@@ -6,26 +6,36 @@ variable "log_analytics_primary_shared_key" {
   type      = string
   sensitive = true
 }
+variable "acr_login_server" { type = string }
 variable "backend_app_name" { type = string }
+variable "backend_image" { type = string }
 variable "mcp_app_name" { type = string }
+variable "mcp_image" { type = string }
 variable "app_insights_connection_string" {
   type      = string
   sensitive = true
 }
 variable "search_endpoint" { type = string }
+variable "search_index_name" { type = string }
+variable "search_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
 variable "storage_account_name" { type = string }
 variable "storage_blob_endpoint" { type = string }
 variable "speech_endpoint" { type = string }
 variable "speech_region" { type = string }
+variable "speech_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
 variable "foundry_endpoint" { type = string }
 variable "openai_endpoint" { type = string }
 variable "chat_deployment" { type = string }
 variable "embedding_deployment" { type = string }
 variable "image_deployment" { type = string }
-
-locals {
-  placeholder_image = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
-}
 
 resource "azurerm_container_app_environment" "this" {
   name                       = var.container_env_name
@@ -44,6 +54,22 @@ resource "azurerm_container_app" "backend" {
     type = "SystemAssigned"
   }
 
+  registry {
+    server   = var.acr_login_server
+    identity = "system"
+  }
+
+  dynamic "secret" {
+    for_each = merge(
+      var.speech_key == "" ? {} : { speech-key = var.speech_key },
+      var.search_key == "" ? {} : { search-key = var.search_key }
+    )
+    content {
+      name  = secret.key
+      value = secret.value
+    }
+  }
+
   ingress {
     external_enabled = true
     target_port      = 80
@@ -56,7 +82,7 @@ resource "azurerm_container_app" "backend" {
   template {
     container {
       name   = "backend"
-      image  = local.placeholder_image
+      image  = var.backend_image
       cpu    = 0.25
       memory = "0.5Gi"
 
@@ -67,6 +93,17 @@ resource "azurerm_container_app" "backend" {
       env {
         name  = "SEARCH_ENDPOINT"
         value = var.search_endpoint
+      }
+      env {
+        name  = "SEARCH_INDEX_NAME"
+        value = var.search_index_name
+      }
+      dynamic "env" {
+        for_each = var.search_key == "" ? [] : ["search-key"]
+        content {
+          name        = "SEARCH_KEY"
+          secret_name = env.value
+        }
       }
       env {
         name  = "STORAGE_ACCOUNT_NAME"
@@ -83,6 +120,13 @@ resource "azurerm_container_app" "backend" {
       env {
         name  = "SPEECH_REGION"
         value = var.speech_region
+      }
+      dynamic "env" {
+        for_each = var.speech_key == "" ? [] : ["speech-key"]
+        content {
+          name        = "SPEECH_KEY"
+          secret_name = env.value
+        }
       }
       env {
         name  = "FOUNDRY_PROJECT_ENDPOINT"
@@ -118,6 +162,11 @@ resource "azurerm_container_app" "mcp" {
     type = "SystemAssigned"
   }
 
+  registry {
+    server   = var.acr_login_server
+    identity = "system"
+  }
+
   ingress {
     external_enabled = true
     target_port      = 80
@@ -130,7 +179,7 @@ resource "azurerm_container_app" "mcp" {
   template {
     container {
       name   = "mcp"
-      image  = local.placeholder_image
+      image  = var.mcp_image
       cpu    = 0.25
       memory = "0.5Gi"
     }
@@ -152,4 +201,3 @@ output "backend_default_hostname" {
 output "mcp_default_hostname" {
   value = azurerm_container_app.mcp.ingress[0].fqdn
 }
-

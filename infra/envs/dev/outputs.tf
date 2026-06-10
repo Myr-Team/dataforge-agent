@@ -27,6 +27,11 @@ output "speech_region" {
   value = var.region
 }
 
+output "speech_primary_key" {
+  value     = module.speech.primary_access_key
+  sensitive = true
+}
+
 output "acr_login_server" {
   value = module.acr.login_server
 }
@@ -63,4 +68,3 @@ output "embedding_deployment" {
 output "image_deployment" {
   value = var.image_deployment
 }
-

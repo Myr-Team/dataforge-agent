@@ -13,3 +13,5 @@
 | 2026-06-10 | WP3 | Built and deployed backend Container App. | Passed cloud health and search smoke. |
 | 2026-06-10 | WP4 | Started MCP market server implementation. | In progress. |
 | 2026-06-10 | WP4 | Built and deployed MCP market Container App. | Passed health, HTTP tool, and MCP JSON-RPC smoke. |
+| 2026-06-10 | WP5 | Started Azure Speech narration implementation. | In progress. |
+| 2026-06-10 | WP5 | Injected Speech/Search secrets as Container App secrets and validated narration. | Passed with Azure Speech WAV artifact. |

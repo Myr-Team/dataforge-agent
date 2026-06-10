@@ -6,8 +6,11 @@ import uuid
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
+from pathlib import Path
 
 try:
     from .chat_loop_primitives import sse
@@ -47,6 +50,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "generated-outputs"
+
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
@@ -80,9 +85,22 @@ def image(req: GenerateImageRequest) -> dict[str, Any]:
     return generate_image(req.prompt, req.size)
 
 
+@app.get("/api/artifacts/{name}")
+def artifact(name: str) -> FileResponse:
+    path = ARTIFACT_DIR / name
+    return FileResponse(path)
+
+
 @app.post("/api/narrate-summary")
-def narrate(req: NarrateSummaryRequest) -> dict[str, Any]:
-    return narrate_summary(req.text, req.voice)
+def narrate(req: NarrateSummaryRequest, request: Request) -> dict[str, Any]:
+    result = narrate_summary(req.text, req.voice)
+    local_path = result.get("local_path")
+    if local_path:
+        artifact_url = str(request.url_for("artifact", name=Path(str(local_path)).name))
+        if artifact_url.startswith("http://"):
+            artifact_url = "https://" + artifact_url.removeprefix("http://")
+        result["audio_blob_url"] = artifact_url
+    return result
 
 
 async def _mock_chat(req: ChatRequest):
