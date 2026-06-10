@@ -23,3 +23,5 @@
 | 2026-06-10 | WP9 | Started three-column trace UI from generated concept. | In progress. |
 | 2026-06-10 | WP9 | Built React/Vite UI and ran Playwright visual/workflow smoke. | Passed: no console errors, 3 artifact links, 20 trace events, 6 agents visible, desktop/mobile screenshots saved. |
 | 2026-06-10 | WP10 | Added router evals and structured trace logging, then deployed backend. | Passed 10 routing cases at 100% accuracy/consistency; App Insights traces returned `dataforge_trace` events. |
+| 2026-06-10 | WP11 | Started end-to-end demo script and runbook. | In progress. |
+| 2026-06-10 | WP11 | Ran `scripts/demo_e2e.py` against the cloud backend. | Passed all demo checks: clarify, 6 agents, MCP, full package artifacts, Azure Speech, auditor revise/pass, honest no. |

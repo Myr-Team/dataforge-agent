@@ -1,0 +1,60 @@
+{
+  "ok": true,
+  "api_base": "https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io",
+  "checks": {
+    "health_ok": true,
+    "clarify_short_circuit": true,
+    "six_agents_visible": true,
+    "mcp_visible": true,
+    "full_package_artifacts": true,
+    "azure_speech_audio": true,
+    "auditor_revise": true,
+    "auditor_pass_after_revision": true,
+    "honest_no": true
+  },
+  "event_counts": {
+    "clarify": 4,
+    "full_package": 20,
+    "medical": 13
+  },
+  "trace_agents": [
+    "df-auditor",
+    "df-coordinator",
+    "df-corpus-analyst",
+    "df-feasibility-analyst",
+    "df-market-researcher",
+    "df-producer"
+  ],
+  "artifact_downloads": {
+    "pdf": {
+      "url": "/api/artifacts/outdoor-analytics-copilot-1781111402.pdf",
+      "bytes": 3260,
+      "header_hex": "255044462d312e34"
+    },
+    "concept_image": {
+      "url": "/api/artifacts/concept-1781111402.png",
+      "bytes": 11676,
+      "header_hex": "89504e470d0a1a0a"
+    },
+    "audio_summary": {
+      "url": "/api/artifacts/summary-1781111404.wav",
+      "bytes": 500444,
+      "header_hex": "52494646d4a20700"
+    }
+  },
+  "medical_audits": [
+    {
+      "verdict": "revise",
+      "issues": [
+        "Medical diagnosis needs clinical validation, consent, and labeled outcomes before feasibility can pass."
+      ],
+      "target_expert": "df-feasibility-analyst"
+    },
+    {
+      "verdict": "pass",
+      "issues": [],
+      "target_expert": null
+    }
+  ],
+  "honest_no_summary": "当前资料不足以支撑这个产品方向，尤其不能支持医疗诊断类承诺；建议先补齐验证、 consent 和标注结果。"
+}
