@@ -11,10 +11,16 @@ try:
     from .chat_loop_primitives import sse
     from .rag import search
     from .schemas import AuditVerdict, ChatRequest, Evidence, RoutingDecision
+    from .tools.generate_image import generate_image
+    from .tools.narrate_summary import narrate_summary
+    from .tools.render_pdf import render_pdf_report
 except ImportError:
     from chat_loop_primitives import sse
     from rag import search
     from schemas import AuditVerdict, ChatRequest, Evidence, RoutingDecision
+    from tools.generate_image import generate_image
+    from tools.narrate_summary import narrate_summary
+    from tools.render_pdf import render_pdf_report
 
 
 PRODUCT_TERMS = ("product", "saas", "business", "proposal", "package", "产品", "商业", "项目书", "方案", "变现")
@@ -190,11 +196,56 @@ def _run_market_researcher() -> dict[str, Any]:
     }
 
 
-def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
+def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
+    feasibility = artifact.get("feasibility", {})
+    corpus = artifact.get("corpus", {})
+    market = artifact.get("market", {})
     return {
-        "opportunity_id": artifact.get("feasibility", {}).get("opportunity_id", "outdoor-analytics-copilot"),
-        "deliverable_plan": ["pdf_report", "concept_image", "audio_summary"],
-        "status": "planned_for_wp8",
+        "opportunity_id": feasibility.get("opportunity_id", "outdoor-analytics-copilot"),
+        "title": "Outdoor Analytics Copilot",
+        "executive_summary": _final_text(
+            RoutingDecision(
+                workspace_id=artifact.get("workspace_id", "demo-corpus"),
+                intent="product_feasibility",
+                experts=[],
+                output_mode="report",
+                needs_clarification=False,
+                reason="producer payload",
+            ),
+            artifact,
+        ),
+        "feasibility": feasibility,
+        "corpus_profile": corpus.get("profile", {}),
+        "opportunities": corpus.get("opportunities", []),
+        "market": market,
+    }
+
+
+def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
+    proposal = _proposal_payload(artifact)
+    pdf = render_pdf_report(proposal, "project_proposal")
+    image_prompt = (
+        "A product concept dashboard for Outdoor Analytics Copilot: sensor evidence, "
+        "coaching insights, feasibility scoring, and enterprise proposal packaging."
+    )
+    image = generate_image(image_prompt, "1024x1024")
+    audio_text = (
+        "DataForge has generated a grounded product package for Outdoor Analytics Copilot. "
+        f"The feasibility verdict is {proposal.get('feasibility', {}).get('verdict', 'conditional')}. "
+        "The package includes a proposal PDF, a concept image, and this spoken summary."
+    )
+    audio = narrate_summary(audio_text, "zh-CN-XiaoxiaoNeural")
+    return {
+        "opportunity_id": proposal["opportunity_id"],
+        "proposal": proposal,
+        "pdf": pdf,
+        "concept_image": image,
+        "audio_summary": audio,
+        "artifact_urls": {
+            "pdf": pdf.get("artifact_url"),
+            "concept_image": image.get("artifact_url"),
+            "audio_summary": audio.get("artifact_url"),
+        },
     }
 
 
@@ -260,7 +311,38 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
 
     if "df-producer" in decision.experts:
         yield sse("role_change", {"agent": "df-producer"})
+        yield sse("tool_call", {"agent": "df-producer", "name": "render_pdf_report", "args": {"template": "project_proposal"}})
+        yield sse("tool_call", {"agent": "df-producer", "name": "generate_image", "args": {"size": "1024x1024"}})
+        yield sse("tool_call", {"agent": "df-producer", "name": "narrate_summary", "args": {"voice": "zh-CN-XiaoxiaoNeural"}})
         artifact["proposal"] = _run_producer(artifact)
+        yield sse(
+            "tool_result",
+            {
+                "agent": "df-producer",
+                "name": "render_pdf_report",
+                "bytes": artifact["proposal"]["pdf"].get("bytes"),
+                "artifact_url": artifact["proposal"]["artifact_urls"].get("pdf"),
+            },
+        )
+        yield sse(
+            "tool_result",
+            {
+                "agent": "df-producer",
+                "name": "generate_image",
+                "bytes": artifact["proposal"]["concept_image"].get("bytes"),
+                "artifact_url": artifact["proposal"]["artifact_urls"].get("concept_image"),
+            },
+        )
+        yield sse(
+            "tool_result",
+            {
+                "agent": "df-producer",
+                "name": "narrate_summary",
+                "bytes": artifact["proposal"]["audio_summary"].get("bytes"),
+                "mode": artifact["proposal"]["audio_summary"].get("mode"),
+                "artifact_url": artifact["proposal"]["artifact_urls"].get("audio_summary"),
+            },
+        )
 
     yield sse("role_change", {"agent": "df-auditor"})
     audit = _audit_artifact(req, artifact)

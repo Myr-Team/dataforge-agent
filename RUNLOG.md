@@ -19,3 +19,4 @@
 | 2026-06-10 | WP6 | Created six Foundry prompt-agent versions and ran verification. | Passed `foundry_get`, strict function schema check, and six-agent `responses_smoke`. |
 | 2026-06-10 | WP7 | Started coordinator-driven orchestration implementation. | In progress. |
 | 2026-06-10 | WP7 | Ran local and cloud `/api/chat` orchestration smoke tests. | Passed product/corpus routing, clarify short-circuit, MCP trace, and auditor revise/pass path. |
+| 2026-06-10 | WP8 | Wired producer tools and ran full-package cloud smoke. | Passed with downloadable PDF, deterministic concept PNG, and Azure Speech WAV. |

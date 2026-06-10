@@ -48,7 +48,16 @@ def narrate_summary(text: str, voice: str = "zh-CN-XiaoxiaoNeural") -> dict[str,
         if audio.startswith(b"RIFF") and len(audio) > 1000:
             path.write_bytes(audio)
             mode = "azure-speech"
-            return {"audio_blob_url": path.as_uri(), "local_path": str(path), "bytes": path.stat().st_size, "voice": voice, "mode": mode, "speech_error": speech_error}
+            return {
+                "audio_blob_url": path.as_uri(),
+                "artifact_name": path.name,
+                "artifact_url": f"/api/artifacts/{path.name}",
+                "local_path": str(path),
+                "bytes": path.stat().st_size,
+                "voice": voice,
+                "mode": mode,
+                "speech_error": speech_error,
+            }
     except Exception as exc:
         mode = "local-fallback"
         speech_error = f"{type(exc).__name__}: {exc}"
@@ -65,4 +74,13 @@ def narrate_summary(text: str, voice: str = "zh-CN-XiaoxiaoNeural") -> dict[str,
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(b"".join(frames))
-    return {"audio_blob_url": path.as_uri(), "local_path": str(path), "bytes": path.stat().st_size, "voice": voice, "mode": mode, "speech_error": speech_error}
+    return {
+        "audio_blob_url": path.as_uri(),
+        "artifact_name": path.name,
+        "artifact_url": f"/api/artifacts/{path.name}",
+        "local_path": str(path),
+        "bytes": path.stat().st_size,
+        "voice": voice,
+        "mode": mode,
+        "speech_error": speech_error,
+    }

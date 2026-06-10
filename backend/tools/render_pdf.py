@@ -40,5 +40,10 @@ def render_pdf_report(proposal: dict[str, Any], template: str = "project_proposa
     path = OUT_DIR / f"{proposal.get('opportunity_id', 'proposal')}-{stamp}.pdf"
     text = f"DataForge {template}\n\n{json.dumps(proposal, indent=2, ensure_ascii=False)}"
     path.write_bytes(_minimal_pdf(text))
-    return {"pdf_blob_url": path.as_uri(), "bytes": path.stat().st_size, "local_path": str(path)}
-
+    return {
+        "pdf_blob_url": path.as_uri(),
+        "artifact_name": path.name,
+        "artifact_url": f"/api/artifacts/{path.name}",
+        "bytes": path.stat().st_size,
+        "local_path": str(path),
+    }
