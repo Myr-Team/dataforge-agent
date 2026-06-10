@@ -11,3 +11,5 @@
 | 2026-06-10 | WP2 | Ran `python ingest\\build_index.py`, `search_smoke.py`, and `feasibility_smoke.py`. | Passed. |
 | 2026-06-10 | WP3 | Started backend tool service implementation. | In progress. |
 | 2026-06-10 | WP3 | Built and deployed backend Container App. | Passed cloud health and search smoke. |
+| 2026-06-10 | WP4 | Started MCP market server implementation. | In progress. |
+| 2026-06-10 | WP4 | Built and deployed MCP market Container App. | Passed health, HTTP tool, and MCP JSON-RPC smoke. |
