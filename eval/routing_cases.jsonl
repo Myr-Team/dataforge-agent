@@ -1,0 +1,10 @@
+{"id":"product_basic","message":"What data product can we build from this workspace?","expected_intent":"product_feasibility","expected_output_mode":"report","expected_experts":["df-corpus-analyst","df-feasibility-analyst","df-market-researcher","df-auditor"]}
+{"id":"full_package","message":"Create a full package with PDF, concept image, and audio for this opportunity.","expected_intent":"product_feasibility","expected_output_mode":"full_package","expected_experts":["df-corpus-analyst","df-feasibility-analyst","df-market-researcher","df-producer","df-auditor"]}
+{"id":"corpus_docs","message":"What do the docs contain? List the main evidence only.","expected_intent":"corpus_qa","expected_output_mode":"chat","expected_experts":["df-corpus-analyst"]}
+{"id":"corpus_evidence","message":"What is in the documents about consent and privacy?","expected_intent":"corpus_qa","expected_output_mode":"chat","expected_experts":["df-corpus-analyst"]}
+{"id":"vague","message":"Build something.","expected_intent":"clarify","expected_output_mode":"chat","expected_experts":[]}
+{"id":"short","message":"Idea?","expected_intent":"clarify","expected_output_mode":"chat","expected_experts":[]}
+{"id":"medical_product","message":"Can we build a health diagnosis product from this workspace?","expected_intent":"product_feasibility","expected_output_mode":"report","expected_experts":["df-corpus-analyst","df-feasibility-analyst","df-market-researcher","df-auditor"]}
+{"id":"proposal_request","message":"Prepare a business proposal for an outdoor analytics SaaS.","expected_intent":"product_feasibility","expected_output_mode":"report","expected_experts":["df-corpus-analyst","df-feasibility-analyst","df-market-researcher","df-auditor"]}
+{"id":"chinese_corpus","message":"只问资料里有什么，列出主要内容","expected_intent":"corpus_qa","expected_output_mode":"chat","expected_experts":["df-corpus-analyst"]}
+{"id":"chinese_full","message":"请生成项目书 PDF、概念图和语音三件套","expected_intent":"product_feasibility","expected_output_mode":"full_package","expected_experts":["df-corpus-analyst","df-feasibility-analyst","df-market-researcher","df-producer","df-auditor"]}

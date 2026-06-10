@@ -22,3 +22,4 @@
 | 2026-06-10 | WP8 | Wired producer tools and ran full-package cloud smoke. | Passed with downloadable PDF, deterministic concept PNG, and Azure Speech WAV. |
 | 2026-06-10 | WP9 | Started three-column trace UI from generated concept. | In progress. |
 | 2026-06-10 | WP9 | Built React/Vite UI and ran Playwright visual/workflow smoke. | Passed: no console errors, 3 artifact links, 20 trace events, 6 agents visible, desktop/mobile screenshots saved. |
+| 2026-06-10 | WP10 | Added router evals and structured trace logging, then deployed backend. | Passed 10 routing cases at 100% accuracy/consistency; App Insights traces returned `dataforge_trace` events. |

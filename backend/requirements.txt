@@ -4,4 +4,4 @@ pydantic==2.10.3
 requests==2.32.3
 azure-identity==1.19.0
 azure-storage-blob==12.24.0
-
+azure-monitor-opentelemetry==1.6.10

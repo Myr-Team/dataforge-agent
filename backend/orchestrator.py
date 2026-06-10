@@ -10,14 +10,18 @@ from typing import Any
 try:
     from .chat_loop_primitives import sse
     from .rag import search
+    from .router import deterministic_route
     from .schemas import AuditVerdict, ChatRequest, Evidence, RoutingDecision
+    from .tracing import trace_event
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
 except ImportError:
     from chat_loop_primitives import sse
     from rag import search
+    from router import deterministic_route
     from schemas import AuditVerdict, ChatRequest, Evidence, RoutingDecision
+    from tracing import trace_event
     from tools.generate_image import generate_image
     from tools.narrate_summary import narrate_summary
     from tools.render_pdf import render_pdf_report
@@ -44,45 +48,13 @@ def _evidence_from_hit(hit: dict[str, Any]) -> Evidence:
     )
 
 
+def _frame(event: str, data: Any, conversation_id: str | None = None) -> str:
+    trace_event(event, data, conversation_id)
+    return sse(event, data)
+
+
 def _coordinator(req: ChatRequest) -> RoutingDecision:
-    message = req.message.strip()
-    wants_full_package = _contains(message, FULL_PACKAGE_TERMS)
-    wants_product = wants_full_package or _contains(message, PRODUCT_TERMS)
-    asks_corpus_only = _contains(message, CORPUS_QA_TERMS) and not wants_product
-    is_vague = _contains(message, VAGUE_TERMS) and not (_contains(message, MEDICAL_TERMS) or _contains(message, PRODUCT_TERMS))
-
-    if is_vague or len(message) < 6:
-        return RoutingDecision(
-            workspace_id=req.workspace_id,
-            intent="clarify",
-            experts=[],
-            output_mode="chat",
-            needs_clarification=True,
-            clarifying_question="请补充你想面向哪个用户、做哪类产品或只想查询资料内容。",
-            reason="The request is too broad to route without inventing a target outcome.",
-        )
-
-    if asks_corpus_only:
-        return RoutingDecision(
-            workspace_id=req.workspace_id,
-            intent="corpus_qa",
-            experts=["df-corpus-analyst"],
-            output_mode="chat",
-            needs_clarification=False,
-            reason="The user is asking what the workspace documents contain.",
-        )
-
-    experts = ["df-corpus-analyst", "df-feasibility-analyst", "df-market-researcher", "df-auditor"]
-    if wants_full_package:
-        experts.insert(-1, "df-producer")
-    return RoutingDecision(
-        workspace_id=req.workspace_id,
-        intent="product_feasibility",
-        experts=experts,
-        output_mode="full_package" if wants_full_package else "report",
-        needs_clarification=False,
-        reason="The user is asking DataForge to identify or evaluate product opportunities.",
-    )
+    return deterministic_route(req.message, req.workspace_id, {"doc_count": 8})
 
 
 def _run_corpus_analyst(req: ChatRequest) -> dict[str, Any]:
@@ -280,42 +252,42 @@ def _audit_artifact(req: ChatRequest, artifact: dict[str, Any]) -> AuditVerdict:
 async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     conv_id = req.conversation_id or str(uuid.uuid4())
     artifact: dict[str, Any] = {"workspace_id": req.workspace_id, "conversation_id": conv_id}
-    yield sse("ready", {"conversation_id": conv_id, "workspace_id": req.workspace_id})
-    yield sse("user", {"text": req.message})
+    yield _frame("ready", {"conversation_id": conv_id, "workspace_id": req.workspace_id}, conv_id)
+    yield _frame("user", {"text": req.message}, conv_id)
 
     decision = _coordinator(req)
-    yield sse("plan", decision.model_dump())
+    yield _frame("plan", decision.model_dump(), conv_id)
     if decision.needs_clarification:
-        yield sse("clarify", {"question": decision.clarifying_question, "reason": decision.reason})
+        yield _frame("clarify", {"question": decision.clarifying_question, "reason": decision.reason}, conv_id)
         return
 
     if "df-corpus-analyst" in decision.experts:
-        yield sse("role_change", {"agent": "df-corpus-analyst"})
-        yield sse("tool_call", {"agent": "df-corpus-analyst", "name": "search_pack_context", "args": {"workspace_id": req.workspace_id, "query": req.message, "top_k": 5}})
+        yield _frame("role_change", {"agent": "df-corpus-analyst"}, conv_id)
+        yield _frame("tool_call", {"agent": "df-corpus-analyst", "name": "search_pack_context", "args": {"workspace_id": req.workspace_id, "query": req.message, "top_k": 5}}, conv_id)
         artifact["corpus"] = _run_corpus_analyst(req)
-        yield sse("tool_result", {"agent": "df-corpus-analyst", "name": "search_pack_context", "count": len(artifact["corpus"]["hits"])})
+        yield _frame("tool_result", {"agent": "df-corpus-analyst", "name": "search_pack_context", "count": len(artifact["corpus"]["hits"])}, conv_id)
 
     if "df-feasibility-analyst" in decision.experts:
-        yield sse("role_change", {"agent": "df-feasibility-analyst"})
+        yield _frame("role_change", {"agent": "df-feasibility-analyst"}, conv_id)
         artifact["feasibility"] = _run_feasibility_analyst(req, artifact)
 
     if "df-market-researcher" in decision.experts and not _contains(req.message, MEDICAL_TERMS):
-        yield sse("role_change", {"agent": "df-market-researcher"})
-        yield sse("tool_call", {"agent": "df-market-researcher", "name": "market_lookup", "args": {"category": "outdoor analytics", "keywords": ["coaching", "sensor", "training"]}})
+        yield _frame("role_change", {"agent": "df-market-researcher"}, conv_id)
+        yield _frame("tool_call", {"agent": "df-market-researcher", "name": "market_lookup", "args": {"category": "outdoor analytics", "keywords": ["coaching", "sensor", "training"]}}, conv_id)
         try:
             artifact["market"] = _run_market_researcher()
-            yield sse("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": len(artifact["market"]["competitors"])})
+            yield _frame("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": len(artifact["market"]["competitors"])}, conv_id)
         except Exception as exc:
             artifact["market"] = {"competitors": [], "positioning_note": "Market lookup unavailable.", "error": str(exc)}
-            yield sse("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": 0, "error": str(exc)})
+            yield _frame("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": 0, "error": str(exc)}, conv_id)
 
     if "df-producer" in decision.experts:
-        yield sse("role_change", {"agent": "df-producer"})
-        yield sse("tool_call", {"agent": "df-producer", "name": "render_pdf_report", "args": {"template": "project_proposal"}})
-        yield sse("tool_call", {"agent": "df-producer", "name": "generate_image", "args": {"size": "1024x1024"}})
-        yield sse("tool_call", {"agent": "df-producer", "name": "narrate_summary", "args": {"voice": "zh-CN-XiaoxiaoNeural"}})
+        yield _frame("role_change", {"agent": "df-producer"}, conv_id)
+        yield _frame("tool_call", {"agent": "df-producer", "name": "render_pdf_report", "args": {"template": "project_proposal"}}, conv_id)
+        yield _frame("tool_call", {"agent": "df-producer", "name": "generate_image", "args": {"size": "1024x1024"}}, conv_id)
+        yield _frame("tool_call", {"agent": "df-producer", "name": "narrate_summary", "args": {"voice": "zh-CN-XiaoxiaoNeural"}}, conv_id)
         artifact["proposal"] = _run_producer(artifact)
-        yield sse(
+        yield _frame(
             "tool_result",
             {
                 "agent": "df-producer",
@@ -323,8 +295,9 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                 "bytes": artifact["proposal"]["pdf"].get("bytes"),
                 "artifact_url": artifact["proposal"]["artifact_urls"].get("pdf"),
             },
+            conv_id,
         )
-        yield sse(
+        yield _frame(
             "tool_result",
             {
                 "agent": "df-producer",
@@ -332,8 +305,9 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                 "bytes": artifact["proposal"]["concept_image"].get("bytes"),
                 "artifact_url": artifact["proposal"]["artifact_urls"].get("concept_image"),
             },
+            conv_id,
         )
-        yield sse(
+        yield _frame(
             "tool_result",
             {
                 "agent": "df-producer",
@@ -342,21 +316,22 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                 "mode": artifact["proposal"]["audio_summary"].get("mode"),
                 "artifact_url": artifact["proposal"]["artifact_urls"].get("audio_summary"),
             },
+            conv_id,
         )
 
-    yield sse("role_change", {"agent": "df-auditor"})
+    yield _frame("role_change", {"agent": "df-auditor"}, conv_id)
     audit = _audit_artifact(req, artifact)
-    yield sse("audit", audit.model_dump())
+    yield _frame("audit", audit.model_dump(), conv_id)
     if audit.verdict == "revise" and audit.target_expert == "df-feasibility-analyst":
-        yield sse("role_change", {"agent": "df-feasibility-analyst", "revision": 1})
+        yield _frame("role_change", {"agent": "df-feasibility-analyst", "revision": 1}, conv_id)
         artifact["feasibility"] = _run_feasibility_analyst(req, artifact, revision=True)
-        yield sse("role_change", {"agent": "df-auditor", "revision": 1})
+        yield _frame("role_change", {"agent": "df-auditor", "revision": 1}, conv_id)
         audit = _audit_artifact(req, artifact)
-        yield sse("audit", audit.model_dump())
+        yield _frame("audit", audit.model_dump(), conv_id)
 
     artifact["audit"] = audit.model_dump()
     summary = _final_text(decision, artifact)
-    yield sse("final", {"text": summary, "routing": decision.model_dump(), "artifact": artifact})
+    yield _frame("final", {"text": summary, "routing": decision.model_dump(), "artifact": artifact}, conv_id)
 
 
 def _final_text(decision: RoutingDecision, artifact: dict[str, Any]) -> str:

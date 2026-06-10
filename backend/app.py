@@ -14,6 +14,7 @@ from pathlib import Path
 try:
     from .orchestrator import orchestrate_chat
     from .rag import search
+    from .tracing import configure_monitoring
     from .schemas import (
         ChatRequest,
         GenerateImageRequest,
@@ -28,6 +29,7 @@ try:
 except ImportError:
     from orchestrator import orchestrate_chat
     from rag import search
+    from tracing import configure_monitoring
     from schemas import (
         ChatRequest,
         GenerateImageRequest,
@@ -41,7 +43,9 @@ except ImportError:
     from tools.render_pdf import render_pdf_report
 
 
-app = FastAPI(title="DataForge Tool Backend", version="0.3.0")
+configure_monitoring()
+
+app = FastAPI(title="DataForge Tool Backend", version="0.10.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
