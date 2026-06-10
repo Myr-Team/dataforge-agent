@@ -3,8 +3,9 @@
 *.tfvars
 *.tfstate
 *.tfstate.*
+tfplan
+*.tfplan
 .terraform/
-.terraform.lock.hcl
 __pycache__/
 *.py[cod]
 .pytest_cache/
