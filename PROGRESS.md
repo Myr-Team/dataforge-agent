@@ -4,7 +4,7 @@
 |---|---|---|---|---|
 | WP0 | Repository, `.gitignore`, reuse manifest skeleton | done | 2026-06-10 | Structure check passed: required repository paths exist. |
 | WP1 | Terraform application resources | done | 2026-06-10 | `terraform apply` succeeded; output JSON contains required resource endpoints and deployment names. |
-| WP2 | Demo corpus and workspace-aware RAG index | todo |  |  |
+| WP2 | Demo corpus and workspace-aware RAG index | done | 2026-06-10 | Uploaded 10 chunks to AI Search; smoke retrieved SaaS signals and medical constraints; health diagnosis verdict is `not_yet_feasible`. |
 | WP3 | Backend tool service and schemas | todo |  |  |
 | WP4 | Market MCP server | todo |  |  |
 | WP5 | Speech narration | todo |  |  |

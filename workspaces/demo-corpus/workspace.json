@@ -1,0 +1,20 @@
+{
+  "workspace_id": "demo-corpus",
+  "name": "TrailSense Outdoor IoT",
+  "persona": "Strategy lead evaluating data-product opportunities for an outdoor sports hardware company",
+  "ask_when": [
+    "The target audience is not specified as B2B fleet/coaching teams or consumer subscribers.",
+    "The requested output asks for medical diagnosis, treatment advice, or regulated clinical claims."
+  ],
+  "raw_docs": [
+    "raw_docs/product_manual.md",
+    "raw_docs/sensor_data_dictionary.md",
+    "raw_docs/customer_feedback_summary.md",
+    "raw_docs/internal_technical_wiki.md",
+    "raw_docs/market_research_notes.md",
+    "raw_docs/privacy_and_consent_review.md",
+    "raw_docs/operations_cost_notes.md",
+    "raw_docs/partnership_pipeline.md"
+  ]
+}
+
