@@ -15,3 +15,5 @@
 | 2026-06-10 | WP4 | Built and deployed MCP market Container App. | Passed health, HTTP tool, and MCP JSON-RPC smoke. |
 | 2026-06-10 | WP5 | Started Azure Speech narration implementation. | In progress. |
 | 2026-06-10 | WP5 | Injected Speech/Search secrets as Container App secrets and validated narration. | Passed with Azure Speech WAV artifact. |
+| 2026-06-10 | WP6 | Started Foundry agent definitions. | In progress. |
+| 2026-06-10 | WP6 | Created six Foundry prompt-agent versions and ran verification. | Passed `foundry_get`, strict function schema check, and six-agent `responses_smoke`. |

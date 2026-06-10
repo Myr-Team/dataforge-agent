@@ -8,7 +8,7 @@
 | WP3 | Backend tool service and schemas | done | 2026-06-10 | Deployed backend image `dataforge-backend:wp3-20260610-1517`; `/api/health` 200 and `/api/search-pack-context` returned 3 demo hits. |
 | WP4 | Market MCP server | done | 2026-06-10 | Deployed `dataforge-mcp:wp4-20260610-1520`; health, HTTP `market_lookup`, and MCP `tools/call` returned competitor data. |
 | WP5 | Speech narration | done | 2026-06-10 | `/api/narrate-summary` returned `mode=azure-speech`; downloaded WAV artifact had RIFF header and 376044 bytes. |
-| WP6 | Six Foundry agents, prompts, tool schemas | todo |  |  |
+| WP6 | Six Foundry agents, prompts, tool schemas | done | 2026-06-10 | Created 6 Foundry prompt-agent versions; `foundry_get` verified all agents; `responses_smoke` returned non-empty role outputs for all 6 agents. |
 | WP7 | Coordinator-driven orchestrator | todo |  |  |
 | WP8 | Producer artifacts: PDF, image, audio | todo |  |  |
 | WP9 | Three-column trace UI | todo |  |  |

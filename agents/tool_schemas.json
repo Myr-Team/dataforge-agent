@@ -1,0 +1,76 @@
+{
+  "search_pack_context": {
+    "type": "function",
+    "name": "search_pack_context",
+    "description": "Search the active DataForge workspace corpus with a mandatory workspace_id filter.",
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspace_id": { "type": "string" },
+        "query": { "type": "string" },
+        "top_k": { "type": "integer", "minimum": 1, "maximum": 20 }
+      },
+      "required": ["workspace_id", "query", "top_k"]
+    }
+  },
+  "render_pdf_report": {
+    "type": "function",
+    "name": "render_pdf_report",
+    "description": "Render a structured DataForge proposal to PDF.",
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "proposal": { "type": "object", "additionalProperties": true },
+        "template": { "type": "string" }
+      },
+      "required": ["proposal", "template"]
+    }
+  },
+  "generate_image": {
+    "type": "function",
+    "name": "generate_image",
+    "description": "Generate a concept image for an approved product opportunity.",
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prompt": { "type": "string" },
+        "size": { "type": "string", "enum": ["1024x1024", "1024x1536", "1536x1024"] }
+      },
+      "required": ["prompt", "size"]
+    }
+  },
+  "narrate_summary": {
+    "type": "function",
+    "name": "narrate_summary",
+    "description": "Generate a Chinese spoken executive summary as playable audio.",
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": { "type": "string" },
+        "voice": { "type": "string" }
+      },
+      "required": ["text", "voice"]
+    }
+  },
+  "market_lookup_mcp": {
+    "type": "mcp",
+    "server_label": "dataforge-market",
+    "server_url_env": "MCP_MARKET_URL",
+    "allowed_tools": ["market_lookup"]
+  },
+  "web_search_preview": {
+    "type": "web_search_preview"
+  },
+  "code_interpreter": {
+    "type": "code_interpreter"
+  }
+}
+

@@ -21,6 +21,7 @@ coverage/
 generated-outputs/
 artifacts/
 *.log
+agents/.agents_state.json
 *.wav
 *.mp3
 *.png
