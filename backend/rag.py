@@ -14,9 +14,12 @@ DEFAULT_INDEX = "dataforge-workspaces"
 
 
 def _terraform_output(name: str) -> str:
+    tf_dir = ROOT / "infra" / "envs" / "dev"
+    if not tf_dir.exists():
+        return ""
     result = subprocess.run(
         ["terraform", "output", "-raw", name],
-        cwd=ROOT / "infra" / "envs" / "dev",
+        cwd=tf_dir,
         capture_output=True,
         text=True,
         check=False,
@@ -50,7 +53,7 @@ def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]
     endpoint = os.environ.get("SEARCH_ENDPOINT") or _terraform_output("search_endpoint")
     key = os.environ.get("SEARCH_KEY") or _terraform_output("search_primary_key")
     index_name = os.environ.get("SEARCH_INDEX_NAME", DEFAULT_INDEX)
-    if not endpoint or not key:
+    if not endpoint:
         return _local_search(workspace_id, query, top_k)
 
     url = f"{endpoint.rstrip('/')}/indexes/{index_name}/docs/search?api-version={API_VERSION}"
@@ -61,7 +64,13 @@ def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]
         "select": "id,workspace_id,title,content,source_file,chunk_id,document_type,language",
     }
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST")
-    req.add_header("api-key", key)
+    if key:
+        req.add_header("api-key", key)
+    else:
+        from azure.identity import DefaultAzureCredential
+
+        token = DefaultAzureCredential().get_token("https://search.azure.com/.default")
+        req.add_header("Authorization", f"Bearer {token.token}")
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read().decode("utf-8"))
@@ -79,4 +88,3 @@ def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]
         }
         for hit in data.get("value", [])
     ]
-

@@ -5,7 +5,7 @@
 | WP0 | Repository, `.gitignore`, reuse manifest skeleton | done | 2026-06-10 | Structure check passed: required repository paths exist. |
 | WP1 | Terraform application resources | done | 2026-06-10 | `terraform apply` succeeded; output JSON contains required resource endpoints and deployment names. |
 | WP2 | Demo corpus and workspace-aware RAG index | done | 2026-06-10 | Uploaded 10 chunks to AI Search; smoke retrieved SaaS signals and medical constraints; health diagnosis verdict is `not_yet_feasible`. |
-| WP3 | Backend tool service and schemas | todo |  |  |
+| WP3 | Backend tool service and schemas | done | 2026-06-10 | Deployed backend image `dataforge-backend:wp3-20260610-1517`; `/api/health` 200 and `/api/search-pack-context` returned 3 demo hits. |
 | WP4 | Market MCP server | todo |  |  |
 | WP5 | Speech narration | todo |  |  |
 | WP6 | Six Foundry agents, prompts, tool schemas | todo |  |  |
