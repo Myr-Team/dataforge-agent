@@ -11,6 +11,6 @@
 | WP6 | Six Foundry agents, prompts, tool schemas | done | 2026-06-10 | Created 6 Foundry prompt-agent versions; `foundry_get` verified all agents; `responses_smoke` returned non-empty role outputs for all 6 agents. |
 | WP7 | Coordinator-driven orchestrator | done | 2026-06-10 | Deployed `dataforge-backend:wp7-20260610-1658`; cloud `/api/chat` routed product vs corpus questions differently, returned `clarify` for vague input, emitted MCP `market_lookup` count 4, and showed auditor revise/pass for health diagnosis. |
 | WP8 | Producer artifacts: PDF, image, audio | done | 2026-06-10 | Deployed `dataforge-backend:wp8-20260610-1715`; cloud `full_package` produced downloadable PDF 3260 bytes, PNG 11676 bytes, and Azure Speech WAV 500444 bytes. |
-| WP9 | Three-column trace UI | todo |  |  |
+| WP9 | Three-column trace UI | done | 2026-06-10 | React/Vite UI built successfully; Playwright run against local UI produced 3 cloud artifact links, trace count 20, all 6 agents visible, and desktop/mobile screenshots in `docs/assets`. |
 | WP10 | Deterministic router, evals, tracing | todo |  |  |
 | WP11 | End-to-end demo script | todo |  |  |

@@ -29,5 +29,6 @@ agents/.agents_state.json
 *.jpeg
 !web/assets/.gitkeep
 !docs/assets/.gitkeep
+!docs/assets/*.png
 .DS_Store
 Thumbs.db

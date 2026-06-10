@@ -20,3 +20,5 @@
 | 2026-06-10 | WP7 | Started coordinator-driven orchestration implementation. | In progress. |
 | 2026-06-10 | WP7 | Ran local and cloud `/api/chat` orchestration smoke tests. | Passed product/corpus routing, clarify short-circuit, MCP trace, and auditor revise/pass path. |
 | 2026-06-10 | WP8 | Wired producer tools and ran full-package cloud smoke. | Passed with downloadable PDF, deterministic concept PNG, and Azure Speech WAV. |
+| 2026-06-10 | WP9 | Started three-column trace UI from generated concept. | In progress. |
+| 2026-06-10 | WP9 | Built React/Vite UI and ran Playwright visual/workflow smoke. | Passed: no console errors, 3 artifact links, 20 trace events, 6 agents visible, desktop/mobile screenshots saved. |
