@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import uuid
 from typing import Any
 
 from fastapi import FastAPI
@@ -13,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from pathlib import Path
 
 try:
-    from .chat_loop_primitives import sse
+    from .orchestrator import orchestrate_chat
     from .rag import search
     from .schemas import (
         ChatRequest,
@@ -27,7 +26,7 @@ try:
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
 except ImportError:
-    from chat_loop_primitives import sse
+    from orchestrator import orchestrate_chat
     from rag import search
     from schemas import (
         ChatRequest,
@@ -103,33 +102,6 @@ def narrate(req: NarrateSummaryRequest, request: Request) -> dict[str, Any]:
     return result
 
 
-async def _mock_chat(req: ChatRequest):
-    conv_id = req.conversation_id or str(uuid.uuid4())
-    yield sse("ready", {"conversation_id": conv_id, "workspace_id": req.workspace_id})
-    yield sse("user", {"text": req.message})
-    yield sse(
-        "plan",
-        {
-            "intent": "product_feasibility",
-            "experts": ["corpus-analyst", "feasibility-analyst", "market-researcher", "producer", "auditor"],
-            "output_mode": "report",
-        },
-    )
-    yield sse("role_change", {"agent": "corpus-analyst"})
-    hits = search(req.workspace_id, req.message, 3)
-    yield sse("tool_call", {"name": "search_pack_context", "args": {"workspace_id": req.workspace_id, "query": req.message}})
-    yield sse("tool_result", {"name": "search_pack_context", "count": len(hits), "sources": [h["source_file"] for h in hits]})
-    yield sse("role_change", {"agent": "auditor"})
-    yield sse("audit", {"verdict": "pass" if hits else "revise", "issues": [] if hits else ["No corpus evidence found"]})
-    yield sse(
-        "final",
-        {
-            "text": "DataForge found grounded signals for outdoor analytics and hard gaps for medical diagnosis claims.",
-            "hits": hits,
-        },
-    )
-
-
 @app.post("/api/chat")
 async def chat(req: ChatRequest) -> StreamingResponse:
-    return StreamingResponse(_mock_chat(req), media_type="text/event-stream")
+    return StreamingResponse(orchestrate_chat(req), media_type="text/event-stream")

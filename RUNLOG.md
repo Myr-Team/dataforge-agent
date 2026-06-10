@@ -17,3 +17,5 @@
 | 2026-06-10 | WP5 | Injected Speech/Search secrets as Container App secrets and validated narration. | Passed with Azure Speech WAV artifact. |
 | 2026-06-10 | WP6 | Started Foundry agent definitions. | In progress. |
 | 2026-06-10 | WP6 | Created six Foundry prompt-agent versions and ran verification. | Passed `foundry_get`, strict function schema check, and six-agent `responses_smoke`. |
+| 2026-06-10 | WP7 | Started coordinator-driven orchestration implementation. | In progress. |
+| 2026-06-10 | WP7 | Ran local and cloud `/api/chat` orchestration smoke tests. | Passed product/corpus routing, clarify short-circuit, MCP trace, and auditor revise/pass path. |
