@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,9 +11,11 @@ from typing import Any
 from ingest.profiler import build_data_profile, compact_profile_for_workspace, profile_to_search_document, write_profile
 
 try:
-    from .search_admin import count_workspace_docs, index_documents, search_endpoint
+    from .blob_store import get_registry_workspace, load_workspace_registry, persist_workspace, remove_workspace_from_blob
+    from .search_admin import count_workspace_docs, delete_workspace_docs, index_documents, search_endpoint
 except ImportError:
-    from search_admin import count_workspace_docs, index_documents, search_endpoint
+    from blob_store import get_registry_workspace, load_workspace_registry, persist_workspace, remove_workspace_from_blob
+    from search_admin import count_workspace_docs, delete_workspace_docs, index_documents, search_endpoint
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,9 +66,18 @@ def create_workspace_from_upload(
         "created_at": profile["created_at"],
         "profile_summary": profile["profile_summary"],
     }
-    (workspace_dir / "workspace.json").write_text(json.dumps(workspace_meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
     indexed_count = _index_profile(profile)
+    workspace_meta["indexed_count"] = indexed_count
+    persistence = _persist_workspace(
+        workspace_id=workspace_id,
+        safe_name=safe_name,
+        content=content,
+        workspace_meta=workspace_meta,
+        profile=profile,
+    )
+    workspace_meta["persistence"] = persistence
+    (workspace_dir / "workspace.json").write_text(json.dumps(workspace_meta, indent=2, ensure_ascii=False), encoding="utf-8")
     return {
         "workspace_id": workspace_id,
         "name": display_name,
@@ -76,7 +88,7 @@ def create_workspace_from_upload(
 
 
 def list_workspaces() -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
     WORKSPACES.mkdir(parents=True, exist_ok=True)
     for workspace_dir in WORKSPACES.iterdir():
         if not workspace_dir.is_dir():
@@ -88,17 +100,53 @@ def list_workspaces() -> list[dict[str, Any]]:
         workspace_id = str(meta.get("workspace_id") or workspace_dir.name)
         profile = _read_profile(workspace_dir, meta)
         doc_count = _workspace_doc_count(workspace_id, workspace_dir, meta)
-        items.append(
-            {
-                "workspace_id": workspace_id,
-                "name": meta.get("name") or workspace_id,
-                "doc_count": doc_count,
-                "format": meta.get("format") or profile.get("format") or "mixed",
-                "profile_summary": meta.get("profile_summary") or profile.get("profile_summary"),
-                "created_at": meta.get("created_at") or profile.get("created_at"),
-            }
-        )
-    return sorted(items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        by_id[workspace_id] = {
+            "workspace_id": workspace_id,
+            "name": meta.get("name") or workspace_id,
+            "doc_count": doc_count,
+            "format": meta.get("format") or profile.get("format") or "mixed",
+            "profile_summary": meta.get("profile_summary") or profile.get("profile_summary"),
+            "created_at": meta.get("created_at") or profile.get("created_at"),
+        }
+    for item in load_workspace_registry():
+        workspace_id = str(item.get("workspace_id") or "")
+        if not workspace_id:
+            continue
+        by_id[workspace_id] = {
+            "workspace_id": workspace_id,
+            "name": item.get("name") or workspace_id,
+            "doc_count": _registry_doc_count(item),
+            "format": item.get("format") or "unknown",
+            "profile_summary": item.get("profile_summary"),
+            "created_at": item.get("created_at"),
+        }
+    return sorted(by_id.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+
+def delete_workspace(workspace_id: str) -> dict[str, Any]:
+    workspace_id = str(workspace_id or "").strip()
+    if not workspace_id:
+        raise ValueError("workspace_id is required")
+    if not workspace_id.startswith("upload-"):
+        raise PermissionError("Built-in workspaces cannot be deleted")
+
+    registry_entry = get_registry_workspace(workspace_id)
+    workspace_dir = WORKSPACES / workspace_id
+    if registry_entry is None and not workspace_dir.exists():
+        raise FileNotFoundError(workspace_id)
+
+    deleted_docs = _delete_search_docs(workspace_id)
+    blob_result: dict[str, Any] = {"deleted_blobs": 0}
+    if registry_entry is not None:
+        blob_result = remove_workspace_from_blob(workspace_id)
+    if workspace_dir.exists():
+        _delete_local_workspace_dir(workspace_dir)
+    return {
+        "workspace_id": workspace_id,
+        "deleted": True,
+        "deleted_docs": deleted_docs,
+        **blob_result,
+    }
 
 
 def workspace_context(workspace_id: str) -> dict[str, Any]:
@@ -122,6 +170,55 @@ def _index_profile(profile: dict[str, Any]) -> int:
         if search_endpoint():
             raise
         return 1
+
+
+def _persist_workspace(
+    *,
+    workspace_id: str,
+    safe_name: str,
+    content: bytes,
+    workspace_meta: dict[str, Any],
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        return persist_workspace(
+            workspace_id=workspace_id,
+            raw_filename=safe_name,
+            raw_content=content,
+            workspace_meta=workspace_meta,
+            profile=profile,
+        )
+    except Exception as exc:
+        if search_endpoint():
+            raise
+        return {"mode": "local_fallback", "error": str(exc)[:300]}
+
+
+def _registry_doc_count(item: dict[str, Any]) -> int:
+    workspace_id = str(item.get("workspace_id") or "")
+    if workspace_id:
+        try:
+            return count_workspace_docs(workspace_id)
+        except Exception:
+            pass
+    return int(item.get("doc_count") or 1)
+
+
+def _delete_search_docs(workspace_id: str) -> int:
+    try:
+        return delete_workspace_docs(workspace_id)
+    except Exception:
+        if search_endpoint():
+            raise
+        return 0
+
+
+def _delete_local_workspace_dir(workspace_dir: Path) -> None:
+    root = WORKSPACES.resolve()
+    target = workspace_dir.resolve()
+    if root not in target.parents:
+        raise RuntimeError(f"Refusing to delete outside workspace root: {target}")
+    shutil.rmtree(target)
 
 
 def _workspace_doc_count(workspace_id: str, workspace_dir: Path, meta: dict[str, Any]) -> int:
@@ -155,7 +252,8 @@ def _unique_workspace_id(value: str) -> str:
         base = f"upload-{base}"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     candidate = f"{base}-{stamp}"
-    if not (WORKSPACES / candidate).exists():
+    existing = {str(item.get("workspace_id")) for item in load_workspace_registry()}
+    if not (WORKSPACES / candidate).exists() and candidate not in existing:
         return candidate
     return f"{candidate}-{uuid.uuid4().hex[:6]}"
 

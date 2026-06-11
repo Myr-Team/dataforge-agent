@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi import File
 from fastapi import Form
+from fastapi import HTTPException
 from fastapi import Request
 from fastapi import UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,36 +17,40 @@ from pathlib import Path
 from starlette.concurrency import run_in_threadpool
 
 try:
-    from .orchestrator import orchestrate_chat
+    from .orchestrator import orchestrate_chat, produce_from_existing_report
     from .rag import search
     from .tracing import configure_monitoring
-    from .workspace_store import create_workspace_from_upload, list_workspaces
+    from .workspace_store import create_workspace_from_upload, delete_workspace, list_workspaces
     from .schemas import (
         ChatRequest,
         GenerateImageRequest,
         NarrateSummaryRequest,
+        ProduceRequest,
         RenderPdfRequest,
         SearchPackContextRequest,
         SearchPackContextResponse,
         UploadResponse,
+        WorkspaceDeleteResponse,
         WorkspacesResponse,
     )
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
 except ImportError:
-    from orchestrator import orchestrate_chat
+    from orchestrator import orchestrate_chat, produce_from_existing_report
     from rag import search
     from tracing import configure_monitoring
-    from workspace_store import create_workspace_from_upload, list_workspaces
+    from workspace_store import create_workspace_from_upload, delete_workspace, list_workspaces
     from schemas import (
         ChatRequest,
         GenerateImageRequest,
         NarrateSummaryRequest,
+        ProduceRequest,
         RenderPdfRequest,
         SearchPackContextRequest,
         SearchPackContextResponse,
         UploadResponse,
+        WorkspaceDeleteResponse,
         WorkspacesResponse,
     )
     from tools.generate_image import generate_image
@@ -111,6 +116,19 @@ async def workspaces() -> WorkspacesResponse:
     return WorkspacesResponse(workspaces=await run_in_threadpool(list_workspaces))
 
 
+@app.delete("/api/workspaces/{workspace_id}", response_model=WorkspaceDeleteResponse)
+async def remove_workspace(workspace_id: str) -> WorkspaceDeleteResponse:
+    try:
+        result = await run_in_threadpool(delete_workspace, workspace_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return WorkspaceDeleteResponse.model_validate(result)
+
+
 @app.post("/api/render-pdf-report")
 async def render_pdf(req: RenderPdfRequest) -> dict[str, Any]:
     return await run_in_threadpool(render_pdf_report, req.proposal, req.template)
@@ -137,6 +155,11 @@ async def narrate(req: NarrateSummaryRequest, request: Request) -> dict[str, Any
             artifact_url = "https://" + artifact_url.removeprefix("http://")
         result["audio_blob_url"] = artifact_url
     return result
+
+
+@app.post("/api/produce")
+async def produce(req: ProduceRequest) -> dict[str, Any]:
+    return await run_in_threadpool(produce_from_existing_report, req.model_dump())
 
 
 @app.post("/api/chat")

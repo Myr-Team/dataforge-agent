@@ -4,6 +4,7 @@ import math
 import re
 from collections import Counter
 from datetime import datetime
+from itertools import combinations
 from typing import Any
 
 
@@ -34,6 +35,7 @@ def infer_table_profile(name: str, rows: list[dict[str, Any]], *, max_columns: i
     columns = list(dict.fromkeys(key for row in rows for key in row.keys()))[:max_columns]
     column_profiles = [_profile_column(column, [row.get(column) for row in rows], row_count) for column in columns]
     signals, noise = _signal_noise(column_profiles, row_count)
+    cross_signals, cross_noise = _cross_signals(rows, column_profiles, row_count)
     return {
         "name": name,
         "row_count": row_count,
@@ -46,7 +48,8 @@ def infer_table_profile(name: str, rows: list[dict[str, Any]], *, max_columns: i
             "duplicate_row_count": _duplicate_rows(rows),
         },
         "signals": signals,
-        "noise": noise,
+        "cross_signals": cross_signals,
+        "noise": (noise + cross_noise)[:14],
     }
 
 
@@ -56,12 +59,13 @@ def summarize_profile(profile: dict[str, Any]) -> str:
     total_rows = sum(int(table.get("row_count") or 0) for table in tables)
     total_columns = sum(int(table.get("column_count") or 0) for table in tables)
     all_signals = [item for table in tables for item in table.get("signals", [])]
+    all_cross = [item for table in tables for item in table.get("cross_signals", [])]
     all_noise = [item for table in tables for item in table.get("noise", [])]
     schema_bits = []
     for table in tables[:4]:
         columns = ", ".join(col.get("name", "") for col in (table.get("columns") or [])[:8])
         schema_bits.append(f"{table.get('name', 'table')}({columns})")
-    signal_text = "；".join(all_signals[:5]) or "暂未发现稳定高信号字段"
+    signal_text = "；".join((all_cross + all_signals)[:5]) or "暂未发现稳定高信号字段"
     noise_text = "；".join(all_noise[:4]) or "未发现严重噪声"
     return (
         f"数据画像：{profile.get('name', '上传数据')}，格式 {profile.get('format')}，"
@@ -93,6 +97,8 @@ def profile_search_content(profile: dict[str, Any]) -> str:
             lines.append(detail)
         for signal in table.get("signals", [])[:8]:
             lines.append(f"高信号判断：{signal}")
+        for signal in table.get("cross_signals", [])[:10]:
+            lines.append(f"交叉信号：{signal}")
         for item in table.get("noise", [])[:8]:
             lines.append(f"噪声风险：{item}")
     return "\n".join(lines)
@@ -155,6 +161,8 @@ def _signal_noise(columns: list[dict[str, Any]], row_count: int) -> tuple[list[s
         if _looks_identifier(name, unique_count, row_count):
             noise.append(f"{name} 更像标识符，可用于追踪但不宜单独推导业务结论")
             continue
+        if _near_uniform_category(col, row_count):
+            noise.append(f"{name} 取值分布近似均匀，暂不作为核心分群结论")
         if type_name == "number":
             numeric = col.get("numeric") or {}
             signals.append(f"{name} 是完整度较高的数值字段，范围 {numeric.get('min')} 到 {numeric.get('max')}")
@@ -163,6 +171,173 @@ def _signal_noise(columns: list[dict[str, Any]], row_count: int) -> tuple[list[s
         elif unique_count >= 2:
             signals.append(f"{name} 有 {unique_count} 个不同取值，可用于分群、筛选或解释差异")
     return signals[:10], noise[:10]
+
+
+def _cross_signals(
+    rows: list[dict[str, Any]],
+    columns: list[dict[str, Any]],
+    row_count: int,
+) -> tuple[list[str], list[str]]:
+    if row_count < 3 or not rows:
+        return [], []
+    numeric_cols = [col for col in columns if col.get("type") == "number" and int(col.get("non_empty") or 0) >= 3]
+    category_cols = [
+        col
+        for col in columns
+        if _is_category(col, row_count) and not _looks_identifier(str(col.get("name", "")), int(col.get("unique_count") or 0), row_count)
+    ]
+    date_cols = [col for col in columns if col.get("type") == "date" and int(col.get("non_empty") or 0) >= 3]
+    signals: list[str] = []
+    noise: list[str] = []
+    used_categories: set[str] = set()
+
+    for numeric in numeric_cols[:8]:
+        for category in category_cols[:8]:
+            signal = _numeric_by_category_signal(rows, str(numeric["name"]), str(category["name"]))
+            if signal:
+                signals.append(signal)
+                used_categories.add(str(category["name"]))
+            if len(signals) >= 10:
+                break
+        if len(signals) >= 10:
+            break
+
+    for left, right in combinations(category_cols[:8], 2):
+        signal = _category_cooccurrence_signal(rows, str(left["name"]), str(right["name"]))
+        if signal:
+            signals.append(signal)
+            used_categories.update({str(left["name"]), str(right["name"])})
+        if len(signals) >= 14:
+            break
+
+    for date_col in date_cols[:3]:
+        for numeric in numeric_cols[:8]:
+            signal = _time_trend_signal(rows, str(date_col["name"]), str(numeric["name"]))
+            if signal:
+                signals.append(signal)
+            if len(signals) >= 16:
+                break
+        if len(signals) >= 16:
+            break
+
+    for category in category_cols[:10]:
+        name = str(category.get("name") or "")
+        if name not in used_categories and _near_uniform_category(category, row_count):
+            noise.append(f"{name} 在当前数据中接近均匀分布，且未发现与数值指标的显著差异")
+    return signals[:16], noise[:8]
+
+
+def _numeric_by_category_signal(rows: list[dict[str, Any]], numeric_col: str, category_col: str) -> str | None:
+    groups: dict[str, list[float]] = {}
+    values: list[float] = []
+    for row in rows:
+        number = _to_number(clean_cell(row.get(numeric_col)))
+        category = clean_cell(row.get(category_col))
+        if number is None or not category:
+            continue
+        values.append(number)
+        groups.setdefault(category, []).append(number)
+    usable = {key: nums for key, nums in groups.items() if nums}
+    if len(usable) < 2 or len(values) < 3:
+        return None
+    means = [(key, sum(nums) / len(nums), len(nums)) for key, nums in usable.items()]
+    low = min(means, key=lambda item: item[1])
+    high = max(means, key=lambda item: item[1])
+    spread = high[1] - low[1]
+    value_range = max(values) - min(values)
+    baseline = max(abs(sum(values) / len(values)), 1.0)
+    if spread <= 0 or (value_range and spread / value_range < 0.25 and spread / baseline < 0.18):
+        return None
+    return (
+        f"{numeric_col} 按 {category_col} 分组均值差异明显："
+        f"{high[0]}={_round(high[1])}(n={high[2]})，"
+        f"{low[0]}={_round(low[1])}(n={low[2]})，差值 {_round(spread)}"
+    )
+
+
+def _category_cooccurrence_signal(rows: list[dict[str, Any]], left_col: str, right_col: str) -> str | None:
+    pairs: Counter[tuple[str, str]] = Counter()
+    left_counts: Counter[str] = Counter()
+    right_counts: Counter[str] = Counter()
+    total = 0
+    for row in rows:
+        left = clean_cell(row.get(left_col))
+        right = clean_cell(row.get(right_col))
+        if not left or not right:
+            continue
+        total += 1
+        pairs[(left, right)] += 1
+        left_counts[left] += 1
+        right_counts[right] += 1
+    if total < 4 or not pairs:
+        return None
+    (left, right), count = pairs.most_common(1)[0]
+    expected = left_counts[left] * right_counts[right] / total
+    lift = count / expected if expected else 0
+    if count < max(2, math.ceil(total * 0.15)) or lift < 1.35:
+        return None
+    return (
+        f"{left_col}={left} 与 {right_col}={right} 共现 {count}/{total} 行，"
+        f"约为独立分布预期的 {_round(lift)} 倍"
+    )
+
+
+def _time_trend_signal(rows: list[dict[str, Any]], date_col: str, numeric_col: str) -> str | None:
+    points: list[tuple[datetime, float]] = []
+    for row in rows:
+        date_value = _parse_date(clean_cell(row.get(date_col)))
+        number = _to_number(clean_cell(row.get(numeric_col)))
+        if date_value is not None and number is not None:
+            points.append((date_value, number))
+    if len(points) < 4:
+        return None
+    points.sort(key=lambda item: item[0])
+    midpoint = len(points) // 2
+    early = [value for _, value in points[:midpoint]]
+    late = [value for _, value in points[midpoint:]]
+    if not early or not late:
+        return None
+    early_mean = sum(early) / len(early)
+    late_mean = sum(late) / len(late)
+    change = late_mean - early_mean
+    pct = change / abs(early_mean) if early_mean else 0
+    if abs(pct) < 0.15 and abs(change) < 1:
+        return None
+    direction = "上升" if change > 0 else "下降"
+    return (
+        f"{numeric_col} 随 {date_col} 呈{direction}趋势："
+        f"前半均值 {_round(early_mean)}，后半均值 {_round(late_mean)}，变化 {pct:.0%}"
+    )
+
+
+def _is_category(col: dict[str, Any], row_count: int) -> bool:
+    type_name = col.get("type")
+    unique_count = int(col.get("unique_count") or 0)
+    non_empty = int(col.get("non_empty") or 0)
+    if non_empty < 3 or unique_count < 2:
+        return False
+    if type_name == "boolean":
+        return True
+    if type_name == "date":
+        return False
+    if type_name != "text":
+        return False
+    return unique_count <= min(20, max(2, math.ceil(row_count * 0.8)))
+
+
+def _near_uniform_category(col: dict[str, Any], row_count: int) -> bool:
+    unique_count = int(col.get("unique_count") or 0)
+    if row_count < 6 or unique_count < 3 or unique_count > 20:
+        return False
+    counts = [int(item.get("count") or 0) for item in col.get("top_values", [])]
+    non_empty = int(col.get("non_empty") or sum(counts))
+    if len(counts) < min(unique_count, 5) or not non_empty:
+        return False
+    expected = non_empty / unique_count
+    if expected <= 0:
+        return False
+    max_deviation = max(abs(count - expected) / expected for count in counts)
+    return max_deviation <= 0.25
 
 
 def _missing_cell_rate(columns: list[dict[str, Any]], row_count: int) -> float:
@@ -205,6 +380,16 @@ def _looks_date(value: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _parse_date(value: str) -> datetime | None:
+    text = value.strip().replace("/", "-")
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text[:10])
+    except ValueError:
+        return None
 
 
 def _looks_identifier(name: str, unique_count: int, row_count: int) -> bool:

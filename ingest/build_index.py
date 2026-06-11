@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ingest.adapters.excel_to_records import excel_to_records
+from ingest.embeddings import embedding_dimensions, enrich_documents_with_embeddings
 from ingest.profiler import profile_to_search_document
 
 
@@ -74,7 +75,25 @@ def _index_schema(index_name: str) -> dict[str, Any]:
             {"name": "language", "type": "Edm.String", "filterable": True},
             {"name": "sheet", "type": "Edm.String", "filterable": True, "facetable": True},
             {"name": "row", "type": "Edm.String", "filterable": True},
+            {
+                "name": "content_vector",
+                "type": "Collection(Edm.Single)",
+                "searchable": True,
+                "retrievable": False,
+                "dimensions": embedding_dimensions(),
+                "vectorSearchProfile": "content-vector-profile",
+            },
         ],
+        "vectorSearch": {
+            "algorithms": [
+                {
+                    "name": "content-hnsw",
+                    "kind": "hnsw",
+                    "hnswParameters": {"metric": "cosine"},
+                }
+            ],
+            "profiles": [{"name": "content-vector-profile", "algorithm": "content-hnsw"}],
+        },
     }
     for field in schema["fields"]:
         if field["name"] in {"title", "content"}:
@@ -174,18 +193,35 @@ def upload_index(workspace_dir: Path, index_name: str) -> dict[str, Any]:
     endpoint = _setting("SEARCH_ENDPOINT", "search_endpoint").rstrip("/")
     key = _setting("SEARCH_KEY", "search_primary_key")
     workspace_id, docs = build_documents(workspace_dir)
+    docs = enrich_documents_with_embeddings(docs)
     index_url = f"{endpoint}/indexes/{index_name}?api-version={API_VERSION}"
     docs_url = f"{endpoint}/indexes/{index_name}/docs/index?api-version={API_VERSION}"
     try:
         _request("PUT", index_url, key, _index_schema(index_name))
+        vector_supported = True
     except RuntimeError:
-        try:
-            _request("DELETE", index_url, key)
-        except RuntimeError:
-            pass
-        _request("PUT", index_url, key, _index_schema(index_name))
-    upload_result = _request("POST", docs_url, key, {"value": docs})
+        if os.environ.get("DF_SEARCH_RECREATE_ON_SCHEMA_CONFLICT") == "1":
+            try:
+                _request("DELETE", index_url, key)
+            except RuntimeError:
+                pass
+            _request("PUT", index_url, key, _index_schema(index_name))
+            vector_supported = True
+        else:
+            vector_supported = False
+    upload_docs = docs if vector_supported else [_without_vector(doc) for doc in docs]
+    try:
+        upload_result = _request("POST", docs_url, key, {"value": upload_docs})
+    except RuntimeError:
+        upload_docs = [_without_vector(doc) for doc in docs]
+        upload_result = _request("POST", docs_url, key, {"value": upload_docs})
     return {"workspace_id": workspace_id, "index_name": index_name, "document_count": len(docs), "upload": upload_result}
+
+
+def _without_vector(doc: dict[str, Any]) -> dict[str, Any]:
+    item = dict(doc)
+    item.pop("content_vector", None)
+    return item
 
 
 def main() -> int:

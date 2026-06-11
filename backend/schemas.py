@@ -120,6 +120,13 @@ class WorkspacesResponse(BaseModel):
     workspaces: list[WorkspaceSummary]
 
 
+class WorkspaceDeleteResponse(BaseModel):
+    workspace_id: str
+    deleted: bool
+    deleted_docs: int
+    deleted_blobs: int = 0
+
+
 class RenderPdfRequest(BaseModel):
     proposal: dict[str, Any]
     template: str = "project_proposal"
@@ -133,6 +140,14 @@ class GenerateImageRequest(BaseModel):
 class NarrateSummaryRequest(BaseModel):
     text: str
     voice: str = "zh-CN-XiaoxiaoNeural"
+
+
+class ProduceRequest(BaseModel):
+    workspace_id: str = "demo-corpus"
+    conversation_id: str | None = None
+    feasibility: dict[str, Any]
+    corpus: dict[str, Any] = Field(default_factory=dict)
+    market: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatRequest(BaseModel):
