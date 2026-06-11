@@ -1,0 +1,120 @@
+{
+  "ok": true,
+  "loaded_env": [
+    "C:\\Users\\12140\\.dataforge-codex.env"
+  ],
+  "api_base": "in-process",
+  "checks": {
+    "no_chinese_hints": true,
+    "no_hit_no_error": true,
+    "no_hit_final": true,
+    "no_hit_graceful_verdict": true,
+    "zh_query_hits_sheet_row": true,
+    "zh_chat_no_error": true,
+    "zh_chat_model_or_final": true,
+    "first_frame_under_1s": true,
+    "health_fast": true
+  },
+  "first_frame_seconds": 0.0008405000007769559,
+  "health_latency_seconds": null,
+  "no_hit_events": [
+    "ready",
+    "user",
+    "plan",
+    "role_change",
+    "tool_call",
+    "tool_result",
+    "role_change",
+    "role_change",
+    "tool_result",
+    "role_change",
+    "audit",
+    "final"
+  ],
+  "no_hit_final": {
+    "text": "资料检索完成，但未找到足以支撑该请求的工作区证据。结论：not_yet_feasible；主要缺口：工作区中未检索到与该请求相关的证据。。",
+    "routing": {
+      "workspace_id": "demo-corpus",
+      "intent": "product_feasibility",
+      "experts": [
+        "df-corpus-analyst",
+        "df-feasibility-analyst",
+        "df-market-researcher",
+        "df-auditor"
+      ],
+      "output_mode": "report",
+      "needs_clarification": false,
+      "clarifying_question": null,
+      "reason": "The user is asking DataForge to identify or evaluate product opportunities."
+    },
+    "artifact": {
+      "workspace_id": "demo-corpus",
+      "conversation_id": "fb4908f5-27ce-405a-a1e7-ec0f2faf9c6d",
+      "corpus": {
+        "profile": {
+          "workspace_id": "demo-corpus",
+          "assets": [],
+          "asset_evidence": [],
+          "gaps_observed": [
+            "No workspace evidence matched the request."
+          ]
+        },
+        "hits": [],
+        "opportunities": []
+      },
+      "feasibility": {
+        "opportunity_id": "insufficient-evidence",
+        "dimensions": [],
+        "verdict": "not_yet_feasible",
+        "overall_confidence": "speculative",
+        "gap_list": [
+          "工作区中未检索到与该请求相关的证据。"
+        ],
+        "_llm": {
+          "mode": "empty_evidence_deterministic",
+          "response_id": null,
+          "usage": {}
+        }
+      },
+      "market": {
+        "competitors": [],
+        "positioning_note": "Market lookup skipped because no workspace evidence matched the request.",
+        "mode": "skipped_empty_evidence"
+      },
+      "audit": {
+        "verdict": "pass",
+        "issues": [],
+        "target_expert": null
+      }
+    }
+  },
+  "zh_events": [
+    "ready",
+    "user",
+    "plan",
+    "role_change",
+    "tool_call",
+    "tool_result",
+    "role_change",
+    "model_response",
+    "role_change",
+    "tool_call",
+    "tool_result",
+    "role_change",
+    "model_response",
+    "audit",
+    "final"
+  ],
+  "zh_first_search_hit": {
+    "@search.score": 6.453052,
+    "id": "excel-corpus-quality_metrics-QualitySignals-row-2",
+    "workspace_id": "excel-corpus",
+    "title": "quality_metrics / QualitySignals row 2",
+    "content": "场景: 产线缺陷检测; 证据: 缺陷照片与人工复核结果已按工站归档; 数量: 48000; 产品含义: 可形成质量巡检 Copilot 和缺陷趋势看板; 缺口: 需要接入实时相机流",
+    "source_file": "raw_docs/quality_metrics.xlsx",
+    "chunk_id": "quality_metrics-QualitySignals-row-2",
+    "document_type": "excel",
+    "sheet": "QualitySignals",
+    "row": "2"
+  }
+}

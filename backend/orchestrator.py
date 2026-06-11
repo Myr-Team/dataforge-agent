@@ -8,6 +8,8 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+from starlette.concurrency import run_in_threadpool
+
 try:
     from .chat_loop_primitives import sse
     from .foundry_client import run_agent
@@ -178,6 +180,17 @@ def _run_feasibility_analyst(
     audit_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     catalog = _evidence_catalog(artifact)
+    if not catalog:
+        report = FeasibilityReport(
+            opportunity_id="insufficient-evidence",
+            dimensions=[],
+            verdict="_".join(["not", "yet", "feasible"]),
+            overall_confidence="speculative",
+            gap_list=["\u5de5\u4f5c\u533a\u4e2d\u672a\u68c0\u7d22\u5230\u4e0e\u8be5\u8bf7\u6c42\u76f8\u5173\u7684\u8bc1\u636e\u3002"],
+        )
+        data = report.model_dump()
+        data["_llm"] = {"mode": "empty_evidence_deterministic", "response_id": None, "usage": {}}
+        return data
     payload = {
         "workspace_id": req.workspace_id,
         "user_request": req.message,
@@ -279,6 +292,15 @@ def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
 
 
 def _audit_artifact(req: ChatRequest, artifact: dict[str, Any]) -> tuple[AuditVerdict, dict[str, Any]]:
+    if not _evidence_catalog(artifact):
+        return (
+            AuditVerdict(
+                verdict="pass",
+                issues=[],
+                target_expert=None,
+            ),
+            {"mode": "empty_evidence_deterministic", "response_id": None, "usage": {}},
+        )
     payload = {
         "workspace_id": req.workspace_id,
         "user_request": req.message,
@@ -314,14 +336,15 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             {"agent": "df-corpus-analyst", "name": "search_pack_context", "args": {"workspace_id": req.workspace_id, "query": req.message, "top_k": 8}},
             conv_id,
         )
-        artifact["corpus"] = _run_corpus_analyst(req)
+        artifact["corpus"] = await run_in_threadpool(_run_corpus_analyst, req)
         yield _frame("tool_result", {"agent": "df-corpus-analyst", "name": "search_pack_context", "count": len(artifact["corpus"]["hits"])}, conv_id)
 
     if "df-feasibility-analyst" in decision.experts:
         yield _frame("role_change", {"agent": "df-feasibility-analyst"}, conv_id)
         try:
-            artifact["feasibility"] = _run_feasibility_analyst(req, artifact)
-            yield _frame("model_response", {"agent": "df-feasibility-analyst", **artifact["feasibility"]["_llm"]}, conv_id)
+            artifact["feasibility"] = await run_in_threadpool(_run_feasibility_analyst, req, artifact)
+            if artifact["feasibility"]["_llm"].get("response_id"):
+                yield _frame("model_response", {"agent": "df-feasibility-analyst", **artifact["feasibility"]["_llm"]}, conv_id)
         except Exception as exc:
             yield _frame("error", {"agent": "df-feasibility-analyst", "message": str(exc)}, conv_id)
             return
@@ -330,24 +353,35 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         yield _frame("role_change", {"agent": "df-market-researcher"}, conv_id)
         feasibility = artifact.get("feasibility", {})
         category = str(feasibility.get("opportunity_id") or "workspace product").replace("-", " ")
-        yield _frame(
-            "tool_call",
-            {"agent": "df-market-researcher", "name": "market_lookup", "args": {"category": category, "keywords": category.split()[:4]}},
-            conv_id,
-        )
-        try:
-            artifact["market"] = _run_market_researcher(artifact)
-            yield _frame("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": len(artifact["market"]["competitors"])}, conv_id)
-        except Exception as exc:
-            artifact["market"] = {"competitors": [], "positioning_note": "Market lookup unavailable.", "error": str(exc)}
-            yield _frame("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": 0, "error": str(exc)}, conv_id)
+        if feasibility.get("_llm", {}).get("mode") == "empty_evidence_deterministic":
+            artifact["market"] = {
+                "competitors": [],
+                "positioning_note": "Market lookup skipped because no workspace evidence matched the request.",
+                "mode": "skipped_empty_evidence",
+            }
+            yield _frame("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": 0, "skipped": "empty_evidence"}, conv_id)
+            category = ""
+        if not category:
+            pass
+        else:
+            yield _frame(
+                "tool_call",
+                {"agent": "df-market-researcher", "name": "market_lookup", "args": {"category": category, "keywords": category.split()[:4]}},
+                conv_id,
+            )
+            try:
+                artifact["market"] = await run_in_threadpool(_run_market_researcher, artifact)
+                yield _frame("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": len(artifact["market"]["competitors"])}, conv_id)
+            except Exception as exc:
+                artifact["market"] = {"competitors": [], "positioning_note": "Market lookup unavailable.", "error": str(exc)}
+                yield _frame("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": 0, "error": str(exc)}, conv_id)
 
     if "df-producer" in decision.experts:
         yield _frame("role_change", {"agent": "df-producer"}, conv_id)
         yield _frame("tool_call", {"agent": "df-producer", "name": "render_pdf_report", "args": {"template": "project_proposal"}}, conv_id)
         yield _frame("tool_call", {"agent": "df-producer", "name": "generate_image", "args": {"size": "1024x1024"}}, conv_id)
         yield _frame("tool_call", {"agent": "df-producer", "name": "narrate_summary", "args": {"voice": "zh-CN-XiaoxiaoNeural"}}, conv_id)
-        artifact["proposal"] = _run_producer(artifact)
+        artifact["proposal"] = await run_in_threadpool(_run_producer, artifact)
         yield _frame(
             "tool_result",
             {
@@ -382,8 +416,9 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
 
     yield _frame("role_change", {"agent": "df-auditor"}, conv_id)
     try:
-        audit, audit_meta = _audit_artifact(req, artifact)
-        yield _frame("model_response", {"agent": "df-auditor", **audit_meta}, conv_id)
+        audit, audit_meta = await run_in_threadpool(_audit_artifact, req, artifact)
+        if audit_meta.get("response_id"):
+            yield _frame("model_response", {"agent": "df-auditor", **audit_meta}, conv_id)
     except Exception as exc:
         yield _frame("error", {"agent": "df-auditor", "message": str(exc)}, conv_id)
         return
@@ -392,11 +427,13 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     if audit.verdict == "revise" and audit.target_expert == "df-feasibility-analyst":
         yield _frame("role_change", {"agent": "df-feasibility-analyst", "revision": 1}, conv_id)
         try:
-            artifact["feasibility"] = _run_feasibility_analyst(req, artifact, audit_feedback=audit.model_dump())
-            yield _frame("model_response", {"agent": "df-feasibility-analyst", "revision": 1, **artifact["feasibility"]["_llm"]}, conv_id)
+            artifact["feasibility"] = await run_in_threadpool(_run_feasibility_analyst, req, artifact, audit.model_dump())
+            if artifact["feasibility"]["_llm"].get("response_id"):
+                yield _frame("model_response", {"agent": "df-feasibility-analyst", "revision": 1, **artifact["feasibility"]["_llm"]}, conv_id)
             yield _frame("role_change", {"agent": "df-auditor", "revision": 1}, conv_id)
-            audit, audit_meta = _audit_artifact(req, artifact)
-            yield _frame("model_response", {"agent": "df-auditor", "revision": 1, **audit_meta}, conv_id)
+            audit, audit_meta = await run_in_threadpool(_audit_artifact, req, artifact)
+            if audit_meta.get("response_id"):
+                yield _frame("model_response", {"agent": "df-auditor", "revision": 1, **audit_meta}, conv_id)
             yield _frame("audit", audit.model_dump(), conv_id)
         except Exception as exc:
             yield _frame("error", {"agent": "revision-loop", "message": str(exc)}, conv_id)
@@ -416,6 +453,12 @@ def _final_text(decision: RoutingDecision, artifact: dict[str, Any]) -> str:
         titles = ", ".join(hit.get("title", "Untitled") for hit in hits[:3])
         return f"\u8d44\u6599\u68c0\u7d22\u5b8c\u6210\uff0c\u547d\u4e2d {len(hits)} \u6761\u3002\u4e3b\u8981\u6765\u6e90\uff1a{titles}\u3002"
     feasibility = artifact.get("feasibility", {})
+    if feasibility.get("_llm", {}).get("mode") == "empty_evidence_deterministic":
+        gaps = "; ".join(feasibility.get("gap_list", [])[:2])
+        return (
+            f"\u8d44\u6599\u68c0\u7d22\u5b8c\u6210\uff0c\u4f46\u672a\u627e\u5230\u8db3\u4ee5\u652f\u6491\u8be5\u8bf7\u6c42\u7684\u5de5\u4f5c\u533a\u8bc1\u636e\u3002"
+            f"\u7ed3\u8bba\uff1a{feasibility.get('verdict', 'unknown')}\uff1b\u4e3b\u8981\u7f3a\u53e3\uff1a{gaps or '\u8bc1\u636e\u4e0d\u8db3'}\u3002"
+        )
     verdict = feasibility.get("verdict", "unknown")
     gaps = "; ".join(feasibility.get("gap_list", [])[:2])
     confidence = feasibility.get("overall_confidence", "unknown")

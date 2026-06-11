@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -36,19 +37,7 @@ def _terraform_output(name: str) -> str:
 def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, Any]]:
     workspace_root = ROOT / "workspaces" / workspace_id
     workspace = workspace_root / "raw_docs"
-    terms = [term.lower() for term in query.split() if len(term) > 2]
-    chinese_hints = {
-        "\u4ea7\u54c1": ["product", "analytics", "subscription"],
-        "\u8fd0\u8425": ["operations", "pilot", "support"],
-        "\u8bed\u6599": ["workspace", "documents", "data"],
-        "\u8bc1\u636e": ["evidence", "data", "support"],
-        "\u53ef\u884c": ["feasible", "cost", "technical"],
-        "\u56fe": ["image", "dashboard", "report"],
-        "\u8bed\u97f3": ["audio", "summary", "report"],
-    }
-    for hint, mapped in chinese_hints.items():
-        if hint in query:
-            terms.extend(mapped)
+    terms = _query_terms(query)
     local_docs: list[dict[str, Any]] = []
     for path in workspace.glob("*.md"):
         text = path.read_text(encoding="utf-8")
@@ -70,14 +59,31 @@ def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, A
     hits: list[dict[str, Any]] = []
     for doc in local_docs:
         haystack = f"{doc.get('title', '')} {doc.get('content', '')}".lower()
-        score = sum(haystack.count(term) for term in terms) if terms else 0
+        score = _score_text(haystack, terms)
         if score:
             item = dict(doc)
             item["score"] = score
             hits.append(item)
     if hits:
         return sorted(hits, key=lambda hit: hit["score"], reverse=True)[:top_k]
-    return [dict(doc, score=0.1) for doc in local_docs[:top_k]]
+    return []
+
+
+def _query_terms(query: str) -> list[str]:
+    lowered = query.lower()
+    terms = [term for term in re.split(r"[^0-9a-zA-Z]+", lowered) if len(term) > 2]
+    cjk_runs = re.findall(r"[\u4e00-\u9fff]+", query)
+    for run in cjk_runs:
+        terms.extend(run[idx : idx + 2] for idx in range(max(0, len(run) - 1)))
+        terms.extend(run[idx : idx + 3] for idx in range(max(0, len(run) - 2)))
+    seen: set[str] = set()
+    return [term for term in terms if term and not (term in seen or seen.add(term))]
+
+
+def _score_text(haystack: str, terms: list[str]) -> int:
+    if not terms:
+        return 0
+    return sum(haystack.count(term.lower()) for term in terms)
 
 
 def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]]:
@@ -124,4 +130,4 @@ def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]
         }
         for hit in data.get("value", [])
     ]
-    return results or _local_search(workspace_id, query, top_k)
+    return results

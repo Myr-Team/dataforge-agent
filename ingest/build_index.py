@@ -112,9 +112,16 @@ def _chunks(text: str, size: int = 1100, overlap: int = 150) -> list[str]:
     return [p for p in parts if p]
 
 
+def _detect_language(text: str, workspace_language: str | None = None) -> str:
+    if workspace_language:
+        return workspace_language
+    return "zh-Hans" if any("\u4e00" <= char <= "\u9fff" for char in text) else "en"
+
+
 def build_documents(workspace_dir: Path) -> tuple[str, list[dict[str, Any]]]:
     meta, docs = _read_workspace(workspace_dir)
     workspace_id = meta["workspace_id"]
+    workspace_language = meta.get("language")
     records: list[dict[str, Any]] = []
     for doc in docs:
         if doc["kind"] == "excel":
@@ -133,7 +140,7 @@ def build_documents(workspace_dir: Path) -> tuple[str, list[dict[str, Any]]]:
                     "source_file": doc["path"],
                     "chunk_id": chunk_id,
                     "document_type": "markdown",
-                    "language": "en",
+                    "language": _detect_language(content, workspace_language),
                 }
             )
     return workspace_id, records
