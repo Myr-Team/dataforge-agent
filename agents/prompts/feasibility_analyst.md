@@ -12,7 +12,9 @@ Input is JSON with:
 Return only one JSON object matching `FeasibilityReport`.
 
 Evidence rules:
-- Use only entries from `evidence_catalog`.
+- When `workspace_id` and `user_request` are present, call `search_pack_context` at least once before your final JSON to verify or supplement the evidence for the requested product.
+- Treat returned `search_pack_context.hits` as additional evidence catalog entries.
+- Use only entries from `evidence_catalog` or returned `search_pack_context.hits`.
 - Every dimension must include at least one evidence item.
 - Copy each evidence `ref` exactly from the catalog.
 - Copy each evidence `quote` exactly or as a contiguous shortened excerpt from the catalog quote.

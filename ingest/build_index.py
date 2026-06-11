@@ -87,11 +87,30 @@ def _read_workspace(workspace_dir: Path) -> tuple[dict[str, Any], list[dict[str,
     for rel in meta["raw_docs"]:
         path = workspace_dir / rel
         if path.suffix.lower() == ".xlsx":
-            docs.append({"path": rel, "title": path.stem, "kind": "excel"})
+            docs.append({"path": rel, "absolute_path": path, "source_file": rel, "title": path.stem, "kind": "excel"})
         else:
             text = path.read_text(encoding="utf-8")
             title = next((line[2:].strip() for line in text.splitlines() if line.startswith("# ")), path.stem)
             docs.append({"path": rel, "title": title, "content": text, "kind": "markdown"})
+    for item in meta.get("external_docs", []):
+        configured_path = os.environ.get(item.get("path_env", "")) or item.get("path")
+        if not configured_path:
+            raise RuntimeError(f"Missing external doc path for {item}")
+        path = Path(configured_path)
+        if not path.exists():
+            raise RuntimeError(f"External doc does not exist: {path}")
+        source_file = item.get("source_file") or f"external/{path.name}"
+        if path.suffix.lower() != ".xlsx":
+            raise RuntimeError(f"Unsupported external doc type: {path}")
+        docs.append(
+            {
+                "path": source_file,
+                "absolute_path": path,
+                "source_file": source_file,
+                "title": item.get("title") or path.stem,
+                "kind": "excel",
+            }
+        )
     return meta, docs
 
 
@@ -125,7 +144,7 @@ def build_documents(workspace_dir: Path) -> tuple[str, list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
     for doc in docs:
         if doc["kind"] == "excel":
-            records.extend(excel_to_records(workspace_dir / doc["path"], doc["path"], workspace_id))
+            records.extend(excel_to_records(Path(doc["absolute_path"]), doc["source_file"], workspace_id))
             continue
         for idx, content in enumerate(_chunks(doc["content"])):
             safe_file = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(doc["path"]).stem).strip("-")

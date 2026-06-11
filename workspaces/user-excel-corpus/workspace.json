@@ -1,0 +1,18 @@
+{
+  "workspace_id": "user-excel-corpus",
+  "name": "User Chinese Excel Corpus",
+  "language": "zh-Hans",
+  "persona": "业务负责人希望把真实中文 Excel 资料转成可评估的数据产品机会",
+  "ask_when": [
+    "请求依赖 Excel 中没有出现的数据字段、授权、合规或实时系统能力。",
+    "产品目标客户、落地场景或商业化边界不清楚。"
+  ],
+  "raw_docs": [],
+  "external_docs": [
+    {
+      "path_env": "DF_USER_EXCEL_PATH",
+      "source_file": "external/user-chinese-workbook.xlsx",
+      "title": "用户中文 Excel 语料"
+    }
+  ]
+}

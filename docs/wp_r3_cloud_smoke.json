@@ -1,0 +1,68 @@
+{
+  "ok": true,
+  "api_base": "https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io",
+  "backend_image": "dataforge-backend:wp-r3-20260611-agent-service",
+  "events": [
+    "ready",
+    "user",
+    "plan",
+    "role_change",
+    "tool_call",
+    "tool_result",
+    "role_change",
+    "tool_call",
+    "tool_result",
+    "model_response",
+    "role_change",
+    "tool_call",
+    "tool_result",
+    "role_change",
+    "tool_call",
+    "tool_result",
+    "model_response",
+    "audit",
+    "final"
+  ],
+  "autonomous_tool_calls": [
+    {
+      "agent": "df-feasibility-analyst",
+      "name": "search_pack_context",
+      "args": {
+        "workspace_id": "user-excel-corpus",
+        "query": "实习培训方案 复盘 数据 产品 建议",
+        "top_k": 5
+      },
+      "autonomous": true
+    },
+    {
+      "agent": "df-auditor",
+      "name": "search_pack_context",
+      "args": {
+        "workspace_id": "user-excel-corpus",
+        "query": "实习培训方案 校招生 培训类型 受训者姓名",
+        "top_k": 5
+      },
+      "autonomous": true
+    }
+  ],
+  "model_modes": [
+    {
+      "agent": "df-feasibility-analyst",
+      "mode": "foundry_agent_service",
+      "tool_call_count": 1
+    },
+    {
+      "agent": "df-auditor",
+      "mode": "foundry_agent_service",
+      "tool_call_count": 1
+    }
+  ],
+  "verdict": "conditional",
+  "first_hit": {
+    "source_file": "external/user-chinese-workbook.xlsx",
+    "sheet": " 校招生",
+    "row": "3",
+    "document_type": "excel"
+  },
+  "final_text_has_double_period": false
+}

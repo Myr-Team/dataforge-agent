@@ -1,0 +1,88 @@
+{
+  "ok": true,
+  "loaded_env": [
+    "C:\\Users\\12140\\.dataforge-codex.env"
+  ],
+  "user_excel_path_configured": true,
+  "upload": {
+    "workspace_id": "user-excel-corpus",
+    "document_count": 189
+  },
+  "checks": {
+    "user_excel_uploaded": true,
+    "user_excel_search_sheet_row": true,
+    "feasibility_agent_service": true,
+    "feasibility_autonomous_tool": true,
+    "auditor_agent_service": true,
+    "auditor_autonomous_tool": true,
+    "sse_autonomous_tool_events": true,
+    "schema_valid_final": true,
+    "empty_evidence_no_double_period": true,
+    "empty_evidence_no_error": true
+  },
+  "user_first_hit": {
+    "id": "user-excel-corpus-excel-excel-row-3",
+    "title": "培训方案 /  校招生 row 3",
+    "source_file": "external/user-chinese-workbook.xlsx",
+    "sheet": " 校招生",
+    "row": "3",
+    "document_type": "excel"
+  },
+  "user_events": [
+    "ready",
+    "user",
+    "plan",
+    "role_change",
+    "tool_call",
+    "tool_result",
+    "role_change",
+    "tool_call",
+    "tool_result",
+    "model_response",
+    "role_change",
+    "tool_call",
+    "tool_result",
+    "role_change",
+    "tool_call",
+    "tool_result",
+    "model_response",
+    "audit",
+    "final"
+  ],
+  "autonomous_tool_events": [
+    {
+      "agent": "df-feasibility-analyst",
+      "name": "search_pack_context",
+      "args": {
+        "workspace_id": "user-excel-corpus",
+        "query": "实习培训方案 培训 复盘 数据 产品",
+        "top_k": 5
+      },
+      "autonomous": true
+    },
+    {
+      "agent": "df-auditor",
+      "name": "search_pack_context",
+      "args": {
+        "workspace_id": "user-excel-corpus",
+        "query": "实习培训方案 Azure Virtual Network Windows系统故障排查 校招生",
+        "top_k": 5
+      },
+      "autonomous": true
+    }
+  ],
+  "model_modes": [
+    {
+      "agent": "df-feasibility-analyst",
+      "mode": "foundry_agent_service",
+      "tool_call_count": 1
+    },
+    {
+      "agent": "df-auditor",
+      "mode": "foundry_agent_service",
+      "tool_call_count": 1
+    }
+  ],
+  "verdict": "conditional",
+  "no_hit_final_text": "资料检索完成，但未找到足以支撑该请求的工作区证据。结论：not_yet_feasible；主要缺口：工作区中未检索到与该请求相关的证据。"
+}

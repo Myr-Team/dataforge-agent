@@ -78,6 +78,34 @@ def _frame(event: str, data: Any, conversation_id: str | None = None) -> str:
     return sse(event, data)
 
 
+def _agent_tool_events(agent: str, meta: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    events: list[tuple[str, dict[str, Any]]] = []
+    for call in meta.get("tool_calls", []):
+        events.append(
+            (
+                "tool_call",
+                {
+                    "agent": agent,
+                    "name": call.get("name"),
+                    "args": call.get("args") or {},
+                    "autonomous": True,
+                },
+            )
+        )
+        events.append(
+            (
+                "tool_result",
+                {
+                    "agent": agent,
+                    "name": call.get("name"),
+                    "count": call.get("count"),
+                    "autonomous": True,
+                },
+            )
+        )
+    return events
+
+
 def _coordinator(req: ChatRequest) -> RoutingDecision:
     return deterministic_route(req.message, req.workspace_id, {"doc_count": 8})
 
@@ -168,10 +196,19 @@ def _verify_evidence(report: FeasibilityReport, catalog: list[dict[str, Any]]) -
 
 
 def _model_meta(result: dict[str, Any]) -> dict[str, Any]:
-    return {
+    meta = {
         "response_id": result.get("response_id"),
         "usage": result.get("usage") or {},
     }
+    if result.get("mode"):
+        meta["mode"] = result["mode"]
+    if result.get("tool_calls") is not None:
+        meta["tool_calls"] = result["tool_calls"]
+    return meta
+
+
+def _clean_sentence_end(text: str) -> str:
+    return str(text or "").rstrip("\u3002. ")
 
 
 def _run_feasibility_analyst(
@@ -343,6 +380,8 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         yield _frame("role_change", {"agent": "df-feasibility-analyst"}, conv_id)
         try:
             artifact["feasibility"] = await run_in_threadpool(_run_feasibility_analyst, req, artifact)
+            for event, data in _agent_tool_events("df-feasibility-analyst", artifact["feasibility"].get("_llm", {})):
+                yield _frame(event, data, conv_id)
             if artifact["feasibility"]["_llm"].get("response_id"):
                 yield _frame("model_response", {"agent": "df-feasibility-analyst", **artifact["feasibility"]["_llm"]}, conv_id)
         except Exception as exc:
@@ -417,6 +456,8 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     yield _frame("role_change", {"agent": "df-auditor"}, conv_id)
     try:
         audit, audit_meta = await run_in_threadpool(_audit_artifact, req, artifact)
+        for event, data in _agent_tool_events("df-auditor", audit_meta):
+            yield _frame(event, data, conv_id)
         if audit_meta.get("response_id"):
             yield _frame("model_response", {"agent": "df-auditor", **audit_meta}, conv_id)
     except Exception as exc:
@@ -428,10 +469,14 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         yield _frame("role_change", {"agent": "df-feasibility-analyst", "revision": 1}, conv_id)
         try:
             artifact["feasibility"] = await run_in_threadpool(_run_feasibility_analyst, req, artifact, audit.model_dump())
+            for event, data in _agent_tool_events("df-feasibility-analyst", artifact["feasibility"].get("_llm", {})):
+                yield _frame(event, {"revision": 1, **data}, conv_id)
             if artifact["feasibility"]["_llm"].get("response_id"):
                 yield _frame("model_response", {"agent": "df-feasibility-analyst", "revision": 1, **artifact["feasibility"]["_llm"]}, conv_id)
             yield _frame("role_change", {"agent": "df-auditor", "revision": 1}, conv_id)
             audit, audit_meta = await run_in_threadpool(_audit_artifact, req, artifact)
+            for event, data in _agent_tool_events("df-auditor", audit_meta):
+                yield _frame(event, {"revision": 1, **data}, conv_id)
             if audit_meta.get("response_id"):
                 yield _frame("model_response", {"agent": "df-auditor", "revision": 1, **audit_meta}, conv_id)
             yield _frame("audit", audit.model_dump(), conv_id)
@@ -454,13 +499,14 @@ def _final_text(decision: RoutingDecision, artifact: dict[str, Any]) -> str:
         return f"\u8d44\u6599\u68c0\u7d22\u5b8c\u6210\uff0c\u547d\u4e2d {len(hits)} \u6761\u3002\u4e3b\u8981\u6765\u6e90\uff1a{titles}\u3002"
     feasibility = artifact.get("feasibility", {})
     if feasibility.get("_llm", {}).get("mode") == "empty_evidence_deterministic":
-        gaps = "; ".join(feasibility.get("gap_list", [])[:2])
+        gaps = "; ".join(_clean_sentence_end(gap) for gap in feasibility.get("gap_list", [])[:2])
+        gap_text = _clean_sentence_end(gaps or "\u8bc1\u636e\u4e0d\u8db3")
         return (
             f"\u8d44\u6599\u68c0\u7d22\u5b8c\u6210\uff0c\u4f46\u672a\u627e\u5230\u8db3\u4ee5\u652f\u6491\u8be5\u8bf7\u6c42\u7684\u5de5\u4f5c\u533a\u8bc1\u636e\u3002"
-            f"\u7ed3\u8bba\uff1a{feasibility.get('verdict', 'unknown')}\uff1b\u4e3b\u8981\u7f3a\u53e3\uff1a{gaps or '\u8bc1\u636e\u4e0d\u8db3'}\u3002"
+            f"\u7ed3\u8bba\uff1a{feasibility.get('verdict', 'unknown')}\uff1b\u4e3b\u8981\u7f3a\u53e3\uff1a{gap_text}\u3002"
         )
     verdict = feasibility.get("verdict", "unknown")
-    gaps = "; ".join(feasibility.get("gap_list", [])[:2])
+    gaps = "; ".join(_clean_sentence_end(gap) for gap in feasibility.get("gap_list", [])[:2])
     confidence = feasibility.get("overall_confidence", "unknown")
     return (
         f"\u5df2\u5b8c\u6210\u8bed\u6599\u68c0\u7d22\u3001\u6a21\u578b\u53ef\u884c\u6027\u8bc4\u4f30\u548c\u5ba1\u8ba1\u3002"

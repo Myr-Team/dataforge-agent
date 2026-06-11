@@ -48,7 +48,7 @@ AGENTS = [
     {
         "name": "df-auditor",
         "prompt": "auditor.md",
-        "tools": [],
+        "tools": ["search_pack_context"],
         "verify_prompt": "Audit whether a feasibility report with empty evidence should pass.",
     },
 ]
