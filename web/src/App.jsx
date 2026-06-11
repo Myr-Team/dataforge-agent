@@ -253,7 +253,7 @@ function ProgressBar({ trace, running }) {
   );
 }
 
-function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health, onUpload, onProduce, stream }) {
+function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health, onUpload, onProduce, stream, producing }) {
   const artifactCount = Object.values(artifacts).filter(Boolean).length;
   const disabled = running || health.status !== "ok";
   return (
@@ -278,8 +278,8 @@ function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, s
         ))}
       </div>
       <div className="panel-scroll">
-        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} run={run} onUpload={onUpload} onProduce={onProduce} artifacts={artifacts} stream={stream} /> : null}
-        {activeTab === "artifacts" ? <ArtifactShelf artifacts={artifacts} running={running} /> : null}
+        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} run={run} onUpload={onUpload} onProduce={onProduce} artifacts={artifacts} stream={stream} producing={producing} /> : null}
+        {activeTab === "artifacts" ? <ArtifactShelf artifacts={artifacts} running={running || producing} /> : null}
         {activeTab === "docs" ? <EvidenceList hits={docHits} /> : null}
       </div>
       <form
@@ -375,7 +375,7 @@ function Welcome({ run, onUpload }) {
   );
 }
 
-function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifacts, stream }) {
+function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifacts, stream, producing }) {
   const endRef = useRef(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: REDUCED_MOTION ? "auto" : "smooth", block: "end" });
@@ -403,10 +403,10 @@ function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifa
             {last && !REDUCED_MOTION && !m.streamed ? <Typewriter text={m.text} /> : <p className="bubble-text">{m.text}</p>}
             {last && showProduce ? (
               <div className="produce-cta">
-                <button className="primary" type="button" onClick={onProduce}>
-                  <Icon name="spark" /> 据此生成完整产物
+                <button className="primary" type="button" onClick={onProduce} disabled={producing}>
+                  <Icon name="spark" /> {producing ? "生成中…" : "据此生成完整产物"}
                 </button>
-                <span>满意这版分析？生成项目书 PDF、概念图与语音摘要</span>
+                <span>{producing ? "正在复用本版分析生成产物，无需重跑…" : "满意这版分析？生成项目书 PDF、概念图与语音摘要"}</span>
               </div>
             ) : null}
           </Bubble>
@@ -616,7 +616,9 @@ export function App() {
   const [workspaces, setWorkspaces] = useState([{ id: "demo-corpus", name: "演示语料 demo-corpus" }]);
   const [upload, setUpload] = useState(null);
   const [stream, setStream] = useState("");
+  const [producing, setProducing] = useState(false);
   const traceRef = useRef(null);
+  const lastAnalysisRef = useRef(null);
   const fileRef = useRef(null);
 
   // 拉取可用工作区（后端未提供该接口时用已知工作区兜底）
@@ -746,9 +748,18 @@ export function App() {
           }
           const final = parsed.events.find((event) => event.event === "final");
           if (final) {
-            const proposal = final.data?.artifact?.proposal || {};
-            const corpusHits = final.data?.artifact?.corpus?.hits || [];
+            const art = final.data?.artifact || {};
+            const proposal = art.proposal || {};
+            const corpusHits = art.corpus?.hits || [];
             setDocHits(corpusHits);
+            // 记下本版分析，供"据此生成完整产物"复用（不重跑 6 agent）
+            lastAnalysisRef.current = {
+              workspace_id: art.workspace_id || workspace,
+              conversation_id: art.conversation_id || null,
+              feasibility: art.feasibility || {},
+              corpus: art.corpus || {},
+              market: art.market || {},
+            };
             setArtifacts({
               pdf: proposal.pdf,
               concept_image: proposal.concept_image,
@@ -769,11 +780,27 @@ export function App() {
     }
   }
 
-  // 在最终分析满意后，据此生成完整产物（沿用上一条提问 + full_package 触发词）
-  function produce() {
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    const base = lastUser?.text || "基于当前工作区的分析";
-    run(`${base}（请据此生成完整产物：项目书 PDF、概念图、语音摘要）`);
+  // 据本版分析直接出产物：调 /api/produce 复用上一版报告，不重跑 6 agent
+  async function produce() {
+    const a = lastAnalysisRef.current;
+    if (!a || producing || running) return;
+    setProducing(true);
+    setActiveTab("artifacts");
+    try {
+      const res = await fetch(`${API_BASE}/api/produce`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(a),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json();
+      setArtifacts({ pdf: d.pdf, concept_image: d.concept_image, audio_summary: d.audio_summary });
+    } catch (e) {
+      setActiveTab("chat");
+      setMessages((items) => [...items, { role: "assistant", text: `生成产物失败：${e instanceof Error ? e.message : String(e)}`, time: "刚刚" }]);
+    } finally {
+      setProducing(false);
+    }
   }
 
   return (
@@ -811,6 +838,7 @@ export function App() {
         onUpload={triggerUpload}
         onProduce={produce}
         stream={stream}
+        producing={producing}
       />
       <div className="trace-scroll">
         <TracePanel trace={trace} running={running} filter={traceFilter} setFilter={setTraceFilter} scrollRef={traceRef} />
