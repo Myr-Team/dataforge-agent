@@ -204,8 +204,10 @@ button:disabled { cursor: not-allowed; }
 .trace-item { position: relative; display: grid; grid-template-columns: 16px 1fr; gap: 11px; padding-bottom: 10px; animation: traceIn .34s cubic-bezier(.22,.61,.36,1) both; }
 @keyframes traceIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
 .trace-rail { position: relative; display: flex; justify-content: center; }
-.trace-rail::before { content: ""; position: absolute; top: 5px; bottom: -10px; left: 50%; width: 2px; transform: translateX(-50%); background: linear-gradient(var(--line-strong), var(--line)); }
+/* 连接线：从本步圆心(11px)精确连到下一步圆心(本项高度 + 10px 间距) */
+.trace-rail::before { content: ""; position: absolute; top: 11px; height: calc(100% + 10px); left: 50%; width: 2px; transform: translateX(-50%); background: var(--line-strong); }
 .trace-item:last-child .trace-rail::before { display: none; }
+.trace-item.active .trace-rail::before { background: linear-gradient(var(--primary), var(--line-strong)); }
 .dot { position: relative; z-index: 1; width: 12px; height: 12px; margin-top: 5px; border-radius: 50%; box-sizing: border-box; }
 /* 完成的步骤=实心圆；进行中的步骤=画圆/加载环 */
 .dot.done { background: var(--primary); border: 2px solid var(--primary); }
@@ -231,14 +233,39 @@ button:disabled { cursor: not-allowed; }
 .trace-top .seq { margin-left: auto; flex-shrink: 0; font-size: 10px; color: var(--faint); }
 .trace-card p { margin: 5px 0 0; color: #334155; font-size: 11.5px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 
-/* ---- 工作区选择器 + 上传入口 ---- */
-.ws-switch { display: grid; grid-template-columns: 1fr auto; gap: 8px; flex-shrink: 0; }
-.ws-select { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--faint); min-width: 0; }
-.ws-select svg { flex-shrink: 0; }
-.ws-select select { width: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 13px; cursor: pointer; }
-.ws-upload { display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 12px; border: 0; border-radius: 8px; background: var(--accent-soft); color: var(--warn); font-size: 13px; font-weight: 600; white-space: nowrap; transition: filter .18s, transform .18s; }
+/* ---- 工作区选择器 + 上传入口（独立成块、各占一行、带标题） ---- */
+.ws-section { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+.ws-section .section-title { margin-bottom: 2px; }
+.ws-select { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); }
+.ws-select svg { flex-shrink: 0; color: var(--primary); }
+.ws-select select { width: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.ws-upload { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 40px; width: 100%; padding: 0 12px; border: 1px dashed var(--accent); border-radius: 9px; background: var(--accent-soft); color: var(--warn); font-size: 12.5px; font-weight: 600; transition: filter .18s, transform .18s; }
 .ws-upload:hover { filter: brightness(.97); transform: translateY(-1px); }
-.ws-upload svg { width: 16px; height: 16px; }
+.ws-upload svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+/* ---- 服务状态列表 ---- */
+.svc-list { display: grid; gap: 6px; }
+.svc-row { display: grid; grid-template-columns: 14px 1fr auto; gap: 9px; align-items: center; padding: 7px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.svc-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); }
+.svc-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.svc-dot.warn { background: var(--error); box-shadow: 0 0 0 3px var(--error-soft); }
+.svc-dot.pending { background: var(--line-strong); }
+.svc-name { font-size: 12.5px; color: var(--ink); }
+.svc-row em { font-style: normal; font-size: 11px; font-weight: 600; }
+.svc-row em.ok { color: var(--ok); }
+.svc-row em.warn { color: var(--error); }
+.svc-row em.pending { color: var(--faint); }
+
+/* ---- 非内置工作区的内容提示卡 ---- */
+.ws-content-note { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+.ws-content-note svg { color: var(--primary); margin-top: 2px; }
+.ws-content-note strong { display: block; font-size: 13px; margin-bottom: 3px; }
+.ws-content-note span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+/* ---- 留痕导出按钮 ---- */
+.trace-export { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface); color: var(--ink); font-size: 11.5px; font-weight: 600; transition: border-color .18s, color .18s; }
+.trace-export:hover { border-color: var(--primary); color: var(--primary); }
+.trace-export svg { width: 14px; height: 14px; }
 
 .upload-status { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 10px 12px; animation: fadeUp .3s ease both; }
 .upload-status.error { border-color: #f3c6c6; background: var(--error-soft); }

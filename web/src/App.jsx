@@ -50,6 +50,7 @@ function Icon({ name }) {
     alert: <><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></>,
     upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M7 9l5-5 5 5" /><path d="M12 4v12" /></>,
     database: <><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5v14a9 3 0 0 0 18 0V5" /><path d="M3 12a9 3 0 0 0 18 0" /></>,
+    download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M7 10l5 5 5-5" /><path d="M12 15V3" /></>,
   };
   return <svg {...common} aria-hidden="true">{paths[name]}</svg>;
 }
@@ -139,7 +140,34 @@ function UploadStatus({ upload }) {
   );
 }
 
+// 服务状态：真实可知的(后端/AI Search)直接显示；其余由 /api/health.dependencies 上报后点亮
+function ServiceStatus({ health }) {
+  const dep = health.dependencies || {};
+  const st = (v) => (v === true || v === "ok" ? "ok" : v === false ? "warn" : v ? "ok" : "pending");
+  const rows = [
+    ["后端编排器", health.status === "ok" ? "ok" : health.status === "checking" ? "pending" : "warn"],
+    ["AI Search", health.status === "ok" ? (health.search_endpoint ? "ok" : "warn") : "pending"],
+    ["Foundry 模型", st(dep.foundry)],
+    ["MCP 市场服务", st(dep.mcp)],
+    ["Azure Speech", st(dep.speech)],
+    ["Blob 存储", st(dep.blob)],
+  ];
+  const label = { ok: "正常", warn: "异常", pending: "待上报" };
+  return (
+    <div className="svc-list">
+      {rows.map(([name, s]) => (
+        <div className="svc-row" key={name}>
+          <span className={`svc-dot ${s}`} />
+          <span className="svc-name">{name}</span>
+          <em className={s}>{label[s]}</em>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function WorkspacePanel({ health, selectedDoc, onDocClick, docHits, workspace, workspaces, onWorkspaceChange, onUpload, upload }) {
+  const cur = workspaces.find((w) => w.id === workspace);
   return (
     <aside className="workspace-panel">
       <div className="brand">
@@ -149,32 +177,27 @@ function WorkspacePanel({ health, selectedDoc, onDocClick, docHits, workspace, w
           <span>产品化 Agent</span>
         </div>
       </div>
-      <div className="ws-switch">
+      <section className="ws-section">
+        <div className="section-title">工作区</div>
         <label className="ws-select">
           <Icon name="database" />
           <select value={workspace} onChange={(e) => onWorkspaceChange(e.target.value)} aria-label="选择工作区">
-            {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}{w.docs != null ? ` · ${w.docs} 篇` : ""}</option>)}
           </select>
         </label>
-        <button className="ws-upload" type="button" onClick={onUpload} title="上传 CSV / Excel / JSON，自动接入">
-          <Icon name="upload" /> 上传数据
+        <button className="ws-upload" type="button" onClick={onUpload} title="上传 CSV / Excel / JSON，自动识别并接入">
+          <Icon name="upload" /> 上传我的数据（CSV / Excel / JSON）
         </button>
-      </div>
+      </section>
       <div className="panel-body">
         <UploadStatus upload={upload} />
         <section>
-          <div className="section-title">运行状态</div>
-          <div className={`health-card ${health.status}`}>
-            <div>
-              <strong>后端编排器</strong>
-              <span title={API_BASE}>{API_BASE}</span>
-            </div>
-            <em>{healthLabel(health)}</em>
-          </div>
+          <div className="section-title">服务状态</div>
+          <ServiceStatus health={health} />
           {health.message ? <p className="health-note">{health.message}</p> : null}
         </section>
         <section>
-          <div className="section-title">输入语料</div>
+          <div className="section-title">工作区内容</div>
           {workspace === "demo-corpus" ? (
             <div className="doc-list">
               {documents.map(([file, label]) => (
@@ -188,7 +211,13 @@ function WorkspacePanel({ health, selectedDoc, onDocClick, docHits, workspace, w
               ))}
             </div>
           ) : (
-            <p className="empty-note">「{workspaces.find((w) => w.id === workspace)?.name || workspace}」已接入，直接在右侧提问即可。</p>
+            <div className="ws-content-note">
+              <Icon name="database" />
+              <div>
+                <strong>{cur?.name || workspace}</strong>
+                <span>已接入{cur?.docs != null ? `，共 ${cur.docs} 篇画像文档` : ""}。这里展示该工作区的数据画像；直接在右侧提问即可。</span>
+              </div>
+            </div>
           )}
         </section>
         <section>
@@ -460,6 +489,28 @@ function EvidenceList({ hits }) {
   );
 }
 
+// 导出本次运行的"留痕"：逐条记录每个 agent 的操作（含 response_id/tokens/审计结论等）
+function exportTrace(trace) {
+  const ts = new Date();
+  const lines = ["# DataForge 运行留痕（Agent 操作记录）", `导出时间：${ts.toLocaleString("zh-CN")}`, `事件总数：${trace.length}`, ""];
+  trace.forEach((t, i) => {
+    const d = t.data || {};
+    const who = d.agent ? agentLabel(d.agent) : t.event === "plan" ? "协调器" : "";
+    const desc = describeEvent(t);
+    lines.push(`### ${String(i + 1).padStart(2, "0")} · ${EVENT_LABELS[t.event] || t.event}${who ? ` · ${who}` : ""}`);
+    if (desc?.text) lines.push(`- ${desc.text}`);
+    if (d.response_id) lines.push(`- response_id: \`${d.response_id}\` · tokens: ${d.usage?.total_tokens ?? "?"}`);
+    if (t.event === "audit") lines.push(`- 审计：${d.verdict}${d.issues?.length ? ` — ${d.issues.join("；")}` : ""}`);
+    lines.push("");
+  });
+  const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `dataforge-trace-${ts.toISOString().slice(0, 19).replace(/[:T]/g, "")}.md`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 function TracePanel({ trace, running, filter, setFilter, scrollRef }) {
   const counts = useMemo(() => ({
     total: trace.length,
@@ -492,6 +543,11 @@ function TracePanel({ trace, running, filter, setFilter, scrollRef }) {
           ].map(([key, label]) => (
             <button className={filter === key ? "active" : ""} key={key} onClick={() => setFilter(key)} type="button">{label}</button>
           ))}
+          {trace.length > 0 ? (
+            <button className="trace-export" type="button" onClick={() => exportTrace(trace)} title="导出本次运行的 Agent 操作留痕（Markdown）">
+              <Icon name="download" /> 留痕
+            </button>
+          ) : null}
         </div>
       </header>
       <div className="trace-list" ref={scrollRef}>
@@ -611,7 +667,7 @@ export function App() {
         const response = await fetch(`${API_BASE}/api/health`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-        if (!cancelled) setHealth({ status: data.ok ? "ok" : "error", message: data.search_endpoint ? "搜索服务已配置" : "使用本地/默认检索配置" });
+        if (!cancelled) setHealth({ status: data.ok ? "ok" : "error", message: data.search_endpoint ? "搜索服务已配置" : "使用本地/默认检索配置", search_endpoint: data.search_endpoint, dependencies: data.dependencies });
       } catch (error) {
         if (!cancelled) setHealth({ status: "error", message: error instanceof Error ? error.message : String(error) });
       }
