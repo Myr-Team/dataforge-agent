@@ -39,6 +39,10 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 300px minmax(520px, 1fr) 460px;
@@ -132,6 +136,7 @@ button {
 }
 
 .workspace-card,
+.health-card,
 .doc-row,
 .integration {
   border: 1px solid var(--line);
@@ -146,6 +151,48 @@ button {
   padding: 14px;
 }
 
+.health-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+}
+
+.health-card strong,
+.health-card span {
+  display: block;
+}
+
+.health-card em {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #edf1f4;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.health-card.ok em {
+  background: var(--teal-soft);
+  color: var(--teal);
+}
+
+.health-card.error em {
+  background: #fdecec;
+  color: #b33737;
+}
+
+.health-note,
+.empty-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .doc-list,
 .integration-list {
   display: grid;
@@ -157,11 +204,19 @@ button {
   grid-template-columns: 22px 1fr;
   gap: 10px;
   align-items: start;
+  width: 100%;
   padding: 10px;
+  color: inherit;
+  text-align: left;
 }
 
 .doc-row svg {
   color: var(--teal);
+}
+
+.doc-row.active {
+  border-color: var(--teal);
+  background: var(--teal-soft);
 }
 
 .doc-row strong {
@@ -186,6 +241,46 @@ button {
   color: var(--green);
   font-size: 12px;
   font-style: normal;
+}
+
+.doc-hit-list {
+  display: grid;
+  gap: 8px;
+}
+
+.doc-hit,
+.evidence-card {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.doc-hit strong,
+.evidence-card strong {
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.doc-hit span,
+.evidence-card span {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.doc-hit p,
+.evidence-card p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: #44525f;
+  font-size: 12px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .chat-panel {
@@ -283,6 +378,38 @@ button {
   padding: 28px 2px 18px;
 }
 
+.empty-state {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  flex: 1;
+  min-height: 260px;
+  padding: 28px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.empty-state svg {
+  color: var(--teal);
+}
+
+.empty-state strong {
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.empty-state p {
+  max-width: 420px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.empty-state.compact {
+  min-height: 180px;
+}
+
 .message {
   display: grid;
   grid-template-columns: 36px 1fr;
@@ -322,8 +449,9 @@ button {
 }
 
 .artifact-shelf {
-  border-top: 1px solid var(--line);
-  padding-top: 18px;
+  flex: 1;
+  overflow: auto;
+  padding-top: 22px;
 }
 
 .shelf-title {
@@ -346,6 +474,14 @@ button {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+}
+
+.evidence-list {
+  display: grid;
+  gap: 12px;
+  flex: 1;
+  overflow: auto;
+  padding: 22px 2px;
 }
 
 .artifact-head {

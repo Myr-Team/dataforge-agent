@@ -1,0 +1,35 @@
+{
+  "ok": true,
+  "url": "http://127.0.0.1:5173/",
+  "api_base": "http://127.0.0.1:8000",
+  "browser_plugin": {
+    "used": true,
+    "page_identity": true,
+    "blank_page_check": true,
+    "framework_overlay": false,
+    "console_errors": [],
+    "screenshot_note": "Browser screenshot display succeeded once; saving via Browser timed out, so committed screenshots were captured with project Playwright."
+  },
+  "checks": {
+    "chinese_ui": true,
+    "local_backend_default": true,
+    "health_probe": true,
+    "no_fake_starter_messages": true,
+    "document_click_searches_real_backend": true,
+    "tabs_switch": true,
+    "trace_filter": true,
+    "model_trace_shows_response_id_and_tokens": true
+  },
+  "interaction_results": {
+    "light_chat_final_seen": true,
+    "trace_items": 15,
+    "model_response_items": 2,
+    "audit_items": 1,
+    "errors": []
+  },
+  "screenshots": [
+    "docs/assets/wp_b_ui_desktop.png",
+    "docs/assets/wp_b_ui_mobile.png",
+    "docs/assets/wp_b_ui_docs_interaction.png"
+  ]
+}

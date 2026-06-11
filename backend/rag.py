@@ -30,10 +30,22 @@ def _terraform_output(name: str) -> str:
 def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, Any]]:
     workspace = ROOT / "workspaces" / workspace_id / "raw_docs"
     terms = [term.lower() for term in query.split() if len(term) > 2]
+    chinese_hints = {
+        "\u4ea7\u54c1": ["product", "analytics", "subscription"],
+        "\u8fd0\u8425": ["operations", "pilot", "support"],
+        "\u8bed\u6599": ["workspace", "documents", "data"],
+        "\u8bc1\u636e": ["evidence", "data", "support"],
+        "\u53ef\u884c": ["feasible", "cost", "technical"],
+        "\u56fe": ["image", "dashboard", "report"],
+        "\u8bed\u97f3": ["audio", "summary", "report"],
+    }
+    for hint, mapped in chinese_hints.items():
+        if hint in query:
+            terms.extend(mapped)
     hits: list[dict[str, Any]] = []
     for path in workspace.glob("*.md"):
         text = path.read_text(encoding="utf-8")
-        score = sum(text.lower().count(term) for term in terms)
+        score = sum(text.lower().count(term) for term in terms) if terms else 0
         if score:
             hits.append(
                 {
@@ -46,7 +58,23 @@ def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, A
                     "score": score,
                 }
             )
-    return sorted(hits, key=lambda hit: hit["score"], reverse=True)[:top_k]
+    if hits:
+        return sorted(hits, key=lambda hit: hit["score"], reverse=True)[:top_k]
+    fallback: list[dict[str, Any]] = []
+    for path in sorted(workspace.glob("*.md"))[:top_k]:
+        text = path.read_text(encoding="utf-8")
+        fallback.append(
+            {
+                "id": f"{workspace_id}-{path.stem}",
+                "workspace_id": workspace_id,
+                "title": path.stem.replace("_", " ").title(),
+                "content": text[:1600],
+                "source_file": f"raw_docs/{path.name}",
+                "chunk_id": path.stem,
+                "score": 0.1,
+            }
+        )
+    return fallback
 
 
 def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]]:
@@ -74,7 +102,7 @@ def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    return [
+    results = [
         {
             "id": hit.get("id"),
             "workspace_id": hit.get("workspace_id"),
@@ -88,3 +116,4 @@ def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]
         }
         for hit in data.get("value", [])
     ]
+    return results or _local_search(workspace_id, query, top_k)

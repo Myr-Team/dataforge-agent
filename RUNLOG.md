@@ -26,3 +26,4 @@
 | 2026-06-10 | WP11 | Started end-to-end demo script and runbook. | In progress. |
 | 2026-06-10 | WP11 | Ran `scripts/demo_e2e.py` against the cloud backend. | Passed all demo checks: clarify, 6 agents, MCP, full package artifacts, Azure Speech, auditor revise/pass, honest no. |
 | 2026-06-11 | WP-A | Replaced scripted feasibility/auditor conclusions with Foundry Responses calls and schema validation. | Passed `python eval/next_stage_wp_a_eval.py`; result saved to `docs/wp_a_next_stage_eval.json`. |
+| 2026-06-11 | WP-B | Reworked React UI for Chinese local-first workflow and wired previously dead controls. | Passed `npm run build` and Browser interaction checks; committed UI screenshots and `docs/wp_b_ui_eval.json`. |
