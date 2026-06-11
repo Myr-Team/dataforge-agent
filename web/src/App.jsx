@@ -530,7 +530,7 @@ function TraceItem({ item, index, active }) {
 export function App() {
   const [messages, setMessages] = useState([]);
   const [trace, setTrace] = useState([]);
-  const [input, setInput] = useState("为运营团队评估一个数据产品机会。");
+  const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [artifacts, setArtifacts] = useState({});
   const [activeTab, setActiveTab] = useState("chat");
