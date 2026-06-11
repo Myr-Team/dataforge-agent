@@ -48,6 +48,8 @@ function Icon({ name }) {
     brain: <><path d="M12 5a3 3 0 0 0-3 3 3 3 0 0 0-1 5.8V17a2 2 0 0 0 4 0" /><path d="M12 5a3 3 0 0 1 3 3 3 3 0 0 1 1 5.8V17a2 2 0 0 1-4 0" /></>,
     shield: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" /><path d="m9 12 2 2 4-4" /></>,
     alert: <><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></>,
+    upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M7 9l5-5 5 5" /><path d="M12 4v12" /></>,
+    database: <><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5v14a9 3 0 0 0 18 0V5" /><path d="M3 12a9 3 0 0 0 18 0" /></>,
   };
   return <svg {...common} aria-hidden="true">{paths[name]}</svg>;
 }
@@ -113,7 +115,31 @@ function describeEvent(item) {
   }
 }
 
-function WorkspacePanel({ health, selectedDoc, onDocClick, docHits }) {
+function UploadStatus({ upload }) {
+  if (!upload) return null;
+  const stages = ["上传文件", "识别格式", "剖析内容", "接入 AI Search", "就绪"];
+  const idx = upload.status === "error" ? -1 : upload.status === "done" ? stages.length : (upload.stage ?? 1);
+  return (
+    <div className={`upload-status ${upload.status}`}>
+      <div className="us-head">
+        <Icon name={upload.status === "error" ? "alert" : upload.status === "done" ? "check" : "upload"} />
+        <span>{upload.message}</span>
+      </div>
+      {upload.status !== "error" ? (
+        <ol className="us-stages">
+          {stages.map((s, i) => (
+            <li key={s} className={i < idx ? "done" : i === idx ? "active" : ""}>{s}</li>
+          ))}
+        </ol>
+      ) : null}
+      {upload.summary ? (
+        <p className="us-summary">{upload.summary.format ? `格式 ${upload.summary.format} · ` : ""}{upload.summary.indexed_count ?? upload.summary.rows ?? "?"} 条已入库</p>
+      ) : null}
+    </div>
+  );
+}
+
+function WorkspacePanel({ health, selectedDoc, onDocClick, docHits, workspace, workspaces, onWorkspaceChange, onUpload, upload }) {
   return (
     <aside className="workspace-panel">
       <div className="brand">
@@ -123,11 +149,19 @@ function WorkspacePanel({ health, selectedDoc, onDocClick, docHits }) {
           <span>产品化 Agent</span>
         </div>
       </div>
-      <label className="search">
-        <Icon name="search" />
-        <input value="demo-corpus" readOnly aria-label="当前工作区" />
-      </label>
+      <div className="ws-switch">
+        <label className="ws-select">
+          <Icon name="database" />
+          <select value={workspace} onChange={(e) => onWorkspaceChange(e.target.value)} aria-label="选择工作区">
+            {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+        </label>
+        <button className="ws-upload" type="button" onClick={onUpload} title="上传 CSV / Excel / JSON，自动接入">
+          <Icon name="upload" /> 上传数据
+        </button>
+      </div>
       <div className="panel-body">
+        <UploadStatus upload={upload} />
         <section>
           <div className="section-title">运行状态</div>
           <div className={`health-card ${health.status}`}>
@@ -141,17 +175,21 @@ function WorkspacePanel({ health, selectedDoc, onDocClick, docHits }) {
         </section>
         <section>
           <div className="section-title">输入语料</div>
-          <div className="doc-list">
-            {documents.map(([file, label]) => (
-              <button className={`doc-row ${selectedDoc === file ? "active" : ""}`} key={file} onClick={() => onDocClick(file)} type="button">
-                <Icon name="file" />
-                <div>
-                  <strong>{file.replace("raw_docs/", "")}</strong>
-                  <span>{label}</span>
-                </div>
-              </button>
-            ))}
-          </div>
+          {workspace === "demo-corpus" ? (
+            <div className="doc-list">
+              {documents.map(([file, label]) => (
+                <button className={`doc-row ${selectedDoc === file ? "active" : ""}`} key={file} onClick={() => onDocClick(file)} type="button">
+                  <Icon name="file" />
+                  <div>
+                    <strong>{file.replace("raw_docs/", "")}</strong>
+                    <span>{label}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-note">「{workspaces.find((w) => w.id === workspace)?.name || workspace}」已接入，直接在右侧提问即可。</p>
+          )}
         </section>
         <section>
           <div className="section-title">文档命中</div>
@@ -186,7 +224,7 @@ function ProgressBar({ trace, running }) {
   );
 }
 
-function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health }) {
+function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health, onUpload, onProduce, stream }) {
   const artifactCount = Object.values(artifacts).filter(Boolean).length;
   const disabled = running || health.status !== "ok";
   return (
@@ -196,10 +234,7 @@ function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, s
           <h1>DataForge 工作台</h1>
           <span>{health.status === "ok" ? "已连接后端，可执行真实多智能体编排" : "等待后端响应…"}</span>
         </div>
-        <button className="primary" onClick={() => run("请基于当前工作区生成一个数据产品方案，包含 PDF、概念图和语音。")} disabled={disabled} type="button">
-          <Icon name="spark" />
-          {running ? "运行中…" : "生成完整产物"}
-        </button>
+        {running ? <span className="run-badge"><span className="run-dot" />运行中…</span> : null}
       </header>
       <ProgressBar trace={trace} running={running} />
       <div className="tabs" role="tablist">
@@ -214,7 +249,7 @@ function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, s
         ))}
       </div>
       <div className="panel-scroll">
-        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} /> : null}
+        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} run={run} onUpload={onUpload} onProduce={onProduce} artifacts={artifacts} stream={stream} /> : null}
         {activeTab === "artifacts" ? <ArtifactShelf artifacts={artifacts} running={running} /> : null}
         {activeTab === "docs" ? <EvidenceList hits={docHits} /> : null}
       </div>
@@ -222,7 +257,9 @@ function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, s
         className="composer"
         onSubmit={(event) => {
           event.preventDefault();
-          run(input);
+          const text = input;
+          setInput("");
+          run(text);
         }}
       >
         <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="输入产品化问题，例如：为运营团队评估一个数据产品机会" aria-label="提问输入框" />
@@ -287,23 +324,42 @@ function ActivityTimeline({ trace, running }) {
   );
 }
 
-function ChatStream({ messages, trace, running }) {
+function Welcome({ run, onUpload }) {
+  const examples = [
+    "这个工作区能做哪些数据产品？请评估可行性",
+    "帮我从这些数据里找一个可落地的产品机会",
+    "生成一份完整产物：项目书 PDF + 概念图 + 语音摘要",
+  ];
+  return (
+    <div className="welcome">
+      <div className="welcome-mark"><Icon name="spark" /></div>
+      <strong>我是 DataForge，你的数据产品化助手</strong>
+      <p>把你的数据（CSV / Excel / JSON）交给我——我会自动识别格式、剖析内容、接入检索，再用多智能体帮你分析「这些数据能做什么产品、是否可行」，并诚实指出缺口。</p>
+      <button className="primary welcome-upload" type="button" onClick={onUpload}><Icon name="upload" /> 上传我的数据</button>
+      <div className="welcome-examples">
+        <span>或先试试这些问题：</span>
+        {examples.map((q, i) => (
+          <button key={i} className="chip" type="button" onClick={() => run(q)}>{q}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifacts, stream }) {
   const endRef = useRef(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: REDUCED_MOTION ? "auto" : "smooth", block: "end" });
-  }, [messages, trace, running]);
+  }, [messages, trace, running, stream]);
 
   const userMsgs = messages.filter((m) => m.role === "user");
   const asstMsgs = messages.filter((m) => m.role === "assistant");
+  const hasArtifacts = Object.values(artifacts || {}).some(Boolean);
+  // 仅当：有助手回复、不在运行、且尚未生成产物时，才在回复下方渐出"生成产物"按钮
+  const showProduce = asstMsgs.length > 0 && !running && !hasArtifacts;
 
   if (!messages.length && !running) {
-    return (
-      <div className="empty-state">
-        <Icon name="pulse" />
-        <strong>尚未开始运行</strong>
-        <p>连接后端后即可发起真实的产品可行性评估。运行时这里会实时显示每个智能体的动作，不再空等。</p>
-      </div>
-    );
+    return <Welcome run={run} onUpload={onUpload} />;
   }
   return (
     <div className="chat-stream">
@@ -315,10 +371,23 @@ function ChatStream({ messages, trace, running }) {
         const last = i === asstMsgs.length - 1;
         return (
           <Bubble key={`a-${i}`} role="assistant" name="DataForge" time={m.time}>
-            {last && !REDUCED_MOTION ? <Typewriter text={m.text} /> : <p className="bubble-text">{m.text}</p>}
+            {last && !REDUCED_MOTION && !m.streamed ? <Typewriter text={m.text} /> : <p className="bubble-text">{m.text}</p>}
+            {last && showProduce ? (
+              <div className="produce-cta">
+                <button className="primary" type="button" onClick={onProduce}>
+                  <Icon name="spark" /> 据此生成完整产物
+                </button>
+                <span>满意这版分析？生成项目书 PDF、概念图与语音摘要</span>
+              </div>
+            ) : null}
           </Bubble>
         );
       })}
+      {stream ? (
+        <Bubble role="assistant" name="DataForge" time="刚刚">
+          <p className="bubble-text">{stream}<span className="caret" /></p>
+        </Bubble>
+      ) : null}
       <div ref={endRef} />
     </div>
   );
@@ -409,7 +478,10 @@ function TracePanel({ trace, running, filter, setFilter, scrollRef }) {
       <header>
         <div>
           <h2>智能体追踪</h2>
-          <span className={running ? "live" : ""}>{running ? "实时运行" : "就绪"}</span>
+          {(() => {
+            const done = trace.some((t) => t.event === "final");
+            return <span className={running ? "live" : done ? "ok" : ""}>{running ? "运行中" : done ? `已完成 · ${trace.length} 步` : "待运行"}</span>;
+          })()}
         </div>
         <div className="trace-pills">
           {[
@@ -458,7 +530,7 @@ function TraceItem({ item, index, active }) {
   return (
     <div className={`trace-item ${item.event} ${active ? "active" : ""}`} style={{ "--i": index }}>
       <div className="trace-rail">
-        <span className="dot" />
+        <span className={`dot ${active ? "loading" : "done"}`} />
       </div>
       <div className="trace-card">
         <div className="trace-top">
@@ -476,7 +548,7 @@ function TraceItem({ item, index, active }) {
 export function App() {
   const [messages, setMessages] = useState([]);
   const [trace, setTrace] = useState([]);
-  const [input, setInput] = useState("为运营团队评估一个数据产品机会。");
+  const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [artifacts, setArtifacts] = useState({});
   const [activeTab, setActiveTab] = useState("chat");
@@ -484,7 +556,53 @@ export function App() {
   const [health, setHealth] = useState({ status: "checking", message: "" });
   const [selectedDoc, setSelectedDoc] = useState("");
   const [docHits, setDocHits] = useState([]);
+  const [workspace, setWorkspace] = useState("demo-corpus");
+  const [workspaces, setWorkspaces] = useState([{ id: "demo-corpus", name: "演示语料 demo-corpus" }]);
+  const [upload, setUpload] = useState(null);
+  const [stream, setStream] = useState("");
   const traceRef = useRef(null);
+  const fileRef = useRef(null);
+
+  // 拉取可用工作区（后端未提供该接口时用已知工作区兜底）
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/api/workspaces`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        const list = (d.workspaces || d || []).map((w) => ({ id: w.workspace_id || w.id, name: w.name || w.workspace_id || w.id, docs: w.doc_count }));
+        if (!cancelled && list.length) setWorkspaces(list);
+      })
+      .catch(() => {
+        if (!cancelled) setWorkspaces([
+          { id: "demo-corpus", name: "演示语料 demo-corpus" },
+          { id: "user-excel-corpus", name: "我的 Excel 语料" },
+          { id: "excel-corpus", name: "示例 Excel 语料" },
+        ]);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  async function handleUpload(file) {
+    if (!file) return;
+    setUpload({ status: "uploading", stage: 1, message: `正在上传 ${file.name}…` });
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: form });
+      if (!res.ok) throw new Error(res.status === 404 ? "数据接入服务尚未就绪，请稍后再试" : `上传失败：HTTP ${res.status}`);
+      const data = await res.json();
+      const wid = data.workspace_id || data.id;
+      setUpload({ status: "done", message: `已接入「${data.name || wid}」`, summary: data });
+      if (wid) {
+        setWorkspaces((ws) => (ws.some((w) => w.id === wid) ? ws : [...ws, { id: wid, name: data.name || wid, docs: data.indexed_count }]));
+        setWorkspace(wid);
+        setMessages([]); setTrace([]); setArtifacts({}); setDocHits([]);
+      }
+    } catch (e) {
+      setUpload({ status: "error", message: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  const triggerUpload = () => fileRef.current?.click();
 
   useEffect(() => {
     let cancelled = false;
@@ -516,7 +634,7 @@ export function App() {
       const response = await fetch(`${API_BASE}/api/search-pack-context`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace_id: "demo-corpus", query: file.replace("raw_docs/", ""), top_k: 5 }),
+        body: JSON.stringify({ workspace_id: workspace, query: file.replace("raw_docs/", ""), top_k: 5 }),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
@@ -531,13 +649,15 @@ export function App() {
     setRunning(true);
     setTrace([]);
     setArtifacts({});
+    setStream("");
     setActiveTab("chat");
     setMessages([{ role: "user", text: message, time: "刚刚" }]);
+    let streamed = false;
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace_id: "demo-corpus", message }),
+        body: JSON.stringify({ workspace_id: workspace, message }),
       });
       if (!response.ok || !response.body) throw new Error(`请求失败：${response.status}`);
       const reader = response.body.getReader();
@@ -551,6 +671,17 @@ export function App() {
         buffer = parsed.rest;
         if (parsed.events.length) {
           setTrace((items) => [...items, ...parsed.events]);
+          for (const ev of parsed.events) {
+            if (ev.event === "answer_delta" || ev.event === "delta") {
+              streamed = true;
+              const piece = ev.data?.delta ?? ev.data?.text ?? "";
+              if (piece) setStream((s) => s + piece);
+            }
+          }
+          const clarify = parsed.events.find((event) => event.event === "clarify");
+          if (clarify) {
+            setMessages((items) => [...items, { role: "assistant", text: clarify.data.question || clarify.data.text || clarify.data.reason || "我需要多了解一点你的目标，方便给出更有据的分析。", time: "刚刚" }]);
+          }
           const final = parsed.events.find((event) => event.event === "final");
           if (final) {
             const proposal = final.data?.artifact?.proposal || {};
@@ -561,7 +692,8 @@ export function App() {
               concept_image: proposal.concept_image,
               audio_summary: proposal.audio_summary,
             });
-            setMessages((items) => [...items, { role: "assistant", text: final.data.text, time: "刚刚" }]);
+            setMessages((items) => [...items, { role: "assistant", text: final.data.text, time: "刚刚", streamed }]);
+            setStream("");
           }
         }
       }
@@ -574,9 +706,33 @@ export function App() {
     }
   }
 
+  // 在最终分析满意后，据此生成完整产物（沿用上一条提问 + full_package 触发词）
+  function produce() {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const base = lastUser?.text || "基于当前工作区的分析";
+    run(`${base}（请据此生成完整产物：项目书 PDF、概念图、语音摘要）`);
+  }
+
   return (
     <div className="app-shell">
-      <WorkspacePanel health={health} selectedDoc={selectedDoc} onDocClick={loadDoc} docHits={docHits} />
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".csv,.xlsx,.xls,.json,.md,.txt"
+        hidden
+        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) handleUpload(f); }}
+      />
+      <WorkspacePanel
+        health={health}
+        selectedDoc={selectedDoc}
+        onDocClick={loadDoc}
+        docHits={docHits}
+        workspace={workspace}
+        workspaces={workspaces}
+        onWorkspaceChange={(w) => { setWorkspace(w); setMessages([]); setTrace([]); setArtifacts({}); setDocHits([]); setSelectedDoc(""); }}
+        onUpload={triggerUpload}
+        upload={upload}
+      />
       <ChatPanel
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -589,6 +745,9 @@ export function App() {
         artifacts={artifacts}
         docHits={docHits}
         health={health}
+        onUpload={triggerUpload}
+        onProduce={produce}
+        stream={stream}
       />
       <div className="trace-scroll">
         <TracePanel trace={trace} running={running} filter={traceFilter} setFilter={setTraceFilter} scrollRef={traceRef} />
