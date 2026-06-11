@@ -120,11 +120,84 @@ class WorkspacesResponse(BaseModel):
     workspaces: list[WorkspaceSummary]
 
 
+class WorkspaceColumnDetail(BaseModel):
+    table: str | None = None
+    name: str
+    role: str | None = None
+    signal: str | None = None
+    missing_rate: float | int | None = None
+    unique_count: int | None = None
+    top_values: list[Any] = Field(default_factory=list)
+
+
+class WorkspaceDocumentDetail(BaseModel):
+    source_file: str | None = None
+    name: str
+    format: str | None = None
+    bytes: int | None = None
+    external: bool = False
+
+
+class WorkspaceDetailResponse(BaseModel):
+    workspace_id: str
+    name: str
+    format: str
+    rows: int = 0
+    columns: list[WorkspaceColumnDetail] = Field(default_factory=list)
+    doc_count: int = 0
+    documents: list[WorkspaceDocumentDetail] = Field(default_factory=list)
+    profile_summary: str | None = None
+    signals: list[str] = Field(default_factory=list)
+    created_at: str | None = None
+
+
 class WorkspaceDeleteResponse(BaseModel):
     workspace_id: str
     deleted: bool
     deleted_docs: int
     deleted_blobs: int = 0
+
+
+class RunStep(BaseModel):
+    time: str | None = None
+    event: str
+    agent: str | None = None
+    name: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunSummary(BaseModel):
+    run_id: str
+    time: str | None = None
+    workspace_id: str | None = None
+    verdict: str | None = None
+    confidence: str | None = None
+    status: str | None = None
+    steps: list[RunStep] = Field(default_factory=list)
+    step_count: int = 0
+
+
+class RunsResponse(BaseModel):
+    runs: list[RunSummary]
+
+
+class RunDetailResponse(BaseModel):
+    run_id: str
+    conversation_id: str | None = None
+    workspace_id: str | None = None
+    message: str | None = None
+    status: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    verdict: str | None = None
+    confidence: str | None = None
+    steps: list[RunStep] = Field(default_factory=list)
+    answer_delta_summary: dict[str, Any] = Field(default_factory=dict)
+    models: list[dict[str, Any]] = Field(default_factory=list)
+    audit: dict[str, Any] | None = None
+    final: dict[str, Any] | None = None
+    artifact: dict[str, Any] | None = None
+    persistence: dict[str, Any] | None = None
 
 
 class RenderPdfRequest(BaseModel):
@@ -148,6 +221,11 @@ class ProduceRequest(BaseModel):
     feasibility: dict[str, Any]
     corpus: dict[str, Any] = Field(default_factory=dict)
     market: dict[str, Any] = Field(default_factory=dict)
+    audit: dict[str, Any] = Field(default_factory=dict)
+    answer: dict[str, Any] = Field(default_factory=dict)
+    proposal: dict[str, Any] = Field(default_factory=dict)
+    narrative: str | None = None
+    text: str | None = None
 
 
 class ChatRequest(BaseModel):

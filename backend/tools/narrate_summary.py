@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import struct
 import time
+import http.client
+import os
 import urllib.error
 import urllib.request
 import wave
 from pathlib import Path
 from xml.sax.saxutils import escape
+
+try:
+    from ..blob_store import upload_artifact
+except ImportError:
+    from blob_store import upload_artifact
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,9 +25,8 @@ def narrate_summary(text: str, voice: str = "zh-CN-XiaoxiaoNeural") -> dict[str,
     path = OUT_DIR / f"summary-{int(time.time())}.wav"
     mode = "local-fallback"
     speech_error = ""
+    speech_warning = ""
     try:
-        import os
-
         region = os.environ.get("SPEECH_REGION", "eastus2")
         speech_key = os.environ.get("SPEECH_KEY")
         ssml = (
@@ -43,12 +49,16 @@ def narrate_summary(text: str, voice: str = "zh-CN-XiaoxiaoNeural") -> dict[str,
         req.add_header("Content-Type", "application/ssml+xml")
         req.add_header("X-Microsoft-OutputFormat", "riff-16khz-16bit-mono-pcm")
         req.add_header("User-Agent", "dataforge-agent")
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            audio = resp.read()
+        with urllib.request.urlopen(req, timeout=float(os.environ.get("DF_SPEECH_TIMEOUT_SECONDS", "120"))) as resp:
+            try:
+                audio = resp.read()
+            except http.client.IncompleteRead as exc:
+                audio = exc.partial
+                speech_warning = f"IncompleteRead: kept {len(audio)} partial bytes"
         if audio.startswith(b"RIFF") and len(audio) > 1000:
             path.write_bytes(audio)
             mode = "azure-speech"
-            return {
+            result: dict[str, str | int] = {
                 "audio_blob_url": path.as_uri(),
                 "artifact_name": path.name,
                 "artifact_url": f"/api/artifacts/{path.name}",
@@ -57,7 +67,10 @@ def narrate_summary(text: str, voice: str = "zh-CN-XiaoxiaoNeural") -> dict[str,
                 "voice": voice,
                 "mode": mode,
                 "speech_error": speech_error,
+                "speech_warning": speech_warning,
             }
+            _attach_blob(result, path, "audio/wav")
+            return result
     except Exception as exc:
         mode = "local-fallback"
         speech_error = f"{type(exc).__name__}: {exc}"
@@ -74,7 +87,7 @@ def narrate_summary(text: str, voice: str = "zh-CN-XiaoxiaoNeural") -> dict[str,
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(b"".join(frames))
-    return {
+    result = {
         "audio_blob_url": path.as_uri(),
         "artifact_name": path.name,
         "artifact_url": f"/api/artifacts/{path.name}",
@@ -83,4 +96,16 @@ def narrate_summary(text: str, voice: str = "zh-CN-XiaoxiaoNeural") -> dict[str,
         "voice": voice,
         "mode": mode,
         "speech_error": speech_error,
+        "speech_warning": speech_warning,
     }
+    _attach_blob(result, path, "audio/wav")
+    return result
+
+
+def _attach_blob(result: dict[str, str | int], path: Path, content_type: str) -> None:
+    try:
+        blob = upload_artifact(path.name, path.read_bytes(), content_type)
+        result["audio_blob_url"] = str(blob.get("blob_url") or result["audio_blob_url"])
+        result["blob_name"] = str(blob.get("blob_name") or "")
+    except Exception as exc:
+        result["blob_error"] = f"{type(exc).__name__}: {exc}"[:500]

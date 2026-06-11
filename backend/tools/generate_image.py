@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
+import os
+import urllib.error
 import struct
 import time
+import urllib.request
 import zlib
 from pathlib import Path
+from typing import Any
+
+try:
+    from ..blob_store import upload_artifact
+except ImportError:
+    from blob_store import upload_artifact
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -93,13 +104,79 @@ def generate_image(prompt: str, size: str = "1024x1024") -> dict[str, str | int]
         width, height = (1536, 1024)
     elif size == "1024x1536":
         width, height = (1024, 1536)
-    path.write_bytes(_concept_png(prompt, width, height))
-    return {
+    mode = "gpt-image-2"
+    image_error = ""
+    try:
+        image_bytes = _generate_with_gpt_image_2(prompt, size)
+    except Exception as exc:
+        mode = "deterministic-fallback"
+        image_error = f"{type(exc).__name__}: {exc}"[:700]
+        image_bytes = _concept_png(prompt, width, height)
+
+    path.write_bytes(image_bytes)
+    result: dict[str, str | int] = {
         "concept_image_blob_url": path.as_uri(),
         "artifact_name": path.name,
         "artifact_url": f"/api/artifacts/{path.name}",
         "local_path": str(path),
         "bytes": path.stat().st_size,
         "size": size,
-        "mode": "deterministic-concept",
+        "mode": mode,
+        "image_error": image_error,
     }
+    try:
+        blob = upload_artifact(path.name, image_bytes, "image/png")
+        result["concept_image_blob_url"] = str(blob.get("blob_url") or result["concept_image_blob_url"])
+        result["blob_name"] = str(blob.get("blob_name") or "")
+    except Exception as exc:
+        result["blob_error"] = f"{type(exc).__name__}: {exc}"[:500]
+    return result
+
+
+def _generate_with_gpt_image_2(prompt: str, size: str) -> bytes:
+    endpoint = os.environ.get("OPENAI_ENDPOINT")
+    if not endpoint:
+        raise RuntimeError("Missing OPENAI_ENDPOINT for gpt-image-2")
+    deployment = os.environ.get("DF_IMAGE_DEPLOYMENT", "gpt-image-2")
+    payload: dict[str, Any] = {
+        "model": deployment,
+        "prompt": _image_prompt(prompt),
+        "size": size,
+        "n": 1,
+        "quality": os.environ.get("DF_IMAGE_QUALITY", "medium"),
+        "output_format": "png",
+    }
+    url = endpoint.rstrip("/") + "/openai/v1/images/generations?api-version=preview"
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST")
+    req.add_header("Content-Type", "application/json")
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if api_key:
+        req.add_header("api-key", api_key)
+    else:
+        from azure.identity import DefaultAzureCredential
+
+        token = DefaultAzureCredential().get_token("https://cognitiveservices.azure.com/.default")
+        req.add_header("Authorization", f"Bearer {token.token}")
+    try:
+        with urllib.request.urlopen(req, timeout=float(os.environ.get("DF_IMAGE_TIMEOUT_SECONDS", "180"))) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:800]
+        raise RuntimeError(f"gpt-image-2 HTTP {exc.code}: {body}") from exc
+    b64 = ((data.get("data") or [{}])[0] or {}).get("b64_json")
+    if not b64:
+        raise RuntimeError("gpt-image-2 response did not include b64_json")
+    image_bytes = base64.b64decode(b64)
+    if not image_bytes.startswith(b"\x89PNG"):
+        raise RuntimeError("gpt-image-2 output was not PNG")
+    return image_bytes
+
+
+def _image_prompt(prompt: str) -> str:
+    return (
+        "Create a polished enterprise product concept image for a data product proposal. "
+        "Show a realistic dashboard/workflow scene with evidence cards, confidence labels, "
+        "market signals, and business stakeholders reviewing the result. Avoid readable UI microtext; "
+        "make it suitable as a proposal cover image. Context: "
+        + str(prompt or "")[:2600]
+    )

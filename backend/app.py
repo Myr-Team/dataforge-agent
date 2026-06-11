@@ -12,45 +12,58 @@ from fastapi import Request
 from fastapi import UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from fastapi.responses import StreamingResponse
 from pathlib import Path
 from starlette.concurrency import run_in_threadpool
 
 try:
+    from .blob_store import download_artifact
+    from .dependency_health import health_dependencies
     from .orchestrator import orchestrate_chat, produce_from_existing_report
     from .rag import search
+    from .run_store import get_run, list_runs
     from .tracing import configure_monitoring
-    from .workspace_store import create_workspace_from_upload, delete_workspace, list_workspaces
+    from .workspace_store import create_workspace_from_upload, delete_workspace, get_workspace_detail, list_workspaces
     from .schemas import (
         ChatRequest,
         GenerateImageRequest,
         NarrateSummaryRequest,
         ProduceRequest,
         RenderPdfRequest,
+        RunDetailResponse,
+        RunsResponse,
         SearchPackContextRequest,
         SearchPackContextResponse,
         UploadResponse,
         WorkspaceDeleteResponse,
+        WorkspaceDetailResponse,
         WorkspacesResponse,
     )
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
 except ImportError:
+    from blob_store import download_artifact
+    from dependency_health import health_dependencies
     from orchestrator import orchestrate_chat, produce_from_existing_report
     from rag import search
+    from run_store import get_run, list_runs
     from tracing import configure_monitoring
-    from workspace_store import create_workspace_from_upload, delete_workspace, list_workspaces
+    from workspace_store import create_workspace_from_upload, delete_workspace, get_workspace_detail, list_workspaces
     from schemas import (
         ChatRequest,
         GenerateImageRequest,
         NarrateSummaryRequest,
         ProduceRequest,
         RenderPdfRequest,
+        RunDetailResponse,
+        RunsResponse,
         SearchPackContextRequest,
         SearchPackContextResponse,
         UploadResponse,
         WorkspaceDeleteResponse,
+        WorkspaceDetailResponse,
         WorkspacesResponse,
     )
     from tools.generate_image import generate_image
@@ -73,11 +86,13 @@ ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "generated-outputs"
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
+    dependencies = health_dependencies()
     return {
         "ok": True,
         "service": "dataforge-backend",
         "search_endpoint": bool(os.environ.get("SEARCH_ENDPOINT")),
         "workspace_default": "demo-corpus",
+        "dependencies": dependencies,
     }
 
 
@@ -116,6 +131,17 @@ async def workspaces() -> WorkspacesResponse:
     return WorkspacesResponse(workspaces=await run_in_threadpool(list_workspaces))
 
 
+@app.get("/api/workspaces/{workspace_id}", response_model=WorkspaceDetailResponse)
+async def workspace_detail(workspace_id: str) -> WorkspaceDetailResponse:
+    try:
+        result = await run_in_threadpool(get_workspace_detail, workspace_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return WorkspaceDetailResponse.model_validate(result)
+
+
 @app.delete("/api/workspaces/{workspace_id}", response_model=WorkspaceDeleteResponse)
 async def remove_workspace(workspace_id: str) -> WorkspaceDeleteResponse:
     try:
@@ -140,9 +166,16 @@ async def image(req: GenerateImageRequest) -> dict[str, Any]:
 
 
 @app.get("/api/artifacts/{name}")
-def artifact(name: str) -> FileResponse:
-    path = ARTIFACT_DIR / name
-    return FileResponse(path)
+def artifact(name: str) -> Response:
+    safe_name = Path(name).name
+    path = ARTIFACT_DIR / safe_name
+    if path.exists():
+        return FileResponse(path)
+    blob = download_artifact(safe_name)
+    if blob:
+        content, content_type = blob
+        return Response(content=content, media_type=content_type)
+    raise HTTPException(status_code=404, detail=f"Artifact not found: {safe_name}")
 
 
 @app.post("/api/narrate-summary")
@@ -160,6 +193,20 @@ async def narrate(req: NarrateSummaryRequest, request: Request) -> dict[str, Any
 @app.post("/api/produce")
 async def produce(req: ProduceRequest) -> dict[str, Any]:
     return await run_in_threadpool(produce_from_existing_report, req.model_dump())
+
+
+@app.get("/api/runs", response_model=RunsResponse)
+async def runs(workspace_id: str | None = None) -> RunsResponse:
+    return RunsResponse(runs=await run_in_threadpool(list_runs, workspace_id))
+
+
+@app.get("/api/runs/{run_id}", response_model=RunDetailResponse)
+async def run_detail(run_id: str) -> RunDetailResponse:
+    try:
+        result = await run_in_threadpool(get_run, run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}") from exc
+    return RunDetailResponse.model_validate(result)
 
 
 @app.post("/api/chat")

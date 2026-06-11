@@ -11,10 +11,10 @@ from typing import Any
 from ingest.profiler import build_data_profile, compact_profile_for_workspace, profile_to_search_document, write_profile
 
 try:
-    from .blob_store import get_registry_workspace, load_workspace_registry, persist_workspace, remove_workspace_from_blob
+    from .blob_store import download_blob_json, get_registry_workspace, load_workspace_registry, persist_workspace, remove_workspace_from_blob, workspace_deleted
     from .search_admin import count_workspace_docs, delete_workspace_docs, index_documents, search_endpoint
 except ImportError:
-    from blob_store import get_registry_workspace, load_workspace_registry, persist_workspace, remove_workspace_from_blob
+    from blob_store import download_blob_json, get_registry_workspace, load_workspace_registry, persist_workspace, remove_workspace_from_blob, workspace_deleted
     from search_admin import count_workspace_docs, delete_workspace_docs, index_documents, search_endpoint
 
 
@@ -98,6 +98,8 @@ def list_workspaces() -> list[dict[str, Any]]:
             continue
         meta = _read_json(meta_path)
         workspace_id = str(meta.get("workspace_id") or workspace_dir.name)
+        if workspace_id.startswith("upload-") and workspace_deleted(workspace_id):
+            continue
         profile = _read_profile(workspace_dir, meta)
         doc_count = _workspace_doc_count(workspace_id, workspace_dir, meta)
         by_id[workspace_id] = {
@@ -111,6 +113,8 @@ def list_workspaces() -> list[dict[str, Any]]:
     for item in load_workspace_registry():
         workspace_id = str(item.get("workspace_id") or "")
         if not workspace_id:
+            continue
+        if workspace_deleted(workspace_id):
             continue
         by_id[workspace_id] = {
             "workspace_id": workspace_id,
@@ -133,6 +137,8 @@ def delete_workspace(workspace_id: str) -> dict[str, Any]:
     registry_entry = get_registry_workspace(workspace_id)
     workspace_dir = WORKSPACES / workspace_id
     if registry_entry is None and not workspace_dir.exists():
+        if workspace_deleted(workspace_id):
+            return {"workspace_id": workspace_id, "deleted": True, "deleted_docs": 0, "deleted_blobs": 0}
         raise FileNotFoundError(workspace_id)
 
     deleted_docs = _delete_search_docs(workspace_id)
@@ -146,6 +152,46 @@ def delete_workspace(workspace_id: str) -> dict[str, Any]:
         "deleted": True,
         "deleted_docs": deleted_docs,
         **blob_result,
+    }
+
+
+def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
+    workspace_id = str(workspace_id or "").strip()
+    if not workspace_id:
+        raise ValueError("workspace_id is required")
+    if workspace_id.startswith("upload-") and workspace_deleted(workspace_id):
+        raise FileNotFoundError(workspace_id)
+    workspace_dir = WORKSPACES / workspace_id
+    meta: dict[str, Any] = {}
+    profile: dict[str, Any] = {}
+    if workspace_dir.exists() and (workspace_dir / "workspace.json").exists():
+        meta = _read_json(workspace_dir / "workspace.json")
+        profile_path = workspace_dir / str(meta.get("profile_file") or "profile.json")
+        if profile_path.exists():
+            profile = _read_json(profile_path)
+    if not meta:
+        meta = download_blob_json(f"workspaces/{workspace_id}/workspace.json") or {}
+    if not profile:
+        profile = download_blob_json(f"workspaces/{workspace_id}/profile.json") or {}
+    if not meta and not profile:
+        raise FileNotFoundError(workspace_id)
+
+    summary = workspace_context(workspace_id)
+    tables = profile.get("tables") or []
+    rows = sum(int(table.get("row_count") or 0) for table in tables)
+    columns = _detail_columns(tables)
+    documents = _detail_documents(workspace_dir, meta)
+    return {
+        "workspace_id": workspace_id,
+        "name": meta.get("name") or profile.get("name") or summary.get("name") or workspace_id,
+        "format": meta.get("format") or profile.get("format") or summary.get("format") or "mixed",
+        "rows": rows,
+        "columns": columns,
+        "doc_count": summary.get("doc_count") or _workspace_doc_count(workspace_id, workspace_dir, meta),
+        "documents": documents,
+        "profile_summary": meta.get("profile_summary") or profile.get("profile_summary") or summary.get("profile_summary"),
+        "signals": _detail_signals(tables),
+        "created_at": meta.get("created_at") or profile.get("created_at") or summary.get("created_at"),
     }
 
 
@@ -244,6 +290,71 @@ def _read_profile(workspace_dir: Path, meta: dict[str, Any]) -> dict[str, Any]:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _detail_columns(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    table_signals = {
+        str(table.get("name") or ""): (table.get("signals") or []) + (table.get("cross_signals") or [])
+        for table in tables
+    }
+    for table in tables:
+        table_name = str(table.get("name") or "")
+        signals = table_signals.get(table_name, [])
+        for column in table.get("columns") or []:
+            name = str(column.get("name") or "")
+            key = f"{table_name}:{name}"
+            if key in seen:
+                continue
+            seen.add(key)
+            signal = next((item for item in signals if name and name in str(item)), "")
+            items.append(
+                {
+                    "table": table_name,
+                    "name": name,
+                    "role": column.get("type") or "unknown",
+                    "signal": signal,
+                    "missing_rate": column.get("missing_rate", 0),
+                    "unique_count": column.get("unique_count", 0),
+                    "top_values": column.get("top_values", [])[:5],
+                }
+            )
+    return items[:120]
+
+
+def _detail_signals(tables: list[dict[str, Any]]) -> list[str]:
+    signals: list[str] = []
+    for table in tables:
+        signals.extend(str(item) for item in table.get("cross_signals", [])[:8])
+        signals.extend(str(item) for item in table.get("signals", [])[:8])
+    return signals[:20]
+
+
+def _detail_documents(workspace_dir: Path, meta: dict[str, Any]) -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = []
+    for rel in meta.get("raw_docs") or []:
+        path = workspace_dir / str(rel)
+        documents.append(
+            {
+                "source_file": str(rel),
+                "name": Path(str(rel)).name,
+                "format": Path(str(rel)).suffix.lstrip(".").lower() or "unknown",
+                "bytes": path.stat().st_size if path.exists() else None,
+            }
+        )
+    for item in meta.get("external_docs") or []:
+        documents.append(
+            {
+                "source_file": item.get("source_file") or item.get("path"),
+                "name": item.get("title") or Path(str(item.get("source_file") or item.get("path") or "external")).name,
+                "format": Path(str(item.get("source_file") or item.get("path") or "")).suffix.lstrip(".").lower() or "external",
+                "external": True,
+            }
+        )
+    if not documents and meta.get("profile_file"):
+        documents.append({"source_file": meta.get("profile_file"), "name": "profile.json", "format": "profile"})
+    return documents
 
 
 def _unique_workspace_id(value: str) -> str:
