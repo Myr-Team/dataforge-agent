@@ -1,0 +1,141 @@
+{
+  "ok": true,
+  "loaded_env": [
+    "C:\\Users\\12140\\.dataforge-codex.env"
+  ],
+  "checks": {
+    "feasibility_model_response": true,
+    "auditor_model_response": true,
+    "unsupported_not_stronger_than_supported": true,
+    "different_rationale": true,
+    "auditor_real_revise": true,
+    "grep_guard": true
+  },
+  "supported_verdict": "conditional",
+  "unsupported_verdict": "not_yet_feasible",
+  "supported_model_responses": [
+    {
+      "agent": "df-feasibility-analyst",
+      "response_id": "resp_0a05ec6a28e336df006a2a1e007e6c8194a5b533cb25557d89",
+      "usage": {
+        "input_tokens": 2603,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 1731,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 4334
+      }
+    },
+    {
+      "agent": "df-auditor",
+      "response_id": "resp_0ee33b27f8c017c3006a2a1e28bcd08190904f9612eaee8337",
+      "usage": {
+        "input_tokens": 3419,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 31,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3450
+      }
+    }
+  ],
+  "unsupported_model_responses": [
+    {
+      "agent": "df-feasibility-analyst",
+      "response_id": "resp_0b182cf8c02d634f006a2a1e36579481939ac55d2f8e7cfc4a",
+      "usage": {
+        "input_tokens": 2589,
+        "input_tokens_details": {
+          "cached_tokens": 1152
+        },
+        "output_tokens": 1339,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3928
+      }
+    },
+    {
+      "agent": "df-auditor",
+      "response_id": "resp_0d83dd95cbfa4222006a2a1e498ad48197aa0872928e365349",
+      "usage": {
+        "input_tokens": 2972,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 345,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3317
+      }
+    },
+    {
+      "agent": "df-feasibility-analyst",
+      "revision": 1,
+      "response_id": "resp_0cc818420e039d46006a2a1e56d9208190a834942ad3ea151d",
+      "usage": {
+        "input_tokens": 2940,
+        "input_tokens_details": {
+          "cached_tokens": 2560
+        },
+        "output_tokens": 2026,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 4966
+      }
+    },
+    {
+      "agent": "df-auditor",
+      "revision": 1,
+      "response_id": "resp_05bacb1893189bc1006a2a1e6b304881969e1800f466cbe2c0",
+      "usage": {
+        "input_tokens": 3717,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 31,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3748
+      }
+    }
+  ],
+  "bad_audit": {
+    "audit": {
+      "verdict": "revise",
+      "issues": [
+        "asset_data: cites non-existent evidence ref missing-file#missing-row (not in evidence_catalog)",
+        "asset_data: quote 'not in catalog' is not present in evidence_catalog",
+        "asset_data: rationale 'The corpus fully supports underwriting decisions.' overclaims beyond the single feedback_summary evidence available",
+        "overall: marks a safety-critical autonomous insurance underwriting product as fully feasible ('feasible', 'data_confirmed') without any evidence of validation, labeled outcomes, or operational controls in the catalog"
+      ],
+      "target_expert": "df-feasibility-analyst"
+    },
+    "response_id": "resp_0a0eb86093350c78006a2a1e77cf0081948bcff44a72a01486",
+    "usage": {
+      "input_tokens": 685,
+      "input_tokens_details": {
+        "cached_tokens": 0
+      },
+      "output_tokens": 134,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 819
+    }
+  },
+  "grep_guard": {
+    "passed": true,
+    "stdout": "",
+    "stderr": ""
+  }
+}

@@ -25,3 +25,4 @@
 | 2026-06-10 | WP10 | Added router evals and structured trace logging, then deployed backend. | Passed 10 routing cases at 100% accuracy/consistency; App Insights traces returned `dataforge_trace` events. |
 | 2026-06-10 | WP11 | Started end-to-end demo script and runbook. | In progress. |
 | 2026-06-10 | WP11 | Ran `scripts/demo_e2e.py` against the cloud backend. | Passed all demo checks: clarify, 6 agents, MCP, full package artifacts, Azure Speech, auditor revise/pass, honest no. |
+| 2026-06-11 | WP-A | Replaced scripted feasibility/auditor conclusions with Foundry Responses calls and schema validation. | Passed `python eval/next_stage_wp_a_eval.py`; result saved to `docs/wp_a_next_stage_eval.json`. |
