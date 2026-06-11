@@ -224,7 +224,7 @@ function ProgressBar({ trace, running }) {
   );
 }
 
-function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health, onUpload, onProduce }) {
+function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health, onUpload, onProduce, stream }) {
   const artifactCount = Object.values(artifacts).filter(Boolean).length;
   const disabled = running || health.status !== "ok";
   return (
@@ -249,7 +249,7 @@ function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, s
         ))}
       </div>
       <div className="panel-scroll">
-        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} run={run} onUpload={onUpload} onProduce={onProduce} artifacts={artifacts} /> : null}
+        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} run={run} onUpload={onUpload} onProduce={onProduce} artifacts={artifacts} stream={stream} /> : null}
         {activeTab === "artifacts" ? <ArtifactShelf artifacts={artifacts} running={running} /> : null}
         {activeTab === "docs" ? <EvidenceList hits={docHits} /> : null}
       </div>
@@ -346,11 +346,11 @@ function Welcome({ run, onUpload }) {
   );
 }
 
-function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifacts }) {
+function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifacts, stream }) {
   const endRef = useRef(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: REDUCED_MOTION ? "auto" : "smooth", block: "end" });
-  }, [messages, trace, running]);
+  }, [messages, trace, running, stream]);
 
   const userMsgs = messages.filter((m) => m.role === "user");
   const asstMsgs = messages.filter((m) => m.role === "assistant");
@@ -371,7 +371,7 @@ function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifa
         const last = i === asstMsgs.length - 1;
         return (
           <Bubble key={`a-${i}`} role="assistant" name="DataForge" time={m.time}>
-            {last && !REDUCED_MOTION ? <Typewriter text={m.text} /> : <p className="bubble-text">{m.text}</p>}
+            {last && !REDUCED_MOTION && !m.streamed ? <Typewriter text={m.text} /> : <p className="bubble-text">{m.text}</p>}
             {last && showProduce ? (
               <div className="produce-cta">
                 <button className="primary" type="button" onClick={onProduce}>
@@ -383,6 +383,11 @@ function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifa
           </Bubble>
         );
       })}
+      {stream ? (
+        <Bubble role="assistant" name="DataForge" time="刚刚">
+          <p className="bubble-text">{stream}<span className="caret" /></p>
+        </Bubble>
+      ) : null}
       <div ref={endRef} />
     </div>
   );
@@ -554,6 +559,7 @@ export function App() {
   const [workspace, setWorkspace] = useState("demo-corpus");
   const [workspaces, setWorkspaces] = useState([{ id: "demo-corpus", name: "演示语料 demo-corpus" }]);
   const [upload, setUpload] = useState(null);
+  const [stream, setStream] = useState("");
   const traceRef = useRef(null);
   const fileRef = useRef(null);
 
@@ -643,8 +649,10 @@ export function App() {
     setRunning(true);
     setTrace([]);
     setArtifacts({});
+    setStream("");
     setActiveTab("chat");
     setMessages([{ role: "user", text: message, time: "刚刚" }]);
+    let streamed = false;
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
@@ -663,6 +671,13 @@ export function App() {
         buffer = parsed.rest;
         if (parsed.events.length) {
           setTrace((items) => [...items, ...parsed.events]);
+          for (const ev of parsed.events) {
+            if (ev.event === "answer_delta" || ev.event === "delta") {
+              streamed = true;
+              const piece = ev.data?.delta ?? ev.data?.text ?? "";
+              if (piece) setStream((s) => s + piece);
+            }
+          }
           const clarify = parsed.events.find((event) => event.event === "clarify");
           if (clarify) {
             setMessages((items) => [...items, { role: "assistant", text: clarify.data.question || clarify.data.text || clarify.data.reason || "我需要多了解一点你的目标，方便给出更有据的分析。", time: "刚刚" }]);
@@ -677,7 +692,8 @@ export function App() {
               concept_image: proposal.concept_image,
               audio_summary: proposal.audio_summary,
             });
-            setMessages((items) => [...items, { role: "assistant", text: final.data.text, time: "刚刚" }]);
+            setMessages((items) => [...items, { role: "assistant", text: final.data.text, time: "刚刚", streamed }]);
+            setStream("");
           }
         }
       }
@@ -731,6 +747,7 @@ export function App() {
         health={health}
         onUpload={triggerUpload}
         onProduce={produce}
+        stream={stream}
       />
       <div className="trace-scroll">
         <TracePanel trace={trace} running={running} filter={traceFilter} setFilter={setTraceFilter} scrollRef={traceRef} />
