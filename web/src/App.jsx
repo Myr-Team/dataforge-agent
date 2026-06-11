@@ -709,6 +709,10 @@ export function App() {
     setActiveTab("chat");
     setMessages([{ role: "user", text: message, time: "刚刚" }]);
     let streamed = false;
+    // 逐字流：把众多 answer_delta 攒进 streamText，按帧（rAF）合并刷新，避免上千次重渲染
+    let streamText = "";
+    let rafId = 0;
+    const flushStream = () => { rafId = 0; setStream(streamText); };
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
@@ -726,12 +730,14 @@ export function App() {
         const parsed = parseSse(buffer);
         buffer = parsed.rest;
         if (parsed.events.length) {
-          setTrace((items) => [...items, ...parsed.events]);
+          // answer_delta/delta 只喂中间对话框的逐字流，不进右侧追踪（否则会被上千条 token 帧刷爆）
+          const traceEvents = parsed.events.filter((e) => e.event !== "answer_delta" && e.event !== "delta");
+          if (traceEvents.length) setTrace((items) => [...items, ...traceEvents]);
           for (const ev of parsed.events) {
             if (ev.event === "answer_delta" || ev.event === "delta") {
               streamed = true;
               const piece = ev.data?.delta ?? ev.data?.text ?? "";
-              if (piece) setStream((s) => s + piece);
+              if (piece) { streamText += piece; if (!rafId) rafId = requestAnimationFrame(flushStream); }
             }
           }
           const clarify = parsed.events.find((event) => event.event === "clarify");
@@ -748,6 +754,7 @@ export function App() {
               concept_image: proposal.concept_image,
               audio_summary: proposal.audio_summary,
             });
+            if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
             setMessages((items) => [...items, { role: "assistant", text: final.data.text, time: "刚刚", streamed }]);
             setStream("");
           }

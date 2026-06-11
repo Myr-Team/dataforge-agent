@@ -200,18 +200,15 @@ button:disabled { cursor: not-allowed; }
 .trace-pills button { height: 28px; padding: 0 11px; border: 0; border-radius: 999px; background: #eef1f6; color: var(--muted); font-size: 11.5px; font-weight: 600; transition: background .18s, color .18s; }
 .trace-pills button.active { background: var(--primary); color: #fff; }
 .trace-list { flex: 1; min-height: 0; overflow-y: auto; border-top: 1px solid var(--line); }
-/* 时间线卡片：逐条滑入，dot 连成左侧轨道 */
-.trace-item { position: relative; display: grid; grid-template-columns: 16px 1fr; gap: 11px; padding-bottom: 10px; animation: traceIn .34s cubic-bezier(.22,.61,.36,1) both; }
-@keyframes traceIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
+/* 时间线卡片：每条 PPT 式渐进插入（淡入 + 自右上滑入 + 微缩放） */
+.trace-item { position: relative; display: grid; grid-template-columns: 16px 1fr; gap: 11px; padding-bottom: 10px; animation: traceIn .46s cubic-bezier(.16,.84,.44,1) both; }
+@keyframes traceIn { from { opacity: 0; transform: translate(14px, -5px) scale(.95); } to { opacity: 1; transform: none; } }
 .trace-rail { position: relative; display: flex; justify-content: center; }
-/* 已完成步骤之间：实线，挂载时自上而下"画"出来（渐进连过来） */
-.trace-rail::before { content: ""; position: absolute; top: 11px; height: calc(100% + 10px); left: 50%; width: 2px; transform: translateX(-50%); transform-origin: top center; background: var(--line-strong); animation: drawDown .35s ease both; }
+/* 连接线：自上方已显示的步骤连下来，止于本步圆点（不往下方待显示区伸） */
+.trace-rail::before { content: ""; position: absolute; left: 50%; top: 0; bottom: -10px; width: 2px; transform: translateX(-50%); transform-origin: top center; background: var(--line-strong); animation: drawDown .42s ease both; }
 @keyframes drawDown { from { transform: translateX(-50%) scaleY(0); } to { transform: translateX(-50%) scaleY(1); } }
-/* 末尾(已完成的最后一步)不画线，避免"杵在那"的悬空线 */
-.trace-item:last-child .trace-rail::before { display: none; }
-/* 正在进行的步骤：圆下方一段向下流动、渐隐的加载线——表示还在跑、下一步将至 */
-.trace-item.active .trace-rail::after { content: ""; position: absolute; top: 24px; height: 28px; left: 50%; width: 2px; transform: translateX(-50%); background: linear-gradient(var(--primary), transparent); animation: flowDown 1.2s ease-in-out infinite; }
-@keyframes flowDown { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
+.trace-item:first-child .trace-rail::before { top: 11px; }              /* 首条从自身圆点起，不向上悬空 */
+.trace-item:last-child .trace-rail::before { bottom: auto; height: 11px; } /* 末条止于圆点，下方不伸出 */
 .dot { position: relative; z-index: 1; width: 12px; height: 12px; margin-top: 5px; border-radius: 50%; box-sizing: border-box; }
 /* 完成的步骤=实心圆；进行中的步骤=画圆/加载环 */
 .dot.done { background: var(--primary); border: 2px solid var(--primary); }
