@@ -204,10 +204,14 @@ button:disabled { cursor: not-allowed; }
 .trace-item { position: relative; display: grid; grid-template-columns: 16px 1fr; gap: 11px; padding-bottom: 10px; animation: traceIn .34s cubic-bezier(.22,.61,.36,1) both; }
 @keyframes traceIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
 .trace-rail { position: relative; display: flex; justify-content: center; }
-/* 连接线：从本步圆心(11px)精确连到下一步圆心(本项高度 + 10px 间距) */
-.trace-rail::before { content: ""; position: absolute; top: 11px; height: calc(100% + 10px); left: 50%; width: 2px; transform: translateX(-50%); background: var(--line-strong); }
+/* 已完成步骤之间：实线，挂载时自上而下"画"出来（渐进连过来） */
+.trace-rail::before { content: ""; position: absolute; top: 11px; height: calc(100% + 10px); left: 50%; width: 2px; transform: translateX(-50%); transform-origin: top center; background: var(--line-strong); animation: drawDown .35s ease both; }
+@keyframes drawDown { from { transform: translateX(-50%) scaleY(0); } to { transform: translateX(-50%) scaleY(1); } }
+/* 末尾(已完成的最后一步)不画线，避免"杵在那"的悬空线 */
 .trace-item:last-child .trace-rail::before { display: none; }
-.trace-item.active .trace-rail::before { background: linear-gradient(var(--primary), var(--line-strong)); }
+/* 正在进行的步骤：圆下方一段向下流动、渐隐的加载线——表示还在跑、下一步将至 */
+.trace-item.active .trace-rail::after { content: ""; position: absolute; top: 24px; height: 28px; left: 50%; width: 2px; transform: translateX(-50%); background: linear-gradient(var(--primary), transparent); animation: flowDown 1.2s ease-in-out infinite; }
+@keyframes flowDown { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
 .dot { position: relative; z-index: 1; width: 12px; height: 12px; margin-top: 5px; border-radius: 50%; box-sizing: border-box; }
 /* 完成的步骤=实心圆；进行中的步骤=画圆/加载环 */
 .dot.done { background: var(--primary); border: 2px solid var(--primary); }
