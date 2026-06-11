@@ -11,8 +11,10 @@ from typing import Any
 
 try:
     from ingest.adapters.excel_to_records import excel_to_records
+    from ingest.adapters.tabular_profile import profile_search_content
 except ImportError:
     excel_to_records = None
+    profile_search_content = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +41,21 @@ def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, A
     workspace = workspace_root / "raw_docs"
     terms = _query_terms(query)
     local_docs: list[dict[str, Any]] = []
+    profile_path = workspace_root / "profile.json"
+    if profile_path.exists() and profile_search_content is not None:
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        local_docs.append(
+            {
+                "id": f"{workspace_id}-profile-000",
+                "workspace_id": workspace_id,
+                "title": f"{profile.get('name', workspace_id)} 数据画像",
+                "content": profile_search_content(profile),
+                "source_file": "profile.json",
+                "chunk_id": "profile-000",
+                "document_type": "profile",
+                "language": "zh-Hans",
+            }
+        )
     for path in workspace.glob("*.md"):
         text = path.read_text(encoding="utf-8")
         local_docs.append(

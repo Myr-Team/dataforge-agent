@@ -5,7 +5,10 @@ import os
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi import File
+from fastapi import Form
 from fastapi import Request
+from fastapi import UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
@@ -16,6 +19,7 @@ try:
     from .orchestrator import orchestrate_chat
     from .rag import search
     from .tracing import configure_monitoring
+    from .workspace_store import create_workspace_from_upload, list_workspaces
     from .schemas import (
         ChatRequest,
         GenerateImageRequest,
@@ -23,6 +27,8 @@ try:
         RenderPdfRequest,
         SearchPackContextRequest,
         SearchPackContextResponse,
+        UploadResponse,
+        WorkspacesResponse,
     )
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
@@ -31,6 +37,7 @@ except ImportError:
     from orchestrator import orchestrate_chat
     from rag import search
     from tracing import configure_monitoring
+    from workspace_store import create_workspace_from_upload, list_workspaces
     from schemas import (
         ChatRequest,
         GenerateImageRequest,
@@ -38,6 +45,8 @@ except ImportError:
         RenderPdfRequest,
         SearchPackContextRequest,
         SearchPackContextResponse,
+        UploadResponse,
+        WorkspacesResponse,
     )
     from tools.generate_image import generate_image
     from tools.narrate_summary import narrate_summary
@@ -77,6 +86,29 @@ async def search_pack_context(req: SearchPackContextRequest) -> SearchPackContex
         count=len(hits),
         source_index=os.environ.get("SEARCH_INDEX_NAME", "dataforge-workspaces"),
     )
+
+
+@app.post("/api/upload", response_model=UploadResponse)
+async def upload_workspace(
+    file: UploadFile = File(...),
+    name: str | None = Form(default=None),
+    workspace_id: str | None = Form(default=None),
+) -> UploadResponse:
+    content = await file.read()
+    result = await run_in_threadpool(
+        create_workspace_from_upload,
+        filename=file.filename or "upload",
+        content=content,
+        content_type=file.content_type,
+        name=name,
+        requested_workspace_id=workspace_id,
+    )
+    return UploadResponse.model_validate(result)
+
+
+@app.get("/api/workspaces", response_model=WorkspacesResponse)
+async def workspaces() -> WorkspacesResponse:
+    return WorkspacesResponse(workspaces=await run_in_threadpool(list_workspaces))
 
 
 @app.post("/api/render-pdf-report")

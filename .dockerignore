@@ -1,0 +1,11 @@
+.git/
+.gitignore
+web/node_modules/
+web/dist/
+node_modules/
+generated-outputs/
+artifacts/
+workspaces/upload-*/
+*.log
+*.pyc
+__pycache__/

@@ -20,6 +20,19 @@ PROMPT_FILES = {
 }
 
 
+CLARIFY_GUIDANCE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "question": {
+            "type": "string",
+            "description": "A concise Chinese onboarding guide and next-step question.",
+        }
+    },
+    "required": ["question"],
+}
+
+
 def _project_client() -> AIProjectClient:
     return AIProjectClient(
         endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
@@ -244,4 +257,37 @@ def run_agent(
         "structured": _extract_json(text),
         "response_id": getattr(response, "id", None),
         "usage": _usage_dict(getattr(response, "usage", None)),
+    }
+
+
+def run_coordinator_guidance(payload: dict[str, Any]) -> dict[str, Any]:
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是 DataForge 的协调器。用户的输入过短、过泛或当前工作区证据不足时，"
+        "你要生成中文上下文引导，而不是固定模板。必须包含三件事："
+        "1) 简短自我介绍；2) 结合 workspace_context 说明当前工作区能做什么；"
+        "3) 给用户一个明确的下一步提问。"
+        "语气自然，避免每次复用同一句话。不要编造 profile_summary 之外的具体事实。"
+        "只返回 JSON。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 700,
+        "text": _schema_format("df_coordinator_guidance", CLARIFY_GUIDANCE_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    text = getattr(response, "output_text", "") or ""
+    data = _extract_json(text)
+    return {
+        "question": str(data.get("question") or "").strip(),
+        "response_id": getattr(response, "id", None),
+        "usage": _usage_dict(getattr(response, "usage", None)),
+        "mode": "coordinator_llm",
     }

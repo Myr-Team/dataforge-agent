@@ -99,6 +99,27 @@ class SearchPackContextResponse(BaseModel):
     source_index: str
 
 
+class UploadResponse(BaseModel):
+    workspace_id: str
+    name: str
+    format: str
+    indexed_count: int
+    profile_summary: str
+
+
+class WorkspaceSummary(BaseModel):
+    workspace_id: str
+    name: str
+    doc_count: int
+    format: str | None = None
+    profile_summary: str | None = None
+    created_at: str | None = None
+
+
+class WorkspacesResponse(BaseModel):
+    workspaces: list[WorkspaceSummary]
+
+
 class RenderPdfRequest(BaseModel):
     proposal: dict[str, Any]
     template: str = "project_proposal"
@@ -118,4 +139,3 @@ class ChatRequest(BaseModel):
     workspace_id: str = "demo-corpus"
     message: str
     conversation_id: str | None = None
-

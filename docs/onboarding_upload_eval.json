@@ -1,0 +1,104 @@
+{
+  "ok": true,
+  "loaded_env": [
+    "C:\\Users\\12140\\.dataforge-codex.env"
+  ],
+  "uploads": {
+    "csv": {
+      "workspace_id": "upload-csv-regional_revenue-20260611092026",
+      "name": "验收 csv 数据 regional_revenue",
+      "format": "csv",
+      "indexed_count": 1,
+      "profile_summary": "数据画像：验收 csv 数据 regional_revenue，格式 csv，包含 1 个表/文档片段、约 3 行、4 个字段。主要 schema：regional_revenue(region, revenue, churn_rate, expansion_signal)。高信号：region 有 3 个不同取值，可用于分群、筛选或解释差异；revenue 是完整度较高的数值字段，范围 42000 到 128000；churn_rate 是完整度较高的数值字段，范围 0.03 到 0.12；expansion_signal 有 3 个不同取值，可用于分群、筛选或解释差异。噪声/风险：未发现严重噪声。"
+    },
+    "json": {
+      "workspace_id": "upload-json-support_tickets-20260611092029",
+      "name": "验收 json 数据 support_tickets",
+      "format": "json",
+      "indexed_count": 1,
+      "profile_summary": "数据画像：验收 json 数据 support_tickets，格式 json，包含 1 个表/文档片段、约 3 行、4 个字段。主要 schema：tickets(category, resolution_hours, sentiment, automation_gap)。高信号：category 有 3 个不同取值，可用于分群、筛选或解释差异；resolution_hours 是完整度较高的数值字段，范围 4 到 18；sentiment 有 3 个不同取值，可用于分群、筛选或解释差异；automation_gap 有 3 个不同取值，可用于分群、筛选或解释差异。噪声/风险：未发现严重噪声。"
+    },
+    "excel": {
+      "workspace_id": "upload-excel-factory_quality-20260611092032",
+      "name": "验收 excel 数据 factory_quality",
+      "format": "excel",
+      "indexed_count": 1,
+      "profile_summary": "数据画像：验收 excel 数据 factory_quality，格式 excel，包含 1 个表/文档片段、约 3 行、5 个字段。主要 schema：QualitySignals(line, defect_rate, rework_cost, supplier, inspection_note)。高信号：line 有 3 个不同取值，可用于分群、筛选或解释差异；defect_rate 是完整度较高的数值字段，范围 0.018 到 0.074；rework_cost 是完整度较高的数值字段，范围 2100 到 18500；supplier 有 2 个不同取值，可用于分群、筛选或解释差异；inspection_note 有 3 个不同取值，可用于分群、筛选或解释差异。噪声/风险：未发现严重噪声。"
+    }
+  },
+  "search_checks": {
+    "csv": {
+      "count": 1,
+      "first": {
+        "id": "upload-csv-regional_revenue-20260611092026-profile-000",
+        "workspace_id": "upload-csv-regional_revenue-20260611092026",
+        "title": "验收 csv 数据 regional_revenue 数据画像",
+        "content": "数据画像：验收 csv 数据 regional_revenue，格式 csv，包含 1 个表/文档片段、约 3 行、4 个字段。主要 schema：regional_revenue(region, revenue, churn_rate, expansion_signal)。高信号：region 有 3 个不同取值，可用于分群、筛选或解释差异；revenue 是完整度较高的数值字段，范围 42000 到 128000；churn_rate 是完整度较高的数值字段，范围 0.03 到 0.12；expansion_signal 有 3 个不同取值，可用于分群、筛选或解释差异。噪声/风险：未发现严重噪声。\n表 regional_revenue：3 行，4 列，缺失率 0.00%。\n字段 region 类型 text，非空 3，唯一值 3，缺失率 0.00%，常见值 华东(1), 华南(1), 西南(1)\n字段 revenue 类型 number，非空 3，唯一值 3，缺失率 0.00%，范围 42000 到 128000，均值 82000，常见值 128000(1), 76000(1), 42000(1)\n字段 churn_rate 类型 number，非空 3，唯一值 3，缺失率 0.00%，范围 0.03 到 0.12，均值 0.0767，常见值 0.03(1), 0.08(1), 0.12(1)\n字段 expansion_signal 类型 text，非空 3，唯一值 3，缺失率 0.00%，常见值 企业客户复购(1), 渠道培训不足(1), 交付响应慢(1)\n高信号判断：region 有 3 个不同取值，可用于分群、筛选或解释差异\n高信号判断：revenue 是完整度较高的数值字段，范围 42000 到 128000\n高信号判断：churn_rate 是完整度较高的数值字段，范围 0.03 到 0.12\n高信号判断：expansion_signal 有 3 个不同取值，可用于分群、筛选或解释差异",
+        "source_file": "profile.json",
+        "chunk_id": "profile-000",
+        "document_type": "profile",
+        "language": "zh-Hans",
+        "sheet": null,
+        "row": null,
+        "score": 11.152033
+      }
+    },
+    "json": {
+      "count": 1,
+      "first": {
+        "id": "upload-json-support_tickets-20260611092029-profile-000",
+        "workspace_id": "upload-json-support_tickets-20260611092029",
+        "title": "验收 json 数据 support_tickets 数据画像",
+        "content": "数据画像：验收 json 数据 support_tickets，格式 json，包含 1 个表/文档片段、约 3 行、4 个字段。主要 schema：tickets(category, resolution_hours, sentiment, automation_gap)。高信号：category 有 3 个不同取值，可用于分群、筛选或解释差异；resolution_hours 是完整度较高的数值字段，范围 4 到 18；sentiment 有 3 个不同取值，可用于分群、筛选或解释差异；automation_gap 有 3 个不同取值，可用于分群、筛选或解释差异。噪声/风险：未发现严重噪声。\n表 tickets：3 行，4 列，缺失率 0.00%。\n字段 category 类型 text，非空 3，唯一值 3，缺失率 0.00%，常见值 退款(1), 部署(1), 培训(1)\n字段 resolution_hours 类型 number，非空 3，唯一值 3，缺失率 0.00%，范围 4 到 18，均值 9.3333，常见值 6(1), 18(1), 4(1)\n字段 sentiment 类型 text，非空 3，唯一值 3，缺失率 0.00%，常见值 negative(1), neutral(1), positive(1)\n字段 automation_gap 类型 text，非空 3，唯一值 3，缺失率 0.00%，常见值 合同解释(1), 环境检查(1), 知识库推荐(1)\n高信号判断：category 有 3 个不同取值，可用于分群、筛选或解释差异\n高信号判断：resolution_hours 是完整度较高的数值字段，范围 4 到 18\n高信号判断：sentiment 有 3 个不同取值，可用于分群、筛选或解释差异\n高信号判断：automation_gap 有 3 个不同取值，可用于分群、筛选或解释差异",
+        "source_file": "profile.json",
+        "chunk_id": "profile-000",
+        "document_type": "profile",
+        "language": "zh-Hans",
+        "sheet": null,
+        "row": null,
+        "score": 12.410857
+      }
+    },
+    "excel": {
+      "count": 1,
+      "first": {
+        "id": "upload-excel-factory_quality-20260611092032-profile-000",
+        "workspace_id": "upload-excel-factory_quality-20260611092032",
+        "title": "验收 excel 数据 factory_quality 数据画像",
+        "content": "数据画像：验收 excel 数据 factory_quality，格式 excel，包含 1 个表/文档片段、约 3 行、5 个字段。主要 schema：QualitySignals(line, defect_rate, rework_cost, supplier, inspection_note)。高信号：line 有 3 个不同取值，可用于分群、筛选或解释差异；defect_rate 是完整度较高的数值字段，范围 0.018 到 0.074；rework_cost 是完整度较高的数值字段，范围 2100 到 18500；supplier 有 2 个不同取值，可用于分群、筛选或解释差异；inspection_note 有 3 个不同取值，可用于分群、筛选或解释差异。噪声/风险：未发现严重噪声。\n表 QualitySignals：3 行，5 列，缺失率 0.00%。\n字段 line 类型 text，非空 3，唯一值 3，缺失率 0.00%，常见值 A(1), B(1), C(1)\n字段 defect_rate 类型 number，非空 3，唯一值 3，缺失率 0.00%，范围 0.018 到 0.074，均值 0.0377，常见值 0.021(1), 0.074(1), 0.018(1)\n字段 rework_cost 类型 number，非空 3，唯一值 3，缺失率 0.00%，范围 2100 到 18500，均值 7933.3333，常见值 3200(1), 18500(1), 2100(1)\n字段 supplier 类型 text，非空 3，唯一值 2，缺失率 0.00%，常见值 S1(2), S2(1)\n字段 inspection_note 类型 text，非空 3，唯一值 3，缺失率 0.00%，常见值 焊点偏移集中在夜班(1), 来料批次波动明显(1), 稳定(1)\n高信号判断：line 有 3 个不同取值，可用于分群、筛选或解释差异\n高信号判断：defect_rate 是完整度较高的数值字段，范围 0.018 到 0.074\n高信号判断：rework_cost 是完整度较高的数值字段，范围 2100 到 18500\n高信号判断：supplier 有 2 个不同取值，可用于分群、筛选或解释差异\n高信号判断：inspection_note 有 3 个不同取值，可用于分群、筛选或解释差异",
+        "source_file": "profile.json",
+        "chunk_id": "profile-000",
+        "document_type": "profile",
+        "language": "zh-Hans",
+        "sheet": null,
+        "row": null,
+        "score": 14.556507
+      }
+    }
+  },
+  "conclusions_differ": true,
+  "csv_chat_errors": [],
+  "json_chat_errors": [],
+  "clarify_questions": [
+    "你好，我是 DataForge 的数据协作助手，可以帮你检查和理解当前工作区里的表格数据。 现在这个工作区叫「验收 csv 数据 regional_revenue」，里边只有 1 个很小的 CSV 表（大约 3 行、4 个字段），字段包括：region、revenue、churn_rate、expansion_signal。基于这些信息，我可以帮你做的事情大致有： - 快速验收：看看数据结构是否合理，比如字段是否齐全、取值范围是否正常（如 revenue 在 42000–128000 之间、churn_rate 在 0.03–0.12 之间）。 - 分群对比：按 region 或 expansion_signal 把几行数据对比一下，看看哪个区域收入更高、流失率更低，是否存在明显异常或机会点。 - 简单指标和结论：用这 3 行数据做一个非常粗的示例分析（例如：哪个 region 当前看起来最健康/风险最大），方便你验证口径或测试流程。 为了往下走，你现在最想先做哪一类事？ 1）帮你做一次“数据健康检查”（看有没有明显问题/异常） 2）对比不同 region 的表现，写一段简短结论 3）帮你根据这张表设计后续要补充哪些字段或数据量 你可以直接回复数字选项，或者告诉我你对这份 regional_revenue 表的目标（例如“想用来做区域增长策略分析”）。",
+    "你好，我是 DataForge 的数据助手，专门帮你在当前工作区里审查和分析数据。 这个工作区里只有一张很小的 csv 表 regional_revenue，大概 3 行、4 个字段：region、revenue、churn_rate、expansion_signal。基于这些字段，我可以帮你做的事包括： - 快速验收：检查是否有缺失值、异常值或字段格式问题。 - 结构理解：解释每个字段能支持什么分析，例如按 region 分组看收入和流失率差异，或按 expansion_signal 做简单分层对比。 - 简单分析：计算各区域的收入占比、平均 churn_rate，找出哪类 expansion_signal 可能对应更好的表现（在样本很小的前提下做趋势判断）。 下一步你可以告诉我：你更关心“数据是否正确”还是“从这些数据里挖一点业务结论”？比如你可以直接说： - “帮我检查这份 regional_revenue 有没有明显问题？” - 或 “根据这个表，哪个区域看起来最值得加大投入？”",
+    "你好，我是 DataForge 工作区的协同助手，可以帮你围绕当前这个 `regional_revenue` CSV 做快速验收和简单分析。 从当前数据画像看，这个表大概有 3 行、4 个字段：region（区域）、revenue（收入）、churn_rate（流失率）、expansion_signal（扩张信号），字段比较干净，适合做： - 基本检查：字段是否有缺失/异常值、是否在预期范围内 - 简单聚合：按区域对收入或流失率做排序、对比 - 规则校验：比如检查 churn_rate 是否都在 0~1 之间，或 revenue 是否在你预期的区间 - 结构确认：字段名、类型、取值分布是否符合你后续建模或报表的要求 为了帮你更聚焦地验收数据，你更关心哪一类问题？比如： 1）先帮你做一轮“数据健康检查”（缺失、异常值、范围对不对）； 2）对比一下各 region 的 revenue / churn_rate 差异； 3）验证一组你心里已有的业务规则（你说规则，我来对照数据检查）。 你可以直接回我一个数字（1/2/3），或者告诉我：你希望用这份 regional_revenue 表解决什么业务问题？"
+  ],
+  "clarify_modes": [
+    "coordinator_llm",
+    "coordinator_llm",
+    "coordinator_llm"
+  ],
+  "clarify_varies": true,
+  "workspace_count": 12,
+  "checks": {
+    "uploaded_all_formats": true,
+    "indexed_profiles": true,
+    "searchable_all_formats": true,
+    "conclusions_differ": true,
+    "no_chat_errors": true,
+    "clarify_llm": true,
+    "clarify_varies": true,
+    "workspaces_listed": true
+  }
+}

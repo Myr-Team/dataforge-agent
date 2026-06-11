@@ -13,7 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 try:
     from .chat_loop_primitives import sse
-    from .foundry_client import run_agent
+    from .foundry_client import run_agent, run_coordinator_guidance
     from .rag import search
     from .router import deterministic_route
     from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
@@ -21,9 +21,10 @@ try:
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
+    from .workspace_store import workspace_context
 except ImportError:
     from chat_loop_primitives import sse
-    from foundry_client import run_agent
+    from foundry_client import run_agent, run_coordinator_guidance
     from rag import search
     from router import deterministic_route
     from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
@@ -31,6 +32,7 @@ except ImportError:
     from tools.generate_image import generate_image
     from tools.narrate_summary import narrate_summary
     from tools.render_pdf import render_pdf_report
+    from workspace_store import workspace_context
 
 
 PRODUCT_TERMS = (
@@ -108,7 +110,47 @@ def _agent_tool_events(agent: str, meta: dict[str, Any]) -> list[tuple[str, dict
 
 
 def _coordinator(req: ChatRequest) -> RoutingDecision:
-    return deterministic_route(req.message, req.workspace_id, {"doc_count": 8})
+    context = workspace_context(req.workspace_id)
+    return deterministic_route(req.message, req.workspace_id, {"doc_count": context.get("doc_count", 0)})
+
+
+def _clarify_guidance(req: ChatRequest, decision: RoutingDecision, conversation_id: str) -> dict[str, Any]:
+    context = workspace_context(req.workspace_id)
+    payload = {
+        "conversation_id": conversation_id,
+        "workspace_context": context,
+        "user_message": req.message,
+        "routing_reason": decision.reason,
+        "style_nonce": uuid.uuid4().hex[:8],
+        "requirements": [
+            "中文输出",
+            "自我介绍",
+            "说明当前工作区能做什么",
+            "给出下一步问题",
+            "避免固定模板和逐字复用",
+        ],
+    }
+    try:
+        result = run_coordinator_guidance(payload)
+        question = _clean_text(result.get("question"), 1200)
+        if question:
+            return result | {"question": question}
+    except Exception as exc:
+        return {
+            "question": _fallback_clarify_question(context),
+            "mode": "coordinator_fallback",
+            "error": _clean_text(exc, 300),
+        }
+    return {"question": _fallback_clarify_question(context), "mode": "coordinator_fallback"}
+
+
+def _fallback_clarify_question(context: dict[str, Any]) -> str:
+    name = context.get("name") or context.get("workspace_id") or "当前工作区"
+    summary = context.get("profile_summary") or f"当前工作区已有 {context.get('doc_count', 0)} 条可检索资料。"
+    return (
+        f"你好，我是 DataForge 协调器，可以先帮你把「{name}」里的资料变成可评估的数据产品方向。"
+        f"{summary} 你下一步想让我做资料问答、产品可行性评估，还是生成项目方案包？"
+    )
 
 
 def _run_corpus_analyst(req: ChatRequest) -> dict[str, Any]:
@@ -169,6 +211,7 @@ def _evidence_catalog(artifact: dict[str, Any]) -> list[dict[str, Any]]:
                 {
                     "source_type": "corpus",
                     "ref": ref,
+                    "id": hit.get("id"),
                     "quote": _clean_text(evidence.get("quote"), 420),
                     "metadata": {
                         "title": hit.get("title"),
@@ -216,6 +259,9 @@ def _refs_match(candidate_ref: str, catalog_item: dict[str, Any]) -> bool:
     if not candidate or not allowed:
         return False
     if candidate == allowed:
+        return True
+    catalog_id = _normalize_ref(catalog_item.get("id"))
+    if catalog_id and candidate == catalog_id:
         return True
 
     candidate_source = _ref_source(candidate)
@@ -493,7 +539,19 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     decision = _coordinator(req)
     yield _frame("plan", decision.model_dump(), conv_id)
     if decision.needs_clarification:
-        yield _frame("clarify", {"question": decision.clarifying_question, "reason": decision.reason}, conv_id)
+        guidance = await run_in_threadpool(_clarify_guidance, req, decision, conv_id)
+        decision.clarifying_question = guidance.get("question")
+        yield _frame(
+            "clarify",
+            {
+                "question": decision.clarifying_question,
+                "reason": decision.reason,
+                "mode": guidance.get("mode"),
+                "response_id": guidance.get("response_id"),
+                "usage": guidance.get("usage") or {},
+            },
+            conv_id,
+        )
         return
 
     if "df-corpus-analyst" in decision.experts:

@@ -2,6 +2,7 @@
 
 | Time | WP | Action | Result |
 |---|---|---|---|
+| 2026-06-11 | WP-Onboarding | Implemented upload onboarding backend after pulling latest `main`; `web/` remained untouched. | Added CSV/JSON/Excel/MD profile adapters, profile-only Search indexing, `POST /api/upload`, `GET /api/workspaces`, and coordinator LLM Chinese clarify guidance. `python eval/onboarding_upload_eval.py` passed all redlines: three formats searchable, conclusions changed across data, and three `你好` replies varied with `mode=coordinator_llm`. Deployed `dataforge-backend:onboarding-20260611-172939`; cloud health, upload/search/workspaces smoke, and cloud `你好` guidance passed. |
 | 2026-06-11 | WP-R3-hotfix | Fixed evidence verification blocker after pulling `main` at `9ed6beb`; `web/` remained untouched. | `_verify_evidence` now normalizes source/chunk refs, accepts reordered `source#sheet#row#chunk` citations, prunes invalid evidence instead of throwing, and 5 demo-corpus product-feasibility runs produced `total_errors=0` in `docs/ref_verification_regression.json`. Deployed `dataforge-backend:ref-verify-20260611-154007`; cloud health passed and one cloud `/api/chat` smoke returned `error_count=0`, `mode=foundry_agent_service`, and 5 dimensions. |
 | 2026-06-10 | WP0 | Initialized independent repository under `dataforge-agent`. | Started. |
 | 2026-06-10 | WP0 | Checked required repository paths. | Passed. |

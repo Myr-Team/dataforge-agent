@@ -34,8 +34,8 @@ def deterministic_route(message: str, workspace_id: str = "demo-corpus", metadat
             experts=[],
             output_mode="chat",
             needs_clarification=True,
-            clarifying_question="Please specify the target user, product scope, or whether you only want document Q&A.",
-            reason="The request is too broad or the workspace lacks indexed documents.",
+            clarifying_question="我会根据当前工作区生成中文引导，请补充目标用户、产品范围或你想先做资料问答。",
+            reason="请求过短、过泛，或当前工作区缺少可检索资料。",
         )
 
     if asks_corpus_only:

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ingest.adapters.excel_to_records import excel_to_records
+from ingest.profiler import profile_to_search_document
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +141,10 @@ def _detect_language(text: str, workspace_language: str | None = None) -> str:
 def build_documents(workspace_dir: Path) -> tuple[str, list[dict[str, Any]]]:
     meta, docs = _read_workspace(workspace_dir)
     workspace_id = meta["workspace_id"]
+    if meta.get("profile_file"):
+        profile_path = workspace_dir / str(meta["profile_file"])
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        return workspace_id, [profile_to_search_document(profile)]
     workspace_language = meta.get("language")
     records: list[dict[str, Any]] = []
     for doc in docs:
