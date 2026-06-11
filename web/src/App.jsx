@@ -424,16 +424,21 @@ function TracePanel({ trace, running, filter, setFilter, scrollRef }) {
       </header>
       <div className="trace-list" ref={scrollRef}>
         {filtered.length ? filtered.map((item, index) => (
-          <TraceItem item={item} index={index} key={`${item.event}-${index}`} />
+          <TraceItem item={item} index={index} active={running && index === filtered.length - 1} key={`${item.event}-${index}`} />
         )) : <p className="empty-note">运行后这里显示逐帧的智能体事件。</p>}
       </div>
     </aside>
   );
 }
 
-function TraceItem({ item, index }) {
-  const agent = item.event === "plan" ? "协调器" : agentLabel(item.data?.agent) || item.data?.intent || item.data?.name || item.event;
-  const status = item.event === "audit" ? (item.data?.verdict === "pass" ? "通过" : "修订") : item.event === "tool_result" ? "完成" : item.event === "model_response" ? "模型" : item.event === "final" ? "结束" : item.event;
+const EVENT_LABELS = {
+  ready: "就绪", user: "提问", plan: "规划", role_change: "切换", tool_call: "调用工具",
+  tool_result: "工具结果", model_response: "模型推理", audit: "审计", clarify: "澄清", final: "完成", error: "错误",
+};
+
+function TraceItem({ item, index, active }) {
+  const agent = item.event === "plan" ? "协调器" : agentLabel(item.data?.agent) || item.data?.intent || item.data?.name || EVENT_LABELS[item.event] || item.event;
+  const status = item.event === "audit" ? (item.data?.verdict === "pass" ? "通过" : "修订") : item.event === "tool_result" ? "完成" : item.event === "model_response" ? "模型" : item.event === "final" ? "结束" : null;
   const detail =
     item.event === "plan"
       ? `${item.data.intent} → ${(item.data.experts || []).map(agentLabel).join("、")}`
@@ -445,19 +450,25 @@ function TraceItem({ item, index }) {
             ? item.data.text
             : item.event === "clarify"
               ? item.data.question
-              : JSON.stringify(item.data || {}).slice(0, 160);
+              : item.event === "role_change"
+                ? `${agentLabel(item.data?.agent)} 接手${item.data?.revision ? `（修订 ${item.data.revision}）` : ""}`
+                : item.event === "tool_call"
+                  ? `${item.data?.name || "tool"}`
+                  : "";
   return (
-    <div className={`trace-item ${item.event}`}>
-      <div className="time">{String(index + 1).padStart(2, "0")}</div>
-      <div className="dot" />
-      <div className="trace-body">
-        <div>
-          <strong>{agent}</strong>
-          <span>{item.event}</span>
-        </div>
-        <p>{detail}</p>
+    <div className={`trace-item ${item.event} ${active ? "active" : ""}`} style={{ "--i": index }}>
+      <div className="trace-rail">
+        <span className="dot" />
       </div>
-      <em>{status}</em>
+      <div className="trace-card">
+        <div className="trace-top">
+          <strong>{agent}</strong>
+          <span className="evt">{EVENT_LABELS[item.event] || item.event}</span>
+          {status ? <em>{status}</em> : null}
+          <span className="seq mono">{String(index + 1).padStart(2, "0")}</span>
+        </div>
+        {detail ? <p>{detail}</p> : null}
+      </div>
     </div>
   );
 }
@@ -492,9 +503,10 @@ export function App() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
-  // 追踪面板自动滚到底
+  // 追踪面板自动滚到底（新条目插入后平滑跟随）
   useEffect(() => {
-    if (traceRef.current) traceRef.current.scrollTop = traceRef.current.scrollHeight;
+    const el = traceRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: REDUCED_MOTION ? "auto" : "smooth" });
   }, [trace]);
 
   async function loadDoc(file) {
