@@ -200,22 +200,34 @@ button:disabled { cursor: not-allowed; }
 .trace-pills button { height: 28px; padding: 0 11px; border: 0; border-radius: 999px; background: #eef1f6; color: var(--muted); font-size: 11.5px; font-weight: 600; transition: background .18s, color .18s; }
 .trace-pills button.active { background: var(--primary); color: #fff; }
 .trace-list { flex: 1; min-height: 0; overflow-y: auto; border-top: 1px solid var(--line); }
-.trace-item { position: relative; display: grid; grid-template-columns: 30px 14px minmax(0, 1fr) auto; gap: 9px; padding: 11px 0; border-bottom: 1px solid var(--line); }
-.trace-item::before { content: ""; position: absolute; top: 0; bottom: 0; left: 37px; width: 1px; background: #d6e0f0; }
-.trace-item .time { font-family: "Fira Code", monospace; color: var(--faint); font-size: 11px; font-weight: 500; }
-.dot { z-index: 1; width: 11px; height: 11px; margin-top: 2px; border: 2px solid var(--primary); border-radius: 50%; background: #fbfcfe; }
+/* 时间线卡片：逐条滑入，dot 连成左侧轨道 */
+.trace-item { position: relative; display: grid; grid-template-columns: 16px 1fr; gap: 11px; padding-bottom: 10px; animation: traceIn .34s cubic-bezier(.22,.61,.36,1) both; }
+@keyframes traceIn { from { opacity: 0; transform: translateY(-9px); } to { opacity: 1; transform: none; } }
+.trace-rail { position: relative; display: flex; justify-content: center; }
+.trace-rail::before { content: ""; position: absolute; top: 5px; bottom: -10px; left: 50%; width: 2px; transform: translateX(-50%); background: linear-gradient(var(--line-strong), var(--line)); }
+.trace-item:last-child .trace-rail::before { display: none; }
+.dot { position: relative; z-index: 1; width: 12px; height: 12px; margin-top: 5px; border: 2px solid var(--primary); border-radius: 50%; background: #fbfcfe; transition: transform .2s; }
 .trace-item.audit .dot { border-color: var(--accent); }
 .trace-item.model_response .dot, .trace-item.tool_result .dot { background: var(--primary); }
 .trace-item.final .dot { background: var(--ok); border-color: var(--ok); }
 .trace-item.error .dot { background: var(--error); border-color: var(--error); }
-.trace-body { min-width: 0; }
-.trace-body > div { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
-.trace-body strong { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.trace-body > div span { flex-shrink: 0; padding: 2px 7px; border-radius: 6px; background: #eef1f6; color: var(--faint); font-size: 10.5px; font-weight: 600; font-family: "Fira Code", monospace; }
-.trace-body p { margin: 0; color: #334155; font-size: 11.5px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
-.trace-item em { align-self: start; padding: 3px 8px; border-radius: 6px; background: var(--primary-soft); color: var(--primary); font-size: 10.5px; font-style: normal; font-weight: 600; }
-.trace-item.audit em { background: var(--accent-soft); color: var(--warn); }
-.trace-item.error em { background: var(--error-soft); color: var(--error); }
+.trace-item.active .dot { animation: dotPing 1.3s ease-out infinite; }
+@keyframes dotPing { 0% { box-shadow: 0 0 0 0 rgba(30,64,175,.4); } 70%,100% { box-shadow: 0 0 0 8px rgba(30,64,175,0); } }
+
+.trace-card { min-width: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 9px 11px; transition: border-color .2s, box-shadow .2s, background .2s; }
+.trace-item.active .trace-card { border-color: var(--primary-2); box-shadow: 0 0 0 3px rgba(59,130,246,.1); }
+.trace-item.audit .trace-card { background: #fffdf7; }
+.trace-item.final .trace-card { background: #f6fcf8; }
+.trace-item.error .trace-card { background: #fef7f7; }
+.trace-top { display: flex; align-items: center; gap: 7px; }
+.trace-top strong { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.trace-top .evt { flex-shrink: 0; padding: 2px 7px; border-radius: 6px; background: var(--primary-soft); color: var(--primary); font-size: 10.5px; font-weight: 600; }
+.trace-item.audit .trace-top .evt { background: var(--accent-soft); color: var(--warn); }
+.trace-item.final .trace-top .evt { background: var(--ok-soft); color: var(--ok); }
+.trace-item.error .trace-top .evt { background: var(--error-soft); color: var(--error); }
+.trace-top em { flex-shrink: 0; font-style: normal; font-size: 10.5px; font-weight: 600; color: var(--ok); }
+.trace-top .seq { margin-left: auto; flex-shrink: 0; font-size: 10px; color: var(--faint); }
+.trace-card p { margin: 5px 0 0; color: #334155; font-size: 11.5px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 
 /* ============ 响应式：1280 以下收为两栏，860 以下整页堆叠可滚动 ============ */
 @media (max-width: 1280px) {
@@ -235,6 +247,39 @@ button:disabled { cursor: not-allowed; }
   .primary { width: 100%; }
 }
 
+/* ============ 微动效：让界面精致、有进出场与反馈 ============ */
+.message { animation: fadeUp .32s ease both; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+.activity-item { animation: slideIn .26s ease both; }
+@keyframes slideIn { from { opacity: 0; transform: translateX(-5px); } to { opacity: 1; transform: none; } }
+.activity { animation: fadeUp .3s ease both; }
+
+.panel-scroll, .trace-list, .panel-body { scroll-behavior: smooth; }
+
+.primary { transition: filter .18s, transform .18s, box-shadow .18s, opacity .18s; }
+.primary:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 8px 20px rgba(30,64,175,.28); }
+.primary:active:not(:disabled) { transform: translateY(0); }
+.composer button { transition: transform .15s, filter .18s; }
+.composer button:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
+.composer button:active:not(:disabled) svg { transform: translateX(2px) translateY(-2px); transition: transform .15s; }
+
+.doc-row { transition: border-color .18s, background .18s, transform .18s; }
+.doc-row:hover { transform: translateX(3px); }
+.doc-hit, .evidence-card { transition: border-color .18s, box-shadow .18s; }
+.doc-hit:hover, .evidence-card:hover { border-color: var(--line-strong); box-shadow: 0 4px 14px rgba(15,23,42,.05); }
+
+.artifact { transition: transform .2s, box-shadow .2s, border-color .2s; }
+.artifact:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: var(--line-strong); }
+
+.tabs button.active::after { animation: growLine .26s cubic-bezier(.22,.61,.36,1); transform-origin: left; }
+@keyframes growLine { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.trace-pills button, .tabs button { transition: background .18s, color .18s; }
+
+.empty-state svg { animation: float 3s ease-in-out infinite; }
+@keyframes float { 50% { transform: translateY(-6px); } }
+
+.health-card em { transition: background .25s, color .25s; }
+
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
