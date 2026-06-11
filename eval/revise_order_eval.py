@@ -72,7 +72,9 @@ async def _collect_local(message: str, workspace_id: str = "demo-corpus") -> tup
     return events, first_frame_at if first_frame_at is not None else -1
 
 
-def _collect_http(api_base: str, message: str, workspace_id: str = "demo-corpus") -> tuple[list[dict[str, Any]], float, float]:
+def _collect_http(api_base: str, message: str, workspace_id: str = "demo-corpus") -> tuple[list[dict[str, Any]], float, float, float]:
+    health_session = requests.Session()
+    baseline_health_latency = _health_latency(api_base, health_session)
     response = requests.post(
         f"{api_base.rstrip('/')}/api/chat",
         json={"workspace_id": workspace_id, "message": message},
@@ -90,7 +92,7 @@ def _collect_http(api_base: str, message: str, workspace_id: str = "demo-corpus"
             continue
         if first_frame_at is None:
             first_frame_at = time.perf_counter() - start
-            health_latency = _health_latency(api_base)
+            health_latency = _health_latency(api_base, health_session)
         if raw.startswith("event: "):
             current = {"event": raw.removeprefix("event: "), "data": ""}
             events.append(current)
@@ -101,16 +103,22 @@ def _collect_http(api_base: str, message: str, workspace_id: str = "demo-corpus"
             item["data"] = json.loads(item["data"])
         except json.JSONDecodeError:
             item["data"] = {"text": item["data"]}
-    return events, first_frame_at if first_frame_at is not None else -1, health_latency if health_latency is not None else -1
+    return (
+        events,
+        first_frame_at if first_frame_at is not None else -1,
+        health_latency if health_latency is not None else -1,
+        baseline_health_latency,
+    )
 
 
 def _event_data(events: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
     return [item["data"] for item in events if item["event"] == event]
 
 
-def _health_latency(api_base: str) -> float:
+def _health_latency(api_base: str, session: requests.Session | None = None) -> float:
+    client = session or requests
     start = time.perf_counter()
-    response = requests.get(f"{api_base.rstrip('/')}/api/health", timeout=30)
+    response = client.get(f"{api_base.rstrip('/')}/api/health", timeout=30)
     response.raise_for_status()
     return time.perf_counter() - start
 
@@ -125,12 +133,13 @@ async def main() -> int:
     zh_message = "\u8bf7\u57fa\u4e8e\u8868\u683c\u8bed\u6599\u8bc4\u4f30\u4ea7\u7ebf\u7f3a\u9677\u68c0\u6d4b\u548c\u8fd4\u5de5\u6210\u672c\u6570\u636e\u4ea7\u54c1"
 
     if args.api_base:
-        no_hit_events, first_frame, health_latency = _collect_http(args.api_base, no_hit_message, "demo-corpus")
-        zh_events, _, _ = _collect_http(args.api_base, zh_message, "excel-corpus")
+        no_hit_events, first_frame, health_latency, baseline_health_latency = _collect_http(args.api_base, no_hit_message, "demo-corpus")
+        zh_events, _, _, _ = _collect_http(args.api_base, zh_message, "excel-corpus")
     else:
         no_hit_events, first_frame = await _collect_local(no_hit_message, "demo-corpus")
         zh_events, _ = await _collect_local(zh_message, "excel-corpus")
         health_latency = None
+        baseline_health_latency = None
 
     no_hit_final = _event_data(no_hit_events, "final")[-1]
     zh_final = _event_data(zh_events, "final")[-1]
@@ -154,6 +163,7 @@ async def main() -> int:
         "api_base": args.api_base or "in-process",
         "checks": checks,
         "first_frame_seconds": first_frame,
+        "baseline_health_latency_seconds": baseline_health_latency,
         "health_latency_seconds": health_latency,
         "no_hit_events": [item["event"] for item in no_hit_events],
         "no_hit_final": no_hit_final,

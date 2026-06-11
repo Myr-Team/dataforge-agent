@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
 from pathlib import Path
+from starlette.concurrency import run_in_threadpool
 
 try:
     from .orchestrator import orchestrate_chat
@@ -57,7 +58,7 @@ ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "generated-outputs"
 
 
 @app.get("/api/health")
-def health() -> dict[str, Any]:
+async def health() -> dict[str, Any]:
     return {
         "ok": True,
         "service": "dataforge-backend",
@@ -67,8 +68,8 @@ def health() -> dict[str, Any]:
 
 
 @app.post("/api/search-pack-context", response_model=SearchPackContextResponse)
-def search_pack_context(req: SearchPackContextRequest) -> SearchPackContextResponse:
-    hits = search(req.workspace_id, req.query, req.top_k)
+async def search_pack_context(req: SearchPackContextRequest) -> SearchPackContextResponse:
+    hits = await run_in_threadpool(search, req.workspace_id, req.query, req.top_k)
     return SearchPackContextResponse(
         workspace_id=req.workspace_id,
         query=req.query,
@@ -79,13 +80,13 @@ def search_pack_context(req: SearchPackContextRequest) -> SearchPackContextRespo
 
 
 @app.post("/api/render-pdf-report")
-def render_pdf(req: RenderPdfRequest) -> dict[str, Any]:
-    return render_pdf_report(req.proposal, req.template)
+async def render_pdf(req: RenderPdfRequest) -> dict[str, Any]:
+    return await run_in_threadpool(render_pdf_report, req.proposal, req.template)
 
 
 @app.post("/api/generate-image")
-def image(req: GenerateImageRequest) -> dict[str, Any]:
-    return generate_image(req.prompt, req.size)
+async def image(req: GenerateImageRequest) -> dict[str, Any]:
+    return await run_in_threadpool(generate_image, req.prompt, req.size)
 
 
 @app.get("/api/artifacts/{name}")
@@ -95,8 +96,8 @@ def artifact(name: str) -> FileResponse:
 
 
 @app.post("/api/narrate-summary")
-def narrate(req: NarrateSummaryRequest, request: Request) -> dict[str, Any]:
-    result = narrate_summary(req.text, req.voice)
+async def narrate(req: NarrateSummaryRequest, request: Request) -> dict[str, Any]:
+    result = await run_in_threadpool(narrate_summary, req.text, req.voice)
     local_path = result.get("local_path")
     if local_path:
         artifact_url = str(request.url_for("artifact", name=Path(str(local_path)).name))

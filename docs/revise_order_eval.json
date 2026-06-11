@@ -3,7 +3,7 @@
   "loaded_env": [
     "C:\\Users\\12140\\.dataforge-codex.env"
   ],
-  "api_base": "in-process",
+  "api_base": "https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io",
   "checks": {
     "no_chinese_hints": true,
     "no_hit_no_error": true,
@@ -15,8 +15,9 @@
     "first_frame_under_1s": true,
     "health_fast": true
   },
-  "first_frame_seconds": 0.0008405000007769559,
-  "health_latency_seconds": null,
+  "first_frame_seconds": 5.030000102124177e-05,
+  "baseline_health_latency_seconds": 1.758578299999499,
+  "health_latency_seconds": 0.42489260000002105,
   "no_hit_events": [
     "ready",
     "user",
@@ -49,7 +50,7 @@
     },
     "artifact": {
       "workspace_id": "demo-corpus",
-      "conversation_id": "fb4908f5-27ce-405a-a1e7-ec0f2faf9c6d",
+      "conversation_id": "2728258d-fbcc-4074-93bf-71794b30ccaf",
       "corpus": {
         "profile": {
           "workspace_id": "demo-corpus",
