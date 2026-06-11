@@ -1,0 +1,4 @@
+node_modules
+dist
+shot.mjs
+.env.development
