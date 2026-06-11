@@ -48,6 +48,8 @@ function Icon({ name }) {
     brain: <><path d="M12 5a3 3 0 0 0-3 3 3 3 0 0 0-1 5.8V17a2 2 0 0 0 4 0" /><path d="M12 5a3 3 0 0 1 3 3 3 3 0 0 1 1 5.8V17a2 2 0 0 1-4 0" /></>,
     shield: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" /><path d="m9 12 2 2 4-4" /></>,
     alert: <><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></>,
+    upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M7 9l5-5 5 5" /><path d="M12 4v12" /></>,
+    database: <><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5v14a9 3 0 0 0 18 0V5" /><path d="M3 12a9 3 0 0 0 18 0" /></>,
   };
   return <svg {...common} aria-hidden="true">{paths[name]}</svg>;
 }
@@ -113,7 +115,31 @@ function describeEvent(item) {
   }
 }
 
-function WorkspacePanel({ health, selectedDoc, onDocClick, docHits }) {
+function UploadStatus({ upload }) {
+  if (!upload) return null;
+  const stages = ["上传文件", "识别格式", "剖析内容", "接入 AI Search", "就绪"];
+  const idx = upload.status === "error" ? -1 : upload.status === "done" ? stages.length : (upload.stage ?? 1);
+  return (
+    <div className={`upload-status ${upload.status}`}>
+      <div className="us-head">
+        <Icon name={upload.status === "error" ? "alert" : upload.status === "done" ? "check" : "upload"} />
+        <span>{upload.message}</span>
+      </div>
+      {upload.status !== "error" ? (
+        <ol className="us-stages">
+          {stages.map((s, i) => (
+            <li key={s} className={i < idx ? "done" : i === idx ? "active" : ""}>{s}</li>
+          ))}
+        </ol>
+      ) : null}
+      {upload.summary ? (
+        <p className="us-summary">{upload.summary.format ? `格式 ${upload.summary.format} · ` : ""}{upload.summary.indexed_count ?? upload.summary.rows ?? "?"} 条已入库</p>
+      ) : null}
+    </div>
+  );
+}
+
+function WorkspacePanel({ health, selectedDoc, onDocClick, docHits, workspace, workspaces, onWorkspaceChange, onUpload, upload }) {
   return (
     <aside className="workspace-panel">
       <div className="brand">
@@ -123,11 +149,19 @@ function WorkspacePanel({ health, selectedDoc, onDocClick, docHits }) {
           <span>产品化 Agent</span>
         </div>
       </div>
-      <label className="search">
-        <Icon name="search" />
-        <input value="demo-corpus" readOnly aria-label="当前工作区" />
-      </label>
+      <div className="ws-switch">
+        <label className="ws-select">
+          <Icon name="database" />
+          <select value={workspace} onChange={(e) => onWorkspaceChange(e.target.value)} aria-label="选择工作区">
+            {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+        </label>
+        <button className="ws-upload" type="button" onClick={onUpload} title="上传 CSV / Excel / JSON，自动接入">
+          <Icon name="upload" /> 上传数据
+        </button>
+      </div>
       <div className="panel-body">
+        <UploadStatus upload={upload} />
         <section>
           <div className="section-title">运行状态</div>
           <div className={`health-card ${health.status}`}>
@@ -141,17 +175,21 @@ function WorkspacePanel({ health, selectedDoc, onDocClick, docHits }) {
         </section>
         <section>
           <div className="section-title">输入语料</div>
-          <div className="doc-list">
-            {documents.map(([file, label]) => (
-              <button className={`doc-row ${selectedDoc === file ? "active" : ""}`} key={file} onClick={() => onDocClick(file)} type="button">
-                <Icon name="file" />
-                <div>
-                  <strong>{file.replace("raw_docs/", "")}</strong>
-                  <span>{label}</span>
-                </div>
-              </button>
-            ))}
-          </div>
+          {workspace === "demo-corpus" ? (
+            <div className="doc-list">
+              {documents.map(([file, label]) => (
+                <button className={`doc-row ${selectedDoc === file ? "active" : ""}`} key={file} onClick={() => onDocClick(file)} type="button">
+                  <Icon name="file" />
+                  <div>
+                    <strong>{file.replace("raw_docs/", "")}</strong>
+                    <span>{label}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-note">「{workspaces.find((w) => w.id === workspace)?.name || workspace}」已接入，直接在右侧提问即可。</p>
+          )}
         </section>
         <section>
           <div className="section-title">文档命中</div>
@@ -186,7 +224,7 @@ function ProgressBar({ trace, running }) {
   );
 }
 
-function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health }) {
+function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health, onUpload }) {
   const artifactCount = Object.values(artifacts).filter(Boolean).length;
   const disabled = running || health.status !== "ok";
   return (
@@ -214,7 +252,7 @@ function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, s
         ))}
       </div>
       <div className="panel-scroll">
-        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} /> : null}
+        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} run={run} onUpload={onUpload} /> : null}
         {activeTab === "artifacts" ? <ArtifactShelf artifacts={artifacts} running={running} /> : null}
         {activeTab === "docs" ? <EvidenceList hits={docHits} /> : null}
       </div>
@@ -287,7 +325,29 @@ function ActivityTimeline({ trace, running }) {
   );
 }
 
-function ChatStream({ messages, trace, running }) {
+function Welcome({ run, onUpload }) {
+  const examples = [
+    "这个工作区能做哪些数据产品？请评估可行性",
+    "帮我从这些数据里找一个可落地的产品机会",
+    "生成一份完整产物：项目书 PDF + 概念图 + 语音摘要",
+  ];
+  return (
+    <div className="welcome">
+      <div className="welcome-mark"><Icon name="spark" /></div>
+      <strong>我是 DataForge，你的数据产品化助手</strong>
+      <p>把你的数据（CSV / Excel / JSON）交给我——我会自动识别格式、剖析内容、接入检索，再用多智能体帮你分析「这些数据能做什么产品、是否可行」，并诚实指出缺口。</p>
+      <button className="primary welcome-upload" type="button" onClick={onUpload}><Icon name="upload" /> 上传我的数据</button>
+      <div className="welcome-examples">
+        <span>或先试试这些问题：</span>
+        {examples.map((q, i) => (
+          <button key={i} className="chip" type="button" onClick={() => run(q)}>{q}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChatStream({ messages, trace, running, run, onUpload }) {
   const endRef = useRef(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: REDUCED_MOTION ? "auto" : "smooth", block: "end" });
@@ -297,13 +357,7 @@ function ChatStream({ messages, trace, running }) {
   const asstMsgs = messages.filter((m) => m.role === "assistant");
 
   if (!messages.length && !running) {
-    return (
-      <div className="empty-state">
-        <Icon name="pulse" />
-        <strong>尚未开始运行</strong>
-        <p>连接后端后即可发起真实的产品可行性评估。运行时这里会实时显示每个智能体的动作，不再空等。</p>
-      </div>
-    );
+    return <Welcome run={run} onUpload={onUpload} />;
   }
   return (
     <div className="chat-stream">
@@ -484,7 +538,52 @@ export function App() {
   const [health, setHealth] = useState({ status: "checking", message: "" });
   const [selectedDoc, setSelectedDoc] = useState("");
   const [docHits, setDocHits] = useState([]);
+  const [workspace, setWorkspace] = useState("demo-corpus");
+  const [workspaces, setWorkspaces] = useState([{ id: "demo-corpus", name: "演示语料 demo-corpus" }]);
+  const [upload, setUpload] = useState(null);
   const traceRef = useRef(null);
+  const fileRef = useRef(null);
+
+  // 拉取可用工作区（后端未提供该接口时用已知工作区兜底）
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/api/workspaces`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        const list = (d.workspaces || d || []).map((w) => ({ id: w.workspace_id || w.id, name: w.name || w.workspace_id || w.id, docs: w.doc_count }));
+        if (!cancelled && list.length) setWorkspaces(list);
+      })
+      .catch(() => {
+        if (!cancelled) setWorkspaces([
+          { id: "demo-corpus", name: "演示语料 demo-corpus" },
+          { id: "user-excel-corpus", name: "我的 Excel 语料" },
+          { id: "excel-corpus", name: "示例 Excel 语料" },
+        ]);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  async function handleUpload(file) {
+    if (!file) return;
+    setUpload({ status: "uploading", stage: 1, message: `正在上传 ${file.name}…` });
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: form });
+      if (!res.ok) throw new Error(res.status === 404 ? "数据接入服务尚未就绪，请稍后再试" : `上传失败：HTTP ${res.status}`);
+      const data = await res.json();
+      const wid = data.workspace_id || data.id;
+      setUpload({ status: "done", message: `已接入「${data.name || wid}」`, summary: data });
+      if (wid) {
+        setWorkspaces((ws) => (ws.some((w) => w.id === wid) ? ws : [...ws, { id: wid, name: data.name || wid, docs: data.indexed_count }]));
+        setWorkspace(wid);
+        setMessages([]); setTrace([]); setArtifacts({}); setDocHits([]);
+      }
+    } catch (e) {
+      setUpload({ status: "error", message: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  const triggerUpload = () => fileRef.current?.click();
 
   useEffect(() => {
     let cancelled = false;
@@ -516,7 +615,7 @@ export function App() {
       const response = await fetch(`${API_BASE}/api/search-pack-context`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace_id: "demo-corpus", query: file.replace("raw_docs/", ""), top_k: 5 }),
+        body: JSON.stringify({ workspace_id: workspace, query: file.replace("raw_docs/", ""), top_k: 5 }),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
@@ -537,7 +636,7 @@ export function App() {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace_id: "demo-corpus", message }),
+        body: JSON.stringify({ workspace_id: workspace, message }),
       });
       if (!response.ok || !response.body) throw new Error(`请求失败：${response.status}`);
       const reader = response.body.getReader();
@@ -551,6 +650,10 @@ export function App() {
         buffer = parsed.rest;
         if (parsed.events.length) {
           setTrace((items) => [...items, ...parsed.events]);
+          const clarify = parsed.events.find((event) => event.event === "clarify");
+          if (clarify) {
+            setMessages((items) => [...items, { role: "assistant", text: clarify.data.question || clarify.data.text || clarify.data.reason || "我需要多了解一点你的目标，方便给出更有据的分析。", time: "刚刚" }]);
+          }
           const final = parsed.events.find((event) => event.event === "final");
           if (final) {
             const proposal = final.data?.artifact?.proposal || {};
@@ -576,7 +679,24 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <WorkspacePanel health={health} selectedDoc={selectedDoc} onDocClick={loadDoc} docHits={docHits} />
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".csv,.xlsx,.xls,.json,.md,.txt"
+        hidden
+        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) handleUpload(f); }}
+      />
+      <WorkspacePanel
+        health={health}
+        selectedDoc={selectedDoc}
+        onDocClick={loadDoc}
+        docHits={docHits}
+        workspace={workspace}
+        workspaces={workspaces}
+        onWorkspaceChange={(w) => { setWorkspace(w); setMessages([]); setTrace([]); setArtifacts({}); setDocHits([]); setSelectedDoc(""); }}
+        onUpload={triggerUpload}
+        upload={upload}
+      />
       <ChatPanel
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -589,6 +709,7 @@ export function App() {
         artifacts={artifacts}
         docHits={docHits}
         health={health}
+        onUpload={triggerUpload}
       />
       <div className="trace-scroll">
         <TracePanel trace={trace} running={running} filter={traceFilter} setFilter={setTraceFilter} scrollRef={traceRef} />

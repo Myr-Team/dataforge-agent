@@ -229,6 +229,40 @@ button:disabled { cursor: not-allowed; }
 .trace-top .seq { margin-left: auto; flex-shrink: 0; font-size: 10px; color: var(--faint); }
 .trace-card p { margin: 5px 0 0; color: #334155; font-size: 11.5px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 
+/* ---- 工作区选择器 + 上传入口 ---- */
+.ws-switch { display: grid; grid-template-columns: 1fr auto; gap: 8px; flex-shrink: 0; }
+.ws-select { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--faint); min-width: 0; }
+.ws-select svg { flex-shrink: 0; }
+.ws-select select { width: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 13px; cursor: pointer; }
+.ws-upload { display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 12px; border: 0; border-radius: 8px; background: var(--accent-soft); color: var(--warn); font-size: 13px; font-weight: 600; white-space: nowrap; transition: filter .18s, transform .18s; }
+.ws-upload:hover { filter: brightness(.97); transform: translateY(-1px); }
+.ws-upload svg { width: 16px; height: 16px; }
+
+.upload-status { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 10px 12px; animation: fadeUp .3s ease both; }
+.upload-status.error { border-color: #f3c6c6; background: var(--error-soft); }
+.upload-status.done { border-color: #bfe6cd; background: var(--ok-soft); }
+.us-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; }
+.us-head svg { width: 16px; height: 16px; flex-shrink: 0; }
+.upload-status.error .us-head { color: var(--error); }
+.upload-status.done .us-head { color: var(--ok); }
+.us-stages { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.us-stages li { font-size: 11px; color: var(--faint); padding: 2px 8px; border-radius: 999px; background: #eef1f6; }
+.us-stages li.done { background: var(--ok-soft); color: var(--ok); }
+.us-stages li.active { background: var(--primary); color: #fff; animation: pulse 1.2s infinite; }
+.us-summary { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); }
+
+/* ---- 欢迎页 ---- */
+.welcome { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; max-width: 560px; margin: 24px auto; padding: 12px; animation: fadeUp .4s ease both; }
+.welcome-mark { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 14px; background: linear-gradient(135deg, var(--primary), var(--primary-2)); color: #fff; }
+.welcome-mark svg { width: 26px; height: 26px; }
+.welcome strong { font-size: 19px; }
+.welcome p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.7; }
+.welcome-upload { min-width: 180px; margin-top: 4px; }
+.welcome-examples { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; }
+.welcome-examples > span { width: 100%; color: var(--faint); font-size: 12.5px; margin-bottom: 2px; }
+.chip { padding: 8px 13px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface); color: var(--ink); font-size: 13px; transition: border-color .18s, color .18s, transform .18s, background .18s; }
+.chip:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); transform: translateY(-1px); }
+
 /* ============ 响应式：1280 以下收为两栏，860 以下整页堆叠可滚动 ============ */
 @media (max-width: 1280px) {
   .app-shell { grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: 1fr 44vh; }
