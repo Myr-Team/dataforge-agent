@@ -224,7 +224,7 @@ function ProgressBar({ trace, running }) {
   );
 }
 
-function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health, onUpload }) {
+function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health, onUpload, onProduce }) {
   const artifactCount = Object.values(artifacts).filter(Boolean).length;
   const disabled = running || health.status !== "ok";
   return (
@@ -234,10 +234,7 @@ function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, s
           <h1>DataForge 工作台</h1>
           <span>{health.status === "ok" ? "已连接后端，可执行真实多智能体编排" : "等待后端响应…"}</span>
         </div>
-        <button className="primary" onClick={() => run("请基于当前工作区生成一个数据产品方案，包含 PDF、概念图和语音。")} disabled={disabled} type="button">
-          <Icon name="spark" />
-          {running ? "运行中…" : "生成完整产物"}
-        </button>
+        {running ? <span className="run-badge"><span className="run-dot" />运行中…</span> : null}
       </header>
       <ProgressBar trace={trace} running={running} />
       <div className="tabs" role="tablist">
@@ -252,7 +249,7 @@ function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, s
         ))}
       </div>
       <div className="panel-scroll">
-        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} run={run} onUpload={onUpload} /> : null}
+        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} run={run} onUpload={onUpload} onProduce={onProduce} artifacts={artifacts} /> : null}
         {activeTab === "artifacts" ? <ArtifactShelf artifacts={artifacts} running={running} /> : null}
         {activeTab === "docs" ? <EvidenceList hits={docHits} /> : null}
       </div>
@@ -260,7 +257,9 @@ function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, s
         className="composer"
         onSubmit={(event) => {
           event.preventDefault();
-          run(input);
+          const text = input;
+          setInput("");
+          run(text);
         }}
       >
         <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="输入产品化问题，例如：为运营团队评估一个数据产品机会" aria-label="提问输入框" />
@@ -347,7 +346,7 @@ function Welcome({ run, onUpload }) {
   );
 }
 
-function ChatStream({ messages, trace, running, run, onUpload }) {
+function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifacts }) {
   const endRef = useRef(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: REDUCED_MOTION ? "auto" : "smooth", block: "end" });
@@ -355,6 +354,9 @@ function ChatStream({ messages, trace, running, run, onUpload }) {
 
   const userMsgs = messages.filter((m) => m.role === "user");
   const asstMsgs = messages.filter((m) => m.role === "assistant");
+  const hasArtifacts = Object.values(artifacts || {}).some(Boolean);
+  // 仅当：有助手回复、不在运行、且尚未生成产物时，才在回复下方渐出"生成产物"按钮
+  const showProduce = asstMsgs.length > 0 && !running && !hasArtifacts;
 
   if (!messages.length && !running) {
     return <Welcome run={run} onUpload={onUpload} />;
@@ -370,6 +372,14 @@ function ChatStream({ messages, trace, running, run, onUpload }) {
         return (
           <Bubble key={`a-${i}`} role="assistant" name="DataForge" time={m.time}>
             {last && !REDUCED_MOTION ? <Typewriter text={m.text} /> : <p className="bubble-text">{m.text}</p>}
+            {last && showProduce ? (
+              <div className="produce-cta">
+                <button className="primary" type="button" onClick={onProduce}>
+                  <Icon name="spark" /> 据此生成完整产物
+                </button>
+                <span>满意这版分析？生成项目书 PDF、概念图与语音摘要</span>
+              </div>
+            ) : null}
           </Bubble>
         );
       })}
@@ -463,7 +473,10 @@ function TracePanel({ trace, running, filter, setFilter, scrollRef }) {
       <header>
         <div>
           <h2>智能体追踪</h2>
-          <span className={running ? "live" : ""}>{running ? "实时运行" : "就绪"}</span>
+          {(() => {
+            const done = trace.some((t) => t.event === "final");
+            return <span className={running ? "live" : done ? "ok" : ""}>{running ? "运行中" : done ? `已完成 · ${trace.length} 步` : "待运行"}</span>;
+          })()}
         </div>
         <div className="trace-pills">
           {[
@@ -512,7 +525,7 @@ function TraceItem({ item, index, active }) {
   return (
     <div className={`trace-item ${item.event} ${active ? "active" : ""}`} style={{ "--i": index }}>
       <div className="trace-rail">
-        <span className="dot" />
+        <span className={`dot ${active ? "loading" : "done"}`} />
       </div>
       <div className="trace-card">
         <div className="trace-top">
@@ -677,6 +690,13 @@ export function App() {
     }
   }
 
+  // 在最终分析满意后，据此生成完整产物（沿用上一条提问 + full_package 触发词）
+  function produce() {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const base = lastUser?.text || "基于当前工作区的分析";
+    run(`${base}（请据此生成完整产物：项目书 PDF、概念图、语音摘要）`);
+  }
+
   return (
     <div className="app-shell">
       <input
@@ -710,6 +730,7 @@ export function App() {
         docHits={docHits}
         health={health}
         onUpload={triggerUpload}
+        onProduce={produce}
       />
       <div className="trace-scroll">
         <TracePanel trace={trace} running={running} filter={traceFilter} setFilter={setTraceFilter} scrollRef={traceRef} />
