@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+try:
+    from ingest.adapters.excel_to_records import excel_to_records
+except ImportError:
+    excel_to_records = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +34,8 @@ def _terraform_output(name: str) -> str:
 
 
 def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, Any]]:
-    workspace = ROOT / "workspaces" / workspace_id / "raw_docs"
+    workspace_root = ROOT / "workspaces" / workspace_id
+    workspace = workspace_root / "raw_docs"
     terms = [term.lower() for term in query.split() if len(term) > 2]
     chinese_hints = {
         "\u4ea7\u54c1": ["product", "analytics", "subscription"],
@@ -42,28 +49,10 @@ def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, A
     for hint, mapped in chinese_hints.items():
         if hint in query:
             terms.extend(mapped)
-    hits: list[dict[str, Any]] = []
+    local_docs: list[dict[str, Any]] = []
     for path in workspace.glob("*.md"):
         text = path.read_text(encoding="utf-8")
-        score = sum(text.lower().count(term) for term in terms) if terms else 0
-        if score:
-            hits.append(
-                {
-                    "id": f"{workspace_id}-{path.stem}",
-                    "workspace_id": workspace_id,
-                    "title": path.stem.replace("_", " ").title(),
-                    "content": text[:1600],
-                    "source_file": f"raw_docs/{path.name}",
-                    "chunk_id": path.stem,
-                    "score": score,
-                }
-            )
-    if hits:
-        return sorted(hits, key=lambda hit: hit["score"], reverse=True)[:top_k]
-    fallback: list[dict[str, Any]] = []
-    for path in sorted(workspace.glob("*.md"))[:top_k]:
-        text = path.read_text(encoding="utf-8")
-        fallback.append(
+        local_docs.append(
             {
                 "id": f"{workspace_id}-{path.stem}",
                 "workspace_id": workspace_id,
@@ -71,10 +60,24 @@ def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, A
                 "content": text[:1600],
                 "source_file": f"raw_docs/{path.name}",
                 "chunk_id": path.stem,
-                "score": 0.1,
+                "document_type": "markdown",
+                "language": "en",
             }
         )
-    return fallback
+    if excel_to_records is not None:
+        for path in workspace.glob("*.xlsx"):
+            local_docs.extend(excel_to_records(path, f"raw_docs/{path.name}", workspace_id))
+    hits: list[dict[str, Any]] = []
+    for doc in local_docs:
+        haystack = f"{doc.get('title', '')} {doc.get('content', '')}".lower()
+        score = sum(haystack.count(term) for term in terms) if terms else 0
+        if score:
+            item = dict(doc)
+            item["score"] = score
+            hits.append(item)
+    if hits:
+        return sorted(hits, key=lambda hit: hit["score"], reverse=True)[:top_k]
+    return [dict(doc, score=0.1) for doc in local_docs[:top_k]]
 
 
 def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]]:
@@ -89,7 +92,7 @@ def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]
         "search": query,
         "top": top_k,
         "filter": f"workspace_id eq '{workspace_id}'",
-        "select": "id,workspace_id,title,content,source_file,chunk_id,document_type,language",
+        "select": "id,workspace_id,title,content,source_file,chunk_id,document_type,language,sheet,row",
     }
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST")
     if key:
@@ -100,8 +103,11 @@ def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]
         token = DefaultAzureCredential().get_token("https://search.azure.com/.default")
         req.add_header("Authorization", f"Bearer {token.token}")
     req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError:
+        return _local_search(workspace_id, query, top_k)
     results = [
         {
             "id": hit.get("id"),
@@ -112,6 +118,8 @@ def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]
             "chunk_id": hit.get("chunk_id"),
             "document_type": hit.get("document_type"),
             "language": hit.get("language"),
+            "sheet": hit.get("sheet"),
+            "row": hit.get("row"),
             "score": hit.get("@search.score", 0.0),
         }
         for hit in data.get("value", [])

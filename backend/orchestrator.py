@@ -400,6 +400,9 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             yield _frame("audit", audit.model_dump(), conv_id)
         except Exception as exc:
             yield _frame("error", {"agent": "revision-loop", "message": str(exc)}, conv_id)
+            artifact["audit"] = audit.model_dump()
+            summary = _final_text(decision, artifact)
+            yield _frame("final", {"text": summary, "routing": decision.model_dump(), "artifact": artifact}, conv_id)
             return
 
     artifact["audit"] = audit.model_dump()

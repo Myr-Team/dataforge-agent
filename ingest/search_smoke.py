@@ -41,7 +41,7 @@ def search(query: str, workspace_id: str = "demo-corpus", top: int = 5) -> list[
         "search": query,
         "top": top,
         "filter": f"workspace_id eq '{workspace_id}'",
-        "select": "id,workspace_id,title,content,source_file,chunk_id",
+        "select": "id,workspace_id,title,content,source_file,chunk_id,sheet,row,document_type",
     }
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST")
     req.add_header("api-key", key)
@@ -83,4 +83,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

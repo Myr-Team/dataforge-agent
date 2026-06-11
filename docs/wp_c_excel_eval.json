@@ -1,0 +1,393 @@
+{
+  "ok": true,
+  "loaded_env": [
+    "C:\\Users\\12140\\.dataforge-codex.env"
+  ],
+  "checks": {
+    "schema_has_chinese_analyzer": true,
+    "schema_has_sheet_row": true,
+    "demo_excel_records": true,
+    "second_excel_corpus_records": true,
+    "demo_cloud_sheet_row_hit": true,
+    "excel_cloud_sheet_row_hit": true,
+    "excel_model_variation": true
+  },
+  "analyzer_fields": {
+    "title": "zh-Hans.microsoft",
+    "content": "zh-Hans.microsoft"
+  },
+  "build_summary": {
+    "demo-corpus": {
+      "workspace_id": "demo-corpus",
+      "record_count": 16,
+      "excel_record_count": 6,
+      "first_excel_ref": {
+        "source_file": "raw_docs/operations_metrics.xlsx",
+        "sheet": "PilotMetrics",
+        "row": "2"
+      }
+    },
+    "excel-corpus": {
+      "workspace_id": "excel-corpus",
+      "record_count": 5,
+      "excel_record_count": 5,
+      "first_excel_ref": {
+        "source_file": "raw_docs/quality_metrics.xlsx",
+        "sheet": "QualitySignals",
+        "row": "2"
+      }
+    }
+  },
+  "upload_results": {
+    "demo-corpus": {
+      "workspace_id": "demo-corpus",
+      "index_name": "dataforge-workspaces",
+      "document_count": 16,
+      "upload": {
+        "@odata.context": "https://srch-dataforge-dev.search.windows.net/indexes('dataforge-workspaces')/$metadata#Collection(Microsoft.Azure.Search.V2024_07_01.IndexResult)",
+        "value": [
+          {
+            "key": "demo-corpus-product_manual-000",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-product_manual-001",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-sensor_data_dictionary-000",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-sensor_data_dictionary-001",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-customer_feedback_summary-000",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-internal_technical_wiki-000",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-market_research_notes-000",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-privacy_and_consent_review-000",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-operations_cost_notes-000",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-partnership_pipeline-000",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-operations_metrics-PilotMetrics-row-2",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-operations_metrics-PilotMetrics-row-3",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-operations_metrics-PilotMetrics-row-4",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-operations_metrics-PilotMetrics-row-5",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-operations_metrics-RiskControls-row-2",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "demo-corpus-operations_metrics-RiskControls-row-3",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          }
+        ]
+      }
+    },
+    "excel-corpus": {
+      "workspace_id": "excel-corpus",
+      "index_name": "dataforge-workspaces",
+      "document_count": 5,
+      "upload": {
+        "@odata.context": "https://srch-dataforge-dev.search.windows.net/indexes('dataforge-workspaces')/$metadata#Collection(Microsoft.Azure.Search.V2024_07_01.IndexResult)",
+        "value": [
+          {
+            "key": "excel-corpus-quality_metrics-QualitySignals-row-2",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "excel-corpus-quality_metrics-QualitySignals-row-3",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "excel-corpus-quality_metrics-QualitySignals-row-4",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "excel-corpus-quality_metrics-CostModel-row-2",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          },
+          {
+            "key": "excel-corpus-quality_metrics-CostModel-row-3",
+            "status": true,
+            "errorMessage": null,
+            "statusCode": 200
+          }
+        ]
+      }
+    }
+  },
+  "demo_first_hit": {
+    "@search.score": 7.8167877,
+    "id": "demo-corpus-operations_metrics-PilotMetrics-row-4",
+    "workspace_id": "demo-corpus",
+    "title": "operations_metrics / PilotMetrics row 4",
+    "content": "Metric: Nightly batch cost per customer; Segment: 20 customer pilot; Value: $42; Evidence Note: Current lake exports and AI Search retrieval can support a small reporting service.; Product Implication: Pilot economics are manageable before live integrations.",
+    "source_file": "raw_docs/operations_metrics.xlsx",
+    "chunk_id": "operations_metrics-PilotMetrics-row-4",
+    "document_type": "excel",
+    "sheet": "PilotMetrics",
+    "row": "4"
+  },
+  "excel_first_hit": {
+    "@search.score": 5.9261656,
+    "id": "excel-corpus-quality_metrics-CostModel-row-3",
+    "workspace_id": "excel-corpus",
+    "title": "quality_metrics / CostModel row 3",
+    "content": "Metric: Rework cost tagged; Value: $184000; Evidence: Rework cost is captured by defect category and supplier batch.; Product Implication: ROI model can be grounded in spreadsheet data.",
+    "source_file": "raw_docs/quality_metrics.xlsx",
+    "chunk_id": "quality_metrics-CostModel-row-3",
+    "document_type": "excel",
+    "sheet": "CostModel",
+    "row": "3"
+  },
+  "excel_feasibility": {
+    "opportunity_id": "quality-metrics-costmodel-row-2-product-opportunity",
+    "dimensions": [
+      {
+        "name": "asset_data",
+        "score": 4,
+        "rationale": "The corpus shows substantial, structured data relevant to manufacturing quality inspection: (1) 86 manual review hours per week tied to inspection spreadsheets, (2) rework cost data ($184,000) tagged by defect category and supplier batch, and (3) 48,000 archived defect photos with human review results organized by workstation. Additional sheets show joined batch/defect/rework-cost data and training performance metrics. These support building a data product for quality inspection teams (dashboards, Copilot-style assistance, ROI modeling). Gaps include lack of explicit mention of real-time camera streams, sensor integrations, or broader production system data beyond spreadsheets.",
+        "evidence": [
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#CostModel#2#quality_metrics-CostModel-row-2",
+            "quote": "Metric: Manual review hours per week; Value: 86; Evidence: Quality team spends 86 hours weekly reconciling inspection spreadsheets.; Product Implication: Automation has direct labor-saving value."
+          },
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#CostModel#3#quality_metrics-CostModel-row-3",
+            "quote": "Metric: Rework cost tagged; Value: $184000; Evidence: Rework cost is captured by defect category and supplier batch.; Product Implication: ROI model can be grounded in spreadsheet data."
+          },
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#QualitySignals#2#quality_metrics-QualitySignals-row-2",
+            "quote": "证据: 缺陷照片与人工复核结果已按工站归档; 数量: 48000; 产品含义: 可形成质量巡检 Copilot 和缺陷趋势看板; 缺口: 需要接入实时相机流"
+          },
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#QualitySignals#3#quality_metrics-QualitySignals-row-3",
+            "quote": "证据: 批次号、缺陷类型、返工成本在同一表内; 数量: 1260; 产品含义: 支持供应商质量评分和采购预警; 缺口: 缺少合同罚则数据"
+          }
+        ],
+        "confidence": "data_confirmed"
+      },
+      {
+        "name": "technical",
+        "score": 3,
+        "rationale": "The evidence directly proposes technically plausible analytics/AI use cases: a quality inspection Copilot, defect trend dashboards, supplier quality scoring, and training recommendation logic. The presence of 48,000 labeled defect photos with human review results suggests enough data to prototype computer-vision-assisted inspection support. However, the corpus also explicitly notes that real-time camera streams are not yet integrated, and there is no mention of existing MLOps, data pipelines, or production deployment infrastructure. Thus, a spreadsheet- and archive-based analytics / decision-support product is technically supported, but a fully real-time inline inspection system would require additional integrations.",
+        "evidence": [
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#QualitySignals#2#quality_metrics-QualitySignals-row-2",
+            "quote": "产品含义: 可形成质量巡检 Copilot 和缺陷趋势看板; 缺口: 需要接入实时相机流"
+          },
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#QualitySignals#3#quality_metrics-QualitySignals-row-3",
+            "quote": "产品含义: 支持供应商质量评分和采购预警; 缺口: 缺少合同罚则数据"
+          },
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#QualitySignals#4#quality_metrics-QualitySignals-row-4",
+            "quote": "产品含义: 可生成培训建议和复核优先级; 缺口: 需要隐私审查"
+          }
+        ],
+        "confidence": "market_inferred"
+      },
+      {
+        "name": "market",
+        "score": 4,
+        "rationale": "The corpus quantifies pain and value levers for quality inspection stakeholders. Quality teams spend 86 hours per week on manual reconciliation of inspection spreadsheets, and $184,000 in rework costs is already tagged with rich context (defect category, supplier batch), supporting ROI storytelling around automation and defect reduction. The spreadsheet explicitly interprets these as product implications (Copilot, dashboards, supplier scoring, training support), which align with common needs of manufacturing quality inspection teams. While there is no external market sizing, the internal pain and clear product ideas indicate a strong internal customer and plausible broader market.",
+        "evidence": [
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#CostModel#2#quality_metrics-CostModel-row-2",
+            "quote": "Evidence: Quality team spends 86 hours weekly reconciling inspection spreadsheets.; Product Implication: Automation has direct labor-saving value."
+          },
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#CostModel#3#quality_metrics-CostModel-row-3",
+            "quote": "Evidence: Rework cost is captured by defect category and supplier batch.; Product Implication: ROI model can be grounded in spreadsheet data."
+          },
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#QualitySignals#2#quality_metrics-QualitySignals-row-2",
+            "quote": "产品含义: 可形成质量巡检 Copilot 和缺陷趋势看板"
+          },
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#QualitySignals#3#quality_metrics-QualitySignals-row-3",
+            "quote": "产品含义: 支持供应商质量评分和采购预警"
+          }
+        ],
+        "confidence": "market_inferred"
+      },
+      {
+        "name": "resource_cost",
+        "score": 3,
+        "rationale": "The available evidence allows an initial ROI and cost-justification view but not a full delivery cost model. We know the baseline manual effort (86 hours/week) and rework costs ($184,000) that can be impacted, which supports strong value-side economics. However, the corpus does not mention required engineering headcount, infrastructure expense, or timelines for integrating real-time camera streams or privacy/compliance reviews. Therefore, the value case is strong and quantifiable, but implementation cost and effort remain to be scoped.",
+        "evidence": [
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#CostModel#2#quality_metrics-CostModel-row-2",
+            "quote": "Metric: Manual review hours per week; Value: 86; Evidence: Quality team spends 86 hours weekly reconciling inspection spreadsheets.; Product Implication: Automation has direct labor-saving value."
+          },
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#CostModel#3#quality_metrics-CostModel-row-3",
+            "quote": "Metric: Rework cost tagged; Value: $184000; Evidence: Rework cost is captured by defect category and supplier batch.; Product Implication: ROI model can be grounded in spreadsheet data."
+          }
+        ],
+        "confidence": "market_inferred"
+      },
+      {
+        "name": "differentiation_risk",
+        "score": 3,
+        "rationale": "The evidence hints at differentiated elements but does not fully prove uniqueness. Many quality tools track defects and rework, but here rework costs are already tied to defect category and supplier batch, and there is a substantial archive (48,000) of defect photos with human review labels organized by workstation, enabling tailored Copilot and training features. Additional signals like vendor-batch tracing and early-week trainee mis-detection trends could drive distinctive supplier scoring and training-coaching features. However, there is no competitive analysis or external benchmark in the corpus, so differentiation is inferred rather than confirmed.",
+        "evidence": [
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#QualitySignals#2#quality_metrics-QualitySignals-row-2",
+            "quote": "证据: 缺陷照片与人工复核结果已按工站归档; 数量: 48000; 产品含义: 可形成质量巡检 Copilot 和缺陷趋势看板"
+          },
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#QualitySignals#3#quality_metrics-QualitySignals-row-3",
+            "quote": "产品含义: 支持供应商质量评分和采购预警"
+          },
+          {
+            "source_type": "corpus",
+            "ref": "raw_docs/quality_metrics.xlsx#QualitySignals#4#quality_metrics-QualitySignals-row-4",
+            "quote": "证据: 新员工误检率在前三周下降明显; 数量: 31%; 产品含义: 可生成培训建议和复核优先级; 缺口: 需要隐私审查"
+          }
+        ],
+        "confidence": "speculative"
+      }
+    ],
+    "verdict": "conditional",
+    "overall_confidence": "market_inferred",
+    "gap_list": [
+      "Real-time camera stream integration is explicitly called out as a missing capability for a live inspection Copilot.",
+      "No concrete information on data pipelines, serving infrastructure, or MLOps for deploying and maintaining models in production.",
+      "Resource and implementation cost estimates (engineering effort, infrastructure, project duration) are not specified in the corpus.",
+      "Supplier quality and procurement alerting features lack related contract penalty/terms data needed for full financial modeling.",
+      "Privacy and compliance review is noted as a gap for using operator- or trainee-linked performance data."
+    ],
+    "_llm": {
+      "response_id": "resp_0fef6242aa3df655006a2a26f407588194b8bc90563a24e2d3",
+      "usage": {
+        "input_tokens": 2143,
+        "input_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "output_tokens": 1912,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 4055
+      }
+    }
+  },
+  "excel_model_responses": [
+    {
+      "agent": "df-feasibility-analyst",
+      "response_id": "resp_0fef6242aa3df655006a2a26f407588194b8bc90563a24e2d3",
+      "usage": {
+        "input_tokens": 2143,
+        "input_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "output_tokens": 1912,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 4055
+      }
+    },
+    {
+      "agent": "df-auditor",
+      "response_id": "resp_0456ebeb16d03fec006a2a27125018819680ed2fff269573b8",
+      "usage": {
+        "input_tokens": 3212,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 31,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3243
+      }
+    }
+  ]
+}

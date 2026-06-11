@@ -11,6 +11,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from ingest.adapters.excel_to_records import excel_to_records
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORKSPACE = ROOT / "workspaces" / "demo-corpus"
@@ -58,7 +60,7 @@ def _request(method: str, url: str, key: str, body: dict[str, Any] | None = None
 
 
 def _index_schema(index_name: str) -> dict[str, Any]:
-    return {
+    schema = {
         "name": index_name,
         "fields": [
             {"name": "id", "type": "Edm.String", "key": True, "filterable": True},
@@ -69,18 +71,27 @@ def _index_schema(index_name: str) -> dict[str, Any]:
             {"name": "chunk_id", "type": "Edm.String", "filterable": True},
             {"name": "document_type", "type": "Edm.String", "filterable": True, "facetable": True},
             {"name": "language", "type": "Edm.String", "filterable": True},
+            {"name": "sheet", "type": "Edm.String", "filterable": True, "facetable": True},
+            {"name": "row", "type": "Edm.String", "filterable": True},
         ],
     }
+    for field in schema["fields"]:
+        if field["name"] in {"title", "content"}:
+            field["analyzer"] = "zh-Hans.microsoft"
+    return schema
 
 
-def _read_workspace(workspace_dir: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+def _read_workspace(workspace_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     meta = json.loads((workspace_dir / "workspace.json").read_text(encoding="utf-8"))
-    docs: list[dict[str, str]] = []
+    docs: list[dict[str, Any]] = []
     for rel in meta["raw_docs"]:
         path = workspace_dir / rel
-        text = path.read_text(encoding="utf-8")
-        title = next((line[2:].strip() for line in text.splitlines() if line.startswith("# ")), path.stem)
-        docs.append({"path": rel, "title": title, "content": text})
+        if path.suffix.lower() == ".xlsx":
+            docs.append({"path": rel, "title": path.stem, "kind": "excel"})
+        else:
+            text = path.read_text(encoding="utf-8")
+            title = next((line[2:].strip() for line in text.splitlines() if line.startswith("# ")), path.stem)
+            docs.append({"path": rel, "title": title, "content": text, "kind": "markdown"})
     return meta, docs
 
 
@@ -106,6 +117,9 @@ def build_documents(workspace_dir: Path) -> tuple[str, list[dict[str, Any]]]:
     workspace_id = meta["workspace_id"]
     records: list[dict[str, Any]] = []
     for doc in docs:
+        if doc["kind"] == "excel":
+            records.extend(excel_to_records(workspace_dir / doc["path"], doc["path"], workspace_id))
+            continue
         for idx, content in enumerate(_chunks(doc["content"])):
             safe_file = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(doc["path"]).stem).strip("-")
             chunk_id = f"{safe_file}-{idx:03d}"
@@ -131,7 +145,14 @@ def upload_index(workspace_dir: Path, index_name: str) -> dict[str, Any]:
     workspace_id, docs = build_documents(workspace_dir)
     index_url = f"{endpoint}/indexes/{index_name}?api-version={API_VERSION}"
     docs_url = f"{endpoint}/indexes/{index_name}/docs/index?api-version={API_VERSION}"
-    _request("PUT", index_url, key, _index_schema(index_name))
+    try:
+        _request("PUT", index_url, key, _index_schema(index_name))
+    except RuntimeError:
+        try:
+            _request("DELETE", index_url, key)
+        except RuntimeError:
+            pass
+        _request("PUT", index_url, key, _index_schema(index_name))
     upload_result = _request("POST", docs_url, key, {"value": docs})
     return {"workspace_id": workspace_id, "index_name": index_name, "document_count": len(docs), "upload": upload_result}
 
@@ -148,4 +169,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -1,0 +1,12 @@
+{
+  "workspace_id": "excel-corpus",
+  "name": "Manufacturing Quality Excel Corpus",
+  "persona": "Operations lead evaluating spreadsheet-backed product opportunities for factory quality teams",
+  "ask_when": [
+    "The request requires regulated safety certification claims that are not represented in the spreadsheet.",
+    "The target buyer or deployment environment is unclear."
+  ],
+  "raw_docs": [
+    "raw_docs/quality_metrics.xlsx"
+  ]
+}
