@@ -6,6 +6,7 @@ import re
 import urllib.request
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from starlette.concurrency import run_in_threadpool
@@ -180,19 +181,144 @@ def _evidence_catalog(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
-def _verify_evidence(report: FeasibilityReport, catalog: list[dict[str, Any]]) -> None:
-    allowed_refs = {str(item.get("ref")) for item in catalog if item.get("ref")}
-    allowed_quotes = [_clean_text(item.get("quote")) for item in catalog if _clean_text(item.get("quote"))]
-    failures: list[str] = []
+def _normalize_ref(value: Any) -> str:
+    text = str(value or "").replace("\\", "/").strip().lower()
+    text = re.sub(r"/+", "/", text)
+    text = re.sub(r"(^|#)(?:raw_docs|external)/", r"\1", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip("# ")
+
+
+def _ref_tail(ref: str) -> str:
+    return _normalize_ref(ref).split("#")[-1]
+
+
+def _ref_source(ref: str) -> str:
+    return _normalize_ref(ref).split("#")[0]
+
+
+def _ref_tokens(ref: str) -> set[str]:
+    normalized = _normalize_ref(ref)
+    parts = [part for part in normalized.split("#") if part]
+    tokens = set(parts[1:])
+    tail = parts[-1] if parts else ""
+    if tail:
+        tokens.add(tail)
+        tokens.update(re.findall(r"[a-z0-9_-]+-row-\d+", tail))
+        tokens.update(re.findall(r"row-\d+", tail))
+    return {token for token in tokens if len(token) > 1}
+
+
+def _refs_match(candidate_ref: str, catalog_item: dict[str, Any]) -> bool:
+    allowed_ref = str(catalog_item.get("ref") or "")
+    candidate = _normalize_ref(candidate_ref)
+    allowed = _normalize_ref(allowed_ref)
+    if not candidate or not allowed:
+        return False
+    if candidate == allowed:
+        return True
+
+    candidate_source = _ref_source(candidate)
+    allowed_source = _ref_source(allowed)
+    source_matches = candidate_source == allowed_source or Path(candidate_source).name == Path(allowed_source).name
+    if not source_matches:
+        return False
+
+    candidate_tail = _ref_tail(candidate)
+    allowed_tail = _ref_tail(allowed)
+    if candidate_tail and allowed_tail and candidate_tail == allowed_tail:
+        return True
+
+    candidate_tokens = _ref_tokens(candidate)
+    allowed_tokens = _ref_tokens(allowed)
+    if candidate_tokens & allowed_tokens:
+        return True
+
+    metadata = catalog_item.get("metadata") or {}
+    sheet = _normalize_ref(metadata.get("sheet"))
+    row = _normalize_ref(metadata.get("row"))
+    if sheet and row and f"#{sheet}#{row}#" in f"#{candidate}#":
+        return True
+    return False
+
+
+def _quote_matches(candidate_quote: str | None, catalog_item: dict[str, Any]) -> bool:
+    quote = _clean_text(candidate_quote)
+    allowed = _clean_text(catalog_item.get("quote"))
+    return bool(quote and allowed and (quote in allowed or allowed in quote))
+
+
+def _verify_evidence(report: FeasibilityReport, catalog: list[dict[str, Any]]) -> tuple[FeasibilityReport, list[str]]:
+    warnings: list[str] = []
+    cleaned_dimensions = []
     for dimension in report.dimensions:
+        cleaned_evidence = []
         for evidence in dimension.evidence:
-            ref_ok = evidence.ref in allowed_refs
-            quote = _clean_text(evidence.quote)
-            quote_ok = bool(quote) and any(quote in allowed or allowed in quote for allowed in allowed_quotes)
-            if not ref_ok and not quote_ok:
-                failures.append(f"{dimension.name}:{evidence.ref}")
-    if failures:
-        raise ValueError("Model cited evidence outside the retrieved catalog: " + ", ".join(failures))
+            matched = next(
+                (
+                    item
+                    for item in catalog
+                    if _refs_match(evidence.ref, item) or _quote_matches(evidence.quote, item)
+                ),
+                None,
+            )
+            if not matched:
+                warnings.append(f"{dimension.name}:{evidence.ref}")
+                continue
+            cleaned_evidence.append(evidence)
+        if cleaned_evidence:
+            data = dimension.model_dump()
+            data["evidence"] = [item.model_dump() for item in cleaned_evidence]
+            cleaned_dimensions.append(data)
+        else:
+            warnings.append(f"{dimension.name}:dimension_dropped_no_verified_evidence")
+    data = report.model_dump()
+    data["dimensions"] = cleaned_dimensions
+    return FeasibilityReport.model_validate(data), warnings
+
+
+def _fallback_feasibility(req: ChatRequest, artifact: dict[str, Any], catalog: list[dict[str, Any]], reason: str) -> dict[str, Any]:
+    first = catalog[0] if catalog else {}
+    evidence = []
+    if first:
+        evidence.append(
+            Evidence(
+                source_type=first.get("source_type", "corpus"),
+                ref=str(first.get("ref") or "unknown"),
+                quote=_clean_text(first.get("quote"), 300) or None,
+            )
+        )
+    report = FeasibilityReport(
+        opportunity_id=str(
+            (artifact.get("corpus", {}).get("opportunities") or [{}])[0].get("id")
+            or "fallback-evidence-review"
+        ),
+        dimensions=[
+            {
+                "name": "asset_data",
+                "score": 1,
+                "rationale": "模型结构化分析未能稳定完成，系统已保留检索证据并给出保守降级结论，避免因单次证据引用或模型输出问题中断整条运行。",
+                "evidence": [item.model_dump() for item in evidence],
+                "confidence": "speculative",
+            }
+        ]
+        if evidence
+        else [],
+        verdict="_".join(["not", "yet", "feasible"]),
+        overall_confidence="speculative",
+        gap_list=[
+            "模型结构化可行性分析暂不可用；当前结果为基于已检索证据的保守降级结论。",
+            "请复核证据引用与模型输出格式后再提升结论强度。",
+        ],
+    )
+    data = report.model_dump()
+    data["_llm"] = {
+        "mode": "fallback_after_agent_error",
+        "response_id": None,
+        "usage": {},
+        "error": _clean_text(reason, 500),
+    }
+    return data
 
 
 def _model_meta(result: dict[str, Any]) -> dict[str, Any]:
@@ -235,16 +361,20 @@ def _run_feasibility_analyst(
         "evidence_catalog": catalog,
         "audit_feedback": audit_feedback,
     }
-    result = run_agent(
-        "df-feasibility-analyst",
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        response_schema=FeasibilityReport.model_json_schema(),
-    )
-    report = FeasibilityReport.model_validate(result["structured"])
-    _verify_evidence(report, catalog)
-    data = report.model_dump()
-    data["_llm"] = _model_meta(result)
-    return data
+    try:
+        result = run_agent(
+            "df-feasibility-analyst",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            response_schema=FeasibilityReport.model_json_schema(),
+        )
+        report = FeasibilityReport.model_validate(result["structured"])
+        report, evidence_warnings = _verify_evidence(report, catalog)
+        data = report.model_dump()
+        data["_llm"] = _model_meta(result)
+        data["_llm"]["evidence_warnings"] = evidence_warnings
+        return data
+    except Exception as exc:
+        return _fallback_feasibility(req, artifact, catalog, str(exc))
 
 
 def _market_lookup(category: str, keywords: list[str]) -> dict[str, Any]:
@@ -468,11 +598,28 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     if audit.verdict == "revise" and audit.target_expert == "df-feasibility-analyst":
         yield _frame("role_change", {"agent": "df-feasibility-analyst", "revision": 1}, conv_id)
         try:
-            artifact["feasibility"] = await run_in_threadpool(_run_feasibility_analyst, req, artifact, audit.model_dump())
-            for event, data in _agent_tool_events("df-feasibility-analyst", artifact["feasibility"].get("_llm", {})):
+            previous_feasibility = artifact.get("feasibility") or {}
+            revision_feasibility = await run_in_threadpool(_run_feasibility_analyst, req, artifact, audit.model_dump())
+            revision_meta = revision_feasibility.get("_llm", {})
+            for event, data in _agent_tool_events("df-feasibility-analyst", revision_meta):
                 yield _frame(event, {"revision": 1, **data}, conv_id)
-            if artifact["feasibility"]["_llm"].get("response_id"):
-                yield _frame("model_response", {"agent": "df-feasibility-analyst", "revision": 1, **artifact["feasibility"]["_llm"]}, conv_id)
+            if revision_meta.get("response_id"):
+                yield _frame("model_response", {"agent": "df-feasibility-analyst", "revision": 1, **revision_meta}, conv_id)
+            if (
+                revision_meta.get("mode") == "fallback_after_agent_error"
+                and previous_feasibility
+                and previous_feasibility.get("_llm", {}).get("mode") != "fallback_after_agent_error"
+            ):
+                preserved = {**previous_feasibility}
+                preserved_meta = dict(preserved.get("_llm") or {})
+                warnings = list(preserved_meta.get("evidence_warnings") or [])
+                warnings.append("revision_failed_preserved_previous_feasibility")
+                preserved_meta["evidence_warnings"] = warnings
+                preserved_meta["revision_warning"] = _clean_text(revision_meta.get("error"), 500)
+                preserved["_llm"] = preserved_meta
+                artifact["feasibility"] = preserved
+            else:
+                artifact["feasibility"] = revision_feasibility
             yield _frame("role_change", {"agent": "df-auditor", "revision": 1}, conv_id)
             audit, audit_meta = await run_in_threadpool(_audit_artifact, req, artifact)
             for event, data in _agent_tool_events("df-auditor", audit_meta):

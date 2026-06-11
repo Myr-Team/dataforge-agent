@@ -2,6 +2,7 @@
 
 | WP | Scope | Status | Timestamp | Acceptance |
 |---|---|---|---|---|
+| WP-R3-hotfix | Evidence ref normalization and nonfatal verification | done | 2026-06-11 | Pulled `main` at `9ed6beb` and kept `web/` untouched. `_verify_evidence` now accepts source-matched reordered refs such as `source#sheet#row#chunk`, prunes invalid evidence instead of raising, and falls back conservatively if model validation still fails. `python eval/ref_verification_regression.py` sent 5 demo-corpus product-feasibility runs with `total_errors=0`; result saved to `docs/ref_verification_regression.json`. Deployed backend image `dataforge-backend:ref-verify-20260611-154007`; cloud health passed and one cloud `/api/chat` smoke had `error_count=0`, `mode=foundry_agent_service`, and 5 dimensions. |
 | WP0 | Repository, `.gitignore`, reuse manifest skeleton | done | 2026-06-10 | Structure check passed: required repository paths exist. |
 | WP1 | Terraform application resources | done | 2026-06-10 | `terraform apply` succeeded; output JSON contains required resource endpoints and deployment names. |
 | WP2 | Demo corpus and workspace-aware RAG index | done | 2026-06-10 | Uploaded 10 chunks to AI Search; smoke retrieved SaaS signals and medical constraints; health diagnosis verdict is `not_yet_feasible`. |

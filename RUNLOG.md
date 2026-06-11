@@ -2,6 +2,7 @@
 
 | Time | WP | Action | Result |
 |---|---|---|---|
+| 2026-06-11 | WP-R3-hotfix | Fixed evidence verification blocker after pulling `main` at `9ed6beb`; `web/` remained untouched. | `_verify_evidence` now normalizes source/chunk refs, accepts reordered `source#sheet#row#chunk` citations, prunes invalid evidence instead of throwing, and 5 demo-corpus product-feasibility runs produced `total_errors=0` in `docs/ref_verification_regression.json`. Deployed `dataforge-backend:ref-verify-20260611-154007`; cloud health passed and one cloud `/api/chat` smoke returned `error_count=0`, `mode=foundry_agent_service`, and 5 dimensions. |
 | 2026-06-10 | WP0 | Initialized independent repository under `dataforge-agent`. | Started. |
 | 2026-06-10 | WP0 | Checked required repository paths. | Passed. |
 | 2026-06-10 | WP1 | Wrote Terraform modules for RG, monitoring, storage, search, speech, ACR, and Container Apps. | Pending validation. |
