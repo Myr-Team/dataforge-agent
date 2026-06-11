@@ -7,8 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-COPY backend/ ./
+COPY backend/ ./backend/
+COPY agents/prompts/ ./agents/prompts/
 
 EXPOSE 80
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "80"]
-
+CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "80"]
