@@ -166,7 +166,7 @@ function ServiceStatus({ health }) {
   );
 }
 
-function WorkspacePanel({ health, selectedDoc, onDocClick, docHits, workspace, workspaces, onWorkspaceChange, onUpload, upload }) {
+function WorkspacePanel({ health, selectedDoc, onDocClick, docHits, workspace, workspaces, onWorkspaceChange, onUpload, upload, wsDetail }) {
   const cur = workspaces.find((w) => w.id === workspace);
   return (
     <aside className="workspace-panel">
@@ -210,18 +210,50 @@ function WorkspacePanel({ health, selectedDoc, onDocClick, docHits, workspace, w
                 </button>
               ))}
             </div>
+          ) : wsDetail && !wsDetail.loading ? (
+            <div className="ws-detail">
+              {wsDetail.description ? <p className="ws-desc">{wsDetail.description}</p> : null}
+              <div className="ws-meta">
+                {wsDetail.format ? <span>{String(wsDetail.format).toUpperCase()}</span> : null}
+                {wsDetail.rows != null ? <span>{wsDetail.rows} 行</span> : null}
+                {(wsDetail.doc_count ?? wsDetail.documents?.length) != null ? <span>{wsDetail.doc_count ?? wsDetail.documents.length} 篇</span> : null}
+              </div>
+              {Array.isArray(wsDetail.columns) && wsDetail.columns.length ? (
+                <div className="ws-cols">
+                  {wsDetail.columns.slice(0, 14).map((c, i) => {
+                    const cn = typeof c === "string" ? c : c.name;
+                    const tag = typeof c === "string" ? "" : (c.signal || c.role || "");
+                    return <span className="ws-col" key={`${cn}-${i}`}>{cn}{tag ? <em>{tag}</em> : null}</span>;
+                  })}
+                </div>
+              ) : null}
+              {Array.isArray(wsDetail.documents) && wsDetail.documents.length ? (
+                <div className="doc-list">
+                  {wsDetail.documents.map((doc, i) => {
+                    const file = typeof doc === "string" ? doc : (doc.source_file || doc.file || doc.name || doc.title || `doc-${i}`);
+                    const label = typeof doc === "string" ? "" : (doc.title || doc.label || doc.description || "");
+                    return (
+                      <button className={`doc-row ${selectedDoc === file ? "active" : ""}`} key={`${file}-${i}`} onClick={() => onDocClick(file)} type="button">
+                        <Icon name="file" />
+                        <div><strong>{String(file).replace("raw_docs/", "")}</strong>{label ? <span>{label}</span> : null}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
           ) : (
             <div className="ws-content-note">
               <Icon name="database" />
               <div>
                 <strong>{cur?.name || workspace}</strong>
-                <span>已接入{cur?.docs != null ? `，共 ${cur.docs} 篇画像文档` : ""}。这里展示该工作区的数据画像；直接在右侧提问即可。</span>
+                <span>{wsDetail?.loading ? "正在载入数据画像…" : "已接入。点击下方提问即可开始分析；该工作区的字段画像会显示在这里。"}</span>
               </div>
             </div>
           )}
         </section>
         <section>
-          <div className="section-title">文档命中</div>
+          <div className="section-title">命中片段</div>
           <div className="doc-hit-list">
             {docHits.length ? docHits.slice(0, 3).map((hit) => (
               <article className="doc-hit" key={hit.id || `${hit.source_file}-${hit.chunk_id}`}>
@@ -253,7 +285,7 @@ function ProgressBar({ trace, running }) {
   );
 }
 
-function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health, onUpload, onProduce, stream, producing }) {
+function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, setInput, run, artifacts, docHits, health, onUpload, onProduce, stream, producing, onCite }) {
   const artifactCount = Object.values(artifacts).filter(Boolean).length;
   const disabled = running || health.status !== "ok";
   return (
@@ -270,7 +302,7 @@ function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, s
         {[
           ["chat", "对话", messages.length],
           ["artifacts", "产物", artifactCount],
-          ["docs", "证据", docHits.length],
+          ["docs", "原文出处", docHits.length],
         ].map(([key, label, count]) => (
           <button className={activeTab === key ? "active" : ""} key={key} onClick={() => setActiveTab(key)} type="button" role="tab" aria-selected={activeTab === key}>
             {label}{count ? <span>{count}</span> : null}
@@ -278,7 +310,7 @@ function ChatPanel({ activeTab, setActiveTab, messages, trace, running, input, s
         ))}
       </div>
       <div className="panel-scroll">
-        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} run={run} onUpload={onUpload} onProduce={onProduce} artifacts={artifacts} stream={stream} producing={producing} /> : null}
+        {activeTab === "chat" ? <ChatStream messages={messages} trace={trace} running={running} run={run} onUpload={onUpload} onProduce={onProduce} artifacts={artifacts} stream={stream} producing={producing} onCite={onCite} /> : null}
         {activeTab === "artifacts" ? <ArtifactShelf artifacts={artifacts} running={running || producing} /> : null}
         {activeTab === "docs" ? <EvidenceList hits={docHits} /> : null}
       </div>
@@ -375,7 +407,101 @@ function Welcome({ run, onUpload }) {
   );
 }
 
-function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifacts, stream, producing }) {
+const CONF_LABEL = { data_confirmed: "数据确证", market_inferred: "市场推断", speculative: "推测" };
+function confLabel(c) { return CONF_LABEL[c] || c || ""; }
+
+// 把正文里内嵌的注解抽成结构化 citations，正文用占位角标替代。支持：
+//   [ref: raw_docs/xx#yy，conf] / [source: 文本，conf] / [gap: "文本"，conf] / 裸 [raw_docs/...]
+// 若后端已提供结构化 citations（WP-R2 后），正文里本就是 [n]，直接沿用。
+function extractCitations(text, existing) {
+  const t = text || "";
+  if (existing && existing.length) return { text: t, cites: existing };
+  const cites = []; const seen = new Map();
+  const clean = t.replace(/\[([^\][]+)\]/g, (whole, inner) => {
+    const km = inner.match(/^\s*(ref|source|evidence|gap|引用|来源|证据|缺口)\s*[:：]\s*(.*)$/is);
+    let kind = "ref"; let body = inner.trim();
+    if (km) {
+      const w = km[1].toLowerCase();
+      kind = (w === "gap" || w === "缺口") ? "gap" : (w === "source" || w === "来源") ? "source" : "ref";
+      body = km[2].trim();
+    } else if (!/(raw_docs|external)\//.test(inner)) {
+      return whole;
+    }
+    let confidence = ""; const parts = body.split(/[，,]\s*/);
+    if (parts.length > 1 && /confirmed|inferred|speculative/i.test(parts[parts.length - 1])) {
+      confidence = parts.pop().trim().toLowerCase(); body = parts.join("，");
+    }
+    let source_file = ""; let chunk_id = ""; let label = body;
+    const pm = body.match(/((?:raw_docs|external)\/[^\s，,#]+)(?:#([^\s，,]+))?/);
+    if (pm) { source_file = pm[1]; chunk_id = pm[2] || ""; if (kind === "ref") label = source_file.replace(/^.*\//, ""); }
+    label = label.replace(/^["'“”]+|["'“”]+$/g, "").trim();
+    const key = `${kind}|${source_file}|${label}`;
+    let idx = seen.get(key);
+    if (idx == null) { idx = cites.length + 1; seen.set(key, idx); cites.push({ marker: idx, kind, source_file, chunk_id, label, confidence }); }
+    return `@@CITE:${idx}@@`;
+  });
+  return { text: clean, cites };
+}
+
+// 行内：解析 **加粗** 与引用占位角标（@@CITE:n@@ 唯一占位符，不误伤正文数字）
+function renderInline(str, onCiteMarker) {
+  const nodes = []; const re = /\*\*([^*]+)\*\*|@@CITE:(\d+)@@/g;
+  let m, last = 0, k = 0;
+  while ((m = re.exec(str))) {
+    if (m.index > last) nodes.push(str.slice(last, m.index));
+    if (m[1] != null) nodes.push(<strong key={k++}>{m[1]}</strong>);
+    else nodes.push(<sup key={k++} className="cite-chip" onClick={() => onCiteMarker(Number(m[2]))} title="查看出处">[{m[2]}]</sup>);
+    last = m.index + m[0].length;
+  }
+  if (last < str.length) nodes.push(str.slice(last));
+  return nodes;
+}
+
+// 富文本回答：轻量 markdown（标题/要点/加粗）+ 引用角标 + 底部"依据来源"芯片
+function RichAnswer({ text, citations, onCite }) {
+  const { text: clean, cites } = useMemo(() => extractCitations(text, citations), [text, citations]);
+  const byMarker = (n) => { const c = cites.find((x) => x.marker === n); if (c) onCite(c); };
+  const blocks = useMemo(() => {
+    const out = []; let list = null;
+    const flush = () => { if (list) { out.push({ type: "ul", items: list }); list = null; } };
+    for (const raw of clean.split(/\n/)) {
+      const line = raw.trimEnd();
+      if (!line.trim()) { flush(); continue; }
+      const h = line.match(/^(#{1,4})\s+(.*)$/);
+      const li = line.match(/^\s*[-*•]\s+(.*)$/) || line.match(/^\s*\d+[.、]\s+(.*)$/);
+      if (h) { flush(); out.push({ type: "h", level: h[1].length, text: h[2] }); }
+      else if (li) { (list = list || []).push(li[1]); }
+      else { flush(); out.push({ type: "p", text: line }); }
+    }
+    flush(); return out;
+  }, [clean]);
+  return (
+    <div className="rich-answer">
+      {blocks.map((b, i) =>
+        b.type === "h" ? <p key={i} className={`ra-h ra-h${b.level}`}>{renderInline(b.text, byMarker)}</p>
+          : b.type === "ul" ? <ul key={i} className="ra-ul">{b.items.map((it, j) => <li key={j}>{renderInline(it, byMarker)}</li>)}</ul>
+            : <p key={i} className="ra-p">{renderInline(b.text, byMarker)}</p>,
+      )}
+      {cites.length ? (
+        <div className="ra-cites">
+          <span className="ra-cites-label">依据来源</span>
+          <div className="ra-cite-row">
+            {cites.map((c) => (
+              <button key={c.marker} className={`ra-cite ${c.kind || "ref"}`} type="button" onClick={() => onCite(c)} title={c.source_file || c.label}>
+                <span className="ra-cite-n">[{c.marker}]</span>
+                <span className="ra-cite-src">{((c.kind === "ref" && c.source_file ? c.source_file : (c.label || c.source_file || "来源"))).replace(/^raw_docs\//, "")}</span>
+                {c.kind === "gap" ? <span className="ra-cite-kind">缺口</span> : c.kind === "source" ? <span className="ra-cite-kind">外部</span> : null}
+                {c.confidence ? <span className={`ra-cite-conf ${c.confidence}`}>{confLabel(c.confidence)}</span> : null}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifacts, stream, producing, onCite }) {
   const endRef = useRef(null);
   // 消息/段落变化时平滑滚动；逐字流期间用 instant（每帧 smooth 滚动会与流式重渲染抢主线程，造成读流背压拖慢整轮）
   useEffect(() => {
@@ -403,7 +529,7 @@ function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifa
           </Bubble>
         ) : (
           <Bubble key={`m-${i}`} role="assistant" name="DataForge" time={m.time}>
-            {i === lastAsstIdx && !REDUCED_MOTION && !m.streamed ? <Typewriter text={m.text} /> : <p className="bubble-text">{m.text}</p>}
+            <RichAnswer text={m.text} citations={m.citations} onCite={onCite} />
             {i === lastAsstIdx && showProduce ? (
               <div className="produce-cta">
                 <button className="primary" type="button" onClick={onProduce} disabled={producing}>
@@ -687,6 +813,74 @@ function TracePanel({ trace, running, filter, setFilter, scrollRef, openSegs, to
   );
 }
 
+// 上传弹窗：客户命名 + 描述 + 多文件（可滚动列表）+ 确认/取消
+function UploadModal({ open, onClose, onSubmit, busy }) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [files, setFiles] = useState([]);
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef(null);
+  useEffect(() => { if (open) { setName(""); setDescription(""); setFiles([]); } }, [open]);
+  if (!open) return null;
+  const addFiles = (list) => {
+    const arr = Array.from(list || []);
+    setFiles((prev) => {
+      const seen = new Set(prev.map((f) => f.name + f.size));
+      return [...prev, ...arr.filter((f) => !seen.has(f.name + f.size))];
+    });
+  };
+  const submit = () => { if (files.length) onSubmit({ name: name.trim(), description: description.trim(), files }); };
+  return (
+    <div className="modal-overlay" onMouseDown={onClose}>
+      <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>接入我的数据</h3>
+          <button className="modal-x" type="button" onClick={onClose} aria-label="关闭">×</button>
+        </div>
+        <label className="modal-field">
+          <span>工作区名称</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="给这份数据起个名字，例如：俱乐部会员数据" />
+        </label>
+        <label className="modal-field">
+          <span>数据描述（可选）</span>
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} placeholder="简单描述这份数据是什么、想用它做什么产品" />
+        </label>
+        <div
+          className={`drop-zone ${dragOver ? "over" : ""}`}
+          onClick={() => inputRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }}
+        >
+          <Icon name="upload" />
+          <strong>上传我的数据</strong>
+          <span>点击选择或拖拽文件到此<br />支持 CSV / Excel(.xlsx/.xls) / JSON / Markdown</span>
+          <input ref={inputRef} type="file" multiple accept=".csv,.xlsx,.xls,.json,.md,.txt" hidden
+            onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+        </div>
+        {files.length ? (
+          <div className="file-list">
+            {files.map((f, i) => (
+              <div className="file-row" key={f.name + i}>
+                <Icon name="file" />
+                <span className="file-name">{f.name}</span>
+                <span className="file-size">{f.size > 1024 ? `${Math.round(f.size / 1024)} KB` : `${f.size} B`}</span>
+                <button className="file-del" type="button" onClick={() => setFiles((p) => p.filter((_, j) => j !== i))} aria-label="移除">×</button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div className="modal-actions">
+          <button className="ghost" type="button" onClick={onClose} disabled={busy}>取消</button>
+          <button className="primary" type="button" onClick={submit} disabled={busy || !files.length}>
+            {busy ? "上传中…" : `确认上传${files.length ? `（${files.length}）` : ""}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [messages, setMessages] = useState([]);
   const [trace, setTrace] = useState([]);
@@ -705,9 +899,10 @@ export function App() {
   const [producing, setProducing] = useState(false);
   const [openSegs, setOpenSegs] = useState({}); // 用户手动展开/折叠的智能体段（按段下标覆盖默认）
   const toggleSeg = (i, val) => setOpenSegs((m) => ({ ...m, [i]: val }));
+  const [uploadModal, setUploadModal] = useState(false);
+  const [wsDetail, setWsDetail] = useState(null); // 非内置工作区的画像详情（GET /api/workspaces/{id}）
   const traceRef = useRef(null);
   const lastAnalysisRef = useRef(null);
-  const fileRef = useRef(null);
 
   // 拉取可用工作区（后端未提供该接口时用已知工作区兜底）
   useEffect(() => {
@@ -728,27 +923,39 @@ export function App() {
     return () => { cancelled = true; };
   }, []);
 
-  async function handleUpload(file) {
-    if (!file) return;
-    setUpload({ status: "uploading", stage: 1, message: `正在上传 ${file.name}…` });
+  // 客户在上传弹窗里命名 + 写描述 + 选多文件，确认后逐个接入到同一个命名工作区
+  async function uploadBundle({ name, description, files }) {
+    if (!files || !files.length) return;
+    setUpload({ status: "uploading", stage: 1, message: `正在上传 ${files.length} 个文件…` });
     try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: form });
-      if (!res.ok) throw new Error(res.status === 404 ? "数据接入服务尚未就绪，请稍后再试" : `上传失败：HTTP ${res.status}`);
-      const data = await res.json();
-      const wid = data.workspace_id || data.id;
-      setUpload({ status: "done", message: `已接入「${data.name || wid}」`, summary: data });
-      if (wid) {
-        setWorkspaces((ws) => (ws.some((w) => w.id === wid) ? ws : [...ws, { id: wid, name: data.name || wid, docs: data.indexed_count }]));
-        setWorkspace(wid);
-        setMessages([]); setTrace([]); setArtifacts({}); setDocHits([]);
+      let wid = null; let last = null;
+      for (let i = 0; i < files.length; i++) {
+        const form = new FormData();
+        form.append("file", files[i]);
+        if (name) form.append("name", name);
+        if (description) form.append("description", description);
+        if (wid) form.append("workspace_id", wid);
+        const res = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: form });
+        if (!res.ok) throw new Error(res.status === 404 ? "数据接入服务尚未就绪，请稍后再试" : `上传失败：HTTP ${res.status}`);
+        last = await res.json();
+        wid = last.workspace_id || last.id || wid;
+        setUpload({ status: "uploading", stage: 2, message: `已接入 ${i + 1}/${files.length} 个文件…` });
       }
+      const dispName = name || last?.name || wid;
+      setUpload({ status: "done", message: `已接入「${dispName}」`, summary: last });
+      if (wid) {
+        setWorkspaces((ws) => (ws.some((w) => w.id === wid)
+          ? ws.map((w) => (w.id === wid ? { ...w, name: dispName, docs: last?.indexed_count ?? w.docs } : w))
+          : [...ws, { id: wid, name: dispName, docs: last?.indexed_count }]));
+        setWorkspace(wid);
+        setMessages([]); setTrace([]); setArtifacts({}); setDocHits([]); setSelectedDoc("");
+      }
+      setUploadModal(false);
     } catch (e) {
       setUpload({ status: "error", message: e instanceof Error ? e.message : String(e) });
     }
   }
-  const triggerUpload = () => fileRef.current?.click();
+  const triggerUpload = () => { setUpload(null); setUploadModal(true); };
 
   useEffect(() => {
     let cancelled = false;
@@ -772,6 +979,18 @@ export function App() {
     const el = traceRef.current;
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: REDUCED_MOTION ? "auto" : "smooth" });
   }, [trace]);
+
+  // 切到非内置工作区时，拉取其画像详情（schema/行数/文档），用于左侧"工作区内容"
+  useEffect(() => {
+    if (!workspace || workspace === "demo-corpus") { setWsDetail(null); return; }
+    let cancelled = false;
+    setWsDetail({ loading: true });
+    fetch(`${API_BASE}/api/workspaces/${encodeURIComponent(workspace)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => { if (!cancelled) setWsDetail(d); })
+      .catch(() => { if (!cancelled) setWsDetail(null); });
+    return () => { cancelled = true; };
+  }, [workspace]);
 
   async function loadDoc(file) {
     setSelectedDoc(file);
@@ -856,7 +1075,7 @@ export function App() {
               audio_summary: proposal.audio_summary,
             });
             if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
-            setMessages((items) => [...items, { role: "assistant", text: final.data.text, time: "刚刚", streamed }]);
+            setMessages((items) => [...items, { role: "assistant", text: final.data.text, time: "刚刚", streamed, citations: art.citations || [] }]);
             setStream("");
           }
         }
@@ -895,13 +1114,7 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <input
-        ref={fileRef}
-        type="file"
-        accept=".csv,.xlsx,.xls,.json,.md,.txt"
-        hidden
-        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) handleUpload(f); }}
-      />
+      <UploadModal open={uploadModal} onClose={() => setUploadModal(false)} onSubmit={uploadBundle} busy={upload?.status === "uploading"} />
       <WorkspacePanel
         health={health}
         selectedDoc={selectedDoc}
@@ -912,6 +1125,7 @@ export function App() {
         onWorkspaceChange={(w) => { setWorkspace(w); setMessages([]); setTrace([]); setArtifacts({}); setDocHits([]); setSelectedDoc(""); }}
         onUpload={triggerUpload}
         upload={upload}
+        wsDetail={wsDetail}
       />
       <ChatPanel
         activeTab={activeTab}
@@ -929,6 +1143,7 @@ export function App() {
         onProduce={produce}
         stream={stream}
         producing={producing}
+        onCite={(c) => { if (c.source_file) loadDoc(c.source_file); }}
       />
       <div className="trace-scroll">
         <TracePanel trace={trace} running={running} filter={traceFilter} setFilter={setTraceFilter} scrollRef={traceRef} openSegs={openSegs} toggleSeg={toggleSeg} />
