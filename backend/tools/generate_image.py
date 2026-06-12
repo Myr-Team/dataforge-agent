@@ -7,15 +7,17 @@ import os
 import urllib.error
 import struct
 import time
+import uuid
 import urllib.request
 import zlib
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 try:
-    from ..blob_store import upload_artifact
+    from ..blob_store import download_blob_content, upload_artifact
 except ImportError:
-    from blob_store import upload_artifact
+    from blob_store import download_blob_content, upload_artifact
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -96,7 +98,7 @@ def _concept_png(prompt: str, width: int = 1024, height: int = 1024) -> bytes:
     return _png(width, height, rows)
 
 
-def generate_image(prompt: str, size: str = "1024x1024") -> dict[str, str | int]:
+def generate_image(prompt: str, size: str = "1024x1024", reference_image_urls: list[str] | None = None) -> dict[str, Any]:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUT_DIR / f"concept-{int(time.time())}.png"
     width, height = (1024, 1024)
@@ -106,12 +108,23 @@ def generate_image(prompt: str, size: str = "1024x1024") -> dict[str, str | int]
         width, height = (1024, 1536)
     mode = "gpt-image-2"
     image_error = ""
+    reference_image_urls = [str(item) for item in (reference_image_urls or []) if str(item or "").strip()]
+    reference_inputs = _load_reference_images(reference_image_urls[:3])
     try:
-        image_bytes = _generate_with_gpt_image_2(prompt, size)
+        if reference_inputs:
+            image_bytes = _edit_with_gpt_image_2(prompt, size, reference_inputs)
+            mode = "gpt-image-2-edit"
+        else:
+            image_bytes = _generate_with_gpt_image_2(prompt, size)
     except Exception as exc:
-        mode = "deterministic-fallback"
         image_error = f"{type(exc).__name__}: {exc}"[:700]
-        image_bytes = _concept_png(prompt, width, height)
+        try:
+            image_bytes = _generate_with_gpt_image_2(prompt, size)
+            mode = "gpt-image-2"
+        except Exception as gen_exc:
+            mode = "deterministic-fallback"
+            image_error = f"{image_error}; generation fallback failed: {type(gen_exc).__name__}: {gen_exc}"[:900]
+            image_bytes = _concept_png(prompt, width, height)
 
     path.write_bytes(image_bytes)
     result: dict[str, str | int] = {
@@ -123,6 +136,7 @@ def generate_image(prompt: str, size: str = "1024x1024") -> dict[str, str | int]
         "size": size,
         "mode": mode,
         "image_error": image_error,
+        "reference_image_count": len(reference_inputs),
     }
     try:
         blob = upload_artifact(path.name, image_bytes, "image/png")
@@ -131,6 +145,147 @@ def generate_image(prompt: str, size: str = "1024x1024") -> dict[str, str | int]
     except Exception as exc:
         result["blob_error"] = f"{type(exc).__name__}: {exc}"[:500]
     return result
+
+
+def _load_reference_images(urls: list[str]) -> list[dict[str, Any]]:
+    images: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for url in urls:
+        try:
+            loaded = _load_reference_image(url)
+            if loaded:
+                images.append(loaded)
+        except Exception as exc:
+            errors.append(f"{url[:80]} => {type(exc).__name__}: {exc}")
+    if urls and not images:
+        raise RuntimeError("No reference image could be loaded: " + "; ".join(errors)[:600])
+    return images
+
+
+def _load_reference_image(url: str) -> dict[str, Any] | None:
+    value = str(url or "").strip()
+    if not value:
+        return None
+    if value.startswith("/api/workspaces/"):
+        parts = [unquote(part) for part in value.split("/") if part]
+        if len(parts) >= 5 and parts[0] == "api" and parts[1] == "workspaces" and parts[3] == "reference-images":
+            try:
+                from ..workspace_store import get_reference_image_content
+            except ImportError:
+                from workspace_store import get_reference_image_content
+
+            downloaded = get_reference_image_content(parts[2], parts[4])
+            if downloaded:
+                content, content_type = downloaded
+                return {"filename": parts[4], "content": content, "content_type": content_type}
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"}:
+        blob_loaded = _load_azure_blob_url(parsed)
+        if blob_loaded:
+            return blob_loaded
+        with urllib.request.urlopen(value, timeout=45) as resp:
+            content = resp.read()
+            content_type = resp.headers.get("Content-Type") or _guess_image_type(parsed.path)
+            return {"filename": Path(parsed.path).name or "reference.png", "content": content, "content_type": content_type}
+    if parsed.scheme == "file":
+        path = Path(unquote(parsed.path))
+        return {"filename": path.name, "content": path.read_bytes(), "content_type": _guess_image_type(path.name)}
+    path = Path(value)
+    if path.exists() and path.is_file():
+        return {"filename": path.name, "content": path.read_bytes(), "content_type": _guess_image_type(path.name)}
+    return None
+
+
+def _load_azure_blob_url(parsed: Any) -> dict[str, Any] | None:
+    if ".blob.core.windows.net" not in str(parsed.netloc):
+        return None
+    parts = [unquote(part) for part in str(parsed.path).lstrip("/").split("/") if part]
+    if len(parts) < 2:
+        return None
+    blob_name = "/".join(parts[1:])
+    downloaded = download_blob_content(blob_name)
+    if not downloaded:
+        return None
+    content, content_type = downloaded
+    return {"filename": Path(blob_name).name, "content": content, "content_type": content_type}
+
+
+def _guess_image_type(name: str) -> str:
+    suffix = Path(name).suffix.lower()
+    if suffix == ".png":
+        return "image/png"
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    return "image/png"
+
+
+def _edit_with_gpt_image_2(prompt: str, size: str, images: list[dict[str, Any]]) -> bytes:
+    endpoint = os.environ.get("OPENAI_ENDPOINT")
+    if not endpoint:
+        raise RuntimeError("Missing OPENAI_ENDPOINT for gpt-image-2 edits")
+    deployment = os.environ.get("DF_IMAGE_DEPLOYMENT", "gpt-image-2")
+    fields: dict[str, str] = {
+        "model": deployment,
+        "prompt": _image_prompt(prompt),
+        "size": size,
+        "n": "1",
+    }
+    quality = os.environ.get("DF_IMAGE_QUALITY")
+    if quality:
+        fields["quality"] = quality
+    files = [
+        (
+            "image",
+            str(item.get("filename") or f"reference-{idx}.png"),
+            bytes(item.get("content") or b""),
+            str(item.get("content_type") or _guess_image_type(str(item.get("filename") or ""))),
+        )
+        for idx, item in enumerate(images, start=1)
+        if item.get("content")
+    ]
+    if not files:
+        raise RuntimeError("No reference image bytes available for gpt-image-2 edits")
+    body, content_type = _multipart_body(fields, files)
+    url = endpoint.rstrip("/") + "/openai/v1/images/edits?api-version=preview"
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", content_type)
+    _add_openai_auth(req)
+    try:
+        with urllib.request.urlopen(req, timeout=float(os.environ.get("DF_IMAGE_TIMEOUT_SECONDS", "180"))) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")[:800]
+        raise RuntimeError(f"gpt-image-2 edits HTTP {exc.code}: {body_text}") from exc
+    return _decode_image_response(data, "gpt-image-2 edits")
+
+
+def _multipart_body(fields: dict[str, str], files: list[tuple[str, str, bytes, str]]) -> tuple[bytes, str]:
+    boundary = f"----dataforge-{uuid.uuid4().hex}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("utf-8"),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+                str(value).encode("utf-8"),
+                b"\r\n",
+            ]
+        )
+    for field, filename, content, content_type in files:
+        safe_name = Path(filename or "reference.png").name
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("utf-8"),
+                f'Content-Disposition: form-data; name="{field}"; filename="{safe_name}"\r\n'.encode("utf-8"),
+                f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"),
+                content,
+                b"\r\n",
+            ]
+        )
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
 def _generate_with_gpt_image_2(prompt: str, size: str) -> bytes:
@@ -149,6 +304,17 @@ def _generate_with_gpt_image_2(prompt: str, size: str) -> bytes:
     url = endpoint.rstrip("/") + "/openai/v1/images/generations?api-version=preview"
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST")
     req.add_header("Content-Type", "application/json")
+    _add_openai_auth(req)
+    try:
+        with urllib.request.urlopen(req, timeout=float(os.environ.get("DF_IMAGE_TIMEOUT_SECONDS", "180"))) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:800]
+        raise RuntimeError(f"gpt-image-2 HTTP {exc.code}: {body}") from exc
+    return _decode_image_response(data, "gpt-image-2")
+
+
+def _add_openai_auth(req: urllib.request.Request) -> None:
     api_key = os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if api_key:
         req.add_header("api-key", api_key)
@@ -157,18 +323,15 @@ def _generate_with_gpt_image_2(prompt: str, size: str) -> bytes:
 
         token = DefaultAzureCredential().get_token("https://cognitiveservices.azure.com/.default")
         req.add_header("Authorization", f"Bearer {token.token}")
-    try:
-        with urllib.request.urlopen(req, timeout=float(os.environ.get("DF_IMAGE_TIMEOUT_SECONDS", "180"))) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")[:800]
-        raise RuntimeError(f"gpt-image-2 HTTP {exc.code}: {body}") from exc
+
+
+def _decode_image_response(data: dict[str, Any], label: str) -> bytes:
     b64 = ((data.get("data") or [{}])[0] or {}).get("b64_json")
     if not b64:
-        raise RuntimeError("gpt-image-2 response did not include b64_json")
+        raise RuntimeError(f"{label} response did not include b64_json")
     image_bytes = base64.b64decode(b64)
     if not image_bytes.startswith(b"\x89PNG"):
-        raise RuntimeError("gpt-image-2 output was not PNG")
+        raise RuntimeError(f"{label} output was not PNG")
     return image_bytes
 
 

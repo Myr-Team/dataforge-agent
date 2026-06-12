@@ -1,0 +1,51 @@
+{
+  "ok": true,
+  "api_base": "https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io",
+  "loaded_env": [
+    "C:\\Users\\12140\\.dataforge-codex.env",
+    "C:\\Users\\12140\\Documents\\Agent-Demo-project\\数据产品化Agent\\.dataforge-codex.env"
+  ],
+  "checks": {
+    "reference_registered": true,
+    "reference_proxy_png": true,
+    "generate_image_returned_png": true,
+    "generate_image_reference_count": true,
+    "generate_image_mode_valid": true,
+    "produce_reference_edit_mode": true,
+    "produce_concept_png": true,
+    "generate_image_used_edit_mode": true,
+    "produce_used_edit_mode": true
+  },
+  "workspace_id": "upload-batch8-logo-workspace-1781259024-20260612101027",
+  "reference_images": [
+    {
+      "url": "/api/workspaces/upload-batch8-logo-workspace-1781259024-20260612101027/reference-images/batch8-logo.png",
+      "role": "logo",
+      "filename": "batch8-logo.png",
+      "blob_url": "https://stdataforgedev.blob.core.windows.net/dataforge-workspaces/workspaces/upload-batch8-logo-workspace-1781259024-20260612101027/reference_images/batch8-logo.png",
+      "blob_name": "workspaces/upload-batch8-logo-workspace-1781259024-20260612101027/reference_images/batch8-logo.png",
+      "source_file": "reference_images/batch8-logo.png",
+      "content_type": "image/png",
+      "bytes": 993
+    }
+  ],
+  "image_result": {
+    "mode": "gpt-image-2-edit",
+    "bytes": 1159577,
+    "reference_image_count": 1,
+    "image_error": ""
+  },
+  "produce_result": {
+    "mode": "gpt-image-2-edit",
+    "bytes": 1320208,
+    "image_error": ""
+  },
+  "delete_results": {
+    "upload-batch8-logo-workspace-1781259024-20260612101027": {
+      "workspace_id": "upload-batch8-logo-workspace-1781259024-20260612101027",
+      "deleted": true,
+      "deleted_docs": 0,
+      "deleted_blobs": 3
+    }
+  }
+}

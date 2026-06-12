@@ -25,7 +25,7 @@ try:
     from .rag import search
     from .run_store import get_run, list_runs
     from .tracing import configure_monitoring
-    from .workspace_store import create_workspace_from_uploads, delete_workspace, get_workspace_detail, list_workspaces
+    from .workspace_store import create_workspace_from_uploads, delete_workspace, get_reference_image_content, get_workspace_detail, list_workspaces
     from .schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -54,7 +54,7 @@ except ImportError:
     from rag import search
     from run_store import get_run, list_runs
     from tracing import configure_monitoring
-    from workspace_store import create_workspace_from_uploads, delete_workspace, get_workspace_detail, list_workspaces
+    from workspace_store import create_workspace_from_uploads, delete_workspace, get_reference_image_content, get_workspace_detail, list_workspaces
     from schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -121,6 +121,7 @@ async def upload_workspace(
     name: str | None = Form(default=None),
     description: str | None = Form(default=None),
     workspace_id: str | None = Form(default=None),
+    asset_role: str | None = Form(default=None),
 ) -> UploadResponse:
     files = []
     for item in file:
@@ -138,6 +139,7 @@ async def upload_workspace(
             name=name,
             description=description,
             requested_workspace_id=workspace_id,
+            asset_role=asset_role,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
@@ -162,6 +164,15 @@ async def workspace_detail(workspace_id: str) -> WorkspaceDetailResponse:
     return WorkspaceDetailResponse.model_validate(result)
 
 
+@app.get("/api/workspaces/{workspace_id}/reference-images/{filename}")
+async def workspace_reference_image(workspace_id: str, filename: str) -> Response:
+    result = await run_in_threadpool(get_reference_image_content, workspace_id, filename)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Reference image not found: {filename}")
+    content, content_type = result
+    return Response(content=content, media_type=content_type)
+
+
 @app.delete("/api/workspaces/{workspace_id}", response_model=WorkspaceDeleteResponse)
 async def remove_workspace(workspace_id: str) -> WorkspaceDeleteResponse:
     try:
@@ -182,7 +193,7 @@ async def render_pdf(req: RenderPdfRequest) -> dict[str, Any]:
 
 @app.post("/api/generate-image")
 async def image(req: GenerateImageRequest) -> dict[str, Any]:
-    return await run_in_threadpool(generate_image, req.prompt, req.size)
+    return await run_in_threadpool(generate_image, req.prompt, req.size, req.reference_image_urls)
 
 
 @app.get("/api/artifacts/{name}")

@@ -1,0 +1,57 @@
+{
+  "ok": true,
+  "api_base": "https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io",
+  "loaded_env": [
+    "C:\\Users\\12140\\.dataforge-codex.env",
+    "C:\\Users\\12140\\Documents\\Agent-Demo-project\\数据产品化Agent\\.dataforge-codex.env"
+  ],
+  "checks": {
+    "no_errors": true,
+    "three_runs_no_clarify": true,
+    "all_routed_to_answer": true,
+    "citations_at_least_three": true,
+    "natural_language_not_raw_dump": true,
+    "opportunity_title_deduped": true
+  },
+  "workspace_id": "upload-batch9-polish-workspace-1781259130-20260612101212",
+  "clarify_counts": [
+    0,
+    0,
+    0
+  ],
+  "intents": [
+    [
+      "corpus_qa"
+    ],
+    [
+      "corpus_qa"
+    ],
+    [
+      "corpus_qa"
+    ]
+  ],
+  "citation_counts": [
+    8,
+    8,
+    8
+  ],
+  "title_check": {
+    "raw": "banana-climbing-shenzhen-banana-climbing-shenzhen-banana-climbing-shenzh",
+    "label": "Banana Climbing Shenzhen 做一个活动让攀岩馆推广方案",
+    "not_repeated": true,
+    "readable_length": true
+  },
+  "text_samples": [
+    "## 综合回答\n- 可以先围绕“做一个活动让攀岩馆推广方案”给出一版有据方案；以下内容只基于当前工作区命中的 8 条上传资料。\n\n## 资料里浮现的信号\n- category 是“门店”；topic 是“南山后海汇旗舰店” [1]\n- category 是“品牌”；topic 是“香蕉攀岩 Banana Climbing” [2]\n- category 是“活动复盘”；topic 是“女生攀岩日” [3]\n- category 是“异业合作线索”；topic 是“高相关赞助品类” [4]\n- category 是“活动复盘”；topic 是“万圣节抱石挑战赛” [5]\n- category 是“客户反馈”；topic 是“活动触达缺口” [6]\n\n## 建议方案\n- 先把方案主题绑定到最强信号：category 是“门店”；topic 是“南山后海汇旗舰店”，不要只做泛泛传播 [1]\n- 把第二类信号转成参与钩子或合作权益：category 是“品牌”；topic 是“香蕉攀岩 Banana Climbing”，用于设计触达文案、活动机制或会员权益 [2]\n- 用第三类信号定义最小验证指标：category 是“活动复盘”；topic 是“女生攀岩日”，建议记录触达人数、参与率、转化/复购、单次成本和用户反馈 [3]\n- 复盘时对照另一条命中信号做分层：category 是“异业合作线索”；topic 是“高相关赞助品类”，看哪些人群、渠道或内容真正拉动结果 [4]\n- 本次结构化 citations 共 8 条；结论应随后续上传数据变化而变化。\n- 本回答返回 8 条结构化 citation，前端可打开证据面板核验。",
+    "## 综合回答\n- 可以先围绕“做一个活动让攀岩馆推广方案”给出一版有据方案；以下内容只基于当前工作区命中的 8 条上传资料。\n\n## 资料里浮现的信号\n- category 是“门店”；topic 是“南山后海汇旗舰店” [1]\n- category 是“品牌”；topic 是“香蕉攀岩 Banana Climbing” [2]\n- category 是“活动复盘”；topic 是“女生攀岩日” [3]\n- category 是“异业合作线索”；topic 是“高相关赞助品类” [4]\n- category 是“活动复盘”；topic 是“万圣节抱石挑战赛” [5]\n- category 是“客户反馈”；topic 是“活动触达缺口” [6]\n\n## 建议方案\n- 先把方案主题绑定到最强信号：category 是“门店”；topic 是“南山后海汇旗舰店”，不要只做泛泛传播 [1]\n- 把第二类信号转成参与钩子或合作权益：category 是“品牌”；topic 是“香蕉攀岩 Banana Climbing”，用于设计触达文案、活动机制或会员权益 [2]\n- 用第三类信号定义最小验证指标：category 是“活动复盘”；topic 是“女生攀岩日”，建议记录触达人数、参与率、转化/复购、单次成本和用户反馈 [3]\n- 复盘时对照另一条命中信号做分层：category 是“异业合作线索”；topic 是“高相关赞助品类”，看哪些人群、渠道或内容真正拉动结果 [4]\n- 本次结构化 citations 共 8 条；结论应随后续上传数据变化而变化。\n- 本回答返回 8 条结构化 citation，前端可打开证据面板核验。",
+    "## 综合回答\n- 可以先围绕“做一个活动让攀岩馆推广方案”给出一版有据方案；以下内容只基于当前工作区命中的 8 条上传资料。\n\n## 资料里浮现的信号\n- category 是“门店”；topic 是“南山后海汇旗舰店” [1]\n- category 是“品牌”；topic 是“香蕉攀岩 Banana Climbing” [2]\n- category 是“活动复盘”；topic 是“女生攀岩日” [3]\n- category 是“异业合作线索”；topic 是“高相关赞助品类” [4]\n- category 是“活动复盘”；topic 是“万圣节抱石挑战赛” [5]\n- category 是“客户反馈”；topic 是“活动触达缺口” [6]\n\n## 建议方案\n- 先把方案主题绑定到最强信号：category 是“门店”；topic 是“南山后海汇旗舰店”，不要只做泛泛传播 [1]\n- 把第二类信号转成参与钩子或合作权益：category 是“品牌”；topic 是“香蕉攀岩 Banana Climbing”，用于设计触达文案、活动机制或会员权益 [2]\n- 用第三类信号定义最小验证指标：category 是“活动复盘”；topic 是“女生攀岩日”，建议记录触达人数、参与率、转化/复购、单次成本和用户反馈 [3]\n- 复盘时对照另一条命中信号做分层：category 是“异业合作线索”；topic 是“高相关赞助品类”，看哪些人群、渠道或内容真正拉动结果 [4]\n- 本次结构化 citations 共 8 条；结论应随后续上传数据变化而变化。\n- 本回答返回 8 条结构化 citation，前端可打开证据面板核验。"
+  ],
+  "delete_results": {
+    "upload-batch9-polish-workspace-1781259130-20260612101212": {
+      "workspace_id": "upload-batch9-polish-workspace-1781259130-20260612101212",
+      "deleted": true,
+      "deleted_docs": 56,
+      "deleted_blobs": 4
+    }
+  }
+}

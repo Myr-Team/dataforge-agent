@@ -107,6 +107,7 @@ class UploadResponse(BaseModel):
     indexed_count: int
     profile_summary: str
     documents: list[dict[str, Any]] = Field(default_factory=list)
+    reference_images: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkspaceSummary(BaseModel):
@@ -118,6 +119,7 @@ class WorkspaceSummary(BaseModel):
     profile_summary: str | None = None
     created_at: str | None = None
     documents: list[dict[str, Any]] = Field(default_factory=list)
+    reference_images: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkspacesResponse(BaseModel):
@@ -142,6 +144,17 @@ class WorkspaceDocumentDetail(BaseModel):
     external: bool = False
 
 
+class WorkspaceReferenceImage(BaseModel):
+    url: str
+    role: str = "reference"
+    filename: str
+    blob_url: str | None = None
+    blob_name: str | None = None
+    source_file: str | None = None
+    content_type: str | None = None
+    bytes: int | None = None
+
+
 class WorkspaceDetailResponse(BaseModel):
     workspace_id: str
     name: str
@@ -151,6 +164,7 @@ class WorkspaceDetailResponse(BaseModel):
     columns: list[WorkspaceColumnDetail] = Field(default_factory=list)
     doc_count: int = 0
     documents: list[WorkspaceDocumentDetail] = Field(default_factory=list)
+    reference_images: list[WorkspaceReferenceImage] = Field(default_factory=list)
     profile_summary: str | None = None
     signals: list[str] = Field(default_factory=list)
     created_at: str | None = None
@@ -243,6 +257,7 @@ class RenderPdfRequest(BaseModel):
 class GenerateImageRequest(BaseModel):
     prompt: str
     size: str = "1024x1024"
+    reference_image_urls: list[str] = Field(default_factory=list)
 
 
 class NarrateSummaryRequest(BaseModel):
@@ -259,6 +274,7 @@ class ProduceRequest(BaseModel):
     audit: dict[str, Any] = Field(default_factory=dict)
     answer: dict[str, Any] = Field(default_factory=dict)
     proposal: dict[str, Any] = Field(default_factory=dict)
+    reference_images: list[dict[str, Any]] = Field(default_factory=list)
     narrative: str | None = None
     text: str | None = None
 

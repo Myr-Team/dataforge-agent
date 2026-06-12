@@ -71,6 +71,7 @@ def persist_workspace_bundle(
     *,
     workspace_id: str,
     raw_payloads: list[dict[str, Any]],
+    reference_payloads: list[dict[str, Any]] | None = None,
     workspace_meta: dict[str, Any],
     profile: dict[str, Any],
 ) -> dict[str, Any]:
@@ -91,6 +92,15 @@ def persist_workspace_bundle(
         item_profile = item.get("profile")
         if isinstance(item_profile, dict):
             _upload_json(container, f"{prefix}/profiles/{profile_filename}", item_profile)
+    for item in reference_payloads or []:
+        filename = PathSafe.name(str(item.get("filename") or "reference-image"))
+        blob_name = f"{prefix}/reference_images/{filename}"
+        container.upload_blob(
+            blob_name,
+            bytes(item.get("content") or b""),
+            overwrite=True,
+            content_settings=ContentSettings(content_type=str(item.get("content_type") or "application/octet-stream")),
+        )
     _delete_tombstone(container, workspace_id)
     entry = _registry_entry(workspace_meta, profile)
     registry = load_workspace_registry()
@@ -103,6 +113,7 @@ def persist_workspace_bundle(
         "prefix": prefix,
         "registry_blob": REGISTRY_BLOB,
         "raw_count": len(raw_payloads),
+        "reference_count": len(reference_payloads or []),
     }
 
 
@@ -191,6 +202,20 @@ def upload_artifact(name: str, content: bytes, content_type: str) -> dict[str, A
     return {"container": _container_name(), "blob_name": blob_name, "blob_url": _blob_url(blob_name)}
 
 
+def download_blob_content(blob_name: str) -> tuple[bytes, str] | None:
+    if not blob_configured():
+        return None
+    try:
+        blob = _container_client().get_blob_client(blob_name)
+        props = blob.get_blob_properties()
+        content_type = getattr(props.content_settings, "content_type", None) or "application/octet-stream"
+        return blob.download_blob().readall(), content_type
+    except ResourceNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
 def download_artifact(name: str) -> tuple[bytes, str] | None:
     if not blob_configured():
         return None
@@ -218,6 +243,7 @@ def _registry_entry(workspace_meta: dict[str, Any], profile: dict[str, Any]) -> 
         "doc_count": int(workspace_meta.get("indexed_count") or 1),
         "source_file": profile.get("source_file"),
         "documents": workspace_meta.get("documents") or [],
+        "reference_images": workspace_meta.get("reference_images") or [],
         "blob_prefix": f"workspaces/{workspace_id}",
         "persistence_mode": "azure_blob",
     }

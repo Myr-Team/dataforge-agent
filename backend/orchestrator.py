@@ -37,7 +37,7 @@ try:
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
-    from .workspace_store import workspace_context
+    from .workspace_store import workspace_context, workspace_reference_images
 except ImportError:
     import cache_store
     from chat_loop_primitives import sse
@@ -59,7 +59,7 @@ except ImportError:
     from tools.generate_image import generate_image
     from tools.narrate_summary import narrate_summary
     from tools.render_pdf import render_pdf_report
-    from workspace_store import workspace_context
+    from workspace_store import workspace_context, workspace_reference_images
 
 
 PRODUCT_TERMS = (
@@ -81,6 +81,15 @@ _MARKET_CACHE_SECONDS = float(os.environ.get("DF_MARKET_CACHE_SECONDS", "600"))
 def _contains(text: str, terms: tuple[str, ...]) -> bool:
     lowered = text.lower()
     return any(term in lowered for term in terms)
+
+
+def _looks_like_solution_request(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    cjk_action = re.search(r"(怎么|如何|怎样|方案|建议|推荐|策略|计划|活动|推广|落地|执行|设计)", text)
+    latin_action = re.search(r"\b(how|plan|strategy|recommend|recommendation|advice|campaign|promote|proposal|approach)\b", text)
+    return bool(cjk_action or latin_action)
 
 
 def _clean_text(value: Any, limit: int | None = None) -> str:
@@ -139,8 +148,105 @@ def _artifact_verdict(artifact: dict[str, Any], fallback: str | None = None) -> 
 
 
 def _slug(value: str, fallback: str = "generated-data-product") -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return slug[:72] or fallback
+    compact = _collapse_repeated_slug(value)
+    slug = re.sub(r"[^a-z0-9]+", "-", compact.lower()).strip("-")
+    tokens = [token for token in slug.split("-") if token]
+    if len(tokens) > 8:
+        slug = "-".join(tokens[:8])
+    return slug[:72].strip("-") or fallback
+
+
+def _collapse_repeated_slug(value: Any) -> str:
+    raw = str(value or "").strip()
+    tokens = [token for token in re.split(r"[-_\s]+", raw) if token]
+    if not tokens:
+        return raw
+    collapsed: list[str] = []
+    idx = 0
+    while idx < len(tokens):
+        best_size = 0
+        best_end = idx
+        max_size = (len(tokens) - idx) // 2
+        for size in range(1, max_size + 1):
+            seq = tokens[idx : idx + size]
+            end = idx + size
+            repeats = 1
+            while end + size <= len(tokens) and tokens[end : end + size] == seq:
+                repeats += 1
+                end += size
+            if repeats > 1 and size > best_size:
+                best_size = size
+                best_end = end
+        if best_size:
+            collapsed.extend(tokens[idx : idx + best_size])
+            idx = best_end
+        else:
+            if not collapsed or collapsed[-1].lower() != tokens[idx].lower():
+                collapsed.append(tokens[idx])
+            idx += 1
+    for size in range(1, len(collapsed) // 2 + 1):
+        prefix = collapsed[:size]
+        tail = collapsed[size:]
+        if tail and len(tail) <= size and all(
+            prefix[pos].lower().startswith(tail[pos].lower()) or tail[pos].lower().startswith(prefix[pos].lower())
+            for pos in range(len(tail))
+        ):
+            collapsed = prefix
+            break
+    return " ".join(collapsed)
+
+
+def _human_title_from_opportunity(value: Any) -> str:
+    text = _collapse_repeated_slug(value)
+    text = re.sub(r"[\\/#.]+", " ", text)
+    text = re.sub(r"[_-]+", " ", text)
+    text = re.sub(r"\b(raw|docs|json|csv|xlsx|xlsm|profile)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" -_")
+    if not text:
+        return "当前工作区机会"
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return text[:36]
+    words = text.split()
+    return " ".join(word.capitalize() if word.isascii() else word for word in words[:8])
+
+
+def _query_action_title(message: str) -> str:
+    text = re.sub(r"\s+", "", str(message or ""))
+    text = re.sub(r"[，。！？!?；;：:、,.]", "", text)
+    text = re.sub(r"^(我想|请|帮我|能不能|可以|想要|需要)", "", text)
+    text = re.sub(r"请基于.*$", "", text)
+    text = text.replace("该怎么做", "怎么做")
+    if re.search(r"[\u4e00-\u9fff]", text):
+        for marker in ("怎么做", "如何做", "怎么", "如何"):
+            text = text.replace(marker, "")
+        text = text[:14]
+        if text and not re.search(r"(方案|建议|策略|计划)$", text):
+            text += "方案"
+        return text
+    words = [word for word in re.findall(r"[A-Za-z0-9]+", str(message or "")) if len(word) > 2]
+    return " ".join(words[:5]).title()
+
+
+def _clean_opportunity_label(raw: Any, req: ChatRequest, artifact: dict[str, Any]) -> str:
+    collapsed = _human_title_from_opportunity(raw)
+    raw_text = str(raw or "")
+    raw_tokens = [token for token in re.split(r"[-_\s]+", raw_text.lower()) if token]
+    collapsed_tokens = [token for token in re.split(r"\s+", collapsed.lower()) if token]
+    repeated_or_truncated = len(raw_tokens) > len(collapsed_tokens) + 2 or len(raw_text) > 72
+    query_title = _query_action_title(req.message) if _looks_like_solution_request(req.message) else ""
+    if query_title and (repeated_or_truncated or len(collapsed_tokens) <= 3):
+        if re.search(r"[\u4e00-\u9fff]", query_title):
+            prefix = collapsed if collapsed and not re.search(r"^(Workspace|Generated|Current)", collapsed) else ""
+            candidate = f"{prefix} {query_title}".strip()
+            return candidate[:48]
+        return f"{collapsed} {query_title}".strip()[:60]
+    return collapsed[:60]
+
+
+def _normalize_feasibility_opportunity(report: FeasibilityReport, req: ChatRequest, artifact: dict[str, Any]) -> FeasibilityReport:
+    data = report.model_dump()
+    data["opportunity_id"] = _clean_opportunity_label(data.get("opportunity_id"), req, artifact)
+    return FeasibilityReport.model_validate(data)
 
 
 def _evidence_from_hit(hit: dict[str, Any]) -> Evidence:
@@ -238,6 +344,12 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
     allowed_intents = {"feasibility_analysis", "followup_edit", "smalltalk_or_meta", "clarify_needed", "corpus_qa"}
     if intent not in allowed_intents:
         intent = "clarify_needed"
+    context = workspace_context(req.workspace_id)
+    forced_grounded_answer = False
+    if intent == "clarify_needed" and _looks_like_solution_request(req.message) and int(context.get("doc_count") or 0) > 0:
+        intent = "corpus_qa"
+        raw["needs_clarification"] = False
+        forced_grounded_answer = True
     experts = [str(item) for item in (raw.get("experts") or []) if isinstance(item, str)]
     allowed_agents = {
         "df-corpus-analyst",
@@ -270,7 +382,11 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
         output_mode=output_mode,  # type: ignore[arg-type]
         needs_clarification=bool(raw.get("needs_clarification")) or intent == "clarify_needed",
         clarifying_question=str(raw.get("clarifying_question") or "").strip() or None,
-        reason=_clean_text(raw.get("reason"), 900) or "Coordinator routed the request by intent.",
+        reason=(
+            (_clean_text(raw.get("reason"), 800) + "；用户是在请求可基于当前资料回答的行动方案，已稳定路由到 grounded answer。")
+            if forced_grounded_answer
+            else (_clean_text(raw.get("reason"), 900) or "Coordinator routed the request by intent.")
+        ),
     )
 
 
@@ -340,9 +456,16 @@ def _run_corpus_analyst(req: ChatRequest) -> dict[str, Any]:
 
 
 def _infer_title(message: str, hits: list[dict[str, Any]]) -> str:
+    if _looks_like_solution_request(message):
+        query_title = _query_action_title(message)
+        if query_title:
+            source = _human_title_from_opportunity((hits[0] or {}).get("source_file") or (hits[0] or {}).get("title")) if hits else ""
+            if source and not source.lower().startswith("profile"):
+                return f"{source} {query_title}".strip()[:60]
+            return query_title
     titles = [str(hit.get("title") or "").strip() for hit in hits if hit.get("title")]
     if titles:
-        first = titles[0].replace("_", " ").replace("-", " ").title()
+        first = _human_title_from_opportunity(titles[0])
         return f"{first} Product Opportunity"
     words = [word for word in re.findall(r"[A-Za-z0-9]+", message) if len(word) > 2]
     return " ".join(words[:5]).title() or "Workspace Product Opportunity"
@@ -549,6 +672,7 @@ def _fallback_feasibility(req: ChatRequest, artifact: dict[str, Any], catalog: l
             "请复核证据引用与模型输出格式后再提升结论强度。",
         ],
     )
+    report = _normalize_feasibility_opportunity(report, req, artifact)
     data = report.model_dump()
     data["_llm"] = {
         "mode": "fallback_after_agent_error",
@@ -631,6 +755,7 @@ def _run_feasibility_analyst(
             overall_confidence="speculative",
             gap_list=["\u5de5\u4f5c\u533a\u4e2d\u672a\u68c0\u7d22\u5230\u4e0e\u8be5\u8bf7\u6c42\u76f8\u5173\u7684\u8bc1\u636e\u3002"],
         )
+        report = _normalize_feasibility_opportunity(report, req, artifact)
         data = report.model_dump()
         data["_llm"] = {"mode": "empty_evidence_deterministic", "response_id": None, "usage": {}}
         return data
@@ -664,6 +789,7 @@ def _run_feasibility_analyst(
         report = FeasibilityReport.model_validate(result["structured"])
         report, evidence_warnings = _verify_evidence(report, catalog)
         report = _normalize_feasibility_confidence(report)
+        report = _normalize_feasibility_opportunity(report, req, artifact)
         data = report.model_dump()
         data["_llm"] = _model_meta(result)
         data["_llm"]["evidence_warnings"] = evidence_warnings
@@ -790,16 +916,20 @@ def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
         "market": market,
         "audit": artifact.get("audit", {}),
         "workspace_id": artifact.get("workspace_id"),
+        "reference_images": artifact.get("reference_images") or [],
     }
 
 
 def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
+    if not artifact.get("reference_images"):
+        artifact["reference_images"] = workspace_reference_images(str(artifact.get("workspace_id") or ""))
     proposal = _proposal_payload(artifact)
     image_prompt = _image_prompt_from_proposal(proposal)
     audio_text = _concise_narration_from_proposal(proposal)
+    reference_image_urls = _reference_image_urls(proposal.get("reference_images") or [])
     with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dataforge-producer") as pool:
         pdf_future = pool.submit(render_pdf_report, proposal, "project_proposal")
-        image_future = pool.submit(generate_image, image_prompt, "1024x1024")
+        image_future = pool.submit(generate_image, image_prompt, "1024x1024", reference_image_urls)
         audio_future = pool.submit(narrate_summary, audio_text, "zh-CN-XiaoxiaoNeural")
         pdf = pdf_future.result()
         image = image_future.result()
@@ -818,6 +948,19 @@ def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _reference_image_urls(reference_images: list[dict[str, Any]]) -> list[str]:
+    ordered = sorted(
+        [item for item in reference_images if isinstance(item, dict)],
+        key=lambda item: {"logo": 0, "activity": 1, "reference": 2}.get(str(item.get("role") or "reference"), 3),
+    )
+    urls: list[str] = []
+    for item in ordered[:3]:
+        value = item.get("blob_url") or item.get("url")
+        if value:
+            urls.append(str(value))
+    return urls
+
+
 def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
     existing = _existing_proposal(payload)
     if existing:
@@ -830,6 +973,7 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
         "market": payload.get("market") or {},
         "audit": payload.get("audit") or {},
         "answer": payload.get("answer") or {},
+        "reference_images": payload.get("reference_images") or [],
         "narrative": payload.get("narrative") or payload.get("text"),
     }
     return _run_producer(artifact)
@@ -1035,8 +1179,16 @@ def _build_citations(artifact: dict[str, Any]) -> tuple[list[dict[str, Any]], di
     citations: list[dict[str, Any]] = []
     marker_by_ref: dict[str, int] = {}
 
-    def add_citation(ref: str, *, confidence: str = "data_confirmed", source_type: str = "corpus") -> int | None:
-        matched = next((item for item in _evidence_catalog(artifact) if _refs_match(ref, item)), None)
+    catalog = _evidence_catalog(artifact)
+
+    def add_citation(
+        ref: str,
+        *,
+        confidence: str = "data_confirmed",
+        source_type: str = "corpus",
+        matched_override: dict[str, Any] | None = None,
+    ) -> int | None:
+        matched = matched_override or next((item for item in catalog if _refs_match(ref, item)), None)
         if not matched and ref:
             matched = {"ref": ref, "quote": ""}
         if not matched:
@@ -1073,7 +1225,21 @@ def _build_citations(artifact: dict[str, Any]) -> tuple[list[dict[str, Any]], di
     if not citations:
         for hit in artifact.get("corpus", {}).get("hits", [])[:8]:
             evidence = _evidence_from_hit(hit)
-            add_citation(evidence.ref, confidence="data_confirmed", source_type="corpus")
+            add_citation(
+                evidence.ref,
+                confidence="data_confirmed",
+                source_type="corpus",
+                matched_override={
+                    "ref": evidence.ref,
+                    "quote": evidence.quote,
+                    "metadata": {
+                        "title": hit.get("title"),
+                        "source_file": hit.get("source_file"),
+                        "sheet": hit.get("sheet"),
+                        "row": hit.get("row"),
+                    },
+                },
+            )
 
     for finding in artifact.get("market", {}).get("external_findings", [])[:4]:
         if not isinstance(finding, dict):
@@ -1105,19 +1271,22 @@ def _evidence_markers(evidence_items: list[dict[str, Any]], citations: list[dict
     markers: list[str] = []
     for evidence in evidence_items:
         ref = str(evidence.get("ref") or "")
+        tail = _ref_tail(ref)
+        source = _ref_source(ref)
         matched = next(
             (
                 item
                 for item in citations
                 if _normalize_ref(ref)
                 and (
-                    _normalize_ref(item.get("source_file")) == _ref_source(ref)
-                    or _normalize_ref(item.get("chunk_id")) == _ref_tail(ref)
-                    or _ref_tail(ref) in _normalize_ref(item.get("chunk_id"))
+                    (tail and _normalize_ref(item.get("chunk_id")) == tail)
+                    or (tail and tail in _normalize_ref(item.get("chunk_id")))
                 )
             ),
             None,
         )
+        if not matched and source and not tail:
+            matched = next((item for item in citations if _normalize_ref(item.get("source_file")) == source), None)
         if matched:
             marker = f"[{matched['marker']}]"
             if marker not in markers:
@@ -1134,6 +1303,7 @@ def _structured_answer(req: ChatRequest, decision: RoutingDecision, artifact: di
     market = artifact.get("market") or {}
     audit = artifact.get("audit") or {}
     opportunity = feasibility.get("opportunity_id") or ((corpus.get("opportunities") or [{}])[0] or {}).get("title") or "workspace opportunity"
+    opportunity_title = _human_title_from_opportunity(opportunity)
     verdict = feasibility.get("verdict") or "unknown"
     overall = feasibility.get("overall_confidence") or "speculative"
     lines: list[str] = [
@@ -1142,7 +1312,7 @@ def _structured_answer(req: ChatRequest, decision: RoutingDecision, artifact: di
         f"- 本次回答基于当前工作区检索、可行性分析和审计结果生成；审计结论：{audit.get('verdict', 'not_run')}。",
         "",
         "## 机会",
-        f"- 机会方向：{_strip_inline_refs(opportunity)}。",
+        f"- 机会方向：{_strip_inline_refs(opportunity_title)}。",
     ]
     if market.get("positioning_note"):
         market_markers = " ".join(f"[{item['marker']}]" for item in citations if item.get("source_type") == "market")[:24]
@@ -1167,12 +1337,8 @@ def _structured_answer(req: ChatRequest, decision: RoutingDecision, artifact: di
     else:
         lines.append("- 暂无额外缺口；建议继续用新数据验证关键假设。")
     lines.extend(["", "## 建议下一步"])
-    low_dimensions = [item for item in dimensions if int(item.get("score") or 0) <= 2]
-    if low_dimensions:
-        for item in low_dimensions[:3]:
-            lines.append(f"- 优先补强 `{item.get('name')}`：围绕该维度补充可量化样本、成本或客户证据。")
-    else:
-        lines.append("- 选择一个最小可验证场景，补充真实客户、成本和交付周期样本。")
+    for item in _feasibility_next_steps(req, artifact, citations):
+        lines.append(f"- {item}")
     if citations:
         lines.append(f"- 前端可在证据面板中查看 {len(citations)} 条结构化 citation。")
     markdown = "\n".join(lines).strip()
@@ -1184,34 +1350,48 @@ def _structured_answer(req: ChatRequest, decision: RoutingDecision, artifact: di
     }
 
 
+def _feasibility_next_steps(req: ChatRequest, artifact: dict[str, Any], citations: list[dict[str, Any]]) -> list[str]:
+    dimensions = artifact.get("feasibility", {}).get("dimensions") or []
+    low_dimensions = [item for item in dimensions if int(item.get("score") or 0) <= 2]
+    hits = artifact.get("corpus", {}).get("hits", [])
+    signals = _evidence_signals(hits, citations)
+    steps: list[str] = []
+    if signals:
+        first = signals[0]
+        second = signals[1] if len(signals) > 1 else first
+        third = signals[2] if len(signals) > 2 else second
+        steps.append(f"把第一轮验证场景锁定在：{first['text']}，先做小范围触达和参与记录 {first['markers']}".rstrip())
+        steps.append(f"把活动、联名、赞助或权益设计绑定到：{second['text']}，避免脱离资料里的真实兴趣/痛点 {second['markers']}".rstrip())
+        steps.append(f"复盘指标直接围绕：{third['text']}，记录转化、复购、成本、参与反馈和渠道来源 {third['markers']}".rstrip())
+    for dimension in low_dimensions[:2]:
+        name = dimension.get("name") or "低分维度"
+        rationale = _strip_inline_refs(dimension.get("rationale")) or "当前证据不足"
+        steps.append(f"补强 `{name}`：针对“{rationale[:72]}”补一组可量化样本或真实成本数据。")
+    if not steps:
+        topic = _query_action_title(req.message) or _human_title_from_opportunity(artifact.get("feasibility", {}).get("opportunity_id"))
+        steps.append(f"围绕“{topic}”跑一个 1 周最小验证，至少记录用户触达、参与、转化、成本和复盘反馈。")
+    return steps[:5]
+
+
 def _structured_corpus_answer(req: ChatRequest, artifact: dict[str, Any]) -> dict[str, Any]:
     citations, _ = _build_citations(artifact)
     hits = artifact.get("corpus", {}).get("hits", [])
+    signals = _evidence_signals(hits, citations)
+    topic = _query_action_title(req.message) or "当前问题"
     lines: list[str] = [
-        "## 资料回答",
-        f"- 我在当前工作区检索到 {len(hits)} 条相关记录；以下判断只基于这些已上传内容。",
+        "## 综合回答",
+        f"- 可以先围绕“{topic}”给出一版有据方案；以下内容只基于当前工作区命中的 {len(hits)} 条上传资料。",
         "",
-        "## 关键证据",
+        "## 资料里浮现的信号",
     ]
-    if hits:
-        for hit in hits[:5]:
-            evidence = _evidence_from_hit(hit).model_dump()
-            markers = _evidence_markers([evidence], citations)
-            source = hit.get("source_file") or "workspace"
-            row = f" row {hit.get('row')}" if hit.get("row") else ""
-            snippet = _strip_inline_refs(hit.get("content"))[:260]
-            lines.append(f"- `{source}{row}`：{snippet} {markers}".rstrip())
+    if signals:
+        for signal in signals[:6]:
+            lines.append(f"- {signal['text']} {signal['markers']}".rstrip())
     else:
         lines.append("- 当前问题没有命中足够具体的工作区记录。")
-    lines.extend(["", "## 建议"])
-    if hits:
-        lines.extend(
-            [
-                "- 先把活动主题绑定到命中记录中最具体的痛点、资产或场景，避免只做泛泛传播。",
-                "- 用命中记录里的会员、门店、活动、赞助或周边信号设计一个最小活动闭环：触达、参与、转化、复盘。",
-                "- 下一轮补充真实转化、成本、参与人数和复购数据后，再升级为完整产品可行性评估。",
-            ]
-        )
+    lines.extend(["", "## 建议方案"])
+    if signals:
+        lines.extend(_corpus_action_lines(signals, citations))
     else:
         lines.append("- 先上传或补充与该问题直接相关的记录，再让系统生成有据建议。")
     if citations:
@@ -1222,6 +1402,64 @@ def _structured_corpus_answer(req: ChatRequest, artifact: dict[str, Any]) -> dic
         "citations": citations,
         "_llm": {"mode": "structured_corpus_answer_renderer", "response_id": None, "usage": {}},
     }
+
+
+def _evidence_signals(hits: list[dict[str, Any]], citations: list[dict[str, Any]]) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for hit in hits[:8]:
+        text = _compact_hit_signal(hit)
+        if not text:
+            continue
+        key = re.sub(r"\W+", "", text.lower())[:80]
+        if key in seen:
+            continue
+        seen.add(key)
+        markers = _evidence_markers([_evidence_from_hit(hit).model_dump()], citations)
+        items.append({"text": text, "markers": markers})
+    return items
+
+
+def _compact_hit_signal(hit: dict[str, Any]) -> str:
+    content = _clean_text(hit.get("content"), 900)
+    if not content:
+        return ""
+    parts = [part.strip() for part in re.split(r";|\n", content) if part.strip()]
+    selected: list[str] = []
+    skip_names = {"collection", "id", "row", "source", "source_file", "chunk_id"}
+    for part in parts:
+        if ":" in part:
+            name, value = part.split(":", 1)
+            name = name.strip()
+            value = value.strip()
+            if not value or name.lower() in skip_names:
+                continue
+            if len(value) < 2:
+                continue
+            selected.append(f"{name} 是“{value[:44]}”")
+        else:
+            selected.append(part[:70])
+        if len(selected) >= 2:
+            break
+    if not selected:
+        return content[:100]
+    text = "；".join(selected)
+    return _strip_raw_ref_leaks(_strip_inline_refs(text))[:140]
+
+
+def _corpus_action_lines(signals: list[dict[str, str]], citations: list[dict[str, Any]]) -> list[str]:
+    first = signals[0]
+    second = signals[1] if len(signals) > 1 else first
+    third = signals[2] if len(signals) > 2 else second
+    fourth = signals[3] if len(signals) > 3 else third
+    citation_total = len(citations)
+    return [
+        f"- 先把方案主题绑定到最强信号：{first['text']}，不要只做泛泛传播 {first['markers']}".rstrip(),
+        f"- 把第二类信号转成参与钩子或合作权益：{second['text']}，用于设计触达文案、活动机制或会员权益 {second['markers']}".rstrip(),
+        f"- 用第三类信号定义最小验证指标：{third['text']}，建议记录触达人数、参与率、转化/复购、单次成本和用户反馈 {third['markers']}".rstrip(),
+        f"- 复盘时对照另一条命中信号做分层：{fourth['text']}，看哪些人群、渠道或内容真正拉动结果 {fourth['markers']}".rstrip(),
+        f"- 本次结构化 citations 共 {citation_total} 条；结论应随后续上传数据变化而变化。",
+    ]
 
 
 def _strip_raw_ref_leaks(text: str) -> str:
@@ -1374,8 +1612,9 @@ async def _progress_frames(
 
 async def _producer_frames(artifact: dict[str, Any], conversation_id: str) -> AsyncIterator[str]:
     yield _frame("role_change", {"agent": "df-producer"}, conversation_id)
+    reference_count = len(artifact.get("reference_images") or workspace_reference_images(str(artifact.get("workspace_id") or "")))
     yield _frame("tool_call", {"agent": "df-producer", "name": "render_pdf_report", "args": {"template": "project_proposal"}}, conversation_id)
-    yield _frame("tool_call", {"agent": "df-producer", "name": "generate_image", "args": {"size": "1024x1024"}}, conversation_id)
+    yield _frame("tool_call", {"agent": "df-producer", "name": "generate_image", "args": {"size": "1024x1024", "reference_count": reference_count}}, conversation_id)
     yield _frame("tool_call", {"agent": "df-producer", "name": "narrate_summary", "args": {"voice": "zh-CN-XiaoxiaoNeural"}}, conversation_id)
     producer_task = asyncio.create_task(run_in_threadpool(_run_producer, artifact))
     while not producer_task.done():
