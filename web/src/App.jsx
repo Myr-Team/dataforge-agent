@@ -377,31 +377,34 @@ function Welcome({ run, onUpload }) {
 
 function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifacts, stream, producing }) {
   const endRef = useRef(null);
+  // 消息/段落变化时平滑滚动；逐字流期间用 instant（每帧 smooth 滚动会与流式重渲染抢主线程，造成读流背压拖慢整轮）
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: REDUCED_MOTION ? "auto" : "smooth", block: "end" });
-  }, [messages, trace, running, stream]);
+  }, [messages.length, trace.length, running]);
+  useEffect(() => {
+    if (stream) endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+  }, [stream]);
 
-  const userMsgs = messages.filter((m) => m.role === "user");
-  const asstMsgs = messages.filter((m) => m.role === "assistant");
   const hasArtifacts = Object.values(artifacts || {}).some(Boolean);
-  // 仅当：有助手回复、不在运行、且尚未生成产物时，才在回复下方渐出"生成产物"按钮
-  const showProduce = asstMsgs.length > 0 && !running && !hasArtifacts;
+  // 最后一条助手消息的下标（产物按钮 / 打字机只挂在它上面）
+  const lastAsstIdx = messages.map((m) => m.role).lastIndexOf("assistant");
+  const showProduce = lastAsstIdx >= 0 && !running && !hasArtifacts;
 
   if (!messages.length && !running) {
     return <Welcome run={run} onUpload={onUpload} />;
   }
+  // 按时间顺序逐条渲染（多轮对话不再被拆成"先所有提问、后所有回复"）
   return (
     <div className="chat-stream">
-      {userMsgs.map((m, i) => (
-        <Bubble key={`u-${i}`} role="user" name="你" time={m.time}><p className="bubble-text">{m.text}</p></Bubble>
-      ))}
-      <ActivityTimeline trace={trace} running={running} />
-      {asstMsgs.map((m, i) => {
-        const last = i === asstMsgs.length - 1;
-        return (
-          <Bubble key={`a-${i}`} role="assistant" name="DataForge" time={m.time}>
-            {last && !REDUCED_MOTION && !m.streamed ? <Typewriter text={m.text} /> : <p className="bubble-text">{m.text}</p>}
-            {last && showProduce ? (
+      {messages.map((m, i) =>
+        m.role === "user" ? (
+          <Bubble key={`m-${i}`} role="user" name="你" time={m.time}>
+            <p className="bubble-text">{m.text}</p>
+          </Bubble>
+        ) : (
+          <Bubble key={`m-${i}`} role="assistant" name="DataForge" time={m.time}>
+            {i === lastAsstIdx && !REDUCED_MOTION && !m.streamed ? <Typewriter text={m.text} /> : <p className="bubble-text">{m.text}</p>}
+            {i === lastAsstIdx && showProduce ? (
               <div className="produce-cta">
                 <button className="primary" type="button" onClick={onProduce} disabled={producing}>
                   <Icon name="spark" /> {producing ? "生成中…" : "据此生成完整产物"}
@@ -410,8 +413,9 @@ function ChatStream({ messages, trace, running, run, onUpload, onProduce, artifa
               </div>
             ) : null}
           </Bubble>
-        );
-      })}
+        ),
+      )}
+      {running ? <ActivityTimeline trace={trace} running={running} /> : null}
       {stream ? (
         <Bubble role="assistant" name="DataForge" time="刚刚">
           <p className="bubble-text">{stream}<span className="caret" /></p>
@@ -511,19 +515,131 @@ function exportTrace(trace) {
   URL.revokeObjectURL(a.href);
 }
 
-function TracePanel({ trace, running, filter, setFilter, scrollRef }) {
+const EVENT_LABELS = {
+  ready: "就绪", user: "提问", plan: "规划", role_change: "切换", tool_call: "调用工具",
+  tool_result: "工具结果", model_response: "模型推理", audit: "审计", clarify: "澄清", final: "完成", error: "错误",
+};
+
+// 把扁平事件流按"哪个智能体在执行"聚合成段：一个 plan/role_change 开一段，
+// 其后的 tool_call/tool_result/model_response/audit 等子步都并入该段（progress/逐字流不入段）。
+function buildSegments(trace) {
+  const segs = [];
+  let cur = null;
+  const open = (agent, kind, data) => { cur = { agent, kind, data: data || {}, events: [] }; segs.push(cur); };
+  for (const item of trace) {
+    const ev = item.event;
+    if (ev === "answer_delta" || ev === "delta" || ev === "progress") continue;
+    if (ev === "plan") { open("df-coordinator", "plan", item.data); cur.events.push(item); continue; }
+    if (ev === "role_change") { open(item.data?.agent, "agent", item.data); cur.events.push(item); continue; }
+    if (ev === "final") { open("__final__", "final", item.data); cur.events.push(item); continue; }
+    if (ev === "error") { open("__error__", "error", item.data); cur.events.push(item); continue; }
+    if (!cur) open(item.data?.agent || "__intro__", "intro", item.data);
+    cur.events.push(item);
+  }
+  return segs;
+}
+
+function segMatchesFilter(ev, filter) {
+  if (filter === "tools") return ev.event === "tool_call" || ev.event === "tool_result";
+  if (filter === "models") return ev.event === "model_response";
+  if (filter === "audit") return ev.event === "audit";
+  return true;
+}
+
+// 单条子步的中文描述
+function stepText(item) {
+  const d = item.data || {};
+  switch (item.event) {
+    case "ready": return "已连接编排器";
+    case "user": return `收到提问：${d.text || ""}`;
+    case "plan": return `规划意图「${d.intent || "?"}」→ ${(d.experts || []).map(agentLabel).join("、")}`;
+    case "role_change": return `${agentLabel(d.agent)} 接手${d.revision ? `（第 ${d.revision} 次修订）` : ""}`;
+    case "tool_call": return `调用工具 ${d.name || "tool"}`;
+    case "tool_result": return `工具 ${d.name || "tool"} 返回 · ${d.count ?? (d.bytes ? `${Math.round(d.bytes / 1024)}KB` : "ok")}`;
+    case "model_response": return `推理完成 · ${d.usage?.total_tokens ?? 0} tokens · ${String(d.response_id || "n/a").slice(0, 16)}…`;
+    case "audit": return `审计：${d.verdict === "pass" ? "通过" : "打回修订"}${d.issues?.length ? ` — ${d.issues[0]}` : ""}`;
+    case "clarify": return `需要澄清：${d.question || ""}`;
+    case "final": return d.text || "已生成最终结论";
+    case "error": return `运行出错：${d.message || ""}`;
+    default: return EVENT_LABELS[item.event] || item.event;
+  }
+}
+
+function segStatus(seg, active) {
+  if (seg.kind === "final") return { label: "完成", tone: "final" };
+  if (seg.kind === "error") return { label: "出错", tone: "error" };
+  const audit = [...seg.events].reverse().find((e) => e.event === "audit");
+  if (audit) return audit.data?.verdict === "pass" ? { label: "审计通过", tone: "ok" } : { label: "打回修订", tone: "warn" };
+  if (active) return { label: "进行中", tone: "active" };
+  return { label: "已完成", tone: "done" };
+}
+
+function segSummary(seg) {
+  if (seg.kind === "final") return seg.data?.text ? String(seg.data.text).slice(0, 80) : "已生成最终结论";
+  if (seg.kind === "plan") return `${seg.data?.intent || "规划"} · 调度 ${(seg.data?.experts || []).length} 个智能体`;
+  if (seg.kind === "error") return seg.data?.message || "运行出错";
+  const tools = seg.events.filter((e) => e.event === "tool_call").length;
+  const tok = seg.events.filter((e) => e.event === "model_response").reduce((s, e) => s + (e.data?.usage?.total_tokens || 0), 0);
+  const bits = [];
+  if (tools) bits.push(`${tools} 次工具调用`);
+  if (tok) bits.push(`${tok} tokens 推理`);
+  return bits.join(" · ") || `${seg.events.length} 个事件`;
+}
+
+function segHead(seg) {
+  if (seg.kind === "final") return { name: "最终结论", role: "汇总输出" };
+  if (seg.kind === "plan") return { name: "协调器", role: "意图路由" };
+  if (seg.kind === "error") return { name: "运行错误", role: "" };
+  if (seg.kind === "intro") return { name: "编排器", role: "初始化" };
+  return { name: agentLabel(seg.agent), role: AGENTS[seg.agent]?.role || "" };
+}
+
+// 一个智能体一张卡：运行中自动展开逐行显示子步；完成后折叠成一行，点标题可重新展开。
+function TraceSegment({ seg, index, active, expanded, filter, onToggle }) {
+  const head = segHead(seg);
+  const status = segStatus(seg, active);
+  const steps = filter === "all" ? seg.events : seg.events.filter((e) => segMatchesFilter(e, filter));
+  return (
+    <div className={`trace-item ${seg.kind} ${active ? "active" : ""} ${expanded ? "open" : ""}`} style={{ "--i": index }}>
+      <div className="trace-rail">
+        <span className={`dot ${active ? "loading" : "done"}`} />
+      </div>
+      <div className="trace-card seg-card">
+        <button className="seg-head" type="button" onClick={onToggle} aria-expanded={expanded}>
+          <span className="seg-name">{head.name}</span>
+          {head.role ? <span className="seg-role">{head.role}</span> : null}
+          <span className={`seg-status ${status.tone}`}>{status.label}</span>
+          <span className="seg-count">{seg.events.length} 步</span>
+          <span className={`seg-caret ${expanded ? "open" : ""}`} aria-hidden="true">▸</span>
+        </button>
+        {expanded ? (
+          <ol className="seg-steps">
+            {steps.map((e, i) => {
+              const d = describeEvent(e) || {};
+              return (
+                <li className={`seg-step ${d.tone || ""}`} key={i}>
+                  <span className="seg-step-ico"><Icon name={d.icon || "spark"} /></span>
+                  <span className="seg-step-tx">{stepText(e)}</span>
+                </li>
+              );
+            })}
+          </ol>
+        ) : (
+          <p className="seg-summary">{segSummary(seg)}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TracePanel({ trace, running, filter, setFilter, scrollRef, openSegs, toggleSeg }) {
   const counts = useMemo(() => ({
-    total: trace.length,
+    total: trace.filter((t) => t.event !== "progress" && t.event !== "answer_delta" && t.event !== "delta").length,
     tools: trace.filter((item) => item.event === "tool_call" || item.event === "tool_result").length,
     models: trace.filter((item) => item.event === "model_response").length,
     audit: trace.filter((item) => item.event === "audit").length,
   }), [trace]);
-  const filtered = trace.filter((item) => {
-    if (filter === "tools") return item.event === "tool_call" || item.event === "tool_result";
-    if (filter === "models") return item.event === "model_response";
-    if (filter === "audit") return item.event === "audit";
-    return true;
-  });
+  const segments = useMemo(() => buildSegments(trace), [trace]);
   return (
     <aside className="trace-panel">
       <header>
@@ -531,7 +647,7 @@ function TracePanel({ trace, running, filter, setFilter, scrollRef }) {
           <h2>智能体追踪</h2>
           {(() => {
             const done = trace.some((t) => t.event === "final");
-            return <span className={running ? "live" : done ? "ok" : ""}>{running ? "运行中" : done ? `已完成 · ${trace.length} 步` : "待运行"}</span>;
+            return <span className={running ? "live" : done ? "ok" : ""}>{running ? "运行中" : done ? `已完成 · ${segments.length} 个智能体` : "待运行"}</span>;
           })()}
         </div>
         <div className="trace-pills">
@@ -551,53 +667,23 @@ function TracePanel({ trace, running, filter, setFilter, scrollRef }) {
         </div>
       </header>
       <div className="trace-list" ref={scrollRef}>
-        {filtered.length ? filtered.map((item, index) => (
-          <TraceItem item={item} index={index} active={running && index === filtered.length - 1} key={`${item.event}-${index}`} />
-        )) : <p className="empty-note">运行后这里显示逐帧的智能体事件。</p>}
+        {segments.length ? segments.map((seg, index) => {
+          const active = running && index === segments.length - 1 && seg.kind !== "final";
+          const expanded = filter !== "all" ? true : (openSegs[index] ?? active);
+          return (
+            <TraceSegment
+              key={index}
+              seg={seg}
+              index={index}
+              active={active}
+              expanded={expanded}
+              filter={filter}
+              onToggle={() => toggleSeg(index, !(openSegs[index] ?? active))}
+            />
+          );
+        }) : <p className="empty-note">运行后这里按智能体分组显示协作过程。</p>}
       </div>
     </aside>
-  );
-}
-
-const EVENT_LABELS = {
-  ready: "就绪", user: "提问", plan: "规划", role_change: "切换", tool_call: "调用工具",
-  tool_result: "工具结果", model_response: "模型推理", audit: "审计", clarify: "澄清", final: "完成", error: "错误",
-};
-
-function TraceItem({ item, index, active }) {
-  const agent = item.event === "plan" ? "协调器" : agentLabel(item.data?.agent) || item.data?.intent || item.data?.name || EVENT_LABELS[item.event] || item.event;
-  const status = item.event === "audit" ? (item.data?.verdict === "pass" ? "通过" : "修订") : item.event === "tool_result" ? "完成" : item.event === "model_response" ? "模型" : item.event === "final" ? "结束" : null;
-  const detail =
-    item.event === "plan"
-      ? `${item.data.intent} → ${(item.data.experts || []).map(agentLabel).join("、")}`
-      : item.event === "model_response"
-        ? `response_id ${String(item.data.response_id || "n/a").slice(0, 18)}… · ${item.data.usage?.total_tokens || 0} tokens`
-        : item.event === "tool_result"
-          ? `${item.data.name || "tool"} → ${item.data.count ?? item.data.bytes ?? "ok"}`
-          : item.event === "final"
-            ? item.data.text
-            : item.event === "clarify"
-              ? item.data.question
-              : item.event === "role_change"
-                ? `${agentLabel(item.data?.agent)} 接手${item.data?.revision ? `（修订 ${item.data.revision}）` : ""}`
-                : item.event === "tool_call"
-                  ? `${item.data?.name || "tool"}`
-                  : "";
-  return (
-    <div className={`trace-item ${item.event} ${active ? "active" : ""}`} style={{ "--i": index }}>
-      <div className="trace-rail">
-        <span className={`dot ${active ? "loading" : "done"}`} />
-      </div>
-      <div className="trace-card">
-        <div className="trace-top">
-          <strong>{agent}</strong>
-          <span className="evt">{EVENT_LABELS[item.event] || item.event}</span>
-          {status ? <em>{status}</em> : null}
-          <span className="seq mono">{String(index + 1).padStart(2, "0")}</span>
-        </div>
-        {detail ? <p>{detail}</p> : null}
-      </div>
-    </div>
   );
 }
 
@@ -617,6 +703,8 @@ export function App() {
   const [upload, setUpload] = useState(null);
   const [stream, setStream] = useState("");
   const [producing, setProducing] = useState(false);
+  const [openSegs, setOpenSegs] = useState({}); // 用户手动展开/折叠的智能体段（按段下标覆盖默认）
+  const toggleSeg = (i, val) => setOpenSegs((m) => ({ ...m, [i]: val }));
   const traceRef = useRef(null);
   const lastAnalysisRef = useRef(null);
   const fileRef = useRef(null);
@@ -708,8 +796,10 @@ export function App() {
     setTrace([]);
     setArtifacts({});
     setStream("");
+    setOpenSegs({}); // 新一轮运行重置分组展开状态
     setActiveTab("chat");
-    setMessages([{ role: "user", text: message, time: "刚刚" }]);
+    // 追加本轮提问（不再清空历史，保留多轮对话）
+    setMessages((items) => [...items, { role: "user", text: message, time: "刚刚" }]);
     let streamed = false;
     // 逐字流：把众多 answer_delta 攒进 streamText，按帧（rAF）合并刷新，避免上千次重渲染
     let streamText = "";
@@ -732,8 +822,8 @@ export function App() {
         const parsed = parseSse(buffer);
         buffer = parsed.rest;
         if (parsed.events.length) {
-          // answer_delta/delta 只喂中间对话框的逐字流，不进右侧追踪（否则会被上千条 token 帧刷爆）
-          const traceEvents = parsed.events.filter((e) => e.event !== "answer_delta" && e.event !== "delta");
+          // answer_delta/delta 只喂中间对话框的逐字流；progress 是心跳，二者都不进右侧追踪
+          const traceEvents = parsed.events.filter((e) => e.event !== "answer_delta" && e.event !== "delta" && e.event !== "progress");
           if (traceEvents.length) setTrace((items) => [...items, ...traceEvents]);
           for (const ev of parsed.events) {
             if (ev.event === "answer_delta" || ev.event === "delta") {
@@ -841,7 +931,7 @@ export function App() {
         producing={producing}
       />
       <div className="trace-scroll">
-        <TracePanel trace={trace} running={running} filter={traceFilter} setFilter={setTraceFilter} scrollRef={traceRef} />
+        <TracePanel trace={trace} running={running} filter={traceFilter} setFilter={setTraceFilter} scrollRef={traceRef} openSegs={openSegs} toggleSeg={toggleSeg} />
       </div>
     </div>
   );
