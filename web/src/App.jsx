@@ -97,6 +97,8 @@ function describeEvent(item) {
       return { icon: "spark", text: "已连接编排器，开始运行" };
     case "plan":
       return { icon: "pulse", text: `协调器规划意图「${d.intent || "?"}」，调度 ${(d.experts || []).length} 个智能体` };
+    case "route":
+      return { icon: "pulse", text: `判定意图「${d.intent || "?"}」，${(d.experts || []).length ? `调度 ${(d.experts || []).length} 个智能体` : "协调器直接处理"}` };
     case "role_change":
       return { icon: "spark", text: `${who} 接手${d.revision ? `（第 ${d.revision} 次修订）` : ""}`, head: true };
     case "tool_call":
@@ -415,7 +417,22 @@ function confLabel(c) { return CONF_LABEL[c] || c || ""; }
 // 若后端已提供结构化 citations（WP-R2 后），正文里本就是 [n]，直接沿用。
 function extractCitations(text, existing) {
   const t = text || "";
-  if (existing && existing.length) return { text: t, cites: existing };
+  // 后端结构化 citations（batch5+）：正文是 [n] 标记，把它们转成可点角标，并把字段映射成前端用的形状
+  if (existing && existing.length) {
+    const cites = existing.map((c) => ({
+      marker: c.marker,
+      kind: c.source_type === "market" ? "source" : "ref",
+      source_file: c.source_file || "",
+      chunk_id: c.chunk_id || "",
+      label: c.source_type === "market" ? (c.source_file || c.snippet || "外部来源") : String(c.source_file || "").replace(/^.*\//, ""),
+      confidence: c.confidence || "",
+      snippet: c.snippet || "",
+      source_url: c.source_url || "",
+    }));
+    const maxM = Math.max(0, ...cites.map((c) => c.marker || 0));
+    const clean = t.replace(/\[(\d+)\]/g, (m, n) => (Number(n) >= 1 && Number(n) <= maxM ? `@@CITE:${n}@@` : m));
+    return { text: clean, cites };
+  }
   const cites = []; const seen = new Map();
   const clean = t.replace(/\[([^\][]+)\]/g, (whole, inner) => {
     const km = inner.match(/^\s*(ref|source|evidence|gap|引用|来源|证据|缺口)\s*[:：]\s*(.*)$/is);
@@ -642,9 +659,15 @@ function exportTrace(trace) {
 }
 
 const EVENT_LABELS = {
-  ready: "就绪", user: "提问", plan: "规划", role_change: "切换", tool_call: "调用工具",
+  ready: "就绪", user: "提问", plan: "规划", route: "路由", role_change: "切换", tool_call: "调用工具",
   tool_result: "工具结果", model_response: "模型推理", audit: "审计", clarify: "澄清", final: "完成", error: "错误",
 };
+
+const INTENT_LABEL = {
+  feasibility_analysis: "可行性分析", followup_edit: "续写/改写", smalltalk_or_meta: "寒暄/元信息",
+  clarify_needed: "需要澄清", corpus_qa: "语料问答", product_feasibility: "产品可行性",
+};
+function intentLabel(x) { return INTENT_LABEL[x] || x || "?"; }
 
 // 把扁平事件流按"哪个智能体在执行"聚合成段：一个 plan/role_change 开一段，
 // 其后的 tool_call/tool_result/model_response/audit 等子步都并入该段（progress/逐字流不入段）。
@@ -678,7 +701,8 @@ function stepText(item) {
   switch (item.event) {
     case "ready": return "已连接编排器";
     case "user": return `收到提问：${d.text || ""}`;
-    case "plan": return `规划意图「${d.intent || "?"}」→ ${(d.experts || []).map(agentLabel).join("、")}`;
+    case "plan": return `规划意图「${intentLabel(d.intent)}」→ ${(d.experts || []).map(agentLabel).join("、") || "协调器直接处理"}`;
+    case "route": return `判定意图「${intentLabel(d.intent)}」${(d.experts || []).length ? `→ 调度 ${(d.experts || []).map(agentLabel).join("、")}` : "→ 协调器直接处理，不惊动分析师"}${d.reason ? `（${d.reason}）` : ""}`;
     case "role_change": return `${agentLabel(d.agent)} 接手${d.revision ? `（第 ${d.revision} 次修订）` : ""}`;
     case "tool_call": return `调用工具 ${d.name || "tool"}`;
     case "tool_result": return `工具 ${d.name || "tool"} 返回 · ${d.count ?? (d.bytes ? `${Math.round(d.bytes / 1024)}KB` : "ok")}`;
@@ -1143,7 +1167,11 @@ export function App() {
         onProduce={produce}
         stream={stream}
         producing={producing}
-        onCite={(c) => { if (c.source_file) loadDoc(c.source_file); }}
+        onCite={(c) => {
+          const url = c.source_url || (/^https?:\/\//.test(c.source_file || "") ? c.source_file : "");
+          if (url) window.open(url, "_blank", "noopener");
+          else if (c.source_file) loadDoc(c.source_file);
+        }}
       />
       <div className="trace-scroll">
         <TracePanel trace={trace} running={running} filter={traceFilter} setFilter={setTraceFilter} scrollRef={traceRef} openSegs={openSegs} toggleSeg={toggleSeg} />
