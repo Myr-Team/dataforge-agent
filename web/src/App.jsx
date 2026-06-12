@@ -168,12 +168,71 @@ function ServiceStatus({ health }) {
   );
 }
 
+// 账户头像 + 微软风格账户菜单（数据来自 Container Apps Easy Auth 的 /.auth/me；退出走 /.auth/logout）
+function initialsOf(s) {
+  const t = (s || "D").trim();
+  if (/[一-鿿]/.test(t)) return t.slice(-1);
+  const parts = t.replace(/@.*/, "").split(/[ ._-]+/).filter(Boolean);
+  return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase() || t[0]?.toUpperCase() || "D";
+}
+function AccountMenu() {
+  const [me, setMe] = useState(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/.auth/me", { headers: { Accept: "application/json" } })
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        const p = Array.isArray(d) ? d[0] : (d?.clientPrincipal || d);
+        const claims = p?.user_claims || [];
+        const get = (...keys) => {
+          for (const k of keys) {
+            const c = claims.find((x) => {
+              const t = (x.typ || "").toLowerCase();
+              return t === k || t.endsWith("/" + k);
+            });
+            if (c?.val) return c.val;
+          }
+          return "";
+        };
+        const name = get("name", "displayname", "given_name") || "";
+        const email = get("emailaddress", "preferred_username", "upn", "email") || p?.user_id || "";
+        if (!cancelled && (name || email)) setMe({ name, email });
+        else if (!cancelled) setMe(null);
+      })
+      .catch(() => { if (!cancelled) setMe(null); });
+    return () => { cancelled = true; };
+  }, []);
+  if (!me) return <div className="mark">D</div>; // 未登录/本地预览：回退品牌标
+  const initials = initialsOf(me.name || me.email);
+  return (
+    <div className="account">
+      <button className="mark avatar" type="button" onClick={() => setOpen((v) => !v)} title={me.name || me.email} aria-haspopup="true" aria-expanded={open}>{initials}</button>
+      {open ? (
+        <>
+          <div className="account-backdrop" onClick={() => setOpen(false)} />
+          <div className="account-menu" role="menu">
+            <div className="account-head">
+              <div className="mark avatar lg">{initials}</div>
+              <div className="account-id">
+                <strong>{me.name || "已登录用户"}</strong>
+                {me.email ? <span>{me.email}</span> : null}
+              </div>
+            </div>
+            <a className="account-signout" href="/.auth/logout?post_logout_redirect_uri=/" role="menuitem">退出登录</a>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function WorkspacePanel({ health, selectedDoc, onDocClick, docHits, workspace, workspaces, onWorkspaceChange, onUpload, upload, wsDetail }) {
   const cur = workspaces.find((w) => w.id === workspace);
   return (
     <aside className="workspace-panel">
       <div className="brand">
-        <div className="mark">D</div>
+        <AccountMenu />
         <div>
           <strong>DataForge</strong>
           <span>产品化 Agent</span>
