@@ -40,6 +40,7 @@ def excel_to_records(path: Path, rel_path: str, workspace_id: str) -> list[dict[
             chunk_id = f"{file_id}-{sheet_id}-row-{row_number}"
             records.append(
                 {
+                    "@search.action": "mergeOrUpload",
                     "id": f"{workspace_id}-{chunk_id}",
                     "workspace_id": workspace_id,
                     "title": f"{path.stem} / {sheet.title} row {row_number}",

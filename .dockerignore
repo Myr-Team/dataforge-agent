@@ -2,9 +2,15 @@
 .gitignore
 web/node_modules/
 web/dist/
+web/
 node_modules/
 generated-outputs/
 artifacts/
+docs/
+eval/
+infra/
+mcp-market/
+scripts/
 workspaces/upload-*/
 *.log
 *.pyc

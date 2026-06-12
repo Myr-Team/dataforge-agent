@@ -12,10 +12,12 @@ from typing import Any
 try:
     from ingest.adapters.excel_to_records import excel_to_records
     from ingest.adapters.tabular_profile import profile_search_content
+    from ingest.adapters.upload_to_records import upload_to_records
     from ingest.embeddings import try_embed_texts
 except ImportError:
     excel_to_records = None
     profile_search_content = None
+    upload_to_records = None
     try_embed_texts = None
 
 
@@ -58,21 +60,12 @@ def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, A
                 "language": "zh-Hans",
             }
         )
-    for path in workspace.glob("*.md"):
-        text = path.read_text(encoding="utf-8")
-        local_docs.append(
-            {
-                "id": f"{workspace_id}-{path.stem}",
-                "workspace_id": workspace_id,
-                "title": path.stem.replace("_", " ").title(),
-                "content": text[:1600],
-                "source_file": f"raw_docs/{path.name}",
-                "chunk_id": path.stem,
-                "document_type": "markdown",
-                "language": "en",
-            }
-        )
-    if excel_to_records is not None:
+    if upload_to_records is not None:
+        if workspace.exists():
+            for path in workspace.iterdir():
+                if path.is_file():
+                    local_docs.extend(upload_to_records(path, f"raw_docs/{path.name}", workspace_id))
+    elif excel_to_records is not None:
         for path in workspace.glob("*.xlsx"):
             local_docs.extend(excel_to_records(path, f"raw_docs/{path.name}", workspace_id))
     hits: list[dict[str, Any]] = []

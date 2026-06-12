@@ -131,13 +131,18 @@ async def upload_workspace(
                 "content_type": item.content_type,
             }
         )
-    result = await run_in_threadpool(
-        create_workspace_from_uploads,
-        files=files,
-        name=name,
-        description=description,
-        requested_workspace_id=workspace_id,
-    )
+    try:
+        result = await run_in_threadpool(
+            create_workspace_from_uploads,
+            files=files,
+            name=name,
+            description=description,
+            requested_workspace_id=workspace_id,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return UploadResponse.model_validate(result)
 
 

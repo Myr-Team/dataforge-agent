@@ -17,6 +17,8 @@ SUPPORTED_FORMATS = {
     ".json": "json",
     ".md": "markdown",
     ".markdown": "markdown",
+    ".txt": "markdown",
+    ".text": "markdown",
     ".xlsx": "excel",
     ".xlsm": "excel",
 }

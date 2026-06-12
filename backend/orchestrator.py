@@ -1070,6 +1070,11 @@ def _build_citations(artifact: dict[str, Any]) -> tuple[list[dict[str, Any]], di
             if ref:
                 add_citation(ref, confidence=confidence, source_type=str(evidence.get("source_type") or "corpus"))
 
+    if not citations:
+        for hit in artifact.get("corpus", {}).get("hits", [])[:8]:
+            evidence = _evidence_from_hit(hit)
+            add_citation(evidence.ref, confidence="data_confirmed", source_type="corpus")
+
     for finding in artifact.get("market", {}).get("external_findings", [])[:4]:
         if not isinstance(finding, dict):
             continue
@@ -1121,6 +1126,8 @@ def _evidence_markers(evidence_items: list[dict[str, Any]], citations: list[dict
 
 
 def _structured_answer(req: ChatRequest, decision: RoutingDecision, artifact: dict[str, Any]) -> dict[str, Any]:
+    if decision.intent == "corpus_qa":
+        return _structured_corpus_answer(req, artifact)
     citations, _ = _build_citations(artifact)
     feasibility = artifact.get("feasibility") or {}
     corpus = artifact.get("corpus") or {}
@@ -1174,6 +1181,46 @@ def _structured_answer(req: ChatRequest, decision: RoutingDecision, artifact: di
         "markdown": markdown,
         "citations": citations,
         "_llm": {"mode": "structured_answer_renderer", "response_id": None, "usage": {}},
+    }
+
+
+def _structured_corpus_answer(req: ChatRequest, artifact: dict[str, Any]) -> dict[str, Any]:
+    citations, _ = _build_citations(artifact)
+    hits = artifact.get("corpus", {}).get("hits", [])
+    lines: list[str] = [
+        "## 资料回答",
+        f"- 我在当前工作区检索到 {len(hits)} 条相关记录；以下判断只基于这些已上传内容。",
+        "",
+        "## 关键证据",
+    ]
+    if hits:
+        for hit in hits[:5]:
+            evidence = _evidence_from_hit(hit).model_dump()
+            markers = _evidence_markers([evidence], citations)
+            source = hit.get("source_file") or "workspace"
+            row = f" row {hit.get('row')}" if hit.get("row") else ""
+            snippet = _strip_inline_refs(hit.get("content"))[:260]
+            lines.append(f"- `{source}{row}`：{snippet} {markers}".rstrip())
+    else:
+        lines.append("- 当前问题没有命中足够具体的工作区记录。")
+    lines.extend(["", "## 建议"])
+    if hits:
+        lines.extend(
+            [
+                "- 先把活动主题绑定到命中记录中最具体的痛点、资产或场景，避免只做泛泛传播。",
+                "- 用命中记录里的会员、门店、活动、赞助或周边信号设计一个最小活动闭环：触达、参与、转化、复盘。",
+                "- 下一轮补充真实转化、成本、参与人数和复购数据后，再升级为完整产品可行性评估。",
+            ]
+        )
+    else:
+        lines.append("- 先上传或补充与该问题直接相关的记录，再让系统生成有据建议。")
+    if citations:
+        lines.append(f"- 本回答返回 {len(citations)} 条结构化 citation，前端可打开证据面板核验。")
+    markdown = _strip_raw_ref_leaks("\n".join(lines).strip())
+    return {
+        "markdown": markdown,
+        "citations": citations,
+        "_llm": {"mode": "structured_corpus_answer_renderer", "response_id": None, "usage": {}},
     }
 
 
