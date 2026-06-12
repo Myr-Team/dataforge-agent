@@ -1,0 +1,527 @@
+{
+  "api_base": "https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io",
+  "loaded_env": [
+    "C:\\Users\\12140\\.dataforge-codex.env",
+    "C:\\Users\\12140\\Documents\\Agent-Demo-project\\数据产品化Agent\\.dataforge-codex.env"
+  ],
+  "workspace_id": "upload-batch6-two-file-append-workspace-20260612090958",
+  "upload1": {
+    "workspace_id": "upload-batch6-two-file-append-workspace-20260612090958",
+    "name": "batch6 two-file append workspace",
+    "description": "Batch6 append acceptance description",
+    "format": "csv",
+    "indexed_count": 4,
+    "profile_summary": "数据画像：batch6 two-file append workspace，格式 csv，包含 1 个表/文档片段、约 3 行、4 个字段。主要 schema：batch6_customers(segment, revenue, churn_risk, signal)。高信号：revenue 按 segment 分组均值差异明显：enterprise=240000(n=1)，smb=42000(n=1)，差值 198000；revenue 按 signal 分组均值差异明显：renewal-expansion=240000(n=1)，refund-churn=42000(n=1)，差值 198000；churn_risk 按 segment 分组均值差异明显：smb=0.21(n=1)，enterprise=0.04(n=1)，差值 0.17；churn_risk 按 signal 分组均值差异明显：refund-churn=0.21(n=1)，renewal-expansion=0.04(n=1)，差值 0.17；segment 有 3 个不同取值，可用于分群、筛选或解释差异。噪声/风险：未发现严重噪声。",
+    "documents": [
+      {
+        "source_file": "raw_docs/batch6_customers.csv",
+        "name": "batch6_customers.csv",
+        "format": "csv",
+        "bytes": 145,
+        "profile_file": "profiles/profile-000.json",
+        "record_count": 3
+      }
+    ]
+  },
+  "upload2": {
+    "workspace_id": "upload-batch6-two-file-append-workspace-20260612090958",
+    "name": "batch6 two-file append workspace",
+    "description": "Batch6 append acceptance description",
+    "format": "csv",
+    "indexed_count": 8,
+    "profile_summary": "数据画像：batch6 two-file append workspace，格式 csv，包含 1 个表/文档片段、约 3 行、4 个字段。主要 schema：batch6_customers(segment, revenue, churn_risk, signal)。高信号：revenue 按 segment 分组均值差异明显：enterprise=240000(n=1)，smb=42000(n=1)，差值 198000；revenue 按 signal 分组均值差异明显：renewal-expansion=240000(n=1)，refund-churn=42000(n=1)，差值 198000；churn_risk 按 segment 分组均值差异明显：smb=0.21(n=1)，enterprise=0.04(n=1)，差值 0.17；churn_risk 按 signal 分组均值差异明显：refund-churn=0.21(n=1)，renewal-expansion=0.04(n=1)，差值 0.17；segment 有 3 个不同取值，可用于分群、筛选或解释差异。噪声/风险：未发现严重噪声。 | 数据画像：batch6 two-file append workspace，格式 csv，包含 1 个表/文档片段、约 3 行、4 个字段。主要 schema：batch6_usage(feature, usage_score, activation_gap, signal)。高信号：usage_score 按 feature 分组均值差异明显：forecasting=91(n=1)，automation=18(n=1)，差值 73；usage_score 按 activation_gap 分组均值差异明显：low=91(n=1)，high=18(n=1)，差值 73；usage_score 按 signal 分组均值差异明显：high-adoption=91(n=1)，integration-blocker=18(n=1)，差值 73；feature 有 3 个不同取值，可用于分群、筛选或解释差异；usage_score 是完整度较高的数值字段，范围 18 到 91。噪声/风险：未发现严重噪声。",
+    "documents": [
+      {
+        "source_file": "raw_docs/batch6_customers.csv",
+        "name": "batch6_customers.csv",
+        "format": "csv",
+        "bytes": 145,
+        "profile_file": "profiles/profile-000.json",
+        "record_count": 3
+      },
+      {
+        "source_file": "raw_docs/batch6_usage.csv",
+        "name": "batch6_usage.csv",
+        "format": "csv",
+        "bytes": 155,
+        "profile_file": "profiles/profile-001.json",
+        "record_count": 3
+      }
+    ]
+  },
+  "detail_after_first": {
+    "workspace_id": "upload-batch6-two-file-append-workspace-20260612090958",
+    "name": "batch6 two-file append workspace",
+    "description": "Batch6 append acceptance description",
+    "format": "csv",
+    "rows": 3,
+    "columns": [
+      {
+        "table": "batch6_customers",
+        "name": "segment",
+        "role": "text",
+        "signal": "segment 有 3 个不同取值，可用于分群、筛选或解释差异",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "enterprise",
+            "count": 1
+          },
+          {
+            "value": "midmarket",
+            "count": 1
+          },
+          {
+            "value": "smb",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_customers",
+        "name": "revenue",
+        "role": "number",
+        "signal": "revenue 是完整度较高的数值字段，范围 42000 到 240000",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "240000",
+            "count": 1
+          },
+          {
+            "value": "96000",
+            "count": 1
+          },
+          {
+            "value": "42000",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_customers",
+        "name": "churn_risk",
+        "role": "number",
+        "signal": "churn_risk 是完整度较高的数值字段，范围 0.04 到 0.21",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "0.04",
+            "count": 1
+          },
+          {
+            "value": "0.12",
+            "count": 1
+          },
+          {
+            "value": "0.21",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_customers",
+        "name": "signal",
+        "role": "text",
+        "signal": "signal 有 3 个不同取值，可用于分群、筛选或解释差异",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "renewal-expansion",
+            "count": 1
+          },
+          {
+            "value": "onboarding-delay",
+            "count": 1
+          },
+          {
+            "value": "refund-churn",
+            "count": 1
+          }
+        ]
+      }
+    ],
+    "doc_count": 4,
+    "documents": [
+      {
+        "source_file": "raw_docs/batch6_customers.csv",
+        "name": "batch6_customers.csv",
+        "format": "csv",
+        "bytes": 145,
+        "external": false
+      }
+    ],
+    "profile_summary": "数据画像：batch6 two-file append workspace，格式 csv，包含 1 个表/文档片段、约 3 行、4 个字段。主要 schema：batch6_customers(segment, revenue, churn_risk, signal)。高信号：revenue 按 segment 分组均值差异明显：enterprise=240000(n=1)，smb=42000(n=1)，差值 198000；revenue 按 signal 分组均值差异明显：renewal-expansion=240000(n=1)，refund-churn=42000(n=1)，差值 198000；churn_risk 按 segment 分组均值差异明显：smb=0.21(n=1)，enterprise=0.04(n=1)，差值 0.17；churn_risk 按 signal 分组均值差异明显：refund-churn=0.21(n=1)，renewal-expansion=0.04(n=1)，差值 0.17；segment 有 3 个不同取值，可用于分群、筛选或解释差异。噪声/风险：未发现严重噪声。",
+    "signals": [
+      "revenue 按 segment 分组均值差异明显：enterprise=240000(n=1)，smb=42000(n=1)，差值 198000",
+      "revenue 按 signal 分组均值差异明显：renewal-expansion=240000(n=1)，refund-churn=42000(n=1)，差值 198000",
+      "churn_risk 按 segment 分组均值差异明显：smb=0.21(n=1)，enterprise=0.04(n=1)，差值 0.17",
+      "churn_risk 按 signal 分组均值差异明显：refund-churn=0.21(n=1)，renewal-expansion=0.04(n=1)，差值 0.17",
+      "segment 有 3 个不同取值，可用于分群、筛选或解释差异",
+      "revenue 是完整度较高的数值字段，范围 42000 到 240000",
+      "churn_risk 是完整度较高的数值字段，范围 0.04 到 0.21",
+      "signal 有 3 个不同取值，可用于分群、筛选或解释差异"
+    ],
+    "created_at": "2026-06-12T09:09:58.824028+00:00"
+  },
+  "detail": {
+    "workspace_id": "upload-batch6-two-file-append-workspace-20260612090958",
+    "name": "batch6 two-file append workspace",
+    "description": "Batch6 append acceptance description",
+    "format": "csv",
+    "rows": 6,
+    "columns": [
+      {
+        "table": "batch6_customers",
+        "name": "segment",
+        "role": "text",
+        "signal": "segment 有 3 个不同取值，可用于分群、筛选或解释差异",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "enterprise",
+            "count": 1
+          },
+          {
+            "value": "midmarket",
+            "count": 1
+          },
+          {
+            "value": "smb",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_customers",
+        "name": "revenue",
+        "role": "number",
+        "signal": "revenue 是完整度较高的数值字段，范围 42000 到 240000",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "240000",
+            "count": 1
+          },
+          {
+            "value": "96000",
+            "count": 1
+          },
+          {
+            "value": "42000",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_customers",
+        "name": "churn_risk",
+        "role": "number",
+        "signal": "churn_risk 是完整度较高的数值字段，范围 0.04 到 0.21",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "0.04",
+            "count": 1
+          },
+          {
+            "value": "0.12",
+            "count": 1
+          },
+          {
+            "value": "0.21",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_customers",
+        "name": "signal",
+        "role": "text",
+        "signal": "signal 有 3 个不同取值，可用于分群、筛选或解释差异",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "renewal-expansion",
+            "count": 1
+          },
+          {
+            "value": "onboarding-delay",
+            "count": 1
+          },
+          {
+            "value": "refund-churn",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_usage",
+        "name": "feature",
+        "role": "text",
+        "signal": "feature 有 3 个不同取值，可用于分群、筛选或解释差异",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "forecasting",
+            "count": 1
+          },
+          {
+            "value": "alerting",
+            "count": 1
+          },
+          {
+            "value": "automation",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_usage",
+        "name": "usage_score",
+        "role": "number",
+        "signal": "usage_score 是完整度较高的数值字段，范围 18 到 91",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "91",
+            "count": 1
+          },
+          {
+            "value": "43",
+            "count": 1
+          },
+          {
+            "value": "18",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_usage",
+        "name": "activation_gap",
+        "role": "text",
+        "signal": "activation_gap 有 3 个不同取值，可用于分群、筛选或解释差异",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "low",
+            "count": 1
+          },
+          {
+            "value": "medium",
+            "count": 1
+          },
+          {
+            "value": "high",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_usage",
+        "name": "signal",
+        "role": "text",
+        "signal": "signal 有 3 个不同取值，可用于分群、筛选或解释差异",
+        "missing_rate": 0.0,
+        "unique_count": 3,
+        "top_values": [
+          {
+            "value": "high-adoption",
+            "count": 1
+          },
+          {
+            "value": "workflow-training",
+            "count": 1
+          },
+          {
+            "value": "integration-blocker",
+            "count": 1
+          }
+        ]
+      }
+    ],
+    "doc_count": 8,
+    "documents": [
+      {
+        "source_file": "raw_docs/batch6_customers.csv",
+        "name": "batch6_customers.csv",
+        "format": "csv",
+        "bytes": 145,
+        "external": false
+      },
+      {
+        "source_file": "raw_docs/batch6_usage.csv",
+        "name": "batch6_usage.csv",
+        "format": "csv",
+        "bytes": 155,
+        "external": false
+      }
+    ],
+    "profile_summary": "数据画像：batch6 two-file append workspace，格式 csv，包含 1 个表/文档片段、约 3 行、4 个字段。主要 schema：batch6_customers(segment, revenue, churn_risk, signal)。高信号：revenue 按 segment 分组均值差异明显：enterprise=240000(n=1)，smb=42000(n=1)，差值 198000；revenue 按 signal 分组均值差异明显：renewal-expansion=240000(n=1)，refund-churn=42000(n=1)，差值 198000；churn_risk 按 segment 分组均值差异明显：smb=0.21(n=1)，enterprise=0.04(n=1)，差值 0.17；churn_risk 按 signal 分组均值差异明显：refund-churn=0.21(n=1)，renewal-expansion=0.04(n=1)，差值 0.17；segment 有 3 个不同取值，可用于分群、筛选或解释差异。噪声/风险：未发现严重噪声。 | 数据画像：batch6 two-file append workspace，格式 csv，包含 1 个表/文档片段、约 3 行、4 个字段。主要 schema：batch6_usage(feature, usage_score, activation_gap, signal)。高信号：usage_score 按 feature 分组均值差异明显：forecasting=91(n=1)，automation=18(n=1)，差值 73；usage_score 按 activation_gap 分组均值差异明显：low=91(n=1)，high=18(n=1)，差值 73；usage_score 按 signal 分组均值差异明显：high-adoption=91(n=1)，integration-blocker=18(n=1)，差值 73；feature 有 3 个不同取值，可用于分群、筛选或解释差异；usage_score 是完整度较高的数值字段，范围 18 到 91。噪声/风险：未发现严重噪声。",
+    "signals": [
+      "revenue 按 segment 分组均值差异明显：enterprise=240000(n=1)，smb=42000(n=1)，差值 198000",
+      "revenue 按 signal 分组均值差异明显：renewal-expansion=240000(n=1)，refund-churn=42000(n=1)，差值 198000",
+      "churn_risk 按 segment 分组均值差异明显：smb=0.21(n=1)，enterprise=0.04(n=1)，差值 0.17",
+      "churn_risk 按 signal 分组均值差异明显：refund-churn=0.21(n=1)，renewal-expansion=0.04(n=1)，差值 0.17",
+      "segment 有 3 个不同取值，可用于分群、筛选或解释差异",
+      "revenue 是完整度较高的数值字段，范围 42000 到 240000",
+      "churn_risk 是完整度较高的数值字段，范围 0.04 到 0.21",
+      "signal 有 3 个不同取值，可用于分群、筛选或解释差异",
+      "usage_score 按 feature 分组均值差异明显：forecasting=91(n=1)，automation=18(n=1)，差值 73",
+      "usage_score 按 activation_gap 分组均值差异明显：low=91(n=1)，high=18(n=1)，差值 73",
+      "usage_score 按 signal 分组均值差异明显：high-adoption=91(n=1)，integration-blocker=18(n=1)，差值 73",
+      "feature 有 3 个不同取值，可用于分群、筛选或解释差异",
+      "usage_score 是完整度较高的数值字段，范围 18 到 91",
+      "activation_gap 有 3 个不同取值，可用于分群、筛选或解释差异",
+      "signal 有 3 个不同取值，可用于分群、筛选或解释差异"
+    ],
+    "created_at": "2026-06-12T09:09:58.824028+00:00"
+  },
+  "single": {
+    "workspace_id": "upload-batch6-single-upload-compatibility-20260612091013",
+    "name": "batch6 single upload compatibility",
+    "description": "single file compatibility",
+    "format": "csv",
+    "indexed_count": 3,
+    "profile_summary": "数据画像：batch6 single upload compatibility，格式 csv，包含 1 个表/文档片段、约 2 行、3 个字段。主要 schema：batch6_single(region, orders, return_rate)。高信号：region 有 2 个不同取值，可用于分群、筛选或解释差异；orders 是完整度较高的数值字段，范围 75 到 120；return_rate 是完整度较高的数值字段，范围 0.03 到 0.11。噪声/风险：未发现严重噪声。",
+    "documents": [
+      {
+        "source_file": "raw_docs/batch6_single.csv",
+        "name": "batch6_single.csv",
+        "format": "csv",
+        "bytes": 58,
+        "profile_file": "profiles/profile-000.json",
+        "record_count": 2
+      }
+    ]
+  },
+  "single_detail": {
+    "workspace_id": "upload-batch6-single-upload-compatibility-20260612091013",
+    "name": "batch6 single upload compatibility",
+    "description": "single file compatibility",
+    "format": "csv",
+    "rows": 2,
+    "columns": [
+      {
+        "table": "batch6_single",
+        "name": "region",
+        "role": "text",
+        "signal": "region 有 2 个不同取值，可用于分群、筛选或解释差异",
+        "missing_rate": 0.0,
+        "unique_count": 2,
+        "top_values": [
+          {
+            "value": "north",
+            "count": 1
+          },
+          {
+            "value": "south",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_single",
+        "name": "orders",
+        "role": "number",
+        "signal": "orders 是完整度较高的数值字段，范围 75 到 120",
+        "missing_rate": 0.0,
+        "unique_count": 2,
+        "top_values": [
+          {
+            "value": "120",
+            "count": 1
+          },
+          {
+            "value": "75",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "table": "batch6_single",
+        "name": "return_rate",
+        "role": "number",
+        "signal": "return_rate 是完整度较高的数值字段，范围 0.03 到 0.11",
+        "missing_rate": 0.0,
+        "unique_count": 2,
+        "top_values": [
+          {
+            "value": "0.03",
+            "count": 1
+          },
+          {
+            "value": "0.11",
+            "count": 1
+          }
+        ]
+      }
+    ],
+    "doc_count": 1,
+    "documents": [
+      {
+        "source_file": "raw_docs/batch6_single.csv",
+        "name": "batch6_single.csv",
+        "format": "csv",
+        "bytes": 58,
+        "external": false
+      }
+    ],
+    "profile_summary": "数据画像：batch6 single upload compatibility，格式 csv，包含 1 个表/文档片段、约 2 行、3 个字段。主要 schema：batch6_single(region, orders, return_rate)。高信号：region 有 2 个不同取值，可用于分群、筛选或解释差异；orders 是完整度较高的数值字段，范围 75 到 120；return_rate 是完整度较高的数值字段，范围 0.03 到 0.11。噪声/风险：未发现严重噪声。",
+    "signals": [
+      "region 有 2 个不同取值，可用于分群、筛选或解释差异",
+      "orders 是完整度较高的数值字段，范围 75 到 120",
+      "return_rate 是完整度较高的数值字段，范围 0.03 到 0.11"
+    ],
+    "created_at": "2026-06-12T09:10:13.992518+00:00"
+  },
+  "search_second_before_sources": [
+    "raw_docs/batch6_customers.csv"
+  ],
+  "search_first_sources": [
+    "raw_docs/batch6_customers.csv",
+    "raw_docs/batch6_usage.csv"
+  ],
+  "search_second_sources": [
+    "raw_docs/batch6_customers.csv",
+    "raw_docs/batch6_usage.csv"
+  ],
+  "checks": {
+    "same_workspace_id": true,
+    "detail_doc_count_at_least_2": true,
+    "documents_include_both_files": true,
+    "description_persisted": true,
+    "search_reflects_first_file": true,
+    "search_reflects_second_file": true,
+    "search_results_change_after_append": true,
+    "profile_changed_after_append": true,
+    "single_upload_compatible": true
+  },
+  "delete_results": {
+    "upload-batch6-two-file-append-workspace-20260612090958": {
+      "workspace_id": "upload-batch6-two-file-append-workspace-20260612090958",
+      "deleted": true,
+      "deleted_docs": 8,
+      "deleted_blobs": 6
+    },
+    "upload-batch6-single-upload-compatibility-20260612091013": {
+      "workspace_id": "upload-batch6-single-upload-compatibility-20260612091013",
+      "deleted": true,
+      "deleted_docs": 3,
+      "deleted_blobs": 4
+    }
+  },
+  "ok": true
+}

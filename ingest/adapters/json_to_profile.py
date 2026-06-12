@@ -9,8 +9,23 @@ from .tabular_profile import clean_cell, infer_table_profile
 
 def json_to_profile(path: Path) -> list[dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8-sig"))
-    table_name, records = _records_from_json(data, path.stem)
-    return [infer_table_profile(table_name, records)]
+    tables = _tables_from_json(data, path.stem)
+    return [infer_table_profile(table_name, records) for table_name, records in tables]
+
+
+def _tables_from_json(data: Any, fallback_name: str) -> list[tuple[str, list[dict[str, Any]]]]:
+    if isinstance(data, dict):
+        tables: list[tuple[str, list[dict[str, Any]]]] = []
+        for key, value in data.items():
+            if not isinstance(value, list):
+                continue
+            dict_records = [_flatten(item) for item in value if isinstance(item, dict)]
+            if dict_records:
+                tables.append((str(key), dict_records))
+        if tables:
+            return tables
+    table_name, records = _records_from_json(data, fallback_name)
+    return [(table_name, records)]
 
 
 def _records_from_json(data: Any, fallback_name: str) -> tuple[str, list[dict[str, Any]]]:

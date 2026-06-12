@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -158,9 +160,18 @@ def _request(method: str, url: str, body: dict[str, Any] | None = None) -> dict[
         token = DefaultAzureCredential().get_token("https://search.azure.com/.default")
         req.add_header("Authorization", f"Bearer {token.token}")
     req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=90) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw else {}
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.RemoteDisconnected):
+            if attempt >= 2:
+                raise
+            time.sleep(0.5 * (attempt + 1))
+    return {}
 
 
 def _require_endpoint() -> str:

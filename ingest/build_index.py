@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ingest.adapters.excel_to_records import excel_to_records
+from ingest.adapters.upload_to_records import upload_to_records
 from ingest.embeddings import embedding_dimensions, enrich_documents_with_embeddings
 from ingest.profiler import profile_to_search_document
 
@@ -160,16 +161,22 @@ def _detect_language(text: str, workspace_language: str | None = None) -> str:
 def build_documents(workspace_dir: Path) -> tuple[str, list[dict[str, Any]]]:
     meta, docs = _read_workspace(workspace_dir)
     workspace_id = meta["workspace_id"]
+    records: list[dict[str, Any]] = []
     if meta.get("profile_file"):
         profile_path = workspace_dir / str(meta["profile_file"])
         profile = json.loads(profile_path.read_text(encoding="utf-8"))
-        return workspace_id, [profile_to_search_document(profile)]
+        records.append(profile_to_search_document(profile))
     workspace_language = meta.get("language")
-    records: list[dict[str, Any]] = []
     for doc in docs:
         if doc["kind"] == "excel":
             records.extend(excel_to_records(Path(doc["absolute_path"]), doc["source_file"], workspace_id))
             continue
+        absolute_path = workspace_dir / str(doc["path"])
+        if absolute_path.exists():
+            upload_records = upload_to_records(absolute_path, doc["path"], workspace_id)
+            if upload_records:
+                records.extend(upload_records)
+                continue
         for idx, content in enumerate(_chunks(doc["content"])):
             safe_file = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(doc["path"]).stem).strip("-")
             chunk_id = f"{safe_file}-{idx:03d}"
