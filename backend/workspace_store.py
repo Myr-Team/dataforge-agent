@@ -14,10 +14,26 @@ from ingest.adapters.upload_to_records import upload_to_records
 from ingest.profiler import build_data_profile, compact_profile_for_workspace, profile_to_search_document, write_profile
 
 try:
-    from .blob_store import download_blob_json, get_registry_workspace, load_workspace_registry, persist_workspace, remove_workspace_from_blob, workspace_deleted
+    from .blob_store import (
+        download_blob_content,
+        download_blob_json,
+        get_registry_workspace,
+        load_workspace_registry,
+        persist_workspace,
+        remove_workspace_from_blob,
+        workspace_deleted,
+    )
     from .search_admin import count_workspace_docs, delete_workspace_docs, index_documents, search_endpoint
 except ImportError:
-    from blob_store import download_blob_json, get_registry_workspace, load_workspace_registry, persist_workspace, remove_workspace_from_blob, workspace_deleted
+    from blob_store import (
+        download_blob_content,
+        download_blob_json,
+        get_registry_workspace,
+        load_workspace_registry,
+        persist_workspace,
+        remove_workspace_from_blob,
+        workspace_deleted,
+    )
     from search_admin import count_workspace_docs, delete_workspace_docs, index_documents, search_endpoint
 
 
@@ -25,6 +41,9 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKSPACES = ROOT / "workspaces"
 _CONTEXT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CONTEXT_CACHE_SECONDS = float(os.environ.get("DF_WORKSPACE_CONTEXT_CACHE_SECONDS", "60"))
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+REFERENCE_ROLES = {"logo", "activity", "reference"}
 
 
 def create_workspace_from_upload(
@@ -99,10 +118,14 @@ def create_workspace_from_uploads(
     name: str | None = None,
     description: str | None = None,
     requested_workspace_id: str | None = None,
+    asset_role: str | None = None,
 ) -> dict[str, Any]:
     clean_files = [item for item in files if item.get("content")]
     if not clean_files:
         raise ValueError("Uploaded file is empty")
+    role = _normalize_asset_role(asset_role)
+    data_files = [item for item in clean_files if not _is_reference_image(item)]
+    reference_files = [item for item in clean_files if _is_reference_image(item)]
     append_workspace_id = str(requested_workspace_id or "").strip()
     existing_meta: dict[str, Any] = {}
     existing_profile: dict[str, Any] = {}
@@ -126,17 +149,23 @@ def create_workspace_from_uploads(
     workspace_dir = WORKSPACES / workspace_id
     raw_dir = workspace_dir / "raw_docs"
     profiles_dir = workspace_dir / "profiles"
+    reference_dir = workspace_dir / "reference_images"
     raw_dir.mkdir(parents=True, exist_ok=bool(append_workspace_id))
     profiles_dir.mkdir(parents=True, exist_ok=True)
+    if reference_files:
+        reference_dir.mkdir(parents=True, exist_ok=True)
 
     existing_documents = _detail_documents(workspace_dir, existing_meta) if existing_meta else []
     used_names: set[str] = _existing_raw_names(existing_meta)
+    used_reference_names: set[str] = _existing_reference_names(existing_meta)
     profiles: list[dict[str, Any]] = []
     content_records: list[dict[str, Any]] = []
     documents: list[dict[str, Any]] = list(existing_documents)
     raw_payloads: list[dict[str, Any]] = []
+    reference_payloads: list[dict[str, Any]] = []
+    reference_images = _reference_images(existing_meta)
     profile_index = _next_profile_index(existing_meta, existing_profile)
-    for index, item in enumerate(clean_files):
+    for index, item in enumerate(data_files):
         safe_name = _unique_safe_filename(str(item.get("filename") or f"upload-{index + 1}"), used_names)
         used_names.add(safe_name)
         content = bytes(item.get("content") or b"")
@@ -180,13 +209,44 @@ def create_workspace_from_uploads(
             }
         )
 
-    aggregate_profile = _aggregate_profiles(
-        workspace_id,
-        display_name,
-        profiles,
-        documents,
-        existing_profile=existing_profile,
-    )
+    for index, item in enumerate(reference_files):
+        safe_name = _unique_safe_filename(str(item.get("filename") or f"reference-{index + 1}"), used_reference_names)
+        used_reference_names.add(safe_name)
+        content = bytes(item.get("content") or b"")
+        content_type = _reference_image_content_type(safe_name, item.get("content_type"))
+        local_path = reference_dir / safe_name
+        local_path.write_bytes(content)
+        blob_name = f"workspaces/{workspace_id}/reference_images/{safe_name}"
+        asset = {
+            "url": _reference_asset_url(workspace_id, safe_name),
+            "blob_url": _reference_asset_blob_url(blob_name),
+            "blob_name": blob_name,
+            "role": role,
+            "filename": safe_name,
+            "source_file": f"reference_images/{safe_name}",
+            "content_type": content_type,
+            "bytes": len(content),
+        }
+        reference_images.append(asset)
+        reference_payloads.append({"filename": safe_name, "content": content, "content_type": content_type})
+
+    if profiles:
+        aggregate_profile = _aggregate_profiles(
+            workspace_id,
+            display_name,
+            profiles,
+            documents,
+            existing_profile=existing_profile,
+        )
+    elif existing_profile:
+        aggregate_profile = dict(existing_profile)
+        aggregate_profile.setdefault("workspace_id", workspace_id)
+        aggregate_profile.setdefault("name", display_name)
+        aggregate_profile.setdefault("format", existing_meta.get("format") or "mixed")
+        aggregate_profile.setdefault("documents", documents)
+        aggregate_profile.setdefault("profile_summary", existing_meta.get("profile_summary") or "Workspace profile retained.")
+    else:
+        aggregate_profile = _reference_only_profile(workspace_id, display_name, reference_images)
     write_profile(workspace_dir / "profile.json", aggregate_profile)
     created_at = existing_meta.get("created_at") or aggregate_profile["created_at"]
     workspace_meta = {
@@ -207,6 +267,7 @@ def create_workspace_from_uploads(
         "created_at": created_at,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "profile_summary": aggregate_profile["profile_summary"],
+        "reference_images": reference_images,
     }
     indexed_delta = _index_documents([profile_to_search_document(profile) for profile in profiles] + content_records)
     previous_indexed = int(existing_meta.get("indexed_count") or 0)
@@ -214,6 +275,7 @@ def create_workspace_from_uploads(
     persistence = _persist_workspace_bundle(
         workspace_id=workspace_id,
         raw_payloads=raw_payloads,
+        reference_payloads=reference_payloads,
         workspace_meta=workspace_meta,
         profile=aggregate_profile,
     )
@@ -229,6 +291,7 @@ def create_workspace_from_uploads(
         "indexed_delta": indexed_delta,
         "profile_summary": aggregate_profile["profile_summary"],
         "documents": documents,
+        "reference_images": reference_images,
     }
 
 
@@ -256,6 +319,7 @@ def list_workspaces() -> list[dict[str, Any]]:
             "profile_summary": meta.get("profile_summary") or profile.get("profile_summary"),
             "created_at": meta.get("created_at") or profile.get("created_at"),
             "documents": meta.get("documents") or _detail_documents(workspace_dir, meta),
+            "reference_images": _reference_images(meta),
         }
     for item in load_workspace_registry():
         workspace_id = str(item.get("workspace_id") or "")
@@ -272,6 +336,7 @@ def list_workspaces() -> list[dict[str, Any]]:
             "profile_summary": item.get("profile_summary"),
             "created_at": item.get("created_at"),
             "documents": item.get("documents") or [],
+            "reference_images": _reference_images(item),
         }
     return sorted(by_id.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
@@ -340,6 +405,7 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
         "columns": columns,
         "doc_count": summary.get("doc_count") or _workspace_doc_count(workspace_id, workspace_dir, meta),
         "documents": documents,
+        "reference_images": _reference_images(meta),
         "profile_summary": meta.get("profile_summary") or profile.get("profile_summary") or summary.get("profile_summary"),
         "signals": _detail_signals(tables),
         "created_at": meta.get("created_at") or profile.get("created_at") or summary.get("created_at"),
@@ -367,9 +433,41 @@ def workspace_context(workspace_id: str) -> dict[str, Any]:
         "description": None,
         "profile_summary": None,
         "documents": [],
+        "reference_images": [],
     }
     _CONTEXT_CACHE[workspace_id] = (now + min(_CONTEXT_CACHE_SECONDS, 10), dict(fallback))
     return fallback
+
+
+def workspace_reference_images(workspace_id: str) -> list[dict[str, Any]]:
+    try:
+        bundle = _load_workspace_bundle(workspace_id)
+    except Exception:
+        bundle = None
+    if not bundle:
+        return []
+    meta, _profile = bundle
+    return _reference_images(meta)
+
+
+def get_reference_image_content(workspace_id: str, filename: str) -> tuple[bytes, str] | None:
+    safe_name = Path(filename or "").name
+    if not workspace_id or not safe_name:
+        return None
+    workspace_dir = WORKSPACES / workspace_id
+    local_path = workspace_dir / "reference_images" / safe_name
+    if local_path.exists() and local_path.is_file():
+        return local_path.read_bytes(), _reference_image_content_type(safe_name, None)
+    bundle = _load_workspace_bundle(workspace_id)
+    meta = bundle[0] if bundle else {}
+    for item in _reference_images(meta):
+        if Path(str(item.get("filename") or "")).name != safe_name:
+            continue
+        blob_name = str(item.get("blob_name") or f"workspaces/{workspace_id}/reference_images/{safe_name}")
+        downloaded = download_blob_content(blob_name)
+        if downloaded:
+            return downloaded
+    return None
 
 
 def _local_workspace_summary(workspace_id: str) -> dict[str, Any] | None:
@@ -384,12 +482,13 @@ def _local_workspace_summary(workspace_id: str) -> dict[str, Any] | None:
     return {
         "workspace_id": str(meta.get("workspace_id") or workspace_id),
         "name": meta.get("name") or workspace_id,
-        "doc_count": int(meta.get("indexed_count") or len(meta.get("raw_docs") or []) or 1),
+        "doc_count": _workspace_doc_count(workspace_id, workspace_dir, meta),
         "format": meta.get("format") or profile.get("format") or "mixed",
         "description": meta.get("description"),
         "profile_summary": meta.get("profile_summary") or profile.get("profile_summary"),
         "created_at": meta.get("created_at") or profile.get("created_at"),
         "documents": meta.get("documents") or [],
+        "reference_images": _reference_images(meta),
     }
 
 
@@ -515,7 +614,7 @@ def _persist_workspace(
             profile=profile,
         )
     except Exception as exc:
-        if search_endpoint():
+        if _blob_configured_for_workspace() and search_endpoint():
             raise
         return {"mode": "local_fallback", "error": str(exc)[:300]}
 
@@ -524,6 +623,7 @@ def _persist_workspace_bundle(
     *,
     workspace_id: str,
     raw_payloads: list[dict[str, Any]],
+    reference_payloads: list[dict[str, Any]],
     workspace_meta: dict[str, Any],
     profile: dict[str, Any],
 ) -> dict[str, Any]:
@@ -536,11 +636,12 @@ def _persist_workspace_bundle(
         return persist_workspace_bundle(
             workspace_id=workspace_id,
             raw_payloads=raw_payloads,
+            reference_payloads=reference_payloads,
             workspace_meta=workspace_meta,
             profile=profile,
         )
     except Exception as exc:
-        if search_endpoint():
+        if _blob_configured_for_workspace() and search_endpoint():
             raise
         return {"mode": "local_fallback", "error": str(exc)[:300]}
 
@@ -550,6 +651,10 @@ def _registry_doc_count(item: dict[str, Any]) -> int:
     if documents:
         return len(documents)
     return int(item.get("doc_count") or (1 if item.get("source_file") else 0) or 1)
+
+
+def _blob_configured_for_workspace() -> bool:
+    return bool(os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or os.environ.get("DF_STORAGE_ACCOUNT"))
 
 
 def _delete_search_docs(workspace_id: str) -> int:
@@ -659,6 +764,90 @@ def _detail_documents(workspace_dir: Path, meta: dict[str, Any]) -> list[dict[st
     if not documents and meta.get("profile_file"):
         documents.append({"source_file": meta.get("profile_file"), "name": "profile.json", "format": "profile"})
     return documents
+
+
+def _is_reference_image(item: dict[str, Any]) -> bool:
+    filename = str(item.get("filename") or "")
+    suffix = Path(filename).suffix.lower()
+    content_type = str(item.get("content_type") or "").split(";")[0].strip().lower()
+    return suffix in IMAGE_EXTENSIONS or content_type in IMAGE_CONTENT_TYPES
+
+
+def _normalize_asset_role(value: str | None) -> str:
+    role = str(value or "reference").strip().lower()
+    return role if role in REFERENCE_ROLES else "reference"
+
+
+def _reference_image_content_type(filename: str, content_type: Any) -> str:
+    provided = str(content_type or "").split(";")[0].strip().lower()
+    if provided in IMAGE_CONTENT_TYPES:
+        return "image/jpeg" if provided == "image/jpg" else provided
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".png":
+        return "image/png"
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    return "application/octet-stream"
+
+
+def _reference_images(meta: dict[str, Any]) -> list[dict[str, Any]]:
+    images: list[dict[str, Any]] = []
+    for item in meta.get("reference_images") or []:
+        if not isinstance(item, dict):
+            continue
+        filename = Path(str(item.get("filename") or item.get("source_file") or "reference-image")).name
+        if not filename:
+            continue
+        workspace_id = str(meta.get("workspace_id") or "")
+        normalized: dict[str, Any] = {
+            "url": item.get("url") or (_reference_asset_url(workspace_id, filename) if workspace_id else ""),
+            "role": _normalize_asset_role(str(item.get("role") or "reference")),
+            "filename": filename,
+        }
+        for key in ("blob_url", "blob_name", "source_file", "content_type", "bytes"):
+            if item.get(key) is not None:
+                normalized[key] = item.get(key)
+        images.append(normalized)
+    return images
+
+
+def _existing_reference_names(meta: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for item in _reference_images(meta):
+        filename = item.get("filename")
+        if filename:
+            names.add(Path(str(filename)).name)
+    return names
+
+
+def _reference_asset_url(workspace_id: str, filename: str) -> str:
+    safe = Path(filename).name
+    return f"/api/workspaces/{workspace_id}/reference-images/{safe}"
+
+
+def _reference_asset_blob_url(blob_name: str) -> str:
+    account = os.environ.get("DF_STORAGE_ACCOUNT")
+    container = os.environ.get("DF_WORKSPACE_CONTAINER", "dataforge-workspaces")
+    if account:
+        return f"https://{account}.blob.core.windows.net/{container}/{blob_name}"
+    return f"{container}/{blob_name}"
+
+
+def _reference_only_profile(workspace_id: str, name: str, reference_images: list[dict[str, Any]]) -> dict[str, Any]:
+    roles = sorted({str(item.get("role") or "reference") for item in reference_images})
+    return {
+        "workspace_id": workspace_id,
+        "name": name,
+        "format": "reference_images",
+        "source_file": "reference_images",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "tables": [],
+        "documents": [],
+        "document_profiles": [],
+        "profile_summary": f"工作区包含 {len(reference_images)} 张参考图片素材；角色包括：{', '.join(roles) or 'reference'}。",
+    }
 
 
 def _existing_raw_names(meta: dict[str, Any]) -> set[str]:

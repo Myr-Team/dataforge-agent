@@ -40,9 +40,13 @@
       "additionalProperties": false,
       "properties": {
         "prompt": { "type": "string" },
-        "size": { "type": "string", "enum": ["1024x1024", "1024x1536", "1536x1024"] }
+        "size": { "type": "string", "enum": ["1024x1024", "1024x1536", "1536x1024"] },
+        "reference_image_urls": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       },
-      "required": ["prompt", "size"]
+      "required": ["prompt", "size", "reference_image_urls"]
     }
   },
   "narrate_summary": {
@@ -73,4 +77,3 @@
     "type": "code_interpreter"
   }
 }
-
