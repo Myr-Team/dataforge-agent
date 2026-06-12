@@ -67,6 +67,45 @@ def persist_workspace(
     }
 
 
+def persist_workspace_bundle(
+    *,
+    workspace_id: str,
+    raw_payloads: list[dict[str, Any]],
+    workspace_meta: dict[str, Any],
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    container = _container_client()
+    _ensure_container(container)
+    prefix = f"workspaces/{workspace_id}"
+    _upload_json(container, f"{prefix}/workspace.json", workspace_meta)
+    _upload_json(container, f"{prefix}/profile.json", profile)
+    for item in raw_payloads:
+        raw_filename = PathSafe.name(str(item.get("raw_filename") or "upload"))
+        container.upload_blob(
+            f"{prefix}/raw_docs/{raw_filename}",
+            bytes(item.get("raw_content") or b""),
+            overwrite=True,
+            content_settings=ContentSettings(content_type="application/octet-stream"),
+        )
+        profile_filename = PathSafe.name(str(item.get("profile_filename") or f"{raw_filename}.json"))
+        item_profile = item.get("profile")
+        if isinstance(item_profile, dict):
+            _upload_json(container, f"{prefix}/profiles/{profile_filename}", item_profile)
+    _delete_tombstone(container, workspace_id)
+    entry = _registry_entry(workspace_meta, profile)
+    registry = load_workspace_registry()
+    registry = [item for item in registry if item.get("workspace_id") != workspace_id]
+    registry.append(entry)
+    _save_registry(registry)
+    return {
+        "mode": "azure_blob",
+        "container": _container_name(),
+        "prefix": prefix,
+        "registry_blob": REGISTRY_BLOB,
+        "raw_count": len(raw_payloads),
+    }
+
+
 def load_workspace_registry() -> list[dict[str, Any]]:
     if not blob_configured():
         return []
@@ -173,10 +212,12 @@ def _registry_entry(workspace_meta: dict[str, Any], profile: dict[str, Any]) -> 
         "workspace_id": workspace_id,
         "name": workspace_meta.get("name") or profile.get("name") or workspace_id,
         "format": workspace_meta.get("format") or profile.get("format") or "unknown",
+        "description": workspace_meta.get("description"),
         "profile_summary": workspace_meta.get("profile_summary") or profile.get("profile_summary"),
         "created_at": workspace_meta.get("created_at") or profile.get("created_at"),
         "doc_count": int(workspace_meta.get("indexed_count") or 1),
         "source_file": profile.get("source_file"),
+        "documents": workspace_meta.get("documents") or [],
         "blob_prefix": f"workspaces/{workspace_id}",
         "persistence_mode": "azure_blob",
     }

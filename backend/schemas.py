@@ -102,9 +102,11 @@ class SearchPackContextResponse(BaseModel):
 class UploadResponse(BaseModel):
     workspace_id: str
     name: str
+    description: str | None = None
     format: str
     indexed_count: int
     profile_summary: str
+    documents: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkspaceSummary(BaseModel):
@@ -112,8 +114,10 @@ class WorkspaceSummary(BaseModel):
     name: str
     doc_count: int
     format: str | None = None
+    description: str | None = None
     profile_summary: str | None = None
     created_at: str | None = None
+    documents: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkspacesResponse(BaseModel):
@@ -141,6 +145,7 @@ class WorkspaceDocumentDetail(BaseModel):
 class WorkspaceDetailResponse(BaseModel):
     workspace_id: str
     name: str
+    description: str | None = None
     format: str
     rows: int = 0
     columns: list[WorkspaceColumnDetail] = Field(default_factory=list)

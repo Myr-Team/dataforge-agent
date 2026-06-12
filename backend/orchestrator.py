@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -16,9 +17,18 @@ from typing import Any
 from starlette.concurrency import run_in_threadpool
 
 try:
+    from . import cache_store
     from .chat_loop_primitives import sse
     from .conversation_store import append_message, conversation_context
-    from .foundry_client import run_agent, run_coordinator_guidance, run_market_web_research, stream_grounded_answer
+    from .foundry_client import (
+        run_agent,
+        run_coordinator_direct_reply,
+        run_coordinator_guidance,
+        run_coordinator_route,
+        run_followup_rewrite,
+        run_market_web_research,
+        stream_grounded_answer,
+    )
     from .rag import search
     from .router import deterministic_route
     from .run_store import complete_run, get_run, record_event, start_run
@@ -29,9 +39,18 @@ try:
     from .tools.render_pdf import render_pdf_report
     from .workspace_store import workspace_context
 except ImportError:
+    import cache_store
     from chat_loop_primitives import sse
     from conversation_store import append_message, conversation_context
-    from foundry_client import run_agent, run_coordinator_guidance, run_market_web_research, stream_grounded_answer
+    from foundry_client import (
+        run_agent,
+        run_coordinator_direct_reply,
+        run_coordinator_guidance,
+        run_coordinator_route,
+        run_followup_rewrite,
+        run_market_web_research,
+        stream_grounded_answer,
+    )
     from rag import search
     from router import deterministic_route
     from run_store import complete_run, get_run, record_event, start_run
@@ -174,9 +193,85 @@ def _agent_tool_events(agent: str, meta: dict[str, Any]) -> list[tuple[str, dict
     return events
 
 
-def _coordinator(req: ChatRequest) -> RoutingDecision:
+def _coordinator(req: ChatRequest, history: list[dict[str, Any]]) -> tuple[RoutingDecision, dict[str, Any]]:
     context = workspace_context(req.workspace_id)
-    return deterministic_route(req.message, req.workspace_id, {"doc_count": context.get("doc_count", 0)})
+    payload = {
+        "workspace_id": req.workspace_id,
+        "workspace_context": context,
+        "current_message": req.message,
+        "conversation_history": _compact_history(history),
+        "has_previous_assistant_answer": any(item.get("role") == "assistant" for item in history),
+        "allowed_agents": [
+            "df-corpus-analyst",
+            "df-feasibility-analyst",
+            "df-market-researcher",
+            "df-auditor",
+            "df-producer",
+        ],
+        "style_nonce": uuid.uuid4().hex[:8],
+    }
+    try:
+        raw = run_coordinator_route(payload)
+        decision = _routing_decision_from_llm(req, raw)
+        return decision, raw.get("_llm") or {"mode": "coordinator_route"}
+    except Exception as exc:
+        if os.environ.get("DF_COORDINATOR_ALLOW_DETERMINISTIC_FALLBACK") == "1":
+            decision = deterministic_route(req.message, req.workspace_id, {"doc_count": context.get("doc_count", 0)})
+            decision.reason = f"Coordinator LLM failed; deterministic development fallback used: {_clean_text(exc, 240)}"
+            return decision, {"mode": "deterministic_fallback", "error": _clean_text(exc, 300)}
+        return (
+            RoutingDecision(
+                workspace_id=req.workspace_id,
+                intent="clarify_needed",
+                experts=[],
+                output_mode="chat",
+                needs_clarification=True,
+                clarifying_question=None,
+                reason=f"Coordinator LLM unavailable, so DataForge needs clarification instead of guessing: {_clean_text(exc, 240)}",
+            ),
+            {"mode": "coordinator_route_unavailable", "error": _clean_text(exc, 300)},
+        )
+
+
+def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> RoutingDecision:
+    intent = str(raw.get("intent") or "clarify_needed").strip()
+    allowed_intents = {"feasibility_analysis", "followup_edit", "smalltalk_or_meta", "clarify_needed", "corpus_qa"}
+    if intent not in allowed_intents:
+        intent = "clarify_needed"
+    experts = [str(item) for item in (raw.get("experts") or []) if isinstance(item, str)]
+    allowed_agents = {
+        "df-corpus-analyst",
+        "df-feasibility-analyst",
+        "df-market-researcher",
+        "df-auditor",
+        "df-producer",
+    }
+    experts = [agent for agent in experts if agent in allowed_agents]
+    if intent in {"followup_edit", "smalltalk_or_meta", "clarify_needed"}:
+        experts = []
+    elif intent == "corpus_qa":
+        experts = ["df-corpus-analyst"]
+    elif intent == "feasibility_analysis":
+        if "df-corpus-analyst" not in experts:
+            experts.insert(0, "df-corpus-analyst")
+        if "df-feasibility-analyst" not in experts:
+            experts.append("df-feasibility-analyst")
+        if "df-auditor" not in experts:
+            experts.append("df-auditor")
+    output_mode = str(raw.get("output_mode") or ("report" if intent == "feasibility_analysis" else "chat"))
+    if output_mode not in {"chat", "report", "full_package"}:
+        output_mode = "report" if intent == "feasibility_analysis" else "chat"
+    if output_mode == "full_package" and "df-producer" not in experts and intent == "feasibility_analysis":
+        experts.append("df-producer")
+    return RoutingDecision(
+        workspace_id=req.workspace_id,
+        intent=intent,
+        experts=experts,
+        output_mode=output_mode,  # type: ignore[arg-type]
+        needs_clarification=bool(raw.get("needs_clarification")) or intent == "clarify_needed",
+        clarifying_question=str(raw.get("clarifying_question") or "").strip() or None,
+        reason=_clean_text(raw.get("reason"), 900) or "Coordinator routed the request by intent.",
+    )
 
 
 def _clarify_guidance(req: ChatRequest, decision: RoutingDecision, conversation_id: str) -> dict[str, Any]:
@@ -480,6 +575,48 @@ def _clean_sentence_end(text: str) -> str:
     return str(text or "").rstrip("\u3002. ")
 
 
+_FEASIBILITY_PROMPT_VERSION = "df-feasibility-analyst:batch5-r1"
+
+
+def _corpus_fingerprint(artifact: dict[str, Any]) -> tuple[str, str]:
+    hits = artifact.get("corpus", {}).get("hits", [])
+    retrieval_modes = sorted({str(hit.get("retrieval_mode") or "unknown") for hit in hits}) or ["none"]
+    parts = []
+    for hit in hits[:12]:
+        parts.append(
+            {
+                "id": hit.get("id"),
+                "source_file": hit.get("source_file"),
+                "chunk_id": hit.get("chunk_id"),
+                "retrieval_mode": hit.get("retrieval_mode"),
+                "content": _clean_text(hit.get("content"), 1600),
+            }
+        )
+    raw = json.dumps(parts, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24], "+".join(retrieval_modes)
+
+
+def _feasibility_cache_key(req: ChatRequest, artifact: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    fingerprint, retrieval_mode = _corpus_fingerprint(artifact)
+    query_hash = hashlib.sha256(req.message.encode("utf-8")).hexdigest()[:16]
+    key = (
+        "dataforge:analysis:v1"
+        f":workspace={req.workspace_id}"
+        f":fingerprint={fingerprint}"
+        f":prompt={_FEASIBILITY_PROMPT_VERSION}"
+        f":retrieval={retrieval_mode}"
+        f":query={query_hash}"
+    )
+    return key, {
+        "workspace_id": req.workspace_id,
+        "chunk_fingerprint": fingerprint,
+        "prompt_version": _FEASIBILITY_PROMPT_VERSION,
+        "retrieval_mode": retrieval_mode,
+        "query_hash": query_hash,
+        "key_sample": key,
+    }
+
+
 def _run_feasibility_analyst(
     req: ChatRequest,
     artifact: dict[str, Any],
@@ -497,6 +634,19 @@ def _run_feasibility_analyst(
         data = report.model_dump()
         data["_llm"] = {"mode": "empty_evidence_deterministic", "response_id": None, "usage": {}}
         return data
+    cache_key, cache_meta = _feasibility_cache_key(req, artifact)
+    if not audit_feedback and os.environ.get("DF_DISABLE_REDIS_CACHE") != "1":
+        cached, get_meta = cache_store.get_json(cache_key)
+        if cached:
+            cached["_llm"] = {
+                **(cached.get("_llm") or {}),
+                "mode": "redis_cached_feasibility",
+                "cache": get_meta | cache_meta,
+                "response_id": None,
+                "usage": {},
+            }
+            return cached
+        artifact["_feasibility_cache"] = {"get": get_meta | cache_meta}
     payload = {
         "workspace_id": req.workspace_id,
         "user_request": req.message,
@@ -517,6 +667,9 @@ def _run_feasibility_analyst(
         data = report.model_dump()
         data["_llm"] = _model_meta(result)
         data["_llm"]["evidence_warnings"] = evidence_warnings
+        if not audit_feedback and os.environ.get("DF_DISABLE_REDIS_CACHE") != "1":
+            set_meta = cache_store.set_json(cache_key, {key: value for key, value in data.items() if key != "_llm"})
+            data["_llm"]["cache"] = (artifact.get("_feasibility_cache") or {}).get("get", {}) | {"set": set_meta, **cache_meta}
         return data
     except Exception as exc:
         return _fallback_feasibility(req, artifact, catalog, str(exc))
@@ -869,6 +1022,168 @@ def _chunk_text(text: str, size: int = 28) -> list[str]:
     return [text[index : index + size] for index in range(0, len(text), size)] or [""]
 
 
+def _strip_inline_refs(text: Any) -> str:
+    value = _clean_text(text, 1200)
+    value = re.sub(r"\[(?:raw_docs|external|profile\.json)[^\]]*\]", "", value)
+    value = re.sub(r"\[[^\]]*#(?:profile|[^\]]*row[^\]]*)[^\]]*\]", "", value)
+    value = re.sub(r"\b(?:data_confirmed|market_inferred|speculative)\b:?", "", value)
+    value = re.sub(r"\s{2,}", " ", value)
+    return value.strip()
+
+
+def _build_citations(artifact: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    citations: list[dict[str, Any]] = []
+    marker_by_ref: dict[str, int] = {}
+
+    def add_citation(ref: str, *, confidence: str = "data_confirmed", source_type: str = "corpus") -> int | None:
+        matched = next((item for item in _evidence_catalog(artifact) if _refs_match(ref, item)), None)
+        if not matched and ref:
+            matched = {"ref": ref, "quote": ""}
+        if not matched:
+            return None
+        canonical_ref = str(matched.get("ref") or ref)
+        normalized = _normalize_ref(canonical_ref)
+        if normalized in marker_by_ref:
+            return marker_by_ref[normalized]
+        metadata = matched.get("metadata") or {}
+        source_file = metadata.get("source_file") or _ref_source(canonical_ref)
+        chunk_id = _ref_tail(canonical_ref) or matched.get("id") or canonical_ref
+        marker = len(citations) + 1
+        citations.append(
+            {
+                "marker": marker,
+                "source_file": source_file,
+                "chunk_id": chunk_id,
+                "confidence": confidence,
+                "source_type": source_type,
+                "snippet": _clean_text(matched.get("quote"), 420),
+            }
+        )
+        marker_by_ref[normalized] = marker
+        return marker
+
+    feasibility = artifact.get("feasibility") or {}
+    for dimension in feasibility.get("dimensions") or []:
+        confidence = str(dimension.get("confidence") or "speculative")
+        for evidence in dimension.get("evidence") or []:
+            ref = str(evidence.get("ref") or "")
+            if ref:
+                add_citation(ref, confidence=confidence, source_type=str(evidence.get("source_type") or "corpus"))
+
+    for finding in artifact.get("market", {}).get("external_findings", [])[:4]:
+        if not isinstance(finding, dict):
+            continue
+        url = str(finding.get("source_url") or "")
+        claim = str(finding.get("claim") or "")
+        if not url and not claim:
+            continue
+        key = _normalize_ref(url or claim)
+        if key in marker_by_ref:
+            continue
+        marker = len(citations) + 1
+        citations.append(
+            {
+                "marker": marker,
+                "source_file": url or finding.get("source_title") or "market",
+                "chunk_id": f"market-{marker}",
+                "confidence": "market_inferred",
+                "source_type": "market",
+                "snippet": _clean_text(claim, 420),
+                "source_url": url,
+            }
+        )
+        marker_by_ref[key] = marker
+    return citations, marker_by_ref
+
+
+def _evidence_markers(evidence_items: list[dict[str, Any]], citations: list[dict[str, Any]]) -> str:
+    markers: list[str] = []
+    for evidence in evidence_items:
+        ref = str(evidence.get("ref") or "")
+        matched = next(
+            (
+                item
+                for item in citations
+                if _normalize_ref(ref)
+                and (
+                    _normalize_ref(item.get("source_file")) == _ref_source(ref)
+                    or _normalize_ref(item.get("chunk_id")) == _ref_tail(ref)
+                    or _ref_tail(ref) in _normalize_ref(item.get("chunk_id"))
+                )
+            ),
+            None,
+        )
+        if matched:
+            marker = f"[{matched['marker']}]"
+            if marker not in markers:
+                markers.append(marker)
+    return " ".join(markers[:3])
+
+
+def _structured_answer(req: ChatRequest, decision: RoutingDecision, artifact: dict[str, Any]) -> dict[str, Any]:
+    citations, _ = _build_citations(artifact)
+    feasibility = artifact.get("feasibility") or {}
+    corpus = artifact.get("corpus") or {}
+    market = artifact.get("market") or {}
+    audit = artifact.get("audit") or {}
+    opportunity = feasibility.get("opportunity_id") or ((corpus.get("opportunities") or [{}])[0] or {}).get("title") or "workspace opportunity"
+    verdict = feasibility.get("verdict") or "unknown"
+    overall = feasibility.get("overall_confidence") or "speculative"
+    lines: list[str] = [
+        "## 执行摘要",
+        f"- 结论：**{verdict}**；整体置信度：**{overall}**。",
+        f"- 本次回答基于当前工作区检索、可行性分析和审计结果生成；审计结论：{audit.get('verdict', 'not_run')}。",
+        "",
+        "## 机会",
+        f"- 机会方向：{_strip_inline_refs(opportunity)}。",
+    ]
+    if market.get("positioning_note"):
+        market_markers = " ".join(f"[{item['marker']}]" for item in citations if item.get("source_type") == "market")[:24]
+        lines.append(f"- 市场补充：{_strip_inline_refs(market.get('positioning_note'))} {market_markers}".rstrip())
+    lines.extend(["", "## 各维度评分与判断"])
+    dimensions = feasibility.get("dimensions") or []
+    if dimensions:
+        for dimension in dimensions:
+            markers = _evidence_markers(dimension.get("evidence") or [], citations)
+            name = dimension.get("name") or "dimension"
+            score = dimension.get("score", "n/a")
+            confidence = dimension.get("confidence") or "speculative"
+            rationale = _strip_inline_refs(dimension.get("rationale")) or "证据不足，需要补充。"
+            lines.append(f"- **{name}**：{score}/5，置信度 `{confidence}`。{rationale} {markers}".rstrip())
+    else:
+        lines.append("- 当前没有足够的已验证证据形成维度评分。")
+    lines.extend(["", "## 关键缺口"])
+    gaps = feasibility.get("gap_list") or []
+    if gaps:
+        for gap in gaps[:5]:
+            lines.append(f"- {_strip_inline_refs(gap)}")
+    else:
+        lines.append("- 暂无额外缺口；建议继续用新数据验证关键假设。")
+    lines.extend(["", "## 建议下一步"])
+    low_dimensions = [item for item in dimensions if int(item.get("score") or 0) <= 2]
+    if low_dimensions:
+        for item in low_dimensions[:3]:
+            lines.append(f"- 优先补强 `{item.get('name')}`：围绕该维度补充可量化样本、成本或客户证据。")
+    else:
+        lines.append("- 选择一个最小可验证场景，补充真实客户、成本和交付周期样本。")
+    if citations:
+        lines.append(f"- 前端可在证据面板中查看 {len(citations)} 条结构化 citation。")
+    markdown = "\n".join(lines).strip()
+    markdown = _strip_raw_ref_leaks(markdown)
+    return {
+        "markdown": markdown,
+        "citations": citations,
+        "_llm": {"mode": "structured_answer_renderer", "response_id": None, "usage": {}},
+    }
+
+
+def _strip_raw_ref_leaks(text: str) -> str:
+    text = re.sub(r"\[raw_docs/[^\]]+\]", "", text)
+    text = re.sub(r"\[external/[^\]]+\]", "", text)
+    text = re.sub(r"\[profile\.json[^\]]*\]", "", text)
+    return text
+
+
 async def _answer_event_stream(payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -909,6 +1224,20 @@ async def _stream_answer_frames(
     conversation_id: str,
     state: dict[str, Any],
 ) -> AsyncIterator[str]:
+    answer = _structured_answer(req, decision, artifact)
+    text = str(answer.get("markdown") or _final_text(decision, artifact))
+    meta = dict(answer.get("_llm") or {})
+    for delta in _chunk_text(text, 96):
+        if delta:
+            yield _frame("answer_delta", {"delta": delta}, conversation_id)
+            await asyncio.sleep(0)
+    state["text"] = text
+    state["meta"] = meta
+    artifact["answer"] = {"markdown": text, "text": text, "citations": answer.get("citations", []), "_llm": meta}
+    artifact["citations"] = answer.get("citations", [])
+    yield _frame("model_response", {"agent": "df-answer-writer", **meta}, conversation_id)
+    return
+
     payload = _answer_payload(req, decision, artifact)
     parts: list[str] = []
     pending_delta = ""
@@ -1048,6 +1377,66 @@ async def _producer_frames(artifact: dict[str, Any], conversation_id: str) -> As
     )
 
 
+def _last_assistant_text(history: list[dict[str, Any]]) -> str:
+    for item in reversed(history):
+        if item.get("role") == "assistant":
+            text = _clean_text(item.get("text"), 1600)
+            if text:
+                return text
+    return ""
+
+
+def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: list[dict[str, Any]]) -> dict[str, Any]:
+    context = workspace_context(req.workspace_id)
+    payload = {
+        "workspace_id": req.workspace_id,
+        "workspace_context": context,
+        "current_message": req.message,
+        "conversation_history": _compact_history(history),
+        "routing": decision.model_dump(),
+        "style_nonce": uuid.uuid4().hex[:8],
+    }
+    if decision.intent == "followup_edit":
+        previous = _last_assistant_text(history)
+        if not previous:
+            return {
+                "text": "我需要先有上一轮分析结果，才能按你的要求改写。请先完成一次分析，或把要改写的内容贴给我。",
+                "mode": "followup_missing_context",
+                "response_id": None,
+                "usage": {},
+            }
+        payload["previous_assistant_answer"] = previous
+        return run_followup_rewrite(payload)
+    return run_coordinator_direct_reply(payload)
+
+
+async def _emit_lightweight_final(
+    req: ChatRequest,
+    decision: RoutingDecision,
+    artifact: dict[str, Any],
+    conv_id: str,
+    history: list[dict[str, Any]],
+) -> AsyncIterator[str]:
+    result = await run_in_threadpool(_lightweight_reply, req, decision, history)
+    text = _strip_raw_ref_leaks(str(result.get("text") or "").strip() or "我可以继续帮你处理当前工作区。")
+    for delta in _chunk_text(text, 96):
+        yield _frame("answer_delta", {"delta": delta}, conv_id)
+        await asyncio.sleep(0)
+    meta = {key: result.get(key) for key in ("mode", "response_id", "usage", "error") if key in result}
+    artifact["answer"] = {"markdown": text, "text": text, "citations": [], "_llm": meta}
+    final_payload = {"text": text, "routing": decision.model_dump(), "artifact": artifact}
+    yield _frame("model_response", {"agent": "df-coordinator", **meta}, conv_id)
+    await run_in_threadpool(
+        _persist_assistant_message,
+        conv_id,
+        req.workspace_id,
+        text,
+        decision.intent,
+    )
+    complete_run(conv_id, status=decision.intent, final=final_payload, artifact=artifact)
+    yield _frame("final", final_payload, conv_id)
+
+
 async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     conv_id = req.conversation_id or str(uuid.uuid4())
     history = conversation_context(req.conversation_id) if req.conversation_id else []
@@ -1062,12 +1451,25 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     yield _frame("user", {"text": req.message}, conv_id)
     await run_in_threadpool(_persist_user_message, conv_id, req.workspace_id, req.message)
 
-    decision = _coordinator(working_req)
+    decision, route_meta = await run_in_threadpool(_coordinator, req, history)
     artifact["routing"] = decision.model_dump()
+    artifact["routing_meta"] = route_meta
     producer_requested = "df-producer" in decision.experts
+    yield _frame(
+        "route",
+        {
+            "intent": decision.intent,
+            "reason": decision.reason,
+            "experts": decision.experts,
+            "output_mode": decision.output_mode,
+            "needs_clarification": decision.needs_clarification,
+            **route_meta,
+        },
+        conv_id,
+    )
     yield _frame("plan", decision.model_dump(), conv_id)
     if decision.needs_clarification:
-        guidance = await run_in_threadpool(_clarify_guidance, working_req, decision, conv_id)
+        guidance = await run_in_threadpool(_clarify_guidance, req, decision, conv_id)
         decision.clarifying_question = guidance.get("question")
         clarify_payload = {
             "question": decision.clarifying_question,
@@ -1091,6 +1493,11 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             artifact=artifact,
         )
         yield frame
+        return
+
+    if decision.intent in {"smalltalk_or_meta", "followup_edit"}:
+        async for frame in _emit_lightweight_final(req, decision, artifact, conv_id, history):
+            yield frame
         return
 
     if "df-corpus-analyst" in decision.experts:
@@ -1134,6 +1541,9 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             ):
                 yield frame
             artifact["feasibility"] = await feasibility_task
+            cache_info = (artifact["feasibility"].get("_llm") or {}).get("cache")
+            if cache_info:
+                yield _frame("cache", {"agent": "df-feasibility-analyst", **cache_info}, conv_id)
             for event, data in _agent_tool_events("df-feasibility-analyst", artifact["feasibility"].get("_llm", {})):
                 yield _frame(event, data, conv_id)
             if artifact["feasibility"]["_llm"].get("response_id"):
@@ -1209,29 +1619,32 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                 yield _frame("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": 0, "error": str(exc)}, conv_id)
                 yield _frame("tool_result", {"agent": "df-market-researcher", "name": "foundry_native_web_search", "count": 0, "error": str(exc)}, conv_id)
 
-    yield _frame("role_change", {"agent": "df-auditor"}, conv_id)
-    try:
-        audit_task = asyncio.create_task(run_in_threadpool(_audit_artifact, working_req, artifact))
-        async for frame in _progress_frames(
-            audit_task,
-            conv_id,
-            "df-auditor",
-            "audit_report",
-        ):
+    if "df-auditor" in decision.experts:
+        yield _frame("role_change", {"agent": "df-auditor"}, conv_id)
+        try:
+            audit_task = asyncio.create_task(run_in_threadpool(_audit_artifact, working_req, artifact))
+            async for frame in _progress_frames(
+                audit_task,
+                conv_id,
+                "df-auditor",
+                "audit_report",
+            ):
+                yield frame
+            audit, audit_meta = await audit_task
+            for event, data in _agent_tool_events("df-auditor", audit_meta):
+                yield _frame(event, data, conv_id)
+            if audit_meta.get("response_id"):
+                yield _frame("model_response", {"agent": "df-auditor", **audit_meta}, conv_id)
+        except Exception as exc:
+            error_payload = {"agent": "df-auditor", "message": str(exc)}
+            frame = _frame("error", error_payload, conv_id)
+            await run_in_threadpool(_persist_assistant_message, conv_id, req.workspace_id, str(exc), "error")
+            complete_run(conv_id, status="error", final=error_payload, artifact=artifact)
             yield frame
-        audit, audit_meta = await audit_task
-        for event, data in _agent_tool_events("df-auditor", audit_meta):
-            yield _frame(event, data, conv_id)
-        if audit_meta.get("response_id"):
-            yield _frame("model_response", {"agent": "df-auditor", **audit_meta}, conv_id)
-    except Exception as exc:
-        error_payload = {"agent": "df-auditor", "message": str(exc)}
-        frame = _frame("error", error_payload, conv_id)
-        await run_in_threadpool(_persist_assistant_message, conv_id, req.workspace_id, str(exc), "error")
-        complete_run(conv_id, status="error", final=error_payload, artifact=artifact)
-        yield frame
-        return
-    yield _frame("audit", audit.model_dump(), conv_id)
+            return
+        yield _frame("audit", audit.model_dump(), conv_id)
+    else:
+        audit = AuditVerdict(verdict="pass", issues=[], target_expert=None)
 
     if audit.verdict == "revise" and audit.target_expert == "df-feasibility-analyst":
         yield _frame("role_change", {"agent": "df-feasibility-analyst", "revision": 1}, conv_id)

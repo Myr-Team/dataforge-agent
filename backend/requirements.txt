@@ -10,3 +10,4 @@ python-multipart==0.0.20
 azure-storage-blob==12.24.0
 azure-monitor-opentelemetry==1.6.10
 reportlab==4.5.1
+redis==5.2.1

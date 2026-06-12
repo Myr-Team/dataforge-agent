@@ -71,14 +71,15 @@ def build_data_profile(
 
 def profile_to_search_document(profile: dict[str, Any]) -> dict[str, Any]:
     workspace_id = str(profile["workspace_id"])
+    profile_id = str(profile.get("profile_id") or "profile-000")
     return {
         "@search.action": "mergeOrUpload",
-        "id": f"{workspace_id}-profile-000",
+        "id": f"{workspace_id}-{profile_id}",
         "workspace_id": workspace_id,
         "title": f"{profile.get('name', workspace_id)} 数据画像",
         "content": profile_search_content(profile),
-        "source_file": "profile.json",
-        "chunk_id": "profile-000",
+        "source_file": profile.get("source_file") or "profile.json",
+        "chunk_id": profile_id,
         "document_type": "profile",
         "language": "zh-Hans",
         "sheet": None,
