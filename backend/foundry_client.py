@@ -35,6 +35,46 @@ CLARIFY_GUIDANCE_SCHEMA = {
 }
 
 
+COORDINATOR_ROUTE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "intent": {
+            "type": "string",
+            "enum": [
+                "feasibility_analysis",
+                "followup_edit",
+                "smalltalk_or_meta",
+                "clarify_needed",
+                "corpus_qa",
+            ],
+        },
+        "experts": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "output_mode": {
+            "type": "string",
+            "enum": ["chat", "report", "full_package"],
+        },
+        "needs_clarification": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "clarifying_question": {"type": "string"},
+    },
+    "required": ["intent", "experts", "output_mode", "needs_clarification", "reason", "clarifying_question"],
+}
+
+
+COORDINATOR_REPLY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "text": {"type": "string"},
+    },
+    "required": ["text"],
+}
+
+
 MARKET_WEB_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -464,6 +504,113 @@ def run_coordinator_guidance(payload: dict[str, Any]) -> dict[str, Any]:
         "usage": _usage_dict(getattr(response, "usage", None)),
         "mode": "coordinator_llm",
     }
+
+
+def run_coordinator_route(payload: dict[str, Any]) -> dict[str, Any]:
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "You are the DataForge coordinator. Classify the current user message by intent using the "
+        "message, workspace context, and recent conversation history. Do not use a keyword checklist. "
+        "Choose exactly one intent: feasibility_analysis, followup_edit, smalltalk_or_meta, "
+        "clarify_needed, or corpus_qa. Schedule only the agents that are actually needed. "
+        "Use df-corpus-analyst for workspace retrieval, df-feasibility-analyst for product feasibility, "
+        "df-market-researcher only when external market/competitor context is needed, df-auditor only "
+        "when there is a feasibility report to audit, and df-producer only for requested artifacts. "
+        "For followup_edit, schedule no analyst agents; the rewrite will use the prior assistant answer. "
+        "For smalltalk_or_meta, schedule no analyst agents and answer directly. "
+        "Return concise JSON only. Write reason and any clarifying question in Chinese."
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 650,
+        "text": _schema_format("df_coordinator_route", COORDINATOR_ROUTE_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    text = getattr(response, "output_text", "") or ""
+    data = _extract_json(text)
+    data["_llm"] = _response_meta(response, "coordinator_route")
+    return data
+
+
+def run_coordinator_direct_reply(payload: dict[str, Any]) -> dict[str, Any]:
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "You are the DataForge coordinator. Reply directly to smalltalk, capability, or meta questions. "
+        "Do not invent workspace facts beyond the provided workspace context. Keep it concise, natural, "
+        "and in Chinese unless the user explicitly asks for another language. Return JSON only."
+    )
+    return _coordinator_text_response(openai_client, instructions, payload, "coordinator_direct_reply")
+
+
+def run_followup_rewrite(payload: dict[str, Any]) -> dict[str, Any]:
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "You rewrite the previous DataForge answer according to the current user instruction. "
+        "Use only the provided previous assistant answer and conversation history. Do not rerun or invent "
+        "analysis. Preserve the substantive conclusion unless the user asks for a format or language change. "
+        "Keep the rewrite lightweight: do not expand evidence panels or add new analysis; target 250-450 words. "
+        "If the user asks for English, write English; otherwise follow the user's language. Return JSON only."
+    )
+    return _coordinator_text_response(openai_client, instructions, payload, "followup_rewrite", max_output_tokens=750)
+
+
+def _coordinator_text_response(
+    openai_client: Any,
+    instructions: str,
+    payload: dict[str, Any],
+    mode: str,
+    *,
+    max_output_tokens: int = 900,
+) -> dict[str, Any]:
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": max_output_tokens,
+        "text": _schema_format(mode, COORDINATOR_REPLY_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    text = getattr(response, "output_text", "") or ""
+    try:
+        data = _extract_json(text)
+        output_text = str(data.get("text") or "").strip()
+    except Exception:
+        output_text = _best_effort_text_field(text) or text.strip()
+    return {
+        "text": output_text,
+        "response_id": getattr(response, "id", None),
+        "usage": _usage_dict(getattr(response, "usage", None)),
+        "mode": mode,
+    }
+
+
+def _best_effort_text_field(text: str) -> str:
+    stripped = str(text or "").strip()
+    match = re.search(r'"text"\s*:\s*"', stripped)
+    if not match:
+        return ""
+    raw = stripped[match.end() :]
+    raw = re.sub(r'"\s*}\s*$', "", raw, flags=re.S)
+    for end in range(len(raw), max(0, len(raw) - 500), -1):
+        candidate = raw[:end]
+        try:
+            return json.loads('"' + candidate + '"').strip()
+        except Exception:
+            continue
+    return raw.replace("\\n", "\n").replace('\\"', '"').strip()
 
 
 def run_market_web_research(payload: dict[str, Any]) -> dict[str, Any]:

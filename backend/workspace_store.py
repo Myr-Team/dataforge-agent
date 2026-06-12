@@ -92,6 +92,108 @@ def create_workspace_from_upload(
     }
 
 
+def create_workspace_from_uploads(
+    *,
+    files: list[dict[str, Any]],
+    name: str | None = None,
+    description: str | None = None,
+    requested_workspace_id: str | None = None,
+) -> dict[str, Any]:
+    clean_files = [item for item in files if item.get("content")]
+    if not clean_files:
+        raise ValueError("Uploaded file is empty")
+    display_seed = name or Path(_safe_filename(str(clean_files[0].get("filename") or "upload"))).stem
+    display_name = str(display_seed or "uploaded data").strip() or "uploaded data"
+    description = str(description or "").strip() or None
+    workspace_id = _unique_workspace_id(requested_workspace_id or display_name)
+    workspace_dir = WORKSPACES / workspace_id
+    raw_dir = workspace_dir / "raw_docs"
+    profiles_dir = workspace_dir / "profiles"
+    raw_dir.mkdir(parents=True, exist_ok=False)
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+
+    used_names: set[str] = set()
+    profiles: list[dict[str, Any]] = []
+    documents: list[dict[str, Any]] = []
+    raw_payloads: list[dict[str, Any]] = []
+    for index, item in enumerate(clean_files):
+        safe_name = _unique_safe_filename(str(item.get("filename") or f"upload-{index + 1}"), used_names)
+        used_names.add(safe_name)
+        content = bytes(item.get("content") or b"")
+        raw_path = raw_dir / safe_name
+        raw_path.write_bytes(content)
+        source_file = f"raw_docs/{safe_name}"
+        profile = build_data_profile(
+            raw_path,
+            workspace_id=workspace_id,
+            name=display_name,
+            source_file=source_file,
+            content_type=item.get("content_type"),
+        )
+        profile_id = f"profile-{index:03d}"
+        profile["profile_id"] = profile_id
+        profile["profile_file"] = f"profiles/{profile_id}.json"
+        write_profile(profiles_dir / f"{profile_id}.json", profile)
+        profiles.append(profile)
+        document = {
+            "source_file": source_file,
+            "name": safe_name,
+            "format": profile.get("format"),
+            "bytes": len(content),
+            "profile_file": profile["profile_file"],
+        }
+        documents.append(document)
+        raw_payloads.append(
+            {
+                "raw_filename": safe_name,
+                "raw_content": content,
+                "profile_filename": f"{profile_id}.json",
+                "profile": profile,
+            }
+        )
+
+    aggregate_profile = _aggregate_profiles(workspace_id, display_name, profiles, documents)
+    write_profile(workspace_dir / "profile.json", aggregate_profile)
+    workspace_meta = {
+        "workspace_id": workspace_id,
+        "name": display_name,
+        "description": description,
+        "format": aggregate_profile["format"],
+        "language": "zh-Hans",
+        "persona": "Uploaded customer data workspace for product feasibility analysis.",
+        "ask_when": [
+            "The request lacks target customer, product scope, or expected output.",
+            "The request depends on fields or facts not present in the uploaded profiles.",
+        ],
+        "raw_docs": [item["source_file"] for item in documents],
+        "documents": documents,
+        "profile_files": [item["profile_file"] for item in documents],
+        "profile_file": "profile.json",
+        "created_at": aggregate_profile["created_at"],
+        "profile_summary": aggregate_profile["profile_summary"],
+    }
+    indexed_count = _index_profiles(profiles)
+    workspace_meta["indexed_count"] = indexed_count
+    persistence = _persist_workspace_bundle(
+        workspace_id=workspace_id,
+        raw_payloads=raw_payloads,
+        workspace_meta=workspace_meta,
+        profile=aggregate_profile,
+    )
+    workspace_meta["persistence"] = persistence
+    (workspace_dir / "workspace.json").write_text(json.dumps(workspace_meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    _CONTEXT_CACHE.pop(workspace_id, None)
+    return {
+        "workspace_id": workspace_id,
+        "name": display_name,
+        "description": description,
+        "format": aggregate_profile["format"],
+        "indexed_count": indexed_count,
+        "profile_summary": aggregate_profile["profile_summary"],
+        "documents": documents,
+    }
+
+
 def list_workspaces() -> list[dict[str, Any]]:
     by_id: dict[str, dict[str, Any]] = {}
     WORKSPACES.mkdir(parents=True, exist_ok=True)
@@ -112,8 +214,10 @@ def list_workspaces() -> list[dict[str, Any]]:
             "name": meta.get("name") or workspace_id,
             "doc_count": doc_count,
             "format": meta.get("format") or profile.get("format") or "mixed",
+            "description": meta.get("description"),
             "profile_summary": meta.get("profile_summary") or profile.get("profile_summary"),
             "created_at": meta.get("created_at") or profile.get("created_at"),
+            "documents": meta.get("documents") or _detail_documents(workspace_dir, meta),
         }
     for item in load_workspace_registry():
         workspace_id = str(item.get("workspace_id") or "")
@@ -126,8 +230,10 @@ def list_workspaces() -> list[dict[str, Any]]:
             "name": item.get("name") or workspace_id,
             "doc_count": _registry_doc_count(item),
             "format": item.get("format") or "unknown",
+            "description": item.get("description"),
             "profile_summary": item.get("profile_summary"),
             "created_at": item.get("created_at"),
+            "documents": item.get("documents") or [],
         }
     return sorted(by_id.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
@@ -190,6 +296,7 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
     return {
         "workspace_id": workspace_id,
         "name": meta.get("name") or profile.get("name") or summary.get("name") or workspace_id,
+        "description": meta.get("description") or summary.get("description"),
         "format": meta.get("format") or profile.get("format") or summary.get("format") or "mixed",
         "rows": rows,
         "columns": columns,
@@ -219,7 +326,9 @@ def workspace_context(workspace_id: str) -> dict[str, Any]:
         "name": workspace_id,
         "doc_count": 0,
         "format": "unknown",
+        "description": None,
         "profile_summary": None,
+        "documents": [],
     }
     _CONTEXT_CACHE[workspace_id] = (now + min(_CONTEXT_CACHE_SECONDS, 10), dict(fallback))
     return fallback
@@ -239,8 +348,10 @@ def _local_workspace_summary(workspace_id: str) -> dict[str, Any] | None:
         "name": meta.get("name") or workspace_id,
         "doc_count": int(meta.get("indexed_count") or len(meta.get("raw_docs") or []) or 1),
         "format": meta.get("format") or profile.get("format") or "mixed",
+        "description": meta.get("description"),
         "profile_summary": meta.get("profile_summary") or profile.get("profile_summary"),
         "created_at": meta.get("created_at") or profile.get("created_at"),
+        "documents": meta.get("documents") or [],
     }
 
 
@@ -252,6 +363,53 @@ def _index_profile(profile: dict[str, Any]) -> int:
         if search_endpoint():
             raise
         return 1
+
+
+def _index_profiles(profiles: list[dict[str, Any]]) -> int:
+    docs = [profile_to_search_document(profile) for profile in profiles]
+    try:
+        return index_documents(docs)
+    except Exception:
+        if search_endpoint():
+            raise
+        return len(docs)
+
+
+def _aggregate_profiles(
+    workspace_id: str,
+    name: str,
+    profiles: list[dict[str, Any]],
+    documents: list[dict[str, Any]],
+) -> dict[str, Any]:
+    tables: list[dict[str, Any]] = []
+    formats = sorted({str(profile.get("format") or "unknown") for profile in profiles})
+    for profile in profiles:
+        for table in profile.get("tables") or []:
+            item = dict(table)
+            item["source_file"] = profile.get("source_file")
+            tables.append(item)
+    aggregate = {
+        "workspace_id": workspace_id,
+        "name": name,
+        "format": formats[0] if len(formats) == 1 else "mixed",
+        "source_file": "profile.json",
+        "created_at": profiles[0].get("created_at") if profiles else datetime.now(timezone.utc).isoformat(),
+        "tables": tables,
+        "documents": documents,
+        "document_profiles": [
+            {
+                "profile_id": profile.get("profile_id"),
+                "profile_file": profile.get("profile_file"),
+                "source_file": profile.get("source_file"),
+                "format": profile.get("format"),
+                "profile_summary": profile.get("profile_summary"),
+            }
+            for profile in profiles
+        ],
+    }
+    summaries = [str(profile.get("profile_summary") or "") for profile in profiles if profile.get("profile_summary")]
+    aggregate["profile_summary"] = " | ".join(summaries[:5])[:1800] or f"{len(profiles)} uploaded documents profiled."
+    return aggregate
 
 
 def _persist_workspace(
@@ -267,6 +425,31 @@ def _persist_workspace(
             workspace_id=workspace_id,
             raw_filename=safe_name,
             raw_content=content,
+            workspace_meta=workspace_meta,
+            profile=profile,
+        )
+    except Exception as exc:
+        if search_endpoint():
+            raise
+        return {"mode": "local_fallback", "error": str(exc)[:300]}
+
+
+def _persist_workspace_bundle(
+    *,
+    workspace_id: str,
+    raw_payloads: list[dict[str, Any]],
+    workspace_meta: dict[str, Any],
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        from .blob_store import persist_workspace_bundle
+    except ImportError:
+        from blob_store import persist_workspace_bundle
+
+    try:
+        return persist_workspace_bundle(
+            workspace_id=workspace_id,
+            raw_payloads=raw_payloads,
             workspace_meta=workspace_meta,
             profile=profile,
         )
@@ -368,6 +551,8 @@ def _detail_signals(tables: list[dict[str, Any]]) -> list[str]:
 
 
 def _detail_documents(workspace_dir: Path, meta: dict[str, Any]) -> list[dict[str, Any]]:
+    if meta.get("documents"):
+        return [item for item in meta.get("documents") or [] if isinstance(item, dict)]
     documents: list[dict[str, Any]] = []
     for rel in meta.get("raw_docs") or []:
         path = workspace_dir / str(rel)
@@ -410,6 +595,18 @@ def _safe_filename(filename: str) -> str:
     stem = _safe_slug(Path(name).stem) or "upload"
     suffix = Path(name).suffix.lower()
     return f"{stem}{suffix}"
+
+
+def _unique_safe_filename(filename: str, used: set[str]) -> str:
+    safe = _safe_filename(filename)
+    if safe not in used:
+        return safe
+    stem = Path(safe).stem
+    suffix = Path(safe).suffix
+    index = 2
+    while f"{stem}-{index}{suffix}" in used:
+        index += 1
+    return f"{stem}-{index}{suffix}"
 
 
 def _safe_slug(value: str) -> str:

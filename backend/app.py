@@ -25,7 +25,7 @@ try:
     from .rag import search
     from .run_store import get_run, list_runs
     from .tracing import configure_monitoring
-    from .workspace_store import create_workspace_from_upload, delete_workspace, get_workspace_detail, list_workspaces
+    from .workspace_store import create_workspace_from_uploads, delete_workspace, get_workspace_detail, list_workspaces
     from .schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -54,7 +54,7 @@ except ImportError:
     from rag import search
     from run_store import get_run, list_runs
     from tracing import configure_monitoring
-    from workspace_store import create_workspace_from_upload, delete_workspace, get_workspace_detail, list_workspaces
+    from workspace_store import create_workspace_from_uploads, delete_workspace, get_workspace_detail, list_workspaces
     from schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -117,17 +117,25 @@ async def search_pack_context(req: SearchPackContextRequest) -> SearchPackContex
 
 @app.post("/api/upload", response_model=UploadResponse)
 async def upload_workspace(
-    file: UploadFile = File(...),
+    file: list[UploadFile] = File(...),
     name: str | None = Form(default=None),
+    description: str | None = Form(default=None),
     workspace_id: str | None = Form(default=None),
 ) -> UploadResponse:
-    content = await file.read()
+    files = []
+    for item in file:
+        files.append(
+            {
+                "filename": item.filename or "upload",
+                "content": await item.read(),
+                "content_type": item.content_type,
+            }
+        )
     result = await run_in_threadpool(
-        create_workspace_from_upload,
-        filename=file.filename or "upload",
-        content=content,
-        content_type=file.content_type,
+        create_workspace_from_uploads,
+        files=files,
         name=name,
+        description=description,
         requested_workspace_id=workspace_id,
     )
     return UploadResponse.model_validate(result)
