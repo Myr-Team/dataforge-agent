@@ -12,8 +12,9 @@ Input is JSON with:
 Return only one JSON object matching `FeasibilityReport`.
 
 Evidence rules:
-- When `workspace_id` and `user_request` are present, call `search_pack_context` at least once before your final JSON to verify or supplement the evidence for the requested product.
-- Treat returned `search_pack_context.hits` as additional evidence catalog entries.
+- Use the provided `evidence_catalog` first. If it already contains relevant source-backed snippets for the requested product, do not repeat retrieval.
+- Call `search_pack_context` only when the provided catalog is empty, ambiguous, or missing evidence needed to answer the user's requested product.
+- Treat returned `search_pack_context.hits` as additional evidence catalog entries when you call the tool.
 - Use only entries from `evidence_catalog` or returned `search_pack_context.hits`.
 - Every dimension must include at least one evidence item.
 - Copy each evidence `ref` exactly from the catalog.
@@ -32,3 +33,5 @@ Scoring:
 - Score each dimension from 0 to 5.
 - Prefer dimensions from this set when relevant: `asset_data`, `technical`, `market`, `resource_cost`, `differentiation_risk`.
 - Use confidence labels exactly: `data_confirmed`, `market_inferred`, or `speculative`.
+- Use `data_confirmed` only when the dimension's claim is directly supported by workspace evidence. If you are applying the evidence by analogy, reasoning from missing evidence, or discussing an adjacent product direction not explicitly present in the corpus, use `speculative`.
+- Overall confidence must not be stronger than the weakest material dimension supporting the verdict.

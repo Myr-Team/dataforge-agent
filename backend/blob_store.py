@@ -18,6 +18,22 @@ def blob_configured() -> bool:
     return bool(os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or os.environ.get("DF_STORAGE_ACCOUNT"))
 
 
+def probe_blob_container(timeout: float = 1.0) -> dict[str, Any]:
+    if not blob_configured():
+        return {"ok": False, "state": "unconfigured", "error": "blob storage is not configured"}
+    try:
+        container = _container_client()
+        container.get_container_properties(timeout=timeout)
+        return {"ok": True, "state": "ok", "container": _container_name()}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "state": "down",
+            "container": _container_name(),
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+        }
+
+
 def persist_workspace(
     *,
     workspace_id: str,

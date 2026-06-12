@@ -390,7 +390,7 @@ def run_agent(
             + json.dumps(response_schema, ensure_ascii=False)
         )
 
-    if os.environ.get("DF_AGENT_RUNTIME", "foundry_agent_service") == "foundry_agent_service":
+    if os.environ.get("DF_AGENT_RUNTIME", "responses") == "foundry_agent_service":
         agent_payload = input_text
         if response_schema:
             agent_payload += (
@@ -406,6 +406,7 @@ def run_agent(
 
     client = _project_client()
     openai_client = client.get_openai_client()
+    instructions += "\nKeep the answer concise: 2 to 3 short paragraphs, no repeated schema restatement. Target 450 to 700 Chinese characters."
     create_args = {
         "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
         "instructions": instructions,
@@ -428,6 +429,7 @@ def run_agent(
         "structured": _extract_json(text),
         "response_id": getattr(response, "id", None),
         "usage": _usage_dict(getattr(response, "usage", None)),
+        "mode": "responses_schema",
     }
 
 
@@ -561,7 +563,7 @@ def stream_grounded_answer(payload: dict[str, Any]) -> Any:
         "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
-        "max_output_tokens": 1400,
+        "max_output_tokens": 520,
         "stream": True,
     }
     completed_meta: dict[str, Any] | None = None

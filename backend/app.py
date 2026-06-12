@@ -19,7 +19,8 @@ from starlette.concurrency import run_in_threadpool
 
 try:
     from .blob_store import download_artifact
-    from .dependency_health import health_dependencies
+    from .conversation_store import get_conversation, list_conversations
+    from .dependency_health import health_dependencies, health_dependency_details
     from .orchestrator import orchestrate_chat, produce_from_existing_report
     from .rag import search
     from .run_store import get_run, list_runs
@@ -27,6 +28,8 @@ try:
     from .workspace_store import create_workspace_from_upload, delete_workspace, get_workspace_detail, list_workspaces
     from .schemas import (
         ChatRequest,
+        ConversationDetailResponse,
+        ConversationsResponse,
         GenerateImageRequest,
         NarrateSummaryRequest,
         ProduceRequest,
@@ -45,7 +48,8 @@ try:
     from .tools.render_pdf import render_pdf_report
 except ImportError:
     from blob_store import download_artifact
-    from dependency_health import health_dependencies
+    from conversation_store import get_conversation, list_conversations
+    from dependency_health import health_dependencies, health_dependency_details
     from orchestrator import orchestrate_chat, produce_from_existing_report
     from rag import search
     from run_store import get_run, list_runs
@@ -53,6 +57,8 @@ except ImportError:
     from workspace_store import create_workspace_from_upload, delete_workspace, get_workspace_detail, list_workspaces
     from schemas import (
         ChatRequest,
+        ConversationDetailResponse,
+        ConversationsResponse,
         GenerateImageRequest,
         NarrateSummaryRequest,
         ProduceRequest,
@@ -93,6 +99,7 @@ async def health() -> dict[str, Any]:
         "search_endpoint": bool(os.environ.get("SEARCH_ENDPOINT")),
         "workspace_default": "demo-corpus",
         "dependencies": dependencies,
+        "dependency_details": health_dependency_details(),
     }
 
 
@@ -209,6 +216,28 @@ async def run_detail(run_id: str) -> RunDetailResponse:
     return RunDetailResponse.model_validate(result)
 
 
+@app.get("/api/conversations", response_model=ConversationsResponse)
+async def conversations(workspace_id: str | None = None) -> ConversationsResponse:
+    return ConversationsResponse(conversations=await run_in_threadpool(list_conversations, workspace_id))
+
+
+@app.get("/api/conversations/{conversation_id}", response_model=ConversationDetailResponse)
+async def conversation_detail(conversation_id: str) -> ConversationDetailResponse:
+    try:
+        result = await run_in_threadpool(get_conversation, conversation_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Conversation not found: {conversation_id}") from exc
+    return ConversationDetailResponse.model_validate(result)
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest) -> StreamingResponse:
-    return StreamingResponse(orchestrate_chat(req), media_type="text/event-stream")
+    return StreamingResponse(
+        orchestrate_chat(req),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

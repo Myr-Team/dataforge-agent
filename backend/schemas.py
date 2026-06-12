@@ -181,6 +181,36 @@ class RunsResponse(BaseModel):
     runs: list[RunSummary]
 
 
+class ConversationSummary(BaseModel):
+    conversation_id: str
+    workspace_id: str | None = None
+    title: str
+    updated_at: str | None = None
+    turn_count: int = 0
+    last_verdict: str | None = None
+
+
+class ConversationsResponse(BaseModel):
+    conversations: list[ConversationSummary]
+
+
+class ConversationMessage(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    text: str
+    time: str | None = None
+    verdict: str | None = None
+
+
+class ConversationDetailResponse(BaseModel):
+    conversation_id: str
+    workspace_id: str | None = None
+    messages: list[ConversationMessage] = Field(default_factory=list)
+    title: str | None = None
+    updated_at: str | None = None
+    turn_count: int = 0
+    last_verdict: str | None = None
+
+
 class RunDetailResponse(BaseModel):
     run_id: str
     conversation_id: str | None = None

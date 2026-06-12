@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +22,8 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACES = ROOT / "workspaces"
+_CONTEXT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_CONTEXT_CACHE_SECONDS = float(os.environ.get("DF_WORKSPACE_CONTEXT_CACHE_SECONDS", "60"))
 
 
 def create_workspace_from_upload(
@@ -78,6 +82,7 @@ def create_workspace_from_upload(
     )
     workspace_meta["persistence"] = persistence
     (workspace_dir / "workspace.json").write_text(json.dumps(workspace_meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    _CONTEXT_CACHE.pop(workspace_id, None)
     return {
         "workspace_id": workspace_id,
         "name": display_name,
@@ -147,6 +152,7 @@ def delete_workspace(workspace_id: str) -> dict[str, Any]:
         blob_result = remove_workspace_from_blob(workspace_id)
     if workspace_dir.exists():
         _delete_local_workspace_dir(workspace_dir)
+    _CONTEXT_CACHE.pop(workspace_id, None)
     return {
         "workspace_id": workspace_id,
         "deleted": True,
@@ -196,15 +202,45 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
 
 
 def workspace_context(workspace_id: str) -> dict[str, Any]:
+    now = time.monotonic()
+    cached = _CONTEXT_CACHE.get(workspace_id)
+    if cached and now < cached[0]:
+        return dict(cached[1])
+    local = _local_workspace_summary(workspace_id)
+    if local:
+        _CONTEXT_CACHE[workspace_id] = (now + _CONTEXT_CACHE_SECONDS, dict(local))
+        return local
     for item in list_workspaces():
         if item["workspace_id"] == workspace_id:
+            _CONTEXT_CACHE[workspace_id] = (now + _CONTEXT_CACHE_SECONDS, dict(item))
             return item
-    return {
+    fallback = {
         "workspace_id": workspace_id,
         "name": workspace_id,
         "doc_count": 0,
         "format": "unknown",
         "profile_summary": None,
+    }
+    _CONTEXT_CACHE[workspace_id] = (now + min(_CONTEXT_CACHE_SECONDS, 10), dict(fallback))
+    return fallback
+
+
+def _local_workspace_summary(workspace_id: str) -> dict[str, Any] | None:
+    workspace_dir = WORKSPACES / workspace_id
+    meta_path = workspace_dir / "workspace.json"
+    if not workspace_dir.exists() or not meta_path.exists():
+        return None
+    if workspace_id.startswith("upload-") and workspace_deleted(workspace_id):
+        return None
+    meta = _read_json(meta_path)
+    profile = _read_profile(workspace_dir, meta)
+    return {
+        "workspace_id": str(meta.get("workspace_id") or workspace_id),
+        "name": meta.get("name") or workspace_id,
+        "doc_count": int(meta.get("indexed_count") or len(meta.get("raw_docs") or []) or 1),
+        "format": meta.get("format") or profile.get("format") or "mixed",
+        "profile_summary": meta.get("profile_summary") or profile.get("profile_summary"),
+        "created_at": meta.get("created_at") or profile.get("created_at"),
     }
 
 

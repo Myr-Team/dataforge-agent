@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import re
 import threading
+import time
 import urllib.request
 import uuid
 from collections.abc import AsyncIterator
@@ -15,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 try:
     from .chat_loop_primitives import sse
+    from .conversation_store import append_message, conversation_context
     from .foundry_client import run_agent, run_coordinator_guidance, run_market_web_research, stream_grounded_answer
     from .rag import search
     from .router import deterministic_route
@@ -27,6 +30,7 @@ try:
     from .workspace_store import workspace_context
 except ImportError:
     from chat_loop_primitives import sse
+    from conversation_store import append_message, conversation_context
     from foundry_client import run_agent, run_coordinator_guidance, run_market_web_research, stream_grounded_answer
     from rag import search
     from router import deterministic_route
@@ -51,6 +55,8 @@ PRODUCT_TERMS = (
     "\u65b9\u6848",
     "\u53d8\u73b0",
 )
+_MARKET_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_MARKET_CACHE_SECONDS = float(os.environ.get("DF_MARKET_CACHE_SECONDS", "600"))
 
 
 def _contains(text: str, terms: tuple[str, ...]) -> bool:
@@ -61,6 +67,56 @@ def _contains(text: str, terms: tuple[str, ...]) -> bool:
 def _clean_text(value: Any, limit: int | None = None) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     return text[:limit] if limit else text
+
+
+def _request_with_history(req: ChatRequest, history: list[dict[str, Any]]) -> ChatRequest:
+    if not history:
+        return req
+    turns = []
+    for item in history[-6:]:
+        role = str(item.get("role") or "message")
+        text = _clean_text(item.get("text"), 700)
+        if text:
+            turns.append(f"{role}: {text}")
+    if not turns:
+        return req
+    contextual_message = (
+        "Conversation history for continuity:\n"
+        + "\n".join(turns)
+        + "\n\nCurrent user message:\n"
+        + req.message
+    )
+    return req.model_copy(update={"message": contextual_message})
+
+
+def _compact_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for item in history[-6:]:
+        text = _clean_text(item.get("text"), 900)
+        if text:
+            compact.append({"role": item.get("role"), "text": text, "time": item.get("time")})
+    return compact
+
+
+def _persist_user_message(conversation_id: str, workspace_id: str, text: str) -> None:
+    try:
+        append_message(conversation_id, workspace_id=workspace_id, role="user", text=text)
+    except Exception:
+        pass
+
+
+def _persist_assistant_message(conversation_id: str, workspace_id: str, text: str, verdict: str | None = None) -> None:
+    try:
+        append_message(conversation_id, workspace_id=workspace_id, role="assistant", text=text, verdict=verdict)
+    except Exception:
+        pass
+
+
+def _artifact_verdict(artifact: dict[str, Any], fallback: str | None = None) -> str | None:
+    feasibility = artifact.get("feasibility") or {}
+    if isinstance(feasibility, dict) and feasibility.get("verdict"):
+        return str(feasibility.get("verdict"))
+    return fallback
 
 
 def _slug(value: str, fallback: str = "generated-data-product") -> str:
@@ -333,6 +389,8 @@ def _verify_evidence(report: FeasibilityReport, catalog: list[dict[str, Any]]) -
 
 
 def _normalize_feasibility_confidence(report: FeasibilityReport) -> FeasibilityReport:
+    rank = {"speculative": 0, "market_inferred": 1, "data_confirmed": 2}
+    labels = {value: key for key, value in rank.items()}
     data = report.model_dump()
     normalized_dimensions = []
     confidences: list[str] = []
@@ -347,18 +405,18 @@ def _normalize_feasibility_confidence(report: FeasibilityReport) -> FeasibilityR
             confidence = "data_confirmed"
         else:
             confidence = "speculative"
+        model_confidence = str(dimension.get("confidence") or confidence)
+        confidence = labels[min(rank.get(model_confidence, 0), rank.get(confidence, 0))]
         dimension["confidence"] = confidence
         confidences.append(confidence)
         normalized_dimensions.append(dimension)
     data["dimensions"] = normalized_dimensions
     if not confidences:
         data["overall_confidence"] = "speculative"
-    elif "data_confirmed" in confidences:
-        data["overall_confidence"] = "data_confirmed"
-    elif "market_inferred" in confidences:
-        data["overall_confidence"] = "market_inferred"
     else:
-        data["overall_confidence"] = "speculative"
+        model_overall = str(data.get("overall_confidence") or "speculative")
+        weakest_dimension = labels[min(rank.get(item, 0) for item in confidences)]
+        data["overall_confidence"] = labels[min(rank.get(model_overall, 0), rank.get(weakest_dimension, 0))]
     return FeasibilityReport.model_validate(data)
 
 
@@ -451,6 +509,7 @@ def _run_feasibility_analyst(
             "df-feasibility-analyst",
             json.dumps(payload, ensure_ascii=False, indent=2),
             response_schema=FeasibilityReport.model_json_schema(),
+            max_output_tokens=2800,
         )
         report = FeasibilityReport.model_validate(result["structured"])
         report, evidence_warnings = _verify_evidence(report, catalog)
@@ -477,17 +536,29 @@ def _market_lookup(category: str, keywords: list[str]) -> dict[str, Any]:
 
 def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
     feasibility = artifact.get("feasibility", {})
-    opportunity = str(feasibility.get("opportunity_id") or "workspace-product")
+    corpus_opportunity = ((artifact.get("corpus", {}).get("opportunities") or [{}])[0] or {})
+    opportunity = str(
+        feasibility.get("opportunity_id")
+        or corpus_opportunity.get("id")
+        or corpus_opportunity.get("title")
+        or "workspace-product"
+    )
     category = opportunity.replace("-", " ")
     keywords = [word for word in category.split() if len(word) > 2][:4] or ["analytics", "workflow"]
+    cache_key = f"{artifact.get('workspace_id')}|{opportunity}|{' '.join(keywords)}"
+    cached = _MARKET_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached and now < cached[0]:
+        data = json.loads(json.dumps(cached[1], ensure_ascii=False))
+        data.setdefault("_llm", {})["cache"] = "memory"
+        return data
     competitors: list[dict[str, Any]] = []
     errors: dict[str, str] = {}
-    try:
+
+    def lookup_competitors() -> list[dict[str, Any]]:
         data = _market_lookup(category, keywords)
         raw_competitors = data.get("competitors") or data.get("results") or (data if isinstance(data, list) else [])
-        competitors = [_market_inferred_item(item) for item in raw_competitors[:5] if isinstance(item, dict)]
-    except Exception as exc:
-        errors["market_lookup"] = _clean_text(exc, 300)
+        return [_market_inferred_item(item) for item in raw_competitors[:5] if isinstance(item, dict)]
 
     web_payload = {
         "opportunity_id": opportunity,
@@ -496,16 +567,23 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
         "feasibility": {key: value for key, value in feasibility.items() if key != "_llm"},
         "evidence_catalog": _evidence_catalog(artifact)[:6],
     }
-    try:
-        web_result = run_market_web_research(web_payload)
-    except Exception as exc:
-        web_result = {
-            "external_findings": [],
-            "sources": [],
-            "positioning_note": "",
-            "_llm": {"mode": "web_search_unavailable", "response_id": None, "usage": {}, "error": _clean_text(exc, 300)},
-        }
-    return {
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="dataforge-market") as pool:
+        competitor_future = pool.submit(lookup_competitors)
+        web_future = pool.submit(run_market_web_research, web_payload)
+        try:
+            competitors = competitor_future.result()
+        except Exception as exc:
+            errors["market_lookup"] = _clean_text(exc, 300)
+        try:
+            web_result = web_future.result()
+        except Exception as exc:
+            web_result = {
+                "external_findings": [],
+                "sources": [],
+                "positioning_note": "",
+                "_llm": {"mode": "web_search_unavailable", "response_id": None, "usage": {}, "error": _clean_text(exc, 300)},
+            }
+    result = {
         "opportunity_id": opportunity,
         "competitors": competitors,
         "external_findings": web_result.get("external_findings", []),
@@ -516,6 +594,8 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
         "_llm": web_result.get("_llm", {}),
         "errors": errors,
     }
+    _MARKET_CACHE[cache_key] = (now + _MARKET_CACHE_SECONDS, json.loads(json.dumps(result, ensure_ascii=False)))
+    return result
 
 
 def _market_inferred_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -562,11 +642,15 @@ def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
 
 def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
     proposal = _proposal_payload(artifact)
-    pdf = render_pdf_report(proposal, "project_proposal")
     image_prompt = _image_prompt_from_proposal(proposal)
-    image = generate_image(image_prompt, "1024x1024")
     audio_text = _concise_narration_from_proposal(proposal)
-    audio = narrate_summary(audio_text, "zh-CN-XiaoxiaoNeural")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dataforge-producer") as pool:
+        pdf_future = pool.submit(render_pdf_report, proposal, "project_proposal")
+        image_future = pool.submit(generate_image, image_prompt, "1024x1024")
+        audio_future = pool.submit(narrate_summary, audio_text, "zh-CN-XiaoxiaoNeural")
+        pdf = pdf_future.result()
+        image = image_future.result()
+        audio = audio_future.result()
     return {
         "opportunity_id": proposal["opportunity_id"],
         "proposal": proposal,
@@ -694,6 +778,10 @@ def _audit_artifact(req: ChatRequest, artifact: dict[str, Any]) -> tuple[AuditVe
         "workspace_id": req.workspace_id,
         "user_request": req.message,
         "feasibility": {key: value for key, value in artifact.get("feasibility", {}).items() if key != "_llm"},
+        "evidence_verification": {
+            "mode": "code_prevalidated",
+            "warnings": (artifact.get("feasibility", {}).get("_llm") or {}).get("evidence_warnings", []),
+        },
         "evidence_catalog": _evidence_catalog(artifact),
         "market": artifact.get("market", {}),
         "market_provenance_policy": "External market claims must remain market_inferred and must not be treated as workspace data_confirmed facts.",
@@ -702,10 +790,41 @@ def _audit_artifact(req: ChatRequest, artifact: dict[str, Any]) -> tuple[AuditVe
         "df-auditor",
         json.dumps(payload, ensure_ascii=False, indent=2),
         response_schema=AuditVerdict.model_json_schema(),
-        max_output_tokens=1000,
+        max_output_tokens=700,
     )
     audit = AuditVerdict.model_validate(result["structured"])
-    return audit, _model_meta(result)
+    audit, adjustment = _normalize_audit_revision_gate(audit)
+    meta = _model_meta(result)
+    if adjustment:
+        meta["audit_adjustment"] = adjustment
+    return audit, meta
+
+
+def _normalize_audit_revision_gate(audit: AuditVerdict) -> tuple[AuditVerdict, str | None]:
+    if audit.verdict != "revise":
+        return audit, None
+    blocking_terms = (
+        "ref outside",
+        "outside the catalog",
+        "not in the catalog",
+        "cannot be traced",
+        "lacks evidence",
+        "missing evidence",
+        "no evidence item",
+        "empty evidence",
+        "clinical diagnosis",
+        "medical decision",
+        "safety-critical",
+        "marked feasible",
+        "too strongly",
+        "invent",
+        "fabricat",
+    )
+    joined = " ".join(audit.issues).lower()
+    if any(term in joined for term in blocking_terms):
+        return audit, None
+    adjusted = AuditVerdict(verdict="pass", issues=audit.issues, target_expert=None)
+    return adjusted, "nonblocking_audit_warnings_no_revision"
 
 
 def _compact_hits(hits: list[dict[str, Any]], limit: int = 6) -> list[dict[str, Any]]:
@@ -741,6 +860,7 @@ def _answer_payload(req: ChatRequest, decision: RoutingDecision, artifact: dict[
         "evidence_catalog": _evidence_catalog(artifact)[:10],
         "retrieved_hits": _compact_hits(corpus.get("hits", [])),
         "corpus_profile": corpus.get("profile", {}),
+        "conversation_history": artifact.get("_conversation_history", []),
         "style_nonce": uuid.uuid4().hex[:8],
     }
 
@@ -768,7 +888,7 @@ async def _answer_event_stream(payload: dict[str, Any]) -> AsyncIterator[dict[st
     threading.Thread(target=worker, name="dataforge-answer-stream", daemon=True).start()
     while True:
         try:
-            item = await asyncio.wait_for(queue.get(), timeout=10)
+            item = await asyncio.wait_for(queue.get(), timeout=8)
         except asyncio.TimeoutError:
             yield {
                 "type": "progress",
@@ -791,8 +911,17 @@ async def _stream_answer_frames(
 ) -> AsyncIterator[str]:
     payload = _answer_payload(req, decision, artifact)
     parts: list[str] = []
+    pending_delta = ""
     meta: dict[str, Any] = {}
     stream_error: str | None = None
+
+    async def flush_delta() -> AsyncIterator[str]:
+        nonlocal pending_delta
+        if pending_delta:
+            chunk = pending_delta
+            pending_delta = ""
+            yield _frame("answer_delta", {"delta": chunk}, conversation_id)
+            await asyncio.sleep(0)
 
     async for item in _answer_event_stream(payload):
         item_type = item.get("type")
@@ -800,14 +929,24 @@ async def _stream_answer_frames(
             delta = str(item.get("delta") or "")
             if delta:
                 parts.append(delta)
-                yield _frame("answer_delta", {"delta": delta}, conversation_id)
-                await asyncio.sleep(0)
+                pending_delta += delta
+                if len(pending_delta) >= 96:
+                    async for frame in flush_delta():
+                        yield frame
         elif item_type == "meta":
+            async for frame in flush_delta():
+                yield frame
             meta = {key: value for key, value in item.items() if key != "type"}
         elif item_type == "error":
+            async for frame in flush_delta():
+                yield frame
             stream_error = str(item.get("message") or "answer stream failed")
         elif item_type == "progress":
+            async for frame in flush_delta():
+                yield frame
             yield _frame("progress", {key: value for key, value in item.items() if key != "type"}, conversation_id)
+    async for frame in flush_delta():
+        yield frame
 
     if not "".join(parts).strip():
         fallback = _final_text(decision, artifact)
@@ -844,7 +983,7 @@ async def _progress_frames(
     agent: str,
     name: str,
     *,
-    interval: int = 10,
+    interval: int = 8,
     extra: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     payload = {"agent": agent, "name": name, "status": "running"}
@@ -865,7 +1004,7 @@ async def _producer_frames(artifact: dict[str, Any], conversation_id: str) -> As
     producer_task = asyncio.create_task(run_in_threadpool(_run_producer, artifact))
     while not producer_task.done():
         try:
-            artifact["proposal"] = await asyncio.wait_for(asyncio.shield(producer_task), timeout=15)
+            artifact["proposal"] = await asyncio.wait_for(asyncio.shield(producer_task), timeout=8)
         except asyncio.TimeoutError:
             yield _frame(
                 "progress",
@@ -911,17 +1050,24 @@ async def _producer_frames(artifact: dict[str, Any], conversation_id: str) -> As
 
 async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     conv_id = req.conversation_id or str(uuid.uuid4())
-    artifact: dict[str, Any] = {"workspace_id": req.workspace_id, "conversation_id": conv_id}
+    history = conversation_context(req.conversation_id) if req.conversation_id else []
+    working_req = _request_with_history(req, history)
+    artifact: dict[str, Any] = {
+        "workspace_id": req.workspace_id,
+        "conversation_id": conv_id,
+        "_conversation_history": _compact_history(history),
+    }
     start_run(conv_id, req.workspace_id, req.message)
     yield _frame("ready", {"conversation_id": conv_id, "workspace_id": req.workspace_id}, conv_id)
     yield _frame("user", {"text": req.message}, conv_id)
+    await run_in_threadpool(_persist_user_message, conv_id, req.workspace_id, req.message)
 
-    decision = _coordinator(req)
+    decision = _coordinator(working_req)
     artifact["routing"] = decision.model_dump()
     producer_requested = "df-producer" in decision.experts
     yield _frame("plan", decision.model_dump(), conv_id)
     if decision.needs_clarification:
-        guidance = await run_in_threadpool(_clarify_guidance, req, decision, conv_id)
+        guidance = await run_in_threadpool(_clarify_guidance, working_req, decision, conv_id)
         decision.clarifying_question = guidance.get("question")
         clarify_payload = {
             "question": decision.clarifying_question,
@@ -931,6 +1077,13 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             "usage": guidance.get("usage") or {},
         }
         frame = _frame("clarify", clarify_payload, conv_id)
+        await run_in_threadpool(
+            _persist_assistant_message,
+            conv_id,
+            req.workspace_id,
+            str(decision.clarifying_question or ""),
+            "clarify",
+        )
         complete_run(
             conv_id,
             status="clarify",
@@ -944,10 +1097,10 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         yield _frame("role_change", {"agent": "df-corpus-analyst"}, conv_id)
         yield _frame(
             "tool_call",
-            {"agent": "df-corpus-analyst", "name": "search_pack_context", "args": {"workspace_id": req.workspace_id, "query": req.message, "top_k": 8}},
+            {"agent": "df-corpus-analyst", "name": "search_pack_context", "args": {"workspace_id": req.workspace_id, "query": working_req.message, "top_k": 8}},
             conv_id,
         )
-        artifact["corpus"] = await run_in_threadpool(_run_corpus_analyst, req)
+        artifact["corpus"] = await run_in_threadpool(_run_corpus_analyst, working_req)
         retrieval_modes = sorted({str(hit.get("retrieval_mode") or "unknown") for hit in artifact["corpus"]["hits"]})
         yield _frame(
             "tool_result",
@@ -960,10 +1113,19 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             conv_id,
         )
 
+    early_market_task: asyncio.Task[Any] | None = None
+    if "df-market-researcher" in decision.experts and artifact.get("corpus", {}).get("hits"):
+        market_seed = {
+            "workspace_id": artifact.get("workspace_id"),
+            "conversation_id": artifact.get("conversation_id"),
+            "corpus": artifact.get("corpus", {}),
+        }
+        early_market_task = asyncio.create_task(run_in_threadpool(_run_market_researcher, market_seed))
+
     if "df-feasibility-analyst" in decision.experts:
         yield _frame("role_change", {"agent": "df-feasibility-analyst"}, conv_id)
         try:
-            feasibility_task = asyncio.create_task(run_in_threadpool(_run_feasibility_analyst, req, artifact))
+            feasibility_task = asyncio.create_task(run_in_threadpool(_run_feasibility_analyst, working_req, artifact))
             async for frame in _progress_frames(
                 feasibility_task,
                 conv_id,
@@ -979,6 +1141,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         except Exception as exc:
             error_payload = {"agent": "df-feasibility-analyst", "message": str(exc)}
             frame = _frame("error", error_payload, conv_id)
+            await run_in_threadpool(_persist_assistant_message, conv_id, req.workspace_id, str(exc), "error")
             complete_run(conv_id, status="error", final=error_payload, artifact=artifact)
             yield frame
             return
@@ -1018,7 +1181,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                 conv_id,
             )
             try:
-                market_task = asyncio.create_task(run_in_threadpool(_run_market_researcher, artifact))
+                market_task = early_market_task or asyncio.create_task(run_in_threadpool(_run_market_researcher, artifact))
                 async for frame in _progress_frames(
                     market_task,
                     conv_id,
@@ -1048,7 +1211,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
 
     yield _frame("role_change", {"agent": "df-auditor"}, conv_id)
     try:
-        audit_task = asyncio.create_task(run_in_threadpool(_audit_artifact, req, artifact))
+        audit_task = asyncio.create_task(run_in_threadpool(_audit_artifact, working_req, artifact))
         async for frame in _progress_frames(
             audit_task,
             conv_id,
@@ -1064,6 +1227,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     except Exception as exc:
         error_payload = {"agent": "df-auditor", "message": str(exc)}
         frame = _frame("error", error_payload, conv_id)
+        await run_in_threadpool(_persist_assistant_message, conv_id, req.workspace_id, str(exc), "error")
         complete_run(conv_id, status="error", final=error_payload, artifact=artifact)
         yield frame
         return
@@ -1073,7 +1237,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         yield _frame("role_change", {"agent": "df-feasibility-analyst", "revision": 1}, conv_id)
         try:
             previous_feasibility = artifact.get("feasibility") or {}
-            revision_task = asyncio.create_task(run_in_threadpool(_run_feasibility_analyst, req, artifact, audit.model_dump()))
+            revision_task = asyncio.create_task(run_in_threadpool(_run_feasibility_analyst, working_req, artifact, audit.model_dump()))
             async for frame in _progress_frames(
                 revision_task,
                 conv_id,
@@ -1104,7 +1268,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             else:
                 artifact["feasibility"] = revision_feasibility
             yield _frame("role_change", {"agent": "df-auditor", "revision": 1}, conv_id)
-            revision_audit_task = asyncio.create_task(run_in_threadpool(_audit_artifact, req, artifact))
+            revision_audit_task = asyncio.create_task(run_in_threadpool(_audit_artifact, working_req, artifact))
             async for frame in _progress_frames(
                 revision_audit_task,
                 conv_id,
@@ -1123,7 +1287,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             yield _frame("error", {"agent": "revision-loop", "message": str(exc)}, conv_id)
             artifact["audit"] = audit.model_dump()
             answer_state: dict[str, Any] = {}
-            async for frame in _stream_answer_frames(req, decision, artifact, conv_id, answer_state):
+            async for frame in _stream_answer_frames(working_req, decision, artifact, conv_id, answer_state):
                 yield frame
             if producer_requested:
                 async for frame in _producer_frames(artifact, conv_id):
@@ -1131,13 +1295,20 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             summary = answer_state.get("text") or _final_text(decision, artifact)
             final_payload = {"text": summary, "routing": decision.model_dump(), "artifact": artifact}
             frame = _frame("final", final_payload, conv_id)
+            await run_in_threadpool(
+                _persist_assistant_message,
+                conv_id,
+                req.workspace_id,
+                summary,
+                _artifact_verdict(artifact, "completed_with_revision_error"),
+            )
             complete_run(conv_id, status="completed_with_revision_error", final=final_payload, artifact=artifact)
             yield frame
             return
 
     artifact["audit"] = audit.model_dump()
     answer_state: dict[str, Any] = {}
-    async for frame in _stream_answer_frames(req, decision, artifact, conv_id, answer_state):
+    async for frame in _stream_answer_frames(working_req, decision, artifact, conv_id, answer_state):
         yield frame
     if producer_requested:
         async for frame in _producer_frames(artifact, conv_id):
@@ -1145,6 +1316,13 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     summary = answer_state.get("text") or _final_text(decision, artifact)
     final_payload = {"text": summary, "routing": decision.model_dump(), "artifact": artifact}
     frame = _frame("final", final_payload, conv_id)
+    await run_in_threadpool(
+        _persist_assistant_message,
+        conv_id,
+        req.workspace_id,
+        summary,
+        _artifact_verdict(artifact, "completed"),
+    )
     complete_run(conv_id, status="completed", final=final_payload, artifact=artifact)
     yield frame
 
