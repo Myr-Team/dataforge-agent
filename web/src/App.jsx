@@ -41,6 +41,7 @@ export function App() {
   const [inspectorTab, setInspectorTab] = useState("evidence");
   const [activeView, setActiveView] = useState("workspaces");
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadContext, setUploadContext] = useState({ mode: "workspace", workspaceId: "" });
   const [uploadState, setUploadState] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [notice, setNotice] = useState(null);
@@ -82,6 +83,21 @@ export function App() {
     setTrace([]);
     setFinalArtifact(null);
     setArtifacts({});
+  };
+
+  const openWorkspaceUpload = () => {
+    setUploadContext({ mode: "workspace", workspaceId: "" });
+    setUploadOpen(true);
+  };
+
+  const openAppendUpload = () => {
+    setUploadContext({ mode: "append", workspaceId });
+    setUploadOpen(true);
+  };
+
+  const openReferenceUpload = () => {
+    setUploadContext({ mode: "reference", workspaceId, assetRole: "logo" });
+    setUploadOpen(true);
   };
 
   useEffect(() => {
@@ -278,15 +294,24 @@ export function App() {
     });
   };
 
-  const upload = async ({ name, description, files }) => {
-    setUploadState({ type: "loading", message: "正在上传并生成数据画像..." });
+  const upload = async ({ name, description, files, workspaceId: targetWorkspaceId, assetRole }) => {
+    const isReference = uploadContext.mode === "reference";
+    const isAppend = Boolean(targetWorkspaceId);
+    setUploadState({ type: "loading", message: isReference ? "正在上传参考图并绑定到当前工作区..." : "正在上传并生成数据画像..." });
     try {
-      const result = await uploadWorkspace({ name, description, files });
-      setUploadState({ type: "done", message: `已创建工作区：${result.name}` });
+      const result = await uploadWorkspace({ name, description, files, workspaceId: targetWorkspaceId, assetRole });
+      setUploadState({
+        type: "done",
+        message: isReference ? "参考图已绑定到当前工作区。" : isAppend ? `已更新工作区：${result.name}` : `已创建工作区：${result.name}`,
+      });
       setUploadOpen(false);
       setWorkspaceId(result.workspace_id);
-      setMessages([]);
-      resetRunState();
+      if (!isAppend) {
+        setMessages([]);
+        resetRunState();
+      } else {
+        await refreshDashboard(result.workspace_id);
+      }
       window.setTimeout(() => setUploadState(null), 2600);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -379,7 +404,7 @@ export function App() {
           dashboard={dashboard}
           workspaceId={workspaceId}
           onWorkspaceChange={changeWorkspace}
-          onUpload={() => setUploadOpen(true)}
+          onUpload={openWorkspaceUpload}
           onNewConversation={startNewConversation}
           loading={dashboardLoading || displayRunning || producing}
           user={user}
@@ -390,7 +415,7 @@ export function App() {
           <WorkspacePane
             dashboard={dashboard}
             workspaceId={workspaceId}
-            onUpload={() => setUploadOpen(true)}
+            onUpload={openAppendUpload}
             onDeleteWorkspace={removeWorkspace}
             onOpenConversation={openConversation}
             onRefresh={() => refreshDashboard(workspaceId)}
@@ -414,6 +439,7 @@ export function App() {
             finalArtifact={finalArtifact}
             artifacts={artifacts}
             onProduce={produce}
+            onUploadReference={openReferenceUpload}
             onNewConversation={startNewConversation}
             producing={producing}
           />
@@ -428,7 +454,16 @@ export function App() {
           />
         </div>
       </div>
-      <UploadModal open={uploadOpen} busy={uploadState?.type === "loading"} onClose={() => setUploadOpen(false)} onSubmit={upload} />
+      <UploadModal
+        open={uploadOpen}
+        busy={uploadState?.type === "loading"}
+        mode={uploadContext.mode}
+        workspace={dashboard?.workspace}
+        workspaceId={uploadContext.workspaceId}
+        assetRole={uploadContext.assetRole}
+        onClose={() => setUploadOpen(false)}
+        onSubmit={upload}
+      />
       <NoticeStack
         notice={dashboardError ? { type: "error", message: dashboardError } : notice}
         uploadState={uploadState}

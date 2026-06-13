@@ -342,6 +342,7 @@ export function AgentStudio({
   finalArtifact,
   artifacts,
   onProduce,
+  onUploadReference,
   producing,
 }) {
   const workspace = dashboard?.workspace || {};
@@ -401,6 +402,7 @@ export function WorkbenchMain({
   finalArtifact,
   artifacts,
   onProduce,
+  onUploadReference,
   producing,
 }) {
   if (view === "conversations") {
@@ -420,7 +422,7 @@ export function WorkbenchMain({
     );
   }
   if (view === "artifacts") {
-    return <ArtifactsCenter dashboard={dashboard} artifacts={artifacts} artifact={finalArtifact} onProduce={onProduce} producing={producing} onUploadReference={() => setView("workspaces")} />;
+    return <ArtifactsCenter dashboard={dashboard} artifacts={artifacts} artifact={finalArtifact} onProduce={onProduce} producing={producing} onUploadReference={onUploadReference} />;
   }
   if (view === "runs") {
     return <RunsCenter dashboard={dashboard} trace={trace} running={running} />;
@@ -1278,7 +1280,7 @@ function EmptyInspector({ icon: Icon, text }) {
   );
 }
 
-export function UploadModal({ open, busy, onClose, onSubmit }) {
+export function UploadModal({ open, busy, mode = "workspace", workspace, workspaceId, assetRole, onClose, onSubmit }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [files, setFiles] = useState([]);
@@ -1294,27 +1296,47 @@ export function UploadModal({ open, busy, onClose, onSubmit }) {
   }, [open]);
 
   if (!open) return null;
+  const isReference = mode === "reference";
+  const isAppend = mode === "append" || isReference;
+  const title = isReference ? "上传参考图" : isAppend ? "追加数据" : "上传数据";
+  const subtitle = isReference ? "透明 PNG Logo / 活动图 / 参考图" : isAppend ? "追加 CSV / Excel / JSON / MD 到当前工作区" : "CSV / Excel / JSON / MD / 参考图";
+  const dropTitle = isReference ? "拖入 Logo 或参考图" : "拖入文件或点击选择";
+  const dropHelp = isReference ? "建议使用透明 PNG；也支持 JPG / WebP" : "支持多文件与参考图";
+  const submitLabel = isReference ? "绑定参考图" : isAppend ? "追加入库" : "上传入库";
+  const accepted = isReference ? "image/png,image/jpeg,image/webp" : undefined;
   const addFiles = (list) => setFiles((items) => [...items, ...Array.from(list || [])]);
   return (
     <div className="modal-overlay" role="presentation">
-      <div className="upload-modal" role="dialog" aria-modal="true" aria-label="上传数据">
+      <div className="upload-modal" role="dialog" aria-modal="true" aria-label={title}>
         <div className="modal-head">
           <div>
-            <strong>上传数据</strong>
-            <span>CSV / Excel / JSON / MD / 参考图</span>
+            <strong>{title}</strong>
+            <span>{subtitle}</span>
           </div>
           <button className="icon-button" type="button" onClick={onClose} disabled={busy}>
             <X size={17} />
           </button>
         </div>
-        <label className="modal-field">
-          <span>工作区名称</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：华东门店运营数据" />
-        </label>
-        <label className="modal-field">
-          <span>备注</span>
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="数据背景、目标客群、已有产物约束" rows={3} />
-        </label>
+        {isAppend ? (
+          <div className="modal-target">
+            <FolderOpen size={16} />
+            <div>
+              <strong>{workspace?.name || workspaceId || "当前工作区"}</strong>
+              <span>{isReference ? "参考图会作为产物生成素材，不会进入工作区事实证据。" : "新数据会进入当前工作区画像与检索索引。"}</span>
+            </div>
+          </div>
+        ) : (
+          <>
+            <label className="modal-field">
+              <span>工作区名称</span>
+              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：华东门店运营数据" />
+            </label>
+            <label className="modal-field">
+              <span>备注</span>
+              <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="数据背景、目标客群、已有产物约束" rows={3} />
+            </label>
+          </>
+        )}
         <label
           className={dragOver ? "drop-zone over" : "drop-zone"}
           onDragOver={(event) => {
@@ -1329,9 +1351,9 @@ export function UploadModal({ open, busy, onClose, onSubmit }) {
           }}
         >
           <UploadCloud size={24} />
-          <strong>拖入文件或点击选择</strong>
-          <span>支持多文件与参考图</span>
-          <input type="file" multiple hidden onChange={(event) => addFiles(event.target.files)} />
+          <strong>{dropTitle}</strong>
+          <span>{dropHelp}</span>
+          <input type="file" multiple hidden accept={accepted} onChange={(event) => addFiles(event.target.files)} />
         </label>
         <div className="file-list">
           {files.map((file, index) => (
@@ -1347,9 +1369,9 @@ export function UploadModal({ open, busy, onClose, onSubmit }) {
         </div>
         <div className="modal-actions">
           <button className="ghost-button" type="button" onClick={onClose} disabled={busy}>取消</button>
-          <button className="primary-button" type="button" disabled={busy || !files.length} onClick={() => onSubmit({ name, description, files })}>
+          <button className="primary-button" type="button" disabled={busy || !files.length} onClick={() => onSubmit({ name, description, files, workspaceId: isAppend ? workspaceId : "", assetRole })}>
             {busy ? <Loader2 size={15} /> : <UploadCloud size={15} />}
-            上传入库
+            {submitLabel}
           </button>
         </div>
       </div>

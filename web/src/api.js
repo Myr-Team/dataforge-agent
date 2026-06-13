@@ -93,12 +93,13 @@ export async function loadConversation(conversationId) {
   return request(`/api/conversations/${encodeURIComponent(conversationId)}`);
 }
 
-export async function uploadWorkspace({ name, description, files, workspaceId }) {
+export async function uploadWorkspace({ name, description, files, workspaceId, assetRole }) {
   const form = new FormData();
   for (const file of files) form.append("file", file);
   if (name) form.append("name", name);
   if (description) form.append("description", description);
   if (workspaceId) form.append("workspace_id", workspaceId);
+  if (assetRole) form.append("asset_role", assetRole);
   return request("/api/upload", { method: "POST", body: form });
 }
 

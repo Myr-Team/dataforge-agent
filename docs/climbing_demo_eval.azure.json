@@ -1,0 +1,91 @@
+{
+  "api_base": "https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io",
+  "workspace_id": "upload-banana-climbing-demo-1781358388-20260613134630",
+  "workspace_name": "Banana Climbing Demo 1781358388",
+  "uploaded": {
+    "format": "json",
+    "indexed_count": 56,
+    "documents": 1
+  },
+  "reference_images": 1,
+  "chat": {
+    "passed": true,
+    "checks": {
+      "no_event_error": true,
+      "delta_matches_final": true,
+      "has_final_or_clarify": true,
+      "has_next_step": true,
+      "no_mojibake": true,
+      "no_internal_terms": true,
+      "has_reference_to_campaign_context": true
+    },
+    "event_count": 35,
+    "events": [
+      "ready",
+      "user",
+      "route",
+      "plan",
+      "tool_result",
+      "role_change",
+      "tool_call",
+      "tool_result",
+      "role_change",
+      "progress",
+      "blind_verdict",
+      "cache",
+      "model_response",
+      "role_change",
+      "model_response",
+      "audit",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "model_response",
+      "final"
+    ],
+    "tool_calls": [
+      {
+        "agent": "df-corpus-analyst",
+        "name": "search_pack_context"
+      }
+    ],
+    "final_text_chars": 1572,
+    "clarify_text_chars": 0,
+    "elapsed_ms": 21626,
+    "artifact_keys": [
+      "_blind_feasibility",
+      "_conversation_history",
+      "_feasibility_cache",
+      "action_plan",
+      "answer",
+      "audit",
+      "citations",
+      "conversation_id",
+      "corpus",
+      "feasibility",
+      "output_contract",
+      "pm_skill",
+      "recommendation",
+      "routing",
+      "routing_meta",
+      "verdict",
+      "workspace_id"
+    ]
+  },
+  "produce": {},
+  "passed": true
+}
