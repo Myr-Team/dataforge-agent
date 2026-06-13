@@ -215,6 +215,16 @@ class ConversationsResponse(BaseModel):
     conversations: list[ConversationSummary]
 
 
+class WorkspaceDashboardResponse(BaseModel):
+    workspace_id: str
+    workspace: WorkspaceDetailResponse
+    workspaces: list[WorkspaceSummary] = Field(default_factory=list)
+    runs: list[RunSummary] = Field(default_factory=list)
+    conversations: list[ConversationSummary] = Field(default_factory=list)
+    health: dict[str, Any] = Field(default_factory=dict)
+    dependency_details: dict[str, Any] = Field(default_factory=dict)
+
+
 class ConversationMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
     text: str
@@ -285,3 +295,6 @@ class ChatRequest(BaseModel):
     workspace_id: str = "demo-corpus"
     message: str
     conversation_id: str | None = None
+    playbook: str | None = None
+    artifact_mode: str | None = None
+    ui_context: dict[str, Any] = Field(default_factory=dict)

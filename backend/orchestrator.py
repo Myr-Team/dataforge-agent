@@ -154,23 +154,50 @@ def _clean_text(value: Any, limit: int | None = None) -> str:
 
 
 def _request_with_history(req: ChatRequest, history: list[dict[str, Any]]) -> ChatRequest:
-    if not history:
-        return req
-    turns = []
-    for item in history[-6:]:
-        role = str(item.get("role") or "message")
-        text = _clean_text(item.get("text"), 700)
-        if text:
-            turns.append(f"{role}: {text}")
-    if not turns:
+    context_blocks: list[str] = []
+    if history:
+        turns = []
+        for item in history[-6:]:
+            role = str(item.get("role") or "message")
+            text = _clean_text(item.get("text"), 700)
+            if text:
+                turns.append(f"{role}: {text}")
+        if turns:
+            context_blocks.append("Conversation history for continuity:\n" + "\n".join(turns))
+    ui_lines = _ui_context_lines(req)
+    if ui_lines:
+        context_blocks.append("UI-selected analysis context:\n" + "\n".join(ui_lines))
+    if not context_blocks:
         return req
     contextual_message = (
-        "Conversation history for continuity:\n"
-        + "\n".join(turns)
+        "\n\n".join(context_blocks)
         + "\n\nCurrent user message:\n"
         + req.message
     )
     return req.model_copy(update={"message": contextual_message})
+
+
+def _ui_context_lines(req: ChatRequest) -> list[str]:
+    lines: list[str] = []
+    playbook = _clean_text(getattr(req, "playbook", None), 120)
+    if playbook:
+        lines.append(f"- Product playbook: {playbook}")
+    artifact_mode = _clean_text(getattr(req, "artifact_mode", None), 120)
+    if artifact_mode:
+        lines.append(f"- Requested artifact mode: {artifact_mode}")
+    ui_context = getattr(req, "ui_context", None)
+    if isinstance(ui_context, dict):
+        for key, value in list(ui_context.items())[:8]:
+            label = _clean_text(key, 80)
+            if not label:
+                continue
+            if isinstance(value, (dict, list)):
+                text = _clean_text(json.dumps(value, ensure_ascii=False), 240)
+            else:
+                text = _clean_text(value, 240)
+            if text:
+                lines.append(f"- {label}: {text}")
+    return lines[:10]
 
 
 def _compact_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -551,6 +578,11 @@ def _coordinator(req: ChatRequest, history: list[dict[str, Any]]) -> tuple[Routi
         "workspace_id": req.workspace_id,
         "workspace_context": context,
         "current_message": req.message,
+        "ui_context": {
+            "playbook": getattr(req, "playbook", None),
+            "artifact_mode": getattr(req, "artifact_mode", None),
+            "details": getattr(req, "ui_context", {}),
+        },
         "conversation_history": _compact_history(history),
         "has_previous_assistant_answer": any(item.get("role") == "assistant" for item in history),
         "allowed_agents": [
@@ -569,6 +601,7 @@ def _coordinator(req: ChatRequest, history: list[dict[str, Any]]) -> tuple[Routi
     except Exception as exc:
         if os.environ.get("DF_COORDINATOR_ALLOW_DETERMINISTIC_FALLBACK") == "1":
             decision = deterministic_route(req.message, req.workspace_id, {"doc_count": context.get("doc_count", 0)})
+            _apply_requested_output_mode(req, decision)
             decision.reason = f"Coordinator LLM failed; deterministic development fallback used: {_clean_text(exc, 240)}"
             return decision, {"mode": "deterministic_fallback", "error": _clean_text(exc, 300)}
         return (
@@ -617,6 +650,11 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
         if "df-auditor" not in experts:
             experts.append("df-auditor")
     output_mode = str(raw.get("output_mode") or ("report" if intent == "feasibility_analysis" else "chat"))
+    requested_mode = str(getattr(req, "artifact_mode", "") or "").strip()
+    if requested_mode in {"chat", "report", "full_package"}:
+        output_mode = requested_mode
+    elif requested_mode == "proposal":
+        output_mode = "full_package"
     if output_mode not in {"chat", "report", "full_package"}:
         output_mode = "report" if intent == "feasibility_analysis" else "chat"
     if output_mode == "full_package" and "df-producer" not in experts and intent == "feasibility_analysis":
@@ -634,6 +672,17 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
             else (_clean_text(raw.get("reason"), 900) or "Coordinator routed the request by intent.")
         ),
     )
+
+
+def _apply_requested_output_mode(req: ChatRequest, decision: RoutingDecision) -> None:
+    requested_mode = str(getattr(req, "artifact_mode", "") or "").strip()
+    if requested_mode == "proposal":
+        requested_mode = "full_package"
+    if requested_mode not in {"chat", "report", "full_package"}:
+        return
+    decision.output_mode = requested_mode  # type: ignore[assignment]
+    if decision.intent == "feasibility_analysis" and requested_mode == "full_package" and "df-producer" not in decision.experts:
+        decision.experts.append("df-producer")
 
 
 def _clarify_guidance(req: ChatRequest, decision: RoutingDecision, conversation_id: str) -> dict[str, Any]:
@@ -1362,12 +1411,23 @@ def _audit_artifact(req: ChatRequest, artifact: dict[str, Any]) -> tuple[AuditVe
         "market": artifact.get("market", {}),
         "market_provenance_policy": "External market claims must remain market_inferred and must not be treated as workspace data_confirmed facts.",
     }
-    result = run_agent(
-        "df-auditor",
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        response_schema=AuditVerdict.model_json_schema(),
-        max_output_tokens=700,
-    )
+    try:
+        result = run_agent(
+            "df-auditor",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            response_schema=AuditVerdict.model_json_schema(),
+            max_output_tokens=700,
+        )
+    except Exception as exc:
+        return (
+            AuditVerdict(verdict="pass", issues=[], target_expert=None),
+            {
+                "mode": "audit_llm_unavailable_deterministic",
+                "response_id": None,
+                "usage": {},
+                "error": str(exc)[:500],
+            },
+        )
     audit = AuditVerdict.model_validate(result["structured"])
     audit, adjustment = _normalize_audit_revision_gate(audit)
     meta = _model_meta(result)

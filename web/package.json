@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "lucide-react": "^1.18.0",
     "react": "latest",
     "react-dom": "latest",
     "vite": "latest"

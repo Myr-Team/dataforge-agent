@@ -39,6 +39,7 @@ try:
         SearchPackContextRequest,
         SearchPackContextResponse,
         UploadResponse,
+        WorkspaceDashboardResponse,
         WorkspaceDeleteResponse,
         WorkspaceDetailResponse,
         WorkspacesResponse,
@@ -68,6 +69,7 @@ except ImportError:
         SearchPackContextRequest,
         SearchPackContextResponse,
         UploadResponse,
+        WorkspaceDashboardResponse,
         WorkspaceDeleteResponse,
         WorkspaceDetailResponse,
         WorkspacesResponse,
@@ -162,6 +164,35 @@ async def workspace_detail(workspace_id: str) -> WorkspaceDetailResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return WorkspaceDetailResponse.model_validate(result)
+
+
+@app.get("/api/workspaces/{workspace_id}/dashboard", response_model=WorkspaceDashboardResponse)
+async def workspace_dashboard(workspace_id: str) -> WorkspaceDashboardResponse:
+    def _load() -> dict[str, Any]:
+        dependencies = health_dependencies()
+        return {
+            "workspace_id": workspace_id,
+            "workspace": get_workspace_detail(workspace_id),
+            "workspaces": list_workspaces(),
+            "runs": list_runs(workspace_id)[:12],
+            "conversations": list_conversations(workspace_id)[:12],
+            "health": {
+                "ok": True,
+                "service": "dataforge-backend",
+                "search_endpoint": bool(os.environ.get("SEARCH_ENDPOINT")),
+                "workspace_default": "demo-corpus",
+                "dependencies": dependencies,
+            },
+            "dependency_details": health_dependency_details(),
+        }
+
+    try:
+        result = await run_in_threadpool(_load)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return WorkspaceDashboardResponse.model_validate(result)
 
 
 @app.get("/api/workspaces/{workspace_id}/reference-images/{filename}")
