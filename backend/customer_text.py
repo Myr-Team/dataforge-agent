@@ -204,6 +204,7 @@ def sanitize_customer_text(text: Any, field_labels: dict[str, str] | None = None
     value = re.sub(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*\b", _replace_leftover_identifier, value)
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r"\s+([，。；：、！？])", r"\1", value)
+    value = re.sub(r"([！？?])。", r"\1", value)
     value = re.sub(r"([。！？]){2,}", r"\1", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     return value.strip()

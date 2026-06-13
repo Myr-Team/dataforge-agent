@@ -23,6 +23,8 @@ import {
   PieChart,
   Plus,
   RefreshCw,
+  Route,
+  Search,
   Send,
   ShieldCheck,
   Sparkles,
@@ -71,6 +73,27 @@ export function ShellNav({ active = "workspaces", onChange = () => {} }) {
       <button className="nav-icon collapse" type="button" title="收起">
         <ChevronDown size={18} />
       </button>
+    </nav>
+  );
+}
+
+export function MobileNav({ active = "workspaces", onChange = () => {} }) {
+  return (
+    <nav className="mobile-nav" aria-label="Mobile primary">
+      {NAV_ITEMS.map((item) => {
+        const Icon = item.icon;
+        return (
+          <button
+            key={item.id}
+            className={active === item.id ? "mobile-nav-item active" : "mobile-nav-item"}
+            type="button"
+            onClick={() => onChange(item.id)}
+          >
+            <Icon size={17} />
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
     </nav>
   );
 }

@@ -10,6 +10,7 @@ import {
 import {
   extractArtifacts,
   Inspector,
+  MobileNav,
   NoticeStack,
   ShellNav,
   TopBar,
@@ -411,6 +412,7 @@ export function App() {
           authState={authState}
           onLogout={logout}
         />
+        <MobileNav active={activeView} onChange={setActiveView} />
         <div className="workbench-grid">
           <WorkspacePane
             dashboard={dashboard}

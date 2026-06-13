@@ -195,7 +195,8 @@ def _ensure_next_step_hint(text: str) -> str:
     cleaned = str(text or "").strip()
     if not cleaned or NEXT_STEP_HINT_RE.search(cleaned):
         return cleaned
-    return cleaned.rstrip("。.!！") + "。下一步建议：告诉我你想先看产品机会、目标客群、证据强弱，还是直接生成 PRD 或路线图。"
+    separator = "" if re.search(r"[。.!！？?]$", cleaned) else "。"
+    return cleaned + separator + "下一步建议：告诉我你想先看产品机会、目标客群、证据强弱，还是直接生成 PRD 或路线图。"
 
 
 def _preset_outcome_requested(message: str) -> bool:

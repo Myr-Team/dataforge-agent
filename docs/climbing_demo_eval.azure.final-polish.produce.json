@@ -1,0 +1,113 @@
+{
+  "api_base": "https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io",
+  "workspace_id": "upload-banana-climbing-demo-1781361504-20260613143826",
+  "workspace_name": "Banana Climbing Demo 1781361504",
+  "uploaded": {
+    "format": "json",
+    "indexed_count": 56,
+    "documents": 1
+  },
+  "reference_images": 1,
+  "chat": {
+    "passed": true,
+    "checks": {
+      "no_event_error": true,
+      "delta_matches_final": true,
+      "has_final_or_clarify": true,
+      "has_next_step": true,
+      "no_mojibake": true,
+      "no_internal_terms": true,
+      "has_reference_to_campaign_context": true,
+      "mentions_merch_logo": true,
+      "mentions_handcare_sponsor": true,
+      "mentions_conversion_goal": true,
+      "offers_artifact_generation": true,
+      "asks_for_png_logo": true,
+      "first_action_is_campaign_plan": true
+    },
+    "event_count": 41,
+    "events": [
+      "ready",
+      "user",
+      "route",
+      "plan",
+      "tool_result",
+      "role_change",
+      "tool_call",
+      "tool_result",
+      "role_change",
+      "progress",
+      "progress",
+      "blind_verdict",
+      "cache",
+      "model_response",
+      "role_change",
+      "model_response",
+      "audit",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "model_response",
+      "final"
+    ],
+    "tool_calls": [
+      {
+        "agent": "df-corpus-analyst",
+        "name": "search_pack_context"
+      }
+    ],
+    "final_text_chars": 2044,
+    "clarify_text_chars": 0,
+    "visible_excerpt": "**行动方案**\n一句话推荐：建议先做“龙岗万达店拉新与复购实验活动策划”的活动企划验证，用新客转化和品牌传播作为主线，先跑小样本再扩大。 [1] [2]\n\n1. 先确认主目标：新客到店转化、老会员复购、品牌曝光三者只能选一个主指标，另两个作为副指标。\n2. 以“会员挑战日/跨店打卡赛”做首轮试点，范围控制在一到两个高活跃门店，并记录报名、到店、完赛和二次到访。\n3. 把 Logo T 恤、徽章或贴纸做成参赛奖励，让参与者在其他攀岩馆和社交平台继续露出品牌。\n4. 找护手霜、手部修复或运动恢复类品牌做赞助，把试用装、完赛包和联合打卡放进活动机制。\n5. 方向确认后生成项目书、执行计划、活动海报和周边衣服概念图；若缺 Logo，先让客户上传透明 PNG。\n\n**活动企划建议**\n1. 先把目标问清楚：本轮可以按“新客到店转化 + 品牌传播”作为主目标，复购作为副指标。 [1]\n2. 活动主线建议做“会员挑战日/跨店打卡赛”：用一到两个高活跃门店先试点，设置报名、到店、完赛、二次到访四个漏斗指标。 [1]\n3. 传播钩子用 Logo 周边：把攀岩馆专属 T 恤或徽章作为参赛奖励，让会员在其他攀岩馆或社交平台继续露出品牌。\n4. 赞助方向优先找护手霜、手部修复或运动恢复类品牌：攀岩后的手部磨损是自然场景，适合做试用装、完赛包和联合打卡。 [2]\n5. 如果这个方向认可，建议直接生成项目书、执行计划、活动海报和周边衣服概念图；若要生成海报/周边，请先上传透明 PNG Logo 作为参考图。\n\n当前判断：有条件可行；整体置信度：证据不足；审计结论：通过。\n经独立审计核验，结论未变。\n\n**评分**\n- 数据充分度 3/5：工作区有门店会员明细、客群画像、过往活动复盘等，可支持对“新客到店”“会员复购”做粗粒度假设，例如宝安新店新手开放体验周有70人到店、22人转会员的转化记录，会员画像中进阶爱好者复购和周边复购高。但证据也显示关键转化链路存在明显缺口：老带新无追踪、团建客群留存无数据、社媒转化无归因，导致难以精确评估不同拉新渠道效果，只能做最小样本实验而非精细归因。 [1] [2]\n- 市场信号 3/5：存在可感知的拉新与复购需求：有进阶爱好者等细分客群，高频消费与周边复购，为会员复购提升提供方向；既往“新手开放体验周”验证了新店冷启动的拉新潜力。客户反馈中提到活动信息触达不足，说明用户对活动有兴趣但触达有缺口，支持策划以活动为核心的拉新与复购实验。但尚无具体预算、竞品或更广市场数据，需求强度仍需通过本次活动实验验证。\n- 可交付性 3/5：基于现有数据，可交付一版“拉新与复购实验活动策划”报告，并给出最小样本实验设计：例如在龙岗万达店复用新手体验周的结构，增加会员推荐标记和简单到店记录，设定新客数、转会员数、老客复购次数等通过/失败标准。数据缺口集中在精细归因和长期留存层面，不影响做一次以到店和转会员为主指标的实验。但若要精确衡量社媒、老带新、团建等渠道贡献，需要补充字段和埋点，当前资料尚不足以支撑复杂归因模型。 [1] [2]\n- 成本与规模 3/5：从现有证据看，类似“新手开放体验周”的活动已经被执行过，说明门店具备基础落地能力；小规模实验活动主要依赖场地、人手和简单记录，成本可控。关键成本在于在人手有限的情况下增加基础数据记录（如推荐来源、简单渠道标记），以及后续分析与复盘时间。尚无明确资源预算或排期数据，因此更大规模、多门店复制前仍需进一步测算。\n- 差异化 3/5：资料中已有按会员类型、门店、客群细分的行为和消费差异，以及针对新店冷启动的活动转化复盘，这为龙岗万达店设计“门店精细化拉新+复购实验”活动提供了本地化依据，相比通用拉新方案具备一定门店级差异化。但尚未看到独特玩法、品牌合作或系统化裂变机制的数据沉淀，差异化暂时体现在“针对本门店客群和数据缺口做精细实验”，能讲清场景但护城河有限。 [1]\n\n**风险/缺口**\n- 关键转化目标存在缺口：社媒粉丝→到店→付费、老带新推荐、团建客群留存未形成可量化漏斗，难以评估不同渠道真实贡献。\n- 缺少针对龙岗万达店的专门活动复盘数据，目前只能类比其他门店新店活动效果。\n- 尚无资源、预算和人手排期的量化信息，大规模推广前需补充测算。\n- 缺少对更具创新玩法或品牌合作的系统记录，活动差异化仍",
+    "elapsed_ms": 27854,
+    "artifact_keys": [
+      "_blind_feasibility",
+      "_conversation_history",
+      "_feasibility_cache",
+      "action_plan",
+      "answer",
+      "audit",
+      "citations",
+      "conversation_id",
+      "corpus",
+      "feasibility",
+      "output_contract",
+      "pm_skill",
+      "recommendation",
+      "routing",
+      "routing_meta",
+      "verdict",
+      "workspace_id"
+    ]
+  },
+  "produce": {
+    "ok": true,
+    "artifact_urls": {
+      "pdf": "/api/artifacts/banana-climbing-campaign-1781361545.pdf",
+      "concept_image": "/api/artifacts/concept-1781361545.png",
+      "audio_summary": "/api/artifacts/summary-1781361545.wav"
+    },
+    "image_mode": "gpt-image-2-edit",
+    "image_reference_count": 1
+  },
+  "passed": true
+}
