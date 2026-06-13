@@ -173,7 +173,7 @@ def _looks_like_solution_request(message: str) -> bool:
     cjk_action = re.search(
         r"(怎么|如何|怎样|方案|建议|推荐|策略|计划|活动|推广|落地|执行|设计|产品化|路线图|定价|实验|"
         r"prd|项目书|生成|输出|证据|最强|最弱|试点|客群|只看|工作区数据|当前数据|这批数据|"
-        r"能做什么|先做什么|产品方向)",
+        r"能做什么|先做什么|产品方向|企划|拉新|新客|转化|宣传|曝光|名声)",
         text,
     )
     latin_action = re.search(r"\b(how|plan|strategy|recommend|recommendation|advice|campaign|promote|proposal|approach)\b", text)
@@ -2110,12 +2110,22 @@ def _ensure_feasibility_action_plan(
     citations: list[dict[str, Any]],
 ) -> tuple[str, list[str]]:
     feasibility = artifact.setdefault("feasibility", {})
+    title = _customer_opportunity_title(req, artifact, feasibility.get("opportunity_id") or "当前资料机会")
+    campaign_steps = _campaign_action_steps(req, artifact, citations)
+    if campaign_steps:
+        recommendation = f"建议先做“{title}”的活动企划验证，用新客转化和品牌传播作为主线，先跑小样本再扩大。"
+        feasibility["opportunity_id"] = title
+        feasibility["recommendation"] = recommendation
+        feasibility["action_plan"] = campaign_steps[:5]
+        artifact["recommendation"] = recommendation
+        artifact["action_plan"] = campaign_steps[:5]
+        return recommendation, campaign_steps[:5]
+
     existing_recommendation = str(feasibility.get("recommendation") or "").strip()
     existing_plan = [str(item).strip() for item in (feasibility.get("action_plan") or []) if str(item).strip()]
     if existing_recommendation and len(existing_plan) >= 3:
         return existing_recommendation, existing_plan[:5]
 
-    title = _customer_opportunity_title(req, artifact, feasibility.get("opportunity_id") or "当前资料机会")
     signals = _evidence_signals(artifact.get("corpus", {}).get("hits", []), citations)
     steps: list[str] = []
     if signals:
@@ -2149,6 +2159,109 @@ def _ensure_feasibility_action_plan(
     return recommendation, steps[:5]
 
 
+def _campaign_story_lines(req: ChatRequest, artifact: dict[str, Any], citations: list[dict[str, Any]]) -> list[str]:
+    blob = _campaign_story_blob(req, artifact, citations)
+    request_text = str(req.message or "")
+    if not re.search(r"(活动|推广|企划|拉新|新客|转化|宣传|曝光|名声|campaign|promotion)", request_text, re.I):
+        return []
+    if not re.search(r"(攀岩|climb|climbing|门店|会员|到店|活动|周边|赞助)", blob, re.I):
+        return []
+
+    signals = _evidence_signals(artifact.get("corpus", {}).get("hits", []), citations)
+    goal_markers = _markers_for_terms(signals, citations, ("新客", "转化", "到店", "复购", "客流", "会员", "活动"))
+    merch_markers = _markers_for_terms(signals, citations, ("周边", "t恤", "T恤", "衣服", "logo", "Logo", "打卡", "曝光"))
+    sponsor_markers = _markers_for_terms(signals, citations, ("护手", "护肤", "手部", "赞助", "联名", "品牌", "修复"))
+    goal_known = bool(re.search(r"(新客|转化|到店|复购|曝光|宣传|名声|拉新)", request_text))
+
+    lines = [
+        "**活动企划建议**",
+        (
+            "1. 先把目标问清楚："
+            + (
+                "本轮可以按“新客到店转化 + 品牌传播”作为主目标，复购作为副指标。"
+                if goal_known
+                else "请客户在“新客到店转化、老会员复购、品牌曝光”里选一个主目标，再定预算和周期。"
+            )
+            + (f" {goal_markers}" if goal_markers else "")
+        ).rstrip(),
+        (
+            "2. 活动主线建议做“会员挑战日/跨店打卡赛”：用一到两个高活跃门店先试点，设置报名、到店、完赛、二次到访四个漏斗指标。"
+            + (f" {goal_markers}" if goal_markers else "")
+        ).rstrip(),
+    ]
+    if re.search(r"(周边|t恤|T恤|衣服|logo|Logo|打卡|曝光)", blob, re.I):
+        lines.append(
+            (
+                "3. 传播钩子用 Logo 周边：把攀岩馆专属 T 恤或徽章作为参赛奖励，让会员在其他攀岩馆或社交平台继续露出品牌。"
+                + (f" {merch_markers}" if merch_markers else "")
+            ).rstrip()
+        )
+    if re.search(r"(护手|护肤|手部|赞助|联名|修复)", blob, re.I):
+        lines.append(
+            (
+                "4. 赞助方向优先找护手霜、手部修复或运动恢复类品牌：攀岩后的手部磨损是自然场景，适合做试用装、完赛包和联合打卡。"
+                + (f" {sponsor_markers}" if sponsor_markers else "")
+            ).rstrip()
+        )
+    lines.append(
+        "5. 如果这个方向认可，建议直接生成项目书、执行计划、活动海报和周边衣服概念图；若要生成海报/周边，请先上传透明 PNG Logo 作为参考图。"
+    )
+    return lines
+
+
+def _campaign_action_steps(req: ChatRequest, artifact: dict[str, Any], citations: list[dict[str, Any]]) -> list[str]:
+    lines = _campaign_story_lines(req, artifact, citations)
+    if not lines:
+        return []
+    steps: list[str] = [
+        "先确认主目标：新客到店转化、老会员复购、品牌曝光三者只能选一个主指标，另两个作为副指标。",
+        "以“会员挑战日/跨店打卡赛”做首轮试点，范围控制在一到两个高活跃门店，并记录报名、到店、完赛和二次到访。",
+    ]
+    story_text = "\n".join(lines)
+    if re.search(r"(周边|T恤|衣服|徽章|Logo|logo)", story_text):
+        steps.append("把 Logo T 恤、徽章或贴纸做成参赛奖励，让参与者在其他攀岩馆和社交平台继续露出品牌。")
+    if re.search(r"(护手|护肤|手部|赞助|联名|修复)", story_text):
+        steps.append("找护手霜、手部修复或运动恢复类品牌做赞助，把试用装、完赛包和联合打卡放进活动机制。")
+    steps.append("方向确认后生成项目书、执行计划、活动海报和周边衣服概念图；若缺 Logo，先让客户上传透明 PNG。")
+    return steps[:5]
+
+
+def _campaign_story_blob(req: ChatRequest, artifact: dict[str, Any], citations: list[dict[str, Any]]) -> str:
+    parts = [str(req.message or "")]
+    corpus = artifact.get("corpus") or {}
+    profile = corpus.get("profile") or {}
+    if isinstance(profile, dict):
+        parts.extend(str(profile.get(key) or "") for key in ("name", "profile_summary", "customer_summary"))
+    for hit in (corpus.get("hits") or [])[:12]:
+        if isinstance(hit, dict):
+            parts.extend(str(hit.get(key) or "") for key in ("title", "content", "snippet", "source_file"))
+    for item in citations[:8]:
+        parts.append(str(item.get("snippet") or ""))
+    return "\n".join(parts)
+
+
+def _markers_for_terms(signals: list[dict[str, str]], citations: list[dict[str, Any]], terms: tuple[str, ...]) -> str:
+    markers: list[str] = []
+    for signal in signals:
+        text = str(signal.get("text") or "")
+        if any(term.lower() in text.lower() for term in terms):
+            for marker in re.findall(r"\[\d+\]", signal.get("markers") or ""):
+                if marker not in markers:
+                    markers.append(marker)
+        if len(markers) >= 2:
+            break
+    if not markers:
+        for item in citations:
+            text = str(item.get("snippet") or "")
+            if any(term.lower() in text.lower() for term in terms):
+                marker = f"[{item.get('marker')}]"
+                if marker not in markers:
+                    markers.append(marker)
+            if len(markers) >= 2:
+                break
+    return " ".join(markers[:2])
+
+
 def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact: dict[str, Any]) -> dict[str, Any]:
     if decision.intent == "corpus_qa":
         return _structured_corpus_answer_v10(req, artifact)
@@ -2169,6 +2282,10 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
     ]
     for index, step in enumerate(action_plan, start=1):
         lines.append(f"{index}. {sanitize_customer_text(step, field_labels)}")
+    campaign_lines = _campaign_story_lines(req, artifact, citations)
+    if campaign_lines:
+        lines.append("")
+        lines.extend(sanitize_customer_text(item, field_labels) for item in campaign_lines)
     lines.extend(
         [
             "",
@@ -2251,6 +2368,10 @@ def _structured_corpus_answer_v10(req: ChatRequest, artifact: dict[str, Any]) ->
             lines.append(f"{index}. {action}")
     else:
         lines.append("1. 先补充与目标用户、场景、预算或活动结果相关的资料，再生成更具体方案。")
+    campaign_lines = _campaign_story_lines(req, artifact, citations)
+    if campaign_lines:
+        lines.append("")
+        lines.extend(sanitize_customer_text(item, field_labels) for item in campaign_lines)
     markdown = sanitize_customer_text("\n".join(lines).strip(), field_labels)
     return {
         "markdown": markdown,

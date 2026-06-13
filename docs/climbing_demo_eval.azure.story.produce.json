@@ -1,0 +1,111 @@
+{
+  "api_base": "https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io",
+  "workspace_id": "upload-banana-climbing-demo-1781360531-20260613142213",
+  "workspace_name": "Banana Climbing Demo 1781360531",
+  "uploaded": {
+    "format": "json",
+    "indexed_count": 56,
+    "documents": 1
+  },
+  "reference_images": 1,
+  "chat": {
+    "passed": true,
+    "checks": {
+      "no_event_error": true,
+      "delta_matches_final": true,
+      "has_final_or_clarify": true,
+      "has_next_step": true,
+      "no_mojibake": true,
+      "no_internal_terms": true,
+      "has_reference_to_campaign_context": true,
+      "mentions_merch_logo": true,
+      "mentions_handcare_sponsor": true,
+      "mentions_conversion_goal": true,
+      "offers_artifact_generation": true,
+      "asks_for_png_logo": true,
+      "first_action_is_campaign_plan": true
+    },
+    "event_count": 39,
+    "events": [
+      "ready",
+      "user",
+      "route",
+      "plan",
+      "tool_result",
+      "role_change",
+      "tool_call",
+      "tool_result",
+      "role_change",
+      "progress",
+      "progress",
+      "blind_verdict",
+      "cache",
+      "model_response",
+      "role_change",
+      "model_response",
+      "audit",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+      "model_response",
+      "final"
+    ],
+    "tool_calls": [
+      {
+        "agent": "df-corpus-analyst",
+        "name": "search_pack_context"
+      }
+    ],
+    "final_text_chars": 1898,
+    "clarify_text_chars": 0,
+    "visible_excerpt": "**行动方案**\n一句话推荐：建议先做“龙岗万达店社媒与活动拉新转化验证”的活动企划验证，用新客转化和品牌传播作为主线，先跑小样本再扩大。 [1] [2]\n\n1. 先确认主目标：新客到店转化、老会员复购、品牌曝光三者只能选一个主指标，另两个作为副指标。\n2. 以“会员挑战日/跨店打卡赛”做首轮试点，范围控制在一到两个高活跃门店，并记录报名、到店、完赛和二次到访。\n3. 把 Logo T 恤、徽章或贴纸做成参赛奖励，让参与者在其他攀岩馆和社交平台继续露出品牌。\n4. 找护手霜、手部修复或运动恢复类品牌做赞助，把试用装、完赛包和联合打卡放进活动机制。\n5. 方向确认后生成项目书、执行计划、活动海报和周边衣服概念图；若缺 Logo，先让客户上传透明 PNG。\n\n**活动企划建议**\n1. 先把目标问清楚：本轮可以按“新客到店转化 + 品牌传播”作为主目标，复购作为副指标。 [1]\n2. 活动主线建议做“会员挑战日/跨店打卡赛”：用一到两个高活跃门店先试点，设置报名、到店、完赛、二次到访四个漏斗指标。 [1]\n3. 传播钩子用 Logo 周边：把攀岩馆专属 T 恤或徽章作为参赛奖励，让会员在其他攀岩馆或社交平台继续露出品牌。\n4. 赞助方向优先找护手霜、手部修复或运动恢复类品牌：攀岩后的手部磨损是自然场景，适合做试用装、完赛包和联合打卡。 [2]\n5. 如果这个方向认可，建议直接生成项目书、执行计划、活动海报和周边衣服概念图；若要生成海报/周边，请先上传透明 PNG Logo 作为参考图。\n\n当前判断：有条件可行；整体置信度：证据不足；审计结论：通过。\n经独立审计核验，结论未变。\n\n**评分**\n- 数据充分度 3/5：工作区有会员明细、门店画像和活动复盘，可支撑“拉新活动→到店→办卡/复购”的小样本验证设计，例如已有新手体验周活动有拉新到会员的转化数据；但对本次关键转化（社媒引流、老带新、团建留存、周边关联复购）的核心字段明显缺失，导致无法做完整转化漏斗和精确归因，只能做局部、以门店整体结果为主的粗粒度验证。 [1] [2]\n- 市场信号 3/5：门店画像显示年卡与高活跃会员复购能力强，且有“新手开放体验周”带来较好转会员成绩，说明拉新与会员转化存在实际空间；同时存在活动触达缺口等痛点，表明更系统的活动策划与渠道打通有现实需求。不过尚未看到针对龙岗万达店社媒投放或本地客群偏好的更细分信号，需求强度与预算上限需要通过小规模实验进一步验证。 [1]\n- 可交付性 3/5：基于现有会员明细、活动复盘和简单打标，可以设计一次以“到店数、办卡数、次卡升级、月度到访提升”为主指标的拉新实验，并用表格/简单仪表盘做实验报告，技术路径较清晰。但由于社媒与老带新、团建等未打通，无法在现阶段做精细归因模型或多渠道统一漏斗分析，属于可落地但能力受限的最小实验版本。 [1] [2]\n- 成本与规模 3/5：在当前数据结构下，可以采用“门店+社群+简易打标”的轻量方案：通过活动报名表增加来源选项、人工标记老带新、简单区分线下渠道，配合一次短周期活动即可完成实验验证，边际成本可控。但要真正形成可规模复制的拉新分析体系，还需要额外投入做系统字段改造与归因埋点，成本与周期尚未量化。 [2]\n- 差异化 3/5：门店已有针对新手开放周与进阶爱好者的分层运营经验，且记录了各门店、会员类型在到访与复购上的差异，这为“龙岗万达店×活动拉新+会员复购”的场景化方案提供了一定特色。但缺乏跨渠道归因与团建/周边联动数据，目前的差异化主要停留在线下场景和客群洞察，尚不足以形成难以复制的分析优势。 [1]\n\n**风险/缺口**\n- 缺少社媒粉丝→到店→付费的来源字段和转化漏斗，无法直接验证社媒投放的真实拉新贡献。\n- 老带新推荐路径目前无追踪字段，无法评估活动对裂变拉新的影响。\n- 团建与一次性客群缺乏留存、转会员和复购数据，难以纳入本次统一目标设计。\n- 周边销售仅有总量，未与活动与新增会员打通，无法判断周边在提升复购与客单上的作用。\n\n**依据**\n- [1] banana climbing shenzhen：数据画像：Banana Climbing Demo 1781360531，格式 json，包含 1 个表/文档片段、约 55 行、17 个字段…\n- [2] banana cli",
+    "elapsed_ms": 28690,
+    "artifact_keys": [
+      "_blind_feasibility",
+      "_conversation_history",
+      "_feasibility_cache",
+      "action_plan",
+      "answer",
+      "audit",
+      "citations",
+      "conversation_id",
+      "corpus",
+      "feasibility",
+      "output_contract",
+      "pm_skill",
+      "recommendation",
+      "routing",
+      "routing_meta",
+      "verdict",
+      "workspace_id"
+    ]
+  },
+  "produce": {
+    "ok": true,
+    "artifact_urls": {
+      "pdf": "/api/artifacts/banana-climbing-campaign-1781360571.pdf",
+      "concept_image": "/api/artifacts/concept-1781360571.png",
+      "audio_summary": "/api/artifacts/summary-1781360571.wav"
+    },
+    "image_mode": "gpt-image-2-edit",
+    "image_reference_count": 1
+  },
+  "passed": true
+}

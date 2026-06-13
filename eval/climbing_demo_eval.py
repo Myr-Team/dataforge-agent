@@ -24,6 +24,35 @@ DEFAULT_MESSAGE = (
 MOJIBAKE_RE = re.compile(r"[锛鎴涓绋璧鏁]{2,}|鈥|�")
 INTERNAL_RE = re.compile(r"raw_docs/|source_file|chunk_id|content_vector|workspace_id|data_confirmed|market_inferred|speculative")
 NEXT_STEP_RE = re.compile(r"下一步|建议|可以先|先做|验证|试点|生成|项目书|海报|周边")
+MERCH_RE = re.compile(r"周边|T恤|衣服|徽章|Logo|logo")
+SPONSOR_RE = re.compile(r"护手|护肤|手部|修复|赞助|联名")
+GOAL_RE = re.compile(r"新客|转化|到店|复购|曝光|宣传|目标")
+ARTIFACT_RE = re.compile(r"项目书|执行计划|活动海报|周边.*概念图|产物")
+PNG_LOGO_RE = re.compile(r"透明\s*PNG|PNG\s*Logo|Logo")
+FIRST_ACTION_RE = re.compile(r"\*\*行动方案\*\*[\s\S]{0,900}先确认主目标[\s\S]{0,900}(Logo\s*T\s*恤|周边)[\s\S]{0,900}(护手|护肤|手部)")
+
+
+def post_with_retries(
+    url: str,
+    *,
+    timeout: int,
+    attempts: int = 3,
+    stream: bool = False,
+    **kwargs: Any,
+) -> requests.Response:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.post(url, timeout=timeout, stream=stream, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt == attempts:
+                break
+            time.sleep(min(2 * attempt, 6))
+    assert last_error is not None
+    raise last_error
 
 
 def upload_file(api_base: str, path: Path, *, name: str, workspace_id: str | None = None, asset_role: str | None = None, timeout: int = 180) -> dict[str, Any]:
@@ -34,8 +63,7 @@ def upload_file(api_base: str, path: Path, *, name: str, workspace_id: str | Non
         data["asset_role"] = asset_role
     with path.open("rb") as handle:
         files = [("file", (path.name, handle, content_type(path)))]
-        response = requests.post(f"{api_base.rstrip('/')}/api/upload", data=data, files=files, timeout=timeout)
-    response.raise_for_status()
+        response = post_with_retries(f"{api_base.rstrip('/')}/api/upload", data=data, files=files, timeout=timeout)
     return response.json()
 
 
@@ -87,8 +115,7 @@ def run_chat(api_base: str, workspace_id: str, message: str, timeout: int) -> di
         "ui_context": {"demo": "banana_climbing_campaign", "customer_stage": "campaign_planning"},
     }
     started = time.perf_counter()
-    response = requests.post(f"{api_base.rstrip('/')}/api/chat", json=payload, stream=True, timeout=timeout)
-    response.raise_for_status()
+    response = post_with_retries(f"{api_base.rstrip('/')}/api/chat", json=payload, stream=True, timeout=timeout)
     events = parse_sse(response.iter_lines(decode_unicode=True))
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     return analyze_events(events, elapsed_ms)
@@ -112,6 +139,12 @@ def analyze_events(events: list[tuple[str, dict[str, Any]]], elapsed_ms: int) ->
         "no_mojibake": not MOJIBAKE_RE.search(visible),
         "no_internal_terms": not INTERNAL_RE.search(visible),
         "has_reference_to_campaign_context": any(token in visible for token in ["攀岩", "活动", "新客", "会员", "周边", "海报", "赞助"]),
+        "mentions_merch_logo": bool(MERCH_RE.search(visible)),
+        "mentions_handcare_sponsor": bool(SPONSOR_RE.search(visible)),
+        "mentions_conversion_goal": bool(GOAL_RE.search(visible)),
+        "offers_artifact_generation": bool(ARTIFACT_RE.search(visible)),
+        "asks_for_png_logo": bool(PNG_LOGO_RE.search(visible)),
+        "first_action_is_campaign_plan": bool(FIRST_ACTION_RE.search(visible)) and "数据缺口" not in visible[:700],
     }
     return {
         "passed": all(checks.values()),
@@ -121,6 +154,7 @@ def analyze_events(events: list[tuple[str, dict[str, Any]]], elapsed_ms: int) ->
         "tool_calls": [{"agent": item.get("agent"), "name": item.get("name")} for item in tool_calls],
         "final_text_chars": len(final_text),
         "clarify_text_chars": len(clarify_text),
+        "visible_excerpt": visible[:1800],
         "elapsed_ms": elapsed_ms,
         "artifact_keys": sorted(artifact.keys()),
     }
@@ -145,8 +179,7 @@ def produce(api_base: str, workspace_id: str, timeout: int) -> dict[str, Any]:
             "text": "建议先做一场围绕攀岩馆会员周边、社交传播和新客体验的拉新活动，并用透明 PNG Logo 生成海报与周边设计图。"
         },
     }
-    response = requests.post(f"{api_base.rstrip('/')}/api/produce", json=payload, timeout=timeout)
-    response.raise_for_status()
+    response = post_with_retries(f"{api_base.rstrip('/')}/api/produce", json=payload, timeout=timeout)
     data = response.json()
     urls = data.get("artifact_urls") or {}
     return {
