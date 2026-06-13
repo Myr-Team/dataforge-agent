@@ -487,11 +487,13 @@ svg { flex-shrink: 0; }
 }
 .agent-studio > * { min-width: 0; }
 .dashboard-stage {
-  grid-template-rows: auto auto auto auto;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   overflow-x: hidden;
   overflow-y: auto;
 }
+.dashboard-stage > * { flex: 0 0 auto; }
 .conversation-stage {
   grid-template-rows: auto auto minmax(0, 1fr) auto;
 }

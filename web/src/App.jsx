@@ -236,15 +236,18 @@ export function App() {
     }, 170);
   };
 
-  const run = async (rawMessage = input) => {
+  const run = async (rawMessage = input, opts = {}) => {
     const message = String(rawMessage || "").trim();
     if (!message || running || demoReveal.active) return;
 
     setMessages((items) => [...items, { role: "user", text: message, time: new Date().toISOString() }]);
     setInput("");
     setRunning(true);
-    setActiveView("conversations");
-    setInspectorTab("trace");
+    // 自动分析（stayOnDashboard）留在工作区看板里就地跑，只有手动会话/绘画才跳到会话视图
+    if (!opts.stayOnDashboard) {
+      setActiveView("conversations");
+      setInspectorTab("trace");
+    }
     resetRunState();
 
     const payload = {

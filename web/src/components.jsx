@@ -116,9 +116,6 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
   return (
     <header className="topbar">
       <div className="topbar-left">
-        <div className="window-lights" aria-hidden="true">
-          <i className="red" /><i className="amber" /><i className="green" />
-        </div>
         <div className="brand-wordmark">
           <strong>DataForge</strong>
           <span>Agent Workbench</span>
@@ -542,7 +539,7 @@ function DashboardStudio({
             <MessageSquare size={15} />
             新建会话
           </button>
-          <button className="primary-button icon-label" type="button" onClick={() => onRun("请基于当前工作区，先自动分析这批数据可以产品化成什么机会，并说明证据强弱、市场推断和下一步。")}>
+          <button className="primary-button icon-label" type="button" onClick={() => onRun("请基于当前工作区，先自动分析这批数据可以产品化成什么机会，并说明证据强弱、市场推断和下一步。", { stayOnDashboard: true })}>
             <Sparkles size={15} />
             自动分析
           </button>
