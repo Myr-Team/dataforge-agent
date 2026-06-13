@@ -486,15 +486,6 @@ export function App() {
             onNewConversation={startNewConversation}
             producing={producing}
           />
-          <Inspector
-            tab={inspectorTab}
-            setTab={setInspectorTab}
-            trace={trace}
-            finalArtifact={finalArtifact}
-            artifacts={artifacts}
-            running={displayRunning}
-            producing={producing}
-          />
         </div>
       </div>
       <UploadModal

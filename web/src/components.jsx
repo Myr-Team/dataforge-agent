@@ -305,22 +305,6 @@ export function WorkspacePane({
         </section>
       ) : null}
 
-      <section className="pane-section">
-        <div className="section-head"><span>参考图像</span><em>来自数据 · {referenceImages.length || 6}</em></div>
-        {referenceImages.length ? (
-          <div className="reference-grid">
-            {referenceImages.slice(0, 6).map((item) => (
-              <img key={item.url || item.filename} src={absoluteApiUrl(item.url)} alt={item.filename || "reference"} />
-            ))}
-          </div>
-        ) : (
-          <div className="reference-grid placeholder">
-            {Array.from({ length: 6 }).map((_, index) => (
-              <span className={`ref-thumb ref-${index % 3}`} key={index} aria-hidden="true" />
-            ))}
-          </div>
-        )}
-      </section>
     </aside>
   );
 }
@@ -573,8 +557,6 @@ function DashboardStudio({
         <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} />
         <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
       </section>
-
-      <AutoAnalysisLog trace={trace} runs={dashboard?.runs || []} running={running} />
     </main>
   );
 }
@@ -936,12 +918,8 @@ function AgentRoute({ trace, running, presentation, compact = false }) {
   const responded = presentation.doneAgents;
   const current = AGENTS.find((agent) => agent.id === activeAgent) || AGENTS[0];
   const runId = trace.find((item) => item.event === "ready")?.data?.conversation_id || "pending";
-  const y = 62;
-  const startX = 52;
-  const gapX = 122;
-  const endX = startX + gapX * (AGENTS.length - 1);
   return (
-    <section className={compact ? "agent-route-card compact" : "agent-route-card"}>
+    <section className="agent-route-card">
       <div className="route-card-head">
         <div>
           <strong>Agent Flow</strong>
@@ -952,36 +930,21 @@ function AgentRoute({ trace, running, presentation, compact = false }) {
           {running ? "运行中" : "待命"}
         </div>
       </div>
-      <div className="route-svg-wrap">
-        <svg className="route-svg" viewBox="0 0 720 144" role="img" aria-label="Agent route">
-          <defs>
-            <linearGradient id="agent-flow-gradient" x1="0" x2="1">
-              <stop offset="0%" stopColor="#0071e3" />
-              <stop offset="52%" stopColor="#00a878" />
-              <stop offset="100%" stopColor="#b26a00" />
-            </linearGradient>
-          </defs>
-          <path className="route-line base" d={`M${startX} ${y} H${endX}`} />
-          <path className={running || presentation.maxStage > 0 ? "route-line live" : "route-line"} d={`M${startX} ${y} H${endX}`} />
-          {AGENTS.map((agent, index) => {
-            const x = startX + index * gapX;
-            const active = activeAgent === agent.id;
-            const done = responded.has(agent.id);
-            const Icon = agent.icon;
-            return (
-              <g key={agent.id} className={active ? "route-node active" : done ? "route-node done" : "route-node"}>
-                <circle cx={x} cy={y} r="22" />
-                <foreignObject x={x - 13} y={y - 13} width="26" height="26">
-                  <div className="route-icon-fo" xmlns="http://www.w3.org/1999/xhtml">
-                    <Icon size={17} strokeWidth={2.2} />
-                  </div>
-                </foreignObject>
-                <text x={x} y="102" textAnchor="middle">{agent.zh}</text>
-                <text className="route-node-role" x={x} y="120" textAnchor="middle">{agent.role}</text>
-              </g>
-            );
-          })}
-        </svg>
+      <div className="pipe-flow" role="list" aria-label="Agent 流水线">
+        {AGENTS.map((agent, index) => {
+          const active = activeAgent === agent.id;
+          const done = responded.has(agent.id);
+          const Icon = agent.icon;
+          const state = active ? "active" : done ? "done" : "idle";
+          return (
+            <div className={`pf-node ${state}`} role="listitem" key={agent.id}>
+              <span className="pf-ic"><Icon size={18} strokeWidth={2.1} /></span>
+              <span className="pf-name">{agent.zh}</span>
+              <span className="pf-role">{agent.role}</span>
+              {index < AGENTS.length - 1 ? <span className={done ? "pf-link lit" : "pf-link"} aria-hidden="true" /> : null}
+            </div>
+          );
+        })}
       </div>
       <div className="route-card-foot">
         <span>{current.zh}</span>

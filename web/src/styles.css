@@ -272,7 +272,7 @@ svg { flex-shrink: 0; }
 
 .workbench-grid {
   display: grid;
-  grid-template-columns: clamp(250px, 22vw, 318px) minmax(420px, 1fr) clamp(300px, 27vw, 384px);
+  grid-template-columns: clamp(260px, 24vw, 340px) minmax(520px, 1fr);
   min-height: 0;
   overflow: hidden;
 }
@@ -481,13 +481,14 @@ svg { flex-shrink: 0; }
 .agent-studio {
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr) auto;
-  gap: 14px;
-  padding: 18px 20px;
+  gap: 12px;
+  padding: 16px 20px;
   overflow: hidden;
 }
 .agent-studio > * { min-width: 0; }
 .dashboard-stage {
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto;
+  align-content: start;
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -1749,3 +1750,17 @@ svg { flex-shrink: 0; }
 .num-hl { background: linear-gradient(180deg, transparent 58%, rgba(0,113,227,0.18) 0); color: var(--ink); font-weight: 700; padding: 0 1px; border-radius: 2px; }
 .cite-mark { display: inline-grid; place-items: center; min-width: 15px; height: 15px; padding: 0 3px; margin: 0 1px; border-radius: 4px;
   background: var(--blue-soft); color: var(--blue); font-size: 10px; font-weight: 700; vertical-align: super; line-height: 1; }
+
+/* flex 流水线（替代 SVG，稳定显示、响应式） */
+.pipe-flow { display: flex; align-items: flex-start; gap: 0; padding: 16px 4px 8px; }
+.pf-node { position: relative; flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+.pf-ic { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; background: #fff; border: 1.6px solid var(--line); color: var(--faint); position: relative; z-index: 1; transition: background .25s, color .25s, border-color .25s, box-shadow .25s; }
+.pf-link { position: absolute; top: 21px; left: 50%; width: 100%; height: 2px; background: var(--line); z-index: 0; }
+.pf-link.lit { background: linear-gradient(90deg, var(--blue), var(--mint)); }
+.pf-name { font-size: 12px; font-weight: 700; color: var(--muted); line-height: 1.2; }
+.pf-role { font-size: 10px; color: var(--faint); }
+.pf-node.done .pf-ic { background: var(--mint-soft); border-color: var(--mint); color: var(--mint); }
+.pf-node.done .pf-name { color: var(--ink); }
+.pf-node.active .pf-ic { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 0 0 4px var(--blue-soft); animation: pulseRing 1.6s ease-in-out infinite; }
+.pf-node.active .pf-name { color: var(--blue); }
+@keyframes pulseRing { 0%,100% { box-shadow: 0 0 0 4px var(--blue-soft); } 50% { box-shadow: 0 0 0 7px var(--blue-soft); } }
