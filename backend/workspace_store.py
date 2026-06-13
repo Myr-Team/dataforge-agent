@@ -22,6 +22,7 @@ try:
         load_workspace_registry,
         persist_workspace,
         remove_workspace_from_blob,
+        upload_blob_json,
         workspace_deleted,
     )
     from .search_admin import count_workspace_docs, delete_workspace_docs, index_documents, search_endpoint
@@ -34,6 +35,7 @@ except ImportError:
         load_workspace_registry,
         persist_workspace,
         remove_workspace_from_blob,
+        upload_blob_json,
         workspace_deleted,
     )
     from search_admin import count_workspace_docs, delete_workspace_docs, index_documents, search_endpoint
@@ -95,6 +97,10 @@ def create_workspace_from_upload(
 
     indexed_count = _index_profile(profile)
     workspace_meta["indexed_count"] = indexed_count
+    workspace_meta["documents"] = _normalize_documents(workspace_dir, workspace_meta, profile)
+    manifest = _build_workspace_manifest(workspace_id, workspace_meta, profile)
+    workspace_meta["manifest_file"] = "manifest.json"
+    (workspace_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     persistence = _persist_workspace(
         workspace_id=workspace_id,
         safe_name=safe_name,
@@ -102,6 +108,7 @@ def create_workspace_from_upload(
         workspace_meta=workspace_meta,
         profile=profile,
     )
+    _persist_workspace_manifest(workspace_id, manifest)
     workspace_meta["persistence"] = persistence
     (workspace_dir / "workspace.json").write_text(json.dumps(workspace_meta, indent=2, ensure_ascii=False), encoding="utf-8")
     _CONTEXT_CACHE.pop(workspace_id, None)
@@ -111,6 +118,7 @@ def create_workspace_from_upload(
         "format": profile["format"],
         "indexed_count": indexed_count,
         "profile_summary": profile["profile_summary"],
+        "documents": workspace_meta["documents"],
     }
 
 
@@ -200,6 +208,8 @@ def create_workspace_from_uploads(
             "bytes": len(content),
             "profile_file": profile["profile_file"],
             "record_count": len(records),
+            "status": "已就绪" if records or profile.get("tables") else "部分字段",
+            "created_at": profile.get("created_at"),
         }
         documents.append(document)
         raw_payloads.append(
@@ -274,6 +284,10 @@ def create_workspace_from_uploads(
     indexed_delta = _index_documents([profile_to_search_document(profile) for profile in profiles] + content_records)
     previous_indexed = int(existing_meta.get("indexed_count") or 0)
     workspace_meta["indexed_count"] = previous_indexed + indexed_delta
+    workspace_meta["documents"] = _normalize_documents(workspace_dir, workspace_meta, aggregate_profile)
+    manifest = _build_workspace_manifest(workspace_id, workspace_meta, aggregate_profile)
+    workspace_meta["manifest_file"] = "manifest.json"
+    (workspace_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     persistence = _persist_workspace_bundle(
         workspace_id=workspace_id,
         raw_payloads=raw_payloads,
@@ -281,6 +295,7 @@ def create_workspace_from_uploads(
         workspace_meta=workspace_meta,
         profile=aggregate_profile,
     )
+    _persist_workspace_manifest(workspace_id, manifest)
     workspace_meta["persistence"] = persistence
     (workspace_dir / "workspace.json").write_text(json.dumps(workspace_meta, indent=2, ensure_ascii=False), encoding="utf-8")
     _CONTEXT_CACHE.pop(workspace_id, None)
@@ -292,7 +307,7 @@ def create_workspace_from_uploads(
         "indexed_count": workspace_meta["indexed_count"],
         "indexed_delta": indexed_delta,
         "profile_summary": aggregate_profile["profile_summary"],
-        "documents": documents,
+        "documents": workspace_meta["documents"],
         "reference_images": reference_images,
     }
 
@@ -397,14 +412,29 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
     tables = profile.get("tables") or []
     rows = sum(int(table.get("row_count") or 0) for table in tables)
     columns = _detail_columns(tables)
-    documents = _detail_documents(workspace_dir, meta)
+    documents = _normalize_documents(workspace_dir, meta, profile)
+    metrics = _workspace_bi_metrics(profile, meta, columns)
     customer_summary = customer_summary_from_profile(profile, meta)
+    manifest = _load_workspace_manifest(workspace_id, workspace_dir) or _build_workspace_manifest(
+        workspace_id,
+        {**meta, "documents": documents},
+        profile,
+        customer_summary=customer_summary,
+        columns=columns,
+        metrics=metrics,
+    )
     return {
         "workspace_id": workspace_id,
         "name": meta.get("name") or profile.get("name") or summary.get("name") or workspace_id,
         "description": meta.get("description") or summary.get("description"),
         "format": meta.get("format") or profile.get("format") or summary.get("format") or "mixed",
         "rows": rows,
+        "row_count": metrics["row_count"],
+        "field_count": metrics["field_count"],
+        "indexed_count": metrics["indexed_count"],
+        "fill_rate": metrics["fill_rate"],
+        "signal_score": metrics["signal_score"],
+        "signal_distribution": metrics["signal_distribution"],
         "columns": columns,
         "customer_summary": customer_summary,
         "doc_count": summary.get("doc_count") or _workspace_doc_count(workspace_id, workspace_dir, meta),
@@ -412,6 +442,7 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
         "reference_images": _reference_images(meta),
         "profile_summary": meta.get("profile_summary") or profile.get("profile_summary") or summary.get("profile_summary"),
         "signals": _detail_signals(tables),
+        "manifest": manifest,
         "created_at": meta.get("created_at") or profile.get("created_at") or summary.get("created_at"),
     }
 
@@ -724,6 +755,79 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _workspace_bi_metrics(profile: dict[str, Any], meta: dict[str, Any], columns: list[dict[str, Any]]) -> dict[str, Any]:
+    tables = profile.get("tables") or []
+    row_count = sum(int(table.get("row_count") or 0) for table in tables)
+    field_count = sum(int(table.get("column_count") or len(table.get("columns") or [])) for table in tables)
+    missing_rates = [float(column.get("missing_rate") or 0) for column in columns]
+    fill_rate = 1 - (sum(missing_rates) / len(missing_rates)) if missing_rates else 0
+    scores = [float(column.get("signal_score") or 0) for column in columns]
+    signal_score = sum(scores) / len(scores) if scores else 0
+    counts = {
+        "strong": sum(1 for column in columns if column.get("signal") == "strong"),
+        "mid": sum(1 for column in columns if column.get("signal") == "mid"),
+        "noise": sum(1 for column in columns if column.get("signal") == "noise"),
+    }
+    total = max(1, sum(counts.values()))
+    return {
+        "row_count": row_count,
+        "field_count": field_count,
+        "indexed_count": int(meta.get("indexed_count") or 0),
+        "fill_rate": round(max(0.0, min(1.0, fill_rate)), 4),
+        "signal_score": round(max(0.0, min(1.0, signal_score)), 4),
+        "signal_distribution": {key: round(value / total, 4) for key, value in counts.items()},
+    }
+
+
+def _build_workspace_manifest(
+    workspace_id: str,
+    meta: dict[str, Any],
+    profile: dict[str, Any],
+    *,
+    customer_summary: str | None = None,
+    columns: list[dict[str, Any]] | None = None,
+    metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    columns = columns if columns is not None else _detail_columns(profile.get("tables") or [])
+    metrics = metrics if metrics is not None else _workspace_bi_metrics(profile, meta, columns)
+    documents = _normalize_documents(WORKSPACES / workspace_id, meta, profile)
+    summary = customer_summary or customer_summary_from_profile(profile, meta)
+    return {
+        "version": "dataforge.canonical_manifest.v1",
+        "workspace_id": workspace_id,
+        "name": meta.get("name") or profile.get("name") or workspace_id,
+        "created_at": meta.get("created_at") or profile.get("created_at"),
+        "updated_at": meta.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+        "format": meta.get("format") or profile.get("format") or "mixed",
+        "customer_summary": summary,
+        "profile_summary": meta.get("profile_summary") or profile.get("profile_summary"),
+        "metrics": metrics,
+        "documents": documents,
+        "columns": columns[:120],
+        "signals": _detail_signals(profile.get("tables") or []),
+        "reference_images": _reference_images(meta),
+    }
+
+
+def _load_workspace_manifest(workspace_id: str, workspace_dir: Path) -> dict[str, Any] | None:
+    local_path = workspace_dir / "manifest.json"
+    if local_path.exists():
+        try:
+            return _read_json(local_path)
+        except Exception:
+            return None
+    return download_blob_json(f"workspaces/{workspace_id}/manifest.json")
+
+
+def _persist_workspace_manifest(workspace_id: str, manifest: dict[str, Any]) -> None:
+    try:
+        upload_blob_json(f"workspaces/{workspace_id}/manifest.json", manifest)
+    except Exception as exc:
+        if _blob_configured_for_workspace() and search_endpoint():
+            raise
+        manifest["persistence_warning"] = str(exc)[:300]
+
+
 def _detail_columns(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -744,16 +848,24 @@ def _detail_columns(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
         str(table.get("name") or ""): (table.get("signals") or []) + (table.get("cross_signals") or [])
         for table in tables
     }
+    table_noise = {
+        str(table.get("name") or ""): table.get("noise") or []
+        for table in tables
+    }
     for table in tables:
         table_name = str(table.get("name") or "")
         signals = table_signals.get(table_name, [])
+        noise_items = table_noise.get(table_name, [])
+        row_count = int(table.get("row_count") or 0)
         for column in table.get("columns") or []:
             name = str(column.get("name") or "")
             key = f"{table_name}:{name}"
             if key in seen:
                 continue
             seen.add(key)
-            signal = next((item for item in signals if name and name in str(item)), "")
+            signal_reason = next((item for item in signals if name and name in str(item)), "")
+            noise_reason = next((item for item in noise_items if name and name in str(item)), "")
+            signal_score, signal_level = _column_signal_score(column, row_count, bool(signal_reason), bool(noise_reason))
             friendly = label_map.get(name) or friendly_label(name, role=column.get("type"))
             items.append(
                 {
@@ -761,13 +873,52 @@ def _detail_columns(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "name": name,
                     "friendly_label": friendly,
                     "role": column.get("type") or "unknown",
-                    "signal": sanitize_customer_text(signal, label_map),
+                    "signal": signal_level,
+                    "signal_score": signal_score,
+                    "signal_reason": sanitize_customer_text(signal_reason or noise_reason or _default_signal_reason(column, signal_level), label_map),
                     "missing_rate": column.get("missing_rate", 0),
                     "unique_count": column.get("unique_count", 0),
+                    "non_empty": column.get("non_empty", 0),
                     "top_values": column.get("top_values", [])[:5],
                 }
             )
     return items[:120]
+
+
+def _column_signal_score(column: dict[str, Any], row_count: int, has_signal: bool, has_noise: bool) -> tuple[float, str]:
+    missing_rate = float(column.get("missing_rate") or 0)
+    unique_count = int(column.get("unique_count") or 0)
+    non_empty = int(column.get("non_empty") or 0)
+    type_name = str(column.get("type") or "unknown")
+    completeness = max(0.0, min(1.0, 1.0 - missing_rate))
+    variety = 0.0
+    if row_count > 0:
+        variety = max(0.0, min(1.0, unique_count / max(1, min(row_count, 20))))
+    type_bonus = 0.12 if type_name in {"number", "date", "boolean"} else 0.08 if type_name == "text" else 0.0
+    score = completeness * 0.56 + variety * 0.24 + type_bonus
+    if has_signal:
+        score += 0.18
+    if has_noise:
+        score = min(score, 0.34)
+    if non_empty == 0:
+        score = 0
+    score = round(max(0.0, min(1.0, score)), 4)
+    if score >= 0.68:
+        return score, "strong"
+    if score >= 0.38:
+        return score, "mid"
+    return score, "noise"
+
+
+def _default_signal_reason(column: dict[str, Any], signal_level: str) -> str:
+    name = str(column.get("name") or "字段")
+    missing = float(column.get("missing_rate") or 0)
+    unique = int(column.get("unique_count") or 0)
+    if signal_level == "strong":
+        return f"{name} 完整度较高且有 {unique} 个可区分取值，可作为重点观察信号"
+    if signal_level == "mid":
+        return f"{name} 有一定可用度，但缺失率约 {missing:.0%}，适合作为辅助信号"
+    return f"{name} 当前缺失率或区分度不足，不宜单独作为核心判断依据"
 
 
 def _detail_signals(tables: list[dict[str, Any]]) -> list[str]:
@@ -804,6 +955,81 @@ def _detail_documents(workspace_dir: Path, meta: dict[str, Any]) -> list[dict[st
     if not documents and meta.get("profile_file"):
         documents.append({"source_file": meta.get("profile_file"), "name": "profile.json", "format": "profile"})
     return documents
+
+
+def _normalize_documents(workspace_dir: Path, meta: dict[str, Any], profile: dict[str, Any]) -> list[dict[str, Any]]:
+    profile_docs = {
+        str(item.get("source_file") or ""): item
+        for item in profile.get("document_profiles") or []
+        if isinstance(item, dict) and item.get("source_file")
+    }
+    documents = _detail_documents(workspace_dir, meta)
+    created_at = meta.get("created_at") or profile.get("created_at")
+    if not documents and isinstance(profile.get("documents"), list):
+        documents = [item for item in profile.get("documents") or [] if isinstance(item, dict)]
+
+    normalized: list[dict[str, Any]] = []
+    for raw in documents:
+        source_file = str(raw.get("source_file") or raw.get("path") or "")
+        profile_doc = profile_docs.get(source_file) or {}
+        name = str(raw.get("name") or Path(source_file).name or "document")
+        fmt = str(raw.get("format") or profile_doc.get("format") or Path(source_file).suffix.lstrip(".").lower() or "unknown")
+        item = {
+            "source_file": source_file or None,
+            "name": name,
+            "format": fmt,
+            "bytes": raw.get("bytes"),
+            "record_count": raw.get("record_count"),
+            "status": raw.get("status"),
+            "created_at": raw.get("created_at") or profile_doc.get("created_at") or created_at,
+            "profile_file": raw.get("profile_file") or profile_doc.get("profile_file"),
+            "external": bool(raw.get("external")),
+        }
+        if item["bytes"] is None and source_file:
+            local_path = workspace_dir / source_file
+            if local_path.exists() and local_path.is_file():
+                item["bytes"] = local_path.stat().st_size
+        if item["record_count"] is None:
+            item["record_count"] = _document_record_count(source_file, profile_doc, profile)
+        if not item["status"]:
+            item["status"] = _document_status(item, profile_doc)
+        normalized.append(item)
+    return normalized
+
+
+def _document_record_count(source_file: str, profile_doc: dict[str, Any], profile: dict[str, Any]) -> int | None:
+    if profile_doc.get("record_count") is not None:
+        try:
+            return int(profile_doc.get("record_count") or 0)
+        except (TypeError, ValueError):
+            return None
+    total = 0
+    matched = False
+    for table in profile.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        table_source = str(table.get("source_file") or profile.get("source_file") or "")
+        if source_file and table_source and table_source != source_file:
+            continue
+        total += int(table.get("row_count") or 0)
+        matched = True
+    if matched:
+        return total
+    return None
+
+
+def _document_status(item: dict[str, Any], profile_doc: dict[str, Any]) -> str:
+    fmt = str(item.get("format") or profile_doc.get("format") or "").lower()
+    record_count = item.get("record_count")
+    if fmt in {"reference", "reference_images", "image", "png", "jpg", "jpeg", "webp"}:
+        return "仅参考"
+    if isinstance(record_count, int) and record_count > 0:
+        return "已就绪"
+    if fmt in {"markdown", "pdf"}:
+        return "已就绪" if record_count else "部分字段"
+    if fmt == "profile":
+        return "画像文件"
+    return "部分字段"
 
 
 def _is_reference_image(item: dict[str, Any]) -> bool:

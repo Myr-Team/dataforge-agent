@@ -131,9 +131,12 @@ class WorkspaceColumnDetail(BaseModel):
     name: str
     friendly_label: str | None = None
     role: str | None = None
-    signal: str | None = None
+    signal: Literal["strong", "mid", "noise"] | None = None
+    signal_score: float | None = None
+    signal_reason: str | None = None
     missing_rate: float | int | None = None
     unique_count: int | None = None
+    non_empty: int | None = None
     top_values: list[Any] = Field(default_factory=list)
 
 
@@ -142,6 +145,10 @@ class WorkspaceDocumentDetail(BaseModel):
     name: str
     format: str | None = None
     bytes: int | None = None
+    record_count: int | None = None
+    status: str | None = None
+    created_at: str | None = None
+    profile_file: str | None = None
     external: bool = False
 
 
@@ -162,6 +169,12 @@ class WorkspaceDetailResponse(BaseModel):
     description: str | None = None
     format: str
     rows: int = 0
+    row_count: int = 0
+    field_count: int = 0
+    indexed_count: int = 0
+    fill_rate: float = 0
+    signal_score: float = 0
+    signal_distribution: dict[str, float] = Field(default_factory=dict)
     columns: list[WorkspaceColumnDetail] = Field(default_factory=list)
     customer_summary: str | None = None
     doc_count: int = 0
@@ -169,6 +182,7 @@ class WorkspaceDetailResponse(BaseModel):
     reference_images: list[WorkspaceReferenceImage] = Field(default_factory=list)
     profile_summary: str | None = None
     signals: list[str] = Field(default_factory=list)
+    manifest: dict[str, Any] = Field(default_factory=dict)
     created_at: str | None = None
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .excel_to_records import excel_to_records
+from .pdf_to_profile import extract_pdf_pages
 from .tabular_profile import clean_cell, normalize_headers
 
 
@@ -26,6 +27,8 @@ def upload_to_records(
         return excel_to_records(path, rel_path, workspace_id)
     if fmt == "markdown":
         return text_to_chunks(path, rel_path, workspace_id)
+    if fmt == "pdf":
+        return pdf_to_chunks(path, rel_path, workspace_id)
     return []
 
 
@@ -92,6 +95,19 @@ def text_to_chunks(path: Path, rel_path: str, workspace_id: str, size: int = 110
     for idx, chunk in enumerate(chunks):
         chunk_id = f"{file_id}-chunk-{idx:03d}"
         records.append(_search_doc(workspace_id, path, rel_path, chunk_id, chunk, "markdown"))
+    return records
+
+
+def pdf_to_chunks(path: Path, rel_path: str, workspace_id: str, size: int = 1100, overlap: int = 150) -> list[dict[str, Any]]:
+    pages = extract_pdf_pages(path)
+    file_id = _safe_id(path.stem)
+    records: list[dict[str, Any]] = []
+    for page in pages:
+        page_no = str(page.get("page") or len(records) + 1)
+        text = str(page.get("content") or "")
+        for idx, chunk in enumerate(_text_chunks(text, size=size, overlap=overlap)):
+            chunk_id = f"{file_id}-page-{page_no}-chunk-{idx:03d}"
+            records.append(_search_doc(workspace_id, path, rel_path, chunk_id, chunk, "pdf", row=page_no))
     return records
 
 
@@ -211,6 +227,8 @@ def _detect_format(path: Path, content_type: str | None = None) -> str:
         return "excel"
     if suffix in {".md", ".markdown", ".txt", ".text"}:
         return "markdown"
+    if suffix == ".pdf":
+        return "pdf"
     content = (content_type or "").lower()
     if "json" in content:
         return "json"
@@ -220,6 +238,8 @@ def _detect_format(path: Path, content_type: str | None = None) -> str:
         return "excel"
     if "markdown" in content or "text/plain" in content:
         return "markdown"
+    if "pdf" in content:
+        return "pdf"
     return "unknown"
 
 

@@ -1135,6 +1135,9 @@ def _feasibility_cache_key(req: ChatRequest, artifact: dict[str, Any]) -> tuple[
     fingerprint, retrieval_mode = _corpus_fingerprint(artifact)
     active_rubric_version = rubric_version()
     query_hash = hashlib.sha256(req.message.encode("utf-8")).hexdigest()[:16]
+    ui_context = getattr(req, "ui_context", {}) or {}
+    cache_bust = str(ui_context.get("cache_bust") or "").strip() if isinstance(ui_context, dict) else ""
+    cache_bust_hash = hashlib.sha256(cache_bust.encode("utf-8")).hexdigest()[:10] if cache_bust else ""
     key = (
         "dataforge:analysis:v1"
         f":workspace={req.workspace_id}"
@@ -1144,6 +1147,8 @@ def _feasibility_cache_key(req: ChatRequest, artifact: dict[str, Any]) -> tuple[
         f":retrieval={retrieval_mode}"
         f":query={query_hash}"
     )
+    if cache_bust_hash:
+        key = f"{key}:run={cache_bust_hash}"
     return key, {
         "workspace_id": req.workspace_id,
         "chunk_fingerprint": fingerprint,
@@ -1151,6 +1156,7 @@ def _feasibility_cache_key(req: ChatRequest, artifact: dict[str, Any]) -> tuple[
         "rubric_version": active_rubric_version,
         "retrieval_mode": retrieval_mode,
         "query_hash": query_hash,
+        "cache_bust_hash": cache_bust_hash or None,
         "key_sample": key,
     }
 

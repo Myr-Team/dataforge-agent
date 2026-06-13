@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+import backend.app as app_module
+import backend.workspace_store as workspace_store
 from backend.app import app
 from backend.customer_text import sanitize_customer_text
 from backend.orchestrator import _mcp_tool_allowed, _tool_provenance, _ui_context_lines
@@ -24,6 +26,79 @@ def test_workspace_dashboard_contract() -> None:
     assert isinstance(data["conversations"], list)
     assert data["health"]["service"] == "dataforge-backend"
     assert "dependencies" in data["health"]
+    assert "search" in data["health"]["dependencies"]
+    workspace = data["workspace"]
+    for key in ("row_count", "field_count", "indexed_count", "fill_rate", "signal_score", "signal_distribution", "manifest"):
+        assert key in workspace
+    assert isinstance(workspace["documents"], list)
+    for column in workspace["columns"]:
+        assert column["signal"] in {"strong", "mid", "noise"}
+        assert 0 <= column["signal_score"] <= 1
+
+
+def test_workspace_manifest_endpoint() -> None:
+    response = client.get("/api/workspaces/demo-corpus/manifest")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["version"] == "dataforge.canonical_manifest.v1"
+    assert data["workspace_id"] == "demo-corpus"
+    assert "metrics" in data
+    assert isinstance(data["documents"], list)
+
+
+def test_auto_analyze_wraps_chat_stream(monkeypatch) -> None:
+    captured: dict[str, ChatRequest] = {}
+
+    async def fake_orchestrate(req: ChatRequest):
+        captured["req"] = req
+        yield 'event: ready\ndata: {"conversation_id":"conv-test","workspace_id":"demo-corpus"}\n\n'
+        yield 'event: role_change\ndata: {"agent":"df-feasibility-analyst"}\n\n'
+        yield 'event: answer_delta\ndata: {"delta":"分析"}\n\n'
+        yield 'event: answer_delta\ndata: {"delta":"完成"}\n\n'
+        yield (
+            'event: final\n'
+            'data: {"text":"分析完成","artifact":{"workspace_id":"demo-corpus","feasibility":{"dimensions":[]}}}\n\n'
+        )
+
+    monkeypatch.setattr(app_module, "orchestrate_chat", fake_orchestrate)
+
+    response = client.post("/api/workspaces/demo-corpus/auto-analyze", json={"playbook": "pricing"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["conversation_id"] == "conv-test"
+    assert data["text"] == "分析完成"
+    assert data["answer_delta_chars"] == len("分析完成")
+    assert any(item["event"] == "role_change" for item in data["trace"])
+    assert captured["req"].playbook == "pricing"
+    assert captured["req"].ui_context["auto_analyze"] is True
+    assert captured["req"].ui_context["cache_bust"]
+
+
+def test_pdf_upload_creates_profile_and_manifest(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(workspace_store, "WORKSPACES", tmp_path / "workspaces")
+    monkeypatch.setattr(workspace_store, "_index_documents", lambda docs: len(docs))
+    monkeypatch.setattr(workspace_store, "_persist_workspace_bundle", lambda **kwargs: {"mode": "test"})
+    monkeypatch.setattr(workspace_store, "_persist_workspace_manifest", lambda workspace_id, manifest: None)
+    monkeypatch.setattr(workspace_store, "load_workspace_registry", lambda: [])
+    monkeypatch.setattr(workspace_store, "workspace_deleted", lambda workspace_id: False)
+
+    pdf_bytes = b"%PDF-1.4\n1 0 obj\n<<>>\nstream\n(climbing campaign conversion data and sponsor notes)\nendstream\nendobj\n%%EOF"
+    response = client.post(
+        "/api/upload",
+        data={"name": "PDF smoke workspace"},
+        files=[("file", ("climbing-demo.pdf", pdf_bytes, "application/pdf"))],
+    )
+
+    assert response.status_code == 200
+    uploaded = response.json()
+    assert uploaded["format"] == "pdf"
+    assert uploaded["documents"][0]["format"] == "pdf"
+    assert uploaded["documents"][0]["status"] in {"已就绪", "部分字段"}
+
+    manifest_path = tmp_path / "workspaces" / uploaded["workspace_id"] / "manifest.json"
+    assert manifest_path.exists()
 
 
 def test_chat_request_keeps_legacy_payload_compatible() -> None:

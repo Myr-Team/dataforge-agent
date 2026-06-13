@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -12,8 +13,10 @@ from azure.identity import DefaultAzureCredential
 
 try:
     from .blob_store import probe_blob_container
+    from .search_admin import API_VERSION, search_endpoint, search_index_name
 except ImportError:
     from blob_store import probe_blob_container
+    from search_admin import API_VERSION, search_endpoint, search_index_name
 
 
 _CACHE: dict[str, Any] = {"expires_at": 0.0, "fingerprint": "", "dependencies": {}, "details": {}}
@@ -55,6 +58,7 @@ def dependency_status() -> dict[str, Any]:
 def _probe_all() -> dict[str, dict[str, Any]]:
     probes = {
         "foundry": _probe_foundry,
+        "search": _probe_search,
         "mcp": _probe_mcp,
         "speech": _probe_speech,
         "blob": _probe_blob,
@@ -121,6 +125,32 @@ def _probe_blob() -> dict[str, Any]:
     return probe_blob_container(timeout=_PROBE_TIMEOUT_SECONDS)
 
 
+def _probe_search() -> dict[str, Any]:
+    endpoint = search_endpoint()
+    index = search_index_name()
+    if not endpoint:
+        return {"ok": False, "state": "unconfigured", "error": "SEARCH_ENDPOINT or DF_SEARCH_SERVICE is not configured"}
+    headers = _search_headers()
+    if not headers:
+        return {"ok": False, "state": "unconfigured", "endpoint": _redact_endpoint(endpoint), "index": index, "error": "no AI Search credential configured"}
+    url = f"{endpoint.rstrip('/')}/indexes/{index}?api-version={API_VERSION}"
+    try:
+        payload = _request_json(url, method="GET", headers=headers, timeout=_PROBE_TIMEOUT_SECONDS)
+        fields = payload.get("fields") if isinstance(payload, dict) else None
+        return {
+            "ok": True,
+            "state": "ok",
+            "endpoint": _redact_endpoint(endpoint),
+            "index": index,
+            "field_count": len(fields) if isinstance(fields, list) else None,
+        }
+    except urllib.error.HTTPError as exc:
+        state = "missing_index" if exc.code == 404 else "down"
+        return {"ok": False, "state": state, "endpoint": _redact_endpoint(endpoint), "index": index, "status": exc.code, "error": _read_http_error(exc)}
+    except Exception as exc:
+        return {"ok": False, "state": "down", "endpoint": _redact_endpoint(endpoint), "index": index, "error": f"{type(exc).__name__}: {exc}"[:500]}
+
+
 def _probe_mcp() -> dict[str, Any]:
     base = os.environ.get("MCP_MARKET_URL", "https://ca-dataforge-mcp.thankfultree-c0fc8321.eastus2.azurecontainerapps.io")
     url = base.rstrip("/")
@@ -151,6 +181,19 @@ def _azure_ai_headers() -> dict[str, str] | None:
         return None
 
 
+def _search_headers() -> dict[str, str] | None:
+    key = os.environ.get("SEARCH_KEY") or os.environ.get("AZURE_SEARCH_API_KEY")
+    if key:
+        return {"api-key": key, "Content-Type": "application/json"}
+    if not _has_azure_identity_config():
+        return None
+    try:
+        token = DefaultAzureCredential().get_token("https://search.azure.com/.default").token
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    except Exception:
+        return None
+
+
 def _request_json(url: str, *, method: str, headers: dict[str, str], timeout: float) -> dict[str, Any]:
     req = urllib.request.Request(url, method=method)
     for name, value in headers.items():
@@ -170,6 +213,11 @@ def _has_azure_identity_config() -> bool:
 
 def _env_fingerprint() -> str:
     keys = [
+        "SEARCH_ENDPOINT",
+        "SEARCH_INDEX_NAME",
+        "SEARCH_KEY",
+        "AZURE_SEARCH_API_KEY",
+        "DF_SEARCH_SERVICE",
         "OPENAI_ENDPOINT",
         "AZURE_OPENAI_ENDPOINT",
         "AZURE_OPENAI_API_BASE",
@@ -190,6 +238,13 @@ def _env_fingerprint() -> str:
     ]
     material = "\n".join(f"{key}={os.environ.get(key, '')}" for key in keys)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _read_http_error(exc: urllib.error.HTTPError) -> str:
+    try:
+        return exc.read().decode("utf-8", errors="replace")[:500]
+    except Exception:
+        return f"HTTP {exc.code}"
 
 
 def _redact_endpoint(endpoint: str) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI
@@ -195,6 +196,108 @@ async def workspace_dashboard(workspace_id: str) -> WorkspaceDashboardResponse:
     return WorkspaceDashboardResponse.model_validate(result)
 
 
+@app.get("/api/workspaces/{workspace_id}/manifest")
+async def workspace_manifest(workspace_id: str) -> dict[str, Any]:
+    try:
+        detail = await run_in_threadpool(get_workspace_detail, workspace_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    manifest = detail.get("manifest") if isinstance(detail, dict) else None
+    if not isinstance(manifest, dict) or not manifest:
+        raise HTTPException(status_code=404, detail=f"Manifest not found: {workspace_id}")
+    return manifest
+
+
+@app.post("/api/workspaces/{workspace_id}/auto-analyze")
+async def workspace_auto_analyze(workspace_id: str, request: Request) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        body = {}
+
+    cache_bust = datetime.now(timezone.utc).isoformat()
+    message = str(
+        body.get("message")
+        or "请基于当前工作区自动运行一次产品可行性分析，输出机会判断、五维评分、证据、风险缺口和下一步行动计划。"
+    )
+    req = ChatRequest(
+        workspace_id=workspace_id,
+        message=message,
+        conversation_id=body.get("conversation_id"),
+        playbook=body.get("playbook") or "opportunity_tree",
+        artifact_mode=body.get("artifact_mode") or "report",
+        ui_context={
+            **(body.get("ui_context") if isinstance(body.get("ui_context"), dict) else {}),
+            "entrypoint": "workspace_dashboard",
+            "auto_analyze": True,
+            "cache_bust": cache_bust,
+        },
+    )
+
+    final_payload: dict[str, Any] | None = None
+    error_payload: dict[str, Any] | None = None
+    conversation_id = req.conversation_id
+    answer_parts: list[str] = []
+    events: list[dict[str, Any]] = []
+    trace: list[dict[str, Any]] = []
+    trace_events = {
+        "ready",
+        "route",
+        "plan",
+        "role_change",
+        "tool_call",
+        "tool_result",
+        "blind_verdict",
+        "cache",
+        "model_response",
+        "audit",
+        "revised_verdict",
+        "progress",
+    }
+
+    async for raw_frame in orchestrate_chat(req):
+        for event, data in _parse_sse_frame(raw_frame):
+            if event == "answer_delta":
+                if isinstance(data, dict):
+                    answer_parts.append(str(data.get("delta") or ""))
+                continue
+            if event == "ready" and isinstance(data, dict):
+                conversation_id = data.get("conversation_id") or conversation_id
+            if event == "final" and isinstance(data, dict):
+                final_payload = data
+            elif event == "error":
+                error_payload = data if isinstance(data, dict) else {"message": str(data)}
+
+            item = {"event": event, "data": _compact_event_data(data)}
+            events.append(item)
+            if event in trace_events:
+                trace.append(item)
+
+    if error_payload is not None:
+        raise HTTPException(status_code=502, detail={"message": "auto analyze failed", "error": error_payload, "events": events[-12:]})
+    if final_payload is None:
+        raise HTTPException(status_code=502, detail={"message": "auto analyze did not return final", "events": events[-12:]})
+
+    artifact = final_payload.get("artifact") if isinstance(final_payload, dict) else {}
+    return {
+        "workspace_id": workspace_id,
+        "conversation_id": conversation_id,
+        "status": "completed",
+        "final": final_payload,
+        "artifact": artifact if isinstance(artifact, dict) else {},
+        "text": str(final_payload.get("text") or "".join(answer_parts)),
+        "events": events,
+        "trace": trace,
+        "answer_delta_chars": len("".join(answer_parts)),
+        "cache_bust": cache_bust,
+    }
+
+
 @app.get("/api/workspaces/{workspace_id}/reference-images/{filename}")
 async def workspace_reference_image(workspace_id: str, filename: str) -> Response:
     result = await run_in_threadpool(get_reference_image_content, workspace_id, filename)
@@ -296,3 +399,39 @@ async def chat(req: ChatRequest) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+def _parse_sse_frame(raw: str) -> list[tuple[str, Any]]:
+    frames: list[tuple[str, Any]] = []
+    for block in str(raw or "").split("\n\n"):
+        event = ""
+        data_lines: list[str] = []
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").strip())
+        if not event:
+            continue
+        data_text = "\n".join(data_lines)
+        try:
+            data: Any = json.loads(data_text) if data_text else {}
+        except json.JSONDecodeError:
+            data = data_text
+        frames.append((event, data))
+    return frames
+
+
+def _compact_event_data(data: Any) -> Any:
+    if not isinstance(data, dict):
+        return data
+    compact = dict(data)
+    if "delta" in compact:
+        compact["delta"] = str(compact["delta"])[:120]
+    if "artifact" in compact and isinstance(compact["artifact"], dict):
+        compact["artifact"] = {
+            "workspace_id": compact["artifact"].get("workspace_id"),
+            "conversation_id": compact["artifact"].get("conversation_id"),
+            "keys": sorted(str(key) for key in compact["artifact"].keys())[:30],
+        }
+    return compact
