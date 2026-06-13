@@ -10,11 +10,16 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from backend.customer_text import customer_hit_title
     from ingest.adapters.excel_to_records import excel_to_records
     from ingest.adapters.tabular_profile import profile_search_content
     from ingest.adapters.upload_to_records import upload_to_records
     from ingest.embeddings import try_embed_texts
 except ImportError:
+    try:
+        from customer_text import customer_hit_title
+    except ImportError:
+        customer_hit_title = None
     excel_to_records = None
     profile_search_content = None
     upload_to_records = None
@@ -79,6 +84,7 @@ def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, A
     if hits:
         for item in hits:
             item["retrieval_mode"] = "local_keyword"
+            _apply_customer_hit_title(item)
         return sorted(hits, key=lambda hit: hit["score"], reverse=True)[:top_k]
     return []
 
@@ -156,10 +162,11 @@ def _remote_search(url: str, payload: dict[str, Any], key: str) -> dict[str, Any
 
 
 def _result_from_hit(hit: dict[str, Any], retrieval_mode: str) -> dict[str, Any]:
-    return {
+    item = {
         "id": hit.get("id"),
         "workspace_id": hit.get("workspace_id"),
         "title": hit.get("title"),
+        "raw_title": hit.get("title"),
         "content": hit.get("content", ""),
         "source_file": hit.get("source_file"),
         "chunk_id": hit.get("chunk_id"),
@@ -170,6 +177,16 @@ def _result_from_hit(hit: dict[str, Any], retrieval_mode: str) -> dict[str, Any]
         "score": hit.get("@search.score", 0.0),
         "retrieval_mode": retrieval_mode,
     }
+    _apply_customer_hit_title(item)
+    return item
+
+
+def _apply_customer_hit_title(item: dict[str, Any]) -> None:
+    if customer_hit_title is None:
+        return
+    if "raw_title" not in item:
+        item["raw_title"] = item.get("title")
+    item["title"] = customer_hit_title(item)
 
 
 def _query_vector(query: str) -> list[float] | None:

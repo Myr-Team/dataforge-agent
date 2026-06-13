@@ -1,0 +1,231 @@
+{
+  "passed": true,
+  "pool_version": "batch11-p0-calibration-v1",
+  "rubric_version": "feasibility-rubric-v2026-06-13",
+  "min_spearman": 0.8,
+  "spearman": 1.0,
+  "inversion_count": 0,
+  "inversions": [],
+  "cases": [
+    {
+      "id": "mature_revenue_expansion",
+      "label_score": 5.0,
+      "predicted_score": 4.1,
+      "verdict": "feasible",
+      "scorecard": [
+        {
+          "name": "asset_data",
+          "display_name": "数据充分度",
+          "weight": 0.3,
+          "score": 4.4,
+          "missing": false
+        },
+        {
+          "name": "market",
+          "display_name": "市场信号",
+          "weight": 0.2,
+          "score": 4.6,
+          "missing": false
+        },
+        {
+          "name": "technical",
+          "display_name": "可交付性",
+          "weight": 0.2,
+          "score": 3.7,
+          "missing": false
+        },
+        {
+          "name": "resource_cost",
+          "display_name": "成本与规模",
+          "weight": 0.15,
+          "score": 3.2,
+          "missing": false
+        },
+        {
+          "name": "differentiation_risk",
+          "display_name": "差异化",
+          "weight": 0.15,
+          "score": 4.2,
+          "missing": false
+        }
+      ]
+    },
+    {
+      "id": "solid_support_workflow",
+      "label_score": 4.0,
+      "predicted_score": 3.5,
+      "verdict": "conditional",
+      "scorecard": [
+        {
+          "name": "asset_data",
+          "display_name": "数据充分度",
+          "weight": 0.3,
+          "score": 3.7,
+          "missing": false
+        },
+        {
+          "name": "market",
+          "display_name": "市场信号",
+          "weight": 0.2,
+          "score": 4.4,
+          "missing": false
+        },
+        {
+          "name": "technical",
+          "display_name": "可交付性",
+          "weight": 0.2,
+          "score": 2.9,
+          "missing": false
+        },
+        {
+          "name": "resource_cost",
+          "display_name": "成本与规模",
+          "weight": 0.15,
+          "score": 3.2,
+          "missing": false
+        },
+        {
+          "name": "differentiation_risk",
+          "display_name": "差异化",
+          "weight": 0.15,
+          "score": 3.1,
+          "missing": false
+        }
+      ]
+    },
+    {
+      "id": "pilot_activity_signals",
+      "label_score": 3.0,
+      "predicted_score": 2.8,
+      "verdict": "conditional",
+      "scorecard": [
+        {
+          "name": "asset_data",
+          "display_name": "数据充分度",
+          "weight": 0.3,
+          "score": 3.4,
+          "missing": false
+        },
+        {
+          "name": "market",
+          "display_name": "市场信号",
+          "weight": 0.2,
+          "score": 2.5,
+          "missing": false
+        },
+        {
+          "name": "technical",
+          "display_name": "可交付性",
+          "weight": 0.2,
+          "score": 2.2,
+          "missing": false
+        },
+        {
+          "name": "resource_cost",
+          "display_name": "成本与规模",
+          "weight": 0.15,
+          "score": 2.6,
+          "missing": false
+        },
+        {
+          "name": "differentiation_risk",
+          "display_name": "差异化",
+          "weight": 0.15,
+          "score": 3.1,
+          "missing": false
+        }
+      ]
+    },
+    {
+      "id": "thin_hype_notes",
+      "label_score": 2.0,
+      "predicted_score": 2.2,
+      "verdict": "not_yet_feasible",
+      "scorecard": [
+        {
+          "name": "asset_data",
+          "display_name": "数据充分度",
+          "weight": 0.3,
+          "score": 2.0,
+          "missing": false
+        },
+        {
+          "name": "market",
+          "display_name": "市场信号",
+          "weight": 0.2,
+          "score": 3.6,
+          "missing": false
+        },
+        {
+          "name": "technical",
+          "display_name": "可交付性",
+          "weight": 0.2,
+          "score": 1.3,
+          "missing": false
+        },
+        {
+          "name": "resource_cost",
+          "display_name": "成本与规模",
+          "weight": 0.15,
+          "score": 2.2,
+          "missing": false
+        },
+        {
+          "name": "differentiation_risk",
+          "display_name": "差异化",
+          "weight": 0.15,
+          "score": 1.9,
+          "missing": false
+        }
+      ]
+    },
+    {
+      "id": "unrelated_sparse_inventory",
+      "label_score": 1.0,
+      "predicted_score": 1.5,
+      "verdict": "not_yet_feasible",
+      "scorecard": [
+        {
+          "name": "asset_data",
+          "display_name": "数据充分度",
+          "weight": 0.3,
+          "score": 2.0,
+          "missing": false
+        },
+        {
+          "name": "market",
+          "display_name": "市场信号",
+          "weight": 0.2,
+          "score": 0.6,
+          "missing": false
+        },
+        {
+          "name": "technical",
+          "display_name": "可交付性",
+          "weight": 0.2,
+          "score": 1.8,
+          "missing": false
+        },
+        {
+          "name": "resource_cost",
+          "display_name": "成本与规模",
+          "weight": 0.15,
+          "score": 2.2,
+          "missing": false
+        },
+        {
+          "name": "differentiation_risk",
+          "display_name": "差异化",
+          "weight": 0.15,
+          "score": 0.8,
+          "missing": false
+        }
+      ]
+    }
+  ],
+  "bad_rubric_smoke": {
+    "passed": true,
+    "bad_spearman": 0.9,
+    "bad_inversions": 1
+  }
+}

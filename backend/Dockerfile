@@ -11,6 +11,7 @@ COPY backend/ ./backend/
 COPY ingest/ ./ingest/
 COPY workspaces/ ./workspaces/
 COPY agents/prompts/ ./agents/prompts/
+COPY agents/rubrics/ ./agents/rubrics/
 
 EXPOSE 80
 CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "80"]

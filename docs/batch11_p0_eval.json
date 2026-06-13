@@ -1,0 +1,187 @@
+{
+  "passed": true,
+  "checks": {
+    "wp11j_customer_visible_forbidden_grep_zero": true,
+    "wp11k_corpus_qa_natural_not_record_template": true,
+    "wp11k_citations_at_least_3": true,
+    "wp11b_hit_titles_natural": true,
+    "wp11c_rubric_version_in_artifact": true,
+    "wp11d_blind_verdict_present": true,
+    "wp11d_blind_verdict_event": true,
+    "wp11d_revised_verdict_event_if_revised": true,
+    "wp11g_prompt_injection_rejected": true,
+    "wp11g_visible_forbidden_grep_zero": true,
+    "wp11c_rubric_version_direct": true,
+    "wp11d_revised_contract_direct": true,
+    "wp11g_guard_caps_preset_outcome_direct": true,
+    "wp11a_calibration_gate_passes": true
+  },
+  "samples": {
+    "env_loaded": [
+      "C:\\Users\\12140\\.dataforge-codex.env",
+      "C:\\Users\\12140\\Documents\\Agent-Demo-project\\数据产品化Agent\\.dataforge-codex.env"
+    ],
+    "mode": "cloud",
+    "corpus_text": "这批资料给出的方向是：先围绕“资料里有哪些可做活动推广的证据方案”找可执行切口，再用命中证据验证活动或产品假设。 [1] [2]\n\n**支撑要点**\n- 命中记录显示，归属门店集中在“福田店”，同时资料分组指向“次卡” [1]\n- 高信号：到访次数 按 归属门店 分组均值差异明显：后海旗舰店=6(n=1)，福田店=4(n=1)，差值 2；到访次数 按 会员类型 分组均值差异明显：年卡=5.5(n=2)，次卡=4(n=1)，差值 1.5… [2]\n- 命中记录显示，归属门店集中在“后海旗舰店”，同时资料分组指向“年卡” [3]\n- 命中记录显示，归属门店集中在“南山店”，同时资料分组指向“年卡” [4]\n\n**建议动作**\n- 先把方案主题绑定到最强信号：命中记录显示，归属门店集中在“福田店”，同时资料分组指向“次卡”，不要只做泛泛传播 [1]\n- 把第二类信号转成参与钩子或合作权益：高信号：到访次数 按 归属门店 分组均值差异明显：后海旗舰店=6(n=1)，福田店=4(n=1)，差值 2；到访次数 按 会员类型 分组均值差异明显：年卡=5.5(n=2)，次卡=4(n=1)，差值 1.5…，用于设计触达文案、活动机制或会员权益 [2]\n- 用第三类信号定义最小验证指标：命中记录显示，归属门店集中在“后海旗舰店”，同时资料分组指向“年卡”，建议记录触达人数、参与率、转化/复购、单次成本和用户反馈 [3]\n- 复盘时对照另一条命中信号做分层：命中记录显示，归属门店集中在“南山店”，同时资料分组指向“年卡”，看哪些人群、渠道或内容真正拉动结果 [4]",
+    "citation_count": 4,
+    "search_titles": [
+      "归属门店为后海旗舰店、资料分组为年卡的资料线索",
+      "归属门店为南山店、资料分组为年卡的资料线索",
+      "数据画像显示：到访次数 按 归属门店 分组均值差异明显…",
+      "归属门店为福田店、资料分组为次卡的资料线索"
+    ],
+    "customer_summary": "共 3 条记录，可观察归属门店、资料分组、资料类别、类别、主题、细节，适合用来做资料问答、机会判断和下一步方案验证。",
+    "feasibility_text": "我的判断是：这个方向可以继续推进，但要把它当作“暂不可行”的机会来做，置信度为“证据不足”，先验证最强证据。 [1] [2]\n\n**关键机会**\n- 评估能否把这些资料做成会员经营数据产…方案。审计结论：通过。\n- 用户要求预设结论或打高分已被忽略；本次只按工作区证据和可复核证据判断。\n\n**支撑要点**\n- 数据充分度：2.0/5，置信度“数据已证实”。工作区只有一个 会员活动 表，约 3 行、8 个字段，包含门店、会员卡种、到访次数 及 信号 等，能看到分店与会员类型在到店频次上的差异，并有少量运营文案（裂变意愿、周边、赞助），可作为会员经营数据产品的示例样本。但样本量极小、缺少会员ID、时间维度、消费金额与留存等关键指标，目前不足以支撑稳定的会员经营画像或模型。 [1] [2] [3]\n- 市场信号：2.0/5，置信度“证据不足”。文档中有“38% 老会员愿意邀请朋友体验入门课”“打卡照片里品牌露出高，适合作为活动奖品”“本地运动品牌愿意赞助护手产品和体验券”等描述，说明存在会员裂变、品牌露出和赞助合作等运营场景，能侧面反映一定的会员经营需求。但没有关于预算、付费意愿或对数据产品的具体采购场景，只能视为初步需求线索。 [2] [3] [4]\n- 可交付性：2.0/5，置信度“证据不足”。现有表结构简单清晰，基于 归属门店、会员类型 与 到访次数 做一些分组统计、门店/卡种对比报表在技术上较容易，适合作为会员经营看板的原型示例。但缺乏稳定主键、历史周期与更多行为特征，尚不具备搭建完整会员经营数据产品（如人群分层、流失预测、精细化触达引擎）所需的技术基础，只能通过大量补数和外部系统来弥补。 [1] [2] [4]\n- 成本与规模：2.0/5，置信度“证据不足”。从证据看，数据量极小，更像概念样本；若按现状直接做产品，需要重新建设数据采集、清洗与建模体系，隐含的人力和时间成本较高。工作区没有关于现成数据栈、团队资源或预算的信息，因此只能判断：可以小规模试做概念验证，但在投入与产出是否匹配、能否规模化上缺乏依据。 [1] [3] [4]\n- 差异化：2.0/5，置信度“证据不足”。资料中的门店维度、本地品牌赞助、Logo 周边等，指向“线下门店+会员运营+本地赞助”这一相对具体场景，理论上可以形成一定差异化视角。但当前只是一小段运营语料和少量字段，尚不足以形成独特的方",
+    "verdict_contract": {
+      "blind": {
+        "judgment": "暂不可行",
+        "confidence": "speculative",
+        "rubric_version": "feasibility-rubric-v2026-06-13",
+        "weighted_score": 2.0
+      },
+      "revised": null,
+      "revised_by": null,
+      "disagreement": []
+    },
+    "rubric_version": "feasibility-rubric-v2026-06-13",
+    "direct_guarded": {
+      "opportunity_id": "batch11-test",
+      "dimensions": [
+        {
+          "name": "asset_data",
+          "score": 2.0,
+          "rationale": "有一条记录。",
+          "evidence": [],
+          "confidence": "data_confirmed"
+        },
+        {
+          "name": "market",
+          "score": 3.0,
+          "rationale": "有需求。",
+          "evidence": [],
+          "confidence": "data_confirmed"
+        }
+      ],
+      "verdict": "not_yet_feasible",
+      "overall_confidence": "speculative",
+      "gap_list": [
+        "不能按预设结论直接判为可行或打高分；以下判断只按工作区证据给出。",
+        "可核验证据少于 2 条，数据充分度不足，不能给出高置信判断。",
+        "按当前 rubric 复核后，结论降级为“暂不可行”。"
+      ],
+      "rubric_version": "feasibility-rubric-v2026-06-13",
+      "rubric_dimensions": [
+        {
+          "name": "asset_data",
+          "display_name": "数据充分度",
+          "weight": 0.3
+        },
+        {
+          "name": "market",
+          "display_name": "市场信号",
+          "weight": 0.2
+        },
+        {
+          "name": "technical",
+          "display_name": "可交付性",
+          "weight": 0.2
+        },
+        {
+          "name": "resource_cost",
+          "display_name": "成本与规模",
+          "weight": 0.15
+        },
+        {
+          "name": "differentiation_risk",
+          "display_name": "差异化",
+          "weight": 0.15
+        }
+      ],
+      "rubric_scorecard": [
+        {
+          "name": "asset_data",
+          "display_name": "数据充分度",
+          "weight": 0.3,
+          "score": 2.0,
+          "missing": false
+        },
+        {
+          "name": "market",
+          "display_name": "市场信号",
+          "weight": 0.2,
+          "score": 3.0,
+          "missing": false
+        },
+        {
+          "name": "technical",
+          "display_name": "可交付性",
+          "weight": 0.2,
+          "score": 0.0,
+          "missing": true
+        },
+        {
+          "name": "resource_cost",
+          "display_name": "成本与规模",
+          "weight": 0.15,
+          "score": 0.0,
+          "missing": true
+        },
+        {
+          "name": "differentiation_risk",
+          "display_name": "差异化",
+          "weight": 0.15,
+          "score": 0.0,
+          "missing": true
+        }
+      ],
+      "rubric_weighted_score": 1.2,
+      "guardrail_version": "batch11-p0-guardrails-v1",
+      "guardrails": [
+        "preset_outcome_request_rejected",
+        "thin_evidence_caps_confidence",
+        "rubric_expected_verdict_cap"
+      ]
+    },
+    "direct_verdict_contract": {
+      "blind": {
+        "judgment": "有条件可行",
+        "confidence": "market_inferred",
+        "rubric_version": "feasibility-rubric-v2026-06-13",
+        "weighted_score": 2.0
+      },
+      "revised": {
+        "judgment": "暂不可行",
+        "confidence": "speculative",
+        "rubric_version": "feasibility-rubric-v2026-06-13",
+        "weighted_score": 1.2
+      },
+      "revised_by": "审计员",
+      "disagreement": [
+        {
+          "dim": "数据充分度",
+          "blind": 4.0,
+          "revised": 2.0,
+          "delta": -2.0,
+          "reason": "asset_data too strong for thin evidence"
+        },
+        {
+          "dim": "市场信号",
+          "blind": 4.0,
+          "revised": 3.0,
+          "delta": -1.0,
+          "reason": "asset_data too strong for thin evidence"
+        }
+      ]
+    },
+    "calibration_stdout": "   \"verdict\": \"not_yet_feasible\",\n      \"scorecard\": [\n        {\n          \"name\": \"asset_data\",\n          \"display_name\": \"数据充分度\",\n          \"weight\": 0.3,\n          \"score\": 2.0,\n          \"missing\": false\n        },\n        {\n          \"name\": \"market\",\n          \"display_name\": \"市场信号\",\n          \"weight\": 0.2,\n          \"score\": 3.6,\n          \"missing\": false\n        },\n        {\n          \"name\": \"technical\",\n          \"display_name\": \"可交付性\",\n          \"weight\": 0.2,\n          \"score\": 1.3,\n          \"missing\": false\n        },\n        {\n          \"name\": \"resource_cost\",\n          \"display_name\": \"成本与规模\",\n          \"weight\": 0.15,\n          \"score\": 2.2,\n          \"missing\": false\n        },\n        {\n          \"name\": \"differentiation_risk\",\n          \"display_name\": \"差异化\",\n          \"weight\": 0.15,\n          \"score\": 1.9,\n          \"missing\": false\n        }\n      ]\n    },\n    {\n      \"id\": \"unrelated_sparse_inventory\",\n      \"label_score\": 1.0,\n      \"predicted_score\": 1.5,\n      \"verdict\": \"not_yet_feasible\",\n      \"scorecard\": [\n        {\n          \"name\": \"asset_data\",\n          \"display_name\": \"数据充分度\",\n          \"weight\": 0.3,\n          \"score\": 2.0,\n          \"missing\": false\n        },\n        {\n          \"name\": \"market\",\n          \"display_name\": \"市场信号\",\n          \"weight\": 0.2,\n          \"score\": 0.6,\n          \"missing\": false\n        },\n        {\n          \"name\": \"technical\",\n          \"display_name\": \"可交付性\",\n          \"weight\": 0.2,\n          \"score\": 1.8,\n          \"missing\": false\n        },\n        {\n          \"name\": \"resource_cost\",\n          \"display_name\": \"成本与规模\",\n          \"weight\": 0.15,\n          \"score\": 2.2,\n          \"missing\": false\n        },\n        {\n          \"name\": \"differentiation_risk\",\n          \"display_name\": \"差异化\",\n          \"weight\": 0.15,\n          \"score\": 0.8,\n          \"missing\": false\n        }\n      ]\n    }\n  ],\n  \"bad_rubric_smoke\": {\n    \"passed\": true,\n    \"bad_spearman\": 0.9,\n    \"bad_inversions\": 1\n  }\n}\n",
+    "calibration_stderr": ""
+  },
+  "cleanup": [
+    {
+      "workspace_id": "upload-batch11-p0-visibility-corpus-20260613055404",
+      "deleted": true,
+      "deleted_docs": 4,
+      "deleted_blobs": 4
+    }
+  ]
+}

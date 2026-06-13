@@ -22,12 +22,26 @@ try:
     from .conversation_store import append_message, conversation_context
     from .customer_text import (
         clarify_options_from_context,
+        customer_hit_title,
         field_label_map_from_hits,
         friendly_label,
         normalize_clarify_options,
         record_pairs,
         sanitize_citations,
         sanitize_customer_text,
+    )
+    from .feasibility_rubric import (
+        apply_post_audit_guardrails,
+        apply_pre_audit_guardrails,
+        attach_rubric_metadata,
+        audit_label,
+        confidence_label,
+        dimension_label,
+        finalize_verdict_contract,
+        load_rubric,
+        make_blind_verdict,
+        rubric_version,
+        verdict_label,
     )
     from .foundry_client import (
         run_agent,
@@ -53,12 +67,26 @@ except ImportError:
     from conversation_store import append_message, conversation_context
     from customer_text import (
         clarify_options_from_context,
+        customer_hit_title,
         field_label_map_from_hits,
         friendly_label,
         normalize_clarify_options,
         record_pairs,
         sanitize_citations,
         sanitize_customer_text,
+    )
+    from feasibility_rubric import (
+        apply_post_audit_guardrails,
+        apply_pre_audit_guardrails,
+        attach_rubric_metadata,
+        audit_label,
+        confidence_label,
+        dimension_label,
+        finalize_verdict_contract,
+        load_rubric,
+        make_blind_verdict,
+        rubric_version,
+        verdict_label,
     )
     from foundry_client import (
         run_agent,
@@ -108,6 +136,16 @@ def _looks_like_solution_request(message: str) -> bool:
     cjk_action = re.search(r"(怎么|如何|怎样|方案|建议|推荐|策略|计划|活动|推广|落地|执行|设计)", text)
     latin_action = re.search(r"\b(how|plan|strategy|recommend|recommendation|advice|campaign|promote|proposal|approach)\b", text)
     return bool(cjk_action or latin_action)
+
+
+def _preset_outcome_requested(message: str) -> bool:
+    return bool(
+        re.search(
+            r"(无论如何|不管证据|不管资料|一定|必须|直接).{0,12}(可行|高分|通过)|打高分|always say feasible|force feasible",
+            str(message or ""),
+            re.I,
+        )
+    )
 
 
 def _clean_text(value: Any, limit: int | None = None) -> str:
@@ -223,24 +261,26 @@ def _human_title_from_opportunity(value: Any) -> str:
     if not text:
         return "当前工作区机会"
     if re.search(r"[\u4e00-\u9fff]", text):
-        return text[:36]
+        return _clip_title_clause(text, 32)
     words = text.split()
     return " ".join(word.capitalize() if word.isascii() else word for word in words[:8])
 
 
 def _query_action_title(message: str) -> str:
-    text = re.sub(r"\s+", "", str(message or ""))
+    raw = str(message or "").strip()
+    text = re.sub(r"\s+", "", raw)
     text = re.sub(r"[，。！？!?；;：:、,.]", "", text)
-    text = re.sub(r"^(我想|请|帮我|能不能|可以|想要|需要)", "", text)
-    text = re.sub(r"请基于.*$", "", text)
+    text = re.sub(r"^(我想|请|帮我|能不能|可以|想要|需要|基于|围绕)", "", text)
+    text = re.sub(r"(请)?(基于|根据).*$", "", text)
     text = text.replace("该怎么做", "怎么做")
     if re.search(r"[\u4e00-\u9fff]", text):
-        for marker in ("怎么做", "如何做", "怎么", "如何"):
+        for marker in ("怎么做", "如何做", "怎么", "如何", "有什么建议", "给建议", "推荐"):
             text = text.replace(marker, "")
-        text = text[:14]
+        text = re.sub(r"(数据|资料|工作区)$", "", text)
+        text = _clip_title_clause(text, 18)
         if text and not re.search(r"(方案|建议|策略|计划)$", text):
             text += "方案"
-        return text
+        return text or "当前问题方案"
     words = [word for word in re.findall(r"[A-Za-z0-9]+", str(message or "")) if len(word) > 2]
     return " ".join(words[:5]).title()
 
@@ -250,15 +290,39 @@ def _clean_opportunity_label(raw: Any, req: ChatRequest, artifact: dict[str, Any
     raw_text = str(raw or "")
     raw_tokens = [token for token in re.split(r"[-_\s]+", raw_text.lower()) if token]
     collapsed_tokens = [token for token in re.split(r"\s+", collapsed.lower()) if token]
-    repeated_or_truncated = len(raw_tokens) > len(collapsed_tokens) + 2 or len(raw_text) > 72
+    source_like = bool(re.search(r"\b(raw_docs|upload|workspace|profile|json|csv|xlsx|batch\d+)\b", raw_text, re.I))
+    repeated_or_truncated = source_like or len(raw_tokens) > len(collapsed_tokens) + 2 or len(raw_text) > 72
     query_title = _query_action_title(req.message) if _looks_like_solution_request(req.message) else ""
     if query_title and (repeated_or_truncated or len(collapsed_tokens) <= 3):
         if re.search(r"[\u4e00-\u9fff]", query_title):
-            prefix = collapsed if collapsed and not re.search(r"^(Workspace|Generated|Current)", collapsed) else ""
-            candidate = f"{prefix} {query_title}".strip()
-            return candidate[:48]
+            return _clip_title_clause(query_title, 30)
         return f"{collapsed} {query_title}".strip()[:60]
-    return collapsed[:60]
+    return _clip_title_clause(collapsed, 34)
+
+
+def _customer_opportunity_title(req: ChatRequest, artifact: dict[str, Any], raw: Any) -> str:
+    query_title = _query_action_title(req.message) if _looks_like_solution_request(req.message) else ""
+    cleaned = _clean_opportunity_label(raw, req, artifact)
+    if query_title and (
+        not cleaned
+        or not re.search(r"[\u4e00-\u9fff]", cleaned)
+        or re.search(r"\b(raw|docs|upload|workspace|profile|batch\d+)\b", cleaned, re.I)
+        or len(cleaned) > 34
+    ):
+        return _clip_title_clause(query_title, 30)
+    return cleaned or query_title or "当前工作区机会"
+
+
+def _clip_title_clause(text: Any, limit: int = 32) -> str:
+    clean = re.sub(r"\s+", "", str(text or "")).strip(" ，。；;：:-_")
+    if len(clean) <= limit:
+        return clean
+    head = clean[:limit]
+    for sep in ("，", "。", "；", "、", "："):
+        pos = head.rfind(sep)
+        if pos >= int(limit * 0.55):
+            return head[:pos].rstrip("，。；、： ")
+    return head.rstrip("，。；、： ") + "…"
 
 
 def _normalize_feasibility_opportunity(report: FeasibilityReport, req: ChatRequest, artifact: dict[str, Any]) -> FeasibilityReport:
@@ -478,6 +542,9 @@ def _fallback_clarify_question(context: dict[str, Any]) -> str:
 
 def _run_corpus_analyst(req: ChatRequest) -> dict[str, Any]:
     hits = search(req.workspace_id, req.message, 8)
+    for hit in hits:
+        hit["raw_title"] = hit.get("raw_title") or hit.get("title")
+        hit["title"] = customer_hit_title(hit)
     evidence = [_evidence_from_hit(hit).model_dump() for hit in hits[:5]]
     title = _infer_title(req.message, hits)
     opportunities: list[dict[str, Any]] = []
@@ -506,14 +573,11 @@ def _infer_title(message: str, hits: list[dict[str, Any]]) -> str:
     if _looks_like_solution_request(message):
         query_title = _query_action_title(message)
         if query_title:
-            source = _human_title_from_opportunity((hits[0] or {}).get("source_file") or (hits[0] or {}).get("title")) if hits else ""
-            if source and not source.lower().startswith("profile"):
-                return f"{source} {query_title}".strip()[:60]
-            return query_title
+            return _clip_title_clause(query_title, 30)
     titles = [str(hit.get("title") or "").strip() for hit in hits if hit.get("title")]
     if titles:
         first = _human_title_from_opportunity(titles[0])
-        return f"{first} Product Opportunity"
+        return _clip_title_clause(first, 30)
     words = [word for word in re.findall(r"[A-Za-z0-9]+", message) if len(word) > 2]
     return " ".join(words[:5]).title() or "Workspace Product Opportunity"
 
@@ -720,7 +784,7 @@ def _fallback_feasibility(req: ChatRequest, artifact: dict[str, Any], catalog: l
         ],
     )
     report = _normalize_feasibility_opportunity(report, req, artifact)
-    data = report.model_dump()
+    data = apply_pre_audit_guardrails(report.model_dump(), catalog, req.message)
     data["_llm"] = {
         "mode": "fallback_after_agent_error",
         "response_id": None,
@@ -746,7 +810,7 @@ def _clean_sentence_end(text: str) -> str:
     return str(text or "").rstrip("\u3002. ")
 
 
-_FEASIBILITY_PROMPT_VERSION = "df-feasibility-analyst:batch5-r1"
+_FEASIBILITY_PROMPT_VERSION = "df-feasibility-analyst:batch11-p0-rubric"
 
 
 def _corpus_fingerprint(artifact: dict[str, Any]) -> tuple[str, str]:
@@ -769,12 +833,14 @@ def _corpus_fingerprint(artifact: dict[str, Any]) -> tuple[str, str]:
 
 def _feasibility_cache_key(req: ChatRequest, artifact: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     fingerprint, retrieval_mode = _corpus_fingerprint(artifact)
+    active_rubric_version = rubric_version()
     query_hash = hashlib.sha256(req.message.encode("utf-8")).hexdigest()[:16]
     key = (
         "dataforge:analysis:v1"
         f":workspace={req.workspace_id}"
         f":fingerprint={fingerprint}"
         f":prompt={_FEASIBILITY_PROMPT_VERSION}"
+        f":rubric={active_rubric_version}"
         f":retrieval={retrieval_mode}"
         f":query={query_hash}"
     )
@@ -782,6 +848,7 @@ def _feasibility_cache_key(req: ChatRequest, artifact: dict[str, Any]) -> tuple[
         "workspace_id": req.workspace_id,
         "chunk_fingerprint": fingerprint,
         "prompt_version": _FEASIBILITY_PROMPT_VERSION,
+        "rubric_version": active_rubric_version,
         "retrieval_mode": retrieval_mode,
         "query_hash": query_hash,
         "key_sample": key,
@@ -803,7 +870,7 @@ def _run_feasibility_analyst(
             gap_list=["\u5de5\u4f5c\u533a\u4e2d\u672a\u68c0\u7d22\u5230\u4e0e\u8be5\u8bf7\u6c42\u76f8\u5173\u7684\u8bc1\u636e\u3002"],
         )
         report = _normalize_feasibility_opportunity(report, req, artifact)
-        data = report.model_dump()
+        data = apply_pre_audit_guardrails(report.model_dump(), catalog, req.message)
         data["_llm"] = {"mode": "empty_evidence_deterministic", "response_id": None, "usage": {}}
         return data
     cache_key, cache_meta = _feasibility_cache_key(req, artifact)
@@ -825,6 +892,8 @@ def _run_feasibility_analyst(
         "candidate_opportunities": artifact.get("corpus", {}).get("opportunities", []),
         "evidence_catalog": catalog,
         "audit_feedback": audit_feedback,
+        "rubric": load_rubric(),
+        "rubric_version": rubric_version(),
     }
     try:
         result = run_agent(
@@ -837,7 +906,7 @@ def _run_feasibility_analyst(
         report, evidence_warnings = _verify_evidence(report, catalog)
         report = _normalize_feasibility_confidence(report)
         report = _normalize_feasibility_opportunity(report, req, artifact)
-        data = report.model_dump()
+        data = apply_pre_audit_guardrails(report.model_dump(), catalog, req.message)
         data["_llm"] = _model_meta(result)
         data["_llm"]["evidence_warnings"] = evidence_warnings
         if not audit_feedback and os.environ.get("DF_DISABLE_REDIS_CACHE") != "1":
@@ -1074,12 +1143,12 @@ def _narration_from_proposal(proposal: dict[str, Any]) -> str:
     feasibility = proposal.get("feasibility") or {}
     if not summary:
         summary = (
-            f"DataForge 已完成项目建议书。结论是 {feasibility.get('verdict', 'unknown')}，"
-            f"整体置信度为 {feasibility.get('overall_confidence', 'unknown')}。"
+            f"DataForge 已完成项目建议书。结论是 {verdict_label(feasibility.get('verdict', 'unknown'))}，"
+            f"整体置信度为 {confidence_label(feasibility.get('overall_confidence', 'unknown'))}。"
         )
     dimensions = feasibility.get("dimensions") or []
     scores = "；".join(
-        f"{item.get('name')} {item.get('score')}分 {item.get('confidence')}" for item in dimensions[:5]
+        f"{_friendly_dimension_name(item.get('name'))} {item.get('score')}分 {confidence_label(item.get('confidence'))}" for item in dimensions[:5]
     )
     gaps = "；".join(_clean_sentence_end(gap) for gap in (feasibility.get("gap_list") or [])[:3])
     tail = f"\n\n维度评分：{scores or '暂无可评分维度'}。主要缺口：{gaps or '暂无明确缺口'}。"
@@ -1091,19 +1160,19 @@ def _concise_narration_from_proposal(proposal: dict[str, Any]) -> str:
     summary = _clean_text(proposal.get("executive_summary"), 620)
     if not summary:
         summary = (
-            f"DataForge has generated a grounded project proposal. "
-            f"Verdict: {feasibility.get('verdict', 'unknown')}. "
-            f"Overall confidence: {feasibility.get('overall_confidence', 'unknown')}."
+            f"DataForge 已生成一版有证据支撑的项目建议。"
+            f"结论：{verdict_label(feasibility.get('verdict', 'unknown'))}。"
+            f"整体置信度：{confidence_label(feasibility.get('overall_confidence', 'unknown'))}。"
         )
     dimensions = feasibility.get("dimensions") or []
     scores = "; ".join(
-        f"{item.get('name')} {item.get('score')}/5 {item.get('confidence')}"
+        f"{_friendly_dimension_name(item.get('name'))} {item.get('score')}/5 {confidence_label(item.get('confidence'))}"
         for item in dimensions[:3]
     )
     gaps = "; ".join(_clean_sentence_end(gap) for gap in (feasibility.get("gap_list") or [])[:2])
     tail = (
-        f"\n\nScores: {scores or 'no scored dimensions yet'}. "
-        f"Main gaps: {gaps or 'no explicit gaps'}."
+        f"\n\n维度评分：{scores or '暂无可评分维度'}。"
+        f"主要缺口：{gaps or '暂无明确缺口'}。"
     )
     return _clean_text(summary + tail, 950)
 
@@ -1169,6 +1238,20 @@ def _normalize_audit_revision_gate(audit: AuditVerdict) -> tuple[AuditVerdict, s
         return audit, None
     adjusted = AuditVerdict(verdict="pass", issues=audit.issues, target_expert=None)
     return adjusted, "nonblocking_audit_warnings_no_revision"
+
+
+def _apply_audit_and_verdict_contract(artifact: dict[str, Any], audit: AuditVerdict) -> dict[str, Any]:
+    audit_data = audit.model_dump()
+    artifact["audit"] = audit_data
+    if not artifact.get("feasibility"):
+        return {}
+    artifact["feasibility"] = apply_post_audit_guardrails(
+        artifact.get("feasibility") or {},
+        artifact.get("_blind_feasibility") or artifact.get("feasibility") or {},
+        _evidence_catalog(artifact),
+        audit_data,
+    )
+    return finalize_verdict_contract(artifact, audit_data)
 
 
 def _compact_hits(hits: list[dict[str, Any]], limit: int = 6) -> list[dict[str, Any]]:
@@ -1254,6 +1337,7 @@ def _build_citations(artifact: dict[str, Any]) -> tuple[list[dict[str, Any]], di
                 "source_file": source_file,
                 "chunk_id": chunk_id,
                 "confidence": confidence,
+                "confidence_label": confidence_label(confidence),
                 "source_type": source_type,
                 "snippet": _clean_text(matched.get("quote"), 420),
             }
@@ -1305,6 +1389,7 @@ def _build_citations(artifact: dict[str, Any]) -> tuple[list[dict[str, Any]], di
                 "source_file": url or finding.get("source_title") or "market",
                 "chunk_id": f"market-{marker}",
                 "confidence": "market_inferred",
+                "confidence_label": confidence_label("market_inferred"),
                 "source_type": "market",
                 "snippet": _clean_text(claim, 420),
                 "source_url": url,
@@ -1503,18 +1588,24 @@ def _compact_hit_signal_customer(hit: dict[str, Any]) -> str:
         match = re.search(r"(?:高信号|交叉信号)[：:]\s*([^。\n]+)", content)
         if match:
             return _clip_customer_signal(sanitize_customer_text(match.group(0), field_labels))
-    selected: list[str] = []
-    skip_names = {"id", "row", "source", "source_file", "chunk_id", "workspace_id", "document_type"}
+    selected: list[tuple[str, str]] = []
+    skip_names = {"collection", "id", "row", "source", "source_file", "chunk_id", "workspace_id", "document_type"}
     for index, (name, value) in enumerate(record_pairs(content), start=1):
         if not value or name.lower() in skip_names or len(value) < 2:
             continue
-        selected.append(f"{friendly_label(name, value=value, index=index)}：{value[:44]}")
+        selected.append((friendly_label(name, value=value, index=index), value[:44]))
         if len(selected) >= 2:
             break
     if not selected:
         parts = [part.strip() for part in re.split(r";|\n", content) if part.strip()]
-        selected.extend(parts[:2])
-    text = "；".join(selected) if selected else content[:100]
+        text = "。".join(parts[:2]) if parts else content[:100]
+        return _clip_customer_signal(sanitize_customer_text(_strip_inline_refs(text), field_labels))
+    if len(selected) == 1:
+        label, value = selected[0]
+        text = f"命中记录显示，{label}集中在“{value}”"
+    else:
+        (label_a, value_a), (label_b, value_b) = selected[0], selected[1]
+        text = f"命中记录显示，{label_a}集中在“{value_a}”，同时{label_b}指向“{value_b}”"
     return _clip_customer_signal(sanitize_customer_text(_strip_inline_refs(text), field_labels))
 
 
@@ -1540,7 +1631,7 @@ def _corpus_action_lines(signals: list[dict[str, str]], citations: list[dict[str
         f"- 把第二类信号转成参与钩子或合作权益：{second['text']}，用于设计触达文案、活动机制或会员权益 {second['markers']}".rstrip(),
         f"- 用第三类信号定义最小验证指标：{third['text']}，建议记录触达人数、参与率、转化/复购、单次成本和用户反馈 {third['markers']}".rstrip(),
         f"- 复盘时对照另一条命中信号做分层：{fourth['text']}，看哪些人群、渠道或内容真正拉动结果 {fourth['markers']}".rstrip(),
-        f"- 本次结构化 citations 共 {citation_total} 条；结论应随后续上传数据变化而变化。",
+        f"- 本次证据引用共 {citation_total} 条；结论应随后续上传数据变化而变化。",
     ]
 
 
@@ -1552,11 +1643,11 @@ def _strip_raw_ref_leaks(text: str) -> str:
 
 
 DIMENSION_LABELS = {
-    "market": "市场机会",
-    "technical": "技术可行性",
-    "asset_data": "数据支撑",
-    "resource_cost": "资源成本",
-    "differentiation_risk": "差异化风险",
+    "market": "市场信号",
+    "technical": "可交付性",
+    "asset_data": "数据充分度",
+    "resource_cost": "成本与规模",
+    "differentiation_risk": "差异化",
 }
 
 
@@ -1586,7 +1677,7 @@ def _customer_text(text: Any, artifact: dict[str, Any]) -> str:
 
 def _friendly_dimension_name(name: Any) -> str:
     value = str(name or "").strip()
-    return DIMENSION_LABELS.get(value, friendly_label(value))
+    return DIMENSION_LABELS.get(value, dimension_label(value) if value else friendly_label(value))
 
 
 def _variant(artifact: dict[str, Any], choices: list[str]) -> str:
@@ -1605,7 +1696,7 @@ def _output_contract(intent: str) -> dict[str, Any]:
     else:
         sections = ["判断结论", "关键机会", "风险/缺口", "建议下一步"]
     return {
-        "version": "batch10.customer_text.v1",
+        "version": "batch11.customer_text.rubric.v1",
         "intent": intent,
         "sections": sections,
         "citation_style": "[n]",
@@ -1623,21 +1714,32 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
     feasibility = artifact.get("feasibility") or {}
     market = artifact.get("market") or {}
     audit = artifact.get("audit") or {}
-    verdict = str(feasibility.get("verdict") or "unknown")
-    overall = str(feasibility.get("overall_confidence") or "speculative")
-    opportunity = _human_title_from_opportunity(feasibility.get("opportunity_id") or _query_action_title(req.message) or "当前机会")
-    if re.search(r"[\u4e00-\u9fff]", req.message) and not re.search(r"[\u4e00-\u9fff]", opportunity):
-        opportunity = _query_action_title(req.message) or "当前机会"
+    verdict = verdict_label(feasibility.get("verdict") or "unknown")
+    overall = confidence_label(feasibility.get("overall_confidence") or "speculative")
+    opportunity = _customer_opportunity_title(req, artifact, feasibility.get("opportunity_id") or _query_action_title(req.message) or "当前机会")
     marker_hint = " ".join(f"[{item['marker']}]" for item in citations[:2])
     lead = _variant(
         artifact,
         [
-            f"先给结论：{opportunity} 目前更适合按 {verdict} 处理，整体置信度是 `{overall}`，建议先小范围验证再放大。 {marker_hint}",
-            f"我的判断是：这个方向可以继续推进，但要把它当作 {verdict} 的机会来做，置信度 `{overall}`，先验证最强证据。 {marker_hint}",
-            f"可以先这么看：{opportunity} 有机会，但下一步应围绕证据做低成本试点；当前结论 `{verdict}`，置信度 `{overall}`。 {marker_hint}",
+            f"先给结论：{opportunity} 目前更适合按“{verdict}”处理，整体置信度为“{overall}”，建议先小范围验证再放大。 {marker_hint}",
+            f"我的判断是：这个方向可以继续推进，但要把它当作“{verdict}”的机会来做，置信度为“{overall}”，先验证最强证据。 {marker_hint}",
+            f"可以先这么看：{opportunity} 有机会，但下一步应围绕证据做低成本试点；当前结论为“{verdict}”，置信度为“{overall}”。 {marker_hint}",
         ],
     ).strip()
-    lines: list[str] = [lead, "", "**关键机会**", f"- {opportunity}。审计结论：{audit.get('verdict', 'not_run')}。"]
+    lines: list[str] = [lead, "", "**关键机会**", f"- {opportunity}。审计结论：{audit_label(audit.get('verdict', 'not_run'))}。"]
+    if _preset_outcome_requested(req.message) or "preset_outcome_request_rejected" in (feasibility.get("guardrails") or []):
+        lines.append("- 用户要求预设结论或打高分已被忽略；本次只按工作区证据和可复核证据判断。")
+    verdict_contract = artifact.get("verdict") or {}
+    if verdict_contract.get("revised"):
+        blind = verdict_contract.get("blind") or {}
+        revised = verdict_contract.get("revised") or {}
+        diff_text = "；".join(
+            f"{item.get('dim')} {item.get('blind')}→{item.get('revised')}"
+            for item in (verdict_contract.get("disagreement") or [])[:3]
+        )
+        lines.append(
+            f"- 审计后已修订结论：初判“{blind.get('judgment', '待判断')}”，修订后为“{revised.get('judgment', '待判断')}”。{diff_text}"
+        )
     if market.get("positioning_note"):
         market_markers = " ".join(f"[{item['marker']}]" for item in citations if item.get("source_type") == "market")
         lines.append(f"- 外部市场只作为参考：{market.get('positioning_note')} {market_markers}".rstrip())
@@ -1649,9 +1751,9 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
             markers = _evidence_markers(dimension.get("evidence") or [], citations)
             label = _friendly_dimension_name(dimension.get("name"))
             score = dimension.get("score", "n/a")
-            confidence = dimension.get("confidence") or "speculative"
+            confidence = confidence_label(dimension.get("confidence") or "speculative")
             rationale = sanitize_customer_text(dimension.get("rationale") or "证据不足，需要补充验证。", field_labels)
-            lines.append(f"- {label}：{score}/5，置信度 `{confidence}`。{rationale} {markers}".rstrip())
+            lines.append(f"- {label}：{score}/5，置信度“{confidence}”。{rationale} {markers}".rstrip())
     gaps = feasibility.get("gap_list") or []
     lines.append("")
     lines.append("**风险/缺口**")
@@ -1684,7 +1786,7 @@ def _structured_corpus_answer_v10(req: ChatRequest, artifact: dict[str, Any]) ->
     lead = _variant(
         artifact,
         [
-            f"直接回答：可以先围绕“{topic}”做一版方案，依据是当前资料里命中的 {len(hits)} 条记录，而不是泛泛 brainstorm。 {marker_hint}",
+            f"直接回答：可以先围绕“{topic}”做一版方案，依据是当前资料里命中的 {len(hits)} 条记录，而不是泛泛发散。 {marker_hint}",
             f"我的建议是先把问题收束到“{topic}”，用资料里的真实信号做小步验证。当前命中 {len(hits)} 条记录。 {marker_hint}",
             f"这批资料给出的方向是：先围绕“{topic}”找可执行切口，再用命中证据验证活动或产品假设。 {marker_hint}",
         ],
@@ -2090,6 +2192,23 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             ):
                 yield frame
             artifact["feasibility"] = await feasibility_task
+            artifact["_blind_feasibility"] = json.loads(json.dumps(artifact["feasibility"], ensure_ascii=False))
+            yield _frame(
+                "blind_verdict",
+                {
+                    "agent": "df-feasibility-analyst",
+                    "verdict": make_blind_verdict(artifact["feasibility"]),
+                    "dimensions": [
+                        {
+                            "dim": _friendly_dimension_name(item.get("name")),
+                            "score": item.get("score"),
+                            "confidence": item.get("confidence"),
+                        }
+                        for item in (artifact["feasibility"].get("dimensions") or [])
+                    ],
+                },
+                conv_id,
+            )
             cache_info = (artifact["feasibility"].get("_llm") or {}).get("cache")
             if cache_info:
                 yield _frame("cache", {"agent": "df-feasibility-analyst", **cache_info}, conv_id)
@@ -2247,7 +2366,9 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             yield _frame("audit", audit.model_dump(), conv_id)
         except Exception as exc:
             yield _frame("error", {"agent": "revision-loop", "message": str(exc)}, conv_id)
-            artifact["audit"] = audit.model_dump()
+            verdict_contract = _apply_audit_and_verdict_contract(artifact, audit)
+            if verdict_contract.get("revised"):
+                yield _frame("revised_verdict", verdict_contract, conv_id)
             answer_state: dict[str, Any] = {}
             async for frame in _stream_answer_frames(req, decision, artifact, conv_id, answer_state):
                 yield frame
@@ -2274,7 +2395,9 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             yield frame
             return
 
-    artifact["audit"] = audit.model_dump()
+    verdict_contract = _apply_audit_and_verdict_contract(artifact, audit)
+    if verdict_contract.get("revised"):
+        yield _frame("revised_verdict", verdict_contract, conv_id)
     answer_state: dict[str, Any] = {}
     async for frame in _stream_answer_frames(req, decision, artifact, conv_id, answer_state):
         yield frame
@@ -2312,11 +2435,11 @@ def _final_text(decision: RoutingDecision, artifact: dict[str, Any]) -> str:
         gap_text = _clean_sentence_end(gaps or "\u8bc1\u636e\u4e0d\u8db3")
         return (
             f"\u8d44\u6599\u68c0\u7d22\u5b8c\u6210\uff0c\u4f46\u672a\u627e\u5230\u8db3\u4ee5\u652f\u6491\u8be5\u8bf7\u6c42\u7684\u5de5\u4f5c\u533a\u8bc1\u636e\u3002"
-            f"\u7ed3\u8bba\uff1a{feasibility.get('verdict', 'unknown')}\uff1b\u4e3b\u8981\u7f3a\u53e3\uff1a{gap_text}\u3002"
+            f"\u7ed3\u8bba\uff1a{verdict_label(feasibility.get('verdict', 'unknown'))}\uff1b\u4e3b\u8981\u7f3a\u53e3\uff1a{gap_text}\u3002"
         )
-    verdict = feasibility.get("verdict", "unknown")
+    verdict = verdict_label(feasibility.get("verdict", "unknown"))
     gaps = "; ".join(_clean_sentence_end(gap) for gap in feasibility.get("gap_list", [])[:2])
-    confidence = feasibility.get("overall_confidence", "unknown")
+    confidence = confidence_label(feasibility.get("overall_confidence", "unknown"))
     return (
         f"\u5df2\u5b8c\u6210\u8bed\u6599\u68c0\u7d22\u3001\u6a21\u578b\u53ef\u884c\u6027\u8bc4\u4f30\u548c\u5ba1\u8ba1\u3002"
         f"\u7ed3\u8bba\uff1a{verdict}\uff1b\u7f6e\u4fe1\u5ea6\uff1a{confidence}\u3002"

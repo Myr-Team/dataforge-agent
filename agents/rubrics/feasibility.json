@@ -1,0 +1,101 @@
+{
+  "rubric_version": "feasibility-rubric-v2026-06-13",
+  "score_scale": {
+    "min": 0,
+    "max": 5,
+    "precision": 1
+  },
+  "dimensions": [
+    {
+      "name": "asset_data",
+      "display_name": "数据充分度",
+      "weight": 0.3,
+      "criteria": {
+        "0": "没有命中工作区证据，或证据与用户请求无关。",
+        "1": "只有零散样本，不能支撑稳定判断。",
+        "2": "有可用样本，但覆盖面、字段完整度或代表性不足。",
+        "3": "有多条相关记录和明确变量，可做小范围验证。",
+        "4": "数据覆盖核心对象、指标和场景，能支撑试点判断。",
+        "5": "数据规模、字段完整度、历史结果和可追溯性都充分。"
+      }
+    },
+    {
+      "name": "market",
+      "display_name": "市场信号",
+      "weight": 0.2,
+      "criteria": {
+        "0": "没有需求、痛点、预算或外部市场信号。",
+        "1": "只有泛化想法，没有具体人群或购买场景。",
+        "2": "出现部分需求线索，但缺少强度或转化证据。",
+        "3": "有明确人群、痛点或增长信号，可做验证。",
+        "4": "内部信号和外部行情相互支持，目标场景清晰。",
+        "5": "需求强、付费路径清晰，且有可复核的市场或转化证据。"
+      }
+    },
+    {
+      "name": "technical",
+      "display_name": "可交付性",
+      "weight": 0.2,
+      "criteria": {
+        "0": "当前资料无法形成可交付产品。",
+        "1": "只能产出概念，缺少数据、流程或系统条件。",
+        "2": "可做原型，但依赖大量手工补数或外部能力。",
+        "3": "可做最小可行版本，关键路径明确。",
+        "4": "数据、流程和交付形态都较清晰，可进入试点。",
+        "5": "交付路径成熟，依赖、验收和运营机制都明确。"
+      }
+    },
+    {
+      "name": "resource_cost",
+      "display_name": "成本与规模",
+      "weight": 0.15,
+      "criteria": {
+        "0": "成本、资源或合规约束不可控。",
+        "1": "资源投入与潜在收益明显不匹配。",
+        "2": "能试做，但成本、周期或运营压力偏高。",
+        "3": "可用低成本方式验证，放大前仍需测算。",
+        "4": "成本结构清晰，能按阶段扩展。",
+        "5": "资源投入低、复用度高、规模化约束少。"
+      }
+    },
+    {
+      "name": "differentiation_risk",
+      "display_name": "差异化",
+      "weight": 0.15,
+      "criteria": {
+        "0": "没有差异化，或容易被通用方案替代。",
+        "1": "差异点模糊，主要依赖泛化包装。",
+        "2": "有局部差异，但护城河和用户价值弱。",
+        "3": "能基于特定资料或场景形成可讲清的差异。",
+        "4": "差异化与用户需求、数据资产和交付能力相互支撑。",
+        "5": "差异显著、可持续，且能转化为明确产品卖点。"
+      }
+    }
+  ],
+  "verdict_thresholds": {
+    "feasible": {
+      "weighted_min": 3.8,
+      "asset_data_min": 3.5,
+      "market_min": 3.0,
+      "max_missing_material_dimensions": 0
+    },
+    "conditional": {
+      "weighted_min": 2.4,
+      "asset_data_min": 2.0
+    },
+    "not_yet_feasible": {
+      "weighted_below": 2.4
+    }
+  },
+  "confidence_policy": {
+    "data_confirmed": "Only direct workspace corpus or computed profile evidence may support this label.",
+    "market_inferred": "External web or market evidence is useful but never becomes workspace-confirmed fact.",
+    "speculative": "Use when the claim depends on analogy, missing evidence, or weak/no direct evidence.",
+    "overall_cap": "Overall confidence cannot exceed the weakest material dimension supporting the verdict."
+  },
+  "calibration_gate": {
+    "min_spearman": 0.8,
+    "no_pairwise_inversions": true,
+    "bad_rubric_smoke_required": true
+  }
+}

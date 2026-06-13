@@ -1,0 +1,56 @@
+{
+  "version": "batch11-p0-calibration-v1",
+  "label_meaning": "Higher label_score means a stronger product-feasibility case under the current rubric.",
+  "cases": [
+    {
+      "id": "mature_revenue_expansion",
+      "label_score": 5,
+      "description": "Multi-record revenue and churn evidence with clear segment differences and product packaging signals.",
+      "records": [
+        {"segment": "enterprise", "region": "East", "monthly_revenue": 188000, "churn_rate": 0.025, "expansion_score": 91, "pain_point": "renewal expansion requests mention dashboard packaging"},
+        {"segment": "enterprise", "region": "South", "monthly_revenue": 143000, "churn_rate": 0.039, "expansion_score": 84, "pain_point": "budget owner asks for automation and reporting"},
+        {"segment": "midmarket", "region": "East", "monthly_revenue": 98000, "churn_rate": 0.055, "expansion_score": 71, "pain_point": "manual workflow creates retention risk"},
+        {"segment": "smb", "region": "North", "monthly_revenue": 39000, "churn_rate": 0.118, "expansion_score": 38, "pain_point": "high support load and weak upsell signal"},
+        {"segment": "enterprise", "region": "West", "monthly_revenue": 160000, "churn_rate": 0.031, "expansion_score": 88, "pain_point": "conversion dashboard requested by sponsor"},
+        {"segment": "midmarket", "region": "South", "monthly_revenue": 102000, "churn_rate": 0.061, "expansion_score": 69, "pain_point": "retention playbook demanded by customer success"}
+      ]
+    },
+    {
+      "id": "solid_support_workflow",
+      "label_score": 4,
+      "description": "Clear automation and resolution-time opportunity, but smaller dataset and delivery still need pilot validation.",
+      "records": [
+        {"category": "deployment", "resolution_hours": 28, "sentiment": "neutral", "automation_gap": "log triage", "revenue_risk": 42000},
+        {"category": "deployment", "resolution_hours": 21, "sentiment": "negative", "automation_gap": "handoff summary", "revenue_risk": 38000},
+        {"category": "training", "resolution_hours": 5, "sentiment": "positive", "automation_gap": "guided playbook", "revenue_risk": 8000},
+        {"category": "billing", "resolution_hours": 12, "sentiment": "neutral", "automation_gap": "invoice explanation", "revenue_risk": 14000}
+      ]
+    },
+    {
+      "id": "pilot_activity_signals",
+      "label_score": 3,
+      "description": "Enough campaign signal for a small pilot, but weak scale and limited outcome metrics.",
+      "records": [
+        {"store": "后海旗舰店", "activity": "会员裂变", "member_share": 0.38, "sponsor_signal": "护手产品赞助", "conversion_note": "老会员愿意邀请朋友体验"},
+        {"store": "福田店", "activity": "周边奖品", "member_share": 0.31, "sponsor_signal": "本地品牌联名", "conversion_note": "打卡照片品牌露出高"},
+        {"store": "南山店", "activity": "体验课", "member_share": 0.27, "sponsor_signal": "体验券", "conversion_note": "新客转化待验证"}
+      ]
+    },
+    {
+      "id": "thin_hype_notes",
+      "label_score": 2,
+      "description": "One row with many demand words but little representative evidence.",
+      "records": [
+        {"note": "huge revenue risk churn cost score pain budget growth 高增长 复购 转化 赞助 demand market opportunity", "idea": "AI dashboard", "owner": "unknown"}
+      ]
+    },
+    {
+      "id": "unrelated_sparse_inventory",
+      "label_score": 1,
+      "description": "Sparse operational inventory data unrelated to a product opportunity.",
+      "records": [
+        {"sku": "A-100", "count": 7, "shelf": "B2"}
+      ]
+    }
+  ]
+}

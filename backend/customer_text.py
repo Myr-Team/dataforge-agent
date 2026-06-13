@@ -81,11 +81,25 @@ INTERNAL_FIELD_NAMES = {
     "workspace_id",
 }
 
-RESERVED_OUTPUT_TAGS = {
-    "data_confirmed",
-    "market_inferred",
-    "not_yet_feasible",
-}
+CUSTOMER_TERM_REPLACEMENTS = [
+    (r"\bnot_yet_feasible\b", "暂不可行"),
+    (r"\bdata_confirmed\b", "数据已证实"),
+    (r"\bmarket_inferred\b", "市场推断"),
+    (r"\bspeculative\b", "证据不足"),
+    (r"\bconditional\b", "有条件可行"),
+    (r"\bfeasible\b", "可行"),
+    (r"\bpass\b", "通过"),
+    (r"\brevise\b", "需修订"),
+    (r"\bmembership\b", "会员类型"),
+]
+
+CATEGORICAL_FALLBACK_LABELS = [
+    "业务类别",
+    "资料分组",
+    "运营标签",
+    "客户标签",
+    "场景标签",
+]
 
 
 def field_tokens(name: Any) -> list[str]:
@@ -118,9 +132,9 @@ def friendly_label(name: Any, *, role: Any = None, value: Any = None, index: int
     elif value_text and len(value_text) > 36:
         base = "描述信息"
     else:
-        base = "分类维度"
-    if index and index > 1:
-        return f"{base}{index}"
+        if index and index > 0:
+            return CATEGORICAL_FALLBACK_LABELS[(index - 1) % len(CATEGORICAL_FALLBACK_LABELS)]
+        base = "业务类别"
     return base
 
 
@@ -177,6 +191,8 @@ def sanitize_customer_text(text: Any, field_labels: dict[str, str] | None = None
     value = re.sub(r"\[?profile\.json[^\]\s,;，。)）]*\]?", "", value)
     value = re.sub(r"\b(?:chunk_id|source_file|workspace_id|document_type|content_vector)\b", "", value)
     value = re.sub(r"\bschema\b", "字段结构", value, flags=re.IGNORECASE)
+    for pattern, replacement in CUSTOMER_TERM_REPLACEMENTS:
+        value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
     for raw, label in sorted((field_labels or {}).items(), key=lambda item: len(item[0]), reverse=True):
         raw = str(raw or "").strip()
         label = str(label or "").strip()
@@ -195,11 +211,49 @@ def sanitize_citations(citations: list[dict[str, Any]], field_labels: dict[str, 
     for item in citations:
         clone = dict(item)
         clone["snippet"] = sanitize_customer_text(clone.get("snippet"), field_labels)
+        if clone.get("confidence") and not clone.get("confidence_label"):
+            clone["confidence_label"] = sanitize_customer_text(str(clone.get("confidence")))
         source = str(clone.get("source_file") or "")
         if source:
             clone.setdefault("source_label", _source_label(source))
         cleaned.append(clone)
     return cleaned
+
+
+def customer_hit_title(hit: dict[str, Any]) -> str:
+    """Return a short customer-facing title for one retrieved hit."""
+    field_labels = field_label_map_from_hits([hit])
+    content = str(hit.get("content") or "")
+    if str(hit.get("document_type") or "") == "profile":
+        match = re.search(r"(?:高信号|交叉信号)[：:]\s*([^。\n；;]+)", content)
+        if match:
+            signal = sanitize_customer_text(match.group(1), field_labels)
+            return _clip_title(f"数据画像显示：{signal}")
+        return "数据画像中的关键线索"
+
+    pairs = []
+    skip = INTERNAL_FIELD_NAMES | {"id", "row", "source", "collection", "document_type"}
+    for index, (name, value) in enumerate(record_pairs(content), start=1):
+        lowered = name.lower().strip()
+        if lowered in skip or not value or len(value) < 2:
+            continue
+        label = friendly_label(name, value=value, index=index)
+        clean_value = _short_title_value(value)
+        if not clean_value:
+            continue
+        if _looks_like_number(clean_value):
+            pairs.append(f"{label}{clean_value}")
+        else:
+            pairs.append(f"{label}为{clean_value}")
+        if len(pairs) >= 2:
+            break
+    if pairs:
+        return _clip_title(sanitize_customer_text("、".join(pairs) + "的资料线索", field_labels))
+
+    title = sanitize_customer_text(hit.get("title") or "", field_labels)
+    if title and not re.search(r"(raw_docs|chunk|row-\d+)", title, flags=re.IGNORECASE):
+        return _clip_title(title)
+    return "工作区资料中的命中线索"
 
 
 def customer_summary_from_profile(profile: dict[str, Any], meta: dict[str, Any] | None = None) -> str:
@@ -305,8 +359,6 @@ def _replace_identifier(text: str, raw: str, label: str) -> str:
 
 def _replace_leftover_identifier(match: re.Match[str]) -> str:
     value = match.group(0)
-    if value in RESERVED_OUTPUT_TAGS:
-        return value
     lowered = value.lower()
     if "batch" in lowered or lowered.endswith(("signals", "records", "metrics", "table")):
         return "资料集合"
@@ -341,4 +393,36 @@ def _source_label(source: str) -> str:
     if not name or name == "profile.json":
         return "数据画像"
     stem = re.sub(r"[_-]+", " ", Path(name).stem).strip()
-    return stem[:40] or "工作区资料"
+    mapped: list[str] = []
+    for token in field_tokens(stem):
+        if token.startswith("batch") or token.isdigit():
+            continue
+        label = GENERIC_TOKEN_LABELS.get(token)
+        if label and label not in mapped:
+            mapped.append(label)
+    if mapped:
+        return _compact_label("".join(mapped) + "资料")
+    return sanitize_customer_text(stem)[:40] or "工作区资料"
+
+
+def _short_title_value(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" ，。；;")
+    if not text:
+        return ""
+    text = re.sub(r"\b(?:raw_docs|profile|chunk|row-\d+)\b", "", text, flags=re.IGNORECASE).strip()
+    if len(text) > 18:
+        text = text[:18].rstrip() + "…"
+    return text
+
+
+def _clip_title(text: str, limit: int = 34) -> str:
+    clean = sanitize_customer_text(text)
+    clean = re.sub(r"[。；;]+$", "", clean)
+    if len(clean) <= limit:
+        return clean or "工作区资料中的命中线索"
+    head = clean[:limit]
+    for sep in ("，", "、", "：", " "):
+        pos = head.rfind(sep)
+        if pos >= int(limit * 0.55):
+            return head[:pos].rstrip("，、： ") + "…"
+    return head.rstrip() + "…"

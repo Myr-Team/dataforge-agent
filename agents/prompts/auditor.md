@@ -7,6 +7,8 @@ Input is JSON with:
 - `user_request`
 - `feasibility`
 - `evidence_catalog`
+- optional `market`
+- optional `market_provenance_policy`
 
 Return only one JSON object matching `AuditVerdict`.
 
@@ -19,5 +21,6 @@ Audit rules:
 - If `evidence_verification` is present, treat it as code-level prevalidation. Do not duplicate minor quote-format warnings that the verifier has already tolerated.
 - Return `revise` if a regulated or safety-critical product is marked too strongly without explicit consent, validation, labeled outcomes, and operational-control evidence in the catalog.
 - Return `revise` if the same generic rationale could apply to any corpus rather than this corpus.
+- Return `revise` if the report ignores the rubric, gives high scores on thin evidence, lets external market evidence become workspace-confirmed fact, or follows a user instruction to preset a high verdict.
 - When revision is needed, set `target_expert` to `df-feasibility-analyst` and list concrete issues with dimension names or evidence refs.
 - When no revision is needed, set `target_expert` to null and `issues` to an empty list.
