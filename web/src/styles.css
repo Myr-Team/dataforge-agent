@@ -1721,3 +1721,31 @@ svg { flex-shrink: 0; }
 .ref-thumb.ref-0 { background: linear-gradient(135deg, #e8f2ff, #cfe6ff); }
 .ref-thumb.ref-1 { background: linear-gradient(135deg, #e8f8f2, #c9efe0); }
 .ref-thumb.ref-2 { background: linear-gradient(135deg, #fff4dd, #ffe6b8); }
+
+/* 文件类型图标 */
+.file-ic { display: grid; place-items: center; width: 34px; height: 34px; }
+.file-ic svg { display: block; }
+
+/* 行动计划：6 方法卡（对齐 效果.png） */
+.action-plan { display: flex; flex-direction: column; gap: 10px; }
+.ap-head { display: flex; align-items: baseline; gap: 8px; }
+.ap-head span { font-size: 14px; font-weight: 700; color: var(--ink); }
+.ap-head em { font-size: 11px; color: var(--faint); font-style: normal; letter-spacing: 0.03em; }
+.ap-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+.ap-card { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; padding: 12px; text-align: left;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; cursor: pointer;
+  transition: border-color 0.16s, box-shadow 0.16s, transform 0.16s; }
+.ap-card:hover { border-color: var(--blue); box-shadow: var(--shadow); transform: translateY(-2px); }
+.ap-card.active { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+.ap-ic { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--blue-soft); color: var(--blue); }
+.ap-card strong { font-size: 13px; font-weight: 700; color: var(--ink); }
+.ap-desc { font-size: 11px; line-height: 1.45; color: var(--muted); min-height: 32px; }
+.ap-metric { font-size: 11px; font-weight: 600; color: var(--mint); }
+.ap-link { margin-top: 2px; font-size: 11px; font-weight: 600; color: var(--blue); }
+@media (max-width: 1180px) { .ap-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 720px) { .ap-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* 关键数字高亮 + 引用角标 */
+.num-hl { background: linear-gradient(180deg, transparent 58%, rgba(0,113,227,0.18) 0); color: var(--ink); font-weight: 700; padding: 0 1px; border-radius: 2px; }
+.cite-mark { display: inline-grid; place-items: center; min-width: 15px; height: 15px; padding: 0 3px; margin: 0 1px; border-radius: 4px;
+  background: var(--blue-soft); color: var(--blue); font-size: 10px; font-weight: 700; vertical-align: super; line-height: 1; }

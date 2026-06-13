@@ -268,7 +268,7 @@ export function WorkspacePane({
             const ready = !doc.status || /就绪|已解析|ready|done/i.test(String(doc.status));
             return (
               <div className="dataset-row" key={doc.source_file || doc.name}>
-                <span className={`file-tag ${meta.cls}`}>{meta.tag}</span>
+                <FileTypeIcon doc={doc} />
                 <div className="dataset-meta">
                   <strong>{doc.name || sanitizeSourceLabel(doc.source_file)}</strong>
                   <span>{meta.label}{doc.bytes ? ` · ${formatBytes(doc.bytes)}` : ""}</span>
@@ -334,16 +334,35 @@ function Metric({ value, label }) {
   );
 }
 
-// 文件类型 → 角标颜色/标签（数据集列表用）
+// 文件类型 → 颜色/标签（数据集列表用）
 function fileTypeMeta(doc) {
   const name = String(doc.name || doc.source_file || "");
   const fmt = String(doc.format || (name.match(/\.([a-z0-9]+)$/i)?.[1]) || "").toLowerCase();
-  if (/xls|excel|sheet/.test(fmt)) return { tag: "XLS", cls: "ft-excel", label: "Excel 表格" };
-  if (/csv/.test(fmt)) return { tag: "CSV", cls: "ft-csv", label: "CSV 数据" };
-  if (/json/.test(fmt)) return { tag: "JSON", cls: "ft-json", label: "JSON 数据" };
-  if (/md|markdown/.test(fmt)) return { tag: "MD", cls: "ft-md", label: "Markdown" };
-  if (/png|jpg|jpeg|webp/.test(fmt)) return { tag: "IMG", cls: "ft-img", label: "图片" };
-  return { tag: "DOC", cls: "ft-doc", label: doc.format || "文件" };
+  if (/xls|excel|sheet/.test(fmt)) return { tag: "XLS", cls: "ft-excel", color: "#1f9d57", label: "Excel 表格" };
+  if (/csv/.test(fmt)) return { tag: "CSV", cls: "ft-csv", color: "#0071e3", label: "CSV 数据" };
+  if (/json/.test(fmt)) return { tag: "JSON", cls: "ft-json", color: "#d98a00", label: "JSON 数据" };
+  if (/md|markdown/.test(fmt)) return { tag: "MD", cls: "ft-md", color: "#3b3b3f", label: "Markdown" };
+  if (/png|jpg|jpeg|webp|gif/.test(fmt)) return { tag: "IMG", cls: "ft-img", color: "#8a4ddf", label: "图片" };
+  if (/pdf/.test(fmt)) return { tag: "PDF", cls: "ft-pdf", color: "#d92d20", label: "PDF" };
+  if (/parquet/.test(fmt)) return { tag: "PRQ", cls: "ft-doc", color: "#0a8f8f", label: "Parquet" };
+  return { tag: "DOC", cls: "ft-doc", color: "#8e8e93", label: doc.format || "文件" };
+}
+
+// 文件类型图标：文档外形 + 折角 + 格式标签（嵌入数据集行，区分 Excel/CSV/JSON/MD/IMG）
+function FileTypeIcon({ doc, size = 34 }) {
+  const meta = fileTypeMeta(doc);
+  const dark = meta.color;
+  return (
+    <span className={`file-ic ${meta.cls}`} aria-label={meta.label}>
+      <svg width={size} height={size} viewBox="0 0 28 32" fill="none" aria-hidden="true">
+        <path d="M3 3a2 2 0 0 1 2-2h12l8 8v18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" fill={meta.color} opacity="0.14" />
+        <path d="M3 3a2 2 0 0 1 2-2h12l8 8v18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" stroke={meta.color} strokeWidth="1.4" />
+        <path d="M17 1v6a2 2 0 0 0 2 2h6" stroke={meta.color} strokeWidth="1.4" fill="none" />
+        <rect x="6" y="17" width="16" height="9" rx="2" fill={dark} />
+        <text x="14" y="23.6" textAnchor="middle" fontSize="6.4" fontWeight="700" fill="#fff" fontFamily="ui-sans-serif, system-ui">{meta.tag}</text>
+      </svg>
+    </span>
+  );
 }
 
 function DataPortrait({ workspace, signalColumns, noisyColumns, columns }) {
@@ -551,7 +570,7 @@ function DashboardStudio({
       <VerdictHero feasibility={feasibility} verdict={verdict} running={running} />
 
       <section className="studio-methods">
-        <PlaybookBar selected={selectedPlaybook} onSelect={setSelectedPlaybook} artifactMode={artifactMode} onMode={setArtifactMode} />
+        <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} />
         <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
       </section>
 
@@ -1082,6 +1101,16 @@ function AnswerPanel({ messages, streamText, running, presentation }) {
   );
 }
 
+// 行内高亮：关键数字（百分比/价位/区间/倍数）加亮、[n] 角标做成引用标记（对齐 效果.png）
+function highlightInline(text) {
+  const parts = String(text || "").split(/(\[\d+\]|\d+(?:\.\d+)?\s*[%％]|\d+(?:[,，]\d{3})+|\d+\s*[-–~]\s*\d+\s*(?:元|万|亿|%|％)?|\d+(?:\.\d+)?\s*(?:元|万|亿|倍|个|天|条|分))/g);
+  return parts.map((part, i) => {
+    if (/^\[\d+\]$/.test(part)) return <sup key={i} className="cite-mark">{part.replace(/[[\]]/g, "")}</sup>;
+    if (/[%％]|元|万|亿|倍|[-–~]|[,，]\d{3}|个|天|条|分/.test(part) && /\d/.test(part)) return <mark key={i} className="num-hl">{part}</mark>;
+    return part;
+  });
+}
+
 function RichText({ text }) {
   const blocks = String(text || "").split(/\n{2,}/).filter(Boolean);
   if (!blocks.length) return null;
@@ -1092,9 +1121,9 @@ function RichText({ text }) {
         if (/^#{1,3}\s/.test(trimmed)) return <h3 key={index}>{trimmed.replace(/^#{1,3}\s/, "")}</h3>;
         if (/^[-*]\s/m.test(trimmed)) {
           const items = trimmed.split("\n").map((line) => line.replace(/^[-*]\s*/, "").trim()).filter(Boolean);
-          return <ul key={index}>{items.map((item) => <li key={item}>{item}</li>)}</ul>;
+          return <ul key={index}>{items.map((item, i) => <li key={i}>{highlightInline(item)}</li>)}</ul>;
         }
-        return <p key={index}>{trimmed}</p>;
+        return <p key={index}>{highlightInline(trimmed)}</p>;
       })}
     </div>
   );
@@ -1129,6 +1158,44 @@ function FeasibilityStrip({ feasibility }) {
         </div>
       ))}
     </div>
+  );
+}
+
+const PLAYBOOK_DESC = {
+  "opportunity-tree": "机会→方案→实验逐层拆解",
+  jtbd: "用户在什么场景要完成什么任务",
+  pricing: "价值锚点与商业化路径",
+  roadmap: "30 / 60 / 90 天交付节奏",
+  prd: "目标用户 · 场景 · 功能边界",
+  experiment: "假设 · 指标 · 样本 · 门槛",
+};
+
+// 行动计划（PM 方法）：6 个方法卡，点选驱动下方 ActionBoard（对齐 效果.png）
+function ActionPlanCards({ selected, onSelect, feasibility }) {
+  const dims = feasibility?.dimensions || [];
+  const metric = (i) => {
+    const d = dims[i];
+    if (d) return `${DIMENSION_LABELS[d.name] || d.name} ${d.score ?? 0}/5`;
+    return ["核心机会", "痛点假设", "价值锚点", "里程碑", "验收指标", "成功门槛"][i] || "查看";
+  };
+  return (
+    <section className="action-plan">
+      <div className="ap-head"><span>行动计划</span><em>PM 方法</em></div>
+      <div className="ap-grid">
+        {PLAYBOOKS.map((item, index) => {
+          const Icon = item.icon;
+          return (
+            <button key={item.id} type="button" className={selected === item.id ? "ap-card active" : "ap-card"} onClick={() => onSelect(item.id)}>
+              <span className="ap-ic"><Icon size={18} /></span>
+              <strong>{item.name}</strong>
+              <span className="ap-desc">{PLAYBOOK_DESC[item.id] || item.prompt}</span>
+              <span className="ap-metric">{metric(index)}</span>
+              <span className="ap-link">查看{item.name} →</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
