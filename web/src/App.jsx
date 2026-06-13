@@ -342,21 +342,38 @@ export function App() {
   const upload = async ({ name, description, files, workspaceId: targetWorkspaceId, assetRole }) => {
     const isReference = uploadContext.mode === "reference";
     const isAppend = Boolean(targetWorkspaceId);
-    setUploadState({ type: "loading", message: isReference ? "正在上传参考图并绑定到当前工作区..." : "正在上传并生成数据画像..." });
+    const list = Array.from(files || []);
+    if (!list.length) return;
     try {
-      const result = await uploadWorkspace({ name, description, files, workspaceId: targetWorkspaceId, assetRole });
+      // 逐个上传：首个建工作区、其余 append 到同一工作区。
+      // 避免把多文件塞进一个请求让后端同步解析/画像/manifest 而卡住，同时给出逐文件进度。
+      let wid = targetWorkspaceId || null;
+      let result = null;
+      for (let i = 0; i < list.length; i++) {
+        const stepMsg = isReference
+          ? "正在上传参考图并绑定到当前工作区..."
+          : list.length > 1
+            ? `正在接入第 ${i + 1}/${list.length} 个文件并生成画像：${list[i].name}…`
+            : "正在上传并生成数据画像...";
+        setUploadState({ type: "loading", message: stepMsg });
+        result = await uploadWorkspace({ name, description, files: [list[i]], workspaceId: wid, assetRole });
+        wid = result.workspace_id || wid;
+      }
       setUploadState({
         type: "done",
-        message: isReference ? "参考图已绑定到当前工作区。" : isAppend ? `已更新工作区：${result.name}` : `已创建工作区：${result.name}`,
+        message: isReference
+          ? "参考图已绑定到当前工作区。"
+          : isAppend
+            ? `已更新工作区：${result.name}`
+            : `已接入 ${list.length} 个文件：${result.name}`,
       });
       setUploadOpen(false);
       setWorkspaceId(result.workspace_id);
       if (!isAppend) {
         setMessages([]);
         resetRunState();
-      } else {
-        await refreshDashboard(result.workspace_id);
       }
+      await refreshDashboard(result.workspace_id);
       window.setTimeout(() => setUploadState(null), 2600);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
