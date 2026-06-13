@@ -14,6 +14,7 @@ from ingest.adapters.upload_to_records import upload_to_records
 from ingest.profiler import build_data_profile, compact_profile_for_workspace, profile_to_search_document, write_profile
 
 try:
+    from .customer_text import customer_summary_from_profile, friendly_label, sanitize_customer_text
     from .blob_store import (
         download_blob_content,
         download_blob_json,
@@ -25,6 +26,7 @@ try:
     )
     from .search_admin import count_workspace_docs, delete_workspace_docs, index_documents, search_endpoint
 except ImportError:
+    from customer_text import customer_summary_from_profile, friendly_label, sanitize_customer_text
     from blob_store import (
         download_blob_content,
         download_blob_json,
@@ -396,6 +398,7 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
     rows = sum(int(table.get("row_count") or 0) for table in tables)
     columns = _detail_columns(tables)
     documents = _detail_documents(workspace_dir, meta)
+    customer_summary = customer_summary_from_profile(profile, meta)
     return {
         "workspace_id": workspace_id,
         "name": meta.get("name") or profile.get("name") or summary.get("name") or workspace_id,
@@ -403,6 +406,7 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
         "format": meta.get("format") or profile.get("format") or summary.get("format") or "mixed",
         "rows": rows,
         "columns": columns,
+        "customer_summary": customer_summary,
         "doc_count": summary.get("doc_count") or _workspace_doc_count(workspace_id, workspace_dir, meta),
         "documents": documents,
         "reference_images": _reference_images(meta),
@@ -723,6 +727,19 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _detail_columns(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
+    all_columns: list[dict[str, Any]] = []
+    for table in tables:
+        all_columns.extend([column for column in table.get("columns") or [] if isinstance(column, dict)])
+    label_map = {
+        str(column.get("name") or ""): friendly_label(
+            column.get("name"),
+            role=column.get("type"),
+            value=(column.get("top_values") or [""])[0] if isinstance(column.get("top_values"), list) else "",
+            index=index,
+        )
+        for index, column in enumerate(all_columns, start=1)
+        if str(column.get("name") or "").strip()
+    }
     table_signals = {
         str(table.get("name") or ""): (table.get("signals") or []) + (table.get("cross_signals") or [])
         for table in tables
@@ -737,12 +754,14 @@ def _detail_columns(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             seen.add(key)
             signal = next((item for item in signals if name and name in str(item)), "")
+            friendly = label_map.get(name) or friendly_label(name, role=column.get("type"))
             items.append(
                 {
                     "table": table_name,
                     "name": name,
+                    "friendly_label": friendly,
                     "role": column.get("type") or "unknown",
-                    "signal": signal,
+                    "signal": sanitize_customer_text(signal, label_map),
                     "missing_rate": column.get("missing_rate", 0),
                     "unique_count": column.get("unique_count", 0),
                     "top_values": column.get("top_values", [])[:5],

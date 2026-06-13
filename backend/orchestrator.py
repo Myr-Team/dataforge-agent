@@ -20,6 +20,15 @@ try:
     from . import cache_store
     from .chat_loop_primitives import sse
     from .conversation_store import append_message, conversation_context
+    from .customer_text import (
+        clarify_options_from_context,
+        field_label_map_from_hits,
+        friendly_label,
+        normalize_clarify_options,
+        record_pairs,
+        sanitize_citations,
+        sanitize_customer_text,
+    )
     from .foundry_client import (
         run_agent,
         run_coordinator_direct_reply,
@@ -37,11 +46,20 @@ try:
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
-    from .workspace_store import workspace_context, workspace_reference_images
+    from .workspace_store import get_workspace_detail, workspace_context, workspace_reference_images
 except ImportError:
     import cache_store
     from chat_loop_primitives import sse
     from conversation_store import append_message, conversation_context
+    from customer_text import (
+        clarify_options_from_context,
+        field_label_map_from_hits,
+        friendly_label,
+        normalize_clarify_options,
+        record_pairs,
+        sanitize_citations,
+        sanitize_customer_text,
+    )
     from foundry_client import (
         run_agent,
         run_coordinator_direct_reply,
@@ -59,7 +77,7 @@ except ImportError:
     from tools.generate_image import generate_image
     from tools.narrate_summary import narrate_summary
     from tools.render_pdf import render_pdf_report
-    from workspace_store import workspace_context, workspace_reference_images
+    from workspace_store import get_workspace_detail, workspace_context, workspace_reference_images
 
 
 PRODUCT_TERMS = (
@@ -408,16 +426,45 @@ def _clarify_guidance(req: ChatRequest, decision: RoutingDecision, conversation_
     }
     try:
         result = run_coordinator_guidance(payload)
-        question = _clean_text(result.get("question"), 1200)
+        field_labels = _workspace_field_labels(req.workspace_id)
+        question = sanitize_customer_text(_clean_text(result.get("question"), 1200), field_labels)
+        options = [
+            {"id": item["id"], "label": sanitize_customer_text(item["label"], field_labels)}
+            for item in normalize_clarify_options(result.get("options"), context, req.message)
+        ]
         if question:
-            return result | {"question": question}
+            return result | {"question": question, "options": options}
     except Exception as exc:
         return {
             "question": _fallback_clarify_question(context),
+            "options": clarify_options_from_context(context, req.message),
             "mode": "coordinator_fallback",
             "error": _clean_text(exc, 300),
         }
-    return {"question": _fallback_clarify_question(context), "mode": "coordinator_fallback"}
+    return {
+        "question": _fallback_clarify_question(context),
+        "options": clarify_options_from_context(context, req.message),
+        "mode": "coordinator_fallback",
+    }
+
+
+def _structured_clarify(req: ChatRequest, guidance: dict[str, Any]) -> dict[str, Any]:
+    context = workspace_context(req.workspace_id)
+    field_labels = _workspace_field_labels(req.workspace_id)
+    question = sanitize_customer_text(
+        _clean_text(guidance.get("question"), 1200) or _fallback_clarify_question(context),
+        field_labels,
+    )
+    options = [
+        {"id": item["id"], "label": sanitize_customer_text(item["label"], field_labels)}
+        for item in normalize_clarify_options(guidance.get("options"), context, req.message)
+    ]
+    return {
+        "question": question,
+        "options": options,
+        "allow_multi": True,
+        "allow_freeform": True,
+    }
 
 
 def _fallback_clarify_question(context: dict[str, Any]) -> str:
@@ -1364,9 +1411,9 @@ def _feasibility_next_steps(req: ChatRequest, artifact: dict[str, Any], citation
         steps.append(f"把活动、联名、赞助或权益设计绑定到：{second['text']}，避免脱离资料里的真实兴趣/痛点 {second['markers']}".rstrip())
         steps.append(f"复盘指标直接围绕：{third['text']}，记录转化、复购、成本、参与反馈和渠道来源 {third['markers']}".rstrip())
     for dimension in low_dimensions[:2]:
-        name = dimension.get("name") or "低分维度"
+        name = _friendly_dimension_name(dimension.get("name") or "低分维度")
         rationale = _strip_inline_refs(dimension.get("rationale")) or "当前证据不足"
-        steps.append(f"补强 `{name}`：针对“{rationale[:72]}”补一组可量化样本或真实成本数据。")
+        steps.append(f"补强{name}：针对“{rationale[:72]}”补一组可量化样本或真实成本数据。")
     if not steps:
         topic = _query_action_title(req.message) or _human_title_from_opportunity(artifact.get("feasibility", {}).get("opportunity_id"))
         steps.append(f"围绕“{topic}”跑一个 1 周最小验证，至少记录用户触达、参与、转化、成本和复盘反馈。")
@@ -1408,7 +1455,7 @@ def _evidence_signals(hits: list[dict[str, Any]], citations: list[dict[str, Any]
     items: list[dict[str, str]] = []
     seen: set[str] = set()
     for hit in hits[:8]:
-        text = _compact_hit_signal(hit)
+        text = _compact_hit_signal_customer(hit)
         if not text:
             continue
         key = re.sub(r"\W+", "", text.lower())[:80]
@@ -1447,6 +1494,41 @@ def _compact_hit_signal(hit: dict[str, Any]) -> str:
     return _strip_raw_ref_leaks(_strip_inline_refs(text))[:140]
 
 
+def _compact_hit_signal_customer(hit: dict[str, Any]) -> str:
+    content = _clean_text(hit.get("content"), 900)
+    if not content:
+        return ""
+    field_labels = field_label_map_from_hits([hit])
+    if str(hit.get("document_type") or "") == "profile":
+        match = re.search(r"(?:高信号|交叉信号)[：:]\s*([^。\n]+)", content)
+        if match:
+            return _clip_customer_signal(sanitize_customer_text(match.group(0), field_labels))
+    selected: list[str] = []
+    skip_names = {"id", "row", "source", "source_file", "chunk_id", "workspace_id", "document_type"}
+    for index, (name, value) in enumerate(record_pairs(content), start=1):
+        if not value or name.lower() in skip_names or len(value) < 2:
+            continue
+        selected.append(f"{friendly_label(name, value=value, index=index)}：{value[:44]}")
+        if len(selected) >= 2:
+            break
+    if not selected:
+        parts = [part.strip() for part in re.split(r";|\n", content) if part.strip()]
+        selected.extend(parts[:2])
+    text = "；".join(selected) if selected else content[:100]
+    return _clip_customer_signal(sanitize_customer_text(_strip_inline_refs(text), field_labels))
+
+
+def _clip_customer_signal(text: str, limit: int = 140) -> str:
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    for sep in ("；", "。", "，", "、", " "):
+        pos = head.rfind(sep)
+        if pos >= int(limit * 0.55):
+            return head[:pos].rstrip("；。，、 ") + "…"
+    return head.rstrip() + "…"
+
+
 def _corpus_action_lines(signals: list[dict[str, str]], citations: list[dict[str, Any]]) -> list[str]:
     first = signals[0]
     second = signals[1] if len(signals) > 1 else first
@@ -1467,6 +1549,167 @@ def _strip_raw_ref_leaks(text: str) -> str:
     text = re.sub(r"\[external/[^\]]+\]", "", text)
     text = re.sub(r"\[profile\.json[^\]]*\]", "", text)
     return text
+
+
+DIMENSION_LABELS = {
+    "market": "市场机会",
+    "technical": "技术可行性",
+    "asset_data": "数据支撑",
+    "resource_cost": "资源成本",
+    "differentiation_risk": "差异化风险",
+}
+
+
+def _customer_field_labels(artifact: dict[str, Any]) -> dict[str, str]:
+    return field_label_map_from_hits(artifact.get("corpus", {}).get("hits", []))
+
+
+def _workspace_field_labels(workspace_id: str) -> dict[str, str]:
+    try:
+        detail = get_workspace_detail(workspace_id)
+    except Exception:
+        return {}
+    labels: dict[str, str] = {}
+    for index, column in enumerate(detail.get("columns") or [], start=1):
+        if not isinstance(column, dict):
+            continue
+        name = str(column.get("name") or "").strip()
+        label = str(column.get("friendly_label") or friendly_label(name, role=column.get("role"), index=index)).strip()
+        if name and label:
+            labels[name] = label
+    return labels
+
+
+def _customer_text(text: Any, artifact: dict[str, Any]) -> str:
+    return sanitize_customer_text(_strip_raw_ref_leaks(str(text or "")), _customer_field_labels(artifact))
+
+
+def _friendly_dimension_name(name: Any) -> str:
+    value = str(name or "").strip()
+    return DIMENSION_LABELS.get(value, friendly_label(value))
+
+
+def _variant(artifact: dict[str, Any], choices: list[str]) -> str:
+    if not choices:
+        return ""
+    seed = str(artifact.get("conversation_id") or uuid.uuid4().hex)
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return choices[digest[0] % len(choices)]
+
+
+def _output_contract(intent: str) -> dict[str, Any]:
+    if intent == "corpus_qa":
+        sections = ["直接回答", "支撑要点", "建议动作"]
+    elif intent == "clarify_needed":
+        sections = ["question", "options", "allow_multi", "allow_freeform"]
+    else:
+        sections = ["判断结论", "关键机会", "风险/缺口", "建议下一步"]
+    return {
+        "version": "batch10.customer_text.v1",
+        "intent": intent,
+        "sections": sections,
+        "citation_style": "[n]",
+        "customer_text": True,
+        "raw_field_names_allowed": False,
+    }
+
+
+def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact: dict[str, Any]) -> dict[str, Any]:
+    if decision.intent == "corpus_qa":
+        return _structured_corpus_answer_v10(req, artifact)
+    citations, _ = _build_citations(artifact)
+    field_labels = _customer_field_labels(artifact)
+    citations = sanitize_citations(citations, field_labels)
+    feasibility = artifact.get("feasibility") or {}
+    market = artifact.get("market") or {}
+    audit = artifact.get("audit") or {}
+    verdict = str(feasibility.get("verdict") or "unknown")
+    overall = str(feasibility.get("overall_confidence") or "speculative")
+    opportunity = _human_title_from_opportunity(feasibility.get("opportunity_id") or _query_action_title(req.message) or "当前机会")
+    if re.search(r"[\u4e00-\u9fff]", req.message) and not re.search(r"[\u4e00-\u9fff]", opportunity):
+        opportunity = _query_action_title(req.message) or "当前机会"
+    marker_hint = " ".join(f"[{item['marker']}]" for item in citations[:2])
+    lead = _variant(
+        artifact,
+        [
+            f"先给结论：{opportunity} 目前更适合按 {verdict} 处理，整体置信度是 `{overall}`，建议先小范围验证再放大。 {marker_hint}",
+            f"我的判断是：这个方向可以继续推进，但要把它当作 {verdict} 的机会来做，置信度 `{overall}`，先验证最强证据。 {marker_hint}",
+            f"可以先这么看：{opportunity} 有机会，但下一步应围绕证据做低成本试点；当前结论 `{verdict}`，置信度 `{overall}`。 {marker_hint}",
+        ],
+    ).strip()
+    lines: list[str] = [lead, "", "**关键机会**", f"- {opportunity}。审计结论：{audit.get('verdict', 'not_run')}。"]
+    if market.get("positioning_note"):
+        market_markers = " ".join(f"[{item['marker']}]" for item in citations if item.get("source_type") == "market")
+        lines.append(f"- 外部市场只作为参考：{market.get('positioning_note')} {market_markers}".rstrip())
+    dimensions = feasibility.get("dimensions") or []
+    if dimensions:
+        lines.append("")
+        lines.append("**支撑要点**")
+        for dimension in dimensions[:5]:
+            markers = _evidence_markers(dimension.get("evidence") or [], citations)
+            label = _friendly_dimension_name(dimension.get("name"))
+            score = dimension.get("score", "n/a")
+            confidence = dimension.get("confidence") or "speculative"
+            rationale = sanitize_customer_text(dimension.get("rationale") or "证据不足，需要补充验证。", field_labels)
+            lines.append(f"- {label}：{score}/5，置信度 `{confidence}`。{rationale} {markers}".rstrip())
+    gaps = feasibility.get("gap_list") or []
+    lines.append("")
+    lines.append("**风险/缺口**")
+    if gaps:
+        for gap in gaps[:4]:
+            lines.append(f"- {sanitize_customer_text(gap, field_labels)}")
+    else:
+        lines.append("- 暂未发现额外缺口，但仍建议用新样本验证关键假设。")
+    lines.append("")
+    lines.append("**建议下一步**")
+    for item in _feasibility_next_steps(req, artifact, citations):
+        lines.append(f"- {sanitize_customer_text(item, field_labels)}")
+    markdown = sanitize_customer_text("\n".join(lines).strip(), field_labels)
+    return {
+        "markdown": markdown,
+        "citations": citations,
+        "_llm": {"mode": "batch10_contract_renderer", "response_id": None, "usage": {}},
+        "output_contract": _output_contract(decision.intent),
+    }
+
+
+def _structured_corpus_answer_v10(req: ChatRequest, artifact: dict[str, Any]) -> dict[str, Any]:
+    citations, _ = _build_citations(artifact)
+    field_labels = _customer_field_labels(artifact)
+    citations = sanitize_citations(citations, field_labels)
+    hits = artifact.get("corpus", {}).get("hits", [])
+    signals = _evidence_signals(hits, citations)
+    topic = sanitize_customer_text(_query_action_title(req.message) or "当前问题", field_labels)
+    marker_hint = " ".join(f"[{item['marker']}]" for item in citations[:2])
+    lead = _variant(
+        artifact,
+        [
+            f"直接回答：可以先围绕“{topic}”做一版方案，依据是当前资料里命中的 {len(hits)} 条记录，而不是泛泛 brainstorm。 {marker_hint}",
+            f"我的建议是先把问题收束到“{topic}”，用资料里的真实信号做小步验证。当前命中 {len(hits)} 条记录。 {marker_hint}",
+            f"这批资料给出的方向是：先围绕“{topic}”找可执行切口，再用命中证据验证活动或产品假设。 {marker_hint}",
+        ],
+    ).strip()
+    lines: list[str] = [lead, "", "**支撑要点**"]
+    if signals:
+        for signal in signals[:6]:
+            lines.append(f"- {sanitize_customer_text(signal['text'], field_labels)} {signal['markers']}".rstrip())
+    else:
+        lines.append("- 当前问题没有命中足够具体的工作区记录。")
+    lines.append("")
+    lines.append("**建议动作**")
+    if signals:
+        for item in _corpus_action_lines(signals, citations)[:4]:
+            action = sanitize_customer_text(item, field_labels).lstrip("- ").strip()
+            lines.append(f"- {action}")
+    else:
+        lines.append("- 先补充与目标用户、场景、预算或活动结果相关的资料，再生成更具体方案。")
+    markdown = sanitize_customer_text("\n".join(lines).strip(), field_labels)
+    return {
+        "markdown": markdown,
+        "citations": citations,
+        "_llm": {"mode": "batch10_corpus_contract_renderer", "response_id": None, "usage": {}},
+        "output_contract": _output_contract("corpus_qa"),
+    }
 
 
 async def _answer_event_stream(payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
@@ -1509,17 +1752,19 @@ async def _stream_answer_frames(
     conversation_id: str,
     state: dict[str, Any],
 ) -> AsyncIterator[str]:
-    answer = _structured_answer(req, decision, artifact)
-    text = str(answer.get("markdown") or _final_text(decision, artifact))
+    answer = _structured_answer_v10(req, decision, artifact)
+    text = _customer_text(answer.get("markdown") or _final_text(decision, artifact), artifact)
     meta = dict(answer.get("_llm") or {})
+    citations = sanitize_citations(answer.get("citations", []), _customer_field_labels(artifact))
     for delta in _chunk_text(text, 96):
         if delta:
             yield _frame("answer_delta", {"delta": delta}, conversation_id)
             await asyncio.sleep(0)
     state["text"] = text
     state["meta"] = meta
-    artifact["answer"] = {"markdown": text, "text": text, "citations": answer.get("citations", []), "_llm": meta}
-    artifact["citations"] = answer.get("citations", [])
+    artifact["answer"] = {"markdown": text, "text": text, "citations": citations, "_llm": meta}
+    artifact["citations"] = citations
+    artifact["output_contract"] = answer.get("output_contract") or _output_contract(decision.intent)
     yield _frame("model_response", {"agent": "df-answer-writer", **meta}, conversation_id)
     return
 
@@ -1704,13 +1949,23 @@ async def _emit_lightweight_final(
     history: list[dict[str, Any]],
 ) -> AsyncIterator[str]:
     result = await run_in_threadpool(_lightweight_reply, req, decision, history)
-    text = _strip_raw_ref_leaks(str(result.get("text") or "").strip() or "我可以继续帮你处理当前工作区。")
+    field_labels = _workspace_field_labels(req.workspace_id)
+    text = sanitize_customer_text(
+        _strip_raw_ref_leaks(str(result.get("text") or "").strip() or "我可以继续帮你处理当前工作区。"),
+        field_labels,
+    )
     for delta in _chunk_text(text, 96):
         yield _frame("answer_delta", {"delta": delta}, conv_id)
         await asyncio.sleep(0)
     meta = {key: result.get(key) for key in ("mode", "response_id", "usage", "error") if key in result}
     artifact["answer"] = {"markdown": text, "text": text, "citations": [], "_llm": meta}
-    final_payload = {"text": text, "routing": decision.model_dump(), "artifact": artifact}
+    artifact["output_contract"] = _output_contract(decision.intent)
+    final_payload = {
+        "text": text,
+        "routing": decision.model_dump(),
+        "artifact": artifact,
+        "output_contract": artifact["output_contract"],
+    }
     yield _frame("model_response", {"agent": "df-coordinator", **meta}, conv_id)
     await run_in_threadpool(
         _persist_assistant_message,
@@ -1756,13 +2011,21 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     yield _frame("plan", decision.model_dump(), conv_id)
     if decision.needs_clarification:
         guidance = await run_in_threadpool(_clarify_guidance, req, decision, conv_id)
-        decision.clarifying_question = guidance.get("question")
+        clarify = _structured_clarify(req, guidance)
+        decision.clarifying_question = clarify["question"]
+        artifact["clarify"] = clarify
+        artifact["output_contract"] = _output_contract("clarify_needed")
         clarify_payload = {
-            "question": decision.clarifying_question,
+            "question": clarify["question"],
+            "clarify": clarify,
+            "options": clarify["options"],
+            "allow_multi": clarify["allow_multi"],
+            "allow_freeform": clarify["allow_freeform"],
             "reason": decision.reason,
             "mode": guidance.get("mode"),
             "response_id": guidance.get("response_id"),
             "usage": guidance.get("usage") or {},
+            "output_contract": artifact["output_contract"],
         }
         frame = _frame("clarify", clarify_payload, conv_id)
         await run_in_threadpool(
@@ -1986,13 +2249,19 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             yield _frame("error", {"agent": "revision-loop", "message": str(exc)}, conv_id)
             artifact["audit"] = audit.model_dump()
             answer_state: dict[str, Any] = {}
-            async for frame in _stream_answer_frames(working_req, decision, artifact, conv_id, answer_state):
+            async for frame in _stream_answer_frames(req, decision, artifact, conv_id, answer_state):
                 yield frame
             if producer_requested:
                 async for frame in _producer_frames(artifact, conv_id):
                     yield frame
-            summary = answer_state.get("text") or _final_text(decision, artifact)
-            final_payload = {"text": summary, "routing": decision.model_dump(), "artifact": artifact}
+            summary = _customer_text(answer_state.get("text") or _final_text(decision, artifact), artifact)
+            artifact.setdefault("output_contract", _output_contract(decision.intent))
+            final_payload = {
+                "text": summary,
+                "routing": decision.model_dump(),
+                "artifact": artifact,
+                "output_contract": artifact["output_contract"],
+            }
             frame = _frame("final", final_payload, conv_id)
             await run_in_threadpool(
                 _persist_assistant_message,
@@ -2007,13 +2276,19 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
 
     artifact["audit"] = audit.model_dump()
     answer_state: dict[str, Any] = {}
-    async for frame in _stream_answer_frames(working_req, decision, artifact, conv_id, answer_state):
+    async for frame in _stream_answer_frames(req, decision, artifact, conv_id, answer_state):
         yield frame
     if producer_requested:
         async for frame in _producer_frames(artifact, conv_id):
             yield frame
-    summary = answer_state.get("text") or _final_text(decision, artifact)
-    final_payload = {"text": summary, "routing": decision.model_dump(), "artifact": artifact}
+    summary = _customer_text(answer_state.get("text") or _final_text(decision, artifact), artifact)
+    artifact.setdefault("output_contract", _output_contract(decision.intent))
+    final_payload = {
+        "text": summary,
+        "routing": decision.model_dump(),
+        "artifact": artifact,
+        "output_contract": artifact["output_contract"],
+    }
     frame = _frame("final", final_payload, conv_id)
     await run_in_threadpool(
         _persist_assistant_message,

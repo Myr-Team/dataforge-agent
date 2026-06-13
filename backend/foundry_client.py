@@ -29,9 +29,22 @@ CLARIFY_GUIDANCE_SCHEMA = {
         "question": {
             "type": "string",
             "description": "A concise Chinese onboarding guide and next-step question.",
-        }
+        },
+        "options": {
+            "type": "array",
+            "description": "Two to five concise Chinese next-step options.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string"},
+                    "label": {"type": "string"},
+                },
+                "required": ["id", "label"],
+            },
+        },
     },
-    "required": ["question"],
+    "required": ["question", "options"],
 }
 
 
@@ -481,6 +494,8 @@ def run_coordinator_guidance(payload: dict[str, Any]) -> dict[str, Any]:
         "你要生成中文上下文引导，而不是固定模板。必须包含三件事："
         "1) 简短自我介绍；2) 结合 workspace_context 说明当前工作区能做什么；"
         "3) 给用户一个明确的下一步提问。"
+        "同时生成 2 到 5 个中文选项，每个选项要短、可点击、面向业务用户。"
+        "不要输出数据库字段名、schema key、文件路径或 raw_docs 引用；需要提到字段含义时改写成自然中文。"
         "语气自然，避免每次复用同一句话。不要编造 profile_summary 之外的具体事实。"
         "只返回 JSON。"
     )
@@ -500,6 +515,7 @@ def run_coordinator_guidance(payload: dict[str, Any]) -> dict[str, Any]:
     data = _extract_json(text)
     return {
         "question": str(data.get("question") or "").strip(),
+        "options": data.get("options") if isinstance(data.get("options"), list) else [],
         "response_id": getattr(response, "id", None),
         "usage": _usage_dict(getattr(response, "usage", None)),
         "mode": "coordinator_llm",

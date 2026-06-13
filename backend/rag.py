@@ -101,6 +101,8 @@ def _score_text(haystack: str, terms: list[str]) -> int:
 
 
 def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+    if os.environ.get("DF_FORCE_LOCAL_SEARCH") == "1":
+        return _local_search(workspace_id, query, top_k)
     endpoint = os.environ.get("SEARCH_ENDPOINT") or _terraform_output("search_endpoint")
     key = os.environ.get("SEARCH_KEY") or _terraform_output("search_primary_key")
     index_name = os.environ.get("SEARCH_INDEX_NAME", DEFAULT_INDEX)
@@ -116,13 +118,13 @@ def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]
         retrieval_mode = "hybrid"
     try:
         data = _remote_search(url, payload, key)
-    except urllib.error.HTTPError:
+    except (urllib.error.HTTPError, urllib.error.URLError):
         if vector:
             try:
                 payload = _search_payload(workspace_id, query, top_k)
                 data = _remote_search(url, payload, key)
                 retrieval_mode = "keyword_fallback"
-            except urllib.error.HTTPError:
+            except (urllib.error.HTTPError, urllib.error.URLError):
                 return _local_search(workspace_id, query, top_k)
         else:
             return _local_search(workspace_id, query, top_k)

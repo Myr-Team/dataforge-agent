@@ -129,6 +129,7 @@ class WorkspacesResponse(BaseModel):
 class WorkspaceColumnDetail(BaseModel):
     table: str | None = None
     name: str
+    friendly_label: str | None = None
     role: str | None = None
     signal: str | None = None
     missing_rate: float | int | None = None
@@ -162,6 +163,7 @@ class WorkspaceDetailResponse(BaseModel):
     format: str
     rows: int = 0
     columns: list[WorkspaceColumnDetail] = Field(default_factory=list)
+    customer_summary: str | None = None
     doc_count: int = 0
     documents: list[WorkspaceDocumentDetail] = Field(default_factory=list)
     reference_images: list[WorkspaceReferenceImage] = Field(default_factory=list)
