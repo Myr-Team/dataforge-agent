@@ -1621,3 +1621,103 @@ svg { flex-shrink: 0; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ============================================================
+   中央 Agent Studio 优化：可行性结论英雄区 + 五维评分（对齐 效果.png）
+   ============================================================ */
+.verdict-hero {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(300px, 1.15fr);
+  gap: 24px;
+  padding: 22px 24px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+.vh-left { display: flex; flex-direction: column; gap: 8px; justify-content: center; padding-left: 16px; border-left: 4px solid var(--line); }
+.verdict-hero.tone-yes .vh-left { border-left-color: var(--mint); }
+.verdict-hero.tone-cond .vh-left { border-left-color: var(--amber); }
+.verdict-hero.tone-no .vh-left { border-left-color: var(--red); }
+.vh-label { font-size: 12px; letter-spacing: 0.04em; color: var(--faint); }
+.vh-judgment { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; margin: 0; }
+.verdict-hero.tone-yes .vh-judgment { color: #0a8f63; }
+.verdict-hero.tone-cond .vh-judgment { color: #b26a00; }
+.verdict-hero.tone-no .vh-judgment { color: var(--red); }
+.vh-conf { align-self: flex-start; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: var(--surface-soft); color: var(--muted); }
+.vh-conf.data_confirmed { background: var(--mint-soft); color: var(--mint); }
+.vh-conf.market_inferred { background: var(--amber-soft); color: var(--amber); }
+.vh-conf.speculative { background: #f0f0f3; color: var(--faint); }
+.vh-opp { font-size: 14px; line-height: 1.6; color: var(--muted); margin: 2px 0 0; }
+.vh-opp.muted { color: var(--faint); }
+.vh-scores { display: flex; flex-direction: column; gap: 9px; justify-content: center; }
+.vh-scores-head { font-size: 12px; letter-spacing: 0.04em; color: var(--faint); margin-bottom: 2px; }
+.vh-score { display: grid; grid-template-columns: 76px 1fr 34px; gap: 10px; align-items: center; }
+.vh-score-label { font-size: 12.5px; color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vh-score-track { height: 8px; border-radius: 999px; background: #eeeef2; overflow: hidden; }
+.vh-score-track i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--blue), #4aa3ff); transition: width 0.6s cubic-bezier(0.16, 0.84, 0.44, 1); }
+.vh-score-track i.v0 { background: #d1d1d6; }
+.vh-score-track i.v1, .vh-score-track i.v2 { background: linear-gradient(90deg, #ff7a59, #ffb259); }
+.vh-score-track i.v3 { background: linear-gradient(90deg, #ffb300, #ffce4a); }
+.vh-score-val { font-size: 13px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.studio-methods { display: flex; flex-direction: column; gap: 14px; }
+@media (max-width: 720px) { .verdict-hero { grid-template-columns: 1fr; } }
+
+/* ============================================================
+   左侧工作区 BI 看板优化（对齐 效果.png）
+   ============================================================ */
+.ws-meta { display: flex; flex-direction: column; gap: 2px; margin: -2px 0 10px; }
+.ws-id { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--faint); word-break: break-all; }
+.ws-created { font-size: 11px; color: var(--faint); }
+.metric-row-4 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.metric-row-4 .metric { background: var(--surface-soft); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.metric-row-4 .metric strong { font-size: 17px; }
+
+/* 数据集行：类型角标 + 解析状态徽章 */
+.dataset-row { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; padding: 8px; border-radius: 10px; transition: background 0.15s; }
+.dataset-row:hover { background: var(--surface-soft); }
+.dataset-meta { min-width: 0; }
+.dataset-meta strong { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dataset-meta span { font-size: 11px; color: var(--faint); }
+.file-tag { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; font-size: 9.5px; font-weight: 800; letter-spacing: 0.02em; color: #fff; }
+.file-tag.ft-excel { background: #1f9d57; }
+.file-tag.ft-csv { background: #0071e3; }
+.file-tag.ft-json { background: #d98a00; }
+.file-tag.ft-md { background: #6e6e73; }
+.file-tag.ft-img { background: #8a4ddf; }
+.file-tag.ft-doc { background: #8e8e93; }
+.ds-status { font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.ds-status.ready { background: var(--mint-soft); color: var(--mint); }
+.ds-status.partial { background: var(--amber-soft); color: var(--amber); }
+
+/* 数据画像：环形 + 强/中/噪占比 */
+.portrait-card { display: grid; grid-template-columns: 96px 1fr; gap: 14px; align-items: center; }
+.portrait-split { display: flex; flex-direction: column; gap: 7px; }
+.psplit-row { display: grid; grid-template-columns: 78px 1fr 34px; gap: 8px; align-items: center; }
+.psplit-label { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
+.psplit-dot { width: 7px; height: 7px; border-radius: 999px; }
+.psplit-dot.sig { background: var(--mint); }
+.psplit-dot.mid { background: var(--amber); }
+.psplit-dot.noise { background: var(--line-strong); }
+.psplit-track { height: 6px; border-radius: 999px; background: #eeeef2; overflow: hidden; }
+.psplit-track b { display: block; height: 100%; border-radius: 999px; }
+.psplit-track b.sig { background: var(--mint); }
+.psplit-track b.mid { background: var(--amber); }
+.psplit-track b.noise { background: var(--line-strong); }
+.psplit-row em { font-size: 11px; font-weight: 600; color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* 关键信号 TOP5 */
+.signal-top { display: flex; flex-direction: column; gap: 8px; }
+.signal-row { display: grid; grid-template-columns: 84px 1fr 32px; gap: 9px; align-items: center; }
+.signal-name { font-size: 12px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.signal-track { height: 6px; border-radius: 999px; background: #eeeef2; overflow: hidden; }
+.signal-track i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--mint), #4fd1a5); }
+.signal-val { font-size: 11px; font-weight: 700; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* 参考图像网格 */
+.reference-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.reference-grid img { width: 100%; aspect-ratio: 1.4; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
+.reference-grid.placeholder .ref-thumb { aspect-ratio: 1.4; border-radius: 8px; border: 1px solid var(--line); }
+.ref-thumb.ref-0 { background: linear-gradient(135deg, #e8f2ff, #cfe6ff); }
+.ref-thumb.ref-1 { background: linear-gradient(135deg, #e8f8f2, #c9efe0); }
+.ref-thumb.ref-2 { background: linear-gradient(135deg, #fff4dd, #ffe6b8); }

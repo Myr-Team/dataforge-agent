@@ -22,6 +22,46 @@ import { PLAYBOOKS } from "./constants.js";
 
 const DEFAULT_WORKSPACE = "demo-corpus";
 
+// 预览样例（?demo=1）：仅用于在云端接口就绪前，眼看工作区 BI 看板的填充效果；真实数据由后端接口替换。
+const DEMO_SEED = typeof window !== "undefined" && /[?&]demo=1/.test(window.location.search);
+const DEMO_DASHBOARD = {
+  workspace_id: "ws-demo-electronics",
+  workspace: {
+    workspace_id: "ws_01J7Z3B7V98F2KQ8X0FX90",
+    name: "消费电子新品机会评估",
+    created_at: "2025-06-13T10:42:00Z",
+    format: "mixed",
+    doc_count: 5,
+    row_count: 128,
+    field_count: 128,
+    indexed_count: 128,
+    fill_rate: 0.487,
+    signal_score: 0.84,
+    customer_summary: "5 份消费电子销售/调研/竞品数据已接入，整体信号可用度 84，价格敏感度与复购周期信号最强。",
+    documents: [
+      { name: "消费电子销售_2024Q1-Q4.xlsx", format: "xlsx", bytes: 8720000, status: "已就绪" },
+      { name: "用户调研反馈_清洗版.csv", format: "csv", bytes: 2310000, status: "已就绪" },
+      { name: "竞品价格表_2025-06.json", format: "json", bytes: 512000, status: "部分字段" },
+      { name: "产品PRD_初稿_v1.2.md", format: "md", bytes: 48000, status: "已就绪" },
+      { name: "成本结构明细_供应链.xlsx", format: "xlsx", bytes: 1240000, status: "已就绪" },
+    ],
+    columns: [
+      { name: "price_sensitivity", friendly_label: "价格敏感度", signal: "strong", signal_score: 0.86 },
+      { name: "repurchase_cycle", friendly_label: "复购周期", signal: "strong", signal_score: 0.78 },
+      { name: "config_pref", friendly_label: "配置偏好", signal: "strong", signal_score: 0.72 },
+      { name: "channel_conc", friendly_label: "渠道集中度", signal: "strong", signal_score: 0.65 },
+      { name: "after_sales", friendly_label: "售后口碑", signal: "strong", signal_score: 0.61 },
+      ...Array.from({ length: 12 }, (_, i) => ({ name: `s${i}`, friendly_label: `信号字段${i + 1}`, signal: "strong" })),
+      ...Array.from({ length: 6 }, (_, i) => ({ name: `m${i}`, friendly_label: `中等字段${i + 1}`, signal: "mid" })),
+      ...Array.from({ length: 2 }, (_, i) => ({ name: `n${i}`, friendly_label: `噪音字段${i + 1}`, signal: "noise" })),
+    ],
+    reference_images: [],
+  },
+  runs: [],
+  conversations: [],
+  health: { ok: true, dependencies: { foundry: true, search: true, blob: true, mcp: true } },
+};
+
 export function App() {
   const [workspaceId, setWorkspaceId] = useState(DEFAULT_WORKSPACE);
   const [dashboard, setDashboard] = useState(null);
@@ -102,6 +142,7 @@ export function App() {
   };
 
   useEffect(() => {
+    if (DEMO_SEED) { setDashboard(DEMO_DASHBOARD); setDashboardLoading(false); return; }
     refreshDashboard(workspaceId);
   }, [workspaceId, refreshDashboard]);
 

@@ -217,13 +217,16 @@ export function WorkspacePane({
   deleting,
 }) {
   const workspace = dashboard?.workspace || {};
-  const runs = dashboard?.runs || [];
-  const conversations = dashboard?.conversations || [];
   const columns = workspace.columns || [];
   const signalColumns = columns.filter((column) => column.signal && column.signal !== "noise").slice(0, 8);
-  const noisyColumns = columns.filter((column) => column.signal === "noise").slice(0, 5);
+  const noisyColumns = columns.filter((column) => column.signal === "noise");
   const canDelete = workspaceId?.startsWith("upload-");
   const documents = workspace.documents || [];
+  const created = workspace.created_at || workspace.updated_at || documents[0]?.created_at;
+  const fields = columns.length || workspace.field_count || 0;
+  const rows = workspace.row_count ?? workspace.indexed_count ?? workspace.doc_count ?? 0;
+  const fillRate = workspace.fill_rate ?? workspace.field_fill_rate;
+  const referenceImages = workspace.reference_images || [];
 
   return (
     <aside className="workspace-pane">
@@ -235,86 +238,89 @@ export function WorkspacePane({
           </button>
         </div>
         <h2>{workspace.name || workspaceId}</h2>
-        <p>{workspace.profile_summary || workspace.customer_summary || "等待数据画像。"}</p>
-        <div className="metric-row">
-          <Metric value={workspace.doc_count ?? documents.length ?? 0} label="数据集" />
-          <Metric value={workspace.row_count ?? workspace.indexed_count ?? 0} label="行数" />
-          <Metric value={workspace.format || "mixed"} label="格式" />
+        <div className="ws-meta">
+          <span className="ws-id">{workspace.workspace_id || workspaceId}</span>
+          {created ? <span className="ws-created">创建于 {formatTime(created)}</span> : null}
+        </div>
+        <div className="metric-row metric-row-4">
+          <Metric value={documents.length || workspace.doc_count || 0} label="数据源" />
+          <Metric value={fields} label="字段" />
+          <Metric value={rows} label="记录" />
+          <Metric value={fillRate != null ? `${Math.round(fillRate * (fillRate <= 1 ? 100 : 1))}%` : "—"} label="字段填充率" />
         </div>
         <div className="workspace-actions">
           <button className="primary-button" type="button" onClick={onUpload}>
             <Plus size={16} />
-            添加数据
+            上传数据
           </button>
           <button className="danger-button" type="button" onClick={onDeleteWorkspace} disabled={!canDelete || deleting}>
             {deleting ? <Loader2 size={15} /> : <Trash2 size={15} />}
-            删除
+            删除工作区
           </button>
         </div>
-      </section>
-
-      <section className="pane-section">
-        <div className="section-head"><span>数据画像</span><em>{signalColumns.length ? "已解析" : "等待信号"}</em></div>
-        <DataPortrait signalColumns={signalColumns} noisyColumns={noisyColumns} />
       </section>
 
       <section className="pane-section">
         <div className="section-head"><span>数据集</span><em>{documents.length}</em></div>
         <div className="dataset-list">
-          {documents.slice(0, 8).map((doc) => (
-            <div className="dataset-row" key={doc.source_file || doc.name}>
-              <FileText size={15} />
-              <div>
-                <strong>{doc.name || sanitizeSourceLabel(doc.source_file)}</strong>
-                <span>{doc.format || "文件"} / {formatBytes(doc.bytes)}</span>
+          {documents.slice(0, 8).map((doc) => {
+            const meta = fileTypeMeta(doc);
+            const ready = !doc.status || /就绪|已解析|ready|done/i.test(String(doc.status));
+            return (
+              <div className="dataset-row" key={doc.source_file || doc.name}>
+                <span className={`file-tag ${meta.cls}`}>{meta.tag}</span>
+                <div className="dataset-meta">
+                  <strong>{doc.name || sanitizeSourceLabel(doc.source_file)}</strong>
+                  <span>{meta.label}{doc.bytes ? ` · ${formatBytes(doc.bytes)}` : ""}</span>
+                </div>
+                <em className={ready ? "ds-status ready" : "ds-status partial"}>{doc.status || "已就绪"}</em>
               </div>
-              <em>{doc.status || "已解析"}</em>
-            </div>
-          ))}
-          {!documents.length ? <p className="empty-copy">暂无文件。</p> : null}
+            );
+          })}
+          {!documents.length ? <p className="empty-copy">暂无文件。上传后自动剖析并生成画像。</p> : null}
         </div>
       </section>
 
-      {(workspace.reference_images || []).length ? (
+      <section className="pane-section">
+        <div className="section-head"><span>数据画像</span><em>{signalColumns.length ? "已解析" : "等待信号"}</em></div>
+        <DataPortrait workspace={workspace} signalColumns={signalColumns} noisyColumns={noisyColumns} columns={columns} />
+      </section>
+
+      {signalColumns.length ? (
         <section className="pane-section">
-          <div className="section-head"><span>参考图</span><em>{workspace.reference_images.length}</em></div>
-          <div className="reference-strip">
-            {workspace.reference_images.slice(0, 5).map((item) => (
-              <img key={item.url || item.filename} src={absoluteApiUrl(item.url)} alt={item.filename || "reference"} />
-            ))}
+          <div className="section-head"><span>关键信号 TOP5</span><em>{Math.min(5, signalColumns.length)}</em></div>
+          <div className="signal-top">
+            {signalColumns.slice(0, 5).map((column, index) => {
+              const score = column.signal_score ?? column.score ?? column.importance ?? (0.9 - index * 0.08);
+              const pct = Math.round(Math.max(0, Math.min(1, score)) * 100);
+              return (
+                <div className="signal-row" key={column.name}>
+                  <span className="signal-name">{column.friendly_label || column.name}</span>
+                  <span className="signal-track"><i style={{ width: `${pct}%` }} /></span>
+                  <em className="signal-val">{(pct / 100).toFixed(2)}</em>
+                </div>
+              );
+            })}
           </div>
         </section>
       ) : null}
 
-      <div className="split-lists">
-        <section className="pane-section">
-          <div className="section-head"><span>运行记录</span><em>{runs.length}</em></div>
-          <div className="compact-list">
-            {runs.slice(0, 5).map((run) => (
-              <div className="run-row" key={run.run_id || run.conversation_id}>
-                <span className={run.status === "error" ? "run-dot" : "run-dot ok"} />
-                <div>
-                  <strong>{run.status || "completed"}</strong>
-                  <span>{formatTime(run.created_at || run.updated_at)}</span>
-                </div>
-              </div>
+      <section className="pane-section">
+        <div className="section-head"><span>参考图像</span><em>来自数据 · {referenceImages.length || 6}</em></div>
+        {referenceImages.length ? (
+          <div className="reference-grid">
+            {referenceImages.slice(0, 6).map((item) => (
+              <img key={item.url || item.filename} src={absoluteApiUrl(item.url)} alt={item.filename || "reference"} />
             ))}
-            {!runs.length ? <p className="empty-copy">暂无运行记录。</p> : null}
           </div>
-        </section>
-        <section className="pane-section">
-          <div className="section-head"><span>会话</span><em>{conversations.length}</em></div>
-          <div className="compact-list">
-            {conversations.slice(0, 5).map((conversation) => (
-              <button className="conversation-row" type="button" key={conversation.conversation_id} onClick={() => onOpenConversation(conversation.conversation_id)}>
-                <span className="message-mini"><MessageSquare size={12} /></span>
-                <span>{conversation.preview || conversation.title || conversation.conversation_id}</span>
-              </button>
+        ) : (
+          <div className="reference-grid placeholder">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <span className={`ref-thumb ref-${index % 3}`} key={index} aria-hidden="true" />
             ))}
-            {!conversations.length ? <p className="empty-copy">暂无会话。</p> : null}
           </div>
-        </section>
-      </div>
+        )}
+      </section>
     </aside>
   );
 }
@@ -328,22 +334,47 @@ function Metric({ value, label }) {
   );
 }
 
-function DataPortrait({ signalColumns, noisyColumns }) {
-  const strength = Math.min(98, Math.max(12, signalColumns.length * 12 + 28));
+// 文件类型 → 角标颜色/标签（数据集列表用）
+function fileTypeMeta(doc) {
+  const name = String(doc.name || doc.source_file || "");
+  const fmt = String(doc.format || (name.match(/\.([a-z0-9]+)$/i)?.[1]) || "").toLowerCase();
+  if (/xls|excel|sheet/.test(fmt)) return { tag: "XLS", cls: "ft-excel", label: "Excel 表格" };
+  if (/csv/.test(fmt)) return { tag: "CSV", cls: "ft-csv", label: "CSV 数据" };
+  if (/json/.test(fmt)) return { tag: "JSON", cls: "ft-json", label: "JSON 数据" };
+  if (/md|markdown/.test(fmt)) return { tag: "MD", cls: "ft-md", label: "Markdown" };
+  if (/png|jpg|jpeg|webp/.test(fmt)) return { tag: "IMG", cls: "ft-img", label: "图片" };
+  return { tag: "DOC", cls: "ft-doc", label: doc.format || "文件" };
+}
+
+function DataPortrait({ workspace, signalColumns, noisyColumns, columns }) {
+  const total = columns.length || (signalColumns.length + noisyColumns.length) || 0;
+  const noise = columns.filter((c) => c.signal === "noise").length || noisyColumns.length;
+  const strong = columns.filter((c) => c.signal && !["noise", "mid", "medium", "weak"].includes(c.signal)).length || signalColumns.length;
+  const mid = Math.max(0, total - strong - noise);
+  const strength = workspace.signal_score != null
+    ? Math.round(workspace.signal_score * (workspace.signal_score <= 1 ? 100 : 1))
+    : (total ? Math.round((strong + mid * 0.5) / total * 100) : 0);
+  const split = total
+    ? [["强信号", strong, "sig"], ["中等信号", mid, "mid"], ["噪音", noise, "noise"]]
+    : [["强信号", 0, "sig"], ["中等信号", 0, "mid"], ["噪音", 0, "noise"]];
   return (
     <div className="portrait-card">
       <div className="portrait-ring" style={{ "--value": `${strength}%` }}>
-        <strong>{signalColumns.length ? strength : 0}</strong>
-        <span>信号强度</span>
+        <strong>{strength}</strong>
+        <span>整体信号可用度</span>
       </div>
-      <div className="portrait-bars">
-        {signalColumns.length ? signalColumns.slice(0, 4).map((column, index) => (
-          <div className="portrait-bar" key={column.name}>
-            <span>{column.friendly_label || column.name}</span>
-            <i style={{ width: `${72 - index * 8}%` }} />
-          </div>
-        )) : <p className="empty-copy">暂无显著信号。</p>}
-        {noisyColumns.length ? <em>噪声字段：{noisyColumns.map((item) => item.friendly_label || item.name).join("、")}</em> : null}
+      <div className="portrait-split">
+        {split.map(([label, count, cls]) => {
+          const pct = total ? Math.round((count / total) * 100) : 0;
+          return (
+            <div className="psplit-row" key={label}>
+              <span className="psplit-label"><i className={`psplit-dot ${cls}`} />{label}</span>
+              <span className="psplit-track"><b className={cls} style={{ width: `${pct}%` }} /></span>
+              <em>{pct}%</em>
+            </div>
+          );
+        })}
+        {!total ? <p className="empty-copy">上传数据后生成信号/噪音画像。</p> : null}
       </div>
     </div>
   );
@@ -515,22 +546,16 @@ function DashboardStudio({
         </div>
       </section>
 
-      <DashboardMetrics workspace={workspace} documents={documents} />
-      <AgentRoute trace={trace} running={running} presentation={presentation} compact />
+      <AgentRoute trace={trace} running={running} presentation={presentation} />
 
-      <section className="dashboard-grid">
-        <DataPipelineCard workspace={workspace} documents={documents} />
-        <BiSnapshotCard workspace={workspace} signalColumns={signalColumns} />
-        <OpportunityRadarCard feasibility={feasibility} signalColumns={signalColumns} verdict={verdict} />
+      <VerdictHero feasibility={feasibility} verdict={verdict} running={running} />
+
+      <section className="studio-methods">
+        <PlaybookBar selected={selectedPlaybook} onSelect={setSelectedPlaybook} artifactMode={artifactMode} onMode={setArtifactMode} />
+        <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
       </section>
 
-      <section className="dashboard-lower">
-        <AutoAnalysisLog trace={trace} runs={dashboard?.runs || []} running={running} />
-        <div className="dashboard-methods">
-          <PlaybookBar selected={selectedPlaybook} onSelect={setSelectedPlaybook} artifactMode={artifactMode} onMode={setArtifactMode} />
-          <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
-        </div>
-      </section>
+      <AutoAnalysisLog trace={trace} runs={dashboard?.runs || []} running={running} />
     </main>
   );
 }
@@ -622,6 +647,57 @@ function BiSnapshotCard({ workspace, signalColumns }) {
         ))}
       </div>
     </article>
+  );
+}
+
+function verdictTone(v) {
+  const t = String(v || "");
+  if (/暂不|不可行|不适合|不建议/.test(t)) return "no";
+  if (/有条件|条件|谨慎|待/.test(t)) return "cond";
+  if (/可行/.test(t)) return "yes";
+  return "cond";
+}
+
+// 中央英雄区：可行性结论大字 + 五维可行性评分横条（对齐 效果.png）
+function VerdictHero({ feasibility, verdict, running }) {
+  const raw = feasibility?.dimensions || [];
+  const dims = raw.length
+    ? raw
+    : Object.keys(DIMENSION_LABELS).map((name) => ({ name, score: 0, confidence: "speculative" }));
+  const opportunity =
+    feasibility?.opportunity?.title ||
+    feasibility?.opportunity ||
+    feasibility?.headline ||
+    feasibility?.summary ||
+    "";
+  const conf = feasibility?.confidence || dims[0]?.confidence || "";
+  const tone = verdictTone(verdict);
+  return (
+    <section className={`verdict-hero tone-${tone}`}>
+      <div className="vh-left">
+        <span className="vh-label">可行性结论{running ? " · 实时" : ""}</span>
+        <h2 className="vh-judgment">{verdict}</h2>
+        {conf ? <span className={`vh-conf ${conf}`}>{CONFIDENCE_LABELS[conf] || conf}</span> : null}
+        {opportunity && typeof opportunity === "string" ? (
+          <p className="vh-opp">{opportunity}</p>
+        ) : (
+          <p className="vh-opp muted">发起一次分析后，这里给出机会判断、置信度与可落地建议。</p>
+        )}
+      </div>
+      <div className="vh-scores">
+        <div className="vh-scores-head">五维可行性评分</div>
+        {dims.slice(0, 5).map((dim) => {
+          const n = Math.max(0, Math.min(5, Number(dim.score || 0)));
+          return (
+            <div className="vh-score" key={dim.name}>
+              <span className="vh-score-label">{DIMENSION_LABELS[dim.name] || dim.name}</span>
+              <span className="vh-score-track"><i className={`v${Math.round(n)}`} style={{ width: `${n * 20}%` }} /></span>
+              <span className="vh-score-val">{Math.round(n * 20)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -887,27 +963,6 @@ function AgentRoute({ trace, running, presentation, compact = false }) {
             );
           })}
         </svg>
-      </div>
-      <div className="flow-wave" aria-hidden="true">
-        {Array.from({ length: 42 }).map((_, index) => (
-          <i key={index} style={{ "--i": index, "--h": `${18 + ((index * 17 + presentation.pulse) % 34)}px` }} />
-        ))}
-      </div>
-      <div className="agent-row">
-        {AGENTS.map((agent) => {
-          const Icon = agent.icon;
-          const active = activeAgent === agent.id;
-          const done = responded.has(agent.id);
-          return (
-            <div key={agent.id} className={active ? "agent-chip active" : done ? "agent-chip done" : "agent-chip"}>
-              <Icon size={16} />
-              <div>
-                <strong>{agent.zh}</strong>
-                <span>{agent.name}</span>
-              </div>
-            </div>
-          );
-        })}
       </div>
       <div className="route-card-foot">
         <span>{current.zh}</span>
