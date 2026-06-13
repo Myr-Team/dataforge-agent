@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from fastapi.testclient import TestClient
 
 import backend.app as app_module
@@ -83,6 +85,7 @@ def test_pdf_upload_creates_profile_and_manifest(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(workspace_store, "_persist_workspace_manifest", lambda workspace_id, manifest: None)
     monkeypatch.setattr(workspace_store, "load_workspace_registry", lambda: [])
     monkeypatch.setattr(workspace_store, "workspace_deleted", lambda workspace_id: False)
+    monkeypatch.setattr(app_module, "_schedule_upload_ingest", lambda result: None)
 
     pdf_bytes = b"%PDF-1.4\n1 0 obj\n<<>>\nstream\n(climbing campaign conversion data and sponsor notes)\nendstream\nendobj\n%%EOF"
     response = client.post(
@@ -94,11 +97,66 @@ def test_pdf_upload_creates_profile_and_manifest(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     uploaded = response.json()
     assert uploaded["format"] == "pdf"
+    assert uploaded["ingest_job_id"]
     assert uploaded["documents"][0]["format"] == "pdf"
-    assert uploaded["documents"][0]["status"] in {"已就绪", "部分字段"}
+    assert uploaded["documents"][0]["status"] == "解析中"
 
     manifest_path = tmp_path / "workspaces" / uploaded["workspace_id"] / "manifest.json"
     assert manifest_path.exists()
+
+    status = workspace_store.run_workspace_ingest_job(uploaded["workspace_id"], uploaded["ingest_job_id"])
+    assert status["state"] in {"ready", "partial"}
+
+    detail = workspace_store.get_workspace_detail(uploaded["workspace_id"])
+    assert detail["documents"][0]["status"] in {"已就绪", "部分字段"}
+    assert detail["documents"][0]["format"] == "pdf"
+    assert detail["manifest"]["metrics"]["field_count"] >= 1
+
+
+def test_async_upload_keeps_file_failures_isolated_and_idempotent(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(workspace_store, "WORKSPACES", tmp_path / "workspaces")
+    monkeypatch.setattr(workspace_store, "_index_documents", lambda docs: len(docs))
+    monkeypatch.setattr(workspace_store, "_persist_workspace_bundle", lambda **kwargs: {"mode": "test"})
+    monkeypatch.setattr(workspace_store, "_persist_workspace_manifest", lambda workspace_id, manifest: None)
+    monkeypatch.setattr(workspace_store, "load_workspace_registry", lambda: [])
+    monkeypatch.setattr(workspace_store, "workspace_deleted", lambda workspace_id: False)
+    monkeypatch.setattr(app_module, "_schedule_upload_ingest", lambda result: None)
+
+    csv_bytes = b"segment,revenue\nA,100\nB,30\n"
+    bad_bytes = b"\x00\x01not supported"
+    start = time.perf_counter()
+    response = client.post(
+        "/api/upload",
+        data={"name": "Async mixed workspace"},
+        files=[
+            ("file", ("metrics.csv", csv_bytes, "text/csv")),
+            ("file", ("broken.bin", bad_bytes, "application/octet-stream")),
+        ],
+    )
+    elapsed = time.perf_counter() - start
+    assert response.status_code == 200
+    uploaded = response.json()
+    assert elapsed < 3
+    assert [doc["status"] for doc in uploaded["documents"]] == ["解析中", "解析中"]
+
+    status = workspace_store.run_workspace_ingest_job(uploaded["workspace_id"], uploaded["ingest_job_id"])
+    assert status["state"] == "partial"
+    files = {item["name"]: item for item in status["files"]}
+    assert files["metrics.csv"]["status"] == "已就绪"
+    assert files["broken.bin"]["status"] == "失败"
+    assert files["broken.bin"]["error"]
+
+    second = client.post(
+        "/api/upload",
+        data={"name": "Async mixed workspace", "workspace_id": uploaded["workspace_id"]},
+        files=[("file", ("metrics.csv", csv_bytes, "text/csv"))],
+    )
+    assert second.status_code == 200
+    repeated = second.json()
+    assert repeated["ingest_job_id"] is None
+    assert len([doc for doc in repeated["documents"] if doc["name"] == "metrics.csv"]) == 1
+    repeated_detail = workspace_store.get_workspace_detail(uploaded["workspace_id"])
+    assert " | " not in repeated_detail["profile_summary"]
 
 
 def test_chat_request_keeps_legacy_payload_compatible() -> None:

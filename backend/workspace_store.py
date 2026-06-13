@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ingest.adapters.upload_to_records import upload_to_records
-from ingest.profiler import build_data_profile, compact_profile_for_workspace, profile_to_search_document, write_profile
+from ingest.profiler import build_data_profile, compact_profile_for_workspace, detect_format, profile_to_search_document, write_profile
 
 try:
     from .customer_text import customer_summary_from_profile, friendly_label, sanitize_customer_text
@@ -48,6 +49,12 @@ _CONTEXT_CACHE_SECONDS = float(os.environ.get("DF_WORKSPACE_CONTEXT_CACHE_SECOND
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 REFERENCE_ROLES = {"logo", "activity", "reference"}
+STATUS_PROCESSING = "解析中"
+STATUS_READY = "已就绪"
+STATUS_PARTIAL = "部分字段"
+STATUS_FAILED = "失败"
+STATUS_REFERENCE = "仅参考"
+INGEST_INDEX_BATCH_SIZE = max(1, int(os.environ.get("DF_INGEST_INDEX_BATCH_SIZE", "150")))
 
 
 def create_workspace_from_upload(
@@ -119,6 +126,228 @@ def create_workspace_from_upload(
         "indexed_count": indexed_count,
         "profile_summary": profile["profile_summary"],
         "documents": workspace_meta["documents"],
+    }
+
+
+def create_workspace_upload_job(
+    *,
+    files: list[dict[str, Any]],
+    name: str | None = None,
+    description: str | None = None,
+    requested_workspace_id: str | None = None,
+    asset_role: str | None = None,
+) -> dict[str, Any]:
+    clean_files = [item for item in files if item.get("content")]
+    if not clean_files:
+        raise ValueError("Uploaded file is empty")
+    role = _normalize_asset_role(asset_role)
+    data_files = [item for item in clean_files if not _is_reference_image(item)]
+    reference_files = [item for item in clean_files if _is_reference_image(item)]
+    append_workspace_id = str(requested_workspace_id or "").strip()
+    existing_meta: dict[str, Any] = {}
+    existing_profile: dict[str, Any] = {}
+    if append_workspace_id:
+        if append_workspace_id.startswith("upload-") and workspace_deleted(append_workspace_id):
+            raise FileNotFoundError(append_workspace_id)
+        loaded = _load_workspace_bundle(append_workspace_id)
+        if loaded is None:
+            raise FileNotFoundError(append_workspace_id)
+        existing_meta, existing_profile = loaded
+
+    display_seed = (
+        name
+        or existing_meta.get("name")
+        or existing_profile.get("name")
+        or Path(_safe_filename(str(clean_files[0].get("filename") or "upload"))).stem
+    )
+    display_name = str(display_seed or "uploaded data").strip() or "uploaded data"
+    description = str(description or "").strip() or existing_meta.get("description") or None
+    workspace_id = append_workspace_id or _unique_workspace_id(display_name)
+    workspace_dir = WORKSPACES / workspace_id
+    raw_dir = workspace_dir / "raw_docs"
+    profiles_dir = workspace_dir / "profiles"
+    reference_dir = workspace_dir / "reference_images"
+    raw_dir.mkdir(parents=True, exist_ok=bool(append_workspace_id))
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    if reference_files:
+        reference_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.now(timezone.utc).isoformat()
+    job_id = f"job_{uuid.uuid4().hex[:12]}"
+    documents = _normalize_documents(workspace_dir, existing_meta, existing_profile) if existing_meta or existing_profile else []
+    reference_images = _reference_images(existing_meta)
+    used_names = _existing_raw_names({"documents": documents, "raw_docs": existing_meta.get("raw_docs") or []})
+    used_reference_names = _existing_reference_names(existing_meta)
+    raw_payloads: list[dict[str, Any]] = []
+    reference_payloads: list[dict[str, Any]] = []
+    pending_sources: list[str] = []
+    skipped_sources: list[str] = []
+    profile_index = _next_profile_index(existing_meta, existing_profile)
+    seen_hashes = {
+        str(item.get("content_sha256") or "")
+        for item in documents
+        if isinstance(item, dict) and item.get("content_sha256")
+    }
+
+    for index, item in enumerate(data_files):
+        content = bytes(item.get("content") or b"")
+        content_hash = hashlib.sha256(content).hexdigest()
+        existing_doc = _find_existing_document(documents, content_hash)
+        if existing_doc and existing_doc.get("status") != STATUS_FAILED:
+            skipped_sources.append(str(existing_doc.get("source_file") or existing_doc.get("name") or ""))
+            continue
+
+        if existing_doc:
+            safe_name = Path(str(existing_doc.get("source_file") or existing_doc.get("name") or "")).name
+            source_file = str(existing_doc.get("source_file") or f"raw_docs/{safe_name}")
+            document = existing_doc
+        else:
+            safe_name = _unique_safe_filename(str(item.get("filename") or f"upload-{index + 1}"), used_names)
+            used_names.add(safe_name)
+            source_file = f"raw_docs/{safe_name}"
+            document = {
+                "source_file": source_file,
+                "name": safe_name,
+                "created_at": now,
+            }
+            documents.append(document)
+
+        raw_path = raw_dir / safe_name
+        raw_path.write_bytes(content)
+        fmt = _cheap_upload_format(safe_name, item.get("content_type"))
+        profile_id = _profile_id_for_document(document, profile_index + len(pending_sources))
+        profile_file = str(document.get("profile_file") or f"profiles/{profile_id}.json")
+        document.update(
+            {
+                "source_file": source_file,
+                "name": safe_name,
+                "format": fmt,
+                "bytes": len(content),
+                "profile_file": profile_file,
+                "record_count": int(document.get("record_count") or 0),
+                "indexed_count": int(document.get("indexed_count") or 0),
+                "status": STATUS_PROCESSING,
+                "error": None,
+                "ingest_job_id": job_id,
+                "content_sha256": content_hash,
+                "content_type": item.get("content_type"),
+                "updated_at": now,
+            }
+        )
+        seen_hashes.add(content_hash)
+        pending_sources.append(source_file)
+        raw_payloads.append({"raw_filename": safe_name, "raw_content": content})
+
+    for index, item in enumerate(reference_files):
+        content = bytes(item.get("content") or b"")
+        content_hash = hashlib.sha256(content).hexdigest()
+        if content_hash in seen_hashes:
+            continue
+        safe_name = _unique_safe_filename(str(item.get("filename") or f"reference-{index + 1}"), used_reference_names)
+        used_reference_names.add(safe_name)
+        content_type = _reference_image_content_type(safe_name, item.get("content_type"))
+        local_path = reference_dir / safe_name
+        local_path.write_bytes(content)
+        blob_name = f"workspaces/{workspace_id}/reference_images/{safe_name}"
+        asset = {
+            "url": _reference_asset_url(workspace_id, safe_name),
+            "blob_url": _reference_asset_blob_url(blob_name),
+            "blob_name": blob_name,
+            "role": role,
+            "filename": safe_name,
+            "source_file": f"reference_images/{safe_name}",
+            "content_type": content_type,
+            "bytes": len(content),
+            "content_sha256": content_hash,
+        }
+        reference_images.append(asset)
+        reference_payloads.append({"filename": safe_name, "content": content, "content_type": content_type})
+        seen_hashes.add(content_hash)
+
+    if existing_profile:
+        aggregate_profile = dict(existing_profile)
+        aggregate_profile.setdefault("workspace_id", workspace_id)
+        aggregate_profile.setdefault("name", display_name)
+        aggregate_profile.setdefault("format", existing_meta.get("format") or "mixed")
+        aggregate_profile.setdefault("source_file", "profile.json")
+        aggregate_profile.setdefault("created_at", existing_meta.get("created_at") or now)
+        aggregate_profile["documents"] = documents
+        if pending_sources:
+            aggregate_profile["profile_summary"] = _processing_summary(display_name, documents)
+    elif reference_images and not documents:
+        aggregate_profile = _reference_only_profile(workspace_id, display_name, reference_images)
+    else:
+        aggregate_profile = _pending_workspace_profile(workspace_id, display_name, documents, now)
+
+    created_at = existing_meta.get("created_at") or aggregate_profile.get("created_at") or now
+    indexed_count = int(existing_meta.get("indexed_count") or 0)
+    workspace_meta = {
+        "workspace_id": workspace_id,
+        "name": display_name,
+        "description": description,
+        "format": aggregate_profile.get("format") or _format_from_documents(documents, reference_images),
+        "language": "zh-Hans",
+        "persona": existing_meta.get("persona") or "Uploaded customer data workspace for product feasibility analysis.",
+        "ask_when": existing_meta.get("ask_when")
+        or [
+            "The request lacks target customer, product scope, or expected output.",
+            "The request depends on fields or facts not present in the uploaded profiles.",
+        ],
+        "raw_docs": [item["source_file"] for item in documents if item.get("source_file")],
+        "documents": documents,
+        "profile_files": [item["profile_file"] for item in documents if item.get("profile_file")],
+        "profile_file": "profile.json",
+        "manifest_file": "manifest.json",
+        "created_at": created_at,
+        "updated_at": now,
+        "profile_summary": aggregate_profile.get("profile_summary") or _processing_summary(display_name, documents),
+        "reference_images": reference_images,
+        "indexed_count": indexed_count,
+        "ingest_jobs": _upsert_ingest_job(
+            existing_meta.get("ingest_jobs"),
+            {
+                "job_id": job_id,
+                "state": "processing" if pending_sources else "ready",
+                "created_at": now,
+                "updated_at": now,
+                "pending_sources": pending_sources,
+                "skipped_sources": skipped_sources,
+            },
+        ),
+    }
+    workspace_meta["documents"] = _normalize_documents(workspace_dir, workspace_meta, aggregate_profile)
+    manifest = _build_workspace_manifest(workspace_id, workspace_meta, aggregate_profile)
+    _write_workspace_files(workspace_dir, workspace_meta, aggregate_profile, manifest)
+    if pending_sources:
+        persistence = _persist_workspace_bundle(
+            workspace_id=workspace_id,
+            raw_payloads=[],
+            reference_payloads=reference_payloads,
+            workspace_meta=workspace_meta,
+            profile=aggregate_profile,
+        )
+    else:
+        persistence = _persist_workspace_bundle(
+            workspace_id=workspace_id,
+            raw_payloads=raw_payloads,
+            reference_payloads=reference_payloads,
+            workspace_meta=workspace_meta,
+            profile=aggregate_profile,
+        )
+    workspace_meta["persistence"] = persistence
+    (workspace_dir / "workspace.json").write_text(json.dumps(workspace_meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    _CONTEXT_CACHE.pop(workspace_id, None)
+    return {
+        "workspace_id": workspace_id,
+        "name": display_name,
+        "description": description,
+        "format": workspace_meta["format"],
+        "indexed_count": indexed_count,
+        "profile_summary": workspace_meta["profile_summary"],
+        "documents": workspace_meta["documents"],
+        "reference_images": reference_images,
+        "ingest_job_id": job_id if pending_sources else None,
+        "ingest_status": _ingest_status_from_documents(workspace_meta),
     }
 
 
@@ -310,6 +539,56 @@ def create_workspace_from_uploads(
         "documents": workspace_meta["documents"],
         "reference_images": reference_images,
     }
+
+
+def run_workspace_ingest_job(workspace_id: str, job_id: str) -> dict[str, Any]:
+    workspace_id = str(workspace_id or "").strip()
+    job_id = str(job_id or "").strip()
+    if not workspace_id or not job_id:
+        raise ValueError("workspace_id and job_id are required")
+    loaded = _load_workspace_bundle(workspace_id)
+    if loaded is None:
+        raise FileNotFoundError(workspace_id)
+    meta, profile = loaded
+    workspace_dir = WORKSPACES / workspace_id
+    (workspace_dir / "raw_docs").mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "profiles").mkdir(parents=True, exist_ok=True)
+    meta["ingest_jobs"] = _mark_ingest_job(meta.get("ingest_jobs"), job_id, state="processing")
+    _persist_workspace_state(workspace_id, workspace_dir, meta, profile, include_raw_payloads=True)
+
+    for document in list(meta.get("documents") or []):
+        if not isinstance(document, dict):
+            continue
+        if document.get("ingest_job_id") != job_id or document.get("status") != STATUS_PROCESSING:
+            continue
+        try:
+            _ingest_one_document(workspace_id, workspace_dir, meta, profile, document)
+        except Exception as exc:
+            document["status"] = STATUS_FAILED
+            document["error"] = f"{type(exc).__name__}: {exc}"[:500]
+            document["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _replace_document(meta, document)
+        profile = _rebuild_workspace_profile(workspace_id, workspace_dir, meta, profile)
+        _persist_workspace_state(workspace_id, workspace_dir, meta, profile)
+
+    status = _ingest_status_from_documents(meta)
+    meta["ingest_jobs"] = _mark_ingest_job(meta.get("ingest_jobs"), job_id, state=status["state"], pct=status["pct"])
+    _persist_workspace_state(workspace_id, workspace_dir, meta, profile)
+    _CONTEXT_CACHE.pop(workspace_id, None)
+    return status
+
+
+def workspace_ingest_status(workspace_id: str) -> dict[str, Any]:
+    workspace_id = str(workspace_id or "").strip()
+    if not workspace_id:
+        raise ValueError("workspace_id is required")
+    loaded = _load_workspace_bundle(workspace_id)
+    if loaded is None:
+        raise FileNotFoundError(workspace_id)
+    meta, _profile = loaded
+    status = _ingest_status_from_documents(meta)
+    status["workspace_id"] = workspace_id
+    return status
 
 
 def list_workspaces() -> list[dict[str, Any]]:
@@ -606,34 +885,58 @@ def _aggregate_profiles(
 ) -> dict[str, Any]:
     tables: list[dict[str, Any]] = []
     formats = {str(profile.get("format") or "unknown") for profile in profiles}
+    incoming_sources = {str(profile.get("source_file") or "") for profile in profiles if profile.get("source_file")}
+    table_keys: set[tuple[str, str]] = set()
     if existing_profile:
         existing_format = str(existing_profile.get("format") or "").strip()
         if existing_format and existing_format != "mixed":
             formats.add(existing_format)
         for table in existing_profile.get("tables") or []:
             if isinstance(table, dict):
-                tables.append(dict(table))
+                source = str(table.get("source_file") or existing_profile.get("source_file") or "")
+                if source and source in incoming_sources:
+                    continue
+                key = (source, str(table.get("name") or ""))
+                if key in table_keys:
+                    continue
+                item = dict(table)
+                if source:
+                    item["source_file"] = source
+                tables.append(item)
+                table_keys.add(key)
     for profile in profiles:
         for table in profile.get("tables") or []:
             item = dict(table)
             item["source_file"] = profile.get("source_file")
+            key = (str(item.get("source_file") or ""), str(item.get("name") or ""))
+            if key in table_keys:
+                continue
             tables.append(item)
+            table_keys.add(key)
     sorted_formats = sorted(formats or {"unknown"})
-    document_profiles = [
-        dict(item)
-        for item in (existing_profile or {}).get("document_profiles") or []
-        if isinstance(item, dict)
-    ]
-    document_profiles.extend(
-        {
+    document_profiles: list[dict[str, Any]] = []
+    profile_keys: set[tuple[str, str]] = set()
+    for item in (existing_profile or {}).get("document_profiles") or []:
+        if not isinstance(item, dict):
+            continue
+        key = (str(item.get("source_file") or ""), str(item.get("profile_id") or item.get("profile_file") or ""))
+        if key[0] in incoming_sources or key in profile_keys:
+            continue
+        document_profiles.append(dict(item))
+        profile_keys.add(key)
+    for profile in profiles:
+        item = {
             "profile_id": profile.get("profile_id"),
             "profile_file": profile.get("profile_file"),
             "source_file": profile.get("source_file"),
             "format": profile.get("format"),
             "profile_summary": profile.get("profile_summary"),
         }
-        for profile in profiles
-    )
+        key = (str(item.get("source_file") or ""), str(item.get("profile_id") or item.get("profile_file") or ""))
+        if key in profile_keys:
+            continue
+        document_profiles.append(item)
+        profile_keys.add(key)
     aggregate = {
         "workspace_id": workspace_id,
         "name": name,
@@ -645,10 +948,18 @@ def _aggregate_profiles(
         "documents": documents,
         "document_profiles": document_profiles,
     }
-    summaries = []
+    summaries: list[str] = []
+    seen_summaries: set[str] = set()
+    summary_candidates = []
     if existing_profile and existing_profile.get("profile_summary"):
-        summaries.append(str(existing_profile.get("profile_summary") or ""))
-    summaries.extend(str(profile.get("profile_summary") or "") for profile in profiles if profile.get("profile_summary"))
+        summary_candidates.append(str(existing_profile.get("profile_summary") or ""))
+    summary_candidates.extend(str(profile.get("profile_summary") or "") for profile in profiles if profile.get("profile_summary"))
+    for summary in summary_candidates:
+        clean_summary = summary.strip()
+        if not clean_summary or clean_summary in seen_summaries or _is_processing_summary(clean_summary):
+            continue
+        summaries.append(clean_summary)
+        seen_summaries.add(clean_summary)
     aggregate["profile_summary"] = " | ".join(summaries[:5])[:1800] or f"{len(profiles)} uploaded documents profiled."
     return aggregate
 
@@ -753,6 +1064,312 @@ def _read_profile(workspace_dir: Path, meta: dict[str, Any]) -> dict[str, Any]:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _ingest_one_document(
+    workspace_id: str,
+    workspace_dir: Path,
+    meta: dict[str, Any],
+    existing_profile: dict[str, Any],
+    document: dict[str, Any],
+) -> None:
+    source_file = str(document.get("source_file") or "")
+    if not source_file:
+        raise ValueError("document.source_file is required")
+    raw_path = workspace_dir / source_file
+    if not raw_path.exists():
+        downloaded = download_blob_content(f"workspaces/{workspace_id}/{source_file}")
+        if not downloaded:
+            raise FileNotFoundError(source_file)
+        content, _content_type = downloaded
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_bytes(content)
+
+    profile_file = str(document.get("profile_file") or "")
+    if not profile_file:
+        profile_file = f"profiles/{_profile_id_for_document(document, _next_profile_index(meta, existing_profile))}.json"
+        document["profile_file"] = profile_file
+    profile_id = Path(profile_file).stem
+    profile = build_data_profile(
+        raw_path,
+        workspace_id=workspace_id,
+        name=str(meta.get("name") or existing_profile.get("name") or workspace_id),
+        source_file=source_file,
+        content_type=document.get("content_type"),
+    )
+    profile["profile_id"] = profile_id
+    profile["profile_file"] = profile_file
+    profile_path = workspace_dir / profile_file
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    write_profile(profile_path, profile)
+    try:
+        upload_blob_json(f"workspaces/{workspace_id}/{profile_file}", profile)
+    except Exception as exc:
+        if _blob_configured_for_workspace() and search_endpoint():
+            raise
+        document["profile_persistence_warning"] = str(exc)[:300]
+
+    records = upload_to_records(raw_path, source_file, workspace_id, content_type=document.get("content_type"))
+    indexed_count = _index_documents_batched([profile_to_search_document(profile)] + records)
+    previous_doc_indexed = int(document.get("indexed_count") or 0)
+    current_workspace_indexed = int(meta.get("indexed_count") or 0)
+    meta["indexed_count"] = max(0, current_workspace_indexed - previous_doc_indexed) + indexed_count
+    now = datetime.now(timezone.utc).isoformat()
+    document.update(
+        {
+            "format": profile.get("format"),
+            "record_count": len(records),
+            "indexed_count": indexed_count,
+            "status": STATUS_READY if records else STATUS_PARTIAL,
+            "error": None,
+            "updated_at": now,
+            "created_at": document.get("created_at") or profile.get("created_at") or now,
+            "profile_file": profile_file,
+        }
+    )
+
+
+def _rebuild_workspace_profile(
+    workspace_id: str,
+    workspace_dir: Path,
+    meta: dict[str, Any],
+    existing_profile: dict[str, Any],
+) -> dict[str, Any]:
+    profiles: list[dict[str, Any]] = []
+    for document in meta.get("documents") or []:
+        if not isinstance(document, dict):
+            continue
+        if document.get("status") not in {STATUS_READY, STATUS_PARTIAL}:
+            continue
+        profile_file = str(document.get("profile_file") or "")
+        if not profile_file:
+            continue
+        profile = _load_document_profile(workspace_id, workspace_dir, profile_file)
+        if profile:
+            profiles.append(profile)
+    if profiles:
+        return _aggregate_profiles(
+            workspace_id,
+            str(meta.get("name") or existing_profile.get("name") or workspace_id),
+            profiles,
+            [item for item in meta.get("documents") or [] if isinstance(item, dict)],
+            existing_profile=existing_profile,
+        )
+    if existing_profile:
+        profile = dict(existing_profile)
+        profile["documents"] = [item for item in meta.get("documents") or [] if isinstance(item, dict)]
+        profile["profile_summary"] = profile.get("profile_summary") or _processing_summary(str(meta.get("name") or workspace_id), profile["documents"])
+        return profile
+    return _pending_workspace_profile(
+        workspace_id,
+        str(meta.get("name") or workspace_id),
+        [item for item in meta.get("documents") or [] if isinstance(item, dict)],
+        str(meta.get("created_at") or datetime.now(timezone.utc).isoformat()),
+    )
+
+
+def _load_document_profile(workspace_id: str, workspace_dir: Path, profile_file: str) -> dict[str, Any]:
+    local_path = workspace_dir / profile_file
+    if local_path.exists():
+        try:
+            return _read_json(local_path)
+        except Exception:
+            pass
+    return download_blob_json(f"workspaces/{workspace_id}/{profile_file}") or {}
+
+
+def _persist_workspace_state(
+    workspace_id: str,
+    workspace_dir: Path,
+    workspace_meta: dict[str, Any],
+    profile: dict[str, Any],
+    *,
+    include_raw_payloads: bool = False,
+) -> None:
+    workspace_meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+    documents = [item for item in workspace_meta.get("documents") or [] if isinstance(item, dict)]
+    document_format = _format_from_documents(documents, _reference_images(workspace_meta))
+    workspace_meta["format"] = document_format if document_format != "pending" else profile.get("format") or workspace_meta.get("format") or "mixed"
+    workspace_meta["profile_summary"] = profile.get("profile_summary") or workspace_meta.get("profile_summary") or _processing_summary(
+        str(workspace_meta.get("name") or workspace_id),
+        documents,
+    )
+    workspace_meta["raw_docs"] = [item["source_file"] for item in workspace_meta.get("documents") or [] if isinstance(item, dict) and item.get("source_file")]
+    workspace_meta["profile_files"] = [item["profile_file"] for item in workspace_meta.get("documents") or [] if isinstance(item, dict) and item.get("profile_file")]
+    workspace_meta["documents"] = _normalize_documents(workspace_dir, workspace_meta, profile)
+    manifest = _build_workspace_manifest(workspace_id, workspace_meta, profile)
+    workspace_meta["manifest_file"] = "manifest.json"
+    _write_workspace_files(workspace_dir, workspace_meta, profile, manifest)
+    persistence = _persist_workspace_bundle(
+        workspace_id=workspace_id,
+        raw_payloads=_raw_payloads_from_documents(workspace_dir, workspace_meta) if include_raw_payloads else [],
+        reference_payloads=[],
+        workspace_meta=workspace_meta,
+        profile=profile,
+    )
+    workspace_meta["persistence"] = persistence
+    _persist_workspace_manifest(workspace_id, manifest)
+    (workspace_dir / "workspace.json").write_text(json.dumps(workspace_meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    _CONTEXT_CACHE.pop(workspace_id, None)
+
+
+def _raw_payloads_from_documents(workspace_dir: Path, workspace_meta: dict[str, Any]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for document in workspace_meta.get("documents") or []:
+        if not isinstance(document, dict):
+            continue
+        source_file = str(document.get("source_file") or "")
+        if not source_file.startswith("raw_docs/") or source_file in seen:
+            continue
+        raw_path = workspace_dir / source_file
+        if not raw_path.exists() or not raw_path.is_file():
+            continue
+        payloads.append({"raw_filename": raw_path.name, "raw_content": raw_path.read_bytes()})
+        seen.add(source_file)
+    return payloads
+
+
+def _write_workspace_files(workspace_dir: Path, workspace_meta: dict[str, Any], profile: dict[str, Any], manifest: dict[str, Any]) -> None:
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    write_profile(workspace_dir / "profile.json", profile)
+    (workspace_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    (workspace_dir / "workspace.json").write_text(json.dumps(workspace_meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _index_documents_batched(docs: list[dict[str, Any]]) -> int:
+    total = 0
+    for start in range(0, len(docs), INGEST_INDEX_BATCH_SIZE):
+        batch = docs[start : start + INGEST_INDEX_BATCH_SIZE]
+        total += _index_documents(batch)
+    return total
+
+
+def _ingest_status_from_documents(meta: dict[str, Any]) -> dict[str, Any]:
+    files = [
+        {
+            "name": item.get("name"),
+            "source_file": item.get("source_file"),
+            "status": item.get("status") or STATUS_PARTIAL,
+            "error": item.get("error"),
+            "record_count": item.get("record_count"),
+            "indexed_count": item.get("indexed_count"),
+            "ingest_job_id": item.get("ingest_job_id"),
+        }
+        for item in meta.get("documents") or []
+        if isinstance(item, dict)
+    ]
+    total = len(files)
+    done = sum(1 for item in files if item["status"] != STATUS_PROCESSING)
+    statuses = {str(item["status"]) for item in files}
+    if total == 0:
+        state = "ready"
+    elif STATUS_PROCESSING in statuses:
+        state = "processing"
+    elif statuses == {STATUS_FAILED}:
+        state = "failed"
+    elif STATUS_FAILED in statuses or STATUS_PARTIAL in statuses:
+        state = "partial"
+    else:
+        state = "ready"
+    return {
+        "state": state,
+        "pct": int(round((done / total) * 100)) if total else 100,
+        "files": files,
+    }
+
+
+def _upsert_ingest_job(existing: Any, job: dict[str, Any]) -> list[dict[str, Any]]:
+    jobs = [item for item in (existing or []) if isinstance(item, dict)]
+    jobs = [item for item in jobs if item.get("job_id") != job.get("job_id")]
+    jobs.append(job)
+    return jobs[-20:]
+
+
+def _mark_ingest_job(existing: Any, job_id: str, *, state: str, pct: int | None = None) -> list[dict[str, Any]]:
+    jobs = [item for item in (existing or []) if isinstance(item, dict)]
+    now = datetime.now(timezone.utc).isoformat()
+    found = False
+    for item in jobs:
+        if item.get("job_id") == job_id:
+            item["state"] = state
+            item["updated_at"] = now
+            if pct is not None:
+                item["pct"] = pct
+            found = True
+            break
+    if not found:
+        jobs.append({"job_id": job_id, "state": state, "created_at": now, "updated_at": now, "pct": pct})
+    return jobs[-20:]
+
+
+def _find_existing_document(documents: list[dict[str, Any]], content_hash: str) -> dict[str, Any] | None:
+    for document in documents:
+        if str(document.get("content_sha256") or "") == content_hash:
+            return document
+    return None
+
+
+def _replace_document(meta: dict[str, Any], document: dict[str, Any]) -> None:
+    source_file = str(document.get("source_file") or "")
+    documents = [item for item in meta.get("documents") or [] if isinstance(item, dict)]
+    for index, item in enumerate(documents):
+        if source_file and str(item.get("source_file") or "") == source_file:
+            documents[index] = dict(document)
+            meta["documents"] = documents
+            return
+    documents.append(dict(document))
+    meta["documents"] = documents
+
+
+def _cheap_upload_format(filename: str, content_type: Any) -> str:
+    try:
+        return detect_format(Path(filename), str(content_type or "") or None)
+    except Exception:
+        suffix = Path(filename).suffix.lower().lstrip(".")
+        return suffix or "unknown"
+
+
+def _profile_id_for_document(document: dict[str, Any], index: int) -> str:
+    profile_file = str(document.get("profile_file") or "")
+    if profile_file:
+        return Path(profile_file).stem
+    return f"profile-{index:03d}"
+
+
+def _processing_summary(name: str, documents: list[dict[str, Any]]) -> str:
+    processing = sum(1 for item in documents if item.get("status") == STATUS_PROCESSING)
+    ready = sum(1 for item in documents if item.get("status") == STATUS_READY)
+    failed = sum(1 for item in documents if item.get("status") == STATUS_FAILED)
+    return f"{name} 已接入，后台正在生成数据画像。当前已就绪 {ready} 个，解析中 {processing} 个，失败 {failed} 个。"
+
+
+def _is_processing_summary(value: str) -> bool:
+    return "后台正在生成数据画像" in str(value or "")
+
+
+def _pending_workspace_profile(workspace_id: str, name: str, documents: list[dict[str, Any]], created_at: str) -> dict[str, Any]:
+    return {
+        "workspace_id": workspace_id,
+        "name": name,
+        "format": _format_from_documents(documents, []),
+        "source_file": "profile.json",
+        "created_at": created_at,
+        "tables": [],
+        "documents": documents,
+        "document_profiles": [],
+        "profile_summary": _processing_summary(name, documents),
+    }
+
+
+def _format_from_documents(documents: list[dict[str, Any]], reference_images: list[dict[str, Any]]) -> str:
+    formats = {str(item.get("format") or "").strip() for item in documents if isinstance(item, dict) and item.get("format")}
+    if reference_images and not formats:
+        return "reference_images"
+    formats.discard("")
+    if not formats:
+        return "pending"
+    return next(iter(formats)) if len(formats) == 1 else "mixed"
 
 
 def _workspace_bi_metrics(profile: dict[str, Any], meta: dict[str, Any], columns: list[dict[str, Any]]) -> dict[str, Any]:
@@ -980,8 +1597,14 @@ def _normalize_documents(workspace_dir: Path, meta: dict[str, Any], profile: dic
             "format": fmt,
             "bytes": raw.get("bytes"),
             "record_count": raw.get("record_count"),
+            "indexed_count": raw.get("indexed_count"),
             "status": raw.get("status"),
+            "error": raw.get("error"),
+            "ingest_job_id": raw.get("ingest_job_id"),
+            "content_sha256": raw.get("content_sha256"),
+            "content_type": raw.get("content_type"),
             "created_at": raw.get("created_at") or profile_doc.get("created_at") or created_at,
+            "updated_at": raw.get("updated_at"),
             "profile_file": raw.get("profile_file") or profile_doc.get("profile_file"),
             "external": bool(raw.get("external")),
         }

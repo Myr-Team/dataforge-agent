@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import datetime, timezone
@@ -26,7 +27,15 @@ try:
     from .rag import search
     from .run_store import get_run, list_runs
     from .tracing import configure_monitoring
-    from .workspace_store import create_workspace_from_uploads, delete_workspace, get_reference_image_content, get_workspace_detail, list_workspaces
+    from .workspace_store import (
+        create_workspace_upload_job,
+        delete_workspace,
+        get_reference_image_content,
+        get_workspace_detail,
+        list_workspaces,
+        run_workspace_ingest_job,
+        workspace_ingest_status,
+    )
     from .schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -56,7 +65,15 @@ except ImportError:
     from rag import search
     from run_store import get_run, list_runs
     from tracing import configure_monitoring
-    from workspace_store import create_workspace_from_uploads, delete_workspace, get_reference_image_content, get_workspace_detail, list_workspaces
+    from workspace_store import (
+        create_workspace_upload_job,
+        delete_workspace,
+        get_reference_image_content,
+        get_workspace_detail,
+        list_workspaces,
+        run_workspace_ingest_job,
+        workspace_ingest_status,
+    )
     from schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -91,6 +108,9 @@ app.add_middleware(
 )
 
 ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "generated-outputs"
+_INGEST_SEMAPHORE = asyncio.Semaphore(max(1, int(os.environ.get("DF_UPLOAD_INGEST_CONCURRENCY", "2"))))
+_INGEST_TASKS: set[asyncio.Task[Any]] = set()
+_INGEST_START_DELAY_SECONDS = max(0.0, float(os.environ.get("DF_UPLOAD_INGEST_START_DELAY_SECONDS", "0.5")))
 
 
 @app.get("/api/health")
@@ -137,13 +157,14 @@ async def upload_workspace(
         )
     try:
         result = await run_in_threadpool(
-            create_workspace_from_uploads,
+            create_workspace_upload_job,
             files=files,
             name=name,
             description=description,
             requested_workspace_id=workspace_id,
             asset_role=asset_role,
         )
+        _schedule_upload_ingest(result)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
     except ValueError as exc:
@@ -194,6 +215,16 @@ async def workspace_dashboard(workspace_id: str) -> WorkspaceDashboardResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return WorkspaceDashboardResponse.model_validate(result)
+
+
+@app.get("/api/workspaces/{workspace_id}/ingest-status")
+async def ingest_status(workspace_id: str) -> dict[str, Any]:
+    try:
+        return await run_in_threadpool(workspace_ingest_status, workspace_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/workspaces/{workspace_id}/manifest")
@@ -435,3 +466,28 @@ def _compact_event_data(data: Any) -> Any:
             "keys": sorted(str(key) for key in compact["artifact"].keys())[:30],
         }
     return compact
+
+
+def _schedule_upload_ingest(result: dict[str, Any]) -> None:
+    job_id = result.get("ingest_job_id")
+    workspace_id = result.get("workspace_id")
+    if not job_id or not workspace_id:
+        return
+    loop = asyncio.get_running_loop()
+
+    def _start() -> None:
+        task = asyncio.create_task(_run_upload_ingest_background(str(workspace_id), str(job_id)))
+        _INGEST_TASKS.add(task)
+        task.add_done_callback(_INGEST_TASKS.discard)
+
+    loop.call_later(_INGEST_START_DELAY_SECONDS, _start)
+
+
+async def _run_upload_ingest_background(workspace_id: str, job_id: str) -> None:
+    async with _INGEST_SEMAPHORE:
+        try:
+            await run_in_threadpool(run_workspace_ingest_job, workspace_id, job_id)
+        except Exception as exc:
+            # The per-file worker persists failures when possible; this guard keeps
+            # an unhandled background exception from terminating the event loop.
+            print(f"upload ingest job failed workspace={workspace_id} job={job_id}: {type(exc).__name__}: {exc}", flush=True)

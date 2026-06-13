@@ -108,6 +108,8 @@ class UploadResponse(BaseModel):
     profile_summary: str
     documents: list[dict[str, Any]] = Field(default_factory=list)
     reference_images: list[dict[str, Any]] = Field(default_factory=list)
+    ingest_job_id: str | None = None
+    ingest_status: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkspaceSummary(BaseModel):
@@ -147,6 +149,8 @@ class WorkspaceDocumentDetail(BaseModel):
     bytes: int | None = None
     record_count: int | None = None
     status: str | None = None
+    error: str | None = None
+    ingest_job_id: str | None = None
     created_at: str | None = None
     profile_file: str | None = None
     external: bool = False
