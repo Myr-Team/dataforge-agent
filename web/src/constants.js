@@ -51,6 +51,7 @@ export const PLAYBOOKS = [
 ];
 
 export const QUESTION_STARTERS = [
+  { id: "campaign", label: "做一场拉新活动", prompt: "我想基于当前工作区的数据，为其中的门店或客户场景策划一场拉新活动。请先分析历史活动、客户转化或可用证据，再建议活动主题、传播方式、潜在赞助合作、预算投入和需要补充确认的问题。" },
   { id: "fit", label: "能产品化成什么？", prompt: "这批数据最适合产品化成什么机会？请给出证据、风险和下一步。" },
   { id: "segment", label: "先试点哪个客群？", prompt: "基于当前数据，哪个客群或场景最值得先试点？请说明证据强弱。" },
   { id: "evidence", label: "证据最强/最弱在哪里？", prompt: "请只根据工作区数据，列出支持产品化的最强证据和最大的证据缺口。" },

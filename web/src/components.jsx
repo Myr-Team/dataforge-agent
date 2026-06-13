@@ -1,21 +1,31 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   AlertTriangle,
   ArrowUpRight,
+  BarChart3,
   Bell,
   CheckCircle2,
   ChevronDown,
+  CircleUserRound,
+  Clock3,
   Database,
   FileDown,
   FileText,
+  FolderOpen,
+  ImagePlus,
+  Layers3,
   Loader2,
+  LogIn,
   LogOut,
   MessageSquare,
   MoreHorizontal,
+  PieChart,
   Plus,
   RefreshCw,
   Send,
   ShieldCheck,
+  Sparkles,
   Trash2,
   UploadCloud,
   X,
@@ -37,7 +47,7 @@ import {
 
 const agentMap = new Map(AGENTS.map((agent) => [agent.id, agent]));
 
-export function ShellNav() {
+export function ShellNav({ active = "workspaces", onChange = () => {} }) {
   return (
     <nav className="shell-nav" aria-label="Primary">
       <div className="brand-mark">D</div>
@@ -45,8 +55,15 @@ export function ShellNav() {
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
           return (
-            <button key={item.id} className={item.id === "workspaces" ? "nav-icon active" : "nav-icon"} type="button" title={item.label}>
+            <button
+              key={item.id}
+              className={active === item.id ? "nav-icon active" : "nav-icon"}
+              type="button"
+              title={item.label}
+              onClick={() => onChange(item.id)}
+            >
               <Icon size={19} />
+              <span>{item.label}</span>
             </button>
           );
         })}
@@ -58,10 +75,21 @@ export function ShellNav() {
   );
 }
 
-export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, loading, user, authState, onLogout }) {
+export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, onNewConversation, loading, user, authState, onLogout }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
   const workspaces = dashboard?.workspaces || [];
   const health = dashboard?.health || {};
   const deps = health.dependencies || {};
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) setMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [menuOpen]);
   return (
     <header className="topbar">
       <div className="topbar-left">
@@ -93,9 +121,13 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, lo
           <StatusChip label="Search" ok={health.search_endpoint || deps.search} />
           <StatusChip label="Blob" ok={deps.blob} />
         </div>
-        <button className="primary-button icon-label" type="button" onClick={onUpload}>
+        <button className="primary-button icon-label" type="button" onClick={() => { setMenuOpen(false); onUpload(); }}>
           <UploadCloud size={16} />
           上传数据
+        </button>
+        <button className="ghost-button icon-label top-new-chat" type="button" onClick={() => { setMenuOpen(false); onNewConversation(); }}>
+          <MessageSquare size={15} />
+          新会话
         </button>
         <button className="icon-button top-icon" type="button" title="通知">
           <Bell size={16} />
@@ -103,17 +135,38 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, lo
         <div className={loading ? "sync-dot loading" : "sync-dot"} title={loading ? "同步中" : "已同步"}>
           {loading ? <Loader2 size={14} /> : <CheckCircle2 size={14} />}
         </div>
-        <div className="user-menu">
-          <div className="avatar" title={user?.email || "DataForge"}>
-            {(user?.name || user?.email || "D").trim().slice(0, 1).toUpperCase()}
-          </div>
-          <div>
-            <strong>{user?.name || "Demo User"}</strong>
-            <span>{authState === "authenticated" ? user?.email || "Azure 登录" : "本地演示态"}</span>
-          </div>
-          <button className="icon-button" type="button" onClick={onLogout} title="退出登录">
-            <LogOut size={15} />
+        <div className="user-menu" ref={menuRef}>
+          <button className="user-trigger" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen}>
+            <div className="avatar" title={user?.email || "DataForge"}>
+              {(user?.name || user?.email || "D").trim().slice(0, 1).toUpperCase()}
+            </div>
+            <ChevronDown size={14} />
           </button>
+          {menuOpen ? (
+            <div className="account-menu" role="menu">
+              <div className="account-card">
+                <div className="avatar large">
+                  {(user?.name || user?.email || "D").trim().slice(0, 1).toUpperCase()}
+                </div>
+                <div>
+                  <strong>{user?.name || "Demo User"}</strong>
+                  <span>{authState === "authenticated" ? user?.email || "Azure 登录" : "本地演示态"}</span>
+                </div>
+              </div>
+              <button type="button" role="menuitem">
+                <CircleUserRound size={15} />
+                个人信息
+              </button>
+              <button type="button" role="menuitem">
+                <LogIn size={15} />
+                账户与权限
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onLogout(); }}>
+                <LogOut size={15} />
+                {authState === "authenticated" ? "退出登录" : "查看云端登录态"}
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
     </header>
@@ -329,6 +382,388 @@ export function AgentStudio({
   );
 }
 
+export function WorkbenchMain({
+  view,
+  setView,
+  dashboard,
+  messages,
+  trace,
+  streamText,
+  running,
+  input,
+  setInput,
+  onRun,
+  onNewConversation,
+  selectedPlaybook,
+  setSelectedPlaybook,
+  artifactMode,
+  setArtifactMode,
+  finalArtifact,
+  artifacts,
+  onProduce,
+  producing,
+}) {
+  if (view === "conversations") {
+    return (
+      <ConversationStudio
+        dashboard={dashboard}
+        messages={messages}
+        trace={trace}
+        streamText={streamText}
+        running={running}
+        input={input}
+        setInput={setInput}
+        onRun={onRun}
+        selectedPlaybook={selectedPlaybook}
+        setSelectedPlaybook={setSelectedPlaybook}
+      />
+    );
+  }
+  if (view === "artifacts") {
+    return <ArtifactsCenter dashboard={dashboard} artifacts={artifacts} artifact={finalArtifact} onProduce={onProduce} producing={producing} onUploadReference={() => setView("workspaces")} />;
+  }
+  if (view === "runs") {
+    return <RunsCenter dashboard={dashboard} trace={trace} running={running} />;
+  }
+  if (view === "settings") {
+    return <SettingsCenter dashboard={dashboard} />;
+  }
+  return (
+    <DashboardStudio
+      dashboard={dashboard}
+      trace={trace}
+      running={running}
+      selectedPlaybook={selectedPlaybook}
+      setSelectedPlaybook={setSelectedPlaybook}
+      artifactMode={artifactMode}
+      setArtifactMode={setArtifactMode}
+      finalArtifact={finalArtifact}
+      artifacts={artifacts}
+      onRun={onRun}
+      onNewConversation={onNewConversation}
+      onProduce={onProduce}
+      producing={producing}
+    />
+  );
+}
+
+function DashboardStudio({
+  dashboard,
+  trace,
+  running,
+  selectedPlaybook,
+  setSelectedPlaybook,
+  artifactMode,
+  setArtifactMode,
+  finalArtifact,
+  artifacts,
+  onRun,
+  onNewConversation,
+  onProduce,
+  producing,
+}) {
+  const workspace = dashboard?.workspace || {};
+  const columns = workspace.columns || [];
+  const documents = workspace.documents || [];
+  const signalColumns = columns.filter((column) => column.signal && column.signal !== "noise").slice(0, 5);
+  const presentation = useAgentPresentation(trace, running);
+  const feasibility = finalArtifact?.feasibility || {};
+  const verdict = VERDICT_LABELS[feasibility.verdict] || "等待分析";
+
+  return (
+    <main className="agent-studio dashboard-stage">
+      <section className="dashboard-hero">
+        <div>
+          <span className="eyeless-label">Workspace Dashboard</span>
+          <h1>{workspace.name || "数据产品化工作区"}</h1>
+          <p>{workspace.customer_summary || workspace.profile_summary || "上传数据后，DataForge 会先生成数据画像、信号/噪声判断、检索索引和可追踪的 Agent 分析记录。"}</p>
+        </div>
+        <div className="dashboard-actions">
+          <button className="ghost-button icon-label" type="button" onClick={onNewConversation}>
+            <MessageSquare size={15} />
+            新建会话
+          </button>
+          <button className="primary-button icon-label" type="button" onClick={() => onRun("请基于当前工作区，先自动分析这批数据可以产品化成什么机会，并说明证据强弱、市场推断和下一步。")}>
+            <Sparkles size={15} />
+            自动分析
+          </button>
+        </div>
+      </section>
+
+      <DashboardMetrics workspace={workspace} documents={documents} />
+      <AgentRoute trace={trace} running={running} presentation={presentation} compact />
+
+      <section className="dashboard-grid">
+        <DataPipelineCard workspace={workspace} documents={documents} />
+        <BiSnapshotCard workspace={workspace} signalColumns={signalColumns} />
+        <OpportunityRadarCard feasibility={feasibility} signalColumns={signalColumns} verdict={verdict} />
+      </section>
+
+      <section className="dashboard-lower">
+        <AutoAnalysisLog trace={trace} runs={dashboard?.runs || []} running={running} />
+        <div className="dashboard-methods">
+          <PlaybookBar selected={selectedPlaybook} onSelect={setSelectedPlaybook} artifactMode={artifactMode} onMode={setArtifactMode} />
+          <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function DashboardMetrics({ workspace, documents }) {
+  const created = workspace.created_at || workspace.updated_at || documents[0]?.created_at;
+  const fields = workspace.columns?.length || workspace.field_count || 0;
+  const rows = workspace.row_count ?? workspace.indexed_count ?? workspace.doc_count ?? 0;
+  return (
+    <section className="dashboard-metrics">
+      <MetricCard icon={FolderOpen} label="工作区" value={workspace.workspace_id || "demo"} detail={created ? `创建于 ${formatTime(created)}` : "已连接"} />
+      <MetricCard icon={Database} label="数据集" value={documents.length || workspace.doc_count || 0} detail="CSV / Excel / JSON / MD / 图片" />
+      <MetricCard icon={Layers3} label="字段" value={fields} detail="用于画像、分布和信号判断" />
+      <MetricCard icon={BarChart3} label="索引记录" value={rows} detail="已进入 Search / RAG 检索链路" />
+    </section>
+  );
+}
+
+function MetricCard({ icon: Icon, label, value, detail }) {
+  return (
+    <article className="metric-card">
+      <Icon size={17} />
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
+        <em>{detail}</em>
+      </div>
+    </article>
+  );
+}
+
+function DataPipelineCard({ workspace, documents }) {
+  const steps = [
+    { label: "上传", done: documents.length > 0, detail: `${documents.length || 0} 个文件` },
+    { label: "格式识别", done: Boolean(workspace.format || documents.length), detail: workspace.format || "mixed" },
+    { label: "数据画像", done: Boolean(workspace.profile_summary || workspace.customer_summary), detail: "schema / 分布 / 信号" },
+    { label: "Search 入库", done: Number(workspace.doc_count || workspace.indexed_count || 0) > 0, detail: `${workspace.doc_count || workspace.indexed_count || 0} 条可检索` },
+    { label: "Agent 就绪", done: true, detail: "可发起会话和产物生成" },
+  ];
+  return (
+    <article className="dash-panel pipeline-panel">
+      <div className="dash-panel-head">
+        <span>数据解析状态</span>
+        <strong>从上传到 Agent 可用</strong>
+      </div>
+      <div className="pipeline-steps">
+        {steps.map((step) => (
+          <div key={step.label} className={step.done ? "pipeline-step done" : "pipeline-step"}>
+            <CheckCircle2 size={15} />
+            <div>
+              <strong>{step.label}</strong>
+              <span>{step.detail}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function BiSnapshotCard({ workspace, signalColumns }) {
+  const rows = Number(workspace.row_count || workspace.indexed_count || workspace.doc_count || 0);
+  const strength = Math.min(96, Math.max(18, signalColumns.length * 13 + Math.min(24, Math.log10(rows + 1) * 10)));
+  const chart = signalColumns.length ? signalColumns : [{ name: "数据覆盖", friendly_label: "数据覆盖" }, { name: "字段完整", friendly_label: "字段完整" }, { name: "可检索性", friendly_label: "可检索性" }];
+  return (
+    <article className="dash-panel bi-panel">
+      <div className="dash-panel-head">
+        <span>BI 快照</span>
+        <strong>自动画像与信号强度</strong>
+      </div>
+      <div className="bi-visual">
+        <svg viewBox="0 0 220 112" aria-label="BI chart">
+          <polyline points="8,86 42,72 76,78 110,45 144,54 178,28 212,36" />
+          {chart.slice(0, 5).map((_, index) => (
+            <rect key={index} x={18 + index * 38} y={94 - ((index + 3) * 11 % 58)} width="18" height={((index + 3) * 11 % 58) + 8} rx="3" />
+          ))}
+        </svg>
+        <div className="bi-donut" style={{ "--value": `${strength}%` }}>
+          <strong>{Math.round(strength)}</strong>
+          <span>信号</span>
+        </div>
+      </div>
+      <div className="bi-list">
+        {chart.slice(0, 4).map((column, index) => (
+          <div key={column.name || index}>
+            <span>{column.friendly_label || column.name}</span>
+            <i style={{ width: `${80 - index * 9}%` }} />
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function OpportunityRadarCard({ feasibility, signalColumns, verdict }) {
+  const dimensions = feasibility?.dimensions || [];
+  const items = dimensions.length ? dimensions.slice(0, 5) : [
+    { name: "market", score: signalColumns.length ? 3 : 0, confidence: "speculative" },
+    { name: "asset_data", score: signalColumns.length ? 4 : 0, confidence: "data_confirmed" },
+    { name: "differentiation_risk", score: signalColumns.length ? 3 : 0, confidence: "speculative" },
+  ];
+  return (
+    <article className="dash-panel radar-panel">
+      <div className="dash-panel-head">
+        <span>机会雷达</span>
+        <strong>{verdict}</strong>
+      </div>
+      <div className="radar-list">
+        {items.map((item) => (
+          <div key={item.name}>
+            <span>{DIMENSION_LABELS[item.name] || item.name}</span>
+            <i><b style={{ width: `${Math.max(0, Math.min(5, Number(item.score || 0))) * 20}%` }} /></i>
+            <em>{item.score || 0}/5</em>
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function AutoAnalysisLog({ trace, runs, running }) {
+  const rows = trace.length ? trace.slice(-8).reverse() : (runs || []).slice(0, 6).map((run) => ({ event: run.status || "completed", data: { agent: "df-coordinator", name: run.run_id || run.conversation_id }, time: run.created_at || run.updated_at }));
+  return (
+    <section className="dash-panel auto-log">
+      <div className="dash-panel-head">
+        <span>自动化流程记录</span>
+        <strong>{running ? "正在写入 Trace" : "最近运行"}</strong>
+      </div>
+      <div className="auto-log-list">
+        {rows.map((item, index) => (
+          <div className="auto-log-row" key={`${item.event}-${index}`}>
+            <Clock3 size={14} />
+            <div>
+              <strong>{eventTitle(item)}</strong>
+              <span>{item.data?.agent || item.data?.name || formatTime(item.time)}</span>
+            </div>
+          </div>
+        ))}
+        {!rows.length ? <p className="empty-copy">上传数据或发起一次分析后，这里会记录每个 Agent 与工具调用。</p> : null}
+      </div>
+    </section>
+  );
+}
+
+function ConversationStudio({
+  dashboard,
+  messages,
+  trace,
+  streamText,
+  running,
+  input,
+  setInput,
+  onRun,
+  selectedPlaybook,
+  setSelectedPlaybook,
+}) {
+  const workspace = dashboard?.workspace || {};
+  const presentation = useAgentPresentation(trace, running);
+  return (
+    <main className="agent-studio conversation-stage">
+      <section className="conversation-head">
+        <div>
+          <span className="eyeless-label">Conversation</span>
+          <h1>AI Agent 会话</h1>
+          <p>围绕「{workspace.name || "当前工作区"}」直接提问。Agent 会根据工作区证据、市场推断和审计结果回答，不把外部来源当作内部事实。</p>
+        </div>
+        <PlaybookBar selected={selectedPlaybook} onSelect={setSelectedPlaybook} artifactMode="chat" onMode={() => {}} />
+      </section>
+      <QuestionStarter onRun={onRun} running={running} />
+      <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} />
+      <Composer input={input} setInput={setInput} running={running} onRun={onRun} selectedPlaybook={selectedPlaybook} />
+    </main>
+  );
+}
+
+function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing, onUploadReference }) {
+  const workspace = dashboard?.workspace || {};
+  const refs = workspace.reference_images || [];
+  return (
+    <main className="agent-studio artifacts-stage">
+      <section className="dashboard-hero">
+        <div>
+          <span className="eyeless-label">Outputs</span>
+          <h1>产出物中心</h1>
+          <p>完成一次分析后，可在这里生成企划书、路线图、实验计划、活动海报、周边设计图和语音摘要。</p>
+        </div>
+        <button className="primary-button icon-label" type="button" onClick={onProduce} disabled={!artifact || producing}>
+          {producing ? <Loader2 size={15} /> : <FileDown size={15} />}
+          生成全套产物
+        </button>
+      </section>
+      <section className="logo-callout">
+        <ImagePlus size={22} />
+        <div>
+          <strong>{refs.length ? `已检测到 ${refs.length} 张参考图` : "生成海报或周边前，建议上传透明 PNG Logo"}</strong>
+          <span>例如攀岩馆活动海报、会员周边 T 恤、赞助合作物料，都可以把 Logo 作为参考图交给图像生成 Agent。</span>
+        </div>
+        <button className="ghost-button icon-label" type="button" onClick={onUploadReference}>
+          <UploadCloud size={15} />
+          上传参考图
+        </button>
+      </section>
+      <OutputPanel artifacts={artifacts} artifact={artifact} running={producing} />
+    </main>
+  );
+}
+
+function RunsCenter({ dashboard, trace, running }) {
+  const runs = dashboard?.runs || [];
+  return (
+    <main className="agent-studio runs-stage">
+      <section className="dashboard-hero">
+        <div>
+          <span className="eyeless-label">Runs</span>
+          <h1>运行记录</h1>
+          <p>记录 Agent 路由、工具调用、模型响应、审计和产物生成步骤，便于客户理解结论从哪里来。</p>
+        </div>
+      </section>
+      <AutoAnalysisLog trace={trace} runs={runs} running={running} />
+      <section className="run-table">
+        {runs.slice(0, 12).map((run) => (
+          <article key={run.run_id || run.conversation_id}>
+            <Activity size={16} />
+            <div>
+              <strong>{run.status || "completed"}</strong>
+              <span>{run.run_id || run.conversation_id || "run"}</span>
+            </div>
+            <em>{formatTime(run.created_at || run.updated_at)}</em>
+          </article>
+        ))}
+        {!runs.length ? <p className="empty-copy">暂无运行记录。</p> : null}
+      </section>
+    </main>
+  );
+}
+
+function SettingsCenter({ dashboard }) {
+  const health = dashboard?.health || {};
+  const deps = health.dependencies || {};
+  return (
+    <main className="agent-studio settings-stage">
+      <section className="dashboard-hero">
+        <div>
+          <span className="eyeless-label">Settings</span>
+          <h1>系统状态</h1>
+          <p>当前环境用于测试和演示。这里展示 Agent 运行所依赖的 Foundry、Search、Blob、MCP 等连接状态。</p>
+        </div>
+      </section>
+      <section className="settings-grid">
+        <MetricCard icon={Sparkles} label="Foundry" value={deps.foundry ? "健康" : "检查中"} detail={health.dependency_details?.foundry?.endpoint || "Azure AI Foundry"} />
+        <MetricCard icon={Search} label="Search" value={health.search_endpoint || deps.search ? "健康" : "检查中"} detail="Azure AI Search" />
+        <MetricCard icon={Database} label="Blob" value={deps.blob ? "健康" : "检查中"} detail="上传工作区与产物持久化" />
+        <MetricCard icon={Route} label="MCP" value={deps.mcp ? "健康" : "检查中"} detail="白名单工具与市场信息" />
+      </section>
+    </main>
+  );
+}
+
 function useAgentPresentation(trace, running) {
   const actualActive = [...trace].reverse().find((item) => item.event === "role_change")?.data?.agent;
   const actualDone = useMemo(() => new Set(trace
@@ -376,13 +811,17 @@ function useAgentPresentation(trace, running) {
   };
 }
 
-function AgentRoute({ trace, running, presentation }) {
+function AgentRoute({ trace, running, presentation, compact = false }) {
   const activeAgent = presentation.activeAgent;
   const responded = presentation.doneAgents;
   const current = AGENTS.find((agent) => agent.id === activeAgent) || AGENTS[0];
   const runId = trace.find((item) => item.event === "ready")?.data?.conversation_id || "pending";
+  const y = 62;
+  const startX = 52;
+  const gapX = 122;
+  const endX = startX + gapX * (AGENTS.length - 1);
   return (
-    <section className="agent-route-card">
+    <section className={compact ? "agent-route-card compact" : "agent-route-card"}>
       <div className="route-card-head">
         <div>
           <strong>Agent Flow</strong>
@@ -394,7 +833,7 @@ function AgentRoute({ trace, running, presentation }) {
         </div>
       </div>
       <div className="route-svg-wrap">
-        <svg className="route-svg" viewBox="0 0 940 144" role="img" aria-label="Agent route">
+        <svg className="route-svg" viewBox="0 0 720 144" role="img" aria-label="Agent route">
           <defs>
             <linearGradient id="agent-flow-gradient" x1="0" x2="1">
               <stop offset="0%" stopColor="#0071e3" />
@@ -402,18 +841,20 @@ function AgentRoute({ trace, running, presentation }) {
               <stop offset="100%" stopColor="#b26a00" />
             </linearGradient>
           </defs>
-          <path className="route-line base" d="M70 58 C190 10 240 106 362 58 S536 10 656 58 792 106 870 58" />
-          <path className={running || presentation.maxStage > 0 ? "route-line live" : "route-line"} d="M70 58 C190 10 240 106 362 58 S536 10 656 58 792 106 870 58" />
+          <path className="route-line base" d={`M${startX} ${y} H${endX}`} />
+          <path className={running || presentation.maxStage > 0 ? "route-line live" : "route-line"} d={`M${startX} ${y} H${endX}`} />
           {AGENTS.map((agent, index) => {
-            const x = 70 + index * 160;
+            const x = startX + index * gapX;
             const active = activeAgent === agent.id;
             const done = responded.has(agent.id);
             const Icon = agent.icon;
             return (
               <g key={agent.id} className={active ? "route-node active" : done ? "route-node done" : "route-node"}>
-                <circle cx={x} cy="58" r="22" />
-                <foreignObject x={x - 10} y="48" width="20" height="20">
-                  <Icon size={18} strokeWidth={2} />
+                <circle cx={x} cy={y} r="22" />
+                <foreignObject x={x - 13} y={y - 13} width="26" height="26">
+                  <div className="route-icon-fo" xmlns="http://www.w3.org/1999/xhtml">
+                    <Icon size={17} strokeWidth={2.2} />
+                  </div>
                 </foreignObject>
                 <text x={x} y="102" textAnchor="middle">{agent.zh}</text>
                 <text className="route-node-role" x={x} y="120" textAnchor="middle">{agent.role}</text>

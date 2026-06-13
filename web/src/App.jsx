@@ -8,13 +8,13 @@ import {
   uploadWorkspace,
 } from "./api.js";
 import {
-  AgentStudio,
   extractArtifacts,
   Inspector,
   NoticeStack,
   ShellNav,
   TopBar,
   UploadModal,
+  WorkbenchMain,
   WorkspacePane,
 } from "./components.jsx";
 import { PLAYBOOKS } from "./constants.js";
@@ -39,6 +39,7 @@ export function App() {
   const [selectedPlaybook, setSelectedPlaybook] = useState("opportunity-tree");
   const [artifactMode, setArtifactMode] = useState("report");
   const [inspectorTab, setInspectorTab] = useState("evidence");
+  const [activeView, setActiveView] = useState("workspaces");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadState, setUploadState] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -141,6 +142,15 @@ export function App() {
     setMessages([]);
     setActiveConversationId(null);
     resetRunState();
+    setActiveView("workspaces");
+  };
+
+  const startNewConversation = () => {
+    setMessages([]);
+    setActiveConversationId(null);
+    resetRunState();
+    setActiveView("conversations");
+    setInspectorTab("trace");
   };
 
   const revealFinalText = (text, onComplete) => {
@@ -175,6 +185,7 @@ export function App() {
     setMessages((items) => [...items, { role: "user", text: message, time: new Date().toISOString() }]);
     setInput("");
     setRunning(true);
+    setActiveView("conversations");
     setInspectorTab("trace");
     resetRunState();
 
@@ -307,6 +318,7 @@ export function App() {
       setActiveConversationId(conversationId);
       setMessages((data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict })));
       resetRunState();
+      setActiveView("conversations");
       setNotice({ type: "done", message: "会话已恢复。" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -361,13 +373,14 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <ShellNav />
+      <ShellNav active={activeView} onChange={setActiveView} />
       <div className="workbench">
         <TopBar
           dashboard={dashboard}
           workspaceId={workspaceId}
           onWorkspaceChange={changeWorkspace}
           onUpload={() => setUploadOpen(true)}
+          onNewConversation={startNewConversation}
           loading={dashboardLoading || displayRunning || producing}
           user={user}
           authState={authState}
@@ -383,7 +396,9 @@ export function App() {
             onRefresh={() => refreshDashboard(workspaceId)}
             deleting={deleting}
           />
-          <AgentStudio
+          <WorkbenchMain
+            view={activeView}
+            setView={setActiveView}
             dashboard={dashboard}
             messages={messages}
             trace={trace}
@@ -399,6 +414,7 @@ export function App() {
             finalArtifact={finalArtifact}
             artifacts={artifacts}
             onProduce={produce}
+            onNewConversation={startNewConversation}
             producing={producing}
           />
           <Inspector
