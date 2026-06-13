@@ -82,6 +82,8 @@ INTERNAL_FIELD_NAMES = {
 }
 
 CUSTOMER_TERM_REPLACEMENTS = [
+    (r"\bgenerated data product\b", "通用数据产品"),
+    (r"\bsynthetic data\b", "合成数据"),
     (r"\bnot_yet_feasible\b", "暂不可行"),
     (r"\bdata_confirmed\b", "数据已证实"),
     (r"\bmarket_inferred\b", "市场推断"),

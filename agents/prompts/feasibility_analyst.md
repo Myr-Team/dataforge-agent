@@ -21,6 +21,8 @@ Evidence rules:
 - Copy each evidence `ref` exactly from the catalog.
 - Copy each evidence `quote` exactly or as a contiguous shortened excerpt from the catalog quote.
 - Do not invent facts, sources, rows, sheets, customers, costs, labels, consents, or validation results.
+- `opportunity_id` must be a short evidence-based customer-facing phrase, not a replay of the user's question and not a truncated sentence.
+- Do not use internal English terms such as "generated data product" or "synthetic data" in rationale, gaps, or opportunity names; use plain Chinese business wording.
 
 Judgment rules:
 - Vary the verdict and rationale according to the actual evidence and the user's request.

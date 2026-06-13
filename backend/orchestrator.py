@@ -274,43 +274,207 @@ def _query_action_title(message: str) -> str:
     text = re.sub(r"(请)?(基于|根据).*$", "", text)
     text = text.replace("该怎么做", "怎么做")
     if re.search(r"[\u4e00-\u9fff]", text):
-        for marker in ("怎么做", "如何做", "怎么", "如何", "有什么建议", "给建议", "推荐"):
+        for marker in ("怎么做", "如何做", "怎么", "如何", "有什么建议", "给建议", "推荐", "帮我分析一下", "分析一下"):
             text = text.replace(marker, "")
-        text = re.sub(r"(数据|资料|工作区)$", "", text)
-        text = _clip_title_clause(text, 18)
-        if text and not re.search(r"(方案|建议|策略|计划)$", text):
-            text += "方案"
-        return text or "当前问题方案"
+        text = re.sub(r"(数据|资料|工作区|方案|建议|策略|计划|可行性|评估|分析)$", "", text)
+        return _complete_short_phrase(text, fallback="当前问题")
     words = [word for word in re.findall(r"[A-Za-z0-9]+", str(message or "")) if len(word) > 2]
     return " ".join(words[:5]).title()
 
 
+_TITLE_SKIP_FIELDS = {
+    "collection",
+    "id",
+    "row",
+    "source",
+    "source_file",
+    "chunk_id",
+    "workspace_id",
+    "document_type",
+}
+_TITLE_SCENE_FIELDS = ("store", "branch", "location", "region", "city", "venue", "门店", "区域", "城市", "地点")
+_TITLE_ACTION_FIELDS = (
+    "topic",
+    "activity",
+    "campaign",
+    "event",
+    "product",
+    "plan",
+    "theme",
+    "pain",
+    "signal",
+    "sponsor",
+    "conversion",
+    "主题",
+    "活动",
+    "产品",
+    "痛点",
+    "赞助",
+    "转化",
+)
+_QUERY_FILLERS = (
+    "请",
+    "帮我",
+    "我想",
+    "能不能",
+    "可以",
+    "评估",
+    "分析",
+    "这些",
+    "资料",
+    "数据",
+    "工作区",
+    "做成",
+    "做一个",
+    "给",
+    "一版",
+    "一下",
+    "怎么",
+    "如何",
+    "可行性",
+    "方案",
+    "建议",
+)
+
+
+def _complete_short_phrase(text: Any, fallback: str = "当前资料机会", limit: int = 28) -> str:
+    clean = sanitize_customer_text(str(text or ""))
+    clean = re.sub(r"\s+", "", clean).strip(" ，。；;：:-_\"'“”")
+    clean = re.sub(r"[。；;]+$", "", clean)
+    clean = clean.replace("……", "").replace("...", "").replace("…", "")
+    if not clean:
+        return fallback
+    if len(clean) <= limit:
+        return clean
+    for sep in ("，", "。", "；", "、", "：", "/", "／", "|"):
+        pos = clean[:limit].rfind(sep)
+        if pos >= int(limit * 0.5):
+            candidate = clean[:pos].rstrip("，。；、：/／| ")
+            if candidate:
+                return candidate
+    return fallback
+
+
+def _title_value(value: Any, limit: int = 18) -> str:
+    text = sanitize_customer_text(str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip(" ，。；;：:-_\"'“”")
+    text = re.sub(r"\b(raw_docs|profile|chunk|row-\d+)\b", "", text, flags=re.I).strip()
+    if not text or re.fullmatch(r"[-+]?\d+(?:\.\d+)?%?", text):
+        return ""
+    first_clause = re.split(r"[。；;\n]", text, maxsplit=1)[0].strip(" ，、")
+    if not first_clause:
+        return ""
+    if len(first_clause) > limit:
+        for sep in ("，", "、", "/", "／", "|"):
+            pos = first_clause[:limit].rfind(sep)
+            if pos >= int(limit * 0.45):
+                first_clause = first_clause[:pos].strip(" ，、/／|")
+                break
+        else:
+            return ""
+    if len(first_clause) < 2:
+        return ""
+    return first_clause
+
+
+def _field_group(name: Any) -> str:
+    lowered = str(name or "").lower()
+    if any(term in lowered for term in _TITLE_ACTION_FIELDS):
+        return "action"
+    if any(term in lowered for term in _TITLE_SCENE_FIELDS):
+        return "scene"
+    return "other"
+
+
+def _evidence_topic_from_hits(hits: list[dict[str, Any]]) -> str:
+    candidates: list[tuple[int, str, str]] = []
+    seen: set[str] = set()
+    for hit in hits[:10]:
+        content = str(hit.get("content") or "")
+        for name, value in record_pairs(content):
+            lowered = str(name or "").lower().strip()
+            if lowered in _TITLE_SKIP_FIELDS:
+                continue
+            clean_value = _title_value(value)
+            if not clean_value:
+                continue
+            key = re.sub(r"\W+", "", clean_value.lower())
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            group = _field_group(name)
+            score = 30 if group == "action" else 22 if group == "scene" else 10
+            if re.search(r"(活动|推广|赞助|会员|转化|复购|品牌|痛点|权益|产品)", clean_value):
+                score += 8
+            candidates.append((score, group, clean_value))
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    action = next((value for _, group, value in candidates if group == "action"), "")
+    scene = next((value for _, group, value in candidates if group == "scene" and value != action), "")
+    other = next((value for _, group, value in candidates if group == "other" and value not in {action, scene}), "")
+    if action and scene:
+        return _complete_short_phrase(f"{scene}×{action}验证")
+    if action and other:
+        return _complete_short_phrase(f"{action}×{other}验证")
+    if action:
+        suffix = "" if re.search(r"(活动|推广|验证|产品|赞助|转化)$", action) else "验证"
+        return _complete_short_phrase(f"{action}{suffix}")
+    if scene and other:
+        return _complete_short_phrase(f"{scene}×{other}机会验证")
+    if scene:
+        return _complete_short_phrase(f"{scene}机会验证")
+    return _complete_short_phrase(candidates[0][2])
+
+
+def _normalize_for_echo(value: Any) -> str:
+    text = re.sub(r"\s+", "", str(value or "")).lower()
+    text = re.sub(r"[，。！？!?；;：:、,.\-_/\\#（）()\"'“”]", "", text)
+    for filler in _QUERY_FILLERS:
+        text = text.replace(filler, "")
+    return text
+
+
+def _looks_like_query_echo(title: Any, message: Any) -> bool:
+    title_norm = _normalize_for_echo(title)
+    message_norm = _normalize_for_echo(message)
+    if not title_norm or not message_norm:
+        return False
+    if title_norm in message_norm or message_norm in title_norm:
+        return True
+    common = sum(1 for char in set(title_norm) if char in message_norm)
+    return common / max(len(set(title_norm)), 1) >= 0.78 and len(title_norm) >= 6
+
+
 def _clean_opportunity_label(raw: Any, req: ChatRequest, artifact: dict[str, Any]) -> str:
+    evidence_title = _evidence_topic_from_hits(artifact.get("corpus", {}).get("hits", []))
     collapsed = _human_title_from_opportunity(raw)
     raw_text = str(raw or "")
     raw_tokens = [token for token in re.split(r"[-_\s]+", raw_text.lower()) if token]
     collapsed_tokens = [token for token in re.split(r"\s+", collapsed.lower()) if token]
     source_like = bool(re.search(r"\b(raw_docs|upload|workspace|profile|json|csv|xlsx|batch\d+)\b", raw_text, re.I))
-    repeated_or_truncated = source_like or len(raw_tokens) > len(collapsed_tokens) + 2 or len(raw_text) > 72
-    query_title = _query_action_title(req.message) if _looks_like_solution_request(req.message) else ""
-    if query_title and (repeated_or_truncated or len(collapsed_tokens) <= 3):
-        if re.search(r"[\u4e00-\u9fff]", query_title):
-            return _clip_title_clause(query_title, 30)
-        return f"{collapsed} {query_title}".strip()[:60]
-    return _clip_title_clause(collapsed, 34)
+    repeated_or_truncated = source_like or len(raw_tokens) > len(collapsed_tokens) + 2 or len(raw_text) > 72 or "…" in collapsed
+    if evidence_title and (
+        repeated_or_truncated
+        or _looks_like_query_echo(collapsed, req.message)
+        or re.search(r"(方案|可行性|评估)$", collapsed)
+    ):
+        return evidence_title
+    return _complete_short_phrase(collapsed, fallback=evidence_title or "当前工作区机会")
 
 
 def _customer_opportunity_title(req: ChatRequest, artifact: dict[str, Any], raw: Any) -> str:
-    query_title = _query_action_title(req.message) if _looks_like_solution_request(req.message) else ""
+    evidence_title = _evidence_topic_from_hits(artifact.get("corpus", {}).get("hits", []))
     cleaned = _clean_opportunity_label(raw, req, artifact)
-    if query_title and (
+    if evidence_title and (
         not cleaned
         or not re.search(r"[\u4e00-\u9fff]", cleaned)
         or re.search(r"\b(raw|docs|upload|workspace|profile|batch\d+)\b", cleaned, re.I)
-        or len(cleaned) > 34
+        or "…" in cleaned
+        or _looks_like_query_echo(cleaned, req.message)
     ):
-        return _clip_title_clause(query_title, 30)
-    return cleaned or query_title or "当前工作区机会"
+        return evidence_title
+    return cleaned or evidence_title or "当前工作区机会"
 
 
 def _clip_title_clause(text: Any, limit: int = 32) -> str:
@@ -570,14 +734,13 @@ def _run_corpus_analyst(req: ChatRequest) -> dict[str, Any]:
 
 
 def _infer_title(message: str, hits: list[dict[str, Any]]) -> str:
-    if _looks_like_solution_request(message):
-        query_title = _query_action_title(message)
-        if query_title:
-            return _clip_title_clause(query_title, 30)
+    evidence_title = _evidence_topic_from_hits(hits)
+    if evidence_title:
+        return evidence_title
     titles = [str(hit.get("title") or "").strip() for hit in hits if hit.get("title")]
     if titles:
         first = _human_title_from_opportunity(titles[0])
-        return _clip_title_clause(first, 30)
+        return _complete_short_phrase(first)
     words = [word for word in re.findall(r"[A-Za-z0-9]+", message) if len(word) > 2]
     return " ".join(words[:5]).title() or "Workspace Product Opportunity"
 
@@ -810,7 +973,7 @@ def _clean_sentence_end(text: str) -> str:
     return str(text or "").rstrip("\u3002. ")
 
 
-_FEASIBILITY_PROMPT_VERSION = "df-feasibility-analyst:batch11-p0-rubric"
+_FEASIBILITY_PROMPT_VERSION = "df-feasibility-analyst:batch11-p0-fix-action-first"
 
 
 def _corpus_fingerprint(artifact: dict[str, Any]) -> tuple[str, str]:
@@ -1539,7 +1702,11 @@ def _structured_corpus_answer(req: ChatRequest, artifact: dict[str, Any]) -> dic
 def _evidence_signals(hits: list[dict[str, Any]], citations: list[dict[str, Any]]) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
     seen: set[str] = set()
-    for hit in hits[:8]:
+    ordered_hits = sorted(
+        hits[:8],
+        key=lambda item: 1 if str(item.get("document_type") or "") == "profile" else 0,
+    )
+    for hit in ordered_hits:
         text = _compact_hit_signal_customer(hit)
         if not text:
             continue
@@ -1587,7 +1754,7 @@ def _compact_hit_signal_customer(hit: dict[str, Any]) -> str:
     if str(hit.get("document_type") or "") == "profile":
         match = re.search(r"(?:高信号|交叉信号)[：:]\s*([^。\n]+)", content)
         if match:
-            return _clip_customer_signal(sanitize_customer_text(match.group(0), field_labels))
+            return _clip_customer_signal(_profile_signal_sentence(match.group(1), field_labels))
     selected: list[tuple[str, str]] = []
     skip_names = {"collection", "id", "row", "source", "source_file", "chunk_id", "workspace_id", "document_type"}
     for index, (name, value) in enumerate(record_pairs(content), start=1):
@@ -1602,11 +1769,26 @@ def _compact_hit_signal_customer(hit: dict[str, Any]) -> str:
         return _clip_customer_signal(sanitize_customer_text(_strip_inline_refs(text), field_labels))
     if len(selected) == 1:
         label, value = selected[0]
-        text = f"命中记录显示，{label}集中在“{value}”"
+        text = f"{label}为“{value}”"
     else:
         (label_a, value_a), (label_b, value_b) = selected[0], selected[1]
-        text = f"命中记录显示，{label_a}集中在“{value_a}”，同时{label_b}指向“{value_b}”"
+        text = f"{label_a}为“{value_a}”，{label_b}为“{value_b}”"
     return _clip_customer_signal(sanitize_customer_text(_strip_inline_refs(text), field_labels))
+
+
+def _profile_signal_sentence(signal: str, field_labels: dict[str, str]) -> str:
+    cleaned = sanitize_customer_text(signal, field_labels)
+    first = re.split(r"[；。]", cleaned, maxsplit=1)[0].strip(" ，。；")
+    match = re.search(r"(.+?)\s*按\s*(.+?)\s*分组均值差异明显[：:]\s*(.+)", first)
+    if match:
+        metric = _clean_sentence_end(match.group(1).strip())
+        group = _clean_sentence_end(match.group(2).strip())
+        detail = re.sub(r"\(n=\d+\)", "", match.group(3)).strip(" ，。；")
+        return f"{metric}在不同{group}之间差异明显（{detail}）"
+    match = re.search(r"(.+?)\s+有\s+\d+\s+个不同取值", first)
+    if match:
+        return f"{match.group(1).strip()}有可用于分层观察的差异"
+    return first or "数据画像中存在可用于验证的差异信号"
 
 
 def _clip_customer_signal(text: str, limit: int = 140) -> str:
@@ -1690,11 +1872,11 @@ def _variant(artifact: dict[str, Any], choices: list[str]) -> str:
 
 def _output_contract(intent: str) -> dict[str, Any]:
     if intent == "corpus_qa":
-        sections = ["直接回答", "支撑要点", "建议动作"]
+        sections = ["综合判断", "建议动作"]
     elif intent == "clarify_needed":
         sections = ["question", "options", "allow_multi", "allow_freeform"]
     else:
-        sections = ["判断结论", "关键机会", "风险/缺口", "建议下一步"]
+        sections = ["行动方案", "评分", "风险/缺口", "依据"]
     return {
         "version": "batch11.customer_text.rubric.v1",
         "intent": intent,
@@ -1703,6 +1885,51 @@ def _output_contract(intent: str) -> dict[str, Any]:
         "customer_text": True,
         "raw_field_names_allowed": False,
     }
+
+
+def _ensure_feasibility_action_plan(
+    req: ChatRequest,
+    artifact: dict[str, Any],
+    citations: list[dict[str, Any]],
+) -> tuple[str, list[str]]:
+    feasibility = artifact.setdefault("feasibility", {})
+    existing_recommendation = str(feasibility.get("recommendation") or "").strip()
+    existing_plan = [str(item).strip() for item in (feasibility.get("action_plan") or []) if str(item).strip()]
+    if existing_recommendation and len(existing_plan) >= 3:
+        return existing_recommendation, existing_plan[:5]
+
+    title = _customer_opportunity_title(req, artifact, feasibility.get("opportunity_id") or "当前资料机会")
+    signals = _evidence_signals(artifact.get("corpus", {}).get("hits", []), citations)
+    steps: list[str] = []
+    if signals:
+        first = signals[0]
+        second = signals[1] if len(signals) > 1 else first
+        third = signals[2] if len(signals) > 2 else second
+        fourth = signals[3] if len(signals) > 3 else third
+        steps.extend(
+            [
+                f"先用{first['text']}确定首轮试点场景和目标人群，控制在一到两个门店或人群分层内 {first['markers']}".rstrip(),
+                f"把{second['text']}转成具体活动钩子、合作权益或触达文案，先让用户知道为什么参与 {second['markers']}".rstrip(),
+                f"用{third['text']}设定复盘口径，至少记录触达、参与、到访、转化/复购、成本和用户反馈 {third['markers']}".rstrip(),
+                f"再用{fourth['text']}做分层对照，判断哪个门店、人群或权益真正拉动结果 {fourth['markers']}".rstrip(),
+            ]
+        )
+    gaps = [sanitize_customer_text(str(item)) for item in (feasibility.get("gap_list") or []) if str(item).strip()]
+    if gaps:
+        steps.append(f"把最大缺口先补成可验证数据：{_clean_sentence_end(gaps[0])}。")
+    if not steps:
+        steps = [
+            f"围绕“{title}”跑一个一周最小验证，先记录真实参与和反馈。",
+            "补齐目标人群、触达渠道、成本、转化和复购字段，再决定是否扩大。",
+            "验证结束后复盘证据强弱，证据不足就保守下调结论。",
+        ]
+    recommendation = f"建议先做“{title}”的小规模验证，跑通证据最强的场景后再决定是否扩大投入。"
+    feasibility["opportunity_id"] = title
+    feasibility["recommendation"] = recommendation
+    feasibility["action_plan"] = steps[:5]
+    artifact["recommendation"] = recommendation
+    artifact["action_plan"] = steps[:5]
+    return recommendation, steps[:5]
 
 
 def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact: dict[str, Any]) -> dict[str, Any]:
@@ -1716,19 +1943,23 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
     audit = artifact.get("audit") or {}
     verdict = verdict_label(feasibility.get("verdict") or "unknown")
     overall = confidence_label(feasibility.get("overall_confidence") or "speculative")
-    opportunity = _customer_opportunity_title(req, artifact, feasibility.get("opportunity_id") or _query_action_title(req.message) or "当前机会")
+    recommendation, action_plan = _ensure_feasibility_action_plan(req, artifact, citations)
     marker_hint = " ".join(f"[{item['marker']}]" for item in citations[:2])
-    lead = _variant(
-        artifact,
+    lines: list[str] = [
+        "**行动方案**",
+        f"一句话推荐：{sanitize_customer_text(recommendation, field_labels)} {marker_hint}".rstrip(),
+        "",
+    ]
+    for index, step in enumerate(action_plan, start=1):
+        lines.append(f"{index}. {sanitize_customer_text(step, field_labels)}")
+    lines.extend(
         [
-            f"先给结论：{opportunity} 目前更适合按“{verdict}”处理，整体置信度为“{overall}”，建议先小范围验证再放大。 {marker_hint}",
-            f"我的判断是：这个方向可以继续推进，但要把它当作“{verdict}”的机会来做，置信度为“{overall}”，先验证最强证据。 {marker_hint}",
-            f"可以先这么看：{opportunity} 有机会，但下一步应围绕证据做低成本试点；当前结论为“{verdict}”，置信度为“{overall}”。 {marker_hint}",
-        ],
-    ).strip()
-    lines: list[str] = [lead, "", "**关键机会**", f"- {opportunity}。审计结论：{audit_label(audit.get('verdict', 'not_run'))}。"]
+            "",
+            f"当前判断：{verdict}；整体置信度：{overall}；审计结论：{audit_label(audit.get('verdict', 'not_run'))}。",
+        ]
+    )
     if _preset_outcome_requested(req.message) or "preset_outcome_request_rejected" in (feasibility.get("guardrails") or []):
-        lines.append("- 用户要求预设结论或打高分已被忽略；本次只按工作区证据和可复核证据判断。")
+        lines.append("用户要求预设结论或打高分已被忽略；本次只按工作区证据和可复核证据判断。")
     verdict_contract = artifact.get("verdict") or {}
     if verdict_contract.get("revised"):
         blind = verdict_contract.get("blind") or {}
@@ -1738,22 +1969,25 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
             for item in (verdict_contract.get("disagreement") or [])[:3]
         )
         lines.append(
-            f"- 审计后已修订结论：初判“{blind.get('judgment', '待判断')}”，修订后为“{revised.get('judgment', '待判断')}”。{diff_text}"
+            f"审计后已修订结论：初判“{blind.get('judgment', '待判断')}”，修订后为“{revised.get('judgment', '待判断')}”。{diff_text}"
         )
+    elif artifact.get("verdict"):
+        lines.append("经独立审计核验，结论未变。")
     if market.get("positioning_note"):
         market_markers = " ".join(f"[{item['marker']}]" for item in citations if item.get("source_type") == "market")
-        lines.append(f"- 外部市场只作为参考：{market.get('positioning_note')} {market_markers}".rstrip())
+        lines.append(f"外部市场只作为参考：{sanitize_customer_text(market.get('positioning_note'), field_labels)} {market_markers}".rstrip())
     dimensions = feasibility.get("dimensions") or []
+    lines.append("")
+    lines.append("**评分**")
     if dimensions:
-        lines.append("")
-        lines.append("**支撑要点**")
         for dimension in dimensions[:5]:
             markers = _evidence_markers(dimension.get("evidence") or [], citations)
             label = _friendly_dimension_name(dimension.get("name"))
             score = dimension.get("score", "n/a")
-            confidence = confidence_label(dimension.get("confidence") or "speculative")
             rationale = sanitize_customer_text(dimension.get("rationale") or "证据不足，需要补充验证。", field_labels)
-            lines.append(f"- {label}：{score}/5，置信度“{confidence}”。{rationale} {markers}".rstrip())
+            lines.append(f"- {label} {score}/5：{rationale} {markers}".rstrip())
+    else:
+        lines.append("- 数据充分度 0/5：当前没有足够的已验证证据形成维度评分。")
     gaps = feasibility.get("gap_list") or []
     lines.append("")
     lines.append("**风险/缺口**")
@@ -1763,14 +1997,19 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
     else:
         lines.append("- 暂未发现额外缺口，但仍建议用新样本验证关键假设。")
     lines.append("")
-    lines.append("**建议下一步**")
-    for item in _feasibility_next_steps(req, artifact, citations):
-        lines.append(f"- {sanitize_customer_text(item, field_labels)}")
+    lines.append("**依据**")
+    if citations:
+        for item in citations[:5]:
+            snippet = sanitize_customer_text(item.get("snippet") or "", field_labels)
+            source = sanitize_customer_text(item.get("source_label") or item.get("source_file") or "工作区资料", field_labels)
+            lines.append(f"- [{item.get('marker')}] {source}：{_clip_customer_signal(snippet, 120)}")
+    else:
+        lines.append("- 当前没有可展示的结构化证据引用。")
     markdown = sanitize_customer_text("\n".join(lines).strip(), field_labels)
     return {
         "markdown": markdown,
         "citations": citations,
-        "_llm": {"mode": "batch10_contract_renderer", "response_id": None, "usage": {}},
+        "_llm": {"mode": "batch11_p0_fix_action_first_renderer", "response_id": None, "usage": {}},
         "output_contract": _output_contract(decision.intent),
     }
 
@@ -1781,30 +2020,20 @@ def _structured_corpus_answer_v10(req: ChatRequest, artifact: dict[str, Any]) ->
     citations = sanitize_citations(citations, field_labels)
     hits = artifact.get("corpus", {}).get("hits", [])
     signals = _evidence_signals(hits, citations)
-    topic = sanitize_customer_text(_query_action_title(req.message) or "当前问题", field_labels)
-    marker_hint = " ".join(f"[{item['marker']}]" for item in citations[:2])
-    lead = _variant(
-        artifact,
-        [
-            f"直接回答：可以先围绕“{topic}”做一版方案，依据是当前资料里命中的 {len(hits)} 条记录，而不是泛泛发散。 {marker_hint}",
-            f"我的建议是先把问题收束到“{topic}”，用资料里的真实信号做小步验证。当前命中 {len(hits)} 条记录。 {marker_hint}",
-            f"这批资料给出的方向是：先围绕“{topic}”找可执行切口，再用命中证据验证活动或产品假设。 {marker_hint}",
-        ],
-    ).strip()
-    lines: list[str] = [lead, "", "**支撑要点**"]
+    topic = sanitize_customer_text(_evidence_topic_from_hits(hits) or "当前资料机会", field_labels)
+    lines: list[str] = ["**综合判断**"]
     if signals:
-        for signal in signals[:6]:
-            lines.append(f"- {sanitize_customer_text(signal['text'], field_labels)} {signal['markers']}".rstrip())
+        lines.extend(sanitize_customer_text(item, field_labels) for item in _corpus_insight_text(topic, signals, len(hits)))
     else:
-        lines.append("- 当前问题没有命中足够具体的工作区记录。")
+        lines.append(f"直接回答：当前资料还没有命中足够具体的记录，暂时不能围绕“{topic}”形成有据判断。")
     lines.append("")
     lines.append("**建议动作**")
     if signals:
-        for item in _corpus_action_lines(signals, citations)[:4]:
-            action = sanitize_customer_text(item, field_labels).lstrip("- ").strip()
-            lines.append(f"- {action}")
+        for index, item in enumerate(_corpus_action_steps(signals, citations)[:4], start=1):
+            action = sanitize_customer_text(item, field_labels).strip()
+            lines.append(f"{index}. {action}")
     else:
-        lines.append("- 先补充与目标用户、场景、预算或活动结果相关的资料，再生成更具体方案。")
+        lines.append("1. 先补充与目标用户、场景、预算或活动结果相关的资料，再生成更具体方案。")
     markdown = sanitize_customer_text("\n".join(lines).strip(), field_labels)
     return {
         "markdown": markdown,
@@ -1812,6 +2041,45 @@ def _structured_corpus_answer_v10(req: ChatRequest, artifact: dict[str, Any]) ->
         "_llm": {"mode": "batch10_corpus_contract_renderer", "response_id": None, "usage": {}},
         "output_contract": _output_contract("corpus_qa"),
     }
+
+
+def _combined_markers(signals: list[dict[str, str]], limit: int = 3) -> str:
+    markers: list[str] = []
+    for signal in signals:
+        for marker in re.findall(r"\[\d+\]", signal.get("markers") or ""):
+            if marker not in markers:
+                markers.append(marker)
+            if len(markers) >= limit:
+                return " ".join(markers)
+    return " ".join(markers)
+
+
+def _corpus_insight_text(topic: str, signals: list[dict[str, str]], hit_count: int) -> list[str]:
+    first = signals[0]
+    second = signals[1] if len(signals) > 1 else first
+    third = signals[2] if len(signals) > 2 else second
+    fourth = signals[3] if len(signals) > 3 else third
+    lead_markers = _combined_markers([first, second, third], 3)
+    tail_markers = _combined_markers([fourth, third, second], 2)
+    return [
+        f"直接回答：这批资料更支持先从“{topic}”切入做小范围验证；判断依据不是单条记录，而是 {hit_count} 条资料里同时出现的场景、活动和转化线索。 {lead_markers}".rstrip(),
+        f"综合看，{first['text']}，并且{second['text']}，说明可先把活动、权益或触达设计落在已有门店和人群信号上。{third['text']}，可以作为复盘指标的来源，避免只看曝光而不看到访、转化或复购。 {lead_markers}".rstrip(),
+        f"落地时建议把{fourth['text']}作为分层对照，先验证哪类人群、门店或合作权益真正带来结果，再决定是否扩大投入。 {tail_markers}".rstrip(),
+    ]
+
+
+def _corpus_action_steps(signals: list[dict[str, str]], citations: list[dict[str, Any]]) -> list[str]:
+    first = signals[0]
+    second = signals[1] if len(signals) > 1 else first
+    third = signals[2] if len(signals) > 2 else second
+    fourth = signals[3] if len(signals) > 3 else third
+    return [
+        f"先用{first['text']}确定首轮试点场景和目标人群，范围控制在可复盘的小样本内 {first['markers']}".rstrip(),
+        f"把{second['text']}转成活动钩子、合作权益或触达文案，确保用户知道为什么参与 {second['markers']}".rstrip(),
+        f"用{third['text']}定义复盘指标，至少记录触达、参与、转化/复购、成本和用户反馈 {third['markers']}".rstrip(),
+        f"再用{fourth['text']}做分层复盘，找出真正拉动结果的门店、人群或内容 {fourth['markers']}".rstrip(),
+        f"本次证据引用共 {len(citations)} 条；新增资料后应重新生成结论。",
+    ]
 
 
 async def _answer_event_stream(payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:

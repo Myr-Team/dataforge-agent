@@ -25,10 +25,10 @@ sys.path.insert(0, str(ROOT))
 
 
 FORBIDDEN_VISIBLE = re.compile(
-    r"\b(data_confirmed|market_inferred|speculative|conditional|pass|membership)\b|分类维度\d+|raw_docs|chunk_id|source_file|\bschema\b",
+    r"\b(data_confirmed|market_inferred|speculative|conditional|pass|membership)\b|generated data product|synthetic data|分类维度\d+|raw_docs|chunk_id|source_file|\bschema\b",
     re.I,
 )
-RECORD_TEMPLATE = re.compile(r"资料类别[：:].{0,60}[；;].{0,20}类别[：:]")
+RECORD_TEMPLATE = re.compile(r"资料类别[：:].{0,60}[；;].{0,20}类别[：:]|命中记录显示|类别集中在|主题指向")
 
 
 class Harness:
@@ -122,19 +122,49 @@ def main() -> int:
         corpus_artifact = corpus_final.get("artifact") or {}
         corpus_citations = _citations(corpus_final)
         search_titles = [str(item.get("title") or "") for item in search_result.get("hits") or []]
+        extra_questions = [
+            "只看资料，哪些活动推广信号最强？",
+            "只问资料里，门店和会员信号有什么可用证据？",
+        ]
+        extra_corpus: list[dict[str, Any]] = []
+        for question in extra_questions:
+            events = harness.chat(workspace_id, question)
+            final = _final(events)
+            artifact = final.get("artifact") or {}
+            title = str((((artifact.get("corpus") or {}).get("opportunities") or [{}])[0] or {}).get("title") or "")
+            extra_corpus.append({"question": question, "text": str(final.get("text") or ""), "title": title})
         visible_chunks = [
             corpus_text,
             str((corpus_artifact.get("answer") or {}).get("markdown") or ""),
             str(detail.get("customer_summary") or ""),
             *(str(item.get("snippet") or "") for item in corpus_citations),
             *search_titles,
+            *(item["text"] for item in extra_corpus),
+            *(item["title"] for item in extra_corpus),
         ]
         forbidden_hits = [match.group(0) for chunk in visible_chunks for match in FORBIDDEN_VISIBLE.finditer(chunk)]
+        corpus_first_line = corpus_text.strip().splitlines()[0] if corpus_text.strip() else ""
+        opportunity_title = str((((corpus_artifact.get("corpus") or {}).get("opportunities") or [{}])[0] or {}).get("title") or "")
+        all_title_checks = [
+            bool(opportunity_title)
+            and "…" not in opportunity_title
+            and not _query_echo(opportunity_title, "资料里有哪些可做活动推广的证据？"),
+            *[
+                bool(item["title"]) and "…" not in item["title"] and not _query_echo(item["title"], item["question"])
+                for item in extra_corpus
+            ],
+        ]
         checks["wp11j_customer_visible_forbidden_grep_zero"] = not forbidden_hits
         checks["wp11k_corpus_qa_natural_not_record_template"] = bool(corpus_text) and not RECORD_TEMPLATE.search(corpus_text)
+        checks["wp11k_corpus_qa_consultant_paragraphs"] = bool(corpus_text) and "综合判断" in corpus_text and "建议动作" in corpus_text
+        checks["wp11l_corpus_opening_not_query_echo"] = "资料里有哪些可做活动推广的证据方案" not in corpus_text and "先围绕“资料里" not in corpus_text
+        checks["wp11l_corpus_opening_complete"] = "…" not in corpus_first_line and not corpus_first_line.endswith("方案")
+        checks["wp11l_three_question_titles_complete_no_echo"] = all(all_title_checks)
         checks["wp11k_citations_at_least_3"] = len(corpus_citations) >= 3
         checks["wp11b_hit_titles_natural"] = bool(search_titles) and all(_natural_title(title) for title in search_titles[:5])
         samples["corpus_text"] = corpus_text[:1000]
+        samples["corpus_opportunity_title"] = opportunity_title
+        samples["extra_corpus"] = [{**item, "text": item["text"][:700]} for item in extra_corpus]
         samples["citation_count"] = len(corpus_citations)
         samples["search_titles"] = search_titles[:5]
         samples["customer_summary"] = detail.get("customer_summary")
@@ -150,6 +180,11 @@ def main() -> int:
             verdict_contract = artifact.get("verdict") or {}
             feasible_text = str(feasible_final.get("text") or "")
             checks["wp11c_rubric_version_in_artifact"] = bool(feasibility.get("rubric_version"))
+            checks["wp11p_action_first_text"] = feasible_text.lstrip().startswith("**行动方案**")
+            checks["wp11p_numbered_steps"] = len(re.findall(r"(?m)^\d+[.、]\s+", feasible_text)) >= 3
+            checks["wp11p_score_lines_renderable"] = len(re.findall(r"(?m)^-?\s*[\u4e00-\u9fff]{2,12}\s+\d(?:\.0)?/5：", feasible_text)) >= 3
+            checks["wp11p_artifact_action_plan"] = bool(feasibility.get("recommendation")) and len(feasibility.get("action_plan") or []) >= 3
+            checks["wp11l_opportunity_not_query_echo"] = not _query_echo(str(feasibility.get("opportunity_id") or ""), "请评估能否把这些资料做成会员经营数据产品")
             checks["wp11d_blind_verdict_present"] = bool((verdict_contract.get("blind") or {}).get("judgment"))
             checks["wp11d_blind_verdict_event"] = any(event.get("event") == "blind_verdict" for event in feasible_events)
             checks["wp11d_revised_verdict_event_if_revised"] = not verdict_contract.get("revised") or any(
@@ -195,6 +230,8 @@ def _direct_contract_checks() -> dict[str, Any]:
         finalize_verdict_contract,
         rubric_version,
     )
+    from backend.orchestrator import _structured_answer_v10
+    from backend.schemas import ChatRequest, RoutingDecision
 
     catalog = [{"ref": "demo.csv#row-1", "quote": "store: A; member_share: 0.38; sponsor_signal: 护手产品赞助"}]
     optimistic = {
@@ -235,15 +272,92 @@ def _direct_contract_checks() -> dict[str, Any]:
         artifact,
         {"verdict": "revise", "issues": ["asset_data too strong for thin evidence"], "target_expert": "df-feasibility-analyst"},
     )
+    render_artifact = {
+        "workspace_id": "direct-batch11",
+        "corpus": {
+            "hits": [
+                {
+                    "source_file": "demo.csv",
+                    "chunk_id": "row-1",
+                    "content": "store: 后海旗舰店; activity: 会员裂变日; sponsor_signal: 护手产品赞助; conversion_signal: 老会员愿意带朋友体验",
+                    "document_type": "csv",
+                },
+                {
+                    "source_file": "demo.csv",
+                    "chunk_id": "row-2",
+                    "content": "store: 福田店; activity: 周边T恤打卡; sponsor_signal: 本地品牌联名; conversion_signal: 打卡传播强",
+                    "document_type": "csv",
+                },
+                {
+                    "source_file": "demo.csv",
+                    "chunk_id": "row-3",
+                    "content": "store: 南山店; activity: 体验券赞助; sponsor_signal: 运动品牌愿意赞助; conversion_signal: 复购会员愿意带朋友体验",
+                    "document_type": "csv",
+                },
+            ],
+            "opportunities": [{"title": "后海旗舰店×会员裂变日验证"}],
+        },
+        "feasibility": attach_rubric_metadata(
+            {
+                "opportunity_id": "请评估能否把这些资料做成会员经营数据产品方案",
+                "dimensions": [
+                    {
+                        "name": "asset_data",
+                        "score": 2,
+                        "rationale": "有门店、活动和赞助线索，但样本仍少。",
+                        "evidence": [{"source_type": "corpus", "ref": "demo.csv#row-1", "quote": "store: 后海旗舰店"}],
+                        "confidence": "data_confirmed",
+                    },
+                    {
+                        "name": "market",
+                        "score": 3,
+                        "rationale": "不要说 generated data product / synthetic data，资料只显示活动需求。",
+                        "evidence": [{"source_type": "corpus", "ref": "demo.csv#row-2", "quote": "activity: 周边T恤打卡"}],
+                        "confidence": "market_inferred",
+                    },
+                    {
+                        "name": "technical",
+                        "score": 2,
+                        "rationale": "可以先做小样本看板，不能直接扩大。",
+                        "evidence": [{"source_type": "corpus", "ref": "demo.csv#row-3", "quote": "activity: 体验券赞助"}],
+                        "confidence": "speculative",
+                    },
+                ],
+                "verdict": "conditional",
+                "overall_confidence": "speculative",
+                "gap_list": ["缺少会员ID、真实转化和成本数据。"],
+            }
+        ),
+        "audit": {"verdict": "pass"},
+    }
+    rendered = _structured_answer_v10(
+        ChatRequest(workspace_id="direct-batch11", message="请评估能否把这些资料做成会员经营数据产品方案"),
+        RoutingDecision(
+            workspace_id="direct-batch11",
+            intent="feasibility_analysis",
+            experts=["df-corpus-analyst", "df-feasibility-analyst"],
+            output_mode="chat",
+            needs_clarification=False,
+            reason="direct renderer test",
+        ),
+        render_artifact,
+    )
+    rendered_text = str(rendered.get("markdown") or "")
     return {
         "checks": {
             "wp11c_rubric_version_direct": guarded.get("rubric_version") == rubric_version(),
             "wp11d_revised_contract_direct": bool(contract.get("blind")) and bool(contract.get("revised")) and bool(contract.get("disagreement")),
             "wp11g_guard_caps_preset_outcome_direct": guarded.get("verdict") != "feasible" and "preset_outcome_request_rejected" in guarded.get("guardrails", []),
+            "wp11p_action_first_direct": rendered_text.lstrip().startswith("**行动方案**")
+            and len(rendered.get("citations") or []) >= 3
+            and len(render_artifact.get("feasibility", {}).get("action_plan") or []) >= 3
+            and not FORBIDDEN_VISIBLE.search(rendered_text)
+            and not _query_echo(render_artifact.get("feasibility", {}).get("opportunity_id", ""), "请评估能否把这些资料做成会员经营数据产品方案"),
         },
         "samples": {
             "direct_guarded": guarded,
             "direct_verdict_contract": contract,
+            "direct_rendered_text": rendered_text[:1200],
         },
     }
 
@@ -352,6 +466,26 @@ def _natural_title(title: str) -> bool:
     if FORBIDDEN_VISIBLE.search(title):
         return False
     return bool(re.search(r"[\u4e00-\u9fff]", title))
+
+
+def _query_echo(title: str, question: str) -> bool:
+    fillers = ("请", "帮我", "我想", "能否", "能不能", "这些", "资料", "数据", "做成", "评估", "可行性", "方案", "建议")
+
+    def normalize(value: str) -> str:
+        text = re.sub(r"\s+", "", str(value or "")).lower()
+        text = re.sub(r"[，。！？!?；;：:、,.\-_/\\#（）()\"'“”]", "", text)
+        for filler in fillers:
+            text = text.replace(filler, "")
+        return text
+
+    left = normalize(title)
+    right = normalize(question)
+    if not left or not right:
+        return False
+    if left in right or right in left:
+        return True
+    common = sum(1 for char in set(left) if char in right)
+    return common / max(len(set(left)), 1) >= 0.78 and len(left) >= 6
 
 
 def _mime(path: Path) -> str:
