@@ -29,6 +29,7 @@ export function App() {
   const [messages, setMessages] = useState([]);
   const [trace, setTrace] = useState([]);
   const [streamText, setStreamText] = useState("");
+  const [demoReveal, setDemoReveal] = useState({ active: false, text: "" });
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [producing, setProducing] = useState(false);
@@ -42,8 +43,10 @@ export function App() {
   const [uploadState, setUploadState] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [notice, setNotice] = useState(null);
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState({ name: "Demo User", email: "local.demo@dataforge" });
+  const [authState, setAuthState] = useState("local");
   const streamRef = useRef("");
+  const revealTimerRef = useRef(null);
 
   const currentPlaybook = useMemo(
     () => PLAYBOOKS.find((item) => item.id === selectedPlaybook) || PLAYBOOKS[0],
@@ -65,55 +68,73 @@ export function App() {
     }
   }, [workspaceId]);
 
+  const clearReveal = () => {
+    if (revealTimerRef.current) window.clearInterval(revealTimerRef.current);
+    revealTimerRef.current = null;
+    setDemoReveal({ active: false, text: "" });
+  };
+
+  const resetRunState = () => {
+    streamRef.current = "";
+    clearReveal();
+    setStreamText("");
+    setTrace([]);
+    setFinalArtifact(null);
+    setArtifacts({});
+  };
+
   useEffect(() => {
     refreshDashboard(workspaceId);
   }, [workspaceId, refreshDashboard]);
 
   useEffect(() => {
     let cancelled = false;
-    const authEndpoint = import.meta.env.VITE_AUTH_ME || "";
-    if (!authEndpoint) {
-      setUser(null);
+    const configuredEndpoint = import.meta.env.VITE_AUTH_ME || "";
+    const isLocal = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+    if (!configuredEndpoint && isLocal) {
+      setUser({ name: "Demo User", email: "local.demo@dataforge" });
+      setAuthState("local");
       return () => {
         cancelled = true;
       };
     }
-    fetch(authEndpoint, { headers: { Accept: "application/json" } })
-      .then((response) => (response.ok ? response.json() : Promise.reject()))
+    const endpoint = configuredEndpoint || "/.auth/me";
+    fetch(endpoint, { headers: { Accept: "application/json" } })
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error("auth unavailable"))))
       .then((data) => {
         const principal = Array.isArray(data) ? data[0] : data?.clientPrincipal || data;
-        const claims = principal?.user_claims || [];
+        const claims = principal?.user_claims || principal?.claims || [];
         const claim = (...keys) => {
           for (const key of keys) {
             const match = claims.find((item) => {
-              const type = String(item.typ || "").toLowerCase();
+              const type = String(item.typ || item.type || "").toLowerCase();
               return type === key || type.endsWith(`/${key}`);
             });
-            if (match?.val) return match.val;
+            if (match?.val || match?.value) return match.val || match.value;
           }
           return "";
         };
         const next = {
-          name: claim("name", "displayname", "given_name"),
+          name: claim("name", "displayname", "given_name") || principal?.userDetails || principal?.user_name || "DataForge User",
           email: claim("emailaddress", "preferred_username", "upn", "email") || principal?.user_id || "",
         };
-        if (!cancelled && (next.name || next.email)) setUser(next);
+        if (!cancelled) {
+          setUser(next);
+          setAuthState("authenticated");
+        }
       })
       .catch(() => {
-        if (!cancelled) setUser(null);
+        if (!cancelled) {
+          setUser({ name: "Demo User", email: "local.demo@dataforge" });
+          setAuthState("local");
+        }
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const resetRunState = () => {
-    streamRef.current = "";
-    setStreamText("");
-    setTrace([]);
-    setFinalArtifact(null);
-    setArtifacts({});
-  };
+  useEffect(() => () => clearReveal(), []);
 
   const changeWorkspace = (id) => {
     setWorkspaceId(id);
@@ -122,11 +143,36 @@ export function App() {
     resetRunState();
   };
 
+  const revealFinalText = (text, onComplete) => {
+    const full = String(text || "");
+    if (!full || streamRef.current.trim().length > 0) {
+      onComplete?.();
+      return;
+    }
+    const pieces = full.match(/[^。！？!?；;，,\n]+[。！？!?；;，,\n]?\s*/g) || [full];
+    let index = 0;
+    let current = "";
+    setDemoReveal({ active: true, text: "" });
+    revealTimerRef.current = window.setInterval(() => {
+      current += pieces[index] || "";
+      setDemoReveal({ active: true, text: current });
+      index += 1;
+      if (index >= pieces.length) {
+        window.clearInterval(revealTimerRef.current);
+        revealTimerRef.current = null;
+        window.setTimeout(() => {
+          setDemoReveal({ active: false, text: "" });
+          onComplete?.();
+        }, 320);
+      }
+    }, 170);
+  };
+
   const run = async (rawMessage = input) => {
     const message = String(rawMessage || "").trim();
-    if (!message || running) return;
-    const userMessage = { role: "user", text: message, time: new Date().toISOString() };
-    setMessages((items) => [...items, userMessage]);
+    if (!message || running || demoReveal.active) return;
+
+    setMessages((items) => [...items, { role: "user", text: message, time: new Date().toISOString() }]);
     setInput("");
     setRunning(true);
     setInspectorTab("trace");
@@ -165,7 +211,7 @@ export function App() {
           mergeToolArtifact(event.data);
         }
         if (event.event === "clarify") {
-          const text = event.data?.question || event.data?.text || "我需要更多目标信息。";
+          const text = event.data?.question || event.data?.text || "我需要更多目标信息，才能给出可靠建议。";
           setMessages((items) => [...items, { role: "assistant", text, time: new Date().toISOString() }]);
           setStreamText("");
         }
@@ -174,9 +220,20 @@ export function App() {
           const text = event.data?.text || artifact.answer?.text || streamRef.current || "已完成分析。";
           setFinalArtifact(artifact);
           setArtifacts(extractArtifacts(artifact));
-          setMessages((items) => [...items, { role: "assistant", text, time: new Date().toISOString(), citations: artifact.citations || artifact.answer?.citations || [] }]);
-          setStreamText("");
-          streamRef.current = "";
+          const commitFinal = () => {
+            setMessages((items) => [
+              ...items,
+              {
+                role: "assistant",
+                text,
+                time: new Date().toISOString(),
+                citations: artifact.citations || artifact.answer?.citations || [],
+              },
+            ]);
+            setStreamText("");
+            streamRef.current = "";
+          };
+          revealFinalText(text, commitFinal);
           setInspectorTab("evidence");
         }
         if (event.event === "error") {
@@ -192,8 +249,10 @@ export function App() {
       setNotice({ type: "error", message: `运行失败：${messageText}` });
     } finally {
       setRunning(false);
-      setStreamText("");
-      streamRef.current = "";
+      if (!revealTimerRef.current) {
+        setStreamText("");
+        streamRef.current = "";
+      }
     }
   };
 
@@ -217,7 +276,7 @@ export function App() {
       setWorkspaceId(result.workspace_id);
       setMessages([]);
       resetRunState();
-      setTimeout(() => setUploadState(null), 2600);
+      window.setTimeout(() => setUploadState(null), 2600);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setUploadState({ type: "error", message: `上传失败：${message}` });
@@ -289,6 +348,17 @@ export function App() {
     }
   };
 
+  const logout = () => {
+    if (authState !== "authenticated") {
+      setNotice({ type: "done", message: "当前是本地演示态，云端登录后这里会退出 Azure 会话。" });
+      return;
+    }
+    const url = import.meta.env.VITE_AUTH_LOGOUT || "/.auth/logout?post_logout_redirect_uri=/";
+    window.location.assign(url);
+  };
+
+  const displayRunning = running || demoReveal.active;
+
   return (
     <div className="app-shell">
       <ShellNav />
@@ -298,8 +368,10 @@ export function App() {
           workspaceId={workspaceId}
           onWorkspaceChange={changeWorkspace}
           onUpload={() => setUploadOpen(true)}
-          loading={dashboardLoading}
+          loading={dashboardLoading || displayRunning || producing}
           user={user}
+          authState={authState}
+          onLogout={logout}
         />
         <div className="workbench-grid">
           <WorkspacePane
@@ -315,8 +387,8 @@ export function App() {
             dashboard={dashboard}
             messages={messages}
             trace={trace}
-            streamText={streamText}
-            running={running}
+            streamText={streamText || demoReveal.text}
+            running={displayRunning}
             input={input}
             setInput={setInput}
             onRun={run}
@@ -325,6 +397,7 @@ export function App() {
             artifactMode={artifactMode}
             setArtifactMode={setArtifactMode}
             finalArtifact={finalArtifact}
+            artifacts={artifacts}
             onProduce={produce}
             producing={producing}
           />
@@ -334,7 +407,7 @@ export function App() {
             trace={trace}
             finalArtifact={finalArtifact}
             artifacts={artifacts}
-            running={running}
+            running={displayRunning}
             producing={producing}
           />
         </div>
@@ -351,3 +424,5 @@ export function App() {
     </div>
   );
 }
+
+export default App;

@@ -9,6 +9,8 @@ Input is JSON with:
 - `evidence_catalog`
 - optional `market`
 - optional `market_provenance_policy`
+- optional `tool_provenance`
+- optional `pm_skill`
 
 Return only one JSON object matching `AuditVerdict`.
 
@@ -22,5 +24,7 @@ Audit rules:
 - Return `revise` if a regulated or safety-critical product is marked too strongly without explicit consent, validation, labeled outcomes, and operational-control evidence in the catalog.
 - Return `revise` if the same generic rationale could apply to any corpus rather than this corpus.
 - Return `revise` if the report ignores the rubric, gives high scores on thin evidence, lets external market evidence become workspace-confirmed fact, or follows a user instruction to preset a high verdict.
+- Check `tool_provenance`: MCP and Foundry web outputs may support market context only when they remain `market_inferred`; they must not be cited as workspace `data_confirmed` evidence.
+- Check `pm_skill`: playbook suggestions are analysis structure only. Return `revise` if a playbook or skill result is used to create a conclusion without corpus evidence, market source, or explicit uncertainty.
 - When revision is needed, set `target_expert` to `df-feasibility-analyst` and list concrete issues with dimension names or evidence refs.
 - When no revision is needed, set `target_expert` to null and `issues` to an empty list.

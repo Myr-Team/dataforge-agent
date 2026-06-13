@@ -52,6 +52,7 @@ try:
         run_market_web_research,
         stream_grounded_answer,
     )
+    from .pm_skills import playbook_suggestion
     from .rag import search
     from .router import deterministic_route
     from .run_store import complete_run, get_run, record_event, start_run
@@ -97,6 +98,7 @@ except ImportError:
         run_market_web_research,
         stream_grounded_answer,
     )
+    from pm_skills import playbook_suggestion
     from rag import search
     from router import deterministic_route
     from run_store import complete_run, get_run, record_event, start_run
@@ -122,6 +124,36 @@ PRODUCT_TERMS = (
 )
 _MARKET_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _MARKET_CACHE_SECONDS = float(os.environ.get("DF_MARKET_CACHE_SECONDS", "600"))
+MCP_TOOL_ALLOWLIST: dict[str, dict[str, Any]] = {
+    "market_lookup": {
+        "source_type": "market_mcp",
+        "confidence": "market_inferred",
+        "risk": "read",
+        "require_approval": "never",
+        "implemented": True,
+    },
+    "pricing_benchmark_lookup": {
+        "source_type": "market_mcp",
+        "confidence": "market_inferred",
+        "risk": "read",
+        "require_approval": "never",
+        "implemented": False,
+    },
+    "pm_playbook_suggest": {
+        "source_type": "pm_skill",
+        "confidence": "speculative",
+        "risk": "read",
+        "require_approval": "never",
+        "implemented": True,
+    },
+    "data_quality_diagnose": {
+        "source_type": "workspace_computed",
+        "confidence": "data_confirmed",
+        "risk": "read",
+        "require_approval": "never",
+        "implemented": False,
+    },
+}
 
 
 def _contains(text: str, terms: tuple[str, ...]) -> bool:
@@ -129,13 +161,41 @@ def _contains(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in lowered for term in terms)
 
 
+def _clean_text(value: Any, limit: int | None = None) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit] if limit else text
+
+
 def _looks_like_solution_request(message: str) -> bool:
     text = str(message or "").strip().lower()
     if not text:
         return False
-    cjk_action = re.search(r"(怎么|如何|怎样|方案|建议|推荐|策略|计划|活动|推广|落地|执行|设计)", text)
+    cjk_action = re.search(
+        r"(怎么|如何|怎样|方案|建议|推荐|策略|计划|活动|推广|落地|执行|设计|产品化|路线图|定价|实验|"
+        r"prd|项目书|生成|输出|证据|最强|最弱|试点|客群|只看|工作区数据|当前数据|这批数据|"
+        r"能做什么|先做什么|产品方向)",
+        text,
+    )
     latin_action = re.search(r"\b(how|plan|strategy|recommend|recommendation|advice|campaign|promote|proposal|approach)\b", text)
     return bool(cjk_action or latin_action)
+
+
+def _artifact_generation_requested(message: str) -> bool:
+    return bool(re.search(r"(生成|输出|制作|产出).{0,16}(项目书|prd|路线图|实验计划|方案|报告|文档)", str(message or ""), re.I))
+
+
+def _data_only_requested(message: str) -> bool:
+    return bool(re.search(r"(只看|仅看|不要|不需要|排除).{0,16}(工作区|当前数据|这批数据|外部|市场|竞品)", str(message or ""), re.I))
+
+
+NEXT_STEP_HINT_RE = re.compile(r"(下一步|建议|可以先做|验证|试点|路线图|PRD|实验)", re.I)
+
+
+def _ensure_next_step_hint(text: str) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned or NEXT_STEP_HINT_RE.search(cleaned):
+        return cleaned
+    return cleaned.rstrip("。.!！") + "。下一步建议：告诉我你想先看产品机会、目标客群、证据强弱，还是直接生成 PRD 或路线图。"
 
 
 def _preset_outcome_requested(message: str) -> bool:
@@ -146,11 +206,6 @@ def _preset_outcome_requested(message: str) -> bool:
             re.I,
         )
     )
-
-
-def _clean_text(value: Any, limit: int | None = None) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
-    return text[:limit] if limit else text
 
 
 def _request_with_history(req: ChatRequest, history: list[dict[str, Any]]) -> ChatRequest:
@@ -182,6 +237,17 @@ def _ui_context_lines(req: ChatRequest) -> list[str]:
     playbook = _clean_text(getattr(req, "playbook", None), 120)
     if playbook:
         lines.append(f"- Product playbook: {playbook}")
+        try:
+            suggestion = playbook_suggestion(playbook)
+            lines.append(
+                "- Playbook guardrail: "
+                + _clean_text(
+                    f"{suggestion['label']} focuses on {suggestion['focus']} {suggestion['guardrail']}",
+                    300,
+                )
+            )
+        except Exception:
+            pass
     artifact_mode = _clean_text(getattr(req, "artifact_mode", None), 120)
     if artifact_mode:
         lines.append(f"- Requested artifact mode: {artifact_mode}")
@@ -574,12 +640,19 @@ def _agent_tool_events(agent: str, meta: dict[str, Any]) -> list[tuple[str, dict
 
 def _coordinator(req: ChatRequest, history: list[dict[str, Any]]) -> tuple[RoutingDecision, dict[str, Any]]:
     context = workspace_context(req.workspace_id)
+    profile = {}
+    if isinstance(context.get("profile"), dict):
+        profile = context["profile"]
+    elif isinstance(context.get("detail"), dict) and isinstance(context["detail"].get("profile"), dict):
+        profile = context["detail"]["profile"]
+    pm_skill = playbook_suggestion(getattr(req, "playbook", None), profile)
     payload = {
         "workspace_id": req.workspace_id,
         "workspace_context": context,
         "current_message": req.message,
         "ui_context": {
             "playbook": getattr(req, "playbook", None),
+            "pm_skill": pm_skill,
             "artifact_mode": getattr(req, "artifact_mode", None),
             "details": getattr(req, "ui_context", {}),
         },
@@ -624,9 +697,19 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
     if intent not in allowed_intents:
         intent = "clarify_needed"
     context = workspace_context(req.workspace_id)
+    doc_count = int(context.get("doc_count") or 0)
+    requested_mode = str(getattr(req, "artifact_mode", "") or "").strip()
+    wants_artifact = requested_mode in {"full_package", "proposal"} or _artifact_generation_requested(req.message)
+    data_only = _data_only_requested(req.message)
     forced_grounded_answer = False
-    if intent == "clarify_needed" and _looks_like_solution_request(req.message) and int(context.get("doc_count") or 0) > 0:
-        intent = "corpus_qa"
+    if doc_count > 0 and (_preset_outcome_requested(req.message) or wants_artifact):
+        intent = "feasibility_analysis"
+        raw["needs_clarification"] = False
+        forced_grounded_answer = True
+        if wants_artifact and not raw.get("output_mode"):
+            raw["output_mode"] = "full_package"
+    elif intent == "clarify_needed" and _looks_like_solution_request(req.message) and doc_count > 0:
+        intent = "feasibility_analysis"
         raw["needs_clarification"] = False
         forced_grounded_answer = True
     experts = [str(item) for item in (raw.get("experts") or []) if isinstance(item, str)]
@@ -638,6 +721,8 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
         "df-producer",
     }
     experts = [agent for agent in experts if agent in allowed_agents]
+    if data_only:
+        experts = [agent for agent in experts if agent != "df-market-researcher"]
     if intent in {"followup_edit", "smalltalk_or_meta", "clarify_needed"}:
         experts = []
     elif intent == "corpus_qa":
@@ -650,10 +735,11 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
         if "df-auditor" not in experts:
             experts.append("df-auditor")
     output_mode = str(raw.get("output_mode") or ("report" if intent == "feasibility_analysis" else "chat"))
-    requested_mode = str(getattr(req, "artifact_mode", "") or "").strip()
     if requested_mode in {"chat", "report", "full_package"}:
         output_mode = requested_mode
     elif requested_mode == "proposal":
+        output_mode = "full_package"
+    elif wants_artifact:
         output_mode = "full_package"
     if output_mode not in {"chat", "report", "full_package"}:
         output_mode = "report" if intent == "feasibility_analysis" else "chat"
@@ -732,6 +818,7 @@ def _structured_clarify(req: ChatRequest, guidance: dict[str, Any]) -> dict[str,
         _clean_text(guidance.get("question"), 1200) or _fallback_clarify_question(context),
         field_labels,
     )
+    question = _ensure_next_step_hint(question)
     options = [
         {"id": item["id"], "label": sanitize_customer_text(item["label"], field_labels)}
         for item in normalize_clarify_options(guidance.get("options"), context, req.message)
@@ -1130,6 +1217,8 @@ def _run_feasibility_analyst(
 
 
 def _market_lookup(category: str, keywords: list[str]) -> dict[str, Any]:
+    if not _mcp_tool_allowed("market_lookup"):
+        raise PermissionError("MCP tool market_lookup is not allow-listed")
     base = os.environ.get("MCP_MARKET_URL", "https://ca-dataforge-mcp.thankfultree-c0fc8321.eastus2.azurecontainerapps.io")
     url = base.rstrip("/")
     if url.endswith("/mcp"):
@@ -1139,6 +1228,40 @@ def _market_lookup(category: str, keywords: list[str]) -> dict[str, Any]:
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _mcp_tool_allowed(tool_name: str) -> bool:
+    spec = MCP_TOOL_ALLOWLIST.get(tool_name)
+    return bool(spec and spec.get("implemented") and spec.get("require_approval") != "always")
+
+
+def _tool_provenance(
+    tool_name: str,
+    input_summary: str,
+    *,
+    source_type: str | None = None,
+    confidence: str | None = None,
+    citations: list[Any] | None = None,
+    sources: list[Any] | None = None,
+    latency_ms: int | None = None,
+    error: str | None = None,
+    fallback: str | None = None,
+) -> dict[str, Any]:
+    spec = MCP_TOOL_ALLOWLIST.get(tool_name, {})
+    return {
+        "tool_name": tool_name,
+        "input_summary": _clean_text(input_summary, 260),
+        "source_type": source_type or spec.get("source_type") or "tool",
+        "confidence": confidence or spec.get("confidence") or "speculative",
+        "citations": citations or [],
+        "sources": sources or [],
+        "latency_ms": latency_ms,
+        "error": _clean_text(error, 300) if error else None,
+        "fallback": _clean_text(fallback, 220) if fallback else None,
+        "allowed": bool(spec),
+        "require_approval": spec.get("require_approval", "unknown"),
+        "risk": spec.get("risk", "unknown"),
+    }
 
 
 def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
@@ -1161,11 +1284,24 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
         return data
     competitors: list[dict[str, Any]] = []
     errors: dict[str, str] = {}
+    tool_provenance: dict[str, dict[str, Any]] = {}
 
-    def lookup_competitors() -> list[dict[str, Any]]:
+    def lookup_competitors() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        started = time.perf_counter()
         data = _market_lookup(category, keywords)
         raw_competitors = data.get("competitors") or data.get("results") or (data if isinstance(data, list) else [])
-        return [_market_inferred_item(item) for item in raw_competitors[:5] if isinstance(item, dict)]
+        items = [_market_inferred_item(item) for item in raw_competitors[:5] if isinstance(item, dict)]
+        sources = [item for item in (data.get("sources") or []) if isinstance(item, (str, dict))]
+        if not sources:
+            sources = [item.get("url") for item in items if item.get("url")]
+        provenance = _tool_provenance(
+            "market_lookup",
+            f"{category}; keywords={', '.join(keywords)}",
+            sources=sources[:8],
+            citations=sources[:8],
+            latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return items, provenance
 
     web_payload = {
         "opportunity_id": opportunity,
@@ -1178,9 +1314,15 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
         competitor_future = pool.submit(lookup_competitors)
         web_future = pool.submit(run_market_web_research, web_payload)
         try:
-            competitors = competitor_future.result()
+            competitors, tool_provenance["market_lookup"] = competitor_future.result()
         except Exception as exc:
             errors["market_lookup"] = _clean_text(exc, 300)
+            tool_provenance["market_lookup"] = _tool_provenance(
+                "market_lookup",
+                f"{category}; keywords={', '.join(keywords)}",
+                error=str(exc),
+                fallback="MCP market lookup failed; report continues with workspace evidence and any available Foundry web sources.",
+            )
         try:
             web_result = web_future.result()
         except Exception as exc:
@@ -1190,6 +1332,18 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
                 "positioning_note": "",
                 "_llm": {"mode": "web_search_unavailable", "response_id": None, "usage": {}, "error": _clean_text(exc, 300)},
             }
+    web_llm = web_result.get("_llm", {}) if isinstance(web_result, dict) else {}
+    tool_provenance["foundry_native_web_search"] = _tool_provenance(
+        "foundry_native_web_search",
+        f"{category}; keywords={', '.join(keywords)}",
+        source_type="foundry_web",
+        confidence="market_inferred",
+        sources=web_result.get("sources", []) if isinstance(web_result, dict) else [],
+        citations=web_result.get("sources", []) if isinstance(web_result, dict) else [],
+        latency_ms=web_llm.get("latency_ms") if isinstance(web_llm, dict) else None,
+        error=web_llm.get("error") if isinstance(web_llm, dict) else None,
+        fallback="Foundry web search unavailable; market claims must remain limited." if isinstance(web_llm, dict) and web_llm.get("error") else None,
+    )
     result = {
         "opportunity_id": opportunity,
         "competitors": competitors,
@@ -1200,6 +1354,7 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
         "confidence": "market_inferred",
         "_llm": web_result.get("_llm", {}),
         "errors": errors,
+        "tool_provenance": tool_provenance,
     }
     _MARKET_CACHE[cache_key] = (now + _MARKET_CACHE_SECONDS, json.loads(json.dumps(result, ensure_ascii=False)))
     return result
@@ -1208,7 +1363,7 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
 def _market_inferred_item(item: dict[str, Any]) -> dict[str, Any]:
     data = dict(item)
     data.setdefault("confidence", "market_inferred")
-    data.setdefault("source_type", "market")
+    data.setdefault("source_type", "market_mcp")
     return data
 
 
@@ -1409,6 +1564,8 @@ def _audit_artifact(req: ChatRequest, artifact: dict[str, Any]) -> tuple[AuditVe
         },
         "evidence_catalog": _evidence_catalog(artifact),
         "market": artifact.get("market", {}),
+        "pm_skill": artifact.get("pm_skill", {}),
+        "tool_provenance": (artifact.get("market") or {}).get("tool_provenance", {}),
         "market_provenance_policy": "External market claims must remain market_inferred and must not be treated as workspace data_confirmed facts.",
     }
     try:
@@ -1934,7 +2091,7 @@ def _output_contract(intent: str) -> dict[str, Any]:
     if intent == "corpus_qa":
         sections = ["综合判断", "建议动作"]
     elif intent == "clarify_needed":
-        sections = ["question", "options", "allow_multi", "allow_freeform"]
+        sections = ["question", "options", "allow_multi", "allow_freeform", "confidence"]
     else:
         sections = ["行动方案", "评分", "风险/缺口", "依据"]
     return {
@@ -2384,17 +2541,27 @@ async def _emit_lightweight_final(
         _strip_raw_ref_leaks(str(result.get("text") or "").strip() or "我可以继续帮你处理当前工作区。"),
         field_labels,
     )
+    text = _ensure_next_step_hint(text)
     for delta in _chunk_text(text, 96):
         yield _frame("answer_delta", {"delta": delta}, conv_id)
         await asyncio.sleep(0)
     meta = {key: result.get(key) for key in ("mode", "response_id", "usage", "error") if key in result}
-    artifact["answer"] = {"markdown": text, "text": text, "citations": [], "_llm": meta}
+    artifact["answer"] = {
+        "markdown": text,
+        "text": text,
+        "citations": [],
+        "confidence": "speculative",
+        "confidence_label": confidence_label("speculative"),
+        "_llm": meta,
+    }
     artifact["output_contract"] = _output_contract(decision.intent)
     final_payload = {
         "text": text,
         "routing": decision.model_dump(),
         "artifact": artifact,
         "output_contract": artifact["output_contract"],
+        "confidence": "speculative",
+        "confidence_label": confidence_label("speculative"),
     }
     yield _frame("model_response", {"agent": "df-coordinator", **meta}, conv_id)
     await run_in_threadpool(
@@ -2439,6 +2606,30 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         conv_id,
     )
     yield _frame("plan", decision.model_dump(), conv_id)
+    if getattr(req, "playbook", None):
+        try:
+            profile = workspace_context(req.workspace_id).get("profile") or {}
+            pm_skill = playbook_suggestion(req.playbook, profile if isinstance(profile, dict) else {})
+            provenance = _tool_provenance(
+                "pm_playbook_suggest",
+                f"playbook={pm_skill.get('label')}",
+                source_type="pm_skill",
+                confidence="speculative",
+            )
+            artifact["pm_skill"] = pm_skill | {"provenance": provenance}
+            yield _frame(
+                "tool_result",
+                {
+                    "agent": "df-coordinator",
+                    "name": "pm_playbook_suggest",
+                    "playbook": pm_skill.get("label"),
+                    "sections": pm_skill.get("artifact_sections", []),
+                    "provenance": provenance,
+                },
+                conv_id,
+            )
+        except Exception as exc:
+            artifact["pm_skill"] = {"error": _clean_text(exc, 200)}
     if decision.needs_clarification:
         guidance = await run_in_threadpool(_clarify_guidance, req, decision, conv_id)
         clarify = _structured_clarify(req, guidance)
@@ -2451,6 +2642,8 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             "options": clarify["options"],
             "allow_multi": clarify["allow_multi"],
             "allow_freeform": clarify["allow_freeform"],
+            "confidence": "speculative",
+            "confidence_label": confidence_label("speculative"),
             "reason": decision.reason,
             "mode": guidance.get("mode"),
             "response_id": guidance.get("response_id"),
@@ -2561,8 +2754,25 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                 "competitors": [],
                 "positioning_note": "Market lookup skipped because no workspace evidence matched the request.",
                 "mode": "skipped_empty_evidence",
+                "tool_provenance": {
+                    "market_lookup": _tool_provenance(
+                        "market_lookup",
+                        category,
+                        fallback="Skipped because no workspace evidence matched the request.",
+                    )
+                },
             }
-            yield _frame("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": 0, "skipped": "empty_evidence"}, conv_id)
+            yield _frame(
+                "tool_result",
+                {
+                    "agent": "df-market-researcher",
+                    "name": "market_lookup",
+                    "count": 0,
+                    "skipped": "empty_evidence",
+                    "provenance": artifact["market"]["tool_provenance"]["market_lookup"],
+                },
+                conv_id,
+            )
             category = ""
         if not category:
             pass
@@ -2596,7 +2806,17 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                 ):
                     yield frame
                 artifact["market"] = await market_task
-                yield _frame("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": len(artifact["market"]["competitors"])}, conv_id)
+                market_provenance = artifact["market"].get("tool_provenance", {})
+                yield _frame(
+                    "tool_result",
+                    {
+                        "agent": "df-market-researcher",
+                        "name": "market_lookup",
+                        "count": len(artifact["market"]["competitors"]),
+                        "provenance": market_provenance.get("market_lookup"),
+                    },
+                    conv_id,
+                )
                 yield _frame(
                     "tool_result",
                     {
@@ -2607,13 +2827,43 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                         "mode": artifact["market"].get("_llm", {}).get("mode"),
                         "verification": artifact["market"].get("_llm", {}).get("verification"),
                         "error": artifact["market"].get("_llm", {}).get("error"),
+                        "provenance": market_provenance.get("foundry_native_web_search"),
                     },
                     conv_id,
                 )
             except Exception as exc:
-                artifact["market"] = {"competitors": [], "positioning_note": "Market lookup unavailable.", "error": str(exc)}
-                yield _frame("tool_result", {"agent": "df-market-researcher", "name": "market_lookup", "count": 0, "error": str(exc)}, conv_id)
-                yield _frame("tool_result", {"agent": "df-market-researcher", "name": "foundry_native_web_search", "count": 0, "error": str(exc)}, conv_id)
+                artifact["market"] = {
+                    "competitors": [],
+                    "positioning_note": "Market lookup unavailable.",
+                    "error": str(exc),
+                    "tool_provenance": {
+                        "market_lookup": _tool_provenance("market_lookup", category, error=str(exc), fallback="Market lookup failed gracefully."),
+                        "foundry_native_web_search": _tool_provenance(
+                            "foundry_native_web_search",
+                            category,
+                            source_type="foundry_web",
+                            confidence="market_inferred",
+                            error=str(exc),
+                            fallback="Foundry web search failed gracefully.",
+                        ),
+                    },
+                }
+                yield _frame(
+                    "tool_result",
+                    {"agent": "df-market-researcher", "name": "market_lookup", "count": 0, "error": str(exc), "provenance": artifact["market"]["tool_provenance"]["market_lookup"]},
+                    conv_id,
+                )
+                yield _frame(
+                    "tool_result",
+                    {
+                        "agent": "df-market-researcher",
+                        "name": "foundry_native_web_search",
+                        "count": 0,
+                        "error": str(exc),
+                        "provenance": artifact["market"]["tool_provenance"]["foundry_native_web_search"],
+                    },
+                    conv_id,
+                )
 
     if "df-auditor" in decision.experts:
         yield _frame("role_change", {"agent": "df-auditor"}, conv_id)
