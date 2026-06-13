@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import struct
@@ -134,10 +135,89 @@ def _artifact_bytes(harness: Harness, artifact_url: str | None) -> bytes:
     return harness.get(artifact_url if artifact_url.startswith("/") else "/" + artifact_url)
 
 
+def _blob_backed_reference_regression() -> dict[str, Any]:
+    """Prove reference images can load from Blob without local workspace state."""
+    from backend import workspace_store
+
+    workspace_id = "upload-batch8-blob-only-regression"
+    filename = "banana_logo.png"
+    blob_name = f"workspaces/{workspace_id}/reference_images/{filename}"
+    with tempfile.TemporaryDirectory() as tmp:
+        content = _logo_png(Path(tmp) / filename, (32, 145, 220)).read_bytes()
+        meta = {
+            "workspace_id": workspace_id,
+            "name": "Batch8 blob-only regression",
+            "reference_images": [
+                {
+                    "url": f"/api/workspaces/{workspace_id}/reference-images/{filename}",
+                    "blob_url": f"https://stdataforgedev.blob.core.windows.net/dataforge-workspaces/{blob_name}",
+                    "blob_name": blob_name,
+                    "role": "logo",
+                    "filename": filename,
+                    "source_file": f"reference_images/{filename}",
+                    "content_type": "image/png",
+                    "bytes": len(content),
+                }
+            ],
+        }
+        calls: list[dict[str, str]] = []
+        old_workspaces = workspace_store.WORKSPACES
+        old_download_content = workspace_store.download_blob_content
+        old_download_json = workspace_store.download_blob_json
+        old_get_registry = workspace_store.get_registry_workspace
+        old_load_bundle = workspace_store._load_workspace_bundle
+
+        def fake_download_content(candidate: str) -> tuple[bytes, str] | None:
+            calls.append({"download_blob_content": candidate})
+            if candidate == blob_name:
+                return content, "image/png"
+            return None
+
+        def fake_download_json(candidate: str) -> dict[str, Any] | None:
+            calls.append({"download_blob_json": candidate})
+            if candidate == f"workspaces/{workspace_id}/workspace.json":
+                return meta
+            return None
+
+        def fake_get_registry(candidate: str) -> dict[str, Any] | None:
+            calls.append({"get_registry_workspace": candidate})
+            return meta if candidate == workspace_id else None
+
+        def fail_local_bundle(candidate: str) -> None:
+            raise AssertionError(f"local bundle should not be required: {candidate}")
+
+        try:
+            workspace_store.WORKSPACES = Path(tmp) / "missing-local-workspaces"
+            workspace_store.download_blob_content = fake_download_content
+            workspace_store.download_blob_json = fake_download_json
+            workspace_store.get_registry_workspace = fake_get_registry
+            workspace_store._load_workspace_bundle = fail_local_bundle
+            listed = workspace_store.workspace_reference_images(workspace_id)
+            downloaded = workspace_store.get_reference_image_content(workspace_id, filename)
+        finally:
+            workspace_store.WORKSPACES = old_workspaces
+            workspace_store.download_blob_content = old_download_content
+            workspace_store.download_blob_json = old_download_json
+            workspace_store.get_registry_workspace = old_get_registry
+            workspace_store._load_workspace_bundle = old_load_bundle
+
+    content_bytes, content_type = downloaded or (b"", "")
+    ok = bool(listed and content_bytes.startswith(b"\x89PNG") and content_type == "image/png")
+    return {
+        "ok": ok,
+        "blob_name": blob_name,
+        "listed_count": len(listed),
+        "content_type": content_type,
+        "bytes": len(content_bytes),
+        "calls": calls,
+    }
+
+
 def run(api_base: str | None = None, cleanup: bool = True, full_produce: bool = False) -> dict[str, Any]:
     loaded_env = _load_env() if api_base else []
     if not api_base:
         _prepare_local_env()
+    blob_regression = _blob_backed_reference_regression()
     harness = Harness(api_base)
     workspace_ids: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -147,7 +227,19 @@ def run(api_base: str | None = None, cleanup: bool = True, full_produce: bool = 
         workspace_ids.append(workspace_id)
         detail = harness.get(f"/api/workspaces/{workspace_id}")
         reference_images = detail.get("reference_images") or []
-        image_bytes = harness.get(reference_images[0]["url"]) if reference_images else b""
+        reference_proxy_reads: list[dict[str, Any]] = []
+        image_bytes = b""
+        if reference_images:
+            for _ in range(5 if api_base else 1):
+                payload = harness.get(reference_images[0]["url"])
+                image_bytes = bytes(payload)
+                reference_proxy_reads.append(
+                    {
+                        "status": 200,
+                        "bytes": len(image_bytes),
+                        "png": image_bytes.startswith(b"\x89PNG"),
+                    }
+                )
 
         image_result = harness.post_json(
             "/api/generate-image",
@@ -159,6 +251,42 @@ def run(api_base: str | None = None, cleanup: bool = True, full_produce: bool = 
             timeout=300,
         )
         concept_bytes = _artifact_bytes(harness, image_result.get("artifact_url"))
+        alternate_reference_images: list[dict[str, Any]] = []
+        alternate_image_result: dict[str, Any] = {}
+        alternate_concept_bytes = b""
+        no_reference_image_result: dict[str, Any] = {}
+        no_reference_bytes = b""
+        if api_base:
+            alternate_logo = _logo_png(Path(tmp) / "batch8-logo-alt.png", (225, 70, 44))
+            alternate_upload = harness.upload_image(
+                alternate_logo,
+                name=f"batch8 alternate logo workspace {int(time.time())}",
+                asset_role="logo",
+            )
+            alternate_workspace_id = alternate_upload["workspace_id"]
+            workspace_ids.append(alternate_workspace_id)
+            alternate_detail = harness.get(f"/api/workspaces/{alternate_workspace_id}")
+            alternate_reference_images = alternate_detail.get("reference_images") or []
+            alternate_image_result = harness.post_json(
+                "/api/generate-image",
+                {
+                    "prompt": "Generate a data product campaign concept using the provided logo.",
+                    "size": "1024x1024",
+                    "reference_image_urls": [alternate_reference_images[0]["url"]] if alternate_reference_images else [],
+                },
+                timeout=300,
+            )
+            alternate_concept_bytes = _artifact_bytes(harness, alternate_image_result.get("artifact_url"))
+            no_reference_image_result = harness.post_json(
+                "/api/generate-image",
+                {
+                    "prompt": "Generate a data product concept image without reference assets.",
+                    "size": "1024x1024",
+                    "reference_image_urls": [],
+                },
+                timeout=300,
+            )
+            no_reference_bytes = _artifact_bytes(harness, no_reference_image_result.get("artifact_url"))
 
         produce_result: dict[str, Any] = {}
         produce_bytes = b""
@@ -193,16 +321,29 @@ def run(api_base: str | None = None, cleanup: bool = True, full_produce: bool = 
 
     checks = {
         "reference_registered": bool(reference_images and reference_images[0].get("role") == "logo"),
-        "reference_proxy_png": bool(image_bytes.startswith(b"\x89PNG")),
+        "reference_proxy_png": bool(reference_proxy_reads and all(item.get("png") for item in reference_proxy_reads)),
+        "blob_backed_reference_without_local_meta": bool(blob_regression.get("ok")),
         "generate_image_returned_png": bool(concept_bytes.startswith(b"\x89PNG")),
         "generate_image_reference_count": int(image_result.get("reference_image_count") or 0) >= 1,
         "generate_image_mode_valid": image_result.get("mode") in {"gpt-image-2-edit", "gpt-image-2", "deterministic-fallback"},
         "produce_reference_edit_mode": (not full_produce)
         or ((produce_result.get("concept_image") or {}).get("mode") in {"gpt-image-2-edit", "gpt-image-2", "deterministic-fallback"}),
+        "produce_reference_count": (not full_produce)
+        or (int((produce_result.get("concept_image") or {}).get("reference_image_count") or 0) >= 1),
         "produce_concept_png": (not full_produce) or bool(produce_bytes.startswith(b"\x89PNG")),
     }
     if api_base:
         checks["generate_image_used_edit_mode"] = image_result.get("mode") == "gpt-image-2-edit"
+        checks["alternate_logo_used_edit_mode"] = alternate_image_result.get("mode") == "gpt-image-2-edit"
+        checks["alternate_logo_reference_count"] = int(alternate_image_result.get("reference_image_count") or 0) >= 1
+        checks["alternate_logo_changed_output"] = bool(
+            concept_bytes
+            and alternate_concept_bytes
+            and hashlib.sha256(concept_bytes).hexdigest() != hashlib.sha256(alternate_concept_bytes).hexdigest()
+        )
+        checks["no_reference_mode"] = no_reference_image_result.get("mode") == "gpt-image-2"
+        checks["no_reference_count"] = int(no_reference_image_result.get("reference_image_count") or 0) == 0
+        checks["no_reference_png"] = bool(no_reference_bytes.startswith(b"\x89PNG"))
         if full_produce:
             checks["produce_used_edit_mode"] = (produce_result.get("concept_image") or {}).get("mode") == "gpt-image-2-edit"
 
@@ -212,16 +353,35 @@ def run(api_base: str | None = None, cleanup: bool = True, full_produce: bool = 
         "loaded_env": loaded_env,
         "checks": checks,
         "workspace_id": workspace_ids[0] if workspace_ids else None,
+        "blob_regression": blob_regression,
+        "reference_proxy_reads": reference_proxy_reads,
         "reference_images": reference_images,
         "image_result": {
             "mode": image_result.get("mode"),
             "bytes": image_result.get("bytes"),
             "reference_image_count": image_result.get("reference_image_count"),
             "image_error": image_result.get("image_error"),
+            "sha256": hashlib.sha256(concept_bytes).hexdigest() if concept_bytes else "",
+        },
+        "alternate_image_result": {
+            "mode": alternate_image_result.get("mode"),
+            "bytes": alternate_image_result.get("bytes"),
+            "reference_image_count": alternate_image_result.get("reference_image_count"),
+            "image_error": alternate_image_result.get("image_error"),
+            "sha256": hashlib.sha256(alternate_concept_bytes).hexdigest() if alternate_concept_bytes else "",
+            "reference_images": alternate_reference_images,
+        },
+        "no_reference_image_result": {
+            "mode": no_reference_image_result.get("mode"),
+            "bytes": no_reference_image_result.get("bytes"),
+            "reference_image_count": no_reference_image_result.get("reference_image_count"),
+            "image_error": no_reference_image_result.get("image_error"),
+            "sha256": hashlib.sha256(no_reference_bytes).hexdigest() if no_reference_bytes else "",
         },
         "produce_result": {
             "mode": (produce_result.get("concept_image") or {}).get("mode"),
             "bytes": (produce_result.get("concept_image") or {}).get("bytes"),
+            "reference_image_count": (produce_result.get("concept_image") or {}).get("reference_image_count"),
             "image_error": (produce_result.get("concept_image") or {}).get("image_error"),
         }
         if produce_result

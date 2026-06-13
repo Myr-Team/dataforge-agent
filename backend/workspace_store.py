@@ -440,6 +440,14 @@ def workspace_context(workspace_id: str) -> dict[str, Any]:
 
 
 def workspace_reference_images(workspace_id: str) -> list[dict[str, Any]]:
+    workspace_id = str(workspace_id or "").strip()
+    if not workspace_id:
+        return []
+    registry_item = get_registry_workspace(workspace_id)
+    if registry_item:
+        images = _reference_images(registry_item)
+        if images:
+            return images
     try:
         bundle = _load_workspace_bundle(workspace_id)
     except Exception:
@@ -451,6 +459,7 @@ def workspace_reference_images(workspace_id: str) -> list[dict[str, Any]]:
 
 
 def get_reference_image_content(workspace_id: str, filename: str) -> tuple[bytes, str] | None:
+    workspace_id = str(workspace_id or "").strip()
     safe_name = Path(filename or "").name
     if not workspace_id or not safe_name:
         return None
@@ -458,12 +467,24 @@ def get_reference_image_content(workspace_id: str, filename: str) -> tuple[bytes
     local_path = workspace_dir / "reference_images" / safe_name
     if local_path.exists() and local_path.is_file():
         return local_path.read_bytes(), _reference_image_content_type(safe_name, None)
+    direct_blob_name = f"workspaces/{workspace_id}/reference_images/{safe_name}"
+    downloaded = download_blob_content(direct_blob_name)
+    if downloaded:
+        return downloaded
+    workspace_json = download_blob_json(f"workspaces/{workspace_id}/workspace.json") or get_registry_workspace(workspace_id) or {}
+    for item in _reference_images(workspace_json):
+        if Path(str(item.get("filename") or "")).name != safe_name:
+            continue
+        blob_name = str(item.get("blob_name") or direct_blob_name)
+        downloaded = download_blob_content(blob_name)
+        if downloaded:
+            return downloaded
     bundle = _load_workspace_bundle(workspace_id)
     meta = bundle[0] if bundle else {}
     for item in _reference_images(meta):
         if Path(str(item.get("filename") or "")).name != safe_name:
             continue
-        blob_name = str(item.get("blob_name") or f"workspaces/{workspace_id}/reference_images/{safe_name}")
+        blob_name = str(item.get("blob_name") or direct_blob_name)
         downloaded = download_blob_content(blob_name)
         if downloaded:
             return downloaded
