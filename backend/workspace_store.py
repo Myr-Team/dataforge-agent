@@ -7,6 +7,8 @@ import re
 import shutil
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -55,6 +57,9 @@ STATUS_PARTIAL = "部分字段"
 STATUS_FAILED = "失败"
 STATUS_REFERENCE = "仅参考"
 INGEST_INDEX_BATCH_SIZE = max(1, int(os.environ.get("DF_INGEST_INDEX_BATCH_SIZE", "150")))
+INGEST_FILE_TIMEOUT_SECONDS = max(0.0, float(os.environ.get("DF_INGEST_FILE_TIMEOUT_SECONDS", "120")))
+INGEST_FILE_MAX_RETRIES = max(1, int(os.environ.get("DF_INGEST_FILE_MAX_RETRIES", "2")))
+INGEST_STALE_SECONDS = max(15.0, float(os.environ.get("DF_INGEST_STALE_SECONDS", "60")))
 
 
 def create_workspace_from_upload(
@@ -318,22 +323,13 @@ def create_workspace_upload_job(
     workspace_meta["documents"] = _normalize_documents(workspace_dir, workspace_meta, aggregate_profile)
     manifest = _build_workspace_manifest(workspace_id, workspace_meta, aggregate_profile)
     _write_workspace_files(workspace_dir, workspace_meta, aggregate_profile, manifest)
-    if pending_sources:
-        persistence = _persist_workspace_bundle(
-            workspace_id=workspace_id,
-            raw_payloads=[],
-            reference_payloads=reference_payloads,
-            workspace_meta=workspace_meta,
-            profile=aggregate_profile,
-        )
-    else:
-        persistence = _persist_workspace_bundle(
-            workspace_id=workspace_id,
-            raw_payloads=raw_payloads,
-            reference_payloads=reference_payloads,
-            workspace_meta=workspace_meta,
-            profile=aggregate_profile,
-        )
+    persistence = _persist_workspace_bundle(
+        workspace_id=workspace_id,
+        raw_payloads=raw_payloads,
+        reference_payloads=reference_payloads,
+        workspace_meta=workspace_meta,
+        profile=aggregate_profile,
+    )
     workspace_meta["persistence"] = persistence
     (workspace_dir / "workspace.json").write_text(json.dumps(workspace_meta, indent=2, ensure_ascii=False), encoding="utf-8")
     _CONTEXT_CACHE.pop(workspace_id, None)
@@ -554,28 +550,60 @@ def run_workspace_ingest_job(workspace_id: str, job_id: str) -> dict[str, Any]:
     (workspace_dir / "raw_docs").mkdir(parents=True, exist_ok=True)
     (workspace_dir / "profiles").mkdir(parents=True, exist_ok=True)
     meta["ingest_jobs"] = _mark_ingest_job(meta.get("ingest_jobs"), job_id, state="processing")
-    _persist_workspace_state(workspace_id, workspace_dir, meta, profile, include_raw_payloads=True)
+    try:
+        _persist_workspace_state(workspace_id, workspace_dir, meta, profile, include_raw_payloads=True)
 
-    for document in list(meta.get("documents") or []):
-        if not isinstance(document, dict):
-            continue
-        if document.get("ingest_job_id") != job_id or document.get("status") != STATUS_PROCESSING:
-            continue
-        try:
-            _ingest_one_document(workspace_id, workspace_dir, meta, profile, document)
-        except Exception as exc:
-            document["status"] = STATUS_FAILED
-            document["error"] = f"{type(exc).__name__}: {exc}"[:500]
-            document["updated_at"] = datetime.now(timezone.utc).isoformat()
-        _replace_document(meta, document)
-        profile = _rebuild_workspace_profile(workspace_id, workspace_dir, meta, profile)
+        for document in list(meta.get("documents") or []):
+            if not isinstance(document, dict):
+                continue
+            if document.get("ingest_job_id") != job_id or document.get("status") != STATUS_PROCESSING:
+                continue
+            try:
+                document["status"] = STATUS_PROCESSING
+                document["error"] = None
+                document["started_at"] = document.get("started_at") or _utc_now_iso()
+                document["updated_at"] = _utc_now_iso()
+                document["attempt_count"] = int(document.get("attempt_count") or 0)
+                _replace_document(meta, document)
+                meta["ingest_jobs"] = _mark_ingest_job(
+                    meta.get("ingest_jobs"),
+                    job_id,
+                    state="processing",
+                    pct=_ingest_status_from_documents(meta)["pct"],
+                )
+                _persist_workspace_state(workspace_id, workspace_dir, meta, profile)
+                _ingest_document_with_retries(workspace_id, workspace_dir, meta, profile, document)
+            except Exception as exc:
+                document["status"] = STATUS_FAILED
+                document["error"] = f"{type(exc).__name__}: {exc}"[:500]
+                document["updated_at"] = _utc_now_iso()
+            _replace_document(meta, document)
+            profile = _rebuild_workspace_profile(workspace_id, workspace_dir, meta, profile)
+            _persist_workspace_state(workspace_id, workspace_dir, meta, profile)
+
+        status = _ingest_status_from_documents(meta)
+        meta["ingest_jobs"] = _mark_ingest_job(meta.get("ingest_jobs"), job_id, state=status["state"], pct=status["pct"])
         _persist_workspace_state(workspace_id, workspace_dir, meta, profile)
-
-    status = _ingest_status_from_documents(meta)
-    meta["ingest_jobs"] = _mark_ingest_job(meta.get("ingest_jobs"), job_id, state=status["state"], pct=status["pct"])
-    _persist_workspace_state(workspace_id, workspace_dir, meta, profile)
-    _CONTEXT_CACHE.pop(workspace_id, None)
-    return status
+        _CONTEXT_CACHE.pop(workspace_id, None)
+        return status
+    except BaseException as exc:
+        for document in meta.get("documents") or []:
+            if not isinstance(document, dict):
+                continue
+            if document.get("ingest_job_id") == job_id and document.get("status") == STATUS_PROCESSING:
+                document["status"] = STATUS_FAILED
+                document["error"] = f"Ingest job interrupted: {type(exc).__name__}: {exc}"[:500]
+                document["updated_at"] = _utc_now_iso()
+        status = _ingest_status_from_documents(meta)
+        meta["ingest_jobs"] = _mark_ingest_job(meta.get("ingest_jobs"), job_id, state=status["state"], pct=status["pct"])
+        try:
+            profile = _rebuild_workspace_profile(workspace_id, workspace_dir, meta, profile)
+            _persist_workspace_state(workspace_id, workspace_dir, meta, profile)
+        except Exception:
+            pass
+        if isinstance(exc, Exception):
+            raise
+        raise
 
 
 def workspace_ingest_status(workspace_id: str) -> dict[str, Any]:
@@ -589,6 +617,47 @@ def workspace_ingest_status(workspace_id: str) -> dict[str, Any]:
     status = _ingest_status_from_documents(meta)
     status["workspace_id"] = workspace_id
     return status
+
+
+def workspace_pending_ingest_jobs(workspace_id: str, *, stale_only: bool = True) -> list[dict[str, Any]]:
+    workspace_id = str(workspace_id or "").strip()
+    if not workspace_id:
+        raise ValueError("workspace_id is required")
+    loaded = _load_workspace_bundle(workspace_id)
+    if loaded is None:
+        raise FileNotFoundError(workspace_id)
+    meta, _profile = loaded
+    now = datetime.now(timezone.utc)
+    processing_docs = [
+        item
+        for item in meta.get("documents") or []
+        if isinstance(item, dict) and item.get("status") == STATUS_PROCESSING and item.get("ingest_job_id")
+    ]
+    by_job: dict[str, list[dict[str, Any]]] = {}
+    for document in processing_docs:
+        by_job.setdefault(str(document.get("ingest_job_id")), []).append(document)
+    jobs: list[dict[str, Any]] = []
+    for job_id, documents in by_job.items():
+        timestamps = [
+            _parse_utc_iso(item.get("updated_at") or item.get("started_at") or item.get("created_at"))
+            for item in documents
+        ]
+        for job in meta.get("ingest_jobs") or []:
+            if isinstance(job, dict) and str(job.get("job_id") or "") == job_id:
+                timestamps.append(_parse_utc_iso(job.get("updated_at") or job.get("created_at")))
+        last_update = max((item for item in timestamps if item is not None), default=None)
+        age_seconds = (now - last_update).total_seconds() if last_update else INGEST_STALE_SECONDS + 1
+        if stale_only and age_seconds < INGEST_STALE_SECONDS:
+            continue
+        jobs.append(
+            {
+                "workspace_id": workspace_id,
+                "ingest_job_id": job_id,
+                "age_seconds": int(age_seconds),
+                "processing_count": len(documents),
+            }
+        )
+    return jobs
 
 
 def list_workspaces() -> list[dict[str, Any]]:
@@ -675,15 +744,23 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
     workspace_dir = WORKSPACES / workspace_id
     meta: dict[str, Any] = {}
     profile: dict[str, Any] = {}
-    if workspace_dir.exists() and (workspace_dir / "workspace.json").exists():
+    prefer_blob = _prefer_blob_workspace_state(workspace_id)
+    if prefer_blob:
+        meta = download_blob_json(f"workspaces/{workspace_id}/workspace.json") or {}
+        profile = download_blob_json(f"workspaces/{workspace_id}/profile.json") or {}
+    if not meta and workspace_dir.exists() and (workspace_dir / "workspace.json").exists():
         meta = _read_json(workspace_dir / "workspace.json")
         profile_path = workspace_dir / str(meta.get("profile_file") or "profile.json")
         if profile_path.exists():
             profile = _read_json(profile_path)
-    if not meta:
+    if not meta and not prefer_blob:
         meta = download_blob_json(f"workspaces/{workspace_id}/workspace.json") or {}
-    if not profile:
+    if not profile and not prefer_blob:
         profile = download_blob_json(f"workspaces/{workspace_id}/profile.json") or {}
+    if not profile and meta:
+        profile_path = workspace_dir / str(meta.get("profile_file") or "profile.json")
+        if profile_path.exists():
+            profile = _read_json(profile_path)
     if not meta and not profile:
         raise FileNotFoundError(workspace_id)
 
@@ -727,6 +804,25 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
 
 
 def workspace_context(workspace_id: str) -> dict[str, Any]:
+    workspace_id = str(workspace_id or "").strip()
+    if _prefer_blob_workspace_state(workspace_id):
+        loaded = _load_workspace_bundle(workspace_id)
+        if loaded:
+            meta, profile = loaded
+            return _workspace_summary_from_state(workspace_id, WORKSPACES / workspace_id, meta, profile)
+        registry_item = get_registry_workspace(workspace_id)
+        if registry_item:
+            return {
+                "workspace_id": workspace_id,
+                "name": registry_item.get("name") or workspace_id,
+                "doc_count": _registry_doc_count(registry_item),
+                "format": registry_item.get("format") or "mixed",
+                "description": registry_item.get("description"),
+                "profile_summary": registry_item.get("profile_summary"),
+                "created_at": registry_item.get("created_at"),
+                "documents": registry_item.get("documents") or [],
+                "reference_images": _reference_images(registry_item),
+            }
     now = time.monotonic()
     cached = _CONTEXT_CACHE.get(workspace_id)
     if cached and now < cached[0]:
@@ -831,16 +927,24 @@ def _load_workspace_bundle(workspace_id: str) -> tuple[dict[str, Any], dict[str,
     workspace_dir = WORKSPACES / workspace_id
     meta: dict[str, Any] = {}
     profile: dict[str, Any] = {}
+    prefer_blob = _prefer_blob_workspace_state(workspace_id)
+    if prefer_blob:
+        meta = download_blob_json(f"workspaces/{workspace_id}/workspace.json") or {}
+        profile = download_blob_json(f"workspaces/{workspace_id}/profile.json") or {}
     meta_path = workspace_dir / "workspace.json"
-    if meta_path.exists():
+    if not meta and meta_path.exists():
         meta = _read_json(meta_path)
         profile_path = workspace_dir / str(meta.get("profile_file") or "profile.json")
         if profile_path.exists():
             profile = _read_json(profile_path)
-    if not meta:
+    if not meta and not prefer_blob:
         meta = download_blob_json(f"workspaces/{workspace_id}/workspace.json") or {}
-    if not profile:
+    if not profile and not prefer_blob:
         profile = download_blob_json(f"workspaces/{workspace_id}/profile.json") or {}
+    if not profile and meta:
+        profile_path = workspace_dir / str(meta.get("profile_file") or "profile.json")
+        if profile_path.exists():
+            profile = _read_json(profile_path)
     if not meta and not profile:
         return None
     if not meta:
@@ -1024,6 +1128,49 @@ def _blob_configured_for_workspace() -> bool:
     return bool(os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or os.environ.get("DF_STORAGE_ACCOUNT"))
 
 
+def _prefer_blob_workspace_state(workspace_id: str) -> bool:
+    return str(workspace_id or "").startswith("upload-") and _blob_configured_for_workspace()
+
+
+def _workspace_summary_from_state(
+    workspace_id: str,
+    workspace_dir: Path,
+    meta: dict[str, Any],
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    documents = meta.get("documents") or profile.get("documents") or []
+    return {
+        "workspace_id": str(meta.get("workspace_id") or profile.get("workspace_id") or workspace_id),
+        "name": meta.get("name") or profile.get("name") or workspace_id,
+        "doc_count": len(documents) if documents else _workspace_doc_count(workspace_id, workspace_dir, meta),
+        "format": meta.get("format") or profile.get("format") or "mixed",
+        "description": meta.get("description"),
+        "profile_summary": meta.get("profile_summary") or profile.get("profile_summary"),
+        "created_at": meta.get("created_at") or profile.get("created_at"),
+        "documents": documents,
+        "reference_images": _reference_images(meta),
+    }
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_utc_iso(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _delete_search_docs(workspace_id: str) -> int:
     try:
         return delete_workspace_docs(workspace_id)
@@ -1064,6 +1211,64 @@ def _read_profile(workspace_dir: Path, meta: dict[str, Any]) -> dict[str, Any]:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _json_clone(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def _ingest_document_with_retries(
+    workspace_id: str,
+    workspace_dir: Path,
+    meta: dict[str, Any],
+    existing_profile: dict[str, Any],
+    document: dict[str, Any],
+) -> None:
+    last_error: Exception | None = None
+    for attempt in range(1, INGEST_FILE_MAX_RETRIES + 1):
+        document["attempt_count"] = attempt
+        document["updated_at"] = _utc_now_iso()
+        meta_work = _json_clone(meta)
+        profile_work = _json_clone(existing_profile)
+        document_work = _json_clone(document)
+        try:
+            if INGEST_FILE_TIMEOUT_SECONDS <= 0:
+                _ingest_one_document(workspace_id, workspace_dir, meta_work, profile_work, document_work)
+            else:
+                executor = ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(
+                    _ingest_one_document,
+                    workspace_id,
+                    workspace_dir,
+                    meta_work,
+                    profile_work,
+                    document_work,
+                )
+                try:
+                    future.result(timeout=INGEST_FILE_TIMEOUT_SECONDS)
+                except FuturesTimeoutError as exc:
+                    future.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise TimeoutError(f"file ingest timed out after {INGEST_FILE_TIMEOUT_SECONDS:g}s") from exc
+                except Exception:
+                    executor.shutdown(wait=True, cancel_futures=True)
+                    raise
+                else:
+                    executor.shutdown(wait=True, cancel_futures=True)
+            document.clear()
+            document.update(document_work)
+            document["attempt_count"] = attempt
+            if meta_work.get("indexed_count") is not None:
+                meta["indexed_count"] = int(meta_work.get("indexed_count") or 0)
+            return
+        except Exception as exc:
+            last_error = exc
+            document["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
+            document["updated_at"] = _utc_now_iso()
+            if attempt < INGEST_FILE_MAX_RETRIES:
+                continue
+    assert last_error is not None
+    raise last_error
 
 
 def _ingest_one_document(
@@ -1169,13 +1374,19 @@ def _rebuild_workspace_profile(
 
 
 def _load_document_profile(workspace_id: str, workspace_dir: Path, profile_file: str) -> dict[str, Any]:
+    if _prefer_blob_workspace_state(workspace_id):
+        blob_profile = download_blob_json(f"workspaces/{workspace_id}/{profile_file}")
+        if blob_profile:
+            return blob_profile
     local_path = workspace_dir / profile_file
     if local_path.exists():
         try:
             return _read_json(local_path)
         except Exception:
             pass
-    return download_blob_json(f"workspaces/{workspace_id}/{profile_file}") or {}
+    if not _prefer_blob_workspace_state(workspace_id):
+        return download_blob_json(f"workspaces/{workspace_id}/{profile_file}") or {}
+    return {}
 
 
 def _persist_workspace_state(
@@ -1427,13 +1638,19 @@ def _build_workspace_manifest(
 
 
 def _load_workspace_manifest(workspace_id: str, workspace_dir: Path) -> dict[str, Any] | None:
+    if _prefer_blob_workspace_state(workspace_id):
+        manifest = download_blob_json(f"workspaces/{workspace_id}/manifest.json")
+        if manifest:
+            return manifest
     local_path = workspace_dir / "manifest.json"
     if local_path.exists():
         try:
             return _read_json(local_path)
         except Exception:
             return None
-    return download_blob_json(f"workspaces/{workspace_id}/manifest.json")
+    if not _prefer_blob_workspace_state(workspace_id):
+        return download_blob_json(f"workspaces/{workspace_id}/manifest.json")
+    return None
 
 
 def _persist_workspace_manifest(workspace_id: str, manifest: dict[str, Any]) -> None:

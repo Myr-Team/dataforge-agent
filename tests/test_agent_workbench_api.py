@@ -8,9 +8,9 @@ import backend.app as app_module
 import backend.workspace_store as workspace_store
 from backend.app import app
 from backend.customer_text import sanitize_customer_text
-from backend.orchestrator import _mcp_tool_allowed, _tool_provenance, _ui_context_lines
+from backend.orchestrator import _mcp_tool_allowed, _structured_answer_v10, _tool_provenance, _ui_context_lines
 from backend.pm_skills import playbook_suggestion
-from backend.schemas import ChatRequest
+from backend.schemas import ChatRequest, RoutingDecision
 
 
 client = TestClient(app)
@@ -159,6 +159,55 @@ def test_async_upload_keeps_file_failures_isolated_and_idempotent(monkeypatch, t
     assert " | " not in repeated_detail["profile_summary"]
 
 
+def test_upload_workspace_prefers_blob_state_over_stale_local(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(workspace_store, "WORKSPACES", tmp_path / "workspaces")
+    workspace_id = "upload-shared-state"
+    local_dir = workspace_store.WORKSPACES / workspace_id
+    local_dir.mkdir(parents=True)
+    (local_dir / "workspace.json").write_text(
+        '{"workspace_id":"upload-shared-state","name":"Local stale","format":"csv","documents":[{"name":"one.csv","status":"解析中"}],"profile_file":"profile.json","profile_summary":"local"}',
+        encoding="utf-8",
+    )
+    (local_dir / "profile.json").write_text(
+        '{"workspace_id":"upload-shared-state","name":"Local stale","tables":[]}',
+        encoding="utf-8",
+    )
+    blob_meta = {
+        "workspace_id": workspace_id,
+        "name": "Blob current",
+        "format": "mixed",
+        "documents": [
+            {"name": "one.csv", "source_file": "raw_docs/one.csv", "status": "已就绪"},
+            {"name": "two.json", "source_file": "raw_docs/two.json", "status": "已就绪"},
+        ],
+        "profile_file": "profile.json",
+        "profile_summary": "blob current",
+        "indexed_count": 2,
+    }
+    blob_profile = {
+        "workspace_id": workspace_id,
+        "name": "Blob current",
+        "format": "mixed",
+        "tables": [],
+        "documents": blob_meta["documents"],
+        "profile_summary": "blob current",
+    }
+
+    monkeypatch.setattr(workspace_store, "_blob_configured_for_workspace", lambda: True)
+    monkeypatch.setattr(workspace_store, "workspace_deleted", lambda value: False)
+    monkeypatch.setattr(
+        workspace_store,
+        "download_blob_json",
+        lambda blob_name: blob_meta if blob_name.endswith("/workspace.json") else blob_profile if blob_name.endswith("/profile.json") else None,
+    )
+
+    detail = workspace_store.get_workspace_detail(workspace_id)
+
+    assert detail["name"] == "Blob current"
+    assert [item["name"] for item in detail["documents"]] == ["one.csv", "two.json"]
+    assert all(item["status"] == "已就绪" for item in detail["documents"])
+
+
 def test_chat_request_keeps_legacy_payload_compatible() -> None:
     req = ChatRequest.model_validate({"workspace_id": "demo-corpus", "message": "你好"})
 
@@ -233,3 +282,64 @@ def test_customer_text_sanitizer_hides_internal_terms() -> None:
     assert "chunk_id" not in text
     assert "市场推断" in text
     assert "工作区证据" in text
+
+
+def test_feasibility_renderer_rewrites_raw_replay_action_plan() -> None:
+    req = ChatRequest(workspace_id="demo-corpus", message="请自动分析这批攀岩馆数据能产品化成什么")
+    decision = RoutingDecision(
+        workspace_id="demo-corpus",
+        intent="feasibility",
+        experts=["df-feasibility-analyst"],
+        output_mode="report",
+        needs_clarification=False,
+        reason="test",
+    )
+    evidence = {
+        "source_type": "corpus",
+        "ref": "raw_docs/operations_metrics.xlsx#operations_metrics-PilotMetrics-row-2",
+        "quote": "深圳一家连锁攀岩馆会员到访、活动报名、复购和异业合作线索。",
+    }
+    artifact = {
+        "workspace_id": "demo-corpus",
+        "corpus": {
+            "hits": [
+                {
+                    "source_file": "raw_docs/operations_metrics.xlsx",
+                    "chunk_id": "operations_metrics-PilotMetrics-row-2",
+                    "content": evidence["quote"],
+                    "title": "攀岩馆会员数据",
+                }
+            ],
+        },
+        "feasibility": {
+            "opportunity_id": "攀岩馆会员增长机会",
+            "recommendation": "先用深圳一家连锁攀岩馆品牌，本工作区为演示用合成数据确定试点。",
+            "action_plan": [
+                "先用深圳一家连锁攀岩馆品牌，本工作区为演示用合成数据确定首轮试点。",
+                "把业务类别为“L03”，资料分组为“岩点装备”转成具体活动钩子。",
+                "用业务类别为“L08”，资料分组为“悦动健身”设定复盘口径。",
+            ],
+            "dimensions": [
+                {"name": "market", "score": 3, "rationale": "有需求线索", "evidence": [evidence], "confidence": "data_confirmed"},
+                {"name": "technical", "score": 3, "rationale": "可执行", "evidence": [evidence], "confidence": "data_confirmed"},
+                {"name": "asset_data", "score": 3, "rationale": "数据可用", "evidence": [evidence], "confidence": "data_confirmed"},
+                {"name": "resource_cost", "score": 3, "rationale": "成本待验证", "evidence": [evidence], "confidence": "data_confirmed"},
+                {"name": "differentiation_risk", "score": 3, "rationale": "差异待验证", "evidence": [evidence], "confidence": "data_confirmed"},
+            ],
+            "verdict": "conditional",
+            "overall_confidence": "data_confirmed",
+            "gap_list": ["缺少真实投放成本和转化阈值。"],
+        },
+        "audit": {"verdict": "pass"},
+    }
+
+    answer = _structured_answer_v10(req, decision, artifact)
+    markdown = answer["markdown"]
+    scores = [item["score"] for item in artifact["feasibility"]["dimensions"]]
+
+    assert "业务类别" not in markdown
+    assert "资料分组" not in markdown
+    assert "L03" not in markdown
+    assert "本工作区为演示用" not in markdown
+    assert "先把" in markdown
+    assert len(set(scores)) > 1

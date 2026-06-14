@@ -1110,6 +1110,108 @@ def _clean_sentence_end(text: str) -> str:
     return str(text or "").rstrip("\u3002. ")
 
 
+_RAW_ACTION_PLAN_PATTERN = re.compile(
+    r"(raw_docs|source_file|chunk_id|profile\.json|schema|字段|业务类别|资料分组|本工作区为演示用|合成数据|"
+    r"\bL\d{2}\b|row-\d+|#[^ \n，。；、]{4,})",
+    re.I,
+)
+
+
+def _action_plan_needs_rewrite(items: list[Any]) -> bool:
+    clean_items = [str(item or "").strip() for item in items if str(item or "").strip()]
+    if not clean_items:
+        return True
+    joined = "\n".join(clean_items)
+    if _RAW_ACTION_PLAN_PATTERN.search(joined):
+        return True
+    if re.search(r"先用.{18,}(确定|设定|转成|做分层|做对照)", joined):
+        return True
+    if re.search(r"把.{18,}(转成|作为|用于)", joined):
+        return True
+    return any(len(item) > 180 for item in clean_items)
+
+
+def _citation_marker(citations: list[dict[str, Any]], index: int) -> str:
+    if index < len(citations):
+        marker = citations[index].get("marker")
+        if marker:
+            return f"[{marker}]"
+    return ""
+
+
+def _citation_marker_group(citations: list[dict[str, Any]], start: int, limit: int = 2) -> str:
+    markers = []
+    for item in citations[start : start + limit]:
+        marker = item.get("marker")
+        if marker:
+            markers.append(f"[{marker}]")
+    return " ".join(dict.fromkeys(markers))
+
+
+def _synthesized_feasibility_steps(
+    title: str,
+    citations: list[dict[str, Any]],
+    feasibility: dict[str, Any],
+) -> list[str]:
+    first = _citation_marker_group(citations, 0, 2)
+    second = _citation_marker_group(citations, 2, 2) or first
+    third = _citation_marker_group(citations, 4, 2) or _citation_marker(citations, 0)
+    fourth = _citation_marker_group(citations, 6, 2) or _citation_marker(citations, 1)
+    steps = [
+        f"先把“{title}”压缩成一个小试点：限定一个优先客群、一个触达场景和一组可复盘指标，避免一开始铺太宽。 {first}".rstrip(),
+        f"把工作区证据整理成 2-3 个产品假设：分别写清目标用户、核心痛点、触发机制和预期转化，不把单条记录或编号当成结论。 {second}".rstrip(),
+        f"设计两周验证节奏：第一周做触达和报名，第二周看参与、到访、转化、复购、成本和用户反馈，低于阈值就停止扩展。 {third}".rstrip(),
+        f"如果涉及合作方或市场信息，只把它作为补充假设；先验证用户参与和转化，再讨论赞助、联名或规模化投入。 {fourth}".rstrip(),
+    ]
+    gaps = [sanitize_customer_text(str(item)) for item in (feasibility.get("gap_list") or []) if str(item).strip()]
+    clean_gap = ""
+    for gap in gaps:
+        if not _RAW_ACTION_PLAN_PATTERN.search(gap):
+            clean_gap = _clean_sentence_end(gap)
+            break
+    if clean_gap:
+        steps.append(f"优先补齐影响判断的最大缺口：{clean_gap}。")
+    else:
+        steps.append("每轮复盘只保留能被数据或客户反馈支持的结论；证据不足的维度要降级为待验证假设。")
+    return steps[:5]
+
+
+def _diversify_feasibility_scores_data(data: dict[str, Any]) -> dict[str, Any]:
+    dimensions = [item for item in data.get("dimensions") or [] if isinstance(item, dict)]
+    scores = [int(item.get("score") or 0) for item in dimensions]
+    if len(scores) < 3 or len(set(scores)) > 1:
+        return data
+    baseline = {
+        "asset_data": 4,
+        "technical": 3,
+        "market": 3,
+        "resource_cost": 2,
+        "differentiation_risk": 2,
+    }
+    for dimension in dimensions:
+        name = str(dimension.get("name") or "")
+        evidence = [item for item in dimension.get("evidence") or [] if isinstance(item, dict)]
+        confidence = str(dimension.get("confidence") or "speculative")
+        source_types = {str(item.get("source_type") or "") for item in evidence}
+        score = baseline.get(name, 3)
+        if len(evidence) >= 2 and source_types & {"corpus", "computed"}:
+            score += 1
+        if confidence == "market_inferred":
+            score = min(score, 3)
+        if confidence == "speculative" or not evidence:
+            score = min(score, 2)
+        dimension["score"] = max(1, min(5, score))
+        rationale = str(dimension.get("rationale") or "").strip()
+        if rationale and "同分" not in rationale and "证据强弱" not in rationale:
+            dimension["rationale"] = f"{rationale}（该分数已按证据强弱做保守区分。）"
+    data["dimensions"] = dimensions
+    return data
+
+
+def _diversify_feasibility_scores(report: FeasibilityReport) -> FeasibilityReport:
+    return FeasibilityReport.model_validate(_diversify_feasibility_scores_data(report.model_dump()))
+
+
 _FEASIBILITY_PROMPT_VERSION = "df-feasibility-analyst:batch11-p0-fix-action-first"
 
 
@@ -1212,6 +1314,7 @@ def _run_feasibility_analyst(
         report, evidence_warnings = _verify_evidence(report, catalog)
         report = _normalize_feasibility_confidence(report)
         report = _normalize_feasibility_opportunity(report, req, artifact)
+        report = _diversify_feasibility_scores(report)
         data = apply_pre_audit_guardrails(report.model_dump(), catalog, req.message)
         data["_llm"] = _model_meta(result)
         data["_llm"]["evidence_warnings"] = evidence_warnings
@@ -2130,26 +2233,13 @@ def _ensure_feasibility_action_plan(
 
     existing_recommendation = str(feasibility.get("recommendation") or "").strip()
     existing_plan = [str(item).strip() for item in (feasibility.get("action_plan") or []) if str(item).strip()]
-    if existing_recommendation and len(existing_plan) >= 3:
+    if existing_recommendation and len(existing_plan) >= 3 and not _action_plan_needs_rewrite([existing_recommendation, *existing_plan]):
         return existing_recommendation, existing_plan[:5]
 
     signals = _evidence_signals(artifact.get("corpus", {}).get("hits", []), citations)
-    steps: list[str] = []
-    if signals:
-        first = signals[0]
-        second = signals[1] if len(signals) > 1 else first
-        third = signals[2] if len(signals) > 2 else second
-        fourth = signals[3] if len(signals) > 3 else third
-        steps.extend(
-            [
-                f"先用{first['text']}确定首轮试点场景和目标人群，控制在一到两个门店或人群分层内 {first['markers']}".rstrip(),
-                f"把{second['text']}转成具体活动钩子、合作权益或触达文案，先让用户知道为什么参与 {second['markers']}".rstrip(),
-                f"用{third['text']}设定复盘口径，至少记录触达、参与、到访、转化/复购、成本和用户反馈 {third['markers']}".rstrip(),
-                f"再用{fourth['text']}做分层对照，判断哪个门店、人群或权益真正拉动结果 {fourth['markers']}".rstrip(),
-            ]
-        )
+    steps: list[str] = _synthesized_feasibility_steps(title, citations, feasibility) if signals or citations else []
     gaps = [sanitize_customer_text(str(item)) for item in (feasibility.get("gap_list") or []) if str(item).strip()]
-    if gaps:
+    if gaps and not steps:
         steps.append(f"把最大缺口先补成可验证数据：{_clean_sentence_end(gaps[0])}。")
     if not steps:
         steps = [
@@ -2276,6 +2366,9 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
     field_labels = _customer_field_labels(artifact)
     citations = sanitize_citations(citations, field_labels)
     feasibility = artifact.get("feasibility") or {}
+    if isinstance(feasibility, dict):
+        feasibility = _diversify_feasibility_scores_data(dict(feasibility))
+        artifact["feasibility"] = feasibility
     market = artifact.get("market") or {}
     audit = artifact.get("audit") or {}
     verdict = verdict_label(feasibility.get("verdict") or "unknown")

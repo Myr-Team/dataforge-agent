@@ -35,6 +35,7 @@ try:
         list_workspaces,
         run_workspace_ingest_job,
         workspace_ingest_status,
+        workspace_pending_ingest_jobs,
     )
     from .schemas import (
         ChatRequest,
@@ -73,6 +74,7 @@ except ImportError:
         list_workspaces,
         run_workspace_ingest_job,
         workspace_ingest_status,
+        workspace_pending_ingest_jobs,
     )
     from schemas import (
         ChatRequest,
@@ -110,6 +112,7 @@ app.add_middleware(
 ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "generated-outputs"
 _INGEST_SEMAPHORE = asyncio.Semaphore(max(1, int(os.environ.get("DF_UPLOAD_INGEST_CONCURRENCY", "2"))))
 _INGEST_TASKS: set[asyncio.Task[Any]] = set()
+_INGEST_KEYS: set[str] = set()
 _INGEST_START_DELAY_SECONDS = max(0.0, float(os.environ.get("DF_UPLOAD_INGEST_START_DELAY_SECONDS", "0.5")))
 
 
@@ -179,6 +182,7 @@ async def workspaces() -> WorkspacesResponse:
 
 @app.get("/api/workspaces/{workspace_id}", response_model=WorkspaceDetailResponse)
 async def workspace_detail(workspace_id: str) -> WorkspaceDetailResponse:
+    await _recover_stale_upload_ingest(workspace_id)
     try:
         result = await run_in_threadpool(get_workspace_detail, workspace_id)
     except FileNotFoundError as exc:
@@ -190,6 +194,8 @@ async def workspace_detail(workspace_id: str) -> WorkspaceDetailResponse:
 
 @app.get("/api/workspaces/{workspace_id}/dashboard", response_model=WorkspaceDashboardResponse)
 async def workspace_dashboard(workspace_id: str) -> WorkspaceDashboardResponse:
+    await _recover_stale_upload_ingest(workspace_id)
+
     def _load() -> dict[str, Any]:
         dependencies = health_dependencies()
         return {
@@ -219,6 +225,7 @@ async def workspace_dashboard(workspace_id: str) -> WorkspaceDashboardResponse:
 
 @app.get("/api/workspaces/{workspace_id}/ingest-status")
 async def ingest_status(workspace_id: str) -> dict[str, Any]:
+    await _recover_stale_upload_ingest(workspace_id)
     try:
         return await run_in_threadpool(workspace_ingest_status, workspace_id)
     except FileNotFoundError as exc:
@@ -468,19 +475,37 @@ def _compact_event_data(data: Any) -> Any:
     return compact
 
 
-def _schedule_upload_ingest(result: dict[str, Any]) -> None:
-    job_id = result.get("ingest_job_id")
+async def _recover_stale_upload_ingest(workspace_id: str) -> None:
+    try:
+        jobs = await run_in_threadpool(workspace_pending_ingest_jobs, workspace_id, stale_only=True)
+    except Exception:
+        return
+    for job in jobs:
+        _schedule_upload_ingest(job, delay_seconds=0.0)
+
+
+def _schedule_upload_ingest(result: dict[str, Any], *, delay_seconds: float | None = None) -> None:
+    job_id = result.get("ingest_job_id") or result.get("job_id")
     workspace_id = result.get("workspace_id")
     if not job_id or not workspace_id:
         return
+    key = f"{workspace_id}:{job_id}"
+    if key in _INGEST_KEYS:
+        return
+    _INGEST_KEYS.add(key)
     loop = asyncio.get_running_loop()
+    delay = _INGEST_START_DELAY_SECONDS if delay_seconds is None else max(0.0, float(delay_seconds))
 
     def _start() -> None:
         task = asyncio.create_task(_run_upload_ingest_background(str(workspace_id), str(job_id)))
         _INGEST_TASKS.add(task)
-        task.add_done_callback(_INGEST_TASKS.discard)
+        def _done(done_task: asyncio.Task[Any]) -> None:
+            _INGEST_TASKS.discard(done_task)
+            _INGEST_KEYS.discard(key)
 
-    loop.call_later(_INGEST_START_DELAY_SECONDS, _start)
+        task.add_done_callback(_done)
+
+    loop.call_later(delay, _start)
 
 
 async def _run_upload_ingest_background(workspace_id: str, job_id: str) -> None:
