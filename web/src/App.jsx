@@ -62,22 +62,6 @@ const DEMO_DASHBOARD = {
   health: { ok: true, dependencies: { foundry: true, search: true, blob: true, mcp: true } },
 };
 
-// 轮询某工作区直到没有「解析中」文件（或超时）——用于上传时串行化后台摄取。
-async function waitIngestSettled(workspaceId, maxMs = 45000) {
-  const start = Date.now();
-  while (Date.now() - start < maxMs) {
-    try {
-      const data = await loadDashboard(workspaceId);
-      const docs = data?.workspace?.documents || [];
-      const processing = docs.some((x) => /解析中|处理中|processing|pending/i.test(String(x.status || "")));
-      if (!processing) return;
-    } catch {
-      // 忽略瞬时错误，继续轮询
-    }
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-  }
-}
-
 export function App() {
   const [workspaceId, setWorkspaceId] = useState(DEFAULT_WORKSPACE);
   const [dashboard, setDashboard] = useState(null);
@@ -375,22 +359,19 @@ export function App() {
     const list = Array.from(files || []);
     if (!list.length) return;
     try {
-      // 逐个上传：首个建工作区、其余 append。每传完一个就**等它摄取就绪再传下一个**，
-      // 串行化后台摄取，避免并发后台任务被丢而永久卡在「解析中」；同时给出逐文件进度。
+      // 逐个上传：首个建工作区、其余 append（每请求一个文件、秒回），上传后由轮询自动把
+      // 「解析中→已就绪」和画像填充刷出来；后端已修复并发摄取，无需再等待串行化。
       let wid = targetWorkspaceId || null;
       let result = null;
       for (let i = 0; i < list.length; i++) {
         const stepMsg = isReference
           ? "正在上传参考图并绑定到当前工作区..."
           : list.length > 1
-            ? `正在接入并解析第 ${i + 1}/${list.length} 个文件：${list[i].name}…`
+            ? `正在接入第 ${i + 1}/${list.length} 个文件：${list[i].name}…`
             : "正在上传并生成数据画像...";
         setUploadState({ type: "loading", message: stepMsg });
         result = await uploadWorkspace({ name, description, files: [list[i]], workspaceId: wid, assetRole });
         wid = result.workspace_id || wid;
-        if (!isReference && wid && i < list.length - 1) {
-          await waitIngestSettled(wid); // 等这个文件就绪再传下一个
-        }
       }
       setUploadState({
         type: "done",
