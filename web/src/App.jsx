@@ -146,6 +146,20 @@ export function App() {
     refreshDashboard(workspaceId);
   }, [workspaceId, refreshDashboard]);
 
+  // 异步摄取轮询：上传后/选中仍在解析的工作区时，每 ~3.5s 刷新看板，
+  // 让数据集状态「解析中→已就绪」与数据画像/TOP5 自动填充；封顶 ~2 分钟，避免个别卡住的文件无限轮询。
+  const ingestPollRef = useRef(0);
+  useEffect(() => {
+    if (DEMO_SEED) return undefined;
+    const docs = dashboard?.workspace?.documents || [];
+    const processing = docs.some((d) => /解析中|处理中|processing|pending/i.test(String(d.status || "")));
+    if (!processing) { ingestPollRef.current = 0; return undefined; }
+    if (!ingestPollRef.current) ingestPollRef.current = Date.now();
+    if (Date.now() - ingestPollRef.current > 120000) return undefined;
+    const timer = window.setTimeout(() => refreshDashboard(workspaceId), 3500);
+    return () => window.clearTimeout(timer);
+  }, [dashboard, workspaceId, refreshDashboard]);
+
   useEffect(() => {
     let cancelled = false;
     const configuredEndpoint = import.meta.env.VITE_AUTH_ME || "";
