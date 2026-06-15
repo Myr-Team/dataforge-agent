@@ -26,6 +26,7 @@ try:
     from .orchestrator import orchestrate_chat, produce_from_existing_report
     from .rag import search
     from .run_store import get_run, list_runs
+    from .speech_token import issue_speech_token
     from .tracing import configure_monitoring
     from .workspace_store import (
         create_workspace_upload_job,
@@ -65,6 +66,7 @@ except ImportError:
     from orchestrator import orchestrate_chat, produce_from_existing_report
     from rag import search
     from run_store import get_run, list_runs
+    from speech_token import issue_speech_token
     from tracing import configure_monitoring
     from workspace_store import (
         create_workspace_upload_job,
@@ -391,6 +393,14 @@ async def narrate(req: NarrateSummaryRequest, request: Request) -> dict[str, Any
             artifact_url = "https://" + artifact_url.removeprefix("http://")
         result["audio_blob_url"] = artifact_url
     return result
+
+
+@app.get("/api/speech/token")
+async def speech_token() -> dict[str, Any]:
+    try:
+        return await run_in_threadpool(issue_speech_token)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/api/produce")

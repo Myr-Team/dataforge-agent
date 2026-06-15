@@ -209,6 +209,67 @@ def _response_tool_trace(response: Any) -> list[dict[str, Any]]:
     return calls
 
 
+def _response_mcp_trace(response: Any) -> list[dict[str, Any]]:
+    data = _to_plain_data(getattr(response, "output", []))
+    calls: list[dict[str, Any]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            item_type = str(value.get("type") or "")
+            if item_type.startswith("mcp_"):
+                calls.append(
+                    {
+                        "type": item_type,
+                        "name": value.get("name"),
+                        "server_label": value.get("server_label"),
+                        "status": value.get("status"),
+                        "id": value.get("id"),
+                        "error": value.get("error"),
+                        "arguments": value.get("arguments"),
+                        "output": value.get("output"),
+                        "agent_reference": value.get("agent_reference"),
+                    }
+                )
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(data)
+    return calls
+
+
+def _market_results_from_mcp_trace(tool_calls: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[Any]]:
+    competitors: list[dict[str, Any]] = []
+    sources: list[Any] = []
+    for call in tool_calls:
+        if call.get("type") != "mcp_call" or call.get("name") != "market_lookup":
+            continue
+        if call.get("error"):
+            raise RuntimeError(f"MCP market_lookup failed: {call.get('error')}")
+        output = call.get("output")
+        if not output:
+            continue
+        data = json.loads(str(output))
+        raw_items = data.get("results") or data.get("competitors") or (data if isinstance(data, list) else [])
+        if not isinstance(raw_items, list):
+            continue
+        for item in raw_items[:6]:
+            if not isinstance(item, dict):
+                continue
+            enriched = dict(item)
+            enriched.setdefault("confidence", "market_inferred")
+            enriched.setdefault("source_type", "market_mcp")
+            enriched.setdefault("tool", "foundry_agent_mcp.market_lookup")
+            competitors.append(enriched)
+            if enriched.get("url"):
+                sources.append(enriched["url"])
+        if competitors:
+            return competitors, sources
+    return competitors, sources
+
+
 def _foundry_web_tool_candidates() -> list[tuple[str, dict[str, Any]]]:
     candidates: list[tuple[str, dict[str, Any]]] = []
     bing_connection_id = (
@@ -483,6 +544,44 @@ def run_agent(
         "response_id": getattr(response, "id", None),
         "usage": _usage_dict(getattr(response, "usage", None)),
         "mode": "responses_schema",
+    }
+
+
+def run_market_mcp_research(payload: dict[str, Any]) -> dict[str, Any]:
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    compact_payload = {
+        "category": payload.get("category"),
+        "keywords": payload.get("keywords") or [],
+        "limit": payload.get("limit") or 5,
+        "opportunity_id": payload.get("opportunity_id"),
+        "research_goal": "Call the MCP market_lookup tool and use its returned competitors as the source of truth.",
+        "response_requirements": [
+            "Use the MCP tool market_lookup before answering.",
+            "Do not invent competitors.",
+            "Return compact JSON with competitors and positioning_note.",
+            "All MCP results are external market context and must remain market_inferred.",
+        ],
+    }
+    response = openai_client.responses.create(
+        input=json.dumps(compact_payload, ensure_ascii=False, indent=2),
+        max_output_tokens=1200,
+        extra_body=_agent_reference("df-market-researcher"),
+    )
+    tool_calls = _response_mcp_trace(response)
+    competitors, sources = _market_results_from_mcp_trace(tool_calls)
+    if not competitors:
+        raise RuntimeError("df-market-researcher did not return competitors from MCP market_lookup")
+    return {
+        "competitors": competitors,
+        "sources": sources,
+        "positioning_note": "Competitor context was retrieved through Foundry Agent Service MCP market_lookup.",
+        "_llm": {
+            "mode": "foundry_agent_mcp",
+            "response_id": getattr(response, "id", None),
+            "usage": _usage_dict(getattr(response, "usage", None)),
+            "tool_calls": [{key: value for key, value in call.items() if key != "output"} for call in tool_calls],
+        },
     }
 
 

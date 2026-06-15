@@ -5,6 +5,8 @@ import time
 from fastapi.testclient import TestClient
 
 import backend.app as app_module
+import backend.foundry_client as foundry_client
+import backend.speech_token as speech_token_module
 import backend.orchestrator as orchestrator_module
 import backend.workspace_store as workspace_store
 from backend.app import app
@@ -385,6 +387,28 @@ def test_data_only_request_blocks_market_researcher(monkeypatch) -> None:
     assert "df-market-researcher" not in decision.experts
 
 
+def test_report_mode_removes_spurious_producer(monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator_module, "workspace_context", lambda workspace_id: {"doc_count": 4})
+    req = ChatRequest(
+        workspace_id="demo-corpus",
+        message="Compare competitor alternatives for this product opportunity.",
+        artifact_mode="report",
+    )
+    decision = _routing_decision_from_llm(
+        req,
+        {
+            "intent": "feasibility_analysis",
+            "experts": ["df-corpus-analyst", "df-market-researcher", "df-feasibility-analyst", "df-auditor", "df-producer"],
+            "output_mode": "report",
+            "needs_clarification": False,
+            "reason": "test",
+        },
+    )
+
+    assert decision.output_mode == "report"
+    assert "df-producer" not in decision.experts
+
+
 def test_clarify_question_is_short_and_options_carry_next_step() -> None:
     question = (
         "你好，我是 DataForge 协调器，可以先帮你把当前工作区里的资料变成可评估的数据产品方向。"
@@ -433,6 +457,57 @@ def test_mcp_allowlist_and_provenance_contract() -> None:
     assert provenance["confidence"] == "market_inferred"
     assert provenance["allowed"] is True
     assert provenance["latency_ms"] == 42
+
+
+def test_foundry_mcp_trace_extracts_market_results() -> None:
+    calls = [
+        {
+            "type": "mcp_call",
+            "name": "market_lookup",
+            "server_label": "dataforge_market",
+            "status": "completed",
+            "output": '{"results":[{"name":"TrainingPeaks","category":"coaching analytics","positioning":"Coach dashboards","url":"https://www.trainingpeaks.com/"}]}',
+        }
+    ]
+
+    competitors, sources = foundry_client._market_results_from_mcp_trace(calls)
+
+    assert competitors[0]["name"] == "TrainingPeaks"
+    assert competitors[0]["source_type"] == "market_mcp"
+    assert competitors[0]["confidence"] == "market_inferred"
+    assert sources == ["https://www.trainingpeaks.com/"]
+
+
+def test_speech_token_uses_backend_key(monkeypatch) -> None:
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"speech-token"
+
+    captured: dict[str, str] = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["key_header"] = req.headers.get("Ocp-apim-subscription-key") or req.headers.get("Ocp-Apim-Subscription-Key")
+        captured["timeout"] = str(timeout)
+        return FakeResponse()
+
+    monkeypatch.setenv("SPEECH_REGION", "eastus2")
+    monkeypatch.setenv("SPEECH_KEY", "secret-key")
+    monkeypatch.setattr(speech_token_module.urllib.request, "urlopen", fake_urlopen)
+
+    result = speech_token_module.issue_speech_token()
+
+    assert result == {"token": "speech-token", "region": "eastus2", "expires_in": 600}
+    assert captured["url"] == "https://eastus2.api.cognitive.microsoft.com/sts/v1.0/issueToken"
+    assert captured["key_header"] == "secret-key"
 
 
 def test_customer_text_sanitizer_hides_internal_terms() -> None:

@@ -49,6 +49,7 @@ try:
         run_coordinator_guidance,
         run_coordinator_route,
         run_followup_rewrite,
+        run_market_mcp_research,
         run_market_web_research,
         stream_grounded_answer,
     )
@@ -95,6 +96,7 @@ except ImportError:
         run_coordinator_guidance,
         run_coordinator_route,
         run_followup_rewrite,
+        run_market_mcp_research,
         run_market_web_research,
         stream_grounded_answer,
     )
@@ -799,6 +801,8 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
         output_mode = "full_package"
     if output_mode not in {"chat", "report", "full_package"}:
         output_mode = "report" if intent == "feasibility_analysis" else "chat"
+    if output_mode != "full_package":
+        experts = [agent for agent in experts if agent != "df-producer"]
     if output_mode == "full_package" and "df-producer" not in experts and intent == "feasibility_analysis":
         experts.append("df-producer")
     return RoutingDecision(
@@ -1481,22 +1485,49 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
     errors: dict[str, str] = {}
     tool_provenance: dict[str, dict[str, Any]] = {}
 
-    def lookup_competitors() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def lookup_competitors() -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
         started = time.perf_counter()
-        data = _market_lookup(category, keywords)
-        raw_competitors = data.get("competitors") or data.get("results") or (data if isinstance(data, list) else [])
-        items = [_market_inferred_item(item) for item in raw_competitors[:5] if isinstance(item, dict)]
-        sources = [item for item in (data.get("sources") or []) if isinstance(item, (str, dict))]
-        if not sources:
-            sources = [item.get("url") for item in items if item.get("url")]
+        mcp_payload = {
+            "opportunity_id": opportunity,
+            "category": category,
+            "keywords": keywords,
+            "limit": 5,
+            "evidence_catalog": _evidence_catalog(artifact)[:4],
+        }
+        meta: dict[str, Any] = {}
+        try:
+            data = run_market_mcp_research(mcp_payload)
+            raw_competitors = data.get("competitors") or data.get("results") or []
+            items = [_market_inferred_item(item) for item in raw_competitors[:5] if isinstance(item, dict)]
+            sources = [item for item in (data.get("sources") or []) if isinstance(item, (str, dict))]
+            if not sources:
+                sources = [item.get("url") for item in items if item.get("url")]
+            meta = data.get("_llm", {}) if isinstance(data.get("_llm"), dict) else {}
+            source_label = "Foundry Agent Service MCP market_lookup"
+            fallback = None
+        except Exception as exc:
+            fallback_data = _market_lookup(category, keywords)
+            raw_competitors = fallback_data.get("competitors") or fallback_data.get("results") or (fallback_data if isinstance(fallback_data, list) else [])
+            items = [_market_inferred_item(item) for item in raw_competitors[:5] if isinstance(item, dict)]
+            sources = [item for item in (fallback_data.get("sources") or []) if isinstance(item, (str, dict))]
+            if not sources:
+                sources = [item.get("url") for item in items if item.get("url")]
+            meta = {"mode": "local_http_fallback", "error": _clean_text(exc, 300)}
+            source_label = "Local HTTP fallback after Foundry Agent MCP failure"
+            fallback = "Foundry Agent MCP market_lookup failed; used local HTTP fallback to avoid dropping market context."
         provenance = _tool_provenance(
             "market_lookup",
             f"{category}; keywords={', '.join(keywords)}",
             sources=sources[:8],
             citations=sources[:8],
             latency_ms=int((time.perf_counter() - started) * 1000),
+            fallback=fallback,
         )
-        return items, provenance
+        provenance["protocol"] = "foundry_agent_mcp" if meta.get("mode") == "foundry_agent_mcp" else "local_http_fallback"
+        provenance["source_label"] = source_label
+        provenance["agent_response_id"] = meta.get("response_id")
+        provenance["tool_calls"] = meta.get("tool_calls", [])
+        return items, provenance, meta
 
     web_payload = {
         "opportunity_id": opportunity,
@@ -1510,8 +1541,9 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
     with concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="dataforge-market") as pool:
         competitor_future = pool.submit(lookup_competitors)
         web_future = pool.submit(run_market_web_research, web_payload)
+        mcp_llm: dict[str, Any] = {}
         try:
-            competitors, tool_provenance["market_lookup"] = competitor_future.result()
+            competitors, tool_provenance["market_lookup"], mcp_llm = competitor_future.result()
         except Exception as exc:
             errors["market_lookup"] = _clean_text(exc, 300)
             tool_provenance["market_lookup"] = _tool_provenance(
@@ -1553,6 +1585,7 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
         "errors": errors,
         "tool_provenance": tool_provenance,
     }
+    result["_llm"]["mcp"] = mcp_llm
     _MARKET_CACHE[cache_key] = (now + _MARKET_CACHE_SECONDS, json.loads(json.dumps(result, ensure_ascii=False)))
     return result
 
@@ -3320,7 +3353,13 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         else:
             yield _frame(
                 "tool_call",
-                {"agent": "df-market-researcher", "name": "market_lookup", "args": {"category": category, "keywords": category.split()[:4]}},
+                {
+                    "agent": "df-market-researcher",
+                    "name": "market_lookup",
+                    "args": {"category": category, "keywords": category.split()[:4]},
+                    "protocol": "foundry_agent_mcp",
+                    "server_label": "dataforge_market",
+                },
                 conv_id,
             )
             yield _frame(
