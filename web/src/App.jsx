@@ -308,9 +308,8 @@ export function App() {
           if (delta) {
             streamRef.current += delta;
             deltaCount += 1;
-            // 后端目前只发 1 个局部块再发 final（非逐字）：单块不显示，保持"思考中"三点，到 final 由打字机统一揭示；
-            // 若后端将来真的逐字多块推流，则从第 2 块起实时显示。
-            if (deltaCount >= 2) setStreamText(streamRef.current);
+            // 后端现在是真 token 流式：逐块实时显示（首块即显，营造真实"边想边写"）。
+            setStreamText(streamRef.current);
           }
           return;
         }
@@ -354,7 +353,10 @@ export function App() {
             setStreamText("");
             streamRef.current = "";
           };
-          revealFinalText(text, commitFinal);
+          // 已经真流式逐块显示过 → 直接用清洗后的 final 文本落定，不再重复打字机动画；
+          // 没有流式（少见的兜底）才用客户端打字机揭示。
+          if (deltaCount >= 2) commitFinal();
+          else revealFinalText(text, commitFinal);
           setInspectorTab("evidence");
         }
         if (event.event === "error") {
