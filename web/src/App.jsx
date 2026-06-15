@@ -225,29 +225,27 @@ export function App() {
     setInspectorTab("trace");
   };
 
-  // 后端实际只发 1 个 answer_delta + final（非逐字），所以由前端对最终答案做打字机式流式揭示。
+  // 后端实际只发 1 个 answer_delta + final（非逐字），所以由前端对最终答案做**逐字**打字机式流式揭示。
   const revealFinalText = (text, onComplete) => {
     const full = String(text || "");
     if (!full) { onComplete?.(); return; }
     streamRef.current = "";   // 丢弃中途的局部 delta，统一用打字机揭示全文
     setStreamText("");
-    const pieces = full.match(/[^。！？!?；;，,\n]+[。！？!?；;，,\n]?\s*/g) || [full];
-    let index = 0;
-    let current = "";
+    let i = 0;
+    const step = Math.max(2, Math.round(full.length / 140)); // 长文本自动加速，总时长可控
     setDemoReveal({ active: true, text: "" });
     revealTimerRef.current = window.setInterval(() => {
-      current += pieces[index] || "";
-      setDemoReveal({ active: true, text: current });
-      index += 1;
-      if (index >= pieces.length) {
+      i += step;
+      setDemoReveal({ active: true, text: full.slice(0, i) });
+      if (i >= full.length) {
         window.clearInterval(revealTimerRef.current);
         revealTimerRef.current = null;
         window.setTimeout(() => {
           setDemoReveal({ active: false, text: "" });
           onComplete?.();
-        }, 200);
+        }, 150);
       }
-    }, 110);
+    }, 22);
   };
 
   const run = async (rawMessage = input, opts = {}) => {

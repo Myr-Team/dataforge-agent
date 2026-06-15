@@ -814,6 +814,72 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
   );
 }
 
+// 一步的输出/结果摘要
+function stepDetail(ev) {
+  const d = ev.data || {};
+  if (ev.event === "tool_result") return d.count != null ? `${d.count} 条结果` : d.status ? String(d.status) : "";
+  if (ev.event === "tool_call") return d.name ? "" : "";
+  if (ev.event === "model_response") return d.usage?.total_tokens ? `${d.usage.total_tokens} tokens` : "";
+  if (ev.event === "audit") return (d.issues && d.issues.length) ? String(d.issues[0]).slice(0, 60) : (d.verdict === "pass" ? "通过" : "要求修订");
+  if (ev.event === "final") return String(d.text || "").replace(/\s+/g, " ").slice(0, 90);
+  if (ev.event === "clarify") return String(d.question || "").slice(0, 60);
+  if (ev.event === "plan" || ev.event === "route") return (d.experts || []).map((e) => (AGENTS.find((a) => a.id === e)?.zh || e)).join("、");
+  return "";
+}
+
+// 按 Agent 分组显示：每个 Agent 的作用 + 它这一轮做了什么、输出了什么
+function AgentRunLog({ trace }) {
+  const groups = useMemo(() => {
+    const out = [];
+    let cur = null;
+    const ensure = (id) => {
+      const key = id || (cur ? cur.id : "df-coordinator");
+      if (!cur || cur.id !== key) { cur = { id: key, steps: [] }; out.push(cur); }
+      return cur;
+    };
+    for (const ev of trace) {
+      if (["progress", "answer_delta", "delta", "user", "ready"].includes(ev.event)) continue;
+      if (ev.event === "role_change") { ensure(ev.data?.agent); continue; }
+      const agentId = ev.data?.agent || (ev.event === "plan" || ev.event === "route" ? "df-coordinator" : null);
+      ensure(agentId).steps.push(ev);
+    }
+    return out.filter((g) => g.steps.length);
+  }, [trace]);
+  if (!groups.length) return <p className="empty-copy">发起一次分析后，这里按 Agent 显示每一步的作用与输出。</p>;
+  return (
+    <div className="agent-run-log">
+      {groups.map((g, i) => {
+        const EXTRA = { "df-answer-writer": { zh: "回答撰写", role: "组织最终回答" }, "df-orchestrator": { zh: "编排器", role: "流程编排" } };
+        const ex = EXTRA[g.id];
+        const meta = AGENTS.find((a) => a.id === g.id) || { zh: ex?.zh || String(g.id).replace(/^df-/, ""), role: ex?.role || "", icon: Activity };
+        const Icon = meta.icon || Activity;
+        return (
+          <article className="arl-card" key={i}>
+            <div className="arl-head">
+              <span className="arl-ic"><Icon size={15} /></span>
+              <strong>{meta.zh}</strong>
+              {meta.role ? <em>{meta.role}</em> : null}
+              <span className="arl-count">{g.steps.length} 步</span>
+            </div>
+            <ol className="arl-steps">
+              {g.steps.map((ev, j) => {
+                const detail = stepDetail(ev);
+                return (
+                  <li key={j} className={`arl-step ${ev.event}`}>
+                    <span className="arl-dot" />
+                    <span className="arl-step-t">{eventTitle(ev)}</span>
+                    {detail ? <span className="arl-step-d">{detail}</span> : null}
+                  </li>
+                );
+              })}
+            </ol>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 function RunsCenter({ dashboard, trace, running }) {
   const runs = dashboard?.runs || [];
   return (
@@ -822,22 +888,30 @@ function RunsCenter({ dashboard, trace, running }) {
         <div>
           <span className="eyeless-label">Runs</span>
           <h1>运行记录</h1>
-          <p>记录 Agent 路由、工具调用、模型响应、审计和产物生成步骤，便于客户理解结论从哪里来。</p>
+          <p>每个 Agent 的作用，以及它这一轮调用了什么工具、输出了什么——让结论的来路可追溯。</p>
         </div>
       </section>
-      <AutoAnalysisLog trace={trace} runs={runs} running={running} />
-      <section className="run-table">
-        {runs.slice(0, 12).map((run) => (
-          <article key={run.run_id || run.conversation_id}>
-            <Activity size={16} />
-            <div>
-              <strong>{run.status || "completed"}</strong>
-              <span>{run.run_id || run.conversation_id || "run"}</span>
-            </div>
-            <em>{formatTime(run.created_at || run.updated_at)}</em>
-          </article>
-        ))}
-        {!runs.length ? <p className="empty-copy">暂无运行记录。</p> : null}
+      <section className="runs-body">
+        <div className="runs-col">
+          <div className="runs-col-head">本轮 Agent 协作明细</div>
+          <AgentRunLog trace={trace} />
+        </div>
+        <div className="runs-col narrow">
+          <div className="runs-col-head">历史运行</div>
+          <div className="run-table">
+            {runs.slice(0, 12).map((run) => (
+              <article key={run.run_id || run.conversation_id}>
+                <Activity size={16} />
+                <div>
+                  <strong>{run.status || "completed"}</strong>
+                  <span>{run.run_id || run.conversation_id || "run"}</span>
+                </div>
+                <em>{formatTime(run.created_at || run.updated_at)}</em>
+              </article>
+            ))}
+            {!runs.length ? <p className="empty-copy">暂无运行记录。</p> : null}
+          </div>
+        </div>
       </section>
     </main>
   );
