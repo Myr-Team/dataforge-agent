@@ -13,6 +13,7 @@ from backend.orchestrator import (
     _mcp_tool_allowed,
     _proposal_image_kind,
     _request_with_history,
+    _safe_chat_topic_label,
     _structured_answer_v10,
     _tool_provenance,
     _ui_context_lines,
@@ -409,6 +410,7 @@ def test_chat_mode_renderer_is_concise_and_not_report_like() -> None:
     assert "L03" not in markdown
     assert answer["output_contract"]["answer_style"] == "concise_conversation"
     assert answer["output_contract"]["no_dimension_scores"] is True
+    assert _safe_chat_topic_label("Required") == "当前工作区机会"
 
 
 def test_conversation_history_is_used_for_budget_followup() -> None:

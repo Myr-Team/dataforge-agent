@@ -2347,9 +2347,25 @@ def _chat_topic(req: ChatRequest, artifact: dict[str, Any], feasibility: dict[st
     if re.search(r"(那|如果|这个|它|继续|预算|一半|减半|只看)", current) and artifact.get("_conversation_history"):
         topic = _last_history_user_topic(artifact)
         if topic:
-            return topic
+            return _safe_chat_topic_label(topic)
     title_req = req.model_copy(update={"message": current})
-    return _customer_opportunity_title(title_req, artifact, feasibility.get("opportunity_id") or _evidence_topic_from_hits(artifact.get("corpus", {}).get("hits", [])) or "当前机会")
+    topic = _customer_opportunity_title(
+        title_req,
+        artifact,
+        feasibility.get("opportunity_id") or _evidence_topic_from_hits(artifact.get("corpus", {}).get("hits", [])) or "当前机会",
+    )
+    return _safe_chat_topic_label(topic)
+
+
+def _safe_chat_topic_label(topic: Any) -> str:
+    cleaned = _complete_short_phrase(topic, fallback="", limit=28)
+    if not cleaned:
+        return "当前工作区机会"
+    if re.fullmatch(r"(required|optional|true|false|yes|no|none|null|unknown|n/?a|id|row|profile)", cleaned, re.I):
+        return "当前工作区机会"
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?%?", cleaned):
+        return "当前工作区机会"
+    return cleaned
 
 
 def _marker_hint_from_citations(citations: list[dict[str, Any]], limit: int = 2) -> str:
