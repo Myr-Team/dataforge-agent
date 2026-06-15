@@ -23,6 +23,7 @@ try:
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
     from .dependency_health import health_dependencies, health_dependency_details
+    from .observability import observability_snapshot
     from .orchestrator import orchestrate_chat, produce_from_existing_report
     from .rag import search
     from .run_store import get_run, list_runs
@@ -63,6 +64,7 @@ except ImportError:
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
     from dependency_health import health_dependencies, health_dependency_details
+    from observability import observability_snapshot
     from orchestrator import orchestrate_chat, produce_from_existing_report
     from rag import search
     from run_store import get_run, list_runs
@@ -129,6 +131,11 @@ async def health() -> dict[str, Any]:
         "dependencies": dependencies,
         "dependency_details": health_dependency_details(),
     }
+
+
+@app.get("/api/observability")
+async def observability() -> dict[str, Any]:
+    return observability_snapshot()
 
 
 @app.post("/api/search-pack-context", response_model=SearchPackContextResponse)

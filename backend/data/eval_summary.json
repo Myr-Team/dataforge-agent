@@ -1,0 +1,61 @@
+{
+  "suites": [
+    {
+      "name": "端到端云端实测 · 攀岩 Demo",
+      "passed": true,
+      "checks_passed": 7,
+      "checks_total": 7,
+      "file": "climbing_demo_eval.azure.json"
+    },
+    {
+      "name": "全链路云端回归 (中/英)",
+      "passed": true,
+      "checks_passed": 16,
+      "checks_total": 16,
+      "file": "full_product_eval.json"
+    },
+    {
+      "name": "可行性判定 P0 评测",
+      "passed": true,
+      "checks_passed": 24,
+      "checks_total": 24,
+      "file": "batch11_p0_eval.json"
+    },
+    {
+      "name": "回答契约评测",
+      "passed": true,
+      "checks_passed": 14,
+      "checks_total": 14,
+      "file": "batch10_answer_contract_eval.json"
+    },
+    {
+      "name": "上传/入库 onboarding",
+      "passed": true,
+      "checks_passed": 8,
+      "checks_total": 8,
+      "file": "onboarding_upload_eval.json"
+    },
+    {
+      "name": "Agent Service 集成",
+      "passed": true,
+      "checks_passed": 10,
+      "checks_total": 10,
+      "file": "wp_r3_agent_service_eval.json"
+    }
+  ],
+  "calibration_gate": {
+    "passed": true,
+    "spearman": 1.0,
+    "min_spearman": 0.8,
+    "inversion_count": 0,
+    "cases": 5,
+    "rubric_version": "feasibility-rubric-v2026-06-13",
+    "pool_version": "batch11-p0-calibration-v1"
+  },
+  "totals": {
+    "suites": 6,
+    "checks_passed": 79,
+    "checks_total": 79
+  },
+  "generated_note": "离线/云端评测快照（随镜像打包）。"
+}
