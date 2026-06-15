@@ -262,7 +262,9 @@ export function WorkspacePane({
         <div className="dataset-list">
           {documents.slice(0, 8).map((doc) => {
             const meta = fileTypeMeta(doc);
-            const ready = !doc.status || /就绪|已解析|ready|done/i.test(String(doc.status));
+            const status = String(doc.status || "已就绪");
+            const parsing = /解析中|处理中|processing|pending/i.test(status);
+            const cls = parsing ? "loading" : /就绪|已解析|ready|done/i.test(status) || !doc.status ? "ready" : "partial";
             return (
               <div className="dataset-row" key={doc.source_file || doc.name}>
                 <FileTypeIcon doc={doc} />
@@ -270,7 +272,7 @@ export function WorkspacePane({
                   <strong>{doc.name || sanitizeSourceLabel(doc.source_file)}</strong>
                   <span>{meta.label}{doc.bytes ? ` · ${formatBytes(doc.bytes)}` : ""}</span>
                 </div>
-                <em className={ready ? "ds-status ready" : "ds-status partial"}>{doc.status || "已就绪"}</em>
+                <em className={`ds-status ${cls}`}>{parsing ? <span className="ds-spinner" aria-hidden="true" /> : null}{status}</em>
               </div>
             );
           })}
@@ -522,7 +524,8 @@ function DashboardStudio({
   const columns = workspace.columns || [];
   const documents = workspace.documents || [];
   const signalColumns = columns.filter((column) => column.signal && column.signal !== "noise").slice(0, 5);
-  const presentation = useAgentPresentation(trace, running);
+  const presentation = useAgentPresentation(trace, running, producing);
+  const hasArtifacts = Object.values(artifacts || {}).some(Boolean);
   const feasibility = finalArtifact?.feasibility || {};
   const verdict = VERDICT_LABELS[feasibility.verdict] || "等待分析";
 
@@ -546,7 +549,7 @@ function DashboardStudio({
         </div>
       </section>
 
-      <AgentRoute trace={trace} running={running} presentation={presentation} />
+      <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} />
 
       <VerdictHero feasibility={feasibility} verdict={verdict} running={running} />
 
@@ -862,89 +865,93 @@ function SettingsCenter({ dashboard }) {
   );
 }
 
-function useAgentPresentation(trace, running) {
+const FLOW_CAPTIONS = [
+  "识别问题意图与所需专家",
+  "检索工作区资料并压缩证据",
+  "按五维 rubric 生成可行性判断",
+  "补充外部市场和竞品线索",
+  "核验来源、置信度和过强结论",
+  "准备项目书、概念图和语音摘要",
+];
+
+// 只跟真实 trace 走：当前活跃 = 最后一次 role_change；已完成 = 真实响应过的 agent。不再用假定时器自动推进。
+function useAgentPresentation(trace, running, producing = false) {
   const actualActive = [...trace].reverse().find((item) => item.event === "role_change")?.data?.agent;
   const actualDone = useMemo(() => new Set(trace
-    .filter((item) => ["model_response", "tool_result", "audit", "final"].includes(item.event))
+    .filter((item) => ["model_response", "tool_result", "audit"].includes(item.event))
     .map((item) => item.data?.agent)
     .filter(Boolean)), [trace]);
-  const [stage, setStage] = useState(0);
+  const hasFinal = trace.some((item) => item.event === "final");
   const [pulse, setPulse] = useState(0);
-
   useEffect(() => {
-    if (!running && !trace.length) {
-      setStage(0);
-      return undefined;
-    }
-    const timer = window.setInterval(() => {
-      setStage((value) => {
-        const target = actualActive ? Math.max(AGENTS.findIndex((agent) => agent.id === actualActive), value) : value;
-        return Math.min(AGENTS.length - 1, Math.max(target, value + (running ? 1 : 0)));
-      });
-      setPulse((value) => value + 1);
-    }, 720);
+    if (!running && !producing) return undefined;
+    const timer = window.setInterval(() => setPulse((value) => value + 1), 800);
     return () => window.clearInterval(timer);
-  }, [running, trace.length, actualActive]);
-
-  const activeAgent = actualActive || AGENTS[Math.min(stage, AGENTS.length - 1)]?.id || AGENTS[0].id;
-  const doneAgents = new Set(actualDone);
-  AGENTS.slice(0, Math.min(stage, AGENTS.length - 1)).forEach((agent) => doneAgents.add(agent.id));
-  if (trace.some((item) => item.event === "final")) AGENTS.forEach((agent) => doneAgents.add(agent.id));
-  const activeIndex = AGENTS.findIndex((agent) => agent.id === activeAgent);
-  const captions = [
-    "识别问题意图与所需专家",
-    "检索工作区资料并压缩证据",
-    "按五维 rubric 生成可行性判断",
-    "补充外部市场和竞品线索",
-    "核验来源、置信度和过强结论",
-    "准备项目书、概念图和语音摘要",
-  ];
-  return {
-    activeAgent,
-    activeIndex: Math.max(0, activeIndex),
-    doneAgents,
-    maxStage: stage,
-    pulse,
-    caption: captions[Math.max(0, activeIndex)] || "多 Agent 协同执行中",
-  };
+  }, [running, producing]);
+  const activeIndex = AGENTS.findIndex((agent) => agent.id === actualActive);
+  const caption = producing
+    ? FLOW_CAPTIONS[AGENTS.length - 1]
+    : activeIndex >= 0 ? FLOW_CAPTIONS[activeIndex] : running ? FLOW_CAPTIONS[0] : "";
+  return { actualActive, actualDone, hasFinal, activeIndex, pulse, caption };
 }
 
-function AgentRoute({ trace, running, presentation, compact = false }) {
-  const activeAgent = presentation.activeAgent;
-  const responded = presentation.doneAgents;
-  const current = AGENTS.find((agent) => agent.id === activeAgent) || AGENTS[0];
+function AgentRoute({ trace, running, presentation, producing = false, hasArtifacts = false }) {
+  const PRODUCER = AGENTS.length - 1; // 产物生成器（最后一个）
+  const { actualActive, actualDone, hasFinal } = presentation;
   const runId = trace.find((item) => item.event === "ready")?.data?.conversation_id || "pending";
+  const activeIdx = AGENTS.findIndex((agent) => agent.id === actualActive);
+  const doneMax = AGENTS.reduce((m, agent, i) => (i < PRODUCER && actualDone.has(agent.id) ? Math.max(m, i) : m), -1);
+  // 分析阶段（0..PRODUCER-1）前沿：分析完成时到审计员；否则取真实活跃/已完成的较大者
+  const frontier = hasFinal ? PRODUCER - 1 : Math.max(activeIdx, doneMax, running ? 0 : -1);
+
+  const nodeState = (i) => {
+    if (i < PRODUCER) {
+      if (hasFinal || i < frontier || actualDone.has(AGENTS[i].id)) return "done";
+      if (i === frontier && (running || activeIdx >= 0)) return "active";
+      return "idle";
+    }
+    // 产物生成器：自动分析不自动跑；客户点「生成产物」才活跃，生成完成（有产物）才点亮
+    if (hasArtifacts) return "done";
+    if (producing) return "active";
+    return "idle";
+  };
+  // 连接线 i（节点 i 与 i+1 之间）：分析段=该节点完成才亮；审计员→产物生成器仅在生成产物时亮
+  const linkLit = (i) => (i < PRODUCER - 1 ? nodeState(i) === "done" : producing || hasArtifacts);
+
+  const current = AGENTS.find((agent) => agent.id === actualActive) || (producing ? AGENTS[PRODUCER] : AGENTS[0]);
+  const live = running || producing;
+  const foot = producing || running
+    ? presentation.caption
+    : hasFinal ? "分析完成 · 拍板后点右下「生成产物」输出文档" : "选择一个问题后开始编排多 Agent 分析";
   return (
     <section className="agent-route-card">
       <div className="route-card-head">
         <div>
           <strong>Agent Flow</strong>
-          <span>run · {String(runId).slice(0, 12)} · {running ? "streaming" : "idle"}</span>
+          <span>run · {String(runId).slice(0, 12)} · {live ? "streaming" : "idle"}</span>
         </div>
-        <div className={running ? "route-live live" : "route-live"}>
+        <div className={live ? "route-live live" : "route-live"}>
           <i />
-          {running ? "运行中" : "待命"}
+          {producing ? "生成产物中" : running ? "运行中" : "待命"}
         </div>
       </div>
       <div className="pipe-flow" role="list" aria-label="Agent 流水线">
         {AGENTS.map((agent, index) => {
-          const active = activeAgent === agent.id;
-          const done = responded.has(agent.id);
+          const state = nodeState(index);
           const Icon = agent.icon;
-          const state = active ? "active" : done ? "done" : "idle";
           return (
             <div className={`pf-node ${state}`} role="listitem" key={agent.id}>
               <span className="pf-ic"><Icon size={18} strokeWidth={2.1} /></span>
               <span className="pf-name">{agent.zh}</span>
               <span className="pf-role">{agent.role}</span>
-              {index < AGENTS.length - 1 ? <span className={done ? "pf-link lit" : "pf-link"} aria-hidden="true" /> : null}
+              {index < AGENTS.length - 1 ? <span className={linkLit(index) ? "pf-link lit" : "pf-link"} aria-hidden="true" /> : null}
             </div>
           );
         })}
       </div>
       <div className="route-card-foot">
         <span>{current.zh}</span>
-        <strong>{running ? presentation.caption : "选择一个问题后开始编排多 Agent 分析"}</strong>
+        <strong>{foot}</strong>
       </div>
     </section>
   );
@@ -1159,7 +1166,17 @@ const PLAYBOOK_DESC = {
   experiment: "假设 · 指标 · 样本 · 门槛",
 };
 
-// 行动计划（PM 方法）：6 个方法卡，点选驱动下方 ActionBoard（对齐 效果.png）
+// 每个 PM 方法点开后的"怎么用"框架
+const METHOD_INFO = {
+  "opportunity-tree": { what: "把机会拆成「机会 → 方案 → 实验」三层，逐层收敛要不要做。", points: ["顶层：最值得先做的机会", "中层：2–3 个候选方案", "底层：每个方案的最小验证实验"] },
+  jtbd: { what: "看清用户在什么场景、要完成什么任务、卡在哪里。", points: ["场景与触发时机", "想完成的核心任务", "当前替代方案与痛点"] },
+  pricing: { what: "理清价值锚点与商业化路径。", points: ["按什么计费 / 打包", "价值锚点在哪", "还缺哪些市场证据"] },
+  roadmap: { what: "排出 30 / 60 / 90 天的交付节奏。", points: ["30 天：跑通最小闭环", "60 天：扩大验证", "90 天：判断是否规模化"] },
+  prd: { what: "写清目标用户、核心场景与功能边界。", points: ["目标用户与场景", "核心功能与边界", "验收指标"] },
+  experiment: { what: "设计一次可证伪的小验证。", points: ["核心假设", "成功 / 失败门槛", "样本与周期"] },
+};
+
+// 行动计划（PM 方法）：6 个方法卡 + 点开后的「怎么用 / 针对这个机会」相关展示
 function ActionPlanCards({ selected, onSelect, feasibility }) {
   const dims = feasibility?.dimensions || [];
   const metric = (i) => {
@@ -1167,9 +1184,16 @@ function ActionPlanCards({ selected, onSelect, feasibility }) {
     if (d) return `${DIMENSION_LABELS[d.name] || d.name} ${d.score ?? 0}/5`;
     return ["核心机会", "痛点假设", "价值锚点", "里程碑", "验收指标", "成功门槛"][i] || "查看";
   };
+  const sel = PLAYBOOKS.find((p) => p.id === selected) || PLAYBOOKS[0];
+  const SelIcon = sel.icon;
+  const info = METHOD_INFO[sel.id] || {};
+  const oppRaw = feasibility?.opportunity?.title || feasibility?.opportunity;
+  const opp = typeof oppRaw === "string" ? oppRaw : "";
+  const steps = Array.isArray(feasibility?.action_plan) ? feasibility.action_plan : [];
+  const gaps = Array.isArray(feasibility?.gap_list) ? feasibility.gap_list : [];
   return (
     <section className="action-plan">
-      <div className="ap-head"><span>行动计划</span><em>PM 方法</em></div>
+      <div className="ap-head"><span>行动计划</span><em>PM 方法 · 点卡片看怎么用</em></div>
       <div className="ap-grid">
         {PLAYBOOKS.map((item, index) => {
           const Icon = item.icon;
@@ -1179,10 +1203,26 @@ function ActionPlanCards({ selected, onSelect, feasibility }) {
               <strong>{item.name}</strong>
               <span className="ap-desc">{PLAYBOOK_DESC[item.id] || item.prompt}</span>
               <span className="ap-metric">{metric(index)}</span>
-              <span className="ap-link">查看{item.name} →</span>
             </button>
           );
         })}
+      </div>
+      <div className="ap-detail" key={sel.id}>
+        <div className="ap-detail-head">
+          <span className="ap-ic sm"><SelIcon size={16} /></span>
+          <strong>{sel.name}</strong>
+          <em>{info.what}</em>
+        </div>
+        {opp ? <p className="ap-detail-opp">针对机会：<b>{opp}</b></p> : null}
+        <ul className="ap-detail-list">
+          {(info.points || []).map((pt, i) => <li key={i}>{pt}</li>)}
+        </ul>
+        {(steps[0] || gaps[0]) ? (
+          <div className="ap-detail-foot">
+            {steps[0] ? <span className="ap-next">下一步 · {String(steps[0]).replace(/\s*\[\d+\]/g, "").slice(0, 54)}…</span> : null}
+            {gaps[0] ? <span className="ap-gap">缺口 · {String(gaps[0]).slice(0, 36)}</span> : null}
+          </div>
+        ) : null}
       </div>
     </section>
   );
