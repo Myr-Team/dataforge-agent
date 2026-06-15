@@ -98,7 +98,7 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
     from reportlab.lib.units import cm
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.pdfbase.pdfmetrics import registerFont
-    from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import HRFlowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     registerFont(UnicodeCIDFont("STSong-Light"))
     FONT = "STSong-Light"
@@ -135,20 +135,91 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
         story.append(Paragraph(_xml(text), styles["h2"]))
         story.append(HRFlowable(width="100%", thickness=0.8, color=LINE, spaceBefore=3, spaceAfter=7))
 
-    # 标题区
+    # 结论 / 标题数据
     title = proposal.get("title") or str(proposal.get("opportunity_id") or "DataForge 数据产品机会")
-    story.append(Paragraph(_xml(title), styles["title"]))
-    story.append(Paragraph(
-        _xml(f"DataForge 数据产品可行性建议书 · 机会 ID：{proposal.get('opportunity_id', 'unknown')} · 生成于 {time.strftime('%Y-%m-%d %H:%M')}"),
-        styles["meta"],
-    ))
-    story.append(Spacer(1, 10))
-
-    # 结论高亮框
     feasibility = proposal.get("feasibility") or {}
     vraw = str(feasibility.get("verdict") or "unknown")
     vlabel, vcol, vbg = _VERDICT.get(vraw, ("待判定", "#3f4b53", "#eef2f6"))
     conf = str(feasibility.get("overall_confidence") or "unknown")
+    gen_time = time.strftime("%Y-%m-%d %H:%M")
+
+    def _cover(canvas: Any, doc_: Any) -> None:
+        w, h = A4
+        canvas.saveState()
+        # 顶部细蓝条
+        canvas.setFillColor(BLUE)
+        canvas.rect(0, h - 0.42 * cm, w, 0.42 * cm, fill=1, stroke=0)
+        # 蓝色 hero band
+        band_top, band_h = h - 7.4 * cm, 6.4 * cm
+        canvas.setFillColor(colors.HexColor("#0a66d6"))
+        canvas.rect(0, band_top, w, band_h, fill=1, stroke=0)
+        canvas.setFillColor(colors.HexColor("#0071e3"))
+        canvas.rect(0, band_top, w, 0.16 * cm, fill=1, stroke=0)
+        # 角落极淡装饰圆
+        canvas.setStrokeColor(colors.Color(1, 1, 1, alpha=0.16))
+        canvas.setLineWidth(1.2)
+        canvas.circle(w - 2.2 * cm, band_top + band_h - 1.6 * cm, 2.6 * cm, stroke=1, fill=0)
+        canvas.circle(w - 0.6 * cm, band_top + 0.8 * cm, 1.4 * cm, stroke=1, fill=0)
+        # 品牌
+        canvas.setFillColor(colors.white)
+        canvas.setFont(FONT, 13)
+        canvas.drawString(2.0 * cm, band_top + band_h - 1.5 * cm, "DataForge")
+        canvas.setFillColor(colors.HexColor("#d4e6ff"))
+        canvas.setFont(FONT, 8.5)
+        canvas.drawString(2.0 * cm, band_top + band_h - 2.05 * cm, "AI Agent · 数据产品可行性引擎")
+        # 标题（白字，CJK 按宽度换行，最多 2 行）
+        canvas.setFillColor(colors.white)
+        max_w = w - 4.0 * cm
+        size = 26 if canvas.stringWidth(title, FONT, 26) <= max_w * 2 else 22
+        lines, cur = [], ""
+        for ch in title:
+            if canvas.stringWidth(cur + ch, FONT, size) > max_w and cur:
+                lines.append(cur); cur = ch
+            else:
+                cur += ch
+        if cur:
+            lines.append(cur)
+        lines = lines[:2]
+        for i, ln in enumerate(lines):
+            canvas.setFont(FONT, size)
+            canvas.drawString(2.0 * cm, band_top + 2.3 * cm - i * (size + 9) / 28.35 * cm, ln)
+        # band 下方：副标题
+        canvas.setFillColor(INK)
+        canvas.setFont(FONT, 15)
+        canvas.drawString(2.0 * cm, band_top - 1.4 * cm, "数据产品可行性建议书")
+        # 结论徽章
+        bx, by = 2.0 * cm, band_top - 3.5 * cm
+        badge = f"可行性结论：{vlabel}"
+        bw = canvas.stringWidth(badge, FONT, 12) + 1.2 * cm
+        canvas.setFillColor(colors.HexColor(vbg))
+        canvas.roundRect(bx, by, bw, 0.95 * cm, 0.18 * cm, fill=1, stroke=0)
+        canvas.setFillColor(colors.HexColor(vcol))
+        canvas.rect(bx, by, 0.1 * cm, 0.95 * cm, fill=1, stroke=0)
+        canvas.setFont(FONT, 12)
+        canvas.drawString(bx + 0.45 * cm, by + 0.32 * cm, badge)
+        canvas.setFillColor(MUTED)
+        canvas.setFont(FONT, 9.5)
+        canvas.drawString(bx + bw + 0.5 * cm, by + 0.32 * cm, f"整体置信度：{_CONF_LABEL.get(conf, conf)}")
+        # 元信息
+        canvas.setFillColor(MUTED)
+        canvas.setFont(FONT, 9)
+        canvas.drawString(2.0 * cm, by - 1.4 * cm, f"机会 ID：{proposal.get('opportunity_id', 'unknown')}")
+        canvas.drawString(2.0 * cm, by - 1.95 * cm, f"生成时间：{gen_time}")
+        # 底部
+        canvas.setStrokeColor(LINE)
+        canvas.setLineWidth(0.5)
+        canvas.line(2.0 * cm, 2.4 * cm, w - 2.0 * cm, 2.4 * cm)
+        canvas.setFillColor(colors.HexColor("#8e8e93"))
+        canvas.setFont(FONT, 8)
+        canvas.drawString(2.0 * cm, 1.9 * cm, "由 DataForge 多 Agent 系统生成 · 检索增强 + 独立审计 + 校准评分")
+        canvas.drawString(2.0 * cm, 1.5 * cm, "仅供内部决策参考")
+        canvas.restoreState()
+
+    # 封面（第 1 页，由 _cover 画）→ 正文从第 2 页开始
+    story.append(Spacer(1, 1))
+    story.append(PageBreak())
+
+    # 结论高亮框（正文页）
     verdict_para = Paragraph(
         f'<font color="{vcol}">可行性结论：{_xml(vlabel)}</font>'
         f'<font color="#6e6e73">　　|　　整体置信度：{_xml(_CONF_LABEL.get(conf, conf))}</font>',
@@ -260,7 +331,7 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
         canvas.drawRightString(w - 1.7 * cm, 0.9 * cm, f"第 {doc_.page} 页")
         canvas.restoreState()
 
-    doc.build(story, onFirstPage=_decorate, onLaterPages=_decorate)
+    doc.build(story, onFirstPage=_cover, onLaterPages=_decorate)
     return buffer.getvalue()
 
 
