@@ -112,6 +112,60 @@ MARKET_WEB_SCHEMA = {
 }
 
 
+ACTION_PLAN_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "recommendation": {"type": "string"},
+        "steps": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["recommendation", "steps"],
+}
+
+
+def run_action_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    """用 LLM 根据可行性判定 + 维度评分 + 缺口 + 证据，生成【这批数据专属】的行动方案（替代写死模板）。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是 DataForge 的可行性分析师。系统已经对这个工作区机会给出了判定(verdict)、各维度评分与理由(dimensions)、"
+        "关键缺口(gap_list) 和带 marker 的证据(evidence)。请据此生成【针对这个具体机会、这批数据】的下一步行动方案。\n"
+        "硬性规则：\n"
+        "1) 绝不套用通用模板，绝不假设行业（不要默认是攀岩/会员/活动/门店；完全按 evidence 与机会本身来）。\n"
+        "2) recommendation：一句话推荐，说清‘建议做什么、为什么、先验证什么’，紧扣这个机会与证据，40-90 字。\n"
+        "3) steps：4-5 条具体、可执行、互不重复的下一步。每条要落地（做什么、看哪个指标/产出什么），并紧扣具体证据、评分或缺口；"
+        "需要引用证据时在该条末尾用 [n]（n=evidence 的 marker 数字）。\n"
+        "4) 必须贴合 evidence 和 gap_list 的真实内容：缺数据就把‘补齐某项数据/做某项统计’写成一步；"
+        "禁止写‘先定一个主指标再小样本验证’‘把证据整理成2-3个假设’这种放之四海皆准的空话。\n"
+        "5) 不同工作区/不同数据必须给出明显不同的方案。中文。只返回 JSON：{recommendation, steps}。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 1300,
+        "text": _schema_format("df_action_plan", ACTION_PLAN_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    text = getattr(response, "output_text", "") or ""
+    try:
+        data = _extract_json(text)
+    except Exception:
+        data = {}
+    steps = [str(s).strip() for s in (data.get("steps") or []) if str(s).strip()]
+    return {
+        "recommendation": str(data.get("recommendation") or "").strip(),
+        "steps": steps,
+        "response_id": getattr(response, "id", None),
+        "usage": _usage_dict(getattr(response, "usage", None)),
+        "mode": "llm_action_plan",
+    }
+
+
 def _project_client() -> AIProjectClient:
     return AIProjectClient(
         endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
@@ -678,8 +732,9 @@ def run_grounded_chat_answer(payload: dict[str, Any]) -> dict[str, Any]:
         "先判断用户这条是【普通问答/判断】还是【要你出方案/策划/活动/计划/落地步骤】：\n"
         "\n"
         "A) 普通问答/判断（如“会员数据怎样”“值得办吗”“证据有多强”“缺什么数据”）：\n"
-        "  - 用简洁自然中文 120-260 字直接回答，先一句结论再 2-4 句结合证据解释；针对问的点答（问会员讲会员、问证据强弱就分强/弱/缺口讲）。\n"
-        "  - 这种情况【不要】加任何 ## 标题、不要分小节、不要列模板清单。\n"
+        "  - 先一句话给结论，再结合证据解释；针对问的点答（问会员讲会员、问证据强弱就分强/弱/缺口讲）。一般 120-280 字。\n"
+        "  - 如果答案有【多个并列要点】（如分几类、几个维度、几条），请【换行】并用 `- ` 列点，让它清晰；不要把多点挤成一大段。\n"
+        "  - 但这种问答【不要】加 `## 大标题`、不要套方案那套小节骨架。\n"
         "\n"
         "B) 要你出方案/策划/活动/计划（如“做一场拉新活动”“帮我策划…”“这个怎么落地”“给个推广方案”）：\n"
         "  - 按下面模板输出【真正可执行的方案】，用 Markdown：每个小节用 `## 标题` 单独成行，要点用 `- ` 或 `1.` 列表，小节之间空一行。直接照这个骨架填，缺的小节可省略：\n"

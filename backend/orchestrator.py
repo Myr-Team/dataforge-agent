@@ -49,6 +49,7 @@ try:
         run_coordinator_guidance,
         run_coordinator_route,
         run_followup_rewrite,
+        run_action_plan,
         run_grounded_chat_answer,
         run_market_mcp_research,
         run_market_web_research,
@@ -97,6 +98,7 @@ except ImportError:
         run_coordinator_guidance,
         run_coordinator_route,
         run_followup_rewrite,
+        run_action_plan,
         run_grounded_chat_answer,
         run_market_mcp_research,
         run_market_web_research,
@@ -301,15 +303,20 @@ def _ordinary_workspace_qa_requested(message: str) -> bool:
 
 
 def _looks_like_context_followup(message: str) -> bool:
+    """只识别【纯改写/排版】类追问（说短点/翻译/列表化…）——这种才走快速改写。
+    像“预算减半先砍哪部分”“为什么”“哪个”这类【分析型追问】不算，放它去 corpus_qa 走真 LLM 作答，
+    否则会落到写死的 _fast_followup_reply 模板，答非所问。"""
     text = _intent_message(message)
     compact = re.sub(r"\s+", "", text)
-    if not compact or len(compact) > 70:
+    if not compact or len(compact) > 60:
         return False
     if _market_context_requested(text) or _artifact_generation_requested(text) or _explicit_heavy_analysis_requested(text):
         return False
     return bool(
         re.search(
-            r"(那|这个|它|刚才|上轮|上文|继续|还有|为什么|怎么|呢|如果|预算|一半|减半|换成|只看|证据|依据|详细|再说|展开)",
+            r"(说.{0,4}(短|简短|简洁|精简)|短一点|简短点|精简|换个?(说法|表述|角度说)|换种说法|重写|改写|"
+            r"再(写|说|表述|组织)一?(遍|次|下)|翻译|英文|中文|用表格|列成表|做成表格|分点列|列表化|"
+            r"加(个)?标题|换行|排版|正式(一点|些)|口语化|更(专业|正式|简单))",
             text,
             re.I,
         )
@@ -2795,22 +2802,14 @@ def _llm_chat_answer(
         raw = str((result or {}).get("text") or "").strip()
         if not raw or len(raw) < 12:
             return None
-        # 方案/活动类：保留 ## 小节与换行/列表结构，走方案专用清洗（不压平）。
-        if _looks_like_plan_markdown(raw):
-            md = _trim_plan_answer(_sanitize_plan_markdown(raw, field_labels), limit=1900)
-            if md and md.count("\n") >= 2:
-                return {
-                    "markdown": md,
-                    "is_plan": True,
-                    "response_id": (result or {}).get("response_id"),
-                    "usage": (result or {}).get("usage", {}),
-                }
-        # 普通问答：简洁单段、不许 ## 标题。
-        text = _sanitize_chat_sentence(raw, field_labels)
-        if text and len(text) >= 12 and "##" not in text:
+        # 统一用「保留结构」的清洗：不再把换行/列表压平。方案给更大额度，普通问答短一些，
+        # 但都保留 LLM 用的换行和 `- ` 列点，多点答案才有排版（修复追问一堆字没换行的问题）。
+        is_plan = _looks_like_plan_markdown(raw)
+        md = _trim_plan_answer(_sanitize_plan_markdown(raw, field_labels), limit=1900 if is_plan else 820)
+        if md and len(md) >= 12:
             return {
-                "markdown": _trim_conversation_answer(text, limit=360),
-                "is_plan": False,
+                "markdown": md,
+                "is_plan": is_plan,
                 "response_id": (result or {}).get("response_id"),
                 "usage": (result or {}).get("usage", {}),
             }
@@ -2887,6 +2886,55 @@ def _structured_chat_answer_v10(req: ChatRequest, decision: RoutingDecision, art
     }
 
 
+def _llm_feasibility_action_plan(
+    req: ChatRequest,
+    artifact: dict[str, Any],
+    citations: list[dict[str, Any]],
+    feasibility: dict[str, Any],
+    title: str,
+) -> tuple[str, list[str]] | None:
+    """用 LLM 根据 LLM 自己产出的判定/维度/缺口/证据，生成这批数据专属的行动方案。失败返回 None。"""
+    try:
+        field_labels = _customer_field_labels(artifact)
+        evidence: list[dict[str, Any]] = []
+        for item in citations[:8]:
+            marker = item.get("marker")
+            snippet = _sanitize_chat_sentence(str(item.get("snippet") or ""), field_labels)
+            if marker and snippet:
+                evidence.append({"marker": marker, "evidence": _clip_customer_signal(snippet, 160)})
+        dims: list[dict[str, Any]] = []
+        for d in (feasibility.get("dimensions") or [])[:6]:
+            dims.append({
+                "name": _friendly_dimension_name(d.get("name")),
+                "score": d.get("score"),
+                "rationale": _clip_customer_signal(_sanitize_chat_sentence(str(d.get("rationale") or ""), field_labels), 130),
+            })
+        gaps = [_sanitize_chat_sentence(str(g), field_labels) for g in (feasibility.get("gap_list") or []) if str(g).strip()][:5]
+        corpus_profile = (artifact.get("corpus", {}) or {}).get("profile", {}) or {}
+        payload = {
+            "opportunity": title,
+            "verdict": feasibility.get("verdict"),
+            "overall_confidence": feasibility.get("overall_confidence"),
+            "dimensions": dims,
+            "gap_list": gaps,
+            "evidence": evidence,
+            "user_request": _current_user_message(req),
+            "workspace_summary": _clip_customer_signal(str(corpus_profile.get("customer_summary") or corpus_profile.get("profile_summary") or ""), 220),
+        }
+        result = run_action_plan(payload)
+        rec = _sanitize_chat_sentence(str((result or {}).get("recommendation") or ""), field_labels)
+        steps: list[str] = []
+        for s in (result or {}).get("steps") or []:
+            s2 = _sanitize_chat_sentence(str(s), field_labels)
+            if s2 and len(s2) >= 8:
+                steps.append(s2)
+        if rec and len(rec) >= 8 and len(steps) >= 3:
+            return rec, steps[:5]
+    except Exception:
+        return None
+    return None
+
+
 def _ensure_feasibility_action_plan(
     req: ChatRequest,
     artifact: dict[str, Any],
@@ -2894,16 +2942,27 @@ def _ensure_feasibility_action_plan(
 ) -> tuple[str, list[str]]:
     feasibility = artifact.setdefault("feasibility", {})
     title = _customer_opportunity_title(req, artifact, feasibility.get("opportunity_id") or "当前资料机会")
-    campaign_steps = _campaign_action_steps(req, artifact, citations)
-    if campaign_steps:
-        recommendation = f"建议先做“{title}”的活动企划验证，用新客转化和品牌传播作为主线，先跑小样本再扩大。"
+
+    # 修订循环里第二次渲染时，复用第一次的 LLM 方案，避免重复调用模型。
+    if feasibility.get("_action_plan_llm"):
+        rec0 = str(feasibility.get("recommendation") or "").strip()
+        plan0 = [str(s).strip() for s in (feasibility.get("action_plan") or []) if str(s).strip()]
+        if rec0 and len(plan0) >= 3:
+            return rec0, plan0[:5]
+
+    # 1) 优先让 LLM 基于真实判定/维度/缺口/证据生成【这批数据专属】的行动方案（泛化、不套攀岩模板）。
+    llm_plan = _llm_feasibility_action_plan(req, artifact, citations, feasibility, title)
+    if llm_plan:
+        recommendation, steps = llm_plan
         feasibility["opportunity_id"] = title
         feasibility["recommendation"] = recommendation
-        feasibility["action_plan"] = campaign_steps[:5]
+        feasibility["action_plan"] = steps[:5]
+        feasibility["_action_plan_llm"] = True
         artifact["recommendation"] = recommendation
-        artifact["action_plan"] = campaign_steps[:5]
-        return recommendation, campaign_steps[:5]
+        artifact["action_plan"] = steps[:5]
+        return recommendation, steps[:5]
 
+    # 2) LLM 失败才回退到合成兜底（不再用写死的攀岩/活动模板覆盖）。
     existing_recommendation = str(feasibility.get("recommendation") or "").strip()
     existing_plan = [str(item).strip() for item in (feasibility.get("action_plan") or []) if str(item).strip()]
     if existing_recommendation and len(existing_plan) >= 3 and not _action_plan_needs_rewrite([existing_recommendation, *existing_plan]):
@@ -2930,6 +2989,9 @@ def _ensure_feasibility_action_plan(
 
 
 def _campaign_story_lines(req: ChatRequest, artifact: dict[str, Any], citations: list[dict[str, Any]]) -> list[str]:
+    # 已弃用：这是写死攀岩/会员/赞助的活动叙事模板，换数据会串味、不泛化。
+    # 行动方案现在统一由 LLM（_llm_feasibility_action_plan）按真实证据生成，这里不再追加模板段落。
+    return []
     blob = _campaign_story_blob(req, artifact, citations)
     request_text = str(req.message or "")
     if not re.search(r"(活动|推广|企划|拉新|新客|转化|宣传|曝光|名声|campaign|promotion)", request_text, re.I):

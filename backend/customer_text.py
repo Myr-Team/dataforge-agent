@@ -210,11 +210,26 @@ def sanitize_customer_text(text: Any, field_labels: dict[str, str] | None = None
     return value.strip()
 
 
+def _clean_citation_snippet(snippet: Any) -> str:
+    """让引用摘录在悬停小框里可读：去掉 dump 进来的 ## 标题标记、把纯结构 meta 收成一句人话。"""
+    text = str(snippet or "").strip()
+    if not text:
+        return text
+    # 行首/行内的 markdown 标题记号 → 去掉记号留文字
+    text = re.sub(r"(?m)^\s*#{1,6}\s*", "", text)
+    text = re.sub(r"(\S)\s*#{1,6}\s+", r"\1 ", text)
+    # 纯数据画像/结构 meta（“数据画像：xxx，格式 json，包含 N 个表/文档片段、约 N…”）→ 收成一句
+    if re.match(r"^数据画像[：:]", text) and re.search(r"(格式|包含).{0,40}(片段|表|文档)", text):
+        return "工作区数据画像与结构概览（字段/记录规模）"
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
 def sanitize_citations(citations: list[dict[str, Any]], field_labels: dict[str, str]) -> list[dict[str, Any]]:
     cleaned: list[dict[str, Any]] = []
     for item in citations:
         clone = dict(item)
-        clone["snippet"] = sanitize_customer_text(clone.get("snippet"), field_labels)
+        clone["snippet"] = _clean_citation_snippet(sanitize_customer_text(clone.get("snippet"), field_labels))
         if clone.get("confidence") and not clone.get("confidence_label"):
             clone["confidence_label"] = sanitize_customer_text(str(clone.get("confidence")))
         source = str(clone.get("source_file") or "")
