@@ -106,9 +106,20 @@ def _score_text(haystack: str, terms: list[str]) -> int:
     return sum(haystack.count(term.lower()) for term in terms)
 
 
-def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+def search(
+    workspace_id: str,
+    query: str,
+    top_k: int = 5,
+    *,
+    use_vector: bool = True,
+    prefer_local: bool = False,
+) -> list[dict[str, Any]]:
     if os.environ.get("DF_FORCE_LOCAL_SEARCH") == "1":
         return _local_search(workspace_id, query, top_k)
+    if prefer_local:
+        local_hits = _local_search(workspace_id, query, top_k)
+        if local_hits or os.environ.get("DF_FAST_QA_REMOTE_FALLBACK") != "1":
+            return local_hits
     endpoint = os.environ.get("SEARCH_ENDPOINT") or _terraform_output("search_endpoint")
     key = os.environ.get("SEARCH_KEY") or _terraform_output("search_primary_key")
     index_name = os.environ.get("SEARCH_INDEX_NAME", DEFAULT_INDEX)
@@ -117,7 +128,7 @@ def search(workspace_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]
 
     url = f"{endpoint.rstrip('/')}/indexes/{index_name}/docs/search?api-version={API_VERSION}"
     payload = _search_payload(workspace_id, query, top_k)
-    vector = _query_vector(query)
+    vector = _query_vector(query) if use_vector else None
     retrieval_mode = "keyword"
     if vector:
         payload["vectorQueries"] = [{"kind": "vector", "vector": vector, "fields": "content_vector", "k": top_k}]

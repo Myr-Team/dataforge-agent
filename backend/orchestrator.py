@@ -168,8 +168,16 @@ def _clean_text(value: Any, limit: int | None = None) -> str:
     return text[:limit] if limit else text
 
 
+def _intent_message(message: Any) -> str:
+    text = str(message or "").strip()
+    match = re.search(r"(?:^|\n)Current user message:\s*(.+)\s*$", text, re.S)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
 def _looks_like_solution_request(message: str) -> bool:
-    text = str(message or "").strip().lower()
+    text = _intent_message(message).lower()
     if not text:
         return False
     cjk_action = re.search(
@@ -183,17 +191,17 @@ def _looks_like_solution_request(message: str) -> bool:
 
 
 def _artifact_generation_requested(message: str) -> bool:
-    return bool(re.search(r"(生成|输出|制作|产出).{0,16}(项目书|prd|路线图|实验计划|方案|报告|文档)", str(message or ""), re.I))
+    return bool(re.search(r"(生成|输出|制作|产出).{0,16}(项目书|prd|路线图|实验计划|方案|报告|文档)", _intent_message(message), re.I))
 
 
 def _data_only_requested(message: str) -> bool:
-    text = str(message or "")
+    text = _intent_message(message)
     lowered = text.lower()
     if re.search(r"\b(only|exclude|without|no)\b.{0,24}\b(external|market|competitor|competition|web)\b", lowered):
         return True
     if re.search(r"(只看|仅看|不要|不需要|排除|不看).{0,16}(工作区|当前数据|这批数据|外部|市场|竞品|竞对)", text, re.I):
         return True
-    return bool(re.search(r"(只看|仅看|不要|不需要|排除).{0,16}(工作区|当前数据|这批数据|外部|市场|竞品)", str(message or ""), re.I))
+    return bool(re.search(r"(只看|仅看|不要|不需要|排除).{0,16}(工作区|当前数据|这批数据|外部|市场|竞品)", text, re.I))
 
 
 NEXT_STEP_HINT_RE = re.compile(r"(下一步|建议|可以先做|验证|试点|路线图|PRD|实验)", re.I)
@@ -208,7 +216,7 @@ def _ensure_next_step_hint(text: str) -> str:
 
 
 def _market_context_requested(message: str) -> bool:
-    text = str(message or "").strip().lower()
+    text = _intent_message(message).lower()
     if not text:
         return False
     direct_terms = (
@@ -219,8 +227,10 @@ def _market_context_requested(message: str) -> bool:
         "替代品",
         "外部市场",
         "市场行情",
+        "外部行情",
         "行业对比",
         "同类产品",
+        "差异化",
         "定价基准",
         "价格对比",
         "标杆产品",
@@ -243,7 +253,62 @@ def _preset_outcome_requested(message: str) -> bool:
     return bool(
         re.search(
             r"(无论如何|不管证据|不管资料|一定|必须|直接).{0,12}(可行|高分|通过)|打高分|always say feasible|force feasible",
-            str(message or ""),
+            _intent_message(message),
+            re.I,
+        )
+    )
+
+
+def _explicit_heavy_analysis_requested(message: str) -> bool:
+    text = _intent_message(message)
+    if not text:
+        return False
+    if _artifact_generation_requested(text) or _preset_outcome_requested(text):
+        return True
+    return bool(
+        re.search(
+            r"(自动分析|完整分析|深度分析|系统分析|可行性|五维|评分|报告|项目书|prd|路线图|实验计划|"
+            r"机会树|jtbd|定价策略|商业模式|产品化.{0,12}(方向|机会|方案|什么)|"
+            r"能.{0,8}产品化|能做成什么|做成.{0,8}产品|输出.{0,12}(分析|报告|方案)|"
+            r"生成.{0,12}(分析|报告|方案)|full package|feasibility|roadmap|experiment plan)",
+            text,
+            re.I,
+        )
+    )
+
+
+def _ordinary_workspace_qa_requested(message: str) -> bool:
+    text = _intent_message(message)
+    compact = re.sub(r"\s+", "", text)
+    if not compact:
+        return False
+    if _market_context_requested(text) or _artifact_generation_requested(text) or _preset_outcome_requested(text):
+        return False
+    if _explicit_heavy_analysis_requested(text):
+        return False
+    if len(compact) <= 90:
+        return bool(
+            re.search(
+                r"(吗|呢|嘛|？|\?|怎么看|是否|能不能|有没有|值不值得|值得|好不好|该不该|要不要|"
+                r"为什么|怎么|如何|哪|多少|证据|依据|只看|当前资料|工作区|这批|还有|注意|建议)",
+                text,
+                re.I,
+            )
+        )
+    return False
+
+
+def _looks_like_context_followup(message: str) -> bool:
+    text = _intent_message(message)
+    compact = re.sub(r"\s+", "", text)
+    if not compact or len(compact) > 70:
+        return False
+    if _market_context_requested(text) or _artifact_generation_requested(text) or _explicit_heavy_analysis_requested(text):
+        return False
+    return bool(
+        re.search(
+            r"(那|这个|它|刚才|上轮|上文|继续|还有|为什么|怎么|呢|如果|预算|一半|减半|换成|只看|证据|依据|详细|再说|展开)",
+            text,
             re.I,
         )
     )
@@ -316,9 +381,9 @@ def _compact_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return compact
 
 
-def _persist_user_message(conversation_id: str, workspace_id: str, text: str) -> None:
+def _persist_user_message(conversation_id: str, workspace_id: str, text: str, assume_new: bool = False) -> None:
     try:
-        append_message(conversation_id, workspace_id=workspace_id, role="user", text=text)
+        append_message(conversation_id, workspace_id=workspace_id, role="user", text=text, remote_load=not assume_new)
     except Exception:
         pass
 
@@ -739,6 +804,63 @@ def _coordinator(req: ChatRequest, history: list[dict[str, Any]]) -> tuple[Routi
         )
 
 
+def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tuple[RoutingDecision, dict[str, Any]] | None:
+    context = workspace_context(req.workspace_id)
+    doc_count = int(context.get("doc_count") or 0)
+    if doc_count <= 0:
+        return None
+    current_message = _intent_message(req.message)
+    requested_mode = str(getattr(req, "artifact_mode", "") or "").strip()
+    requested_analysis_mode = requested_mode in {"report", "full_package", "proposal"}
+    wants_artifact = requested_mode in {"full_package", "proposal"} or _artifact_generation_requested(current_message)
+    market_context = _market_context_requested(current_message)
+    auto_analyze = _is_auto_analyze_request(req)
+    heavy = _explicit_heavy_analysis_requested(current_message) or auto_analyze or requested_analysis_mode
+    if (
+        req.conversation_id
+        and history
+        and _looks_like_context_followup(current_message)
+        and not heavy
+        and not wants_artifact
+        and not market_context
+    ):
+        decision = RoutingDecision(
+            workspace_id=req.workspace_id,
+            intent="followup_edit",
+            experts=[],
+            output_mode="chat",
+            needs_clarification=False,
+            clarifying_question=None,
+            reason="同会话短追问命中快速路径，复用上一轮上下文，跳过 coordinator、检索和市场工具。",
+        )
+        return decision, {
+            "mode": "preflight_fast_route",
+            "fast_path": "followup_edit",
+            "market_tools_allowed": False,
+        }
+    if (
+        _ordinary_workspace_qa_requested(current_message)
+        and not heavy
+        and not wants_artifact
+        and not market_context
+    ):
+        decision = RoutingDecision(
+            workspace_id=req.workspace_id,
+            intent="corpus_qa",
+            experts=["df-corpus-analyst"],
+            output_mode="chat",
+            needs_clarification=False,
+            clarifying_question=None,
+            reason="普通工作区问答命中快速路径，直接检索当前资料并简答，跳过 coordinator、市场联网和完整多 Agent 链。",
+        )
+        return decision, {
+            "mode": "preflight_fast_route",
+            "fast_path": "corpus_qa",
+            "market_tools_allowed": False,
+        }
+    return None
+
+
 def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> RoutingDecision:
     intent = str(raw.get("intent") or "clarify_needed").strip()
     allowed_intents = {"feasibility_analysis", "followup_edit", "smalltalk_or_meta", "clarify_needed", "corpus_qa"}
@@ -746,18 +868,36 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
         intent = "clarify_needed"
     context = workspace_context(req.workspace_id)
     doc_count = int(context.get("doc_count") or 0)
+    current_message = _intent_message(req.message)
     requested_mode = str(getattr(req, "artifact_mode", "") or "").strip()
-    wants_artifact = requested_mode in {"full_package", "proposal"} or _artifact_generation_requested(req.message)
-    data_only = _data_only_requested(req.message)
-    market_context = _market_context_requested(req.message)
+    requested_analysis_mode = requested_mode in {"report", "full_package", "proposal"}
+    wants_artifact = requested_mode in {"full_package", "proposal"} or _artifact_generation_requested(current_message)
+    data_only = _data_only_requested(current_message)
+    market_context = _market_context_requested(current_message)
+    auto_analyze = _is_auto_analyze_request(req)
+    explicit_heavy = _explicit_heavy_analysis_requested(current_message) or auto_analyze or requested_analysis_mode
+    ordinary_qa = _ordinary_workspace_qa_requested(current_message)
+    followup_context = bool(req.conversation_id) and _looks_like_context_followup(current_message)
+    allow_market_tools = bool((market_context or auto_analyze) and not data_only)
     forced_grounded_answer = False
-    if doc_count > 0 and (_preset_outcome_requested(req.message) or wants_artifact):
+    forced_fast_path = False
+    if doc_count > 0 and followup_context and not explicit_heavy and not wants_artifact and not market_context:
+        intent = "followup_edit"
+        raw["needs_clarification"] = False
+        raw["output_mode"] = "chat"
+        forced_fast_path = True
+    elif doc_count > 0 and (_preset_outcome_requested(current_message) or wants_artifact or auto_analyze):
         intent = "feasibility_analysis"
         raw["needs_clarification"] = False
         forced_grounded_answer = True
         if wants_artifact and not raw.get("output_mode"):
             raw["output_mode"] = "full_package"
-    elif intent == "clarify_needed" and _looks_like_solution_request(req.message) and doc_count > 0:
+    elif doc_count > 0 and ordinary_qa and not requested_analysis_mode:
+        intent = "corpus_qa"
+        raw["needs_clarification"] = False
+        raw["output_mode"] = "chat"
+        forced_fast_path = True
+    elif intent == "clarify_needed" and _looks_like_solution_request(current_message) and explicit_heavy and doc_count > 0:
         intent = "feasibility_analysis"
         raw["needs_clarification"] = False
         forced_grounded_answer = True
@@ -765,6 +905,11 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
         intent = "feasibility_analysis"
         raw["needs_clarification"] = False
         forced_grounded_answer = True
+    elif intent == "feasibility_analysis" and doc_count > 0 and ordinary_qa and not requested_analysis_mode and not wants_artifact and not market_context and not auto_analyze:
+        intent = "corpus_qa"
+        raw["needs_clarification"] = False
+        raw["output_mode"] = "chat"
+        forced_fast_path = True
     experts = [str(item) for item in (raw.get("experts") or []) if isinstance(item, str)]
     allowed_agents = {
         "df-corpus-analyst",
@@ -774,7 +919,7 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
         "df-producer",
     }
     experts = [agent for agent in experts if agent in allowed_agents]
-    if data_only:
+    if data_only or not allow_market_tools:
         experts = [agent for agent in experts if agent != "df-market-researcher"]
     if intent in {"followup_edit", "smalltalk_or_meta", "clarify_needed"}:
         experts = []
@@ -785,7 +930,7 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
             experts.insert(0, "df-corpus-analyst")
         if "df-feasibility-analyst" not in experts:
             experts.append("df-feasibility-analyst")
-        if market_context and not data_only and "df-market-researcher" not in experts:
+        if market_context and allow_market_tools and "df-market-researcher" not in experts:
             if "df-auditor" in experts:
                 experts.insert(experts.index("df-auditor"), "df-market-researcher")
             else:
@@ -801,6 +946,8 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
         output_mode = "full_package"
     if output_mode not in {"chat", "report", "full_package"}:
         output_mode = "report" if intent == "feasibility_analysis" else "chat"
+    if intent in {"corpus_qa", "followup_edit", "smalltalk_or_meta", "clarify_needed"}:
+        output_mode = "chat"
     if output_mode != "full_package":
         experts = [agent for agent in experts if agent != "df-producer"]
     if output_mode == "full_package" and "df-producer" not in experts and intent == "feasibility_analysis":
@@ -815,6 +962,8 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
         reason=(
             (_clean_text(raw.get("reason"), 800) + "；用户是在请求可基于当前资料回答的行动方案，已稳定路由到 grounded answer。")
             if forced_grounded_answer
+            else (_clean_text(raw.get("reason"), 800) + "；普通问答/追问已走快速路径，跳过市场联网和完整多 Agent 链。")
+            if forced_fast_path
             else (_clean_text(raw.get("reason"), 900) or "Coordinator routed the request by intent.")
         ),
     )
@@ -930,8 +1079,10 @@ def _short_clarify_question(question: str, options: list[dict[str, str]], contex
     return preferred + "？"
 
 
-def _run_corpus_analyst(req: ChatRequest) -> dict[str, Any]:
-    hits = search(req.workspace_id, req.message, 8)
+def _run_corpus_analyst(req: ChatRequest, top_k: int = 8, use_vector: bool = True) -> dict[str, Any]:
+    hits = search(req.workspace_id, req.message, top_k, use_vector=use_vector, prefer_local=not use_vector)
+    if not hits and not use_vector:
+        hits = _workspace_profile_fallback_hits(req.workspace_id)
     for hit in hits:
         hit["raw_title"] = hit.get("raw_title") or hit.get("title")
         hit["title"] = customer_hit_title(hit)
@@ -957,6 +1108,46 @@ def _run_corpus_analyst(req: ChatRequest) -> dict[str, Any]:
         "hits": hits,
         "opportunities": opportunities,
     }
+
+
+def _workspace_profile_fallback_hits(workspace_id: str) -> list[dict[str, Any]]:
+    context = workspace_context(workspace_id)
+    summary = _clean_text(context.get("profile_summary"), 1200)
+    documents = [item for item in (context.get("documents") or []) if isinstance(item, dict)]
+    doc_lines = []
+    for item in documents[:5]:
+        name = _clean_text(item.get("name") or item.get("source_file") or "工作区资料", 80)
+        status = _clean_text(item.get("status") or item.get("format") or "", 40)
+        if name:
+            doc_lines.append(f"{name}: {status}".strip(": "))
+    content_parts = []
+    if summary:
+        content_parts.append(f"数据画像摘要: {summary}")
+    if doc_lines:
+        content_parts.append("已上传资料: " + "；".join(doc_lines))
+    if not content_parts:
+        name = _clean_text(context.get("name") or workspace_id, 80)
+        doc_count = int(context.get("doc_count") or 0)
+        if doc_count <= 0:
+            return []
+        content_parts.append(f"工作区 {name} 已有 {doc_count} 份资料，可先用于方向性问答，但需要更具体的问题来命中细节证据。")
+    return [
+        {
+            "id": f"{workspace_id}-profile-fast-fallback",
+            "workspace_id": workspace_id,
+            "title": "工作区数据画像摘要",
+            "raw_title": "Workspace profile summary",
+            "content": "\n".join(content_parts),
+            "source_file": "profile.json",
+            "chunk_id": "profile-fast-fallback",
+            "document_type": "profile",
+            "language": "zh-Hans",
+            "sheet": None,
+            "row": None,
+            "score": 1.0,
+            "retrieval_mode": "profile_fallback",
+        }
+    ]
 
 
 def _infer_title(message: str, hits: list[dict[str, Any]]) -> str:
@@ -2414,11 +2605,7 @@ def _is_conversation_answer(req: ChatRequest, decision: RoutingDecision) -> bool
 
 
 def _current_user_message(req: ChatRequest) -> str:
-    text = str(req.message or "").strip()
-    match = re.search(r"(?:^|\n)Current user message:\s*(.+)\s*$", text, re.S)
-    if match:
-        return match.group(1).strip()
-    return text
+    return _intent_message(req.message)
 
 
 def _last_history_user_topic(artifact: dict[str, Any]) -> str:
@@ -3076,7 +3263,50 @@ def _last_assistant_text(history: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _fast_followup_reply(req: ChatRequest, history: list[dict[str, Any]]) -> dict[str, Any]:
+    previous = _last_assistant_text(history)
+    if not previous:
+        return {
+            "text": "我需要先有上一轮分析结果，才能按你的要求调整。请先完成一次分析，或把要调整的内容贴给我。",
+            "mode": "fast_followup_missing_context",
+            "response_id": None,
+            "usage": {},
+        }
+    current = _intent_message(req.message)
+    compact_previous = _clean_text(previous, 220)
+    history_artifact = {
+        "workspace_id": req.workspace_id,
+        "_conversation_history": _compact_history(history),
+    }
+    topic = _last_history_user_topic(history_artifact) or "上一轮方案"
+    constraint = _chat_constraint_phrase(current)
+    if constraint == "预算减半":
+        text = (
+            f"可以，基于上一轮“{topic}”的方向，预算减半时不要扩大投放面。"
+            "建议保留最能验证需求的核心环节，把范围缩到 1-2 个门店/客群，先看报名、到场、转化和单次成本；"
+            "如果这些指标仍成立，再恢复到完整方案。"
+        )
+    elif re.search(r"(证据|依据|为什么|最强|最弱)", current):
+        text = (
+            f"基于上一轮回答，先看支撑“{topic}”的工作区证据是否同时覆盖需求、执行条件和转化结果。"
+            f"当前可继续追问具体证据面板；上一轮核心判断是：{compact_previous}"
+        )
+    else:
+        text = (
+            f"可以沿用上一轮“{topic}”的主方向，但把这次新增约束先当成范围调整，而不是重跑完整分析。"
+            f"我的建议是先保留核心验证指标，再缩小对象、预算或周期；上一轮判断摘要：{compact_previous}"
+        )
+    return {
+        "text": text,
+        "mode": "fast_followup_renderer",
+        "response_id": None,
+        "usage": {},
+    }
+
+
 def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: list[dict[str, Any]]) -> dict[str, Any]:
+    if decision.intent == "followup_edit" and _looks_like_context_followup(req.message):
+        return _fast_followup_reply(req, history)
     context = workspace_context(req.workspace_id)
     payload = {
         "workspace_id": req.workspace_id,
@@ -3108,7 +3338,8 @@ async def _emit_lightweight_final(
     history: list[dict[str, Any]],
 ) -> AsyncIterator[str]:
     result = await run_in_threadpool(_lightweight_reply, req, decision, history)
-    field_labels = _workspace_field_labels(req.workspace_id)
+    fast_path = (artifact.get("routing_meta") or {}).get("fast_path")
+    field_labels = {} if fast_path else _workspace_field_labels(req.workspace_id)
     text = sanitize_customer_text(
         _strip_raw_ref_leaks(str(result.get("text") or "").strip() or "我可以继续帮你处理当前工作区。"),
         field_labels,
@@ -3126,7 +3357,7 @@ async def _emit_lightweight_final(
         "confidence_label": confidence_label("speculative"),
         "_llm": meta,
     }
-    artifact["output_contract"] = _output_contract(decision.intent)
+    artifact["output_contract"] = _chat_output_contract(decision.intent)
     final_payload = {
         "text": text,
         "routing": decision.model_dump(),
@@ -3136,19 +3367,39 @@ async def _emit_lightweight_final(
         "confidence_label": confidence_label("speculative"),
     }
     yield _frame("model_response", {"agent": "df-coordinator", **meta}, conv_id)
-    await run_in_threadpool(
-        _persist_assistant_message,
-        conv_id,
-        req.workspace_id,
-        text,
-        decision.intent,
-    )
-    complete_run(conv_id, status=decision.intent, final=final_payload, artifact=artifact)
     yield _frame("final", final_payload, conv_id)
+    asyncio.create_task(
+        _persist_chat_completion(
+            conv_id,
+            req.workspace_id,
+            text,
+            decision.intent,
+            decision.intent,
+            final_payload,
+            artifact,
+        )
+    )
+
+
+async def _persist_chat_completion(
+    conversation_id: str,
+    workspace_id: str,
+    text: str,
+    verdict: str,
+    status: str,
+    final_payload: dict[str, Any],
+    artifact: dict[str, Any],
+) -> None:
+    try:
+        await run_in_threadpool(_persist_assistant_message, conversation_id, workspace_id, text, verdict)
+        await run_in_threadpool(complete_run, conversation_id, status=status, final=final_payload, artifact=artifact)
+    except Exception:
+        return
 
 
 async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     conv_id = req.conversation_id or str(uuid.uuid4())
+    new_conversation = req.conversation_id is None
     history = conversation_context(req.conversation_id, limit=20) if req.conversation_id else []
     working_req = _request_with_history(req, history)
     artifact: dict[str, Any] = {
@@ -3159,9 +3410,13 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     start_run(conv_id, req.workspace_id, req.message)
     yield _frame("ready", {"conversation_id": conv_id, "workspace_id": req.workspace_id}, conv_id)
     yield _frame("user", {"text": req.message}, conv_id)
-    await run_in_threadpool(_persist_user_message, conv_id, req.workspace_id, req.message)
+    await run_in_threadpool(_persist_user_message, conv_id, req.workspace_id, req.message, new_conversation)
 
-    decision, route_meta = await run_in_threadpool(_coordinator, working_req, history)
+    fast_route = await run_in_threadpool(_preflight_fast_route, req, history)
+    if fast_route:
+        decision, route_meta = fast_route
+    else:
+        decision, route_meta = await run_in_threadpool(_coordinator, working_req, history)
     if _suppress_auto_analyze_producer(req, decision):
         route_meta = {**route_meta, "producer_suppressed": "auto_analyze"}
     artifact["routing"] = decision.model_dump()
@@ -3247,13 +3502,22 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         return
 
     if "df-corpus-analyst" in decision.experts:
+        fast_corpus_path = route_meta.get("fast_path") == "corpus_qa"
+        corpus_query = _intent_message(req.message) if fast_corpus_path else working_req.message
+        corpus_req = req.model_copy(update={"message": corpus_query})
+        corpus_top_k = 5 if fast_corpus_path else 8
+        corpus_use_vector = not fast_corpus_path
         yield _frame("role_change", {"agent": "df-corpus-analyst"}, conv_id)
         yield _frame(
             "tool_call",
-            {"agent": "df-corpus-analyst", "name": "search_pack_context", "args": {"workspace_id": req.workspace_id, "query": working_req.message, "top_k": 8}},
+            {
+                "agent": "df-corpus-analyst",
+                "name": "search_pack_context",
+                "args": {"workspace_id": req.workspace_id, "query": corpus_query, "top_k": corpus_top_k, "use_vector": corpus_use_vector},
+            },
             conv_id,
         )
-        artifact["corpus"] = await run_in_threadpool(_run_corpus_analyst, working_req)
+        artifact["corpus"] = await run_in_threadpool(_run_corpus_analyst, corpus_req, corpus_top_k, corpus_use_vector)
         retrieval_modes = sorted({str(hit.get("retrieval_mode") or "unknown") for hit in artifact["corpus"]["hits"]})
         yield _frame(
             "tool_result",
@@ -3549,7 +3813,8 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                 summary,
                 _artifact_verdict(artifact, "completed_with_revision_error"),
             )
-            await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
+            if decision.intent == "feasibility_analysis":
+                await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
             complete_run(conv_id, status="completed_with_revision_error", final=final_payload, artifact=artifact)
             yield frame
             return
@@ -3572,6 +3837,20 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         "output_contract": artifact["output_contract"],
     }
     frame = _frame("final", final_payload, conv_id)
+    if decision.intent != "feasibility_analysis":
+        yield frame
+        asyncio.create_task(
+            _persist_chat_completion(
+                conv_id,
+                req.workspace_id,
+                summary,
+                _artifact_verdict(artifact, "completed"),
+                "completed",
+                final_payload,
+                artifact,
+            )
+        )
+        return
     await run_in_threadpool(
         _persist_assistant_message,
         conv_id,
@@ -3579,7 +3858,8 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         summary,
         _artifact_verdict(artifact, "completed"),
     )
-    await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
+    if decision.intent == "feasibility_analysis":
+        await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
     complete_run(conv_id, status="completed", final=final_payload, artifact=artifact)
     yield frame
 

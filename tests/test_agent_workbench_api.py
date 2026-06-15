@@ -13,7 +13,9 @@ from backend.app import app
 from backend.customer_text import sanitize_customer_text
 from backend.orchestrator import (
     _image_prompt_from_proposal,
+    _lightweight_reply,
     _mcp_tool_allowed,
+    _preflight_fast_route,
     _proposal_image_kind,
     _request_with_history,
     _routing_decision_from_llm,
@@ -385,6 +387,130 @@ def test_data_only_request_blocks_market_researcher(monkeypatch) -> None:
     )
 
     assert "df-market-researcher" not in decision.experts
+
+
+def test_ordinary_workspace_question_uses_fast_corpus_path(monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator_module, "workspace_context", lambda workspace_id: {"doc_count": 4})
+    req = ChatRequest(
+        workspace_id="demo-corpus",
+        message="这个活动值得办吗？",
+    )
+    decision = _routing_decision_from_llm(
+        req,
+        {
+            "intent": "feasibility_analysis",
+            "experts": [
+                "df-corpus-analyst",
+                "df-market-researcher",
+                "df-feasibility-analyst",
+                "df-auditor",
+            ],
+            "output_mode": "report",
+            "needs_clarification": False,
+            "reason": "coordinator over-routed",
+        },
+    )
+
+    assert decision.intent == "corpus_qa"
+    assert decision.output_mode == "chat"
+    assert decision.experts == ["df-corpus-analyst"]
+    assert "df-market-researcher" not in decision.experts
+
+
+def test_preflight_fast_route_skips_coordinator_for_ordinary_qa(monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator_module, "workspace_context", lambda workspace_id: {"doc_count": 4})
+    req = ChatRequest(workspace_id="demo-corpus", message="这个活动值得办吗？", artifact_mode="chat")
+
+    routed = _preflight_fast_route(req, [])
+
+    assert routed is not None
+    decision, meta = routed
+    assert decision.intent == "corpus_qa"
+    assert decision.experts == ["df-corpus-analyst"]
+    assert meta["fast_path"] == "corpus_qa"
+
+
+def test_followup_reuses_context_without_market_from_history(monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator_module, "workspace_context", lambda workspace_id: {"doc_count": 4})
+    req = ChatRequest(
+        workspace_id="demo-corpus",
+        conversation_id="conv-budget",
+        message="那预算只有一半呢？",
+    )
+    working_req = _request_with_history(
+        req,
+        [
+            {"role": "user", "text": "请对比竞品和外部市场差异化机会。"},
+            {"role": "assistant", "text": "上一轮已经给出圣诞跨馆联赛建议。"},
+        ],
+    )
+    decision = _routing_decision_from_llm(
+        working_req,
+        {
+            "intent": "feasibility_analysis",
+            "experts": [
+                "df-corpus-analyst",
+                "df-market-researcher",
+                "df-feasibility-analyst",
+                "df-auditor",
+            ],
+            "output_mode": "report",
+            "needs_clarification": False,
+            "reason": "history mentioned market",
+        },
+    )
+
+    assert decision.intent == "followup_edit"
+    assert decision.output_mode == "chat"
+    assert decision.experts == []
+
+
+def test_fast_followup_reply_applies_budget_constraint(monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator_module, "workspace_context", lambda workspace_id: {"doc_count": 4})
+    req = ChatRequest(workspace_id="demo-corpus", conversation_id="conv-budget", message="那预算只有一半呢？")
+    decision = RoutingDecision(
+        workspace_id="demo-corpus",
+        intent="followup_edit",
+        experts=[],
+        output_mode="chat",
+        needs_clarification=False,
+        reason="fast",
+    )
+
+    result = _lightweight_reply(
+        req,
+        decision,
+        [
+            {"role": "user", "text": "圣诞跨馆联赛值得办吗？"},
+            {"role": "assistant", "text": "建议小范围验证圣诞跨馆联赛，重点看报名、到场和复购。"},
+        ],
+    )
+
+    assert result["mode"] == "fast_followup_renderer"
+    assert "预算减半" in result["text"]
+    assert "完整方案" in result["text"]
+
+
+def test_differentiation_question_keeps_market_researcher(monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator_module, "workspace_context", lambda workspace_id: {"doc_count": 4})
+    req = ChatRequest(
+        workspace_id="demo-corpus",
+        message="这个机会的差异化和外部行情怎么看？",
+    )
+    decision = _routing_decision_from_llm(
+        req,
+        {
+            "intent": "corpus_qa",
+            "experts": ["df-corpus-analyst"],
+            "output_mode": "chat",
+            "needs_clarification": False,
+            "reason": "market comparison requested",
+        },
+    )
+
+    assert decision.intent == "feasibility_analysis"
+    assert "df-market-researcher" in decision.experts
+    assert decision.experts.index("df-market-researcher") < decision.experts.index("df-auditor")
 
 
 def test_report_mode_removes_spurious_producer(monkeypatch) -> None:
