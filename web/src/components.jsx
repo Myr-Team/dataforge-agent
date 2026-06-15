@@ -16,6 +16,7 @@ import {
   ImagePlus,
   Layers3,
   Loader2,
+  Mic,
   LogIn,
   LogOut,
   MessageSquare,
@@ -1419,11 +1420,37 @@ function buildDefaultSteps(feasibility, playbook) {
 }
 
 function Composer({ input, setInput, running, onRun }) {
+  const recRef = useRef(null);
+  const [listening, setListening] = useState(false);
+  const baseRef = useRef("");
+  const SR = typeof window !== "undefined" ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+
+  const startVoice = () => {
+    if (!SR || running) return;
+    const rec = new SR();
+    rec.lang = "zh-CN";
+    rec.interimResults = true;
+    rec.continuous = false;
+    baseRef.current = input ? input + " " : "";
+    rec.onresult = (e) => {
+      let t = "";
+      for (let i = 0; i < e.results.length; i += 1) t += e.results[i][0].transcript;
+      setInput(baseRef.current + t); // 语音转文字直接填进输入框，用户可改、再发送
+    };
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    recRef.current = rec;
+    setListening(true);
+    try { rec.start(); } catch { setListening(false); }
+  };
+  const stopVoice = () => { try { recRef.current?.stop(); } catch { /* ignore */ } setListening(false); };
+
   return (
     <form
       className="composer"
       onSubmit={(event) => {
         event.preventDefault();
+        if (listening) stopVoice();
         onRun(input);
       }}
     >
@@ -1431,9 +1458,21 @@ function Composer({ input, setInput, running, onRun }) {
         <input
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          placeholder="继续追问，例如：这个活动值得再办一次吗？"
+          placeholder={listening ? "正在聆听，请说话…" : "继续追问，或点麦克风语音输入"}
           disabled={running}
         />
+        {SR ? (
+          <button
+            type="button"
+            className={listening ? "mic-btn on" : "mic-btn"}
+            onClick={listening ? stopVoice : startVoice}
+            disabled={running}
+            title={listening ? "停止" : "语音输入"}
+            aria-label="语音输入"
+          >
+            <Mic size={17} />
+          </button>
+        ) : null}
       </div>
       <button className="send-button" type="submit" disabled={running || !input.trim()}>
         {running ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
