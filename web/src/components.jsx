@@ -1155,6 +1155,26 @@ function ClarifyCard({ clarify, onSubmit, disabled }) {
   );
 }
 
+// 等待气泡：三点 + 计时；超过几秒给"还在分析"的提示，避免多轮慢看着像冻住。
+function WaitingBubble({ caption }) {
+  const [secs, setSecs] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setSecs((s) => s + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return (
+    <article className="chat-message assistant streaming waiting">
+      <div className="speaker">AI</div>
+      <div className="message-body">
+        <span className="typing-dots" aria-label="Agent 正在思考"><i /><i /><i /></span>
+        {secs >= 5 ? (
+          <span className="waiting-hint">{caption ? `${caption}…` : "正在分析…"}{secs >= 12 ? "（多轮会话会慢一些，请稍候）" : ""}</span>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
 function AnswerPanel({ messages, streamText, running, presentation, onRun }) {
   const visible = messages.length || streamText;
   const scrollRef = useRef(null);
@@ -1204,12 +1224,7 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun }) {
               </div>
             </article>
           ) : running ? (
-            <article className="chat-message assistant streaming waiting">
-              <div className="speaker">AI</div>
-              <div className="message-body">
-                <span className="typing-dots" aria-label="Agent 正在思考"><i /><i /><i /></span>
-              </div>
-            </article>
+            <WaitingBubble caption={presentation?.caption} />
           ) : null}
           <div ref={bottomRef} />
         </div>
