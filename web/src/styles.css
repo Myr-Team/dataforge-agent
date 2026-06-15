@@ -1792,6 +1792,12 @@ svg { flex-shrink: 0; }
 .cite-tip-text { color: #eef2f9; white-space: normal; }
 .cite-tip-src { font-size: 11px; color: #9aa6bd; word-break: break-all; }
 
+/* 绿色证据条做成可悬停 */
+.citation-inline { overflow: visible; }
+.pill-ref { display: inline-flex; align-items: center; cursor: help; }
+.pill-ref .confidence-pill.mini { cursor: help; }
+.pill-ref .cite-tip { bottom: calc(100% + 10px); }
+
 /* 对话内「确认生成产物」按钮 */
 .produce-offer-chip {
   display: inline-flex;

@@ -1214,7 +1214,7 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
                     : message.role === "user"
                       ? <TypeOut text={message.text} animate={isLastUser && running} />
                       : <RichText text={message.text} citations={message.citations} />}
-                  {message.citations?.length ? <CitationInline citations={message.citations} /> : null}
+                  {message.citations?.length ? <CitationInline citations={message.citations} text={message.text} /> : null}
                   {message.produceOffer && onProduce ? (
                     <button
                       type="button"
@@ -1354,14 +1354,34 @@ function RichText({ text, citations }) {
   );
 }
 
-function CitationInline({ citations }) {
+function CitationInline({ citations, text }) {
+  // 只显示正文 [n] 真正引用到的那几条；鼠标悬到绿色证据条上，弹出该条证据的实际内容
+  const used = React.useMemo(() => {
+    const s = new Set();
+    String(text || "").replace(/\[(\d+)\]/g, (m, n) => { s.add(n); return m; });
+    return s;
+  }, [text]);
+  const list = (citations || []).map((c, i) => ({ ...c, n: String(c.marker ?? i + 1) }));
+  const shown = (used.size ? list.filter((c) => used.has(c.n)) : list).slice(0, 6);
+  if (!shown.length) return null;
   return (
     <div className="citation-inline">
-      {citations.slice(0, 5).map((citation, index) => (
-        <span key={`${citation.ref || citation.source || index}`} className={`confidence-pill mini ${citation.confidence || "speculative"}`}>
-          {index + 1}. {CONFIDENCE_LABELS[citation.confidence] || "证据"}
-        </span>
-      ))}
+      {shown.map((c) => {
+        const quote = c.snippet || c.quote || c.text || "暂无可显示的证据摘录。";
+        const src = c.source_label || c.source_file || c.ref || c.source || "";
+        return (
+          <span key={c.n} className="cite-ref pill-ref" tabIndex={0}>
+            <span className={`confidence-pill mini ${c.confidence || "speculative"}`}>
+              [{c.n}] {CONFIDENCE_LABELS[c.confidence] || "证据"}
+            </span>
+            <span className="cite-tip" role="tooltip">
+              <span className={`cite-tip-conf ${c.confidence || "speculative"}`}>{CONFIDENCE_LABELS[c.confidence] || "证据"} · 证据 [{c.n}]</span>
+              <span className="cite-tip-text">{quote}</span>
+              {src ? <span className="cite-tip-src">{src}</span> : null}
+            </span>
+          </span>
+        );
+      })}
     </div>
   );
 }
