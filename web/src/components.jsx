@@ -1225,11 +1225,11 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun }) {
 
 // 行内高亮：关键数字（百分比/价位/区间/倍数）加亮、[n] 角标做成引用标记（对齐 效果.png）
 // 行内：关键数字高亮 + [n] 引用角标
+// 只把 [n] 做成普通小上标，其余纯文本——不再给数字加任何高亮/背景。
 function highlightTokens(text, kp) {
-  const parts = String(text || "").split(/(\[\d+\]|\d+(?:\.\d+)?\s*[%％]|\d+(?:[,，]\d{3})+|\d+\s*[-–~]\s*\d+\s*(?:元|万|亿|%|％)?|\d+(?:\.\d+)?\s*(?:元|万|亿|倍|个|天|条|分))/g);
+  const parts = String(text || "").split(/(\[\d+\])/g);
   return parts.map((part, i) => {
     if (/^\[\d+\]$/.test(part)) return <sup key={`${kp}-${i}`} className="cite-mark">{part.replace(/[[\]]/g, "")}</sup>;
-    if (/[%％]|元|万|亿|倍|[-–~]|[,，]\d{3}|个|天|条|分/.test(part) && /\d/.test(part)) return <mark key={`${kp}-${i}`} className="num-hl">{part}</mark>;
     return <React.Fragment key={`${kp}-${i}`}>{part}</React.Fragment>;
   });
 }
