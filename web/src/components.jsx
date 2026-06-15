@@ -1261,8 +1261,20 @@ function inlineNodes(text, kp = "i") {
 }
 
 // 轻量 markdown 渲染：标题 / 无序列表 / 有序列表 / 段落（段内单换行→换行）+ 行内粗体与高亮
+// 显示前清洗后端答案里的坏标点：角标前多余句号、句号+逗号叠用、重复标点、标点前空格
+function sanitizeReply(text) {
+  return String(text || "")
+    .replace(/([一-龥A-Za-z0-9）)】\]"”])\s*。\s*(\[\d+\])/g, "$1$2") // “是。[1]” → “是[1]”
+    .replace(/。\s*，/g, "，")
+    .replace(/，\s*。/g, "。")
+    .replace(/。{2,}/g, "。")
+    .replace(/，{2,}/g, "，")
+    .replace(/\s+([，。！？；：、])/g, "$1")
+    .replace(/([，。！？；：、])\1+/g, "$1");
+}
+
 function RichText({ text }) {
-  const lines = String(text || "").split("\n");
+  const lines = sanitizeReply(text).split("\n");
   const blocks = [];
   let para = [];
   let list = null;
