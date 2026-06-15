@@ -668,6 +668,23 @@ def run_coordinator_direct_reply(payload: dict[str, Any]) -> dict[str, Any]:
     return _coordinator_text_response(openai_client, instructions, payload, "coordinator_direct_reply")
 
 
+def run_grounded_chat_answer(payload: dict[str, Any]) -> dict[str, Any]:
+    """用 LLM 针对用户【当前这条问题】、结合工作区证据与对话历史作答（替代写死的模板）。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是 DataForge 的数据分析助手，正在和客户多轮对话。请**针对用户当前这一条问题**直接作答，绝不要套用固定句式模板。\n"
+        "规则：\n"
+        "1) 先用一句话直接回答这条问题，再用 2-4 句结合证据解释；针对问的点回答（问会员就讲会员、问证据强弱就分强/弱/缺口讲）。\n"
+        "2) 只用 evidence 里提供的证据，不编造工作区事实；需要引用时在句末用 [n]（n=evidence 的 marker 数字）。\n"
+        "3) 绝不把证据原文整段照抄，不输出 markdown 标题(如 ## )、字段名、或 '会员编号为\"Mxxxx\"'、'数值为\"…\"' 这类原始值；要综合成人话。\n"
+        "4) 结合 conversation_history 记住上文，理解指代与新增约束（如'预算减半''只看旗舰店'）。\n"
+        "5) 简洁（120-280 字）、自然中文；不同问题给明显不同的答案；证据不足就直说缺什么。\n"
+        "只返回 JSON，字段 text 为最终回答。"
+    )
+    return _coordinator_text_response(openai_client, instructions, payload, "grounded_chat_answer", max_output_tokens=650)
+
+
 def run_followup_rewrite(payload: dict[str, Any]) -> dict[str, Any]:
     client = _project_client()
     openai_client = client.get_openai_client()

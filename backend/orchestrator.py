@@ -49,6 +49,7 @@ try:
         run_coordinator_guidance,
         run_coordinator_route,
         run_followup_rewrite,
+        run_grounded_chat_answer,
         run_market_mcp_research,
         run_market_web_research,
         stream_grounded_answer,
@@ -96,6 +97,7 @@ except ImportError:
         run_coordinator_guidance,
         run_coordinator_route,
         run_followup_rewrite,
+        run_grounded_chat_answer,
         run_market_mcp_research,
         run_market_web_research,
         stream_grounded_answer,
@@ -2693,6 +2695,54 @@ def _trim_conversation_answer(text: str, *, limit: int = 320) -> str:
     return head.rstrip(" ，；、") + "。"
 
 
+def _llm_chat_answer(
+    req: ChatRequest,
+    artifact: dict[str, Any],
+    citations: list[dict[str, Any]],
+    feasibility: dict[str, Any],
+    field_labels: Any,
+) -> dict[str, Any] | None:
+    """用 LLM 针对当前问题作答（替代模板）。失败返回 None，由调用方回退到模板。"""
+    try:
+        evidence: list[dict[str, Any]] = []
+        for item in citations[:8]:
+            marker = item.get("marker")
+            snippet = sanitize_customer_text(str(item.get("snippet") or "")) if "sanitize_customer_text" in globals() else str(item.get("snippet") or "")
+            snippet = _sanitize_chat_sentence(snippet, field_labels)
+            if marker and snippet:
+                evidence.append({"marker": marker, "evidence": _clip_customer_signal(snippet, 160)})
+        history: list[dict[str, Any]] = []
+        conv_id = getattr(req, "conversation_id", None)
+        if conv_id:
+            try:
+                history = _compact_history(conversation_context(conv_id))
+            except Exception:
+                history = []
+        corpus_profile = (artifact.get("corpus", {}) or {}).get("profile", {}) or {}
+        payload = {
+            "current_question": _current_user_message(req),
+            "conversation_history": history[-8:],
+            "evidence": evidence,
+            "workspace_summary": _clip_customer_signal(str(corpus_profile.get("customer_summary") or corpus_profile.get("profile_summary") or ""), 220),
+            "feasibility_hint": {
+                "verdict": feasibility.get("verdict"),
+                "opportunity": feasibility.get("opportunity_id"),
+            },
+        }
+        result = run_grounded_chat_answer(payload)
+        text = str((result or {}).get("text") or "").strip()
+        text = _sanitize_chat_sentence(text, field_labels)
+        if text and len(text) >= 12 and "##" not in text:
+            return {
+                "markdown": _trim_conversation_answer(text, limit=360),
+                "response_id": (result or {}).get("response_id"),
+                "usage": (result or {}).get("usage", {}),
+            }
+    except Exception:
+        return None
+    return None
+
+
 def _structured_chat_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact: dict[str, Any]) -> dict[str, Any]:
     citations, _ = _build_citations(artifact)
     field_labels = _customer_field_labels(artifact)
@@ -2700,6 +2750,15 @@ def _structured_chat_answer_v10(req: ChatRequest, decision: RoutingDecision, art
     feasibility = artifact.get("feasibility") or {}
     if not isinstance(feasibility, dict):
         feasibility = {}
+    # 先用 LLM 针对当前问题作答；失败再回退到下面的模板拼接。
+    _llm_ans = _llm_chat_answer(req, artifact, citations, feasibility, field_labels)
+    if _llm_ans:
+        return {
+            "markdown": _llm_ans["markdown"],
+            "citations": citations,
+            "_llm": {"mode": "grounded_chat_llm", "response_id": _llm_ans.get("response_id"), "usage": _llm_ans.get("usage", {})},
+            "output_contract": _chat_output_contract(decision.intent),
+        }
     hits = artifact.get("corpus", {}).get("hits", [])
     signals = _evidence_signals(hits, citations)
     current = _current_user_message(req)
