@@ -1792,6 +1792,32 @@ svg { flex-shrink: 0; }
 .cite-tip-text { color: #eef2f9; white-space: normal; }
 .cite-tip-src { font-size: 11px; color: #9aa6bd; word-break: break-all; }
 
+/* 独立审计 · 自我校验卡片 */
+.audit-card { margin: 14px 0; padding: 16px 18px; border-radius: 14px; border: 1px solid var(--line, #e5e7eb); background: linear-gradient(180deg, #fbfdff, #f6f9fc); }
+.audit-card.is-revise { border-color: rgba(214, 158, 46, 0.4); background: linear-gradient(180deg, #fffdf6, #fdf8ec); }
+.audit-head { display: flex; align-items: flex-start; gap: 10px; }
+.audit-head > svg { color: var(--blue); margin-top: 2px; flex: none; }
+.audit-card.is-revise .audit-head > svg { color: #c9881f; }
+.audit-title { flex: 1; min-width: 0; }
+.audit-title strong { display: block; font-size: 14px; color: var(--ink, #1d2433); }
+.audit-title span { display: block; font-size: 12px; color: var(--muted, #6b7280); margin-top: 2px; line-height: 1.5; }
+.audit-badge { flex: none; align-self: center; padding: 4px 11px; border-radius: 999px; font-size: 11.5px; font-weight: 700; }
+.audit-badge.pass { background: rgba(34, 160, 110, 0.12); color: #1f8f63; }
+.audit-badge.revise { background: rgba(214, 158, 46, 0.16); color: #b9801c; }
+.audit-revision { display: flex; align-items: center; gap: 9px; margin-top: 12px; font-size: 14px; }
+.audit-revision .av-from { color: var(--muted, #6b7280); text-decoration: line-through; text-decoration-thickness: 1px; }
+.audit-revision.unchanged .av-from { display: none; }
+.audit-revision .av-arrow { color: #c9881f; font-weight: 700; }
+.audit-revision.unchanged .av-arrow { display: none; }
+.audit-revision .av-to { font-weight: 700; color: var(--ink, #1d2433); }
+.audit-revision em { color: var(--muted, #6b7280); font-size: 12px; font-style: normal; margin-left: 4px; }
+.audit-diffs { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 7px; }
+.audit-diffs li { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 8px; background: #fff; border: 1px solid var(--line, #e5e7eb); font-size: 12px; }
+.audit-diffs .ad-dim { color: var(--muted, #6b7280); }
+.audit-diffs b { color: var(--ink, #1d2433); }
+.audit-issues { margin: 10px 0 0; padding-left: 18px; }
+.audit-issues li { font-size: 12.5px; color: var(--muted, #6b7280); line-height: 1.6; }
+
 /* 绿色证据条做成可悬停 */
 .citation-inline { overflow: visible; }
 .pill-ref { display: inline-flex; align-items: center; cursor: help; }

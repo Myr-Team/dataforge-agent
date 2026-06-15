@@ -563,11 +563,63 @@ function DashboardStudio({
 
       <VerdictHero feasibility={feasibility} verdict={verdict} running={running} />
 
+      <AuditCard artifact={finalArtifact} />
+
       <section className="studio-methods">
         <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} />
         <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
       </section>
     </main>
+  );
+}
+
+// 自审计显性化：把"审计 agent 盲判复核 → 修订/通过"作为创新卖点直接展示
+function AuditCard({ artifact }) {
+  const audit = artifact?.audit;
+  const contract = artifact?.verdict || {};
+  const fe = artifact?.feasibility || {};
+  const hasAnalysis = Boolean(fe.verdict || (fe.dimensions && fe.dimensions.length));
+  if (!audit || !hasAnalysis) return null;
+  const revised = contract.revised || null;
+  const blindLabel = contract.blind?.judgment || VERDICT_LABELS[fe.verdict] || "初判";
+  const disagreement = (contract.disagreement || []).slice(0, 4);
+  const issues = (audit.issues || []).filter(Boolean).slice(0, 3);
+  const passed = audit.verdict === "pass" && !revised;
+  const fmt = (v) => (typeof v === "number" ? (Number.isInteger(v) ? v : v.toFixed(1)) : v);
+  return (
+    <section className={`audit-card ${passed ? "is-pass" : "is-revise"}`}>
+      <div className="audit-head">
+        <ShieldCheck size={16} />
+        <div className="audit-title">
+          <strong>独立审计 · 自我校验</strong>
+          <span>审计 Agent 在不看初判结论的前提下复核分析，避免自我确认偏差、不自欺地放大结论。</span>
+        </div>
+        <span className={`audit-badge ${passed ? "pass" : "revise"}`}>{passed ? "审计通过 · 结论一致" : "审计已修订结论"}</span>
+      </div>
+      <div className={`audit-revision ${revised ? "" : "unchanged"}`}>
+        <span className="av-from">{blindLabel}</span>
+        <span className="av-arrow">→</span>
+        <span className="av-to">{revised ? revised.judgment : blindLabel}</span>
+        <em>{revised ? "盲判 → 审计修订后结论" : "盲判与初判一致，结论未被放大"}</em>
+      </div>
+      {disagreement.length ? (
+        <ul className="audit-diffs">
+          {disagreement.map((d, i) => (
+            <li key={i}>
+              <span className="ad-dim">{d.dim}</span>
+              <b>{fmt(d.blind)}</b>
+              <span className="av-arrow">→</span>
+              <b>{fmt(d.revised)}</b>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {issues.length ? (
+        <ul className="audit-issues">
+          {issues.map((it, i) => <li key={i}>{it}</li>)}
+        </ul>
+      ) : null}
+    </section>
   );
 }
 
