@@ -43,7 +43,7 @@ def _tracing_status() -> dict[str, Any]:
 def _models() -> dict[str, Any]:
     return {
         "chat": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
-        "embedding": os.environ.get("DF_EMBED_DEPLOYMENT") or os.environ.get("EMBEDDING_DEPLOYMENT"),
+        "embedding": os.environ.get("DF_EMBEDDING_DEPLOYMENT") or os.environ.get("DF_EMBED_DEPLOYMENT") or os.environ.get("EMBEDDING_DEPLOYMENT"),
         "image": os.environ.get("DF_IMAGE_DEPLOYMENT") or os.environ.get("IMAGE_DEPLOYMENT"),
     }
 
