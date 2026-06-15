@@ -2021,3 +2021,58 @@ svg { flex-shrink: 0; }
 .mic-btn.on { background: var(--red-soft); color: var(--red); animation: micPulse 1.25s ease-in-out infinite; }
 .mic-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 @keyframes micPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(217, 45, 32, 0.35); } 50% { box-shadow: 0 0 0 5px rgba(217, 45, 32, 0); } }
+
+/* ============================================================
+   质感精修层（精致极简：层次 / 微交互 / 排版 / 氛围）
+   后置覆盖，不改结构。Apple 蓝白风格不变。
+   ============================================================ */
+:root {
+  --shadow-sm: 0 1px 2px rgba(29,29,31,.04), 0 1px 3px rgba(29,29,31,.06);
+  --shadow-md: 0 2px 6px rgba(29,29,31,.05), 0 10px 28px rgba(29,29,31,.08);
+  --shadow-blue: 0 4px 14px rgba(0,113,227,.22);
+  --ease: cubic-bezier(.2,.7,.3,1);
+}
+
+/* 卡片层次：柔和分层阴影替代纯描边的平面感 */
+.metric-card, .dash-panel, .obsv-card, .obsv-suites, .arl-card,
+.histrun, .ap-card, .score-strip, .verdict-hero, .clarify-card {
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow .22s var(--ease), transform .22s var(--ease), border-color .22s var(--ease);
+}
+.metric-card:hover, .arl-card:hover, .histrun:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); border-color: var(--line-strong); }
+.audit-card { box-shadow: var(--shadow-sm); }
+.chat-message.assistant .message-body { box-shadow: var(--shadow-sm); }
+
+/* 按钮质感：主按钮加微渐变 + 蓝影 + 按压反馈 */
+.primary-button, .send-button {
+  background: linear-gradient(180deg, #1a85f0, var(--blue));
+  box-shadow: var(--shadow-blue);
+  transition: transform .14s var(--ease), box-shadow .2s var(--ease), filter .16s var(--ease);
+}
+.primary-button:hover:not(:disabled), .send-button:hover:not(:disabled) { filter: brightness(1.04); transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0,113,227,.3); }
+.primary-button:active:not(:disabled), .send-button:active:not(:disabled) { transform: translateY(0) scale(.98); box-shadow: var(--shadow-blue); }
+.ghost-button { box-shadow: var(--shadow-sm); }
+.ghost-button:hover:not(:disabled) { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.icon-button { transition: background .16s var(--ease), color .16s var(--ease), transform .16s var(--ease); }
+.icon-button:hover { transform: translateY(-1px); }
+
+/* 药丸 / 徽章：细微内描边增加质感 */
+.verdict-pill, .confidence-pill, .signal-chip { box-shadow: inset 0 0 0 1px rgba(29,29,31,.045); }
+
+/* 排版精修 */
+.dashboard-hero h1, .conversation-head h1 { letter-spacing: -0.018em; }
+.eyeless-label { letter-spacing: .08em; }
+
+/* 全局微交互：平滑过渡 + 可见焦点环 + 选区色 */
+a, button { transition: color .16s var(--ease), background .16s var(--ease), border-color .16s var(--ease); }
+:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--blue-soft); border-radius: 6px; }
+::selection { background: rgba(0,113,227,.16); }
+
+/* 氛围：主背景一层极淡蓝光晕，避免纯平 */
+body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05), transparent 62%), var(--bg); background-attachment: fixed; }
+
+/* 滚动条精修 */
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 99px; border: 2px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--faint); background-clip: content-box; }
