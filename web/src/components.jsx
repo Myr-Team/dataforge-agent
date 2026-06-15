@@ -437,7 +437,7 @@ export function AgentStudio({
       <QualityBar quality={quality} />
 
       <section className="answer-surface">
-        <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} />
+        <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} />
         <FeasibilityStrip feasibility={feasibility} />
         <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
       </section>
@@ -480,6 +480,8 @@ export function WorkbenchMain({
         input={input}
         setInput={setInput}
         onRun={onRun}
+        onProduce={onProduce}
+        producing={producing}
         selectedPlaybook={selectedPlaybook}
         setSelectedPlaybook={setSelectedPlaybook}
       />
@@ -769,6 +771,8 @@ function ConversationStudio({
   input,
   setInput,
   onRun,
+  onProduce,
+  producing,
   selectedPlaybook,
   setSelectedPlaybook,
 }) {
@@ -784,7 +788,7 @@ function ConversationStudio({
         </div>
       </section>
       <QuestionStarter onRun={onRun} running={running} />
-      <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} />
+      <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} />
       <Composer input={input} setInput={setInput} running={running} onRun={onRun} selectedPlaybook={selectedPlaybook} />
     </main>
   );
@@ -1175,7 +1179,7 @@ function WaitingBubble({ caption }) {
   );
 }
 
-function AnswerPanel({ messages, streamText, running, presentation, onRun }) {
+function AnswerPanel({ messages, streamText, running, presentation, onRun, onProduce, producing }) {
   const visible = messages.length || streamText;
   const scrollRef = useRef(null);
   const bottomRef = useRef(null);
@@ -1209,8 +1213,19 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun }) {
                     ? <ClarifyCard clarify={message.clarify} onSubmit={onRun} disabled={running} />
                     : message.role === "user"
                       ? <TypeOut text={message.text} animate={isLastUser && running} />
-                      : <RichText text={message.text} />}
+                      : <RichText text={message.text} citations={message.citations} />}
                   {message.citations?.length ? <CitationInline citations={message.citations} /> : null}
+                  {message.produceOffer && onProduce ? (
+                    <button
+                      type="button"
+                      className="produce-offer-chip"
+                      onClick={() => onProduce(message.produceOffer)}
+                      disabled={producing}
+                    >
+                      {producing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
+                      <span>{message.produceOffer.label || "确认生成产物"}</span>
+                    </button>
+                  ) : null}
                 </div>
               </article>
             );
@@ -1242,21 +1257,42 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun }) {
 // 行内高亮：关键数字（百分比/价位/区间/倍数）加亮、[n] 角标做成引用标记（对齐 效果.png）
 // 行内：关键数字高亮 + [n] 引用角标
 // 只把 [n] 做成普通小上标，其余纯文本——不再给数字加任何高亮/背景。
-function highlightTokens(text, kp) {
+// [n] 引用：渲染成可悬停的小角标，鼠标移上去弹出该条证据内容（quote/来源/置信）
+function CiteRef({ n, citation }) {
+  if (!citation) return <sup className="cite-mark">{n}</sup>;
+  const quote = citation.snippet || citation.quote || citation.text || "暂无可显示的证据摘录。";
+  const conf = CONFIDENCE_LABELS[citation.confidence] || "证据";
+  const src = citation.ref || citation.source || "";
+  return (
+    <span className="cite-ref" tabIndex={0}>
+      <sup className="cite-mark linked">{n}</sup>
+      <span className="cite-tip" role="tooltip">
+        <span className={`cite-tip-conf ${citation.confidence || "speculative"}`}>{conf} · 证据 [{n}]</span>
+        <span className="cite-tip-text">{quote}</span>
+        {src ? <span className="cite-tip-src">{src}</span> : null}
+      </span>
+    </span>
+  );
+}
+
+function highlightTokens(text, kp, citeMap) {
   const parts = String(text || "").split(/(\[\d+\])/g);
   return parts.map((part, i) => {
-    if (/^\[\d+\]$/.test(part)) return <sup key={`${kp}-${i}`} className="cite-mark">{part.replace(/[[\]]/g, "")}</sup>;
+    if (/^\[\d+\]$/.test(part)) {
+      const n = part.replace(/[[\]]/g, "");
+      return <CiteRef key={`${kp}-${i}`} n={n} citation={citeMap ? citeMap[n] : null} />;
+    }
     return <React.Fragment key={`${kp}-${i}`}>{part}</React.Fragment>;
   });
 }
 
 // 行内 markdown：**粗体** + `代码` + 数字/引用高亮
-function inlineNodes(text, kp = "i") {
+function inlineNodes(text, kp = "i", citeMap) {
   const segs = String(text || "").split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
   return segs.map((seg, i) => {
-    if (/^\*\*[^*]+\*\*$/.test(seg)) return <strong key={`${kp}-b${i}`}>{highlightTokens(seg.slice(2, -2), `${kp}-b${i}`)}</strong>;
+    if (/^\*\*[^*]+\*\*$/.test(seg)) return <strong key={`${kp}-b${i}`}>{highlightTokens(seg.slice(2, -2), `${kp}-b${i}`, citeMap)}</strong>;
     if (/^`[^`]+`$/.test(seg)) return <code key={`${kp}-c${i}`}>{seg.slice(1, -1)}</code>;
-    return <React.Fragment key={`${kp}-${i}`}>{highlightTokens(seg, `${kp}-${i}`)}</React.Fragment>;
+    return <React.Fragment key={`${kp}-${i}`}>{highlightTokens(seg, `${kp}-${i}`, citeMap)}</React.Fragment>;
   });
 }
 
@@ -1280,7 +1316,15 @@ function sanitizeReply(text) {
     .trim();
 }
 
-function RichText({ text }) {
+function RichText({ text, citations }) {
+  const citeMap = React.useMemo(() => {
+    const map = {};
+    (citations || []).forEach((c, idx) => {
+      const key = String(c?.marker ?? idx + 1);
+      if (!map[key]) map[key] = c;
+    });
+    return map;
+  }, [citations]);
   const lines = sanitizeReply(text).split("\n");
   const blocks = [];
   let para = [];
@@ -1301,10 +1345,10 @@ function RichText({ text }) {
   return (
     <div className="rich-text">
       {blocks.map((b, i) => {
-        if (b.type === "h") return <h3 key={i}>{inlineNodes(b.text, `h${i}`)}</h3>;
-        if (b.type === "ul") return <ul key={i}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `u${i}-${j}`)}</li>)}</ul>;
-        if (b.type === "ol") return <ol key={i}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `o${i}-${j}`)}</li>)}</ol>;
-        return <p key={i}>{b.lines.map((ln, j) => <React.Fragment key={j}>{j > 0 ? <br /> : null}{inlineNodes(ln, `p${i}-${j}`)}</React.Fragment>)}</p>;
+        if (b.type === "h") return <h3 key={i}>{inlineNodes(b.text, `h${i}`, citeMap)}</h3>;
+        if (b.type === "ul") return <ul key={i}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `u${i}-${j}`, citeMap)}</li>)}</ul>;
+        if (b.type === "ol") return <ol key={i}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `o${i}-${j}`, citeMap)}</li>)}</ol>;
+        return <p key={i}>{b.lines.map((ln, j) => <React.Fragment key={j}>{j > 0 ? <br /> : null}{inlineNodes(ln, `p${i}-${j}`, citeMap)}</React.Fragment>)}</p>;
       })}
     </div>
   );

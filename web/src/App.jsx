@@ -338,6 +338,8 @@ export function App() {
             try { window.localStorage.setItem(`df-analysis:${workspaceId}`, JSON.stringify(artifact)); } catch { /* ignore */ }
           }
           // 不在分析阶段自动填充产物：产物生成器停在待命，由客户拍板后点「生成产物」才生成（见 produce()）。
+          // 对话里 agent 识别到「想要产物」时，后端给 produce_offer → 在消息下挂一个确认生成按钮
+          const produceOffer = artifact.produce_offer || event.data?.produce_offer || null;
           const commitFinal = () => {
             setMessages((items) => [
               ...items,
@@ -346,6 +348,7 @@ export function App() {
                 text,
                 time: new Date().toISOString(),
                 citations: artifact.citations || artifact.answer?.citations || [],
+                produceOffer,
               },
             ]);
             setStreamText("");
