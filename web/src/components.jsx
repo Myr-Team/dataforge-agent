@@ -153,7 +153,7 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
           <Bell size={16} />
         </button>
         <div className={loading ? "sync-dot loading" : "sync-dot"} title={loading ? "同步中" : "已同步"}>
-          {loading ? <Loader2 size={14} /> : <CheckCircle2 size={14} />}
+          {loading ? <Loader2 className="spin" size={14} /> : <CheckCircle2 size={14} />}
         </div>
         <div className="user-menu" ref={menuRef}>
           <button className="user-trigger" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen}>
@@ -251,7 +251,7 @@ export function WorkspacePane({
             上传数据
           </button>
           <button className="danger-button" type="button" onClick={onDeleteWorkspace} disabled={!canDelete || deleting}>
-            {deleting ? <Loader2 size={15} /> : <Trash2 size={15} />}
+            {deleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
             删除工作区
           </button>
         </div>
@@ -791,7 +791,7 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
           <p>完成一次分析后，可在这里生成企划书、路线图、实验计划、活动海报、周边设计图和语音摘要。</p>
         </div>
         <button className="primary-button icon-label" type="button" onClick={onProduce} disabled={!artifact || producing}>
-          {producing ? <Loader2 size={15} /> : <FileDown size={15} />}
+          {producing ? <Loader2 className="spin" size={15} /> : <FileDown size={15} />}
           生成全套产物
         </button>
       </section>
@@ -1014,6 +1014,24 @@ function QualityBar({ quality }) {
   );
 }
 
+// 用户消息打字机：发出问题后逐字"流式打出来"（仅对刚发出的最后一条动画；历史/加载会话直接整段显示）
+function TypeOut({ text, animate }) {
+  const reduce = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const [shown, setShown] = useState(animate && !reduce ? "" : text);
+  useEffect(() => {
+    if (!animate || reduce) { setShown(text); return undefined; }
+    let i = 0;
+    setShown("");
+    const id = window.setInterval(() => {
+      i += 1;
+      setShown(text.slice(0, i));
+      if (i >= text.length) window.clearInterval(id);
+    }, 32);
+    return () => window.clearInterval(id);
+  }, [text, animate, reduce]);
+  return <p className="chat-usertext">{shown}{animate && !reduce && shown.length < text.length ? <span className="cursor" /> : null}</p>;
+}
+
 function AnswerPanel({ messages, streamText, running, presentation }) {
   const visible = messages.length || streamText;
   return (
@@ -1030,21 +1048,33 @@ function AnswerPanel({ messages, streamText, running, presentation }) {
       </div>
       {visible ? (
         <div className="message-stack">
-          {messages.map((message, index) => (
-            <article key={`${message.role}-${index}`} className={`chat-message ${message.role}`}>
-              <div className="speaker">{message.role === "user" ? "你" : "AI"}</div>
-              <div className="message-body">
-                <RichText text={message.text} />
-                {message.citations?.length ? <CitationInline citations={message.citations} /> : null}
-              </div>
-            </article>
-          ))}
+          {messages.map((message, index) => {
+            const isLastUser = message.role === "user" && index === messages.length - 1;
+            return (
+              <article key={`${message.role}-${index}`} className={`chat-message ${message.role}`}>
+                <div className="speaker">{message.role === "user" ? "你" : "AI"}</div>
+                <div className="message-body">
+                  {message.role === "user"
+                    ? <TypeOut text={message.text} animate={isLastUser && running} />
+                    : <RichText text={message.text} />}
+                  {message.citations?.length ? <CitationInline citations={message.citations} /> : null}
+                </div>
+              </article>
+            );
+          })}
           {streamText ? (
             <article className="chat-message assistant streaming">
               <div className="speaker">AI</div>
               <div className="message-body">
                 <RichText text={streamText} />
                 {running ? <span className="cursor" /> : null}
+              </div>
+            </article>
+          ) : running ? (
+            <article className="chat-message assistant streaming waiting">
+              <div className="speaker">AI</div>
+              <div className="message-body">
+                <span className="typing-dots" aria-label="Agent 正在思考"><i /><i /><i /></span>
               </div>
             </article>
           ) : null}
@@ -1172,7 +1202,7 @@ function ActionBoard({ artifact, selectedPlaybook, onProduce, producing }) {
           <strong>{feasibility.opportunity_id || "产品化机会"}</strong>
         </div>
         <button className="ghost-button icon-label" type="button" onClick={onProduce} disabled={!artifact || producing}>
-          {producing ? <Loader2 size={15} /> : <FileDown size={15} />}
+          {producing ? <Loader2 className="spin" size={15} /> : <FileDown size={15} />}
           生成产物
         </button>
       </div>
@@ -1216,7 +1246,7 @@ function Composer({ input, setInput, running, onRun }) {
         />
       </div>
       <button className="send-button" type="submit" disabled={running || !input.trim()}>
-        {running ? <Loader2 size={18} /> : <Send size={18} />}
+        {running ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
       </button>
     </form>
   );
@@ -1472,7 +1502,7 @@ export function UploadModal({ open, busy, mode = "workspace", workspace, workspa
         <div className="modal-actions">
           <button className="ghost-button" type="button" onClick={onClose} disabled={busy}>取消</button>
           <button className="primary-button" type="button" disabled={busy || !files.length} onClick={() => onSubmit({ name, description, files, workspaceId: isAppend ? workspaceId : "", assetRole })}>
-            {busy ? <Loader2 size={15} /> : <UploadCloud size={15} />}
+            {busy ? <Loader2 className="spin" size={15} /> : <UploadCloud size={15} />}
             {submitLabel}
           </button>
         </div>
@@ -1494,7 +1524,7 @@ export function NoticeStack({ notice, uploadState, onDismiss }) {
       ) : null}
       {uploadState ? (
         <div className={`notice ${uploadState.type || "info"}`}>
-          {uploadState.type === "error" ? <AlertTriangle size={16} /> : uploadState.type === "done" ? <CheckCircle2 size={16} /> : <Loader2 size={16} />}
+          {uploadState.type === "error" ? <AlertTriangle size={16} /> : uploadState.type === "done" ? <CheckCircle2 size={16} /> : <Loader2 className="spin" size={16} />}
           <span>{uploadState.message}</span>
         </div>
       ) : null}

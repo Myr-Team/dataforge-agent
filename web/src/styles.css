@@ -1766,3 +1766,21 @@ svg { flex-shrink: 0; }
 .pf-node.active .pf-ic { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 0 0 4px var(--blue-soft); animation: pulseRing 1.6s ease-in-out infinite; }
 .pf-node.active .pf-name { color: var(--blue); }
 @keyframes pulseRing { 0%,100% { box-shadow: 0 0 0 4px var(--blue-soft); } 50% { box-shadow: 0 0 0 7px var(--blue-soft); } }
+
+/* 旋转加载图标（上传/发送/生成产物的 Loader2 都用） */
+.spin { animation: spin 1s linear infinite; transform-origin: center; }
+
+/* 助手"正在思考"三点加载（发出对话后、Agent 还没回时显示在回复气泡里） */
+.typing-dots { display: inline-flex; align-items: center; gap: 5px; padding: 4px 2px; }
+.typing-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); animation: typingDot 1.25s ease-in-out infinite; }
+.typing-dots i:nth-child(2) { animation-delay: 0.18s; }
+.typing-dots i:nth-child(3) { animation-delay: 0.36s; }
+@keyframes typingDot { 0%, 60%, 100% { transform: translateY(0); opacity: 0.35; } 30% { transform: translateY(-5px); opacity: 1; } }
+.chat-message.waiting .message-body { display: inline-flex; align-items: center; min-height: 28px; }
+
+/* 用户消息打字机文本 */
+.chat-usertext { margin: 0; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+
+/* 消息气泡入场（轻微上滑淡入，给"发出/到达"的感觉） */
+.chat-message { animation: msgIn 0.26s cubic-bezier(0.16, 0.84, 0.44, 1) both; }
+@keyframes msgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
