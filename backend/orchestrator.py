@@ -61,7 +61,7 @@ try:
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
-    from .workspace_store import get_workspace_detail, workspace_context, workspace_reference_images
+    from .workspace_store import get_workspace_detail, save_workspace_last_analysis, workspace_context, workspace_reference_images
 except ImportError:
     import cache_store
     from chat_loop_primitives import sse
@@ -107,7 +107,7 @@ except ImportError:
     from tools.generate_image import generate_image
     from tools.narrate_summary import narrate_summary
     from tools.render_pdf import render_pdf_report
-    from workspace_store import get_workspace_detail, workspace_context, workspace_reference_images
+    from workspace_store import get_workspace_detail, save_workspace_last_analysis, workspace_context, workspace_reference_images
 
 
 PRODUCT_TERMS = (
@@ -185,6 +185,12 @@ def _artifact_generation_requested(message: str) -> bool:
 
 
 def _data_only_requested(message: str) -> bool:
+    text = str(message or "")
+    lowered = text.lower()
+    if re.search(r"\b(only|exclude|without|no)\b.{0,24}\b(external|market|competitor|competition|web)\b", lowered):
+        return True
+    if re.search(r"(只看|仅看|不要|不需要|排除|不看).{0,16}(工作区|当前数据|这批数据|外部|市场|竞品|竞对)", text, re.I):
+        return True
     return bool(re.search(r"(只看|仅看|不要|不需要|排除).{0,16}(工作区|当前数据|这批数据|外部|市场|竞品)", str(message or ""), re.I))
 
 
@@ -197,6 +203,38 @@ def _ensure_next_step_hint(text: str) -> str:
         return cleaned
     separator = "" if re.search(r"[。.!！？?]$", cleaned) else "。"
     return cleaned + separator + "下一步建议：告诉我你想先看产品机会、目标客群、证据强弱，还是直接生成 PRD 或路线图。"
+
+
+def _market_context_requested(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    direct_terms = (
+        "竞品",
+        "竞对",
+        "竞争对手",
+        "替代方案",
+        "替代品",
+        "外部市场",
+        "市场行情",
+        "行业对比",
+        "同类产品",
+        "定价基准",
+        "价格对比",
+        "标杆产品",
+        "benchmark",
+        "competitor",
+        "competition",
+        "alternative",
+        "market research",
+        "pricing benchmark",
+    )
+    if _contains(text, direct_terms):
+        return True
+    return bool(
+        re.search(r"(外部|市场|行业|定价|价格).{0,10}(对比|基准|标杆|竞品|竞对|替代)", text)
+        or re.search(r"(对比|基准|标杆|竞品|竞对|替代).{0,10}(外部|市场|行业|定价|价格)", text)
+    )
 
 
 def _preset_outcome_requested(message: str) -> bool:
@@ -286,6 +324,13 @@ def _persist_user_message(conversation_id: str, workspace_id: str, text: str) ->
 def _persist_assistant_message(conversation_id: str, workspace_id: str, text: str, verdict: str | None = None) -> None:
     try:
         append_message(conversation_id, workspace_id=workspace_id, role="assistant", text=text, verdict=verdict)
+    except Exception:
+        pass
+
+
+def _persist_last_analysis(workspace_id: str, final_payload: dict[str, Any]) -> None:
+    try:
+        save_workspace_last_analysis(workspace_id, final_payload)
     except Exception:
         pass
 
@@ -702,6 +747,7 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
     requested_mode = str(getattr(req, "artifact_mode", "") or "").strip()
     wants_artifact = requested_mode in {"full_package", "proposal"} or _artifact_generation_requested(req.message)
     data_only = _data_only_requested(req.message)
+    market_context = _market_context_requested(req.message)
     forced_grounded_answer = False
     if doc_count > 0 and (_preset_outcome_requested(req.message) or wants_artifact):
         intent = "feasibility_analysis"
@@ -710,6 +756,10 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
         if wants_artifact and not raw.get("output_mode"):
             raw["output_mode"] = "full_package"
     elif intent == "clarify_needed" and _looks_like_solution_request(req.message) and doc_count > 0:
+        intent = "feasibility_analysis"
+        raw["needs_clarification"] = False
+        forced_grounded_answer = True
+    elif intent in {"clarify_needed", "corpus_qa"} and market_context and doc_count > 0 and not data_only:
         intent = "feasibility_analysis"
         raw["needs_clarification"] = False
         forced_grounded_answer = True
@@ -733,6 +783,11 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
             experts.insert(0, "df-corpus-analyst")
         if "df-feasibility-analyst" not in experts:
             experts.append("df-feasibility-analyst")
+        if market_context and not data_only and "df-market-researcher" not in experts:
+            if "df-auditor" in experts:
+                experts.insert(experts.index("df-auditor"), "df-market-researcher")
+            else:
+                experts.append("df-market-researcher")
         if "df-auditor" not in experts:
             experts.append("df-auditor")
     output_mode = str(raw.get("output_mode") or ("report" if intent == "feasibility_analysis" else "chat"))
@@ -772,6 +827,23 @@ def _apply_requested_output_mode(req: ChatRequest, decision: RoutingDecision) ->
         decision.experts.append("df-producer")
 
 
+def _is_auto_analyze_request(req: ChatRequest) -> bool:
+    ui_context = getattr(req, "ui_context", None)
+    if not isinstance(ui_context, dict):
+        return False
+    return bool(ui_context.get("auto_analyze")) or str(ui_context.get("entrypoint") or "") == "workspace_dashboard"
+
+
+def _suppress_auto_analyze_producer(req: ChatRequest, decision: RoutingDecision) -> bool:
+    if not _is_auto_analyze_request(req):
+        return False
+    before = list(decision.experts)
+    decision.experts = [agent for agent in decision.experts if agent != "df-producer"]
+    if decision.output_mode == "full_package":
+        decision.output_mode = "report"  # type: ignore[assignment]
+    return before != decision.experts
+
+
 def _clarify_guidance(req: ChatRequest, decision: RoutingDecision, conversation_id: str) -> dict[str, Any]:
     context = workspace_context(req.workspace_id)
     payload = {
@@ -782,9 +854,9 @@ def _clarify_guidance(req: ChatRequest, decision: RoutingDecision, conversation_
         "style_nonce": uuid.uuid4().hex[:8],
         "requirements": [
             "中文输出",
-            "自我介绍",
-            "说明当前工作区能做什么",
-            "给出下一步问题",
+            "只输出一句短问题",
+            "点明缺少目标、范围或约束",
+            "选项里承载下一步方向",
             "避免固定模板和逐字复用",
         ],
     }
@@ -815,15 +887,15 @@ def _clarify_guidance(req: ChatRequest, decision: RoutingDecision, conversation_
 def _structured_clarify(req: ChatRequest, guidance: dict[str, Any]) -> dict[str, Any]:
     context = workspace_context(req.workspace_id)
     field_labels = _workspace_field_labels(req.workspace_id)
-    question = sanitize_customer_text(
-        _clean_text(guidance.get("question"), 1200) or _fallback_clarify_question(context),
-        field_labels,
-    )
-    question = _ensure_next_step_hint(question)
     options = [
         {"id": item["id"], "label": sanitize_customer_text(item["label"], field_labels)}
         for item in normalize_clarify_options(guidance.get("options"), context, req.message)
     ]
+    question = sanitize_customer_text(
+        _clean_text(guidance.get("question"), 1200) or _fallback_clarify_question(context),
+        field_labels,
+    )
+    question = _short_clarify_question(question, options, context)
     return {
         "question": question,
         "options": options,
@@ -834,11 +906,24 @@ def _structured_clarify(req: ChatRequest, guidance: dict[str, Any]) -> dict[str,
 
 def _fallback_clarify_question(context: dict[str, Any]) -> str:
     name = context.get("name") or context.get("workspace_id") or "当前工作区"
-    summary = context.get("profile_summary") or f"当前工作区已有 {context.get('doc_count', 0)} 条可检索资料。"
-    return (
-        f"你好，我是 DataForge 协调器，可以先帮你把「{name}」里的资料变成可评估的数据产品方向。"
-        f"{summary} 你下一步想让我做资料问答、产品可行性评估，还是生成项目方案包？"
-    )
+    return f"还缺一个目标：你想基于「{name}」先做资料问答、可行性评估，还是项目方案包？"
+
+
+def _short_clarify_question(question: str, options: list[dict[str, str]], context: dict[str, Any]) -> str:
+    cleaned = re.sub(r"\s+", " ", sanitize_customer_text(question or "")).strip()
+    cleaned = re.sub(r"^(你好[，,。 ]*)?(我是\s*DataForge[^。！？!?]*[。！？!?]?)", "", cleaned).strip()
+    sentences = [item.strip(" ，。；;") for item in re.split(r"[。！？!?]\s*", cleaned) if item.strip()]
+    preferred = next((item for item in sentences if re.search(r"(缺|需要|想|选择|目标|范围|约束|先做|下一步)", item)), "")
+    labels = [str(item.get("label") or "").strip() for item in options if str(item.get("label") or "").strip()]
+    if not preferred:
+        preferred = _fallback_clarify_question(context).rstrip("？")
+    if len(preferred) > 90:
+        if labels:
+            preferred = "还缺一个目标：请选择「" + " / ".join(labels[:3]) + "」，或直接补充你的业务约束"
+        else:
+            preferred = _fallback_clarify_question(context).rstrip("？")
+    preferred = preferred.rstrip("。！？!?；; ")
+    return preferred + "？"
 
 
 def _run_corpus_analyst(req: ChatRequest) -> dict[str, Any]:
@@ -1417,6 +1502,8 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
         "opportunity_id": opportunity,
         "category": category,
         "keywords": keywords,
+        "research_goal": "Search comparable products, competitors, pricing/packaging, campaign mechanics, and differentiation points for this opportunity.",
+        "required_comparison_fields": ["competitor_or_alternative", "pricing_or_playbook", "what_they_do", "our_differentiation"],
         "feasibility": {key: value for key, value in feasibility.items() if key != "_llm"},
         "evidence_catalog": _evidence_catalog(artifact)[:6],
     }
@@ -2598,6 +2685,7 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
         artifact["feasibility"] = feasibility
     market = artifact.get("market") or {}
     audit = artifact.get("audit") or {}
+    auto_analyze = _is_auto_analyze_request(req)
     verdict = verdict_label(feasibility.get("verdict") or "unknown")
     overall = confidence_label(feasibility.get("overall_confidence") or "speculative")
     recommendation, action_plan = _ensure_feasibility_action_plan(req, artifact, citations)
@@ -2607,12 +2695,13 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
         f"一句话推荐：{sanitize_customer_text(recommendation, field_labels)} {marker_hint}".rstrip(),
         "",
     ]
-    for index, step in enumerate(action_plan, start=1):
+    plan_limit = 3 if auto_analyze else 5
+    for index, step in enumerate(action_plan[:plan_limit], start=1):
         lines.append(f"{index}. {sanitize_customer_text(step, field_labels)}")
     campaign_lines = _campaign_story_lines(req, artifact, citations)
     if campaign_lines:
         lines.append("")
-        lines.extend(sanitize_customer_text(item, field_labels) for item in campaign_lines)
+        lines.extend(sanitize_customer_text(item, field_labels) for item in (campaign_lines[:3] if auto_analyze else campaign_lines))
     lines.extend(
         [
             "",
@@ -2646,6 +2735,8 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
             label = _friendly_dimension_name(dimension.get("name"))
             score = dimension.get("score", "n/a")
             rationale = sanitize_customer_text(dimension.get("rationale") or "证据不足，需要补充验证。", field_labels)
+            if auto_analyze:
+                rationale = _clip_customer_signal(rationale, 110)
             lines.append(f"- {label} {score}/5：{rationale} {markers}".rstrip())
     else:
         lines.append("- 数据充分度 0/5：当前没有足够的已验证证据形成维度评分。")
@@ -2653,14 +2744,14 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
     lines.append("")
     lines.append("**风险/缺口**")
     if gaps:
-        for gap in gaps[:4]:
+        for gap in gaps[: 3 if auto_analyze else 4]:
             lines.append(f"- {sanitize_customer_text(gap, field_labels)}")
     else:
         lines.append("- 暂未发现额外缺口，但仍建议用新样本验证关键假设。")
     lines.append("")
     lines.append("**依据**")
     if citations:
-        for item in citations[:5]:
+        for item in citations[: 3 if auto_analyze else 5]:
             snippet = sanitize_customer_text(item.get("snippet") or "", field_labels)
             source = sanitize_customer_text(item.get("source_label") or item.get("source_file") or "工作区资料", field_labels)
             lines.append(f"- [{item.get('marker')}] {source}：{_clip_customer_signal(snippet, 120)}")
@@ -3038,6 +3129,8 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     await run_in_threadpool(_persist_user_message, conv_id, req.workspace_id, req.message)
 
     decision, route_meta = await run_in_threadpool(_coordinator, working_req, history)
+    if _suppress_auto_analyze_producer(req, decision):
+        route_meta = {**route_meta, "producer_suppressed": "auto_analyze"}
     artifact["routing"] = decision.model_dump()
     artifact["routing_meta"] = route_meta
     producer_requested = "df-producer" in decision.experts
@@ -3417,6 +3510,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                 summary,
                 _artifact_verdict(artifact, "completed_with_revision_error"),
             )
+            await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
             complete_run(conv_id, status="completed_with_revision_error", final=final_payload, artifact=artifact)
             yield frame
             return
@@ -3446,6 +3540,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         summary,
         _artifact_verdict(artifact, "completed"),
     )
+    await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
     complete_run(conv_id, status="completed", final=final_payload, artifact=artifact)
     yield frame
 

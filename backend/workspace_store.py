@@ -761,6 +761,10 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
         profile_path = workspace_dir / str(meta.get("profile_file") or "profile.json")
         if profile_path.exists():
             profile = _read_json(profile_path)
+    if meta and not meta.get("last_analysis") and not prefer_blob:
+        blob_meta = download_blob_json(f"workspaces/{workspace_id}/workspace.json") or {}
+        if isinstance(blob_meta, dict) and blob_meta.get("last_analysis"):
+            meta["last_analysis"] = blob_meta["last_analysis"]
     if not meta and not profile:
         raise FileNotFoundError(workspace_id)
 
@@ -799,6 +803,7 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
         "profile_summary": meta.get("profile_summary") or profile.get("profile_summary") or summary.get("profile_summary"),
         "signals": _detail_signals(tables),
         "manifest": manifest,
+        "last_analysis": meta.get("last_analysis") or profile.get("last_analysis") or {},
         "created_at": meta.get("created_at") or profile.get("created_at") or summary.get("created_at"),
     }
 
@@ -822,6 +827,7 @@ def workspace_context(workspace_id: str) -> dict[str, Any]:
                 "created_at": registry_item.get("created_at"),
                 "documents": registry_item.get("documents") or [],
                 "reference_images": _reference_images(registry_item),
+                "last_analysis": registry_item.get("last_analysis") or {},
             }
     now = time.monotonic()
     cached = _CONTEXT_CACHE.get(workspace_id)
@@ -844,9 +850,84 @@ def workspace_context(workspace_id: str) -> dict[str, Any]:
         "profile_summary": None,
         "documents": [],
         "reference_images": [],
+        "last_analysis": {},
     }
     _CONTEXT_CACHE[workspace_id] = (now + min(_CONTEXT_CACHE_SECONDS, 10), dict(fallback))
     return fallback
+
+
+def save_workspace_last_analysis(workspace_id: str, final_payload: dict[str, Any]) -> dict[str, Any]:
+    workspace_id = str(workspace_id or "").strip()
+    if not workspace_id:
+        raise ValueError("workspace_id is required")
+    analysis = _last_analysis_from_final(final_payload)
+    if not analysis:
+        return {}
+    workspace_dir = WORKSPACES / workspace_id
+    prefer_blob = _prefer_blob_workspace_state(workspace_id)
+    meta: dict[str, Any] = {}
+    profile: dict[str, Any] = {}
+    if prefer_blob:
+        meta = download_blob_json(f"workspaces/{workspace_id}/workspace.json") or {}
+        profile = download_blob_json(f"workspaces/{workspace_id}/profile.json") or {}
+    if not meta and (workspace_dir / "workspace.json").exists():
+        meta = _read_json(workspace_dir / "workspace.json")
+    if not profile and (workspace_dir / "profile.json").exists():
+        profile = _read_json(workspace_dir / "profile.json")
+    if not meta and not prefer_blob:
+        meta = download_blob_json(f"workspaces/{workspace_id}/workspace.json") or {}
+    if not meta:
+        raise FileNotFoundError(workspace_id)
+
+    meta["last_analysis"] = analysis
+    meta["updated_at"] = _utc_now_iso()
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "workspace.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        upload_blob_json(f"workspaces/{workspace_id}/workspace.json", meta)
+    except Exception as exc:
+        if prefer_blob and search_endpoint():
+            raise
+        analysis["persistence_warning"] = str(exc)[:300]
+    _CONTEXT_CACHE.pop(workspace_id, None)
+    return analysis
+
+
+def _last_analysis_from_final(final_payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(final_payload, dict):
+        return {}
+    artifact = final_payload.get("artifact") if isinstance(final_payload.get("artifact"), dict) else {}
+    feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
+    dimensions = [item for item in (feasibility.get("dimensions") or []) if isinstance(item, dict)]
+    if not dimensions and not feasibility.get("verdict") and not feasibility.get("action_plan"):
+        return {}
+    answer = artifact.get("answer") if isinstance(artifact.get("answer"), dict) else {}
+    citations = artifact.get("citations") or answer.get("citations") or []
+    if not isinstance(citations, list):
+        citations = []
+    action_plan = feasibility.get("action_plan") or artifact.get("action_plan") or []
+    if not isinstance(action_plan, list):
+        action_plan = [action_plan]
+    analysis = {
+        "updated_at": _utc_now_iso(),
+        "conversation_id": artifact.get("conversation_id") or final_payload.get("conversation_id"),
+        "text": str(final_payload.get("text") or answer.get("text") or answer.get("markdown") or "")[:2400],
+        "verdict": feasibility.get("verdict"),
+        "overall_confidence": feasibility.get("overall_confidence"),
+        "recommendation": feasibility.get("recommendation") or artifact.get("recommendation"),
+        "dimensions": _json_plain(dimensions[:5]),
+        "action_plan": _json_plain([item for item in action_plan[:5] if str(item).strip()]),
+        "gap_list": _json_plain([item for item in (feasibility.get("gap_list") or [])[:5] if str(item).strip()]),
+        "citations": _json_plain([item for item in citations[:8] if isinstance(item, dict)]),
+        "audit": _json_plain(artifact.get("audit") or {}),
+        "routing": _json_plain(final_payload.get("routing") or artifact.get("routing") or {}),
+        "output_contract": _json_plain(final_payload.get("output_contract") or artifact.get("output_contract") or {}),
+    }
+    return {key: value for key, value in analysis.items() if value not in (None, "", [], {})}
+
+
+def _json_plain(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
 
 def workspace_reference_images(workspace_id: str) -> list[dict[str, Any]]:
@@ -1149,6 +1230,7 @@ def _workspace_summary_from_state(
         "created_at": meta.get("created_at") or profile.get("created_at"),
         "documents": documents,
         "reference_images": _reference_images(meta),
+        "last_analysis": meta.get("last_analysis") or profile.get("last_analysis") or {},
     }
 
 

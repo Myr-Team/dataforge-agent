@@ -84,7 +84,24 @@ def _materialize_tools(agent: dict[str, Any], mcp_url: str) -> list[dict[str, An
                 )
             )
         elif tool_type == "web_search_preview":
-            tools.append(models.WebSearchPreviewTool())
+            bing_connection_id = os.environ.get("DF_BING_CONNECTION_ID") or os.environ.get("BING_CONNECTION_ID")
+            if bing_connection_id:
+                tools.append(
+                    models.BingGroundingTool(
+                        bing_grounding=models.BingGroundingSearchToolParameters(
+                            search_configurations=[
+                                models.BingGroundingSearchConfiguration(
+                                    project_connection_id=bing_connection_id,
+                                    market=os.environ.get("DF_WEB_MARKET", "zh-CN"),
+                                    set_lang=os.environ.get("DF_WEB_LANG", "zh-Hans"),
+                                    count=int(os.environ.get("DF_BING_RESULT_COUNT", "5")),
+                                )
+                            ]
+                        )
+                    )
+                )
+            else:
+                tools.append(models.WebSearchPreviewTool())
         elif tool_type == "code_interpreter":
             tools.append(models.CodeInterpreterTool())
         else:
@@ -113,7 +130,10 @@ def build_agents(dry_run: bool = False) -> dict[str, Any]:
                 "name": agent["name"],
                 "model": deployment,
                 "instructions": _prompt(agent),
-                "tools": [key for key in agent["tools"]],
+                "tools": [
+                    "bing_grounding" if key == "web_search_preview" and (os.environ.get("DF_BING_CONNECTION_ID") or os.environ.get("BING_CONNECTION_ID")) else key
+                    for key in agent["tools"]
+                ],
             }
             for agent in AGENTS
         ]

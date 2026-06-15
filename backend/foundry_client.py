@@ -491,9 +491,8 @@ def run_coordinator_guidance(payload: dict[str, Any]) -> dict[str, Any]:
     openai_client = client.get_openai_client()
     instructions = (
         "你是 DataForge 的协调器。用户的输入过短、过泛或当前工作区证据不足时，"
-        "你要生成中文上下文引导，而不是固定模板。必须包含三件事："
-        "1) 简短自我介绍；2) 结合 workspace_context 说明当前工作区能做什么；"
-        "3) 给用户一个明确的下一步提问。"
+        "你要生成中文上下文引导，而不是固定模板。question 必须很短：一句话说明还缺目标、范围或约束，"
+        "不要自我介绍，不要展开说明工作区详情；具体下一步方向放到 options。"
         "同时生成 2 到 5 个中文选项，每个选项要短、可点击、面向业务用户。"
         "不要输出数据库字段名、schema key、文件路径或 raw_docs 引用；需要提到字段含义时改写成自然中文。"
         "语气自然，避免每次复用同一句话。不要编造 profile_summary 之外的具体事实。"
@@ -653,7 +652,8 @@ def run_market_web_research(payload: dict[str, Any]) -> dict[str, Any]:
     instructions = (
         "你是 DataForge 的市场研究员。请使用已经验证可用的 Foundry 原生 web 搜索工具查询公开市场信息，"
         "只返回 JSON。所有外部网页信息都必须标记为 market_inferred，不能说成工作区数据已确认。"
-        "输出 2 到 4 条和输入机会相关的外部行情/竞品/需求线索，每条必须尽量带 source_url。"
+        "主动搜索同类产品、竞品、替代方案、价格/套餐、活动玩法或增长机制，并给出我们与它们的差异点。"
+        "输出 2 到 4 条外部竞品/同类机会对比结论，每条必须尽量带 source_url；positioning_note 要短，说明竞品在做什么、价格/玩法、我们的差异点。"
     )
     create_args: dict[str, Any] = {
         "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),

@@ -5,6 +5,7 @@ import time
 from fastapi.testclient import TestClient
 
 import backend.app as app_module
+import backend.orchestrator as orchestrator_module
 import backend.workspace_store as workspace_store
 from backend.app import app
 from backend.customer_text import sanitize_customer_text
@@ -13,8 +14,11 @@ from backend.orchestrator import (
     _mcp_tool_allowed,
     _proposal_image_kind,
     _request_with_history,
+    _routing_decision_from_llm,
     _safe_chat_topic_label,
+    _short_clarify_question,
     _structured_answer_v10,
+    _suppress_auto_analyze_producer,
     _tool_provenance,
     _ui_context_lines,
 )
@@ -57,6 +61,75 @@ def test_workspace_manifest_endpoint() -> None:
     assert data["workspace_id"] == "demo-corpus"
     assert "metrics" in data
     assert isinstance(data["documents"], list)
+
+
+def test_workspace_last_analysis_persists_to_detail(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(workspace_store, "WORKSPACES", tmp_path / "workspaces")
+    monkeypatch.setattr(workspace_store, "upload_blob_json", lambda blob_name, payload: {"blob_name": blob_name})
+    workspace_id = "analysis-local"
+    workspace_dir = workspace_store.WORKSPACES / workspace_id
+    workspace_dir.mkdir(parents=True)
+    (workspace_dir / "workspace.json").write_text(
+        '{"workspace_id":"analysis-local","name":"Analysis Local","format":"csv","documents":[],"profile_file":"profile.json"}',
+        encoding="utf-8",
+    )
+    (workspace_dir / "profile.json").write_text(
+        '{"workspace_id":"analysis-local","name":"Analysis Local","tables":[]}',
+        encoding="utf-8",
+    )
+    final_payload = {
+        "text": "建议先做小范围验证。",
+        "artifact": {
+            "conversation_id": "conv-analysis",
+            "feasibility": {
+                "verdict": "conditional",
+                "overall_confidence": "data_confirmed",
+                "recommendation": "先验证目标客群。",
+                "dimensions": [{"name": "market", "score": 3, "confidence": "data_confirmed"}],
+                "action_plan": ["先跑小样本。"],
+            },
+            "citations": [{"marker": 1, "snippet": "报名提升"}],
+        },
+        "output_contract": {"version": "test"},
+    }
+
+    saved = workspace_store.save_workspace_last_analysis(workspace_id, final_payload)
+    detail = workspace_store.get_workspace_detail(workspace_id)
+
+    assert saved["verdict"] == "conditional"
+    assert detail["last_analysis"]["verdict"] == "conditional"
+    assert detail["last_analysis"]["dimensions"][0]["name"] == "market"
+
+
+def test_workspace_last_analysis_reads_blob_when_local_meta_is_stale(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(workspace_store, "WORKSPACES", tmp_path / "workspaces")
+    workspace_id = "analysis-stale"
+    workspace_dir = workspace_store.WORKSPACES / workspace_id
+    workspace_dir.mkdir(parents=True)
+    (workspace_dir / "workspace.json").write_text(
+        '{"workspace_id":"analysis-stale","name":"Analysis Stale","format":"csv","documents":[],"profile_file":"profile.json"}',
+        encoding="utf-8",
+    )
+    (workspace_dir / "profile.json").write_text(
+        '{"workspace_id":"analysis-stale","name":"Analysis Stale","tables":[]}',
+        encoding="utf-8",
+    )
+
+    def fake_download_blob_json(blob_name: str):
+        if blob_name == f"workspaces/{workspace_id}/workspace.json":
+            return {
+                "workspace_id": workspace_id,
+                "name": "Analysis Stale",
+                "last_analysis": {"verdict": "go", "dimensions": [{"name": "market"}]},
+            }
+        return {}
+
+    monkeypatch.setattr(workspace_store, "download_blob_json", fake_download_blob_json)
+
+    detail = workspace_store.get_workspace_detail(workspace_id)
+
+    assert detail["last_analysis"]["verdict"] == "go"
+    assert detail["last_analysis"]["dimensions"][0]["name"] == "market"
 
 
 def test_auto_analyze_wraps_chat_stream(monkeypatch) -> None:
@@ -244,6 +317,86 @@ def test_chat_request_accepts_workbench_context() -> None:
     assert req.artifact_mode == "full_package"
     assert req.ui_context["playbook_label"] == "机会树"
     assert any("Playbook guardrail" in line for line in _ui_context_lines(req))
+
+
+def test_auto_analyze_suppresses_inline_producer() -> None:
+    req = ChatRequest(
+        workspace_id="demo-corpus",
+        message="自动分析",
+        artifact_mode="full_package",
+        ui_context={"auto_analyze": True, "entrypoint": "workspace_dashboard"},
+    )
+    decision = RoutingDecision(
+        workspace_id="demo-corpus",
+        intent="feasibility_analysis",
+        experts=["df-corpus-analyst", "df-feasibility-analyst", "df-auditor", "df-producer"],
+        output_mode="full_package",
+        needs_clarification=False,
+        reason="test",
+    )
+
+    changed = _suppress_auto_analyze_producer(req, decision)
+
+    assert changed is True
+    assert "df-producer" not in decision.experts
+    assert decision.output_mode == "report"
+
+
+def test_competitor_request_forces_market_researcher(monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator_module, "workspace_context", lambda workspace_id: {"doc_count": 4})
+    req = ChatRequest(
+        workspace_id="demo-corpus",
+        message="Compare competitor alternatives and pricing benchmarks for this product opportunity.",
+        artifact_mode="report",
+    )
+    decision = _routing_decision_from_llm(
+        req,
+        {
+            "intent": "feasibility_analysis",
+            "experts": ["df-corpus-analyst", "df-feasibility-analyst", "df-auditor"],
+            "output_mode": "report",
+            "needs_clarification": False,
+            "reason": "test",
+        },
+    )
+
+    assert "df-market-researcher" in decision.experts
+    assert decision.experts.index("df-market-researcher") < decision.experts.index("df-auditor")
+
+
+def test_data_only_request_blocks_market_researcher(monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator_module, "workspace_context", lambda workspace_id: {"doc_count": 4})
+    req = ChatRequest(
+        workspace_id="demo-corpus",
+        message="Only use workspace data; no external market or competitor lookup.",
+        artifact_mode="report",
+    )
+    decision = _routing_decision_from_llm(
+        req,
+        {
+            "intent": "feasibility_analysis",
+            "experts": ["df-corpus-analyst", "df-feasibility-analyst", "df-market-researcher", "df-auditor"],
+            "output_mode": "report",
+            "needs_clarification": False,
+            "reason": "test",
+        },
+    )
+
+    assert "df-market-researcher" not in decision.experts
+
+
+def test_clarify_question_is_short_and_options_carry_next_step() -> None:
+    question = (
+        "你好，我是 DataForge 协调器，可以先帮你把当前工作区里的资料变成可评估的数据产品方向。"
+        "当前工作区已经有很多资料。你下一步想让我做资料问答、产品可行性评估，还是生成项目方案包？"
+    )
+    options = [{"id": "qa", "label": "资料问答"}, {"id": "feasibility", "label": "可行性评估"}, {"id": "proposal", "label": "项目方案包"}]
+
+    short = _short_clarify_question(question, options, {"name": "演示工作区"})
+
+    assert len(short) <= 100
+    assert "我是 DataForge" not in short
+    assert short.endswith("？")
 
 
 def test_pm_skill_runner_is_method_only() -> None:

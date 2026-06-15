@@ -187,6 +187,7 @@ class WorkspaceDetailResponse(BaseModel):
     profile_summary: str | None = None
     signals: list[str] = Field(default_factory=list)
     manifest: dict[str, Any] = Field(default_factory=dict)
+    last_analysis: dict[str, Any] = Field(default_factory=dict)
     created_at: str | None = None
 
 
