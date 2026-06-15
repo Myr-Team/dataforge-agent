@@ -1455,16 +1455,33 @@ function RichText({ text, citations }) {
   }
   flushPara(); flushList();
   if (!blocks.length) return null;
-  return (
-    <div className="rich-text">
-      {blocks.map((b, i) => {
-        if (b.type === "h") return <h3 key={i}>{inlineNodes(b.text, `h${i}`, citeMap)}</h3>;
-        if (b.type === "ul") return <ul key={i}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `u${i}-${j}`, citeMap)}</li>)}</ul>;
-        if (b.type === "ol") return <ol key={i}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `o${i}-${j}`, citeMap)}</li>)}</ol>;
-        return <p key={i}>{b.lines.map((ln, j) => <React.Fragment key={j}>{j > 0 ? <br /> : null}{inlineNodes(ln, `p${i}-${j}`, citeMap)}</React.Fragment>)}</p>;
-      })}
-    </div>
-  );
+  const renderBlock = (b, key) => {
+    if (b.type === "h") return <h3 key={key}>{inlineNodes(b.text, `h${key}`, citeMap)}</h3>;
+    if (b.type === "ul") return <ul key={key}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `u${key}-${j}`, citeMap)}</li>)}</ul>;
+    if (b.type === "ol") return <ol key={key}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `o${key}-${j}`, citeMap)}</li>)}</ol>;
+    return <p key={key}>{b.lines.map((ln, j) => <React.Fragment key={j}>{j > 0 ? <br /> : null}{inlineNodes(ln, `p${key}-${j}`, citeMap)}</React.Fragment>)}</p>;
+  };
+  // 方案模式（≥2 个 ## 小节）→ 渲染成「成品文档」：每个小节卡片化，「一句话方案」做高亮 lead
+  const headingCount = blocks.filter((b) => b.type === "h").length;
+  if (headingCount >= 2) {
+    const sections = [];
+    for (const b of blocks) {
+      if (b.type === "h") sections.push({ head: b.text, body: [] });
+      else if (sections.length) sections[sections.length - 1].body.push(b);
+      else sections.push({ head: null, body: [b] });
+    }
+    return (
+      <div className="rich-text is-plan">
+        {sections.map((s, i) => (
+          <section className={`plan-section${i === 0 ? " lead" : ""}`} key={i}>
+            {s.head ? <h3>{inlineNodes(s.head, `ph${i}`, citeMap)}</h3> : null}
+            {s.body.map((b, j) => renderBlock(b, `${i}-${j}`))}
+          </section>
+        ))}
+      </div>
+    );
+  }
+  return <div className="rich-text">{blocks.map((b, i) => renderBlock(b, i))}</div>;
 }
 
 function CitationInline({ citations, text }) {

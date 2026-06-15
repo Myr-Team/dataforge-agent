@@ -1959,6 +1959,16 @@ svg { flex-shrink: 0; }
 .rich-text ul li::marker { color: var(--blue); }
 .rich-text ol li::marker { color: var(--blue); font-weight: 700; }
 
+/* 方案模式：渲染成「成品文档」——小节卡片化 + 「一句话方案」高亮 */
+.rich-text.is-plan { border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(180deg, #ffffff, #fafcff); padding: 6px 16px 12px; }
+.plan-section { padding: 11px 0; border-top: 1px solid #eef1f6; }
+.plan-section:first-child, .plan-section.lead { border-top: 0; }
+.plan-section > :last-child { margin-bottom: 0; }
+.plan-section > h3 { margin: 2px 0 7px; font-size: 15px; font-weight: 700; color: var(--ink); padding-left: 10px; border-left: 3px solid var(--blue); line-height: 1.3; }
+.plan-section.lead { margin: 8px 0 4px; padding: 13px 15px; background: var(--blue-soft); border-radius: 10px; }
+.plan-section.lead > h3 { border-left: 0; padding-left: 0; color: var(--blue); font-size: 13.5px; letter-spacing: 0.02em; margin-bottom: 5px; }
+.plan-section.lead p { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); line-height: 1.6; }
+
 /* 反问选择框 */
 .clarify-card { display: flex; flex-direction: column; gap: 10px; }
 .clarify-q { font-size: 14px; }
