@@ -1845,9 +1845,11 @@ def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
     image_kind = _proposal_image_kind(proposal)[0]
     audio_text = _concise_narration_from_proposal(proposal)
     reference_image_urls = _reference_image_urls(proposal.get("reference_images") or [])
+    overlay_title = str(proposal.get("title") or proposal.get("opportunity_id") or "").strip()
+    logo_url = _logo_reference_url(proposal.get("reference_images") or [])
     with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dataforge-producer") as pool:
         pdf_future = pool.submit(render_pdf_report, proposal, "project_proposal")
-        image_future = pool.submit(generate_image, image_prompt, "1024x1024", reference_image_urls)
+        image_future = pool.submit(generate_image, image_prompt, "1024x1024", reference_image_urls, overlay_title, logo_url)
         audio_future = pool.submit(narrate_summary, audio_text, "zh-CN-XiaoxiaoNeural")
         pdf = pdf_future.result()
         image = image_future.result()
@@ -1866,6 +1868,15 @@ def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
             "audio_summary": audio.get("artifact_url"),
         },
     }
+
+
+def _logo_reference_url(reference_images: list[dict[str, Any]]) -> str | None:
+    for item in reference_images:
+        if isinstance(item, dict) and str(item.get("role") or "") == "logo":
+            value = item.get("blob_url") or item.get("url")
+            if value:
+                return str(value)
+    return None
 
 
 def _reference_image_urls(reference_images: list[dict[str, Any]]) -> list[str]:

@@ -98,7 +98,13 @@ def _concept_png(prompt: str, width: int = 1024, height: int = 1024) -> bytes:
     return _png(width, height, rows)
 
 
-def generate_image(prompt: str, size: str = "1024x1024", reference_image_urls: list[str] | None = None) -> dict[str, Any]:
+def generate_image(
+    prompt: str,
+    size: str = "1024x1024",
+    reference_image_urls: list[str] | None = None,
+    overlay_title: str | None = None,
+    logo_url: str | None = None,
+) -> dict[str, Any]:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUT_DIR / f"concept-{int(time.time())}.png"
     width, height = (1024, 1024)
@@ -126,6 +132,20 @@ def generate_image(prompt: str, size: str = "1024x1024", reference_image_urls: l
             image_error = f"{image_error}; generation fallback failed: {type(gen_exc).__name__}: {gen_exc}"[:900]
             image_bytes = _concept_png(prompt, width, height)
 
+    # 生成后合成 logo + 标题（成品封面感）；任何失败都回退原图，不影响产出
+    overlay_mode = ""
+    if overlay_title or logo_url:
+        logo_bytes = None
+        if logo_url:
+            try:
+                loaded = _load_reference_image(logo_url)
+                if loaded:
+                    logo_bytes = bytes(loaded.get("content") or b"")
+            except Exception:
+                logo_bytes = None
+        composited, overlay_mode = _composite_overlay(image_bytes, overlay_title, logo_bytes)
+        image_bytes = composited
+
     path.write_bytes(image_bytes)
     result: dict[str, str | int] = {
         "concept_image_blob_url": path.as_uri(),
@@ -137,6 +157,7 @@ def generate_image(prompt: str, size: str = "1024x1024", reference_image_urls: l
         "mode": mode,
         "image_error": image_error,
         "reference_image_count": len(reference_inputs),
+        "overlay": overlay_mode,
     }
     try:
         blob = upload_artifact(path.name, image_bytes, "image/png")
@@ -333,6 +354,100 @@ def _decode_image_response(data: dict[str, Any], label: str) -> bytes:
     if not image_bytes.startswith(b"\x89PNG"):
         raise RuntimeError(f"{label} output was not PNG")
     return image_bytes
+
+
+_CJK_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+]
+
+
+def _cjk_font_path() -> str | None:
+    for candidate in _CJK_FONT_CANDIDATES:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _wrap_text(draw: Any, text: str, font: Any, max_w: float) -> list[str]:
+    lines: list[str] = []
+    cur = ""
+    for ch in str(text or ""):
+        if ch == "\n":
+            lines.append(cur)
+            cur = ""
+            continue
+        if draw.textlength(cur + ch, font=font) > max_w and cur:
+            lines.append(cur)
+            cur = ch
+        else:
+            cur += ch
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _composite_overlay(image_bytes: bytes, title: str | None, logo_bytes: bytes | None) -> tuple[bytes, str]:
+    """在生成图上合成 logo + 标题 + DataForge 字标。失败回退原图。返回 (bytes, overlay_mode)。"""
+    try:
+        from io import BytesIO
+
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        return image_bytes, "no_pillow"
+    try:
+        base = Image.open(BytesIO(image_bytes)).convert("RGBA")
+        W, H = base.size
+        font_path = _cjk_font_path()
+        if not font_path:
+            return image_bytes, "no_cjk_font"
+        t_size = max(34, int(W * 0.050))
+        s_size = max(15, int(W * 0.019))
+        title_font = ImageFont.truetype(font_path, t_size)
+        sub_font = ImageFont.truetype(font_path, s_size)
+
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        # 底部渐变压暗带，保证文字可读
+        band_h = int(H * 0.32)
+        for i in range(band_h):
+            alpha = int(205 * (i / band_h) ** 1.25)
+            draw.line([(0, H - band_h + i), (W, H - band_h + i)], fill=(8, 14, 24, alpha))
+        # 顶部细蓝条
+        draw.rectangle([0, 0, W, max(4, int(H * 0.008))], fill=(0, 113, 227, 255))
+
+        pad = int(W * 0.05)
+        mode = "title"
+        title_clean = str(title or "").strip()
+        lines = _wrap_text(draw, title_clean, title_font, W - 2 * pad)[:2] if title_clean else []
+        y = H - pad - len(lines) * (t_size + 8)
+        draw.text((pad, y - s_size - 12), "DataForge · 数据产品可行性建议书", font=sub_font, fill=(206, 226, 255, 240))
+        for line in lines:
+            draw.text((pad, y), line, font=title_font, fill=(255, 255, 255, 255))
+            y += t_size + 8
+
+        if logo_bytes:
+            try:
+                logo = Image.open(BytesIO(logo_bytes)).convert("RGBA")
+                lh = max(56, int(H * 0.10))
+                lw = max(1, int(logo.width * lh / max(1, logo.height)))
+                logo = logo.resize((lw, lh))
+                chip_pad = int(lh * 0.20)
+                chip = Image.new("RGBA", (lw + 2 * chip_pad, lh + 2 * chip_pad), (255, 255, 255, 235))
+                overlay.alpha_composite(chip, (pad, pad))
+                overlay.alpha_composite(logo, (pad + chip_pad, pad + chip_pad))
+                mode = "title+logo"
+            except Exception:
+                pass
+
+        out = Image.alpha_composite(base, overlay).convert("RGB")
+        buffer = BytesIO()
+        out.save(buffer, format="PNG")
+        return buffer.getvalue(), mode
+    except Exception as exc:
+        return image_bytes, f"error:{type(exc).__name__}"
 
 
 def _image_prompt(prompt: str) -> str:
