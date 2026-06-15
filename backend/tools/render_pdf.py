@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,11 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "generated-outputs"
+
+# CID 字体渲染不了 emoji，提前剥掉避免豆腐块
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U00002190-\U000021FF\U00002B00-\U00002BFF️‍]"
+)
 
 
 def _minimal_pdf(text: str) -> bytes:
@@ -72,6 +78,17 @@ def render_pdf_report(proposal: dict[str, Any], template: str = "project_proposa
     return result
 
 
+_CONF_LABEL = {"data_confirmed": "证据充分", "market_inferred": "市场推断", "speculative": "证据不足"}
+_VERDICT = {
+    "feasible": ("可行", "#0a7d4f", "#e8f8f2"),
+    "recommended": ("推荐推进", "#0a7d4f", "#e8f8f2"),
+    "conditional": ("有条件可行", "#8a5a00", "#fff4dd"),
+    "not_yet_feasible": ("暂不可行", "#8a5a00", "#fff4dd"),
+    "not_feasible": ("暂不建议", "#b3261e", "#fdecea"),
+    "rejected": ("暂不建议", "#b3261e", "#fdecea"),
+}
+
+
 def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
     from io import BytesIO
 
@@ -81,105 +98,169 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
     from reportlab.lib.units import cm
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.pdfbase.pdfmetrics import registerFont
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     registerFont(UnicodeCIDFont("STSong-Light"))
+    FONT = "STSong-Light"
+    BLUE = colors.HexColor("#0071e3")
+    INK = colors.HexColor("#1d1d1f")
+    MUTED = colors.HexColor("#6e6e73")
+    LINE = colors.HexColor("#e5e5ea")
+
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        leftMargin=1.6 * cm,
-        rightMargin=1.6 * cm,
-        topMargin=1.5 * cm,
-        bottomMargin=1.5 * cm,
+        leftMargin=1.7 * cm,
+        rightMargin=1.7 * cm,
+        topMargin=2.15 * cm,
+        bottomMargin=1.75 * cm,
         title=str(proposal.get("title") or "DataForge 项目建议书"),
+        author="DataForge",
     )
     base = getSampleStyleSheet()
     styles = {
-        "title": ParagraphStyle("df-title", parent=base["Title"], fontName="STSong-Light", fontSize=20, leading=26, spaceAfter=14),
-        "h2": ParagraphStyle("df-h2", parent=base["Heading2"], fontName="STSong-Light", fontSize=13, leading=18, spaceBefore=10, spaceAfter=6),
-        "body": ParagraphStyle("df-body", parent=base["BodyText"], fontName="STSong-Light", fontSize=9.2, leading=14, spaceAfter=5),
-        "small": ParagraphStyle("df-small", parent=base["BodyText"], fontName="STSong-Light", fontSize=8, leading=11, textColor=colors.HexColor("#3f4b53")),
+        "title": ParagraphStyle("df-title", parent=base["Title"], fontName=FONT, fontSize=22, leading=27, textColor=INK, spaceAfter=2, alignment=0),
+        "meta": ParagraphStyle("df-meta", parent=base["BodyText"], fontName=FONT, fontSize=8.5, leading=12, textColor=MUTED),
+        "h2": ParagraphStyle("df-h2", parent=base["Heading2"], fontName=FONT, fontSize=13, leading=17, textColor=BLUE, spaceBefore=14, spaceAfter=2),
+        "body": ParagraphStyle("df-body", parent=base["BodyText"], fontName=FONT, fontSize=9.6, leading=15, textColor=INK, spaceAfter=5),
+        "small": ParagraphStyle("df-small", parent=base["BodyText"], fontName=FONT, fontSize=8.3, leading=12, textColor=colors.HexColor("#3f4b53")),
+        "cellh": ParagraphStyle("df-cellh", parent=base["BodyText"], fontName=FONT, fontSize=8.6, leading=11, textColor=colors.white),
+        "boxbody": ParagraphStyle("df-boxbody", parent=base["BodyText"], fontName=FONT, fontSize=9.6, leading=15.5, textColor=INK, spaceAfter=4),
     }
+
     story: list[Any] = []
+
+    def section(text: str) -> None:
+        story.append(Paragraph(_xml(text), styles["h2"]))
+        story.append(HRFlowable(width="100%", thickness=0.8, color=LINE, spaceBefore=3, spaceAfter=7))
+
+    # 标题区
     title = proposal.get("title") or str(proposal.get("opportunity_id") or "DataForge 数据产品机会")
-    story.append(Paragraph(_xml(f"DataForge 项目建议书：{title}"), styles["title"]))
-    story.append(Paragraph(_xml(f"模板：{template}；机会 ID：{proposal.get('opportunity_id', 'unknown')}"), styles["small"]))
-    story.append(Spacer(1, 6))
+    story.append(Paragraph(_xml(title), styles["title"]))
+    story.append(Paragraph(
+        _xml(f"DataForge 数据产品可行性建议书 · 机会 ID：{proposal.get('opportunity_id', 'unknown')} · 生成于 {time.strftime('%Y-%m-%d %H:%M')}"),
+        styles["meta"],
+    ))
+    story.append(Spacer(1, 10))
 
-    summary = proposal.get("executive_summary") or "暂无执行摘要。"
-    story.append(Paragraph("执行摘要", styles["h2"]))
-    for paragraph in _split_paragraphs(summary, 6):
-        story.append(Paragraph(_xml(paragraph), styles["body"]))
-
+    # 结论高亮框
     feasibility = proposal.get("feasibility") or {}
-    story.append(Paragraph("可行性结论", styles["h2"]))
-    story.append(
-        Paragraph(
-            _xml(
-                f"结论：{feasibility.get('verdict', 'unknown')}；整体置信度："
-                f"{feasibility.get('overall_confidence', 'unknown')}。"
-            ),
-            styles["body"],
-        )
+    vraw = str(feasibility.get("verdict") or "unknown")
+    vlabel, vcol, vbg = _VERDICT.get(vraw, ("待判定", "#3f4b53", "#eef2f6"))
+    conf = str(feasibility.get("overall_confidence") or "unknown")
+    verdict_para = Paragraph(
+        f'<font color="{vcol}">可行性结论：{_xml(vlabel)}</font>'
+        f'<font color="#6e6e73">　　|　　整体置信度：{_xml(_CONF_LABEL.get(conf, conf))}</font>',
+        styles["boxbody"],
     )
+    vt = Table([[verdict_para]], colWidths=[doc.width])
+    vt.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(vbg)),
+        ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(vcol)),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ("TOPPADDING", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+    ]))
+    story.append(vt)
+
+    # 执行摘要（浅底框）
+    section("执行摘要")
+    summary_paras = [Paragraph(_xml(p), styles["boxbody"]) for p in _split_paragraphs(proposal.get("executive_summary") or "暂无执行摘要。", 6)]
+    st = Table([[summary_paras or [Paragraph("暂无执行摘要。", styles["boxbody"])]]], colWidths=[doc.width])
+    st.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f6f9fe")),
+        ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(st)
+
+    # 五维评分表
     dimensions = feasibility.get("dimensions") or []
     if dimensions:
-        rows = [[Paragraph(_xml("维度"), styles["small"]), Paragraph(_xml("评分"), styles["small"]), Paragraph(_xml("置信度"), styles["small"]), Paragraph(_xml("证据与理由"), styles["small"])]]
+        section("可行性五维评分")
+        rows = [[Paragraph("维度", styles["cellh"]), Paragraph("评分", styles["cellh"]), Paragraph("置信度", styles["cellh"]), Paragraph("理由与证据", styles["cellh"])]]
         for dim in dimensions:
             evidence = dim.get("evidence") or []
-            evidence_text = "；".join(
-                f"{item.get('ref', 'unknown')}: {str(item.get('quote') or '')[:180]}" for item in evidence[:3]
-            )
-            rationale = str(dim.get("rationale") or "")
-            rows.append(
-                [
-                    Paragraph(_xml(str(dim.get("name") or "")), styles["small"]),
-                    Paragraph(_xml(str(dim.get("score") or "")), styles["small"]),
-                    Paragraph(_xml(str(dim.get("confidence") or "")), styles["small"]),
-                    Paragraph(_xml(f"{rationale} 证据：{evidence_text}"), styles["small"]),
-                ]
-            )
-        table = Table(rows, colWidths=[2.5 * cm, 1.2 * cm, 2.4 * cm, 11.0 * cm], repeatRows=1)
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2f4")),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#ccd5da")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                ]
-            )
-        )
+            evidence_text = "；".join(str(item.get("quote") or "")[:130] for item in evidence[:2] if item.get("quote"))
+            cell = _xml(str(dim.get("rationale") or ""))
+            if evidence_text:
+                cell += f'<br/><font color="#6e6e73">证据：{_xml(evidence_text)}</font>'
+            score = dim.get("score")
+            score_txt = f"{score}/5" if score not in (None, "") else "—"
+            rows.append([
+                Paragraph(_xml(str(dim.get("name") or "")), styles["small"]),
+                Paragraph(score_txt, styles["small"]),
+                Paragraph(_xml(_CONF_LABEL.get(str(dim.get("confidence")), str(dim.get("confidence") or ""))), styles["small"]),
+                Paragraph(cell, styles["small"]),
+            ])
+        c0, c1, c2 = 2.7 * cm, 1.3 * cm, 2.0 * cm
+        table = Table(rows, colWidths=[c0, c1, c2, doc.width - c0 - c1 - c2], repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), BLUE),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f9fc")]),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.HexColor("#dde3ea")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
         story.append(table)
 
+    # 关键缺口
     gaps = feasibility.get("gap_list") or []
     if gaps:
-        story.append(Paragraph("关键缺口", styles["h2"]))
+        section("关键缺口")
         for gap in gaps[:8]:
-            story.append(Paragraph(_xml(f"• {gap}"), styles["body"]))
+            story.append(Paragraph(f'<font color="#0071e3">●</font>　{_xml(gap)}', styles["body"]))
 
+    # 市场与外部来源
     market = proposal.get("market") or {}
-    story.append(Paragraph("市场与外部来源", styles["h2"]))
-    for item in (market.get("external_findings") or [])[:5]:
-        story.append(
-            Paragraph(
-                _xml(
-                    f"[{item.get('confidence', 'market_inferred')}] {item.get('claim', '')} "
-                    f"来源：{item.get('source_title') or item.get('source_url') or 'unknown'}"
-                ),
+    findings = (market.get("external_findings") or [])[:5]
+    section("市场与外部来源")
+    if findings:
+        for item in findings:
+            story.append(Paragraph(
+                f'<font color="#8a5a00">[市场推断]</font> {_xml(item.get("claim", ""))}'
+                f'<br/><font color="#6e6e73">来源：{_xml(item.get("source_title") or item.get("source_url") or "unknown")}</font>',
                 styles["body"],
-            )
-        )
-    if not market.get("external_findings"):
+            ))
+    else:
         story.append(Paragraph(_xml(str(market.get("positioning_note") or "暂无外部市场补充。")), styles["body"]))
 
-    story.append(Paragraph("语料与机会", styles["h2"]))
-    for opportunity in (proposal.get("opportunities") or [])[:5]:
-        story.append(Paragraph(_xml(f"{opportunity.get('title')}: {opportunity.get('description')}"), styles["body"]))
+    # 语料与机会
+    opportunities = (proposal.get("opportunities") or [])[:5]
+    if opportunities:
+        section("语料与机会")
+        for opportunity in opportunities:
+            story.append(Paragraph(
+                f'<font color="#1d1d1f">{_xml(opportunity.get("title") or "")}</font>：{_xml(opportunity.get("description") or "")}',
+                styles["body"],
+            ))
 
-    doc.build(story)
+    def _decorate(canvas: Any, doc_: Any) -> None:
+        canvas.saveState()
+        w, h = A4
+        canvas.setFillColor(BLUE)
+        canvas.rect(0, h - 0.42 * cm, w, 0.42 * cm, fill=1, stroke=0)
+        canvas.setFillColor(BLUE)
+        canvas.setFont(FONT, 8)
+        canvas.drawString(1.7 * cm, h - 0.98 * cm, "DataForge · 数据产品可行性建议书")
+        canvas.setStrokeColor(LINE)
+        canvas.setLineWidth(0.5)
+        canvas.line(1.7 * cm, 1.25 * cm, w - 1.7 * cm, 1.25 * cm)
+        canvas.setFillColor(colors.HexColor("#8e8e93"))
+        canvas.setFont(FONT, 7.5)
+        canvas.drawString(1.7 * cm, 0.9 * cm, "由 DataForge 多 Agent 系统生成 · 仅供内部决策参考")
+        canvas.drawRightString(w - 1.7 * cm, 0.9 * cm, f"第 {doc_.page} 页")
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=_decorate, onLaterPages=_decorate)
     return buffer.getvalue()
 
 
@@ -191,4 +272,5 @@ def _split_paragraphs(text: Any, limit: int) -> list[str]:
 
 
 def _xml(text: Any) -> str:
-    return escape(str(text or "")).replace("\n", "<br/>")
+    cleaned = _EMOJI_RE.sub("", str(text or ""))
+    return escape(cleaned).replace("\n", "<br/>")
