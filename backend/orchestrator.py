@@ -2695,6 +2695,68 @@ def _trim_conversation_answer(text: str, *, limit: int = 320) -> str:
     return head.rstrip(" ，；、") + "。"
 
 
+def _looks_like_plan_markdown(text: str) -> bool:
+    """LLM 是否按方案模板输出了结构化内容（有 ## 小节标题且多行）。"""
+    if not text:
+        return False
+    return bool(re.search(r"(?m)^\s*#{2,4}\s+\S", text)) and text.count("\n") >= 2
+
+
+def _sanitize_plan_markdown(text: str, field_labels: dict[str, str]) -> str:
+    """方案专用清洗：逐行清洗但【保留换行、列表序号、## 标题】，不压平结构。"""
+    out: list[str] = []
+    for raw in str(text or "").split("\n"):
+        stripped = raw.rstrip()
+        if not stripped.strip():
+            out.append("")
+            continue
+        m = re.match(r"^(\s*(?:#{2,4}\s+|[-*]\s+|\d+[.)、]\s+)?)(.*)$", stripped)
+        prefix, body = (m.group(1), m.group(2)) if m else ("", stripped)
+        body = sanitize_customer_text(_strip_raw_ref_leaks(body), field_labels)
+        body = re.sub(r"(?:资料分组|时间维度|业务类别|本工作区为演示用|合成数据)为[“\"'][^，。；、\n]+[”\"']?[，；、]?", "", body)
+        body = re.sub(r"\bL\d{2}\b", "", body)
+        body = re.sub(r"[ \t]{2,}", " ", body).strip()
+        out.append((prefix + body).rstrip() if body else prefix.rstrip())
+    md = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return md
+
+
+def _trim_plan_answer(md: str, *, limit: int = 1500) -> str:
+    """按整行截断方案，避免把某个小节截一半。"""
+    if len(md) <= limit:
+        return md
+    kept: list[str] = []
+    total = 0
+    for line in md.split("\n"):
+        if total + len(line) + 1 > limit and kept:
+            break
+        kept.append(line)
+        total += len(line) + 1
+    return "\n".join(kept).rstrip()
+
+
+def _produce_offer_for(
+    req: ChatRequest,
+    feasibility: dict[str, Any],
+    *,
+    plan: bool = False,
+) -> dict[str, Any] | None:
+    """对话里识别出客户想要产物 → 给前端一个“确认生成”的信号；plan=刚生成了方案。"""
+    msg = _current_user_message(req)
+    has_analysis = bool(
+        (feasibility or {}).get("verdict")
+        or (feasibility or {}).get("dimensions")
+        or (feasibility or {}).get("scores")
+    )
+    if re.search(r"(生成|制作|做|出|产出|导出|给我|来个|要个|帮我做).{0,8}(海报|配图|概念图|key ?visual|poster|宣传图)", msg, re.I) or re.search(r"(海报|poster|宣传图|概念图)", msg, re.I):
+        return {"kind": "poster", "label": "确认生成活动海报 / 概念图", "ready": has_analysis}
+    if re.search(r"(生成|制作|写|出|产出|导出|给我|帮我做|要个).{0,8}(方案|项目书|prd|proposal|报告|文档|计划书|pdf)", msg, re.I):
+        return {"kind": "proposal", "label": "确认生成完整方案（PDF / 概念图 / 语音）", "ready": has_analysis}
+    if plan:
+        return {"kind": "proposal", "label": "把这个方案生成完整产物（PDF / 概念图 / 语音）", "ready": has_analysis}
+    return None
+
+
 def _llm_chat_answer(
     req: ChatRequest,
     artifact: dict[str, Any],
@@ -2730,11 +2792,25 @@ def _llm_chat_answer(
             },
         }
         result = run_grounded_chat_answer(payload)
-        text = str((result or {}).get("text") or "").strip()
-        text = _sanitize_chat_sentence(text, field_labels)
+        raw = str((result or {}).get("text") or "").strip()
+        if not raw or len(raw) < 12:
+            return None
+        # 方案/活动类：保留 ## 小节与换行/列表结构，走方案专用清洗（不压平）。
+        if _looks_like_plan_markdown(raw):
+            md = _trim_plan_answer(_sanitize_plan_markdown(raw, field_labels), limit=1500)
+            if md and md.count("\n") >= 2:
+                return {
+                    "markdown": md,
+                    "is_plan": True,
+                    "response_id": (result or {}).get("response_id"),
+                    "usage": (result or {}).get("usage", {}),
+                }
+        # 普通问答：简洁单段、不许 ## 标题。
+        text = _sanitize_chat_sentence(raw, field_labels)
         if text and len(text) >= 12 and "##" not in text:
             return {
                 "markdown": _trim_conversation_answer(text, limit=360),
+                "is_plan": False,
                 "response_id": (result or {}).get("response_id"),
                 "usage": (result or {}).get("usage", {}),
             }
@@ -2753,10 +2829,14 @@ def _structured_chat_answer_v10(req: ChatRequest, decision: RoutingDecision, art
     # 先用 LLM 针对当前问题作答；失败再回退到下面的模板拼接。
     _llm_ans = _llm_chat_answer(req, artifact, citations, feasibility, field_labels)
     if _llm_ans:
+        offer = _produce_offer_for(req, feasibility, plan=bool(_llm_ans.get("is_plan")))
+        if offer:
+            artifact["produce_offer"] = offer
         return {
             "markdown": _llm_ans["markdown"],
             "citations": citations,
-            "_llm": {"mode": "grounded_chat_llm", "response_id": _llm_ans.get("response_id"), "usage": _llm_ans.get("usage", {})},
+            "is_plan": bool(_llm_ans.get("is_plan")),
+            "_llm": {"mode": "grounded_chat_plan_llm" if _llm_ans.get("is_plan") else "grounded_chat_llm", "response_id": _llm_ans.get("response_id"), "usage": _llm_ans.get("usage", {})},
             "output_contract": _chat_output_contract(decision.intent),
         }
     hits = artifact.get("corpus", {}).get("hits", [])
