@@ -1792,6 +1792,41 @@ svg { flex-shrink: 0; }
 .cite-tip-text { color: #eef2f9; white-space: normal; }
 .cite-tip-src { font-size: 11px; color: #9aa6bd; word-break: break-all; }
 
+/* 可观测性 + 评测面板 */
+.obsv { margin: 4px 0 18px; }
+.obsv-grid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 14px; }
+@media (max-width: 900px) { .obsv-grid { grid-template-columns: 1fr; } }
+.obsv-card { padding: 15px 17px; border: 1px solid var(--line, #e5e7eb); border-radius: 13px; background: #fff; }
+.obsv-card.highlight { background: linear-gradient(180deg, #f7fbff, #f2f8fd); border-color: rgba(0,113,227,0.25); }
+.obsv-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.obsv-head > svg { color: var(--blue); }
+.obsv-head strong { font-size: 13.5px; color: var(--ink, #1d2433); }
+.obsv-badge { margin-left: auto; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.obsv-badge.pass { background: rgba(34,160,110,0.14); color: #1f8f63; }
+.obsv-badge.fail { background: rgba(214,68,68,0.14); color: #c0392b; }
+.obsv-rows { display: flex; flex-direction: column; gap: 7px; }
+.obsv-row { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted, #6b7280); }
+.obsv-row b { color: var(--ink, #1d2433); font-weight: 600; }
+.obsv-row.ok b { color: #1f8f63; }
+.obsv-row.off b { color: #b9801c; }
+.obsv-metrics { display: flex; gap: 10px; }
+.obsv-metric { flex: 1; text-align: center; padding: 10px 6px; background: #fff; border: 1px solid var(--line, #e5e7eb); border-radius: 10px; }
+.obsv-metric em { display: block; font-style: normal; font-size: 11.5px; color: var(--muted, #6b7280); }
+.obsv-metric b { display: block; font-size: 22px; color: var(--blue); margin: 2px 0; }
+.obsv-metric small { font-size: 10.5px; color: var(--muted, #6b7280); }
+.obsv-note { margin: 10px 0 0; font-size: 12px; color: var(--muted, #6b7280); line-height: 1.55; }
+.obsv-suites { margin-top: 14px; padding: 15px 17px; border: 1px solid var(--line, #e5e7eb); border-radius: 13px; background: #fff; }
+.obsv-suites-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 11px; }
+.obsv-suites-head strong { font-size: 13.5px; color: var(--ink, #1d2433); }
+.obsv-suites-head span { font-size: 12px; color: var(--muted, #6b7280); }
+.obsv-suite-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 9px; }
+.obsv-suite { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 10px; background: #f7fbf9; border: 1px solid rgba(34,160,110,0.18); }
+.obsv-suite.fail { background: #fdf6f6; border-color: rgba(214,68,68,0.2); }
+.obsv-suite > svg { color: #1f8f63; flex: none; }
+.obsv-suite.fail > svg { color: #c0392b; }
+.obsv-suite strong { display: block; font-size: 12.5px; color: var(--ink, #1d2433); }
+.obsv-suite span { font-size: 11.5px; color: var(--muted, #6b7280); }
+
 /* 独立审计 · 自我校验卡片 */
 .audit-card { margin: 14px 0; padding: 16px 18px; border-radius: 14px; border: 1px solid var(--line, #e5e7eb); background: linear-gradient(180deg, #fbfdff, #f6f9fc); }
 .audit-card.is-revise { border-color: rgba(214, 158, 46, 0.4); background: linear-gradient(180deg, #fffdf6, #fdf8ec); }

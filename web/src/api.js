@@ -85,6 +85,10 @@ export async function listWorkspaces() {
   return data.workspaces || [];
 }
 
+export async function loadObservability() {
+  return request("/api/observability");
+}
+
 export async function deleteWorkspace(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE" });
 }

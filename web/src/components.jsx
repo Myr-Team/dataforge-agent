@@ -468,6 +468,7 @@ export function WorkbenchMain({
   onProduce,
   onUploadReference,
   producing,
+  observability,
 }) {
   if (view === "conversations") {
     return (
@@ -491,7 +492,7 @@ export function WorkbenchMain({
     return <ArtifactsCenter dashboard={dashboard} artifacts={artifacts} artifact={finalArtifact} onProduce={onProduce} producing={producing} onUploadReference={onUploadReference} />;
   }
   if (view === "runs") {
-    return <RunsCenter dashboard={dashboard} trace={trace} running={running} />;
+    return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} />;
   }
   if (view === "settings") {
     return <SettingsCenter dashboard={dashboard} />;
@@ -881,9 +882,11 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
 // 一步的输出/结果摘要
 function stepDetail(ev) {
   const d = ev.data || {};
-  if (ev.event === "tool_result") return d.count != null ? `${d.count} 条结果` : d.status ? String(d.status) : "";
+  const ms = d.latency_ms != null ? `${d.latency_ms}ms` : "";
+  const join = (...parts) => parts.filter(Boolean).join(" · ");
+  if (ev.event === "tool_result") return join(d.count != null ? `${d.count} 条结果` : d.status ? String(d.status) : "", ms);
   if (ev.event === "tool_call") return d.name ? "" : "";
-  if (ev.event === "model_response") return d.usage?.total_tokens ? `${d.usage.total_tokens} tokens` : "";
+  if (ev.event === "model_response") return join(d.usage?.total_tokens ? `${d.usage.total_tokens} tokens` : "", ms);
   if (ev.event === "audit") return (d.issues && d.issues.length) ? String(d.issues[0]).slice(0, 60) : (d.verdict === "pass" ? "通过" : "要求修订");
   if (ev.event === "final") return String(d.text || "").replace(/\s+/g, " ").slice(0, 90);
   if (ev.event === "clarify") return String(d.question || "").slice(0, 60);
@@ -944,17 +947,74 @@ function AgentRunLog({ trace }) {
   );
 }
 
-function RunsCenter({ dashboard, trace, running }) {
+function ObservabilityPanel({ observability }) {
+  if (!observability) return null;
+  const t = observability.tracing || {};
+  const models = observability.models || {};
+  const ev = observability.eval || {};
+  const cg = ev.calibration_gate || null;
+  const suites = ev.suites || [];
+  const totals = ev.totals || {};
+  return (
+    <section className="obsv">
+      <div className="obsv-grid">
+        <article className="obsv-card">
+          <div className="obsv-head"><Activity size={15} /><strong>分布式追踪 · Observability</strong></div>
+          <div className="obsv-rows">
+            <div className={`obsv-row ${t.app_insights ? "ok" : "off"}`}><span>Azure Monitor / App Insights</span><b>{t.app_insights ? "已接入" : "未配置"}</b></div>
+            <div className={`obsv-row ${t.otel_sdk ? "ok" : "off"}`}><span>OpenTelemetry SDK</span><b>{t.otel_sdk ? "已启用" : "缺失"}</b></div>
+            <div className="obsv-row"><span>导出器</span><b>{t.exporter || "—"}</b></div>
+            <div className="obsv-row"><span>服务名</span><b>{t.service_name || "—"}</b></div>
+            <div className="obsv-row"><span>对话模型</span><b>{models.chat || "—"}</b></div>
+          </div>
+        </article>
+        <article className="obsv-card highlight">
+          <div className="obsv-head"><ShieldCheck size={15} /><strong>可行性 rubric 校准门禁</strong>{cg ? <span className={`obsv-badge ${cg.passed ? "pass" : "fail"}`}>{cg.passed ? "通过" : "未过"}</span> : null}</div>
+          {cg ? (
+            <div className="obsv-metrics">
+              <div className="obsv-metric"><em>Spearman 相关</em><b>{cg.spearman}</b><small>阈值 ≥ {cg.min_spearman}</small></div>
+              <div className="obsv-metric"><em>评分反转</em><b>{cg.inversion_count}</b><small>越低越好</small></div>
+              <div className="obsv-metric"><em>校准用例</em><b>{cg.cases}</b><small>标注↔预测</small></div>
+            </div>
+          ) : <p className="empty-copy">无校准数据。</p>}
+          {cg ? <p className="obsv-note">rubric {cg.rubric_version} · 预测分与人工标注分单调一致，说明可行性评分是可校准、不自欺的。</p> : null}
+        </article>
+      </div>
+      {suites.length ? (
+        <div className="obsv-suites">
+          <div className="obsv-suites-head">
+            <strong>评测套件</strong>
+            <span>{totals.checks_passed}/{totals.checks_total} 项检查通过 · {totals.suites} 套件</span>
+          </div>
+          <div className="obsv-suite-grid">
+            {suites.map((s) => (
+              <div key={s.file} className={`obsv-suite ${s.passed === false ? "fail" : "pass"}`}>
+                {s.passed === false ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}
+                <div>
+                  <strong>{s.name}</strong>
+                  <span>{s.checks_total ? `${s.checks_passed}/${s.checks_total} 检查` : (s.passed ? "通过" : "—")}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function RunsCenter({ dashboard, trace, running, observability }) {
   const runs = dashboard?.runs || [];
   return (
     <main className="agent-studio runs-stage">
       <section className="dashboard-hero">
         <div>
-          <span className="eyeless-label">Runs</span>
-          <h1>运行记录</h1>
-          <p>每个 Agent 的作用，以及它这一轮调用了什么工具、输出了什么——让结论的来路可追溯。</p>
+          <span className="eyeless-label">Runs · Observability</span>
+          <h1>运行记录 · 可观测性</h1>
+          <p>每个 Agent 调用了什么工具、耗时与 token，全链路追踪进 Azure Monitor；下方是可行性评分的校准门禁与评测结果——结论可追溯、可度量。</p>
         </div>
       </section>
+      <ObservabilityPanel observability={observability} />
       <section className="runs-body">
         <div className="runs-col">
           <div className="runs-col-head">本轮 Agent 协作明细</div>

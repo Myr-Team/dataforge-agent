@@ -3,6 +3,7 @@ import {
   deleteWorkspace,
   loadConversation,
   loadDashboard,
+  loadObservability,
   produceArtifacts,
   streamChat,
   uploadWorkspace,
@@ -88,6 +89,7 @@ export function App() {
   const [notice, setNotice] = useState(null);
   const [user, setUser] = useState({ name: "Demo User", email: "local.demo@dataforge" });
   const [authState, setAuthState] = useState("local");
+  const [observability, setObservability] = useState(null);
   const streamRef = useRef("");
   const revealTimerRef = useRef(null);
 
@@ -175,6 +177,13 @@ export function App() {
     const t = window.setTimeout(() => setNotice(null), 3500);
     return () => window.clearTimeout(t);
   }, [notice]);
+
+  // 可观测性 + 评测快照（用于 Runs 视图展示 tracing/eval）
+  useEffect(() => {
+    let cancelled = false;
+    loadObservability().then((d) => { if (!cancelled) setObservability(d); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -601,6 +610,7 @@ export function App() {
             onUploadReference={openReferenceUpload}
             onNewConversation={startNewConversation}
             producing={producing}
+            observability={observability}
           />
         </div>
       </div>
