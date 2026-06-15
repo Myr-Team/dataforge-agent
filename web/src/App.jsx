@@ -462,33 +462,75 @@ export function App() {
     }
   };
 
+  const hasAnalysisArtifact = (a) => {
+    const fe = a?.feasibility || {};
+    return Boolean(fe.verdict || (fe.dimensions && fe.dimensions.length) || fe.scores);
+  };
+
+  // 没有现成分析时，先静默跑一次可行性分析，拿到 artifact 再用于生成产物（让会话里“直接产出”可用）
+  const ensureAnalysisArtifact = () =>
+    new Promise((resolve, reject) => {
+      let captured = null;
+      streamChat(
+        {
+          workspace_id: workspaceId,
+          message: "基于当前工作区资料做一次可行性分析，用于生成产物。",
+          conversation_id: activeConversationId,
+          artifact_mode: "report",
+          ui_context: { workspace_name: dashboard?.workspace?.name || workspaceId, requested_output: "report", mode: "auto_analysis" },
+        },
+        (event) => {
+          if (event.event === "ready" && event.data?.conversation_id) setActiveConversationId(event.data.conversation_id);
+          if (event.event === "final") captured = event.data?.artifact || null;
+        },
+      )
+        .then(() => resolve(captured))
+        .catch(reject);
+    });
+
   const produce = async () => {
-    const fe = finalArtifact?.feasibility || {};
-    const hasAnalysis = Boolean(fe.verdict || (fe.dimensions && fe.dimensions.length) || fe.scores);
-    if (!finalArtifact || !hasAnalysis) {
-      setNotice({ type: "error", message: "请先在工作区做一次自动分析，再生成产物。" });
-      return;
-    }
+    if (producing) return;
     setProducing(true);
     setInspectorTab("output");
-    setNotice({ type: "loading", message: "正在生成产物（PDF / 概念图 / 语音）…" });
     try {
+      let base = finalArtifact;
+      if (!hasAnalysisArtifact(base)) {
+        setNotice({ type: "loading", message: "先快速分析当前工作区，再生成产物…" });
+        base = await ensureAnalysisArtifact();
+        if (hasAnalysisArtifact(base)) {
+          setFinalArtifact(base);
+          try { window.localStorage.setItem(`df-analysis:${workspaceId}`, JSON.stringify(base)); } catch { /* ignore */ }
+        }
+      }
+      if (!hasAnalysisArtifact(base)) {
+        setNotice({ type: "error", message: "这个工作区暂时无法生成产物：没有可分析的有效数据。" });
+        return;
+      }
+      setNotice({ type: "loading", message: "正在生成产物（PDF / 概念图 / 语音）…" });
       const result = await produceArtifacts({
         workspace_id: workspaceId,
-        conversation_id: activeConversationId || finalArtifact.conversation_id,
-        feasibility: finalArtifact.feasibility || {},
-        corpus: finalArtifact.corpus || {},
-        market: finalArtifact.market || {},
-        audit: finalArtifact.audit || {},
-        answer: finalArtifact.answer || {},
-        proposal: finalArtifact.proposal || {},
-        reference_images: finalArtifact.reference_images || [],
-        narrative: finalArtifact.narrative,
-        text: finalArtifact.answer?.text || finalArtifact.answer?.markdown,
+        conversation_id: activeConversationId || base.conversation_id,
+        feasibility: base.feasibility || {},
+        corpus: base.corpus || {},
+        market: base.market || {},
+        audit: base.audit || {},
+        answer: base.answer || {},
+        proposal: base.proposal || {},
+        reference_images: base.reference_images || [],
+        narrative: base.narrative,
+        text: base.answer?.text || base.answer?.markdown,
       });
-      const nextArtifact = { ...finalArtifact, proposal: result };
+      const nextArtifact = { ...base, proposal: result };
       setFinalArtifact(nextArtifact);
-      setArtifacts(extractArtifacts(nextArtifact));
+      const arts = extractArtifacts(nextArtifact);
+      setArtifacts(arts);
+      // 在会话里就地展示产物，点了能立刻看到 PDF / 概念图 / 语音，而不是“好像没反应”
+      if (arts && (arts.pdf || arts.concept_image || arts.audio_summary)) {
+        setMessages((items) => [
+          ...items,
+          { role: "assistant", time: new Date().toISOString(), text: "产物已生成，可直接查看 / 下载：", producedArtifacts: arts },
+        ]);
+      }
       setNotice({ type: "done", message: "产物已生成。" });
       refreshDashboard(workspaceId);
     } catch (error) {

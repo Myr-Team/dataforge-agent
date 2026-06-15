@@ -1226,6 +1226,7 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
                       <span>{message.produceOffer.label || "确认生成产物"}</span>
                     </button>
                   ) : null}
+                  {message.producedArtifacts ? <ChatArtifacts artifacts={message.producedArtifacts} /> : null}
                 </div>
               </article>
             );
@@ -1382,6 +1383,37 @@ function CitationInline({ citations, text }) {
           </span>
         );
       })}
+    </div>
+  );
+}
+
+// 会话里就地展示刚生成的产物（PDF / 概念图 / 语音），点「生成产物」后立刻能看到
+function ChatArtifacts({ artifacts }) {
+  const pdf = artifacts?.pdf ? artifactLink(artifacts.pdf) : null;
+  const img = artifacts?.concept_image ? artifactLink(artifacts.concept_image) : null;
+  const audio = artifacts?.audio_summary ? artifactLink(artifacts.audio_summary) : null;
+  if (!pdf && !img && !audio) return null;
+  return (
+    <div className="chat-artifacts">
+      {pdf ? (
+        <a className="chat-artifact-card" href={pdf} target="_blank" rel="noreferrer">
+          <FileText size={16} />
+          <span>方案报告 PDF</span>
+          <FileDown size={14} className="ca-dl" />
+        </a>
+      ) : null}
+      {img ? (
+        <a className="chat-artifact-card image" href={img} target="_blank" rel="noreferrer">
+          <img src={img} alt="概念图产物" />
+          <span className="ca-cap"><ImagePlus size={13} /> 概念图</span>
+        </a>
+      ) : null}
+      {audio ? (
+        <div className="chat-artifact-card audio">
+          <span className="ca-cap"><Mic size={13} /> 语音摘要</span>
+          <audio src={audio} controls preload="none" />
+        </div>
+      ) : null}
     </div>
   );
 }
