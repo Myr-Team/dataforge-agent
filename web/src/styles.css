@@ -2076,3 +2076,21 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 *::-webkit-scrollbar { width: 9px; height: 9px; }
 *::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 99px; border: 2px solid transparent; background-clip: content-box; }
 *::-webkit-scrollbar-thumb:hover { background: var(--faint); background-clip: content-box; }
+
+/* ---- 质感精修：会话气泡 ---- */
+.message-body { border-radius: 6px 13px 13px 13px; background: linear-gradient(180deg, #ffffff, #fbfbfd); border-color: var(--line); }
+.chat-message.assistant .message-body { box-shadow: var(--shadow-sm); }
+.chat-message.user .message-body { background: linear-gradient(180deg, #eff6ff, var(--blue-soft)); border-color: #cfe4ff; box-shadow: 0 1px 2px rgba(0,113,227,.05), 0 5px 16px rgba(0,113,227,.08); }
+.speaker { box-shadow: var(--shadow-sm); transition: transform .2s var(--ease); }
+.chat-message.assistant .speaker { background: linear-gradient(160deg, #3a3b42, var(--ink)); }
+.chat-message:hover .speaker { transform: scale(1.05); }
+.streaming .message-body { border-color: #cfe4ff; }
+
+/* ---- 质感精修：Inspector 右栏 ---- */
+.inspector-tabs { background: var(--surface-soft); }
+.inspector-tabs button { transition: color .16s var(--ease), background .16s var(--ease), box-shadow .16s var(--ease); }
+.inspector-tabs button:hover:not(.active) { color: var(--ink); background: rgba(0,0,0,.03); }
+.inspector-tabs button.active { box-shadow: var(--shadow-sm); }
+.evidence-card { border-radius: 10px; box-shadow: var(--shadow-sm); transition: box-shadow .2s var(--ease), transform .2s var(--ease), border-color .2s var(--ease); }
+.evidence-card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); border-color: var(--line-strong); }
+.evidence-flow circle { transition: fill .2s var(--ease); }
