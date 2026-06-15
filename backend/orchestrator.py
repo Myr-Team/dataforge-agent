@@ -2797,7 +2797,7 @@ def _llm_chat_answer(
             return None
         # 方案/活动类：保留 ## 小节与换行/列表结构，走方案专用清洗（不压平）。
         if _looks_like_plan_markdown(raw):
-            md = _trim_plan_answer(_sanitize_plan_markdown(raw, field_labels), limit=1500)
+            md = _trim_plan_answer(_sanitize_plan_markdown(raw, field_labels), limit=1900)
             if md and md.count("\n") >= 2:
                 return {
                     "markdown": md,

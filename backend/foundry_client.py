@@ -707,7 +707,7 @@ def run_grounded_chat_answer(payload: dict[str, Any]) -> dict[str, Any]:
         "4) 不同问题给明显不同的答案；证据不足就直说缺什么。\n"
         "只返回 JSON，字段 text 为最终回答（方案模板里的换行 \\n 必须保留）。"
     )
-    return _coordinator_text_response(openai_client, instructions, payload, "grounded_chat_answer", max_output_tokens=1100)
+    return _coordinator_text_response(openai_client, instructions, payload, "grounded_chat_answer", max_output_tokens=1700)
 
 
 def run_followup_rewrite(payload: dict[str, Any]) -> dict[str, Any]:
