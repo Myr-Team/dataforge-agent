@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 
 try:
     from . import cache_store
+    from . import content_safety
     from .chat_loop_primitives import sse
     from .conversation_store import append_message, conversation_context
     from .customer_text import (
@@ -67,6 +68,7 @@ try:
     from .workspace_store import get_workspace_detail, save_workspace_last_analysis, workspace_context, workspace_reference_images
 except ImportError:
     import cache_store
+    import content_safety
     from chat_loop_primitives import sse
     from conversation_store import append_message, conversation_context
     from customer_text import (
@@ -3612,6 +3614,25 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     yield _frame("ready", {"conversation_id": conv_id, "workspace_id": req.workspace_id}, conv_id)
     yield _frame("user", {"text": req.message}, conv_id)
     await run_in_threadpool(_persist_user_message, conv_id, req.workspace_id, req.message, new_conversation)
+
+    # 负责任 AI：先用 Azure AI Content Safety 过一遍用户输入（jailbreak 注入 + 有害类别），
+    # 命中就安全拒答、不进入多 Agent 链。服务异常时 fail-open（screen_input 内部兜底），不影响正常使用。
+    screen = await run_in_threadpool(content_safety.screen_input, req.message)
+    if screen.get("checked") and not screen.get("allowed"):
+        yield _frame("content_safety", {"blocked": True, "jailbreak": screen.get("jailbreak"), "categories": screen.get("categories", [])}, conv_id)
+        refusal = content_safety.refusal_message(screen)
+        artifact["answer"] = {"markdown": refusal, "text": refusal, "citations": [], "_llm": {"mode": "content_safety_block"}}
+        artifact["output_contract"] = _chat_output_contract("smalltalk_or_meta")
+        final_payload = {
+            "text": refusal,
+            "routing": {"intent": "content_safety_block"},
+            "artifact": artifact,
+            "content_safety": {"blocked": True, "jailbreak": screen.get("jailbreak"), "categories": screen.get("categories", [])},
+        }
+        await run_in_threadpool(_persist_assistant_message, conv_id, req.workspace_id, refusal, "content_safety_block")
+        complete_run(conv_id, status="content_safety_block", final=final_payload, artifact=artifact)
+        yield _frame("final", final_payload, conv_id)
+        return
 
     fast_route = await run_in_threadpool(_preflight_fast_route, req, history)
     if fast_route:

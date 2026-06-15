@@ -62,6 +62,7 @@ def _probe_all() -> dict[str, dict[str, Any]]:
         "mcp": _probe_mcp,
         "speech": _probe_speech,
         "blob": _probe_blob,
+        "content_safety": _probe_content_safety,
     }
     results: dict[str, dict[str, Any]] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(probes), thread_name_prefix="dataforge-health") as pool:
@@ -123,6 +124,17 @@ def _probe_speech() -> dict[str, Any]:
 
 def _probe_blob() -> dict[str, Any]:
     return probe_blob_container(timeout=_PROBE_TIMEOUT_SECONDS)
+
+
+def _probe_content_safety() -> dict[str, Any]:
+    try:
+        try:
+            from . import content_safety
+        except ImportError:
+            import content_safety
+        return content_safety.health()
+    except Exception as exc:
+        return {"ok": False, "state": "down", "error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
 def _probe_search() -> dict[str, Any]:
