@@ -264,18 +264,24 @@ export function App() {
     }
     resetRunState();
 
+    // 自动分析(看板)= 完整报告 + 五维评分；会话提问 = 简洁问答(chat)，不重跑五维、答案更短
+    const isAuto = !!opts.stayOnDashboard;
+    const mode = isAuto ? "report" : "chat";
     const payload = {
       workspace_id: workspaceId,
       message,
       conversation_id: activeConversationId,
-      playbook: currentPlaybook.prompt,
-      artifact_mode: artifactMode,
+      artifact_mode: mode,
       ui_context: {
-        playbook_label: currentPlaybook.name,
         workspace_name: dashboard?.workspace?.name || workspaceId,
-        requested_output: artifactMode,
+        requested_output: mode,
+        mode: isAuto ? "auto_analysis" : "conversation",
       },
     };
+    if (isAuto) {
+      payload.playbook = currentPlaybook.prompt;
+      payload.ui_context.playbook_label = currentPlaybook.name;
+    }
 
     try {
       await streamChat(payload, (event) => {

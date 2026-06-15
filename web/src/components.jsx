@@ -769,9 +769,8 @@ function ConversationStudio({
         <div>
           <span className="eyeless-label">Conversation</span>
           <h1>AI Agent 会话</h1>
-          <p>围绕「{workspace.name || "当前工作区"}」直接提问。Agent 会根据工作区证据、市场推断和审计结果回答，不把外部来源当作内部事实。</p>
+          <p>围绕「{workspace.name || "当前工作区"}」直接提问，Agent 会结合工作区证据、记住整段对话来回答，不把外部来源当作内部事实。</p>
         </div>
-        <PlaybookBar selected={selectedPlaybook} onSelect={setSelectedPlaybook} artifactMode="chat" onMode={() => {}} />
       </section>
       <QuestionStarter onRun={onRun} running={running} />
       <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} />
@@ -1199,8 +1198,7 @@ function buildDefaultSteps(feasibility, playbook) {
   ];
 }
 
-function Composer({ input, setInput, running, onRun, selectedPlaybook }) {
-  const playbook = PLAYBOOKS.find((item) => item.id === selectedPlaybook) || PLAYBOOKS[0];
+function Composer({ input, setInput, running, onRun }) {
   return (
     <form
       className="composer"
@@ -1210,11 +1208,10 @@ function Composer({ input, setInput, running, onRun, selectedPlaybook }) {
       }}
     >
       <div className="composer-field">
-        <span>{playbook.name}</span>
         <input
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          placeholder="分析这份数据最适合产品化成什么机会？"
+          placeholder="继续追问，例如：这个活动值得再办一次吗？"
           disabled={running}
         />
       </div>
