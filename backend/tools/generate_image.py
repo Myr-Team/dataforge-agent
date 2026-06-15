@@ -337,9 +337,10 @@ def _decode_image_response(data: dict[str, Any], label: str) -> bytes:
 
 def _image_prompt(prompt: str) -> str:
     return (
-        "Create a polished enterprise product concept image for a data product proposal. "
-        "Show a realistic dashboard/workflow scene with evidence cards, confidence labels, "
-        "market signals, and business stakeholders reviewing the result. Avoid readable UI microtext; "
-        "make it suitable as a proposal cover image. Context: "
+        "Create the requested proposal concept image exactly following the deliverable type and reference asset instructions. "
+        "If a reference image or logo is provided, integrate it visibly while preserving brand shape and color. "
+        "Use polished commercial art direction suitable for a demo proposal cover. "
+        "Avoid conference tables, generic office review scenes, people gathered around screens, handshakes, and unrelated corporate stock imagery. "
+        "Avoid readable UI microtext. Brief: "
         + str(prompt or "")[:2600]
     )

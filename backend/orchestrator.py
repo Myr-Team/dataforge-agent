@@ -213,9 +213,9 @@ def _request_with_history(req: ChatRequest, history: list[dict[str, Any]]) -> Ch
     context_blocks: list[str] = []
     if history:
         turns = []
-        for item in history[-6:]:
+        for item in history[-20:]:
             role = str(item.get("role") or "message")
-            text = _clean_text(item.get("text"), 700)
+            text = _clean_text(item.get("text"), 900)
             if text:
                 turns.append(f"{role}: {text}")
         if turns:
@@ -269,7 +269,7 @@ def _ui_context_lines(req: ChatRequest) -> list[str]:
 
 def _compact_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
-    for item in history[-6:]:
+    for item in history[-20:]:
         text = _clean_text(item.get("text"), 900)
         if text:
             compact.append({"role": item.get("role"), "text": text, "time": item.get("time")})
@@ -1518,6 +1518,7 @@ def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
         artifact["reference_images"] = workspace_reference_images(str(artifact.get("workspace_id") or ""))
     proposal = _proposal_payload(artifact)
     image_prompt = _image_prompt_from_proposal(proposal)
+    image_kind = _proposal_image_kind(proposal)[0]
     audio_text = _concise_narration_from_proposal(proposal)
     reference_image_urls = _reference_image_urls(proposal.get("reference_images") or [])
     with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dataforge-producer") as pool:
@@ -1530,6 +1531,8 @@ def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
     return {
         "opportunity_id": proposal["opportunity_id"],
         "proposal": proposal,
+        "image_kind": image_kind,
+        "image_prompt": image_prompt,
         "pdf": pdf,
         "concept_image": image,
         "audio_summary": audio,
@@ -1552,6 +1555,42 @@ def _reference_image_urls(reference_images: list[dict[str, Any]]) -> list[str]:
         if value:
             urls.append(str(value))
     return urls
+
+
+def _proposal_image_kind(proposal: dict[str, Any]) -> tuple[str, str, str]:
+    feasibility = proposal.get("feasibility") or {}
+    market = proposal.get("market") or {}
+    dimensions = feasibility.get("dimensions") or []
+    text = " ".join(
+        str(part or "")
+        for part in (
+            proposal.get("title"),
+            proposal.get("opportunity_id"),
+            proposal.get("executive_summary"),
+            feasibility.get("opportunity_id"),
+            feasibility.get("recommendation"),
+            " ".join(str(item) for item in feasibility.get("action_plan") or []),
+            " ".join(str(item.get("rationale") or "") for item in dimensions if isinstance(item, dict)),
+            market.get("positioning_note"),
+        )
+    ).lower()
+    if re.search(r"(活动|运营|赛事|联赛|比赛|挑战|打卡|拉新|推广|宣传|海报|campaign|event|competition|poster|festival)", text, re.I):
+        return (
+            "event_poster",
+            "活动海报 / campaign key visual",
+            "Create a campaign poster or event key visual with a strong title area, hero scene, branded visual hook, clear campaign atmosphere, and space for date/location blocks.",
+        )
+    if re.search(r"(报告|分析|画像|看板|仪表盘|dashboard|analytics|report|insight|bi|scorecard|board)", text, re.I):
+        return (
+            "analytics_board",
+            "分析看板 / dashboard concept",
+            "Create a clean analytics dashboard or product board concept with evidence groups, trend modules, confidence tags, and executive decision panels.",
+        )
+    return (
+        "product_concept",
+        "产品概念设计 / product UI or physical mockup",
+        "Create a product concept design, app UI mockup, service screen, packaging, or physical prototype that makes the proposed product tangible.",
+    )
 
 
 def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1608,7 +1647,20 @@ def _image_prompt_from_proposal(proposal: dict[str, Any]) -> str:
     market = proposal.get("market") or {}
     market_bits = "; ".join(str(item.get("claim") or "")[:160] for item in (market.get("external_findings") or [])[:3])
     gaps = "; ".join(str(item)[:120] for item in (feasibility.get("gap_list") or [])[:3])
+    image_kind, image_label, image_direction = _proposal_image_kind(proposal)
+    reference_count = len([item for item in (proposal.get("reference_images") or []) if isinstance(item, dict)])
+    logo_instruction = (
+        "Reference asset instruction: the provided reference image is a logo or brand asset. Integrate it visibly into the concept image, preserve its shape and colors, and place it on the poster/product/header/mockup where a customer can notice it. "
+        if reference_count
+        else "No reference logo is provided, so create a brand-neutral concept while keeping the deliverable type specific. "
+    )
     return (
+        f"Deliverable image type: {image_label} ({image_kind}). "
+        f"{image_direction} "
+        f"{logo_instruction}"
+        "Use polished commercial art direction and make the output suitable as a proposal cover. "
+        "Avoid conference tables, generic office review scenes, people gathered around screens, handshakes, and unrelated corporate stock imagery. "
+        "Avoid readable tiny UI text; use shapes and short label-like marks instead. "
         f"Opportunity: {proposal.get('title')}. Verdict: {feasibility.get('verdict')} "
         f"overall confidence {feasibility.get('overall_confidence')}. Dimensions: {dimension_bits}. "
         f"Market signals: {market_bits}. Gaps: {gaps}."
@@ -2214,6 +2266,165 @@ def _output_contract(intent: str) -> dict[str, Any]:
     }
 
 
+def _chat_output_contract(intent: str) -> dict[str, Any]:
+    contract = _output_contract(intent)
+    contract.update(
+        {
+            "version": "batch12.conversation_chat.v1",
+            "sections": ["direct_answer", "brief_reasoning", "next_step"],
+            "answer_style": "concise_conversation",
+            "max_target_chars": 300,
+            "no_numbered_action_plan": True,
+            "no_dimension_scores": True,
+        }
+    )
+    return contract
+
+
+def _is_conversation_answer(req: ChatRequest, decision: RoutingDecision) -> bool:
+    artifact_mode = str(getattr(req, "artifact_mode", "") or "").strip().lower()
+    ui_context = getattr(req, "ui_context", None)
+    ui_mode = str((ui_context or {}).get("mode") or "").strip().lower() if isinstance(ui_context, dict) else ""
+    return (
+        decision.intent == "corpus_qa"
+        or artifact_mode == "chat"
+        or ui_mode == "conversation"
+        or str(getattr(decision, "output_mode", "") or "").strip().lower() == "chat"
+    )
+
+
+def _current_user_message(req: ChatRequest) -> str:
+    text = str(req.message or "").strip()
+    match = re.search(r"(?:^|\n)Current user message:\s*(.+)\s*$", text, re.S)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
+def _last_history_user_topic(artifact: dict[str, Any]) -> str:
+    history = artifact.get("_conversation_history") or []
+    if not isinstance(history, list):
+        return ""
+    for item in reversed(history):
+        if not isinstance(item, dict) or item.get("role") != "user":
+            continue
+        text = _current_user_message(ChatRequest(workspace_id=str(artifact.get("workspace_id") or "demo-corpus"), message=str(item.get("text") or "")))
+        text = re.sub(r"(值得|能不能|是否|可以|怎么|如何|那如果|如果|呢|吗|？|\?)", "", text).strip(" ，。；;：:-_")
+        candidate = _complete_short_phrase(text, fallback="", limit=26)
+        if candidate:
+            return candidate
+    return ""
+
+
+def _chat_constraint_phrase(current: str) -> str:
+    text = str(current or "")
+    constraints: list[str] = []
+    if re.search(r"(预算.{0,8}(一半|减半|砍半)|只有一半|减半.{0,8}预算|half.{0,8}budget)", text, re.I):
+        constraints.append("预算减半")
+    if re.search(r"(只看|仅看).{0,12}(旗舰店|旗舰|主店|核心门店)", text):
+        constraints.append("只看旗舰店")
+    if re.search(r"(只看|仅看).{0,12}(数据|工作区|内部资料)", text):
+        constraints.append("只按工作区数据")
+    if re.search(r"(先不|不要|不看).{0,12}(市场|外部)", text):
+        constraints.append("暂不纳入外部市场信息")
+    if not constraints:
+        return ""
+    return "，".join(constraints)
+
+
+def _sanitize_chat_sentence(text: Any, field_labels: dict[str, str]) -> str:
+    cleaned = sanitize_customer_text(_strip_raw_ref_leaks(str(text or "")), field_labels)
+    cleaned = re.sub(r"(?:资料分组|时间维度|业务类别|本工作区为演示用|合成数据)为[“\"']?[^，。；、\n]+[”\"']?[，；、]?", "", cleaned)
+    cleaned = re.sub(r"\bL\d{2}\b", "", cleaned)
+    cleaned = re.sub(r"(?m)^\s*\d+[.)、]\s*", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"([。！？!?])\1+", r"\1", cleaned)
+    return cleaned.strip(" ，；;")
+
+
+def _chat_topic(req: ChatRequest, artifact: dict[str, Any], feasibility: dict[str, Any]) -> str:
+    current = _current_user_message(req)
+    if re.search(r"(那|如果|这个|它|继续|预算|一半|减半|只看)", current) and artifact.get("_conversation_history"):
+        topic = _last_history_user_topic(artifact)
+        if topic:
+            return topic
+    title_req = req.model_copy(update={"message": current})
+    return _customer_opportunity_title(title_req, artifact, feasibility.get("opportunity_id") or _evidence_topic_from_hits(artifact.get("corpus", {}).get("hits", [])) or "当前机会")
+
+
+def _marker_hint_from_citations(citations: list[dict[str, Any]], limit: int = 2) -> str:
+    markers = [f"[{item.get('marker')}]" for item in citations[:limit] if item.get("marker")]
+    return " ".join(markers)
+
+
+def _trim_conversation_answer(text: str, *, limit: int = 320) -> str:
+    cleaned = re.sub(r"\n{2,}", "\n", text).strip()
+    cleaned = re.sub(r"(?m)^\s*\d+[.)、]\s*", "", cleaned)
+    if len(cleaned) <= limit:
+        return cleaned
+    head = cleaned[:limit]
+    for sep in ("。", "；", "，", "\n"):
+        pos = head.rfind(sep)
+        if pos >= int(limit * 0.72):
+            return head[: pos + (1 if sep in "。；，" else 0)].rstrip()
+    return head.rstrip(" ，；、") + "。"
+
+
+def _structured_chat_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact: dict[str, Any]) -> dict[str, Any]:
+    citations, _ = _build_citations(artifact)
+    field_labels = _customer_field_labels(artifact)
+    citations = sanitize_citations(citations, field_labels)
+    feasibility = artifact.get("feasibility") or {}
+    if not isinstance(feasibility, dict):
+        feasibility = {}
+    hits = artifact.get("corpus", {}).get("hits", [])
+    signals = _evidence_signals(hits, citations)
+    current = _current_user_message(req)
+    constraint = _chat_constraint_phrase(current)
+    topic = _sanitize_chat_sentence(_chat_topic(req, artifact, feasibility), field_labels) or "当前机会"
+    marker_hint = _combined_markers(signals[:3], 2) or _marker_hint_from_citations(citations)
+    verdict = str(feasibility.get("verdict") or "").lower()
+
+    if constraint:
+        lead = f"如果继续围绕“{topic}”，在{constraint}的前提下，不建议照原规模复刻，应该缩成一轮更小的验证。"
+    elif verdict in {"feasible", "recommended"}:
+        lead = f"直接看，“{topic}”可以继续推进，但仍建议先做可复盘的小范围验证。"
+    elif verdict in {"not_yet_feasible", "not_feasible", "rejected"}:
+        lead = f"直接看，“{topic}”现在不适合直接放大，证据还不足以支撑高投入。"
+    else:
+        lead = f"直接看，“{topic}”可以继续讨论，但要按证据强弱先收窄试点范围。"
+
+    lines = [lead]
+    if signals:
+        first = _sanitize_chat_sentence(signals[0].get("text"), field_labels)
+        second = _sanitize_chat_sentence(signals[1].get("text"), field_labels) if len(signals) > 1 else ""
+        if second and second != first:
+            lines.append(f"目前较强的依据是{first}，同时{second}。{marker_hint}".strip())
+        else:
+            lines.append(f"目前较强的依据是{first}。{marker_hint}".strip())
+    elif citations:
+        lines.append(f"当前只命中少量工作区证据，结论应保守处理。{marker_hint}".strip())
+    else:
+        lines.append("当前工作区还没有足够证据支撑明确判断，需要先补充可复盘的数据。")
+
+    gaps = [_sanitize_chat_sentence(item, field_labels) for item in (feasibility.get("gap_list") or []) if str(item).strip()]
+    if gaps:
+        lines.append(f"最大的缺口是{_clip_customer_signal(gaps[0], 58)}，所以先验证成本、参与或转化阈值。")
+    elif constraint:
+        lines.append("下一步只保留最能证明效果的门店、人群或渠道，其他动作先暂停。")
+    else:
+        lines.append("下一步建议先定一个主指标，再用一轮小样本验证决定是否生成完整项目书。")
+
+    markdown = _trim_conversation_answer("".join(line if line.endswith(("。", "！", "？", ".", "!", "?")) else line + "。" for line in lines))
+    markdown = _sanitize_chat_sentence(markdown, field_labels)
+    return {
+        "markdown": markdown,
+        "citations": citations,
+        "_llm": {"mode": "batch12_conversation_chat_renderer", "response_id": None, "usage": {}},
+        "output_contract": _chat_output_contract(decision.intent),
+    }
+
+
 def _ensure_feasibility_action_plan(
     req: ChatRequest,
     artifact: dict[str, Any],
@@ -2360,8 +2571,8 @@ def _markers_for_terms(signals: list[dict[str, str]], citations: list[dict[str, 
 
 
 def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact: dict[str, Any]) -> dict[str, Any]:
-    if decision.intent == "corpus_qa":
-        return _structured_corpus_answer_v10(req, artifact)
+    if _is_conversation_answer(req, decision):
+        return _structured_chat_answer_v10(req, decision, artifact)
     citations, _ = _build_citations(artifact)
     field_labels = _customer_field_labels(artifact)
     citations = sanitize_citations(citations, field_labels)
@@ -2798,7 +3009,7 @@ async def _emit_lightweight_final(
 
 async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     conv_id = req.conversation_id or str(uuid.uuid4())
-    history = conversation_context(req.conversation_id) if req.conversation_id else []
+    history = conversation_context(req.conversation_id, limit=20) if req.conversation_id else []
     working_req = _request_with_history(req, history)
     artifact: dict[str, Any] = {
         "workspace_id": req.workspace_id,
@@ -2810,7 +3021,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     yield _frame("user", {"text": req.message}, conv_id)
     await run_in_threadpool(_persist_user_message, conv_id, req.workspace_id, req.message)
 
-    decision, route_meta = await run_in_threadpool(_coordinator, req, history)
+    decision, route_meta = await run_in_threadpool(_coordinator, working_req, history)
     artifact["routing"] = decision.model_dump()
     artifact["routing_meta"] = route_meta
     producer_requested = "df-producer" in decision.experts
@@ -3169,7 +3380,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             if verdict_contract.get("revised"):
                 yield _frame("revised_verdict", verdict_contract, conv_id)
             answer_state: dict[str, Any] = {}
-            async for frame in _stream_answer_frames(req, decision, artifact, conv_id, answer_state):
+            async for frame in _stream_answer_frames(working_req, decision, artifact, conv_id, answer_state):
                 yield frame
             if producer_requested:
                 async for frame in _producer_frames(artifact, conv_id):
@@ -3198,7 +3409,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     if verdict_contract.get("revised"):
         yield _frame("revised_verdict", verdict_contract, conv_id)
     answer_state: dict[str, Any] = {}
-    async for frame in _stream_answer_frames(req, decision, artifact, conv_id, answer_state):
+    async for frame in _stream_answer_frames(working_req, decision, artifact, conv_id, answer_state):
         yield frame
     if producer_requested:
         async for frame in _producer_frames(artifact, conv_id):

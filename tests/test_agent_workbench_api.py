@@ -8,9 +8,18 @@ import backend.app as app_module
 import backend.workspace_store as workspace_store
 from backend.app import app
 from backend.customer_text import sanitize_customer_text
-from backend.orchestrator import _mcp_tool_allowed, _structured_answer_v10, _tool_provenance, _ui_context_lines
+from backend.orchestrator import (
+    _image_prompt_from_proposal,
+    _mcp_tool_allowed,
+    _proposal_image_kind,
+    _request_with_history,
+    _structured_answer_v10,
+    _tool_provenance,
+    _ui_context_lines,
+)
 from backend.pm_skills import playbook_suggestion
 from backend.schemas import ChatRequest, RoutingDecision
+from backend.tools.generate_image import _image_prompt
 
 
 client = TestClient(app)
@@ -343,3 +352,147 @@ def test_feasibility_renderer_rewrites_raw_replay_action_plan() -> None:
     assert "本工作区为演示用" not in markdown
     assert "先把" in markdown
     assert len(set(scores)) > 1
+
+
+def test_chat_mode_renderer_is_concise_and_not_report_like() -> None:
+    req = ChatRequest(
+        workspace_id="demo-corpus",
+        message="圣诞跨馆联赛值得再办吗？",
+        artifact_mode="chat",
+        ui_context={"mode": "conversation"},
+    )
+    decision = RoutingDecision(
+        workspace_id="demo-corpus",
+        intent="feasibility_analysis",
+        experts=["df-corpus-analyst", "df-feasibility-analyst"],
+        output_mode="chat",
+        needs_clarification=False,
+        reason="test",
+    )
+    evidence = {
+        "source_type": "corpus",
+        "ref": "raw_docs/climb.xlsx#climb-row-2",
+        "quote": "资料分组: 圣诞跨馆联赛; 时间维度: 2024-12; 新客报名: 38; 到店转化: 21%; 复购: 有提升",
+    }
+    artifact = {
+        "workspace_id": "demo-corpus",
+        "corpus": {
+            "hits": [
+                {
+                    "source_file": "raw_docs/climb.xlsx",
+                    "chunk_id": "climb-row-2",
+                    "content": evidence["quote"],
+                    "title": "圣诞跨馆联赛复盘",
+                }
+            ]
+        },
+        "feasibility": {
+            "opportunity_id": "圣诞跨馆联赛",
+            "verdict": "conditional",
+            "overall_confidence": "data_confirmed",
+            "dimensions": [
+                {"name": "market", "score": 4, "rationale": "有活动报名与到店信号", "evidence": [evidence], "confidence": "data_confirmed"}
+            ],
+            "gap_list": ["缺少真实预算、单次获客成本和复购阈值。"],
+        },
+    }
+
+    answer = _structured_answer_v10(req, decision, artifact)
+    markdown = answer["markdown"]
+
+    assert 60 <= len(markdown) <= 340
+    assert "行动方案" not in markdown
+    assert "评分" not in markdown
+    assert "\n1." not in markdown
+    assert "资料分组" not in markdown
+    assert "时间维度" not in markdown
+    assert "L03" not in markdown
+    assert answer["output_contract"]["answer_style"] == "concise_conversation"
+    assert answer["output_contract"]["no_dimension_scores"] is True
+
+
+def test_conversation_history_is_used_for_budget_followup() -> None:
+    history = [
+        {"role": "user", "text": "圣诞跨馆联赛值得再办吗？"},
+        {"role": "assistant", "text": "可以继续，但建议缩小成一轮可复盘试点。"},
+    ]
+    req = ChatRequest(
+        workspace_id="demo-corpus",
+        conversation_id="conv-budget",
+        message="那如果预算只有一半呢？",
+        artifact_mode="chat",
+        ui_context={"mode": "conversation"},
+    )
+    working_req = _request_with_history(req, history)
+
+    assert "Conversation history for continuity" in working_req.message
+    assert "圣诞跨馆联赛值得再办吗" in working_req.message
+    assert "Current user message" in working_req.message
+    assert "预算只有一半" in working_req.message
+
+    decision = RoutingDecision(
+        workspace_id="demo-corpus",
+        intent="corpus_qa",
+        experts=["df-corpus-analyst"],
+        output_mode="chat",
+        needs_clarification=False,
+        reason="test",
+    )
+    artifact = {
+        "workspace_id": "demo-corpus",
+        "_conversation_history": history,
+        "corpus": {
+            "hits": [
+                {
+                    "source_file": "raw_docs/climb.xlsx",
+                    "chunk_id": "climb-row-5",
+                    "content": "活动名称: 圣诞跨馆联赛; 报名人数: 56; 到店转化: 28%; 预算: 中等; 复购: 有提升",
+                    "title": "圣诞跨馆联赛复盘",
+                }
+            ]
+        },
+        "feasibility": {"opportunity_id": "圣诞跨馆联赛", "verdict": "conditional", "gap_list": []},
+    }
+
+    markdown = _structured_answer_v10(working_req, decision, artifact)["markdown"]
+
+    assert "预算减半" in markdown
+    assert "圣诞跨馆联赛" in markdown
+    assert "行动方案" not in markdown
+    assert "\n1." not in markdown
+
+
+def test_producer_image_prompt_uses_deliverable_type_and_logo_instruction() -> None:
+    product_proposal = {
+        "title": "会员续费提醒产品",
+        "feasibility": {"opportunity_id": "会员续费提醒产品", "recommendation": "做一个会员续费提醒小程序产品", "dimensions": []},
+        "market": {},
+        "reference_images": [],
+    }
+    event_proposal = {
+        "title": "圣诞跨馆联赛活动",
+        "feasibility": {"opportunity_id": "圣诞跨馆联赛活动", "recommendation": "生成活动海报和报名转化企划", "dimensions": []},
+        "market": {},
+        "reference_images": [{"role": "logo", "blob_url": "https://example.test/logo.png"}],
+    }
+    dashboard_proposal = {
+        "title": "门店经营分析看板",
+        "feasibility": {"opportunity_id": "门店经营分析看板", "recommendation": "输出报告和 dashboard 概念", "dimensions": []},
+        "market": {},
+        "reference_images": [],
+    }
+
+    assert _proposal_image_kind(product_proposal)[0] == "product_concept"
+    assert _proposal_image_kind(event_proposal)[0] == "event_poster"
+    assert _proposal_image_kind(dashboard_proposal)[0] == "analytics_board"
+
+    product_prompt = _image_prompt_from_proposal(product_proposal)
+    event_prompt = _image_prompt_from_proposal(event_proposal)
+    wrapped_prompt = _image_prompt(event_prompt)
+
+    assert "产品概念" in product_prompt or "product UI" in product_prompt
+    assert "活动海报" in event_prompt
+    assert "logo" in event_prompt.lower()
+    assert "visibly" in event_prompt
+    assert "business stakeholders" not in wrapped_prompt
+    assert "meeting discussion" not in wrapped_prompt.lower()
