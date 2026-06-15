@@ -1150,7 +1150,7 @@ svg { flex-shrink: 0; }
 }
 .composer-field {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -1749,9 +1749,10 @@ svg { flex-shrink: 0; }
 @media (max-width: 720px) { .ap-grid { grid-template-columns: repeat(2, 1fr); } }
 
 /* 关键数字高亮 + 引用角标 */
-.num-hl { color: #0a5bd0; font-weight: 600; }
-.cite-mark { display: inline-grid; place-items: center; min-width: 15px; height: 15px; padding: 0 3px; margin: 0 1px; border-radius: 4px;
-  background: var(--blue-soft); color: var(--blue); font-size: 10px; font-weight: 700; vertical-align: super; line-height: 1; }
+/* 极简：数字不再特殊高亮（纯文本）；引用角标改成普通小上标、无背景块 */
+.num-hl { color: inherit; font-weight: inherit; }
+.cite-mark { color: var(--muted); font-size: 0.72em; vertical-align: super; margin: 0 1px; font-weight: 500; }
+.rich-text strong { font-weight: 650; color: var(--ink); }
 
 /* flex 流水线（替代 SVG，稳定显示、响应式） */
 .pipe-flow { display: flex; align-items: flex-start; gap: 0; padding: 16px 4px 8px; }

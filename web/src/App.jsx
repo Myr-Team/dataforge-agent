@@ -122,8 +122,8 @@ export function App() {
     clearReveal();
     setStreamText("");
     setTrace([]);
-    setFinalArtifact(null);
     setArtifacts({});
+    // 注意：不清 finalArtifact —— 它只保存"最近一次可行性分析"，聊天/换轮不应丢掉看板上的结论与五维。
   };
 
   const openWorkspaceUpload = () => {
@@ -159,6 +159,22 @@ export function App() {
     const timer = window.setTimeout(() => refreshDashboard(workspaceId), 3500);
     return () => window.clearTimeout(timer);
   }, [dashboard, workspaceId, refreshDashboard]);
+
+  // 恢复该工作区上次的可行性分析（刷新/换工作区后看板结论与五维不丢；待后端持久化后改读后端）
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(`df-analysis:${workspaceId}`);
+      setFinalArtifact(raw ? JSON.parse(raw) : null);
+    } catch { setFinalArtifact(null); }
+    setArtifacts({});
+  }, [workspaceId]);
+
+  // notice 自动淡出（非加载态 3.5s 后自动消失，不用手动点关）
+  useEffect(() => {
+    if (!notice || notice.type === "loading") return undefined;
+    const t = window.setTimeout(() => setNotice(null), 3500);
+    return () => window.clearTimeout(t);
+  }, [notice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -313,9 +329,15 @@ export function App() {
         if (event.event === "final") {
           const artifact = event.data?.artifact || {};
           const text = event.data?.text || artifact.answer?.text || streamRef.current || "已完成分析。";
-          setFinalArtifact(artifact);
+          // finalArtifact 只在"真正的可行性分析"时更新（含 verdict/五维），聊天/问答不覆盖它——
+          // 这样换工作区/聊天后，看板结论与「生成产物」仍基于上次分析，不会拿"你好"这种回复去生成。
+          const fe = artifact.feasibility || {};
+          const isAnalysis = Boolean(fe.verdict || (fe.dimensions && fe.dimensions.length) || fe.scores);
+          if (isAnalysis) {
+            setFinalArtifact(artifact);
+            try { window.localStorage.setItem(`df-analysis:${workspaceId}`, JSON.stringify(artifact)); } catch { /* ignore */ }
+          }
           // 不在分析阶段自动填充产物：产物生成器停在待命，由客户拍板后点「生成产物」才生成（见 produce()）。
-          // setArtifacts 仅由 produce() 调用。
           const commitFinal = () => {
             setMessages((items) => [
               ...items,
@@ -438,12 +460,15 @@ export function App() {
   };
 
   const produce = async () => {
-    if (!finalArtifact) {
-      setNotice({ type: "error", message: "没有可复用的分析报告。" });
+    const fe = finalArtifact?.feasibility || {};
+    const hasAnalysis = Boolean(fe.verdict || (fe.dimensions && fe.dimensions.length) || fe.scores);
+    if (!finalArtifact || !hasAnalysis) {
+      setNotice({ type: "error", message: "请先在工作区做一次自动分析，再生成产物。" });
       return;
     }
     setProducing(true);
     setInspectorTab("output");
+    setNotice({ type: "loading", message: "正在生成产物（PDF / 概念图 / 语音）…" });
     try {
       const result = await produceArtifacts({
         workspace_id: workspaceId,

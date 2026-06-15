@@ -1707,9 +1707,9 @@ export function NoticeStack({ notice, uploadState, onDismiss }) {
     <div className="notice-stack">
       {notice ? (
         <div className={`notice ${notice.type || "info"}`}>
-          {notice.type === "error" ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+          {notice.type === "error" ? <AlertTriangle size={16} /> : notice.type === "loading" ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
           <span>{notice.message}</span>
-          <button type="button" onClick={onDismiss}><X size={14} /></button>
+          {notice.type !== "loading" ? <button type="button" onClick={onDismiss}><X size={14} /></button> : null}
         </div>
       ) : null}
       {uploadState ? (
