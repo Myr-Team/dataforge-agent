@@ -429,7 +429,7 @@ export function AgentStudio({
       <QualityBar quality={quality} />
 
       <section className="answer-surface">
-        <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} />
+        <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} />
         <FeasibilityStrip feasibility={feasibility} />
         <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
       </section>
@@ -776,7 +776,7 @@ function ConversationStudio({
         </div>
       </section>
       <QuestionStarter onRun={onRun} running={running} />
-      <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} />
+      <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} />
       <Composer input={input} setInput={setInput} running={running} onRun={onRun} selectedPlaybook={selectedPlaybook} />
     </main>
   );
@@ -1039,8 +1039,44 @@ function TypeOut({ text, animate }) {
   return <p className="chat-usertext">{shown}{animate && !reduce && shown.length < text.length ? <span className="cursor" /> : null}</p>;
 }
 
-function AnswerPanel({ messages, streamText, running, presentation }) {
+// 反问选择框：问题 + 快捷选项（后端给 options 用之，否则给一组通用快捷意图）+ 自由输入
+function ClarifyCard({ clarify, onSubmit, disabled }) {
+  const [text, setText] = useState("");
+  const opts = (clarify.options && clarify.options.length)
+    ? clarify.options.map((o) => (typeof o === "string" ? o : o.label || o.id)).filter(Boolean)
+    : ["看产品机会", "目标客群", "证据最强/最弱在哪", "生成 PRD 草案", "做 30/60/90 路线图"];
+  const send = (value) => {
+    const msg = String(value ?? text).trim();
+    if (!msg || disabled) return;
+    setText("");
+    onSubmit?.(msg);
+  };
+  return (
+    <div className="clarify-card">
+      <div className="clarify-q"><RichText text={clarify.question} /></div>
+      <div className="clarify-opts">
+        {opts.map((o, i) => (
+          <button key={i} type="button" disabled={disabled} onClick={() => send(o)}>{o}</button>
+        ))}
+      </div>
+      <form className="clarify-form" onSubmit={(e) => { e.preventDefault(); send(); }}>
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="或直接输入你的目标…" disabled={disabled} />
+        <button type="submit" disabled={disabled || !text.trim()}>确认</button>
+      </form>
+    </div>
+  );
+}
+
+function AnswerPanel({ messages, streamText, running, presentation, onRun }) {
   const visible = messages.length || streamText;
+  const scrollRef = useRef(null);
+  const bottomRef = useRef(null);
+  // 新消息/流式更新时自动滚到底，不用手动滚
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    bottomRef.current?.scrollIntoView?.({ block: "end" });
+  }, [messages, streamText, running]);
   return (
     <div className="answer-panel">
       <div className="answer-panel-head">
@@ -1054,16 +1090,18 @@ function AnswerPanel({ messages, streamText, running, presentation }) {
         </div>
       </div>
       {visible ? (
-        <div className="message-stack">
+        <div className="message-stack" ref={scrollRef}>
           {messages.map((message, index) => {
             const isLastUser = message.role === "user" && index === messages.length - 1;
             return (
               <article key={`${message.role}-${index}`} className={`chat-message ${message.role}`}>
                 <div className="speaker">{message.role === "user" ? "你" : "AI"}</div>
                 <div className="message-body">
-                  {message.role === "user"
-                    ? <TypeOut text={message.text} animate={isLastUser && running} />
-                    : <RichText text={message.text} />}
+                  {message.clarify
+                    ? <ClarifyCard clarify={message.clarify} onSubmit={onRun} disabled={running} />
+                    : message.role === "user"
+                      ? <TypeOut text={message.text} animate={isLastUser && running} />
+                      : <RichText text={message.text} />}
                   {message.citations?.length ? <CitationInline citations={message.citations} /> : null}
                 </div>
               </article>
@@ -1085,6 +1123,7 @@ function AnswerPanel({ messages, streamText, running, presentation }) {
               </div>
             </article>
           ) : null}
+          <div ref={bottomRef} />
         </div>
       ) : (
         <div className="blank-answer">
@@ -1098,28 +1137,52 @@ function AnswerPanel({ messages, streamText, running, presentation }) {
 }
 
 // 行内高亮：关键数字（百分比/价位/区间/倍数）加亮、[n] 角标做成引用标记（对齐 效果.png）
-function highlightInline(text) {
+// 行内：关键数字高亮 + [n] 引用角标
+function highlightTokens(text, kp) {
   const parts = String(text || "").split(/(\[\d+\]|\d+(?:\.\d+)?\s*[%％]|\d+(?:[,，]\d{3})+|\d+\s*[-–~]\s*\d+\s*(?:元|万|亿|%|％)?|\d+(?:\.\d+)?\s*(?:元|万|亿|倍|个|天|条|分))/g);
   return parts.map((part, i) => {
-    if (/^\[\d+\]$/.test(part)) return <sup key={i} className="cite-mark">{part.replace(/[[\]]/g, "")}</sup>;
-    if (/[%％]|元|万|亿|倍|[-–~]|[,，]\d{3}|个|天|条|分/.test(part) && /\d/.test(part)) return <mark key={i} className="num-hl">{part}</mark>;
-    return part;
+    if (/^\[\d+\]$/.test(part)) return <sup key={`${kp}-${i}`} className="cite-mark">{part.replace(/[[\]]/g, "")}</sup>;
+    if (/[%％]|元|万|亿|倍|[-–~]|[,，]\d{3}|个|天|条|分/.test(part) && /\d/.test(part)) return <mark key={`${kp}-${i}`} className="num-hl">{part}</mark>;
+    return <React.Fragment key={`${kp}-${i}`}>{part}</React.Fragment>;
   });
 }
 
+// 行内 markdown：**粗体** + `代码` + 数字/引用高亮
+function inlineNodes(text, kp = "i") {
+  const segs = String(text || "").split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return segs.map((seg, i) => {
+    if (/^\*\*[^*]+\*\*$/.test(seg)) return <strong key={`${kp}-b${i}`}>{highlightTokens(seg.slice(2, -2), `${kp}-b${i}`)}</strong>;
+    if (/^`[^`]+`$/.test(seg)) return <code key={`${kp}-c${i}`}>{seg.slice(1, -1)}</code>;
+    return <React.Fragment key={`${kp}-${i}`}>{highlightTokens(seg, `${kp}-${i}`)}</React.Fragment>;
+  });
+}
+
+// 轻量 markdown 渲染：标题 / 无序列表 / 有序列表 / 段落（段内单换行→换行）+ 行内粗体与高亮
 function RichText({ text }) {
-  const blocks = String(text || "").split(/\n{2,}/).filter(Boolean);
+  const lines = String(text || "").split("\n");
+  const blocks = [];
+  let para = [];
+  let list = null;
+  const flushPara = () => { if (para.length) { blocks.push({ type: "p", lines: para }); para = []; } };
+  const flushList = () => { if (list) { blocks.push(list); list = null; } };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    let m;
+    if ((m = line.match(/^#{1,4}\s+(.*)/))) { flushPara(); flushList(); blocks.push({ type: "h", text: m[1] }); }
+    else if ((m = line.match(/^\s*[-*]\s+(.*)/))) { flushPara(); if (!list || list.type !== "ul") { flushList(); list = { type: "ul", items: [] }; } list.items.push(m[1]); }
+    else if ((m = line.match(/^\s*\d+[.、)]\s+(.*)/))) { flushPara(); if (!list || list.type !== "ol") { flushList(); list = { type: "ol", items: [] }; } list.items.push(m[1]); }
+    else { flushList(); para.push(line); }
+  }
+  flushPara(); flushList();
   if (!blocks.length) return null;
   return (
     <div className="rich-text">
-      {blocks.map((block, index) => {
-        const trimmed = block.trim();
-        if (/^#{1,3}\s/.test(trimmed)) return <h3 key={index}>{trimmed.replace(/^#{1,3}\s/, "")}</h3>;
-        if (/^[-*]\s/m.test(trimmed)) {
-          const items = trimmed.split("\n").map((line) => line.replace(/^[-*]\s*/, "").trim()).filter(Boolean);
-          return <ul key={index}>{items.map((item, i) => <li key={i}>{highlightInline(item)}</li>)}</ul>;
-        }
-        return <p key={index}>{highlightInline(trimmed)}</p>;
+      {blocks.map((b, i) => {
+        if (b.type === "h") return <h3 key={i}>{inlineNodes(b.text, `h${i}`)}</h3>;
+        if (b.type === "ul") return <ul key={i}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `u${i}-${j}`)}</li>)}</ul>;
+        if (b.type === "ol") return <ol key={i}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `o${i}-${j}`)}</li>)}</ol>;
+        return <p key={i}>{b.lines.map((ln, j) => <React.Fragment key={j}>{j > 0 ? <br /> : null}{inlineNodes(ln, `p${i}-${j}`)}</React.Fragment>)}</p>;
       })}
     </div>
   );

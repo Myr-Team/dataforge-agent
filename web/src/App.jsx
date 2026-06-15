@@ -225,12 +225,12 @@ export function App() {
     setInspectorTab("trace");
   };
 
+  // 后端实际只发 1 个 answer_delta + final（非逐字），所以由前端对最终答案做打字机式流式揭示。
   const revealFinalText = (text, onComplete) => {
     const full = String(text || "");
-    if (!full || streamRef.current.trim().length > 0) {
-      onComplete?.();
-      return;
-    }
+    if (!full) { onComplete?.(); return; }
+    streamRef.current = "";   // 丢弃中途的局部 delta，统一用打字机揭示全文
+    setStreamText("");
     const pieces = full.match(/[^。！？!?；;，,\n]+[。！？!?；;，,\n]?\s*/g) || [full];
     let index = 0;
     let current = "";
@@ -245,9 +245,9 @@ export function App() {
         window.setTimeout(() => {
           setDemoReveal({ active: false, text: "" });
           onComplete?.();
-        }, 320);
+        }, 200);
       }
-    }, 170);
+    }, 110);
   };
 
   const run = async (rawMessage = input, opts = {}) => {
@@ -282,6 +282,7 @@ export function App() {
       payload.playbook = currentPlaybook.prompt;
       payload.ui_context.playbook_label = currentPlaybook.name;
     }
+    let deltaCount = 0;
 
     try {
       await streamChat(payload, (event) => {
@@ -292,7 +293,10 @@ export function App() {
           const delta = event.data?.delta || event.data?.text || "";
           if (delta) {
             streamRef.current += delta;
-            setStreamText(streamRef.current);
+            deltaCount += 1;
+            // 后端目前只发 1 个局部块再发 final（非逐字）：单块不显示，保持"思考中"三点，到 final 由打字机统一揭示；
+            // 若后端将来真的逐字多块推流，则从第 2 块起实时显示。
+            if (deltaCount >= 2) setStreamText(streamRef.current);
           }
           return;
         }
@@ -303,8 +307,11 @@ export function App() {
           mergeToolArtifact(event.data);
         }
         if (event.event === "clarify") {
-          const text = event.data?.question || event.data?.text || "我需要更多目标信息，才能给出可靠建议。";
-          setMessages((items) => [...items, { role: "assistant", text, time: new Date().toISOString() }]);
+          const cd = event.data || {};
+          const c = cd.clarify || cd; // 兼容 {clarify:{...}} 与扁平结构
+          const question = c.question || cd.question || cd.text || "我需要多了解一点你的目标，才能给出更有据的分析。";
+          const options = Array.isArray(c.options) ? c.options.filter((o) => o && (o.label || o.id || typeof o === "string")) : [];
+          setMessages((items) => [...items, { role: "assistant", text: "", time: new Date().toISOString(), clarify: { question, options } }]);
           setStreamText("");
         }
         if (event.event === "final") {
