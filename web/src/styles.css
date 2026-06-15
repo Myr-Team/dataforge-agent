@@ -1749,7 +1749,7 @@ svg { flex-shrink: 0; }
 @media (max-width: 720px) { .ap-grid { grid-template-columns: repeat(2, 1fr); } }
 
 /* 关键数字高亮 + 引用角标 */
-.num-hl { background: linear-gradient(180deg, transparent 58%, rgba(0,113,227,0.18) 0); color: var(--ink); font-weight: 700; padding: 0 1px; border-radius: 2px; }
+.num-hl { color: #0a5bd0; font-weight: 600; }
 .cite-mark { display: inline-grid; place-items: center; min-width: 15px; height: 15px; padding: 0 3px; margin: 0 1px; border-radius: 4px;
   background: var(--blue-soft); color: var(--blue); font-size: 10px; font-weight: 700; vertical-align: super; line-height: 1; }
 
@@ -1844,3 +1844,16 @@ svg { flex-shrink: 0; }
 .arl-step-t { color: var(--ink); flex-shrink: 0; }
 .arl-step-d { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1100px) { .runs-body { grid-template-columns: 1fr; } .runs-col.narrow { display: none; } }
+
+/* 左下角服务状态（竖排，替代原收起按钮） */
+.shell-nav .nav-status { margin-top: auto; display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+.nav-status-head { font-size: 9.5px; color: var(--faint); letter-spacing: 0.03em; }
+.nav-status-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.nst-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong); flex-shrink: 0; }
+.nst-dot.ok { background: var(--mint); box-shadow: 0 0 5px rgba(0, 168, 120, 0.5); }
+
+/* 产物确认 CTA（分析完成后出现在流水线底部） */
+.route-card-foot { flex-wrap: wrap; gap: 8px; }
+.produce-cta { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 6px 14px; border: 0; border-radius: 9px; background: var(--blue); color: #fff; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: background 0.15s, transform 0.12s; }
+.produce-cta:hover { background: #0066cc; transform: translateY(-1px); }
+.produce-doing { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12px; color: var(--blue); font-weight: 600; }

@@ -301,9 +301,7 @@ export function App() {
         if (event.event !== "progress") {
           setTrace((items) => [...items, event]);
         }
-        if (event.event === "tool_result" && event.data?.artifact_url) {
-          mergeToolArtifact(event.data);
-        }
+        // 不在分析期把内联产物自动填进来——产物生成器停在待命，由客户点「生成产物」(produce) 才出产物。
         if (event.event === "clarify") {
           const cd = event.data || {};
           const c = cd.clarify || cd; // 兼容 {clarify:{...}} 与扁平结构
@@ -316,7 +314,8 @@ export function App() {
           const artifact = event.data?.artifact || {};
           const text = event.data?.text || artifact.answer?.text || streamRef.current || "已完成分析。";
           setFinalArtifact(artifact);
-          setArtifacts(extractArtifacts(artifact));
+          // 不在分析阶段自动填充产物：产物生成器停在待命，由客户拍板后点「生成产物」才生成（见 produce()）。
+          // setArtifacts 仅由 produce() 调用。
           const commitFinal = () => {
             setMessages((items) => [
               ...items,
@@ -485,7 +484,7 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <ShellNav active={activeView} onChange={setActiveView} />
+      <ShellNav active={activeView} onChange={setActiveView} health={dashboard?.health} />
       <div className="workbench">
         <TopBar
           dashboard={dashboard}

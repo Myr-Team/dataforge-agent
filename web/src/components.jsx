@@ -49,7 +49,14 @@ import {
 
 const agentMap = new Map(AGENTS.map((agent) => [agent.id, agent]));
 
-export function ShellNav({ active = "workspaces", onChange = () => {} }) {
+export function ShellNav({ active = "workspaces", onChange = () => {}, health = {} }) {
+  const deps = health.dependencies || {};
+  const status = [
+    ["Foundry", deps.foundry],
+    ["Search", Boolean(health.search_endpoint || deps.search)],
+    ["Blob", deps.blob],
+    ["MCP", deps.mcp],
+  ];
   return (
     <nav className="shell-nav" aria-label="Primary">
       <div className="brand-mark">D</div>
@@ -70,9 +77,14 @@ export function ShellNav({ active = "workspaces", onChange = () => {} }) {
           );
         })}
       </div>
-      <button className="nav-icon collapse" type="button" title="收起">
-        <ChevronDown size={18} />
-      </button>
+      <div className="nav-status" aria-label="服务状态">
+        <span className="nav-status-head">服务状态</span>
+        {status.map(([label, ok]) => (
+          <span className="nav-status-row" key={label} title={`${label}: ${ok ? "正常" : "未连接"}`}>
+            <i className={ok ? "nst-dot ok" : "nst-dot off"} />{label}
+          </span>
+        ))}
+      </div>
     </nav>
   );
 }
@@ -136,11 +148,6 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
         </label>
       </div>
       <div className="topbar-actions">
-        <div className="health-chips">
-          <StatusChip label="Foundry" ok={deps.foundry} />
-          <StatusChip label="Search" ok={health.search_endpoint || deps.search} />
-          <StatusChip label="Blob" ok={deps.blob} />
-        </div>
         <button className="primary-button icon-label" type="button" onClick={() => { setMenuOpen(false); onUpload(); }}>
           <UploadCloud size={16} />
           上传数据
@@ -549,7 +556,7 @@ function DashboardStudio({
         </div>
       </section>
 
-      <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} />
+      <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} onProduce={onProduce} />
 
       <VerdictHero feasibility={feasibility} verdict={verdict} running={running} />
 
@@ -969,7 +976,7 @@ function useAgentPresentation(trace, running, producing = false) {
   return { actualActive, actualDone, hasFinal, activeIndex, pulse, caption };
 }
 
-function AgentRoute({ trace, running, presentation, producing = false, hasArtifacts = false }) {
+function AgentRoute({ trace, running, presentation, producing = false, hasArtifacts = false, onProduce }) {
   const PRODUCER = AGENTS.length - 1; // 产物生成器（最后一个）
   const { actualActive, actualDone, hasFinal } = presentation;
   const runId = trace.find((item) => item.event === "ready")?.data?.conversation_id || "pending";
@@ -1015,7 +1022,7 @@ function AgentRoute({ trace, running, presentation, producing = false, hasArtifa
           const Icon = agent.icon;
           return (
             <div className={`pf-node ${state}`} role="listitem" key={agent.id}>
-              <span className="pf-ic"><Icon size={18} strokeWidth={2.1} /></span>
+              <span className="pf-ic">{state === "active" ? <Loader2 className="spin" size={18} /> : <Icon size={18} strokeWidth={2.1} />}</span>
               <span className="pf-name">{agent.zh}</span>
               <span className="pf-role">{agent.role}</span>
               {index < AGENTS.length - 1 ? <span className={linkLit(index) ? "pf-link lit" : "pf-link"} aria-hidden="true" /> : null}
@@ -1026,6 +1033,12 @@ function AgentRoute({ trace, running, presentation, producing = false, hasArtifa
       <div className="route-card-foot">
         <span>{current.zh}</span>
         <strong>{foot}</strong>
+        {hasFinal && !producing && !hasArtifacts && onProduce ? (
+          <button className="produce-cta" type="button" onClick={onProduce}>
+            <FileDown size={14} /> 确认方案 · 生成产物
+          </button>
+        ) : null}
+        {producing ? <span className="produce-doing"><Loader2 className="spin" size={14} /> 正在生成产物…</span> : null}
       </div>
     </section>
   );
