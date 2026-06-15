@@ -722,47 +722,78 @@ def run_coordinator_direct_reply(payload: dict[str, Any]) -> dict[str, Any]:
     return _coordinator_text_response(openai_client, instructions, payload, "coordinator_direct_reply")
 
 
+# 共享指令体（run_grounded_chat_answer 与 stream_grounded_chat_answer 共用，仅结尾输出格式不同）。
+_GROUNDED_CHAT_BODY = (
+    "你是 DataForge 的数据分析助手，正在和客户多轮对话。请针对用户【当前这一条】消息作答，绝不套固定句式模板。\n"
+    "\n"
+    "先判断用户这条是【普通问答/判断】还是【要你出方案/策划/活动/计划/落地步骤】：\n"
+    "\n"
+    "A) 普通问答/判断（如“会员数据怎样”“值得办吗”“证据有多强”“缺什么数据”）：\n"
+    "  - 先一句话给结论，再结合证据解释；针对问的点答（问会员讲会员、问证据强弱就分强/弱/缺口讲）。一般 120-280 字。\n"
+    "  - 如果答案有【多个并列要点】（如分几类、几个维度、几条），请【换行】并用 `- ` 列点，让它清晰；不要把多点挤成一大段。\n"
+    "  - 但这种问答【不要】加 `## 大标题`、不要套方案那套小节骨架。\n"
+    "\n"
+    "B) 要你出方案/策划/活动/计划（如“做一场拉新活动”“帮我策划…”“这个怎么落地”“给个推广方案”）：\n"
+    "  - 按下面模板输出【真正可执行的方案】，用 Markdown：每个小节用 `## 标题` 单独成行，要点用 `- ` 或 `1.` 列表，小节之间空一行。直接照这个骨架填，缺的小节可省略：\n"
+    "    ## 一句话方案\n"
+    "    （定位+主线，一句话）\n"
+    "    ## 🎯 目标与主指标\n"
+    "    - 目标：… / 主指标（北极星）：…\n"
+    "    ## 👥 目标人群\n"
+    "    - 结合资料里的真实人群/痛点\n"
+    "    ## 🎬 活动机制（主线玩法）\n"
+    "    1. …\n"
+    "    2. …\n"
+    "    ## 📅 节奏（时间线）\n"
+    "    - 第1周：… / 第2-3周：… / 第4周：复盘\n"
+    "    ## 📊 漏斗指标\n"
+    "    - 曝光 → 报名 → 到店 → 转化/复购，每段给一个可量化阈值\n"
+    "    ## ⚠️ 风险与先验证\n"
+    "    - 最大风险 + 先用小样本验证什么\n"
+    "  - 方案必须结合 evidence 里的真实信号；没有数据支撑的地方写“需补：…”，绝不编造数字。\n"
+    "\n"
+    "通用规则：\n"
+    "1) 只用 evidence 提供的证据，不编造工作区事实；需要引用时在句末用 [n]（n=evidence 的 marker 数字）。\n"
+    "2) 绝不整段照抄证据原文，不输出字段名或 '会员编号为\"Mxxxx\"'、'数值为\"…\"' 这类原始值；综合成人话。\n"
+    "3) 结合 conversation_history 记住上文，理解指代与新增约束（如“预算减半”“只看旗舰店”）。\n"
+    "4) 不同问题给明显不同的答案；证据不足就直说缺什么。"
+)
+
+
 def run_grounded_chat_answer(payload: dict[str, Any]) -> dict[str, Any]:
     """用 LLM 针对用户【当前这条问题】、结合工作区证据与对话历史作答（替代写死的模板）。"""
     client = _project_client()
     openai_client = client.get_openai_client()
-    instructions = (
-        "你是 DataForge 的数据分析助手，正在和客户多轮对话。请针对用户【当前这一条】消息作答，绝不套固定句式模板。\n"
-        "\n"
-        "先判断用户这条是【普通问答/判断】还是【要你出方案/策划/活动/计划/落地步骤】：\n"
-        "\n"
-        "A) 普通问答/判断（如“会员数据怎样”“值得办吗”“证据有多强”“缺什么数据”）：\n"
-        "  - 先一句话给结论，再结合证据解释；针对问的点答（问会员讲会员、问证据强弱就分强/弱/缺口讲）。一般 120-280 字。\n"
-        "  - 如果答案有【多个并列要点】（如分几类、几个维度、几条），请【换行】并用 `- ` 列点，让它清晰；不要把多点挤成一大段。\n"
-        "  - 但这种问答【不要】加 `## 大标题`、不要套方案那套小节骨架。\n"
-        "\n"
-        "B) 要你出方案/策划/活动/计划（如“做一场拉新活动”“帮我策划…”“这个怎么落地”“给个推广方案”）：\n"
-        "  - 按下面模板输出【真正可执行的方案】，用 Markdown：每个小节用 `## 标题` 单独成行，要点用 `- ` 或 `1.` 列表，小节之间空一行。直接照这个骨架填，缺的小节可省略：\n"
-        "    ## 一句话方案\n"
-        "    （定位+主线，一句话）\n"
-        "    ## 🎯 目标与主指标\n"
-        "    - 目标：… / 主指标（北极星）：…\n"
-        "    ## 👥 目标人群\n"
-        "    - 结合资料里的真实人群/痛点\n"
-        "    ## 🎬 活动机制（主线玩法）\n"
-        "    1. …\n"
-        "    2. …\n"
-        "    ## 📅 节奏（时间线）\n"
-        "    - 第1周：… / 第2-3周：… / 第4周：复盘\n"
-        "    ## 📊 漏斗指标\n"
-        "    - 曝光 → 报名 → 到店 → 转化/复购，每段给一个可量化阈值\n"
-        "    ## ⚠️ 风险与先验证\n"
-        "    - 最大风险 + 先用小样本验证什么\n"
-        "  - 方案必须结合 evidence 里的真实信号；没有数据支撑的地方写“需补：…”，绝不编造数字。\n"
-        "\n"
-        "通用规则：\n"
-        "1) 只用 evidence 提供的证据，不编造工作区事实；需要引用时在句末用 [n]（n=evidence 的 marker 数字）。\n"
-        "2) 绝不整段照抄证据原文，不输出字段名或 '会员编号为\"Mxxxx\"'、'数值为\"…\"' 这类原始值；综合成人话。\n"
-        "3) 结合 conversation_history 记住上文，理解指代与新增约束（如“预算减半”“只看旗舰店”）。\n"
-        "4) 不同问题给明显不同的答案；证据不足就直说缺什么。\n"
-        "只返回 JSON，字段 text 为最终回答（方案模板里的换行 \\n 必须保留）。"
-    )
+    instructions = _GROUNDED_CHAT_BODY + "\n只返回 JSON，字段 text 为最终回答（方案模板里的换行 \\n 必须保留）。"
     return _coordinator_text_response(openai_client, instructions, payload, "grounded_chat_answer", max_output_tokens=1700)
+
+
+def stream_grounded_chat_answer(payload: dict[str, Any]) -> Any:
+    """与 run_grounded_chat_answer 同一套自适应逻辑，但【真 token 流式】输出纯文本（不套 JSON）。
+    逐 token 产出 {type:'delta', delta}；结束产出 {type:'meta', ...}。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = _GROUNDED_CHAT_BODY + "\n直接输出最终回答正文（方案模板里的换行必须保留），不要输出 JSON、不要加任何前后缀说明。"
+    create_args = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 1700,
+        "stream": True,
+    }
+    completed_meta: dict[str, Any] | None = None
+    stream = openai_client.responses.create(**create_args)
+    for event in stream:
+        delta = _stream_delta(event)
+        if delta:
+            yield {"type": "delta", "delta": delta}
+            continue
+        event_type = str(getattr(event, "type", "") or "")
+        if event_type in {"response.completed", "response.done"}:
+            response = getattr(event, "response", None)
+            if response is not None:
+                completed_meta = _response_meta(response, "grounded_chat_stream")
+    yield {"type": "meta", **(completed_meta or {"mode": "grounded_chat_stream", "usage": {}})}
 
 
 def run_followup_rewrite(payload: dict[str, Any]) -> dict[str, Any]:

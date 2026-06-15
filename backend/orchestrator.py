@@ -55,6 +55,7 @@ try:
         run_market_mcp_research,
         run_market_web_research,
         stream_grounded_answer,
+        stream_grounded_chat_answer,
     )
     from .pm_skills import playbook_suggestion
     from .rag import search
@@ -105,6 +106,7 @@ except ImportError:
         run_market_mcp_research,
         run_market_web_research,
         stream_grounded_answer,
+        stream_grounded_chat_answer,
     )
     from pm_skills import playbook_suggestion
     from rag import search
@@ -2766,6 +2768,53 @@ def _produce_offer_for(
     return None
 
 
+def _grounded_chat_payload(
+    req: ChatRequest,
+    artifact: dict[str, Any],
+    citations: list[dict[str, Any]],
+    feasibility: dict[str, Any],
+    field_labels: Any,
+) -> dict[str, Any]:
+    """构建 grounded 会话作答的 LLM 输入（run_ 与 stream_ 两条路径共用）。"""
+    evidence: list[dict[str, Any]] = []
+    for item in citations[:8]:
+        marker = item.get("marker")
+        snippet = sanitize_customer_text(str(item.get("snippet") or "")) if "sanitize_customer_text" in globals() else str(item.get("snippet") or "")
+        snippet = _sanitize_chat_sentence(snippet, field_labels)
+        if marker and snippet:
+            evidence.append({"marker": marker, "evidence": _clip_customer_signal(snippet, 160)})
+    history: list[dict[str, Any]] = []
+    conv_id = getattr(req, "conversation_id", None)
+    if conv_id:
+        try:
+            history = _compact_history(conversation_context(conv_id))
+        except Exception:
+            history = []
+    corpus_profile = (artifact.get("corpus", {}) or {}).get("profile", {}) or {}
+    return {
+        "current_question": _current_user_message(req),
+        "conversation_history": history[-8:],
+        "evidence": evidence,
+        "workspace_summary": _clip_customer_signal(str(corpus_profile.get("customer_summary") or corpus_profile.get("profile_summary") or ""), 220),
+        "feasibility_hint": {
+            "verdict": feasibility.get("verdict"),
+            "opportunity": feasibility.get("opportunity_id"),
+        },
+    }
+
+
+def _finalize_grounded_chat_text(raw: str, field_labels: Any) -> tuple[str, bool] | None:
+    """把（流式或一次性拿到的）原始答案做保留结构的清洗。返回 (markdown, is_plan)，无效返回 None。"""
+    raw = str(raw or "").strip()
+    if not raw or len(raw) < 12:
+        return None
+    is_plan = _looks_like_plan_markdown(raw)
+    md = _trim_plan_answer(_sanitize_plan_markdown(raw, field_labels), limit=1900 if is_plan else 820)
+    if md and len(md) >= 12:
+        return md, is_plan
+    return None
+
+
 def _llm_chat_answer(
     req: ChatRequest,
     artifact: dict[str, Any],
@@ -2775,40 +2824,14 @@ def _llm_chat_answer(
 ) -> dict[str, Any] | None:
     """用 LLM 针对当前问题作答（替代模板）。失败返回 None，由调用方回退到模板。"""
     try:
-        evidence: list[dict[str, Any]] = []
-        for item in citations[:8]:
-            marker = item.get("marker")
-            snippet = sanitize_customer_text(str(item.get("snippet") or "")) if "sanitize_customer_text" in globals() else str(item.get("snippet") or "")
-            snippet = _sanitize_chat_sentence(snippet, field_labels)
-            if marker and snippet:
-                evidence.append({"marker": marker, "evidence": _clip_customer_signal(snippet, 160)})
-        history: list[dict[str, Any]] = []
-        conv_id = getattr(req, "conversation_id", None)
-        if conv_id:
-            try:
-                history = _compact_history(conversation_context(conv_id))
-            except Exception:
-                history = []
-        corpus_profile = (artifact.get("corpus", {}) or {}).get("profile", {}) or {}
-        payload = {
-            "current_question": _current_user_message(req),
-            "conversation_history": history[-8:],
-            "evidence": evidence,
-            "workspace_summary": _clip_customer_signal(str(corpus_profile.get("customer_summary") or corpus_profile.get("profile_summary") or ""), 220),
-            "feasibility_hint": {
-                "verdict": feasibility.get("verdict"),
-                "opportunity": feasibility.get("opportunity_id"),
-            },
-        }
+        payload = _grounded_chat_payload(req, artifact, citations, feasibility, field_labels)
         result = run_grounded_chat_answer(payload)
         raw = str((result or {}).get("text") or "").strip()
-        if not raw or len(raw) < 12:
-            return None
         # 统一用「保留结构」的清洗：不再把换行/列表压平。方案给更大额度，普通问答短一些，
         # 但都保留 LLM 用的换行和 `- ` 列点，多点答案才有排版（修复追问一堆字没换行的问题）。
-        is_plan = _looks_like_plan_markdown(raw)
-        md = _trim_plan_answer(_sanitize_plan_markdown(raw, field_labels), limit=1900 if is_plan else 820)
-        if md and len(md) >= 12:
+        finalized = _finalize_grounded_chat_text(raw, field_labels)
+        if finalized:
+            md, is_plan = finalized
             return {
                 "markdown": md,
                 "is_plan": is_plan,
@@ -3294,6 +3317,85 @@ async def _answer_event_stream(payload: dict[str, Any]) -> AsyncIterator[dict[st
         yield item
 
 
+class _ChatStreamUnavailable(Exception):
+    """流式没拿到有效内容，且尚未对外发出任何 delta —— 安全回退到同步渲染。"""
+
+
+async def _stream_chat_answer_frames(
+    req: ChatRequest,
+    decision: RoutingDecision,
+    artifact: dict[str, Any],
+    conversation_id: str,
+    state: dict[str, Any],
+) -> AsyncIterator[str]:
+    """真 token 流式的会话作答：边生成边发 delta，结束后用「保留结构」的清洗版落到 final。
+    一旦发出过 delta 就绝不抛异常（避免和同步回退重复出文）。"""
+    citations, _ = _build_citations(artifact)
+    field_labels = _customer_field_labels(artifact)
+    citations = sanitize_citations(citations, field_labels)
+    feasibility = artifact.get("feasibility") or {}
+    if not isinstance(feasibility, dict):
+        feasibility = {}
+    payload = _grounded_chat_payload(req, artifact, citations, feasibility, field_labels)
+
+    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def worker() -> None:
+        try:
+            for item in stream_grounded_chat_answer(payload):
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": str(exc)[:300]})
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    threading.Thread(target=worker, name="df-chat-stream", daemon=True).start()
+
+    raw_parts: list[str] = []
+    meta: dict[str, Any] = {"mode": "grounded_chat_stream", "response_id": None, "usage": {}}
+    emitted = False
+    while True:
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=25)
+        except asyncio.TimeoutError:
+            break
+        if item is None:
+            break
+        kind = item.get("type")
+        if kind == "delta":
+            delta = item.get("delta") or ""
+            if delta:
+                raw_parts.append(delta)
+                emitted = True
+                yield _frame("answer_delta", {"delta": delta}, conversation_id)
+                await asyncio.sleep(0)
+        elif kind == "meta":
+            meta = {key: value for key, value in item.items() if key != "type"} or meta
+
+    raw = "".join(raw_parts).strip()
+    if not emitted or len(raw) < 12:
+        # 还没对外发过任何 delta → 安全回退
+        raise _ChatStreamUnavailable()
+
+    # 发过 delta 之后：只做清洗与落库，任何异常都吞掉并用 raw 兜底，绝不再抛（防重复出文）
+    try:
+        finalized = _finalize_grounded_chat_text(raw, field_labels)
+        md, is_plan = finalized if finalized else (raw, _looks_like_plan_markdown(raw))
+        offer = _produce_offer_for(req, feasibility, plan=is_plan)
+        if offer:
+            artifact["produce_offer"] = offer
+        meta = {**meta, "mode": "grounded_chat_plan_stream" if is_plan else "grounded_chat_stream"}
+    except Exception:
+        md, meta = raw, {**meta, "mode": "grounded_chat_stream"}
+    state["text"] = md
+    state["meta"] = meta
+    artifact["answer"] = {"markdown": md, "text": md, "citations": citations, "_llm": meta}
+    artifact["citations"] = citations
+    artifact["output_contract"] = _chat_output_contract(decision.intent)
+    yield _frame("model_response", {"agent": "df-answer-writer", **meta}, conversation_id)
+
+
 async def _stream_answer_frames(
     req: ChatRequest,
     decision: RoutingDecision,
@@ -3301,6 +3403,16 @@ async def _stream_answer_frames(
     conversation_id: str,
     state: dict[str, Any],
 ) -> AsyncIterator[str]:
+    # 会话作答优先走真流式；失败（未发出任何 delta）再回退到同步渲染。
+    if _is_conversation_answer(req, decision):
+        try:
+            async for frame in _stream_chat_answer_frames(req, decision, artifact, conversation_id, state):
+                yield frame
+            return
+        except _ChatStreamUnavailable:
+            pass
+        except Exception:
+            pass
     answer = _structured_answer_v10(req, decision, artifact)
     text = _customer_text(answer.get("markdown") or _final_text(decision, artifact), artifact)
     meta = dict(answer.get("_llm") or {})
