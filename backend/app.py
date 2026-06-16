@@ -24,7 +24,7 @@ try:
     from .conversation_store import get_conversation, list_conversations
     from .dependency_health import health_dependencies, health_dependency_details
     from .observability import observability_snapshot
-    from .orchestrator import orchestrate_chat, produce_from_existing_report
+    from .orchestrator import generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from .rag import search
     from .run_store import get_run, list_runs
     from .speech_token import issue_speech_token
@@ -46,6 +46,7 @@ try:
         GenerateImageRequest,
         NarrateSummaryRequest,
         ProduceRequest,
+        PlaybookRequest,
         RenderPdfRequest,
         RunDetailResponse,
         RunsResponse,
@@ -65,7 +66,7 @@ except ImportError:
     from conversation_store import get_conversation, list_conversations
     from dependency_health import health_dependencies, health_dependency_details
     from observability import observability_snapshot
-    from orchestrator import orchestrate_chat, produce_from_existing_report
+    from orchestrator import generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from rag import search
     from run_store import get_run, list_runs
     from speech_token import issue_speech_token
@@ -87,6 +88,7 @@ except ImportError:
         GenerateImageRequest,
         NarrateSummaryRequest,
         ProduceRequest,
+        PlaybookRequest,
         RenderPdfRequest,
         RunDetailResponse,
         RunsResponse,
@@ -413,6 +415,11 @@ async def speech_token() -> dict[str, Any]:
 @app.post("/api/produce")
 async def produce(req: ProduceRequest) -> dict[str, Any]:
     return await run_in_threadpool(produce_from_existing_report, req.model_dump())
+
+
+@app.post("/api/playbook")
+async def playbook(req: PlaybookRequest) -> dict[str, Any]:
+    return await run_in_threadpool(generate_playbook_detail, req.model_dump())
 
 
 @app.get("/api/runs", response_model=RunsResponse)

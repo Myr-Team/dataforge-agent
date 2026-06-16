@@ -143,6 +143,56 @@ EXEC_SUMMARY_SCHEMA = {
 }
 
 
+PLAYBOOK_DETAIL_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string"},
+        "points": {"type": "array", "items": {"type": "string"}},
+        "goal": {"type": "string"},
+    },
+    "required": ["summary", "points", "goal"],
+}
+
+
+def run_playbook_detail(payload: dict[str, Any]) -> dict[str, Any]:
+    """用某个 PM 方法的视角，针对这批数据分析出的机会，生成【与数据挂钩】的具体内容（不是泛泛框架介绍）。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是资深产品分析师。请用【method_name 指定的 PM 方法】的视角，针对这批数据分析出来的机会，"
+        "给出【具体、与数据/证据挂钩】的内容——不要泛泛介绍这个方法本身，要落到这个机会、这批数据上。\n"
+        "输出 JSON：\n"
+        "1) summary：一句话，用该方法视角概括‘这个机会该怎么看 / 怎么做’，必须点到具体机会与数据信号。\n"
+        "2) points：3-4 条，每条一句，按该方法的结构展开并紧扣真实数据/人群/缺口——"
+        "如 opportunity-tree 给‘机会→方案→实验’三层、jtbd 给‘场景/任务/痛点’、pricing 给‘计费方式/价值锚点/市场缺口’、"
+        "roadmap 给‘30/60/90 天’、prd 给‘目标用户/核心功能/验收指标’、experiment 给‘假设/门槛/样本周期’。\n"
+        "3) goal：一句‘产品落地目标’，尽量可量化、和数据挂钩。\n"
+        "只用提供的 feasibility / evidence / 人群信息，不编造数字；缺数据就说‘需补：…’。中文。只返回 JSON {summary, points, goal}。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 800,
+        "text": _schema_format("df_playbook_detail", PLAYBOOK_DETAIL_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    try:
+        data = _extract_json(getattr(response, "output_text", "") or "")
+    except Exception:
+        data = {}
+    return {
+        "summary": str(data.get("summary") or "").strip(),
+        "points": [str(p).strip() for p in (data.get("points") or []) if str(p).strip()],
+        "goal": str(data.get("goal") or "").strip(),
+    }
+
+
 def run_image_subject(payload: dict[str, Any]) -> dict[str, Any]:
     """让 agent 判断这份方案【实际要做的产品/交付物是什么】，给图像模型一个可作画的产品主体（英文）。"""
     client = _project_client()

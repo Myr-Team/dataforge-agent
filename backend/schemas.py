@@ -311,6 +311,16 @@ class ProduceRequest(BaseModel):
     kinds: list[str] | None = None
 
 
+class PlaybookRequest(BaseModel):
+    workspace_id: str = "demo-corpus"
+    method: str
+    method_name: str | None = None
+    framework: dict[str, Any] = Field(default_factory=dict)
+    opportunity: str | None = None
+    audience: str | None = None
+    feasibility: dict[str, Any] = Field(default_factory=dict)
+
+
 class ChatRequest(BaseModel):
     workspace_id: str = "demo-corpus"
     message: str

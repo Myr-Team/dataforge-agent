@@ -53,6 +53,7 @@ try:
         run_action_plan,
         run_executive_summary,
         run_image_subject,
+        run_playbook_detail,
         run_grounded_chat_answer,
         run_market_mcp_research,
         run_market_web_research,
@@ -106,6 +107,7 @@ except ImportError:
         run_action_plan,
         run_executive_summary,
         run_image_subject,
+        run_playbook_detail,
         run_grounded_chat_answer,
         run_market_mcp_research,
         run_market_web_research,
@@ -1979,6 +1981,32 @@ def _proposal_image_kind(proposal: dict[str, Any]) -> tuple[str, str, str]:
         "产品概念设计 / product UI or physical mockup",
         "Create a product concept design, app UI mockup, service screen, packaging, or physical prototype that makes the proposed product tangible.",
     )
+
+
+def generate_playbook_detail(payload: dict[str, Any]) -> dict[str, Any]:
+    """为行动计划某个 PM 方法生成与数据挂钩的内容；失败回退（前端用静态框架兜底）。"""
+    method = str(payload.get("method") or "").strip()
+    method_name = str(payload.get("method_name") or method or "PM 方法").strip()
+    feasibility = payload.get("feasibility") or {}
+    llm_payload = {
+        "method_id": method,
+        "method_name": method_name,
+        "framework": payload.get("framework") or {},
+        "opportunity": payload.get("opportunity") or feasibility.get("opportunity_id"),
+        "verdict": feasibility.get("verdict"),
+        "recommendation": feasibility.get("recommendation"),
+        "action_plan": [str(s) for s in (feasibility.get("action_plan") or [])[:5]],
+        "gap_list": [str(g) for g in (feasibility.get("gap_list") or [])[:4]],
+        "dimensions": [{"name": d.get("name"), "score": d.get("score"), "rationale": str(d.get("rationale") or "")[:120]} for d in (feasibility.get("dimensions") or [])[:5] if isinstance(d, dict)],
+        "audience": payload.get("audience"),
+    }
+    try:
+        result = run_playbook_detail(llm_payload)
+        if result.get("summary") or result.get("points"):
+            return {"method": method, **result, "mode": "llm"}
+    except Exception as exc:
+        return {"method": method, "summary": "", "points": [], "goal": "", "mode": "error", "error": str(exc)[:200]}
+    return {"method": method, "summary": "", "points": [], "goal": "", "mode": "empty"}
 
 
 def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
