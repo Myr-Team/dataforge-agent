@@ -171,6 +171,22 @@ export function App() {
     setArtifacts({});
   }, [workspaceId]);
 
+  // 恢复该工作区上次的会话内容（后端已持久化会话，刷新/换工作区后从后端拉回，不再清空）
+  useEffect(() => {
+    let cancelled = false;
+    setMessages([]);
+    setActiveConversationId(null);
+    let convId = null;
+    try { convId = window.localStorage.getItem(`df-conv:${workspaceId}`); } catch { convId = null; }
+    if (!convId) return undefined;
+    loadConversation(convId).then((data) => {
+      if (cancelled || !data) return;
+      const msgs = (data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] }));
+      if (msgs.length) { setMessages(msgs); setActiveConversationId(convId); }
+    }).catch(() => { /* 会话已删除或不可达，忽略 */ });
+    return () => { cancelled = true; };
+  }, [workspaceId]);
+
   // notice 自动淡出（非加载态 3.5s 后自动消失，不用手动点关）
   useEffect(() => {
     if (!notice || notice.type === "loading") return undefined;
@@ -245,6 +261,7 @@ export function App() {
   const startNewConversation = () => {
     setMessages([]);
     setActiveConversationId(null);
+    try { window.localStorage.removeItem(`df-conv:${workspaceId}`); } catch { /* ignore */ }
     resetRunState();
     setActiveView("conversations");
     setInspectorTab("trace");
@@ -311,6 +328,7 @@ export function App() {
       await streamChat(payload, (event) => {
         if (event.event === "ready" && event.data?.conversation_id) {
           setActiveConversationId(event.data.conversation_id);
+          try { window.localStorage.setItem(`df-conv:${workspaceId}`, event.data.conversation_id); } catch { /* ignore */ }
         }
         if (event.event === "answer_delta" || event.event === "delta") {
           const delta = event.data?.delta || event.data?.text || "";
@@ -463,7 +481,8 @@ export function App() {
     try {
       const data = await loadConversation(conversationId);
       setActiveConversationId(conversationId);
-      setMessages((data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict })));
+      try { window.localStorage.setItem(`df-conv:${workspaceId}`, conversationId); } catch { /* ignore */ }
+      setMessages((data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] })));
       resetRunState();
       setActiveView("conversations");
       setNotice({ type: "done", message: "会话已恢复。" });
@@ -499,8 +518,18 @@ export function App() {
         .catch(reject);
     });
 
-  const produce = async () => {
+  const produce = async (kindsArg) => {
     if (producing) return;
+    const KIND_LABEL = { pdf: "项目文档 PDF", concept_image: "概念图", audio: "语音摘要" };
+    // kindsArg：产物类型数组（产物页按钮），或会话 chip 的 offer 对象，或缺省→文档+概念图
+    let kinds;
+    if (Array.isArray(kindsArg)) kinds = kindsArg.filter((k) => KIND_LABEL[k]);
+    else if (kindsArg && kindsArg.kind === "poster") kinds = ["concept_image"];
+    else {
+      kinds = ["pdf", "concept_image"];
+      try { if (window.localStorage.getItem("df-pref-audio") === "1") kinds.push("audio"); } catch { /* ignore */ }
+    }
+    if (!kinds.length) kinds = ["pdf", "concept_image"];
     setProducing(true);
     setInspectorTab("output");
     try {
@@ -517,7 +546,7 @@ export function App() {
         setNotice({ type: "error", message: "这个工作区暂时无法生成产物：没有可分析的有效数据。" });
         return;
       }
-      setNotice({ type: "loading", message: "正在生成产物（PDF / 概念图 / 语音）…" });
+      setNotice({ type: "loading", message: `正在生成${kinds.map((k) => KIND_LABEL[k]).join(" / ")}…` });
       const result = await produceArtifacts({
         workspace_id: workspaceId,
         conversation_id: activeConversationId || base.conversation_id,
@@ -530,8 +559,16 @@ export function App() {
         reference_images: base.reference_images || [],
         narrative: base.narrative,
         text: base.answer?.text || base.answer?.markdown,
+        kinds,
       });
-      const nextArtifact = { ...base, proposal: result };
+      // 合并：produce 只返回本次生成的产物，保留之前已生成的，别覆盖丢失
+      const prevProposal = base.proposal || {};
+      const mergedProposal = {
+        ...prevProposal,
+        ...result,
+        artifact_urls: { ...(prevProposal.artifact_urls || {}), ...(result.artifact_urls || {}) },
+      };
+      const nextArtifact = { ...base, proposal: mergedProposal };
       setFinalArtifact(nextArtifact);
       const arts = extractArtifacts(nextArtifact);
       setArtifacts(arts);
@@ -611,6 +648,7 @@ export function App() {
             onNewConversation={startNewConversation}
             producing={producing}
             observability={observability}
+            onOpenConversation={openConversation}
           />
         </div>
       </div>

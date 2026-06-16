@@ -483,6 +483,7 @@ export function WorkbenchMain({
   onUploadReference,
   producing,
   observability,
+  onOpenConversation,
 }) {
   if (view === "conversations") {
     return (
@@ -506,10 +507,10 @@ export function WorkbenchMain({
     return <ArtifactsCenter dashboard={dashboard} artifacts={artifacts} artifact={finalArtifact} onProduce={onProduce} producing={producing} onUploadReference={onUploadReference} />;
   }
   if (view === "runs") {
-    return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} />;
+    return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} />;
   }
   if (view === "settings") {
-    return <SettingsCenter dashboard={dashboard} />;
+    return <SettingsCenter dashboard={dashboard} observability={observability} />;
   }
   return (
     <DashboardStudio
@@ -870,12 +871,22 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
         <div>
           <span className="eyeless-label">Outputs</span>
           <h1>产出物中心</h1>
-          <p>完成一次分析后，可在这里生成企划书、路线图、实验计划、活动海报、周边设计图和语音摘要。</p>
+          <p>完成一次分析后，按需分项生成。默认优先生成项目文档与概念图；语音摘要为可选项。</p>
         </div>
-        <button className="primary-button icon-label" type="button" onClick={onProduce} disabled={!artifact || producing}>
-          {producing ? <Loader2 className="spin" size={15} /> : <FileDown size={15} />}
-          生成全套产物
-        </button>
+        <div className="produce-actions">
+          <button className="primary-button icon-label" type="button" onClick={() => onProduce(["pdf"])} disabled={!artifact || producing}>
+            {producing ? <Loader2 className="spin" size={15} /> : <FileText size={15} />}
+            生成项目文档
+          </button>
+          <button className="primary-button icon-label" type="button" onClick={() => onProduce(["concept_image"])} disabled={!artifact || producing}>
+            {producing ? <Loader2 className="spin" size={15} /> : <ImagePlus size={15} />}
+            生成概念图
+          </button>
+          <button className="ghost-button icon-label" type="button" onClick={() => onProduce(["audio"])} disabled={!artifact || producing} title="可选产物">
+            <Mic size={15} />
+            语音摘要（可选）
+          </button>
+        </div>
       </section>
       <section className="logo-callout">
         <ImagePlus size={22} />
@@ -1017,7 +1028,7 @@ function ObservabilityPanel({ observability }) {
   );
 }
 
-function RunsCenter({ dashboard, trace, running, observability }) {
+function RunsCenter({ dashboard, trace, running, observability, onOpenConversation }) {
   const runs = dashboard?.runs || [];
   return (
     <main className="agent-studio runs-stage">
@@ -1035,18 +1046,29 @@ function RunsCenter({ dashboard, trace, running, observability }) {
           <AgentRunLog trace={trace} />
         </div>
         <div className="runs-col narrow">
-          <div className="runs-col-head">历史运行</div>
+          <div className="runs-col-head">历史运行（点击恢复会话）</div>
           <div className="run-table">
-            {runs.slice(0, 12).map((run) => (
-              <article key={run.run_id || run.conversation_id}>
-                <Activity size={16} />
-                <div>
-                  <strong>{run.status || "completed"}</strong>
-                  <span>{run.run_id || run.conversation_id || "run"}</span>
-                </div>
-                <em>{formatTime(run.created_at || run.updated_at)}</em>
-              </article>
-            ))}
+            {runs.slice(0, 12).map((run) => {
+              const id = run.run_id || run.conversation_id;
+              const label = run.title || run.message || run.first_message || "历史会话";
+              return (
+                <button
+                  type="button"
+                  className="histrun clickable"
+                  key={id}
+                  onClick={() => id && onOpenConversation && onOpenConversation(id)}
+                  disabled={!id || !onOpenConversation}
+                  title="点击恢复这次会话"
+                >
+                  <Activity size={15} />
+                  <div>
+                    <strong>{String(label).slice(0, 26)}</strong>
+                    <span>{run.status || "completed"} · {String(id || "").slice(0, 8)}</span>
+                  </div>
+                  <em>{formatTime(run.created_at || run.updated_at)}</em>
+                </button>
+              );
+            })}
             {!runs.length ? <p className="empty-copy">暂无运行记录。</p> : null}
           </div>
         </div>
@@ -1055,24 +1077,84 @@ function RunsCenter({ dashboard, trace, running, observability }) {
   );
 }
 
-function SettingsCenter({ dashboard }) {
+function SettingsCenter({ dashboard, observability }) {
   const health = dashboard?.health || {};
   const deps = health.dependencies || {};
+  const details = health.dependency_details || dashboard?.dependency_details || {};
+  const models = observability?.models || {};
+  const tracing = observability?.tracing || {};
+  const [audioPref, setAudioPref] = useState(() => { try { return window.localStorage.getItem("df-pref-audio") === "1"; } catch { return false; } });
+  const toggleAudio = () => {
+    setAudioPref((prev) => { const v = !prev; try { window.localStorage.setItem("df-pref-audio", v ? "1" : "0"); } catch { /* ignore */ } return v; });
+  };
+  const depRow = (label, ok, detail) => (
+    <div className={`set-dep ${ok ? "ok" : "off"}`} key={label}>
+      <span className="set-dep-dot" />
+      <span className="set-dep-label">{label}</span>
+      <span className="set-dep-detail">{detail}</span>
+      <span className="set-dep-state">{ok ? "已连接" : "未连接"}</span>
+    </div>
+  );
+  const kv = (k, v) => (<div className="set-kv"><span>{k}</span><b>{v}</b></div>);
   return (
     <main className="agent-studio settings-stage">
       <section className="dashboard-hero">
         <div>
           <span className="eyeless-label">Settings</span>
-          <h1>系统状态</h1>
-          <p>当前环境用于测试和演示。这里展示 Agent 运行所依赖的 Foundry、Search、Blob、MCP 等连接状态。</p>
+          <h1>设置</h1>
+          <p>模型与生成、产物偏好、数据与合规，以及当前演示环境的集成与连接状态。</p>
         </div>
       </section>
-      <section className="settings-grid">
-        <MetricCard icon={Sparkles} label="Foundry" value={deps.foundry ? "健康" : "检查中"} detail={health.dependency_details?.foundry?.endpoint || "Azure AI Foundry"} />
-        <MetricCard icon={Search} label="Search" value={health.search_endpoint || deps.search ? "健康" : "检查中"} detail="Azure AI Search" />
-        <MetricCard icon={Database} label="Blob" value={deps.blob ? "健康" : "检查中"} detail="上传工作区与产物持久化" />
-        <MetricCard icon={Route} label="MCP" value={deps.mcp ? "健康" : "检查中"} detail="白名单工具与市场信息" />
-      </section>
+      <div className="settings-cards">
+        <article className="set-card">
+          <div className="set-card-head"><Sparkles size={16} /><strong>模型与生成</strong></div>
+          {kv("对话 / 推理模型", models.chat || "gpt-5.1")}
+          {kv("概念图模型", models.image || "gpt-image-2")}
+          {kv("向量模型（RAG）", models.embedding || "text-embedding-3-small")}
+          {kv("检索增强", "Azure AI Search · 向量 + 关键词")}
+        </article>
+        <article className="set-card">
+          <div className="set-card-head"><FileDown size={16} /><strong>产物偏好</strong></div>
+          {kv("默认生成", "项目文档 + 概念图")}
+          <label className="set-toggle">
+            <span>默认同时生成语音摘要</span>
+            <input type="checkbox" checked={audioPref} onChange={toggleAudio} />
+            <i className="set-switch" />
+          </label>
+          <p className="set-note">语音摘要为可选产物；也可在「产出物中心」按需单独生成。</p>
+        </article>
+        <article className="set-card">
+          <div className="set-card-head"><ShieldCheck size={16} /><strong>数据与合规</strong></div>
+          {kv("内容安全（RAI）", deps.content_safety ? "已启用 · Prompt Shield" : "未配置")}
+          {kv("身份认证", "Microsoft Entra ID · Easy Auth")}
+          {kv("数据驻留", "Azure · East US 2")}
+          {kv("分布式追踪", tracing.app_insights ? "App Insights · OpenTelemetry" : "本地")}
+        </article>
+        <article className="set-card">
+          <div className="set-card-head"><Layers3 size={16} /><strong>通用偏好</strong></div>
+          {kv("界面语言", "简体中文")}
+          {kv("主题", "浅色（深色即将支持）")}
+          {kv("时区", "跟随系统")}
+          {kv("数据持久化", deps.blob ? "Azure Blob（工作区/会话/产物）" : "本地")}
+        </article>
+        <article className="set-card span2">
+          <div className="set-card-head"><Activity size={16} /><strong>集成与连接状态</strong></div>
+          <div className="set-deps">
+            {depRow("Azure AI Foundry · Agent Service", deps.foundry, details.foundry?.endpoint || "多 Agent 编排")}
+            {depRow("Azure AI Search", deps.search || health.search_endpoint, "混合检索 RAG")}
+            {depRow("Azure Blob Storage", deps.blob, "工作区 / 会话 / 产物持久化")}
+            {depRow("MCP Server", deps.mcp, "market_lookup 工具")}
+            {depRow("Azure AI Speech", deps.speech, "TTS 语音摘要 / STT 语音输入")}
+            {depRow("Azure AI Content Safety", deps.content_safety, "Prompt Shield + 内容审核")}
+          </div>
+        </article>
+        <article className="set-card">
+          <div className="set-card-head"><ShieldCheck size={16} /><strong>关于</strong></div>
+          {kv("产品", "DataForge Agent Studio")}
+          {kv("赛道", "GCR Hackathon · Pro Code")}
+          {kv("环境", "演示 / Demo")}
+        </article>
+      </div>
     </main>
   );
 }

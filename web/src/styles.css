@@ -2108,3 +2108,51 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 /* ---- 左上角品牌 logo（替换原 D 方块，按导航栏宽度缩放） ---- */
 .shell-nav .brand-mark { width: 100%; max-width: 100px; height: auto; min-height: 0; margin: 2px auto 0; padding: 0; background: transparent; box-shadow: none; border-radius: 0; display: block; }
 .shell-nav .brand-mark img { width: 100%; height: auto; display: block; }
+
+/* ---- 产物页：分项生成按钮 ---- */
+.produce-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---- 历史运行：可点击恢复会话 ---- */
+.run-table .histrun.clickable {
+  width: 100%; text-align: left; cursor: pointer;
+  display: grid; grid-template-columns: 22px minmax(0,1fr) auto; gap: 10px; align-items: center;
+  padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+  box-shadow: var(--shadow-sm); transition: box-shadow .2s var(--ease), transform .2s var(--ease), border-color .2s var(--ease);
+}
+.run-table .histrun.clickable:hover:not(:disabled) { box-shadow: var(--shadow-md); transform: translateY(-1px); border-color: var(--blue); }
+.run-table .histrun.clickable:disabled { cursor: default; opacity: .7; }
+.run-table .histrun svg { color: var(--blue); }
+.run-table .histrun strong { display: block; font-size: 12.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-table .histrun span { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.run-table .histrun em { color: var(--faint); font-size: 11px; font-style: normal; }
+
+/* ---- 设置页 ---- */
+.settings-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 900px) { .settings-cards { grid-template-columns: 1fr; } }
+.set-card { padding: 16px 18px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); box-shadow: var(--shadow-sm); }
+.set-card.span2 { grid-column: 1 / -1; }
+.set-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.set-card-head > svg { color: var(--blue); }
+.set-card-head strong { font-size: 14px; color: var(--ink); }
+.set-kv { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 7px 0; border-top: 1px solid #f1f1f4; font-size: 13px; }
+.set-kv:first-of-type { border-top: 0; }
+.set-kv span { color: var(--muted); }
+.set-kv b { color: var(--ink); font-weight: 600; text-align: right; }
+.set-note { margin: 10px 0 0; font-size: 11.5px; color: var(--faint); line-height: 1.5; }
+.set-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; font-size: 13px; color: var(--ink); cursor: pointer; }
+.set-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.set-switch { position: relative; width: 38px; height: 22px; border-radius: 999px; background: var(--line-strong); transition: background .18s var(--ease); flex: none; }
+.set-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .18s var(--ease); }
+.set-toggle input:checked + .set-switch { background: var(--blue); }
+.set-toggle input:checked + .set-switch::after { transform: translateX(16px); }
+.set-deps { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+@media (max-width: 760px) { .set-deps { grid-template-columns: 1fr; } }
+.set-dep { display: grid; grid-template-columns: 10px minmax(0,1fr) auto; gap: 9px; align-items: center; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+.set-dep-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); }
+.set-dep.ok .set-dep-dot { background: var(--mint); box-shadow: 0 0 6px rgba(0,168,120,.5); }
+.set-dep.off .set-dep-dot { background: var(--amber); }
+.set-dep-label { font-size: 12.5px; color: var(--ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-dep-detail { display: none; }
+.set-dep-state { font-size: 11px; font-weight: 700; }
+.set-dep.ok .set-dep-state { color: #1f8f63; }
+.set-dep.off .set-dep-state { color: #b9801c; }
