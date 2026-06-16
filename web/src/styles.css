@@ -2094,3 +2094,13 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .evidence-card { border-radius: 10px; box-shadow: var(--shadow-sm); transition: box-shadow .2s var(--ease), transform .2s var(--ease), border-color .2s var(--ease); }
 .evidence-card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); border-color: var(--line-strong); }
 .evidence-flow circle { transition: fill .2s var(--ease); }
+
+/* ---- 修：信号可用度标签移到环下方（不再挤在环里） ---- */
+.portrait-ring-col { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.portrait-cap { font-size: 10px; color: var(--muted); text-align: center; line-height: 1.25; max-width: 92px; }
+
+/* ---- 修：会话发送按钮恢复朴素蓝，去掉光晕与焦点蓝圈 ---- */
+.send-button { background: var(--blue); box-shadow: none; }
+.send-button:hover:not(:disabled) { background: #0066cc; box-shadow: none; transform: translateY(-1px); }
+.send-button:active:not(:disabled) { box-shadow: none; transform: translateY(0); }
+.send-button:focus-visible, .composer-field input:focus-visible, .composer-field input:focus { box-shadow: none; outline: none; }

@@ -225,6 +225,18 @@ export function WorkspacePane({
   const columns = workspace.columns || [];
   const signalColumns = columns.filter((column) => column.signal && column.signal !== "noise").slice(0, 8);
   const noisyColumns = columns.filter((column) => column.signal === "noise");
+  // TOP5 按展示名去重，避免出现两个同名字段（如两个“数量”）
+  const topSignals = (() => {
+    const seen = new Set();
+    const out = [];
+    for (const column of signalColumns) {
+      const key = String(column.friendly_label || column.name || "").trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(column);
+    }
+    return out;
+  })();
   const canDelete = workspaceId?.startsWith("upload-");
   const documents = workspace.documents || [];
   const created = workspace.created_at || workspace.updated_at || documents[0]?.created_at;
@@ -293,11 +305,11 @@ export function WorkspacePane({
         <DataPortrait workspace={workspace} signalColumns={signalColumns} noisyColumns={noisyColumns} columns={columns} />
       </section>
 
-      {signalColumns.length ? (
+      {topSignals.length ? (
         <section className="pane-section">
-          <div className="section-head"><span>关键信号 TOP5</span><em>{Math.min(5, signalColumns.length)}</em></div>
+          <div className="section-head"><span>关键信号 TOP5</span><em>{Math.min(5, topSignals.length)}</em></div>
           <div className="signal-top">
-            {signalColumns.slice(0, 5).map((column, index) => {
+            {topSignals.slice(0, 5).map((column, index) => {
               const score = column.signal_score ?? column.score ?? column.importance ?? (0.9 - index * 0.08);
               const pct = Math.round(Math.max(0, Math.min(1, score)) * 100);
               return (
@@ -369,9 +381,11 @@ function DataPortrait({ workspace, signalColumns, noisyColumns, columns }) {
     : [["强信号", 0, "sig"], ["中等信号", 0, "mid"], ["噪音", 0, "noise"]];
   return (
     <div className="portrait-card">
-      <div className="portrait-ring" style={{ "--value": `${strength}%` }}>
-        <strong>{strength}</strong>
-        <span>整体信号可用度</span>
+      <div className="portrait-ring-col">
+        <div className="portrait-ring" style={{ "--value": `${strength}%` }}>
+          <strong>{strength}</strong>
+        </div>
+        <span className="portrait-cap">整体信号可用度</span>
       </div>
       <div className="portrait-split">
         {split.map(([label, count, cls]) => {
