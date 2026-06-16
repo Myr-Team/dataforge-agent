@@ -60,7 +60,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, health = 
   ];
   return (
     <nav className="shell-nav" aria-label="Primary">
-      <div className="brand-mark">D</div>
+      <div className="brand-mark"><img src="/dataforge-logo.png" alt="DataForge" /></div>
       <div className="nav-stack">
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;

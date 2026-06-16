@@ -2104,3 +2104,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .send-button:hover:not(:disabled) { background: #0066cc; box-shadow: none; transform: translateY(-1px); }
 .send-button:active:not(:disabled) { box-shadow: none; transform: translateY(0); }
 .send-button:focus-visible, .composer-field input:focus-visible, .composer-field input:focus { box-shadow: none; outline: none; }
+
+/* ---- 左上角品牌 logo（替换原 D 方块，按导航栏宽度缩放） ---- */
+.shell-nav .brand-mark { width: 100%; max-width: 100px; height: auto; min-height: 0; margin: 2px auto 0; padding: 0; background: transparent; box-shadow: none; border-radius: 0; display: block; }
+.shell-nav .brand-mark img { width: 100%; height: auto; display: block; }
