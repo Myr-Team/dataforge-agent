@@ -51,6 +51,7 @@ try:
         run_coordinator_route,
         run_followup_rewrite,
         run_action_plan,
+        run_data_overview,
         run_executive_summary,
         run_image_subject,
         run_playbook_detail,
@@ -105,6 +106,7 @@ except ImportError:
         run_coordinator_route,
         run_followup_rewrite,
         run_action_plan,
+        run_data_overview,
         run_executive_summary,
         run_image_subject,
         run_playbook_detail,
@@ -1981,6 +1983,43 @@ def _proposal_image_kind(proposal: dict[str, Any]) -> tuple[str, str, str]:
         "产品概念设计 / product UI or physical mockup",
         "Create a product concept design, app UI mockup, service screen, packaging, or physical prototype that makes the proposed product tangible.",
     )
+
+
+def generate_data_overview(workspace_id: str) -> dict[str, Any]:
+    """为某工作区生成「数据说明」（客户友好解读上传的数据）。带缓存，数据不变就不重复调 LLM。"""
+    try:
+        detail = get_workspace_detail(workspace_id)
+    except Exception:
+        return {"overview": "", "datasets": [], "usable_for": []}
+    documents = detail.get("documents") or []
+    columns = detail.get("columns") or []
+    cache_key = f"data_overview:{workspace_id}:{len(documents)}:{len(columns)}"
+    if os.environ.get("DF_DISABLE_REDIS_CACHE") != "1":
+        try:
+            cached, _ = cache_store.get_json(cache_key)
+            if cached:
+                return cached
+        except Exception:
+            pass
+    payload = {
+        "workspace_name": detail.get("name") or workspace_id,
+        "documents": [{"name": d.get("name") or d.get("source_file"), "format": d.get("format")} for d in documents[:12] if isinstance(d, dict)],
+        "columns": [{"name": c.get("name"), "label": c.get("friendly_label"), "signal": c.get("signal")} for c in columns[:30] if isinstance(c, dict)],
+        "profile_summary": detail.get("profile_summary"),
+        "customer_summary": detail.get("customer_summary"),
+        "row_count": detail.get("row_count") or detail.get("indexed_count"),
+        "field_count": len(columns),
+    }
+    try:
+        result = run_data_overview(payload)
+    except Exception as exc:
+        return {"overview": "", "datasets": [], "usable_for": [], "error": str(exc)[:200]}
+    if (result.get("overview") or result.get("datasets")) and os.environ.get("DF_DISABLE_REDIS_CACHE") != "1":
+        try:
+            cache_store.set_json(cache_key, result)
+        except Exception:
+            pass
+    return result
 
 
 def generate_playbook_detail(payload: dict[str, Any]) -> dict[str, Any]:

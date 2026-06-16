@@ -24,7 +24,7 @@ try:
     from .conversation_store import get_conversation, list_conversations
     from .dependency_health import health_dependencies, health_dependency_details
     from .observability import observability_snapshot
-    from .orchestrator import generate_playbook_detail, orchestrate_chat, produce_from_existing_report
+    from .orchestrator import generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from .rag import search
     from .run_store import get_run, list_runs
     from .speech_token import issue_speech_token
@@ -66,7 +66,7 @@ except ImportError:
     from conversation_store import get_conversation, list_conversations
     from dependency_health import health_dependencies, health_dependency_details
     from observability import observability_snapshot
-    from orchestrator import generate_playbook_detail, orchestrate_chat, produce_from_existing_report
+    from orchestrator import generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from rag import search
     from run_store import get_run, list_runs
     from speech_token import issue_speech_token
@@ -420,6 +420,11 @@ async def produce(req: ProduceRequest) -> dict[str, Any]:
 @app.post("/api/playbook")
 async def playbook(req: PlaybookRequest) -> dict[str, Any]:
     return await run_in_threadpool(generate_playbook_detail, req.model_dump())
+
+
+@app.get("/api/workspaces/{workspace_id}/data-overview")
+async def data_overview(workspace_id: str) -> dict[str, Any]:
+    return await run_in_threadpool(generate_data_overview, workspace_id)
 
 
 @app.get("/api/runs", response_model=RunsResponse)

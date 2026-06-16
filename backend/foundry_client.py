@@ -193,6 +193,63 @@ def run_playbook_detail(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+DATA_OVERVIEW_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "overview": {"type": "string"},
+        "datasets": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"name": {"type": "string"}, "what": {"type": "string"}},
+                "required": ["name", "what"],
+            },
+        },
+        "usable_for": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["overview", "datasets", "usable_for"],
+}
+
+
+def run_data_overview(payload: dict[str, Any]) -> dict[str, Any]:
+    """客户刚上传数据后，用客户能懂的话解释【这批数据都是什么、能用来做什么】。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是数据分析师。客户刚上传了一批数据，请用【客户能听懂的话】解释这批数据都是什么、能用来做什么，"
+        "让客户一上来就明白自己手里有什么。\n"
+        "输出 JSON：\n"
+        "1) overview：2-3 句，概括这批数据整体是什么、规模、覆盖什么主题、适合回答什么问题。\n"
+        "2) datasets：对每个上传文件给一条 {name, what}，what 用一句话说这个文件大概是什么内容、什么维度"
+        "（结合文件名、格式、字段推断；别编造具体数值或不存在的字段）。\n"
+        "3) usable_for：2-4 条，这批数据可以支撑的分析/用途（如‘按门店看到访与停留差异’）。\n"
+        "中文、客户友好、不要堆术语、不编造。只返回 JSON。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 900,
+        "text": _schema_format("df_data_overview", DATA_OVERVIEW_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    try:
+        data = _extract_json(getattr(response, "output_text", "") or "")
+    except Exception:
+        data = {}
+    return {
+        "overview": str(data.get("overview") or "").strip(),
+        "datasets": [{"name": str(d.get("name") or ""), "what": str(d.get("what") or "")} for d in (data.get("datasets") or []) if isinstance(d, dict)],
+        "usable_for": [str(u).strip() for u in (data.get("usable_for") or []) if str(u).strip()],
+    }
+
+
 def run_image_subject(payload: dict[str, Any]) -> dict[str, Any]:
     """让 agent 判断这份方案【实际要做的产品/交付物是什么】，给图像模型一个可作画的产品主体（英文）。"""
     client = _project_client()
