@@ -452,10 +452,11 @@ def _composite_overlay(image_bytes: bytes, title: str | None, logo_bytes: bytes 
 
 def _image_prompt(prompt: str) -> str:
     return (
-        "Create the requested proposal concept image exactly following the deliverable type and reference asset instructions. "
-        "If a reference image or logo is provided, integrate it visibly while preserving brand shape and color. "
-        "Use polished commercial art direction suitable for a demo proposal cover. "
-        "Avoid conference tables, generic office review scenes, people gathered around screens, handshakes, and unrelated corporate stock imagery. "
-        "Avoid readable UI microtext. Brief: "
+        "Create the requested proposal concept key visual following the brief exactly. "
+        "Keep the bottom ~28% calm and low-detail (a title caption will be overlaid there later), and keep the top-left corner clean for a small logo. "
+        "If a reference logo is provided, use its colors and shapes as style cues; do not stretch or distort it. "
+        "Do NOT render paragraphs, headlines, or Chinese text — rely on imagery, color and iconography. "
+        "Polished, premium commercial art direction. Avoid conference tables, office review scenes, people around screens, handshakes, and stock-photo clichés. "
+        "Brief: "
         + str(prompt or "")[:2600]
     )

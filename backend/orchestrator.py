@@ -1913,13 +1913,13 @@ def _proposal_image_kind(proposal: dict[str, Any]) -> tuple[str, str, str]:
         return (
             "event_poster",
             "活动海报 / campaign key visual",
-            "Create a campaign poster or event key visual with a strong title area, hero scene, branded visual hook, clear campaign atmosphere, and space for date/location blocks.",
+            "Create a campaign key visual: one bold hero scene and branded atmosphere conveying the campaign energy through imagery only.",
         )
     if re.search(r"(报告|分析|画像|看板|仪表盘|dashboard|analytics|report|insight|bi|scorecard|board)", text, re.I):
         return (
             "analytics_board",
             "分析看板 / dashboard concept",
-            "Create a clean analytics dashboard or product board concept with evidence groups, trend modules, confidence tags, and executive decision panels.",
+            "Create a clean analytics/product board concept: abstract evidence, trend and score modules and decision panels rendered as shapes and iconography (not real text).",
         )
     return (
         "product_concept",
@@ -1975,30 +1975,38 @@ def _complete_proposal(value: Any) -> bool:
 
 def _image_prompt_from_proposal(proposal: dict[str, Any]) -> str:
     feasibility = proposal.get("feasibility") or {}
-    dimensions = feasibility.get("dimensions") or []
-    dimension_bits = ", ".join(
-        f"{item.get('name')} score {item.get('score')} confidence {item.get('confidence')}" for item in dimensions[:5]
-    )
-    market = proposal.get("market") or {}
-    market_bits = "; ".join(str(item.get("claim") or "")[:160] for item in (market.get("external_findings") or [])[:3])
-    gaps = "; ".join(str(item)[:120] for item in (feasibility.get("gap_list") or [])[:3])
     image_kind, image_label, image_direction = _proposal_image_kind(proposal)
-    reference_count = len([item for item in (proposal.get("reference_images") or []) if isinstance(item, dict)])
-    logo_instruction = (
-        "Reference asset instruction: the provided reference image is a logo or brand asset. Integrate it visibly into the concept image, preserve its shape and colors, and place it on the poster/product/header/mockup where a customer can notice it. "
-        if reference_count
-        else "No reference logo is provided, so create a brand-neutral concept while keeping the deliverable type specific. "
-    )
+
+    # 把"大概的方案内容"提炼成一段供作画的 brief（意译成画面，不直接印字）
+    title = _clean_text(proposal.get("title") or proposal.get("opportunity_id"), 80)
+    recommendation = _clean_text(feasibility.get("recommendation"), 200)
+    steps = [_clean_text(step, 80) for step in (feasibility.get("action_plan") or [])[:3] if str(step).strip()]
+    corpus_profile = proposal.get("corpus_profile") or {}
+    audience = _clean_text(corpus_profile.get("customer_summary") or corpus_profile.get("profile_summary") or proposal.get("executive_summary"), 180)
+    market_note = _clean_text((proposal.get("market") or {}).get("positioning_note"), 140)
+
+    brief_bits: list[str] = []
+    if recommendation:
+        brief_bits.append(f"核心建议：{recommendation}")
+    if steps:
+        brief_bits.append("关键动作：" + "；".join(steps))
+    if audience:
+        brief_bits.append(f"对象与背景：{audience}")
+    if market_note:
+        brief_bits.append(f"市场定位：{market_note}")
+    scene_brief = " ".join(brief_bits)[:900]
+
     return (
-        f"Deliverable image type: {image_label} ({image_kind}). "
-        f"{image_direction} "
-        f"{logo_instruction}"
-        "Use polished commercial art direction and make the output suitable as a proposal cover. "
-        "Avoid conference tables, generic office review scenes, people gathered around screens, handshakes, and unrelated corporate stock imagery. "
-        "Avoid readable tiny UI text; use shapes and short label-like marks instead. "
-        f"Opportunity: {proposal.get('title')}. Verdict: {feasibility.get('verdict')} "
-        f"overall confidence {feasibility.get('overall_confidence')}. Dimensions: {dimension_bits}. "
-        f"Market signals: {market_bits}. Gaps: {gaps}."
+        "Design ONE polished concept key visual for a business proposal cover. "
+        f"Deliverable type: {image_label} ({image_kind}). {image_direction} "
+        "Translate the following opportunity and plan into imagery, color and iconography — do NOT print this text in the image: "
+        f"《{title}》。{scene_brief} "
+        "Composition (important): a single clear focal subject in the upper two-thirds; "
+        "keep the BOTTOM ~28% as calm low-detail negative space or a soft gradient so a title caption can be overlaid later; "
+        "keep the TOP-LEFT corner relatively clean for a small logo. "
+        "Text: do NOT render paragraphs, headlines, or any Chinese characters; at most one or two very short English label marks. "
+        "Style: modern, premium, uncluttered, a confident blue accent. "
+        "Avoid: conference tables, office review scenes, people around screens, handshakes, stock-photo clichés, dense fake UI microtext."
     )
 
 
