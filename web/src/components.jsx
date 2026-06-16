@@ -33,7 +33,7 @@ import {
   UploadCloud,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, loadPlaybookDetail } from "./api.js";
+import { API_BASE, artifactLink, loadDataOverview, loadPlaybookDetail } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -569,6 +569,49 @@ export function WorkbenchMain({
   );
 }
 
+function DataOverviewCard({ workspaceId, hasDocs }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const cacheRef = useRef({});
+  useEffect(() => {
+    if (!workspaceId || !hasDocs) { setData(null); return undefined; }
+    if (cacheRef.current[workspaceId]) { setData(cacheRef.current[workspaceId]); return undefined; }
+    let cancelled = false;
+    setLoading(true); setData(null);
+    loadDataOverview(workspaceId)
+      .then((d) => { if (!cancelled && d && (d.overview || (d.datasets && d.datasets.length))) { cacheRef.current[workspaceId] = d; setData(d); } })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [workspaceId, hasDocs]);
+  if (!hasDocs) return null;
+  if (loading) return <section className="data-overview is-loading"><Loader2 className="spin" size={14} /> Agent 正在解读这批数据是什么…</section>;
+  if (!data || !data.overview) return null;
+  return (
+    <section className="data-overview">
+      <div className="do-head"><Database size={16} /><strong>数据说明 · Agent 解读</strong></div>
+      <p className="do-overview">{data.overview}</p>
+      {data.datasets?.length ? (
+        <div className="do-datasets">
+          {data.datasets.map((ds, i) => (
+            <div className="do-dataset" key={`${ds.name}-${i}`}>
+              <FileText size={14} />
+              <strong>{ds.name}</strong>
+              <span>{ds.what}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {data.usable_for?.length ? (
+        <div className="do-uses">
+          <em>可支撑</em>
+          {data.usable_for.map((u, i) => <span className="do-use" key={i}>{u}</span>)}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function DashboardStudio({
   dashboard,
   trace,
@@ -614,6 +657,8 @@ function DashboardStudio({
       </section>
 
       <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} onProduce={onProduce} />
+
+      <DataOverviewCard workspaceId={dashboard?.workspace_id || workspace?.workspace_id} hasDocs={(documents || []).length > 0} />
 
       <VerdictHero feasibility={feasibility} verdict={verdict} running={running} />
 

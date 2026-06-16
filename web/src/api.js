@@ -97,6 +97,10 @@ export async function loadRun(runId) {
   return request(`/api/runs/${encodeURIComponent(runId)}`);
 }
 
+export async function loadDataOverview(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/data-overview`);
+}
+
 export async function deleteWorkspace(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE" });
 }
