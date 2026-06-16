@@ -3832,9 +3832,11 @@ async def _persist_chat_completion(
     status: str,
     final_payload: dict[str, Any],
     artifact: dict[str, Any],
+    citations: list[dict[str, Any]] | None = None,
 ) -> None:
     try:
-        citations = artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or []
+        if not citations:
+            citations = artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or []
         await run_in_threadpool(_persist_assistant_message, conversation_id, workspace_id, text, verdict, citations)
         await run_in_threadpool(complete_run, conversation_id, status=status, final=final_payload, artifact=artifact)
     except Exception:
@@ -4303,6 +4305,8 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     frame = _frame("final", final_payload, conv_id)
     if decision.intent != "feasibility_analysis":
         yield frame
+        # 在 fire-and-forget 任务前就把 citations 取出来，避免 artifact 被后续清理导致引用丢失
+        chat_citations = artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or []
         asyncio.create_task(
             _persist_chat_completion(
                 conv_id,
@@ -4312,6 +4316,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                 "completed",
                 final_payload,
                 artifact,
+                list(chat_citations),
             )
         )
         return
