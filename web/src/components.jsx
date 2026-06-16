@@ -33,7 +33,7 @@ import {
   UploadCloud,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink } from "./api.js";
+import { API_BASE, artifactLink, loadPlaybookDetail } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -111,7 +111,45 @@ export function MobileNav({ active = "workspaces", onChange = () => {} }) {
   );
 }
 
-export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, onNewConversation, loading, user, authState, onLogout }) {
+function NotificationBell({ tasks = [] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    window.addEventListener("pointerdown", onDown);
+    return () => window.removeEventListener("pointerdown", onDown);
+  }, [open]);
+  const running = tasks.filter((t) => t.status === "running").length;
+  const recent = tasks.slice(0, 12);
+  const icon = (s) => (s === "running" ? <Loader2 className="spin" size={14} /> : s === "error" ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />);
+  return (
+    <div className="notif" ref={ref}>
+      <button className="icon-button top-icon" type="button" title="任务通知" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <Bell size={16} />
+        {running ? <span className="notif-badge">{running}</span> : null}
+      </button>
+      {open ? (
+        <div className="notif-panel" role="menu">
+          <div className="notif-head"><strong>任务通知</strong><span>{running ? `${running} 个进行中` : "暂无进行中任务"}</span></div>
+          <div className="notif-list">
+            {recent.length ? recent.map((t) => (
+              <div className={`notif-item ${t.status}`} key={t.id}>
+                <span className="notif-ic">{icon(t.status)}</span>
+                <div className="notif-body">
+                  <strong>{t.label}</strong>
+                  <span>{(t.detail || (t.status === "running" ? "进行中…" : t.status === "error" ? "失败" : "已完成"))}{t.time ? ` · ${formatTime(t.time)}` : ""}</span>
+                </div>
+              </div>
+            )) : <p className="empty-copy">还没有任务。发起一次分析或生成产物，这里会记录进度。</p>}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, onNewConversation, loading, user, authState, onLogout, tasks }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
   const workspaces = dashboard?.workspaces || [];
@@ -153,13 +191,7 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
           <UploadCloud size={16} />
           上传数据
         </button>
-        <button className="ghost-button icon-label top-new-chat" type="button" onClick={() => { setMenuOpen(false); onNewConversation(); }}>
-          <MessageSquare size={15} />
-          新会话
-        </button>
-        <button className="icon-button top-icon" type="button" title="通知">
-          <Bell size={16} />
-        </button>
+        <NotificationBell tasks={tasks} />
         <div className={loading ? "sync-dot loading" : "sync-dot"} title={loading ? "同步中" : "已同步"}>
           {loading ? <Loader2 className="spin" size={14} /> : <CheckCircle2 size={14} />}
         </div>
@@ -582,7 +614,7 @@ function DashboardStudio({
       <AuditCard artifact={finalArtifact} />
 
       <section className="studio-methods">
-        <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} />
+        <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id} />
         <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
       </section>
     </main>
@@ -1683,7 +1715,7 @@ const METHOD_INFO = {
 };
 
 // 行动计划（PM 方法）：6 个方法卡 + 点开后的「怎么用 / 针对这个机会」相关展示
-function ActionPlanCards({ selected, onSelect, feasibility }) {
+function ActionPlanCards({ selected, onSelect, feasibility, workspaceId }) {
   const dims = feasibility?.dimensions || [];
   const metric = (i) => {
     const d = dims[i];
@@ -1695,11 +1727,45 @@ function ActionPlanCards({ selected, onSelect, feasibility }) {
   const info = METHOD_INFO[sel.id] || {};
   const oppRaw = feasibility?.opportunity?.title || feasibility?.opportunity;
   const opp = typeof oppRaw === "string" ? oppRaw : "";
-  const steps = Array.isArray(feasibility?.action_plan) ? feasibility.action_plan : [];
-  const gaps = Array.isArray(feasibility?.gap_list) ? feasibility.gap_list : [];
+  const hasAnalysis = Boolean(feasibility?.verdict || (feasibility?.dimensions && feasibility.dimensions.length));
+
+  // 行动计划详情：让 Agent 针对这批数据 + 该方法生成与数据挂钩的内容（缓存 + 加载态 + 静态兜底）
+  const cacheRef = useRef({});
+  const [detail, setDetail] = useState(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  useEffect(() => {
+    if (!hasAnalysis) { setDetail(null); return undefined; }
+    const key = `${workspaceId || "ws"}:${sel.id}`;
+    if (cacheRef.current[key]) { setDetail(cacheRef.current[key]); return undefined; }
+    let cancelled = false;
+    setLoadingDetail(true);
+    setDetail(null);
+    loadPlaybookDetail({
+      workspace_id: workspaceId || "demo-corpus",
+      method: sel.id,
+      method_name: sel.name,
+      framework: info,
+      opportunity: opp,
+      audience: feasibility?.audience,
+      feasibility: {
+        verdict: feasibility?.verdict,
+        opportunity_id: feasibility?.opportunity_id,
+        recommendation: feasibility?.recommendation,
+        action_plan: feasibility?.action_plan,
+        gap_list: feasibility?.gap_list,
+        dimensions: feasibility?.dimensions,
+      },
+    }).then((d) => {
+      if (cancelled) return;
+      if (d && (d.summary || (d.points && d.points.length))) { cacheRef.current[key] = d; setDetail(d); }
+      else setDetail(null);
+    }).catch(() => { if (!cancelled) setDetail(null); }).finally(() => { if (!cancelled) setLoadingDetail(false); });
+    return () => { cancelled = true; };
+  }, [sel.id, workspaceId, hasAnalysis]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <section className="action-plan">
-      <div className="ap-head"><span>行动计划</span><em>PM 方法 · 点卡片看怎么用</em></div>
+      <div className="ap-head"><span>行动计划</span><em>{hasAnalysis ? "PM 方法 · 点卡片看针对这批数据的分析" : "PM 方法 · 先做一次分析"}</em></div>
       <div className="ap-grid">
         {PLAYBOOKS.map((item, index) => {
           const Icon = item.icon;
@@ -1717,21 +1783,36 @@ function ActionPlanCards({ selected, onSelect, feasibility }) {
         <div className="ap-detail-head">
           <span className="ap-ic sm"><SelIcon size={16} /></span>
           <strong>{sel.name}</strong>
-          <em>{info.what}</em>
+          <em>{detail?.summary || info.what}</em>
         </div>
         {opp ? <p className="ap-detail-opp">针对机会：<b>{opp}</b></p> : null}
-        <ul className="ap-detail-list">
-          {(info.points || []).map((pt, i) => <li key={i}>{pt}</li>)}
-        </ul>
-        {(steps[0] || gaps[0]) ? (
+        {loadingDetail ? (
+          <p className="ap-detail-loading"><Loader2 className="spin" size={14} /> Agent 正在结合这批数据整理「{sel.name}」分析…</p>
+        ) : (
+          <ul className="ap-detail-list">
+            {(detail?.points && detail.points.length ? detail.points : (info.points || [])).map((pt, i) => <li key={i}>{pt}</li>)}
+          </ul>
+        )}
+        {detail?.goal ? (
+          <p className="ap-detail-goal"><b>产品落地目标</b> · {detail.goal}</p>
+        ) : (!loadingDetail && (steps0(feasibility) || gaps0(feasibility))) ? (
           <div className="ap-detail-foot">
-            {steps[0] ? <span className="ap-next">下一步 · {String(steps[0]).replace(/\s*\[\d+\]/g, "").slice(0, 54)}…</span> : null}
-            {gaps[0] ? <span className="ap-gap">缺口 · {String(gaps[0]).slice(0, 36)}</span> : null}
+            {steps0(feasibility) ? <span className="ap-next">下一步 · {steps0(feasibility)}…</span> : null}
+            {gaps0(feasibility) ? <span className="ap-gap">缺口 · {gaps0(feasibility)}</span> : null}
           </div>
         ) : null}
       </div>
     </section>
   );
+}
+
+function steps0(feasibility) {
+  const s = Array.isArray(feasibility?.action_plan) ? feasibility.action_plan[0] : null;
+  return s ? String(s).replace(/\s*\[\d+\]/g, "").slice(0, 54) : "";
+}
+function gaps0(feasibility) {
+  const g = Array.isArray(feasibility?.gap_list) ? feasibility.gap_list[0] : null;
+  return g ? String(g).slice(0, 36) : "";
 }
 
 function ActionBoard({ artifact, selectedPlaybook, onProduce, producing }) {

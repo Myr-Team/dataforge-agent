@@ -89,6 +89,10 @@ export async function loadObservability() {
   return request("/api/observability");
 }
 
+export async function loadPlaybookDetail(payload) {
+  return request("/api/playbook", { method: "POST", body: JSON.stringify(payload) });
+}
+
 export async function deleteWorkspace(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE" });
 }

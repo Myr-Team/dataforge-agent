@@ -19,7 +19,7 @@ import {
   WorkbenchMain,
   WorkspacePane,
 } from "./components.jsx";
-import { PLAYBOOKS } from "./constants.js";
+import { PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
 
 const DEFAULT_WORKSPACE = "demo-corpus";
 
@@ -90,6 +90,21 @@ export function App() {
   const [user, setUser] = useState({ name: "Demo User", email: "local.demo@dataforge" });
   const [authState, setAuthState] = useState("local");
   const [observability, setObservability] = useState(null);
+  const [tasks, setTasks] = useState(() => { try { return JSON.parse(window.localStorage.getItem("df-tasks") || "[]"); } catch { return []; } });
+  const pushTask = useCallback((task) => {
+    setTasks((list) => {
+      const next = [{ time: new Date().toISOString(), ...task }, ...list].slice(0, 30);
+      try { window.localStorage.setItem("df-tasks", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+  const updateTask = useCallback((id, patch) => {
+    setTasks((list) => {
+      const next = list.map((t) => (t.id === id ? { ...t, ...patch } : t));
+      try { window.localStorage.setItem("df-tasks", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
   const streamRef = useRef("");
   const revealTimerRef = useRef(null);
 
@@ -297,6 +312,9 @@ export function App() {
     setMessages((items) => [...items, { role: "user", text: message, time: new Date().toISOString() }]);
     setInput("");
     setRunning(true);
+    // 任务通知：自动分析记一条"可行性分析"任务（进行中→完成/失败）
+    const taskId = opts.stayOnDashboard ? `analysis-${Date.now()}` : null;
+    if (taskId) pushTask({ id: taskId, label: "可行性分析", detail: "分析进行中…", status: "running" });
     // 自动分析（stayOnDashboard）留在工作区看板里就地跑，只有手动会话/绘画才跳到会话视图
     if (!opts.stayOnDashboard) {
       setActiveView("conversations");
@@ -363,6 +381,7 @@ export function App() {
             setFinalArtifact(artifact);
             try { window.localStorage.setItem(`df-analysis:${workspaceId}`, JSON.stringify(artifact)); } catch { /* ignore */ }
           }
+          if (taskId) updateTask(taskId, { status: "done", detail: isAnalysis ? `结论：${VERDICT_LABELS[fe.verdict] || "已完成"}` : "已完成" });
           // 不在分析阶段自动填充产物：产物生成器停在待命，由客户拍板后点「生成产物」才生成（见 produce()）。
           // 对话里 agent 识别到「想要产物」时，后端给 produce_offer → 在消息下挂一个确认生成按钮
           const produceOffer = artifact.produce_offer || event.data?.produce_offer || null;
@@ -397,6 +416,7 @@ export function App() {
       setTrace((items) => [...items, { event: "error", data: { message: messageText } }]);
       setMessages((items) => [...items, { role: "assistant", text: `运行失败：${messageText}`, time: new Date().toISOString() }]);
       setNotice({ type: "error", message: `运行失败：${messageText}` });
+      if (taskId) updateTask(taskId, { status: "error", detail: "分析失败" });
     } finally {
       setRunning(false);
       if (!revealTimerRef.current) {
@@ -530,6 +550,8 @@ export function App() {
       try { if (window.localStorage.getItem("df-pref-audio") === "1") kinds.push("audio"); } catch { /* ignore */ }
     }
     if (!kinds.length) kinds = ["pdf", "concept_image"];
+    const prodTaskId = `produce-${Date.now()}`;
+    pushTask({ id: prodTaskId, label: "生成产物", detail: `${kinds.map((k) => KIND_LABEL[k]).join(" / ")} · 进行中…`, status: "running" });
     setProducing(true);
     setInspectorTab("output");
     try {
@@ -580,10 +602,12 @@ export function App() {
         ]);
       }
       setNotice({ type: "done", message: "产物已生成。" });
+      updateTask(prodTaskId, { status: "done", detail: `${kinds.map((k) => KIND_LABEL[k]).join(" / ")} · 已生成` });
       refreshDashboard(workspaceId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNotice({ type: "error", message: `生成产物失败：${message}` });
+      updateTask(prodTaskId, { status: "error", detail: "生成失败" });
     } finally {
       setProducing(false);
     }
@@ -614,6 +638,7 @@ export function App() {
           user={user}
           authState={authState}
           onLogout={logout}
+          tasks={tasks}
         />
         <MobileNav active={activeView} onChange={setActiveView} />
         <div className="workbench-grid">

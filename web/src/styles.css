@@ -2156,3 +2156,26 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .set-dep-state { font-size: 11px; font-weight: 700; }
 .set-dep.ok .set-dep-state { color: #1f8f63; }
 .set-dep.off .set-dep-state { color: #b9801c; }
+
+/* ---- 任务通知栏 ---- */
+.notif { position: relative; display: inline-flex; }
+.notif-badge { position: absolute; top: -4px; right: -4px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px; background: var(--red); color: #fff; font-size: 9.5px; font-weight: 800; display: grid; place-items: center; line-height: 1; }
+.notif-panel { position: absolute; top: 38px; right: 0; width: 324px; max-height: 440px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); z-index: 60; padding: 6px; }
+.notif-head { display: flex; justify-content: space-between; align-items: baseline; padding: 8px 10px 6px; }
+.notif-head strong { font-size: 13px; color: var(--ink); }
+.notif-head span { font-size: 11px; color: var(--muted); }
+.notif-list { display: flex; flex-direction: column; gap: 3px; }
+.notif-item { display: grid; grid-template-columns: 24px minmax(0,1fr); gap: 9px; align-items: start; padding: 9px 10px; border-radius: 9px; }
+.notif-item:hover { background: var(--surface-soft); }
+.notif-ic { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 6px; background: var(--blue-soft); color: var(--blue); }
+.notif-item.done .notif-ic { background: var(--mint-soft); color: #1f8f63; }
+.notif-item.error .notif-ic { background: var(--red-soft); color: var(--red); }
+.notif-body strong { display: block; font-size: 12.5px; color: var(--ink); }
+.notif-body span { display: block; font-size: 11px; color: var(--muted); margin-top: 1px; line-height: 1.4; }
+.notif-list .empty-copy { padding: 14px 10px; }
+
+/* ---- 行动计划：Agent 生成的数据挂钩内容 ---- */
+.ap-detail-loading { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); padding: 9px 0; }
+.ap-detail-loading svg { color: var(--blue); }
+.ap-detail-goal { margin: 10px 0 0; padding: 9px 12px; border-radius: 9px; background: var(--blue-soft); font-size: 12.5px; color: var(--ink); line-height: 1.55; }
+.ap-detail-goal b { color: var(--blue); }
