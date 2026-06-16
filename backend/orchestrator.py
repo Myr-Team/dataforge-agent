@@ -1875,37 +1875,52 @@ def _clean_exec_summary_fallback(text: Any) -> str:
     return cleaned.strip()[:1600]
 
 
-def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
+_PRODUCE_KINDS = ("pdf", "concept_image", "audio")
+
+
+def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> dict[str, Any]:
+    # 默认只生成项目文档(PDF)+概念图，语音摘要按需（非必要产物）
+    wanted = [k for k in (kinds or ["pdf", "concept_image"]) if k in _PRODUCE_KINDS]
+    if not wanted:
+        wanted = ["pdf", "concept_image"]
     if not artifact.get("reference_images"):
         artifact["reference_images"] = workspace_reference_images(str(artifact.get("workspace_id") or ""))
     proposal = _proposal_payload(artifact)
-    image_prompt = _image_prompt_from_proposal(proposal)
-    image_kind = _proposal_image_kind(proposal)[0]
-    audio_text = _concise_narration_from_proposal(proposal)
-    reference_image_urls = _reference_image_urls(proposal.get("reference_images") or [])
-    overlay_title = str(proposal.get("title") or proposal.get("opportunity_id") or "").strip()
-    logo_url = _logo_reference_url(proposal.get("reference_images") or [])
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dataforge-producer") as pool:
-        pdf_future = pool.submit(render_pdf_report, proposal, "project_proposal")
-        image_future = pool.submit(generate_image, image_prompt, "1024x1024", reference_image_urls, overlay_title, logo_url)
-        audio_future = pool.submit(narrate_summary, audio_text, "zh-CN-XiaoxiaoNeural")
-        pdf = pdf_future.result()
-        image = image_future.result()
-        audio = audio_future.result()
-    return {
+    result: dict[str, Any] = {
         "opportunity_id": proposal["opportunity_id"],
         "proposal": proposal,
-        "image_kind": image_kind,
-        "image_prompt": image_prompt,
-        "pdf": pdf,
-        "concept_image": image,
-        "audio_summary": audio,
-        "artifact_urls": {
-            "pdf": pdf.get("artifact_url"),
-            "concept_image": image.get("artifact_url"),
-            "audio_summary": audio.get("artifact_url"),
-        },
+        "kinds": wanted,
+        "artifact_urls": {},
     }
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dataforge-producer") as pool:
+        pdf_future = pool.submit(render_pdf_report, proposal, "project_proposal") if "pdf" in wanted else None
+        image_future = None
+        if "concept_image" in wanted:
+            image_prompt = _image_prompt_from_proposal(proposal)
+            result["image_kind"] = _proposal_image_kind(proposal)[0]
+            result["image_prompt"] = image_prompt
+            image_future = pool.submit(
+                generate_image,
+                image_prompt,
+                "1024x1024",
+                _reference_image_urls(proposal.get("reference_images") or []),
+                str(proposal.get("title") or proposal.get("opportunity_id") or "").strip(),
+                _logo_reference_url(proposal.get("reference_images") or []),
+            )
+        audio_future = pool.submit(narrate_summary, _concise_narration_from_proposal(proposal), "zh-CN-XiaoxiaoNeural") if "audio" in wanted else None
+        if pdf_future:
+            pdf = pdf_future.result()
+            result["pdf"] = pdf
+            result["artifact_urls"]["pdf"] = pdf.get("artifact_url")
+        if image_future:
+            image = image_future.result()
+            result["concept_image"] = image
+            result["artifact_urls"]["concept_image"] = image.get("artifact_url")
+        if audio_future:
+            audio = audio_future.result()
+            result["audio_summary"] = audio
+            result["artifact_urls"]["audio_summary"] = audio.get("artifact_url")
+    return result
 
 
 def _logo_reference_url(reference_images: list[dict[str, Any]]) -> str | None:
@@ -1967,9 +1982,7 @@ def _proposal_image_kind(proposal: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
-    existing = _existing_proposal(payload)
-    if existing:
-        return existing
+    kinds = payload.get("kinds") or ["pdf", "concept_image"]
     artifact = {
         "workspace_id": payload.get("workspace_id") or "demo-corpus",
         "conversation_id": payload.get("conversation_id"),
@@ -1981,7 +1994,7 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
         "reference_images": payload.get("reference_images") or [],
         "narrative": payload.get("narrative") or payload.get("text"),
     }
-    return _run_producer(artifact)
+    return _run_producer(artifact, kinds)
 
 
 def _existing_proposal(payload: dict[str, Any]) -> dict[str, Any] | None:

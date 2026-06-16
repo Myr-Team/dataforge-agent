@@ -308,6 +308,7 @@ class ProduceRequest(BaseModel):
     reference_images: list[dict[str, Any]] = Field(default_factory=list)
     narrative: str | None = None
     text: str | None = None
+    kinds: list[str] | None = None
 
 
 class ChatRequest(BaseModel):
