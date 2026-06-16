@@ -276,14 +276,20 @@ export function WorkspacePane({
   const rows = workspace.row_count ?? workspace.indexed_count ?? workspace.doc_count ?? 0;
   const fillRate = workspace.fill_rate ?? workspace.field_fill_rate;
   const referenceImages = workspace.reference_images || [];
+  const [refreshing, setRefreshing] = useState(false);
+  const doRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try { await onRefresh?.(); } finally { window.setTimeout(() => setRefreshing(false), 500); }
+  };
 
   return (
     <aside className="workspace-pane">
       <section className="pane-section workspace-hero">
         <div className="section-head">
           <span>工作区</span>
-          <button className="icon-button" type="button" onClick={onRefresh} title="刷新">
-            <RefreshCw size={15} />
+          <button className="icon-button" type="button" onClick={doRefresh} title="刷新数据画像与运行状态（上传/解析后用它拉取最新）" disabled={refreshing}>
+            {refreshing ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
           </button>
         </div>
         <h2>{workspace.name || workspaceId}</h2>
@@ -339,7 +345,7 @@ export function WorkspacePane({
 
       {topSignals.length ? (
         <section className="pane-section">
-          <div className="section-head"><span>关键信号 TOP5</span><em>{Math.min(5, topSignals.length)}</em></div>
+          <div className="section-head"><span>关键信息</span><em>{topSignals.length}</em></div>
           <div className="signal-top">
             {topSignals.slice(0, 5).map((column, index) => {
               const score = column.signal_score ?? column.score ?? column.importance ?? (0.9 - index * 0.08);
@@ -903,21 +909,7 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
         <div>
           <span className="eyeless-label">Outputs</span>
           <h1>产出物中心</h1>
-          <p>完成一次分析后，按需分项生成。默认优先生成项目文档与概念图；语音摘要为可选项。</p>
-        </div>
-        <div className="produce-actions">
-          <button className="primary-button icon-label" type="button" onClick={() => onProduce(["pdf"])} disabled={!artifact || producing}>
-            {producing ? <Loader2 className="spin" size={15} /> : <FileText size={15} />}
-            生成项目文档
-          </button>
-          <button className="primary-button icon-label" type="button" onClick={() => onProduce(["concept_image"])} disabled={!artifact || producing}>
-            {producing ? <Loader2 className="spin" size={15} /> : <ImagePlus size={15} />}
-            生成概念图
-          </button>
-          <button className="ghost-button icon-label" type="button" onClick={() => onProduce(["audio"])} disabled={!artifact || producing} title="可选产物">
-            <Mic size={15} />
-            语音摘要（可选）
-          </button>
+          <p>每个产物各自一个生成按钮，按需分项生成。会话/工作区里的「生成产物」默认是项目文档 + 概念图一套。</p>
         </div>
       </section>
       <section className="logo-callout">
@@ -931,7 +923,7 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
           上传参考图
         </button>
       </section>
-      <OutputPanel artifacts={artifacts} artifact={artifact} running={producing} />
+      <OutputPanel artifacts={artifacts} artifact={artifact} running={producing} onProduce={onProduce} producing={producing} />
     </main>
   );
 }
@@ -1082,7 +1074,8 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
           <div className="run-table">
             {runs.slice(0, 12).map((run) => {
               const id = run.run_id || run.conversation_id;
-              const label = run.title || run.message || run.first_message || "历史会话";
+              const verdict = run.verdict ? (VERDICT_LABELS[run.verdict] || run.verdict) : null;
+              const label = verdict ? `可行性分析 · ${verdict}` : (run.title || run.message || "历史会话");
               return (
                 <button
                   type="button"
@@ -1095,9 +1088,9 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
                   <Activity size={15} />
                   <div>
                     <strong>{String(label).slice(0, 26)}</strong>
-                    <span>{run.status || "completed"} · {String(id || "").slice(0, 8)}</span>
+                    <span>{run.status || "completed"}{run.step_count ? ` · ${run.step_count} 步` : ""}</span>
                   </div>
-                  <em>{formatTime(run.created_at || run.updated_at)}</em>
+                  <em>{formatTime(run.time || run.completed_at || run.updated_at || run.created_at)}</em>
                 </button>
               );
             })}
@@ -2030,20 +2023,22 @@ function TraceItem({ item }) {
   );
 }
 
-function OutputPanel({ artifacts, artifact, running }) {
+const PRODUCIBLE = [
+  { id: "pdf", kind: "pdf", title: "项目文档", description: "可下载 PDF 提案（封面 + 结论 + 五维评分）", icon: FileText },
+  { id: "concept_image", kind: "concept_image", title: "概念图", description: "产品概念视觉（含 logo/标题）", icon: ImagePlus },
+  { id: "audio_summary", kind: "audio", title: "语音摘要", description: "可播放的汇报摘要（可选产物）", icon: Mic },
+];
+
+function OutputPanel({ artifacts, artifact, running, onProduce, producing }) {
   const analysisReady = Boolean(artifact);
-  const artifactMap = {
-    pdf: artifacts.pdf,
-    concept_image: artifacts.concept_image,
-    audio_summary: artifacts.audio_summary,
-  };
+  const artifactMap = { pdf: artifacts.pdf, concept_image: artifacts.concept_image, audio_summary: artifacts.audio_summary };
   return (
     <div className="inspector-body output-body">
       <div className="output-hint">
-        <strong>{analysisReady ? "产物入口" : "先完成一次分析"}</strong>
-        <span>{analysisReady ? "可按需要生成或打开项目产物。" : "完成分析后，这里会显示 PRD、路线图、实验计划、定价建议和项目书入口。"}</span>
+        <strong>{analysisReady ? "按需分项生成" : "先完成一次分析"}</strong>
+        <span>{analysisReady ? "每个产物各自一个生成按钮——只想要图片就单独点概念图。会话/工作区里的「生成产物」默认是文档 + 概念图一套。" : "完成分析后，这里可以分项生成项目文档、概念图和语音摘要。"}</span>
       </div>
-      {ARTIFACT_GROUPS.map((item) => {
+      {PRODUCIBLE.map((item) => {
         const Icon = item.icon;
         const file = artifactMap[item.id];
         const href = artifactLink(file);
@@ -2053,14 +2048,26 @@ function OutputPanel({ artifacts, artifact, running }) {
             <div>
               <Icon size={18} />
               <strong>{item.title}</strong>
-              <span>{file?.bytes ? `${Math.round(file.bytes / 1024)} KB` : generated ? "已生成" : running ? "生成中" : analysisReady ? "可生成" : "待分析"}</span>
+              <span>{file?.bytes ? `${Math.round(file.bytes / 1024)} KB` : generated ? "已生成" : producing ? "生成中…" : analysisReady ? "可生成" : "待分析"}</span>
             </div>
             <p>{item.description}</p>
             {item.id === "concept_image" && href ? <img src={href} alt="概念图产物" /> : null}
             {item.id === "audio_summary" && href ? <audio src={href} controls /> : null}
-            <a className={href ? "output-link" : "output-link disabled"} href={href || undefined} target="_blank" rel="noreferrer">
-              {href ? "打开" : "等待产物"} <ArrowUpRight size={14} />
-            </a>
+            <div className="output-card-foot">
+              <button
+                type="button"
+                className="output-gen"
+                onClick={() => onProduce && onProduce([item.kind])}
+                disabled={!analysisReady || producing}
+                title={analysisReady ? "" : "先做一次分析"}
+              >
+                {producing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
+                {generated ? "重新生成" : "生成"}
+              </button>
+              {href ? (
+                <a className="output-link" href={href} target="_blank" rel="noreferrer">打开 <ArrowUpRight size={14} /></a>
+              ) : <span className="output-link disabled">尚未生成</span>}
+            </div>
           </article>
         );
       })}

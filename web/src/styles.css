@@ -2179,3 +2179,9 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .ap-detail-loading svg { color: var(--blue); }
 .ap-detail-goal { margin: 10px 0 0; padding: 9px 12px; border-radius: 9px; background: var(--blue-soft); font-size: 12.5px; color: var(--ink); line-height: 1.55; }
 .ap-detail-goal b { color: var(--blue); }
+
+/* ---- 产物卡片：每项自带生成按钮 ---- */
+.output-card-foot { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.output-gen { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 0; border-radius: 8px; background: var(--blue); color: #fff; font-size: 12.5px; font-weight: 600; cursor: pointer; box-shadow: var(--shadow-sm); transition: background .15s var(--ease), transform .12s var(--ease); }
+.output-gen:hover:not(:disabled) { background: #0066cc; transform: translateY(-1px); }
+.output-gen:disabled { opacity: .5; cursor: default; box-shadow: none; }
