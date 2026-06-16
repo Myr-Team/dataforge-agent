@@ -51,6 +51,8 @@ try:
         run_coordinator_route,
         run_followup_rewrite,
         run_action_plan,
+        run_executive_summary,
+        run_image_subject,
         run_grounded_chat_answer,
         run_market_mcp_research,
         run_market_web_research,
@@ -102,6 +104,8 @@ except ImportError:
         run_coordinator_route,
         run_followup_rewrite,
         run_action_plan,
+        run_executive_summary,
+        run_image_subject,
         run_grounded_chat_answer,
         run_market_mcp_research,
         run_market_web_research,
@@ -1823,10 +1827,34 @@ def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
             artifact,
         )
     )
+    # 为正式 PDF 生成干净、条目式的执行摘要（去对话腔/markdown）；失败回退清洗版叙述
+    exec_headline, exec_points = "", []
+    try:
+        es = run_executive_summary({
+            "opportunity": title,
+            "verdict": feasibility.get("verdict"),
+            "overall_confidence": feasibility.get("overall_confidence"),
+            "recommendation": feasibility.get("recommendation"),
+            "action_plan": [str(s) for s in (feasibility.get("action_plan") or [])[:5]],
+            "gap_list": [str(g) for g in (feasibility.get("gap_list") or [])[:4]],
+            "dimensions": [{"name": d.get("name"), "score": d.get("score")} for d in (feasibility.get("dimensions") or [])[:5] if isinstance(d, dict)],
+            "audience": (corpus.get("profile", {}) or {}).get("customer_summary"),
+            "market": (market or {}).get("positioning_note"),
+        })
+        exec_headline = str(es.get("headline") or "").strip()
+        exec_points = [str(p).strip() for p in (es.get("points") or []) if str(p).strip()]
+    except Exception:
+        exec_headline, exec_points = "", []
+    if exec_headline or exec_points:
+        clean_summary = (exec_headline + ("\n" + "\n".join(f"- {p}" for p in exec_points) if exec_points else "")).strip()
+    else:
+        clean_summary = _clean_exec_summary_fallback(narrative)
     return {
         "opportunity_id": opportunity_id,
         "title": title,
-        "executive_summary": narrative,
+        "executive_summary": clean_summary,
+        "executive_headline": exec_headline,
+        "executive_points": exec_points,
         "feasibility": {key: value for key, value in feasibility.items() if key != "_llm"},
         "corpus_profile": corpus.get("profile", {}),
         "opportunities": corpus.get("opportunities", []),
@@ -1835,6 +1863,16 @@ def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
         "workspace_id": artifact.get("workspace_id"),
         "reference_images": artifact.get("reference_images") or [],
     }
+
+
+def _clean_exec_summary_fallback(text: Any) -> str:
+    """LLM 摘要失败时的兜底：去掉对话腔开场 + markdown 符号。"""
+    cleaned = str(text or "")
+    cleaned = re.sub(r"[#*`_]+", "", cleaned)
+    cleaned = re.sub(r"(?m)^\s*(先给你[^。\n]*。|下面给你[^。\n]*。|我先[^。\n]*。|这里给你[^。\n]*。)", "", cleaned)
+    cleaned = re.sub(r"(方便你[^。\n]*扫一眼[^。\n]*。|方便你整体[^。\n]*。)", "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()[:1600]
 
 
 def _run_producer(artifact: dict[str, Any]) -> dict[str, Any]:
@@ -1996,12 +2034,42 @@ def _image_prompt_from_proposal(proposal: dict[str, Any]) -> str:
         brief_bits.append(f"市场定位：{market_note}")
     scene_brief = " ".join(brief_bits)[:900]
 
+    # 让 agent 判断"实际要做的产品是什么"，画产品本身（不是报告/看板）
+    subject = ""
+    kind = ""
+    try:
+        decided = run_image_subject({
+            "title": title,
+            "verdict": feasibility.get("verdict"),
+            "recommendation": recommendation,
+            "action_plan": steps,
+            "audience": audience,
+            "market": market_note,
+        })
+        subject = str(decided.get("subject") or "").strip()
+        kind = str(decided.get("kind") or "").strip()
+    except Exception:
+        subject, kind = "", ""
+
+    kind_dir = {
+        "product_app": ("product app UI concept", "Depict the actual product as a clean modern app/software UI mockup on a device."),
+        "product_physical": ("physical product / packaging concept", "Depict the tangible physical product, its packaging or a prototype."),
+        "service": ("service / in-store experience concept", "Depict the branded service experience or in-store scene that delivers the product."),
+        "campaign": ("campaign key visual", "Depict a bold campaign key visual with branded atmosphere."),
+    }
+    if subject and kind in kind_dir:
+        image_label, image_direction = kind_dir[kind]
+        image_kind = kind
+        focal = f"The product to depict: {subject}."
+    else:
+        focal = f"Translate this opportunity and plan into a product/concept visual (do NOT print this text): 《{title}》。{scene_brief}"
+
     return (
-        "Design ONE polished concept key visual for a business proposal cover. "
+        "Design ONE polished product concept key visual for a business proposal cover. "
         f"Deliverable type: {image_label} ({image_kind}). {image_direction} "
-        "Translate the following opportunity and plan into imagery, color and iconography — do NOT print this text in the image: "
-        f"《{title}》。{scene_brief} "
-        "Composition (important): a single clear focal subject in the upper two-thirds; "
+        "Show the actual PRODUCT / deliverable — NOT a report, dashboard, analytics chart, slide, meeting room or office scene. "
+        f"{focal} Context (do NOT print as text): {scene_brief} "
+        "Composition (important): one clear focal subject in the upper two-thirds; "
         "keep the BOTTOM ~28% as calm low-detail negative space or a soft gradient so a title caption can be overlaid later; "
         "keep the TOP-LEFT corner relatively clean for a small logo. "
         "Text: do NOT render paragraphs, headlines, or any Chinese characters; at most one or two very short English label marks. "

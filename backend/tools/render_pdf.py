@@ -78,7 +78,7 @@ def render_pdf_report(proposal: dict[str, Any], template: str = "project_proposa
     return result
 
 
-_CONF_LABEL = {"data_confirmed": "证据充分", "market_inferred": "市场推断", "speculative": "证据不足"}
+_CONF_LABEL = {"data_confirmed": "数据支撑", "market_inferred": "市场参考", "speculative": "待验证"}
 _VERDICT = {
     "feasible": ("可行", "#0a7d4f", "#e8f8f2"),
     "recommended": ("推荐推进", "#0a7d4f", "#e8f8f2"),
@@ -236,9 +236,18 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
     ]))
     story.append(vt)
 
-    # 执行摘要（浅底框）
+    # 执行摘要（浅底框）：优先用结构化 headline + 条目；否则清洗后的整段
     section("执行摘要")
-    summary_paras = [Paragraph(_xml(p), styles["boxbody"]) for p in _split_paragraphs(proposal.get("executive_summary") or "暂无执行摘要。", 6)]
+    headline = str(proposal.get("executive_headline") or "").strip()
+    points = [str(p).strip() for p in (proposal.get("executive_points") or []) if str(p).strip()]
+    summary_paras: list[Any] = []
+    if headline:
+        summary_paras.append(Paragraph(f'<font color="#0a66d6">{_xml(headline)}</font>', styles["boxbody"]))
+    if points:
+        for pt in points[:6]:
+            summary_paras.append(Paragraph(f'<font color="#0071e3">●</font>　{_xml(pt)}', styles["boxbody"]))
+    if not summary_paras:
+        summary_paras = [Paragraph(_xml(p), styles["boxbody"]) for p in _split_paragraphs(proposal.get("executive_summary") or "暂无执行摘要。", 6)]
     st = Table([[summary_paras or [Paragraph("暂无执行摘要。", styles["boxbody"])]]], colWidths=[doc.width])
     st.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f6f9fe")),
@@ -256,11 +265,8 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
         section("可行性五维评分")
         rows = [[Paragraph("维度", styles["cellh"]), Paragraph("评分", styles["cellh"]), Paragraph("置信度", styles["cellh"]), Paragraph("理由与证据", styles["cellh"])]]
         for dim in dimensions:
-            evidence = dim.get("evidence") or []
-            evidence_text = "；".join(str(item.get("quote") or "")[:130] for item in evidence[:2] if item.get("quote"))
+            # 客户向：只放清洗后的理由，不贴原始证据引文（内部味太重）
             cell = _xml(str(dim.get("rationale") or ""))
-            if evidence_text:
-                cell += f'<br/><font color="#6e6e73">证据：{_xml(evidence_text)}</font>'
             score = dim.get("score")
             score_txt = f"{score}/5" if score not in (None, "") else "—"
             rows.append([
@@ -344,4 +350,9 @@ def _split_paragraphs(text: Any, limit: int) -> list[str]:
 
 def _xml(text: Any) -> str:
     cleaned = _EMOJI_RE.sub("", str(text or ""))
+    # 清洗残留 markdown 记号（**粗体** / ## 标题 / `代码` / __ 等），避免印进 PDF
+    cleaned = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", cleaned)
+    cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!\*)\*(?!\*)", "", cleaned)
+    cleaned = cleaned.replace("`", "").replace("__", "")
     return escape(cleaned).replace("\n", "<br/>")

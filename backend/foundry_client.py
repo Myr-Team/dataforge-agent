@@ -122,6 +122,96 @@ ACTION_PLAN_SCHEMA = {
     "required": ["recommendation", "steps"],
 }
 
+IMAGE_SUBJECT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "subject": {"type": "string"},
+        "kind": {"type": "string", "enum": ["product_app", "product_physical", "service", "campaign"]},
+    },
+    "required": ["subject", "kind"],
+}
+
+EXEC_SUMMARY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "headline": {"type": "string"},
+        "points": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["headline", "points"],
+}
+
+
+def run_image_subject(payload: dict[str, Any]) -> dict[str, Any]:
+    """让 agent 判断这份方案【实际要做的产品/交付物是什么】，给图像模型一个可作画的产品主体（英文）。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是产品概念视觉的美术指导。根据这份可行性方案，判断【我们实际要做的产品 / 交付物是什么】，"
+        "并把它描述成一个【可作画的具体视觉主体】，用于让图像模型画出这个产品本身——"
+        "绝不要画成报告、数据看板、分析图表、会议室或办公室场景。\n"
+        "kind 取值：product_app（App/软件界面）、product_physical（实体产品/包装/样机）、service（服务或门店体验场景）、campaign（活动主视觉）。\n"
+        "subject：用一句【英文】描述要画的具体产品画面，越具体越好（如 'a mobile membership app screen showing a climber's visit streak and tier rewards, hero device mockup'）。\n"
+        "只返回 JSON：{subject, kind}。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 400,
+        "text": _schema_format("df_image_subject", IMAGE_SUBJECT_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    try:
+        data = _extract_json(getattr(response, "output_text", "") or "")
+    except Exception:
+        data = {}
+    return {
+        "subject": str(data.get("subject") or "").strip(),
+        "kind": str(data.get("kind") or "").strip(),
+    }
+
+
+def run_executive_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    """为正式 PDF 报告生成干净、条目式的执行摘要（去对话腔、去 markdown）。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是为【客户决策】撰写正式执行摘要的分析师，输出将放进一份正式 PDF 报告。\n"
+        "硬性要求：\n"
+        "1) 绝不要任何对话腔/寒暄（禁止出现“先给你一版”“方便你扫一眼”“我先”“下面给你”“整体扫一眼”之类）。\n"
+        "2) 不要任何 markdown 符号（不要 * # ` 等），纯文本。\n"
+        "3) headline：一句话点出机会方向与可行性结论（客户视角、专业克制）。\n"
+        "4) points：3-5 条要点，每条一句话，覆盖：机会/产品方向、关键依据、主要缺口或风险、建议的下一步；可执行、不空话。\n"
+        "5) 中文，正式、简洁。只返回 JSON：{headline, points}。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 700,
+        "text": _schema_format("df_exec_summary", EXEC_SUMMARY_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    try:
+        data = _extract_json(getattr(response, "output_text", "") or "")
+    except Exception:
+        data = {}
+    points = [str(p).strip() for p in (data.get("points") or []) if str(p).strip()]
+    return {
+        "headline": str(data.get("headline") or "").strip(),
+        "points": points,
+    }
+
 
 def run_action_plan(payload: dict[str, Any]) -> dict[str, Any]:
     """用 LLM 根据可行性判定 + 维度评分 + 缺口 + 证据，生成【这批数据专属】的行动方案（替代写死模板）。"""
