@@ -4,6 +4,7 @@ import {
   loadConversation,
   loadDashboard,
   loadObservability,
+  loadRun,
   produceArtifacts,
   streamChat,
   uploadWorkspace,
@@ -105,6 +106,17 @@ export function App() {
       return next;
     });
   }, []);
+  // 恢复会话时，若消息没带 citations，从对应 run 的 artifact 证据池补上，保证 [n] 悬停索引可用
+  const withRunCitations = useCallback(async (convId, msgs) => {
+    const needs = msgs.some((m) => m.role === "assistant" && (!m.citations || !m.citations.length) && /\[\d+\]/.test(String(m.text || "")));
+    if (!needs || !convId) return msgs;
+    try {
+      const run = await loadRun(convId);
+      const pool = run?.final?.artifact?.citations || run?.artifact?.citations || [];
+      if (!pool.length) return msgs;
+      return msgs.map((m) => (m.role === "assistant" && (!m.citations || !m.citations.length) && /\[\d+\]/.test(String(m.text || "")) ? { ...m, citations: pool } : m));
+    } catch { return msgs; }
+  }, []);
   const streamRef = useRef("");
   const revealTimerRef = useRef(null);
 
@@ -177,14 +189,25 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [dashboard, workspaceId, refreshDashboard]);
 
-  // 恢复该工作区上次的可行性分析（刷新/换工作区后看板结论与五维不丢；待后端持久化后改读后端）
+  // 恢复该工作区上次的可行性分析 + Agent Flow 流水线状态（刷新/换工作区后看板结论、五维、流水线都不丢）
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(`df-analysis:${workspaceId}`);
       setFinalArtifact(raw ? JSON.parse(raw) : null);
     } catch { setFinalArtifact(null); }
     setArtifacts({});
+    try {
+      const rawTrace = window.localStorage.getItem(`df-trace:${workspaceId}`);
+      setTrace(rawTrace ? JSON.parse(rawTrace) : []);
+    } catch { setTrace([]); }
   }, [workspaceId]);
+
+  // 持久化 Agent Flow 轨迹（有真实运行事件时），刷新后流水线状态保持
+  useEffect(() => {
+    if (!trace.length || running) return;
+    if (!trace.some((e) => ["model_response", "audit", "final"].includes(e.event))) return;
+    try { window.localStorage.setItem(`df-trace:${workspaceId}`, JSON.stringify(trace.slice(-44))); } catch { /* ignore */ }
+  }, [trace, running, workspaceId]);
 
   // 恢复该工作区上次的会话内容（后端已持久化会话，刷新/换工作区后从后端拉回，不再清空）
   useEffect(() => {
@@ -194,10 +217,11 @@ export function App() {
     let convId = null;
     try { convId = window.localStorage.getItem(`df-conv:${workspaceId}`); } catch { convId = null; }
     if (!convId) return undefined;
-    loadConversation(convId).then((data) => {
+    loadConversation(convId).then(async (data) => {
       if (cancelled || !data) return;
-      const msgs = (data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] }));
-      if (msgs.length) { setMessages(msgs); setActiveConversationId(convId); }
+      let msgs = (data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] }));
+      msgs = await withRunCitations(convId, msgs);
+      if (!cancelled && msgs.length) { setMessages(msgs); setActiveConversationId(convId); }
     }).catch(() => { /* 会话已删除或不可达，忽略 */ });
     return () => { cancelled = true; };
   }, [workspaceId]);
@@ -502,7 +526,9 @@ export function App() {
       const data = await loadConversation(conversationId);
       setActiveConversationId(conversationId);
       try { window.localStorage.setItem(`df-conv:${workspaceId}`, conversationId); } catch { /* ignore */ }
-      setMessages((data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] })));
+      let msgs = (data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] }));
+      msgs = await withRunCitations(conversationId, msgs);
+      setMessages(msgs);
       resetRunState();
       setActiveView("conversations");
       setNotice({ type: "done", message: "会话已恢复。" });
