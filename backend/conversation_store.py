@@ -53,6 +53,7 @@ def append_message(
     role: str,
     text: str,
     verdict: str | None = None,
+    citations: list[dict[str, Any]] | None = None,
     remote_load: bool = True,
 ) -> dict[str, Any]:
     now = _utc_now()
@@ -72,6 +73,13 @@ def append_message(
         if verdict:
             message["verdict"] = verdict
             conversation["last_verdict"] = verdict
+        if citations:
+            slim: list[dict[str, Any]] = []
+            for c in citations[:8]:
+                if isinstance(c, dict):
+                    slim.append({k: c.get(k) for k in ("marker", "snippet", "quote", "confidence", "ref", "source_label", "source_file") if c.get(k) is not None})
+            if slim:
+                message["citations"] = slim
         messages.append(message)
         conversation["messages"] = messages
         conversation["title"] = conversation.get("title") or _title_from_messages(messages)

@@ -407,9 +407,9 @@ def _persist_user_message(conversation_id: str, workspace_id: str, text: str, as
         pass
 
 
-def _persist_assistant_message(conversation_id: str, workspace_id: str, text: str, verdict: str | None = None) -> None:
+def _persist_assistant_message(conversation_id: str, workspace_id: str, text: str, verdict: str | None = None, citations: list[dict[str, Any]] | None = None) -> None:
     try:
-        append_message(conversation_id, workspace_id=workspace_id, role="assistant", text=text, verdict=verdict)
+        append_message(conversation_id, workspace_id=workspace_id, role="assistant", text=text, verdict=verdict, citations=citations)
     except Exception:
         pass
 
@@ -3834,7 +3834,8 @@ async def _persist_chat_completion(
     artifact: dict[str, Any],
 ) -> None:
     try:
-        await run_in_threadpool(_persist_assistant_message, conversation_id, workspace_id, text, verdict)
+        citations = artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or []
+        await run_in_threadpool(_persist_assistant_message, conversation_id, workspace_id, text, verdict, citations)
         await run_in_threadpool(complete_run, conversation_id, status=status, final=final_payload, artifact=artifact)
     except Exception:
         return
