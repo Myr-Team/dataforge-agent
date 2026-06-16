@@ -1639,12 +1639,14 @@ function CitationInline({ citations, text }) {
 
 // 会话里就地展示刚生成的产物（PDF / 概念图 / 语音），点「生成产物」后立刻能看到
 function ChatArtifacts({ artifacts }) {
+  const [lightbox, setLightbox] = useState(null);
   const pdf = artifacts?.pdf ? artifactLink(artifacts.pdf) : null;
   const img = artifacts?.concept_image ? artifactLink(artifacts.concept_image) : null;
   const audio = artifacts?.audio_summary ? artifactLink(artifacts.audio_summary) : null;
   if (!pdf && !img && !audio) return null;
   return (
     <div className="chat-artifacts">
+      <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />
       {pdf ? (
         <a className="chat-artifact-card" href={pdf} target="_blank" rel="noreferrer">
           <FileText size={16} />
@@ -1653,10 +1655,10 @@ function ChatArtifacts({ artifacts }) {
         </a>
       ) : null}
       {img ? (
-        <a className="chat-artifact-card image" href={img} target="_blank" rel="noreferrer">
+        <button type="button" className="chat-artifact-card image" onClick={() => setLightbox(img)} title="点击查看大图">
           <img src={img} alt="概念图产物" />
           <span className="ca-cap"><ImagePlus size={13} /> 概念图</span>
-        </a>
+        </button>
       ) : null}
       {audio ? (
         <div className="chat-artifact-card audio">
@@ -2023,6 +2025,22 @@ function TraceItem({ item }) {
   );
 }
 
+function ImageLightbox({ src, onClose }) {
+  useEffect(() => {
+    if (!src) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [src, onClose]);
+  if (!src) return null;
+  return (
+    <div className="img-lightbox" onClick={onClose} role="dialog" aria-modal="true">
+      <button className="img-lightbox-close" type="button" onClick={onClose} aria-label="关闭"><X size={20} /></button>
+      <img src={src} alt="产物大图" onClick={(e) => e.stopPropagation()} />
+    </div>
+  );
+}
+
 const PRODUCIBLE = [
   { id: "pdf", kind: "pdf", title: "项目文档", description: "可下载 PDF 提案（封面 + 结论 + 五维评分）", icon: FileText },
   { id: "concept_image", kind: "concept_image", title: "概念图", description: "产品概念视觉（含 logo/标题）", icon: ImagePlus },
@@ -2032,8 +2050,10 @@ const PRODUCIBLE = [
 function OutputPanel({ artifacts, artifact, running, onProduce, producing }) {
   const analysisReady = Boolean(artifact);
   const artifactMap = { pdf: artifacts.pdf, concept_image: artifacts.concept_image, audio_summary: artifacts.audio_summary };
+  const [lightbox, setLightbox] = useState(null);
   return (
     <div className="inspector-body output-body">
+      <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />
       <div className="output-hint">
         <strong>{analysisReady ? "按需分项生成" : "先完成一次分析"}</strong>
         <span>{analysisReady ? "每个产物各自一个生成按钮——只想要图片就单独点概念图。会话/工作区里的「生成产物」默认是文档 + 概念图一套。" : "完成分析后，这里可以分项生成项目文档、概念图和语音摘要。"}</span>
@@ -2051,7 +2071,7 @@ function OutputPanel({ artifacts, artifact, running, onProduce, producing }) {
               <span>{file?.bytes ? `${Math.round(file.bytes / 1024)} KB` : generated ? "已生成" : producing ? "生成中…" : analysisReady ? "可生成" : "待分析"}</span>
             </div>
             <p>{item.description}</p>
-            {item.id === "concept_image" && href ? <img src={href} alt="概念图产物" /> : null}
+            {item.id === "concept_image" && href ? <img className="output-img" src={href} alt="概念图产物" onClick={() => setLightbox(href)} title="点击查看大图" /> : null}
             {item.id === "audio_summary" && href ? <audio src={href} controls /> : null}
             <div className="output-card-foot">
               <button
@@ -2064,9 +2084,12 @@ function OutputPanel({ artifacts, artifact, running, onProduce, producing }) {
                 {producing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
                 {generated ? "重新生成" : "生成"}
               </button>
-              {href ? (
-                <a className="output-link" href={href} target="_blank" rel="noreferrer">打开 <ArrowUpRight size={14} /></a>
-              ) : <span className="output-link disabled">尚未生成</span>}
+              {item.id === "pdf" && href ? (
+                <a className="output-link" href={href} target="_blank" rel="noreferrer">打开 PDF <ArrowUpRight size={14} /></a>
+              ) : null}
+              {item.id === "concept_image" && href ? (
+                <button type="button" className="output-link as-link" onClick={() => setLightbox(href)}>查看大图 <ArrowUpRight size={14} /></button>
+              ) : null}
             </div>
           </article>
         );
