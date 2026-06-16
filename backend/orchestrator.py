@@ -4275,6 +4275,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
                 req.workspace_id,
                 summary,
                 _artifact_verdict(artifact, "completed_with_revision_error"),
+                artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or [],
             )
             if decision.intent == "feasibility_analysis":
                 await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
@@ -4320,6 +4321,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         req.workspace_id,
         summary,
         _artifact_verdict(artifact, "completed"),
+        artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or [],
     )
     if decision.intent == "feasibility_analysis":
         await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
