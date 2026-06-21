@@ -8,25 +8,25 @@ from typing import Any
 GENERIC_TOKEN_LABELS = {
     "account": "账号",
     "activity": "活动",
-    "also": "关联",
     "amount": "金额",
     "avg": "平均",
+    "average": "平均",
     "branch": "门店",
     "brand": "品牌",
     "budget": "预算",
     "campaign": "活动",
-    "card": "卡",
-    "category": "类别",
+    "card": "卡券",
+    "category": "品类",
     "channel": "渠道",
     "city": "城市",
-    "collection": "资料类别",
+    "collection": "资料集合",
     "contract": "合同",
     "cost": "成本",
     "count": "数量",
     "customer": "客户",
     "date": "日期",
     "day": "日期",
-    "detail": "细节",
+    "detail": "明细",
     "duration": "时长",
     "event": "活动",
     "first": "首次",
@@ -53,7 +53,7 @@ GENERIC_TOKEN_LABELS = {
     "risk": "风险",
     "revenue": "收入",
     "score": "评分",
-    "segment": "分群",
+    "segment": "客群",
     "signal": "信号",
     "signals": "信号",
     "source": "来源",
@@ -82,17 +82,18 @@ INTERNAL_FIELD_NAMES = {
 }
 
 CUSTOMER_TERM_REPLACEMENTS = [
-    (r"\bgenerated data product\b", "通用数据产品"),
+    (r"\bgenerated data product\b", "数据产品"),
     (r"\bsynthetic data\b", "合成数据"),
     (r"\bnot_yet_feasible\b", "暂不可行"),
-    (r"\bdata_confirmed\b", "数据已证实"),
+    (r"\bdata_confirmed\b", "工作区证据"),
     (r"\bmarket_inferred\b", "市场推断"),
     (r"\bspeculative\b", "证据不足"),
     (r"\bconditional\b", "有条件可行"),
     (r"\bfeasible\b", "可行"),
     (r"\bpass\b", "通过"),
-    (r"\brevise\b", "需修订"),
+    (r"\brevise\b", "需要修订"),
     (r"\bmembership\b", "会员类型"),
+    (r"\bschema\b", "字段结构"),
 ]
 
 CATEGORICAL_FALLBACK_LABELS = [
@@ -189,10 +190,9 @@ def record_pairs(content: str) -> list[tuple[str, str]]:
 
 def sanitize_customer_text(text: Any, field_labels: dict[str, str] | None = None) -> str:
     value = str(text or "")
-    value = re.sub(r"\[?(?:raw_docs|external)/[^\]\s,;，。)）]+#?[^\]\s,;，。)）]*\]?", "", value)
-    value = re.sub(r"\[?profile\.json[^\]\s,;，。)）]*\]?", "", value)
+    value = re.sub(r"\[?(?:raw_docs|external)/[^\]\s,;，。；：）)]+#?[^\]\s,;，。；：）)]*\]?", "", value)
+    value = re.sub(r"\[?profile\.json[^\]\s,;，。；：）)]*\]?", "", value)
     value = re.sub(r"\b(?:chunk_id|source_file|workspace_id|document_type|content_vector)\b", "", value)
-    value = re.sub(r"\bschema\b", "字段结构", value, flags=re.IGNORECASE)
     for pattern, replacement in CUSTOMER_TERM_REPLACEMENTS:
         value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
     for raw, label in sorted((field_labels or {}).items(), key=lambda item: len(item[0]), reverse=True):
@@ -204,15 +204,32 @@ def sanitize_customer_text(text: Any, field_labels: dict[str, str] | None = None
     value = re.sub(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*\b", _replace_leftover_identifier, value)
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r"\s+([，。；：、！？])", r"\1", value)
+    value = re.sub(r"([！？?])。", r"\1", value)
+    value = re.sub(r"([。！？]){2,}", r"\1", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     return value.strip()
+
+
+def _clean_citation_snippet(snippet: Any) -> str:
+    """让引用摘录在悬停小框里可读：去掉 dump 进来的 ## 标题标记、把纯结构 meta 收成一句人话。"""
+    text = str(snippet or "").strip()
+    if not text:
+        return text
+    # 行首/行内的 markdown 标题记号 → 去掉记号留文字
+    text = re.sub(r"(?m)^\s*#{1,6}\s*", "", text)
+    text = re.sub(r"(\S)\s*#{1,6}\s+", r"\1 ", text)
+    # 纯数据画像/结构 meta（“数据画像：xxx，格式 json，包含 N 个表/文档片段、约 N…”）→ 收成一句
+    if re.match(r"^数据画像[：:]", text) and re.search(r"(格式|包含).{0,40}(片段|表|文档)", text):
+        return "工作区数据画像与结构概览（字段/记录规模）"
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
 
 
 def sanitize_citations(citations: list[dict[str, Any]], field_labels: dict[str, str]) -> list[dict[str, Any]]:
     cleaned: list[dict[str, Any]] = []
     for item in citations:
         clone = dict(item)
-        clone["snippet"] = sanitize_customer_text(clone.get("snippet"), field_labels)
+        clone["snippet"] = _clean_citation_snippet(sanitize_customer_text(clone.get("snippet"), field_labels))
         if clone.get("confidence") and not clone.get("confidence_label"):
             clone["confidence_label"] = sanitize_customer_text(str(clone.get("confidence")))
         source = str(clone.get("source_file") or "")
@@ -303,7 +320,7 @@ def clarify_options_from_context(context: dict[str, Any], message: str = "") -> 
     if re.search(r"门店|store|branch|region|区域", seed):
         add("scope_store", "按门店或区域先做小范围试点")
     if re.search(r"产品|product|category|周边|权益", seed):
-        add("scope_product", "围绕产品、权益或周边组合设计")
+        add("scope_product", "围绕产品、权益或组合设计")
 
     add("output_plan", "我想要可执行的下一步方案")
     add("output_evidence", "我想先看资料里最强的证据")
@@ -413,7 +430,7 @@ def _short_title_value(value: Any) -> str:
         return ""
     text = re.sub(r"\b(?:raw_docs|profile|chunk|row-\d+)\b", "", text, flags=re.IGNORECASE).strip()
     if len(text) > 18:
-        text = text[:18].rstrip() + "…"
+        text = text[:18].rstrip() + "..."
     return text
 
 
@@ -426,5 +443,5 @@ def _clip_title(text: str, limit: int = 34) -> str:
     for sep in ("，", "、", "：", " "):
         pos = head.rfind(sep)
         if pos >= int(limit * 0.55):
-            return head[:pos].rstrip("，、： ") + "…"
-    return head.rstrip() + "…"
+            return head[:pos].rstrip("，、： ") + "..."
+    return head.rstrip() + "..."

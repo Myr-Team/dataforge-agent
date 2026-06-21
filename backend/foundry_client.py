@@ -112,6 +112,339 @@ MARKET_WEB_SCHEMA = {
 }
 
 
+ACTION_PLAN_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "recommendation": {"type": "string"},
+        "steps": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["recommendation", "steps"],
+}
+
+IMAGE_SUBJECT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "subject": {"type": "string"},
+        "kind": {"type": "string", "enum": ["product_app", "product_physical", "service", "campaign"]},
+    },
+    "required": ["subject", "kind"],
+}
+
+EXEC_SUMMARY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "headline": {"type": "string"},
+        "points": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["headline", "points"],
+}
+
+
+PLAYBOOK_DETAIL_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string"},
+        "points": {"type": "array", "items": {"type": "string"}},
+        "goal": {"type": "string"},
+    },
+    "required": ["summary", "points", "goal"],
+}
+
+
+def run_playbook_detail(payload: dict[str, Any]) -> dict[str, Any]:
+    """用某个 PM 方法的视角，针对这批数据分析出的机会，生成【与数据挂钩】的具体内容（不是泛泛框架介绍）。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是资深产品分析师。请用【method_name 指定的 PM 方法】的视角，针对这批数据分析出来的机会，"
+        "给出【具体、与数据/证据挂钩】的内容——不要泛泛介绍这个方法本身，要落到这个机会、这批数据上。\n"
+        "输出 JSON：\n"
+        "1) summary：一句话，用该方法视角概括‘这个机会该怎么看 / 怎么做’，必须点到具体机会与数据信号。\n"
+        "2) points：3-4 条，每条一句，按该方法的结构展开并紧扣真实数据/人群/缺口——"
+        "如 opportunity-tree 给‘机会→方案→实验’三层、jtbd 给‘场景/任务/痛点’、pricing 给‘计费方式/价值锚点/市场缺口’、"
+        "roadmap 给‘30/60/90 天’、prd 给‘目标用户/核心功能/验收指标’、experiment 给‘假设/门槛/样本周期’。\n"
+        "3) goal：一句‘产品落地目标’，尽量可量化、和数据挂钩。\n"
+        "只用提供的 feasibility / evidence / 人群信息，不编造数字；缺数据就说‘需补：…’。中文。只返回 JSON {summary, points, goal}。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 800,
+        "text": _schema_format("df_playbook_detail", PLAYBOOK_DETAIL_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    try:
+        data = _extract_json(getattr(response, "output_text", "") or "")
+    except Exception:
+        data = {}
+    return {
+        "summary": str(data.get("summary") or "").strip(),
+        "points": [str(p).strip() for p in (data.get("points") or []) if str(p).strip()],
+        "goal": str(data.get("goal") or "").strip(),
+    }
+
+
+DATA_OVERVIEW_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "overview": {"type": "string"},
+        "datasets": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"name": {"type": "string"}, "what": {"type": "string"}},
+                "required": ["name", "what"],
+            },
+        },
+        "usable_for": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["overview", "datasets", "usable_for"],
+}
+
+
+def run_data_overview(payload: dict[str, Any]) -> dict[str, Any]:
+    """客户刚上传数据后，用客户能懂的话解释【这批数据都是什么、能用来做什么】。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是数据分析师。客户刚上传了一批数据，请用【客户能听懂的话】解释这批数据都是什么、能用来做什么，"
+        "让客户一上来就明白自己手里有什么。\n"
+        "输出 JSON：\n"
+        "1) overview：2-3 句，概括这批数据整体是什么、规模、覆盖什么主题、适合回答什么问题。\n"
+        "2) datasets：对每个上传文件给一条 {name, what}，what 用一句话说这个文件大概是什么内容、什么维度"
+        "（结合文件名、格式、字段推断；别编造具体数值或不存在的字段）。\n"
+        "3) usable_for：2-4 条，这批数据可以支撑的分析/用途（如‘按门店看到访与停留差异’）。\n"
+        "中文、客户友好、不要堆术语、不编造。只返回 JSON。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 900,
+        "text": _schema_format("df_data_overview", DATA_OVERVIEW_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    try:
+        data = _extract_json(getattr(response, "output_text", "") or "")
+    except Exception:
+        data = {}
+    return {
+        "overview": str(data.get("overview") or "").strip(),
+        "datasets": [{"name": str(d.get("name") or ""), "what": str(d.get("what") or "")} for d in (data.get("datasets") or []) if isinstance(d, dict)],
+        "usable_for": [str(u).strip() for u in (data.get("usable_for") or []) if str(u).strip()],
+    }
+
+
+PLAN_METRICS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "metrics": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "key": {"type": "string"},
+                    "label": {"type": "string"},
+                    "value": {"type": "string"},
+                    "unit": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["assumption", "observed", "target"]},
+                    "note": {"type": "string"},
+                },
+                "required": ["key", "label", "value", "unit", "kind", "note"],
+            },
+        },
+    },
+    "required": ["metrics"],
+}
+
+
+def run_plan_metrics_extract(payload: dict[str, Any]) -> dict[str, Any]:
+    """从上一版方案里抽取【可回填迭代的关键指标】（如客获率/转换率/客单价/周期等）。
+
+    抽出来的都是方案里【AI 预估/假设】的数字，因此 kind 默认 assumption；
+    客户随后可在前端把它改成 observed（实测回填）或 target（目标值）。
+    保持通用：抽方案里真实出现的量化杠杆，别硬塞固定那几个指标，也别编造数字。
+    """
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是产品分析师。下面是上一版可行性方案的内容。请抽取其中【可以用于下一轮迭代的关键量化指标】，"
+        "也就是方案里出现的、可以被回填实测值再优化的数字杠杆，例如客获率/转化率/客单价/续费率/获客成本/"
+        "活动周期/样本量/预算等——只抽方案里真实出现或明确依据的，不要硬凑、不要编造数字。\n"
+        "对每个指标输出 {key, label, value, unit, kind, note}：\n"
+        "- key：英文短标识（如 conversion_rate）；label：中文名（如 转化率）。\n"
+        "- value：方案里给出的数值（字符串，保留原值；没有明确数值就给区间或留空字符串）。\n"
+        "- unit：单位（如 %、元、天、人；没有就空字符串）。\n"
+        "- kind：一律填 assumption（这些是方案里的预估/假设值，客户之后会自行改成实测或目标）。\n"
+        "- note：一句话说明这个指标在方案里是干嘛的/依据什么。\n"
+        "抽 3-8 个最关键的即可。中文。只返回 JSON {metrics:[...]}。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 900,
+        "text": _schema_format("df_plan_metrics", PLAN_METRICS_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    try:
+        data = _extract_json(getattr(response, "output_text", "") or "")
+    except Exception:
+        data = {}
+    out: list[dict[str, Any]] = []
+    for m in (data.get("metrics") or []):
+        if not isinstance(m, dict):
+            continue
+        kind = str(m.get("kind") or "assumption")
+        if kind not in ("assumption", "observed", "target"):
+            kind = "assumption"
+        out.append(
+            {
+                "key": str(m.get("key") or "").strip(),
+                "label": str(m.get("label") or "").strip(),
+                "value": str(m.get("value") or "").strip(),
+                "unit": str(m.get("unit") or "").strip(),
+                "kind": kind,
+                "note": str(m.get("note") or "").strip(),
+            }
+        )
+    return {"metrics": [m for m in out if m["label"]]}
+
+
+def run_image_subject(payload: dict[str, Any]) -> dict[str, Any]:
+    """让 agent 判断这份方案【实际要做的产品/交付物是什么】，给图像模型一个可作画的产品主体（英文）。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是产品概念视觉的美术指导。根据这份可行性方案，判断【我们实际要做的产品 / 交付物是什么】，"
+        "并把它描述成一个【可作画的具体视觉主体】，用于让图像模型画出这个产品本身——"
+        "绝不要画成报告、数据看板、分析图表、会议室或办公室场景。\n"
+        "kind 取值：product_app（App/软件界面）、product_physical（实体产品/包装/样机）、service（服务或门店体验场景）、campaign（活动主视觉）。\n"
+        "subject：用一句【英文】描述要画的具体产品画面，越具体越好（如 'a mobile membership app screen showing a climber's visit streak and tier rewards, hero device mockup'）。\n"
+        "只返回 JSON：{subject, kind}。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 400,
+        "text": _schema_format("df_image_subject", IMAGE_SUBJECT_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    try:
+        data = _extract_json(getattr(response, "output_text", "") or "")
+    except Exception:
+        data = {}
+    return {
+        "subject": str(data.get("subject") or "").strip(),
+        "kind": str(data.get("kind") or "").strip(),
+    }
+
+
+def run_executive_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    """为正式 PDF 报告生成干净、条目式的执行摘要（去对话腔、去 markdown）。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是为【客户决策】撰写正式执行摘要的分析师，输出将放进一份正式 PDF 报告。\n"
+        "硬性要求：\n"
+        "1) 绝不要任何对话腔/寒暄（禁止出现“先给你一版”“方便你扫一眼”“我先”“下面给你”“整体扫一眼”之类）。\n"
+        "2) 不要任何 markdown 符号（不要 * # ` 等），纯文本。\n"
+        "3) headline：一句话点出机会方向与可行性结论（客户视角、专业克制）。\n"
+        "4) points：3-5 条要点，每条一句话，覆盖：机会/产品方向、关键依据、主要缺口或风险、建议的下一步；可执行、不空话。\n"
+        "5) 中文，正式、简洁。只返回 JSON：{headline, points}。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 700,
+        "text": _schema_format("df_exec_summary", EXEC_SUMMARY_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    try:
+        data = _extract_json(getattr(response, "output_text", "") or "")
+    except Exception:
+        data = {}
+    points = [str(p).strip() for p in (data.get("points") or []) if str(p).strip()]
+    return {
+        "headline": str(data.get("headline") or "").strip(),
+        "points": points,
+    }
+
+
+def run_action_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    """用 LLM 根据可行性判定 + 维度评分 + 缺口 + 证据，生成【这批数据专属】的行动方案（替代写死模板）。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "你是 DataForge 的可行性分析师。系统已经对这个工作区机会给出了判定(verdict)、各维度评分与理由(dimensions)、"
+        "关键缺口(gap_list) 和带 marker 的证据(evidence)。请据此生成【针对这个具体机会、这批数据】的下一步行动方案。\n"
+        "硬性规则：\n"
+        "1) 绝不套用通用模板，绝不假设行业（不要默认是攀岩/会员/活动/门店；完全按 evidence 与机会本身来）。\n"
+        "2) recommendation：一句话推荐，说清‘建议做什么、为什么、先验证什么’，紧扣这个机会与证据，40-90 字。\n"
+        "3) steps：4-5 条具体、可执行、互不重复的下一步。每条要落地（做什么、看哪个指标/产出什么），并紧扣具体证据、评分或缺口；"
+        "需要引用证据时在该条末尾用 [n]（n=evidence 的 marker 数字）。\n"
+        "4) 必须贴合 evidence 和 gap_list 的真实内容：缺数据就把‘补齐某项数据/做某项统计’写成一步；"
+        "禁止写‘先定一个主指标再小样本验证’‘把证据整理成2-3个假设’这种放之四海皆准的空话。\n"
+        "5) 不同工作区/不同数据必须给出明显不同的方案。中文。只返回 JSON：{recommendation, steps}。"
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 1300,
+        "text": _schema_format("df_action_plan", ACTION_PLAN_SCHEMA),
+    }
+    try:
+        response = openai_client.responses.create(**create_args)
+    except Exception:
+        create_args.pop("text", None)
+        response = openai_client.responses.create(**create_args)
+    text = getattr(response, "output_text", "") or ""
+    try:
+        data = _extract_json(text)
+    except Exception:
+        data = {}
+    steps = [str(s).strip() for s in (data.get("steps") or []) if str(s).strip()]
+    return {
+        "recommendation": str(data.get("recommendation") or "").strip(),
+        "steps": steps,
+        "response_id": getattr(response, "id", None),
+        "usage": _usage_dict(getattr(response, "usage", None)),
+        "mode": "llm_action_plan",
+    }
+
+
 def _project_client() -> AIProjectClient:
     return AIProjectClient(
         endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
@@ -207,6 +540,67 @@ def _response_tool_trace(response: Any) -> list[dict[str, Any]]:
 
     walk(data)
     return calls
+
+
+def _response_mcp_trace(response: Any) -> list[dict[str, Any]]:
+    data = _to_plain_data(getattr(response, "output", []))
+    calls: list[dict[str, Any]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            item_type = str(value.get("type") or "")
+            if item_type.startswith("mcp_"):
+                calls.append(
+                    {
+                        "type": item_type,
+                        "name": value.get("name"),
+                        "server_label": value.get("server_label"),
+                        "status": value.get("status"),
+                        "id": value.get("id"),
+                        "error": value.get("error"),
+                        "arguments": value.get("arguments"),
+                        "output": value.get("output"),
+                        "agent_reference": value.get("agent_reference"),
+                    }
+                )
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(data)
+    return calls
+
+
+def _market_results_from_mcp_trace(tool_calls: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[Any]]:
+    competitors: list[dict[str, Any]] = []
+    sources: list[Any] = []
+    for call in tool_calls:
+        if call.get("type") != "mcp_call" or call.get("name") != "market_lookup":
+            continue
+        if call.get("error"):
+            raise RuntimeError(f"MCP market_lookup failed: {call.get('error')}")
+        output = call.get("output")
+        if not output:
+            continue
+        data = json.loads(str(output))
+        raw_items = data.get("results") or data.get("competitors") or (data if isinstance(data, list) else [])
+        if not isinstance(raw_items, list):
+            continue
+        for item in raw_items[:6]:
+            if not isinstance(item, dict):
+                continue
+            enriched = dict(item)
+            enriched.setdefault("confidence", "market_inferred")
+            enriched.setdefault("source_type", "market_mcp")
+            enriched.setdefault("tool", "foundry_agent_mcp.market_lookup")
+            competitors.append(enriched)
+            if enriched.get("url"):
+                sources.append(enriched["url"])
+        if competitors:
+            return competitors, sources
+    return competitors, sources
 
 
 def _foundry_web_tool_candidates() -> list[tuple[str, dict[str, Any]]]:
@@ -486,14 +880,51 @@ def run_agent(
     }
 
 
+def run_market_mcp_research(payload: dict[str, Any]) -> dict[str, Any]:
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    compact_payload = {
+        "category": payload.get("category"),
+        "keywords": payload.get("keywords") or [],
+        "limit": payload.get("limit") or 5,
+        "opportunity_id": payload.get("opportunity_id"),
+        "research_goal": "Call the MCP market_lookup tool and use its returned competitors as the source of truth.",
+        "response_requirements": [
+            "Use the MCP tool market_lookup before answering.",
+            "Do not invent competitors.",
+            "Return compact JSON with competitors and positioning_note.",
+            "All MCP results are external market context and must remain market_inferred.",
+        ],
+    }
+    response = openai_client.responses.create(
+        input=json.dumps(compact_payload, ensure_ascii=False, indent=2),
+        max_output_tokens=1200,
+        extra_body=_agent_reference("df-market-researcher"),
+    )
+    tool_calls = _response_mcp_trace(response)
+    competitors, sources = _market_results_from_mcp_trace(tool_calls)
+    if not competitors:
+        raise RuntimeError("df-market-researcher did not return competitors from MCP market_lookup")
+    return {
+        "competitors": competitors,
+        "sources": sources,
+        "positioning_note": "Competitor context was retrieved through Foundry Agent Service MCP market_lookup.",
+        "_llm": {
+            "mode": "foundry_agent_mcp",
+            "response_id": getattr(response, "id", None),
+            "usage": _usage_dict(getattr(response, "usage", None)),
+            "tool_calls": [{key: value for key, value in call.items() if key != "output"} for call in tool_calls],
+        },
+    }
+
+
 def run_coordinator_guidance(payload: dict[str, Any]) -> dict[str, Any]:
     client = _project_client()
     openai_client = client.get_openai_client()
     instructions = (
         "你是 DataForge 的协调器。用户的输入过短、过泛或当前工作区证据不足时，"
-        "你要生成中文上下文引导，而不是固定模板。必须包含三件事："
-        "1) 简短自我介绍；2) 结合 workspace_context 说明当前工作区能做什么；"
-        "3) 给用户一个明确的下一步提问。"
+        "你要生成中文上下文引导，而不是固定模板。question 必须很短：一句话说明还缺目标、范围或约束，"
+        "不要自我介绍，不要展开说明工作区详情；具体下一步方向放到 options。"
         "同时生成 2 到 5 个中文选项，每个选项要短、可点击、面向业务用户。"
         "不要输出数据库字段名、schema key、文件路径或 raw_docs 引用；需要提到字段含义时改写成自然中文。"
         "语气自然，避免每次复用同一句话。不要编造 profile_summary 之外的具体事实。"
@@ -568,6 +999,81 @@ def run_coordinator_direct_reply(payload: dict[str, Any]) -> dict[str, Any]:
         "and in Chinese unless the user explicitly asks for another language. Return JSON only."
     )
     return _coordinator_text_response(openai_client, instructions, payload, "coordinator_direct_reply")
+
+
+# 共享指令体（run_grounded_chat_answer 与 stream_grounded_chat_answer 共用，仅结尾输出格式不同）。
+_GROUNDED_CHAT_BODY = (
+    "你是 DataForge 的数据分析助手，正在和客户多轮对话。请针对用户【当前这一条】消息作答，绝不套固定句式模板。\n"
+    "\n"
+    "先判断用户这条是【普通问答/判断】还是【要你出方案/策划/活动/计划/落地步骤】：\n"
+    "\n"
+    "A) 普通问答/判断（如“会员数据怎样”“值得办吗”“证据有多强”“缺什么数据”）：\n"
+    "  - 先一句话给结论，开头可用一个贴切的 emoji 点题（✅ 可行 / ⚠️ 谨慎 / ❌ 不建议 / 📊 数据情况 / 💡 建议 / 🔍 发现），再结合证据解释。一般 120-280 字。\n"
+    "  - 把【关键结论、数字、指标、人群】用 **加粗** 突出；有【多个并列要点】时【换行】用 `- ` 列点，必要时每点前加一个贴切 emoji（如 📈 增长、💰 成本、👥 人群、⚠️ 风险、🧩 缺口），让回答更易读。\n"
+    "  - 但这种问答【不要】加 `## 大标题`、不要套方案那套小节骨架。\n"
+    "\n"
+    "B) 要你出方案/策划/活动/计划（如“做一场拉新活动”“帮我策划…”“这个怎么落地”“给个推广方案”）：\n"
+    "  - 按下面模板输出【真正可执行的方案】，用 Markdown：每个小节用 `## 标题` 单独成行，要点用 `- ` 或 `1.` 列表，小节之间空一行。直接照这个骨架填，缺的小节可省略：\n"
+    "    ## 一句话方案\n"
+    "    （定位+主线，一句话）\n"
+    "    ## 🎯 目标与主指标\n"
+    "    - 目标：… / 主指标（北极星）：…\n"
+    "    ## 👥 目标人群\n"
+    "    - 结合资料里的真实人群/痛点\n"
+    "    ## 🎬 活动机制（主线玩法）\n"
+    "    1. …\n"
+    "    2. …\n"
+    "    ## 📅 节奏（时间线）\n"
+    "    - 第1周：… / 第2-3周：… / 第4周：复盘\n"
+    "    ## 📊 漏斗指标\n"
+    "    - 曝光 → 报名 → 到店 → 转化/复购，每段给一个可量化阈值\n"
+    "    ## ⚠️ 风险与先验证\n"
+    "    - 最大风险 + 先用小样本验证什么\n"
+    "  - 方案必须结合 evidence 里的真实信号；没有数据支撑的地方写“需补：…”，绝不编造数字。\n"
+    "\n"
+    "通用规则：\n"
+    "1) 只用 evidence 提供的证据，不编造工作区事实；需要引用时在句末用 [n]（n=evidence 的 marker 数字）。\n"
+    "2) 绝不整段照抄证据原文，不输出字段名或 '会员编号为\"Mxxxx\"'、'数值为\"…\"' 这类原始值；综合成人话。\n"
+    "3) 结合 conversation_history 记住上文，理解指代与新增约束（如“预算减半”“只看旗舰店”）。\n"
+    "4) 不同问题给明显不同的答案；证据不足就直说缺什么。\n"
+    "5) 排版友好：适度用 emoji 与 **加粗** 让回答更生动、易扫读，但保持专业、克制——别每句都加、别堆砌。"
+)
+
+
+def run_grounded_chat_answer(payload: dict[str, Any]) -> dict[str, Any]:
+    """用 LLM 针对用户【当前这条问题】、结合工作区证据与对话历史作答（替代写死的模板）。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = _GROUNDED_CHAT_BODY + "\n只返回 JSON，字段 text 为最终回答（方案模板里的换行 \\n 必须保留）。"
+    return _coordinator_text_response(openai_client, instructions, payload, "grounded_chat_answer", max_output_tokens=1700)
+
+
+def stream_grounded_chat_answer(payload: dict[str, Any]) -> Any:
+    """与 run_grounded_chat_answer 同一套自适应逻辑，但【真 token 流式】输出纯文本（不套 JSON）。
+    逐 token 产出 {type:'delta', delta}；结束产出 {type:'meta', ...}。"""
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = _GROUNDED_CHAT_BODY + "\n直接输出最终回答正文（方案模板里的换行必须保留），不要输出 JSON、不要加任何前后缀说明。"
+    create_args = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 1700,
+        "stream": True,
+    }
+    completed_meta: dict[str, Any] | None = None
+    stream = openai_client.responses.create(**create_args)
+    for event in stream:
+        delta = _stream_delta(event)
+        if delta:
+            yield {"type": "delta", "delta": delta}
+            continue
+        event_type = str(getattr(event, "type", "") or "")
+        if event_type in {"response.completed", "response.done"}:
+            response = getattr(event, "response", None)
+            if response is not None:
+                completed_meta = _response_meta(response, "grounded_chat_stream")
+    yield {"type": "meta", **(completed_meta or {"mode": "grounded_chat_stream", "usage": {}})}
 
 
 def run_followup_rewrite(payload: dict[str, Any]) -> dict[str, Any]:
@@ -653,7 +1159,8 @@ def run_market_web_research(payload: dict[str, Any]) -> dict[str, Any]:
     instructions = (
         "你是 DataForge 的市场研究员。请使用已经验证可用的 Foundry 原生 web 搜索工具查询公开市场信息，"
         "只返回 JSON。所有外部网页信息都必须标记为 market_inferred，不能说成工作区数据已确认。"
-        "输出 2 到 4 条和输入机会相关的外部行情/竞品/需求线索，每条必须尽量带 source_url。"
+        "主动搜索同类产品、竞品、替代方案、价格/套餐、活动玩法或增长机制，并给出我们与它们的差异点。"
+        "输出 2 到 4 条外部竞品/同类机会对比结论，每条必须尽量带 source_url；positioning_note 要短，说明竞品在做什么、价格/玩法、我们的差异点。"
     )
     create_args: dict[str, Any] = {
         "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),

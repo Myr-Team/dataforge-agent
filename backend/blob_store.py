@@ -1,5 +1,6 @@
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,6 +11,7 @@ from azure.storage.blob import BlobServiceClient, ContentSettings
 
 DEFAULT_CONTAINER = "dataforge-workspaces"
 REGISTRY_BLOB = "registry/workspaces.json"
+REGISTRY_ENTRY_PREFIX = "registry/workspaces"
 DELETED_WORKSPACE_PREFIX = "registry/deleted_workspaces"
 ARTIFACT_PREFIX = "artifacts"
 
@@ -55,10 +57,7 @@ def persist_workspace(
     )
     _delete_tombstone(container, workspace_id)
     entry = _registry_entry(workspace_meta, profile)
-    registry = load_workspace_registry()
-    registry = [item for item in registry if item.get("workspace_id") != workspace_id]
-    registry.append(entry)
-    _save_registry(registry)
+    _save_registry_entry(container, entry)
     return {
         "mode": "azure_blob",
         "container": _container_name(),
@@ -78,35 +77,48 @@ def persist_workspace_bundle(
     container = _container_client()
     _ensure_container(container)
     prefix = f"workspaces/{workspace_id}"
-    _upload_json(container, f"{prefix}/workspace.json", workspace_meta)
-    _upload_json(container, f"{prefix}/profile.json", profile)
+    upload_tasks = [
+        lambda: _upload_json(container, f"{prefix}/workspace.json", workspace_meta),
+        lambda: _upload_json(container, f"{prefix}/profile.json", profile),
+    ]
     for item in raw_payloads:
         raw_filename = PathSafe.name(str(item.get("raw_filename") or "upload"))
-        container.upload_blob(
-            f"{prefix}/raw_docs/{raw_filename}",
-            bytes(item.get("raw_content") or b""),
-            overwrite=True,
-            content_settings=ContentSettings(content_type="application/octet-stream"),
+        raw_content = bytes(item.get("raw_content") or b"")
+        upload_tasks.append(
+            lambda raw_filename=raw_filename, raw_content=raw_content: container.upload_blob(
+                f"{prefix}/raw_docs/{raw_filename}",
+                raw_content,
+                overwrite=True,
+                content_settings=ContentSettings(content_type="application/octet-stream"),
+            )
         )
         profile_filename = PathSafe.name(str(item.get("profile_filename") or f"{raw_filename}.json"))
         item_profile = item.get("profile")
         if isinstance(item_profile, dict):
-            _upload_json(container, f"{prefix}/profiles/{profile_filename}", item_profile)
+            upload_tasks.append(
+                lambda profile_filename=profile_filename, item_profile=item_profile: _upload_json(
+                    container,
+                    f"{prefix}/profiles/{profile_filename}",
+                    item_profile,
+                )
+            )
     for item in reference_payloads or []:
         filename = PathSafe.name(str(item.get("filename") or "reference-image"))
         blob_name = f"{prefix}/reference_images/{filename}"
-        container.upload_blob(
-            blob_name,
-            bytes(item.get("content") or b""),
-            overwrite=True,
-            content_settings=ContentSettings(content_type=str(item.get("content_type") or "application/octet-stream")),
+        content = bytes(item.get("content") or b"")
+        content_type = str(item.get("content_type") or "application/octet-stream")
+        upload_tasks.append(
+            lambda blob_name=blob_name, content=content, content_type=content_type: container.upload_blob(
+                blob_name,
+                content,
+                overwrite=True,
+                content_settings=ContentSettings(content_type=content_type),
+            )
         )
+    _run_upload_tasks(upload_tasks)
     _delete_tombstone(container, workspace_id)
     entry = _registry_entry(workspace_meta, profile)
-    registry = load_workspace_registry()
-    registry = [item for item in registry if item.get("workspace_id") != workspace_id]
-    registry.append(entry)
-    _save_registry(registry)
+    _save_registry_entry(container, entry)
     return {
         "mode": "azure_blob",
         "container": _container_name(),
@@ -120,23 +132,40 @@ def persist_workspace_bundle(
 def load_workspace_registry() -> list[dict[str, Any]]:
     if not blob_configured():
         return []
+    by_id: dict[str, dict[str, Any]] = {}
     try:
         container = _container_client()
         blob = container.get_blob_client(REGISTRY_BLOB)
         raw = blob.download_blob().readall().decode("utf-8")
     except ResourceNotFoundError:
-        return []
+        raw = ""
     except Exception:
-        return []
+        raw = ""
+    if raw:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data = {}
+        if isinstance(data, dict):
+            items = data.get("workspaces") or []
+        else:
+            items = data
+        for item in items:
+            if isinstance(item, dict) and item.get("workspace_id"):
+                by_id[str(item["workspace_id"])] = item
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    if isinstance(data, dict):
-        items = data.get("workspaces") or []
-    else:
-        items = data
-    return [item for item in items if isinstance(item, dict)]
+        container = _container_client()
+        for blob in container.list_blobs(name_starts_with=f"{REGISTRY_ENTRY_PREFIX}/"):
+            try:
+                raw_entry = container.get_blob_client(blob.name).download_blob().readall().decode("utf-8")
+                entry = json.loads(raw_entry)
+            except Exception:
+                continue
+            if isinstance(entry, dict) and entry.get("workspace_id"):
+                by_id[str(entry["workspace_id"])] = entry
+    except Exception:
+        pass
+    return sorted(by_id.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
 def get_registry_workspace(workspace_id: str) -> dict[str, Any] | None:
@@ -156,6 +185,10 @@ def remove_workspace_from_blob(workspace_id: str) -> dict[str, Any]:
             deleted_blobs += 1
         except ResourceNotFoundError:
             continue
+    try:
+        container.delete_blob(_registry_entry_blob(workspace_id))
+    except ResourceNotFoundError:
+        pass
     registry = [item for item in load_workspace_registry() if item.get("workspace_id") != workspace_id]
     _save_registry(registry)
     _write_tombstone(container, workspace_id)
@@ -233,6 +266,7 @@ def download_artifact(name: str) -> tuple[bytes, str] | None:
 
 def _registry_entry(workspace_meta: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
     workspace_id = str(workspace_meta.get("workspace_id") or profile.get("workspace_id"))
+    documents = workspace_meta.get("documents") or []
     return {
         "workspace_id": workspace_id,
         "name": workspace_meta.get("name") or profile.get("name") or workspace_id,
@@ -240,9 +274,9 @@ def _registry_entry(workspace_meta: dict[str, Any], profile: dict[str, Any]) -> 
         "description": workspace_meta.get("description"),
         "profile_summary": workspace_meta.get("profile_summary") or profile.get("profile_summary"),
         "created_at": workspace_meta.get("created_at") or profile.get("created_at"),
-        "doc_count": int(workspace_meta.get("indexed_count") or 1),
+        "doc_count": len(documents) if documents else int(workspace_meta.get("indexed_count") or 1),
         "source_file": profile.get("source_file"),
-        "documents": workspace_meta.get("documents") or [],
+        "documents": documents,
         "reference_images": workspace_meta.get("reference_images") or [],
         "blob_prefix": f"workspaces/{workspace_id}",
         "persistence_mode": "azure_blob",
@@ -257,6 +291,26 @@ def _save_registry(items: list[dict[str, Any]]) -> None:
         "workspaces": sorted(items, key=lambda item: str(item.get("created_at") or ""), reverse=True),
     }
     _upload_json(container, REGISTRY_BLOB, data)
+
+
+def _save_registry_entry(container: Any, entry: dict[str, Any]) -> None:
+    _upload_json(container, _registry_entry_blob(str(entry.get("workspace_id") or "")), entry)
+
+
+def _registry_entry_blob(workspace_id: str) -> str:
+    return f"{REGISTRY_ENTRY_PREFIX}/{PathSafe.name(workspace_id)}.json"
+
+
+def _run_upload_tasks(tasks: list[Any]) -> None:
+    if not tasks:
+        return
+    if len(tasks) == 1:
+        tasks[0]()
+        return
+    with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as executor:
+        futures = [executor.submit(task) for task in tasks]
+        for future in futures:
+            future.result()
 
 
 def _write_tombstone(container: Any, workspace_id: str) -> None:

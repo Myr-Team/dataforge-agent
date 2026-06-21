@@ -58,6 +58,14 @@ def _load_tool_defs() -> dict[str, Any]:
     return json.loads(SCHEMAS.read_text(encoding="utf-8"))
 
 
+def _mcp_server_url(raw_url: str | None = None) -> str:
+    url = (raw_url or os.environ.get("MCP_MARKET_URL") or "https://ca-dataforge-mcp.thankfultree-c0fc8321.eastus2.azurecontainerapps.io/mcp").strip()
+    url = url.rstrip("/")
+    if not url.endswith("/mcp"):
+        url += "/mcp"
+    return url
+
+
 def _materialize_tools(agent: dict[str, Any], mcp_url: str) -> list[dict[str, Any]]:
     from azure.ai.projects import models
 
@@ -79,12 +87,30 @@ def _materialize_tools(agent: dict[str, Any], mcp_url: str) -> list[dict[str, An
             tools.append(
                 models.MCPTool(
                     server_label=spec["server_label"],
-                    server_url=mcp_url,
+                    server_url=_mcp_server_url(mcp_url),
                     allowed_tools=spec["allowed_tools"],
+                    require_approval="never",
                 )
             )
         elif tool_type == "web_search_preview":
-            tools.append(models.WebSearchPreviewTool())
+            bing_connection_id = os.environ.get("DF_BING_CONNECTION_ID") or os.environ.get("BING_CONNECTION_ID")
+            if bing_connection_id:
+                tools.append(
+                    models.BingGroundingTool(
+                        bing_grounding=models.BingGroundingSearchToolParameters(
+                            search_configurations=[
+                                models.BingGroundingSearchConfiguration(
+                                    project_connection_id=bing_connection_id,
+                                    market=os.environ.get("DF_WEB_MARKET", "zh-CN"),
+                                    set_lang=os.environ.get("DF_WEB_LANG", "zh-Hans"),
+                                    count=int(os.environ.get("DF_BING_RESULT_COUNT", "5")),
+                                )
+                            ]
+                        )
+                    )
+                )
+            else:
+                tools.append(models.WebSearchPreviewTool())
         elif tool_type == "code_interpreter":
             tools.append(models.CodeInterpreterTool())
         else:
@@ -107,13 +133,16 @@ def _project_client():
 def build_agents(dry_run: bool = False) -> dict[str, Any]:
     if dry_run:
         deployment = os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1")
-        mcp_url = os.environ.get("MCP_MARKET_URL", "https://ca-dataforge-mcp.thankfultree-c0fc8321.eastus2.azurecontainerapps.io/mcp")
+        mcp_url = _mcp_server_url()
         specs = [
             {
                 "name": agent["name"],
                 "model": deployment,
                 "instructions": _prompt(agent),
-                "tools": [key for key in agent["tools"]],
+                "tools": [
+                    "bing_grounding" if key == "web_search_preview" and (os.environ.get("DF_BING_CONNECTION_ID") or os.environ.get("BING_CONNECTION_ID")) else key
+                    for key in agent["tools"]
+                ],
             }
             for agent in AGENTS
         ]
@@ -122,7 +151,7 @@ def build_agents(dry_run: bool = False) -> dict[str, Any]:
     from azure.ai.projects import models
 
     deployment = os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1")
-    mcp_url = os.environ.get("MCP_MARKET_URL", "https://ca-dataforge-mcp.thankfultree-c0fc8321.eastus2.azurecontainerapps.io/mcp")
+    mcp_url = _mcp_server_url()
     specs = [
         {
             "name": agent["name"],

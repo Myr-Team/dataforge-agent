@@ -108,6 +108,8 @@ class UploadResponse(BaseModel):
     profile_summary: str
     documents: list[dict[str, Any]] = Field(default_factory=list)
     reference_images: list[dict[str, Any]] = Field(default_factory=list)
+    ingest_job_id: str | None = None
+    ingest_status: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkspaceSummary(BaseModel):
@@ -131,9 +133,12 @@ class WorkspaceColumnDetail(BaseModel):
     name: str
     friendly_label: str | None = None
     role: str | None = None
-    signal: str | None = None
+    signal: Literal["strong", "mid", "noise"] | None = None
+    signal_score: float | None = None
+    signal_reason: str | None = None
     missing_rate: float | int | None = None
     unique_count: int | None = None
+    non_empty: int | None = None
     top_values: list[Any] = Field(default_factory=list)
 
 
@@ -142,6 +147,12 @@ class WorkspaceDocumentDetail(BaseModel):
     name: str
     format: str | None = None
     bytes: int | None = None
+    record_count: int | None = None
+    status: str | None = None
+    error: str | None = None
+    ingest_job_id: str | None = None
+    created_at: str | None = None
+    profile_file: str | None = None
     external: bool = False
 
 
@@ -162,6 +173,12 @@ class WorkspaceDetailResponse(BaseModel):
     description: str | None = None
     format: str
     rows: int = 0
+    row_count: int = 0
+    field_count: int = 0
+    indexed_count: int = 0
+    fill_rate: float = 0
+    signal_score: float = 0
+    signal_distribution: dict[str, float] = Field(default_factory=dict)
     columns: list[WorkspaceColumnDetail] = Field(default_factory=list)
     customer_summary: str | None = None
     doc_count: int = 0
@@ -169,6 +186,8 @@ class WorkspaceDetailResponse(BaseModel):
     reference_images: list[WorkspaceReferenceImage] = Field(default_factory=list)
     profile_summary: str | None = None
     signals: list[str] = Field(default_factory=list)
+    manifest: dict[str, Any] = Field(default_factory=dict)
+    last_analysis: dict[str, Any] = Field(default_factory=dict)
     created_at: str | None = None
 
 
@@ -196,6 +215,7 @@ class RunSummary(BaseModel):
     status: str | None = None
     steps: list[RunStep] = Field(default_factory=list)
     step_count: int = 0
+    maf: dict[str, Any] | None = None
 
 
 class RunsResponse(BaseModel):
@@ -213,6 +233,16 @@ class ConversationSummary(BaseModel):
 
 class ConversationsResponse(BaseModel):
     conversations: list[ConversationSummary]
+
+
+class WorkspaceDashboardResponse(BaseModel):
+    workspace_id: str
+    workspace: WorkspaceDetailResponse
+    workspaces: list[WorkspaceSummary] = Field(default_factory=list)
+    runs: list[RunSummary] = Field(default_factory=list)
+    conversations: list[ConversationSummary] = Field(default_factory=list)
+    health: dict[str, Any] = Field(default_factory=dict)
+    dependency_details: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConversationMessage(BaseModel):
@@ -279,9 +309,27 @@ class ProduceRequest(BaseModel):
     reference_images: list[dict[str, Any]] = Field(default_factory=list)
     narrative: str | None = None
     text: str | None = None
+    kinds: list[str] | None = None
+
+
+class PlaybookRequest(BaseModel):
+    workspace_id: str = "demo-corpus"
+    method: str
+    method_name: str | None = None
+    framework: dict[str, Any] = Field(default_factory=dict)
+    opportunity: str | None = None
+    audience: str | None = None
+    feasibility: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlanFlagshipRequest(BaseModel):
+    run_id: str | None = None
 
 
 class ChatRequest(BaseModel):
     workspace_id: str = "demo-corpus"
     message: str
     conversation_id: str | None = None
+    playbook: str | None = None
+    artifact_mode: str | None = None
+    ui_context: dict[str, Any] = Field(default_factory=dict)

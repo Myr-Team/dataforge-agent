@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ CONVERSATION_REGISTRY_BLOB = "registry/conversations.json"
 CONVERSATION_BLOB_PREFIX = "conversations"
 
 _LOCK = threading.RLock()
+_BLOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dataforge-conversation-blob")
 
 
 def get_conversation(conversation_id: str) -> dict[str, Any]:
@@ -51,10 +53,13 @@ def append_message(
     role: str,
     text: str,
     verdict: str | None = None,
+    citations: list[dict[str, Any]] | None = None,
+    remote_load: bool = True,
 ) -> dict[str, Any]:
     now = _utc_now()
     with _LOCK:
-        conversation = _load_conversation(conversation_id) or {
+        loader = _load_conversation if remote_load else _load_local_conversation
+        conversation = loader(conversation_id) or {
             "conversation_id": conversation_id,
             "workspace_id": workspace_id,
             "created_at": now,
@@ -68,6 +73,13 @@ def append_message(
         if verdict:
             message["verdict"] = verdict
             conversation["last_verdict"] = verdict
+        if citations:
+            slim: list[dict[str, Any]] = []
+            for c in citations[:8]:
+                if isinstance(c, dict):
+                    slim.append({k: c.get(k) for k in ("marker", "snippet", "quote", "confidence", "ref", "source_label", "source_file") if c.get(k) is not None})
+            if slim:
+                message["citations"] = slim
         messages.append(message)
         conversation["messages"] = messages
         conversation["title"] = conversation.get("title") or _title_from_messages(messages)
@@ -92,6 +104,14 @@ def _persist_conversation(conversation: dict[str, Any]) -> dict[str, Any]:
     conversation["local_path"] = str(path)
     summary = _summary(conversation)
     blob_name = f"{CONVERSATION_BLOB_PREFIX}/{safe}.json"
+    conversation["persistence"] = {"mode": "local_and_blob_async", "blob_name": blob_name}
+    path.write_text(json.dumps(conversation, ensure_ascii=False, indent=2), encoding="utf-8")
+    snapshot = json.loads(json.dumps(conversation, ensure_ascii=False))
+    _BLOB_EXECUTOR.submit(_persist_conversation_blob, snapshot, summary, blob_name)
+    return conversation
+
+
+def _persist_conversation_blob(conversation: dict[str, Any], summary: dict[str, Any], blob_name: str) -> None:
     try:
         upload_blob_json(blob_name, conversation)
         registry = download_blob_json(CONVERSATION_REGISTRY_BLOB) or {}
@@ -100,25 +120,37 @@ def _persist_conversation(conversation: dict[str, Any]) -> dict[str, Any]:
         entries.append(summary)
         entries = sorted(entries, key=lambda item: str(item.get("updated_at") or ""), reverse=True)[:500]
         upload_blob_json(CONVERSATION_REGISTRY_BLOB, {"version": 1, "conversations": entries})
-        conversation["persistence"] = {"mode": "local_and_blob", "blob_name": blob_name}
-    except Exception as exc:
-        conversation["persistence"] = {"mode": "local_only", "error": f"{type(exc).__name__}: {exc}"[:500]}
-    path.write_text(json.dumps(conversation, ensure_ascii=False, indent=2), encoding="utf-8")
-    return conversation
+    except Exception:
+        return
 
 
 def _load_conversation(conversation_id: str) -> dict[str, Any] | None:
+    local = _load_local_conversation(conversation_id)
+    if local:
+        return local
     safe = _safe_name(conversation_id)
+    path = CONVERSATION_DIR / f"{safe}.json"
     blob = download_blob_json(f"{CONVERSATION_BLOB_PREFIX}/{safe}.json")
     if blob:
-        return blob
-    path = CONVERSATION_DIR / f"{safe}.json"
-    if path.exists():
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else None
+            CONVERSATION_DIR.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(blob, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
-            return None
+            pass
+        return blob
+    return None
+
+
+def _load_local_conversation(conversation_id: str) -> dict[str, Any] | None:
+    safe = _safe_name(conversation_id)
+    path = CONVERSATION_DIR / f"{safe}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
     return None
 
 

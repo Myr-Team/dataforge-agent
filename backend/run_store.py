@@ -129,6 +129,34 @@ def get_run(run_id: str) -> dict[str, Any]:
     raise FileNotFoundError(run_id)
 
 
+PLAN_FLAGSHIP_BLOB = "registry/plan-flagship.json"
+
+
+def _flagship_map() -> dict[str, str]:
+    data = download_blob_json(PLAN_FLAGSHIP_BLOB) or {}
+    mapping = data.get("flagship")
+    return mapping if isinstance(mapping, dict) else {}
+
+
+def get_flagship_plan(workspace_id: str) -> str | None:
+    """Return the run_id marked as the workspace's flagship plan, if any."""
+    return _flagship_map().get(workspace_id)
+
+
+def set_flagship_plan(workspace_id: str, run_id: str | None) -> dict[str, Any]:
+    """Mark (or clear, when run_id is falsy) the workspace's flagship plan."""
+    mapping = _flagship_map()
+    if run_id:
+        mapping[workspace_id] = run_id
+    else:
+        mapping.pop(workspace_id, None)
+    try:
+        upload_blob_json(PLAN_FLAGSHIP_BLOB, {"version": 1, "flagship": mapping})
+    except Exception:
+        pass
+    return {"workspace_id": workspace_id, "flagship_run_id": mapping.get(workspace_id)}
+
+
 def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     safe = _safe_name(str(run.get("run_id") or "run"))
@@ -172,6 +200,33 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "status": run.get("status"),
         "steps": steps,
         "step_count": len(run.get("steps") or []),
+        "maf": _maf_summary(run),
+    }
+
+
+def _maf_summary(run: dict[str, Any]) -> dict[str, Any] | None:
+    """Summarise the Microsoft Agent Framework workflow activity for run history."""
+    graph: dict[str, Any] | None = None
+    revisions = 0
+    audit_rounds = 0
+    for step in run.get("steps") or []:
+        event = step.get("event")
+        data = step.get("data") if isinstance(step.get("data"), dict) else {}
+        if event == "maf_workflow":
+            graph = data
+        elif event == "audit":
+            audit_rounds += 1
+        elif event == "role_change" and data.get("orchestrator") == "maf" and data.get("agent") == "df-feasibility-analyst":
+            revisions += 1
+    if graph is None:
+        return None
+    return {
+        "framework": graph.get("framework"),
+        "framework_version": graph.get("framework_version"),
+        "pattern": graph.get("pattern"),
+        "max_revisions": graph.get("max_revisions"),
+        "revisions": revisions,
+        "audit_rounds": audit_rounds,
     }
 
 

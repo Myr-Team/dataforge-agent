@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI
@@ -21,11 +23,22 @@ try:
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
     from .dependency_health import health_dependencies, health_dependency_details
-    from .orchestrator import orchestrate_chat, produce_from_existing_report
+    from .observability import observability_snapshot
+    from .orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from .rag import search
-    from .run_store import get_run, list_runs
+    from .run_store import get_flagship_plan, get_run, list_runs, set_flagship_plan
+    from .speech_token import issue_speech_token
     from .tracing import configure_monitoring
-    from .workspace_store import create_workspace_from_uploads, delete_workspace, get_reference_image_content, get_workspace_detail, list_workspaces
+    from .workspace_store import (
+        create_workspace_upload_job,
+        delete_workspace,
+        get_reference_image_content,
+        get_workspace_detail,
+        list_workspaces,
+        run_workspace_ingest_job,
+        workspace_ingest_status,
+        workspace_pending_ingest_jobs,
+    )
     from .schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -33,12 +46,15 @@ try:
         GenerateImageRequest,
         NarrateSummaryRequest,
         ProduceRequest,
+        PlaybookRequest,
+        PlanFlagshipRequest,
         RenderPdfRequest,
         RunDetailResponse,
         RunsResponse,
         SearchPackContextRequest,
         SearchPackContextResponse,
         UploadResponse,
+        WorkspaceDashboardResponse,
         WorkspaceDeleteResponse,
         WorkspaceDetailResponse,
         WorkspacesResponse,
@@ -50,11 +66,22 @@ except ImportError:
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
     from dependency_health import health_dependencies, health_dependency_details
-    from orchestrator import orchestrate_chat, produce_from_existing_report
+    from observability import observability_snapshot
+    from orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from rag import search
-    from run_store import get_run, list_runs
+    from run_store import get_flagship_plan, get_run, list_runs, set_flagship_plan
+    from speech_token import issue_speech_token
     from tracing import configure_monitoring
-    from workspace_store import create_workspace_from_uploads, delete_workspace, get_reference_image_content, get_workspace_detail, list_workspaces
+    from workspace_store import (
+        create_workspace_upload_job,
+        delete_workspace,
+        get_reference_image_content,
+        get_workspace_detail,
+        list_workspaces,
+        run_workspace_ingest_job,
+        workspace_ingest_status,
+        workspace_pending_ingest_jobs,
+    )
     from schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -62,12 +89,15 @@ except ImportError:
         GenerateImageRequest,
         NarrateSummaryRequest,
         ProduceRequest,
+        PlaybookRequest,
+        PlanFlagshipRequest,
         RenderPdfRequest,
         RunDetailResponse,
         RunsResponse,
         SearchPackContextRequest,
         SearchPackContextResponse,
         UploadResponse,
+        WorkspaceDashboardResponse,
         WorkspaceDeleteResponse,
         WorkspaceDetailResponse,
         WorkspacesResponse,
@@ -88,6 +118,10 @@ app.add_middleware(
 )
 
 ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "generated-outputs"
+_INGEST_SEMAPHORE = asyncio.Semaphore(max(1, int(os.environ.get("DF_UPLOAD_INGEST_CONCURRENCY", "2"))))
+_INGEST_TASKS: set[asyncio.Task[Any]] = set()
+_INGEST_KEYS: set[str] = set()
+_INGEST_START_DELAY_SECONDS = max(0.0, float(os.environ.get("DF_UPLOAD_INGEST_START_DELAY_SECONDS", "0.5")))
 
 
 @app.get("/api/health")
@@ -101,6 +135,11 @@ async def health() -> dict[str, Any]:
         "dependencies": dependencies,
         "dependency_details": health_dependency_details(),
     }
+
+
+@app.get("/api/observability")
+async def observability() -> dict[str, Any]:
+    return observability_snapshot()
 
 
 @app.post("/api/search-pack-context", response_model=SearchPackContextResponse)
@@ -134,13 +173,14 @@ async def upload_workspace(
         )
     try:
         result = await run_in_threadpool(
-            create_workspace_from_uploads,
+            create_workspace_upload_job,
             files=files,
             name=name,
             description=description,
             requested_workspace_id=workspace_id,
             asset_role=asset_role,
         )
+        _schedule_upload_ingest(result)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
     except ValueError as exc:
@@ -155,6 +195,7 @@ async def workspaces() -> WorkspacesResponse:
 
 @app.get("/api/workspaces/{workspace_id}", response_model=WorkspaceDetailResponse)
 async def workspace_detail(workspace_id: str) -> WorkspaceDetailResponse:
+    await _recover_stale_upload_ingest(workspace_id)
     try:
         result = await run_in_threadpool(get_workspace_detail, workspace_id)
     except FileNotFoundError as exc:
@@ -162,6 +203,150 @@ async def workspace_detail(workspace_id: str) -> WorkspaceDetailResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return WorkspaceDetailResponse.model_validate(result)
+
+
+@app.get("/api/workspaces/{workspace_id}/dashboard", response_model=WorkspaceDashboardResponse)
+async def workspace_dashboard(workspace_id: str) -> WorkspaceDashboardResponse:
+    await _recover_stale_upload_ingest(workspace_id)
+
+    def _load() -> dict[str, Any]:
+        dependencies = health_dependencies()
+        return {
+            "workspace_id": workspace_id,
+            "workspace": get_workspace_detail(workspace_id),
+            "workspaces": list_workspaces(),
+            "runs": list_runs(workspace_id)[:12],
+            "conversations": list_conversations(workspace_id)[:12],
+            "health": {
+                "ok": True,
+                "service": "dataforge-backend",
+                "search_endpoint": bool(os.environ.get("SEARCH_ENDPOINT")),
+                "workspace_default": "demo-corpus",
+                "dependencies": dependencies,
+            },
+            "dependency_details": health_dependency_details(),
+        }
+
+    try:
+        result = await run_in_threadpool(_load)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return WorkspaceDashboardResponse.model_validate(result)
+
+
+@app.get("/api/workspaces/{workspace_id}/ingest-status")
+async def ingest_status(workspace_id: str) -> dict[str, Any]:
+    await _recover_stale_upload_ingest(workspace_id)
+    try:
+        return await run_in_threadpool(workspace_ingest_status, workspace_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/workspaces/{workspace_id}/manifest")
+async def workspace_manifest(workspace_id: str) -> dict[str, Any]:
+    try:
+        detail = await run_in_threadpool(get_workspace_detail, workspace_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    manifest = detail.get("manifest") if isinstance(detail, dict) else None
+    if not isinstance(manifest, dict) or not manifest:
+        raise HTTPException(status_code=404, detail=f"Manifest not found: {workspace_id}")
+    return manifest
+
+
+@app.post("/api/workspaces/{workspace_id}/auto-analyze")
+async def workspace_auto_analyze(workspace_id: str, request: Request) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        body = {}
+
+    cache_bust = datetime.now(timezone.utc).isoformat()
+    message = str(
+        body.get("message")
+        or "请基于当前工作区自动运行一次产品可行性分析，输出机会判断、五维评分、证据、风险缺口和下一步行动计划。"
+    )
+    req = ChatRequest(
+        workspace_id=workspace_id,
+        message=message,
+        conversation_id=body.get("conversation_id"),
+        playbook=body.get("playbook") or "opportunity_tree",
+        artifact_mode=body.get("artifact_mode") or "report",
+        ui_context={
+            **(body.get("ui_context") if isinstance(body.get("ui_context"), dict) else {}),
+            "entrypoint": "workspace_dashboard",
+            "auto_analyze": True,
+            "cache_bust": cache_bust,
+        },
+    )
+
+    final_payload: dict[str, Any] | None = None
+    error_payload: dict[str, Any] | None = None
+    conversation_id = req.conversation_id
+    answer_parts: list[str] = []
+    events: list[dict[str, Any]] = []
+    trace: list[dict[str, Any]] = []
+    trace_events = {
+        "ready",
+        "route",
+        "plan",
+        "role_change",
+        "tool_call",
+        "tool_result",
+        "blind_verdict",
+        "cache",
+        "model_response",
+        "audit",
+        "revised_verdict",
+        "progress",
+    }
+
+    async for raw_frame in orchestrate_chat(req):
+        for event, data in _parse_sse_frame(raw_frame):
+            if event == "answer_delta":
+                if isinstance(data, dict):
+                    answer_parts.append(str(data.get("delta") or ""))
+                continue
+            if event == "ready" and isinstance(data, dict):
+                conversation_id = data.get("conversation_id") or conversation_id
+            if event == "final" and isinstance(data, dict):
+                final_payload = data
+            elif event == "error":
+                error_payload = data if isinstance(data, dict) else {"message": str(data)}
+
+            item = {"event": event, "data": _compact_event_data(data)}
+            events.append(item)
+            if event in trace_events:
+                trace.append(item)
+
+    if error_payload is not None:
+        raise HTTPException(status_code=502, detail={"message": "auto analyze failed", "error": error_payload, "events": events[-12:]})
+    if final_payload is None:
+        raise HTTPException(status_code=502, detail={"message": "auto analyze did not return final", "events": events[-12:]})
+
+    artifact = final_payload.get("artifact") if isinstance(final_payload, dict) else {}
+    return {
+        "workspace_id": workspace_id,
+        "conversation_id": conversation_id,
+        "status": "completed",
+        "final": final_payload,
+        "artifact": artifact if isinstance(artifact, dict) else {},
+        "text": str(final_payload.get("text") or "".join(answer_parts)),
+        "events": events,
+        "trace": trace,
+        "answer_delta_chars": len("".join(answer_parts)),
+        "cache_bust": cache_bust,
+    }
 
 
 @app.get("/api/workspaces/{workspace_id}/reference-images/{filename}")
@@ -221,9 +406,27 @@ async def narrate(req: NarrateSummaryRequest, request: Request) -> dict[str, Any
     return result
 
 
+@app.get("/api/speech/token")
+async def speech_token() -> dict[str, Any]:
+    try:
+        return await run_in_threadpool(issue_speech_token)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.post("/api/produce")
 async def produce(req: ProduceRequest) -> dict[str, Any]:
     return await run_in_threadpool(produce_from_existing_report, req.model_dump())
+
+
+@app.post("/api/playbook")
+async def playbook(req: PlaybookRequest) -> dict[str, Any]:
+    return await run_in_threadpool(generate_playbook_detail, req.model_dump())
+
+
+@app.get("/api/workspaces/{workspace_id}/data-overview")
+async def data_overview(workspace_id: str) -> dict[str, Any]:
+    return await run_in_threadpool(generate_data_overview, workspace_id)
 
 
 @app.get("/api/runs", response_model=RunsResponse)
@@ -240,6 +443,22 @@ async def run_detail(run_id: str) -> RunDetailResponse:
     return RunDetailResponse.model_validate(result)
 
 
+@app.get("/api/runs/{run_id}/plan-metrics")
+async def run_plan_metrics(run_id: str) -> dict:
+    """抽取该次分析方案里【可回填迭代的关键指标】（供二次分析编辑）。"""
+    return await run_in_threadpool(extract_plan_metrics, run_id)
+
+
+@app.get("/api/workspaces/{workspace_id}/flagship")
+async def workspace_flagship(workspace_id: str) -> dict:
+    return {"workspace_id": workspace_id, "flagship_run_id": await run_in_threadpool(get_flagship_plan, workspace_id)}
+
+
+@app.post("/api/workspaces/{workspace_id}/flagship")
+async def set_workspace_flagship(workspace_id: str, body: PlanFlagshipRequest) -> dict:
+    return await run_in_threadpool(set_flagship_plan, workspace_id, body.run_id)
+
+
 @app.get("/api/conversations", response_model=ConversationsResponse)
 async def conversations(workspace_id: str | None = None) -> ConversationsResponse:
     return ConversationsResponse(conversations=await run_in_threadpool(list_conversations, workspace_id))
@@ -254,10 +473,36 @@ async def conversation_detail(conversation_id: str) -> ConversationDetailRespons
     return ConversationDetailResponse.model_validate(result)
 
 
+async def _sse_keepalive(agen, interval: float = 10.0):
+    """Wrap an SSE async-generator so the connection never goes silent longer than
+    `interval` seconds. Long agent steps (e.g. market web search) can leave a 30s+
+    gap between frames, which proxies/ingress drop → the browser reports a network
+    error mid-analysis. Emitting an SSE comment line (':' prefix, ignored by the
+    client parser) during those waits keeps the stream alive."""
+    ait = agen.__aiter__()
+    pending = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(ait.__anext__())
+            try:
+                item = await asyncio.wait_for(asyncio.shield(pending), timeout=interval)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            except StopAsyncIteration:
+                return
+            pending = None
+            yield item
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest) -> StreamingResponse:
     return StreamingResponse(
-        orchestrate_chat(req),
+        _sse_keepalive(orchestrate_chat(req)),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -265,3 +510,82 @@ async def chat(req: ChatRequest) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+def _parse_sse_frame(raw: str) -> list[tuple[str, Any]]:
+    frames: list[tuple[str, Any]] = []
+    for block in str(raw or "").split("\n\n"):
+        event = ""
+        data_lines: list[str] = []
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").strip())
+        if not event:
+            continue
+        data_text = "\n".join(data_lines)
+        try:
+            data: Any = json.loads(data_text) if data_text else {}
+        except json.JSONDecodeError:
+            data = data_text
+        frames.append((event, data))
+    return frames
+
+
+def _compact_event_data(data: Any) -> Any:
+    if not isinstance(data, dict):
+        return data
+    compact = dict(data)
+    if "delta" in compact:
+        compact["delta"] = str(compact["delta"])[:120]
+    if "artifact" in compact and isinstance(compact["artifact"], dict):
+        compact["artifact"] = {
+            "workspace_id": compact["artifact"].get("workspace_id"),
+            "conversation_id": compact["artifact"].get("conversation_id"),
+            "keys": sorted(str(key) for key in compact["artifact"].keys())[:30],
+        }
+    return compact
+
+
+async def _recover_stale_upload_ingest(workspace_id: str) -> None:
+    try:
+        jobs = await run_in_threadpool(workspace_pending_ingest_jobs, workspace_id, stale_only=True)
+    except Exception:
+        return
+    for job in jobs:
+        _schedule_upload_ingest(job, delay_seconds=0.0)
+
+
+def _schedule_upload_ingest(result: dict[str, Any], *, delay_seconds: float | None = None) -> None:
+    job_id = result.get("ingest_job_id") or result.get("job_id")
+    workspace_id = result.get("workspace_id")
+    if not job_id or not workspace_id:
+        return
+    key = f"{workspace_id}:{job_id}"
+    if key in _INGEST_KEYS:
+        return
+    _INGEST_KEYS.add(key)
+    loop = asyncio.get_running_loop()
+    delay = _INGEST_START_DELAY_SECONDS if delay_seconds is None else max(0.0, float(delay_seconds))
+
+    def _start() -> None:
+        task = asyncio.create_task(_run_upload_ingest_background(str(workspace_id), str(job_id)))
+        _INGEST_TASKS.add(task)
+        def _done(done_task: asyncio.Task[Any]) -> None:
+            _INGEST_TASKS.discard(done_task)
+            _INGEST_KEYS.discard(key)
+
+        task.add_done_callback(_done)
+
+    loop.call_later(delay, _start)
+
+
+async def _run_upload_ingest_background(workspace_id: str, job_id: str) -> None:
+    async with _INGEST_SEMAPHORE:
+        try:
+            await run_in_threadpool(run_workspace_ingest_job, workspace_id, job_id)
+        except Exception as exc:
+            # The per-file worker persists failures when possible; this guard keeps
+            # an unhandled background exception from terminating the event loop.
+            print(f"upload ingest job failed workspace={workspace_id} job={job_id}: {type(exc).__name__}: {exc}", flush=True)

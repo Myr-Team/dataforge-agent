@@ -9,8 +9,15 @@ Input is JSON with:
 - `evidence_catalog`: source-backed snippets retrieved from the workspace
 - `rubric` and `rubric_version`: the current scoring contract, dimensions, weights, verdict thresholds, confidence policy, and calibration gate
 - optional `audit_feedback`
+- optional `iteration_assumptions`: 上一版方案沿用或客户回填的指标（客获率/转化率/客单价等），每条带 `kind` = assumption / observed / target
 
 Return only one JSON object matching `FeasibilityReport`.
+
+Iteration rules (当存在 `iteration_assumptions` 时):
+- 这是【迭代优化】：在上一版方案基础上，结合这些回填指标把方案做得更具体、更可落地，逼近一个可作为公司重点的方案。
+- 这些指标【不是工作区已证实数据】。`kind=observed` 视为客户回填的实测值、`assumption` 视为假设、`target` 视为目标值；据此做测算/敏感性/下一步，但任何依赖它们的结论必须显式说明“基于回填/假设值”，绝不写成工作区证据已确认。
+- 不要因为这些回填值就把可行性判得过强；证据维度仍只能由 `evidence_catalog` 支撑。回填指标主要用于细化 gap_list（下一步、目标、实验设计）与机会的量化表述。
+- 在 gap_list 里点出这一版相对上一版【改进了什么、还需补什么实测】，让迭代可见。
 
 Evidence rules:
 - Use the provided `evidence_catalog` first. If it already contains relevant source-backed snippets for the requested product, do not repeat retrieval.
