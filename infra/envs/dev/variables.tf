@@ -1,7 +1,13 @@
+# ---------------------------------------------------------------------------
+# Deployment-specific values. Supply these via a local terraform.tfvars file
+# (git-ignored) or -var flags. See terraform.tfvars.example for the shape.
+# Defaults are intentionally blank so this repo carries no account identifiers.
+# ---------------------------------------------------------------------------
+
 variable "subscription_id" {
   type        = string
-  description = "Azure subscription id."
-  default     = "b2cb3c3d-c9f0-4dfa-bcdd-718a6a8abf10"
+  description = "Azure subscription id. Provide via tfvars; never commit it."
+  default     = ""
 }
 
 variable "region" {
@@ -22,23 +28,25 @@ variable "resource_group_name" {
 }
 
 variable "storage_account_name" {
-  type    = string
-  default = "stdataforgedev"
+  type        = string
+  description = "Globally-unique storage account name (lowercase, 3-24 chars)."
+  default     = ""
 }
 
 variable "search_service_name" {
   type    = string
-  default = "srch-dataforge-dev"
+  default = ""
 }
 
 variable "speech_account_name" {
   type    = string
-  default = "speech-dataforge-dev"
+  default = ""
 }
 
 variable "acr_name" {
-  type    = string
-  default = "acrdataforgedev"
+  type        = string
+  description = "Globally-unique Azure Container Registry name (alphanumeric)."
+  default     = ""
 }
 
 variable "backend_app_name" {
@@ -47,8 +55,9 @@ variable "backend_app_name" {
 }
 
 variable "backend_image" {
-  type    = string
-  default = "acrdataforgedev.azurecr.io/dataforge-backend:wp5-20260610-1535"
+  type        = string
+  description = "Backend container image, e.g. <acr>.azurecr.io/dataforge-backend:<tag>."
+  default     = ""
 }
 
 variable "mcp_app_name" {
@@ -57,8 +66,9 @@ variable "mcp_app_name" {
 }
 
 variable "mcp_image" {
-  type    = string
-  default = "acrdataforgedev.azurecr.io/dataforge-mcp:wp4-20260610-1520"
+  type        = string
+  description = "MCP container image, e.g. <acr>.azurecr.io/dataforge-mcp:<tag>."
+  default     = ""
 }
 
 variable "log_analytics_name" {
@@ -77,23 +87,27 @@ variable "container_env_name" {
 }
 
 variable "foundry_resource_group_name" {
-  type    = string
-  default = "Agent-Demo-Fuzh"
+  type        = string
+  description = "Resource group of an existing Azure AI Foundry account to reuse."
+  default     = ""
 }
 
 variable "foundry_account_name" {
-  type    = string
-  default = "Agent-Demo-Foundry-fuzh"
+  type        = string
+  description = "Existing Azure AI Foundry account name to reuse."
+  default     = ""
 }
 
 variable "foundry_endpoint" {
-  type    = string
-  default = "https://agent-demo-foundry-fuzh.services.ai.azure.com/api/projects/Agent-Demo-proj"
+  type        = string
+  description = "Foundry project endpoint, e.g. https://<account>.services.ai.azure.com/api/projects/<project>."
+  default     = ""
 }
 
 variable "openai_endpoint" {
-  type    = string
-  default = "https://agent-demo-foundry-fuzh.openai.azure.com/"
+  type        = string
+  description = "Azure OpenAI endpoint, e.g. https://<account>.openai.azure.com/."
+  default     = ""
 }
 
 variable "chat_deployment" {

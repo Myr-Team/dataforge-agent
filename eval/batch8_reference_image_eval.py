@@ -150,7 +150,7 @@ def _blob_backed_reference_regression() -> dict[str, Any]:
             "reference_images": [
                 {
                     "url": f"/api/workspaces/{workspace_id}/reference-images/{filename}",
-                    "blob_url": f"https://stdataforgedev.blob.core.windows.net/dataforge-workspaces/{blob_name}",
+                    "blob_url": f"https://yourstorageacct.blob.core.windows.net/dataforge-workspaces/{blob_name}",
                     "blob_name": blob_name,
                     "role": "logo",
                     "filename": filename,

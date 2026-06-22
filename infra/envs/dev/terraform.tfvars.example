@@ -1,0 +1,23 @@
+# Copy to terraform.tfvars (git-ignored) and fill in your own values.
+# This file carries NO real account identifiers.
+
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+# Globally-unique names you control:
+storage_account_name = "yourstorageacct"   # 3-24 lowercase alphanumerics
+search_service_name  = "your-search-svc"
+speech_account_name  = "your-speech-svc"
+acr_name             = "youracr"
+
+backend_image = "youracr.azurecr.io/dataforge-backend:<tag>"
+mcp_image     = "youracr.azurecr.io/dataforge-mcp:<tag>"
+
+# Existing Azure AI Foundry account to reuse:
+foundry_resource_group_name = "your-foundry-rg"
+foundry_account_name        = "your-foundry-account"
+foundry_endpoint            = "https://your-foundry-account.services.ai.azure.com/api/projects/your-foundry-project"
+openai_endpoint             = "https://your-foundry-account.openai.azure.com/"
+
+# Secrets — supply at apply time, never commit:
+# speech_key = "..."
+# search_key = "..."

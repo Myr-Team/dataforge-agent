@@ -44,7 +44,7 @@
       "index_name": "dataforge-workspaces",
       "document_count": 16,
       "upload": {
-        "@odata.context": "https://srch-dataforge-dev.search.windows.net/indexes('dataforge-workspaces')/$metadata#Collection(Microsoft.Azure.Search.V2024_07_01.IndexResult)",
+        "@odata.context": "https://your-search-svc.search.windows.net/indexes('dataforge-workspaces')/$metadata#Collection(Microsoft.Azure.Search.V2024_07_01.IndexResult)",
         "value": [
           {
             "key": "demo-corpus-product_manual-000",
@@ -150,7 +150,7 @@
       "index_name": "dataforge-workspaces",
       "document_count": 5,
       "upload": {
-        "@odata.context": "https://srch-dataforge-dev.search.windows.net/indexes('dataforge-workspaces')/$metadata#Collection(Microsoft.Azure.Search.V2024_07_01.IndexResult)",
+        "@odata.context": "https://your-search-svc.search.windows.net/indexes('dataforge-workspaces')/$metadata#Collection(Microsoft.Azure.Search.V2024_07_01.IndexResult)",
         "value": [
           {
             "key": "excel-corpus-quality_metrics-QualitySignals-row-2",

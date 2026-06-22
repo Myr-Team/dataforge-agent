@@ -3,7 +3,7 @@
   "api_base": "https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io",
   "loaded_env": [
     "C:\\Users\\12140\\.dataforge-codex.env",
-    "C:\\Users\\12140\\Documents\\Agent-Demo-project\\数据产品化Agent\\.dataforge-codex.env"
+    "C:\\Users\\12140\\Documents\\your-foundry-projectect\\数据产品化Agent\\.dataforge-codex.env"
   ],
   "checks": {
     "no_errors": true,

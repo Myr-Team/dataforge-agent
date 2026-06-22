@@ -4,7 +4,7 @@
   "api_base": "in-process",
   "loaded_env": [
     "C:\\Users\\12140\\.dataforge-codex.env",
-    "C:\\Users\\12140\\Documents\\Agent-Demo-project\\数据产品化Agent\\.dataforge-codex.env"
+    "C:\\Users\\12140\\Documents\\your-foundry-projectect\\数据产品化Agent\\.dataforge-codex.env"
   ],
   "stage": "delete_cleanup",
   "checks": {

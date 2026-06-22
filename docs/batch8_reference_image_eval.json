@@ -3,7 +3,7 @@
   "api_base": "https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io",
   "loaded_env": [
     "C:\\Users\\12140\\.dataforge-codex.env",
-    "C:\\Users\\12140\\Documents\\Agent-Demo-project\\数据产品化Agent\\.dataforge-codex.env"
+    "C:\\Users\\12140\\Documents\\your-foundry-projectect\\数据产品化Agent\\.dataforge-codex.env"
   ],
   "checks": {
     "reference_registered": true,
@@ -72,7 +72,7 @@
       "url": "/api/workspaces/upload-batch8-logo-workspace-1781322756-20260613035241/reference-images/batch8-logo.png",
       "role": "logo",
       "filename": "batch8-logo.png",
-      "blob_url": "https://stdataforgedev.blob.core.windows.net/dataforge-workspaces/workspaces/upload-batch8-logo-workspace-1781322756-20260613035241/reference_images/batch8-logo.png",
+      "blob_url": "https://yourstorageacct.blob.core.windows.net/dataforge-workspaces/workspaces/upload-batch8-logo-workspace-1781322756-20260613035241/reference_images/batch8-logo.png",
       "blob_name": "workspaces/upload-batch8-logo-workspace-1781322756-20260613035241/reference_images/batch8-logo.png",
       "source_file": "reference_images/batch8-logo.png",
       "content_type": "image/png",
@@ -97,7 +97,7 @@
         "url": "/api/workspaces/upload-batch8-alternate-logo-workspace-1781322797-20260613035321/reference-images/batch8-logo-alt.png",
         "role": "logo",
         "filename": "batch8-logo-alt.png",
-        "blob_url": "https://stdataforgedev.blob.core.windows.net/dataforge-workspaces/workspaces/upload-batch8-alternate-logo-workspace-1781322797-20260613035321/reference_images/batch8-logo-alt.png",
+        "blob_url": "https://yourstorageacct.blob.core.windows.net/dataforge-workspaces/workspaces/upload-batch8-alternate-logo-workspace-1781322797-20260613035321/reference_images/batch8-logo-alt.png",
         "blob_name": "workspaces/upload-batch8-alternate-logo-workspace-1781322797-20260613035321/reference_images/batch8-logo-alt.png",
         "source_file": "reference_images/batch8-logo-alt.png",
         "content_type": "image/png",
