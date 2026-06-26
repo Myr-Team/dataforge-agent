@@ -1230,7 +1230,7 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
         <ImagePlus size={22} />
         <div>
           <strong>{refs.length ? `已检测到 ${refs.length} 张参考图` : "生成海报或周边前，建议上传透明 PNG Logo"}</strong>
-          <span>例如攀岩馆活动海报、会员周边 T 恤、赞助合作物料，都可以把 Logo 作为参考图交给图像生成 Agent。</span>
+          <span>例如活动主视觉、包装样机、服务触点物料，都可以把 Logo 作为参考图交给图像生成 Agent。</span>
         </div>
         <button className="ghost-button icon-label" type="button" onClick={onUploadReference}>
           <UploadCloud size={15} />

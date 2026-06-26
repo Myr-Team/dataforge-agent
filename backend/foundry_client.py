@@ -341,7 +341,7 @@ def run_image_subject(payload: dict[str, Any]) -> dict[str, Any]:
         "并把它描述成一个【可作画的具体视觉主体】，用于让图像模型画出这个产品本身——"
         "绝不要画成报告、数据看板、分析图表、会议室或办公室场景。\n"
         "kind 取值：product_app（App/软件界面）、product_physical（实体产品/包装/样机）、service（服务或门店体验场景）、campaign（活动主视觉）。\n"
-        "subject：用一句【英文】描述要画的具体产品画面，越具体越好（如 'a mobile membership app screen showing a climber's visit streak and tier rewards, hero device mockup'）。\n"
+        "subject：用一句【英文】描述要画的具体产品画面，越具体越好（如 'a clean mobile app dashboard screen showing the single core metric and a hero device mockup'）。示例仅示意，必须按 evidence 与机会本身生成，不得套用示例行业或模板。\n"
         "只返回 JSON：{subject, kind}。"
     )
     create_args: dict[str, Any] = {

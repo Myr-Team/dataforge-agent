@@ -1586,7 +1586,7 @@ def _diversify_feasibility_scores(report: FeasibilityReport) -> FeasibilityRepor
     return FeasibilityReport.model_validate(_diversify_feasibility_scores_data(report.model_dump()))
 
 
-_FEASIBILITY_PROMPT_VERSION = "df-feasibility-analyst:batch11-p0-fix-action-first"
+_FEASIBILITY_PROMPT_VERSION = "df-feasibility-analyst:batch12-purge-hardcoded-template"
 
 
 def _corpus_fingerprint(artifact: dict[str, Any]) -> tuple[str, str]:
@@ -1980,6 +1980,15 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
         "kinds": wanted,
         "artifact_urls": {},
     }
+    def collect_future(future: concurrent.futures.Future[Any] | None, key: str) -> dict[str, Any] | None:
+        if future is None:
+            return None
+        try:
+            value = future.result()
+            return value if isinstance(value, dict) else {"mode": f"{key}_unexpected_result", "error": "Producer returned a non-object result."}
+        except Exception as exc:
+            return {"mode": f"{key}_error", "error": _clean_text(exc, 500)}
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dataforge-producer") as pool:
         pdf_future = pool.submit(render_pdf_report, proposal, "project_proposal") if "pdf" in wanted else None
         image_future = None
@@ -1997,17 +2006,20 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
             )
         audio_future = pool.submit(narrate_summary, _concise_narration_from_proposal(proposal), "zh-CN-XiaoxiaoNeural") if "audio" in wanted else None
         if pdf_future:
-            pdf = pdf_future.result()
+            pdf = collect_future(pdf_future, "pdf") or {}
             result["pdf"] = pdf
-            result["artifact_urls"]["pdf"] = pdf.get("artifact_url")
+            if pdf.get("artifact_url"):
+                result["artifact_urls"]["pdf"] = pdf.get("artifact_url")
         if image_future:
-            image = image_future.result()
+            image = collect_future(image_future, "concept_image") or {}
             result["concept_image"] = image
-            result["artifact_urls"]["concept_image"] = image.get("artifact_url")
+            if image.get("artifact_url"):
+                result["artifact_urls"]["concept_image"] = image.get("artifact_url")
         if audio_future:
-            audio = audio_future.result()
+            audio = collect_future(audio_future, "audio_summary") or {}
             result["audio_summary"] = audio
-            result["artifact_urls"]["audio_summary"] = audio.get("artifact_url")
+            if audio.get("artifact_url"):
+                result["artifact_urls"]["audio_summary"] = audio.get("artifact_url")
     return result
 
 
@@ -3281,106 +3293,6 @@ def _campaign_story_lines(req: ChatRequest, artifact: dict[str, Any], citations:
     # 已弃用：这是写死攀岩/会员/赞助的活动叙事模板，换数据会串味、不泛化。
     # 行动方案现在统一由 LLM（_llm_feasibility_action_plan）按真实证据生成，这里不再追加模板段落。
     return []
-    blob = _campaign_story_blob(req, artifact, citations)
-    request_text = str(req.message or "")
-    if not re.search(r"(活动|推广|企划|拉新|新客|转化|宣传|曝光|名声|campaign|promotion)", request_text, re.I):
-        return []
-    if not re.search(r"(攀岩|climb|climbing|门店|会员|到店|活动|周边|赞助)", blob, re.I):
-        return []
-
-    signals = _evidence_signals(artifact.get("corpus", {}).get("hits", []), citations)
-    goal_markers = _markers_for_terms(signals, citations, ("新客", "转化", "到店", "复购", "客流", "会员", "活动"))
-    merch_markers = _markers_for_terms(signals, citations, ("周边", "t恤", "T恤", "衣服", "logo", "Logo", "打卡", "曝光"))
-    sponsor_markers = _markers_for_terms(signals, citations, ("护手", "护肤", "手部", "赞助", "联名", "品牌", "修复"))
-    goal_known = bool(re.search(r"(新客|转化|到店|复购|曝光|宣传|名声|拉新)", request_text))
-
-    lines = [
-        "**活动企划建议**",
-        (
-            "1. 先把目标问清楚："
-            + (
-                "本轮可以按“新客到店转化 + 品牌传播”作为主目标，复购作为副指标。"
-                if goal_known
-                else "请客户在“新客到店转化、老会员复购、品牌曝光”里选一个主目标，再定预算和周期。"
-            )
-            + (f" {goal_markers}" if goal_markers else "")
-        ).rstrip(),
-        (
-            "2. 活动主线建议做“会员挑战日/跨店打卡赛”：用一到两个高活跃门店先试点，设置报名、到店、完赛、二次到访四个漏斗指标。"
-            + (f" {goal_markers}" if goal_markers else "")
-        ).rstrip(),
-    ]
-    if re.search(r"(周边|t恤|T恤|衣服|logo|Logo|打卡|曝光)", blob, re.I):
-        lines.append(
-            (
-                "3. 传播钩子用 Logo 周边：把攀岩馆专属 T 恤或徽章作为参赛奖励，让会员在其他攀岩馆或社交平台继续露出品牌。"
-                + (f" {merch_markers}" if merch_markers else "")
-            ).rstrip()
-        )
-    if re.search(r"(护手|护肤|手部|赞助|联名|修复)", blob, re.I):
-        lines.append(
-            (
-                "4. 赞助方向优先找护手霜、手部修复或运动恢复类品牌：攀岩后的手部磨损是自然场景，适合做试用装、完赛包和联合打卡。"
-                + (f" {sponsor_markers}" if sponsor_markers else "")
-            ).rstrip()
-        )
-    lines.append(
-        "5. 如果这个方向认可，建议直接生成项目书、执行计划、活动海报和周边衣服概念图；若要生成海报/周边，请先上传透明 PNG Logo 作为参考图。"
-    )
-    return lines
-
-
-def _campaign_action_steps(req: ChatRequest, artifact: dict[str, Any], citations: list[dict[str, Any]]) -> list[str]:
-    lines = _campaign_story_lines(req, artifact, citations)
-    if not lines:
-        return []
-    steps: list[str] = [
-        "先确认主目标：新客到店转化、老会员复购、品牌曝光三者只能选一个主指标，另两个作为副指标。",
-        "以“会员挑战日/跨店打卡赛”做首轮试点，范围控制在一到两个高活跃门店，并记录报名、到店、完赛和二次到访。",
-    ]
-    story_text = "\n".join(lines)
-    if re.search(r"(周边|T恤|衣服|徽章|Logo|logo)", story_text):
-        steps.append("把 Logo T 恤、徽章或贴纸做成参赛奖励，让参与者在其他攀岩馆和社交平台继续露出品牌。")
-    if re.search(r"(护手|护肤|手部|赞助|联名|修复)", story_text):
-        steps.append("找护手霜、手部修复或运动恢复类品牌做赞助，把试用装、完赛包和联合打卡放进活动机制。")
-    steps.append("方向确认后生成项目书、执行计划、活动海报和周边衣服概念图；若缺 Logo，先让客户上传透明 PNG。")
-    return steps[:5]
-
-
-def _campaign_story_blob(req: ChatRequest, artifact: dict[str, Any], citations: list[dict[str, Any]]) -> str:
-    parts = [str(req.message or "")]
-    corpus = artifact.get("corpus") or {}
-    profile = corpus.get("profile") or {}
-    if isinstance(profile, dict):
-        parts.extend(str(profile.get(key) or "") for key in ("name", "profile_summary", "customer_summary"))
-    for hit in (corpus.get("hits") or [])[:12]:
-        if isinstance(hit, dict):
-            parts.extend(str(hit.get(key) or "") for key in ("title", "content", "snippet", "source_file"))
-    for item in citations[:8]:
-        parts.append(str(item.get("snippet") or ""))
-    return "\n".join(parts)
-
-
-def _markers_for_terms(signals: list[dict[str, str]], citations: list[dict[str, Any]], terms: tuple[str, ...]) -> str:
-    markers: list[str] = []
-    for signal in signals:
-        text = str(signal.get("text") or "")
-        if any(term.lower() in text.lower() for term in terms):
-            for marker in re.findall(r"\[\d+\]", signal.get("markers") or ""):
-                if marker not in markers:
-                    markers.append(marker)
-        if len(markers) >= 2:
-            break
-    if not markers:
-        for item in citations:
-            text = str(item.get("snippet") or "")
-            if any(term.lower() in text.lower() for term in terms):
-                marker = f"[{item.get('marker')}]"
-                if marker not in markers:
-                    markers.append(marker)
-            if len(markers) >= 2:
-                break
-    return " ".join(markers[:2])
 
 
 def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact: dict[str, Any]) -> dict[str, Any]:
@@ -3783,10 +3695,14 @@ async def _progress_frames(
 async def _producer_frames(artifact: dict[str, Any], conversation_id: str) -> AsyncIterator[str]:
     yield _frame("role_change", {"agent": "df-producer"}, conversation_id)
     reference_count = len(artifact.get("reference_images") or workspace_reference_images(str(artifact.get("workspace_id") or "")))
+    routing = artifact.get("routing") if isinstance(artifact.get("routing"), dict) else {}
+    output_mode = str(routing.get("output_mode") or "")
+    wanted = ["pdf", "concept_image", "audio"] if output_mode == "full_package" else ["pdf", "concept_image"]
     yield _frame("tool_call", {"agent": "df-producer", "name": "render_pdf_report", "args": {"template": "project_proposal"}}, conversation_id)
     yield _frame("tool_call", {"agent": "df-producer", "name": "generate_image", "args": {"size": "1024x1024", "reference_count": reference_count}}, conversation_id)
-    yield _frame("tool_call", {"agent": "df-producer", "name": "narrate_summary", "args": {"voice": "zh-CN-XiaoxiaoNeural"}}, conversation_id)
-    producer_task = asyncio.create_task(run_in_threadpool(_run_producer, artifact))
+    if "audio" in wanted:
+        yield _frame("tool_call", {"agent": "df-producer", "name": "narrate_summary", "args": {"voice": "zh-CN-XiaoxiaoNeural"}}, conversation_id)
+    producer_task = asyncio.create_task(run_in_threadpool(_run_producer, artifact, wanted))
     while not producer_task.done():
         try:
             artifact["proposal"] = await asyncio.wait_for(asyncio.shield(producer_task), timeout=8)
@@ -3798,39 +3714,40 @@ async def _producer_frames(artifact: dict[str, Any], conversation_id: str) -> As
             )
     if "proposal" not in artifact:
         artifact["proposal"] = await producer_task
+    proposal = artifact.get("proposal") if isinstance(artifact.get("proposal"), dict) else {}
+    artifact_urls = proposal.get("artifact_urls") if isinstance(proposal.get("artifact_urls"), dict) else {}
+
+    def tool_result_payload(name: str, key: str, url_key: str) -> dict[str, Any]:
+        item = proposal.get(key) if isinstance(proposal.get(key), dict) else {}
+        payload = {
+            "agent": "df-producer",
+            "name": name,
+            "bytes": item.get("bytes"),
+            "mode": item.get("mode"),
+            "artifact_url": artifact_urls.get(url_key),
+        }
+        if item.get("error"):
+            payload["error"] = item.get("error")
+        elif not item:
+            payload["error"] = "Artifact was not generated."
+        return payload
+
     yield _frame(
         "tool_result",
-        {
-            "agent": "df-producer",
-            "name": "render_pdf_report",
-            "bytes": artifact["proposal"]["pdf"].get("bytes"),
-            "mode": artifact["proposal"]["pdf"].get("mode"),
-            "artifact_url": artifact["proposal"]["artifact_urls"].get("pdf"),
-        },
+        tool_result_payload("render_pdf_report", "pdf", "pdf"),
         conversation_id,
     )
     yield _frame(
         "tool_result",
-        {
-            "agent": "df-producer",
-            "name": "generate_image",
-            "bytes": artifact["proposal"]["concept_image"].get("bytes"),
-            "mode": artifact["proposal"]["concept_image"].get("mode"),
-            "artifact_url": artifact["proposal"]["artifact_urls"].get("concept_image"),
-        },
+        tool_result_payload("generate_image", "concept_image", "concept_image"),
         conversation_id,
     )
-    yield _frame(
-        "tool_result",
-        {
-            "agent": "df-producer",
-            "name": "narrate_summary",
-            "bytes": artifact["proposal"]["audio_summary"].get("bytes"),
-            "mode": artifact["proposal"]["audio_summary"].get("mode"),
-            "artifact_url": artifact["proposal"]["artifact_urls"].get("audio_summary"),
-        },
-        conversation_id,
-    )
+    if "audio" in wanted:
+        yield _frame(
+            "tool_result",
+            tool_result_payload("narrate_summary", "audio_summary", "audio_summary"),
+            conversation_id,
+        )
 
 
 def _last_assistant_text(history: list[dict[str, Any]]) -> str:

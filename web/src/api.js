@@ -1,5 +1,28 @@
 export const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 
+function errorMessageFromPayload(data, fallback) {
+  const raw = data?.detail ?? data?.message ?? fallback;
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object") {
+    if (typeof raw.message === "string") return raw.message;
+    if (typeof raw.error === "string") return raw.error;
+    if (raw.error && typeof raw.error === "object") {
+      if (typeof raw.error.message === "string") return raw.error.message;
+      try {
+        return JSON.stringify(raw.error);
+      } catch {
+        return fallback;
+      }
+    }
+    try {
+      return JSON.stringify(raw);
+    } catch {
+      return fallback;
+    }
+  }
+  return String(raw || fallback);
+}
+
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
@@ -13,7 +36,7 @@ async function request(path, options = {}) {
     let message = `${response.status} ${response.statusText}`;
     try {
       const data = await response.json();
-      message = data.detail || data.message || message;
+      message = errorMessageFromPayload(data, message);
     } catch {
       // Keep HTTP status text when the server does not return JSON.
     }
@@ -151,7 +174,7 @@ export async function streamChat(payload, onEvent) {
     let message = `${response.status} ${response.statusText}`;
     try {
       const data = await response.json();
-      message = data.detail || data.message || message;
+      message = errorMessageFromPayload(data, message);
     } catch {
       // Keep HTTP status text.
     }

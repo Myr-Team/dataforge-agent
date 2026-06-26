@@ -1,11 +1,11 @@
 {
   "suites": [
     {
-      "name": "端到端云端实测 · 攀岩 Demo",
+      "name": "端到端云端实测 · 业务机会 Demo",
       "passed": true,
-      "checks_passed": 7,
-      "checks_total": 7,
-      "file": "climbing_demo_eval.azure.json"
+      "checks_passed": 9,
+      "checks_total": 9,
+      "file": "demo_e2e_last_run.json"
     },
     {
       "name": "全链路云端回归 (中/英)",
@@ -54,8 +54,8 @@
   },
   "totals": {
     "suites": 6,
-    "checks_passed": 79,
-    "checks_total": 79
+    "checks_passed": 81,
+    "checks_total": 81
   },
   "generated_note": "离线/云端评测快照（随镜像打包）。"
 }

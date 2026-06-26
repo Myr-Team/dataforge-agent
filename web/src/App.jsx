@@ -393,6 +393,8 @@ export function App() {
       payload.ui_context.mode = "auto_analysis";
     }
     let deltaCount = 0;
+    let terminalEvent = false;
+    let streamErrorMessage = "";
 
     try {
       await streamChat(payload, (event) => {
@@ -415,6 +417,7 @@ export function App() {
         }
         // 不在分析期把内联产物自动填进来——产物生成器停在待命，由客户点「生成产物」(produce) 才出产物。
         if (event.event === "clarify") {
+          terminalEvent = true;
           const cd = event.data || {};
           const c = cd.clarify || cd; // 兼容 {clarify:{...}} 与扁平结构
           const question = c.question || cd.question || cd.text || "我需要多了解一点你的目标，才能给出更有据的分析。";
@@ -423,6 +426,7 @@ export function App() {
           setStreamText("");
         }
         if (event.event === "final") {
+          terminalEvent = true;
           const artifact = event.data?.artifact || {};
           const text = event.data?.text || artifact.answer?.text || streamRef.current || "已完成分析。";
           // finalArtifact 只在"真正的可行性分析"时更新（含 verdict/五维），聊天/问答不覆盖它——
@@ -459,9 +463,17 @@ export function App() {
         }
         if (event.event === "error") {
           const messageText = event.data?.message || "运行失败。";
+          terminalEvent = true;
+          streamErrorMessage = messageText;
           setNotice({ type: "error", message: messageText });
         }
       });
+      if (streamErrorMessage) {
+        throw new Error(streamErrorMessage);
+      }
+      if (!terminalEvent) {
+        throw new Error("连接已断开，未收到最终结果。请重试。");
+      }
       refreshDashboard(workspaceId);
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
@@ -575,6 +587,7 @@ export function App() {
   const ensureAnalysisArtifact = () =>
     new Promise((resolve, reject) => {
       let captured = null;
+      let streamErrorMessage = "";
       streamChat(
         {
           workspace_id: workspaceId,
@@ -586,9 +599,14 @@ export function App() {
         (event) => {
           if (event.event === "ready" && event.data?.conversation_id) setActiveConversationId(event.data.conversation_id);
           if (event.event === "final") captured = event.data?.artifact || null;
+          if (event.event === "error") streamErrorMessage = event.data?.message || "分析失败。";
         },
       )
-        .then(() => resolve(captured))
+        .then(() => {
+          if (streamErrorMessage) reject(new Error(streamErrorMessage));
+          else if (!captured) reject(new Error("分析流已断开，未收到可生成产物的结果。"));
+          else resolve(captured);
+        })
         .catch(reject);
     });
 

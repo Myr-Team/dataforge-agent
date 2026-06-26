@@ -39,6 +39,41 @@ def set_json(key: str, value: dict[str, Any], *, ttl_seconds: int | None = None)
         return meta | {"status": "unavailable", "elapsed_ms": int((time.monotonic() - started) * 1000), "error": _err(exc)}
 
 
+def delete_matching(pattern: str, *, scan_count: int = 500) -> dict[str, Any]:
+    client, meta = _client()
+    if client is None:
+        return meta | {"pattern": pattern, "deleted": 0}
+    started = time.monotonic()
+    deleted = 0
+    scanned = 0
+    try:
+        cursor: int | str = 0
+        while True:
+            cursor, keys = client.scan(cursor=cursor, match=pattern, count=scan_count)
+            keys = list(keys or [])
+            scanned += len(keys)
+            if keys:
+                deleted += int(client.delete(*keys) or 0)
+            if str(cursor) == "0":
+                break
+        return meta | {
+            "status": "deleted",
+            "pattern": pattern,
+            "scanned": scanned,
+            "deleted": deleted,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        }
+    except Exception as exc:
+        return meta | {
+            "status": "unavailable",
+            "pattern": pattern,
+            "scanned": scanned,
+            "deleted": deleted,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "error": _err(exc),
+        }
+
+
 def probe() -> dict[str, Any]:
     client, meta = _client()
     if client is None:

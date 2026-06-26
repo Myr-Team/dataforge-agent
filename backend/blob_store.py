@@ -222,6 +222,18 @@ def download_blob_json(blob_name: str) -> dict[str, Any] | None:
         return None
 
 
+def delete_blob_name(blob_name: str) -> bool:
+    if not blob_configured():
+        return False
+    try:
+        _container_client().delete_blob(blob_name)
+        return True
+    except ResourceNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
 def upload_artifact(name: str, content: bytes, content_type: str) -> dict[str, Any]:
     container = _container_client()
     _ensure_container(container)

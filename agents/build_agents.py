@@ -25,7 +25,7 @@ AGENTS = [
         "name": "df-corpus-analyst",
         "prompt": "corpus_analyst.md",
         "tools": ["search_pack_context"],
-        "verify_prompt": "Find evidence for outdoor analytics opportunities in workspace demo-corpus.",
+        "verify_prompt": "Find evidence for the highest-value product opportunity in the target workspace.",
     },
     {
         "name": "df-feasibility-analyst",
@@ -37,13 +37,13 @@ AGENTS = [
         "name": "df-market-researcher",
         "prompt": "market_researcher.md",
         "tools": ["market_lookup_mcp", "web_search_preview"],
-        "verify_prompt": "Compare outdoor coaching analytics competitors.",
+        "verify_prompt": "Compare competitors relevant to the target product opportunity.",
     },
     {
         "name": "df-producer",
         "prompt": "producer.md",
         "tools": ["render_pdf_report", "generate_image", "narrate_summary"],
-        "verify_prompt": "Plan deliverables for an outdoor analytics proposal.",
+        "verify_prompt": "Plan deliverables for a target-workspace product opportunity proposal.",
     },
     {
         "name": "df-auditor",

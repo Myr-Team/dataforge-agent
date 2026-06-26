@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .blob_store import download_blob_json, upload_blob_json
+    from .blob_store import delete_blob_name, download_blob_json, upload_blob_json
 except ImportError:
-    from blob_store import download_blob_json, upload_blob_json
+    from blob_store import delete_blob_name, download_blob_json, upload_blob_json
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -155,6 +155,40 @@ def set_flagship_plan(workspace_id: str, run_id: str | None) -> dict[str, Any]:
     except Exception:
         pass
     return {"workspace_id": workspace_id, "flagship_run_id": mapping.get(workspace_id)}
+
+
+def purge_workspace_runs(workspace_id: str) -> dict[str, Any]:
+    """Delete persisted run records for one workspace from local storage and Blob registry."""
+    run_ids = sorted({str(item.get("run_id") or "") for item in list_runs(workspace_id) if item.get("run_id")})
+    deleted_local = 0
+    deleted_blob = 0
+    for run_id in run_ids:
+        safe = _safe_name(run_id)
+        path = RUN_DIR / f"{safe}.json"
+        if path.exists():
+            try:
+                path.unlink()
+                deleted_local += 1
+            except Exception:
+                pass
+        if delete_blob_name(f"{RUN_BLOB_PREFIX}/{safe}.json"):
+            deleted_blob += 1
+    try:
+        registry = download_blob_json(RUN_REGISTRY_BLOB) or {}
+        entries = [item for item in registry.get("runs") or [] if isinstance(item, dict) and item.get("workspace_id") != workspace_id]
+        upload_blob_json(RUN_REGISTRY_BLOB, {"version": registry.get("version") or 1, "runs": entries})
+    except Exception:
+        pass
+    try:
+        set_flagship_plan(workspace_id, None)
+    except Exception:
+        pass
+    return {
+        "workspace_id": workspace_id,
+        "run_ids": run_ids,
+        "deleted_local_runs": deleted_local,
+        "deleted_blob_runs": deleted_blob,
+    }
 
 
 def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
