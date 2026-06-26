@@ -133,7 +133,7 @@ def _parse_frame(frame: str) -> dict[str, Any] | None:
 
 
 def _demo_json(path: Path) -> Path:
-    candidate = Path(r"D:\Demo\banana_climbing_shenzhen.json")
+    candidate = Path(r"D:\Demo\business_opportunity_shenzhen.json")
     if candidate.exists():
         return candidate
     target = path / "batch9_demo.json"
@@ -141,10 +141,10 @@ def _demo_json(path: Path) -> Path:
         json.dumps(
             {
                 "signals": [
-                    {"category": "活动", "topic": "会员裂变", "detail": "38% 会员愿意邀请朋友体验攀岩入门课"},
+                    {"category": "活动", "topic": "用户转介绍", "detail": "38% 用户愿意邀请朋友体验示例产品入门服务"},
                     {"category": "周边", "topic": "Logo T恤", "detail": "打卡照片中品牌露出高，适合作为活动奖品"},
-                    {"category": "赞助", "topic": "运动品牌", "detail": "本地运动品牌愿意赞助护手产品和体验券"},
-                    {"category": "痛点", "topic": "手部护理", "detail": "新手用户反馈手部磨损，需要护手霜和教学提醒"},
+                    {"category": "赞助", "topic": "合作品牌", "detail": "本地合作品牌愿意赞助试用装和体验券"},
+                    {"category": "痛点", "topic": "体验流程", "detail": "新手用户反馈流程说明不足，需要试用装和教学提醒"},
                 ]
             },
             ensure_ascii=False,
@@ -173,13 +173,13 @@ def _title_check() -> dict[str, Any]:
     from backend.orchestrator import _clean_opportunity_label
     from backend.schemas import ChatRequest
 
-    req = ChatRequest(workspace_id="upload-batch9", message="我想做一个活动让攀岩馆推广该怎么做")
-    raw = "banana-climbing-shenzhen-banana-climbing-shenzhen-banana-climbing-shenzh"
+    req = ChatRequest(workspace_id="upload-batch9", message="我想做一个活动让示例产品推广该怎么做")
+    raw = "sample-growth-shenzhen-sample-growth-shenzhen-sample-growth-shenzh"
     label = _clean_opportunity_label(raw, req, {"corpus": {"hits": []}})
     return {
         "raw": raw,
         "label": label,
-        "not_repeated": label.lower().count("banana") <= 1,
+        "not_repeated": label.lower().count("sample") <= 1,
         "readable_length": len(label) <= 60,
     }
 
@@ -195,7 +195,7 @@ def run(api_base: str | None = None, cleanup: bool = True) -> dict[str, Any]:
         upload = harness.upload(data_path, name=f"batch9 polish workspace {int(time.time())}")
         workspace_id = upload["workspace_id"]
         uploaded_ids.append(workspace_id)
-        message = "我想做一个活动让攀岩馆推广该怎么做？请基于资料给出建议。"
+        message = "我想做一个活动让示例产品推广该怎么做？请基于资料给出建议。"
         runs = [harness.chat(workspace_id, message) for _ in range(3)]
 
     finals = [_final(events) for events in runs]

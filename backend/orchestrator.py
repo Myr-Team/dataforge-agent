@@ -3288,13 +3288,6 @@ def _ensure_feasibility_action_plan(
     artifact["action_plan"] = steps[:5]
     return recommendation, steps[:5]
 
-
-def _campaign_story_lines(req: ChatRequest, artifact: dict[str, Any], citations: list[dict[str, Any]]) -> list[str]:
-    # 已弃用：这是写死攀岩/会员/赞助的活动叙事模板，换数据会串味、不泛化。
-    # 行动方案现在统一由 LLM（_llm_feasibility_action_plan）按真实证据生成，这里不再追加模板段落。
-    return []
-
-
 def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact: dict[str, Any]) -> dict[str, Any]:
     if _is_conversation_answer(req, decision):
         return _structured_chat_answer_v10(req, decision, artifact)
@@ -3320,10 +3313,6 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
     plan_limit = 3 if auto_analyze else 5
     for index, step in enumerate(action_plan[:plan_limit], start=1):
         lines.append(f"{index}. {sanitize_customer_text(step, field_labels)}")
-    campaign_lines = _campaign_story_lines(req, artifact, citations)
-    if campaign_lines:
-        lines.append("")
-        lines.extend(sanitize_customer_text(item, field_labels) for item in (campaign_lines[:3] if auto_analyze else campaign_lines))
     lines.extend(
         [
             "",
@@ -3408,10 +3397,6 @@ def _structured_corpus_answer_v10(req: ChatRequest, artifact: dict[str, Any]) ->
             lines.append(f"{index}. {action}")
     else:
         lines.append("1. 先补充与目标用户、场景、预算或活动结果相关的资料，再生成更具体方案。")
-    campaign_lines = _campaign_story_lines(req, artifact, citations)
-    if campaign_lines:
-        lines.append("")
-        lines.extend(sanitize_customer_text(item, field_labels) for item in campaign_lines)
     markdown = sanitize_customer_text("\n".join(lines).strip(), field_labels)
     return {
         "markdown": markdown,

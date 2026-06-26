@@ -122,12 +122,33 @@ def _parse_sse(frame: str) -> dict[str, Any] | None:
     return {"event": event, "data": parsed}
 
 
+def _make_demo_json(path: Path) -> Path:
+    candidate = Path(r"D:\Demo\business_opportunity_shenzhen.json")
+    if candidate.exists():
+        return candidate
+    target = path / "batch7_business_opportunity.json"
+    records = [
+        {"category": "渠道活动线索", "topic": "高相关合作品类", "detail": "试用装、运动恢复、功能饮料、体验券等与目标用户高度相关，适合冠名/赞助活动、互放物料、联名权益，实现双向引流", "source": "运营梳理"},
+        {"category": "渠道活动线索", "topic": "体验流程是普遍痛点", "detail": "高频用户反馈首次体验门槛、流程说明和售后提醒需要优化；适合与体验服务品牌做活动赞助与互相导流", "metric": "问卷中约63%用户在意体验流程", "source": "用户问卷"},
+        {"category": "用户画像", "topic": "跨点位体验", "detail": "近四成用户在不止一个服务点参与体验，点位网络大；在一个点位办的活动和周边，会被其他点位/其他城市的人看到", "metric": "跨点位用户占比38%", "source": "示例运营数据"},
+        {"category": "周边", "topic": "品牌主题T恤", "detail": "主题T恤在活动期间常售罄，用户日常穿着率高；有用户在其他城市/其他点位穿着被认出而带来新客", "metric": "季度售约420件，89元", "source": "销售+社媒评论"},
+        {"category": "活动复盘", "topic": "周末体验挑战赛", "detail": "样板点，180人参与，转化42人，出片多上同城热门", "metric": "UGC约260条", "source": "示例运营数据"},
+        {"category": "客户反馈", "topic": "活动触达缺口", "detail": "用户反馈活动规则和权益说明不够清楚，需要提前触达和现场说明", "source": "客服记录"},
+    ]
+    records.extend(
+        {"category": "补充线索", "topic": f"样例记录{i}", "detail": "用于验证 JSON 内容索引能保留真实记录粒度", "source": "测试数据"}
+        for i in range(1, 8)
+    )
+    target.write_text(json.dumps({"records": records}, ensure_ascii=False), encoding="utf-8")
+    return target
+
+
 def _make_csv(path: Path) -> Path:
     target = path / "batch7_content.csv"
     target.write_text(
-        "store,activity,member_share,sponsor_signal\n"
-        "后海旗舰店,联名护手霜体验日,0.38,运动品牌愿意赞助\n"
-        "福田店,周边T恤试穿打卡,0.31,社媒曝光强\n",
+        "location,campaign,participant_share,sponsor_signal\n"
+        "南山样板点,联名体验日,0.38,合作品牌愿意赞助\n"
+        "福田样板点,周边T恤试穿打卡,0.31,社媒曝光强\n",
         encoding="utf-8",
     )
     return target
@@ -138,9 +159,9 @@ def _make_excel(path: Path) -> Path:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "ActivitySignals"
-    sheet.append(["store", "pain_point", "product", "conversion_signal"])
-    sheet.append(["南山后海汇旗舰店", "手部护理痛点明显", "护手霜", "复购会员愿意带朋友体验"])
-    sheet.append(["福田领展中心店", "打卡传播强", "Logo T恤", "跨店会员占比高"])
+    sheet.append(["location", "pain_point", "product", "conversion_signal"])
+    sheet.append(["南山样板点", "体验流程痛点明显", "试用装", "复购用户愿意带朋友体验"])
+    sheet.append(["福田样板点", "打卡传播强", "Logo T恤", "跨点位用户占比高"])
     workbook.save(target)
     return target
 
@@ -177,65 +198,63 @@ def _final_citations(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [item for item in citations if isinstance(item, dict)]
 
 
-def run(api_base: str | None = None, cleanup: bool = True, banana_path: Path | None = None) -> dict[str, Any]:
+def run(api_base: str | None = None, cleanup: bool = True, demo_path: Path | None = None) -> dict[str, Any]:
     loaded_env = _load_env()
     harness = Harness(api_base)
     uploaded_ids: list[str] = []
-    banana = banana_path or Path(r"D:\Demo\banana_climbing_shenzhen.json")
-    if not banana.exists():
-        raise FileNotFoundError(f"Missing banana demo file: {banana}")
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        demo = demo_path or _make_demo_json(root)
         csv_path = _make_csv(root)
         excel_path = _make_excel(root)
-        banana_upload = harness.upload(banana, name="batch7 banana content index", description="Batch7 JSON content index")
+        demo_upload = harness.upload(demo, name="batch7 business content index", description="Batch7 JSON content index")
         csv_upload = harness.upload(csv_path, name="batch7 csv content index", description="Batch7 CSV content index")
         excel_upload = harness.upload(excel_path, name="batch7 excel content index", description="Batch7 Excel content index")
-        uploaded_ids.extend([banana_upload["workspace_id"], csv_upload["workspace_id"], excel_upload["workspace_id"]])
+        uploaded_ids.extend([demo_upload["workspace_id"], csv_upload["workspace_id"], excel_upload["workspace_id"]])
 
-        banana_search = harness.post_json(
+        demo_search = harness.post_json(
             "/api/search-pack-context",
             {
-                "workspace_id": banana_upload["workspace_id"],
-                "query": "推广 活动 周边 会员 赞助 护手",
+                "workspace_id": demo_upload["workspace_id"],
+                "query": "推广 活动 周边 用户 赞助 体验",
                 "top_k": 10,
             },
         )
         csv_search = harness.post_json(
             "/api/search-pack-context",
-            {"workspace_id": csv_upload["workspace_id"], "query": "护手霜 赞助 会员 活动", "top_k": 5},
+            {"workspace_id": csv_upload["workspace_id"], "query": "试用装 赞助 用户 活动", "top_k": 5},
         )
         excel_search = harness.post_json(
             "/api/search-pack-context",
-            {"workspace_id": excel_upload["workspace_id"], "query": "手部护理 护手霜 复购会员", "top_k": 5},
+            {"workspace_id": excel_upload["workspace_id"], "query": "体验流程 试用装 复购用户", "top_k": 5},
         )
         chat_events = harness.chat(
-            banana_upload["workspace_id"],
-            "我想做一个活动让攀岩馆获得推广该怎么做？请基于工作区证据给出建议并引用证据。",
+            demo_upload["workspace_id"],
+            "我想做一个活动让示例产品获得推广该怎么做？请基于工作区证据给出建议并引用证据。",
         )
 
-    banana_hits = _hits(banana_search)
+    demo_hits = _hits(demo_search)
     csv_hits = _hits(csv_search)
     excel_hits = _hits(excel_search)
-    banana_content = _content_join(banana_hits)
+    demo_content = _content_join(demo_hits)
     csv_content = _content_join(csv_hits)
     excel_content = _content_join(excel_hits)
     citations = _final_citations(chat_events)
     checks = {
-        "banana_indexed_many_docs": banana_upload.get("indexed_count", 0) > 10,
-        "banana_search_multiple_real_records": len(banana_hits) >= 3
-        and any(item.get("document_type") == "json" for item in banana_hits),
-        "banana_search_specific_content": any(
-            phrase in banana_content
-            for phrase in ["护手霜", "跨店会员", "带logo", "会员占比", "赞助"]
+        "json_indexed_many_docs": demo_upload.get("indexed_count", 0) > 10,
+        "json_search_multiple_real_records": len(demo_hits) >= 3
+        and any(item.get("document_type") == "json" for item in demo_hits),
+        "json_search_specific_content": any(
+            phrase in demo_content
+            for phrase in ["试用装", "跨点位用户", "品牌主题", "用户占比", "赞助"]
         ),
         "csv_content_searchable": any("batch7_content.csv" in item for item in _sources(csv_hits))
-        and "护手霜" in csv_content,
+        and "合作品牌" in csv_content,
         "excel_content_searchable": any("batch7_content.xlsx" in item for item in _sources(excel_hits))
         and any(item.get("row") for item in excel_hits),
         "chat_has_citations": len(citations) > 0,
         "chat_cites_uploaded_records": any(
-            str(item.get("source_file") or "").endswith("banana_climbing_shenzhen.json") for item in citations
+            str(item.get("source_file") or "").endswith(".json") for item in citations
         ),
     }
     delete_results: dict[str, Any] = {}
@@ -248,9 +267,9 @@ def run(api_base: str | None = None, cleanup: bool = True, banana_path: Path | N
     result = {
         "api_base": api_base or "local-asgi",
         "loaded_env": loaded_env,
-        "uploads": {"banana": banana_upload, "csv": csv_upload, "excel": excel_upload},
-        "banana_search_count": len(banana_hits),
-        "banana_search_samples": banana_hits[:5],
+        "uploads": {"json": demo_upload, "csv": csv_upload, "excel": excel_upload},
+        "json_search_count": len(demo_hits),
+        "json_search_samples": demo_hits[:5],
         "csv_search_samples": csv_hits[:3],
         "excel_search_samples": excel_hits[:3],
         "chat_event_names": [event.get("event") for event in chat_events],
@@ -268,16 +287,16 @@ def run(api_base: str | None = None, cleanup: bool = True, banana_path: Path | N
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api-base", default=None)
-    parser.add_argument("--banana-path", type=Path, default=None)
+    parser.add_argument("--demo-path", type=Path, default=None)
     parser.add_argument("--no-cleanup", action="store_true")
     args = parser.parse_args()
-    result = run(api_base=args.api_base, cleanup=not args.no_cleanup, banana_path=args.banana_path)
+    result = run(api_base=args.api_base, cleanup=not args.no_cleanup, demo_path=args.demo_path)
     print(
         json.dumps(
             {
                 "ok": result["ok"],
                 "uploads": {key: value["workspace_id"] for key, value in result["uploads"].items()},
-                "banana_search_count": result["banana_search_count"],
+                "json_search_count": result["json_search_count"],
                 "chat_citations_count": result["chat_citations_count"],
                 "checks": result["checks"],
             },

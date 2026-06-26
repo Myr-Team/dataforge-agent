@@ -19,7 +19,7 @@ AGENTS = [
         "name": "df-coordinator",
         "prompt": "coordinator.md",
         "tools": [],
-        "verify_prompt": "Workspace demo-corpus: user asks what products can be built. Return routing JSON.",
+        "verify_prompt": "Target workspace: user asks what products can be built. Return routing JSON.",
     },
     {
         "name": "df-corpus-analyst",
@@ -31,7 +31,7 @@ AGENTS = [
         "name": "df-feasibility-analyst",
         "prompt": "feasibility_analyst.md",
         "tools": ["search_pack_context", "code_interpreter"],
-        "verify_prompt": "Evaluate a health diagnosis product for workspace demo-corpus.",
+        "verify_prompt": "Evaluate a target-workspace product opportunity with evidence-grounded feasibility scoring.",
     },
     {
         "name": "df-market-researcher",
