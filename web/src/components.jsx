@@ -616,7 +616,17 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
     onIterate?.(inputs);
   };
 
-  if (!versions.length) return null;
+  if (!versions.length) {
+    return (
+      <section className="plan-iter-card plan-iter-empty" data-tour="iterate">
+        <div className="pi-head">
+          <Layers3 size={16} />
+          <strong>方案迭代 · 指标回填</strong>
+        </div>
+        <p className="empty-copy">生成方案后，把试点跑出来的真实客获率/客单价等指标回填进来，即可迭代出下一版，逐步逼近公司重点方案。</p>
+      </section>
+    );
+  }
   return (
     <section className="plan-iter-card" data-tour="iterate">
       <div className="pi-head">
