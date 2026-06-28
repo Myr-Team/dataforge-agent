@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { startTour } from "./tour.js";
 import {
   Activity,
   AlertTriangle,
@@ -10,6 +11,7 @@ import {
   ChevronDown,
   CircleUserRound,
   Clock3,
+  Compass,
   Database,
   FileDown,
   FileText,
@@ -71,6 +73,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, health = 
           return (
             <button
               key={item.id}
+              data-tour={item.id === "runs" ? "runs" : undefined}
               className={active === item.id ? "nav-icon active" : "nav-icon"}
               type="button"
               title={item.label}
@@ -191,7 +194,11 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
         </label>
       </div>
       <div className="topbar-actions">
-        <button className="primary-button icon-label" type="button" onClick={() => { setMenuOpen(false); onUpload(); }}>
+        <button className="tour-button icon-label" type="button" onClick={startTour} title="新手引导：一步步了解产品流程">
+          <Compass size={16} />
+          新手引导
+        </button>
+        <button data-tour="upload" className="primary-button icon-label" type="button" onClick={() => { setMenuOpen(false); onUpload(); }}>
           <UploadCloud size={16} />
           上传数据
         </button>
@@ -331,7 +338,7 @@ export function WorkspacePane({
         </div>
       </section>
 
-      <section className="pane-section">
+      <section className="pane-section" data-tour="pipeline">
         <div className="section-head"><span>数据解析状态</span><em>从上传到 Agent 可用</em></div>
         <DataPipelineCard workspace={workspace} documents={documents} />
       </section>
@@ -611,7 +618,7 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
 
   if (!versions.length) return null;
   return (
-    <section className="plan-iter-card">
+    <section className="plan-iter-card" data-tour="iterate">
       <div className="pi-head">
         <Layers3 size={16} />
         <strong>方案迭代 · 指标回填</strong>
@@ -846,7 +853,7 @@ function DashboardStudio({
             <MessageSquare size={15} />
             新建会话
           </button>
-          <button className="primary-button icon-label" type="button" onClick={() => onRun("请基于当前工作区，先自动分析这批数据可以产品化成什么机会，并说明证据强弱、市场推断和下一步。", { stayOnDashboard: true })}>
+          <button data-tour="analyze" className="primary-button icon-label" type="button" onClick={() => onRun("请基于当前工作区，先自动分析这批数据可以产品化成什么机会，并说明证据强弱、市场推断和下一步。", { stayOnDashboard: true })}>
             <Sparkles size={15} />
             自动分析
           </button>
@@ -987,7 +994,7 @@ function VerdictHero({ feasibility, verdict, running }) {
   const conf = feasibility?.confidence || dims[0]?.confidence || "";
   const tone = verdictTone(verdict);
   return (
-    <section className={`verdict-hero tone-${tone}`}>
+    <section className={`verdict-hero tone-${tone}`} data-tour="verdict">
       <div className="vh-left">
         <span className="vh-label">可行性结论{running ? " · 实时" : ""}</span>
         <h2 className="vh-judgment">{verdict}</h2>
@@ -1506,7 +1513,7 @@ function AgentRoute({ trace, running, presentation, producing = false, hasArtifa
         <span>{current.zh}</span>
         <strong>{foot}</strong>
         {hasFinal && !producing && !hasArtifacts && onProduce ? (
-          <button className="produce-cta" type="button" onClick={onProduce}>
+          <button data-tour="produce" className="produce-cta" type="button" onClick={onProduce}>
             <FileDown size={14} /> 确认方案 · 生成产物
           </button>
         ) : null}

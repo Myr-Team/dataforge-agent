@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "driver.js": "^1.6.0",
     "lucide-react": "^1.18.0",
     "react": "latest",
     "react-dom": "latest",
