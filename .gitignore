@@ -33,3 +33,7 @@ agents/.agents_state.json
 !docs/assets/*.png
 .DS_Store
 Thumbs.db
+
+# 品牌 logo(静态资源,必须入库,否则 build 丢失)
+!web/public/
+!web/public/dataforge-logo.png
