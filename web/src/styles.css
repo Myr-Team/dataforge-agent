@@ -2389,3 +2389,13 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   border: 1px solid var(--line); border-radius: 7px; cursor: pointer;
 }
 .msg-copy:hover { color: var(--ink); border-color: var(--line-strong); background: #fafafa; }
+
+/* ---- 修聊天区横向滚动: 容器不横滚 + 头部可换行 + 长内容/长串换行 ---- */
+.answer-panel { overflow-x: hidden; }
+.answer-panel-head { flex-wrap: wrap; }
+.typing-indicator { min-width: 0; }
+.typing-indicator span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.message-stack { min-width: 0; }
+.rich-text, .message-body { overflow-wrap: anywhere; word-break: break-word; }
+.rich-text code { white-space: pre-wrap; word-break: break-word; }
+.rich-text pre { max-width: 100%; overflow-x: auto; }
