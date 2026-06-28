@@ -357,7 +357,16 @@ export function App() {
     const message = String(rawMessage || "").trim();
     if (!message || running || demoReveal.active) return;
 
-    setMessages((items) => [...items, { role: "user", text: message, time: new Date().toISOString() }]);
+    if (opts.regenerate) {
+      // 重新生成：保留原问题，移除上一条 AI 回答后重跑
+      setMessages((items) => {
+        const copy = [...items];
+        while (copy.length && copy[copy.length - 1].role === "assistant") copy.pop();
+        return copy;
+      });
+    } else {
+      setMessages((items) => [...items, { role: "user", text: message, time: new Date().toISOString() }]);
+    }
     setInput("");
     setRunning(true);
     // 任务通知：自动分析记一条"可行性分析"任务（进行中→完成/失败）

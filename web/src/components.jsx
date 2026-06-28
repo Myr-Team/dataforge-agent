@@ -14,6 +14,7 @@ import {
   Clock3,
   Compass,
   Copy,
+  RotateCcw,
   Square,
   Database,
   FileDown,
@@ -1056,7 +1057,10 @@ function VerdictHero({ feasibility, verdict, running }) {
         <h2 className="vh-judgment">{verdict}</h2>
         {conf ? <span className={`vh-conf ${conf}`}>{CONFIDENCE_LABELS[conf] || conf}</span> : null}
         {opportunity && typeof opportunity === "string" ? (
-          <p className="vh-opp">{opportunity}</p>
+          <div className="vh-discovery">
+            <span className="vh-discover-chip"><Sparkles size={13} /> Agent 发现的机会</span>
+            <p className="vh-opp">{opportunity}</p>
+          </div>
         ) : (
           <p className="vh-opp muted">发起一次分析后，这里给出机会判断、置信度与可落地建议。</p>
         )}
@@ -1765,6 +1769,12 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
   }, [messages, streamText, running]);
   // 等待期间显示当前是哪个 Agent 在干什么(取自实时 trace)，把多 Agent 协作秀进对话流
   const liveStage = useMemo(() => deriveAgentStage(trace), [trace]);
+  const lastUserText = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === "user" && messages[i].text) return messages[i].text;
+    }
+    return "";
+  }, [messages]);
   return (
     <div className="answer-panel">
       <div className="answer-panel-head">
@@ -1796,7 +1806,16 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
                       ? <TypeOut text={message.text} animate={isLastUser && running} />
                       : <RichText text={message.text} citations={message.citations} />}
                   {message.citations?.length ? <CitationInline citations={message.citations} text={message.text} /> : null}
-                  {message.role === "assistant" && message.text && !message.clarify ? <CopyButton text={message.text} /> : null}
+                  {message.role === "assistant" && message.text && !message.clarify ? (
+                    <div className="msg-actions">
+                      <CopyButton text={message.text} />
+                      {index === messages.length - 1 && !running && lastUserText ? (
+                        <button type="button" className="msg-copy msg-regen" title="用同一个问题重新生成" onClick={() => onRun(lastUserText, { regenerate: true })}>
+                          <RotateCcw size={13} /> 重新生成
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {message.produceOffer && onProduce ? (
                     <button
                       type="button"
