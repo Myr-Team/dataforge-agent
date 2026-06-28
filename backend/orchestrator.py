@@ -1895,6 +1895,78 @@ def _market_inferred_item(item: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+_DOC_METHODOLOGY = [
+    "五维 rubric 打分：资产数据、技术可行性、市场机会、资源成本、差异化风险，每个维度都必须挂到具体证据。",
+    "证据分级：data_confirmed（工作区已证实）/ market_inferred（市场参考）/ speculative（待验证）；缺证据即如实降级，不拔高结论。",
+    "独立审计与复修：分析结果先经审计专家把关，发现质量缺口（证据缺失、结论过强等）自动回流复修，通过才收敛。",
+    "结论封顶：可行性结论不超过当前证据强度能支撑的档位；审计前后逐维对照留痕，结论可复核。",
+]
+
+
+def _doc_meta(opportunity_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
+    date_compact = time.strftime("%Y%m%d")
+    short = hashlib.sha256(str(opportunity_id).encode("utf-8")).hexdigest()[:4].upper()
+    feasibility = artifact.get("feasibility") or {}
+    version = str(feasibility.get("plan_version") or artifact.get("plan_version") or "v1")
+    return {
+        "doc_id": f"DF-{date_compact}-{short}",
+        "version": version,
+        "generated_date": time.strftime("%Y-%m-%d"),
+        "audience": "管理层 / 产品决策",
+        "classification": "内部决策参考",
+    }
+
+
+def _doc_background(profile: dict[str, Any], title: str) -> str:
+    summary = str((profile or {}).get("profile_summary") or (profile or {}).get("customer_summary") or "").strip()
+    parts = [f"本建议书基于工作区现有数据，评估「{title}」的产品可行性与下一步路径。"]
+    if summary:
+        parts.append(_clean_text(summary, 400) or "")
+    parts.append("评估只采用工作区可核验证据；外部市场信息单独标注为市场参考，不与工作区事实混同。")
+    return " ".join(part for part in parts if part)
+
+
+def _doc_risk_register(feasibility: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for gap in (feasibility.get("gap_list") or [])[:8]:
+        text = str(gap).strip()
+        if not text:
+            continue
+        low = text.lower()
+        if re.search(r"合规|安全|consent|medical|clinical|医疗|隐私|授权|regulat|safety", low):
+            severity, impact = "高", "可能构成合规/安全前置条件，未解决前不应推进。"
+        elif re.search(r"证据|数据|不足|缺|样本|evidence|verify|sample", low):
+            severity, impact = "中", "影响结论可信度，需补足后才能提升结论强度。"
+        else:
+            severity, impact = "低", "影响落地节奏，可在验证阶段一并解决。"
+        rows.append({"gap": text, "impact": impact, "mitigation": "补齐为可核验数据后复核，并据此调整结论强度。", "severity": severity})
+    return rows
+
+
+def _doc_roadmap(feasibility: dict[str, Any]) -> list[dict[str, Any]]:
+    steps = [str(s).strip() for s in (feasibility.get("action_plan") or []) if str(s).strip()]
+    if not steps:
+        return []
+    phases = [
+        {"phase": "阶段一 · 样板验证", "metric": "小样本跑通核心场景，记录真实转化与留存"},
+        {"phase": "阶段二 · 扩大验证", "metric": "扩大样本与渠道，校准客获率与客单价"},
+        {"phase": "阶段三 · 规模化", "metric": "形成可复制方案，沉淀为企业资产"},
+    ]
+    buckets: list[list[str]] = [[], [], []]
+    for index, step in enumerate(steps[:6]):
+        buckets[min(index // 2, 2)].append(step)
+    return [{**phase, "steps": bucket} for phase, bucket in zip(phases, buckets) if bucket]
+
+
+def _doc_evidence_appendix(artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    appendix: list[dict[str, Any]] = []
+    for item in _evidence_catalog(artifact)[:10]:
+        ref = str(item.get("ref") or "")
+        source_file = str((item.get("metadata") or {}).get("source_file") or _ref_source(ref) or "")
+        appendix.append({"ref": ref, "source_file": source_file, "quote": _clean_text(item.get("quote"), 200) or ""})
+    return appendix
+
+
 def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
     feasibility = artifact.get("feasibility", {})
     corpus = artifact.get("corpus", {})
@@ -1952,6 +2024,13 @@ def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
         "audit": artifact.get("audit", {}),
         "workspace_id": artifact.get("workspace_id"),
         "reference_images": artifact.get("reference_images") or [],
+        # 文档独有层（让 PDF 不等于聊天速览，具备存档/汇报质感）
+        "doc_meta": _doc_meta(opportunity_id, artifact),
+        "background": _doc_background(corpus.get("profile", {}), title),
+        "methodology": list(_DOC_METHODOLOGY),
+        "risk_register": _doc_risk_register(feasibility),
+        "roadmap": _doc_roadmap(feasibility),
+        "evidence_appendix": _doc_evidence_appendix(artifact),
     }
 
 
