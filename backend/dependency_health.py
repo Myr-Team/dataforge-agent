@@ -21,7 +21,8 @@ except ImportError:
 
 _CACHE: dict[str, Any] = {"expires_at": 0.0, "fingerprint": "", "dependencies": {}, "details": {}}
 _CACHE_TTL_SECONDS = float(os.environ.get("DF_HEALTH_CACHE_SECONDS", "45"))
-_PROBE_TIMEOUT_SECONDS = float(os.environ.get("DF_HEALTH_PROBE_TIMEOUT_SECONDS", "5.0"))
+# 列 Foundry 全部模型(用户有数百个)偶尔 >5s 会让健康状态闪烁成灰；默认放宽到 8s
+_PROBE_TIMEOUT_SECONDS = float(os.environ.get("DF_HEALTH_PROBE_TIMEOUT_SECONDS", "8.0"))
 _MCP_PROBE_TIMEOUT_SECONDS = float(os.environ.get("DF_MCP_HEALTH_TIMEOUT_SECONDS", "2.0"))
 
 
