@@ -1063,7 +1063,6 @@ function VerdictHero({ feasibility, verdict, running }) {
       </div>
       <div className="vh-scores">
         <div className="vh-scores-head">五维可行性评分</div>
-        <VerdictRadar dims={dims} />
         {dims.slice(0, 5).map((dim) => {
           const n = Math.max(0, Math.min(5, Number(dim.score || 0)));
           return (
