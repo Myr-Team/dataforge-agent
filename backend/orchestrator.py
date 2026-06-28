@@ -2322,16 +2322,19 @@ def _image_prompt_from_proposal(proposal: dict[str, Any]) -> str:
         focal = f"Translate this opportunity and plan into a product/concept visual (do NOT print this text): 《{title}》。{scene_brief}"
 
     return (
-        "Design ONE polished product concept key visual for a business proposal cover. "
-        f"Deliverable type: {image_label} ({image_kind}). {image_direction} "
-        "Show the actual PRODUCT / deliverable — NOT a report, dashboard, analytics chart, slide, meeting room or office scene. "
-        f"{focal} Context (do NOT print as text): {scene_brief} "
-        "Composition (important): one clear focal subject in the upper two-thirds; "
-        "keep the BOTTOM ~28% as calm low-detail negative space or a soft gradient so a title caption can be overlaid later; "
-        "keep the TOP-LEFT corner relatively clean for a small logo. "
-        "Text: do NOT render paragraphs, headlines, or any Chinese characters; at most one or two very short English label marks. "
-        "Style: modern, premium, uncluttered, a confident blue accent. "
-        "Avoid: conference tables, office review scenes, people around screens, handshakes, stock-photo clichés, dense fake UI microtext."
+        "Create ONE premium PRODUCT hero image — like a modern product launch shot or advertising key visual. "
+        f"Product to depict ({image_kind}): {image_label}. {image_direction} "
+        f"{focal} "
+        "Render the REAL product itself as the single clear hero subject (a device with the app screen, a tangible "
+        "physical product / packaging, or a branded service scene as appropriate), photographed like a product ad. "
+        "ABSOLUTELY DO NOT draw: a book, document, manual, instruction sheet, paper, magazine or brochure spread, "
+        "report, slideshow, dashboard, analytics chart, abstract or surreal collage, stream-of-consciousness imagery, "
+        "floating disconnected objects, an office or meeting scene, or people around screens. "
+        f"Use this only as background context, do NOT print it as text: {scene_brief} "
+        "Composition: one clear hero subject in the upper two-thirds; keep the BOTTOM ~28% as calm low-detail "
+        "negative space or a soft gradient so a title caption can be overlaid later; keep the TOP-LEFT corner clean for a small logo. "
+        "Text: no paragraphs, no headlines, no Chinese characters; at most one or two very short English label marks. "
+        "Style: clean, modern, premium, tangible and realistic (not conceptual or abstract), with a confident blue accent."
     )
 
 

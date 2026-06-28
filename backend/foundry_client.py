@@ -351,11 +351,21 @@ def run_image_subject(payload: dict[str, Any]) -> dict[str, Any]:
         "max_output_tokens": 400,
         "text": _schema_format("df_image_subject", IMAGE_SUBJECT_SCHEMA),
     }
-    try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
-        create_args.pop("text", None)
-        response = openai_client.responses.create(**create_args)
+    # foundry 偶发超时会让 subject 判断失败 → 退回笼统兜底图。多试几次吸收瞬时抖动，
+    # 先带 schema、失败再去掉 schema，共 3 次机会，尽量拿到具体产品主体。
+    response = None
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            if attempt == 1:
+                create_args.pop("text", None)  # 第 2 次去掉结构化约束，提高成功率
+            response = openai_client.responses.create(**create_args)
+            break
+        except Exception as exc:  # 超时/限流等瞬时错误重试
+            last_error = exc
+            response = None
+    if response is None:
+        return {"subject": "", "kind": "", "error": f"{type(last_error).__name__}: {last_error}"[:200] if last_error else ""}
     try:
         data = _extract_json(getattr(response, "output_text", "") or "")
     except Exception:
