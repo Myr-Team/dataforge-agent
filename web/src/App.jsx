@@ -11,7 +11,6 @@ import {
 } from "./api.js";
 import {
   extractArtifacts,
-  Inspector,
   MobileNav,
   NoticeStack,
   ShellNav,

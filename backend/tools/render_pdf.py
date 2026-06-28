@@ -142,6 +142,7 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
     vlabel, vcol, vbg = _VERDICT.get(vraw, ("待判定", "#3f4b53", "#eef2f6"))
     conf = str(feasibility.get("overall_confidence") or "unknown")
     gen_time = time.strftime("%Y-%m-%d %H:%M")
+    doc_meta = proposal.get("doc_meta") or {}
 
     def _cover(canvas: Any, doc_: Any) -> None:
         w, h = A4
@@ -203,8 +204,8 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
         # 元信息
         canvas.setFillColor(MUTED)
         canvas.setFont(FONT, 9)
-        canvas.drawString(2.0 * cm, by - 1.4 * cm, f"机会 ID：{proposal.get('opportunity_id', 'unknown')}")
-        canvas.drawString(2.0 * cm, by - 1.95 * cm, f"生成时间：{gen_time}")
+        canvas.drawString(2.0 * cm, by - 1.4 * cm, f"文档编号：{doc_meta.get('doc_id', proposal.get('opportunity_id', 'unknown'))}　·　版本：{doc_meta.get('version', 'v1')}")
+        canvas.drawString(2.0 * cm, by - 1.95 * cm, f"生成日期：{doc_meta.get('generated_date', gen_time)}　·　密级：{doc_meta.get('classification', '内部决策参考')}")
         # 底部
         canvas.setStrokeColor(LINE)
         canvas.setLineWidth(0.5)
@@ -259,6 +260,19 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
     ]))
     story.append(st)
 
+    # 背景与目标（文档独有）
+    background = str(proposal.get("background") or "").strip()
+    if background:
+        section("背景与目标")
+        story.append(Paragraph(_xml(background), styles["body"]))
+
+    # 评估方法（文档独有，体现可校准/自审计/不自欺）
+    methodology = [str(item).strip() for item in (proposal.get("methodology") or []) if str(item).strip()]
+    if methodology:
+        section("评估方法")
+        for item in methodology:
+            story.append(Paragraph(f'<font color="#0071e3">●</font>　{_xml(item)}', styles["body"]))
+
     # 五维评分表
     dimensions = feasibility.get("dimensions") or []
     if dimensions:
@@ -289,12 +303,53 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
         ]))
         story.append(table)
 
-    # 关键缺口
-    gaps = feasibility.get("gap_list") or []
-    if gaps:
-        section("关键缺口")
-        for gap in gaps[:8]:
-            story.append(Paragraph(f'<font color="#0071e3">●</font>　{_xml(gap)}', styles["body"]))
+    # 风险与缺口登记表（文档独有：缺口→影响→建议补法→严重度）
+    risk_register = proposal.get("risk_register") or []
+    if risk_register:
+        section("风险与缺口登记表")
+        _sev_color = {"高": "#b3261e", "中": "#8a5a00", "低": "#0a7d4f"}
+        rrows = [[
+            Paragraph("缺口", styles["cellh"]), Paragraph("影响", styles["cellh"]),
+            Paragraph("建议补法", styles["cellh"]), Paragraph("严重度", styles["cellh"]),
+        ]]
+        for risk in risk_register[:8]:
+            sev = str(risk.get("severity") or "")
+            rrows.append([
+                Paragraph(_xml(str(risk.get("gap") or "")), styles["small"]),
+                Paragraph(_xml(str(risk.get("impact") or "")), styles["small"]),
+                Paragraph(_xml(str(risk.get("mitigation") or "")), styles["small"]),
+                Paragraph(f'<font color="{_sev_color.get(sev, "#3f4b53")}">{_xml(sev)}</font>', styles["small"]),
+            ])
+        rc0, rc3 = 4.1 * cm, 1.4 * cm
+        rtable = Table(rrows, colWidths=[rc0, (doc.width - rc0 - rc3) / 2, (doc.width - rc0 - rc3) / 2, rc3], repeatRows=1)
+        rtable.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), BLUE),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f9fc")]),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.HexColor("#dde3ea")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(rtable)
+    else:
+        gaps = feasibility.get("gap_list") or []
+        if gaps:
+            section("关键缺口")
+            for gap in gaps[:8]:
+                story.append(Paragraph(f'<font color="#0071e3">●</font>　{_xml(gap)}', styles["body"]))
+
+    # 行动路线图（文档独有：分阶段 + 里程碑指标）
+    roadmap = proposal.get("roadmap") or []
+    if roadmap:
+        section("行动路线图")
+        for phase in roadmap:
+            story.append(Paragraph(f'<font color="#0a66d6">{_xml(str(phase.get("phase") or ""))}</font>', styles["boxbody"]))
+            for step in (phase.get("steps") or []):
+                story.append(Paragraph(f'　·　{_xml(str(step))}', styles["small"]))
+            metric = str(phase.get("metric") or "").strip()
+            if metric:
+                story.append(Paragraph(f'<font color="#6e6e73">里程碑指标：{_xml(metric)}</font>', styles["small"]))
+            story.append(Spacer(1, 4))
 
     # 市场与外部来源
     market = proposal.get("market") or {}
@@ -319,6 +374,19 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
                 f'<font color="#1d1d1f">{_xml(opportunity.get("title") or "")}</font>：{_xml(opportunity.get("description") or "")}',
                 styles["body"],
             ))
+
+    # 证据附录（文档独有：引用清单可溯源）
+    evidence_appendix = proposal.get("evidence_appendix") or []
+    if evidence_appendix:
+        section("证据附录")
+        for idx, item in enumerate(evidence_appendix[:10], start=1):
+            source = str(item.get("source_file") or item.get("ref") or "unknown")
+            quote = str(item.get("quote") or "").strip()
+            line = f'<font color="#1d1d1f">[{idx}] {_xml(source)}</font>'
+            if quote:
+                line += f'<br/><font color="#6e6e73">{_xml(quote)}</font>'
+            story.append(Paragraph(line, styles["small"]))
+            story.append(Spacer(1, 3))
 
     def _decorate(canvas: Any, doc_: Any) -> None:
         canvas.saveState()

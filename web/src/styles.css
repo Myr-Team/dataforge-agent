@@ -2327,3 +2327,24 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .pi-diff-gaps .g-res { font-size: 11px; font-weight: 700; color: #1f8f63; background: var(--mint-soft); padding: 3px 9px; border-radius: 999px; }
 .pi-diff-gaps .g-add { font-size: 11px; font-weight: 700; color: var(--amber, #b4690e); background: #fdeede; padding: 3px 9px; border-radius: 999px; }
 .pi-diff-gaps .g-item { flex-basis: 100%; font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+/* ---- 数据解析状态流水线（DataPipelineCard 复活） ---- */
+.pipeline-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
+  gap: 8px;
+}
+.pipeline-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 10px;
+  background: #fafafa;
+}
+.pipeline-step > svg { color: #c4c8d0; flex-shrink: 0; margin-top: 1px; }
+.pipeline-step.done { background: rgba(31,143,99,0.06); border-color: rgba(31,143,99,0.28); }
+.pipeline-step.done > svg { color: #1f8f63; }
+.pipeline-step strong { display: block; font-size: 12.5px; color: var(--ink, #1d2433); font-weight: 600; }
+.pipeline-step span { display: block; font-size: 11px; color: var(--muted, #6b7280); margin-top: 2px; line-height: 1.4; }

@@ -1555,29 +1555,31 @@ def _diversify_feasibility_scores_data(data: dict[str, Any]) -> dict[str, Any]:
     scores = [int(item.get("score") or 0) for item in dimensions]
     if len(scores) < 3 or len(set(scores)) > 1:
         return data
-    baseline = {
-        "asset_data": 4,
-        "technical": 3,
-        "market": 3,
-        "resource_cost": 2,
-        "differentiation_risk": 2,
-    }
+    # 模型给出"全维同分"（退化/偷懒输出）时重排。
+    # 不再按维度名套固定 baseline（那是隐性行业固化：默认资产数据强、成本/差异弱），
+    # 改为按每个维度【自身的证据强弱】派生分数——分差来自证据，而非行业预设。
+    # 若各维度证据确实一致，结果保持同分即是诚实的（不人为制造分差）。
     for dimension in dimensions:
-        name = str(dimension.get("name") or "")
         evidence = [item for item in dimension.get("evidence") or [] if isinstance(item, dict)]
         confidence = str(dimension.get("confidence") or "speculative")
         source_types = {str(item.get("source_type") or "") for item in evidence}
-        score = baseline.get(name, 3)
-        if len(evidence) >= 2 and source_types & {"corpus", "computed"}:
-            score += 1
+        grounded = bool(source_types & {"corpus", "computed"})
+        if len(evidence) >= 2 and grounded:
+            score = 4
+        elif evidence and grounded:
+            score = 3
+        elif evidence:  # 仅市场/外部来源，无工作区直证
+            score = 3
+        else:
+            score = 2
         if confidence == "market_inferred":
             score = min(score, 3)
         if confidence == "speculative" or not evidence:
             score = min(score, 2)
         dimension["score"] = max(1, min(5, score))
         rationale = str(dimension.get("rationale") or "").strip()
-        if rationale and "同分" not in rationale and "证据强弱" not in rationale:
-            dimension["rationale"] = f"{rationale}（该分数已按证据强弱做保守区分。）"
+        if rationale and "证据强弱" not in rationale and "同分" not in rationale:
+            dimension["rationale"] = f"{rationale}（该分数按本维度证据强弱保守区分，未套用行业模板。）"
     data["dimensions"] = dimensions
     return data
 
@@ -1893,6 +1895,78 @@ def _market_inferred_item(item: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+_DOC_METHODOLOGY = [
+    "五维 rubric 打分：资产数据、技术可行性、市场机会、资源成本、差异化风险，每个维度都必须挂到具体证据。",
+    "证据分级：data_confirmed（工作区已证实）/ market_inferred（市场参考）/ speculative（待验证）；缺证据即如实降级，不拔高结论。",
+    "独立审计与复修：分析结果先经审计专家把关，发现质量缺口（证据缺失、结论过强等）自动回流复修，通过才收敛。",
+    "结论封顶：可行性结论不超过当前证据强度能支撑的档位；审计前后逐维对照留痕，结论可复核。",
+]
+
+
+def _doc_meta(opportunity_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
+    date_compact = time.strftime("%Y%m%d")
+    short = hashlib.sha256(str(opportunity_id).encode("utf-8")).hexdigest()[:4].upper()
+    feasibility = artifact.get("feasibility") or {}
+    version = str(feasibility.get("plan_version") or artifact.get("plan_version") or "v1")
+    return {
+        "doc_id": f"DF-{date_compact}-{short}",
+        "version": version,
+        "generated_date": time.strftime("%Y-%m-%d"),
+        "audience": "管理层 / 产品决策",
+        "classification": "内部决策参考",
+    }
+
+
+def _doc_background(profile: dict[str, Any], title: str) -> str:
+    summary = str((profile or {}).get("profile_summary") or (profile or {}).get("customer_summary") or "").strip()
+    parts = [f"本建议书基于工作区现有数据，评估「{title}」的产品可行性与下一步路径。"]
+    if summary:
+        parts.append(_clean_text(summary, 400) or "")
+    parts.append("评估只采用工作区可核验证据；外部市场信息单独标注为市场参考，不与工作区事实混同。")
+    return " ".join(part for part in parts if part)
+
+
+def _doc_risk_register(feasibility: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for gap in (feasibility.get("gap_list") or [])[:8]:
+        text = str(gap).strip()
+        if not text:
+            continue
+        low = text.lower()
+        if re.search(r"合规|安全|consent|medical|clinical|医疗|隐私|授权|regulat|safety", low):
+            severity, impact = "高", "可能构成合规/安全前置条件，未解决前不应推进。"
+        elif re.search(r"证据|数据|不足|缺|样本|evidence|verify|sample", low):
+            severity, impact = "中", "影响结论可信度，需补足后才能提升结论强度。"
+        else:
+            severity, impact = "低", "影响落地节奏，可在验证阶段一并解决。"
+        rows.append({"gap": text, "impact": impact, "mitigation": "补齐为可核验数据后复核，并据此调整结论强度。", "severity": severity})
+    return rows
+
+
+def _doc_roadmap(feasibility: dict[str, Any]) -> list[dict[str, Any]]:
+    steps = [str(s).strip() for s in (feasibility.get("action_plan") or []) if str(s).strip()]
+    if not steps:
+        return []
+    phases = [
+        {"phase": "阶段一 · 样板验证", "metric": "小样本跑通核心场景，记录真实转化与留存"},
+        {"phase": "阶段二 · 扩大验证", "metric": "扩大样本与渠道，校准客获率与客单价"},
+        {"phase": "阶段三 · 规模化", "metric": "形成可复制方案，沉淀为企业资产"},
+    ]
+    buckets: list[list[str]] = [[], [], []]
+    for index, step in enumerate(steps[:6]):
+        buckets[min(index // 2, 2)].append(step)
+    return [{**phase, "steps": bucket} for phase, bucket in zip(phases, buckets) if bucket]
+
+
+def _doc_evidence_appendix(artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    appendix: list[dict[str, Any]] = []
+    for item in _evidence_catalog(artifact)[:10]:
+        ref = str(item.get("ref") or "")
+        source_file = str((item.get("metadata") or {}).get("source_file") or _ref_source(ref) or "")
+        appendix.append({"ref": ref, "source_file": source_file, "quote": _clean_text(item.get("quote"), 200) or ""})
+    return appendix
+
+
 def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
     feasibility = artifact.get("feasibility", {})
     corpus = artifact.get("corpus", {})
@@ -1950,6 +2024,13 @@ def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
         "audit": artifact.get("audit", {}),
         "workspace_id": artifact.get("workspace_id"),
         "reference_images": artifact.get("reference_images") or [],
+        # 文档独有层（让 PDF 不等于聊天速览，具备存档/汇报质感）
+        "doc_meta": _doc_meta(opportunity_id, artifact),
+        "background": _doc_background(corpus.get("profile", {}), title),
+        "methodology": list(_DOC_METHODOLOGY),
+        "risk_register": _doc_risk_register(feasibility),
+        "roadmap": _doc_roadmap(feasibility),
+        "evidence_appendix": _doc_evidence_appendix(artifact),
     }
 
 
@@ -4079,10 +4160,11 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             cache_info = (artifact["feasibility"].get("_llm") or {}).get("cache")
             if cache_info:
                 yield _frame("cache", {"agent": "df-feasibility-analyst", **cache_info}, conv_id)
-            for event, data in _agent_tool_events("df-feasibility-analyst", artifact["feasibility"].get("_llm", {})):
+            llm_meta = (artifact.get("feasibility") or {}).get("_llm") or {}
+            for event, data in _agent_tool_events("df-feasibility-analyst", llm_meta):
                 yield _frame(event, data, conv_id)
-            if artifact["feasibility"]["_llm"].get("response_id"):
-                yield _frame("model_response", {"agent": "df-feasibility-analyst", **artifact["feasibility"]["_llm"]}, conv_id)
+            if llm_meta.get("response_id"):
+                yield _frame("model_response", {"agent": "df-feasibility-analyst", **llm_meta}, conv_id)
         except Exception as exc:
             error_payload = {"agent": "df-feasibility-analyst", "message": str(exc)}
             frame = _frame("error", error_payload, conv_id)

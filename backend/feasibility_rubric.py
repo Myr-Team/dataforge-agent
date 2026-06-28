@@ -250,7 +250,7 @@ def score_dataset_records(records: list[dict[str, Any]], rubric: dict[str, Any] 
     completeness = 1 - (missing / total) if total else 0
     numeric_fields = [key for key, values in numeric_values.items() if values]
     distinct_signal = sum(1 for key in keys if len({str(row.get(key, "")) for row in records if row.get(key, "") != ""}) >= 2)
-    pain_terms = len(re.findall(r"pain|risk|churn|需求|痛点|投诉|高|增长|复购|转化|赞助|budget|revenue|cost|score", text_blob))
+    pain_terms = len(re.findall(r"pain|risk|churn|需求|痛点|投诉|高|增长|复购|转化|budget|revenue|cost|score", text_blob))
     outcome_terms = len(re.findall(r"revenue|conversion|retention|score|cost|rate|orders|visits|收入|转化|复购|成本|评分|到访", text_blob))
 
     scores = {
