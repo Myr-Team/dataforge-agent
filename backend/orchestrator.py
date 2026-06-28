@@ -4279,10 +4279,11 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             cache_info = (artifact["feasibility"].get("_llm") or {}).get("cache")
             if cache_info:
                 yield _frame("cache", {"agent": "df-feasibility-analyst", **cache_info}, conv_id)
-            for event, data in _agent_tool_events("df-feasibility-analyst", artifact["feasibility"].get("_llm", {})):
+            llm_meta = (artifact.get("feasibility") or {}).get("_llm") or {}
+            for event, data in _agent_tool_events("df-feasibility-analyst", llm_meta):
                 yield _frame(event, data, conv_id)
-            if artifact["feasibility"]["_llm"].get("response_id"):
-                yield _frame("model_response", {"agent": "df-feasibility-analyst", **artifact["feasibility"]["_llm"]}, conv_id)
+            if llm_meta.get("response_id"):
+                yield _frame("model_response", {"agent": "df-feasibility-analyst", **llm_meta}, conv_id)
         except Exception as exc:
             error_payload = {"agent": "df-feasibility-analyst", "message": str(exc)}
             frame = _frame("error", error_payload, conv_id)
