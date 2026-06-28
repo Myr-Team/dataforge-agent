@@ -237,17 +237,6 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
   );
 }
 
-function StatusChip({ label, ok }) {
-  const good = ok === true || ok === "ok" || ok === "configured";
-  return (
-    <span className={good ? "status-chip ok" : "status-chip muted"}>
-      <i />
-      <span>{label}</span>
-      <em>{good ? "健康" : "检查"}</em>
-    </span>
-  );
-}
-
 export function WorkspacePane({
   dashboard,
   workspaceId,
@@ -340,6 +329,11 @@ export function WorkspacePane({
           })}
           {!documents.length ? <p className="empty-copy">暂无文件。上传后自动剖析并生成画像。</p> : null}
         </div>
+      </section>
+
+      <section className="pane-section">
+        <div className="section-head"><span>数据解析状态</span><em>从上传到 Agent 可用</em></div>
+        <DataPipelineCard workspace={workspace} documents={documents} />
       </section>
 
       <section className="pane-section">
@@ -443,63 +437,6 @@ function DataPortrait({ workspace, signalColumns, noisyColumns, columns }) {
         {!total ? <p className="empty-copy">上传数据后生成信号/噪音画像。</p> : null}
       </div>
     </div>
-  );
-}
-
-export function AgentStudio({
-  dashboard,
-  messages,
-  trace,
-  streamText,
-  running,
-  input,
-  setInput,
-  onRun,
-  selectedPlaybook,
-  setSelectedPlaybook,
-  artifactMode,
-  setArtifactMode,
-  finalArtifact,
-  artifacts,
-  onProduce,
-  onUploadReference,
-  producing,
-}) {
-  const workspace = dashboard?.workspace || {};
-  const feasibility = finalArtifact?.feasibility || {};
-  const verdict = VERDICT_LABELS[feasibility.verdict] || VERDICT_LABELS[finalArtifact?.routing?.intent] || "待分析";
-  const confidence = CONFIDENCE_LABELS[feasibility.overall_confidence] || feasibility.overall_confidence || "待验证";
-  const evidence = useMemo(() => collectEvidence(finalArtifact), [finalArtifact]);
-  const quality = useMemo(() => summarizeQuality(finalArtifact, trace, artifacts, evidence), [finalArtifact, trace, artifacts, evidence]);
-  const presentation = useAgentPresentation(trace, running);
-
-  return (
-    <main className="agent-studio">
-      <section className="studio-head">
-        <div>
-          <span className="eyeless-label">Agent Studio</span>
-          <h1>{workspace.name || "DataForge"} · {verdict}</h1>
-          <p>{workspace.customer_summary || workspace.profile_summary || "选择工作区后开始产品化分析。"}</p>
-        </div>
-        <div className="verdict-stack">
-          <span className="verdict-pill">{verdict}</span>
-          <span className={`confidence-pill ${feasibility.overall_confidence || "speculative"}`}>{confidence}</span>
-        </div>
-      </section>
-
-      <AgentRoute trace={trace} running={running} presentation={presentation} />
-      <QuestionStarter onRun={onRun} running={running} />
-      <PlaybookBar selected={selectedPlaybook} onSelect={setSelectedPlaybook} artifactMode={artifactMode} onMode={setArtifactMode} />
-      <QualityBar quality={quality} />
-
-      <section className="answer-surface">
-        <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} />
-        <FeasibilityStrip feasibility={feasibility} />
-        <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
-      </section>
-
-      <Composer input={input} setInput={setInput} running={running} onRun={onRun} selectedPlaybook={selectedPlaybook} />
-    </main>
   );
 }
 
@@ -991,20 +928,6 @@ function AuditCard({ artifact }) {
   );
 }
 
-function DashboardMetrics({ workspace, documents }) {
-  const created = workspace.created_at || workspace.updated_at || documents[0]?.created_at;
-  const fields = workspace.columns?.length || workspace.field_count || 0;
-  const rows = workspace.row_count ?? workspace.indexed_count ?? workspace.doc_count ?? 0;
-  return (
-    <section className="dashboard-metrics">
-      <MetricCard icon={FolderOpen} label="工作区" value={workspace.workspace_id || "demo"} detail={created ? `创建于 ${formatTime(created)}` : "已连接"} />
-      <MetricCard icon={Database} label="数据集" value={documents.length || workspace.doc_count || 0} detail="CSV / Excel / JSON / MD / 图片" />
-      <MetricCard icon={Layers3} label="字段" value={fields} detail="用于画像、分布和信号判断" />
-      <MetricCard icon={BarChart3} label="索引记录" value={rows} detail="已进入 Search / RAG 检索链路" />
-    </section>
-  );
-}
-
 function MetricCard({ icon: Icon, label, value, detail }) {
   return (
     <article className="metric-card">
@@ -1027,57 +950,17 @@ function DataPipelineCard({ workspace, documents }) {
     { label: "Agent 就绪", done: true, detail: "可发起会话和产物生成" },
   ];
   return (
-    <article className="dash-panel pipeline-panel">
-      <div className="dash-panel-head">
-        <span>数据解析状态</span>
-        <strong>从上传到 Agent 可用</strong>
-      </div>
-      <div className="pipeline-steps">
-        {steps.map((step) => (
-          <div key={step.label} className={step.done ? "pipeline-step done" : "pipeline-step"}>
-            <CheckCircle2 size={15} />
-            <div>
-              <strong>{step.label}</strong>
-              <span>{step.detail}</span>
-            </div>
+    <div className="pipeline-steps">
+      {steps.map((step) => (
+        <div key={step.label} className={step.done ? "pipeline-step done" : "pipeline-step"}>
+          <CheckCircle2 size={15} />
+          <div>
+            <strong>{step.label}</strong>
+            <span>{step.detail}</span>
           </div>
-        ))}
-      </div>
-    </article>
-  );
-}
-
-function BiSnapshotCard({ workspace, signalColumns }) {
-  const rows = Number(workspace.row_count || workspace.indexed_count || workspace.doc_count || 0);
-  const strength = Math.min(96, Math.max(18, signalColumns.length * 13 + Math.min(24, Math.log10(rows + 1) * 10)));
-  const chart = signalColumns.length ? signalColumns : [{ name: "数据覆盖", friendly_label: "数据覆盖" }, { name: "字段完整", friendly_label: "字段完整" }, { name: "可检索性", friendly_label: "可检索性" }];
-  return (
-    <article className="dash-panel bi-panel">
-      <div className="dash-panel-head">
-        <span>BI 快照</span>
-        <strong>自动画像与信号强度</strong>
-      </div>
-      <div className="bi-visual">
-        <svg viewBox="0 0 220 112" aria-label="BI chart">
-          <polyline points="8,86 42,72 76,78 110,45 144,54 178,28 212,36" />
-          {chart.slice(0, 5).map((_, index) => (
-            <rect key={index} x={18 + index * 38} y={94 - ((index + 3) * 11 % 58)} width="18" height={((index + 3) * 11 % 58) + 8} rx="3" />
-          ))}
-        </svg>
-        <div className="bi-donut" style={{ "--value": `${strength}%` }}>
-          <strong>{Math.round(strength)}</strong>
-          <span>信号</span>
         </div>
-      </div>
-      <div className="bi-list">
-        {chart.slice(0, 4).map((column, index) => (
-          <div key={column.name || index}>
-            <span>{column.friendly_label || column.name}</span>
-            <i style={{ width: `${80 - index * 9}%` }} />
-          </div>
-        ))}
-      </div>
-    </article>
+      ))}
+    </div>
   );
 }
 
@@ -1127,56 +1010,6 @@ function VerdictHero({ feasibility, verdict, running }) {
             </div>
           );
         })}
-      </div>
-    </section>
-  );
-}
-
-function OpportunityRadarCard({ feasibility, signalColumns, verdict }) {
-  const dimensions = feasibility?.dimensions || [];
-  const items = dimensions.length ? dimensions.slice(0, 5) : [
-    { name: "market", score: signalColumns.length ? 3 : 0, confidence: "speculative" },
-    { name: "asset_data", score: signalColumns.length ? 4 : 0, confidence: "data_confirmed" },
-    { name: "differentiation_risk", score: signalColumns.length ? 3 : 0, confidence: "speculative" },
-  ];
-  return (
-    <article className="dash-panel radar-panel">
-      <div className="dash-panel-head">
-        <span>机会雷达</span>
-        <strong>{verdict}</strong>
-      </div>
-      <div className="radar-list">
-        {items.map((item) => (
-          <div key={item.name}>
-            <span>{DIMENSION_LABELS[item.name] || item.name}</span>
-            <i><b style={{ width: `${Math.max(0, Math.min(5, Number(item.score || 0))) * 20}%` }} /></i>
-            <em>{item.score || 0}/5</em>
-          </div>
-        ))}
-      </div>
-    </article>
-  );
-}
-
-function AutoAnalysisLog({ trace, runs, running }) {
-  const rows = trace.length ? trace.slice(-8).reverse() : (runs || []).slice(0, 6).map((run) => ({ event: run.status || "completed", data: { agent: "df-coordinator", name: run.run_id || run.conversation_id }, time: run.created_at || run.updated_at }));
-  return (
-    <section className="dash-panel auto-log">
-      <div className="dash-panel-head">
-        <span>自动化流程记录</span>
-        <strong>{running ? "正在写入 Trace" : "最近运行"}</strong>
-      </div>
-      <div className="auto-log-list">
-        {rows.map((item, index) => (
-          <div className="auto-log-row" key={`${item.event}-${index}`}>
-            <Clock3 size={14} />
-            <div>
-              <strong>{eventTitle(item)}</strong>
-              <span>{item.data?.agent || item.data?.name || formatTime(item.time)}</span>
-            </div>
-          </div>
-        ))}
-        {!rows.length ? <p className="empty-copy">上传数据或发起一次分析后，这里会记录每个 Agent 与工具调用。</p> : null}
       </div>
     </section>
   );
@@ -2313,28 +2146,6 @@ function Composer({ input, setInput, running, onRun }) {
         {running ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
       </button>
     </form>
-  );
-}
-
-export function Inspector({ tab, setTab, trace, finalArtifact, artifacts, running, producing }) {
-  const evidence = useMemo(() => collectEvidence(finalArtifact), [finalArtifact]);
-  return (
-    <aside className="inspector">
-      <div className="inspector-tabs">
-        {INSPECTOR_TABS.map((item) => {
-          const Icon = item.icon;
-          return (
-            <button key={item.id} type="button" className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>
-              <Icon size={15} />
-              {item.label}
-            </button>
-          );
-        })}
-      </div>
-      {tab === "evidence" ? <EvidencePanel evidence={evidence} running={running} /> : null}
-      {tab === "trace" ? <TracePanel trace={trace} running={running} /> : null}
-      {tab === "output" ? <OutputPanel artifacts={artifacts} artifact={finalArtifact} running={running || producing} /> : null}
-    </aside>
   );
 }
 
