@@ -2421,3 +2421,14 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .msg-regen { margin-left: 6px; }
 .msg-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .msg-actions .msg-copy { margin-top: 0; }
+
+/* ---- markdown 表格 / 运行记录筛选 ---- */
+.rich-table-wrap { overflow-x: auto; margin: 10px 0; }
+.rich-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rich-table th, .rich-table td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+.rich-table th { background: #f6f9fe; color: var(--ink); font-weight: 700; white-space: nowrap; }
+.rich-table tbody tr:nth-child(even) { background: #fafafa; }
+.runs-filter { display: flex; align-items: center; gap: 7px; padding: 7px 10px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--muted); }
+.runs-filter input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font-size: 13px; color: var(--ink); }
+.runs-filter-clear { display: inline-flex; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 2px; }
+.runs-filter-clear:hover { color: var(--ink); }

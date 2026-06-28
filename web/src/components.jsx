@@ -1269,6 +1269,16 @@ function ObservabilityPanel({ observability }) {
 
 function RunsCenter({ dashboard, trace, running, observability, onOpenConversation }) {
   const runs = dashboard?.runs || [];
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    const kw = q.trim().toLowerCase();
+    if (!kw) return runs;
+    return runs.filter((run) => {
+      const verdict = run.verdict ? (VERDICT_LABELS[run.verdict] || run.verdict) : "";
+      const blob = `${verdict} ${run.title || ""} ${run.message || ""} ${run.status || ""} ${run.maf ? "maf 复修" : ""}`.toLowerCase();
+      return blob.includes(kw);
+    });
+  }, [runs, q]);
   return (
     <main className="agent-studio runs-stage">
       <section className="dashboard-hero">
@@ -1286,8 +1296,14 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
         </div>
         <div className="runs-col narrow">
           <div className="runs-col-head">历史运行（点击恢复会话）</div>
+          <div className="runs-filter">
+            <Search size={14} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="按结论 / 状态 / 关键词筛选…" />
+            {q ? <button type="button" className="runs-filter-clear" onClick={() => setQ("")} aria-label="清除"><X size={13} /></button> : null}
+          </div>
           <div className="run-table">
-            {runs.slice(0, 12).map((run) => {
+            {!filtered.length ? <p className="empty-copy">{runs.length ? "没有匹配的运行记录。" : "暂无运行记录。"}</p> : null}
+            {filtered.slice(0, 20).map((run) => {
               const id = run.run_id || run.conversation_id;
               const verdict = run.verdict ? (VERDICT_LABELS[run.verdict] || run.verdict) : null;
               const label = verdict ? `可行性分析 · ${verdict}` : (run.title || run.message || "历史会话");
@@ -1316,7 +1332,6 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
                 </button>
               );
             })}
-            {!runs.length ? <p className="empty-copy">暂无运行记录。</p> : null}
           </div>
         </div>
       </section>
@@ -1921,6 +1936,10 @@ function sanitizeReply(text) {
     .trim();
 }
 
+function splitTableRow(line) {
+  return line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+}
+
 function RichText({ text, citations }) {
   const citeMap = React.useMemo(() => {
     const map = {};
@@ -1936,12 +1955,22 @@ function RichText({ text, citations }) {
   let list = null;
   const flushPara = () => { if (para.length) { blocks.push({ type: "p", lines: para }); para = []; } };
   const flushList = () => { if (list) { blocks.push(list); list = null; } };
-  for (const raw of lines) {
-    const line = raw.replace(/\s+$/, "");
-    // 空行结束段落，但不打断列表：避免「松散列表」(每项之间空一行) 被拆成
-    // 多个单项 <ol>，从而每项都从 1 开始、出现一堆「1.」。列表会在遇到
-    // 真正的非列表内容（标题/段落）或文本结尾时再 flush。
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const line = lines[idx].replace(/\s+$/, "");
     if (!line.trim()) { flushPara(); continue; }
+    // markdown 表格：当前行 |a|b| 且下一行是分隔行 |---|---|
+    const nextLine = (lines[idx + 1] || "").trim();
+    if (/^\s*\|.*\|\s*$/.test(line) && /^\|?[\s:|-]+\|?$/.test(nextLine) && nextLine.includes("-")) {
+      flushPara(); flushList();
+      const header = splitTableRow(line);
+      const rows = [];
+      idx += 2;
+      while (idx < lines.length && /^\s*\|.*\|\s*$/.test(lines[idx])) { rows.push(splitTableRow(lines[idx])); idx += 1; }
+      idx -= 1;
+      blocks.push({ type: "table", header, rows });
+      continue;
+    }
+    // 空行结束段落，但不打断列表（避免松散列表每项从 1 重排）
     let m;
     if ((m = line.match(/^#{1,4}\s+(.*)/))) { flushPara(); flushList(); blocks.push({ type: "h", text: m[1] }); }
     else if ((m = line.match(/^\s*[-*]\s+(.*)/))) { flushPara(); if (!list || list.type !== "ul") { flushList(); list = { type: "ul", items: [] }; } list.items.push(m[1]); }
@@ -1954,6 +1983,14 @@ function RichText({ text, citations }) {
     if (b.type === "h") return <h3 key={key}>{inlineNodes(b.text, `h${key}`, citeMap)}</h3>;
     if (b.type === "ul") return <ul key={key}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `u${key}-${j}`, citeMap)}</li>)}</ul>;
     if (b.type === "ol") return <ol key={key}>{b.items.map((it, j) => <li key={j}>{inlineNodes(it, `o${key}-${j}`, citeMap)}</li>)}</ol>;
+    if (b.type === "table") return (
+      <div className="rich-table-wrap" key={key}>
+        <table className="rich-table">
+          <thead><tr>{b.header.map((c, i) => <th key={i}>{inlineNodes(c, `th${key}-${i}`, citeMap)}</th>)}</tr></thead>
+          <tbody>{b.rows.map((r, ri) => <tr key={ri}>{b.header.map((_, ci) => <td key={ci}>{inlineNodes(r[ci] || "", `td${key}-${ri}-${ci}`, citeMap)}</td>)}</tr>)}</tbody>
+        </table>
+      </div>
+    );
     return <p key={key}>{b.lines.map((ln, j) => <React.Fragment key={j}>{j > 0 ? <br /> : null}{inlineNodes(ln, `p${key}-${j}`, citeMap)}</React.Fragment>)}</p>;
   };
   // 方案模式（≥2 个 ## 小节）→ 渲染成「成品文档」：每个小节卡片化，「一句话方案」做高亮 lead
