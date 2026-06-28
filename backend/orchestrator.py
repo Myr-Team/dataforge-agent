@@ -1555,29 +1555,31 @@ def _diversify_feasibility_scores_data(data: dict[str, Any]) -> dict[str, Any]:
     scores = [int(item.get("score") or 0) for item in dimensions]
     if len(scores) < 3 or len(set(scores)) > 1:
         return data
-    baseline = {
-        "asset_data": 4,
-        "technical": 3,
-        "market": 3,
-        "resource_cost": 2,
-        "differentiation_risk": 2,
-    }
+    # 模型给出"全维同分"（退化/偷懒输出）时重排。
+    # 不再按维度名套固定 baseline（那是隐性行业固化：默认资产数据强、成本/差异弱），
+    # 改为按每个维度【自身的证据强弱】派生分数——分差来自证据，而非行业预设。
+    # 若各维度证据确实一致，结果保持同分即是诚实的（不人为制造分差）。
     for dimension in dimensions:
-        name = str(dimension.get("name") or "")
         evidence = [item for item in dimension.get("evidence") or [] if isinstance(item, dict)]
         confidence = str(dimension.get("confidence") or "speculative")
         source_types = {str(item.get("source_type") or "") for item in evidence}
-        score = baseline.get(name, 3)
-        if len(evidence) >= 2 and source_types & {"corpus", "computed"}:
-            score += 1
+        grounded = bool(source_types & {"corpus", "computed"})
+        if len(evidence) >= 2 and grounded:
+            score = 4
+        elif evidence and grounded:
+            score = 3
+        elif evidence:  # 仅市场/外部来源，无工作区直证
+            score = 3
+        else:
+            score = 2
         if confidence == "market_inferred":
             score = min(score, 3)
         if confidence == "speculative" or not evidence:
             score = min(score, 2)
         dimension["score"] = max(1, min(5, score))
         rationale = str(dimension.get("rationale") or "").strip()
-        if rationale and "同分" not in rationale and "证据强弱" not in rationale:
-            dimension["rationale"] = f"{rationale}（该分数已按证据强弱做保守区分。）"
+        if rationale and "证据强弱" not in rationale and "同分" not in rationale:
+            dimension["rationale"] = f"{rationale}（该分数按本维度证据强弱保守区分，未套用行业模板。）"
     data["dimensions"] = dimensions
     return data
 
