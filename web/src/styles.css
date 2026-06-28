@@ -2432,3 +2432,8 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .runs-filter input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font-size: 13px; color: var(--ink); }
 .runs-filter-clear { display: inline-flex; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 2px; }
 .runs-filter-clear:hover { color: var(--ink); }
+
+/* ---- 迭代收敛图 ---- */
+.pi-converge { margin: 6px 0 12px; }
+.pi-converge-head { font-size: 12px; font-weight: 700; color: var(--ink); margin-bottom: 4px; }
+.conv-chart { width: 100%; max-width: 440px; height: auto; display: block; }

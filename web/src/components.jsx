@@ -558,6 +558,43 @@ function buildPlanDiff(runA, runB) {
   };
 }
 
+const _CV_RANK = { not_yet_feasible: 1, not_feasible: 1, rejected: 1, conditional: 2, feasible: 3, recommended: 3 };
+const _CV_LABEL = { 1: "暂不可行", 2: "有条件可行", 3: "可行" };
+const _CV_COLOR = { 1: "#8a5a00", 2: "#0A84E0", 3: "#0a7d4f" };
+function ConvergenceChart({ versions }) {
+  const vers = (versions || []).slice(-6);
+  if (vers.length < 2) return null;
+  const n = vers.length;
+  const W = Math.max(240, n * 72);
+  const H = 132;
+  const padX = 26;
+  const padT = 22;
+  const padB = 30;
+  const usableW = W - padX * 2;
+  const usableH = H - padT - padB;
+  const x = (i) => padX + (n > 1 ? (usableW * i) / (n - 1) : usableW / 2);
+  const y = (r) => padT + usableH * (1 - (r - 1) / 2);
+  const rankOf = (v) => _CV_RANK[v.verdict] || 1;
+  const pts = vers.map((v, i) => [x(i), y(rankOf(v))]);
+  return (
+    <svg className="conv-chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="迭代收敛图">
+      {[1, 2, 3].map((r) => (
+        <g key={r}>
+          <line x1={padX} y1={y(r)} x2={W - padX} y2={y(r)} stroke="#eef1f5" strokeWidth="1" />
+          <text x="6" y={y(r) + 3} fontSize="8.5" fill="#9aa3af">{_CV_LABEL[r]}</text>
+        </g>
+      ))}
+      <polyline points={pts.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(" ")} fill="none" stroke="#0A84E0" strokeWidth="2" />
+      {pts.map(([px, py], i) => (
+        <g key={i}>
+          <circle cx={px.toFixed(1)} cy={py.toFixed(1)} r="4.5" fill={_CV_COLOR[rankOf(vers[i])]} />
+          <text x={px.toFixed(1)} y={H - 10} fontSize="10" fill="#6e6e73" textAnchor="middle">{vers[i].vlabel}</text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
 function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
   // 版本 = 该工作区的可行性分析 run（有 verdict 的），按时间正序编号 v1/v2…
   const versions = useMemo(() => {
@@ -640,6 +677,13 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
         <strong>方案迭代 · 指标回填</strong>
         <span className="pi-sub">把上一版方案的客获率/转化率/价格等指标回填，迭代逼近公司重点方案</span>
       </div>
+
+      {versions.length >= 2 ? (
+        <div className="pi-converge">
+          <div className="pi-converge-head">结论随迭代收敛</div>
+          <ConvergenceChart versions={versions} />
+        </div>
+      ) : null}
 
       <div className="pi-versions">
         {versions.map((v) => (
