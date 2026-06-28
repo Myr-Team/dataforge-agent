@@ -73,7 +73,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, health = 
           return (
             <button
               key={item.id}
-              data-tour={item.id === "runs" ? "runs" : undefined}
+              data-tour={item.id === "runs" ? "runs" : item.id === "artifacts" ? "artifacts-nav" : undefined}
               className={active === item.id ? "nav-icon active" : "nav-icon"}
               type="button"
               title={item.label}

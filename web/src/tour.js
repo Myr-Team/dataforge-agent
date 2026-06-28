@@ -25,9 +25,9 @@ const STEPS = [
     desc: "五维评分 + 证据可溯源 + 审计自我修正；结论不会超过证据强度能支撑的档位。",
   },
   {
-    sel: '[data-tour="produce"]',
+    sel: ['[data-tour="produce"]', '[data-tour="artifacts-nav"]'],
     title: "5 · 生成产物",
-    desc: "一键产出可下载的 PDF 可行性建议书，以及产品概念图。",
+    desc: "拍板后一键产出可下载的 PDF 可行性建议书 + 产品概念图；左栏「产物」里可随时查看。",
   },
   {
     sel: '[data-tour="runs"]',
@@ -43,9 +43,12 @@ const STEPS = [
 
 export function startTour() {
   const steps = STEPS.map((s) => {
-    const exists = typeof document !== "undefined" && document.querySelector(s.sel);
+    const selectors = Array.isArray(s.sel) ? s.sel : [s.sel];
+    const found = typeof document !== "undefined"
+      ? selectors.find((sel) => document.querySelector(sel))
+      : null;
     const popover = { title: s.title, description: s.desc };
-    return exists ? { element: s.sel, popover } : { popover };
+    return found ? { element: found, popover } : { popover };
   });
   const tour = driver({
     showProgress: true,

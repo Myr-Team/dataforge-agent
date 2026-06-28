@@ -2367,4 +2367,5 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   padding: 6px 12px !important; font-size: 12.5px !important; font-weight: 600 !important;
 }
 .driver-popover.df-tour button.driver-popover-prev-btn { background: #eef2f6 !important; color: #3f4b53 !important; }
-.driver-popover.df-tour .driver-popover-close-btn { color: #6e6e73 !important; }
+.driver-popover.df-tour .driver-popover-close-btn { display: none !important; }
+.driver-popover.df-tour .driver-popover-navigation-btns { gap: 8px; }
