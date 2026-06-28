@@ -3784,55 +3784,76 @@ async def _progress_frames(
 
 async def _producer_frames(artifact: dict[str, Any], conversation_id: str) -> AsyncIterator[str]:
     yield _frame("role_change", {"agent": "df-producer"}, conversation_id)
-    reference_count = len(artifact.get("reference_images") or workspace_reference_images(str(artifact.get("workspace_id") or "")))
+    # 轻量准备（同步、快）：参考图 + 提案数据
+    if not artifact.get("reference_images"):
+        artifact["reference_images"] = workspace_reference_images(str(artifact.get("workspace_id") or ""))
+    proposal = _proposal_payload(artifact)
+    reference_images = proposal.get("reference_images") or []
+    reference_count = len(reference_images)
+    # 默认产物：PDF + 概念图（语音按需，这里不产 → 不再虚假承诺/崩溃）
+    wanted = ["pdf", "concept_image"]
+    result: dict[str, Any] = {
+        "opportunity_id": proposal["opportunity_id"],
+        "proposal": proposal,
+        "kinds": wanted,
+        "artifact_urls": {},
+    }
+    # 只为将要生成的产物发 tool_call
     yield _frame("tool_call", {"agent": "df-producer", "name": "render_pdf_report", "args": {"template": "project_proposal"}}, conversation_id)
     yield _frame("tool_call", {"agent": "df-producer", "name": "generate_image", "args": {"size": "1024x1024", "reference_count": reference_count}}, conversation_id)
-    yield _frame("tool_call", {"agent": "df-producer", "name": "narrate_summary", "args": {"voice": "zh-CN-XiaoxiaoNeural"}}, conversation_id)
-    producer_task = asyncio.create_task(run_in_threadpool(_run_producer, artifact))
-    while not producer_task.done():
-        try:
-            artifact["proposal"] = await asyncio.wait_for(asyncio.shield(producer_task), timeout=8)
-        except asyncio.TimeoutError:
+
+    # 每项产物独立提交，谁先好谁先亮（PDF 通常 1-2 秒，概念图几十秒）
+    tasks: dict[str, Any] = {
+        "pdf": asyncio.create_task(run_in_threadpool(render_pdf_report, proposal, "project_proposal")),
+    }
+    image_prompt = _image_prompt_from_proposal(proposal)
+    result["image_kind"] = _proposal_image_kind(proposal)[0]
+    result["image_prompt"] = image_prompt
+    tasks["concept_image"] = asyncio.create_task(
+        run_in_threadpool(
+            generate_image,
+            image_prompt,
+            "1024x1024",
+            _reference_image_urls(reference_images),
+            str(proposal.get("title") or proposal.get("opportunity_id") or "").strip(),
+            _logo_reference_url(reference_images),
+        )
+    )
+    tool_name = {"pdf": "render_pdf_report", "concept_image": "generate_image"}
+    task_to_kind = {task: kind for kind, task in tasks.items()}
+    pending = set(tasks.values())
+    while pending:
+        done, pending = await asyncio.wait(pending, timeout=8, return_when=asyncio.FIRST_COMPLETED)
+        if not done:
             yield _frame(
                 "progress",
                 {"agent": "df-producer", "name": "produce_artifacts", "status": "running"},
                 conversation_id,
             )
-    if "proposal" not in artifact:
-        artifact["proposal"] = await producer_task
-    yield _frame(
-        "tool_result",
-        {
-            "agent": "df-producer",
-            "name": "render_pdf_report",
-            "bytes": artifact["proposal"]["pdf"].get("bytes"),
-            "mode": artifact["proposal"]["pdf"].get("mode"),
-            "artifact_url": artifact["proposal"]["artifact_urls"].get("pdf"),
-        },
-        conversation_id,
-    )
-    yield _frame(
-        "tool_result",
-        {
-            "agent": "df-producer",
-            "name": "generate_image",
-            "bytes": artifact["proposal"]["concept_image"].get("bytes"),
-            "mode": artifact["proposal"]["concept_image"].get("mode"),
-            "artifact_url": artifact["proposal"]["artifact_urls"].get("concept_image"),
-        },
-        conversation_id,
-    )
-    yield _frame(
-        "tool_result",
-        {
-            "agent": "df-producer",
-            "name": "narrate_summary",
-            "bytes": artifact["proposal"]["audio_summary"].get("bytes"),
-            "mode": artifact["proposal"]["audio_summary"].get("mode"),
-            "artifact_url": artifact["proposal"]["artifact_urls"].get("audio_summary"),
-        },
-        conversation_id,
-    )
+            continue
+        for task in done:
+            kind = task_to_kind[task]
+            try:
+                res = task.result()
+            except Exception as exc:  # 单项失败不拖垮其余产物
+                res = {"mode": f"{kind}_failed", "error": str(exc)[:300]}
+            res = res if isinstance(res, dict) else {"mode": f"{kind}_unexpected_result"}
+            result[kind] = res
+            url = res.get("artifact_url")
+            if url:
+                result["artifact_urls"][kind] = url
+            yield _frame(
+                "tool_result",
+                {
+                    "agent": "df-producer",
+                    "name": tool_name.get(kind, kind),
+                    "bytes": res.get("bytes"),
+                    "mode": res.get("mode"),
+                    "artifact_url": url,
+                },
+                conversation_id,
+            )
+    artifact["proposal"] = result
 
 
 def _last_assistant_text(history: list[dict[str, Any]]) -> str:
