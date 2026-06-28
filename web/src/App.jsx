@@ -118,6 +118,7 @@ export function App() {
   }, []);
   const streamRef = useRef("");
   const revealTimerRef = useRef(null);
+  const abortRef = useRef(null);
 
   const currentPlaybook = useMemo(
     () => PLAYBOOKS.find((item) => item.id === selectedPlaybook) || PLAYBOOKS[0],
@@ -394,6 +395,8 @@ export function App() {
     let deltaCount = 0;
     let terminalEvent = false;
     let streamErrorMessage = "";
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
       await streamChat(payload, (event) => {
@@ -466,7 +469,7 @@ export function App() {
           streamErrorMessage = messageText;
           setNotice({ type: "error", message: messageText });
         }
-      });
+      }, controller.signal);
       if (streamErrorMessage) {
         throw new Error(streamErrorMessage);
       }
@@ -475,18 +478,30 @@ export function App() {
       }
       refreshDashboard(workspaceId);
     } catch (error) {
-      const messageText = error instanceof Error ? error.message : String(error);
-      setTrace((items) => [...items, { event: "error", data: { message: messageText } }]);
-      setMessages((items) => [...items, { role: "assistant", text: `运行失败：${messageText}`, time: new Date().toISOString() }]);
-      setNotice({ type: "error", message: `运行失败：${messageText}` });
-      if (taskId) updateTask(taskId, { status: "error", detail: "分析失败" });
+      if (error?.name === "AbortError" || controller.signal.aborted) {
+        // 用户主动点了「停止生成」——不当作错误
+        setMessages((items) => [...items, { role: "assistant", text: "已停止本次生成。", time: new Date().toISOString() }]);
+        if (taskId) updateTask(taskId, { status: "done", detail: "已停止" });
+      } else {
+        const messageText = error instanceof Error ? error.message : String(error);
+        setTrace((items) => [...items, { event: "error", data: { message: messageText } }]);
+        setMessages((items) => [...items, { role: "assistant", text: `运行失败：${messageText}`, time: new Date().toISOString() }]);
+        setNotice({ type: "error", message: `运行失败：${messageText}` });
+        if (taskId) updateTask(taskId, { status: "error", detail: "分析失败" });
+      }
     } finally {
+      abortRef.current = null;
       setRunning(false);
       if (!revealTimerRef.current) {
         setStreamText("");
         streamRef.current = "";
       }
     }
+  };
+
+  // 停止生成：中止当前 SSE 请求(run 的 catch 会识别为主动停止)
+  const stop = () => {
+    if (abortRef.current) abortRef.current.abort();
   };
 
   const mergeToolArtifact = (data) => {
@@ -733,6 +748,7 @@ export function App() {
             input={input}
             setInput={setInput}
             onRun={run}
+            onStop={stop}
             selectedPlaybook={selectedPlaybook}
             setSelectedPlaybook={setSelectedPlaybook}
             artifactMode={artifactMode}

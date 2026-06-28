@@ -2369,3 +2369,23 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .driver-popover.df-tour button.driver-popover-prev-btn { background: #eef2f6 !important; color: #3f4b53 !important; }
 .driver-popover.df-tour .driver-popover-close-btn { display: none !important; }
 .driver-popover.df-tour .driver-popover-navigation-btns { gap: 8px; }
+
+/* ---- 会话优化：多行输入 / 停止生成 / 复制 ---- */
+.composer-field { height: auto; min-height: 44px; align-items: center; padding: 7px 12px; }
+.composer-field textarea {
+  width: 100%; min-width: 0; border: 0; outline: 0; background: transparent;
+  color: var(--ink); font-size: 14px; line-height: 1.5; font-family: inherit;
+  resize: none; max-height: 140px; overflow-y: auto; padding: 0; display: block;
+}
+.stop-btn {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px;
+  font-size: 12px; font-weight: 600; color: #b3261e; background: #fdecea;
+  border: 1px solid rgba(179,38,30,0.2); border-radius: 8px; cursor: pointer; white-space: nowrap;
+}
+.stop-btn:hover { background: #fbdbd7; }
+.msg-copy {
+  display: inline-flex; align-items: center; gap: 4px; margin-top: 8px;
+  padding: 3px 8px; font-size: 11.5px; color: var(--muted); background: transparent;
+  border: 1px solid var(--line); border-radius: 7px; cursor: pointer;
+}
+.msg-copy:hover { color: var(--ink); border-color: var(--line-strong); background: #fafafa; }

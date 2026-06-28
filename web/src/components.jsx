@@ -10,8 +10,11 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleUserRound,
+  Check,
   Clock3,
   Compass,
+  Copy,
+  Square,
   Database,
   FileDown,
   FileText,
@@ -458,6 +461,7 @@ export function WorkbenchMain({
   input,
   setInput,
   onRun,
+  onStop,
   onNewConversation,
   selectedPlaybook,
   setSelectedPlaybook,
@@ -482,6 +486,7 @@ export function WorkbenchMain({
         input={input}
         setInput={setInput}
         onRun={onRun}
+        onStop={onStop}
         onProduce={onProduce}
         producing={producing}
         selectedPlaybook={selectedPlaybook}
@@ -1041,6 +1046,7 @@ function ConversationStudio({
   input,
   setInput,
   onRun,
+  onStop,
   onProduce,
   producing,
   selectedPlaybook,
@@ -1058,7 +1064,7 @@ function ConversationStudio({
         </div>
       </section>
       <QuestionStarter onRun={onRun} running={running} />
-      <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} />
+      <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} trace={trace} onStop={onStop} />
       <Composer input={input} setInput={setInput} running={running} onRun={onRun} selectedPlaybook={selectedPlaybook} />
     </main>
   );
@@ -1663,16 +1669,61 @@ function WaitingBubble({ caption }) {
   );
 }
 
-function AnswerPanel({ messages, streamText, running, presentation, onRun, onProduce, producing }) {
+const AGENT_STAGE = {
+  "df-coordinator": "协调器在规划任务…",
+  "df-corpus-analyst": "检索专家在找证据…",
+  "df-feasibility-analyst": "分析专家在按五维打分…",
+  "df-market-researcher": "市场专家在联网调研…",
+  "df-auditor": "审计专家在把关…",
+  "df-producer": "正在生成产物…",
+};
+function deriveAgentStage(trace) {
+  if (!Array.isArray(trace)) return "";
+  for (let i = trace.length - 1; i >= 0; i -= 1) {
+    const agent = trace[i]?.data?.agent;
+    if (agent && AGENT_STAGE[agent]) return AGENT_STAGE[agent];
+  }
+  return "";
+}
+
+function CopyButton({ text }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      className="msg-copy"
+      title="复制这条回答"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(String(text || ""));
+          setDone(true);
+          setTimeout(() => setDone(false), 1400);
+        } catch { /* ignore */ }
+      }}
+    >
+      {done ? <Check size={13} /> : <Copy size={13} />}
+      <span>{done ? "已复制" : "复制"}</span>
+    </button>
+  );
+}
+
+function AnswerPanel({ messages, streamText, running, presentation, onRun, onProduce, producing, trace, onStop }) {
   const visible = messages.length || streamText;
   const scrollRef = useRef(null);
   const bottomRef = useRef(null);
-  // 新消息/流式更新时自动滚到底，不用手动滚
+  const atBottomRef = useRef(true);
+  // 仅在用户已贴着底部时才自动滚；上翻看历史/证据时不抢滚动
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (el) atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
   useEffect(() => {
+    if (!atBottomRef.current) return;
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-    bottomRef.current?.scrollIntoView?.({ block: "end" });
   }, [messages, streamText, running]);
+  // 等待期间显示当前是哪个 Agent 在干什么(取自实时 trace)，把多 Agent 协作秀进对话流
+  const liveStage = useMemo(() => deriveAgentStage(trace), [trace]);
   return (
     <div className="answer-panel">
       <div className="answer-panel-head">
@@ -1682,11 +1733,16 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
         </div>
         <div className={running ? "typing-indicator live" : "typing-indicator"}>
           <i /><i /><i />
-          <span>{running ? presentation.caption : "等待输入"}</span>
+          <span>{running ? (liveStage || presentation.caption) : "等待输入"}</span>
         </div>
+        {running && onStop ? (
+          <button type="button" className="stop-btn" onClick={onStop} title="停止本次生成">
+            <Square size={13} /> 停止生成
+          </button>
+        ) : null}
       </div>
       {visible ? (
-        <div className="message-stack" ref={scrollRef}>
+        <div className="message-stack" ref={scrollRef} onScroll={handleScroll}>
           {messages.map((message, index) => {
             const isLastUser = message.role === "user" && index === messages.length - 1;
             return (
@@ -1699,6 +1755,7 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
                       ? <TypeOut text={message.text} animate={isLastUser && running} />
                       : <RichText text={message.text} citations={message.citations} />}
                   {message.citations?.length ? <CitationInline citations={message.citations} text={message.text} /> : null}
+                  {message.role === "assistant" && message.text && !message.clarify ? <CopyButton text={message.text} /> : null}
                   {message.produceOffer && onProduce ? (
                     <button
                       type="button"
@@ -1724,7 +1781,7 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
               </div>
             </article>
           ) : running ? (
-            <WaitingBubble caption={presentation?.caption} />
+            <WaitingBubble caption={liveStage || presentation?.caption} />
           ) : null}
           <div ref={bottomRef} />
         </div>
@@ -2108,7 +2165,15 @@ function Composer({ input, setInput, running, onRun }) {
   const recRef = useRef(null);
   const [listening, setListening] = useState(false);
   const baseRef = useRef("");
+  const taRef = useRef(null);
   const SR = typeof window !== "undefined" ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+  // textarea 随内容自适应高度(发送清空后复位为单行)
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+  }, [input]);
 
   const startVoice = () => {
     if (!SR || running) return;
@@ -2140,10 +2205,18 @@ function Composer({ input, setInput, running, onRun }) {
       }}
     >
       <div className="composer-field">
-        <input
+        <textarea
+          ref={taRef}
+          rows={1}
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          placeholder={listening ? "正在聆听，请说话…" : "继续追问，或点麦克风语音输入"}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent?.isComposing) {
+              event.preventDefault();
+              if (!running && input.trim()) { if (listening) stopVoice(); onRun(input); }
+            }
+          }}
+          placeholder={listening ? "正在聆听，请说话…" : "继续追问（Enter 发送 · Shift+Enter 换行），或点麦克风语音输入"}
           disabled={running}
         />
         {SR ? (

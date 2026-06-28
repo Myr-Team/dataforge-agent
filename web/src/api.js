@@ -164,11 +164,12 @@ export async function produceArtifacts(payload) {
   });
 }
 
-export async function streamChat(payload, onEvent) {
+export async function streamChat(payload, onEvent, signal) {
   const response = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify(payload),
+    signal,
   });
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
