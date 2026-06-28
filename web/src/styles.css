@@ -2399,3 +2399,8 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .rich-text, .message-body { overflow-wrap: anywhere; word-break: break-word; }
 .rich-text code { white-space: pre-wrap; word-break: break-word; }
 .rich-text pre { max-width: 100%; overflow-x: auto; }
+
+/* ---- 五维雷达图 / 消息时间戳 / 引用移动端 ---- */
+.verdict-radar { width: 192px; height: 192px; max-width: 100%; display: block; margin: 2px auto 10px; }
+.msg-time { display: block; margin-top: 6px; font-size: 11px; color: var(--faint, #9aa3af); }
+.cite-ref:focus-within .cite-tip, .cite-ref:active .cite-tip { opacity: 1; transform: translateX(-50%) translateY(0); }

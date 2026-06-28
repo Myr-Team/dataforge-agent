@@ -995,6 +995,47 @@ function verdictTone(v) {
 }
 
 // 中央英雄区：可行性结论大字 + 五维可行性评分横条（对齐 效果.png）
+function VerdictRadar({ dims }) {
+  const items = (dims || []).slice(0, 5);
+  if (items.length < 3) return null;
+  const size = 192;
+  const cx = size / 2;
+  const cy = size / 2;
+  const R = size * 0.31;
+  const n = items.length;
+  const pt = (i, r) => {
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  };
+  const ring = (k) => items.map((_, i) => pt(i, R * k).map((v) => v.toFixed(1)).join(",")).join(" ");
+  const sc = (d) => Math.max(0, Math.min(5, Number(d.score || 0)));
+  const shape = items.map((d, i) => pt(i, R * (sc(d) / 5)).map((v) => v.toFixed(1)).join(",")).join(" ");
+  return (
+    <svg className="verdict-radar" viewBox={`0 0 ${size} ${size}`} role="img" aria-label="五维雷达图">
+      {[0.25, 0.5, 0.75, 1].map((k) => (
+        <polygon key={k} points={ring(k)} fill="none" stroke="#e5e7eb" strokeWidth="1" />
+      ))}
+      {items.map((_, i) => {
+        const [x, y] = pt(i, R);
+        return <line key={i} x1={cx} y1={cy} x2={x.toFixed(1)} y2={y.toFixed(1)} stroke="#e5e7eb" strokeWidth="1" />;
+      })}
+      <polygon points={shape} fill="rgba(10,132,224,0.16)" stroke="#0A84E0" strokeWidth="2" />
+      {items.map((d, i) => {
+        const [x, y] = pt(i, R * (sc(d) / 5));
+        return <circle key={i} cx={x.toFixed(1)} cy={y.toFixed(1)} r="3" fill="#0A84E0" />;
+      })}
+      {items.map((d, i) => {
+        const [lx, ly] = pt(i, R + 16);
+        return (
+          <text key={i} x={lx.toFixed(1)} y={ly.toFixed(1)} fontSize="10.5" fill="#6e6e73" textAnchor="middle" dominantBaseline="middle">
+            {(DIMENSION_LABELS && DIMENSION_LABELS[d.name]) || d.name}
+          </text>
+        );
+      })}
+    </svg>
+  );
+}
+
 function VerdictHero({ feasibility, verdict, running }) {
   const raw = feasibility?.dimensions || [];
   const dims = raw.length
@@ -1022,6 +1063,7 @@ function VerdictHero({ feasibility, verdict, running }) {
       </div>
       <div className="vh-scores">
         <div className="vh-scores-head">五维可行性评分</div>
+        <VerdictRadar dims={dims} />
         {dims.slice(0, 5).map((dim) => {
           const n = Math.max(0, Math.min(5, Number(dim.score || 0)));
           return (
@@ -1768,6 +1810,9 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
                     </button>
                   ) : null}
                   {message.producedArtifacts ? <ChatArtifacts artifacts={message.producedArtifacts} /> : null}
+                  {message.time && !message.clarify ? (
+                    <span className="msg-time">{new Date(message.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
+                  ) : null}
                 </div>
               </article>
             );
