@@ -207,15 +207,11 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
           上传数据
         </button>
         <NotificationBell tasks={tasks} />
-        <div className={loading ? "sync-dot loading" : "sync-dot"} title={loading ? "同步中" : "已同步"}>
-          {loading ? <Loader2 className="spin" size={14} /> : <CheckCircle2 size={14} />}
-        </div>
         <div className="user-menu" ref={menuRef}>
-          <button className="user-trigger" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen}>
+          <button className="user-trigger" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen} title="账户">
             <div className="avatar" title={user?.email || "DataForge"}>
               {(user?.name || user?.email || "D").trim().slice(0, 1).toUpperCase()}
             </div>
-            <ChevronDown size={14} />
           </button>
           {menuOpen ? (
             <div className="account-menu" role="menu">
@@ -1164,7 +1160,7 @@ function ConversationStudio({
       </section>
       <QuestionStarter onRun={onRun} running={running} />
       <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} trace={trace} onStop={onStop} />
-      <Composer input={input} setInput={setInput} running={running} onRun={onRun} selectedPlaybook={selectedPlaybook} />
+      <Composer input={input} setInput={setInput} running={running} onRun={onRun} onStop={onStop} selectedPlaybook={selectedPlaybook} />
     </main>
   );
 }
@@ -1855,11 +1851,6 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
           <i /><i /><i />
           <span>{running ? (liveStage || presentation.caption) : "等待输入"}</span>
         </div>
-        {running && onStop ? (
-          <button type="button" className="stop-btn" onClick={onStop} title="停止本次生成">
-            <Square size={13} /> 停止生成
-          </button>
-        ) : null}
       </div>
       {visible ? (
         <div className="message-stack" ref={scrollRef} onScroll={handleScroll}>
@@ -2332,7 +2323,7 @@ function buildDefaultSteps(feasibility, playbook) {
   ];
 }
 
-function Composer({ input, setInput, running, onRun }) {
+function Composer({ input, setInput, running, onRun, onStop }) {
   const recRef = useRef(null);
   const [listening, setListening] = useState(false);
   const baseRef = useRef("");
@@ -2403,9 +2394,15 @@ function Composer({ input, setInput, running, onRun }) {
           </button>
         ) : null}
       </div>
-      <button className="send-button" type="submit" disabled={running || !input.trim()}>
-        {running ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-      </button>
+      {running ? (
+        <button className="send-button stop" type="button" onClick={onStop} title="停止生成" aria-label="停止生成">
+          <Square size={16} />
+        </button>
+      ) : (
+        <button className="send-button" type="submit" disabled={!input.trim()} title="发送" aria-label="发送">
+          <Send size={18} />
+        </button>
+      )}
     </form>
   );
 }
