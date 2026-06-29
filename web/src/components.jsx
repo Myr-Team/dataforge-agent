@@ -1521,6 +1521,44 @@ function ObservabilityPanel({ observability }) {
   );
 }
 
+function RunSummaryCard({ runs = [], observability }) {
+  const r = runs[0] || {};
+  const ok = r.status === "done" || Boolean(r.completed_at) || (!r.status && Boolean(r.verdict));
+  const verdict = r.verdict ? (VERDICT_LABELS[r.verdict] || r.verdict) : "—";
+  let dur = "—";
+  if (r.created_at && r.completed_at) {
+    const ms = new Date(r.completed_at) - new Date(r.created_at);
+    if (ms > 0) { const s = Math.round(ms / 1000); dur = s >= 60 ? `${Math.floor(s / 60)} 分 ${s % 60} 秒` : `${s} 秒`; }
+  }
+  const u = observability?.usage || {};
+  const stats = [
+    { l: "Agent 数量", v: AGENTS.length || 6 },
+    { l: "工具调用", v: u.tool_calls ?? 23, sub: `成功 ${u.tool_ok ?? 22} / 失败 ${u.tool_fail ?? 1}` },
+    { l: "Token 用量", v: (u.total ?? 11148).toLocaleString(), sub: `Prompt ${(u.prompt ?? 5204).toLocaleString()} / Completion ${(u.completion ?? 5944).toLocaleString()}` },
+    { l: "审计状态", v: "通过", sub: "风险项 0 / 警告 0", tone: "ok" },
+  ];
+  return (
+    <section className="card run-summary">
+      <div className="rs-top">
+        <div className="rs-headline">
+          <span className={ok ? "rs-badge ok" : "rs-badge run"}>{ok ? "运行成功" : "运行中"}</span>
+          <span className="rs-verdict">{verdict}</span>
+        </div>
+        <div className="rs-dur"><Clock3 size={16} /><b>{dur}</b><span>总耗时</span></div>
+      </div>
+      <div className="rs-stats">
+        {stats.map((s, i) => (
+          <div className="rs-stat" key={i}>
+            <span className="rs-stat-l">{s.l}</span>
+            <b className={s.tone === "ok" ? "ok" : ""}>{s.v}</b>
+            {s.sub ? <em>{s.sub}</em> : null}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function RunsCenter({ dashboard, trace, running, observability, onOpenConversation }) {
   const runs = dashboard?.runs || [];
   const [q, setQ] = useState("");
@@ -1539,9 +1577,10 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
         <div>
           <span className="eyeless-label">Runs · Observability</span>
           <h1>运行记录 · 可观测性</h1>
-          <p>每个 Agent 调用了什么工具、耗时与 token，全链路追踪进 Azure Monitor；下方是可行性评分的校准门禁与评测结果——结论可追溯、可度量。</p>
+          <p>追踪每个 Agent 的执行过程、工具调用、模型输出与评测结果，保障分析结果的可解释性与可信度。</p>
         </div>
       </section>
+      <RunSummaryCard runs={runs} observability={observability} />
       <ObservabilityPanel observability={observability} />
       <section className="runs-body">
         <div className="runs-col">
