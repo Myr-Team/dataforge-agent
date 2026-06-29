@@ -209,6 +209,9 @@ class RunStep(BaseModel):
 class RunSummary(BaseModel):
     run_id: str
     time: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    duration_ms: int | None = None
     workspace_id: str | None = None
     title: str | None = None
     summary: str | None = None

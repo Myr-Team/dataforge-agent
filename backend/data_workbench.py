@@ -195,6 +195,8 @@ async def blob_import(workspace_id: str, request: Request) -> dict[str, Any]:
 def list_workspace_files(workspace_id: str) -> dict[str, Any]:
     detail = get_workspace_detail(workspace_id)
     documents = [item for item in detail.get("documents") or [] if isinstance(item, dict)]
+    field_counts = _document_field_counts(detail, documents)
+    single_doc_fields = int(detail.get("field_count") or 0) if len(documents) == 1 else 0
     groups = [
         {"label": "数据集", "files": []},
         {"label": "文档", "files": []},
@@ -203,7 +205,9 @@ def list_workspace_files(workspace_id: str) -> dict[str, Any]:
     by_label = {item["label"]: item["files"] for item in groups}
     used_bytes = 0
     for document in documents:
-        entry = _file_entry(document)
+        source = str(document.get("source_file") or "")
+        entry = _file_entry(document, field_count=field_counts.get(source) or single_doc_fields)
+        _fill_file_counts_from_content(workspace_id, document, entry)
         used_bytes += int(entry.get("bytes") or 0)
         label = _file_group(entry)
         by_label[label].append(entry)
@@ -519,8 +523,10 @@ async def _json_body(request: Request) -> dict[str, Any]:
     return data
 
 
-def _file_entry(document: dict[str, Any]) -> dict[str, Any]:
+def _file_entry(document: dict[str, Any], *, field_count: int | None = None) -> dict[str, Any]:
     file_type = _file_type(document)
+    records = document.get("record_count")
+    fields = document.get("field_count") or document.get("workbench_cols") or field_count
     return {
         "id": _file_id(document),
         "name": str(document.get("name") or Path(str(document.get("source_file") or "file")).name),
@@ -529,9 +535,66 @@ def _file_entry(document: dict[str, Any]) -> dict[str, Any]:
         "status": _api_status(document),
         "updated_at": document.get("updated_at") or document.get("created_at"),
         "source_file": document.get("source_file"),
-        "record_count": document.get("record_count"),
+        "record_count": records,
+        "records": records,
+        "field_count": fields,
+        "fields": fields,
         "backend_status": document.get("status"),
     }
+
+
+def _document_field_counts(detail: dict[str, Any], documents: list[dict[str, Any]]) -> dict[str, int]:
+    columns = [item for item in detail.get("columns") or [] if isinstance(item, dict)]
+    if not columns or not documents:
+        return {}
+    if len(documents) == 1:
+        source = str(documents[0].get("source_file") or "")
+        return {source: int(detail.get("field_count") or len(columns))}
+
+    counts: dict[str, int] = {}
+    for document in documents:
+        source = str(document.get("source_file") or "")
+        stem = Path(source).stem.lower()
+        if not source or not stem:
+            continue
+        matched = [
+            column
+            for column in columns
+            if stem in str(column.get("table") or "").lower()
+            or str(column.get("table") or "").lower() in {stem, Path(source).name.lower()}
+        ]
+        if matched:
+            counts[source] = len({str(column.get("name") or "") for column in matched if column.get("name")})
+    return counts
+
+
+def _fill_file_counts_from_content(workspace_id: str, document: dict[str, Any], entry: dict[str, Any]) -> None:
+    file_type = _file_type(document)
+    needs_records = entry.get("records") is None
+    needs_fields = entry.get("fields") in (None, 0)
+    if not needs_records and not needs_fields:
+        return
+    if file_type in TABLE_TYPES:
+        try:
+            content, _ = _read_document_bytes(workspace_id, document)
+            preview = _preview_bytes(content, file_type, str(entry.get("name") or ""), limit=1, offset=0)
+        except Exception:
+            return
+        records = preview.get("total_rows")
+        fields = preview.get("total_cols")
+        if needs_records and records is not None:
+            entry["record_count"] = records
+            entry["records"] = records
+        if needs_fields and fields is not None:
+            entry["field_count"] = fields
+            entry["fields"] = fields
+    elif file_type in MARKDOWN_TYPES:
+        if needs_records:
+            entry["record_count"] = 1
+            entry["records"] = 1
+        if needs_fields:
+            entry["field_count"] = 1
+            entry["fields"] = 1
 
 
 def _file_id(document: dict[str, Any]) -> str:
