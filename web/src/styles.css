@@ -1,7 +1,7 @@
 :root {
   color-scheme: light;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --bg: #f5f5f7;
+  font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --bg: #fafafb;
   --surface: #ffffff;
   --surface-soft: #fbfbfd;
   --surface-glass: rgba(255, 255, 255, 0.86);
@@ -18,7 +18,7 @@
   --amber-soft: #fff4dd;
   --red: #d92d20;
   --red-soft: #fff0ed;
-  --shadow: 0 18px 60px rgba(29, 29, 31, 0.08);
+  --shadow: 0 1px 2px rgba(20, 20, 40, 0.04), 0 8px 24px -12px rgba(20, 20, 40, 0.10);
   --radius: 8px;
   color: var(--ink);
   background: var(--bg);
