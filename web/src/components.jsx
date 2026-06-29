@@ -920,6 +920,20 @@ function DataOverviewCard({ workspaceId, hasDocs }) {
   );
 }
 
+function Collapsible({ title, hint, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className={open ? "collapsible open" : "collapsible"}>
+      <button type="button" className="collapsible-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <ChevronDown size={15} className="cl-caret" />
+        <span>{title}</span>
+        {hint ? <em className="cl-hint">{hint}</em> : null}
+      </button>
+      {open ? <div className="collapsible-body">{children}</div> : null}
+    </section>
+  );
+}
+
 function DashboardStudio({
   dashboard,
   trace,
@@ -966,13 +980,14 @@ function DashboardStudio({
 
       <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} onProduce={onProduce} />
 
-      <WebSearchPanel trace={trace} />
-
       <VerdictHero feasibility={feasibility} verdict={verdict} running={running} artifact={finalArtifact} />
 
       <AuditCard artifact={finalArtifact} />
 
-      <DataOverviewCard workspaceId={dashboard?.workspace_id || workspace?.workspace_id} hasDocs={(documents || []).length > 0} />
+      <Collapsible title="数据概览与检索来源" hint="点击展开">
+        <DataOverviewCard workspaceId={dashboard?.workspace_id || workspace?.workspace_id} hasDocs={(documents || []).length > 0} />
+        <WebSearchPanel trace={trace} />
+      </Collapsible>
 
       <section className="studio-methods">
         <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id} />

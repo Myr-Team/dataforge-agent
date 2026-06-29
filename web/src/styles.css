@@ -538,6 +538,14 @@ svg { flex-shrink: 0; }
   overflow: hidden;
 }
 .agent-studio > * { min-width: 0; }
+.collapsible { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.collapsible-head { display: flex; align-items: center; gap: 9px; width: 100%; padding: 12px 16px; border: 0; background: transparent; cursor: pointer; font-size: 14px; font-weight: 600; color: var(--ink); text-align: left; border-radius: 12px; }
+.collapsible-head:hover { background: var(--surface-soft); }
+.cl-caret { color: var(--faint); transform: rotate(-90deg); transition: transform .18s ease; flex: none; }
+.collapsible.open .cl-caret { transform: rotate(0deg); }
+.cl-hint { margin-left: auto; font-style: normal; font-size: 12px; color: var(--faint); }
+.collapsible.open .cl-hint { display: none; }
+.collapsible-body { display: grid; gap: 12px; padding: 2px 16px 16px; }
 .dashboard-stage {
   display: flex;
   flex-direction: column;

@@ -83,7 +83,7 @@ export function App() {
   const [artifactMode, setArtifactMode] = useState("report");
   const [inspectorTab, setInspectorTab] = useState("evidence");
   const [activeView, setActiveView] = useState("workspaces");
-  const [navCollapsed, setNavCollapsed] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(true);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadContext, setUploadContext] = useState({ mode: "workspace", workspaceId: "" });
   const [uploadState, setUploadState] = useState(null);
