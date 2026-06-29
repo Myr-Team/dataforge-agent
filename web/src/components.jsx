@@ -91,12 +91,12 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, health = 
         })}
       </div>
       <div className="nav-status" aria-label="服务状态">
-        <span className="nav-status-head">服务状态</span>
-        {status.map(([label, ok]) => (
-          <span className="nav-status-row" key={label} title={`${label}: ${ok ? "正常" : "未连接"}`}>
-            <i className={ok ? "nst-dot ok" : "nst-dot off"} />{label}
-          </span>
-        ))}
+        <span className="nav-status-head">服务</span>
+        <span className="nav-status-dots">
+          {status.map(([label, ok]) => (
+            <i className={ok ? "nst-dot ok" : "nst-dot off"} key={label} title={`${label}: ${ok ? "正常" : "未连接"}`} />
+          ))}
+        </span>
       </div>
       {onToggleCollapse ? (
         <button className="nav-collapse-btn" type="button" onClick={onToggleCollapse} title={collapsed ? "展开侧栏" : "收起侧栏"} aria-label="切换侧栏">

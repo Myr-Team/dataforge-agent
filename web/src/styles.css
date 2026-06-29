@@ -35,7 +35,7 @@ svg { flex-shrink: 0; }
 
 .app-shell {
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-columns: 184px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas: "top top" "nav main";
   height: 100dvh;
@@ -2079,7 +2079,8 @@ svg { flex-shrink: 0; }
 @media (max-width: 1100px) { .runs-body { grid-template-columns: 1fr; } .runs-col.narrow { display: none; } }
 
 /* 左下角服务状态（竖排，替代原收起按钮） */
-.shell-nav .nav-status { margin-top: auto; display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+.shell-nav .nav-status { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 6px 2px; border-top: 1px solid var(--line); }
+.nav-status-dots { display: inline-flex; gap: 6px; }
 .nav-status-head { font-size: 9.5px; color: var(--faint); letter-spacing: 0.03em; }
 .nav-status-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
 .nst-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong); flex-shrink: 0; }
