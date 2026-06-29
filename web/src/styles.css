@@ -70,7 +70,7 @@ svg { flex-shrink: 0; }
   gap: 22px;
   padding: 18px 12px;
   border-right: 1px solid var(--line);
-  background: rgba(245, 245, 247, 0.92);
+  background: var(--surface);
 }
 .shell-nav .collapse { margin-top: auto; transform: rotate(90deg); }
 
