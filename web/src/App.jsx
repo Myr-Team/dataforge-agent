@@ -83,7 +83,6 @@ export function App() {
   const [artifactMode, setArtifactMode] = useState("report");
   const [inspectorTab, setInspectorTab] = useState("evidence");
   const [activeView, setActiveView] = useState("workspaces");
-  const [navCollapsed, setNavCollapsed] = useState(true);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadContext, setUploadContext] = useState({ mode: "workspace", workspaceId: "" });
   const [uploadState, setUploadState] = useState(null);
@@ -748,7 +747,7 @@ export function App() {
   const displayRunning = running || demoReveal.active;
 
   return (
-    <div className={navCollapsed ? "app-shell nav-collapsed" : "app-shell"}>
+    <div className="app-shell">
       <TopBar
         dashboard={dashboard}
         workspaceId={workspaceId}
@@ -761,7 +760,7 @@ export function App() {
         onLogout={logout}
         tasks={tasks}
       />
-      <ShellNav active={activeView} onChange={setActiveView} health={dashboard?.health} collapsed={navCollapsed} onToggleCollapse={() => setNavCollapsed((v) => !v)} />
+      <ShellNav active={activeView} onChange={setActiveView} workspace={dashboard?.workspace} />
       <div className="workbench">
         <MobileNav active={activeView} onChange={setActiveView} />
         <div className="workbench-grid">

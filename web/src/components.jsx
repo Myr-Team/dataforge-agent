@@ -28,6 +28,7 @@ import {
   PanelLeftClose,
   Rows3,
   TrendingUp,
+  UserPlus,
   Mic,
   LogIn,
   LogOut,
@@ -64,14 +65,7 @@ import {
 
 const agentMap = new Map(AGENTS.map((agent) => [agent.id, agent]));
 
-export function ShellNav({ active = "workspaces", onChange = () => {}, health = {}, collapsed = false, onToggleCollapse }) {
-  const deps = health.dependencies || {};
-  const status = [
-    ["Foundry", deps.foundry],
-    ["Search", Boolean(health.search_endpoint || deps.search)],
-    ["Blob", deps.blob],
-    ["MCP", deps.mcp],
-  ];
+export function ShellNav({ active = "workspaces", onChange = () => {}, workspace = {} }) {
   return (
     <nav className="shell-nav" aria-label="Primary">
       <div className="nav-stack">
@@ -92,19 +86,15 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, health = 
           );
         })}
       </div>
-      <div className="nav-status" aria-label="服务状态">
-        <span className="nav-status-head">服务状态</span>
-        {status.map(([label, ok]) => (
-          <span className="nav-status-row" key={label} title={`${label}: ${ok ? "正常" : "未连接"}`}>
-            <i className={ok ? "nst-dot ok" : "nst-dot off"} />{label}
-          </span>
-        ))}
-      </div>
-      {onToggleCollapse ? (
-        <button className="nav-collapse-btn" type="button" onClick={onToggleCollapse} title={collapsed ? "展开侧栏" : "收起侧栏"} aria-label="切换侧栏">
-          <PanelLeftClose size={16} /><span>收起</span>
+      <div className="ws-foot">
+        <div className="wsf-k">Workspace</div>
+        <div className="wsf-v">{workspace.name || "当前工作区"}</div>
+        <div className="wsf-k">Role</div>
+        <div className="wsf-v wsf-last">Owner</div>
+        <button className="wsf-invite" type="button" title="团队协作能力即将上线">
+          <UserPlus size={15} /> Invite members
         </button>
-      ) : null}
+      </div>
     </nav>
   );
 }
