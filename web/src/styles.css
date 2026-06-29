@@ -36,12 +36,16 @@ svg { flex-shrink: 0; }
 .app-shell {
   display: grid;
   grid-template-columns: 128px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "top top" "nav main";
   height: 100dvh;
   background:
     radial-gradient(circle at 50% -20%, rgba(0, 113, 227, 0.06), transparent 32%),
     var(--bg);
   overflow: hidden;
 }
+.shell-nav { grid-area: nav; }
+.workbench { grid-area: main; }
 
 .shell-nav {
   display: flex;
@@ -124,18 +128,18 @@ svg { flex-shrink: 0; }
   background: var(--blue-soft);
 }
 
-.workbench { display: grid; grid-template-rows: 68px minmax(0, 1fr); min-width: 0; min-height: 0; }
+.workbench { display: grid; grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; }
 .topbar {
+  grid-area: top;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  padding: 12px 22px;
+  padding: 7px 18px;
+  min-height: 52px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-glass);
   backdrop-filter: blur(18px);
-  position: sticky;
-  top: 0;
   z-index: 100;
 }
 
@@ -170,8 +174,10 @@ svg { flex-shrink: 0; }
 .brand-mini { display: inline-flex; align-items: center; gap: 9px; }
 .brand-logo-sm { width: 26px; height: 26px; border-radius: 7px; display: block; }
 .brand-mini strong { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+.topbar-left { gap: 4px; }
 .ws-switch { position: relative; }
-.ws-crumb { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px 0 4px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; border-radius: 7px; }
+.ws-crumb { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px 0 4px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; border-radius: 7px; }
+.ws-caret { color: var(--faint); }
 .ws-crumb:hover { background: var(--surface-soft); }
 .ws-crumb .ws-sep { color: var(--faint); }
 .ws-crumb .ws-name { color: var(--ink); font-weight: 600; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

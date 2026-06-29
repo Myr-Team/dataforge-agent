@@ -9,6 +9,7 @@ import {
   Bell,
   CheckCircle2,
   ChevronDown,
+  ChevronsUpDown,
   CircleUserRound,
   Check,
   Clock3,
@@ -175,7 +176,7 @@ function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange }) {
       <button className="ws-crumb" type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} title="切换工作区">
         <span className="ws-sep">/</span>
         <span className="ws-name">{currentName}</span>
-        <ChevronDown size={14} />
+        <ChevronsUpDown size={14} className="ws-caret" />
       </button>
       {open ? (
         <div className="ws-dd" role="menu">

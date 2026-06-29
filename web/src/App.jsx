@@ -748,20 +748,20 @@ export function App() {
 
   return (
     <div className="app-shell">
+      <TopBar
+        dashboard={dashboard}
+        workspaceId={workspaceId}
+        onWorkspaceChange={changeWorkspace}
+        onUpload={openWorkspaceUpload}
+        onNewConversation={startNewConversation}
+        loading={dashboardLoading || displayRunning || producing}
+        user={user}
+        authState={authState}
+        onLogout={logout}
+        tasks={tasks}
+      />
       <ShellNav active={activeView} onChange={setActiveView} health={dashboard?.health} />
       <div className="workbench">
-        <TopBar
-          dashboard={dashboard}
-          workspaceId={workspaceId}
-          onWorkspaceChange={changeWorkspace}
-          onUpload={openWorkspaceUpload}
-          onNewConversation={startNewConversation}
-          loading={dashboardLoading || displayRunning || producing}
-          user={user}
-          authState={authState}
-          onLogout={logout}
-          tasks={tasks}
-        />
         <MobileNav active={activeView} onChange={setActiveView} />
         <div className="workbench-grid">
           <WorkspacePane
