@@ -42,6 +42,10 @@ import {
   BookOpen,
   ThumbsUp,
   ThumbsDown,
+  Boxes,
+  Server,
+  Cpu,
+  HardDrive,
   Mic,
   LogIn,
   LogOut,
@@ -1488,30 +1492,79 @@ function ConversationStudio({
   );
 }
 
+const OUTPUT_PRODUCTS = [
+  { id: "pdf", icon: FileText, cls: "prod-pdf", title: "项目文档", desc: "下载完整的项目提案，包含封面、结论、五维评分与详细分析。", tags: ["封面与概览", "五维评分", "详细分析", "附录与数据来源"] },
+  { id: "concept_image", icon: ImagePlus, cls: "prod-img", title: "概念图", desc: "生成产品概念图与视觉参考，助力定位与汇报展示。", tags: ["概念视觉", "Logo 占位", "配色参考", "场景示意"] },
+  { id: "audio_summary", icon: Mic, cls: "prod-audio", title: "语音摘要", desc: "将关键结论与建议生成语音摘要，便于快速收听与分享。", tags: ["关键结论", "行动建议", "风险提示", "时长 2-5 分钟"] },
+  { id: "roadmap", icon: Route, cls: "prod-route", title: "路线图 / 验证计划", desc: "生成路线图与验证计划，明确关键里程碑与验证实验。", tags: ["阶段路线图", "关键里程碑", "验证实验", "资源与风险"] },
+];
+const OUTPUT_RECENT = [
+  { name: "选址情报演示-项目提案.pdf", type: "PDF", size: "12.4 MB", time: "10:22" },
+  { name: "选址概念图_v1.png", type: "PNG", size: "2.1 MB", time: "10:20" },
+  { name: "选址情报演示-语音摘要.mp3", type: "MP3", size: "4.5 MB", time: "10:18" },
+  { name: "路线图与验证计划_v1.pdf", type: "PDF", size: "1.8 MB", time: "10:15" },
+  { name: "配色与视觉参考.png", type: "PNG", size: "1.6 MB", time: "昨天 16:42" },
+  { name: "数据与来源清单.pdf", type: "PDF", size: "0.9 MB", time: "昨天 16:40" },
+];
+
 function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing, onUploadReference }) {
-  const workspace = dashboard?.workspace || {};
-  const refs = workspace.reference_images || [];
+  const hasAnalysis = Boolean(artifact?.feasibility?.verdict);
   return (
-    <main className="agent-studio artifacts-stage">
-      <section className="dashboard-hero">
-        <div>
-          <span className="eyeless-label">Outputs</span>
-          <h1>产出物中心</h1>
-          <p>每个产物各自一个生成按钮，按需分项生成。会话/工作区里的「生成产物」默认是项目文档 + 概念图一套。</p>
-        </div>
+    <main className="agent-studio outputs-stage">
+      <header className="conv-head">
+        <span className="eyeless-label">Outputs</span>
+        <h1>产物中心</h1>
+        <p>所有产物均基于当前工作区的分析与结论自动生成，支持下载、分享与重新生成。</p>
+      </header>
+
+      <section className="card out-status">
+        <div className="os-item"><div className="os-ic blue"><Sparkles size={18} /></div><div><span>当前分析状态</span><b>{hasAnalysis ? "分析已完成" : "等待分析"}</b><em>最后更新：2024-05-02 10:22</em></div></div>
+        <div className="os-item"><div className="os-ic ok"><ShieldCheck size={18} /></div><div><span>审核状态</span><b className="ok">已通过</b><em>审核时间：2024-05-02 10:22</em></div></div>
+        <div className="os-item"><div className="os-ic amber"><Lightbulb size={18} /></div><div><span>建议操作</span><b>上传透明 PNG Logo</b><em>建议上传透明 PNG 格式 Logo，以生成更专业的概念图</em></div></div>
+        <button className="dw-btn" type="button" onClick={onUploadReference}><UploadCloud size={15} />上传 Logo</button>
       </section>
-      <section className="logo-callout">
-        <ImagePlus size={22} />
-        <div>
-          <strong>{refs.length ? `已检测到 ${refs.length} 张参考图` : "生成海报或周边前，建议上传透明 PNG Logo"}</strong>
-          <span>例如活动主视觉、包装样机、服务触点物料，都可以把 Logo 作为参考图交给图像生成 Agent。</span>
-        </div>
-        <button className="ghost-button icon-label" type="button" onClick={onUploadReference}>
-          <UploadCloud size={15} />
-          上传参考图
-        </button>
-      </section>
-      <OutputPanel artifacts={artifacts} artifact={artifact} running={producing} onProduce={onProduce} producing={producing} />
+
+      <div className="out-body">
+        <section className="out-main">
+          <div className="out-sec-h">可生成的产物</div>
+          {OUTPUT_PRODUCTS.map((p) => {
+            const Ic = p.icon;
+            return (
+              <article className="card out-prod" key={p.id}>
+                <div className={`out-prod-ic ${p.cls}`}><Ic size={22} /></div>
+                <div className="out-prod-main">
+                  <b>{p.title}</b>
+                  <p>{p.desc}</p>
+                  <div className="out-tags">{p.tags.map((t) => <span key={t} className="out-tag">{t}</span>)}</div>
+                </div>
+                <div className="out-prod-r">
+                  <span className="out-badge"><span className="d" />可生成</span>
+                  <button className="dw-btn primary" type="button" disabled={producing} onClick={() => onProduce && onProduce([p.id])}>
+                    {producing ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}生成
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+          <p className="out-note"><Info size={13} /> 以上产物均基于当前分析结果生成。若底层数据或分析结论发生变化，请重新生成以确保准确性。</p>
+        </section>
+
+        <aside className="card out-recent">
+          <div className="cardhead"><span className="t">最近产物</span><span className="lnk">查看全部</span></div>
+          <div className="out-recent-list">
+            {OUTPUT_RECENT.map((a, i) => (
+              <div className="out-rec" key={i}>
+                <FileTypeIcon doc={{ name: a.name }} size={22} />
+                <div className="out-rec-main"><b>{a.name}</b><em>{a.type} · {a.size}</em></div>
+                <span className="out-rec-time">{a.time}</span>
+                <span className="dw-chip ok">已完成</span>
+                <button type="button" className="out-rec-more"><MoreHorizontal size={15} /></button>
+              </div>
+            ))}
+          </div>
+          <button type="button" className="out-open"><FolderOpen size={15} />打开产物目录<ChevronRight size={14} /></button>
+        </aside>
+      </div>
     </main>
   );
 }
@@ -1814,83 +1867,101 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
   );
 }
 
+const SET_MEMBERS = [
+  { initial: "博", name: "博文（你）", email: "bowen@example.com", role: "所有者", you: true },
+  { initial: "李", name: "李思运", email: "lisiyun@example.com", role: "管理员" },
+  { initial: "王", name: "王敏", email: "wangmin@example.com", role: "编辑者" },
+  { initial: "张", name: "张悦", email: "zhangyue@example.com", role: "查看者" },
+];
+
 function SettingsCenter({ dashboard, observability }) {
   const health = dashboard?.health || {};
   const deps = health.dependencies || {};
-  const details = health.dependency_details || dashboard?.dependency_details || {};
   const models = observability?.models || {};
-  const tracing = observability?.tracing || {};
-  const [audioPref, setAudioPref] = useState(() => { try { return window.localStorage.getItem("df-pref-audio") === "1"; } catch { return false; } });
-  const toggleAudio = () => {
-    setAudioPref((prev) => { const v = !prev; try { window.localStorage.setItem("df-pref-audio", v ? "1" : "0"); } catch { /* ignore */ } return v; });
-  };
-  const depRow = (label, ok, detail) => (
-    <div className={`set-dep ${ok ? "ok" : "off"}`} key={label}>
-      <span className="set-dep-dot" />
-      <span className="set-dep-label">{label}</span>
-      <span className="set-dep-detail">{detail}</span>
-      <span className="set-dep-state">{ok ? "已连接" : "未连接"}</span>
-    </div>
-  );
+  const [tab, setTab] = useState("members");
+  const connectors = [
+    { src: "/icons/foundry.svg", name: "Azure AI Foundry Agent Service", desc: "Agent 执行与编排服务", ok: deps.foundry !== false },
+    { src: "/icons/ai-search.svg", name: "Azure AI Search", desc: "向量检索与搜索服务", ok: (deps.search || health.search_endpoint) !== false },
+    { src: "/icons/azure-blob.svg", name: "Azure Blob Storage", desc: "数据与文件存储服务", ok: deps.blob !== false },
+    { icon: Server, name: "MCP Server", desc: "外部工具与能力连接器", ok: deps.mcp !== false },
+    { src: "/icons/speech.svg", name: "Azure AI Speech", desc: "语音识别与合成服务", ok: deps.speech !== false },
+    { src: "/icons/content-safety.svg", name: "Azure AI Content Safety", desc: "内容安全与风险检测", ok: deps.content_safety !== false },
+  ];
   const kv = (k, v) => (<div className="set-kv"><span>{k}</span><b>{v}</b></div>);
+  const cfgCard = (icon, title, rows, desc) => (
+    <section className="card set-cfg">
+      <div className="set-cfg-h">{icon}<strong>{title}</strong><span className="lnk lnk-btn">管理</span></div>
+      <div className="set-cfg-rows">{rows.map(([k, v]) => kv(k, v))}</div>
+      <p className="set-cfg-desc">{desc}</p>
+    </section>
+  );
   return (
     <main className="agent-studio settings-stage">
-      <section className="dashboard-hero">
-        <div>
-          <span className="eyeless-label">Settings</span>
-          <h1>设置</h1>
-          <p>模型与生成、产物偏好、数据与合规，以及当前演示环境的集成与连接状态。</p>
-        </div>
-      </section>
-      <div className="settings-cards">
-        <article className="set-card">
-          <div className="set-card-head"><Sparkles size={16} /><strong>模型与生成</strong></div>
-          {kv("对话 / 推理模型", models.chat || "gpt-5.1")}
-          {kv("概念图模型", models.image || "gpt-image-2")}
-          {kv("向量模型（RAG）", models.embedding || "text-embedding-3-small")}
-          {kv("检索增强", "Azure AI Search · 向量 + 关键词")}
-        </article>
-        <article className="set-card">
-          <div className="set-card-head"><FileDown size={16} /><strong>产物偏好</strong></div>
-          {kv("默认生成", "项目文档 + 概念图")}
-          <label className="set-toggle">
-            <span>默认同时生成语音摘要</span>
-            <input type="checkbox" checked={audioPref} onChange={toggleAudio} />
-            <i className="set-switch" />
-          </label>
-          <p className="set-note">语音摘要为可选产物；也可在「产出物中心」按需单独生成。</p>
-        </article>
-        <article className="set-card">
-          <div className="set-card-head"><ShieldCheck size={16} /><strong>数据与合规</strong></div>
-          {kv("内容安全（RAI）", deps.content_safety ? "已启用 · Prompt Shield" : "未配置")}
-          {kv("身份认证", "Microsoft Entra ID · Easy Auth")}
-          {kv("数据驻留", "Azure · East US 2")}
-          {kv("分布式追踪", tracing.app_insights ? "App Insights · OpenTelemetry" : "本地")}
-        </article>
-        <article className="set-card">
-          <div className="set-card-head"><Layers3 size={16} /><strong>通用偏好</strong></div>
-          {kv("界面语言", "简体中文")}
-          {kv("主题", "浅色（深色即将支持）")}
-          {kv("时区", "跟随系统")}
-          {kv("数据持久化", deps.blob ? "Azure Blob（工作区/会话/产物）" : "本地")}
-        </article>
-        <article className="set-card span2">
-          <div className="set-card-head"><Activity size={16} /><strong>集成与连接状态</strong></div>
-          <div className="set-deps">
-            {depRow("Azure AI Foundry · Agent Service", deps.foundry, details.foundry?.endpoint || "多 Agent 编排")}
-            {depRow("Azure AI Search", deps.search || health.search_endpoint, "混合检索 RAG")}
-            {depRow("Azure Blob Storage", deps.blob, "工作区 / 会话 / 产物持久化")}
-            {depRow("MCP Server", deps.mcp, "market_lookup 工具")}
-            {depRow("Azure AI Speech", deps.speech, "TTS 语音摘要 / STT 语音输入")}
-            {depRow("Azure AI Content Safety", deps.content_safety, "Prompt Shield + 内容审核")}
+      <header className="conv-head">
+        <span className="eyeless-label">Settings</span>
+        <h1>设置</h1>
+        <p>管理模型与生成、数据与合规、系统偏好与集成连接，确保平台安全稳定运行。</p>
+      </header>
+
+      <div className="set-stats">
+        <div className="card set-stat"><div className="set-stat-ic blue"><Boxes size={18} /></div><b>模型服务</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>在线模型 4 个</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><Database size={18} /></div><b>数据存储</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>存储用量 68%</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><ShieldCheck size={18} /></div><b>内容安全</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>Prompt Shield 已启用</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><Server size={18} /></div><b>连接器状态</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">全部正常</span></div><em>已连接 6 / 6</em></div>
+      </div>
+
+      <div className="set-cfgs">
+        {cfgCard(<Sparkles size={16} />, "模型与生成", [["对话 / 推理模型", models.chat || "gpt-5.1"], ["概念图模型", models.image || "gpt-image-2"], ["向量模型（RAG）", models.embedding || "text-embedding-3-small"], ["检索增强", "Azure AI Search · 向量 + 关键词"], ["默认生成音频摘要", "已禁用"]], "控制模型选择、检索增强与生成输出行为。")}
+        {cfgCard(<ShieldCheck size={16} />, "数据与合规", [["内容安全（RAI）", "已启用 · Prompt Shield"], ["身份认证", "Microsoft Entra ID · Easy Auth"], ["数据驻留", "Azure · East US 2"], ["分布式追踪", "App Insights · OpenTelemetry"], ["审计日志保留", "180 天"]], "保障数据安全、合规与可观测性。")}
+        {cfgCard(<Cpu size={16} />, "工作区偏好", [["界面语言", "简体中文"], ["主题", "浅色（深色即将支持）"], ["时区", "跟随系统"], ["数据持久化", "Azure Blob（工作区/会话/产物）"], ["默认时区显示", "跟随系统"]], "自定义界面语言、主题、时区与数据持久化偏好。")}
+      </div>
+
+      <div className="set-bottom">
+        <section className="card set-conn">
+          <div className="cardhead"><span className="t">集成与连接状态</span><button type="button" className="lnk lnk-btn"><RefreshCw size={13} /> 刷新状态</button></div>
+          <div className="set-conn-grid">
+            {connectors.map((c, i) => {
+              const Ic = c.icon;
+              return (
+                <div className="set-conn-card" key={i}>
+                  {c.src ? <img className="svc-ic" src={c.src} width="26" height="26" alt="" /> : <span className="set-conn-lic"><Ic size={20} /></span>}
+                  <div className="set-conn-main"><b>{c.name}</b><em>{c.desc}</em></div>
+                  <span className={c.ok ? "dw-chip ok" : "dw-chip"}>{c.ok ? "已连接" : "未连接"}</span>
+                </div>
+              );
+            })}
           </div>
-        </article>
-        <article className="set-card">
-          <div className="set-card-head"><ShieldCheck size={16} /><strong>关于</strong></div>
-          {kv("产品", "DataForge Agent Studio")}
-          {kv("赛道", "GCR Hackathon · Pro Code")}
-          {kv("环境", "演示 / Demo")}
-        </article>
+          <p className="set-cfg-desc">管理平台所依赖的外部服务与连接器，确保数据流转与能力调用正常。</p>
+        </section>
+
+        <section className="card set-about">
+          <div className="set-tabs">
+            <button type="button" className={tab === "about" ? "set-tab active" : "set-tab"} onClick={() => setTab("about")}>关于</button>
+            <button type="button" className={tab === "members" ? "set-tab active" : "set-tab"} onClick={() => setTab("members")}>成员与权限</button>
+          </div>
+          {tab === "about" ? (
+            <div className="set-about-body">
+              {kv("产品名称", "DataForge")}
+              {kv("版本", "v1.0.0")}
+              {kv("构建编号", "2024.05.02.1021")}
+              {kv("部署环境", "生产环境")}
+              <div className="set-kv"><span>服务协议</span><span className="lnk lnk-btn">查看服务协议</span></div>
+              <div className="set-kv"><span>隐私政策</span><span className="lnk lnk-btn">查看隐私政策</span></div>
+            </div>
+          ) : (
+            <div className="set-members">
+              <div className="set-members-head"><span>成员（{SET_MEMBERS.length}）</span><button type="button" className="lnk lnk-btn">管理成员</button></div>
+              {SET_MEMBERS.map((m, i) => (
+                <div className="set-member" key={i}>
+                  <span className="mbr-av">{m.initial}</span>
+                  <div className="mbr-main"><b>{m.name}</b><em>{m.email}</em></div>
+                  {m.you ? <span className="dw-chip ok">所有者</span> : <span className="mbr-role">{m.role}<ChevronDown size={13} /></span>}
+                </div>
+              ))}
+              <button type="button" className="lnk lnk-btn set-more-mbr">查看更多成员 ›</button>
+            </div>
+          )}
+        </section>
       </div>
     </main>
   );
