@@ -618,6 +618,8 @@ svg { flex-shrink: 0; }
 .tbl-card .cardhead .t { font-size: 14px; font-weight: 600; }
 .tbl-card .cardhead .lnk { font-size: 13px; color: var(--blue); font-weight: 600; cursor: pointer; }
 .tbl-wrap { overflow-x: auto; }
+.asset-detail { padding: 4px 4px 10px; }
+.asset-detail .data-overview { border: 0; background: transparent; box-shadow: none; margin: 0; padding: 12px 16px; }
 .data-table { width: 100%; border-collapse: collapse; }
 .data-table thead th { font-size: 12px; font-weight: 600; color: var(--muted); text-align: left; padding: 11px 18px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .data-table tbody td { font-size: 13.5px; padding: 12px 18px; border-bottom: 1px solid #f1f2f4; color: var(--ink); }

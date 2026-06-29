@@ -1004,19 +1004,22 @@ function AgentPipeline({ trace = [], running = false, hasResult = false }) {
   );
 }
 
-function DataAssetsTable({ documents = [], workspace = {}, detailOpen = false, onViewDetails }) {
+function DataAssetsTable({ documents = [], workspace = {}, detailOpen = false, onViewDetails, workspaceId }) {
   const rows = documents.slice(0, 6);
   const isIndexed = (status) => !status || /就绪|已解析|ready|done|index/i.test(String(status));
   const updated = workspace.updated_at ? new Date(workspace.updated_at).toLocaleDateString("zh-CN") : "Today";
   return (
     <div className="card tbl-card" data-tour="artifacts">
       <div className="cardhead">
-        <span className="t">最近数据资产</span>
+        <span className="t">{detailOpen ? "数据说明 · Agent 解读" : "最近数据资产"}</span>
         {onViewDetails ? (
-          <button type="button" className="lnk lnk-btn" onClick={onViewDetails}>{detailOpen ? "收起数据说明" : "查看详情"}</button>
+          <button type="button" className="lnk lnk-btn" onClick={onViewDetails}>{detailOpen ? "返回资产列表" : "查看详情"}</button>
         ) : null}
       </div>
       <div className="tbl-wrap">
+        {detailOpen ? (
+          <div className="asset-detail"><DataOverviewCard workspaceId={workspaceId} hasDocs={documents.length > 0} embedded /></div>
+        ) : (
         <table className="data-table">
           <thead><tr><th>名称</th><th>类型</th><th>字段</th><th>记录</th><th>状态</th><th>更新时间</th></tr></thead>
           <tbody>
@@ -1038,6 +1041,7 @@ function DataAssetsTable({ documents = [], workspace = {}, detailOpen = false, o
             )}
           </tbody>
         </table>
+        )}
       </div>
     </div>
   );
@@ -1116,17 +1120,7 @@ function DashboardStudio({
         <AuditCard artifact={finalArtifact} />
       </div>
 
-      <DataAssetsTable documents={documents} workspace={workspace} detailOpen={showDataDetail} onViewDetails={() => setShowDataDetail((v) => !v)} />
-      {showDataDetail ? (
-        <DataOverviewCard workspaceId={dashboard?.workspace_id || workspace?.workspace_id} hasDocs={(documents || []).length > 0} />
-      ) : null}
-
-      <PlanIteratePanel
-        workspaceId={dashboard?.workspace_id || workspace?.workspace_id}
-        runs={dashboard?.runs || []}
-        running={running}
-        onIterate={(inputs) => onRun("基于回填指标迭代优化这版方案，逼近一个可作为公司重点的方案。", { stayOnDashboard: true, iterationInputs: inputs })}
-      />
+      <DataAssetsTable documents={documents} workspace={workspace} detailOpen={showDataDetail} onViewDetails={() => setShowDataDetail((v) => !v)} workspaceId={dashboard?.workspace_id || workspace?.workspace_id} />
 
       <Collapsible title="高级分析" hint="运行更深入的模型与仿真分析">
         <section className="studio-methods">
@@ -1135,6 +1129,13 @@ function DashboardStudio({
         </section>
         <WebSearchPanel trace={trace} />
       </Collapsible>
+
+      <PlanIteratePanel
+        workspaceId={dashboard?.workspace_id || workspace?.workspace_id}
+        runs={dashboard?.runs || []}
+        running={running}
+        onIterate={(inputs) => onRun("基于回填指标迭代优化这版方案，逼近一个可作为公司重点的方案。", { stayOnDashboard: true, iterationInputs: inputs })}
+      />
     </main>
   );
 }
