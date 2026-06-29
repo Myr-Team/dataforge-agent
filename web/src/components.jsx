@@ -934,12 +934,12 @@ function OverviewCards({ workspace = {}, documents = [], runs = [] }) {
   const coverage = Math.round(rawCov > 1 ? rawCov : rawCov * 100);
   const fields = workspace.field_count || 0;
   const lastRun = runs[0];
-  const runLabel = lastRun ? (VERDICT_LABELS[lastRun.verdict] || (lastRun.status === "done" || lastRun.completed_at ? "Completed" : "Running")) : "—";
+  const runLabel = lastRun ? (VERDICT_LABELS[lastRun.verdict] || (lastRun.status === "done" || lastRun.completed_at ? "已完成" : "运行中")) : "—";
   const cards = [
-    { ic: <Database size={18} />, n: assets, l: "Data assets", s: `${fields} fields tracked` },
-    { ic: <Rows3 size={18} />, n: records, l: "Records", s: `Field coverage ${coverage}%` },
-    { ic: <TrendingUp size={18} />, n: `${coverage}%`, l: "Field coverage", s: coverage >= 100 ? "Full schema" : "Partial schema" },
-    { ic: <Clock3 size={18} />, n: runLabel, l: "Last run", s: lastRun?.title ? String(lastRun.title).slice(0, 22) : "No run yet", small: true },
+    { ic: <Database size={18} />, n: assets, l: "数据源", s: `${fields} 个字段` },
+    { ic: <Rows3 size={18} />, n: records, l: "记录数", s: `字段覆盖率 ${coverage}%` },
+    { ic: <TrendingUp size={18} />, n: `${coverage}%`, l: "字段覆盖率", s: coverage >= 100 ? "完整结构" : "部分结构" },
+    { ic: <Clock3 size={18} />, n: runLabel, l: "最近运行", s: lastRun?.title ? String(lastRun.title).slice(0, 22) : "暂无运行", small: true },
   ];
   return (
     <div className="ov-grid">
@@ -1002,10 +1002,10 @@ function DataAssetsTable({ documents = [], workspace = {} }) {
   const updated = workspace.updated_at ? new Date(workspace.updated_at).toLocaleDateString("zh-CN") : "Today";
   return (
     <div className="card tbl-card" data-tour="artifacts">
-      <div className="cardhead"><span className="t">Recent Data Assets</span></div>
+      <div className="cardhead"><span className="t">最近数据资产</span></div>
       <div className="tbl-wrap">
         <table className="data-table">
-          <thead><tr><th>Name</th><th>Type</th><th>Fields</th><th>Records</th><th>Status</th><th>Updated</th></tr></thead>
+          <thead><tr><th>名称</th><th>类型</th><th>字段</th><th>记录</th><th>状态</th><th>更新时间</th></tr></thead>
           <tbody>
             {rows.length ? rows.map((doc, i) => {
               const name = doc.name || sanitizeSourceLabel(doc.source_file) || `asset-${i}`;
@@ -1013,10 +1013,10 @@ function DataAssetsTable({ documents = [], workspace = {} }) {
               return (
                 <tr key={doc.source_file || name}>
                   <td><span className="td-name"><FileText size={15} />{name}</span></td>
-                  <td>{doc.format || "Document"}</td>
-                  <td><span className="td-chip">Partial</span></td>
+                  <td>{doc.format || "文档"}</td>
+                  <td><span className="td-chip">部分字段</span></td>
                   <td className="td-mut">—</td>
-                  <td><span className={ok ? "td-stt ok" : "td-stt warn"}><span className="d" />{ok ? "Indexed" : "Needs review"}</span></td>
+                  <td><span className={ok ? "td-stt ok" : "td-stt warn"}><span className="d" />{ok ? "已索引" : "待复核"}</span></td>
                   <td className="td-mut">{updated}</td>
                 </tr>
               );
@@ -1058,7 +1058,7 @@ function DashboardStudio({
     <main className="agent-studio dashboard-stage">
       <section className="dashboard-hero">
         <div>
-          <div className="dh-title"><h1>{workspace.name || "数据产品化工作区"}</h1><span className="tag-ws">Workspace</span></div>
+          <div className="dh-title"><h1>{workspace.name || "数据产品化工作区"}</h1><span className="tag-ws">工作区</span></div>
           <p>{workspace.customer_summary || workspace.profile_summary || "整合客户资料、市场反馈与产品数据，自动发现可落地的产品机会。"}</p>
         </div>
         <div className="dashboard-actions">
