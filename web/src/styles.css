@@ -320,7 +320,7 @@ svg { flex-shrink: 0; }
 
 .workbench-grid {
   display: grid;
-  grid-template-columns: clamp(260px, 24vw, 340px) minmax(520px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
 }
@@ -1680,7 +1680,7 @@ svg { flex-shrink: 0; }
   body { overflow: auto; }
   .app-shell { height: auto; min-height: 100dvh; grid-template-columns: 112px minmax(0, 1fr); }
   .workbench { min-height: 100dvh; }
-  .workbench-grid { grid-template-columns: 300px minmax(0, 1fr); grid-template-rows: auto auto; overflow: visible; }
+  .workbench-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; overflow: visible; }
   .inspector { grid-column: 1 / -1; margin: 0 16px 18px; min-height: 420px; }
   .agent-studio { min-height: 760px; }
   .agent-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }

@@ -1087,6 +1087,8 @@ function DashboardStudio({
 
       <AgentPipeline trace={trace} running={running} hasResult={Boolean(feasibility.verdict)} />
 
+      <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} onProduce={onProduce} />
+
       <div className="verdict-row">
         <VerdictHero feasibility={feasibility} verdict={verdict} running={running} artifact={finalArtifact} />
         <AuditCard artifact={finalArtifact} />

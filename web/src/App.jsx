@@ -765,15 +765,6 @@ export function App() {
       <div className="workbench">
         <MobileNav active={activeView} onChange={setActiveView} />
         <div className="workbench-grid">
-          <WorkspacePane
-            dashboard={dashboard}
-            workspaceId={workspaceId}
-            onUpload={openAppendUpload}
-            onDeleteWorkspace={removeWorkspace}
-            onOpenConversation={openConversation}
-            onRefresh={() => refreshDashboard(workspaceId)}
-            deleting={deleting}
-          />
           <WorkbenchMain
             view={activeView}
             setView={setActiveView}
