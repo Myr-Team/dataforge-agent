@@ -657,18 +657,37 @@ svg { flex-shrink: 0; }
 .id-copy:hover { color: var(--blue); background: var(--surface-soft); }
 
 /* ===== 会话页(对齐参考图4) ===== */
-.agent-studio.conv-stage { display: flex; flex-direction: column; gap: 14px; overflow: hidden; padding: 20px 26px 0; }
+/* 会话页=分析工作台：整页单层滚动（无内层滚动条），底部输入框 sticky */
+.agent-studio.conv-stage { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; padding: 20px 26px 0; }
 .conv-head h1 { font-size: 25px; font-weight: 700; letter-spacing: -.02em; margin-top: 2px; }
 .conv-head p { font-size: 14px; color: var(--muted); margin-top: 6px; }
 .conv-chips { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .cc-label { font-size: 13px; color: var(--muted); font-weight: 500; }
 .cc-chip { font-size: 13px; padding: 7px 14px; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; color: var(--ink); cursor: pointer; }
 .cc-chip:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
-.conv-body { flex: 1; min-height: 0; overflow: hidden; display: grid; grid-template-columns: minmax(0,1fr) 348px; gap: 16px; }
-@media (max-width: 1100px){ .conv-body { grid-template-columns: 1fr; overflow-y: auto; } }
-.conv-main { min-width: 0; min-height: 0; overflow-y: auto; padding-right: 3px; }
-.conv-context { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; padding-right: 3px; }
+.conv-body { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 22px; align-items: start; }
+@media (max-width: 1100px){ .conv-body { grid-template-columns: 1fr; } }
+.conv-main { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.conv-context { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .conv-result { padding: 18px 20px; }
+
+/* 主会话流：用户问题轻量条 + AI 全宽输出卡（无嵌套聊天框、无内层滚动） */
+.answer-flow { display: flex; flex-direction: column; gap: 16px; }
+.user-ask { display: flex; align-items: flex-start; gap: 10px; padding: 11px 14px; background: var(--blue-soft); border: 1px solid #cfe0fb; border-radius: 10px; }
+.user-ask-tag { flex: none; font-size: 11px; font-weight: 700; color: var(--blue); background: #fff; border: 1px solid #cfe0fb; border-radius: 6px; padding: 2px 8px; line-height: 1.5; }
+.user-ask p { font-size: 13.5px; line-height: 1.6; color: var(--ink); margin: 1px 0 0; }
+.answer-card { padding: 18px 20px; }
+.answer-card-body { font-size: 14px; }
+.answer-card .cr-top { margin-bottom: 14px; }
+.trust-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tb { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.tb.ok { color: var(--mint); background: #eaf7f0; }
+.tb.warn { color: var(--amber); background: #fdf3e6; }
+.tb.info { color: #475569; background: #eef2f7; }
+.answer-card.waiting, .answer-card.streaming { background: var(--surface); }
+.answer-card .cr-foot { flex-wrap: wrap; row-gap: 10px; margin-top: 16px; }
+.cr-acts .msg-copy { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--ink); cursor: pointer; }
+.cr-acts .cr-prd { border-color: #cfe0fb; color: var(--blue); background: var(--blue-soft); }
 .cr-top { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; }
 .cr-av { width: 28px; height: 28px; border-radius: 8px; background: var(--blue-soft); color: var(--blue); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
 .cr-top b { font-size: 13.5px; } .cr-top em { font-size: 12px; color: var(--faint); font-style: normal; }
@@ -715,7 +734,9 @@ svg { flex-shrink: 0; }
 .qa-ic { width: 32px; height: 32px; border-radius: 8px; background: var(--surface-soft); color: var(--blue); display: flex; align-items: center; justify-content: center; flex: none; }
 .qa-item b { font-size: 13px; font-weight: 600; display: block; }
 .qa-item em { font-size: 11.5px; color: var(--faint); font-style: normal; }
-.conv-composer { padding: 12px 0 16px; }
+.conv-composer { position: sticky; bottom: 0; z-index: 5; padding: 12px 0 16px; margin-top: 4px; background: linear-gradient(180deg, rgba(248,249,251,0) 0%, var(--bg) 22%); }
+/* 上下文里的 verdict badge 不竖向断行 */
+.ctx-kv .dw-chip, .ctx-audit .dw-chip { white-space: nowrap; flex: none; }
 
 /* ===== 产物页(参考图5) ===== */
 .agent-studio.outputs-stage, .agent-studio.settings-stage { display: flex; flex-direction: column; gap: 16px; overflow-y: auto; padding: 20px 26px; }

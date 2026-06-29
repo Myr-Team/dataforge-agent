@@ -1368,7 +1368,19 @@ function ConversationStudio({
   setSelectedPlaybook,
 }) {
   const workspace = dashboard?.workspace || {};
-  const docs = workspace.documents || [];
+  const docsRaw = workspace.documents || [];
+  // 按文件名去重，避免「当前数据源」出现重复条目
+  const docs = (() => {
+    const seen = new Set();
+    const out = [];
+    for (const d of docsRaw) {
+      const key = String(d?.name || "").trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(d);
+    }
+    return out;
+  })();
   const recent = (dashboard?.runs || [])[0] || {};
   const recentVerdict = recent.verdict ? (VERDICT_LABELS[recent.verdict] || recent.verdict) : "有条件可行";
   const presentation = useAgentPresentation(trace, running);
@@ -1401,61 +1413,72 @@ function ConversationStudio({
           {hasMsgs ? (
             <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} trace={trace} onStop={onStop} />
           ) : (
-            <article className="card conv-result">
-              <div className="cr-top"><span className="cr-av">AI</span><b>AI Agent</b><em>· 示例分析结果</em></div>
-              <div className="cr-sec"><div className="cr-h"><FileText size={15} />结论摘要</div>
-                <p>基于 3 个数据源与多维分析，推荐在 华东-上海-浦东 的 高新区 人流-竞品-租金综合表现最优，适合作为首批试点区域。</p>
-                <p>预计试点 4 周内可完成 1,250–1,750 组意向触达，首月可沉淀 68–98 组高意向线索，ROI 预期为 1.8–2.3。</p>
+            <div className="answer-flow">
+              <div className="user-ask">
+                <span className="user-ask-tag">用户问题</span>
+                <p>请只根据工作区数据，列出支持产品化的最强证据和最大的证据缺口。</p>
               </div>
-              <div className="cr-sec"><div className="cr-h"><Lightbulb size={15} />核心建议</div>
-                <div className="cr-advice">
-                  <div className="cra"><b>首批试点区域</b><strong>华东-上海-浦东 · 高新区</strong><em>综合得分 82 / 100</em></div>
-                  <div className="cra"><b>目标客群</b><strong>25–35 岁新锐白领 & 创业者</strong><em>预计覆盖 62% 潜在客群</em></div>
-                  <div className="cra"><b>关键行动</b><strong>4 周拉新试点 + 内容种草 + 线下体验</strong><em>预计首月 ROI 1.8 – 2.3</em></div>
+              <article className="card answer-card">
+                <div className="cr-top"><span className="cr-av">AI</span><b>AI Agent</b><em>· 2 分钟前</em></div>
+                <div className="cr-sec"><div className="cr-h"><FileText size={15} />结论摘要</div>
+                  <p>基于当前工作区已有资料，{workspace.name || "TrailSense Outdoor IoT"} 已积累一定数量的产品、传感器与客户反馈资料，具备继续做方向性产品探索的基础。但当前数据仍缺少真实用户需求、商业化指标和技术验证数据，因此<b>不建议直接进入完整产品化阶段</b>，建议先进行小范围验证。</p>
                 </div>
-              </div>
-              <div className="cr-sec"><div className="cr-h"><BookOpen size={15} />依据</div>
-                <ul className="cr-basis">
-                  <li><b>surrounding_env</b>：工作区数据画像与结构概览（字段 / 记录规模）</li>
-                  <li><b>device_events</b>：人流与行为数据（近 30 天）</li>
-                  <li><b>market_notes</b>：市场与竞品信息（行业报告 / 公开资料）</li>
-                </ul>
-              </div>
-              <div className="cr-sec"><div className="cr-h"><FileText size={15} />证据</div>
-                <div className="cr-evid">
-                  {(docs.length ? docs.slice(0, 3) : [{ name: "surrounding_env.xlsx", format: "xlsx" }, { name: "device_events.csv", format: "csv" }, { name: "market_notes.md", format: "md" }]).map((d, i) => (
-                    <div className="cre" key={i}><FileTypeIcon doc={d} size={22} /><div><b>{d.name}</b><em>{d.format || "文档"}</em></div></div>
-                  ))}
-                  <div className="cre muted"><Database size={18} /><div><b>共 {docs.length || 3} 个数据源</b><em>已关联分析</em></div></div>
+                <div className="cr-sec"><div className="cr-h"><Lightbulb size={15} />核心建议</div>
+                  <div className="cr-advice">
+                    <div className="cra"><b>优先验证场景</b><strong>户外设备监测与异常预警</strong><em>基于产品手册、传感器字段和客户反馈初步推断</em></div>
+                    <div className="cra"><b>关键证据缺口</b><strong>用户需求 · 使用频率 · 付费意愿</strong><em>当前资料未覆盖真实访谈和需求优先级</em></div>
+                    <div className="cra"><b>建议下一步</b><strong>设计 2 周验证实验</strong><em>补充客户访谈、POC 指标和成本测算</em></div>
+                  </div>
                 </div>
-              </div>
-              <div className="cr-foot">
-                <span>以上结论由 AI 生成，请结合你的业务判断使用。</span>
-                <div className="cr-acts">
-                  <button type="button"><Copy size={14} />复制</button>
-                  <button type="button"><FileDown size={14} />生成 PRD 草案</button>
-                  <button type="button" className="cr-ico"><ThumbsUp size={14} /></button>
-                  <button type="button" className="cr-ico"><ThumbsDown size={14} /></button>
+                <div className="cr-sec"><div className="cr-h"><BookOpen size={15} />依据</div>
+                  <ul className="cr-basis">
+                    <li><b>product_manual.md</b>：产品功能和设备能力说明</li>
+                    <li><b>sensor_data_dictionary.md</b>：传感器字段和数据结构</li>
+                    <li><b>customer_feedback_summary.md</b>：客户反馈与问题线索</li>
+                    <li><b>internal_technical_wiki.md</b>：内部技术约束与实现说明</li>
+                  </ul>
                 </div>
-              </div>
-            </article>
+                <div className="cr-sec"><div className="cr-h"><FileText size={15} />证据</div>
+                  <div className="cr-evid">
+                    {(docs.length ? docs.slice(0, 3) : [{ name: "product_manual.md", format: "md" }, { name: "sensor_data_dictionary.md", format: "md" }, { name: "customer_feedback_summary.md", format: "md" }]).map((d, i) => (
+                      <div className="cre" key={i}><FileTypeIcon doc={d} size={22} /><div><b>{d.name}</b><em>{d.format || "文档"}</em></div></div>
+                    ))}
+                    <div className="cre muted"><Database size={18} /><div><b>共 {docs.length || 9} 个数据源</b><em>已关联分析</em></div></div>
+                  </div>
+                </div>
+                <div className="cr-foot">
+                  <div className="trust-badges">
+                    <span className="tb ok"><CheckCircle2 size={13} />数据已证实</span>
+                    <span className="tb warn"><AlertTriangle size={13} />证据不足</span>
+                    <span className="tb info">需要补充验证</span>
+                  </div>
+                  <div className="cr-acts">
+                    <button type="button"><Copy size={14} />复制</button>
+                    <button type="button"><RotateCcw size={14} />重新生成</button>
+                    <button type="button" className="cr-prd"><FileDown size={14} />生成 PRD 草案</button>
+                    <button type="button" className="cr-ico" title="有帮助"><ThumbsUp size={14} /></button>
+                    <button type="button" className="cr-ico" title="需改进"><ThumbsDown size={14} /></button>
+                  </div>
+                </div>
+              </article>
+            </div>
           )}
         </div>
 
         <aside className="conv-context">
           <section className="card ctx-card">
             <div className="ctx-h">当前工作区上下文</div>
-            <div className="ctx-kv"><span>工作区</span><b>{workspace.name || "当前工作区"}</b></div>
+            <div className="ctx-kv"><span>工作区</span><b>{workspace.name || "TrailSense Outdoor IoT"}</b></div>
             <div className="ctx-kv"><span>角色</span><b>所有者</b></div>
-            <div className="ctx-kv"><span>描述</span><b className="ctx-desc">{workspace.customer_summary || workspace.profile_summary || "基于多源数据与智能体协同，生成可行性评估与情报报告。"}</b></div>
+            <div className="ctx-kv"><span>描述</span><b className="ctx-desc">{workspace.customer_summary || workspace.profile_summary || "共 1 份资料，适合用来做资料问答、机会判断和下一步方案验证。"}</b></div>
             <button type="button" className="ctx-btn">查看工作区详情</button>
           </section>
 
           <section className="card ctx-card">
-            <div className="ctx-h">当前数据源<em>{docs.length || 3} 个数据源已关联</em></div>
+            <div className="ctx-h">当前数据源<em>{docs.length || 9} 个数据源已关联</em></div>
             <div className="ctx-srcs">
-              {(docs.length ? docs.slice(0, 4) : [{ name: "surrounding_env.xlsx", format: "xlsx" }, { name: "device_events.csv", format: "csv" }, { name: "market_notes.md", format: "md" }]).map((d, i) => (
-                <div className="ctx-src" key={i}><FileTypeIcon doc={d} size={18} /><b>{d.name}</b></div>
+              {(docs.length ? docs.slice(0, 5) : [{ name: "product_manual.md", format: "md" }, { name: "sensor_data_dictionary.md", format: "md" }, { name: "customer_feedback_summary.md", format: "md" }, { name: "internal_technical_wiki.md", format: "md" }]).map((d, i) => (
+                <div className="ctx-src" key={i}><FileTypeIcon doc={d} size={18} /><b title={d.name}>{d.name}</b></div>
               ))}
             </div>
             <button type="button" className="lnk lnk-btn">查看全部数据源 ›</button>
@@ -1464,8 +1487,8 @@ function ConversationStudio({
           <section className="card ctx-card">
             <div className="ctx-h">最近分析结论</div>
             <div className="ctx-kv"><span>综合结论</span><span className="dw-chip ok">{recentVerdict}</span></div>
-            <div className="ctx-kv"><span>生成时间</span><b>{formatTime(recent.completed_at || recent.time) || "2024-05-02 10:22"}</b></div>
-            <div className="ctx-sub">基于 {docs.length || 3} 个数据源 · 12 项指标 <button type="button" className="lnk lnk-btn">查看详情</button></div>
+            <div className="ctx-kv"><span>生成时间</span><b>{formatTime(recent.completed_at || recent.time) || "06/29 15:56"}</b></div>
+            <div className="ctx-sub">基于 {docs.length || 9} 个数据源 · 12 项指标 <button type="button" className="lnk lnk-btn">查看详情</button></div>
           </section>
 
           <section className="card ctx-card">
@@ -2314,23 +2337,6 @@ function CopyButton({ text }) {
 }
 
 function AnswerPanel({ messages, streamText, running, presentation, onRun, onProduce, producing, trace, onStop }) {
-  const visible = messages.length || streamText;
-  const scrollRef = useRef(null);
-  const bottomRef = useRef(null);
-  const atBottomRef = useRef(true);
-  // 仅在用户已贴着底部时才自动滚；上翻看历史/证据时不抢滚动
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (el) atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  };
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const last = messages[messages.length - 1];
-    if (last?.role === "user") atBottomRef.current = true; // 用户刚发言，强制跟到最新
-    if (!atBottomRef.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages, streamText, running]);
   // 等待期间显示当前是哪个 Agent 在干什么(取自实时 trace)，把多 Agent 协作秀进对话流
   const liveStage = useMemo(() => deriveAgentStage(trace), [trace]);
   const lastUserText = useMemo(() => {
@@ -2340,87 +2346,68 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
     return "";
   }, [messages]);
   return (
-    <div className="answer-panel">
-      <div className="answer-panel-head">
-        <div>
-          <span>AI 分析</span>
-          <strong>{running ? "实时生成中" : "结果输出"}</strong>
-        </div>
-        <div className={running ? "typing-indicator live" : "typing-indicator"}>
-          <i /><i /><i />
-          <span>{running ? (liveStage || presentation.caption) : "等待输入"}</span>
-        </div>
-      </div>
-      {visible ? (
-        <div className="message-stack" ref={scrollRef} onScroll={handleScroll}>
-          {messages.map((message, index) => {
-            const isLastUser = message.role === "user" && index === messages.length - 1;
-            return (
-              <article key={`${message.role}-${index}`} className={`chat-message ${message.role}`}>
-                <div className="speaker">{message.role === "user" ? "你" : "AI"}</div>
-                <div className="message-body">
-                  {message.clarify
-                    ? <ClarifyCard clarify={message.clarify} onSubmit={onRun} disabled={running} />
-                    : message.role === "user"
-                      ? <TypeOut text={message.text} animate={isLastUser && running} />
-                      : <RichText text={message.text} citations={message.citations} />}
-                  {message.citations?.length ? <CitationInline citations={message.citations} text={message.text} /> : null}
-                  {message.role === "assistant" && message.text && !message.clarify ? (
-                    <div className="msg-actions">
-                      <CopyButton text={message.text} />
-                      {message.recoverable && !running ? (
-                        <button
-                          type="button"
-                          className="msg-copy msg-retry"
-                          title="重试/继续本次回答"
-                          onClick={() => onRun(message.recoverable.prompt || lastUserText, { regenerate: true })}
-                        >
-                          <RotateCcw size={13} /> 重试/继续
-                        </button>
-                      ) : null}
-                      {!message.recoverable && index === messages.length - 1 && !running && lastUserText ? (
-                        <button type="button" className="msg-copy msg-regen" title="用同一个问题重新生成" onClick={() => onRun(lastUserText, { regenerate: true })}>
-                          <RotateCcw size={13} /> 重新生成
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {message.produceOffer && onProduce ? (
-                    <button
-                      type="button"
-                      className="produce-offer-chip"
-                      onClick={() => onProduce(message.produceOffer)}
-                      disabled={producing}
-                    >
-                      {producing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
-                      <span>{message.produceOffer.label || "确认生成产物"}</span>
-                    </button>
-                  ) : null}
-                  {message.producedArtifacts ? <ChatArtifacts artifacts={message.producedArtifacts} /> : null}
+    <div className="answer-flow">
+      {messages.map((message, index) => {
+        // 用户提问 → 轻量「用户问题」条（非即时通讯气泡）
+        if (message.role === "user") {
+          return (
+            <div className="user-ask" key={`u-${index}`}>
+              <span className="user-ask-tag">用户问题</span>
+              <p>{message.text}</p>
+            </div>
+          );
+        }
+        // AI 输出 → 全宽分析卡片
+        const isLast = index === messages.length - 1;
+        return (
+          <article className="card answer-card" key={`a-${index}`}>
+            <div className="cr-top"><span className="cr-av">AI</span><b>AI Agent</b><em>· 分析结果</em></div>
+            <div className="answer-card-body">
+              {message.clarify
+                ? <ClarifyCard clarify={message.clarify} onSubmit={onRun} disabled={running} />
+                : <RichText text={message.text} citations={message.citations} />}
+              {message.citations?.length ? <CitationInline citations={message.citations} text={message.text} /> : null}
+            </div>
+            {message.producedArtifacts ? <ChatArtifacts artifacts={message.producedArtifacts} /> : null}
+            {message.produceOffer && onProduce ? (
+              <button type="button" className="produce-offer-chip" onClick={() => onProduce(message.produceOffer)} disabled={producing}>
+                {producing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
+                <span>{message.produceOffer.label || "确认生成产物"}</span>
+              </button>
+            ) : null}
+            {message.text && !message.clarify ? (
+              <div className="cr-foot">
+                <div className="trust-badges">
+                  <span className="tb ok"><CheckCircle2 size={13} />数据已证实</span>
+                  <span className="tb warn"><AlertTriangle size={13} />部分需补充验证</span>
                 </div>
-              </article>
-            );
-          })}
-          {streamText ? (
-            <article className="chat-message assistant streaming">
-              <div className="speaker">AI</div>
-              <div className="message-body">
-                <RichText text={streamText} />
-                {running ? <span className="cursor" /> : null}
+                <div className="cr-acts">
+                  <CopyButton text={message.text} />
+                  {message.recoverable && !running ? (
+                    <button type="button" onClick={() => onRun(message.recoverable.prompt || lastUserText, { regenerate: true })}><RotateCcw size={14} />重试/继续</button>
+                  ) : isLast && !running && lastUserText ? (
+                    <button type="button" onClick={() => onRun(lastUserText, { regenerate: true })}><RotateCcw size={14} />重新生成</button>
+                  ) : null}
+                  {onProduce ? <button type="button" className="cr-prd" onClick={() => onRun("基于当前结论生成一份 PRD 草案。")}><FileDown size={14} />生成 PRD 草案</button> : null}
+                  <button type="button" className="cr-ico" title="有帮助"><ThumbsUp size={14} /></button>
+                  <button type="button" className="cr-ico" title="需改进"><ThumbsDown size={14} /></button>
+                </div>
               </div>
-            </article>
-          ) : running ? (
-            <WaitingBubble caption={liveStage || presentation?.caption} />
-          ) : null}
-          <div ref={bottomRef} />
-        </div>
-      ) : (
-        <div className="blank-answer">
-          <ShieldCheck size={28} />
-          <strong>等待问题</strong>
-          <span>选择上方问题启动器，或输入你想分析的产品机会。</span>
-        </div>
-      )}
+            ) : null}
+          </article>
+        );
+      })}
+      {streamText ? (
+        <article className="card answer-card streaming">
+          <div className="cr-top"><span className="cr-av">AI</span><b>AI Agent</b><em>· 实时生成中</em></div>
+          <div className="answer-card-body"><RichText text={streamText} />{running ? <span className="cursor" /> : null}</div>
+        </article>
+      ) : running ? (
+        <article className="card answer-card waiting">
+          <div className="cr-top"><span className="cr-av">AI</span><b>AI Agent</b><em>· {liveStage || presentation?.caption || "分析中"}</em></div>
+          <WaitingBubble caption={liveStage || presentation?.caption} />
+        </article>
+      ) : null}
     </div>
   );
 }
@@ -2874,7 +2861,7 @@ function Composer({ input, setInput, running, onRun, onStop }) {
               if (!running && input.trim()) { if (listening) stopVoice(); onRun(input); }
             }
           }}
-          placeholder={listening ? "正在聆听，请说话…" : "继续追问（Enter 发送 · Shift+Enter 换行），或点麦克风语音输入"}
+          placeholder={listening ? "正在聆听，请说话…" : "继续追问（Enter 发送 · Shift+Enter 换行），或从上方选择推荐问题"}
           disabled={running}
         />
         {SR ? (
