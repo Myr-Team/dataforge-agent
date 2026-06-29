@@ -106,6 +106,26 @@ COORDINATOR_REPLY_SCHEMA = {
 }
 
 
+FOLLOWUP_ASSESSMENT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "text": {"type": "string"},
+        "assessment": {
+            "type": "string",
+            "enum": ["supported", "needs_more_evidence", "risky", "unclear"],
+        },
+        "gaps": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "clarify": {"type": "string"},
+        "should_clarify": {"type": "boolean"},
+    },
+    "required": ["text", "assessment", "gaps", "clarify", "should_clarify"],
+}
+
+
 MARKET_WEB_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -1224,6 +1244,47 @@ def run_followup_rewrite(payload: dict[str, Any]) -> dict[str, Any]:
         "If the user asks for English, write English; otherwise follow the user's language. Return JSON only."
     )
     return _coordinator_text_response(openai_client, instructions, payload, "followup_rewrite", max_output_tokens=750)
+
+
+def run_followup_assessment(payload: dict[str, Any]) -> dict[str, Any]:
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "You are the lightweight DataForge follow-up evaluator. Use only the provided last_analysis, "
+        "previous assistant answer, workspace summary, and current user message. Do not rerun retrieval, "
+        "market research, feasibility scoring, or audit. Judge whether the user's new idea or constraint "
+        "is supported by the previous evidence, identify the most important missing information, and ask "
+        "one concise clarifying question when the user intent is ambiguous or the decision depends on a "
+        "missing scope, target user, metric, budget, timing, or data source. Do not use a keyword checklist "
+        "or scenario-specific templates. Never invent workspace facts. Return JSON only, in the user's language."
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": 850,
+        "text": _schema_format("followup_assessment", FOLLOWUP_ASSESSMENT_SCHEMA),
+    }
+    try:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if not _can_retry_without_schema(exc):
+            raise
+        create_args.pop("text", None)
+        response = _responses_create_with_retry(openai_client, **create_args)
+    text = getattr(response, "output_text", "") or ""
+    data = _extract_json(text)
+    gaps = [str(item).strip() for item in (data.get("gaps") or []) if str(item).strip()]
+    return {
+        "text": str(data.get("text") or "").strip(),
+        "assessment": str(data.get("assessment") or "unclear"),
+        "gaps": gaps[:6],
+        "clarify": str(data.get("clarify") or "").strip(),
+        "should_clarify": bool(data.get("should_clarify")),
+        "response_id": getattr(response, "id", None),
+        "usage": _usage_dict(getattr(response, "usage", None)),
+        "mode": "followup_assessment",
+    }
 
 
 def _coordinator_text_response(

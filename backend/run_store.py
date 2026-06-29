@@ -99,7 +99,9 @@ def complete_run(
     run["verdict"] = _verdict(run)
     run["confidence"] = _confidence(run)
     run["step_count"] = len(run.get("steps") or [])
-    run["summary"] = _run_summary(run)
+    run["title"] = _run_title(run)
+    run["summary"] = _run_summary_text(run)
+    run["registry_summary"] = _run_summary(run)
     return _persist_run(run)
 
 
@@ -122,10 +124,10 @@ def get_run(run_id: str) -> dict[str, Any]:
     safe = _safe_name(run_id)
     path = RUN_DIR / f"{safe}.json"
     if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
+        return _normalize_run_detail(json.loads(path.read_text(encoding="utf-8")))
     data = download_blob_json(f"{RUN_BLOB_PREFIX}/{safe}.json")
     if data:
-        return data
+        return _normalize_run_detail(data)
     raise FileNotFoundError(run_id)
 
 
@@ -196,7 +198,7 @@ def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
     safe = _safe_name(str(run.get("run_id") or "run"))
     path = RUN_DIR / f"{safe}.json"
     run["local_path"] = str(path)
-    summary = dict(run.get("summary") or _run_summary(run))
+    summary = dict(run.get("registry_summary") or _run_summary(run))
     blob_name = f"{RUN_BLOB_PREFIX}/{safe}.json"
     try:
         run["persistence"] = {"mode": "local_and_blob", "blob_name": blob_name}
@@ -229,6 +231,9 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "run_id": run.get("run_id"),
         "time": run.get("completed_at") or run.get("updated_at") or run.get("started_at"),
         "workspace_id": run.get("workspace_id"),
+        "title": run.get("title") or _run_title(run),
+        "summary": run.get("summary") if isinstance(run.get("summary"), str) else _run_summary_text(run),
+        "message": _clean_phrase(run.get("message"), 160),
         "verdict": run.get("verdict"),
         "confidence": run.get("confidence"),
         "status": run.get("status"),
@@ -236,6 +241,171 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "step_count": len(run.get("steps") or []),
         "maf": _maf_summary(run),
     }
+
+
+def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(run, dict):
+        return {}
+    normalized = dict(run)
+    if isinstance(normalized.get("summary"), dict):
+        normalized["registry_summary"] = normalized.get("summary")
+        normalized["summary"] = normalized.get("summary_text") or _run_summary_text(normalized)
+    normalized.setdefault("title", _run_title(normalized))
+    if not isinstance(normalized.get("summary"), str):
+        normalized["summary"] = _run_summary_text(normalized)
+    normalized.setdefault("registry_summary", _run_summary(normalized))
+    return normalized
+
+
+_VERDICT_LABELS = {
+    "feasible": "可行",
+    "recommended": "建议推进",
+    "conditional": "有条件可行",
+    "not_yet_feasible": "暂不可行",
+    "not_feasible": "暂不建议",
+    "rejected": "暂不建议",
+    "clarify": "待澄清",
+    "followup_edit": "跟进",
+    "corpus_qa": "资料问答",
+}
+
+
+def _run_title(run: dict[str, Any]) -> str:
+    artifact = run.get("artifact") or (run.get("final") or {}).get("artifact") or {}
+    feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
+    has_feasibility_signal = bool(feasibility.get("opportunity_id") or feasibility.get("verdict"))
+    message_topic = _message_topic(run.get("message"))
+    topic = (
+        (_clean_opportunity_text(feasibility.get("opportunity_id")) if has_feasibility_signal else "")
+        or ("" if has_feasibility_signal else message_topic)
+        or _first_opportunity_title(artifact)
+        or message_topic
+        or _clean_phrase(run.get("workspace_id"), 36)
+        or "DataForge 分析"
+    )
+    verdict = str(run.get("verdict") or (feasibility or {}).get("verdict") or "").strip()
+    label = _VERDICT_LABELS.get(verdict, "")
+    if label and label not in topic:
+        title = f"{topic} · {label}"
+    else:
+        title = topic
+    return _clean_phrase(title, 34) or "DataForge 分析"
+
+
+def _run_summary_text(run: dict[str, Any]) -> str:
+    artifact = run.get("artifact") or (run.get("final") or {}).get("artifact") or {}
+    feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
+    has_feasibility_signal = bool(feasibility.get("opportunity_id") or feasibility.get("verdict"))
+    message_topic = _message_topic(run.get("message"))
+    title = _clean_phrase(
+        (_clean_opportunity_text(feasibility.get("opportunity_id")) if has_feasibility_signal else "")
+        or ("" if has_feasibility_signal else message_topic)
+        or _first_opportunity_title(artifact)
+        or message_topic,
+        44,
+    )
+    verdict = str(run.get("verdict") or feasibility.get("verdict") or "").strip()
+    verdict_text = _VERDICT_LABELS.get(verdict, verdict) if verdict else ""
+    confidence = str(run.get("confidence") or feasibility.get("overall_confidence") or "").strip()
+    gap = _first_clean_item(feasibility.get("gap_list"))
+    recommendation = _clean_phrase(feasibility.get("recommendation"), 100)
+    evidence = _evidence_hint(artifact)
+    parts: list[str] = []
+    if title:
+        parts.append(f"围绕“{title}”")
+    if verdict_text:
+        parts.append(f"结论为{verdict_text}")
+    if confidence:
+        parts.append(f"置信度{confidence}")
+    if evidence:
+        parts.append(f"依据{evidence}")
+    if gap:
+        parts.append(f"主要缺口是{gap}")
+    elif recommendation:
+        parts.append(f"建议{recommendation}")
+    if not parts:
+        return _clean_phrase(run.get("message"), 120) or "本次运行已完成。"
+    sentence = "，".join(parts)
+    return _clean_phrase(sentence.rstrip("。") + "。", 180)
+
+
+def _clean_opportunity_text(value: Any) -> str:
+    text = _clean_phrase(value, 64)
+    if not text:
+        return ""
+    text = re.sub(r"[-_]+", " ", text)
+    text = re.sub(r"\b(workspace|product|opportunity|analysis|feasibility)\b", "", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip(" -_·:：")
+    if not text or text.lower() in {"data", "product", "workspace"}:
+        return ""
+    return _clean_phrase(text, 44)
+
+
+def _first_opportunity_title(artifact: dict[str, Any]) -> str:
+    corpus = artifact.get("corpus") if isinstance(artifact.get("corpus"), dict) else {}
+    for item in corpus.get("opportunities") or []:
+        if isinstance(item, dict):
+            title = _clean_phrase(item.get("title") or item.get("id"), 44)
+            if title and not _low_information_title(title):
+                return title
+    return ""
+
+
+def _low_information_title(value: Any) -> bool:
+    text = _clean_phrase(value, 64)
+    if not text:
+        return True
+    compact = re.sub(r"\s+", "", text)
+    if re.fullmatch(r"[\[\](),.;:，。;:、\s\d+-]+", compact):
+        return True
+    if re.fullmatch(r"row[-_ ]?\d+|chunk[-_ ]?\d+|profile|unknown", text, flags=re.I):
+        return True
+    return False
+
+
+def _message_topic(value: Any) -> str:
+    text = _clean_phrase(value, 180)
+    if not text:
+        return ""
+    text = re.sub(r"(?i)\b(please|help|analyze|analysis|feasibility|report|generate|create)\b", " ", text)
+    text = re.sub(r"(请|帮我|基于|当前|工作区|分析|生成|输出|报告|项目书|可行性|方案|一次|一下)", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" -_·:：，。；;？！?")
+    if len(text) > 42:
+        text = text[:42].rstrip(" -_·:：，。；;")
+    return text
+
+
+def _first_clean_item(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    for item in value:
+        text = _clean_phrase(item, 90)
+        if text:
+            return text
+    return ""
+
+
+def _evidence_hint(artifact: dict[str, Any]) -> str:
+    citations = artifact.get("citations") or ((artifact.get("answer") or {}).get("citations") if isinstance(artifact.get("answer"), dict) else [])
+    if isinstance(citations, list):
+        for item in citations:
+            if isinstance(item, dict):
+                source = _clean_phrase(item.get("title") or item.get("source_file") or item.get("ref"), 54)
+                if source:
+                    return source
+    corpus = artifact.get("corpus") if isinstance(artifact.get("corpus"), dict) else {}
+    hits = corpus.get("hits") if isinstance(corpus, dict) else []
+    if isinstance(hits, list) and hits:
+        hit = hits[0] if isinstance(hits[0], dict) else {}
+        return _clean_phrase(hit.get("title") or hit.get("source_file"), 54)
+    return ""
+
+
+def _clean_phrase(value: Any, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    text = text.strip(" -_·:：，。；;？！?")
+    return text[:limit].strip(" -_·:：，。；;") if limit else text
 
 
 def _maf_summary(run: dict[str, Any]) -> dict[str, Any] | None:
@@ -273,7 +443,12 @@ def _local_run_summaries() -> list[dict[str, Any]]:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        summary = data.get("summary") if isinstance(data, dict) else None
+        summary = data.get("registry_summary") if isinstance(data, dict) else None
+        if not isinstance(summary, dict):
+            legacy_summary = data.get("summary") if isinstance(data, dict) else None
+            summary = legacy_summary if isinstance(legacy_summary, dict) else None
+        if not isinstance(summary, dict) and isinstance(data, dict):
+            summary = _run_summary(_normalize_run_detail(data))
         if isinstance(summary, dict):
             items.append(summary)
     return items
