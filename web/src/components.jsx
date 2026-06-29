@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { startTour } from "./tour.js";
-import { DataWorkbench } from "./DataWorkbench.jsx";
+const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 import {
   Activity,
   AlertTriangle,
@@ -533,7 +533,11 @@ export function WorkbenchMain({
     );
   }
   if (view === "data") {
-    return <DataWorkbench dashboard={dashboard} onRun={onRun} />;
+    return (
+      <Suspense fallback={<main className="agent-studio data-stage"><div style={{ padding: 40, color: "var(--muted)" }}>加载数据工作台…</div></main>}>
+        <DataWorkbench dashboard={dashboard} onRun={onRun} />
+      </Suspense>
+    );
   }
   if (view === "artifacts") {
     return <ArtifactsCenter dashboard={dashboard} artifacts={artifacts} artifact={finalArtifact} onProduce={onProduce} producing={producing} onUploadReference={onUploadReference} />;

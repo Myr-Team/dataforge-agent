@@ -1,6 +1,3 @@
-import { driver } from "driver.js";
-import "driver.js/dist/driver.css";
-
 // 产品引导步骤。分析后才出现的元素(结论/产物/迭代)若当前未渲染，
 // 自动降级为居中说明卡(不高亮),保证不报错、流程仍讲得清。
 const STEPS = [
@@ -41,7 +38,12 @@ const STEPS = [
   },
 ];
 
-export function startTour() {
+export async function startTour() {
+  // driver.js 较大且只在点「新手引导」时才用，动态加载以缩小首屏 bundle
+  const [{ driver }] = await Promise.all([
+    import("driver.js"),
+    import("driver.js/dist/driver.css"),
+  ]);
   const steps = STEPS.map((s) => {
     const selectors = Array.isArray(s.sel) ? s.sel : [s.sel];
     const found = typeof document !== "undefined"
