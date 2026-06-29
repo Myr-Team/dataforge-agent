@@ -1016,7 +1016,7 @@ function DataAssetsTable({ documents = [], workspace = {} }) {
               const ok = isIndexed(doc.status);
               return (
                 <tr key={doc.source_file || name}>
-                  <td><span className="td-name"><FileText size={15} />{name}</span></td>
+                  <td><span className="td-name"><FileTypeIcon doc={doc} size={20} />{name}</span></td>
                   <td>{doc.format || "文档"}</td>
                   <td><span className="td-chip">部分字段</span></td>
                   <td className="td-mut">—</td>
@@ -2460,7 +2460,7 @@ function ActionBoard({ artifact, selectedPlaybook, onProduce, producing }) {
     <div className="action-board">
       <div className="board-head">
         <div>
-          <span>落地行动方案 · 用「{playbook.name}」方法拆解</span>
+          <span>落地行动方案</span>
           <strong>{feasibility.opportunity_id || "产品化机会"}</strong>
         </div>
         <button className="ghost-button icon-label" type="button" onClick={onProduce} disabled={!artifact || producing}>
