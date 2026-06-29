@@ -609,14 +609,15 @@ function ConvergenceChart({ versions }) {
   const vers = (versions || []).slice(-6);
   if (vers.length < 2) return null;
   const n = vers.length;
-  const W = Math.max(240, n * 72);
+  const padL = 80;
+  const padR = 18;
   const H = 132;
-  const padX = 26;
   const padT = 22;
   const padB = 30;
-  const usableW = W - padX * 2;
+  const W = Math.max(300, padL + padR + (n - 1) * 66);
+  const usableW = W - padL - padR;
   const usableH = H - padT - padB;
-  const x = (i) => padX + (n > 1 ? (usableW * i) / (n - 1) : usableW / 2);
+  const x = (i) => padL + (n > 1 ? (usableW * i) / (n - 1) : usableW / 2);
   const y = (r) => padT + usableH * (1 - (r - 1) / 2);
   const rankOf = (v) => _CV_RANK[v.verdict] || 1;
   const pts = vers.map((v, i) => [x(i), y(rankOf(v))]);
@@ -624,8 +625,8 @@ function ConvergenceChart({ versions }) {
     <svg className="conv-chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="迭代收敛图">
       {[1, 2, 3].map((r) => (
         <g key={r}>
-          <line x1={padX} y1={y(r)} x2={W - padX} y2={y(r)} stroke="#eef1f5" strokeWidth="1" />
-          <text x="6" y={y(r) + 3} fontSize="8.5" fill="#9aa3af">{_CV_LABEL[r]}</text>
+          <line x1={padL} y1={y(r)} x2={W - padR} y2={y(r)} stroke="#eef1f5" strokeWidth="1" />
+          <text x={padL - 10} y={y(r) + 3} fontSize="10" fill="#9aa3af" textAnchor="end">{_CV_LABEL[r]}</text>
         </g>
       ))}
       <polyline points={pts.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(" ")} fill="none" stroke="#0A84E0" strokeWidth="2" />
@@ -2356,7 +2357,7 @@ function ActionBoard({ artifact, selectedPlaybook, onProduce, producing }) {
     <div className="action-board">
       <div className="board-head">
         <div>
-          <span>{playbook.name}</span>
+          <span>落地行动方案 · 用「{playbook.name}」方法拆解</span>
           <strong>{feasibility.opportunity_id || "产品化机会"}</strong>
         </div>
         <button className="ghost-button icon-label" type="button" onClick={onProduce} disabled={!artifact || producing}>
