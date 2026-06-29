@@ -4,6 +4,7 @@ import {
   Boxes,
   ClipboardList,
   Compass,
+  Database,
   FileText,
   FlaskConical,
   GitBranch,
@@ -26,11 +27,12 @@ import {
 } from "lucide-react";
 
 export const NAV_ITEMS = [
-  { id: "workspaces", label: "Overview", icon: LayoutGrid },
-  { id: "runs", label: "Runs", icon: Route },
-  { id: "conversations", label: "Conversations", icon: MessageSquare },
-  { id: "artifacts", label: "Products", icon: Boxes },
-  { id: "settings", label: "Settings", icon: Settings },
+  { id: "workspaces", label: "工作区", icon: Home },
+  { id: "data", label: "数据", icon: Database },
+  { id: "runs", label: "运行记录", icon: Route },
+  { id: "conversations", label: "会话", icon: MessageSquare },
+  { id: "artifacts", label: "产物", icon: Boxes },
+  { id: "settings", label: "设置", icon: Settings },
 ];
 
 export const AGENTS = [

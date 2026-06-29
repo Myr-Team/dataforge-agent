@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { startTour } from "./tour.js";
+import { DataWorkbench } from "./DataWorkbench.jsx";
 import {
   Activity,
   AlertTriangle,
@@ -530,6 +531,9 @@ export function WorkbenchMain({
         setSelectedPlaybook={setSelectedPlaybook}
       />
     );
+  }
+  if (view === "data") {
+    return <DataWorkbench dashboard={dashboard} onRun={onRun} />;
   }
   if (view === "artifacts") {
     return <ArtifactsCenter dashboard={dashboard} artifacts={artifacts} artifact={finalArtifact} onProduce={onProduce} producing={producing} onUploadReference={onUploadReference} />;
