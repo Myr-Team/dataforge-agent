@@ -35,6 +35,7 @@ import {
   Wrench,
   Coins,
   Download,
+  Info,
   Mic,
   LogIn,
   LogOut,
