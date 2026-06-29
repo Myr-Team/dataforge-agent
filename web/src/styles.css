@@ -85,7 +85,7 @@ svg { flex-shrink: 0; }
 .brand-mark { width: 36px; height: 36px; border-radius: 8px; font-size: 18px; margin: 0 auto; }
 .avatar { width: 34px; height: 34px; border-radius: 50%; font-size: 14px; }
 
-.nav-stack { display: grid; gap: 7px; }
+.nav-stack { display: grid; gap: 2px; }
 .nav-icon, .icon-button {
   display: grid;
   place-items: center;
@@ -95,11 +95,12 @@ svg { flex-shrink: 0; }
 }
 .nav-icon {
   width: 100%;
-  min-height: 42px;
-  grid-template-columns: 22px minmax(0, 1fr);
-  gap: 8px;
-  justify-content: start;
-  padding: 0 10px;
+  min-height: 38px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 11px;
+  align-items: center;
+  justify-items: start;
+  padding: 0 11px;
   border-radius: 8px;
   text-align: left;
 }
