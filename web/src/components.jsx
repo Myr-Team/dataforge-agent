@@ -70,7 +70,6 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, health = 
   ];
   return (
     <nav className="shell-nav" aria-label="Primary">
-      <div className="brand-mark"><img src="/dataforge-logo.png" alt="DataForge" /></div>
       <div className="nav-stack">
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
@@ -160,6 +159,52 @@ function NotificationBell({ tasks = [] }) {
   );
 }
 
+function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    window.addEventListener("pointerdown", onDown);
+    return () => window.removeEventListener("pointerdown", onDown);
+  }, [open]);
+  const current = workspaces.find((w) => w.workspace_id === workspaceId);
+  const currentName = current?.name || workspaceId || "工作区";
+  return (
+    <div className="ws-switch" ref={ref}>
+      <button className="ws-crumb" type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} title="切换工作区">
+        <span className="ws-sep">/</span>
+        <span className="ws-name">{currentName}</span>
+        <ChevronDown size={14} />
+      </button>
+      {open ? (
+        <div className="ws-dd" role="menu">
+          <div className="ws-dd-head">工作区</div>
+          <div className="ws-dd-list">
+            {workspaces.length ? (
+              workspaces.map((w) => {
+                const active = w.workspace_id === workspaceId;
+                const sub = w.name && w.name !== w.workspace_id ? w.workspace_id : "";
+                return (
+                  <button key={w.workspace_id} type="button" className={active ? "ws-dd-item cur" : "ws-dd-item"} role="menuitem" onClick={() => { onChange(w.workspace_id); setOpen(false); }}>
+                    <span className="ws-ck">{active ? <Check size={15} /> : null}</span>
+                    <span className="ws-dd-meta">
+                      <span className="ws-dd-name">{w.name || w.workspace_id}</span>
+                      {sub ? <span className="ws-dd-sub">{sub}</span> : null}
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="ws-dd-empty">暂无工作区</div>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, onNewConversation, loading, user, authState, onLogout, tasks }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
@@ -178,24 +223,11 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
   return (
     <header className="topbar">
       <div className="topbar-left">
-        <div className="brand-wordmark">
+        <div className="brand-mini">
+          <img className="brand-logo-sm" src="/dataforge-logo.png" alt="" />
           <strong>DataForge</strong>
-          <span>Agent Workbench</span>
         </div>
-        <label className="workspace-select">
-          <Database size={16} />
-          <select value={workspaceId} onChange={(event) => onWorkspaceChange(event.target.value)}>
-            {workspaces.length ? (
-              workspaces.map((workspace) => (
-                <option key={workspace.workspace_id} value={workspace.workspace_id}>
-                  {workspace.name || workspace.workspace_id}
-                </option>
-              ))
-            ) : (
-              <option value={workspaceId}>{workspaceId}</option>
-            )}
-          </select>
-        </label>
+        <WorkspaceSwitcher workspaces={workspaces} workspaceId={workspaceId} onChange={onWorkspaceChange} />
       </div>
       <div className="topbar-actions">
         <button className="tour-button icon-label" type="button" onClick={startTour} title="新手引导：一步步了解产品流程">
@@ -1898,9 +1930,6 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
                     </button>
                   ) : null}
                   {message.producedArtifacts ? <ChatArtifacts artifacts={message.producedArtifacts} /> : null}
-                  {message.time && !message.clarify ? (
-                    <span className="msg-time">{new Date(message.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
-                  ) : null}
                 </div>
               </article>
             );
@@ -2394,15 +2423,16 @@ function Composer({ input, setInput, running, onRun, onStop }) {
           </button>
         ) : null}
       </div>
-      {running ? (
-        <button className="send-button stop" type="button" onClick={onStop} title="停止生成" aria-label="停止生成">
-          <Square size={16} />
-        </button>
-      ) : (
-        <button className="send-button" type="submit" disabled={!input.trim()} title="发送" aria-label="发送">
-          <Send size={18} />
-        </button>
-      )}
+      <button
+        className={running ? "send-button stop" : "send-button"}
+        type={running ? "button" : "submit"}
+        onClick={running ? onStop : undefined}
+        disabled={running ? false : !input.trim()}
+        title={running ? "停止生成" : "发送"}
+        aria-label={running ? "停止生成" : "发送"}
+      >
+        <span className="send-ico">{running ? <Square size={16} /> : <Send size={18} />}</span>
+      </button>
     </form>
   );
 }

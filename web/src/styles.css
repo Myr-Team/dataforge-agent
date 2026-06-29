@@ -166,6 +166,27 @@ svg { flex-shrink: 0; }
 }
 .workspace-select select { max-width: 260px; border: 0; outline: 0; background: transparent; color: inherit; font-size: 13px; }
 
+/* 顶栏：logo + 产品名 + 工作区面包屑下拉 */
+.brand-mini { display: inline-flex; align-items: center; gap: 9px; }
+.brand-logo-sm { width: 26px; height: 26px; border-radius: 7px; display: block; }
+.brand-mini strong { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+.ws-switch { position: relative; }
+.ws-crumb { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px 0 4px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; border-radius: 7px; }
+.ws-crumb:hover { background: var(--surface-soft); }
+.ws-crumb .ws-sep { color: var(--faint); }
+.ws-crumb .ws-name { color: var(--ink); font-weight: 600; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-dd { position: absolute; top: 40px; left: 0; min-width: 280px; max-width: 360px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 16px 40px -12px rgba(20,20,40,.28); padding: 7px; z-index: 200; }
+.ws-dd-head { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); padding: 8px 10px 6px; }
+.ws-dd-list { display: flex; flex-direction: column; gap: 1px; max-height: 360px; overflow-y: auto; }
+.ws-dd-item { display: flex; align-items: flex-start; gap: 9px; width: 100%; text-align: left; padding: 9px 10px; border: 0; background: transparent; border-radius: 8px; cursor: pointer; color: var(--ink); }
+.ws-dd-item:hover { background: var(--surface-soft); }
+.ws-dd-item.cur { background: var(--blue-soft); }
+.ws-ck { width: 16px; flex: none; color: var(--blue); display: inline-flex; align-items: center; padding-top: 1px; }
+.ws-dd-meta { display: flex; flex-direction: column; min-width: 0; }
+.ws-dd-name { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-dd-sub { font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-dd-empty { padding: 12px 10px; color: var(--faint); font-size: 13px; }
+
 .status-chip {
   display: inline-flex;
   align-items: center;
@@ -343,7 +364,9 @@ svg { flex-shrink: 0; }
 }
 .primary-button, .send-button { border: 0; color: #fff; background: var(--blue); }
 .primary-button { padding: 0 13px; }
-.send-button { width: 44px; height: 44px; }
+.send-button { width: 44px; height: 44px; transition: background .22s ease, transform .12s ease; }
+.send-button .send-ico { display: inline-flex; animation: sendIcoIn .22s ease; }
+@keyframes sendIcoIn { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: scale(1); } }
 .send-button.stop { background: #1f1f22; }
 .send-button.stop:hover:not(:disabled) { background: #3a3a40; }
 .ghost-button, .danger-button {
@@ -2139,7 +2162,8 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .send-button { background: var(--blue); box-shadow: none; }
 .send-button:hover:not(:disabled) { background: #0066cc; box-shadow: none; transform: translateY(-1px); }
 .send-button:active:not(:disabled) { box-shadow: none; transform: translateY(0); }
-.send-button:focus-visible, .composer-field input:focus-visible, .composer-field input:focus { box-shadow: none; outline: none; }
+.send-button:focus-visible, .composer-field input:focus-visible, .composer-field input:focus,
+.composer-field textarea:focus-visible, .composer-field textarea:focus, .composer-field:focus-within { box-shadow: none; outline: none; }
 
 /* ---- 左上角品牌 logo（替换原 D 方块，按导航栏宽度缩放） ---- */
 .shell-nav .brand-mark { width: 100%; max-width: 100px; height: auto; min-height: 0; margin: 2px auto 0; padding: 0; background: transparent; box-shadow: none; border-radius: 0; display: block; }
