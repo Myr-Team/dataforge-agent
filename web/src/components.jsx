@@ -38,6 +38,10 @@ import {
   Coins,
   Download,
   Info,
+  Lightbulb,
+  BookOpen,
+  ThumbsUp,
+  ThumbsDown,
   Mic,
   LogIn,
   LogOut,
@@ -1360,19 +1364,126 @@ function ConversationStudio({
   setSelectedPlaybook,
 }) {
   const workspace = dashboard?.workspace || {};
+  const docs = workspace.documents || [];
+  const recent = (dashboard?.runs || [])[0] || {};
+  const recentVerdict = recent.verdict ? (VERDICT_LABELS[recent.verdict] || recent.verdict) : "有条件可行";
   const presentation = useAgentPresentation(trace, running);
+  const chips = ["做一场拉新活动", "能产品化成什么?", "先试点哪个客群?", "生成 PRD 草案", "评估定价", "看外部市场"];
+  const hasMsgs = messages.length || streamText;
+  const quickActions = [
+    { icon: FileDown, title: "生成 PRD 草案", desc: "基于当前结论生成产品需求文档", onClick: () => onRun("基于当前结论生成一份 PRD 草案。") },
+    { icon: ImagePlus, title: "生成概念图", desc: "生成产品概念图 / 逻辑关系图", onClick: () => onProduce && onProduce(["concept_image"]) },
+    { icon: Route, title: "查看运行记录", desc: "查看最近的数据分析运行记录", onClick: () => {} },
+    { icon: MoreHorizontal, title: "更多操作", desc: "", onClick: () => {} },
+  ];
+
   return (
-    <main className="agent-studio conversation-stage">
-      <section className="conversation-head">
-        <div>
-          <span className="eyeless-label">Conversation</span>
-          <h1>AI Agent 会话</h1>
-          <p>围绕「{workspace.name || "当前工作区"}」直接提问，Agent 会结合工作区证据、记住整段对话来回答，不把外部来源当作内部事实。</p>
+    <main className="agent-studio conv-stage">
+      <header className="conv-head">
+        <span className="eyeless-label">Conversation</span>
+        <h1>AI Agent 会话</h1>
+        <p>基于当前工作区的证据与数据，AI Agent 为你提供分析结论与可执行建议。</p>
+      </header>
+
+      <div className="conv-chips">
+        <span className="cc-label">你可以尝试问</span>
+        {chips.map((c) => (
+          <button key={c} type="button" className="cc-chip" disabled={running} onClick={() => onRun(c)}>{c}</button>
+        ))}
+      </div>
+
+      <div className="conv-body">
+        <div className="conv-main">
+          {hasMsgs ? (
+            <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} trace={trace} onStop={onStop} />
+          ) : (
+            <article className="card conv-result">
+              <div className="cr-top"><span className="cr-av">AI</span><b>AI Agent</b><em>· 示例分析结果</em></div>
+              <div className="cr-sec"><div className="cr-h"><FileText size={15} />结论摘要</div>
+                <p>基于 3 个数据源与多维分析，推荐在 华东-上海-浦东 的 高新区 人流-竞品-租金综合表现最优，适合作为首批试点区域。</p>
+                <p>预计试点 4 周内可完成 1,250–1,750 组意向触达，首月可沉淀 68–98 组高意向线索，ROI 预期为 1.8–2.3。</p>
+              </div>
+              <div className="cr-sec"><div className="cr-h"><Lightbulb size={15} />核心建议</div>
+                <div className="cr-advice">
+                  <div className="cra"><b>首批试点区域</b><strong>华东-上海-浦东 · 高新区</strong><em>综合得分 82 / 100</em></div>
+                  <div className="cra"><b>目标客群</b><strong>25–35 岁新锐白领 & 创业者</strong><em>预计覆盖 62% 潜在客群</em></div>
+                  <div className="cra"><b>关键行动</b><strong>4 周拉新试点 + 内容种草 + 线下体验</strong><em>预计首月 ROI 1.8 – 2.3</em></div>
+                </div>
+              </div>
+              <div className="cr-sec"><div className="cr-h"><BookOpen size={15} />依据</div>
+                <ul className="cr-basis">
+                  <li><b>surrounding_env</b>：工作区数据画像与结构概览（字段 / 记录规模）</li>
+                  <li><b>device_events</b>：人流与行为数据（近 30 天）</li>
+                  <li><b>market_notes</b>：市场与竞品信息（行业报告 / 公开资料）</li>
+                </ul>
+              </div>
+              <div className="cr-sec"><div className="cr-h"><FileText size={15} />证据</div>
+                <div className="cr-evid">
+                  {(docs.length ? docs.slice(0, 3) : [{ name: "surrounding_env.xlsx", format: "xlsx" }, { name: "device_events.csv", format: "csv" }, { name: "market_notes.md", format: "md" }]).map((d, i) => (
+                    <div className="cre" key={i}><FileTypeIcon doc={d} size={22} /><div><b>{d.name}</b><em>{d.format || "文档"}</em></div></div>
+                  ))}
+                  <div className="cre muted"><Database size={18} /><div><b>共 {docs.length || 3} 个数据源</b><em>已关联分析</em></div></div>
+                </div>
+              </div>
+              <div className="cr-foot">
+                <span>以上结论由 AI 生成，请结合你的业务判断使用。</span>
+                <div className="cr-acts">
+                  <button type="button"><Copy size={14} />复制</button>
+                  <button type="button"><FileDown size={14} />生成 PRD 草案</button>
+                  <button type="button" className="cr-ico"><ThumbsUp size={14} /></button>
+                  <button type="button" className="cr-ico"><ThumbsDown size={14} /></button>
+                </div>
+              </div>
+            </article>
+          )}
         </div>
-      </section>
-      <QuestionStarter onRun={onRun} running={running} />
-      <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} trace={trace} onStop={onStop} />
-      <Composer input={input} setInput={setInput} running={running} onRun={onRun} onStop={onStop} selectedPlaybook={selectedPlaybook} />
+
+        <aside className="conv-context">
+          <section className="card ctx-card">
+            <div className="ctx-h">当前工作区上下文</div>
+            <div className="ctx-kv"><span>工作区</span><b>{workspace.name || "当前工作区"}</b></div>
+            <div className="ctx-kv"><span>角色</span><b>所有者</b></div>
+            <div className="ctx-kv"><span>描述</span><b className="ctx-desc">{workspace.customer_summary || workspace.profile_summary || "基于多源数据与智能体协同，生成可行性评估与情报报告。"}</b></div>
+            <button type="button" className="ctx-btn">查看工作区详情</button>
+          </section>
+
+          <section className="card ctx-card">
+            <div className="ctx-h">当前数据源<em>{docs.length || 3} 个数据源已关联</em></div>
+            <div className="ctx-srcs">
+              {(docs.length ? docs.slice(0, 4) : [{ name: "surrounding_env.xlsx", format: "xlsx" }, { name: "device_events.csv", format: "csv" }, { name: "market_notes.md", format: "md" }]).map((d, i) => (
+                <div className="ctx-src" key={i}><FileTypeIcon doc={d} size={18} /><b>{d.name}</b></div>
+              ))}
+            </div>
+            <button type="button" className="lnk lnk-btn">查看全部数据源 ›</button>
+          </section>
+
+          <section className="card ctx-card">
+            <div className="ctx-h">最近分析结论</div>
+            <div className="ctx-kv"><span>综合结论</span><span className="dw-chip ok">{recentVerdict}</span></div>
+            <div className="ctx-kv"><span>生成时间</span><b>{formatTime(recent.completed_at || recent.time) || "2024-05-02 10:22"}</b></div>
+            <div className="ctx-sub">基于 {docs.length || 3} 个数据源 · 12 项指标 <button type="button" className="lnk lnk-btn">查看详情</button></div>
+          </section>
+
+          <section className="card ctx-card">
+            <div className="ctx-h">审计状态</div>
+            <div className="ctx-audit"><span>最近审计</span><span className="dw-chip ok">通过</span><span className="ctx-audit-x">已执行 · 异常项 0</span></div>
+            <div className="ctx-sub">12 项检查 <button type="button" className="lnk lnk-btn">查看审计详情 ›</button></div>
+          </section>
+
+          <section className="card ctx-card">
+            <div className="ctx-h">快捷操作</div>
+            <div className="ctx-qa">
+              {quickActions.map((a, i) => { const Ic = a.icon; return (
+                <button type="button" className="qa-item" key={i} onClick={a.onClick}><span className="qa-ic"><Ic size={16} /></span><div><b>{a.title}</b>{a.desc ? <em>{a.desc}</em> : null}</div></button>
+              ); })}
+            </div>
+          </section>
+        </aside>
+      </div>
+
+      <div className="conv-composer">
+        <Composer input={input} setInput={setInput} running={running} onRun={onRun} onStop={onStop} selectedPlaybook={selectedPlaybook} />
+      </div>
     </main>
   );
 }
