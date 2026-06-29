@@ -238,11 +238,6 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
         </div>
         <WorkspaceSwitcher workspaces={workspaces} workspaceId={workspaceId} onChange={onWorkspaceChange} />
       </div>
-      <div className="topbar-search">
-        <Search size={15} />
-        <input placeholder="搜索工作区、数据资产、运行记录…" aria-label="全局搜索" />
-        <kbd>⌘K</kbd>
-      </div>
       <div className="topbar-actions">
         <button className="tour-button icon-label" type="button" onClick={startTour} title="新手引导：一步步了解产品流程">
           <Compass size={16} />
@@ -1009,13 +1004,18 @@ function AgentPipeline({ trace = [], running = false, hasResult = false }) {
   );
 }
 
-function DataAssetsTable({ documents = [], workspace = {} }) {
+function DataAssetsTable({ documents = [], workspace = {}, detailOpen = false, onViewDetails }) {
   const rows = documents.slice(0, 6);
   const isIndexed = (status) => !status || /就绪|已解析|ready|done|index/i.test(String(status));
   const updated = workspace.updated_at ? new Date(workspace.updated_at).toLocaleDateString("zh-CN") : "Today";
   return (
     <div className="card tbl-card" data-tour="artifacts">
-      <div className="cardhead"><span className="t">最近数据资产</span></div>
+      <div className="cardhead">
+        <span className="t">最近数据资产</span>
+        {onViewDetails ? (
+          <button type="button" className="lnk lnk-btn" onClick={onViewDetails}>{detailOpen ? "收起数据说明" : "查看详情"}</button>
+        ) : null}
+      </div>
       <div className="tbl-wrap">
         <table className="data-table">
           <thead><tr><th>名称</th><th>类型</th><th>字段</th><th>记录</th><th>状态</th><th>更新时间</th></tr></thead>
@@ -1066,6 +1066,7 @@ function DashboardStudio({
   const hasArtifacts = Object.values(artifacts || {}).some(Boolean);
   const feasibility = finalArtifact?.feasibility || {};
   const verdict = VERDICT_LABELS[feasibility.verdict] || "等待分析";
+  const [showDataDetail, setShowDataDetail] = useState(false);
   const radarGroups = (feasibility.dimensions || []).reduce(
     (acc, d) => {
       const s = Number(d.score || 0);
@@ -1097,7 +1098,7 @@ function DashboardStudio({
 
       <OverviewCards workspace={workspace} documents={documents} runs={dashboard?.runs || []} />
 
-      <AgentPipeline trace={trace} running={running} hasResult={Boolean(feasibility.verdict)} />
+      <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} onProduce={onProduce} />
 
       <div className="ws-trio">
         <VerdictHero compact feasibility={feasibility} verdict={verdict} running={running} artifact={finalArtifact} onViewReport={onNewConversation} />
@@ -1115,22 +1116,24 @@ function DashboardStudio({
         <AuditCard artifact={finalArtifact} />
       </div>
 
-      <DataAssetsTable documents={documents} workspace={workspace} />
+      <DataAssetsTable documents={documents} workspace={workspace} detailOpen={showDataDetail} onViewDetails={() => setShowDataDetail((v) => !v)} />
+      {showDataDetail ? (
+        <DataOverviewCard workspaceId={dashboard?.workspace_id || workspace?.workspace_id} hasDocs={(documents || []).length > 0} />
+      ) : null}
+
+      <PlanIteratePanel
+        workspaceId={dashboard?.workspace_id || workspace?.workspace_id}
+        runs={dashboard?.runs || []}
+        running={running}
+        onIterate={(inputs) => onRun("基于回填指标迭代优化这版方案，逼近一个可作为公司重点的方案。", { stayOnDashboard: true, iterationInputs: inputs })}
+      />
 
       <Collapsible title="高级分析" hint="运行更深入的模型与仿真分析">
-        <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} onProduce={onProduce} />
-        <DataOverviewCard workspaceId={dashboard?.workspace_id || workspace?.workspace_id} hasDocs={(documents || []).length > 0} />
         <section className="studio-methods">
           <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id} />
           <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
         </section>
         <WebSearchPanel trace={trace} />
-        <PlanIteratePanel
-          workspaceId={dashboard?.workspace_id || workspace?.workspace_id}
-          runs={dashboard?.runs || []}
-          running={running}
-          onIterate={(inputs) => onRun("基于回填指标迭代优化这版方案，逼近一个可作为公司重点的方案。", { stayOnDashboard: true, iterationInputs: inputs })}
-        />
       </Collapsible>
     </main>
   );
