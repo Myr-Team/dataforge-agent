@@ -26,6 +26,8 @@ import {
   Layers3,
   Loader2,
   PanelLeftClose,
+  Rows3,
+  TrendingUp,
   Mic,
   LogIn,
   LogOut,
@@ -935,6 +937,109 @@ function Collapsible({ title, hint, defaultOpen = false, children }) {
   );
 }
 
+function OverviewCards({ workspace = {}, documents = [], runs = [] }) {
+  const assets = documents.length || workspace.doc_count || 0;
+  const records = workspace.row_count || 0;
+  const rawCov = workspace.field_fill_rate ?? workspace.fill_rate ?? 0;
+  const coverage = Math.round(rawCov > 1 ? rawCov : rawCov * 100);
+  const fields = workspace.field_count || 0;
+  const lastRun = runs[0];
+  const runLabel = lastRun ? (VERDICT_LABELS[lastRun.verdict] || (lastRun.status === "done" || lastRun.completed_at ? "Completed" : "Running")) : "—";
+  const cards = [
+    { ic: <Database size={18} />, n: assets, l: "Data assets", s: `${fields} fields tracked` },
+    { ic: <Rows3 size={18} />, n: records, l: "Records", s: `Field coverage ${coverage}%` },
+    { ic: <TrendingUp size={18} />, n: `${coverage}%`, l: "Field coverage", s: coverage >= 100 ? "Full schema" : "Partial schema" },
+    { ic: <Clock3 size={18} />, n: runLabel, l: "Last run", s: lastRun?.title ? String(lastRun.title).slice(0, 22) : "No run yet", small: true },
+  ];
+  return (
+    <div className="ov-grid">
+      {cards.map((c, i) => (
+        <div className="card ov-card" key={i}>
+          <div className="ov-ic">{c.ic}</div>
+          <div className={c.small ? "ov-n small" : "ov-n"}>{c.n}</div>
+          <div className="ov-l">{c.l}</div>
+          <div className="ov-s">{c.s}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const PIPELINE_STAGES = [
+  { nm: "Coordinator", ds: "Task routing", mk: "coordinat" },
+  { nm: "Corpus Analyst", ds: "Index & profile", mk: "corpus" },
+  { nm: "Feasibility Analyst", ds: "Scoring", mk: "feasib" },
+  { nm: "Market Researcher", ds: "External research", mk: "market" },
+  { nm: "Auditor", ds: "Verify & check", mk: "audit" },
+  { nm: "Product Generator", ds: "PDF / Deck", mk: "produc" },
+];
+function AgentPipeline({ trace = [], running = false, hasResult = false }) {
+  let seen = -1;
+  for (const t of trace) {
+    const s = JSON.stringify(t).toLowerCase();
+    PIPELINE_STAGES.forEach((stage, i) => { if (s.includes(stage.mk)) seen = Math.max(seen, i); });
+  }
+  const doneCount = hasResult ? PIPELINE_STAGES.length : Math.max(0, seen + 1);
+  const curIdx = hasResult ? -1 : running ? Math.min(doneCount, PIPELINE_STAGES.length - 1) : -1;
+  const fillPct = PIPELINE_STAGES.length > 1
+    ? ((Math.max(0, (hasResult ? PIPELINE_STAGES.length - 1 : curIdx >= 0 ? curIdx : doneCount - 1)) ) / (PIPELINE_STAGES.length - 1)) * 100
+    : 0;
+  return (
+    <div className="card pipe-card" data-tour="pipeline">
+      <div className="pipe-head"><span className="t">Agent pipeline</span><span className="lnk">View details</span></div>
+      <div className="pipe-flow">
+        <div className="pipe-line"><div className="pipe-fill" style={{ width: `${Math.max(0, Math.min(100, fillPct))}%` }} /></div>
+        {PIPELINE_STAGES.map((stage, i) => {
+          const done = i < doneCount && i !== curIdx;
+          const cur = i === curIdx;
+          return (
+            <div className={`pipe-node ${done ? "done" : ""} ${cur ? "cur" : ""}`} key={stage.nm}>
+              <div className="pipe-dot">{done ? <Check size={17} /> : cur ? <Loader2 size={16} className="spin" /> : <span className="pipe-i" />}</div>
+              <div className="pipe-nm">{stage.nm}</div>
+              <div className="pipe-ds">{stage.ds}</div>
+              {cur ? <div className="pipe-st">In progress</div> : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DataAssetsTable({ documents = [], workspace = {} }) {
+  const rows = documents.slice(0, 6);
+  const isIndexed = (status) => !status || /就绪|已解析|ready|done|index/i.test(String(status));
+  const updated = workspace.updated_at ? new Date(workspace.updated_at).toLocaleDateString("zh-CN") : "Today";
+  return (
+    <div className="card tbl-card" data-tour="artifacts">
+      <div className="cardhead"><span className="t">Recent Data Assets</span><span className="lnk">View all</span></div>
+      <div className="tbl-wrap">
+        <table className="data-table">
+          <thead><tr><th>Name</th><th>Type</th><th>Fields</th><th>Records</th><th>Status</th><th>Updated</th></tr></thead>
+          <tbody>
+            {rows.length ? rows.map((doc, i) => {
+              const name = doc.name || sanitizeSourceLabel(doc.source_file) || `asset-${i}`;
+              const ok = isIndexed(doc.status);
+              return (
+                <tr key={doc.source_file || name}>
+                  <td><span className="td-name"><FileText size={15} />{name}</span></td>
+                  <td>{doc.format || "Document"}</td>
+                  <td><span className="td-chip">Partial</span></td>
+                  <td className="td-mut">—</td>
+                  <td><span className={ok ? "td-stt ok" : "td-stt warn"}><span className="d" />{ok ? "Indexed" : "Needs review"}</span></td>
+                  <td className="td-mut">{updated}</td>
+                </tr>
+              );
+            }) : (
+              <tr><td colSpan={6} className="td-empty">上传数据后，这里列出工作区的数据资产。</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function DashboardStudio({
   dashboard,
   trace,
@@ -963,9 +1068,8 @@ function DashboardStudio({
     <main className="agent-studio dashboard-stage">
       <section className="dashboard-hero">
         <div>
-          <span className="eyeless-label">Workspace Dashboard</span>
-          <h1>{workspace.name || "数据产品化工作区"}</h1>
-          <p>{workspace.customer_summary || workspace.profile_summary || "上传数据后，DataForge 会先生成数据画像、信号/噪声判断、检索索引和可追踪的 Agent 分析记录。"}</p>
+          <div className="dh-title"><h1>{workspace.name || "数据产品化工作区"}</h1><span className="tag-ws">Workspace</span></div>
+          <p>{workspace.customer_summary || workspace.profile_summary || "整合客户资料、市场反馈与产品数据，自动发现可落地的产品机会。"}</p>
         </div>
         <div className="dashboard-actions">
           <button className="ghost-button icon-label" type="button" onClick={onNewConversation}>
@@ -979,21 +1083,25 @@ function DashboardStudio({
         </div>
       </section>
 
-      <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} onProduce={onProduce} />
+      <OverviewCards workspace={workspace} documents={documents} runs={dashboard?.runs || []} />
 
-      <VerdictHero feasibility={feasibility} verdict={verdict} running={running} artifact={finalArtifact} />
+      <AgentPipeline trace={trace} running={running} hasResult={Boolean(feasibility.verdict)} />
 
-      <AuditCard artifact={finalArtifact} />
+      <div className="verdict-row">
+        <VerdictHero feasibility={feasibility} verdict={verdict} running={running} artifact={finalArtifact} />
+        <AuditCard artifact={finalArtifact} />
+      </div>
 
-      <Collapsible title="数据概览与检索来源" hint="点击展开">
+      <DataAssetsTable documents={documents} workspace={workspace} />
+
+      <Collapsible title="行动方案 · 数据概览 · 检索来源" hint="点击展开">
+        <section className="studio-methods">
+          <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id} />
+          <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
+        </section>
         <DataOverviewCard workspaceId={dashboard?.workspace_id || workspace?.workspace_id} hasDocs={(documents || []).length > 0} />
         <WebSearchPanel trace={trace} />
       </Collapsible>
-
-      <section className="studio-methods">
-        <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id} />
-        <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
-      </section>
 
       <PlanIteratePanel
         workspaceId={dashboard?.workspace_id || workspace?.workspace_id}

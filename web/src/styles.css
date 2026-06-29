@@ -1,25 +1,25 @@
 :root {
   color-scheme: light;
   font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Microsoft YaHei", "PingFang SC", sans-serif;
-  --bg: #fafafb;
+  --bg: #f8f9fb;
   --surface: #ffffff;
-  --surface-soft: #fbfbfd;
+  --surface-soft: #f3f4f6;
   --surface-glass: rgba(255, 255, 255, 0.86);
-  --ink: #1d1d1f;
-  --muted: #6e6e73;
-  --faint: #8e8e93;
-  --line: #e5e5ea;
-  --line-strong: #d1d1d6;
-  --blue: #0071e3;
-  --blue-soft: #e8f2ff;
-  --mint: #00a878;
-  --mint-soft: #e8f8f2;
-  --amber: #b26a00;
-  --amber-soft: #fff4dd;
-  --red: #d92d20;
-  --red-soft: #fff0ed;
-  --shadow: 0 1px 2px rgba(20, 20, 40, 0.04), 0 8px 24px -12px rgba(20, 20, 40, 0.10);
-  --radius: 8px;
+  --ink: #111827;
+  --muted: #6b7280;
+  --faint: #9aa1ae;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --blue: #2563eb;
+  --blue-soft: #eff4fe;
+  --mint: #059669;
+  --mint-soft: #e7f4ee;
+  --amber: #d97706;
+  --amber-soft: #fbf1e3;
+  --red: #dc2626;
+  --red-soft: #fef2f2;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --radius: 10px;
   color: var(--ink);
   background: var(--bg);
 }
@@ -546,6 +546,65 @@ svg { flex-shrink: 0; }
 .cl-hint { margin-left: auto; font-style: normal; font-size: 12px; color: var(--faint); }
 .collapsible.open .cl-hint { display: none; }
 .collapsible-body { display: grid; gap: 12px; padding: 2px 16px 16px; }
+
+/* ===== Overview 重排：企业控制台风(流式自适应) ===== */
+.agent-studio.dashboard-stage { display: flex; flex-direction: column; gap: 16px; overflow-y: auto; padding: 22px 26px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.dh-title { display: flex; align-items: center; gap: 11px; }
+.dh-title h1 { font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
+.tag-ws { font-size: 11.5px; font-weight: 600; color: var(--blue); background: var(--blue-soft); padding: 3px 10px; border-radius: 6px; }
+.dashboard-stage .dashboard-hero p { font-size: 14px; color: var(--muted); margin-top: 6px; }
+
+.ov-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 16px; }
+.ov-card { padding: 16px 18px; }
+.ov-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--blue-soft); color: var(--blue); display: flex; align-items: center; justify-content: center; margin-bottom: 12px; }
+.ov-n { font-size: 24px; font-weight: 700; line-height: 1.15; }
+.ov-n.small { font-size: 18px; }
+.ov-l { font-size: 13px; font-weight: 500; margin-top: 6px; }
+.ov-s { font-size: 12px; color: var(--faint); margin-top: 3px; }
+
+.pipe-card { padding: 16px 22px 18px; }
+.pipe-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.pipe-head .t { font-size: 14px; font-weight: 600; }
+.pipe-head .lnk { font-size: 13px; color: var(--blue); font-weight: 600; cursor: pointer; }
+.pipe-flow { display: flex; align-items: flex-start; justify-content: space-between; position: relative; padding: 8px 4px 0; gap: 6px; }
+.pipe-line { position: absolute; top: 27px; left: 64px; right: 64px; height: 2px; background: var(--line); z-index: 1; }
+.pipe-fill { position: absolute; left: 0; height: 100%; background: var(--mint); transition: width .4s ease; }
+.pipe-node { display: flex; flex-direction: column; align-items: center; gap: 8px; flex: 1; min-width: 0; position: relative; z-index: 2; text-align: center; }
+.pipe-dot { width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--surface); border: 2px solid var(--line); color: var(--faint); flex: none; }
+.pipe-node.done .pipe-dot { background: var(--mint); border-color: var(--mint); color: #fff; }
+.pipe-node.cur .pipe-dot { background: var(--blue); border-color: var(--blue); color: #fff; }
+.pipe-i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: block; }
+.pipe-nm { font-size: 13px; font-weight: 600; line-height: 1.2; }
+.pipe-ds { font-size: 11.5px; color: var(--muted); }
+.pipe-st { font-size: 11px; font-weight: 600; color: var(--blue); background: var(--blue-soft); padding: 2px 8px; border-radius: 5px; }
+
+.verdict-row { display: grid; grid-template-columns: 1.9fr 1fr; gap: 16px; align-items: stretch; }
+.verdict-row > .verdict-hero, .verdict-row > .audit-card { margin: 0; }
+@media (max-width: 1180px){ .verdict-row { grid-template-columns: 1fr; } }
+@media (max-width: 980px){ .ov-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+
+/* 结论中性化：去掉巨大彩色标题, 用克制深色 */
+.verdict-hero.tone-yes .vh-judgment, .verdict-hero.tone-cond .vh-judgment, .verdict-hero.tone-no .vh-judgment { color: var(--ink); }
+
+.tbl-card { overflow: hidden; }
+.tbl-card .cardhead { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.tbl-card .cardhead .t { font-size: 14px; font-weight: 600; }
+.tbl-card .cardhead .lnk { font-size: 13px; color: var(--blue); font-weight: 600; cursor: pointer; }
+.tbl-wrap { overflow-x: auto; }
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table thead th { font-size: 12px; font-weight: 600; color: var(--muted); text-align: left; padding: 11px 18px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.data-table tbody td { font-size: 13.5px; padding: 12px 18px; border-bottom: 1px solid #f1f2f4; color: var(--ink); }
+.data-table tbody tr:last-child td { border-bottom: 0; }
+.td-name { display: inline-flex; align-items: center; gap: 9px; font-weight: 500; }
+.td-name svg { color: var(--faint); flex: none; }
+.td-chip { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 6px; background: var(--surface-soft); color: var(--muted); }
+.td-mut { color: var(--muted); }
+.td-stt { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; }
+.td-stt .d { width: 7px; height: 7px; border-radius: 50%; }
+.td-stt.ok { color: var(--mint); } .td-stt.ok .d { background: var(--mint); }
+.td-stt.warn { color: var(--amber); } .td-stt.warn .d { background: var(--amber); }
+.td-empty { text-align: center; color: var(--faint); padding: 24px; font-size: 13px; }
 .dashboard-stage {
   display: flex;
   flex-direction: column;
