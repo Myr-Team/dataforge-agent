@@ -35,7 +35,7 @@ svg { flex-shrink: 0; }
 
 .app-shell {
   display: grid;
-  grid-template-columns: 128px minmax(0, 1fr);
+  grid-template-columns: 200px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas: "top top" "nav main";
   height: 100dvh;
@@ -46,6 +46,15 @@ svg { flex-shrink: 0; }
 }
 .shell-nav { grid-area: nav; }
 .workbench { grid-area: main; }
+.app-shell.nav-collapsed { grid-template-columns: 62px minmax(0, 1fr); }
+.nav-collapsed .shell-nav { padding: 18px 8px; }
+.nav-collapsed .nav-icon { grid-template-columns: 1fr; justify-content: center; padding: 0; }
+.nav-collapsed .nav-icon span { display: none; }
+.nav-collapsed .nav-status { display: none; }
+.nav-collapse-btn { margin-top: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; border: 0; background: transparent; color: var(--faint); cursor: pointer; border-radius: 8px; font-size: 12.5px; }
+.nav-collapse-btn:hover { background: var(--surface-soft); color: var(--ink); }
+.nav-collapsed .nav-collapse-btn svg { transform: rotate(180deg); }
+.nav-collapsed .nav-collapse-btn span { display: none; }
 
 .shell-nav {
   display: flex;
@@ -90,12 +99,14 @@ svg { flex-shrink: 0; }
 .nav-icon span {
   overflow: hidden;
   color: inherit;
-  font-size: 12px;
-  font-weight: 760;
+  font-size: 13px;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.nav-icon:hover, .nav-icon.active { background: var(--surface); color: var(--ink); box-shadow: 0 1px 0 rgba(0,0,0,0.04); }
+.nav-icon:hover { background: var(--surface-soft); color: var(--ink); }
+.nav-icon.active { background: var(--blue-soft); color: var(--blue); }
+.nav-icon.active span { font-weight: 600; }
 .nav-icon.collapse { width: 42px; align-self: center; grid-template-columns: 1fr; padding: 0; }
 .nav-icon.collapse span { display: none; }
 .icon-button { width: 30px; height: 30px; border-radius: 7px; }
@@ -173,7 +184,7 @@ svg { flex-shrink: 0; }
 /* 顶栏：logo + 产品名 + 工作区面包屑下拉 */
 .brand-mini { display: inline-flex; align-items: center; gap: 9px; }
 .brand-logo-sm { width: 26px; height: 26px; border-radius: 7px; display: block; }
-.brand-mini strong { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+.brand-mini strong { font-size: 15.5px; font-weight: 600; letter-spacing: -.01em; }
 .topbar-left { gap: 4px; }
 .ws-switch { position: relative; }
 .ws-crumb { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px 0 4px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; border-radius: 7px; }

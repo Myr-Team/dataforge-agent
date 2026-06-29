@@ -25,6 +25,7 @@ import {
   ImagePlus,
   Layers3,
   Loader2,
+  PanelLeftClose,
   Mic,
   LogIn,
   LogOut,
@@ -61,7 +62,7 @@ import {
 
 const agentMap = new Map(AGENTS.map((agent) => [agent.id, agent]));
 
-export function ShellNav({ active = "workspaces", onChange = () => {}, health = {} }) {
+export function ShellNav({ active = "workspaces", onChange = () => {}, health = {}, collapsed = false, onToggleCollapse }) {
   const deps = health.dependencies || {};
   const status = [
     ["Foundry", deps.foundry],
@@ -97,6 +98,11 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, health = 
           </span>
         ))}
       </div>
+      {onToggleCollapse ? (
+        <button className="nav-collapse-btn" type="button" onClick={onToggleCollapse} title={collapsed ? "展开侧栏" : "收起侧栏"} aria-label="切换侧栏">
+          <PanelLeftClose size={16} /><span>收起</span>
+        </button>
+      ) : null}
     </nav>
   );
 }
@@ -185,7 +191,13 @@ function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange }) {
             {workspaces.length ? (
               workspaces.map((w) => {
                 const active = w.workspace_id === workspaceId;
-                const sub = w.name && w.name !== w.workspace_id ? w.workspace_id : "";
+                const sub = w.row_count
+                  ? `${w.row_count} 行${w.field_count ? ` · ${w.field_count} 列` : ""}`
+                  : w.doc_count
+                    ? `${w.doc_count} 个文件`
+                    : w.format
+                      ? String(w.format).toUpperCase()
+                      : "";
                 return (
                   <button key={w.workspace_id} type="button" className={active ? "ws-dd-item cur" : "ws-dd-item"} role="menuitem" onClick={() => { onChange(w.workspace_id); setOpen(false); }}>
                     <span className="ws-ck">{active ? <Check size={15} /> : null}</span>
