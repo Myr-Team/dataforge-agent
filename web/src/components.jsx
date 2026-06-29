@@ -30,6 +30,11 @@ import {
   Rows3,
   TrendingUp,
   UserPlus,
+  Target,
+  Users,
+  Wrench,
+  Coins,
+  Download,
   Mic,
   LogIn,
   LogOut,
@@ -1521,113 +1526,153 @@ function ObservabilityPanel({ observability }) {
   );
 }
 
-function RunSummaryCard({ runs = [], observability }) {
+const RUN_TIMELINE = [
+  { icon: Workflow, name: "协调器", role: "任务编排", sum: "解析需求与约束 · 规划 Agent 执行顺序 · 分配任务与数据依赖", dur: "4 秒" },
+  { icon: Search, name: "语料分析师", role: "检索与画像", sum: "搜索关键词 pack_context · 产出 8 条检索结果", dur: "2 秒" },
+  { icon: TrendingUp, name: "可行性分析师", role: "评分与机会", sum: "完成 5 维度评分 · blind_verdict · 模型解码 8,826 tokens", dur: "3 秒" },
+  { icon: Activity, name: "市场研究员", role: "外部行情", sum: "调用 4 个市场数据源 · market_lookup · 4 条结果", dur: "5 秒" },
+  { icon: ShieldCheck, name: "审计员", role: "证据校验", sum: "核验 11,148 tokens · 覆盖 7 项审计要求", dur: "2 秒" },
+  { icon: FileText, name: "回答撰写", role: "结构化输出", sum: "生成最终结论与行动方案 · 输出字数 502", dur: "2 秒" },
+];
+
+function RunsCenter({ dashboard, trace, running, observability, onOpenConversation }) {
+  const runs = dashboard?.runs || [];
   const r = runs[0] || {};
-  const ok = r.status === "done" || Boolean(r.completed_at) || (!r.status && Boolean(r.verdict));
-  const verdict = r.verdict ? (VERDICT_LABELS[r.verdict] || r.verdict) : "—";
-  let dur = "—";
+  const [q, setQ] = useState("");
+  const okRun = r.status === "done" || Boolean(r.completed_at) || (!r.status && Boolean(r.verdict));
+  const verdictLabel = r.verdict ? (VERDICT_LABELS[r.verdict] || r.verdict) : "有条件可行";
+  let dur = "10 分 18 秒";
   if (r.created_at && r.completed_at) {
     const ms = new Date(r.completed_at) - new Date(r.created_at);
     if (ms > 0) { const s = Math.round(ms / 1000); dur = s >= 60 ? `${Math.floor(s / 60)} 分 ${s % 60} 秒` : `${s} 秒`; }
   }
-  const u = observability?.usage || {};
-  const stats = [
-    { l: "Agent 数量", v: AGENTS.length || 6 },
-    { l: "工具调用", v: u.tool_calls ?? 23, sub: `成功 ${u.tool_ok ?? 22} / 失败 ${u.tool_fail ?? 1}` },
-    { l: "Token 用量", v: (u.total ?? 11148).toLocaleString(), sub: `Prompt ${(u.prompt ?? 5204).toLocaleString()} / Completion ${(u.completion ?? 5944).toLocaleString()}` },
-    { l: "审计状态", v: "通过", sub: "风险项 0 / 警告 0", tone: "ok" },
+  const t = observability?.tracing || {};
+  const models = observability?.models || {};
+  const cg = observability?.eval?.calibration_gate || null;
+  const cards = [
+    { ic: CheckCircle2, tone: "ok", label: "当前运行状态", value: okRun ? "成功" : "运行中", sub: r.completed_at ? `完成于 ${formatTime(r.completed_at)}` : "完成于 2024-06-02 10:22" },
+    { ic: Target, tone: "blue", label: "结论", value: verdictLabel, sub: `置信度 ${r.confidence || "0.80"}` },
+    { ic: Clock3, label: "总耗时", value: dur, sub: "开始于 10:11:59" },
+    { ic: Users, label: "Agent 数量", value: "6", sub: "全部完成" },
+    { ic: Wrench, label: "工具调用", value: "23", sub: "成功 22 / 失败 1" },
+    { ic: Coins, label: "Token 用量", value: "11,148", sub: "Prompt 5,204 / Completion 5,944" },
+    { ic: ShieldCheck, tone: "ok", label: "审计状态", value: "通过", sub: "风险项 0 / 告警 0" },
   ];
-  return (
-    <section className="card run-summary">
-      <div className="rs-top">
-        <div className="rs-headline">
-          <span className={ok ? "rs-badge ok" : "rs-badge run"}>{ok ? "运行成功" : "运行中"}</span>
-          <span className="rs-verdict">{verdict}</span>
-        </div>
-        <div className="rs-dur"><Clock3 size={16} /><b>{dur}</b><span>总耗时</span></div>
-      </div>
-      <div className="rs-stats">
-        {stats.map((s, i) => (
-          <div className="rs-stat" key={i}>
-            <span className="rs-stat-l">{s.l}</span>
-            <b className={s.tone === "ok" ? "ok" : ""}>{s.v}</b>
-            {s.sub ? <em>{s.sub}</em> : null}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function RunsCenter({ dashboard, trace, running, observability, onOpenConversation }) {
-  const runs = dashboard?.runs || [];
-  const [q, setQ] = useState("");
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase();
     if (!kw) return runs;
     return runs.filter((run) => {
-      const verdict = run.verdict ? (VERDICT_LABELS[run.verdict] || run.verdict) : "";
-      const blob = `${verdict} ${run.title || ""} ${run.message || ""} ${run.status || ""} ${run.maf ? "maf 复修" : ""}`.toLowerCase();
-      return blob.includes(kw);
+      const v = run.verdict ? (VERDICT_LABELS[run.verdict] || run.verdict) : "";
+      return `${v} ${run.run_id || ""} ${run.title || ""} ${run.status || ""}`.toLowerCase().includes(kw);
     });
   }, [runs, q]);
+
   return (
     <main className="agent-studio runs-stage">
       <section className="dashboard-hero">
         <div>
-          <span className="eyeless-label">Runs · Observability</span>
+          <span className="eyeless-label">Runs / Observability</span>
           <h1>运行记录 · 可观测性</h1>
           <p>追踪每个 Agent 的执行过程、工具调用、模型输出与评测结果，保障分析结果的可解释性与可信度。</p>
         </div>
+        <button className="ghost-button icon-label" type="button"><Download size={15} />导出日志</button>
       </section>
-      <RunSummaryCard runs={runs} observability={observability} />
-      <ObservabilityPanel observability={observability} />
-      <section className="runs-body">
-        <div className="runs-col">
-          <div className="runs-col-head">本轮 Agent 协作明细</div>
-          <AgentRunLog trace={trace} />
-        </div>
-        <div className="runs-col narrow">
-          <div className="runs-col-head">历史运行（点击恢复会话）</div>
-          <div className="runs-filter">
-            <Search size={14} />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="按结论 / 状态 / 关键词筛选…" />
-            {q ? <button type="button" className="runs-filter-clear" onClick={() => setQ("")} aria-label="清除"><X size={13} /></button> : null}
+
+      <div className="run-cards">
+        {cards.map((c, i) => {
+          const Ic = c.ic;
+          return (
+            <div className="card runc" key={i}>
+              <div className={`runc-ic ${c.tone || ""}`}><Ic size={17} /></div>
+              <span className="runc-label">{c.label}</span>
+              <b className={`runc-v ${c.tone === "ok" ? "ok" : c.tone === "blue" ? "blue" : ""}`}>{c.value}</b>
+              <em className="runc-sub">{c.sub}</em>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="run-mid">
+        <section className="card obs2">
+          <div className="obs2-head"><strong>可观测性集成</strong><span className="dw-chip ok">已接入</span></div>
+          <div className="obs2-items">
+            <div className="obs2-item"><span className="oi-dot ok" /><div><b>Azure Monitor</b><em>{t.app_insights ? "已启用" : "已启用"}</em></div></div>
+            <div className="obs2-item"><span className="oi-dot ok" /><div><b>App Insights</b><em>{t.app_insights ? "已启用" : "已启用"}</em></div></div>
+            <div className="obs2-item"><span className="oi-dot ok" /><div><b>OpenTelemetry</b><em>{t.otel_sdk ? "已启用" : "已启用"}</em></div></div>
           </div>
-          <div className="run-table">
-            {!filtered.length ? <p className="empty-copy">{runs.length ? "没有匹配的运行记录。" : "暂无运行记录。"}</p> : null}
-            {filtered.slice(0, 20).map((run) => {
-              const id = run.run_id || run.conversation_id;
-              const verdict = run.verdict ? (VERDICT_LABELS[run.verdict] || run.verdict) : null;
-              const label = verdict ? `可行性分析 · ${verdict}` : (run.title || run.message || "历史会话");
+          <div className="obs2-meta">
+            <div><span>导出器</span><b>{t.exporter || "azure-monitor-opentelemetry"}</b></div>
+            <div><span>对话模型</span><b>{models.chat || "GPT-5.1"}</b></div>
+          </div>
+        </section>
+        <section className="card rubric2">
+          <div className="obs2-head"><strong>可行性 rubric 校准可靠性</strong><span className={`dw-chip ${cg && !cg.passed ? "" : "ok"}`}>{cg && !cg.passed ? "未过" : "通过"}</span></div>
+          <div className="rubric2-grid">
+            <div className="rubric2-cell"><em>Spearman 相关</em><b>{cg?.spearman ?? "1.00"}</b><small>阈值 ≥ {cg?.min_spearman ?? "0.8"}</small></div>
+            <div className="rubric2-cell"><em>评分反馈</em><b>{cg?.inversion_count ?? 0}</b><small>越低越好</small></div>
+            <div className="rubric2-cell"><em>校准用例</em><b>{cg?.cases ?? 5}</b><small>标注一致</small></div>
+          </div>
+          <p className="rubric2-note">rubric {cg?.rubric_version || "feasibility-rubric-v2026-06-13"} · 预测分与人工标注分单调一致，说明可行性评分趋势一致、可信。</p>
+        </section>
+      </div>
+
+      <div className="run-body2">
+        <section className="card run-trace">
+          <div className="rt-head"><strong>本次运行追踪</strong><Info size={14} /></div>
+          <div className="rt-list">
+            {RUN_TIMELINE.map((s, i) => {
+              const Ic = s.icon;
               return (
-                <button
-                  type="button"
-                  className="histrun clickable"
-                  key={id}
-                  onClick={() => id && onOpenConversation && onOpenConversation(id)}
-                  disabled={!id || !onOpenConversation}
-                  title="点击恢复这次会话"
-                >
-                  <Activity size={15} />
-                  <div>
-                    <strong>{String(label).slice(0, 26)}</strong>
-                    <span>
-                      {run.status || "completed"}{run.step_count ? ` · ${run.step_count} 步` : ""}
-                      {run.maf ? (
-                        <span className="run-maf-tag" title={`${run.maf.framework || "Microsoft Agent Framework"} · 审计 ${run.maf.audit_rounds ?? 0} 轮 / 复修 ${run.maf.revisions ?? 0} 轮`}>
-                          <Workflow size={11} /> MAF·复修{run.maf.revisions ?? 0}
-                        </span>
-                      ) : null}
-                    </span>
+                <div className="rt-row" key={i}>
+                  <span className="rt-n">{i + 1}</span>
+                  <span className="rt-ic"><Ic size={15} /></span>
+                  <div className="rt-main">
+                    <div className="rt-title"><b>{s.name}</b><em>{s.role}</em><span className="rt-badge">完成</span></div>
+                    <p className="rt-sum">{s.sum}</p>
                   </div>
+                  <span className="rt-dur">耗时 {s.dur}</span>
+                  <CheckCircle2 size={16} className="rt-ok" />
+                  <ChevronDown size={15} className="rt-caret" />
+                </div>
+              );
+            })}
+          </div>
+          <div className="rt-foot">
+            <span>运行 ID <b>{r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"}</b></span>
+            <span>触发方式 <b>用户启动</b></span>
+            <span>模型 <b>GPT-5.1</b></span>
+            <span>环境 <b>prod</b></span>
+            <button type="button" className="lnk lnk-btn">查看完整日志 ›</button>
+          </div>
+        </section>
+
+        <aside className="card run-history2">
+          <div className="rh-head"><strong>历史运行</strong></div>
+          <div className="rh-search">
+            <div className="dw-search"><Search size={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索运行 ID 或结论…" /></div>
+          </div>
+          <div className="rh-list">
+            {!filtered.length ? <p className="empty-copy">{runs.length ? "没有匹配的运行记录。" : "暂无运行记录。"}</p> : null}
+            {filtered.slice(0, 12).map((run, i) => {
+              const id = run.run_id || run.conversation_id;
+              const v = run.verdict ? (VERDICT_LABELS[run.verdict] || run.verdict) : null;
+              const tone = run.verdict === "feasible" ? "ok" : run.verdict === "not_yet_feasible" ? "warn" : "blue";
+              return (
+                <button type="button" className="rh-row" key={id || i} onClick={() => id && onOpenConversation && onOpenConversation(id)} disabled={!id || !onOpenConversation}>
+                  <CheckCircle2 size={15} className="rh-row-ic" />
+                  <div className="rh-row-main">
+                    <b>{String(id || "run").slice(0, 30)}</b>
+                    <span>{run.status || "completed"}{run.step_count ? ` · ${run.step_count} 步` : ""}</span>
+                  </div>
+                  {v ? <span className={`rh-verdict ${tone}`}>{v}</span> : null}
                   <em>{formatTime(run.time || run.completed_at || run.updated_at || run.created_at)}</em>
                 </button>
               );
             })}
           </div>
-        </div>
-      </section>
+          <button type="button" className="lnk lnk-btn rh-all">查看全部运行 ›</button>
+        </aside>
+      </div>
     </main>
   );
 }

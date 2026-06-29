@@ -572,6 +572,81 @@ svg { flex-shrink: 0; }
 .rs-stat b.ok { color: var(--mint); }
 .rs-stat em { font-style: normal; font-size: 11.5px; color: var(--faint); }
 @media (max-width: 860px){ .rs-stats { grid-template-columns: repeat(2, 1fr); } }
+
+/* ===== 运行记录页(对齐参考图) ===== */
+.run-cards { display: grid; grid-template-columns: repeat(7, 1fr); gap: 14px; }
+@media (max-width: 1280px){ .run-cards { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 760px){ .run-cards { grid-template-columns: repeat(2, 1fr); } }
+.runc { padding: 15px 16px; }
+.runc-ic { width: 30px; height: 30px; border-radius: 8px; background: var(--surface-soft); color: var(--muted); display: flex; align-items: center; justify-content: center; margin-bottom: 11px; }
+.runc-ic.ok { background: var(--mint-soft); color: var(--mint); }
+.runc-ic.blue { background: var(--blue-soft); color: var(--blue); }
+.runc-label { font-size: 12px; color: var(--muted); display: block; }
+.runc-v { display: block; font-size: 19px; font-weight: 700; margin-top: 6px; }
+.runc-v.ok { color: var(--mint); } .runc-v.blue { color: var(--blue); }
+.runc-sub { display: block; font-size: 11px; color: var(--faint); margin-top: 5px; font-style: normal; }
+
+.run-mid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 980px){ .run-mid { grid-template-columns: 1fr; } }
+.obs2, .rubric2 { padding: 16px 18px; }
+.obs2-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.obs2-head strong { font-size: 14px; }
+.obs2-items { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.obs2-item { display: flex; align-items: center; gap: 9px; }
+.oi-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.oi-dot.ok { background: var(--mint); }
+.obs2-item b { font-size: 13px; display: block; }
+.obs2-item em { font-size: 11.5px; color: var(--faint); font-style: normal; }
+.obs2-meta { display: flex; gap: 40px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.obs2-meta span { font-size: 12px; color: var(--muted); display: block; }
+.obs2-meta b { font-size: 12.5px; font-weight: 600; }
+.rubric2-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.rubric2-cell { border: 1px solid var(--line); border-radius: 10px; padding: 13px 14px; }
+.rubric2-cell em { font-size: 12px; color: var(--muted); font-style: normal; }
+.rubric2-cell b { display: block; font-size: 24px; font-weight: 700; color: var(--blue); margin: 6px 0 3px; }
+.rubric2-cell small { font-size: 11px; color: var(--faint); }
+.rubric2-note { font-size: 11.5px; color: var(--faint); margin-top: 13px; line-height: 1.5; }
+
+.run-body2 { display: grid; grid-template-columns: minmax(0,1fr) 380px; gap: 16px; }
+@media (max-width: 1100px){ .run-body2 { grid-template-columns: 1fr; } }
+.run-trace { display: flex; flex-direction: column; }
+.rt-head { display: flex; align-items: center; gap: 8px; padding: 15px 18px; border-bottom: 1px solid var(--line); }
+.rt-head strong { font-size: 14px; } .rt-head svg { color: var(--faint); }
+.rt-list { padding: 6px 8px; }
+.rt-row { display: grid; grid-template-columns: 26px 30px minmax(0,1fr) auto 18px 18px; align-items: center; gap: 11px; padding: 11px 12px; border-radius: 9px; }
+.rt-row:hover { background: var(--surface-soft); }
+.rt-n { width: 24px; height: 24px; border-radius: 50%; background: var(--surface-soft); color: var(--muted); font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+.rt-ic { width: 30px; height: 30px; border-radius: 8px; background: var(--blue-soft); color: var(--blue); display: flex; align-items: center; justify-content: center; }
+.rt-main { min-width: 0; }
+.rt-title { display: flex; align-items: center; gap: 9px; }
+.rt-title b { font-size: 13.5px; font-weight: 600; }
+.rt-title em { font-size: 12px; color: var(--muted); font-style: normal; }
+.rt-badge { font-size: 11px; font-weight: 600; color: var(--mint); background: var(--mint-soft); padding: 1px 8px; border-radius: 5px; }
+.rt-sum { font-size: 12px; color: var(--muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rt-dur { font-size: 12px; color: var(--faint); white-space: nowrap; }
+.rt-ok { color: var(--mint); }
+.rt-caret { color: var(--faint); }
+.rt-foot { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; margin-top: auto; padding: 14px 18px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.rt-foot b { color: var(--ink); font-weight: 600; }
+.rt-foot .lnk-btn { margin-left: auto; color: var(--blue); font-weight: 600; }
+
+.run-history2 { display: flex; flex-direction: column; }
+.rh-head { padding: 15px 18px; border-bottom: 1px solid var(--line); }
+.rh-head strong { font-size: 14px; }
+.rh-search { padding: 12px 14px; }
+.rh-list { padding: 0 8px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.rh-row { display: grid; grid-template-columns: 18px minmax(0,1fr) auto auto; align-items: center; gap: 10px; padding: 10px 11px; border: 0; background: transparent; border-radius: 8px; cursor: pointer; text-align: left; }
+.rh-row:hover { background: var(--surface-soft); }
+.rh-row-ic { color: var(--mint); }
+.rh-row-main { min-width: 0; }
+.rh-row-main b { font-size: 12.5px; font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rh-row-main span { font-size: 11px; color: var(--faint); }
+.rh-verdict { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 5px; white-space: nowrap; }
+.rh-verdict.ok { background: var(--mint-soft); color: var(--mint); }
+.rh-verdict.warn { background: var(--amber-soft); color: var(--amber); }
+.rh-verdict.blue { background: var(--blue-soft); color: var(--blue); }
+.rh-row em { font-size: 11px; color: var(--faint); font-style: normal; white-space: nowrap; }
+.rh-all { margin: 12px 18px; color: var(--blue); font-weight: 600; align-self: flex-start; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
 .dh-title { display: flex; align-items: center; gap: 11px; }
 .dh-title h1 { font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
