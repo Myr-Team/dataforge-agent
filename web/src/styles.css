@@ -651,10 +651,14 @@ svg { flex-shrink: 0; }
 .rh-pager button { width: 28px; height: 28px; border: 1px solid var(--line); background: var(--surface); border-radius: 7px; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .rh-pager button:disabled { opacity: .4; cursor: default; }
 .rh-pager span { font-size: 12.5px; color: var(--muted); }
-/* 历史时间右对齐 + 整体收紧 */
-.rh-row { grid-template-columns: 18px minmax(0,1fr) auto 56px; }
-.rh-row em { text-align: right; }
-.obs2-item svg { flex: none; }
+/* 历史行改 flex：名称占主、徽标与时间靠右、时间固定列右对齐 */
+.rh-row { display: flex; align-items: center; gap: 10px; }
+.rh-row-main { flex: 1; min-width: 0; }
+.rh-verdict { flex: none; }
+.rh-row em { flex: none; width: 58px; text-align: right; }
+.svc-ic { display: block; flex: none; }
+.id-copy { border: 0; background: transparent; color: var(--faint); cursor: pointer; padding: 2px; display: inline-flex; align-items: center; border-radius: 5px; }
+.id-copy:hover { color: var(--blue); background: var(--surface-soft); }
 .rt-runid { display: inline-flex; align-items: center; gap: 5px; }
 .rt-runid .msg-copy, .rt-runid button { margin: 0; }
 .agent-studio.runs-stage { gap: 13px; padding: 18px 22px; }

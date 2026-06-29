@@ -1529,31 +1529,13 @@ function ObservabilityPanel({ observability }) {
   );
 }
 
+const SVC_ICONS = {
+  monitor: "/icons/azure-monitor.svg",
+  appinsights: "/icons/app-insights.svg",
+  otel: "/icons/opentelemetry.svg",
+};
 function ObsIcon({ name }) {
-  if (name === "monitor") {
-    return (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <rect x="2" y="2" width="20" height="20" rx="5" fill="#0078D4" />
-        <path d="M5 14.5l3-4.5 3 3.2 3-5.2 4 6.5" stroke="#fff" strokeWidth="1.7" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-  if (name === "appinsights") {
-    return (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <rect x="2" y="2" width="20" height="20" rx="5" fill="#7A4F9E" />
-        <path d="M12 6a4 4 0 0 0-2.4 7.2V15h4.8v-1.8A4 4 0 0 0 12 6z" fill="#fff" />
-        <rect x="10" y="15.6" width="4" height="2" rx="1" fill="#fff" />
-      </svg>
-    );
-  }
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect x="2" y="2" width="20" height="20" rx="5" fill="#425CC7" />
-      <circle cx="12" cy="9.5" r="2.8" fill="#F5A800" />
-      <rect x="8.6" y="12.6" width="6.8" height="6" rx="2.2" fill="#fff" />
-    </svg>
-  );
+  return <img className="svc-ic" src={SVC_ICONS[name]} alt="" width="22" height="22" aria-hidden="true" />;
 }
 
 const RUN_TIMELINE = [
@@ -1673,7 +1655,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
             })}
           </div>
           <div className="rt-foot">
-            <span className="rt-runid">运行 ID <b>{r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"}</b><CopyButton text={r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"} /></span>
+            <span className="rt-runid">运行 ID <b>{r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"}</b><button type="button" className="id-copy" title="复制运行 ID" onClick={() => { try { navigator.clipboard.writeText(r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"); } catch { /* ignore */ } }}><Copy size={13} /></button></span>
             <span>触发方式 <b>用户启动</b></span>
             <span>模型 <b>GPT-5.1</b></span>
             <span>环境 <b>prod</b></span>
