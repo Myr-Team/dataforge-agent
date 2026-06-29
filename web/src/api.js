@@ -79,6 +79,15 @@ export function parseSse(buffer) {
   return { events, rest };
 }
 
+export function isTransientFetchError(error) {
+  const name = error?.name || "";
+  const message = error instanceof Error ? error.message : String(error || "");
+  return (
+    name === "TypeError" &&
+    /failed to fetch|networkerror|network error|load failed|fetch failed|connection|disconnected/i.test(message)
+  );
+}
+
 export async function loadDashboard(workspaceId) {
   try {
     return await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/dashboard`);
@@ -165,33 +174,46 @@ export async function produceArtifacts(payload) {
 }
 
 export async function streamChat(payload, onEvent, signal) {
-  const response = await fetch(`${API_BASE}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify(payload),
-    signal,
-  });
-  if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
+  let deliveredEvents = 0;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const data = await response.json();
-      message = errorMessageFromPayload(data, message);
-    } catch {
-      // Keep HTTP status text.
-    }
-    throw new Error(message);
-  }
-  if (!response.body) throw new Error("SSE stream is unavailable in this browser.");
+      const response = await fetch(`${API_BASE}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify(payload),
+        signal,
+      });
+      if (!response.ok) {
+        let message = `${response.status} ${response.statusText}`;
+        try {
+          const data = await response.json();
+          message = errorMessageFromPayload(data, message);
+        } catch {
+          // Keep HTTP status text.
+        }
+        throw new Error(message);
+      }
+      if (!response.body) throw new Error("SSE stream is unavailable in this browser.");
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const parsed = parseSse(buffer);
-    buffer = parsed.rest;
-    for (const event of parsed.events) onEvent(event);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parsed = parseSse(buffer);
+        buffer = parsed.rest;
+        for (const event of parsed.events) {
+          deliveredEvents += 1;
+          onEvent(event);
+        }
+      }
+      return;
+    } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError") throw error;
+      if (attempt === 0 && deliveredEvents === 0 && isTransientFetchError(error)) continue;
+      throw error;
+    }
   }
 }

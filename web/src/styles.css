@@ -1370,6 +1370,7 @@ svg { flex-shrink: 0; }
   border-radius: 7px;
   background: var(--surface);
 }
+.output-card.failed { border-color: rgba(217,45,32,.24); background: var(--red-soft); }
 .output-card > div:first-child {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr) auto;
@@ -1384,6 +1385,7 @@ svg { flex-shrink: 0; }
   font-size: 12.5px;
   line-height: 1.5;
 }
+.output-card p.output-error { color: var(--red); }
 .output-card img {
   width: 100%;
   max-height: 180px;
@@ -1656,6 +1658,20 @@ svg { flex-shrink: 0; }
 .vh-conf.speculative { background: #f0f0f3; color: var(--faint); }
 .vh-opp { font-size: 14px; line-height: 1.6; color: var(--muted); margin: 2px 0 0; }
 .vh-opp.muted { color: var(--faint); }
+.vh-downgrade {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 7px;
+  max-width: 620px;
+  padding: 8px 10px;
+  border: 1px solid rgba(214,158,46,.32);
+  border-radius: 7px;
+  background: var(--amber-soft);
+  color: #8a5a00;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.vh-downgrade svg { flex: none; margin-top: 2px; }
 .vh-scores { display: flex; flex-direction: column; gap: 9px; justify-content: center; }
 .vh-scores-head { font-size: 12px; letter-spacing: 0.04em; color: var(--faint); margin-bottom: 2px; }
 .vh-score { display: grid; grid-template-columns: 76px 1fr 34px; gap: 10px; align-items: center; }
@@ -1891,6 +1907,19 @@ svg { flex-shrink: 0; }
 }
 .chat-artifact-card:hover { border-color: var(--blue); box-shadow: 0 6px 16px rgba(0,113,227,0.12); transform: translateY(-1px); }
 .chat-artifact-card .ca-dl { color: var(--blue); margin-left: 2px; }
+.chat-artifact-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 9px 11px;
+  border: 1px solid rgba(217,45,32,.24);
+  border-radius: 7px;
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 600;
+}
 .chat-artifact-card.image { flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px; }
 .chat-artifact-card.image img { width: 168px; max-width: 100%; border-radius: 7px; display: block; }
 .chat-artifact-card.image .ca-cap, .chat-artifact-card.audio .ca-cap { display: inline-flex; align-items: center; gap: 5px; color: var(--muted, #6b7280); font-weight: 600; font-size: 12px; }
@@ -2418,7 +2447,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   60% { box-shadow: 0 0 0 9px rgba(10,132,224,0); }
   100% { box-shadow: 0 0 0 0 rgba(10,132,224,0); }
 }
-.msg-regen { margin-left: 6px; }
+.msg-regen, .msg-retry { margin-left: 6px; }
 .msg-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .msg-actions .msg-copy { margin-top: 0; }
 

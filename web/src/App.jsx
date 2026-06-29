@@ -6,6 +6,7 @@ import {
   loadObservability,
   loadRun,
   produceArtifacts,
+  isTransientFetchError,
   streamChat,
   uploadWorkspace,
 } from "./api.js";
@@ -494,9 +495,24 @@ export function App() {
       } else {
         const messageText = error instanceof Error ? error.message : String(error);
         setTrace((items) => [...items, { event: "error", data: { message: messageText } }]);
-        setMessages((items) => [...items, { role: "assistant", text: `运行失败：${messageText}`, time: new Date().toISOString() }]);
-        setNotice({ type: "error", message: `运行失败：${messageText}` });
-        if (taskId) updateTask(taskId, { status: "error", detail: "分析失败" });
+        const partialText = String(streamRef.current || streamText || "").trim();
+        if (partialText && isTransientFetchError(error)) {
+          setMessages((items) => [
+            ...items,
+            {
+              role: "assistant",
+              text: partialText,
+              time: new Date().toISOString(),
+              recoverable: { prompt: message, message: messageText },
+            },
+          ]);
+          setNotice({ type: "done", message: "连接中断，已保留已生成内容，可重试/继续。" });
+          if (taskId) updateTask(taskId, { status: "done", detail: "已保留部分内容" });
+        } else {
+          setMessages((items) => [...items, { role: "assistant", text: `运行失败：${messageText}`, time: new Date().toISOString() }]);
+          setNotice({ type: "error", message: `运行失败：${messageText}` });
+          if (taskId) updateTask(taskId, { status: "error", detail: "分析失败" });
+        }
       }
     } finally {
       abortRef.current = null;
@@ -680,24 +696,35 @@ export function App() {
       });
       // 合并：produce 只返回本次生成的产物，保留之前已生成的，别覆盖丢失
       const prevProposal = base.proposal || {};
+      const warnings = [
+        ...((prevProposal.warnings || []).filter(Boolean)),
+        ...((result.warnings || []).filter(Boolean)),
+      ];
       const mergedProposal = {
         ...prevProposal,
         ...result,
         artifact_urls: { ...(prevProposal.artifact_urls || {}), ...(result.artifact_urls || {}) },
+        warnings,
       };
       const nextArtifact = { ...base, proposal: mergedProposal };
       setFinalArtifact(nextArtifact);
       const arts = extractArtifacts(nextArtifact);
       setArtifacts(arts);
+      const warningText = warnings.map((w) => w?.message).filter(Boolean).join("；");
       // 在会话里就地展示产物，点了能立刻看到 PDF / 概念图 / 语音，而不是“好像没反应”
       if (arts && (arts.pdf || arts.concept_image || arts.audio_summary)) {
         setMessages((items) => [
           ...items,
-          { role: "assistant", time: new Date().toISOString(), text: "产物已生成，可直接查看 / 下载：", producedArtifacts: arts },
+          {
+            role: "assistant",
+            time: new Date().toISOString(),
+            text: warningText ? `产物已部分生成：${warningText}` : "产物已生成，可直接查看 / 下载：",
+            producedArtifacts: arts,
+          },
         ]);
       }
-      setNotice({ type: "done", message: "产物已生成。" });
-      updateTask(prodTaskId, { status: "done", detail: `${kinds.map((k) => KIND_LABEL[k]).join(" / ")} · 已生成` });
+      setNotice({ type: "done", message: warningText || "产物已生成。" });
+      updateTask(prodTaskId, { status: "done", detail: warningText ? "部分生成完成" : `${kinds.map((k) => KIND_LABEL[k]).join(" / ")} · 已生成` });
       refreshDashboard(workspaceId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

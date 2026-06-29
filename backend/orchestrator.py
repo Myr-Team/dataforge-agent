@@ -2096,6 +2096,15 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
             result["concept_image"] = image
             if image.get("artifact_url"):
                 result["artifact_urls"]["concept_image"] = image.get("artifact_url")
+            else:
+                result["degraded"] = True
+                result.setdefault("warnings", []).append(
+                    {
+                        "kind": "concept_image",
+                        "message": "概念图生成失败，建议书已生成。",
+                        "error": _clean_text(image.get("error") or "no concept image artifact url", 300),
+                    }
+                )
         if audio_future:
             audio = collect_future(audio_future, "audio_summary") or {}
             result["audio_summary"] = audio
@@ -3784,6 +3793,8 @@ async def _producer_frames(artifact: dict[str, Any], conversation_id: str) -> As
     if "proposal" not in artifact:
         artifact["proposal"] = await producer_task
     proposal = artifact.get("proposal") if isinstance(artifact.get("proposal"), dict) else {}
+    if proposal.get("warnings"):
+        artifact["artifact_warnings"] = proposal.get("warnings")
     artifact_urls = proposal.get("artifact_urls") if isinstance(proposal.get("artifact_urls"), dict) else {}
 
     def tool_result_payload(name: str, key: str, url_key: str) -> dict[str, Any]:
@@ -3797,8 +3808,12 @@ async def _producer_frames(artifact: dict[str, Any], conversation_id: str) -> As
         }
         if item.get("error"):
             payload["error"] = item.get("error")
+            payload["status"] = "degraded"
         elif not item:
             payload["error"] = "Artifact was not generated."
+            payload["status"] = "degraded"
+        else:
+            payload["status"] = "ok"
         return payload
 
     yield _frame(
