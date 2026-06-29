@@ -91,12 +91,12 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, health = 
         })}
       </div>
       <div className="nav-status" aria-label="服务状态">
-        <span className="nav-status-head">服务</span>
-        <span className="nav-status-dots">
-          {status.map(([label, ok]) => (
-            <i className={ok ? "nst-dot ok" : "nst-dot off"} key={label} title={`${label}: ${ok ? "正常" : "未连接"}`} />
-          ))}
-        </span>
+        <span className="nav-status-head">服务状态</span>
+        {status.map(([label, ok]) => (
+          <span className="nav-status-row" key={label} title={`${label}: ${ok ? "正常" : "未连接"}`}>
+            <i className={ok ? "nst-dot ok" : "nst-dot off"} />{label}
+          </span>
+        ))}
       </div>
       {onToggleCollapse ? (
         <button className="nav-collapse-btn" type="button" onClick={onToggleCollapse} title={collapsed ? "展开侧栏" : "收起侧栏"} aria-label="切换侧栏">
@@ -177,6 +177,9 @@ function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange }) {
   }, [open]);
   const current = workspaces.find((w) => w.workspace_id === workspaceId);
   const currentName = current?.name || workspaceId || "工作区";
+  const sorted = [...workspaces].sort(
+    (a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0),
+  );
   return (
     <div className="ws-switch" ref={ref}>
       <button className="ws-crumb" type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} title="切换工作区">
@@ -188,8 +191,8 @@ function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange }) {
         <div className="ws-dd" role="menu">
           <div className="ws-dd-head">工作区</div>
           <div className="ws-dd-list">
-            {workspaces.length ? (
-              workspaces.map((w) => {
+            {sorted.length ? (
+              sorted.map((w) => {
                 const active = w.workspace_id === workspaceId;
                 const sub = w.row_count
                   ? `${w.row_count} 行${w.field_count ? ` · ${w.field_count} 列` : ""}`
@@ -1873,9 +1876,12 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
     if (el) atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
   useEffect(() => {
-    if (!atBottomRef.current) return;
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    const last = messages[messages.length - 1];
+    if (last?.role === "user") atBottomRef.current = true; // 用户刚发言，强制跟到最新
+    if (!atBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
   }, [messages, streamText, running]);
   // 等待期间显示当前是哪个 Agent 在干什么(取自实时 trace)，把多 Agent 协作秀进对话流
   const liveStage = useMemo(() => deriveAgentStage(trace), [trace]);

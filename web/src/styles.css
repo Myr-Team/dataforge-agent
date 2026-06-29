@@ -28,6 +28,13 @@
 html, body, #root { min-height: 100%; }
 body { margin: 0; min-width: 320px; overflow: hidden; }
 button, input, select, textarea { font: inherit; }
+
+/* 细而克制的滚动条，替代系统默认的粗条 */
+* { scrollbar-width: thin; scrollbar-color: rgba(20, 20, 40, 0.18) transparent; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(20, 20, 40, 0.16); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(20, 20, 40, 0.30); background-clip: content-box; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.48; }
 svg { flex-shrink: 0; }
@@ -988,8 +995,12 @@ svg { flex-shrink: 0; }
 .answer-panel {
   min-height: 0;
   padding: 16px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
+.answer-panel-head { flex: none; }
+.answer-panel .message-stack { flex: 1; min-height: 0; overflow-y: auto; }
 .answer-panel-head {
   display: flex;
   justify-content: space-between;
@@ -2079,8 +2090,7 @@ svg { flex-shrink: 0; }
 @media (max-width: 1100px) { .runs-body { grid-template-columns: 1fr; } .runs-col.narrow { display: none; } }
 
 /* 左下角服务状态（竖排，替代原收起按钮） */
-.shell-nav .nav-status { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 6px 2px; border-top: 1px solid var(--line); }
-.nav-status-dots { display: inline-flex; gap: 6px; }
+.shell-nav .nav-status { margin-top: auto; display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
 .nav-status-head { font-size: 9.5px; color: var(--faint); letter-spacing: 0.03em; }
 .nav-status-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
 .nst-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong); flex-shrink: 0; }
