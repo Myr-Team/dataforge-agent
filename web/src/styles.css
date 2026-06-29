@@ -154,8 +154,8 @@ svg { flex-shrink: 0; }
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  padding: 7px 18px;
-  min-height: 52px;
+  padding: 8px 18px;
+  min-height: 56px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-glass);
   backdrop-filter: blur(18px);
@@ -198,11 +198,7 @@ svg { flex-shrink: 0; }
 .ws-switch > .ws-sep { color: var(--faint); }
 .ws-crumb { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; border-radius: 7px; }
 .ws-caret { color: var(--faint); }
-/* 顶栏全局搜索 */
-.topbar-search { flex: 1; max-width: 480px; margin: 0 auto; display: flex; align-items: center; gap: 9px; height: 38px; padding: 0 13px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--faint); }
-.topbar-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font-size: 13.5px; color: var(--ink); }
-.topbar-search kbd { font-size: 11px; color: var(--faint); background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-family: inherit; }
-@media (max-width: 1100px){ .topbar-search { display: none; } }
+/* 顶栏不放全局搜索：中间留白保持干净，搜索下沉到各页内部（数据/运行记录） */
 .ws-crumb:hover { background: var(--surface-soft); }
 .ws-crumb .ws-sep { color: var(--faint); }
 .ws-crumb .ws-name { color: var(--ink); font-weight: 600; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
