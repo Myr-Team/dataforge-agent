@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,22 @@ PROMPT_FILES = {
 }
 
 _WEB_TOOL_CACHE: dict[str, Any] | None = None
+_LLM_RETRY_DELAYS = (0.5, 1.0, 2.0)
+_TRANSIENT_ERROR_TERMS = (
+    "rate limit",
+    "too many requests",
+    "timeout",
+    "timed out",
+    "temporarily unavailable",
+    "connection reset",
+    "connection aborted",
+    "connection error",
+    "remote end closed",
+    "server disconnected",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+)
 
 
 CLARIFY_GUIDANCE_SCHEMA = {
@@ -178,10 +196,12 @@ def run_playbook_detail(payload: dict[str, Any]) -> dict[str, Any]:
         "text": _schema_format("df_playbook_detail", PLAYBOOK_DETAIL_SCHEMA),
     }
     try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if not _can_retry_without_schema(exc):
+            raise
         create_args.pop("text", None)
-        response = openai_client.responses.create(**create_args)
+        response = _responses_create_with_retry(openai_client, **create_args)
     try:
         data = _extract_json(getattr(response, "output_text", "") or "")
     except Exception:
@@ -235,10 +255,12 @@ def run_data_overview(payload: dict[str, Any]) -> dict[str, Any]:
         "text": _schema_format("df_data_overview", DATA_OVERVIEW_SCHEMA),
     }
     try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if not _can_retry_without_schema(exc):
+            raise
         create_args.pop("text", None)
-        response = openai_client.responses.create(**create_args)
+        response = _responses_create_with_retry(openai_client, **create_args)
     try:
         data = _extract_json(getattr(response, "output_text", "") or "")
     except Exception:
@@ -304,10 +326,12 @@ def run_plan_metrics_extract(payload: dict[str, Any]) -> dict[str, Any]:
         "text": _schema_format("df_plan_metrics", PLAN_METRICS_SCHEMA),
     }
     try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if not _can_retry_without_schema(exc):
+            raise
         create_args.pop("text", None)
-        response = openai_client.responses.create(**create_args)
+        response = _responses_create_with_retry(openai_client, **create_args)
     try:
         data = _extract_json(getattr(response, "output_text", "") or "")
     except Exception:
@@ -359,11 +383,13 @@ def run_image_subject(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             if attempt == 1:
                 create_args.pop("text", None)  # 第 2 次去掉结构化约束，提高成功率
-            response = openai_client.responses.create(**create_args)
+            response = _responses_create_with_retry(openai_client, **create_args)
             break
         except Exception as exc:  # 超时/限流等瞬时错误重试
             last_error = exc
             response = None
+            if not (_is_transient_llm_error(exc) or _can_retry_without_schema(exc)):
+                break
     if response is None:
         return {"subject": "", "kind": "", "error": f"{type(last_error).__name__}: {last_error}"[:200] if last_error else ""}
     try:
@@ -397,10 +423,12 @@ def run_executive_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "text": _schema_format("df_exec_summary", EXEC_SUMMARY_SCHEMA),
     }
     try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if not _can_retry_without_schema(exc):
+            raise
         create_args.pop("text", None)
-        response = openai_client.responses.create(**create_args)
+        response = _responses_create_with_retry(openai_client, **create_args)
     try:
         data = _extract_json(getattr(response, "output_text", "") or "")
     except Exception:
@@ -436,10 +464,12 @@ def run_action_plan(payload: dict[str, Any]) -> dict[str, Any]:
         "text": _schema_format("df_action_plan", ACTION_PLAN_SCHEMA),
     }
     try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if not _can_retry_without_schema(exc):
+            raise
         create_args.pop("text", None)
-        response = openai_client.responses.create(**create_args)
+        response = _responses_create_with_retry(openai_client, **create_args)
     text = getattr(response, "output_text", "") or ""
     try:
         data = _extract_json(text)
@@ -461,6 +491,94 @@ def _project_client() -> AIProjectClient:
         credential=DefaultAzureCredential(),
         allow_preview=True,
     )
+
+
+def _status_code_from_exception(exc: Exception) -> int | None:
+    for attr in ("status_code", "status", "code"):
+        value = getattr(exc, attr, None)
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    response = getattr(exc, "response", None)
+    for attr in ("status_code", "status", "code"):
+        value = getattr(response, attr, None)
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    status = _status_code_from_exception(exc)
+    if status is not None:
+        return status in {408, 409, 425, 429} or status >= 500
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return any(term in message for term in _TRANSIENT_ERROR_TERMS)
+
+
+def _can_retry_without_schema(exc: Exception) -> bool:
+    if _is_transient_llm_error(exc):
+        return False
+    message = f"{type(exc).__name__}: {exc}".lower()
+    schema_terms = (
+        "json_schema",
+        "response_format",
+        "structured output",
+        "schema",
+        "text.format",
+        "unsupported parameter",
+        "unknown parameter",
+        "invalid parameter",
+        "invalid request",
+    )
+    return any(term in message for term in schema_terms)
+
+
+def _llm_retry_delay(attempt: int) -> float:
+    base = _LLM_RETRY_DELAYS[min(attempt, len(_LLM_RETRY_DELAYS) - 1)]
+    return base + random.uniform(0.0, 0.2)
+
+
+def _responses_create_with_retry(openai_client: Any, **create_args: Any) -> Any:
+    retry_count = 0
+    while True:
+        try:
+            response = openai_client.responses.create(**create_args)
+            if retry_count:
+                try:
+                    setattr(response, "_dataforge_retry_attempts", retry_count)
+                except Exception:
+                    pass
+            return response
+        except Exception as exc:
+            if retry_count >= len(_LLM_RETRY_DELAYS) or not _is_transient_llm_error(exc):
+                raise
+            time.sleep(_llm_retry_delay(retry_count))
+            retry_count += 1
+
+
+def _stream_response_events_with_retry(openai_client: Any, create_args: dict[str, Any]) -> Any:
+    retry_count = 0
+    emitted_token = False
+    while True:
+        try:
+            stream = openai_client.responses.create(**create_args)
+            for event in stream:
+                if _stream_delta(event):
+                    emitted_token = True
+                yield event
+            return
+        except Exception as exc:
+            if emitted_token or retry_count >= len(_LLM_RETRY_DELAYS) or not _is_transient_llm_error(exc):
+                raise
+            time.sleep(_llm_retry_delay(retry_count))
+            retry_count += 1
 
 
 def _usage_dict(usage: Any) -> dict[str, Any]:
@@ -488,11 +606,15 @@ def _stream_delta(event: Any) -> str:
 
 
 def _response_meta(response: Any, mode: str) -> dict[str, Any]:
-    return {
+    meta = {
         "mode": mode,
         "response_id": getattr(response, "id", None),
         "usage": _usage_dict(getattr(response, "usage", None)),
     }
+    retry_attempts = getattr(response, "_dataforge_retry_attempts", 0)
+    if retry_attempts:
+        meta["retry_attempts"] = retry_attempts
+    return meta
 
 
 def _to_plain_data(value: Any) -> Any:
@@ -655,7 +777,8 @@ def _verify_foundry_web_tool(openai_client: Any) -> dict[str, Any]:
     )
     for name, tool in _foundry_web_tool_candidates():
         try:
-            response = openai_client.responses.create(
+            response = _responses_create_with_retry(
+                openai_client,
                 model=os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
                 instructions=instructions,
                 input="Check current public information about enterprise data analytics platforms.",
@@ -763,12 +886,12 @@ def _run_prompt_agent(
     if text_format:
         create_args["text"] = text_format
     try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
-        if "text" not in create_args:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if "text" not in create_args or not _can_retry_without_schema(exc):
             raise
         create_args.pop("text")
-        response = openai_client.responses.create(**create_args)
+        response = _responses_create_with_retry(openai_client, **create_args)
 
     for _ in range(max_tool_rounds):
         calls = _function_calls(response)
@@ -804,12 +927,12 @@ def _run_prompt_agent(
         if text_format:
             next_args["text"] = text_format
         try:
-            response = openai_client.responses.create(**next_args)
-        except Exception:
-            if "text" not in next_args:
+            response = _responses_create_with_retry(openai_client, **next_args)
+        except Exception as exc:
+            if "text" not in next_args or not _can_retry_without_schema(exc):
                 raise
             next_args.pop("text")
-            response = openai_client.responses.create(**next_args)
+            response = _responses_create_with_retry(openai_client, **next_args)
     else:
         raise RuntimeError(f"{agent_name} exceeded {max_tool_rounds} tool rounds")
 
@@ -874,12 +997,12 @@ def run_agent(
     if text_format:
         create_args["text"] = text_format
     try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
-        if "text" not in create_args:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if "text" not in create_args or not _can_retry_without_schema(exc):
             raise
         create_args.pop("text")
-        response = openai_client.responses.create(**create_args)
+        response = _responses_create_with_retry(openai_client, **create_args)
     text = getattr(response, "output_text", "") or ""
     return {
         "text": text,
@@ -906,7 +1029,8 @@ def run_market_mcp_research(payload: dict[str, Any]) -> dict[str, Any]:
             "All MCP results are external market context and must remain market_inferred.",
         ],
     }
-    response = openai_client.responses.create(
+    response = _responses_create_with_retry(
+        openai_client,
         input=json.dumps(compact_payload, ensure_ascii=False, indent=2),
         max_output_tokens=1200,
         extra_body=_agent_reference("df-market-researcher"),
@@ -948,10 +1072,12 @@ def run_coordinator_guidance(payload: dict[str, Any]) -> dict[str, Any]:
         "text": _schema_format("df_coordinator_guidance", CLARIFY_GUIDANCE_SCHEMA),
     }
     try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if not _can_retry_without_schema(exc):
+            raise
         create_args.pop("text", None)
-        response = openai_client.responses.create(**create_args)
+        response = _responses_create_with_retry(openai_client, **create_args)
     text = getattr(response, "output_text", "") or ""
     data = _extract_json(text)
     return {
@@ -990,10 +1116,12 @@ def run_coordinator_route(payload: dict[str, Any]) -> dict[str, Any]:
         "text": _schema_format("df_coordinator_route", COORDINATOR_ROUTE_SCHEMA),
     }
     try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if not _can_retry_without_schema(exc):
+            raise
         create_args.pop("text", None)
-        response = openai_client.responses.create(**create_args)
+        response = _responses_create_with_retry(openai_client, **create_args)
     text = getattr(response, "output_text", "") or ""
     data = _extract_json(text)
     data["_llm"] = _response_meta(response, "coordinator_route")
@@ -1072,8 +1200,7 @@ def stream_grounded_chat_answer(payload: dict[str, Any]) -> Any:
         "stream": True,
     }
     completed_meta: dict[str, Any] | None = None
-    stream = openai_client.responses.create(**create_args)
-    for event in stream:
+    for event in _stream_response_events_with_retry(openai_client, create_args):
         delta = _stream_delta(event)
         if delta:
             yield {"type": "delta", "delta": delta}
@@ -1115,10 +1242,12 @@ def _coordinator_text_response(
         "text": _schema_format(mode, COORDINATOR_REPLY_SCHEMA),
     }
     try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if not _can_retry_without_schema(exc):
+            raise
         create_args.pop("text", None)
-        response = openai_client.responses.create(**create_args)
+        response = _responses_create_with_retry(openai_client, **create_args)
     text = getattr(response, "output_text", "") or ""
     try:
         data = _extract_json(text)
@@ -1181,10 +1310,12 @@ def run_market_web_research(payload: dict[str, Any]) -> dict[str, Any]:
         "text": _schema_format("df_market_web_research", MARKET_WEB_SCHEMA),
     }
     try:
-        response = openai_client.responses.create(**create_args)
-    except Exception:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if not _can_retry_without_schema(exc):
+            raise
         create_args.pop("text", None)
-        response = openai_client.responses.create(**create_args)
+        response = _responses_create_with_retry(openai_client, **create_args)
     text = getattr(response, "output_text", "") or ""
     sources = _response_sources(response)
     tool_calls = _response_tool_trace(response)
@@ -1251,8 +1382,7 @@ def stream_grounded_answer(payload: dict[str, Any]) -> Any:
         "stream": True,
     }
     completed_meta: dict[str, Any] | None = None
-    stream = openai_client.responses.create(**create_args)
-    for event in stream:
+    for event in _stream_response_events_with_retry(openai_client, create_args):
         delta = _stream_delta(event)
         if delta:
             yield {"type": "delta", "delta": delta}

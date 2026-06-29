@@ -924,7 +924,7 @@ function DashboardStudio({
 
       <WebSearchPanel trace={trace} />
 
-      <VerdictHero feasibility={feasibility} verdict={verdict} running={running} />
+      <VerdictHero feasibility={feasibility} verdict={verdict} running={running} artifact={finalArtifact} />
 
       <AuditCard artifact={finalArtifact} />
 
@@ -1081,7 +1081,7 @@ function VerdictRadar({ dims }) {
   );
 }
 
-function VerdictHero({ feasibility, verdict, running }) {
+function VerdictHero({ feasibility, verdict, running, artifact }) {
   const raw = feasibility?.dimensions || [];
   const dims = raw.length
     ? raw
@@ -1094,6 +1094,10 @@ function VerdictHero({ feasibility, verdict, running }) {
     "";
   const conf = feasibility?.confidence || dims[0]?.confidence || "";
   const tone = verdictTone(verdict);
+  const downgrade = artifact?.verdict?.downgrade || artifact?.verdict_downgrade || null;
+  const beforeLabel = downgrade?.verdict_before_label || VERDICT_LABELS[downgrade?.verdict_before] || downgrade?.verdict_before;
+  const afterLabel = downgrade?.verdict_after_label || VERDICT_LABELS[downgrade?.verdict_after] || downgrade?.verdict_after;
+  const downgradeReason = String(downgrade?.downgrade_reason || "证据不足以支撑原结论").replace(/[。.!！\s]+$/, "");
   return (
     <section className={`verdict-hero tone-${tone}`} data-tour="verdict">
       <div className="vh-left">
@@ -1108,6 +1112,12 @@ function VerdictHero({ feasibility, verdict, running }) {
         ) : (
           <p className="vh-opp muted">发起一次分析后，这里给出机会判断、置信度与可落地建议。</p>
         )}
+        {downgrade ? (
+          <div className="vh-downgrade">
+            <AlertTriangle size={15} />
+            <span>审计已将结论从 {beforeLabel} 降为 {afterLabel}，因为{downgradeReason}。</span>
+          </div>
+        ) : null}
       </div>
       <div className="vh-scores">
         <div className="vh-scores-head">五维可行性评分</div>
@@ -1868,7 +1878,17 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
                   {message.role === "assistant" && message.text && !message.clarify ? (
                     <div className="msg-actions">
                       <CopyButton text={message.text} />
-                      {index === messages.length - 1 && !running && lastUserText ? (
+                      {message.recoverable && !running ? (
+                        <button
+                          type="button"
+                          className="msg-copy msg-retry"
+                          title="重试/继续本次回答"
+                          onClick={() => onRun(message.recoverable.prompt || lastUserText, { regenerate: true })}
+                        >
+                          <RotateCcw size={13} /> 重试/继续
+                        </button>
+                      ) : null}
+                      {!message.recoverable && index === messages.length - 1 && !running && lastUserText ? (
                         <button type="button" className="msg-copy msg-regen" title="用同一个问题重新生成" onClick={() => onRun(lastUserText, { regenerate: true })}>
                           <RotateCcw size={13} /> 重新生成
                         </button>
@@ -2098,7 +2118,8 @@ function ChatArtifacts({ artifacts }) {
   const pdf = artifacts?.pdf ? artifactLink(artifacts.pdf) : null;
   const img = artifacts?.concept_image ? artifactLink(artifacts.concept_image) : null;
   const audio = artifacts?.audio_summary ? artifactLink(artifacts.audio_summary) : null;
-  if (!pdf && !img && !audio) return null;
+  const imgError = artifacts?.concept_image?.error;
+  if (!pdf && !img && !audio && !imgError) return null;
   return (
     <div className="chat-artifacts">
       <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />
@@ -2114,6 +2135,12 @@ function ChatArtifacts({ artifacts }) {
           <img src={img} alt="概念图产物" />
           <span className="ca-cap"><ImagePlus size={13} /> 概念图</span>
         </button>
+      ) : null}
+      {imgError ? (
+        <div className="chat-artifact-warning">
+          <AlertTriangle size={14} />
+          <span>概念图生成失败，建议书已生成。</span>
+        </div>
       ) : null}
       {audio ? (
         <div className="chat-artifact-card audio">
@@ -2516,14 +2543,15 @@ function OutputPanel({ artifacts, artifact, running, onProduce, producing }) {
         const file = artifactMap[item.id];
         const href = artifactLink(file);
         const generated = Boolean(href);
+        const failed = Boolean(file?.error && !href);
         return (
-          <article className="output-card" key={item.id}>
+          <article className={`output-card ${failed ? "failed" : ""}`} key={item.id}>
             <div>
               <Icon size={18} />
               <strong>{item.title}</strong>
-              <span>{file?.bytes ? `${Math.round(file.bytes / 1024)} KB` : generated ? "已生成" : producing ? "生成中…" : analysisReady ? "可生成" : "待分析"}</span>
+              <span>{failed ? "生成失败" : file?.bytes ? `${Math.round(file.bytes / 1024)} KB` : generated ? "已生成" : producing ? "生成中…" : analysisReady ? "可生成" : "待分析"}</span>
             </div>
-            <p>{item.description}</p>
+            <p className={failed ? "output-error" : ""}>{failed ? (file?.message || "本项生成失败，其他产物可继续使用。") : item.description}</p>
             {item.id === "concept_image" && href ? <img className="output-img" src={href} alt="概念图产物" onClick={() => setLightbox(href)} title="点击查看大图" /> : null}
             {item.id === "audio_summary" && href ? <audio src={href} controls /> : null}
             <div className="output-card-foot">

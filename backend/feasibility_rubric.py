@@ -219,12 +219,28 @@ def finalize_verdict_contract(artifact: dict[str, Any], audit: dict[str, Any] | 
     current = copy.deepcopy(artifact.get("feasibility") or {})
     disagreement = _dimension_disagreement(blind, current, audit)
     changed = _verdict_changed(blind, current) or bool(disagreement)
+    before_verdict = str(blind.get("verdict") or "")
+    after_verdict = str(current.get("verdict") or "")
+    downgraded = bool(before_verdict and after_verdict and _verdict_rank(after_verdict) < _verdict_rank(before_verdict))
     contract = {
         "blind": make_blind_verdict(blind),
         "revised": make_blind_verdict(current) if changed else None,
         "revised_by": "审计员" if changed else None,
         "disagreement": disagreement,
     }
+    if downgraded:
+        reason = _downgrade_reason(disagreement, audit, current)
+        downgrade = {
+            "verdict_before": before_verdict,
+            "verdict_after": after_verdict,
+            "verdict_before_label": verdict_label(before_verdict),
+            "verdict_after_label": verdict_label(after_verdict),
+            "downgrade_reason": reason,
+            "source": "audit_guardrail",
+        }
+        contract.update(downgrade)
+        contract["downgrade"] = downgrade
+        artifact["verdict_downgrade"] = downgrade
     artifact["verdict"] = contract
     return contract
 
@@ -312,6 +328,22 @@ def _verdict_changed(blind: dict[str, Any], current: dict[str, Any]) -> bool:
         str(blind.get("verdict") or "") != str(current.get("verdict") or "")
         or str(blind.get("overall_confidence") or "") != str(current.get("overall_confidence") or "")
     )
+
+
+def _downgrade_reason(disagreement: list[dict[str, Any]], audit: dict[str, Any] | None, current: dict[str, Any]) -> str:
+    for item in disagreement:
+        reason = str(item.get("reason") or "").strip()
+        if reason:
+            return reason[:220]
+    for issue in (audit or {}).get("issues") or []:
+        text = str(issue or "").strip()
+        if text:
+            return text[:220]
+    for gap in current.get("gap_list") or []:
+        text = str(gap or "").strip()
+        if text:
+            return text[:220]
+    return "审计复核后认为证据强度不足以支撑原结论。"
 
 
 def _has_preset_outcome_request(text: str) -> bool:
