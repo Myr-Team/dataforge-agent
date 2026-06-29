@@ -1012,7 +1012,7 @@ function DataAssetsTable({ documents = [], workspace = {} }) {
   const updated = workspace.updated_at ? new Date(workspace.updated_at).toLocaleDateString("zh-CN") : "Today";
   return (
     <div className="card tbl-card" data-tour="artifacts">
-      <div className="cardhead"><span className="t">Recent Data Assets</span><span className="lnk">View all</span></div>
+      <div className="cardhead"><span className="t">Recent Data Assets</span></div>
       <div className="tbl-wrap">
         <table className="data-table">
           <thead><tr><th>Name</th><th>Type</th><th>Fields</th><th>Records</th><th>Status</th><th>Updated</th></tr></thead>
@@ -1085,8 +1085,6 @@ function DashboardStudio({
 
       <OverviewCards workspace={workspace} documents={documents} runs={dashboard?.runs || []} />
 
-      <AgentPipeline trace={trace} running={running} hasResult={Boolean(feasibility.verdict)} />
-
       <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} onProduce={onProduce} />
 
       <div className="verdict-row">
@@ -1096,12 +1094,13 @@ function DashboardStudio({
 
       <DataAssetsTable documents={documents} workspace={workspace} />
 
-      <Collapsible title="行动方案 · 数据概览 · 检索来源" hint="点击展开">
+      <DataOverviewCard workspaceId={dashboard?.workspace_id || workspace?.workspace_id} hasDocs={(documents || []).length > 0} />
+
+      <Collapsible title="行动方案 · 检索来源" hint="点击展开">
         <section className="studio-methods">
           <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id} />
           <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
         </section>
-        <DataOverviewCard workspaceId={dashboard?.workspace_id || workspace?.workspace_id} hasDocs={(documents || []).length > 0} />
         <WebSearchPanel trace={trace} />
       </Collapsible>
 
