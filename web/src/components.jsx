@@ -175,8 +175,8 @@ function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange }) {
   );
   return (
     <div className="ws-switch" ref={ref}>
+      <span className="ws-sep">/</span>
       <button className="ws-crumb" type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} title="切换工作区">
-        <span className="ws-sep">/</span>
         <span className="ws-name">{currentName}</span>
         <ChevronsUpDown size={14} className="ws-caret" />
       </button>
