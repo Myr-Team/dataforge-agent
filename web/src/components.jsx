@@ -238,6 +238,11 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
         </div>
         <WorkspaceSwitcher workspaces={workspaces} workspaceId={workspaceId} onChange={onWorkspaceChange} />
       </div>
+      <div className="topbar-search">
+        <Search size={15} />
+        <input placeholder="搜索工作区、数据资产、运行记录…" aria-label="全局搜索" />
+        <kbd>⌘K</kbd>
+      </div>
       <div className="topbar-actions">
         <button className="tour-button icon-label" type="button" onClick={startTour} title="新手引导：一步步了解产品流程">
           <Compass size={16} />
@@ -1061,6 +1066,15 @@ function DashboardStudio({
   const hasArtifacts = Object.values(artifacts || {}).some(Boolean);
   const feasibility = finalArtifact?.feasibility || {};
   const verdict = VERDICT_LABELS[feasibility.verdict] || "等待分析";
+  const radarGroups = (feasibility.dimensions || []).reduce(
+    (acc, d) => {
+      const s = Number(d.score || 0);
+      const label = DIMENSION_LABELS[d.name] || d.name;
+      (s >= 4 ? acc.adv : s >= 3 ? acc.good : acc.watch).push(label);
+      return acc;
+    },
+    { adv: [], good: [], watch: [] },
+  );
 
   return (
     <main className="agent-studio dashboard-stage">
@@ -1083,31 +1097,41 @@ function DashboardStudio({
 
       <OverviewCards workspace={workspace} documents={documents} runs={dashboard?.runs || []} />
 
-      <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} onProduce={onProduce} />
+      <AgentPipeline trace={trace} running={running} hasResult={Boolean(feasibility.verdict)} />
 
-      <div className="verdict-row">
-        <VerdictHero feasibility={feasibility} verdict={verdict} running={running} artifact={finalArtifact} />
+      <div className="ws-trio">
+        <VerdictHero compact feasibility={feasibility} verdict={verdict} running={running} artifact={finalArtifact} onViewReport={onNewConversation} />
+        <section className="card radar-card">
+          <div className="rc-head">五维评估得分</div>
+          <div className="rc-body">
+            <VerdictRadar dims={feasibility.dimensions} />
+            <div className="rc-legend">
+              <div className="rcl-row"><span className="rcl-dot adv" /><b>优势维度 ({radarGroups.adv.length})</b><em>{radarGroups.adv.join("、") || "—"}</em></div>
+              <div className="rcl-row"><span className="rcl-dot good" /><b>良好维度 ({radarGroups.good.length})</b><em>{radarGroups.good.join("、") || "—"}</em></div>
+              <div className="rcl-row"><span className="rcl-dot watch" /><b>关注维度 ({radarGroups.watch.length})</b><em>{radarGroups.watch.join("、") || "—"}</em></div>
+            </div>
+          </div>
+        </section>
         <AuditCard artifact={finalArtifact} />
       </div>
 
       <DataAssetsTable documents={documents} workspace={workspace} />
 
-      <DataOverviewCard workspaceId={dashboard?.workspace_id || workspace?.workspace_id} hasDocs={(documents || []).length > 0} />
-
-      <Collapsible title="行动方案 · 检索来源" hint="点击展开">
+      <Collapsible title="高级分析" hint="运行更深入的模型与仿真分析">
+        <AgentRoute trace={trace} running={running} presentation={presentation} producing={producing} hasArtifacts={hasArtifacts} onProduce={onProduce} />
+        <DataOverviewCard workspaceId={dashboard?.workspace_id || workspace?.workspace_id} hasDocs={(documents || []).length > 0} />
         <section className="studio-methods">
           <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id} />
           <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
         </section>
         <WebSearchPanel trace={trace} />
+        <PlanIteratePanel
+          workspaceId={dashboard?.workspace_id || workspace?.workspace_id}
+          runs={dashboard?.runs || []}
+          running={running}
+          onIterate={(inputs) => onRun("基于回填指标迭代优化这版方案，逼近一个可作为公司重点的方案。", { stayOnDashboard: true, iterationInputs: inputs })}
+        />
       </Collapsible>
-
-      <PlanIteratePanel
-        workspaceId={dashboard?.workspace_id || workspace?.workspace_id}
-        runs={dashboard?.runs || []}
-        running={running}
-        onIterate={(inputs) => onRun("基于回填指标迭代优化这版方案，逼近一个可作为公司重点的方案。", { stayOnDashboard: true, iterationInputs: inputs })}
-      />
     </main>
   );
 }
@@ -1231,10 +1255,10 @@ function VerdictRadar({ dims }) {
         const [x, y] = pt(i, R);
         return <line key={i} x1={cx} y1={cy} x2={x.toFixed(1)} y2={y.toFixed(1)} stroke="#e5e7eb" strokeWidth="1" />;
       })}
-      <polygon points={shape} fill="rgba(10,132,224,0.16)" stroke="#0A84E0" strokeWidth="2" />
+      <polygon points={shape} fill="rgba(37,99,235,0.14)" stroke="#2563eb" strokeWidth="2" />
       {items.map((d, i) => {
         const [x, y] = pt(i, R * (sc(d) / 5));
-        return <circle key={i} cx={x.toFixed(1)} cy={y.toFixed(1)} r="3" fill="#0A84E0" />;
+        return <circle key={i} cx={x.toFixed(1)} cy={y.toFixed(1)} r="3" fill="#2563eb" />;
       })}
       {items.map((d, i) => {
         const [lx, ly] = pt(i, R + 16);
@@ -1248,7 +1272,7 @@ function VerdictRadar({ dims }) {
   );
 }
 
-function VerdictHero({ feasibility, verdict, running, artifact }) {
+function VerdictHero({ feasibility, verdict, running, artifact, compact, onViewReport }) {
   const raw = feasibility?.dimensions || [];
   const dims = raw.length
     ? raw
@@ -1266,7 +1290,7 @@ function VerdictHero({ feasibility, verdict, running, artifact }) {
   const afterLabel = downgrade?.verdict_after_label || VERDICT_LABELS[downgrade?.verdict_after] || downgrade?.verdict_after;
   const downgradeReason = String(downgrade?.downgrade_reason || "证据不足以支撑原结论").replace(/[。.!！\s]+$/, "");
   return (
-    <section className={`verdict-hero tone-${tone}`} data-tour="verdict">
+    <section className={`verdict-hero tone-${tone}${compact ? " compact" : ""}`} data-tour="verdict">
       <div className="vh-left">
         <span className="vh-label">可行性结论{running ? " · 实时" : ""}</span>
         <h2 className="vh-judgment">{verdict}</h2>
@@ -1285,20 +1309,25 @@ function VerdictHero({ feasibility, verdict, running, artifact }) {
             <span>审计已将结论从 {beforeLabel} 降为 {afterLabel}，因为{downgradeReason}。</span>
           </div>
         ) : null}
+        {compact ? (
+          <button type="button" className="vh-report-btn" onClick={onViewReport}><FileText size={14} />查看详细分析报告</button>
+        ) : null}
       </div>
-      <div className="vh-scores">
-        <div className="vh-scores-head">五维可行性评分</div>
-        {dims.slice(0, 5).map((dim) => {
-          const n = Math.max(0, Math.min(5, Number(dim.score || 0)));
-          return (
-            <div className="vh-score" key={dim.name}>
-              <span className="vh-score-label">{DIMENSION_LABELS[dim.name] || dim.name}</span>
-              <span className="vh-score-track"><i className={`v${Math.round(n)}`} style={{ width: `${n * 20}%` }} /></span>
-              <span className="vh-score-val">{Math.round(n * 20)}</span>
-            </div>
-          );
-        })}
-      </div>
+      {compact ? null : (
+        <div className="vh-scores">
+          <div className="vh-scores-head">五维可行性评分</div>
+          {dims.slice(0, 5).map((dim) => {
+            const n = Math.max(0, Math.min(5, Number(dim.score || 0)));
+            return (
+              <div className="vh-score" key={dim.name}>
+                <span className="vh-score-label">{DIMENSION_LABELS[dim.name] || dim.name}</span>
+                <span className="vh-score-track"><i className={`v${Math.round(n)}`} style={{ width: `${n * 20}%` }} /></span>
+                <span className="vh-score-val">{Math.round(n * 20)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }

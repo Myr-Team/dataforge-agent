@@ -197,6 +197,11 @@ svg { flex-shrink: 0; }
 .ws-switch { position: relative; }
 .ws-crumb { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px 0 4px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; border-radius: 7px; }
 .ws-caret { color: var(--faint); }
+/* 顶栏全局搜索 */
+.topbar-search { flex: 1; max-width: 480px; margin: 0 auto; display: flex; align-items: center; gap: 9px; height: 38px; padding: 0 13px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--faint); }
+.topbar-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font-size: 13.5px; color: var(--ink); }
+.topbar-search kbd { font-size: 11px; color: var(--faint); background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-family: inherit; }
+@media (max-width: 1100px){ .topbar-search { display: none; } }
 .ws-crumb:hover { background: var(--surface-soft); }
 .ws-crumb .ws-sep { color: var(--faint); }
 .ws-crumb .ws-name { color: var(--ink); font-weight: 600; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -582,6 +587,24 @@ svg { flex-shrink: 0; }
 
 .verdict-row { display: grid; grid-template-columns: 1.9fr 1fr; gap: 16px; align-items: stretch; }
 .verdict-row > .verdict-hero, .verdict-row > .audit-card { margin: 0; }
+
+/* 工作区总览三卡行：结论 / 五维雷达 / 审计 */
+.ws-trio { display: grid; grid-template-columns: 1fr 1.18fr 1fr; gap: 16px; align-items: stretch; }
+@media (max-width: 1200px){ .ws-trio { grid-template-columns: 1fr; } }
+.verdict-hero.compact { grid-template-columns: 1fr; }
+.vh-report-btn { display: inline-flex; align-items: center; gap: 7px; margin-top: 16px; height: 36px; padding: 0 16px; border: 0; border-radius: 8px; background: var(--blue); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; width: fit-content; }
+.vh-report-btn:hover { background: #1d4ed8; }
+.radar-card { display: flex; flex-direction: column; }
+.rc-head { padding: 15px 18px 4px; font-size: 14px; font-weight: 600; }
+.rc-body { display: grid; grid-template-columns: 180px 1fr; gap: 12px; align-items: center; padding: 6px 18px 18px; }
+.radar-card .verdict-radar { width: 180px; height: 180px; }
+.rc-legend { display: flex; flex-direction: column; gap: 12px; }
+.rcl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 12.5px; }
+.rcl-row b { font-weight: 600; color: var(--ink); }
+.rcl-row em { width: 100%; font-style: normal; font-size: 11.5px; color: var(--faint); padding-left: 15px; }
+.rcl-dot { width: 8px; height: 8px; border-radius: 50%; }
+.rcl-dot.adv { background: var(--mint); } .rcl-dot.good { background: var(--blue); } .rcl-dot.watch { background: var(--amber); }
+@media (max-width: 560px){ .rc-body { grid-template-columns: 1fr; justify-items: center; } }
 @media (max-width: 1180px){ .verdict-row { grid-template-columns: 1fr; } }
 @media (max-width: 980px){ .ov-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
 
