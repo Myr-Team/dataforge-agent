@@ -590,7 +590,7 @@ svg { flex-shrink: 0; }
 
 /* 工作区总览三卡行：结论 / 五维雷达 / 审计 */
 .ws-trio { display: grid; grid-template-columns: 1fr 1.18fr 1fr; gap: 16px; align-items: stretch; }
-.ws-trio > * { margin: 0; height: 100%; min-width: 0; }
+.ws-trio > .verdict-hero, .ws-trio > .audit-card, .ws-trio > .card { margin: 0; height: 100%; min-width: 0; }
 .lnk-btn { border: 0; background: transparent; cursor: pointer; padding: 0; }
 @media (max-width: 1200px){ .ws-trio { grid-template-columns: 1fr; } }
 .verdict-hero.compact { grid-template-columns: 1fr; }
