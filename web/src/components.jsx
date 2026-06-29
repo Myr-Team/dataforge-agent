@@ -10,6 +10,8 @@ import {
   Bell,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronsUpDown,
   CircleUserRound,
   Check,
@@ -1527,6 +1529,33 @@ function ObservabilityPanel({ observability }) {
   );
 }
 
+function ObsIcon({ name }) {
+  if (name === "monitor") {
+    return (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2" y="2" width="20" height="20" rx="5" fill="#0078D4" />
+        <path d="M5 14.5l3-4.5 3 3.2 3-5.2 4 6.5" stroke="#fff" strokeWidth="1.7" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (name === "appinsights") {
+    return (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2" y="2" width="20" height="20" rx="5" fill="#7A4F9E" />
+        <path d="M12 6a4 4 0 0 0-2.4 7.2V15h4.8v-1.8A4 4 0 0 0 12 6z" fill="#fff" />
+        <rect x="10" y="15.6" width="4" height="2" rx="1" fill="#fff" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="2" y="2" width="20" height="20" rx="5" fill="#425CC7" />
+      <circle cx="12" cy="9.5" r="2.8" fill="#F5A800" />
+      <rect x="8.6" y="12.6" width="6.8" height="6" rx="2.2" fill="#fff" />
+    </svg>
+  );
+}
+
 const RUN_TIMELINE = [
   { icon: Workflow, name: "协调器", role: "任务编排", sum: "解析需求与约束 · 规划 Agent 执行顺序 · 分配任务与数据依赖", dur: "4 秒" },
   { icon: Search, name: "语料分析师", role: "检索与画像", sum: "搜索关键词 pack_context · 产出 8 条检索结果", dur: "2 秒" },
@@ -1540,6 +1569,8 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
   const runs = dashboard?.runs || [];
   const r = runs[0] || {};
   const [q, setQ] = useState("");
+  const [histExpanded, setHistExpanded] = useState(false);
+  const [histPage, setHistPage] = useState(0);
   const okRun = r.status === "done" || Boolean(r.completed_at) || (!r.status && Boolean(r.verdict));
   const verdictLabel = r.verdict ? (VERDICT_LABELS[r.verdict] || r.verdict) : "有条件可行";
   let dur = "10 分 18 秒";
@@ -1567,6 +1598,9 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
       return `${v} ${run.run_id || ""} ${run.title || ""} ${run.status || ""}`.toLowerCase().includes(kw);
     });
   }, [runs, q]);
+  const PAGE = 10;
+  const histPages = Math.max(1, Math.ceil(filtered.length / PAGE));
+  const histVisible = histExpanded ? filtered.slice(histPage * PAGE, histPage * PAGE + PAGE) : filtered.slice(0, 6);
 
   return (
     <main className="agent-studio runs-stage">
@@ -1597,9 +1631,9 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
         <section className="card obs2">
           <div className="obs2-head"><strong>可观测性集成</strong><span className="dw-chip ok">已接入</span></div>
           <div className="obs2-items">
-            <div className="obs2-item"><span className="oi-dot ok" /><div><b>Azure Monitor</b><em>{t.app_insights ? "已启用" : "已启用"}</em></div></div>
-            <div className="obs2-item"><span className="oi-dot ok" /><div><b>App Insights</b><em>{t.app_insights ? "已启用" : "已启用"}</em></div></div>
-            <div className="obs2-item"><span className="oi-dot ok" /><div><b>OpenTelemetry</b><em>{t.otel_sdk ? "已启用" : "已启用"}</em></div></div>
+            <div className="obs2-item"><ObsIcon name="monitor" /><div><b>Azure Monitor</b><em>已启用</em></div></div>
+            <div className="obs2-item"><ObsIcon name="appinsights" /><div><b>App Insights</b><em>已启用</em></div></div>
+            <div className="obs2-item"><ObsIcon name="otel" /><div><b>OpenTelemetry</b><em>已启用</em></div></div>
           </div>
           <div className="obs2-meta">
             <div><span>导出器</span><b>{t.exporter || "azure-monitor-opentelemetry"}</b></div>
@@ -1639,7 +1673,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
             })}
           </div>
           <div className="rt-foot">
-            <span>运行 ID <b>{r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"}</b></span>
+            <span className="rt-runid">运行 ID <b>{r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"}</b><CopyButton text={r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"} /></span>
             <span>触发方式 <b>用户启动</b></span>
             <span>模型 <b>GPT-5.1</b></span>
             <span>环境 <b>prod</b></span>
@@ -1654,7 +1688,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
           </div>
           <div className="rh-list">
             {!filtered.length ? <p className="empty-copy">{runs.length ? "没有匹配的运行记录。" : "暂无运行记录。"}</p> : null}
-            {filtered.slice(0, 12).map((run, i) => {
+            {histVisible.map((run, i) => {
               const id = run.run_id || run.conversation_id;
               const v = run.verdict ? (VERDICT_LABELS[run.verdict] || run.verdict) : null;
               const tone = run.verdict === "feasible" ? "ok" : run.verdict === "not_yet_feasible" ? "warn" : "blue";
@@ -1671,7 +1705,16 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
               );
             })}
           </div>
-          <button type="button" className="lnk lnk-btn rh-all">查看全部运行 ›</button>
+          {!histExpanded && filtered.length > 6 ? (
+            <button type="button" className="lnk lnk-btn rh-all" onClick={() => { setHistExpanded(true); setHistPage(0); }}>查看全部运行 ›</button>
+          ) : null}
+          {histExpanded && histPages > 1 ? (
+            <div className="rh-pager">
+              <button type="button" disabled={histPage === 0} onClick={() => setHistPage((p) => Math.max(0, p - 1))}><ChevronLeft size={15} /></button>
+              <span>{histPage + 1} / {histPages}</span>
+              <button type="button" disabled={histPage >= histPages - 1} onClick={() => setHistPage((p) => Math.min(histPages - 1, p + 1))}><ChevronRight size={15} /></button>
+            </div>
+          ) : null}
         </aside>
       </div>
     </main>
