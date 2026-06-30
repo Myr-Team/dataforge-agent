@@ -26,7 +26,9 @@
 
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; }
-body { margin: 0; min-width: 320px; overflow: hidden; }
+/* 全局等比缩放：整站像浏览器 90% 那样更紧凑（改这一个值即可整体调比例） */
+:root { --app-zoom: 0.9; }
+body { margin: 0; min-width: 320px; overflow: hidden; zoom: var(--app-zoom); }
 button, input, select, textarea { font: inherit; }
 
 /* 细而克制的滚动条，替代系统默认的粗条 */
@@ -45,7 +47,9 @@ svg { flex-shrink: 0; }
   grid-template-columns: 184px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas: "top top" "nav main";
-  height: 100dvh;
+  /* body zoom 后用反向补偿撑满视口，避免右/下出现留白 */
+  height: calc(100dvh / var(--app-zoom));
+  width: calc(100% / var(--app-zoom));
   background:
     radial-gradient(circle at 50% -20%, rgba(0, 113, 227, 0.06), transparent 32%),
     var(--bg);
@@ -2156,7 +2160,7 @@ svg { flex-shrink: 0; }
 
 @media (max-width: 1360px) {
   body { overflow: auto; }
-  .app-shell { height: auto; min-height: 100dvh; grid-template-columns: 112px minmax(0, 1fr); }
+  .app-shell { height: auto; min-height: calc(100dvh / var(--app-zoom)); width: 100%; grid-template-columns: 112px minmax(0, 1fr); }
   .workbench { min-height: 100dvh; }
   .workbench-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; overflow: visible; }
   .inspector { grid-column: 1 / -1; margin: 0 16px 18px; min-height: 420px; }
