@@ -84,7 +84,22 @@ function fmtTime(v) {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }) {
+function historyUser(item, currentUser) {
+  const rawName = String(item?.user || "").trim();
+  const rawEmail = String(item?.email || "").trim();
+  const loginName = String(currentUser?.name || "").trim();
+  const loginEmail = String(currentUser?.email || "").trim();
+  const isPlaceholder = !rawEmail && (!rawName || rawName === "DataForge");
+  const name = isPlaceholder ? (loginName || loginEmail || "DataForge") : (rawName || rawEmail || loginName || "DataForge");
+  const email = isPlaceholder ? loginEmail : rawEmail;
+  return {
+    name,
+    email,
+    initial: String(name || email || "D").trim().slice(0, 1).toUpperCase(),
+  };
+}
+
+export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, user }) {
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
   const [tab, setTab] = useState("table");
   const [groups, setGroups] = useState([]);
@@ -551,6 +566,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
     if (!kw) return groups;
     return groups.map((g) => ({ ...g, files: (g.files || []).filter((f) => String(f.name || "").toLowerCase().includes(kw)) })).filter((g) => (g.files || []).length);
   }, [groups, q]);
+  const latestHistoryUser = history.length ? historyUser(history[0], user) : null;
 
   return (
     <main className="agent-studio data-stage">
@@ -711,7 +727,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
           ) : tab === "mapping" ? (
             <MappingPanel mapping={mapping} mapDraft={mapDraft} setMapDraft={setMapDraft} onSave={saveMapping} />
           ) : (
-            <HistoryPanel history={history} />
+            <HistoryPanel history={history} currentUser={user} />
           )}
         </section>
 
@@ -740,9 +756,9 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
             <div className="dw-sec-t">最近修改</div>
             {history.length ? (
               <div className="dw-mod">
-                <div className="dw-mod-av">{(history[0].user || "D").slice(0, 1)}</div>
+                <div className="dw-mod-av">{latestHistoryUser.initial}</div>
                 <div className="dw-mod-meta">
-                  <div className="dw-mod-top"><span className="dw-mod-mail">{history[0].email || history[0].user || "DataForge"}</span><span className="dw-mod-time">{fmtTime(history[0].at)}</span></div>
+                  <div className="dw-mod-top"><span className="dw-mod-mail" title={latestHistoryUser.email || latestHistoryUser.name}>{latestHistoryUser.name}</span><span className="dw-mod-time">{fmtTime(history[0].at)}</span></div>
                   <div className="dw-mod-desc">{history[0].change_summary || "—"}</div>
                 </div>
               </div>
@@ -1005,20 +1021,23 @@ function MappingPanel({ mapping, mapDraft, setMapDraft, onSave }) {
   );
 }
 
-function HistoryPanel({ history }) {
+function HistoryPanel({ history, currentUser }) {
   if (!history.length) return <div className="empty-copy" style={{ padding: 40 }}>暂无版本历史。保存修改后会在这里出现。</div>;
   return (
     <div className="dw-panel">
       <ul className="dw-hist">
-        {history.map((h, i) => (
-          <li key={i} className="dw-hist-row">
-            <div className="dw-mod-av">{(h.user || "D").slice(0, 1)}</div>
-            <div className="dw-mod-meta">
-              <div className="dw-mod-top"><span className="dw-mod-mail">{h.email || h.user || "DataForge"}</span><span className="dw-mod-time">{fmtTime(h.at)}</span></div>
-              <div className="dw-mod-desc">{h.change_summary || "—"}</div>
-            </div>
-          </li>
-        ))}
+        {history.map((h, i) => {
+          const display = historyUser(h, currentUser);
+          return (
+            <li key={i} className="dw-hist-row">
+              <div className="dw-mod-av">{display.initial}</div>
+              <div className="dw-mod-meta">
+                <div className="dw-mod-top"><span className="dw-mod-mail" title={display.email || display.name}>{display.name}</span><span className="dw-mod-time">{fmtTime(h.at)}</span></div>
+                <div className="dw-mod-desc">{h.change_summary || "—"}</div>
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

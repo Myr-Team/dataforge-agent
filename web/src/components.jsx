@@ -560,6 +560,7 @@ function WorkbenchMainInner({
   onOpenConversation,
   onAppendUpload,
   tasks,
+  user,
 }) {
   if (view === "conversations") {
     return (
@@ -583,7 +584,7 @@ function WorkbenchMainInner({
   if (view === "data") {
     return (
       <Suspense fallback={<main className="agent-studio data-stage"><div style={{ padding: 40, color: "var(--muted)" }}>加载数据工作台…</div></main>}>
-        <DataWorkbench dashboard={dashboard} onUpload={onAppendUpload} onOpenConversation={onOpenConversation} onRun={onRun} />
+        <DataWorkbench dashboard={dashboard} onUpload={onAppendUpload} onOpenConversation={onOpenConversation} onRun={onRun} user={user} />
       </Suspense>
     );
   }
@@ -1709,6 +1710,14 @@ const SVC_ICONS = {
   appinsights: "/icons/app-insights.svg",
   otel: "/icons/opentelemetry.svg",
 };
+const SETTINGS_ICON_SRCS = [
+  ...Object.values(SVC_ICONS),
+  "/icons/foundry.svg",
+  "/icons/ai-search.svg",
+  "/icons/azure-blob.svg",
+  "/icons/speech.svg",
+  "/icons/content-safety.svg",
+];
 function ObsIcon({ name }) {
   return <img className="svc-ic" src={SVC_ICONS[name]} alt="" width="22" height="22" aria-hidden="true" />;
 }
@@ -1722,6 +1731,68 @@ const RUN_TIMELINE = [
   { icon: FileText, name: "回答撰写", role: "结构化输出", sum: "生成最终结论与行动方案 · 输出字数 502", dur: "2 秒" },
 ];
 
+function formatTraceDuration(ms) {
+  const n = Number(ms || 0);
+  if (!n) return "";
+  if (n >= 60000) return `${Math.floor(n / 60000)} 分 ${Math.round((n % 60000) / 1000)} 秒`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)} 秒`;
+  return `${Math.round(n)} ms`;
+}
+
+function traceStepView(step) {
+  const agentId = String(step?.agent || "").trim();
+  const role = String(step?.role || step?.event || "").trim();
+  if (agentId) {
+    const meta = AGENTS.find((item) => item.id === agentId);
+    const writer = agentId.toLowerCase().includes("answer") || agentId.toLowerCase().includes("writer");
+    return {
+      key: `agent:${agentId}`,
+      icon: traceIcon(agentId || role),
+      name: meta?.zh || (writer ? "回答撰写" : agentId),
+      role: meta?.role || (writer ? "结构化输出" : role),
+    };
+  }
+  const s = role.toLowerCase();
+  if (["ready", "user"].includes(s)) return { key: "system:entry", icon: Workflow, name: "运行入口", role: "请求接收" };
+  if (["route", "plan"].includes(s)) return { key: "system:route", icon: Route, name: "路由与计划", role: "任务拆解" };
+  if (s.includes("audit") || s.includes("revised")) return { key: "system:audit", icon: ShieldCheck, name: "审计与修订", role: "证据校验" };
+  if (s.includes("tool")) return { key: "system:tools", icon: Wrench, name: "工具调用", role: "外部能力" };
+  if (s.includes("final")) return { key: "system:final", icon: FileText, name: "最终输出", role: "结果汇总" };
+  if (s.includes("error")) return { key: "system:error", icon: AlertTriangle, name: "异常事件", role: "运行告警" };
+  return { key: `system:${s || "event"}`, icon: Activity, name: "系统事件", role: role || "运行记录" };
+}
+
+function groupTraceRows(items) {
+  const groups = [];
+  const seen = new Map();
+  for (const item of items || []) {
+    const key = item.groupKey || `${item.name || "Agent"}::${item.role || ""}`;
+    let group = seen.get(key);
+    if (!group) {
+      group = {
+        key,
+        icon: item.icon,
+        name: item.name || "Agent",
+        role: item.role || "",
+        status: item.status || "完成",
+        sum: item.sum || "",
+        durationMs: 0,
+        details: [],
+      };
+      seen.set(key, group);
+      groups.push(group);
+    }
+    group.status = item.status || group.status || "完成";
+    if (!group.sum && item.sum) group.sum = item.sum;
+    group.durationMs += Number(item.durationMs || 0);
+    group.details.push(item);
+  }
+  return groups.map((group) => ({
+    ...group,
+    dur: group.durationMs ? formatTraceDuration(group.durationMs) : (group.details.length === 1 ? group.details[0].dur : ""),
+  }));
+}
+
 function RunsCenter({ dashboard, trace, running, observability, onOpenConversation, tasks }) {
   const runs = dashboard?.runs || [];
   const r = runs[0] || {};
@@ -1732,11 +1803,12 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
   const [summary, setSummary] = useState(null);
   const [rtrace, setRtrace] = useState(null);
   const [tracePage, setTracePage] = useState(0);
+  const [traceOpen, setTraceOpen] = useState({});
   const [logOpen, setLogOpen] = useState(false);
   const [logText, setLogText] = useState("");
   useEffect(() => {
     if (!runId) return;
-    setSummary(null); setRtrace(null); setTracePage(0);
+    setSummary(null); setRtrace(null); setTracePage(0); setTraceOpen({});
     loadRunSummary(runId).then(setSummary).catch(() => {});
     loadRunTrace(runId).then((d) => setRtrace(Array.isArray(d) ? d : (d?.trace || []))).catch(() => {});
   }, [runId]);
@@ -1833,36 +1905,61 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
         <section className="card run-trace">
           <div className="rt-head"><strong>本次运行追踪</strong><Info size={14} /></div>
           {(() => {
-            const list = (rtrace && rtrace.length) ? rtrace.map((s, i) => ({
-              icon: traceIcon(s.agent || s.role),
-              name: s.agent || "Agent", role: s.role || "", status: s.status || "完成",
-              sum: s.summary || "", dur: s.duration_ms ? (s.duration_ms >= 1000 ? `${(s.duration_ms / 1000).toFixed(1)} 秒` : `${s.duration_ms} ms`) : "",
-            })) : (rtrace === null ? null : RUN_TIMELINE.map((s) => ({ icon: s.icon, name: s.name, role: s.role, status: "完成", sum: s.sum, dur: s.dur })));
+            const list = (rtrace && rtrace.length) ? rtrace.map((s) => {
+              const view = traceStepView(s);
+              return {
+                groupKey: view.key,
+                icon: view.icon,
+                name: view.name,
+                role: view.role,
+                status: s.status || "完成",
+                sum: s.summary || "",
+                durationMs: Number(s.duration_ms || 0),
+                dur: formatTraceDuration(s.duration_ms),
+                event: s.event || s.role || "",
+              };
+            }) : (rtrace === null ? null : RUN_TIMELINE.map((s) => ({ icon: s.icon, name: s.name, role: s.role, status: "完成", sum: s.sum, dur: s.dur })));
             const TPER = 8;
-            const tpages = list ? Math.max(1, Math.ceil(list.length / TPER)) : 1;
+            const grouped = list ? groupTraceRows(list) : null;
+            const tpages = grouped ? Math.max(1, Math.ceil(grouped.length / TPER)) : 1;
             const cur = Math.min(tracePage, tpages - 1);
-            const shown = list ? list.slice(cur * TPER, cur * TPER + TPER) : [];
+            const shown = grouped ? grouped.slice(cur * TPER, cur * TPER + TPER) : [];
             return (
               <>
                 <div className="rt-list">
                   {list === null ? <p className="empty-copy" style={{ padding: 14 }}><Loader2 size={14} className="spin" /> 加载追踪…</p> : null}
                   {shown.map((s, i) => {
                     const Ic = s.icon;
+                    const rowIndex = cur * TPER + i + 1;
+                    const open = Boolean(traceOpen[s.key]);
                     return (
-                      <div className="rt-row" key={i}>
-                        <span className="rt-n">{cur * TPER + i + 1}</span>
-                        <span className="rt-ic"><Ic size={15} /></span>
-                        <div className="rt-main">
-                          <div className="rt-title"><b>{s.name}</b>{s.role ? <em>{s.role}</em> : null}<span className="rt-badge">{s.status}</span></div>
-                          {s.sum ? <p className="rt-sum">{s.sum}</p> : null}
-                        </div>
-                        {s.dur ? <span className="rt-dur">耗时 {s.dur}</span> : null}
-                        <CheckCircle2 size={16} className="rt-ok" />
+                      <div className={open ? "rt-xrow open" : "rt-xrow"} key={s.key || i}>
+                        <button type="button" className="rt-rowmain" onClick={() => setTraceOpen((m) => ({ ...m, [s.key]: !m[s.key] }))}>
+                          <span className="rt-n">{rowIndex}</span>
+                          <span className="rt-ic"><Ic size={15} /></span>
+                          <div className="rt-main">
+                            <div className="rt-title"><b>{s.name}</b>{s.role ? <em>{s.role}</em> : null}<span className="rt-badge">{s.status}</span>{s.details.length > 1 ? <span className="rt-count">{s.details.length} 条</span> : null}</div>
+                            {s.sum ? <p className="rt-sum">{s.sum}</p> : null}
+                          </div>
+                          <span className="rt-dur">{s.dur ? `耗时 ${s.dur}` : "已记录"}</span>
+                          <CheckCircle2 size={16} className="rt-ok" />
+                          <ChevronDown size={16} className="rt-caret" />
+                        </button>
+                        {open ? (
+                          <div className="rt-detail">
+                            {s.details.map((d, j) => (
+                              <div className="rt-det-sec" key={`${s.key}-${j}`}>
+                                <b>{j + 1}. {d.event || d.status || "trace"}{d.dur ? ` · ${d.dur}` : ""}</b>
+                                <p>{d.sum || "已记录执行事件。"}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     );
                   })}
                 </div>
-                {list && tpages > 1 ? (
+                {grouped && tpages > 1 ? (
                   <div className="rh-pager" style={{ justifyContent: "center" }}>
                     <button type="button" disabled={cur === 0} onClick={() => setTracePage(cur - 1)}><ChevronLeft size={15} /></button>
                     <span>{cur + 1} / {tpages}</span>
@@ -1937,8 +2034,14 @@ function runDisplayName(run) {
 // 服务图标：SVG 加载失败时回退到 lucide 图标，避免出现裂图
 function SvcIcon({ src, size = 26, fallback: Fallback = Server }) {
   const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   if (failed || !src) return <span className="set-conn-lic"><Fallback size={Math.round(size * 0.76)} /></span>;
-  return <img className="svc-ic" src={src} width={size} height={size} alt="" onError={() => setFailed(true)} />;
+  return (
+    <span className={loaded ? "set-conn-svc loaded" : "set-conn-svc"} style={{ width: size, height: size }}>
+      <Fallback size={Math.round(size * 0.7)} />
+      <img className="svc-ic" src={src} width={size} height={size} alt="" loading="eager" decoding="async" fetchPriority="low" onLoad={() => setLoaded(true)} onError={() => setFailed(true)} />
+    </span>
+  );
 }
 
 function traceIcon(label) {
@@ -1966,6 +2069,18 @@ function SettingsCenter({ dashboard, observability }) {
   const [probedAt, setProbedAt] = useState(null);
   const [sys, setSys] = useState(null);
   useEffect(() => { loadSystemStatus().then(setSys).catch(() => {}); }, []);
+  useEffect(() => {
+    const nodes = SETTINGS_ICON_SRCS.map((href) => {
+      const node = document.createElement("link");
+      node.rel = "preload";
+      node.as = "image";
+      node.href = href;
+      node.type = "image/svg+xml";
+      document.head.appendChild(node);
+      return node;
+    });
+    return () => nodes.forEach((node) => node.remove());
+  }, []);
   const deps = sys?.dependencies || health.dependencies || {};
   const reprobe = () => {
     if (probing) return;

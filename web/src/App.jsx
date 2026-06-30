@@ -799,6 +799,7 @@ export function App() {
             observability={observability}
             onOpenConversation={openConversation}
             tasks={tasks}
+            user={user}
           />
         </div>
       </div>
