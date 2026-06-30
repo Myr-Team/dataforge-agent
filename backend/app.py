@@ -137,7 +137,7 @@ async def health() -> dict[str, Any]:
         "ok": True,
         "service": "dataforge-backend",
         "search_endpoint": bool(os.environ.get("SEARCH_ENDPOINT")),
-        "workspace_default": "demo-corpus",
+        "workspace_default": "upload-cn-abe76cb16b-20260620102932",
         "dependencies": dependencies,
         "dependency_details": health_dependency_details(),
     }
