@@ -168,6 +168,39 @@ Returns workspace summary, current data sources, recent conclusion, and audit st
 
 Returns backend endpoints for PDF, concept image, PRD, and roadmap actions.
 
+## Produce Kinds
+
+`POST /api/produce` and the backend helper `produce_from_existing_report` now accept two additional explicit `kinds` values for the Outputs page:
+
+```json
+{
+  "workspace_id": "demo-corpus",
+  "kinds": ["roadmap", "validation_plan"],
+  "feasibility": {
+    "opportunity_id": "pilot-validation",
+    "verdict": "conditional",
+    "gap_list": ["补齐转化证据"],
+    "action_plan": ["定义试点样本"]
+  }
+}
+```
+
+Response fields follow existing artifact shape:
+
+```json
+{
+  "kinds": ["roadmap", "validation_plan"],
+  "artifact_urls": {
+    "roadmap": "/api/artifacts/pilot-validation-roadmap-123.md",
+    "validation_plan": "/api/artifacts/pilot-validation-validation_plan-123.md"
+  },
+  "roadmap": { "kind": "roadmap", "content_type": "text/markdown; charset=utf-8", "markdown": "..." },
+  "validation_plan": { "kind": "validation_plan", "content_type": "text/markdown; charset=utf-8", "markdown": "..." }
+}
+```
+
+Both artifacts are generated from the run proposal, feasibility gaps/actions, roadmap, risk register, and evidence appendix. They do not call the LLM or use dataset-name rules.
+
 ## Artifacts
 
 `GET /api/workspaces/{workspace_id}/artifacts`

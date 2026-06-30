@@ -2074,7 +2074,7 @@ def _clean_exec_summary_fallback(text: Any) -> str:
     return cleaned.strip()[:1600]
 
 
-_PRODUCE_KINDS = ("pdf", "concept_image", "audio", "pilot_plan", "action_plan")
+_PRODUCE_KINDS = ("pdf", "concept_image", "audio", "pilot_plan", "action_plan", "roadmap", "validation_plan")
 
 
 def _run_text_artifact(proposal: dict[str, Any], kind: str) -> dict[str, Any]:
@@ -2084,6 +2084,12 @@ def _run_text_artifact(proposal: dict[str, Any], kind: str) -> dict[str, Any]:
     elif kind == "action_plan":
         title = "30/60/90 天行动清单"
         markdown = _action_plan_markdown(proposal)
+    elif kind == "roadmap":
+        title = "路线图与里程碑"
+        markdown = _roadmap_markdown(proposal)
+    elif kind == "validation_plan":
+        title = "验证计划与资源风险"
+        markdown = _validation_plan_markdown(proposal)
     else:
         raise ValueError(f"Unsupported text artifact kind: {kind}")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -2203,6 +2209,102 @@ def _action_plan_markdown(proposal: dict[str, Any]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def _roadmap_markdown(proposal: dict[str, Any]) -> str:
+    feasibility = proposal.get("feasibility") or {}
+    title = _clean_text(proposal.get("title") or proposal.get("opportunity_id") or "DataForge opportunity", 100)
+    verdict = _clean_text(feasibility.get("verdict") or "unknown", 40)
+    confidence = _clean_text(feasibility.get("overall_confidence") or "unknown", 40)
+    actions = [str(item).strip() for item in (feasibility.get("action_plan") or []) if str(item).strip()]
+    gaps = [str(item).strip() for item in (feasibility.get("gap_list") or []) if str(item).strip()]
+    roadmap = [item for item in (proposal.get("roadmap") or []) if isinstance(item, dict)]
+    dimensions = [item for item in (feasibility.get("dimensions") or []) if isinstance(item, dict)]
+    lines = [
+        f"# 路线图与里程碑 - {title}",
+        "",
+        f"- 当前结论：{verdict}",
+        f"- 置信度：{confidence}",
+        "- 原则：每个阶段只推进证据已经支撑的范围，缺口未补齐时不升档。",
+        "",
+        "## 阶段路线",
+    ]
+    if roadmap:
+        for index, item in enumerate(roadmap[:4], start=1):
+            phase = _clean_text(item.get("phase") or f"阶段 {index}", 80)
+            metric = _clean_text(item.get("metric") or "", 140)
+            steps = [str(step).strip() for step in (item.get("steps") or []) if str(step).strip()]
+            lines.append(f"### {phase}")
+            if metric:
+                lines.append(f"- 验证指标：{metric}")
+            for step in steps[:4]:
+                lines.append(f"- {step}")
+    else:
+        for index, step in enumerate(actions[:6], start=1):
+            lines.append(f"- M{index}: {step}")
+    if dimensions:
+        lines.extend(["", "## 里程碑校准点"])
+        for item in dimensions[:5]:
+            name = _clean_text(item.get("name") or "dimension", 60)
+            score = item.get("score")
+            rationale = _clean_text(item.get("rationale") or "", 140)
+            lines.append(f"- {name}: score={score}" + (f"，依据：{rationale}" if rationale else ""))
+    if gaps:
+        lines.extend(["", "## 阶段门槛"])
+        for gap in gaps[:5]:
+            lines.append(f"- 未补齐前不扩大：{gap}")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _validation_plan_markdown(proposal: dict[str, Any]) -> str:
+    feasibility = proposal.get("feasibility") or {}
+    title = _clean_text(proposal.get("title") or proposal.get("opportunity_id") or "DataForge opportunity", 100)
+    verdict = _clean_text(feasibility.get("verdict") or "unknown", 40)
+    gaps = [str(item).strip() for item in (feasibility.get("gap_list") or []) if str(item).strip()]
+    actions = [str(item).strip() for item in (feasibility.get("action_plan") or []) if str(item).strip()]
+    risks = [item for item in (proposal.get("risk_register") or []) if isinstance(item, dict)]
+    evidence = [item for item in (proposal.get("evidence_appendix") or []) if isinstance(item, dict)]
+    lines = [
+        f"# 验证计划与资源风险 - {title}",
+        "",
+        f"- 当前结论：{verdict}",
+        "- 目标：用最小可行实验补齐会改变结论档位的证据，而不是证明预设答案正确。",
+        "",
+        "## 关键假设",
+    ]
+    if gaps:
+        for gap in gaps[:5]:
+            lines.append(f"- 需要验证：{gap}")
+    else:
+        lines.append("- 当前未列出显式缺口，先复核需求、转化、成本和合规四类证据是否可追溯。")
+    lines.extend(["", "## 实验动作"])
+    for index, action in enumerate(actions[:6] or ["设计一个小样本试点，记录需求强度、转化路径、交付成本和风险暴露。"], start=1):
+        lines.append(f"{index}. {action}")
+    lines.extend(["", "## 资源与风险"])
+    if risks:
+        for risk in risks[:6]:
+            gap = _clean_text(risk.get("gap") or "未命名风险", 100)
+            severity = _clean_text(risk.get("severity") or "unknown", 30)
+            impact = _clean_text(risk.get("impact") or "", 140)
+            mitigation = _clean_text(risk.get("mitigation") or "", 140)
+            lines.append(f"- {gap}（severity={severity}）")
+            if impact:
+                lines.append(f"  - 影响：{impact}")
+            if mitigation:
+                lines.append(f"  - 缓解：{mitigation}")
+    else:
+        lines.append("- 资源风险随实验记录更新：人力、数据口径、渠道样本、交付依赖和合规前置条件。")
+    lines.extend(["", "## 判定标准"])
+    lines.append("- Go：关键缺口被新增证据补齐，且需求、转化、成本没有互相冲突。")
+    lines.append("- Hold：有局部信号，但关键证据仍不足以支持升档或扩大。")
+    lines.append("- No-Go：新增证据无法支持当前结论，或风险变成前置阻断。")
+    if evidence:
+        lines.extend(["", "## 证据引用"])
+        for index, item in enumerate(evidence[:8], start=1):
+            source = _clean_text(item.get("source_file") or item.get("ref") or "workspace evidence", 80)
+            quote = _clean_text(item.get("quote") or "", 160)
+            lines.append(f"- [{index}] {source}" + (f"：{quote}" if quote else ""))
+    return "\n".join(lines).strip() + "\n"
+
+
 def _risk_line(risks: list[dict[str, Any]], index: int) -> str:
     if index < len(risks):
         risk = risks[index]
@@ -2236,10 +2338,12 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
         except Exception as exc:
             return {"mode": f"{key}_error", "error": _clean_text(exc, 500)}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5, thread_name_prefix="dataforge-producer") as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6, thread_name_prefix="dataforge-producer") as pool:
         pdf_future = pool.submit(render_pdf_report, proposal, "project_proposal") if "pdf" in wanted else None
         pilot_future = pool.submit(_run_text_artifact, proposal, "pilot_plan") if "pilot_plan" in wanted else None
         action_future = pool.submit(_run_text_artifact, proposal, "action_plan") if "action_plan" in wanted else None
+        roadmap_future = pool.submit(_run_text_artifact, proposal, "roadmap") if "roadmap" in wanted else None
+        validation_future = pool.submit(_run_text_artifact, proposal, "validation_plan") if "validation_plan" in wanted else None
         image_future = None
         if "concept_image" in wanted:
             image_prompt = _image_prompt_from_proposal(proposal)
@@ -2273,6 +2377,20 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
                 result["artifact_urls"]["action_plan"] = action.get("artifact_url")
             else:
                 result.setdefault("warnings", []).append({"kind": "action_plan", "message": "30/60/90 天行动清单生成失败。", "error": _clean_text(action.get("error") or "no artifact url", 300)})
+        if roadmap_future:
+            roadmap = collect_future(roadmap_future, "roadmap") or {}
+            result["roadmap"] = roadmap
+            if roadmap.get("artifact_url"):
+                result["artifact_urls"]["roadmap"] = roadmap.get("artifact_url")
+            else:
+                result.setdefault("warnings", []).append({"kind": "roadmap", "message": "路线图与里程碑生成失败。", "error": _clean_text(roadmap.get("error") or "no artifact url", 300)})
+        if validation_future:
+            validation = collect_future(validation_future, "validation_plan") or {}
+            result["validation_plan"] = validation
+            if validation.get("artifact_url"):
+                result["artifact_urls"]["validation_plan"] = validation.get("artifact_url")
+            else:
+                result.setdefault("warnings", []).append({"kind": "validation_plan", "message": "验证计划与资源风险生成失败。", "error": _clean_text(validation.get("error") or "no artifact url", 300)})
         if image_future:
             image = collect_future(image_future, "concept_image") or {}
             result["concept_image"] = image

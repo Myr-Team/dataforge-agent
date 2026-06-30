@@ -37,6 +37,40 @@ Returns real workspace files grouped for the left file tree.
 
 `status` is `"indexed"` or `"needs_review"`.
 
+### `POST /api/workspaces/{workspace_id}/files`
+
+Creates a new markdown/text/table file, saves it through the existing workspace upload pipeline, and runs ingest so analysis can reference it.
+
+Markdown body:
+
+```json
+{ "name": "pilot_notes", "type": "md", "text": "# Pilot notes\n\nNew signal." }
+```
+
+Table body (`kind:"table"` defaults to CSV; use `type:"xlsx"` for Excel):
+
+```json
+{
+  "name": "validation_metrics",
+  "kind": "table",
+  "columns": ["metric", "value"],
+  "rows": [["trial_signup", "12"]]
+}
+```
+
+Response:
+
+```json
+{
+  "workspace_id": "upload-demo",
+  "saved_at": "2026-06-29T11:53:35Z",
+  "file": { "id": "80f33c3bd55fa67f", "name": "validation_metrics.csv", "type": "csv", "status": "indexed" },
+  "upload": { "ingest_job_id": "job_xxx", "indexed_delta": 3, "documents": [] }
+}
+```
+
+Validation rejects path separators, oversized markdown/table payloads, too many columns/rows, and overlong cell values.
+
 ### `GET /api/workspaces/{workspace_id}/files/{file_id}/content?limit=100&offset=0`
 
 CSV/XLSX response:
@@ -115,6 +149,42 @@ Computed from real file content.
 ```
 
 `validation.status` is `"passed"`, `"warn"`, or `"failed"`.
+
+### `GET /api/workspaces/{workspace_id}/files/{file_id}/field-mapping`
+
+Returns computed quality mapping plus any user overrides:
+
+```json
+{
+  "workspace_id": "upload-demo",
+  "file_id": "80f33c3bd55fa67f",
+  "field_mapping": {
+    "mapped": 2,
+    "total": 2,
+    "pct": 100.0,
+    "fields": [{ "name": "metric", "type": "text", "mapped": true, "target": "business_metric", "mapping_source": "user" }]
+  },
+  "overrides": { "metric": { "target": "business_metric", "notes": "Used to compare pilot outcomes" } },
+  "saved_at": "2026-06-29T11:53:35Z",
+  "validation": { "status": "passed", "checked_at": "2026-06-29T11:53:35Z" }
+}
+```
+
+### `PUT /api/workspaces/{workspace_id}/files/{file_id}/field-mapping`
+
+Accepted bodies:
+
+```json
+{ "mapping": { "metric": "business_metric" } }
+```
+
+or:
+
+```json
+{ "mappings": [{ "source": "metric", "target": "business_metric", "notes": "Used to compare pilot outcomes" }] }
+```
+
+Targets are stored as a workspace metadata overlay. The backend still recomputes missing/duplicate/outlier/type quality from the real file content on every quality call.
 
 ### `GET /api/workspaces/{workspace_id}/files/{file_id}/history`
 

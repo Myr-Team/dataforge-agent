@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backend import data_workbench as dw  # noqa: E402
+from backend import orchestrator  # noqa: E402
 from backend.workspace_store import create_workspace_upload_job, delete_workspace, run_workspace_ingest_job  # noqa: E402
 
 
@@ -102,6 +103,39 @@ def test_files_content_quality_edit_history() -> None:
         md_preview = dw.preview_file_content(workspace_id, md_file["id"], limit=1, offset=0)
         assert md_preview["kind"] == "markdown"
         assert "Updated" in md_preview["text"]
+
+        created_md = dw.create_workspace_file(workspace_id, {"name": "pilot_notes", "type": "md", "text": "# Pilot notes\n\nNew demand signal."})
+        assert created_md["file"]["type"] == "md"
+        created_md_preview = dw.preview_file_content(workspace_id, created_md["file"]["id"], limit=1, offset=0)
+        assert created_md_preview["kind"] == "markdown"
+        assert "Pilot notes" in created_md_preview["text"]
+
+        created_csv = dw.create_workspace_file(
+            workspace_id,
+            {
+                "name": "validation_metrics",
+                "kind": "table",
+                "columns": ["metric", "value"],
+                "rows": [["trial_signup", "12"], ["pilot_cost", "3400"]],
+            },
+        )
+        assert created_csv["file"]["type"] == "csv"
+        created_csv_preview = dw.preview_file_content(workspace_id, created_csv["file"]["id"], limit=10, offset=0)
+        assert created_csv_preview["rows"][0] == ["trial_signup", "12"]
+        assert created_csv_preview["total_cols"] == 2
+
+        initial_mapping = dw.file_field_mapping(workspace_id, created_csv["file"]["id"])
+        assert initial_mapping["field_mapping"]["total"] == 2
+        saved_mapping = dw.save_file_field_mapping(
+            workspace_id,
+            created_csv["file"]["id"],
+            {"mapping": {"metric": {"target": "business_metric", "notes": "Used to compare pilot outcomes"}}},
+        )
+        assert saved_mapping["overrides"]["metric"]["target"] == "business_metric"
+        mapped_quality = dw.file_quality(workspace_id, created_csv["file"]["id"])
+        metric_field = next(item for item in mapped_quality["field_mapping"]["fields"] if item["name"] == "metric")
+        assert metric_field["target"] == "business_metric"
+        assert metric_field["mapping_source"] == "user"
     finally:
         delete_workspace(workspace_id)
 
@@ -163,11 +197,53 @@ def test_connector_credentials_are_session_scoped_and_not_echoed() -> None:
         dw._sql_tables = original_sql
 
 
+def test_produce_roadmap_and_validation_plan_contract() -> None:
+    original_summary = orchestrator.run_executive_summary
+    original_references = orchestrator.workspace_reference_images
+    created_paths: list[Path] = []
+    try:
+        orchestrator.run_executive_summary = lambda payload: {"headline": "Pilot validation", "points": ["Evidence-gated rollout"]}
+        orchestrator.workspace_reference_images = lambda workspace_id: []
+        result = orchestrator.produce_from_existing_report(
+            {
+                "workspace_id": "demo-contract",
+                "kinds": ["roadmap", "validation_plan"],
+                "feasibility": {
+                    "opportunity_id": "pilot-validation",
+                    "verdict": "conditional",
+                    "overall_confidence": "medium",
+                    "recommendation": "Run a limited pilot before expansion.",
+                    "gap_list": ["补齐转化证据", "核算单位交付成本"],
+                    "action_plan": ["定义试点样本", "记录报名到付费转化", "复核交付成本"],
+                    "dimensions": [
+                        {"name": "demand", "score": 3, "rationale": "Uploaded notes show repeated requests."},
+                        {"name": "cost", "score": 2, "rationale": "Cost data is incomplete."},
+                    ],
+                },
+                "answer": {"text": "Use evidence-gated rollout."},
+            }
+        )
+        assert result["artifact_urls"]["roadmap"].endswith(".md")
+        assert result["artifact_urls"]["validation_plan"].endswith(".md")
+        assert "补齐转化证据" in result["roadmap"]["markdown"]
+        assert "核算单位交付成本" in result["validation_plan"]["markdown"]
+        created_paths.extend(Path(result[key]["local_path"]) for key in ("roadmap", "validation_plan"))
+    finally:
+        orchestrator.run_executive_summary = original_summary
+        orchestrator.workspace_reference_images = original_references
+        for path in created_paths:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
 def main() -> None:
     tests = [
         test_files_content_quality_edit_history,
         test_analyze_selected_files_contract,
         test_connector_credentials_are_session_scoped_and_not_echoed,
+        test_produce_roadmap_and_validation_plan_contract,
     ]
     for test in tests:
         test()
