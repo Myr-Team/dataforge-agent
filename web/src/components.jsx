@@ -1184,12 +1184,13 @@ function DashboardStudio({
 
       <DataAssetsTable documents={documents} workspace={workspace} detailOpen={showDataDetail} onViewDetails={() => setShowDataDetail((v) => !v)} workspaceId={dashboard?.workspace_id || workspace?.workspace_id} />
 
+      <WebSearchPanel trace={trace} />
+
       <Collapsible title="高级分析" hint="运行更深入的模型与仿真分析">
         <section className="studio-methods">
           <ActionPlanCards selected={selectedPlaybook} onSelect={setSelectedPlaybook} feasibility={feasibility} workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id} />
           <ActionBoard artifact={finalArtifact} selectedPlaybook={selectedPlaybook} onProduce={onProduce} producing={producing} />
         </section>
-        <WebSearchPanel trace={trace} />
       </Collapsible>
 
       <PlanIteratePanel
@@ -3479,6 +3480,7 @@ export function NoticeStack({ notice, uploadState, onDismiss }) {
         <div className={`notice ${notice.type || "info"}`}>
           {notice.type === "error" ? <AlertTriangle size={16} /> : notice.type === "loading" ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
           <span>{notice.message}</span>
+          {notice.action ? <button className="notice-action" type="button" onClick={notice.action}>{notice.actionLabel || "查看"}</button> : null}
           {notice.type !== "loading" ? <button type="button" onClick={onDismiss}><X size={14} /></button> : null}
         </div>
       ) : null}

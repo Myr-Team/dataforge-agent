@@ -132,6 +132,54 @@ def get_run(run_id: str) -> dict[str, Any]:
     raise FileNotFoundError(run_id)
 
 
+def update_run_proposal(run_id: str, proposal: dict[str, Any]) -> dict[str, Any] | None:
+    """Merge newly produced artifacts back into a persisted run."""
+    if not run_id or not isinstance(proposal, dict):
+        return None
+    with _LOCK:
+        run = get_run(run_id)
+        artifact = run.get("artifact") or (run.get("final") or {}).get("artifact") or {}
+        artifact = dict(artifact) if isinstance(artifact, dict) else {}
+        previous = artifact.get("proposal") if isinstance(artifact.get("proposal"), dict) else {}
+        previous = dict(previous or {})
+        incoming = _plain(proposal)
+        incoming = incoming if isinstance(incoming, dict) else {}
+
+        merged_urls = {}
+        for source in (previous.get("artifact_urls"), incoming.get("artifact_urls")):
+            if isinstance(source, dict):
+                merged_urls.update({key: value for key, value in source.items() if value})
+
+        merged = {**previous, **incoming}
+        if merged_urls:
+            merged["artifact_urls"] = merged_urls
+
+        warnings: list[Any] = []
+        for source in (previous.get("warnings"), incoming.get("warnings")):
+            if isinstance(source, list):
+                warnings.extend(item for item in source if item)
+        if warnings:
+            merged["warnings"] = warnings[-12:]
+
+        artifact["proposal"] = merged
+        run["artifact"] = artifact
+        if isinstance(run.get("final"), dict):
+            final = dict(run["final"])
+            final_artifact = final.get("artifact") if isinstance(final.get("artifact"), dict) else {}
+            final_artifact = dict(final_artifact or {})
+            final_artifact["proposal"] = merged
+            final["artifact"] = final_artifact
+            run["final"] = final
+
+        run["updated_at"] = _utc_now()
+        run["verdict"] = _verdict(run)
+        run["confidence"] = _confidence(run)
+        run["title"] = _run_title(run)
+        run["summary"] = _run_summary_text(run)
+        run["registry_summary"] = _run_summary(run)
+        return _persist_run(run)
+
+
 PLAN_FLAGSHIP_BLOB = "registry/plan-flagship.json"
 
 

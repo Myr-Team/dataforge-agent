@@ -115,7 +115,11 @@ def generate_image(
     mode = "gpt-image-2"
     image_error = ""
     reference_image_urls = [str(item) for item in (reference_image_urls or []) if str(item or "").strip()]
-    reference_inputs = _load_reference_images(reference_image_urls[:3])
+    try:
+        reference_inputs = _load_reference_images(reference_image_urls[:3])
+    except Exception as exc:
+        reference_inputs = []
+        image_error = f"reference image load failed: {type(exc).__name__}: {exc}"[:700]
     try:
         if reference_inputs:
             image_bytes = _edit_with_gpt_image_2(prompt, size, reference_inputs)
@@ -123,7 +127,8 @@ def generate_image(
         else:
             image_bytes = _generate_with_gpt_image_2(prompt, size)
     except Exception as exc:
-        image_error = f"{type(exc).__name__}: {exc}"[:700]
+        err = f"{type(exc).__name__}: {exc}"[:700]
+        image_error = f"{image_error}; {err}"[:900] if image_error else err
         try:
             image_bytes = _generate_with_gpt_image_2(prompt, size)
             mode = "gpt-image-2"

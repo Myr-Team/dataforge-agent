@@ -151,7 +151,9 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   const [connectorResult, setConnectorResult] = useState(null);
   const [externalGroups, setExternalGroups] = useState([]);
   const [importingExternal, setImportingExternal] = useState(false);
+  const [externalRestoredKey, setExternalRestoredKey] = useState("");
   const toastT = useRef(null);
+  const externalStorageKey = workspaceId ? `df-dataworkbench-external:${workspaceId}` : "";
 
   const showToast = useCallback((msg) => {
     setToast(msg);
@@ -176,6 +178,46 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [contextMenu]);
+
+  useEffect(() => {
+    if (!externalStorageKey) {
+      setExternalGroups([]);
+      setConnectorResult(null);
+      setExternalRestoredKey("");
+      return;
+    }
+    try {
+      const saved = JSON.parse(window.sessionStorage.getItem(externalStorageKey) || "{}");
+      setExternalGroups(Array.isArray(saved.externalGroups) ? saved.externalGroups : []);
+      setConnectorResult(saved.connectorResult || null);
+    } catch {
+      setExternalGroups([]);
+      setConnectorResult(null);
+    }
+    setExternalRestoredKey(externalStorageKey);
+  }, [externalStorageKey]);
+
+  useEffect(() => {
+    if (!externalStorageKey || externalRestoredKey !== externalStorageKey) return;
+    try {
+      window.sessionStorage.setItem(
+        externalStorageKey,
+        JSON.stringify({
+          externalGroups,
+          connectorResult: connectorResult ? {
+            kind: connectorResult.kind,
+            connection_id: connectorResult.connection_id,
+            status: connectorResult.status,
+            database: connectorResult.database,
+            expires_at: connectorResult.expires_at,
+            connected_at: connectorResult.connected_at,
+          } : null,
+        }),
+      );
+    } catch {
+      // Session-only convenience; never block the workbench on storage quota.
+    }
+  }, [externalGroups, connectorResult, externalStorageKey, externalRestoredKey]);
 
   const reloadFiles = useCallback(async () => {
     if (!workspaceId) return;

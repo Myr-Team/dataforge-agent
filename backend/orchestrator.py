@@ -67,7 +67,7 @@ try:
     from .pm_skills import playbook_suggestion
     from .rag import search
     from .router import deterministic_route
-    from .run_store import complete_run, get_run, record_event, start_run
+    from .run_store import complete_run, get_run, record_event, start_run, update_run_proposal
     from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
     from .tracing import trace_event
     from .maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -126,7 +126,7 @@ except ImportError:
     from pm_skills import playbook_suggestion
     from rag import search
     from router import deterministic_route
-    from run_store import complete_run, get_run, record_event, start_run
+    from run_store import complete_run, get_run, record_event, start_run, update_run_proposal
     from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
     from tracing import trace_event
     from maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -2536,9 +2536,10 @@ def generate_playbook_detail(payload: dict[str, Any]) -> dict[str, Any]:
 
 def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
     kinds = payload.get("kinds") or ["pdf", "concept_image", "pilot_plan", "action_plan"]
+    run_id = str(payload.get("conversation_id") or payload.get("run_id") or "").strip()
     artifact = {
         "workspace_id": payload.get("workspace_id") or "demo-corpus",
-        "conversation_id": payload.get("conversation_id"),
+        "conversation_id": run_id or payload.get("conversation_id"),
         "feasibility": payload.get("feasibility") or {},
         "corpus": payload.get("corpus") or {},
         "market": payload.get("market") or {},
@@ -2547,7 +2548,22 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
         "reference_images": payload.get("reference_images") or [],
         "narrative": payload.get("narrative") or payload.get("text"),
     }
-    return _run_producer(artifact, kinds)
+    result = _run_producer(artifact, kinds)
+    if run_id:
+        try:
+            update_run_proposal(run_id, result)
+            result["persisted_run_id"] = run_id
+        except Exception as exc:
+            if not isinstance(result.get("warnings"), list):
+                result["warnings"] = []
+            result["warnings"].append(
+                {
+                    "kind": "persistence",
+                    "message": "产物已生成，但同步到产物中心失败；请稍后刷新或重试。",
+                    "error": f"{type(exc).__name__}: {exc}"[:500],
+                }
+            )
+    return result
 
 
 def _existing_proposal(payload: dict[str, Any]) -> dict[str, Any] | None:

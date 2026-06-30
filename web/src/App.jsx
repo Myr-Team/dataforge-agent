@@ -91,6 +91,7 @@ export function App() {
   const [user, setUser] = useState({ name: "Demo User", email: "local.demo@dataforge" });
   const [authState, setAuthState] = useState("local");
   const [observability, setObservability] = useState(null);
+  const activeViewRef = useRef(activeView);
   const [tasks, setTasks] = useState(() => {
     // 刷新后没有任何任务真正在跑：把上次残留的"进行中"收尾，避免幽灵角标(永远的 1)与卡住的"可行性分析"
     try {
@@ -128,6 +129,10 @@ export function App() {
   const streamRef = useRef("");
   const revealTimerRef = useRef(null);
   const abortRef = useRef(null);
+
+  useEffect(() => {
+    activeViewRef.current = activeView;
+  }, [activeView]);
 
   const currentPlaybook = useMemo(
     () => PLAYBOOKS.find((item) => item.id === selectedPlaybook) || PLAYBOOKS[0],
@@ -262,7 +267,7 @@ export function App() {
   // notice 自动淡出（非加载态 3.5s 后自动消失，不用手动点关）
   useEffect(() => {
     if (!notice || notice.type === "loading") return undefined;
-    const t = window.setTimeout(() => setNotice(null), 3500);
+    const t = window.setTimeout(() => setNotice(null), notice.action ? 9000 : 3500);
     return () => window.clearTimeout(t);
   }, [notice]);
 
@@ -479,6 +484,17 @@ export function App() {
           // 没有流式（少见的兜底）才用客户端打字机揭示。
           if (deltaCount >= 2) commitFinal();
           else revealFinalText(text, commitFinal);
+          if (!isAuto && activeViewRef.current !== "conversations") {
+            setNotice({
+              type: "done",
+              message: "AI 回复已生成完成。",
+              actionLabel: "查看会话",
+              action: () => {
+                setActiveView("conversations");
+                setNotice(null);
+              },
+            });
+          }
           setInspectorTab("evidence");
         }
         if (event.event === "error") {
@@ -733,6 +749,17 @@ export function App() {
         ]);
       }
       setNotice({ type: "done", message: warningText || "产物已生成。" });
+      if (activeViewRef.current !== "artifacts") {
+        setNotice({
+          type: warningText ? "error" : "done",
+          message: warningText ? `产物已部分生成：${warningText}` : "产物已生成，已同步到产物中心。",
+          actionLabel: "查看产物",
+          action: () => {
+            setActiveView("artifacts");
+            setNotice(null);
+          },
+        });
+      }
       updateTask(prodTaskId, { status: "done", detail: warningText ? "部分生成完成" : `${kinds.map((k) => KIND_LABEL[k]).join(" / ")} · 已生成` });
       refreshDashboard(workspaceId);
     } catch (error) {

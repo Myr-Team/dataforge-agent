@@ -15,6 +15,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "generated-outputs"
+LOGO_PATH = ROOT / "backend" / "assets" / "dataforge-logo.png"
 
 _EMOJI_RE = re.compile(
     "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U00002190-\U000021FF\U00002B00-\U00002BFF\uFE0F]"
@@ -48,7 +49,7 @@ def render_pdf_report(proposal: dict[str, Any], template: str = "project_proposa
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = int(time.time())
     path = OUT_DIR / f"{_safe_name(proposal.get('opportunity_id') or 'proposal')}-{stamp}.pdf"
-    mode = "reportlab-ms-style-project-proposal"
+    mode = "reportlab-project-document-v2"
     pdf_error = ""
     try:
         pdf_bytes = _rich_pdf(proposal, template)
@@ -101,23 +102,23 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
     registerFont(UnicodeCIDFont("STSong-Light"))
     font = "STSong-Light"
     latin_font = "Helvetica"
-    blue = colors.HexColor("#0078D4")
-    blue_dark = colors.HexColor("#004E8C")
-    blue_mid = colors.HexColor("#106EBE")
-    text_gray = colors.HexColor("#424242")
-    muted = colors.HexColor("#666666")
-    line = colors.HexColor("#D6DCE5")
-    pale = colors.HexColor("#F3F6FA")
+    blue = colors.HexColor("#2563EB")
+    blue_dark = colors.HexColor("#0F3A75")
+    blue_mid = colors.HexColor("#1D4ED8")
+    text_gray = colors.HexColor("#374151")
+    muted = colors.HexColor("#6B7280")
+    line = colors.HexColor("#D7DEE8")
+    pale = colors.HexColor("#F7FAFF")
 
     buffer = BytesIO()
     doc_title = str(proposal.get("title") or proposal.get("opportunity_id") or "DataForge 项目建议书")
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        leftMargin=1.75 * cm,
-        rightMargin=1.75 * cm,
-        topMargin=2.05 * cm,
-        bottomMargin=1.65 * cm,
+        leftMargin=1.8 * cm,
+        rightMargin=1.8 * cm,
+        topMargin=2.1 * cm,
+        bottomMargin=1.72 * cm,
         title=doc_title,
         author="DataForge",
     )
@@ -125,12 +126,25 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
     base = getSampleStyleSheet()
     styles = {
         "cover_kicker": ParagraphStyle("cover-kicker", parent=base["BodyText"], fontName=font, fontSize=11, leading=15, textColor=blue_dark),
-        "toc_title": ParagraphStyle("toc-title", parent=base["Title"], fontName=font, fontSize=24, leading=30, textColor=blue_dark, spaceAfter=20),
-        "h1": ParagraphStyle("h1", parent=base["Heading1"], fontName=font, fontSize=19, leading=25, textColor=blue_dark, spaceBefore=18, spaceAfter=8),
-        "h2": ParagraphStyle("h2", parent=base["Heading2"], fontName=font, fontSize=13.5, leading=18, textColor=blue_mid, spaceBefore=12, spaceAfter=5),
-        "body": ParagraphStyle("body", parent=base["BodyText"], fontName=font, fontSize=9.7, leading=16.2, textColor=text_gray, spaceAfter=7),
-        "small": ParagraphStyle("small", parent=base["BodyText"], fontName=font, fontSize=8.4, leading=12.4, textColor=text_gray),
-        "muted": ParagraphStyle("muted", parent=base["BodyText"], fontName=font, fontSize=8.1, leading=11.5, textColor=muted),
+        "toc_title": ParagraphStyle("toc-title", parent=base["Title"], fontName=font, fontSize=24, leading=30, textColor=blue_dark, spaceAfter=22),
+        "h1": ParagraphStyle(
+            "h1",
+            parent=base["Heading1"],
+            fontName=font,
+            fontSize=18.5,
+            leading=24,
+            textColor=blue_dark,
+            spaceBefore=18,
+            spaceAfter=10,
+            backColor=pale,
+            borderColor=line,
+            borderWidth=0.35,
+            borderPadding=7,
+        ),
+        "h2": ParagraphStyle("h2", parent=base["Heading2"], fontName=font, fontSize=13.2, leading=18, textColor=blue_mid, spaceBefore=12, spaceAfter=6),
+        "body": ParagraphStyle("body", parent=base["BodyText"], fontName=font, fontSize=10.1, leading=17.2, textColor=text_gray, spaceAfter=7.5),
+        "small": ParagraphStyle("small", parent=base["BodyText"], fontName=font, fontSize=8.7, leading=12.8, textColor=text_gray),
+        "muted": ParagraphStyle("muted", parent=base["BodyText"], fontName=font, fontSize=8.3, leading=12, textColor=muted),
         "table_header": ParagraphStyle("table-header", parent=base["BodyText"], fontName=font, fontSize=8.3, leading=11, textColor=colors.white),
         "toc": ParagraphStyle("toc", parent=base["BodyText"], fontName=font, fontSize=10.4, leading=15.5, textColor=text_gray),
     }
@@ -205,8 +219,8 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
                 Paragraph(_xml(risk.get("mitigation") or ""), styles["small"]),
                 Paragraph(_xml(risk.get("severity") or ""), styles["small"]),
             ])
-        first = 4.0 * cm
-        last = 1.25 * cm
+        first = 3.65 * cm
+        last = 1.8 * cm
         _add_table(story, rows, [first, (doc.width - first - last) / 2, (doc.width - first - last) / 2, last], blue)
 
     roadmap = [item for item in (proposal.get("roadmap") or []) if isinstance(item, dict)]
@@ -283,10 +297,11 @@ def _add_toc(story: list[Any], styles: dict[str, Any], width: float) -> None:
             Paragraph("." * 72, styles["toc"]),
             Paragraph(page, styles["toc"]),
         ])
-    table = Table(rows, colWidths=[4.8 * 28.35, width - 5.6 * 28.35, 0.8 * 28.35])
+    table = Table(rows, colWidths=[5.1 * 28.35, width - 5.95 * 28.35, 0.85 * 28.35])
     table.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("TEXTCOLOR", (1, 0), (1, -1), colors.HexColor("#A6A6A6")),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.18, colors.HexColor("#EEF2F7")),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 7),
@@ -345,13 +360,13 @@ def _add_table(story: list[Any], rows: list[list[Any]], col_widths: list[float],
     table = Table(rows, colWidths=col_widths, repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), header_color),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F6FA")]),
-        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#D6DCE5")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+        ("GRID", (0, 0), (-1, -1), 0.28, colors.HexColor("#D7DEE8")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 7),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
     ]))
     story.append(table)
     story.append(Spacer(1, 10))
@@ -375,28 +390,34 @@ def _draw_cover(
 
     w, h = page_size
     canvas.saveState()
-    canvas.setFillColor(colors.white)
+    canvas.setFillColor(colors.HexColor("#F8FAFC"))
     canvas.rect(0, 0, w, h, fill=1, stroke=0)
-    _draw_logo(canvas, 2.0 * cm, h - 2.55 * cm, 0.62 * cm)
+    canvas.setFillColor(colors.white)
+    canvas.roundRect(1.35 * cm, 1.28 * cm, w - 2.7 * cm, h - 2.55 * cm, 0.18 * cm, fill=1, stroke=0)
+    _draw_brand_mark(canvas, 2.0 * cm, h - 1.7 * cm, 1.38 * cm)
 
-    canvas.setFillColor(colors.HexColor("#004E8C"))
+    canvas.setFillColor(colors.HexColor("#0F3A75"))
     canvas.setFont(f"{latin_font}-Bold", 12)
-    canvas.drawString(4.0 * cm, h - 2.05 * cm, "DataForge")
-    canvas.setFillColor(colors.HexColor("#666666"))
+    canvas.drawString(3.75 * cm, h - 2.05 * cm, "DataForge")
+    canvas.setFillColor(colors.HexColor("#6B7280"))
     canvas.setFont(font, 8.5)
-    canvas.drawString(4.0 * cm, h - 2.55 * cm, "数据商机化与可校准可行性分析")
+    canvas.drawString(3.75 * cm, h - 2.55 * cm, "数据商机化与可校准可行性分析")
 
-    band_y = h - 8.7 * cm
-    band_h = 2.2 * cm
-    for i in range(80):
-        ratio = i / 79
-        r = 0.0 + (0.31 - 0.0) * ratio
-        g = 0.47 + (0.90 - 0.47) * ratio
-        b = 0.83 + (1.00 - 0.83) * ratio
+    band_y = h - 8.45 * cm
+    band_h = 2.05 * cm
+    for i in range(96):
+        ratio = i / 95
+        r = 0.10 + (0.42 - 0.10) * ratio
+        g = 0.39 + (0.83 - 0.39) * ratio
+        b = 0.92 + (1.00 - 0.92) * ratio
         canvas.setFillColor(colors.Color(r, g, b))
-        canvas.rect(i * w / 80, band_y, w / 80 + 1, band_h, fill=1, stroke=0)
+        canvas.rect(1.35 * cm + i * (w - 2.7 * cm) / 96, band_y, (w - 2.7 * cm) / 96 + 1, band_h, fill=1, stroke=0)
+    canvas.setFillColor(colors.HexColor("#DBEAFE"))
+    canvas.circle(w - 3.2 * cm, band_y + band_h * 0.55, 1.28 * cm, fill=1, stroke=0)
+    canvas.setFillColor(colors.HexColor("#EFF6FF"))
+    canvas.circle(w - 5.4 * cm, band_y + band_h * 0.28, 0.52 * cm, fill=1, stroke=0)
 
-    canvas.setFillColor(colors.HexColor("#1F1F1F"))
+    canvas.setFillColor(colors.HexColor("#111827"))
     title_y = h - 5.05 * cm
     for idx, line in enumerate(_wrap_canvas_text(canvas, title, font, 26, w - 4.0 * cm)[:3]):
         _draw_mixed_string(canvas, 2.0 * cm, title_y - idx * 0.9 * cm, line, font, f"{latin_font}-Bold", 26, max_width=w - 4.0 * cm)
@@ -410,7 +431,7 @@ def _draw_cover(
     canvas.setFillColor(colors.HexColor(verdict_color))
     canvas.setFont(font, 10.5)
     canvas.drawString(2.25 * cm, band_y - 1.08 * cm, badge)
-    canvas.setFillColor(colors.HexColor("#666666"))
+    canvas.setFillColor(colors.HexColor("#6B7280"))
     canvas.drawString(8.1 * cm, band_y - 1.08 * cm, f"置信度：{confidence}")
 
     date = str(doc_meta.get("generated_date") or time.strftime("%Y-%m-%d"))
@@ -419,11 +440,31 @@ def _draw_cover(
     _draw_mixed_string(canvas, 2.0 * cm, 3.3 * cm, f"生成日期：{date}", font, latin_font, 9, max_width=w - 4.0 * cm)
     _draw_mixed_string(canvas, 2.0 * cm, 2.8 * cm, f"文档编号：{doc_id}", font, latin_font, 9, max_width=w - 4.0 * cm)
     _draw_mixed_string(canvas, 2.0 * cm, 2.3 * cm, f"版本：{doc_meta.get('version', 'v1')}", font, latin_font, 9, max_width=w - 4.0 * cm)
-    canvas.setStrokeColor(colors.HexColor("#D6DCE5"))
+    canvas.setStrokeColor(colors.HexColor("#D7DEE8"))
     canvas.line(2.0 * cm, 1.75 * cm, w - 2.0 * cm, 1.75 * cm)
-    canvas.setFillColor(colors.HexColor("#666666"))
+    canvas.setFillColor(colors.HexColor("#6B7280"))
     _draw_mixed_string(canvas, 2.0 * cm, 1.3 * cm, "DataForge 多智能体系统生成 - 仅供内部决策参考", font, latin_font, 8, max_width=w - 4.0 * cm)
     canvas.restoreState()
+
+
+def _draw_brand_mark(canvas: Any, x: float, top_y: float, size: float) -> None:
+    try:
+        from reportlab.lib.utils import ImageReader
+
+        if LOGO_PATH.exists():
+            canvas.drawImage(
+                ImageReader(str(LOGO_PATH)),
+                x,
+                top_y - size,
+                width=size,
+                height=size,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+            return
+    except Exception:
+        pass
+    _draw_logo(canvas, x, top_y - size * 0.1, size / 3.05)
 
 
 def _draw_logo(canvas: Any, x: float, y: float, unit: float) -> None:
@@ -470,10 +511,11 @@ def _draw_page_frame(canvas: Any, page_size: tuple[float, float], font: str, lat
     canvas.saveState()
     canvas.setFillColor(blue)
     canvas.rect(0, h - 0.28 * cm, w, 0.28 * cm, fill=1, stroke=0)
+    _draw_brand_mark(canvas, 1.75 * cm, h - 0.58 * cm, 0.36 * cm)
     canvas.setFillColor(colors.HexColor("#004E8C"))
     canvas.setFont(f"{latin_font}-Bold", 8)
-    canvas.drawString(1.75 * cm, h - 0.95 * cm, "DataForge")
-    header_x = 1.75 * cm + canvas.stringWidth("DataForge", f"{latin_font}-Bold", 8) + 3
+    canvas.drawString(2.18 * cm, h - 0.95 * cm, "DataForge")
+    header_x = 2.18 * cm + canvas.stringWidth("DataForge", f"{latin_font}-Bold", 8) + 3
     canvas.setFont(font, 8)
     canvas.drawString(header_x, h - 0.95 * cm, " 项目建议书")
     canvas.setStrokeColor(line)
