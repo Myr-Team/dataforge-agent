@@ -96,6 +96,7 @@ def complete_run(
     run["status"] = status
     run["completed_at"] = _utc_now()
     run["updated_at"] = run["completed_at"]
+    run["duration_ms"] = _duration_ms(run.get("started_at"), run.get("completed_at"))
     run["verdict"] = _verdict(run)
     run["confidence"] = _confidence(run)
     run["step_count"] = len(run.get("steps") or [])
@@ -230,6 +231,9 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
     return {
         "run_id": run.get("run_id"),
         "time": run.get("completed_at") or run.get("updated_at") or run.get("started_at"),
+        "started_at": run.get("started_at"),
+        "finished_at": run.get("completed_at"),
+        "duration_ms": run.get("duration_ms") or _duration_ms(run.get("started_at"), run.get("completed_at") or run.get("updated_at")),
         "workspace_id": run.get("workspace_id"),
         "title": run.get("title") or _run_title(run),
         "summary": run.get("summary") if isinstance(run.get("summary"), str) else _run_summary_text(run),
@@ -513,3 +517,24 @@ def _safe_name(value: str) -> str:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _duration_ms(start: Any, end: Any) -> int | None:
+    start_dt = _parse_time(start)
+    end_dt = _parse_time(end)
+    if not start_dt or not end_dt:
+        return None
+    return max(0, int((end_dt - start_dt).total_seconds() * 1000))
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None

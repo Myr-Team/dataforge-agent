@@ -3487,6 +3487,7 @@ def _llm_feasibility_action_plan(
             })
         gaps = [_sanitize_chat_sentence(str(g), field_labels) for g in (feasibility.get("gap_list") or []) if str(g).strip()][:5]
         corpus_profile = (artifact.get("corpus", {}) or {}).get("profile", {}) or {}
+        playbook = playbook_suggestion(getattr(req, "playbook", None), corpus_profile) if getattr(req, "playbook", None) else {}
         payload = {
             "opportunity": title,
             "verdict": feasibility.get("verdict"),
@@ -3494,6 +3495,13 @@ def _llm_feasibility_action_plan(
             "dimensions": dims,
             "gap_list": gaps,
             "evidence": evidence,
+            "playbook": {
+                "id": playbook.get("playbook"),
+                "label": playbook.get("label"),
+                "focus": playbook.get("focus"),
+                "sections": playbook.get("artifact_sections") or [],
+                "questions": playbook.get("questions") or [],
+            } if playbook else {},
             "user_request": _current_user_message(req),
             "workspace_summary": _clip_customer_signal(str(corpus_profile.get("customer_summary") or corpus_profile.get("profile_summary") or ""), 220),
         }
