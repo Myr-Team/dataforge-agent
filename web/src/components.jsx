@@ -1466,6 +1466,7 @@ function ConversationStudio({
         </div>
 
         <aside className="conv-context">
+          {/* 第 1 行：当前工作区上下文（整行） */}
           <section className="card ctx-card">
             <div className="ctx-h">当前工作区上下文</div>
             <div className="ctx-kv"><span>工作区</span><b>{workspace.name || "TrailSense Outdoor IoT"}</b></div>
@@ -1474,37 +1475,46 @@ function ConversationStudio({
             <button type="button" className="ctx-btn">查看工作区详情</button>
           </section>
 
-          <section className="card ctx-card">
-            <div className="ctx-h">当前数据源<em>{docs.length || 9} 个数据源已关联</em></div>
-            <div className="ctx-srcs">
-              {(docs.length ? docs.slice(0, 5) : [{ name: "product_manual.md", format: "md" }, { name: "sensor_data_dictionary.md", format: "md" }, { name: "customer_feedback_summary.md", format: "md" }, { name: "internal_technical_wiki.md", format: "md" }]).map((d, i) => (
-                <div className="ctx-src" key={i}><FileTypeIcon doc={d} size={18} /><b title={d.name}>{d.name}</b></div>
-              ))}
-            </div>
-            <button type="button" className="lnk lnk-btn">查看全部数据源 ›</button>
-          </section>
+          {/* 第 2 行：当前数据源 | 快捷操作 */}
+          <div className="ctx-grid2">
+            <section className="card ctx-card">
+              <div className="ctx-h">当前数据源<em>{docs.length || 9} 源</em></div>
+              <div className="ctx-srcs">
+                {(docs.length ? docs.slice(0, 5) : [{ name: "product_manual.md", format: "md" }, { name: "sensor_data_dictionary.md", format: "md" }, { name: "customer_feedback_summary.md", format: "md" }, { name: "internal_technical_wiki.md", format: "md" }]).map((d, i) => (
+                  <div className="ctx-src" key={i}><FileTypeIcon doc={d} size={16} /><b title={d.name}>{d.name}</b></div>
+                ))}
+              </div>
+              <button type="button" className="lnk lnk-btn">查看全部数据源 ›</button>
+            </section>
 
-          <section className="card ctx-card">
-            <div className="ctx-h">最近分析结论</div>
-            <div className="ctx-kv"><span>综合结论</span><span className="dw-chip ok">{recentVerdict}</span></div>
-            <div className="ctx-kv"><span>生成时间</span><b>{formatTime(recent.completed_at || recent.time) || "06/29 15:56"}</b></div>
-            <div className="ctx-sub">基于 {docs.length || 9} 个数据源 · 12 项指标 <button type="button" className="lnk lnk-btn">查看详情</button></div>
-          </section>
+            <section className="card ctx-card">
+              <div className="ctx-h">快捷操作</div>
+              <div className="ctx-qa">
+                {quickActions.map((a, i) => { const Ic = a.icon; return (
+                  <button type="button" className="qa-item" key={i} onClick={a.onClick}><span className="qa-ic"><Ic size={15} /></span><div><b>{a.title}</b>{a.desc ? <em>{a.desc}</em> : null}</div></button>
+                ); })}
+              </div>
+            </section>
+          </div>
 
-          <section className="card ctx-card">
-            <div className="ctx-h">审计状态</div>
-            <div className="ctx-audit"><span>最近审计</span><span className="dw-chip ok">通过</span><span className="ctx-audit-x">已执行 · 异常项 0</span></div>
-            <div className="ctx-sub">12 项检查 <button type="button" className="lnk lnk-btn">查看审计详情 ›</button></div>
-          </section>
+          {/* 第 3 行：最近分析结论 | 审计状态 */}
+          <div className="ctx-grid2">
+            <section className="card ctx-card">
+              <div className="ctx-h">最近分析结论</div>
+              <div className="ctx-kv"><span>结论</span><span className="dw-chip ok">{recentVerdict}</span></div>
+              <div className="ctx-kv"><span>时间</span><b>{formatTime(recent.completed_at || recent.time) || "06/29 15:56"}</b></div>
+              <div className="ctx-kv"><span>基于</span><b>{docs.length || 9} 源 · 12 指标</b></div>
+              <button type="button" className="lnk lnk-btn">查看详情 ›</button>
+            </section>
 
-          <section className="card ctx-card">
-            <div className="ctx-h">快捷操作</div>
-            <div className="ctx-qa">
-              {quickActions.map((a, i) => { const Ic = a.icon; return (
-                <button type="button" className="qa-item" key={i} onClick={a.onClick}><span className="qa-ic"><Ic size={16} /></span><div><b>{a.title}</b>{a.desc ? <em>{a.desc}</em> : null}</div></button>
-              ); })}
-            </div>
-          </section>
+            <section className="card ctx-card">
+              <div className="ctx-h">审计状态</div>
+              <div className="ctx-kv"><span>审计</span><span className="dw-chip ok">通过</span></div>
+              <div className="ctx-kv"><span>检查</span><b>12 项</b></div>
+              <div className="ctx-kv"><span>异常</span><b>0 项</b></div>
+              <button type="button" className="lnk lnk-btn">查看审计详情 ›</button>
+            </section>
+          </div>
         </aside>
       </div>
 

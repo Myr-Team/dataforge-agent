@@ -732,8 +732,21 @@ svg { flex-shrink: 0; }
 .qa-item { display: flex; align-items: center; gap: 11px; padding: 9px 8px; border: 0; background: transparent; border-radius: 8px; cursor: pointer; text-align: left; }
 .qa-item:hover { background: var(--surface-soft); }
 .qa-ic { width: 32px; height: 32px; border-radius: 8px; background: var(--surface-soft); color: var(--blue); display: flex; align-items: center; justify-content: center; flex: none; }
-.qa-item b { font-size: 13px; font-weight: 600; display: block; }
-.qa-item em { font-size: 11.5px; color: var(--faint); font-style: normal; }
+.qa-item b { font-size: 12.5px; font-weight: 600; display: block; }
+.qa-item em { font-size: 11px; color: var(--faint); font-style: normal; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 右侧侧栏编排：1 整行大卡 + 2×2 小卡网格（贴近参考图节奏，信息更紧凑） */
+.ctx-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+@media (max-width: 1100px){ .ctx-grid2 { grid-template-columns: 1fr; } }
+.ctx-grid2 .ctx-card { padding: 14px 14px; }
+.ctx-grid2 .ctx-h { margin-bottom: 11px; font-size: 13px; }
+.ctx-grid2 .ctx-kv { margin-bottom: 8px; gap: 8px; font-size: 12.5px; }
+.ctx-grid2 .ctx-kv > span { width: 34px; }
+.ctx-grid2 .ctx-srcs { gap: 7px; margin-bottom: 10px; }
+.ctx-grid2 .ctx-src { font-size: 12px; gap: 7px; }
+.ctx-grid2 .qa-item { padding: 6px 6px; gap: 9px; }
+.ctx-grid2 .qa-ic { width: 28px; height: 28px; }
+.ctx-grid2 .lnk-btn { margin-top: 2px; }
 .conv-composer { position: sticky; bottom: 0; z-index: 5; padding: 12px 0 16px; margin-top: 4px; background: linear-gradient(180deg, rgba(248,249,251,0) 0%, var(--bg) 22%); }
 /* 上下文里的 verdict badge 不竖向断行 */
 .ctx-kv .dw-chip, .ctx-audit .dw-chip { white-space: nowrap; flex: none; }
