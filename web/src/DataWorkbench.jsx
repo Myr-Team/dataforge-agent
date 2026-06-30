@@ -96,6 +96,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [toast, setToast] = useState("");
   const [q, setQ] = useState("");
+  const [collapsed, setCollapsed] = useState({});
   const toastT = useRef(null);
 
   const showToast = useCallback((msg) => {
@@ -312,17 +313,23 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation }) {
           </div>
           <div className="dw-tree-body">
             {!filteredGroups.length && !filesLoading ? <p className="empty-copy" style={{ padding: "16px 12px" }}>暂无文件。上传或新建一个文件开始。</p> : null}
-            {filteredGroups.map((g) => (
-              <div className="dw-group" key={g.label}>
-                <div className="dw-group-head"><ChevronDown size={13} />{g.label}<em style={{ marginLeft: "auto", fontStyle: "normal", color: "var(--faint)" }}>{(g.files || []).length}</em></div>
-                {(g.files || []).map((f) => (
-                  <button key={f.id} type="button" className={active?.id === f.id ? "dw-file active" : "dw-file"} onClick={() => openFile(f)} title={f.name}>
-                    {fileIconFor(f.type, f.name)}<span>{f.name}</span>
-                    {f.record_count ? <em className="dw-file-rc">{f.record_count}</em> : null}
+            {filteredGroups.map((g) => {
+              const isCollapsed = collapsed[g.label];
+              return (
+                <div className="dw-group" key={g.label}>
+                  <button type="button" className="dw-group-head" onClick={() => setCollapsed((m) => ({ ...m, [g.label]: !m[g.label] }))}>
+                    <ChevronDown size={13} className="dw-group-caret" style={{ transform: isCollapsed ? "rotate(-90deg)" : "none" }} />{g.label}
+                    <em style={{ marginLeft: "auto", fontStyle: "normal", color: "var(--faint)" }}>{(g.files || []).length}</em>
                   </button>
-                ))}
-              </div>
-            ))}
+                  {!isCollapsed && (g.files || []).map((f) => (
+                    <button key={f.id} type="button" className={active?.id === f.id ? "dw-file active" : "dw-file"} onClick={() => openFile(f)} title={f.name}>
+                      {fileIconFor(f.type, f.name)}<span>{f.name}</span>
+                      {f.record_count ? <em className="dw-file-rc">{f.record_count}</em> : null}
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
           </div>
           <div className="dw-tree-foot">
             <div className="dw-store">
