@@ -863,18 +863,6 @@ svg { flex-shrink: 0; }
 .set-more-mbr { margin-top: 10px; color: var(--blue); font-weight: 600; }
 .rt-runid { display: inline-flex; align-items: center; gap: 5px; }
 .rt-runid .msg-copy, .rt-runid button { margin: 0; }
-/* 运行记录页底部：任务记录归档 */
-.rh-tasks { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
-.rh-tasks-sub { font-size: 11.5px; color: var(--faint); font-weight: 400; }
-.rh-task { display: flex; align-items: center; gap: 10px; padding: 8px 4px; }
-.rh-task-ic { display: inline-flex; width: 22px; height: 22px; border-radius: 6px; align-items: center; justify-content: center; flex: none; }
-.rh-task-ic.done { background: var(--mint-soft); color: var(--mint); }
-.rh-task-ic.running { background: var(--blue-soft); color: var(--blue); }
-.rh-task-ic.error { background: var(--red-soft); color: var(--red); }
-.rh-task-main { flex: 1; min-width: 0; }
-.rh-task-main b { font-size: 12.5px; font-weight: 600; display: block; }
-.rh-task-main span { font-size: 11.5px; color: var(--faint); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rh-task em { font-size: 11px; color: var(--faint); font-style: normal; white-space: nowrap; }
 
 /* ===== 单屏适配：会话 / 产物 / 设置 三页尽量一屏显示完，减少向下滚动 ===== */
 /* 紧凑页头（这三页的大标题/说明收一收，省出纵向空间） */
