@@ -589,7 +589,17 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     showToast("已发送到分析，正在打开会话…");
     try {
       if (onRun) {
-        onRun(message, { stayOnDashboard: false });
+        await onRun(message, {
+          stayOnDashboard: false,
+          artifactMode: "report",
+          newConversation: true,
+          uiContext: {
+            entrypoint: "data_workbench",
+            mode: "data_workbench_analysis",
+            selected_file_ids: [active.id],
+            selected_files: [{ id: active.id, name: active.name, type: active.type, status: active.status }],
+          },
+        });
       } else {
         const res = await dwAnalyzeFiles(workspaceId, [active.id], message);
         const cid = res?.conversation_id || res?.jump?.conversation_id;

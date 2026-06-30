@@ -325,7 +325,7 @@ export async function dwFileHistory(workspaceId, fileId) {
   return loadWorkspaceFileHistory(workspaceId, fileId);
 }
 export async function dwAnalyzeFiles(workspaceId, fileIds, message) {
-  return analyzeWorkspaceFiles(workspaceId, { file_ids: fileIds, message: message || "请分析这些文件里的机会" });
+  return analyzeWorkspaceFiles(workspaceId, { file_ids: fileIds, message: message || "请分析这些文件里的机会", artifact_mode: "report" });
 }
 
 export function runLogUrl(runId, format = "json") {

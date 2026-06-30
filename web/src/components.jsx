@@ -2173,7 +2173,7 @@ function SettingsCenter({ dashboard, observability }) {
     { src: "/icons/content-safety.svg", name: "Azure AI Content Safety", desc: "内容安全与风险检测", ok: deps.content_safety !== false },
   ];
   const connOk = connectors.filter((c) => c.ok).length;
-  const kv = (k, v) => (<div className="set-kv"><span>{k}</span><b>{v}</b></div>);
+  const kv = (k, v) => (<div className="set-kv" key={k}><span>{k}</span><b>{v}</b></div>);
   const cfgCard = (icon, title, rows, desc) => (
     <section className="card set-cfg">
       <div className="set-cfg-h">{icon}<strong>{title}</strong><span className="lnk lnk-btn">管理</span></div>

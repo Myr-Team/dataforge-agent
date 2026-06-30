@@ -200,18 +200,19 @@ Targets are stored as a workspace metadata overlay. The backend still recomputes
 { "file_ids": ["80f33c3bd55fa67f"], "message": "请分析这些文件里的机会", "conversation_id": null }
 ```
 
-Returns a completed backend analysis payload plus a frontend jump signal:
+Returns quickly with a frontend jump signal; the backend continues the analysis in the returned conversation/run:
 
 ```json
 {
   "workspace_id": "upload-demo",
   "conversation_id": "conv-id",
-  "status": "started",
+  "status": "accepted",
   "mode": "analysis",
   "selected_files": [{ "id": "80f33c3bd55fa67f", "name": "device_events.csv" }],
   "jump": { "view": "agent_flow", "conversation_id": "conv-id" },
-  "final": {},
-  "text": "..."
+  "background": true,
+  "final": null,
+  "text": ""
 }
 ```
 

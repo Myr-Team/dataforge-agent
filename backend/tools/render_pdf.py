@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import re
 import time
+import urllib.request
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 from xml.sax.saxutils import escape
 
 try:
@@ -89,8 +92,6 @@ _VERDICT = {
 
 
 def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
-    from io import BytesIO
-
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -270,7 +271,7 @@ def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
         _draw_cover(canvas, A4, font, latin_font, proposal, doc_title, verdict_label, verdict_color, verdict_bg, confidence, doc_meta)
 
     def decorate(canvas: Any, doc_: Any) -> None:
-        _draw_page_frame(canvas, A4, font, latin_font, doc_title, doc_.page, blue, line, muted)
+        _draw_page_frame(canvas, A4, font, latin_font, doc_title, doc_.page, blue, line, muted, proposal)
 
     doc.build(story, onFirstPage=cover, onLaterPages=decorate)
     return buffer.getvalue()
@@ -394,7 +395,7 @@ def _draw_cover(
     canvas.rect(0, 0, w, h, fill=1, stroke=0)
     canvas.setFillColor(colors.white)
     canvas.roundRect(1.35 * cm, 1.28 * cm, w - 2.7 * cm, h - 2.55 * cm, 0.18 * cm, fill=1, stroke=0)
-    _draw_brand_mark(canvas, 2.0 * cm, h - 1.7 * cm, 1.38 * cm)
+    _draw_brand_mark(canvas, 2.0 * cm, h - 1.7 * cm, 1.38 * cm, proposal)
 
     canvas.setFillColor(colors.HexColor("#0F3A75"))
     canvas.setFont(f"{latin_font}-Bold", 12)
@@ -447,13 +448,12 @@ def _draw_cover(
     canvas.restoreState()
 
 
-def _draw_brand_mark(canvas: Any, x: float, top_y: float, size: float) -> None:
+def _draw_brand_mark(canvas: Any, x: float, top_y: float, size: float, proposal: dict[str, Any] | None = None) -> None:
     try:
-        from reportlab.lib.utils import ImageReader
-
-        if LOGO_PATH.exists():
+        image = _brand_logo_reader(proposal or {})
+        if image:
             canvas.drawImage(
-                ImageReader(str(LOGO_PATH)),
+                image,
                 x,
                 top_y - size,
                 width=size,
@@ -465,6 +465,92 @@ def _draw_brand_mark(canvas: Any, x: float, top_y: float, size: float) -> None:
     except Exception:
         pass
     _draw_logo(canvas, x, top_y - size * 0.1, size / 3.05)
+
+
+def _brand_logo_reader(proposal: dict[str, Any]) -> Any:
+    from reportlab.lib.utils import ImageReader
+
+    for source in _brand_logo_sources(proposal):
+        loaded = _load_logo_bytes(source)
+        if loaded:
+            return ImageReader(BytesIO(loaded))
+    if LOGO_PATH.exists():
+        return ImageReader(str(LOGO_PATH))
+    return None
+
+
+def _brand_logo_sources(proposal: dict[str, Any]) -> list[str]:
+    sources: list[str] = []
+    for key in ("brand_logo_url", "logo_url"):
+        value = str(proposal.get(key) or "").strip()
+        if value:
+            sources.append(value)
+    images = [item for item in (proposal.get("reference_images") or []) if isinstance(item, dict)]
+    logos = []
+    others = []
+    for item in images:
+        role = str(item.get("role") or "").strip().lower()
+        name = str(item.get("name") or item.get("filename") or item.get("source_file") or "").strip().lower()
+        url = str(item.get("url") or item.get("artifact_url") or item.get("source_file") or item.get("local_path") or "").strip()
+        if not url:
+            continue
+        if role == "logo" or "logo" in name or "brand" in name:
+            logos.append(url)
+        else:
+            others.append(url)
+    return _dedupe_sources([*sources, *logos, *others])
+
+
+def _dedupe_sources(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def _load_logo_bytes(source: str) -> bytes | None:
+    value = str(source or "").strip()
+    if not value:
+        return None
+    if value.startswith("/api/workspaces/"):
+        parts = [unquote(part) for part in value.split("/") if part]
+        if len(parts) >= 5 and parts[0] == "api" and parts[1] == "workspaces" and parts[3] == "reference-images":
+            try:
+                from ..workspace_store import get_reference_image_content
+            except ImportError:
+                from workspace_store import get_reference_image_content
+
+            downloaded = get_reference_image_content(parts[2], parts[4])
+            return _compact_logo_bytes(downloaded[0]) if downloaded else None
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"}:
+        with urllib.request.urlopen(value, timeout=12) as response:
+            return _compact_logo_bytes(response.read(2 * 1024 * 1024))
+    if parsed.scheme == "file":
+        path = Path(unquote(parsed.path))
+        return _compact_logo_bytes(path.read_bytes()) if path.exists() and path.is_file() else None
+    path = Path(value)
+    if path.exists() and path.is_file():
+        return _compact_logo_bytes(path.read_bytes())
+    return None
+
+
+def _compact_logo_bytes(content: bytes | None, max_px: int = 384) -> bytes | None:
+    if not content:
+        return None
+    try:
+        from PIL import Image
+
+        image = Image.open(BytesIO(content)).convert("RGBA")
+        image.thumbnail((max_px, max_px), Image.Resampling.LANCZOS)
+        out = BytesIO()
+        image.save(out, format="PNG", optimize=True)
+        return out.getvalue()
+    except Exception:
+        return content
 
 
 def _draw_logo(canvas: Any, x: float, y: float, unit: float) -> None:
@@ -503,7 +589,7 @@ def _draw_logo(canvas: Any, x: float, y: float, unit: float) -> None:
     canvas.restoreState()
 
 
-def _draw_page_frame(canvas: Any, page_size: tuple[float, float], font: str, latin_font: str, doc_name: str, page: int, blue: Any, line: Any, muted: Any) -> None:
+def _draw_page_frame(canvas: Any, page_size: tuple[float, float], font: str, latin_font: str, doc_name: str, page: int, blue: Any, line: Any, muted: Any, proposal: dict[str, Any]) -> None:
     from reportlab.lib import colors
     from reportlab.lib.units import cm
 
@@ -511,7 +597,7 @@ def _draw_page_frame(canvas: Any, page_size: tuple[float, float], font: str, lat
     canvas.saveState()
     canvas.setFillColor(blue)
     canvas.rect(0, h - 0.28 * cm, w, 0.28 * cm, fill=1, stroke=0)
-    _draw_brand_mark(canvas, 1.75 * cm, h - 0.58 * cm, 0.36 * cm)
+    _draw_brand_mark(canvas, 1.75 * cm, h - 0.58 * cm, 0.36 * cm, proposal)
     canvas.setFillColor(colors.HexColor("#004E8C"))
     canvas.setFont(f"{latin_font}-Bold", 8)
     canvas.drawString(2.18 * cm, h - 0.95 * cm, "DataForge")

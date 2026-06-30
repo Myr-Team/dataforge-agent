@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from openpyxl import Workbook, load_workbook
 from starlette.concurrency import run_in_threadpool
 
@@ -132,9 +132,9 @@ async def workspace_file_history(workspace_id: str, file_id: str) -> list[dict[s
 
 
 @router.post("/files/analyze")
-async def workspace_files_analyze(workspace_id: str, request: Request) -> dict[str, Any]:
+async def workspace_files_analyze(workspace_id: str, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     body = await _json_body(request)
-    return await analyze_selected_files(workspace_id, body)
+    return await analyze_selected_files(workspace_id, body, background_tasks)
 
 
 @router.get("/connectors/capabilities")
@@ -482,7 +482,7 @@ def file_history(workspace_id: str, file_id: str) -> list[dict[str, Any]]:
     return [{"user": "DataForge", "email": None, "at": at, "change_summary": "初始文件版本"}]
 
 
-async def analyze_selected_files(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
+async def analyze_selected_files(workspace_id: str, body: dict[str, Any], background_tasks: BackgroundTasks | None = None) -> dict[str, Any]:
     raw_ids = body.get("file_ids") or body.get("files") or []
     file_ids = [str(item) for item in raw_ids if str(item).strip()]
     if not file_ids:
@@ -524,10 +524,11 @@ async def analyze_selected_files(workspace_id: str, body: dict[str, Any]) -> dic
     message = str(body.get("message") or "").strip() or (
         f"请只基于数据工作台中选中的文件（{names}）发起一次数据商机化分析，输出机会、证据强度、风险缺口和下一步验证计划。"
     )
+    conversation_id = str(body.get("conversation_id") or "").strip() or str(uuid.uuid4())
     req = ChatRequest(
         workspace_id=workspace_id,
         message=message,
-        conversation_id=body.get("conversation_id"),
+        conversation_id=conversation_id,
         playbook=body.get("playbook") or "opportunity_tree",
         artifact_mode=body.get("artifact_mode") or "report",
         ui_context={
@@ -539,39 +540,31 @@ async def analyze_selected_files(workspace_id: str, body: dict[str, Any]) -> dic
             "workbench_warnings": warnings,
         },
     )
-    final_payload: dict[str, Any] | None = None
-    error_payload: dict[str, Any] | None = None
-    answer_parts: list[str] = []
-    events: list[dict[str, Any]] = []
-    conversation_id = req.conversation_id
-    async for raw_frame in orchestrate_chat(req):
-        for event, data in _parse_sse_frame(raw_frame):
-            if event == "answer_delta" and isinstance(data, dict):
-                answer_parts.append(str(data.get("delta") or ""))
-                continue
-            if event == "ready" and isinstance(data, dict):
-                conversation_id = data.get("conversation_id") or conversation_id
-            if event == "final" and isinstance(data, dict):
-                final_payload = data
-            elif event == "error":
-                error_payload = data if isinstance(data, dict) else {"message": str(data)}
-            events.append({"event": event, "data": _compact_event_data(data)})
-    if error_payload:
-        raise HTTPException(status_code=502, detail={"message": "analysis failed", "error": error_payload, "events": events[-12:]})
-    if not final_payload:
-        raise HTTPException(status_code=502, detail={"message": "analysis did not return final", "events": events[-12:]})
+    if background_tasks is not None:
+        background_tasks.add_task(_consume_workbench_analysis, req)
+    else:
+        await _consume_workbench_analysis(req)
     return {
         "workspace_id": workspace_id,
         "conversation_id": conversation_id,
-        "status": "started",
+        "status": "accepted",
         "mode": "analysis",
         "selected_files": selected,
         "warnings": warnings,
         "jump": {"view": "agent_flow", "conversation_id": conversation_id},
-        "final": final_payload,
-        "text": str(final_payload.get("text") or "".join(answer_parts)),
-        "events": events,
+        "background": True,
+        "final": None,
+        "text": "",
+        "events": [],
     }
+
+
+async def _consume_workbench_analysis(req: ChatRequest) -> None:
+    try:
+        async for _ in orchestrate_chat(req):
+            pass
+    except Exception as exc:
+        print(f"workbench analyze background failed: {type(exc).__name__}", flush=True)
 
 
 def connect_sql(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:

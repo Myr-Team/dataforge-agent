@@ -2320,8 +2320,10 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
     wanted = [k for k in (kinds or ["pdf", "concept_image", "pilot_plan", "action_plan"]) if k in _PRODUCE_KINDS]
     if not wanted:
         wanted = ["pdf", "concept_image", "pilot_plan", "action_plan"]
-    if not artifact.get("reference_images"):
-        artifact["reference_images"] = workspace_reference_images(str(artifact.get("workspace_id") or ""))
+    artifact["reference_images"] = _merge_reference_images(
+        artifact.get("reference_images") or [],
+        workspace_reference_images(str(artifact.get("workspace_id") or "")),
+    )
     proposal = _proposal_payload(artifact)
     result: dict[str, Any] = {
         "opportunity_id": proposal["opportunity_id"],
@@ -2411,6 +2413,21 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
             if audio.get("artifact_url"):
                 result["artifact_urls"]["audio_summary"] = audio.get("artifact_url")
     return result
+
+
+def _merge_reference_images(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("url") or item.get("source_file") or item.get("name") or item.get("filename") or item)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+    return merged
 
 
 def _logo_reference_url(reference_images: list[dict[str, Any]]) -> str | None:
