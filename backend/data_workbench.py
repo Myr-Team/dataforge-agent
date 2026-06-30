@@ -31,6 +31,7 @@ try:
         _CONTEXT_CACHE,
         _index_documents_batched,
         _load_workspace_bundle,
+        _normalize_documents,
         _persist_workspace_state,
         _rebuild_workspace_profile,
         create_workspace_upload_job,
@@ -46,6 +47,7 @@ except ImportError:
         _CONTEXT_CACHE,
         _index_documents_batched,
         _load_workspace_bundle,
+        _normalize_documents,
         _persist_workspace_state,
         _rebuild_workspace_profile,
         create_workspace_upload_job,
@@ -1220,6 +1222,8 @@ def _update_document_after_save(
     meta, profile = _workspace_state(workspace_id)
     fid = _file_id(document)
     source = _safe_source_file(document)
+    if not isinstance(meta.get("documents"), list) or not meta.get("documents"):
+        meta["documents"] = _normalize_documents(WORKSPACES / workspace_id, meta, profile)
     changed = False
     for item in meta.get("documents") or []:
         if isinstance(item, dict) and str(item.get("source_file") or "") == source:

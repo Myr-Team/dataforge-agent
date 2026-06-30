@@ -45,6 +45,8 @@ async function request(path, options = {}) {
   return response.json();
 }
 
+export const apiFetch = request;
+
 export function artifactLink(artifact) {
   if (!artifact) return "";
   const url =
@@ -129,8 +131,123 @@ export async function loadRun(runId) {
   return request(`/api/runs/${encodeURIComponent(runId)}`);
 }
 
+export async function loadRunSummary(runId) {
+  return request(`/api/runs/${encodeURIComponent(runId)}/summary`);
+}
+
+export async function loadRunTrace(runId) {
+  return request(`/api/runs/${encodeURIComponent(runId)}/trace`);
+}
+
+export async function loadRunLog(runId, format = "json") {
+  return request(`/api/runs/${encodeURIComponent(runId)}/log?format=${encodeURIComponent(format)}`);
+}
+
 export async function loadDataOverview(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/data-overview`);
+}
+
+export async function loadWorkspaceFiles(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/files`);
+}
+
+export async function createWorkspaceFile(workspaceId, payload) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/files`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function loadWorkspaceFileContent(workspaceId, fileId, { limit = 100, offset = 0 } = {}) {
+  return request(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/files/${encodeURIComponent(fileId)}/content?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`,
+  );
+}
+
+export async function saveWorkspaceTableCells(workspaceId, fileId, edits) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/files/${encodeURIComponent(fileId)}/cells`, {
+    method: "PUT",
+    body: JSON.stringify({ edits }),
+  });
+}
+
+export async function saveWorkspaceFileContent(workspaceId, fileId, text) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/files/${encodeURIComponent(fileId)}/content`, {
+    method: "PUT",
+    body: JSON.stringify({ text }),
+  });
+}
+
+export async function loadWorkspaceFileQuality(workspaceId, fileId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/files/${encodeURIComponent(fileId)}/quality`);
+}
+
+export async function loadWorkspaceFieldMapping(workspaceId, fileId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/files/${encodeURIComponent(fileId)}/field-mapping`);
+}
+
+export async function saveWorkspaceFieldMapping(workspaceId, fileId, mappings) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/files/${encodeURIComponent(fileId)}/field-mapping`, {
+    method: "PUT",
+    body: JSON.stringify({ mappings }),
+  });
+}
+
+export async function loadWorkspaceFileHistory(workspaceId, fileId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/files/${encodeURIComponent(fileId)}/history`);
+}
+
+export async function analyzeWorkspaceFiles(workspaceId, payload) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/files/analyze`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function loadConnectorCapabilities(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/connectors/capabilities`);
+}
+
+export async function connectWorkspaceBlob(workspaceId, payload) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/connectors/blob/connect`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function connectWorkspaceSql(workspaceId, payload) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/connectors/sql/connect`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function loadWorkspaceArtifacts(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/artifacts`);
+}
+
+export async function loadSystemStatus() {
+  return request("/api/system-status");
+}
+
+export async function loadWorkspaceSettings(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/settings`);
+}
+
+export async function loadWorkspaceMembers(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members`);
+}
+
+export async function loadConversationStructuredResult(conversationId) {
+  return request(`/api/conversations/${encodeURIComponent(conversationId)}/structured-result`);
+}
+
+export async function loadConversationContext(conversationId) {
+  return request(`/api/conversations/${encodeURIComponent(conversationId)}/context`);
+}
+
+export async function loadConversationQuickActions(conversationId) {
+  return request(`/api/conversations/${encodeURIComponent(conversationId)}/quick-actions`);
 }
 
 export async function loadPlanMetrics(runId) {

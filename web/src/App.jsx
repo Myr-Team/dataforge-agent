@@ -179,6 +179,38 @@ export function App() {
     setUploadOpen(true);
   };
 
+  const handleDataWorkbenchAnalysis = useCallback((result) => {
+    const conversationId = result?.conversation_id;
+    const final = result?.final || {};
+    const artifact = final.artifact || {};
+    const text = result?.text || final.text || "数据工作台分析已完成。";
+    if (conversationId) {
+      setActiveConversationId(conversationId);
+      try { window.localStorage.setItem(`df-conv:${workspaceId}`, conversationId); } catch { /* ignore */ }
+    }
+    if (artifact?.feasibility?.verdict || artifact?.feasibility?.dimensions?.length) {
+      setFinalArtifact(artifact);
+      try { window.localStorage.setItem(`df-analysis:${workspaceId}`, JSON.stringify(artifact)); } catch { /* ignore */ }
+    }
+    if (Array.isArray(result?.events)) {
+      setTrace(result.events);
+      try { window.localStorage.setItem(`df-trace:${workspaceId}`, JSON.stringify(result.events.slice(-44))); } catch { /* ignore */ }
+    }
+    setMessages((items) => [
+      ...items,
+      {
+        role: "assistant",
+        text,
+        time: new Date().toISOString(),
+        citations: artifact.citations || artifact.answer?.citations || [],
+      },
+    ]);
+    setActiveView("conversations");
+    setInspectorTab("evidence");
+    setNotice({ type: "done", message: "数据工作台文件已发送到分析，结果已打开。" });
+    refreshDashboard(workspaceId);
+  }, [refreshDashboard, workspaceId]);
+
   useEffect(() => {
     if (DEMO_SEED) { setDashboard(DEMO_DASHBOARD); setDashboardLoading(false); return; }
     refreshDashboard(workspaceId);
@@ -659,10 +691,11 @@ export function App() {
 
   const produce = async (kindsArg) => {
     if (producing) return;
-    const KIND_LABEL = { pdf: "项目文档 PDF", concept_image: "概念图", audio: "语音摘要" };
+    const KIND_LABEL = { pdf: "项目文档 PDF", concept_image: "概念图", audio: "语音摘要", roadmap: "路线图", validation_plan: "验证计划" };
+    const KIND_ALIAS = { audio_summary: "audio" };
     // kindsArg：产物类型数组（产物页按钮），或会话 chip 的 offer 对象，或缺省→文档+概念图
     let kinds;
-    if (Array.isArray(kindsArg)) kinds = kindsArg.filter((k) => KIND_LABEL[k]);
+    if (Array.isArray(kindsArg)) kinds = kindsArg.map((k) => KIND_ALIAS[k] || k).filter((k) => KIND_LABEL[k]);
     else if (kindsArg && kindsArg.kind === "poster") kinds = ["concept_image"];
     else {
       kinds = ["pdf", "concept_image"];
@@ -791,7 +824,9 @@ export function App() {
             finalArtifact={finalArtifact}
             artifacts={artifacts}
             onProduce={produce}
+            onUploadAppend={openAppendUpload}
             onUploadReference={openReferenceUpload}
+            onAnalysisResult={handleDataWorkbenchAnalysis}
             onNewConversation={startNewConversation}
             producing={producing}
             observability={observability}
