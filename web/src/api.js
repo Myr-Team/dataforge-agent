@@ -173,6 +173,68 @@ export async function produceArtifacts(payload) {
   });
 }
 
+// ===== 数据工作台 =====
+const wsPath = (id) => `/api/workspaces/${encodeURIComponent(id)}`;
+
+export async function dwListFiles(workspaceId) {
+  return request(`${wsPath(workspaceId)}/files`);
+}
+export async function dwFileContent(workspaceId, fileId, { limit = 100, offset = 0 } = {}) {
+  return request(`${wsPath(workspaceId)}/files/${encodeURIComponent(fileId)}/content?limit=${limit}&offset=${offset}`);
+}
+export async function dwCreateFile(workspaceId, body) {
+  return request(`${wsPath(workspaceId)}/files`, { method: "POST", body: JSON.stringify(body) });
+}
+export async function dwSaveCells(workspaceId, fileId, edits) {
+  return request(`${wsPath(workspaceId)}/files/${encodeURIComponent(fileId)}/cells`, { method: "PUT", body: JSON.stringify({ edits }) });
+}
+export async function dwSaveContent(workspaceId, fileId, text) {
+  return request(`${wsPath(workspaceId)}/files/${encodeURIComponent(fileId)}/content`, { method: "PUT", body: JSON.stringify({ text }) });
+}
+export async function dwFileQuality(workspaceId, fileId) {
+  return request(`${wsPath(workspaceId)}/files/${encodeURIComponent(fileId)}/quality`);
+}
+export async function dwFieldMapping(workspaceId, fileId) {
+  return request(`${wsPath(workspaceId)}/files/${encodeURIComponent(fileId)}/field-mapping`);
+}
+export async function dwSaveFieldMapping(workspaceId, fileId, mapping) {
+  return request(`${wsPath(workspaceId)}/files/${encodeURIComponent(fileId)}/field-mapping`, { method: "PUT", body: JSON.stringify({ mapping }) });
+}
+export async function dwFileHistory(workspaceId, fileId) {
+  return request(`${wsPath(workspaceId)}/files/${encodeURIComponent(fileId)}/history`);
+}
+export async function dwAnalyzeFiles(workspaceId, fileIds, message) {
+  return request(`${wsPath(workspaceId)}/files/analyze`, { method: "POST", body: JSON.stringify({ file_ids: fileIds, message: message || "请分析这些文件里的机会" }) });
+}
+
+// ===== 运行记录 =====
+export async function loadRunSummary(runId) {
+  return request(`/api/runs/${encodeURIComponent(runId)}/summary`);
+}
+export async function loadRunTrace(runId) {
+  return request(`/api/runs/${encodeURIComponent(runId)}/trace`);
+}
+export function runLogUrl(runId, format = "json") {
+  return `${API_BASE}/api/runs/${encodeURIComponent(runId)}/log?format=${format}`;
+}
+export async function loadRunLog(runId, format = "json") {
+  return request(`/api/runs/${encodeURIComponent(runId)}/log?format=${format}`);
+}
+
+// ===== 产物 / 设置 =====
+export async function loadArtifactsList(workspaceId) {
+  return request(`${wsPath(workspaceId)}/artifacts`);
+}
+export async function loadSystemStatus() {
+  return request("/api/system-status");
+}
+export async function loadWorkspaceSettings(workspaceId) {
+  return request(`${wsPath(workspaceId)}/settings`);
+}
+export async function loadMembers(workspaceId) {
+  return request(`${wsPath(workspaceId)}/members`);
+}
+
 export async function streamChat(payload, onEvent, signal) {
   let deliveredEvents = 0;
   for (let attempt = 0; attempt < 2; attempt += 1) {

@@ -1089,6 +1089,15 @@ svg { flex-shrink: 0; }
 .dw-cell { color: var(--ink); cursor: cell; }
 .dw-cell:hover { background: #f7f9fd; }
 .dw-cell.sel { box-shadow: inset 0 0 0 2px var(--blue); background: #fff; }
+/* 可编辑单元格输入 */
+.dw-grid td.dw-cell { padding: 0; }
+.dw-cell-in { width: 100%; min-width: 90px; border: 0; outline: 0; background: transparent; padding: 7px 11px; font: inherit; font-size: 13px; color: var(--ink); }
+.dw-cell-in:focus { box-shadow: inset 0 0 0 2px var(--blue); background: #fff; border-radius: 2px; }
+.dw-file-rc { margin-left: auto; font-style: normal; font-size: 11px; color: var(--faint); }
+.dw-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+.dw-hist { list-style: none; margin: 0; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+.dw-hist-row { display: flex; align-items: center; gap: 11px; padding: 9px 6px; border-bottom: 1px solid #f1f2f4; }
+.dw-hist-row:last-child { border-bottom: 0; }
 .dw-grid-foot { display: flex; align-items: center; gap: 18px; padding: 9px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .dw-rows-sel { display: inline-flex; align-items: center; gap: 4px; }
 .dw-pager { margin-left: auto; display: flex; align-items: center; gap: 3px; }

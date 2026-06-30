@@ -558,6 +558,7 @@ function WorkbenchMainInner({
   producing,
   observability,
   onOpenConversation,
+  onAppendUpload,
   tasks,
 }) {
   if (view === "conversations") {
@@ -582,7 +583,7 @@ function WorkbenchMainInner({
   if (view === "data") {
     return (
       <Suspense fallback={<main className="agent-studio data-stage"><div style={{ padding: 40, color: "var(--muted)" }}>加载数据工作台…</div></main>}>
-        <DataWorkbench dashboard={dashboard} onRun={onRun} />
+        <DataWorkbench dashboard={dashboard} onUpload={onAppendUpload} onOpenConversation={onOpenConversation} />
       </Suspense>
     );
   }

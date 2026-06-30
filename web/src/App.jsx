@@ -792,6 +792,7 @@ export function App() {
             artifacts={artifacts}
             onProduce={produce}
             onUploadReference={openReferenceUpload}
+            onAppendUpload={openAppendUpload}
             onNewConversation={startNewConversation}
             producing={producing}
             observability={observability}
