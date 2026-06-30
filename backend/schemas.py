@@ -209,7 +209,13 @@ class RunStep(BaseModel):
 class RunSummary(BaseModel):
     run_id: str
     time: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    duration_ms: int | None = None
     workspace_id: str | None = None
+    title: str | None = None
+    summary: str | None = None
+    message: str | None = None
     verdict: str | None = None
     confidence: str | None = None
     status: str | None = None
@@ -267,6 +273,8 @@ class RunDetailResponse(BaseModel):
     conversation_id: str | None = None
     workspace_id: str | None = None
     message: str | None = None
+    title: str | None = None
+    summary: str | dict[str, Any] | None = None
     status: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
