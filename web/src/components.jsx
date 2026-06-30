@@ -820,24 +820,16 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
         </button>
       </div>
 
-      {/* 上半：左图 60% | 右摘要 40% */}
-      <div className="pi2-main">
-        <div className="pi2-chart">
-          <div className="pi2-chart-head">结论迭代趋势</div>
-          {versions.length >= 2 ? (
-            <ConvergenceChart versions={versions} flagshipId={flagshipId} />
-          ) : (
-            <div className="pi2-chart-empty">至少 2 个版本后显示收敛趋势。</div>
-          )}
-        </div>
-        <aside className="pi2-summary">
+      {/* 当前选中版本摘要（整行） */}
+      <aside className="pi2-summary pi2-summary-full">
+        <div className="pi2-sum-grid">
           <div className="pi2-sum-row"><span>当前选中版本</span><b className="pi2-sel">{selected.vlabel || "—"}</b></div>
           <div className="pi2-sum-row"><span>结论</span><span className={`dw-chip ${verdictTone(selected.verdict)}`}>{selVerdict}</span></div>
-          <div className="pi2-sum-block"><span>结论摘要</span><p>{selSummary}</p></div>
-          <div className="pi2-sum-block"><span>待回填指标</span><div className="pi2-chips">{PENDING_METRICS.map((m) => <span className="pi2-chip" key={m}>{m}</span>)}</div></div>
           <div className="pi2-sum-row"><span>最近操作</span><b className="pi2-faint">{open && metrics && metrics.length ? "已提取指标，待回填" : "尚未回填指标"}</b></div>
-        </aside>
-      </div>
+        </div>
+        <div className="pi2-sum-block"><span>结论摘要</span><p>{selSummary}</p></div>
+        <div className="pi2-sum-block"><span>待回填指标</span><div className="pi2-chips">{PENDING_METRICS.map((m) => <span className="pi2-chip" key={m}>{m}</span>)}</div></div>
+      </aside>
 
       {/* 版本轨道：紧凑 stepper */}
       <div className="pi2-track">

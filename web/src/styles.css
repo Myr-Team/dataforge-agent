@@ -3072,6 +3072,9 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .pi2-chart .conv-chart { width: 100%; height: auto; display: block; aspect-ratio: 1280 / 250; margin: auto 0; }
 .pi2-chart-empty { flex: 1; display: grid; place-items: center; color: var(--faint); font-size: 12.5px; min-height: 150px; }
 .pi2-summary { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 14px 15px; display: flex; flex-direction: column; gap: 11px; min-width: 0; }
+.pi2-summary-full { margin-top: 16px; background: #fbfcfe; }
+.pi2-sum-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; padding-bottom: 11px; border-bottom: 1px solid var(--line); }
+@media (max-width: 700px){ .pi2-sum-grid { grid-template-columns: 1fr; gap: 8px; } }
 .pi2-sum-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; }
 .pi2-sum-row > span { color: var(--muted); flex: none; }
 .pi2-sel { font-size: 14px; font-weight: 700; color: var(--blue); }
