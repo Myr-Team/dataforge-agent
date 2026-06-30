@@ -42,9 +42,11 @@ import {
   dwBlobConnect,
   dwBlobContainers,
   dwBlobItems,
+  dwBlobPreview,
   dwBlobImport,
   dwSqlConnect,
   dwSqlTables,
+  dwSqlPreview,
   dwSqlImport,
 } from "./api.js";
 
@@ -66,9 +68,22 @@ const PAGE = 100;
 
 function fileIconFor(type, name = "") {
   const t = (type || (name.split(".").pop() || "")).toLowerCase();
+  if (t === "sql" || t === "database") return <Database size={15} className="fi fi-sql" />;
+  if (t === "blob") return <Cloud size={15} className="fi fi-blob" />;
   if (t === "md" || t === "markdown" || t === "txt") return <FileText size={15} className="fi fi-md" />;
   if (t === "xlsx") return <FileSpreadsheet size={15} className="fi fi-xlsx" />;
   return <FileSpreadsheet size={15} className="fi fi-csv" />;
+}
+
+function typeFromName(name = "", contentType = "") {
+  const suffix = String(name || "").split(".").pop()?.toLowerCase() || "";
+  if (["csv", "xlsx", "md", "markdown", "txt", "json"].includes(suffix)) return suffix === "markdown" ? "md" : suffix;
+  const content = String(contentType || "").toLowerCase();
+  if (content.includes("csv")) return "csv";
+  if (content.includes("json")) return "json";
+  if (content.includes("markdown") || content.includes("text/plain")) return "md";
+  if (content.includes("spreadsheet") || content.includes("excel")) return "xlsx";
+  return "blob";
 }
 
 function fmtBytes(b) {
@@ -134,6 +149,8 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   const [connectorModal, setConnectorModal] = useState(null);
   const [connectorBusy, setConnectorBusy] = useState(false);
   const [connectorResult, setConnectorResult] = useState(null);
+  const [externalGroups, setExternalGroups] = useState([]);
+  const [importingExternal, setImportingExternal] = useState(false);
   const toastT = useRef(null);
 
   const showToast = useCallback((msg) => {
@@ -191,6 +208,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   const isMd = active && ["md", "markdown", "txt"].includes(String(active.type || "").toLowerCase());
   const isJson = active && String(active.type || "").toLowerCase() === "json";
   const isTextPreview = isMd || isJson || content?.kind === "markdown" || content?.kind === "json";
+  const isExternal = Boolean(active?.external);
 
   const loadContent = useCallback(async (file, off = 0) => {
     setContentLoading(true);
@@ -224,6 +242,45 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     }
   }, [workspaceId, showToast]);
 
+  const loadExternalContent = useCallback(async (file, off = 0) => {
+    const source = file?.source || {};
+    setContentLoading(true);
+    setEdits({});
+    setTableOps({});
+    setSelectedCell(null);
+    setContextMenu(null);
+    setDirty(false);
+    setQuality(null);
+    setMapping(null);
+    setHistory([]);
+    setMapDraft({});
+    try {
+      const data = file.externalKind === "blob"
+        ? await dwBlobPreview(workspaceId, source.connection_id, source.container, source.blob, { limit: PAGE, offset: off })
+        : await dwSqlPreview(workspaceId, source.connection_id, source.table, PAGE);
+      setContent(data);
+      setOffset(file.externalKind === "blob" ? off : 0);
+      if (data.kind === "markdown" || data.kind === "json") {
+        setMdText(data.text || "");
+        setRows([]);
+        setTableColumns([]);
+      } else {
+        const nextColumns = (data.columns || []).map((c) => (typeof c === "string" ? c : c.name));
+        setTableColumns(nextColumns);
+        setRows((data.rows || []).map((r) => [...r]));
+        setColWidths((old) => {
+          const next = {};
+          for (const col of nextColumns) next[col] = old[col] || 136;
+          return next;
+        });
+      }
+    } catch (e) {
+      showToast(`外部数据预览失败：${e.message}`);
+    } finally {
+      setContentLoading(false);
+    }
+  }, [workspaceId, showToast]);
+
   const loadSidePanels = useCallback(async (file) => {
     setQuality(null); setMapping(null); setHistory([]); setMapDraft({});
     dwFileQuality(workspaceId, file.id).then(setQuality).catch(() => {});
@@ -235,9 +292,13 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     setActive(file);
     setOpenTabs((tabs) => (tabs.find((t) => t.id === file.id) ? tabs : [...tabs, file]));
     setTab("table");
-    loadContent(file, 0);
-    loadSidePanels(file);
-  }, [loadContent, loadSidePanels]);
+    if (file.external) {
+      loadExternalContent(file, 0);
+    } else {
+      loadContent(file, 0);
+      loadSidePanels(file);
+    }
+  }, [loadContent, loadExternalContent, loadSidePanels]);
 
   const closeTab = (file, e) => {
     e.stopPropagation();
@@ -429,6 +490,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   };
 
   const openTableContextMenu = (event, row, col, target = "cell") => {
+    if (isExternal) return;
     if (!columns.length) return;
     event.preventDefault();
     const safeRow = Math.max(0, Math.min(rows.length - 1, row ?? 0));
@@ -498,6 +560,105 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     }
   };
 
+  const upsertExternalGroups = useCallback((kind, nextGroups) => {
+    setExternalGroups((current) => [
+      ...current.filter((group) => group.externalKind !== kind),
+      ...nextGroups,
+    ]);
+  }, []);
+
+  const buildBlobExternalGroups = useCallback(async (connectionId, containers) => {
+    const visibleContainers = (containers || []).slice(0, 12);
+    return Promise.all(visibleContainers.map(async (container) => {
+      const name = container.name || container;
+      try {
+        const data = await dwBlobItems(workspaceId, connectionId, name, "", 100);
+        return {
+          label: `Blob · ${name}`,
+          external: true,
+          externalKind: "blob",
+          files: (data.blobs || []).map((item) => ({
+            id: `external:blob:${connectionId}:${name}:${item.name}`,
+            name: item.name,
+            type: typeFromName(item.name, item.content_type),
+            bytes: item.bytes,
+            updated_at: item.updated_at,
+            status: "external",
+            external: true,
+            externalKind: "blob",
+            source: {
+              connection_id: connectionId,
+              container: name,
+              blob: item.name,
+            },
+          })),
+        };
+      } catch {
+        return { label: `Blob · ${name}`, external: true, externalKind: "blob", files: [] };
+      }
+    }));
+  }, [workspaceId]);
+
+  const buildSqlExternalGroup = useCallback((connectionId, tables, database) => ({
+    label: `SQL · ${database || "database"}`,
+    external: true,
+    externalKind: "sql",
+    files: (tables || []).map((table) => {
+      const id = table.id || `${table.schema}.${table.name}`;
+      return {
+        id: `external:sql:${connectionId}:${id}`,
+        name: id,
+        type: "sql",
+        status: "external",
+        external: true,
+        externalKind: "sql",
+        source: {
+          connection_id: connectionId,
+          table: id,
+          database,
+        },
+      };
+    }),
+  }), []);
+
+  const findImportedFile = (data, res, source) => {
+    const files = (data?.groups || []).flatMap((group) => group.files || []);
+    const doc = (res?.upload?.documents || [])[0] || {};
+    const candidateIds = new Set([doc.id, doc.file_id, doc.document_id, res?.file?.id].filter(Boolean).map(String));
+    const candidateNames = new Set([doc.name, doc.filename, res?.file?.name, source?.name].filter(Boolean).map(String));
+    return files.find((file) => candidateIds.has(String(file.id))) ||
+      files.find((file) => candidateNames.has(String(file.name))) ||
+      null;
+  };
+
+  const importExternalSource = async (source = active) => {
+    if (!source?.external || importingExternal) return;
+    setImportingExternal(true);
+    try {
+      let res;
+      if (source.externalKind === "blob") {
+        res = await dwBlobImport(workspaceId, {
+          connection_id: source.source.connection_id,
+          container: source.source.container,
+          blob: source.source.blob,
+        });
+      } else {
+        res = await dwSqlImport(workspaceId, {
+          connection_id: source.source.connection_id,
+          table: source.source.table,
+        });
+      }
+      showToast("已导入文件库");
+      const data = await reloadFiles();
+      const imported = findImportedFile(data, res, source);
+      if (imported) openFile(imported);
+    } catch (e) {
+      showToast(`导入失败：${e.message}`);
+    } finally {
+      setImportingExternal(false);
+    }
+  };
+
   const submitConnector = async (event) => {
     event.preventDefault();
     if (!connectorModal || connectorBusy) return;
@@ -513,7 +674,12 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
           sas: value("sas"),
         });
         const containers = connected.containers?.length ? connected.containers : (await dwBlobContainers(workspaceId, connected.connection_id)).containers;
-        setConnectorResult({ kind: "blob", connection_id: connected.connection_id, containers: containers || [] });
+        const nextGroups = await buildBlobExternalGroups(connected.connection_id, containers || []);
+        upsertExternalGroups("blob", nextGroups);
+        setConnectorResult({ kind: "blob", connection_id: connected.connection_id, containers: containers || [], groups: nextGroups });
+        setConnectorModal(null);
+        const firstExternal = nextGroups.flatMap((group) => group.files || [])[0];
+        if (firstExternal) openFile(firstExternal);
         showToast("Blob 已连接，凭证仅保存在服务端会话");
       } else if (connectorModal === "sql") {
         const connected = await dwSqlConnect(workspaceId, {
@@ -524,7 +690,12 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
           connection_string: value("connection_string"),
         });
         const tables = connected.tables?.length ? connected.tables : (await dwSqlTables(workspaceId, connected.connection_id)).tables;
-        setConnectorResult({ kind: "sql", connection_id: connected.connection_id, tables: tables || [] });
+        const nextGroup = buildSqlExternalGroup(connected.connection_id, tables || [], value("database"));
+        upsertExternalGroups("sql", [nextGroup]);
+        setConnectorResult({ kind: "sql", connection_id: connected.connection_id, tables: tables || [], groups: [nextGroup] });
+        setConnectorModal(null);
+        const firstExternal = (nextGroup.files || [])[0];
+        if (firstExternal) openFile(firstExternal);
         showToast("SQL 已连接，凭证仅保存在服务端会话");
       }
     } catch (e) {
@@ -561,11 +732,13 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   const curPage = Math.floor(offset / PAGE);
   const gotoPage = (p) => { if (active && !isMd) loadContent(active, Math.max(0, Math.min(pageCount - 1, p)) * PAGE); };
 
+  const displayGroups = useMemo(() => [...groups, ...externalGroups], [groups, externalGroups]);
+
   const filteredGroups = useMemo(() => {
     const kw = q.trim().toLowerCase();
-    if (!kw) return groups;
-    return groups.map((g) => ({ ...g, files: (g.files || []).filter((f) => String(f.name || "").toLowerCase().includes(kw)) })).filter((g) => (g.files || []).length);
-  }, [groups, q]);
+    if (!kw) return displayGroups;
+    return displayGroups.map((g) => ({ ...g, files: (g.files || []).filter((f) => String(f.name || "").toLowerCase().includes(kw)) })).filter((g) => (g.files || []).length);
+  }, [displayGroups, q]);
   const latestHistoryUser = history.length ? historyUser(history[0], user) : null;
 
   return (
@@ -588,9 +761,9 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
           <button className="dw-btn primary" type="button" onClick={() => onUpload && onUpload(workspaceId)}><UploadCloud size={15} />上传文件</button>
           <button className="dw-btn" type="button" onClick={() => createFile("md")}><FileText size={15} />新建 Markdown</button>
           <button className="dw-btn" type="button" onClick={() => createFile("table")}><Table2 size={15} />新建表格</button>
-          <button className="dw-btn" type="button" disabled={!dirty || saving} onClick={save}>{saving ? <Loader2 size={15} className="spin" /> : <Save size={15} />}保存更改</button>
-          <button className="dw-btn ghost-blue" type="button" disabled={!active || analyzing} onClick={sendToAnalysis}>{analyzing ? <Loader2 size={15} className="spin" /> : <Send size={15} />}发送到分析</button>
-          <button className="dw-btn" type="button" disabled={!active} onClick={deleteActiveFile}><Trash2 size={15} />删除文件</button>
+          <button className="dw-btn" type="button" disabled={!dirty || saving || isExternal} onClick={save}>{saving ? <Loader2 size={15} className="spin" /> : <Save size={15} />}保存更改</button>
+          <button className="dw-btn ghost-blue" type="button" disabled={!active || analyzing || isExternal} onClick={sendToAnalysis}>{analyzing ? <Loader2 size={15} className="spin" /> : <Send size={15} />}发送到分析</button>
+          <button className="dw-btn" type="button" disabled={!active || isExternal} onClick={deleteActiveFile}><Trash2 size={15} />删除文件</button>
         </div>
         <div className="dw-actions-r">
           <div className="dw-search"><Search size={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索文件或字段…" /></div>
@@ -599,7 +772,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
 
       <nav className="dw-tabs">
         {TABS.map((t) => (
-          <button key={t.id} type="button" className={tab === t.id ? "dw-tab active" : "dw-tab"} onClick={() => setTab(t.id)}>{t.label}</button>
+          <button key={t.id} type="button" className={tab === t.id ? "dw-tab active" : "dw-tab"} disabled={isExternal && t.id !== "table"} onClick={() => setTab(t.id)}>{t.label}</button>
         ))}
       </nav>
 
@@ -624,8 +797,9 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
                     <em style={{ marginLeft: "auto", fontStyle: "normal", color: "var(--faint)" }}>{(g.files || []).length}</em>
                   </button>
                   {!isCollapsed && (g.files || []).map((f) => (
-                    <button key={f.id} type="button" className={active?.id === f.id ? "dw-file active" : "dw-file"} onClick={() => openFile(f)} title={f.name}>
+                    <button key={f.id} type="button" className={`${active?.id === f.id ? "dw-file active" : "dw-file"}${f.external ? " external" : ""}`} onClick={() => openFile(f)} title={f.name}>
                       {fileIconFor(f.type, f.name)}<span>{f.name}</span>
+                      {f.external ? <em className="dw-file-ext">外部</em> : null}
                       {f.record_count ? <em className="dw-file-rc">{f.record_count}</em> : null}
                     </button>
                   ))}
@@ -661,12 +835,32 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
                 <span className="dw-md-name"><FileText size={14} />{active.name}</span>
                 <span className="dw-md-time">{content?.total_chars != null ? `${content.total_chars} 字` : ""}</span>
               </div>
-              <textarea className="dw-md-area" value={mdText} readOnly={isJson} onChange={(e) => onMdChange(e.target.value)} />
+              {isExternal ? (
+                <div className="dw-external-tools compact">
+                  <span className="dw-source-chip">Blob 只读预览</span>
+                  <span className="dw-source-path">{`${active.source?.container}/${active.source?.blob}`}</span>
+                  <button type="button" className="dw-btn primary" disabled={importingExternal} onClick={() => importExternalSource(active)}>
+                    {importingExternal ? <Loader2 size={15} className="spin" /> : <FileUp size={15} />}
+                    导入到文件库
+                  </button>
+                </div>
+              ) : null}
+              <textarea className="dw-md-area" value={mdText} readOnly={isJson || isExternal} onChange={(e) => onMdChange(e.target.value)} />
               {isJson ? <div className="dw-json-note">JSON 当前支持预览与质量校验；需要修改时请导入为表格或上传新版本。</div> : null}
             </div>
           ) : tab === "table" ? (
             <>
-              <div className="dw-table-tools">
+              {isExternal ? (
+                <div className="dw-external-tools">
+                  <span className="dw-source-chip">{active.externalKind === "sql" ? "SQL 只读预览" : "Blob 只读预览"}</span>
+                  <span className="dw-source-path">{active.externalKind === "sql" ? active.source?.table : `${active.source?.container}/${active.source?.blob}`}</span>
+                  <button type="button" className="dw-btn primary" disabled={importingExternal} onClick={() => importExternalSource(active)}>
+                    {importingExternal ? <Loader2 size={15} className="spin" /> : <FileUp size={15} />}
+                    导入到文件库
+                  </button>
+                </div>
+              ) : (
+                <div className="dw-table-tools">
                 <button type="button" className="dw-tool-btn" onClick={addRow}><Rows3 size={14} />新增行</button>
                 <button type="button" className="dw-tool-btn" onClick={deleteRow} disabled={!selectedCell}><Trash2 size={14} />删除行</button>
                 <button type="button" className="dw-tool-btn" onClick={addColumn}><Columns3 size={14} />新增列</button>
@@ -680,7 +874,8 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
                     placeholder="选择单元格后编辑内容"
                   />
                 </div>
-              </div>
+                </div>
+              )}
               <div className="dw-grid-wrap">
                 <table className="dw-grid">
                   <colgroup>
@@ -701,7 +896,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
                         <td className={selectedCell?.row === ri ? "dw-rownum active" : "dw-rownum"} onContextMenu={(e) => openTableContextMenu(e, ri, selectedCell?.col ?? 0, "row")}>{offset + ri + 1}</td>
                         {columns.map((c, ci) => (
                           <td key={ci} className={selectedCell?.row === ri && selectedCell?.col === ci ? "dw-cell sel" : "dw-cell"} onClick={() => setSelectedCell({ row: ri, col: ci })} onContextMenu={(e) => openTableContextMenu(e, ri, ci, "cell")}>
-                            <input className="dw-cell-in" value={row[ci] ?? ""} onFocus={() => setSelectedCell({ row: ri, col: ci })} onChange={(e) => onCellChange(ri, c, e.target.value)} />
+                            <input className="dw-cell-in" value={row[ci] ?? ""} readOnly={isExternal} onFocus={() => setSelectedCell({ row: ri, col: ci })} onChange={(e) => { if (!isExternal) onCellChange(ri, c, e.target.value); }} />
                           </td>
                         ))}
                       </tr>
@@ -734,6 +929,34 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
         {/* 右：数据状态 */}
         <aside className="card dw-status">
           <div className="dw-status-head"><span className="t">数据状态</span></div>
+          {isExternal ? (
+            <>
+              <div className="dw-sec dw-external-status">
+                <div className="dw-sec-row"><span className="dw-sec-t">外部来源</span><span className="dw-chip warn">只读</span></div>
+                <div className="dw-ext-source">
+                  <b>{active.externalKind === "sql" ? "SQL Database" : "Blob Storage"}</b>
+                  <span>{active.externalKind === "sql" ? active.source?.database || "database" : active.source?.container}</span>
+                  <em>{active.externalKind === "sql" ? active.source?.table : active.source?.blob}</em>
+                </div>
+              </div>
+              <div className="dw-sec">
+                <div className="dw-sec-t">预览状态</div>
+                <ul className="dw-qlist">
+                  <li><span>行数</span><span className="qv">{content?.total_rows ?? rows.length}</span></li>
+                  <li><span>列数</span><span className="qv">{content?.total_cols ?? columns.length}</span></li>
+                  <li><span>模式</span><span className="qv">预览后导入</span></li>
+                </ul>
+              </div>
+              <div className="dw-sec">
+                <button type="button" className="dw-btn primary dw-import-wide" disabled={importingExternal} onClick={() => importExternalSource(active)}>
+                  {importingExternal ? <Loader2 size={15} className="spin" /> : <FileUp size={15} />}
+                  导入到文件库
+                </button>
+                <div className="dw-sec-sub">导入后会成为本地文件，可编辑、保存并发送到分析。</div>
+              </div>
+            </>
+          ) : (
+            <>
           <div className="dw-sec">
             <div className="dw-sec-row"><span className="dw-sec-t">字段映射</span><span className="dw-sec-v">{mapping?.field_mapping ? `${mapping.field_mapping.mapped} / ${mapping.field_mapping.total} ` : "— "}<b className="ok">{mapping?.field_mapping ? `${Math.round(mapping.field_mapping.pct || 0)}%` : ""}</b></span></div>
             <div className="dw-prog"><i style={{ width: `${mapping?.field_mapping?.pct || 0}%` }} /></div>
@@ -765,6 +988,8 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
             ) : <div className="dw-sec-sub">暂无修改记录</div>}
             <button type="button" className="dw-link-btn" onClick={() => setTab("history")}><History size={13} />查看版本历史</button>
           </div>
+            </>
+          )}
         </aside>
       </div>
 

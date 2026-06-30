@@ -1739,6 +1739,71 @@ function formatTraceDuration(ms) {
   return `${Math.round(n)} ms`;
 }
 
+const TRACE_EVENT_LABELS = {
+  ready: "接收请求",
+  user: "读取输入",
+  route: "识别意图",
+  plan: "规划路径",
+  role_change: "切换 Agent",
+  tool_call: "调用工具",
+  tool_result: "工具返回",
+  model_response: "模型响应",
+  audit: "审计检查",
+  final: "生成结果",
+  clarify: "澄清问题",
+  progress: "执行进度",
+  cache: "读取缓存",
+  blind_verdict: "生成初判",
+  maf_workflow: "多智能体编排",
+  error: "异常事件",
+};
+
+function traceEventLabel(event) {
+  const raw = String(event || "").trim();
+  const key = raw.toLowerCase();
+  return TRACE_EVENT_LABELS[key] || raw.replace(/_/g, " ") || "执行事件";
+}
+
+function traceStatusLabel(status) {
+  const raw = String(status || "").trim();
+  const key = raw.toLowerCase();
+  if (!raw || ["done", "ok", "success", "completed", "complete"].includes(key)) return "完成";
+  if (["running", "pending", "started", "streaming"].includes(key)) return "进行中";
+  if (["error", "failed", "fail"].includes(key)) return "异常";
+  return raw;
+}
+
+function cleanTraceSummary(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (/^[a-z_]+:\s*$/i.test(text)) return "";
+  return text;
+}
+
+function traceDetailText(detail) {
+  const event = String(detail?.rawEvent || detail?.event || "").toLowerCase();
+  const agent = String(detail?.agent || detail?.name || "").trim();
+  const tool = String(detail?.toolName || "").trim();
+  if (event === "ready") return "已建立运行通道，并创建本次运行上下文。";
+  if (event === "user") return "已接收用户输入，准备进入意图识别与任务拆解。";
+  if (event === "route") return "已识别任务类型，并选择后续执行路径。";
+  if (event === "plan") return "已拆解执行步骤，并准备分配给相关 Agent。";
+  if (event === "role_change") return agent ? `切换到 ${agent}，开始处理该阶段任务。` : "已切换到下一位 Agent 处理该阶段任务。";
+  if (event === "tool_call") return tool ? `发起工具调用：${tool}。` : "已发起检索、数据或生成类工具调用。";
+  if (event === "tool_result") return "工具已返回结果，输出进入后续分析。";
+  if (event === "model_response") return agent ? `${agent} 已完成模型响应。` : "模型响应已完成并写入本轮上下文。";
+  if (event === "audit") return "审计环节已检查证据一致性与结论边界。";
+  if (event === "final") return "最终回答已生成，并写入运行结果。";
+  if (event === "clarify") return "当前信息不足，已转入澄清问题。";
+  if (event.includes("error")) return "该步骤出现异常，详情可查看完整日志。";
+  return "已记录该阶段的执行事件。";
+}
+
+function traceDetailTitle(detail, index) {
+  const label = traceEventLabel(detail?.rawEvent || detail?.event || detail?.status);
+  return `${index + 1}. ${label}${detail?.dur ? ` · ${detail.dur}` : ""}`;
+}
+
 function traceStepView(step) {
   const agentId = String(step?.agent || "").trim();
   const role = String(step?.role || step?.event || "").trim();
@@ -1907,16 +1972,25 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
           {(() => {
             const list = (rtrace && rtrace.length) ? rtrace.map((s) => {
               const view = traceStepView(s);
-              return {
+              const rawEvent = s.event || s.role || "";
+              const detail = s.detail || s.data || {};
+              const item = {
                 groupKey: view.key,
                 icon: view.icon,
                 name: view.name,
                 role: view.role,
-                status: s.status || "完成",
-                sum: s.summary || "",
+                status: traceStatusLabel(s.status),
                 durationMs: Number(s.duration_ms || 0),
                 dur: formatTraceDuration(s.duration_ms),
-                event: s.event || s.role || "",
+                rawEvent,
+                event: traceEventLabel(rawEvent),
+                agent: s.agent || "",
+                toolName: s.name || detail.name || detail.tool || "",
+                detail,
+              };
+              return {
+                ...item,
+                sum: cleanTraceSummary(s.summary) || traceDetailText(item),
               };
             }) : (rtrace === null ? null : RUN_TIMELINE.map((s) => ({ icon: s.icon, name: s.name, role: s.role, status: "完成", sum: s.sum, dur: s.dur })));
             const TPER = 8;
@@ -1949,8 +2023,8 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
                           <div className="rt-detail">
                             {s.details.map((d, j) => (
                               <div className="rt-det-sec" key={`${s.key}-${j}`}>
-                                <b>{j + 1}. {d.event || d.status || "trace"}{d.dur ? ` · ${d.dur}` : ""}</b>
-                                <p>{d.sum || "已记录执行事件。"}</p>
+                                <b>{traceDetailTitle(d, j)}</b>
+                                <p>{cleanTraceSummary(d.sum) || traceDetailText(d)}</p>
                               </div>
                             ))}
                           </div>

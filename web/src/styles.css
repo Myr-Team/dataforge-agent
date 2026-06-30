@@ -895,9 +895,14 @@ svg { flex-shrink: 0; }
 .rt-count { font-size: 11px; font-weight: 600; color: var(--blue); background: var(--blue-soft); padding: 1px 7px; border-radius: 5px; }
 .rt-rowmain .rt-dur { justify-self: end; text-align: right; color: var(--muted); }
 .rt-rowmain .rt-ok { justify-self: center; }
-.rt-detail { padding: 2px 14px 14px 90px; display: flex; flex-direction: column; gap: 8px; }
-.rt-det-sec b { font-size: 12px; color: var(--blue); font-weight: 600; display: block; margin-bottom: 3px; }
+.rt-detail { padding: 2px 14px 14px 90px; display: flex; flex-direction: column; gap: 7px; }
+.rt-det-sec { display: grid; grid-template-columns: 106px minmax(0,1fr); gap: 10px; align-items: start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.rt-det-sec b { font-size: 12px; color: var(--muted); font-weight: 700; display: block; margin: 0; line-height: 1.45; }
 .rt-det-sec p { font-size: 12.5px; color: var(--ink); line-height: 1.55; margin: 0; white-space: pre-wrap; word-break: break-word; }
+@media (max-width: 720px) {
+  .rt-detail { padding-left: 14px; }
+  .rt-det-sec { grid-template-columns: 1fr; gap: 4px; }
+}
 
 /* ===== 单屏适配：会话 / 产物 / 设置 三页尽量一屏显示完，减少向下滚动 ===== */
 /* 紧凑页头（这三页的大标题/说明收一收，省出纵向空间） */
@@ -1075,6 +1080,7 @@ svg { flex-shrink: 0; }
 .dw-tab { padding: 9px 2px 11px; border: 0; background: transparent; color: var(--muted); font-size: 13.5px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .dw-tab:hover { color: var(--ink); }
 .dw-tab.active { color: var(--blue); font-weight: 600; border-bottom-color: var(--blue); }
+.dw-tab:disabled { color: var(--faint); cursor: default; opacity: .55; }
 
 .dw-body { display: grid; grid-template-columns: 240px minmax(0,1fr) 284px; gap: 14px; min-height: 480px; }
 
@@ -1091,12 +1097,31 @@ svg { flex-shrink: 0; }
 .dw-group-head:hover { background: var(--surface-soft); }
 .dw-group-caret { transition: transform .15s; flex: none; }
 .dw-file { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px 7px 22px; border: 0; background: transparent; border-radius: 7px; cursor: pointer; font-size: 13px; color: var(--ink); text-align: left; position: relative; }
-.dw-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-file span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dw-file:hover { background: var(--surface-soft); }
 .dw-file.active { background: var(--blue-soft); color: var(--blue); font-weight: 500; }
 .dw-file.active::before { content: ""; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--blue); }
+.dw-file.external { color: #334155; }
+.dw-file.external .dw-file-ext {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 18px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid #c7d8f7;
+  border-radius: 6px;
+  color: var(--blue);
+  background: var(--blue-soft);
+  font-size: 10px;
+  line-height: 1;
+  font-style: normal;
+  font-weight: 700;
+}
 .fi { flex: none; }
-.fi-xlsx { color: #107C41; } .fi-csv { color: #2563eb; } .fi-md { color: #6b7280; }
+.fi-xlsx { color: #107C41; } .fi-csv { color: #2563eb; } .fi-md { color: #6b7280; } .fi-sql { color: #2563eb; } .fi-blob { color: #0ea5e9; }
 .dw-tree-foot { border-top: 1px solid var(--line); padding: 12px 14px; }
 .dw-store span { font-size: 11.5px; color: var(--muted); }
 .dw-store-bar { height: 5px; border-radius: 3px; background: #eef0f4; margin-top: 7px; overflow: hidden; }
@@ -1137,6 +1162,35 @@ svg { flex-shrink: 0; }
 .dw-tool-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--ink); font-size: 12px; font-weight: 700; cursor: pointer; }
 .dw-tool-btn:hover:not(:disabled) { background: #f7f9fd; }
 .dw-tool-btn:disabled { opacity: .45; cursor: default; }
+.dw-external-tools {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfdff;
+}
+.dw-external-tools.compact { border-top: 1px solid var(--line); }
+.dw-source-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-size: 11.5px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.dw-source-path {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .dw-context-menu { position: fixed; z-index: 650; min-width: 196px; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: #fff; box-shadow: 0 18px 48px rgba(15, 23, 42, .18); display: grid; gap: 2px; }
 .dw-context-menu button { width: 100%; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); font-size: 12.5px; text-align: left; cursor: pointer; }
 .dw-context-menu button:hover:not(:disabled) { background: var(--surface-soft); }
@@ -1198,6 +1252,26 @@ svg { flex-shrink: 0; }
 .dw-mod-time { font-size: 11px; color: var(--faint); flex: none; }
 .dw-mod-desc { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .dw-mod + .dw-link-btn { margin-top: 12px; }
+.dw-import-wide { width: 100%; justify-content: center; }
+.dw-ext-source {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+.dw-ext-source b { color: var(--ink); font-size: 13px; }
+.dw-ext-source span,
+.dw-ext-source em {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* 连接器 Demo */
 .dw-connectors { padding: 18px 20px 20px; }
