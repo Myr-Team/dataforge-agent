@@ -101,6 +101,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
   const [edits, setEdits] = useState({}); // "rowIdx:colName" -> value (page-relative rows + offset)
   const [tableOps, setTableOps] = useState({});
   const [selectedCell, setSelectedCell] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null);
   const [colWidths, setColWidths] = useState({});
   const [offset, setOffset] = useState(0);
   const [dirty, setDirty] = useState(false);
@@ -125,6 +126,24 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
     window.clearTimeout(toastT.current);
     toastT.current = window.setTimeout(() => setToast(""), 2600);
   }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return undefined;
+    const close = () => setContextMenu(null);
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextMenu]);
 
   const reloadFiles = useCallback(async () => {
     if (!workspaceId) return;
@@ -163,6 +182,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
     setEdits({});
     setTableOps({});
     setSelectedCell(null);
+    setContextMenu(null);
     setDirty(false);
     try {
       const data = await dwFileContent(workspaceId, file.id, { limit: PAGE, offset: off });
@@ -223,6 +243,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
   };
   const columns = tableColumns;
   const colIndex = (name) => columns.indexOf(name);
+  const hasTableOps = Object.values(tableOps).some((value) => Array.isArray(value) && value.length);
 
   const onMdChange = (v) => {
     setMdText(v);
@@ -236,11 +257,13 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
       if (isMd) {
         await dwSaveContent(workspaceId, active.id, mdText);
       } else {
-        const editList = Object.entries(edits).map(([k, value]) => { const [row, col] = k.split(/:(.+)/); return { row: Number(row), col, value }; });
+        const editList = hasTableOps
+          ? rows.flatMap((row, rowIdx) => columns.map((col, colIdx) => ({ row: offset + rowIdx, col, value: row[colIdx] ?? "" })))
+          : Object.entries(edits).map(([k, value]) => { const [row, col] = k.split(/:(.+)/); return { row: Number(row), col, value }; });
         const payload = { edits: editList, ...tableOps };
         if (editList.length || Object.keys(tableOps).length) await dwSaveCells(workspaceId, active.id, payload);
       }
-      setDirty(false); setEdits({}); setTableOps({});
+      setDirty(false); setEdits({}); setTableOps({}); setContextMenu(null);
       showToast("已保存");
       await loadContent(active, offset); // 重新载入校验持久化
       loadSidePanels(active);
@@ -298,12 +321,76 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
 
   const selectedCol = selectedCell ? columns[selectedCell.col] : null;
 
-  const addRow = () => {
+  const uniqueColumnName = (base) => {
+    let name = base || `column_${columns.length + 1}`;
+    let n = 2;
+    while (columns.includes(name)) {
+      name = `${base}_${n}`;
+      n += 1;
+    }
+    return name;
+  };
+
+  const insertRowAt = (pageRowIdx, where = "below") => {
     if (!columns.length) return;
+    const insertAtPage = Math.max(0, Math.min(rows.length, pageRowIdx + (where === "below" ? 1 : 0)));
+    const insertAtFile = offset + insertAtPage;
     const values = columns.map(() => "");
-    setRows((rs) => [...rs, values]);
-    setTableOps((ops) => ({ ...ops, add_rows: [...(ops.add_rows || []), { values }] }));
+    setRows((rs) => [...rs.slice(0, insertAtPage), values, ...rs.slice(insertAtPage)]);
+    setTableOps((ops) => ({ ...ops, add_rows: [...(ops.add_rows || []), { index: insertAtFile, values }] }));
+    setSelectedCell({ row: insertAtPage, col: Math.max(0, selectedCell?.col || 0) });
+    setContextMenu(null);
     setDirty(true);
+  };
+
+  const deleteRowAt = (pageRowIdx) => {
+    if (pageRowIdx == null || pageRowIdx < 0 || pageRowIdx >= rows.length) {
+      showToast("先选中要删除的行");
+      return;
+    }
+    const absolute = offset + pageRowIdx;
+    setRows((rs) => rs.filter((_, idx) => idx !== pageRowIdx));
+    setTableOps((ops) => ({ ...ops, delete_rows: [...(ops.delete_rows || []), absolute] }));
+    setEdits({});
+    setSelectedCell(null);
+    setContextMenu(null);
+    setDirty(true);
+  };
+
+  const insertColumnAt = (colIdx, where = "right") => {
+    const insertAt = Math.max(0, Math.min(columns.length, colIdx + (where === "right" ? 1 : 0)));
+    const base = `column_${columns.length + 1}`;
+    const name = uniqueColumnName(base);
+    setTableColumns((cols) => [...cols.slice(0, insertAt), name, ...cols.slice(insertAt)]);
+    setRows((rs) => rs.map((row) => [...row.slice(0, insertAt), "", ...row.slice(insertAt)]));
+    setColWidths((m) => ({ ...m, [name]: 136 }));
+    setTableOps((ops) => ({ ...ops, add_cols: [...(ops.add_cols || []), { index: insertAt, name, values: rows.map(() => "") }] }));
+    setSelectedCell({ row: Math.max(0, selectedCell?.row || 0), col: insertAt });
+    setContextMenu(null);
+    setDirty(true);
+  };
+
+  const deleteColumnAt = (colIdx) => {
+    const col = columns[colIdx];
+    if (!col) {
+      showToast("先选中要删除的列");
+      return;
+    }
+    if (columns.length <= 1) {
+      showToast("至少保留一列");
+      return;
+    }
+    setTableColumns((cols) => cols.filter((_, idx) => idx !== colIdx));
+    setRows((rs) => rs.map((row) => row.filter((_, idx) => idx !== colIdx)));
+    setTableOps((ops) => ({ ...ops, delete_cols: [...(ops.delete_cols || []), col] }));
+    setEdits({});
+    setSelectedCell(null);
+    setContextMenu(null);
+    setDirty(true);
+  };
+
+  const addRow = () => {
+    insertRowAt(selectedCell?.row ?? Math.max(0, rows.length - 1), "below");
   };
 
   const deleteRow = () => {
@@ -311,26 +398,11 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
       showToast("先选中要删除的行");
       return;
     }
-    const absolute = offset + selectedCell.row;
-    setRows((rs) => rs.filter((_, idx) => idx !== selectedCell.row));
-    setTableOps((ops) => ({ ...ops, delete_rows: [...(ops.delete_rows || []), absolute] }));
-    setSelectedCell(null);
-    setDirty(true);
+    deleteRowAt(selectedCell.row);
   };
 
   const addColumn = () => {
-    const base = `column_${columns.length + 1}`;
-    let name = base;
-    let n = 2;
-    while (columns.includes(name)) {
-      name = `${base}_${n}`;
-      n += 1;
-    }
-    setTableColumns((cols) => [...cols, name]);
-    setRows((rs) => rs.map((row) => [...row, ""]));
-    setColWidths((m) => ({ ...m, [name]: 136 }));
-    setTableOps((ops) => ({ ...ops, add_cols: [...(ops.add_cols || []), { name }] }));
-    setDirty(true);
+    insertColumnAt(selectedCell?.col ?? Math.max(0, columns.length - 1), "right");
   };
 
   const deleteColumn = () => {
@@ -338,12 +410,24 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
       showToast("先选中要删除的列");
       return;
     }
-    const idx = columns.indexOf(selectedCol);
-    setTableColumns((cols) => cols.filter((col) => col !== selectedCol));
-    setRows((rs) => rs.map((row) => row.filter((_, colIdx) => colIdx !== idx)));
-    setTableOps((ops) => ({ ...ops, delete_cols: [...(ops.delete_cols || []), selectedCol] }));
-    setSelectedCell(null);
-    setDirty(true);
+    deleteColumnAt(columns.indexOf(selectedCol));
+  };
+
+  const openTableContextMenu = (event, row, col, target = "cell") => {
+    if (!columns.length) return;
+    event.preventDefault();
+    const safeRow = Math.max(0, Math.min(rows.length - 1, row ?? 0));
+    const safeCol = Math.max(0, Math.min(columns.length - 1, col ?? 0));
+    setSelectedCell({ row: safeRow, col: safeCol });
+    const menuWidth = 220;
+    const menuHeight = 248;
+    setContextMenu({
+      x: Math.min(event.clientX, window.innerWidth - menuWidth - 8),
+      y: Math.min(event.clientY, window.innerHeight - menuHeight - 8),
+      row: safeRow,
+      col: safeCol,
+      target,
+    });
   };
 
   const resizeColumn = (name, startX) => {
@@ -589,7 +673,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
                   </colgroup>
                   <thead>
                     <tr><th className="dw-rownum" />{columns.map((c, i) => (
-                      <th key={i} className={selectedCell?.col === i ? "sel-col" : ""}>
+                      <th key={i} className={selectedCell?.col === i ? "sel-col" : ""} onContextMenu={(e) => openTableContextMenu(e, selectedCell?.row ?? 0, i, "column")}>
                         <span>{c}</span>
                         <i className="dw-col-resize" onMouseDown={(e) => { e.preventDefault(); resizeColumn(c, e.clientX); }} />
                       </th>
@@ -598,15 +682,15 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
                   <tbody>
                     {rows.map((row, ri) => (
                       <tr key={ri}>
-                        <td className="dw-rownum">{offset + ri + 1}</td>
+                        <td className={selectedCell?.row === ri ? "dw-rownum active" : "dw-rownum"} onContextMenu={(e) => openTableContextMenu(e, ri, selectedCell?.col ?? 0, "row")}>{offset + ri + 1}</td>
                         {columns.map((c, ci) => (
-                          <td key={ci} className={selectedCell?.row === ri && selectedCell?.col === ci ? "dw-cell sel" : "dw-cell"} onClick={() => setSelectedCell({ row: ri, col: ci })}>
+                          <td key={ci} className={selectedCell?.row === ri && selectedCell?.col === ci ? "dw-cell sel" : "dw-cell"} onClick={() => setSelectedCell({ row: ri, col: ci })} onContextMenu={(e) => openTableContextMenu(e, ri, ci, "cell")}>
                             <input className="dw-cell-in" value={row[ci] ?? ""} onFocus={() => setSelectedCell({ row: ri, col: ci })} onChange={(e) => onCellChange(ri, c, e.target.value)} />
                           </td>
                         ))}
                       </tr>
                     ))}
-                    {!rows.length ? <tr><td className="dw-rownum">1</td>{columns.map((c, ci) => <td key={ci} className="dw-cell" />)}</tr> : null}
+                    {!rows.length ? <tr><td className="dw-rownum" onContextMenu={(e) => openTableContextMenu(e, 0, selectedCell?.col ?? 0, "row")}>1</td>{columns.map((c, ci) => <td key={ci} className="dw-cell" onContextMenu={(e) => openTableContextMenu(e, 0, ci, "cell")} />)}</tr> : null}
                   </tbody>
                 </table>
               </div>
@@ -732,6 +816,23 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }
             }
           }}
         />
+      ) : null}
+      {contextMenu ? (
+        <div
+          className="dw-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          role="menu"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          <button type="button" role="menuitem" onClick={() => insertRowAt(contextMenu.row, "above")}><Rows3 size={14} />在上方插入行</button>
+          <button type="button" role="menuitem" onClick={() => insertRowAt(contextMenu.row, "below")}><Rows3 size={14} />在下方插入行</button>
+          <button type="button" role="menuitem" onClick={() => deleteRowAt(contextMenu.row)} disabled={!rows.length}><Trash2 size={14} />删除当前行</button>
+          <i aria-hidden="true" />
+          <button type="button" role="menuitem" onClick={() => insertColumnAt(contextMenu.col, "left")}><Columns3 size={14} />在左侧插入列</button>
+          <button type="button" role="menuitem" onClick={() => insertColumnAt(contextMenu.col, "right")}><Columns3 size={14} />在右侧插入列</button>
+          <button type="button" role="menuitem" onClick={() => deleteColumnAt(contextMenu.col)} disabled={columns.length <= 1}><Trash2 size={14} />删除当前列</button>
+        </div>
       ) : null}
     </main>
   );
