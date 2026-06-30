@@ -22,6 +22,7 @@ from starlette.concurrency import run_in_threadpool
 try:
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
+    from .data_workbench import router as data_workbench_router
     from .dependency_health import health_dependencies, health_dependency_details
     from .observability import observability_snapshot
     from .orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
@@ -65,6 +66,7 @@ try:
 except ImportError:
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
+    from data_workbench import router as data_workbench_router
     from dependency_health import health_dependencies, health_dependency_details
     from observability import observability_snapshot
     from orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
@@ -116,6 +118,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(data_workbench_router)
 
 ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "generated-outputs"
 _INGEST_SEMAPHORE = asyncio.Semaphore(max(1, int(os.environ.get("DF_UPLOAD_INGEST_CONCURRENCY", "2"))))

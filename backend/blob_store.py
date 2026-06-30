@@ -208,6 +208,23 @@ def upload_blob_json(blob_name: str, value: dict[str, Any]) -> dict[str, Any]:
     return {"container": _container_name(), "blob_name": blob_name, "blob_url": _blob_url(blob_name)}
 
 
+def upload_workspace_blob(workspace_id: str, relative_path: str, content: bytes, content_type: str = "application/octet-stream") -> dict[str, Any]:
+    container = _container_client()
+    _ensure_container(container)
+    safe_workspace = PathSafe.name(workspace_id)
+    safe_parts = [PathSafe.name(part) for part in str(relative_path or "").replace("\\", "/").split("/") if part]
+    if not safe_workspace or not safe_parts:
+        raise ValueError("workspace_id and relative_path are required")
+    blob_name = f"workspaces/{safe_workspace}/{'/'.join(safe_parts)}"
+    container.upload_blob(
+        blob_name,
+        bytes(content or b""),
+        overwrite=True,
+        content_settings=ContentSettings(content_type=content_type),
+    )
+    return {"container": _container_name(), "blob_name": blob_name, "blob_url": _blob_url(blob_name)}
+
+
 def download_blob_json(blob_name: str) -> dict[str, Any] | None:
     if not blob_configured():
         return None
