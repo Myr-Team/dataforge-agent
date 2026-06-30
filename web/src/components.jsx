@@ -657,13 +657,13 @@ function ConvergenceChart({ versions, flagshipId }) {
   const vers = (versions || []).slice(-8);
   if (vers.length < 2) return null;
   const n = vers.length;
-  const padL = 78;
-  const padR = 26;
+  const padL = 90;
+  const padR = 30;
   const H = 250;
-  const padT = 38;
-  const padB = 48;
-  // 固定 viewBox 宽高比（约 2.4:1）= 图框比例，配合 width:100% 撑满框宽、不留白；X 按版本数均分
-  const W = 600;
+  const padT = 40;
+  const padB = 50;
+  // 宽幅 viewBox（约 5:1）匹配又宽又扁的图框；配合 CSS aspect-ratio + width:100% 撑满整框、不留白
+  const W = 1280;
   const usableW = W - padL - padR;
   const usableH = H - padT - padB;
   const x = (i) => padL + (n > 1 ? (usableW * i) / (n - 1) : usableW / 2);
