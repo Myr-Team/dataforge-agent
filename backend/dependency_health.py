@@ -4,9 +4,11 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import socket
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from typing import Any
 
 from azure.identity import DefaultAzureCredential
@@ -20,10 +22,15 @@ except ImportError:
 
 
 _CACHE: dict[str, Any] = {"expires_at": 0.0, "fingerprint": "", "dependencies": {}, "details": {}}
-_CACHE_TTL_SECONDS = float(os.environ.get("DF_HEALTH_CACHE_SECONDS", "45"))
+_LAST_OK: dict[str, dict[str, Any]] = {}
+_PROBE_HISTORY: deque[dict[str, Any]] = deque(maxlen=int(os.environ.get("DF_HEALTH_HISTORY_SIZE", "240")))
+_CACHE_TTL_SECONDS = float(os.environ.get("DF_HEALTH_CACHE_SECONDS", "90"))
 # 列 Foundry 全部模型(用户有数百个)偶尔 >5s 会让健康状态闪烁成灰；默认放宽到 8s
 _PROBE_TIMEOUT_SECONDS = float(os.environ.get("DF_HEALTH_PROBE_TIMEOUT_SECONDS", "8.0"))
 _MCP_PROBE_TIMEOUT_SECONDS = float(os.environ.get("DF_MCP_HEALTH_TIMEOUT_SECONDS", "2.0"))
+_FOUNDRY_STALE_OK_SECONDS = float(os.environ.get("DF_FOUNDRY_HEALTH_STALE_OK_SECONDS", "1800"))
+_FOUNDRY_RETRY_DELAY_SECONDS = float(os.environ.get("DF_FOUNDRY_HEALTH_RETRY_DELAY_SECONDS", "0.35"))
+_FOUNDRY_SAMPLE_BYTES = int(os.environ.get("DF_FOUNDRY_HEALTH_SAMPLE_BYTES", "256"))
 
 
 def health_dependencies() -> dict[str, bool]:
@@ -67,13 +74,47 @@ def _probe_all() -> dict[str, dict[str, Any]]:
     }
     results: dict[str, dict[str, Any]] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(probes), thread_name_prefix="dataforge-health") as pool:
-        futures = {name: pool.submit(func) for name, func in probes.items()}
+        futures = {name: pool.submit(_timed_probe, name, func) for name, func in probes.items()}
         for name, future in futures.items():
             try:
-                results[name] = future.result(timeout=_PROBE_TIMEOUT_SECONDS + 0.4)
+                results[name] = future.result(timeout=_probe_future_timeout(name))
             except Exception as exc:
-                results[name] = {"ok": False, "state": "down", "error": f"{type(exc).__name__}: {exc}"[:500]}
+                detail = {
+                    "ok": False,
+                    "state": "down",
+                    "error_type": "timeout",
+                    "error": f"{type(exc).__name__}: {exc}"[:500],
+                    "latency_ms": int(_probe_future_timeout(name) * 1000),
+                }
+                if name == "foundry":
+                    detail = _stale_ok_if_recent(name, detail)
+                _record_probe(name, detail)
+                results[name] = detail
     return results
+
+
+def _probe_future_timeout(name: str) -> float:
+    if name == "foundry":
+        return (_PROBE_TIMEOUT_SECONDS * 2) + _FOUNDRY_RETRY_DELAY_SECONDS + 1.0
+    return _PROBE_TIMEOUT_SECONDS + 0.4
+
+
+def _timed_probe(name: str, func: Any) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        detail = func()
+    except Exception as exc:
+        detail = {"ok": False, "state": "down", **_classify_probe_error(exc)}
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+    if not isinstance(detail, dict):
+        detail = {"ok": False, "state": "down", "error_type": "invalid_result"}
+    detail.setdefault("latency_ms", elapsed_ms)
+    detail.setdefault("error_type", "none" if detail.get("ok") else "unknown")
+    detail.setdefault("observed_at", _now_iso())
+    if detail.get("ok") and detail.get("state") == "ok":
+        _LAST_OK[name] = {"at": time.time(), "detail": {key: value for key, value in detail.items() if key != "latency_ms"}}
+    _record_probe(name, detail)
+    return detail
 
 
 def _probe_foundry() -> dict[str, Any]:
@@ -88,13 +129,48 @@ def _probe_foundry() -> dict[str, Any]:
     headers = _azure_ai_headers()
     if not headers:
         return {"ok": False, "state": "unconfigured", "error": "no Azure OpenAI credential configured"}
-    try:
-        payload = _request_json(url, method="GET", headers=headers, timeout=_PROBE_TIMEOUT_SECONDS)
-        models = payload.get("data") if isinstance(payload, dict) else None
-        count = len(models) if isinstance(models, list) else None
-        return {"ok": True, "state": "ok", "endpoint": _redact_endpoint(endpoint), "model_count": count}
-    except Exception as exc:
-        return {"ok": False, "state": "down", "endpoint": _redact_endpoint(endpoint), "error": f"{type(exc).__name__}: {exc}"[:500]}
+    attempts: list[dict[str, Any]] = []
+    for attempt in range(2):
+        started = time.perf_counter()
+        try:
+            status, sample_len = _request_status_sample(
+                url,
+                method="GET",
+                headers=headers,
+                timeout=_PROBE_TIMEOUT_SECONDS,
+                max_bytes=_FOUNDRY_SAMPLE_BYTES,
+            )
+            return {
+                "ok": True,
+                "state": "ok",
+                "endpoint": _redact_endpoint(endpoint),
+                "probe": "models_status_sample",
+                "status": status,
+                "sample_bytes": sample_len,
+                "attempts": attempt + 1,
+                "error_type": "none",
+            }
+        except Exception as exc:
+            info = _classify_probe_error(exc)
+            info["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
+            info["attempt"] = attempt + 1
+            attempts.append(info)
+            if not info.get("transient") or attempt >= 1:
+                break
+            time.sleep(_FOUNDRY_RETRY_DELAY_SECONDS)
+    last = attempts[-1] if attempts else {"error_type": "unknown", "error": "Foundry probe failed"}
+    detail = {
+        "ok": False,
+        "state": "down",
+        "endpoint": _redact_endpoint(endpoint),
+        "probe": "models_status_sample",
+        "attempts": len(attempts),
+        "error_type": last.get("error_type"),
+        "status": last.get("status"),
+        "error": str(last.get("error") or "")[:500],
+        "attempt_details": attempts,
+    }
+    return _stale_ok_if_recent("foundry", detail)
 
 
 def _probe_speech() -> dict[str, Any]:
@@ -121,6 +197,65 @@ def _probe_speech() -> dict[str, Any]:
         return {"ok": True, "state": "ok", "region": region, "probe": "aad_token"}
     except Exception as exc:
         return {"ok": False, "state": "down", "region": region, "probe": "aad_token", "error": f"{type(exc).__name__}: {exc}"[:500]}
+
+
+def _stale_ok_if_recent(name: str, detail: dict[str, Any]) -> dict[str, Any]:
+    if not _is_transient_error_type(str(detail.get("error_type") or "")):
+        return detail
+    last = _LAST_OK.get(name) or {}
+    last_at = float(last.get("at") or 0)
+    age = time.time() - last_at if last_at else None
+    if age is None or age > _FOUNDRY_STALE_OK_SECONDS:
+        return detail
+    degraded = dict(detail)
+    degraded["ok"] = True
+    degraded["state"] = "degraded"
+    degraded["last_ok_age_seconds"] = round(age, 1)
+    degraded["degraded_reason"] = "transient_probe_failure_recent_success"
+    return degraded
+
+
+def _is_transient_error_type(value: str) -> bool:
+    return value in {"timeout", "rate_limited", "transient_http", "connection_error"}
+
+
+def _classify_probe_error(exc: BaseException) -> dict[str, Any]:
+    if isinstance(exc, urllib.error.HTTPError):
+        status = int(getattr(exc, "code", 0) or 0)
+        if status == 429:
+            error_type, transient = "rate_limited", True
+        elif status in {408, 409, 425} or 500 <= status <= 599:
+            error_type, transient = "transient_http", True
+        elif status in {401, 403}:
+            error_type, transient = "auth_error", False
+        else:
+            error_type, transient = "http_error", False
+        return {"error_type": error_type, "status": status, "transient": transient, "error": _read_http_error(exc)}
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return {"error_type": "timeout", "transient": True, "error": f"{type(exc).__name__}: {exc}"[:500]}
+    if isinstance(exc, urllib.error.URLError):
+        reason = str(getattr(exc, "reason", exc))
+        lowered = reason.lower()
+        error_type = "timeout" if "timed out" in lowered or "timeout" in lowered else "connection_error"
+        return {"error_type": error_type, "transient": True, "error": f"{type(exc).__name__}: {reason}"[:500]}
+    return {"error_type": "unknown", "transient": False, "error": f"{type(exc).__name__}: {exc}"[:500]}
+
+
+def _record_probe(name: str, detail: dict[str, Any]) -> None:
+    entry = {
+        "type": "dataforge_health_probe",
+        "dependency": name,
+        "ok": bool(detail.get("ok")),
+        "state": detail.get("state"),
+        "latency_ms": detail.get("latency_ms"),
+        "error_type": detail.get("error_type"),
+        "status": detail.get("status"),
+        "attempts": detail.get("attempts"),
+        "observed_at": detail.get("observed_at") or _now_iso(),
+    }
+    _PROBE_HISTORY.append(entry)
+    if os.environ.get("DF_HEALTH_PROBE_LOG", "1") != "0":
+        print(json.dumps(entry, ensure_ascii=False, sort_keys=True), flush=True)
 
 
 def _probe_blob() -> dict[str, Any]:
@@ -216,6 +351,23 @@ def _request_json(url: str, *, method: str, headers: dict[str, str], timeout: fl
     return json.loads(raw) if raw else {}
 
 
+def _request_status_sample(
+    url: str,
+    *,
+    method: str,
+    headers: dict[str, str],
+    timeout: float,
+    max_bytes: int,
+) -> tuple[int, int]:
+    req = urllib.request.Request(url, method=method)
+    req.add_header("User-Agent", "DataForge-health/1.0")
+    for name, value in headers.items():
+        req.add_header(name, value)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        sample = resp.read(max(0, max_bytes))
+        return int(resp.status), len(sample or b"")
+
+
 def _has_azure_identity_config() -> bool:
     return bool(
         os.environ.get("AZURE_CLIENT_ID")
@@ -262,3 +414,7 @@ def _read_http_error(exc: urllib.error.HTTPError) -> str:
 
 def _redact_endpoint(endpoint: str) -> str:
     return endpoint.rstrip("/")
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

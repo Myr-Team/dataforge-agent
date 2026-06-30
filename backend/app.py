@@ -22,6 +22,8 @@ from starlette.concurrency import run_in_threadpool
 try:
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
+    from .control_plane import build_workspace_dashboard, router as control_plane_router
+    from .data_workbench import router as data_workbench_router
     from .dependency_health import health_dependencies, health_dependency_details
     from .observability import observability_snapshot
     from .orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
@@ -65,6 +67,8 @@ try:
 except ImportError:
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
+    from control_plane import build_workspace_dashboard, router as control_plane_router
+    from data_workbench import router as data_workbench_router
     from dependency_health import health_dependencies, health_dependency_details
     from observability import observability_snapshot
     from orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
@@ -116,6 +120,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(data_workbench_router)
+app.include_router(control_plane_router)
 
 ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "generated-outputs"
 _INGEST_SEMAPHORE = asyncio.Semaphore(max(1, int(os.environ.get("DF_UPLOAD_INGEST_CONCURRENCY", "2"))))
@@ -208,27 +214,8 @@ async def workspace_detail(workspace_id: str) -> WorkspaceDetailResponse:
 @app.get("/api/workspaces/{workspace_id}/dashboard", response_model=WorkspaceDashboardResponse)
 async def workspace_dashboard(workspace_id: str) -> WorkspaceDashboardResponse:
     await _recover_stale_upload_ingest(workspace_id)
-
-    def _load() -> dict[str, Any]:
-        dependencies = health_dependencies()
-        return {
-            "workspace_id": workspace_id,
-            "workspace": get_workspace_detail(workspace_id),
-            "workspaces": list_workspaces(),
-            "runs": list_runs(workspace_id)[:12],
-            "conversations": list_conversations(workspace_id)[:12],
-            "health": {
-                "ok": True,
-                "service": "dataforge-backend",
-                "search_endpoint": bool(os.environ.get("SEARCH_ENDPOINT")),
-                "workspace_default": "demo-corpus",
-                "dependencies": dependencies,
-            },
-            "dependency_details": health_dependency_details(),
-        }
-
     try:
-        result = await run_in_threadpool(_load)
+        result = await run_in_threadpool(build_workspace_dashboard, workspace_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
     except ValueError as exc:
