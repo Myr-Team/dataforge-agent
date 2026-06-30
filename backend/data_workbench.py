@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from starlette.concurrency import run_in_threadpool
 
 from ingest.profiler import build_data_profile, profile_to_search_document
@@ -74,6 +74,12 @@ async def workspace_files(workspace_id: str) -> dict[str, Any]:
     return await _call(list_workspace_files, workspace_id)
 
 
+@router.post("/files")
+async def workspace_file_create(workspace_id: str, request: Request) -> dict[str, Any]:
+    body = await _json_body(request)
+    return await _call(create_workspace_file, workspace_id, body)
+
+
 @router.get("/files/{file_id}/content")
 async def workspace_file_content(
     workspace_id: str,
@@ -99,6 +105,17 @@ async def workspace_file_markdown(workspace_id: str, file_id: str, request: Requ
 @router.get("/files/{file_id}/quality")
 async def workspace_file_quality(workspace_id: str, file_id: str) -> dict[str, Any]:
     return await _call(file_quality, workspace_id, file_id)
+
+
+@router.get("/files/{file_id}/field-mapping")
+async def workspace_file_field_mapping(workspace_id: str, file_id: str) -> dict[str, Any]:
+    return await _call(file_field_mapping, workspace_id, file_id)
+
+
+@router.put("/files/{file_id}/field-mapping")
+async def workspace_file_field_mapping_save(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
+    body = await _json_body(request)
+    return await _call(save_file_field_mapping, workspace_id, file_id, body)
 
 
 @router.get("/files/{file_id}/history")
@@ -224,6 +241,38 @@ def preview_file_content(workspace_id: str, file_id: str, limit: int = 100, offs
     return _preview_bytes(content, _file_type(document), Path(str(document.get("name") or "")).name, limit, offset)
 
 
+def create_workspace_file(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    filename, file_type = _new_file_name_and_type(body)
+    content, content_type = _new_file_content(body, file_type)
+    result = create_workspace_upload_job(
+        files=[{"filename": filename, "content": content, "content_type": content_type}],
+        name=None,
+        requested_workspace_id=workspace_id,
+        asset_role=str(body.get("asset_role") or "reference"),
+    )
+    created_sources = {
+        str(item.get("source_file") or "")
+        for item in result.get("documents") or []
+        if isinstance(item, dict) and item.get("ingest_job_id") == result.get("ingest_job_id")
+    }
+    _run_ingest_if_present(result)
+    created = None
+    files = list_workspace_files(workspace_id)
+    for group in files.get("groups") or []:
+        for item in group.get("files") or []:
+            if isinstance(item, dict) and (str(item.get("source_file") or "") in created_sources or item.get("name") == filename):
+                created = item
+                break
+        if created:
+            break
+    return {
+        "workspace_id": workspace_id,
+        "saved_at": _utc_now(),
+        "file": created or {"name": filename, "type": file_type},
+        "upload": _compact_upload_result(result),
+    }
+
+
 def save_table_cells(workspace_id: str, file_id: str, body: dict[str, Any]) -> dict[str, Any]:
     document = _find_document(workspace_id, file_id)
     file_type = _file_type(document)
@@ -288,7 +337,7 @@ def file_quality(workspace_id: str, file_id: str) -> dict[str, Any]:
         text = _decode_text(content)
         mapped = 1 if text.strip() else 0
         status = "passed" if mapped else "failed"
-        return {
+        result = {
             "workspace_id": workspace_id,
             "file_id": _file_id(document),
             "field_mapping": {"mapped": mapped, "total": 1, "pct": 100.0 if mapped else 0.0, "fields": [{"name": "text", "type": "markdown", "mapped": bool(mapped)}]},
@@ -303,8 +352,50 @@ def file_quality(workspace_id: str, file_id: str) -> dict[str, Any]:
             },
             "validation": {"status": status, "checked_at": checked_at},
         }
+        return _apply_mapping_overrides(workspace_id, _file_id(document), result)
     table = _table_from_bytes(content, file_type)
-    return _quality_from_table(workspace_id, document, table, checked_at)
+    return _apply_mapping_overrides(workspace_id, _file_id(document), _quality_from_table(workspace_id, document, table, checked_at))
+
+
+def file_field_mapping(workspace_id: str, file_id: str) -> dict[str, Any]:
+    quality = file_quality(workspace_id, file_id)
+    meta, _profile = _workspace_state(workspace_id)
+    fid = str(quality.get("file_id") or file_id)
+    stored = _stored_field_mapping(meta, fid)
+    return {
+        "workspace_id": workspace_id,
+        "file_id": fid,
+        "field_mapping": quality.get("field_mapping") or {},
+        "overrides": stored.get("mappings") or {},
+        "saved_at": stored.get("saved_at"),
+        "validation": quality.get("validation") or {},
+    }
+
+
+def save_file_field_mapping(workspace_id: str, file_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    document = _find_document(workspace_id, file_id)
+    fid = _file_id(document)
+    quality = file_quality(workspace_id, fid)
+    fields = {
+        str(item.get("name") or "")
+        for item in ((quality.get("field_mapping") or {}).get("fields") or [])
+        if isinstance(item, dict) and item.get("name")
+    }
+    mappings = _normalize_field_mapping_body(body, fields)
+    saved_at = _utc_now()
+    meta, profile = _workspace_state(workspace_id)
+    all_mappings = meta.setdefault("workbench_field_mappings", {})
+    all_mappings[fid] = {
+        "file_id": fid,
+        "source_file": document.get("source_file"),
+        "mappings": mappings,
+        "saved_at": saved_at,
+    }
+    _persist_workspace_state(workspace_id, WORKSPACES / workspace_id, meta, profile, include_raw_payloads=True)
+    _CONTEXT_CACHE.pop(workspace_id, None)
+    updated = file_field_mapping(workspace_id, fid)
+    updated["saved_at"] = saved_at
+    return updated
 
 
 def file_history(workspace_id: str, file_id: str) -> list[dict[str, Any]]:
@@ -763,6 +854,154 @@ def _table_from_bytes(content: bytes, file_type: str) -> dict[str, Any]:
     return {"headers": [], "rows": []}
 
 
+def _new_file_name_and_type(body: dict[str, Any]) -> tuple[str, str]:
+    raw_name = str(body.get("name") or body.get("filename") or "").strip()
+    requested = str(body.get("type") or body.get("kind") or "").strip().lower()
+    if requested in {"markdown", "text", "note"}:
+        requested = "md"
+    elif requested in {"table", "spreadsheet"}:
+        requested = "csv"
+    elif requested == "excel":
+        requested = "xlsx"
+
+    if not raw_name:
+        raw_name = "untitled"
+    if "/" in raw_name or "\\" in raw_name or raw_name in {".", ".."}:
+        raise ValueError("Invalid file name")
+    if len(raw_name) > 160:
+        raise ValueError("File name is too long")
+
+    name_path = Path(raw_name)
+    suffix = name_path.suffix.lower().lstrip(".")
+    if suffix == "markdown":
+        suffix = "md"
+    if suffix == "excel":
+        suffix = "xlsx"
+    file_type = requested or suffix or "md"
+    if file_type not in {"md", "txt", "csv", "xlsx"}:
+        raise ValueError("type must be one of md, txt, csv or xlsx")
+    if file_type == "txt":
+        ext = ".txt"
+    elif file_type == "md":
+        ext = ".md"
+    elif file_type == "xlsx":
+        ext = ".xlsx"
+    else:
+        ext = ".csv"
+
+    stem = name_path.stem if name_path.suffix else raw_name
+    stem = re.sub(r"[\x00-\x1f<>:\"|?*]+", "-", stem).strip(" .-_")
+    if not stem:
+        stem = "untitled"
+    return f"{stem[:120]}{ext}", file_type
+
+
+def _new_file_content(body: dict[str, Any], file_type: str) -> tuple[bytes, str]:
+    if file_type in {"md", "txt"}:
+        text = body.get("text")
+        if text is None:
+            text = body.get("content")
+        if text is None:
+            text = "# Untitled\n"
+        if not isinstance(text, str):
+            raise ValueError("text/content must be a string")
+        content = text.encode("utf-8")
+        if len(content) > MAX_MARKDOWN_BYTES:
+            raise ValueError("Markdown content is too large")
+        content_type = "text/plain; charset=utf-8" if file_type == "txt" else "text/markdown; charset=utf-8"
+        return content or b"\n", content_type
+
+    columns, rows = _new_table_shape(body)
+    if file_type == "csv":
+        content = _table_to_csv_bytes(columns, rows)
+        if len(content) > MAX_TABLE_SAVE_BYTES:
+            raise ValueError("Table content is too large")
+        return content, "text/csv; charset=utf-8"
+
+    workbook = Workbook()
+    try:
+        sheet = workbook.active
+        sheet.title = "Sheet1"
+        sheet.append(columns)
+        for row in rows:
+            sheet.append(row)
+        out = io.BytesIO()
+        workbook.save(out)
+        content = out.getvalue()
+    finally:
+        workbook.close()
+    if len(content) > MAX_TABLE_SAVE_BYTES:
+        raise ValueError("Table content is too large")
+    return content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _new_table_shape(body: dict[str, Any]) -> tuple[list[str], list[list[str]]]:
+    if "columns" in body:
+        raw_columns = body.get("columns")
+    elif "headers" in body:
+        raw_columns = body.get("headers")
+    else:
+        raw_columns = ["column_1"]
+    if not isinstance(raw_columns, list) or not raw_columns:
+        raise ValueError("columns must be a non-empty list")
+    if len(raw_columns) > 200:
+        raise ValueError("Too many columns")
+    columns = [_column_name(item, idx) for idx, item in enumerate(raw_columns)]
+
+    raw_rows = body.get("rows") if "rows" in body else []
+    if not isinstance(raw_rows, list):
+        raise ValueError("rows must be a list")
+    if len(raw_rows) > 5000:
+        raise ValueError("Too many rows")
+    rows: list[list[str]] = []
+    for raw_row in raw_rows:
+        if isinstance(raw_row, dict):
+            row = [str(raw_row.get(column, "")) for column in columns]
+        elif isinstance(raw_row, list):
+            row = [str(raw_row[idx]) if idx < len(raw_row) and raw_row[idx] is not None else "" for idx in range(len(columns))]
+        else:
+            raise ValueError("Each row must be an array or object")
+        for value in row:
+            if len(value) > MAX_CELL_CHARS:
+                raise ValueError("Cell value is too long")
+        rows.append(row)
+    return columns, rows
+
+
+def _column_name(value: Any, index: int) -> str:
+    name = str(value or "").strip() or f"column_{index + 1}"
+    name = re.sub(r"\s+", " ", name)
+    if len(name) > 120:
+        raise ValueError("Column name is too long")
+    return name
+
+
+def _compact_upload_result(result: dict[str, Any]) -> dict[str, Any]:
+    documents = []
+    for item in result.get("documents") or []:
+        if not isinstance(item, dict):
+            continue
+        documents.append(
+            {
+                "id": _file_id(item),
+                "name": item.get("name"),
+                "type": _file_type(item),
+                "source_file": item.get("source_file"),
+                "bytes": item.get("bytes"),
+                "status": _api_status(item),
+                "updated_at": item.get("updated_at") or item.get("created_at"),
+            }
+        )
+    return {
+        "workspace_id": result.get("workspace_id"),
+        "ingest_job_id": result.get("ingest_job_id"),
+        "ingest_status": result.get("ingest_status"),
+        "indexed_count": result.get("indexed_count"),
+        "indexed_delta": result.get("indexed_delta"),
+        "documents": documents,
+    }
+
+
 def _quality_from_table(workspace_id: str, document: dict[str, Any], table: dict[str, Any], checked_at: str) -> dict[str, Any]:
     headers = [str(item) for item in table.get("headers") or []]
     rows = [[str(cell) for cell in row] for row in (table.get("rows") or [])]
@@ -799,6 +1038,89 @@ def _quality_from_table(workspace_id: str, document: dict[str, Any], table: dict
         },
         "validation": {"status": status, "checked_at": checked_at},
     }
+
+
+def _apply_mapping_overrides(workspace_id: str, file_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    meta, _profile = _workspace_state(workspace_id)
+    stored = _stored_field_mapping(meta, file_id)
+    mappings = stored.get("mappings") or {}
+    field_mapping = result.get("field_mapping") if isinstance(result.get("field_mapping"), dict) else {}
+    fields = field_mapping.get("fields") if isinstance(field_mapping.get("fields"), list) else []
+    mapped = 0
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        name = str(field.get("name") or "")
+        override = mappings.get(name) if isinstance(mappings, dict) else None
+        target = override.get("target") if isinstance(override, dict) else None
+        if target:
+            field["mapped"] = True
+            field["target"] = target
+            field["standard_name"] = target
+            field["mapping_source"] = "user"
+            if override.get("notes"):
+                field["notes"] = override.get("notes")
+        if field.get("mapped"):
+            mapped += 1
+    total = int(field_mapping.get("total") or len([item for item in fields if isinstance(item, dict)]))
+    field_mapping["mapped"] = mapped
+    field_mapping["total"] = total
+    field_mapping["pct"] = round(mapped / total * 100, 2) if total else 0.0
+    if stored.get("saved_at"):
+        field_mapping["overrides_saved_at"] = stored.get("saved_at")
+    result["field_mapping"] = field_mapping
+    return result
+
+
+def _stored_field_mapping(meta: dict[str, Any], file_id: str) -> dict[str, Any]:
+    all_mappings = meta.get("workbench_field_mappings")
+    if not isinstance(all_mappings, dict):
+        return {}
+    stored = all_mappings.get(str(file_id))
+    return stored if isinstance(stored, dict) else {}
+
+
+def _normalize_field_mapping_body(body: dict[str, Any], fields: set[str]) -> dict[str, dict[str, str]]:
+    raw = body.get("mappings", body.get("mapping", body.get("overrides", {})))
+    pairs: list[tuple[str, Any, Any]] = []
+    if isinstance(raw, dict):
+        for source, target in raw.items():
+            notes = None
+            if isinstance(target, dict):
+                notes = target.get("notes")
+                target = target.get("target", target.get("standard_name", target.get("mapped_to")))
+            pairs.append((str(source), target, notes))
+    elif isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                raise ValueError("Each mapping must be an object")
+            source = str(item.get("name") or item.get("source") or item.get("field") or "").strip()
+            target = item.get("target", item.get("standard_name", item.get("mapped_to")))
+            notes = item.get("notes")
+            pairs.append((source, target, notes))
+    else:
+        raise ValueError("mappings must be an object or list")
+
+    normalized: dict[str, dict[str, str]] = {}
+    for source, target, notes in pairs:
+        source = str(source or "").strip()
+        if not source:
+            raise ValueError("Mapping source field is required")
+        if fields and source not in fields:
+            raise ValueError(f"Unknown field: {source}")
+        target_text = str(target or "").strip()
+        if not target_text:
+            continue
+        if len(target_text) > 120:
+            raise ValueError("Mapping target is too long")
+        entry = {"target": target_text}
+        notes_text = str(notes or "").strip()
+        if notes_text:
+            if len(notes_text) > 300:
+                raise ValueError("Mapping notes are too long")
+            entry["notes"] = notes_text
+        normalized[source] = entry
+    return normalized
 
 
 def _field_quality(idx: int, name: str, rows: list[list[str]]) -> dict[str, Any]:
