@@ -504,7 +504,37 @@ function DataPortrait({ workspace, signalColumns, noisyColumns, columns }) {
   );
 }
 
-export function WorkbenchMain({
+// 渲染兜底：任一页面渲染抛错时显示提示而不是整页白屏
+class ViewErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidUpdate(prev) { if (prev.view !== this.props.view && this.state.error) this.setState({ error: null }); }
+  render() {
+    if (this.state.error) {
+      return (
+        <main className="agent-studio" style={{ display: "grid", placeItems: "center", padding: 40 }}>
+          <div style={{ textAlign: "center", color: "var(--muted)", maxWidth: 420 }}>
+            <AlertTriangle size={28} style={{ color: "var(--amber)" }} />
+            <h2 style={{ margin: "12px 0 6px", fontSize: 18, color: "var(--ink)" }}>这个页面出了点问题</h2>
+            <p style={{ fontSize: 13, lineHeight: 1.6 }}>页面渲染时遇到异常，已避免整页白屏。可刷新页面或切换到其他页面后重试。</p>
+            <button className="ghost-button" type="button" style={{ marginTop: 14 }} onClick={() => window.location.reload()}>刷新页面</button>
+          </div>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export function WorkbenchMain(props) {
+  return (
+    <ViewErrorBoundary view={props.view}>
+      <WorkbenchMainInner {...props} />
+    </ViewErrorBoundary>
+  );
+}
+
+function WorkbenchMainInner({
   view,
   setView,
   dashboard,
@@ -2159,20 +2189,21 @@ function QualityBar({ quality }) {
 
 // 用户消息打字机：发出问题后逐字"流式打出来"（仅对刚发出的最后一条动画；历史/加载会话直接整段显示）
 function TypeOut({ text, animate }) {
+  const safe = text == null ? "" : String(text);
   const reduce = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const [shown, setShown] = useState(animate && !reduce ? "" : text);
+  const [shown, setShown] = useState(animate && !reduce ? "" : safe);
   useEffect(() => {
-    if (!animate || reduce) { setShown(text); return undefined; }
+    if (!animate || reduce) { setShown(safe); return undefined; }
     let i = 0;
     setShown("");
     const id = window.setInterval(() => {
       i += 1;
-      setShown(text.slice(0, i));
-      if (i >= text.length) window.clearInterval(id);
+      setShown(safe.slice(0, i));
+      if (i >= safe.length) window.clearInterval(id);
     }, 32);
     return () => window.clearInterval(id);
-  }, [text, animate, reduce]);
-  return <p className="chat-usertext">{shown}{animate && !reduce && shown.length < text.length ? <span className="cursor" /> : null}</p>;
+  }, [safe, animate, reduce]);
+  return <p className="chat-usertext">{shown}{animate && !reduce && shown.length < safe.length ? <span className="cursor" /> : null}</p>;
 }
 
 // 反问选择框：问题 + 快捷选项（后端给 options 用之，否则给一组通用快捷意图）+ 自由输入
