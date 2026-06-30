@@ -794,102 +794,84 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
       </section>
     );
   }
+  const selected = versions.find((v) => v.id === effectiveBase) || latest || {};
+  const selVerdict = VERDICT_LABELS[selected.verdict] || selected.verdict || "—";
+  const verdictTone = (vd) => (vd === "feasible" || vd === "recommended" ? "ok" : vd === "conditional" ? "blue" : "warn");
+  const selSummary = selected.summary || selected.recommendation || selected.title
+    || `第 ${selected.vlabel ? selected.vlabel.replace(/\D/g, "") : versions.length} 版结论为「${selVerdict}」，回填客获率/转化率/价格/成本等关键商业指标可推进下一版判断。`;
+  const PENDING_METRICS = ["客获率", "转化率", "价格", "成本", "毛利", "目标客群"];
+  const baseLabel = selected.vlabel || "当前";
   return (
-    <section className="plan-iter-card" data-tour="iterate">
-      <div className="pi-head">
-        <Layers3 size={16} />
-        <strong>方案迭代 · 指标回填</strong>
-        <span className="pi-sub">把上一版方案的客获率/转化率/价格等指标回填，迭代逼近公司重点方案</span>
+    <section className="plan-iter-card pi2" data-tour="iterate">
+      {/* 顶部：标题+说明 | 主按钮 */}
+      <div className="pi2-top">
+        <div className="pi2-titlewrap">
+          <div className="pi2-title"><Layers3 size={16} /><strong>方案迭代 · 指标回填</strong></div>
+          <p className="pi2-desc">追踪每版方案的可行性变化，并将客获率、转化率、价格等关键指标回填到迭代记录中。</p>
+        </div>
+        <button type="button" className="pi2-extract" onClick={extract} disabled={!effectiveBase}>
+          <Sparkles size={15} /> 提取「{baseLabel}」方案指标并回填
+        </button>
       </div>
 
-      {versions.length >= 2 ? (
-        <div className="pi-converge">
-          <div className="pi-converge-head">结论随迭代收敛</div>
-          <ConvergenceChart versions={versions} flagshipId={flagshipId} />
+      {/* 上半：左图 60% | 右摘要 40% */}
+      <div className="pi2-main">
+        <div className="pi2-chart">
+          <div className="pi2-chart-head">结论迭代趋势</div>
+          {versions.length >= 2 ? (
+            <ConvergenceChart versions={versions} flagshipId={flagshipId} />
+          ) : (
+            <div className="pi2-chart-empty">至少 2 个版本后显示收敛趋势。</div>
+          )}
         </div>
-      ) : null}
+        <aside className="pi2-summary">
+          <div className="pi2-sum-row"><span>当前选中版本</span><b className="pi2-sel">{selected.vlabel || "—"}</b></div>
+          <div className="pi2-sum-row"><span>结论</span><span className={`dw-chip ${verdictTone(selected.verdict)}`}>{selVerdict}</span></div>
+          <div className="pi2-sum-block"><span>结论摘要</span><p>{selSummary}</p></div>
+          <div className="pi2-sum-block"><span>待回填指标</span><div className="pi2-chips">{PENDING_METRICS.map((m) => <span className="pi2-chip" key={m}>{m}</span>)}</div></div>
+          <div className="pi2-sum-row"><span>最近操作</span><b className="pi2-faint">{open && metrics && metrics.length ? "已提取指标，待回填" : "尚未回填指标"}</b></div>
+        </aside>
+      </div>
 
-      <div className="pi-versions">
-        {versions.map((v) => (
-          <div key={v.id} className={`pi-ver ${v.id === flagshipId ? "flag" : ""} ${v.id === effectiveBase ? "base" : ""}`}>
-            <button type="button" className="pi-ver-main" onClick={() => setBaseId(v.id)} title="以此版为基准提取指标">
-              <em>{v.vlabel}</em>
-              <span>{VERDICT_LABELS[v.verdict] || v.verdict}</span>
-              {v.maf?.revisions ? <small>复修{v.maf.revisions}</small> : null}
+      {/* 版本轨道：紧凑 stepper */}
+      <div className="pi2-track">
+        {versions.map((v, i) => (
+          <React.Fragment key={v.id}>
+            <button type="button" className={`pi2-pill ${v.id === effectiveBase ? "cur" : ""}`} onClick={() => setBaseId(v.id)} title={`以 ${v.vlabel} 为基准`}>
+              <span className={`pi2-pdot ${verdictTone(v.verdict)}`} />
+              <b>{v.vlabel}</b><em>{VERDICT_LABELS[v.verdict] || v.verdict}</em>
+              <span className={`pi2-star ${v.id === flagshipId ? "on" : ""}`} onClick={(e) => { e.stopPropagation(); markFlagship(v.id); }} title={v.id === flagshipId ? "取消公司重点" : "标为公司重点"}><Star size={12} /></span>
             </button>
-            <button type="button" className={`pi-star ${v.id === flagshipId ? "on" : ""}`} onClick={() => markFlagship(v.id)} title={v.id === flagshipId ? "取消公司重点方案" : "标为公司重点方案"}>
-              <Star size={14} />
-            </button>
-          </div>
+            {i < versions.length - 1 ? <span className="pi2-sep">—</span> : null}
+          </React.Fragment>
         ))}
       </div>
 
+      {/* 版本对比：一条工具栏 */}
       {versions.length >= 2 ? (
-        <div className="pi-compare">
-          <div className="pi-cmp-bar">
-            <span className="pi-cmp-title">版本对比</span>
-            <select value={cmpA} onChange={(e) => { setCmpA(e.target.value); setDiff(null); }}>
-              {versions.map((v) => <option key={v.id} value={v.id}>{v.vlabel}</option>)}
-            </select>
-            <span className="pi-cmp-arrow">→</span>
-            <select value={cmpB} onChange={(e) => { setCmpB(e.target.value); setDiff(null); }}>
-              {versions.map((v) => <option key={v.id} value={v.id}>{v.vlabel}</option>)}
-            </select>
-            <button type="button" className="pi-cmp-go" onClick={compare} disabled={!cmpA || !cmpB || cmpA === cmpB || diffLoading}>
-              {diffLoading ? <Loader2 className="spin" size={13} /> : <BarChart3 size={13} />} 对比
-            </button>
-          </div>
+        <div className="pi2-cmp">
+          <span className="pi2-cmp-t">版本对比</span>
+          <select value={cmpA} onChange={(e) => { setCmpA(e.target.value); setDiff(null); }}>
+            {versions.map((v) => <option key={v.id} value={v.id}>{v.vlabel}</option>)}
+          </select>
+          <span className="pi2-cmp-arrow">→</span>
+          <select value={cmpB} onChange={(e) => { setCmpB(e.target.value); setDiff(null); }}>
+            {versions.map((v) => <option key={v.id} value={v.id}>{v.vlabel}</option>)}
+          </select>
+          <button type="button" className="pi2-cmp-go" onClick={compare} disabled={!cmpA || !cmpB || cmpA === cmpB || diffLoading}>
+            {diffLoading ? <Loader2 className="spin" size={13} /> : <BarChart3 size={13} />} 对比
+          </button>
           {diff ? (
-            <div className="pi-diff">
-              <div className="pi-diff-row head">
-                <span className="pi-diff-k">维度</span>
-                <span>{vlabelOf(cmpA)}</span>
-                <span>{vlabelOf(cmpB)}</span>
-                <span>变化</span>
-              </div>
-              <div className="pi-diff-row">
-                <span className="pi-diff-k">可行性结论</span>
-                <span>{VERDICT_LABELS[diff.verdict.from] || diff.verdict.from || "—"}</span>
-                <span>{VERDICT_LABELS[diff.verdict.to] || diff.verdict.to || "—"}</span>
-                <span className={`pi-delta ${diff.verdict.dir > 0 ? "up" : diff.verdict.dir < 0 ? "down" : "flat"}`}>
-                  {diff.verdict.dir > 0 ? "↑ 提升" : diff.verdict.dir < 0 ? "↓ 下降" : "持平"}
-                </span>
-              </div>
-              {diff.dims.map((d) => (
-                <div className="pi-diff-row" key={d.name}>
-                  <span className="pi-diff-k">{d.label}</span>
-                  <span>{d.base}/5</span>
-                  <span>{d.target}/5</span>
-                  <span className={`pi-delta ${d.delta > 0 ? "up" : d.delta < 0 ? "down" : "flat"}`}>
-                    {d.delta > 0 ? `+${d.delta}` : d.delta < 0 ? `${d.delta}` : "—"}
-                  </span>
-                </div>
-              ))}
-              {diff.iterationInputs?.length ? (
-                <div className="pi-diff-note">
-                  <em>{vlabelOf(cmpB)} 回填了：</em>
-                  {diff.iterationInputs.map((m, i) => (
-                    <span className="pi-diff-chip" key={i}>{m.label} {m.value}{m.unit} · {KIND_LABEL[m.kind] || m.kind}</span>
-                  ))}
-                </div>
-              ) : null}
-              {(diff.gaps.added.length || diff.gaps.resolved.length) ? (
-                <div className="pi-diff-gaps">
-                  {diff.gaps.resolved.length ? <span className="g-res">已解决 {diff.gaps.resolved.length}</span> : null}
-                  {diff.gaps.added.length ? <span className="g-add">新增下一步 {diff.gaps.added.length}</span> : null}
-                  {diff.gaps.added.slice(0, 2).map((g, i) => <div className="g-item" key={i}>＋ {String(g).slice(0, 80)}</div>)}
-                </div>
-              ) : null}
-            </div>
+            <span className="pi2-cmp-sum">
+              {diff.verdict.dir > 0 ? "结论提升" : diff.verdict.dir < 0 ? "结论下降" : "结论未改善"}
+              {diff.gaps.added.length ? `，仍缺 ${String(diff.gaps.added[0]).slice(0, 28)}` : "，可行性指标无明显变化"}
+            </span>
           ) : null}
         </div>
       ) : null}
 
-      {!open ? (
-        <button type="button" className="pi-extract" onClick={extract} disabled={!effectiveBase}>
-          <Sparkles size={14} /> 提取「{(versions.find((v) => v.id === effectiveBase)?.vlabel) || "当前"}」方案指标 → 回填迭代
-        </button>
-      ) : loading ? (
+      {/* 指标回填编辑器（提取后展开） */}
+      {!open ? null : loading ? (
         <div className="pi-loading"><Loader2 className="spin" size={14} /> 正在从方案中抽取关键指标…</div>
       ) : (
         <div className="pi-editor">
