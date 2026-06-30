@@ -59,14 +59,16 @@ const TABS = [
   { id: "table", label: "表格编辑" },
   { id: "mapping", label: "字段映射" },
   { id: "quality", label: "数据质量" },
-  { id: "connectors", label: "连接器 Demo" },
+  { id: "connectors", label: "连接器" },
 ];
 
+// 能落地的标 available（可接入），尚未就绪的标 planned（计划上线）
 const CONNECTORS = [
-  { id: "adl", name: "Azure Data Lake", status: "未连接", demo: true, icon: Cloud },
-  { id: "blob", name: "Azure Blob Storage", status: "未连接", demo: true, icon: HardDrive },
-  { id: "sql", name: "SQL Database", status: "未连接", demo: true, icon: Database },
-  { id: "upload", name: "CSV / Excel Upload", status: "可用", demo: false, icon: FileUp, hint: "本地上传文件" },
+  { id: "purview", name: "Microsoft Purview", src: "/icons/purview.svg", state: "available", hint: "数据治理与统一编目" },
+  { id: "blob", name: "Azure Blob Storage", src: "/icons/azure-blob.svg", state: "available", hint: "对象存储 · 支持连接接入" },
+  { id: "sql", name: "SQL Database", src: "/icons/sql-database.svg", state: "available", hint: "数据库 · 账号密码连接" },
+  { id: "adl", name: "Azure Data Lake", src: "/icons/data-lake.svg", state: "planned", hint: "数据湖 · 计划上线" },
+  { id: "upload", name: "CSV / Excel 上传", icon: FileUp, state: "available", hint: "本地上传文件" },
 ];
 
 function fileIcon(name) {
@@ -285,29 +287,31 @@ export function DataWorkbench({ dashboard, onRun }) {
         </aside>
       </div>
 
-      {/* 底部：外部数据接入 Demo */}
+      {/* 底部：外部数据接入 */}
       <section className="card dw-connectors">
         <div className="dw-conn-head">
-          <h2>外部数据接入 Demo</h2>
-          <p>未来支持统一连接与管理企业数据湖、数据库等数据源；当前为演示入口，不影响本地文件编辑。</p>
+          <h2>外部数据接入</h2>
+          <p>统一连接与管理企业数据治理、对象存储、数据库等数据源；标注「计划上线」的连接器即将开放。</p>
         </div>
         <div className="dw-conn-grid">
           {CONNECTORS.map((c) => {
             const Icon = c.icon;
+            const planned = c.state === "planned";
             return (
               <div className="dw-conn-card" key={c.id}>
                 <div className="dw-conn-top">
-                  <div className="dw-conn-ic"><Icon size={20} /></div>
-                  {c.demo ? <span className="dw-badge demo">Demo</span> : <span className="dw-badge ok">可用</span>}
+                  <div className="dw-conn-ic">{c.src ? <img src={c.src} width="22" height="22" alt="" /> : <Icon size={20} />}</div>
+                  {planned ? <span className="dw-badge planned">计划上线</span> : <span className="dw-badge ok">可用</span>}
                 </div>
                 <div className="dw-conn-name">{c.name}</div>
-                <div className="dw-conn-status">{c.hint || c.status}</div>
+                <div className="dw-conn-status">{c.hint}</div>
                 <button
                   type="button"
-                  className={c.demo ? "dw-conn-btn" : "dw-conn-btn primary"}
-                  onClick={() => (c.demo ? showToast("Demo 接口，未来支持真实连接") : showToast("Demo：上传文件入口"))}
+                  className={planned ? "dw-conn-btn" : "dw-conn-btn primary"}
+                  disabled={planned}
+                  onClick={() => (planned ? null : showToast(c.id === "upload" ? "上传文件入口" : `接入 ${c.name}`))}
                 >
-                  {c.demo ? "连接" : "上传文件"}
+                  {planned ? "敬请期待" : c.id === "upload" ? "上传文件" : "接入"}
                 </button>
               </div>
             );

@@ -841,8 +841,13 @@ svg { flex-shrink: 0; }
 .set-conn-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 16px 12px; }
 .set-conn-h strong { font-size: 14.5px; font-weight: 600; }
 .set-refresh { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--muted); cursor: pointer; }
-.set-refresh:hover { color: var(--blue); border-color: var(--blue); }
+.set-refresh:hover:not(:disabled) { color: var(--blue); border-color: var(--blue); }
 .set-refresh svg { color: inherit; }
+.set-refresh:disabled { color: var(--blue); cursor: progress; }
+/* 重新探测的动态感：卡片轻微脉冲 + 检测中标签 */
+.set-conn-card.probing { animation: connProbe 0.9s ease-in-out infinite; }
+.dw-chip.probing { display: inline-flex; align-items: center; gap: 5px; background: var(--blue-soft); color: var(--blue); }
+@keyframes connProbe { 0%,100% { border-color: var(--line); } 50% { border-color: #bcd4fb; } }
 .set-about { padding: 0; }
 .set-tabs { display: flex; gap: 22px; padding: 0 18px; border-bottom: 1px solid var(--line); }
 .set-tab { padding: 14px 2px; border: 0; background: transparent; color: var(--muted); font-size: 13.5px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
@@ -1141,7 +1146,10 @@ svg { flex-shrink: 0; }
 .dw-conn-ic { width: 38px; height: 38px; border-radius: 9px; background: var(--surface-soft); color: var(--blue); display: flex; align-items: center; justify-content: center; }
 .dw-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 5px; }
 .dw-badge.demo { background: var(--surface-soft); color: var(--muted); }
+.dw-badge.planned { background: var(--amber-soft); color: var(--amber); }
 .dw-badge.ok { background: var(--mint-soft); color: var(--mint); }
+.dw-conn-ic img { display: block; }
+.dw-conn-btn:disabled { opacity: .55; cursor: not-allowed; }
 .dw-conn-name { font-size: 13.5px; font-weight: 600; margin-top: 12px; }
 .dw-conn-status { font-size: 12px; color: var(--faint); margin-top: 3px; }
 .dw-conn-btn { margin-top: 13px; height: 32px; width: 100%; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 7px; font-size: 12.5px; font-weight: 600; cursor: pointer; }

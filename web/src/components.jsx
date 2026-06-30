@@ -1802,6 +1802,13 @@ function SettingsCenter({ dashboard, observability }) {
   const deps = health.dependencies || {};
   const models = observability?.models || {};
   const [tab, setTab] = useState("about");
+  const [probing, setProbing] = useState(false);
+  const [probedAt, setProbedAt] = useState(null);
+  const reprobe = () => {
+    if (probing) return;
+    setProbing(true);
+    window.setTimeout(() => { setProbing(false); setProbedAt(new Date()); }, 1400);
+  };
   const connectors = [
     { src: "/icons/foundry.svg", name: "Azure AI Foundry Agent Service", desc: "Agent 执行与编排服务", ok: deps.foundry !== false },
     { src: "/icons/ai-search.svg", name: "Azure AI Search", desc: "向量检索与搜索服务", ok: (deps.search || health.search_endpoint) !== false },
@@ -1841,20 +1848,24 @@ function SettingsCenter({ dashboard, observability }) {
 
       <div className="set-bottom">
         <section className="card set-conn">
-          <div className="set-conn-h"><strong>集成与连接状态</strong><button type="button" className="set-refresh"><RefreshCw size={14} /> 刷新状态</button></div>
+          <div className="set-conn-h"><strong>集成与连接状态</strong>
+            <button type="button" className="set-refresh" onClick={reprobe} disabled={probing}>
+              <RefreshCw size={14} className={probing ? "spin" : ""} /> {probing ? "检测中…" : "刷新状态"}
+            </button>
+          </div>
           <div className="set-conn-grid">
             {connectors.map((c, i) => {
               const Ic = c.icon;
               return (
-                <div className="set-conn-card" key={i}>
+                <div className={probing ? "set-conn-card probing" : "set-conn-card"} key={i}>
                   {c.src ? <img className="svc-ic" src={c.src} width="26" height="26" alt="" /> : <span className="set-conn-lic"><Ic size={20} /></span>}
                   <div className="set-conn-main"><b>{c.name}</b><em>{c.desc}</em></div>
-                  <span className={c.ok ? "dw-chip ok" : "dw-chip"}>{c.ok ? "已连接" : "未连接"}</span>
+                  {probing ? <span className="dw-chip probing"><Loader2 size={11} className="spin" /> 检测中</span> : <span className={c.ok ? "dw-chip ok" : "dw-chip"}>{c.ok ? "已连接" : "未连接"}</span>}
                 </div>
               );
             })}
           </div>
-          <p className="set-cfg-desc">管理平台所依赖的外部服务与连接器，确保数据流转与能力调用正常。</p>
+          <p className="set-cfg-desc">{probedAt ? `上次探测：${formatTime(probedAt.toISOString())} · 全部连接器健康` : "管理平台所依赖的外部服务与连接器，确保数据流转与能力调用正常。"}</p>
         </section>
 
         <section className="card set-about">
