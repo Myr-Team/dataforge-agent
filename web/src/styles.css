@@ -26,9 +26,7 @@
 
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; }
-/* 全局等比缩放：整站像浏览器 90% 那样更紧凑（改这一个值即可整体调比例） */
-:root { --app-zoom: 0.9; }
-body { margin: 0; min-width: 320px; overflow: hidden; zoom: var(--app-zoom); }
+body { margin: 0; min-width: 320px; overflow: hidden; }
 button, input, select, textarea { font: inherit; }
 
 /* 细而克制的滚动条，替代系统默认的粗条 */
@@ -47,9 +45,7 @@ svg { flex-shrink: 0; }
   grid-template-columns: 184px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas: "top top" "nav main";
-  /* body zoom 后用反向补偿撑满视口，避免右/下出现留白 */
-  height: calc(100dvh / var(--app-zoom));
-  width: calc(100% / var(--app-zoom));
+  height: 100dvh;
   background:
     radial-gradient(circle at 50% -20%, rgba(0, 113, 227, 0.06), transparent 32%),
     var(--bg);
@@ -851,6 +847,54 @@ svg { flex-shrink: 0; }
 .set-more-mbr { margin-top: 10px; color: var(--blue); font-weight: 600; }
 .rt-runid { display: inline-flex; align-items: center; gap: 5px; }
 .rt-runid .msg-copy, .rt-runid button { margin: 0; }
+
+/* ===== 单屏适配：会话 / 产物 / 设置 三页尽量一屏显示完，减少向下滚动 ===== */
+/* 紧凑页头（这三页的大标题/说明收一收，省出纵向空间） */
+.conv-stage .conv-head h1, .outputs-stage .conv-head h1, .settings-stage .conv-head h1 { font-size: 21px; }
+.conv-stage .conv-head p, .outputs-stage .conv-head p, .settings-stage .conv-head p { font-size: 13px; margin-top: 3px; }
+
+/* 产物页：收紧间距与卡片密度 */
+.agent-studio.outputs-stage { gap: 12px; padding: 14px 24px; }
+.outputs-stage .out-status { padding: 13px 18px; gap: 20px; }
+.outputs-stage .os-ic { width: 36px; height: 36px; }
+.outputs-stage .os-item b { font-size: 14.5px; margin: 1px 0; }
+.outputs-stage .out-body { gap: 14px; }
+.outputs-stage .out-main { gap: 10px; }
+.outputs-stage .out-sec-h { font-size: 14px; }
+.outputs-stage .out-prod { padding: 12px 16px; gap: 13px; }
+.outputs-stage .out-prod-ic { width: 38px; height: 38px; border-radius: 10px; }
+.outputs-stage .out-prod-main p { margin: 4px 0 7px; font-size: 12.5px; line-height: 1.45; }
+.outputs-stage .out-prod-main b { font-size: 14px; }
+.outputs-stage .out-tag { padding: 2px 8px; font-size: 11px; }
+.outputs-stage .out-prod-r { gap: 9px; }
+.outputs-stage .out-note { margin-top: 0; }
+.outputs-stage .out-rec { padding: 7px 10px; }
+
+/* 设置页：三大行收紧，整页一屏装下 */
+.agent-studio.settings-stage { gap: 12px; padding: 14px 24px; }
+.settings-stage .set-stats, .settings-stage .set-cfgs { gap: 12px; }
+.settings-stage .set-stat { padding: 13px 16px; }
+.settings-stage .set-stat-ic { width: 34px; height: 34px; margin-bottom: 8px; }
+.settings-stage .set-stat-kv { margin: 7px 0 5px; }
+.settings-stage .set-cfg { padding: 13px 16px; }
+.settings-stage .set-cfg-h { margin-bottom: 9px; }
+.settings-stage .set-kv { padding: 7px 0; }
+.settings-stage .set-cfg-desc { margin-top: 9px; }
+.settings-stage .set-bottom { gap: 14px; }
+.settings-stage .set-conn-grid { gap: 10px; padding: 12px 14px; }
+.settings-stage .set-conn-card { padding: 9px 12px; }
+.settings-stage .set-tab { padding: 11px 2px; }
+.settings-stage .set-about-body, .settings-stage .set-members { padding: 12px 16px; }
+.settings-stage .set-member { padding: 7px 0; }
+
+/* 会话页：页头/快捷问题收紧，主体尽量占满一屏 */
+.agent-studio.conv-stage { gap: 10px; padding: 14px 24px 0; }
+.conv-stage .conv-chips { gap: 8px; }
+.conv-stage .answer-card { padding: 16px 18px; }
+.conv-stage .cr-sec { margin-bottom: 12px; }
+.conv-stage .cr-h { margin-bottom: 8px; }
+.conv-stage .cr-sec p { margin-bottom: 6px; line-height: 1.6; }
+.conv-stage .conv-composer { padding: 10px 0 12px; }
 .agent-studio.runs-stage { gap: 13px; padding: 18px 22px; }
 .run-cards { gap: 12px; }
 .run-mid, .run-body2 { gap: 14px; }
@@ -2160,7 +2204,7 @@ svg { flex-shrink: 0; }
 
 @media (max-width: 1360px) {
   body { overflow: auto; }
-  .app-shell { height: auto; min-height: calc(100dvh / var(--app-zoom)); width: 100%; grid-template-columns: 112px minmax(0, 1fr); }
+  .app-shell { height: auto; min-height: 100dvh; grid-template-columns: 112px minmax(0, 1fr); }
   .workbench { min-height: 100dvh; }
   .workbench-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; overflow: visible; }
   .inspector { grid-column: 1 / -1; margin: 0 16px 18px; min-height: 420px; }
