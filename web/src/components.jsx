@@ -1666,7 +1666,7 @@ const RUN_TIMELINE = [
   { icon: FileText, name: "回答撰写", role: "结构化输出", sum: "生成最终结论与行动方案 · 输出字数 502", dur: "2 秒" },
 ];
 
-function RunsCenter({ dashboard, trace, running, observability, onOpenConversation }) {
+function RunsCenter({ dashboard, trace, running, observability, onOpenConversation, tasks }) {
   const runs = dashboard?.runs || [];
   const r = runs[0] || {};
   const [q, setQ] = useState("");
