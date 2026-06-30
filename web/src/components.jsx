@@ -65,7 +65,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, loadDataOverview, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship } from "./api.js";
+import { API_BASE, artifactLink, loadDataOverview, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadMembers } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -1465,6 +1465,15 @@ const OUTPUT_RECENT = [
 
 function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing, onUploadReference }) {
   const hasAnalysis = Boolean(artifact?.feasibility?.verdict);
+  const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
+  const [recent, setRecent] = useState(null);
+  const [dirOpen, setDirOpen] = useState(false);
+  const reloadRecent = React.useCallback(() => {
+    if (!workspaceId) return;
+    loadArtifactsList(workspaceId).then((d) => setRecent(d.artifacts || [])).catch(() => setRecent([]));
+  }, [workspaceId]);
+  useEffect(() => { reloadRecent(); }, [reloadRecent, producing]);
+  const recentItems = recent || [];
   return (
     <main className="agent-studio outputs-stage">
       <header className="conv-head">
@@ -1506,22 +1515,63 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
         </section>
 
         <aside className="card out-recent">
-          <div className="cardhead"><span className="t">最近产物</span><span className="lnk">查看全部</span></div>
+          <div className="cardhead"><span className="t">最近产物</span><button type="button" className="lnk lnk-btn" onClick={reloadRecent}>刷新</button></div>
           <div className="out-recent-list">
-            {OUTPUT_RECENT.map((a, i) => (
-              <div className="out-rec" key={i}>
-                <FileTypeIcon doc={{ name: a.name }} size={22} />
-                <div className="out-rec-main"><b>{a.name}</b><em>{a.type} · {a.size}</em></div>
-                <span className="out-rec-time">{a.time}</span>
-                <span className="dw-chip ok">已完成</span>
-                <button type="button" className="out-rec-more"><MoreHorizontal size={15} /></button>
-              </div>
-            ))}
+            {recent === null ? <p className="empty-copy" style={{ padding: 16 }}><Loader2 size={14} className="spin" /> 加载产物…</p> : null}
+            {recent !== null && !recentItems.length ? <p className="empty-copy" style={{ padding: 16 }}>暂无产物。生成后会在这里出现。</p> : null}
+            {recentItems.slice(0, 6).map((a, i) => {
+              const href = artifactLink(a);
+              return (
+                <a className="out-rec" key={i} href={href || undefined} target="_blank" rel="noreferrer" style={href ? undefined : { pointerEvents: "none" }}>
+                  <FileTypeIcon doc={{ name: a.name }} size={22} />
+                  <div className="out-rec-main"><b>{a.name}</b><em>{(a.type || "").toUpperCase()}{a.bytes ? ` · ${formatBytes(a.bytes)}` : ""}</em></div>
+                  <span className="out-rec-time">{formatTime(a.created_at)}</span>
+                  <span className={`dw-chip ${a.status === "ready" || !a.status ? "ok" : ""}`}>{a.status === "ready" || !a.status ? "已完成" : a.status}</span>
+                </a>
+              );
+            })}
           </div>
-          <button type="button" className="out-open"><FolderOpen size={15} />打开产物目录<ChevronRight size={14} /></button>
+          <button type="button" className="out-open" onClick={() => setDirOpen(true)}><FolderOpen size={15} />打开产物目录<ChevronRight size={14} /></button>
         </aside>
       </div>
+
+      <SideDrawer open={dirOpen} title="产物目录" onClose={() => setDirOpen(false)}>
+        {!recentItems.length ? <p className="empty-copy">该工作区暂无产物。</p> : (
+          <div className="drawer-list">
+            {recentItems.map((a, i) => {
+              const href = artifactLink(a);
+              return (
+                <a className="drawer-row" key={i} href={href || undefined} target="_blank" rel="noreferrer" style={href ? undefined : { pointerEvents: "none", opacity: .6 }}>
+                  <FileTypeIcon doc={{ name: a.name }} size={20} />
+                  <div className="drawer-row-main"><b>{a.name}</b><em>{(a.type || "").toUpperCase()}{a.bytes ? ` · ${formatBytes(a.bytes)}` : ""} · {formatTime(a.created_at)}</em></div>
+                  {href ? <Download size={15} /> : null}
+                </a>
+              );
+            })}
+          </div>
+        )}
+      </SideDrawer>
     </main>
+  );
+}
+
+// 通用右侧抽屉
+function SideDrawer({ open, title, onClose, children }) {
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return createPortal(
+    <div className="drawer-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <aside className="side-drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="drawer-head"><strong>{title}</strong><button type="button" className="icon-button" onClick={onClose}><X size={17} /></button></div>
+        <div className="drawer-body">{children}</div>
+      </aside>
+    </div>,
+    document.body,
   );
 }
 
@@ -1670,9 +1720,25 @@ const RUN_TIMELINE = [
 function RunsCenter({ dashboard, trace, running, observability, onOpenConversation, tasks }) {
   const runs = dashboard?.runs || [];
   const r = runs[0] || {};
+  const runId = r.run_id || r.conversation_id || "";
   const [q, setQ] = useState("");
   const [histExpanded, setHistExpanded] = useState(false);
   const [histPage, setHistPage] = useState(0);
+  const [summary, setSummary] = useState(null);
+  const [rtrace, setRtrace] = useState(null);
+  const [expanded, setExpanded] = useState({});
+  const [logOpen, setLogOpen] = useState(false);
+  const [logText, setLogText] = useState("");
+  useEffect(() => {
+    if (!runId) return;
+    setSummary(null); setRtrace(null); setExpanded({});
+    loadRunSummary(runId).then(setSummary).catch(() => {});
+    loadRunTrace(runId).then((d) => setRtrace(Array.isArray(d) ? d : (d?.trace || []))).catch(() => {});
+  }, [runId]);
+  const openLog = () => {
+    setLogOpen(true); setLogText("");
+    loadRunLog(runId, "text").then((d) => setLogText(typeof d === "string" ? d : (d?.text || JSON.stringify(d, null, 2)))).catch((e) => setLogText(`加载日志失败：${e.message}`));
+  };
   const okRun = r.status === "done" || Boolean(r.completed_at) || (!r.status && Boolean(r.verdict));
   const verdictLabel = r.verdict ? (VERDICT_LABELS[r.verdict] || r.verdict) : "有条件可行";
   let dur = "10 分 18 秒";
@@ -1683,14 +1749,19 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
   const t = observability?.tracing || {};
   const models = observability?.models || {};
   const cg = observability?.eval?.calibration_gate || null;
+  const sm = summary || {};
+  const smDur = sm.duration_ms ? (sm.duration_ms >= 60000 ? `${Math.floor(sm.duration_ms / 60000)} 分 ${Math.round((sm.duration_ms % 60000) / 1000)} 秒` : `${Math.round(sm.duration_ms / 1000)} 秒`) : dur;
+  const tc = sm.tool_calls || {};
+  const tk = sm.tokens || {};
+  const au = sm.audit || {};
   const cards = [
-    { ic: CheckCircle2, tone: "ok", label: "当前运行状态", value: okRun ? "成功" : "运行中", sub: r.completed_at ? `完成于 ${formatTime(r.completed_at)}` : "完成于 2024-06-02 10:22" },
-    { ic: Target, tone: "blue", label: "结论", value: verdictLabel, sub: `置信度 ${r.confidence || "0.80"}` },
-    { ic: Clock3, label: "总耗时", value: dur, sub: "开始于 10:11:59" },
-    { ic: Users, label: "Agent 数量", value: "6", sub: "全部完成" },
-    { ic: Wrench, label: "工具调用", value: "23", sub: "成功 22 / 失败 1" },
-    { ic: Coins, label: "Token 用量", value: "11,148", sub: "Prompt 5,204 / Completion 5,944" },
-    { ic: ShieldCheck, tone: "ok", label: "审计状态", value: "通过", sub: "风险项 0 / 告警 0" },
+    { ic: CheckCircle2, tone: "ok", label: "当前运行状态", value: sm.status ? (sm.status === "done" ? "成功" : sm.status) : (okRun ? "成功" : "运行中"), sub: sm.finished_at ? `完成于 ${formatTime(sm.finished_at)}` : r.completed_at ? `完成于 ${formatTime(r.completed_at)}` : "" },
+    { ic: Target, tone: "blue", label: "结论", value: sm.verdict ? (VERDICT_LABELS[sm.verdict] || sm.verdict) : verdictLabel, sub: `置信度 ${r.confidence || "0.80"}` },
+    { ic: Clock3, label: "总耗时", value: smDur, sub: sm.started_at ? `开始于 ${formatTime(sm.started_at)}` : "" },
+    { ic: Users, label: "Agent 数量", value: String(sm.agent_count ?? "6"), sub: "全部完成" },
+    { ic: Wrench, label: "工具调用", value: String(tc.total ?? "23"), sub: `成功 ${tc.ok ?? 22} / 失败 ${tc.fail ?? 1}` },
+    { ic: Coins, label: "Token 用量", value: (tk.total != null ? tk.total.toLocaleString() : "11,148"), sub: `Prompt ${tk.prompt ?? 5204} / Completion ${tk.completion ?? 5944}` },
+    { ic: ShieldCheck, tone: "ok", label: "审计状态", value: au.status === "pass" || !au.status ? "通过" : au.status, sub: `风险项 ${au.risks ?? 0} / 告警 ${au.warnings ?? 0}` },
   ];
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase();
@@ -1712,7 +1783,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
           <h1>运行记录 · 可观测性</h1>
           <p>追踪每个 Agent 的执行过程、工具调用、模型输出与评测结果，保障分析结果的可解释性与可信度。</p>
         </div>
-        <button className="ghost-button icon-label" type="button"><Download size={15} />导出日志</button>
+        <a className="ghost-button icon-label" href={runId ? runLogUrl(runId, "text") : undefined} target="_blank" rel="noreferrer" style={runId ? undefined : { pointerEvents: "none", opacity: .5 }}><Download size={15} />导出日志</a>
       </section>
 
       <div className="run-cards">
@@ -1757,29 +1828,50 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
         <section className="card run-trace">
           <div className="rt-head"><strong>本次运行追踪</strong><Info size={14} /></div>
           <div className="rt-list">
-            {RUN_TIMELINE.map((s, i) => {
+            {rtrace === null ? <p className="empty-copy" style={{ padding: 14 }}><Loader2 size={14} className="spin" /> 加载追踪…</p> : null}
+            {rtrace !== null && !rtrace.length ? (RUN_TIMELINE.map((s, i) => {
               const Ic = s.icon;
               return (
                 <div className="rt-row" key={i}>
-                  <span className="rt-n">{i + 1}</span>
-                  <span className="rt-ic"><Ic size={15} /></span>
-                  <div className="rt-main">
-                    <div className="rt-title"><b>{s.name}</b><em>{s.role}</em><span className="rt-badge">完成</span></div>
-                    <p className="rt-sum">{s.sum}</p>
-                  </div>
-                  <span className="rt-dur">耗时 {s.dur}</span>
-                  <CheckCircle2 size={16} className="rt-ok" />
-                  <ChevronDown size={15} className="rt-caret" />
+                  <span className="rt-n">{i + 1}</span><span className="rt-ic"><Ic size={15} /></span>
+                  <div className="rt-main"><div className="rt-title"><b>{s.name}</b><em>{s.role}</em><span className="rt-badge">完成</span></div><p className="rt-sum">{s.sum}</p></div>
+                  <span className="rt-dur">耗时 {s.dur}</span><CheckCircle2 size={16} className="rt-ok" />
+                </div>
+              );
+            })) : null}
+            {(rtrace || []).map((s, i) => {
+              const open = expanded[i];
+              const dms = s.duration_ms ? (s.duration_ms >= 1000 ? `${(s.duration_ms / 1000).toFixed(1)} 秒` : `${s.duration_ms} ms`) : "";
+              const detail = s.detail || {};
+              return (
+                <div className={open ? "rt-xrow open" : "rt-xrow"} key={i}>
+                  <button type="button" className="rt-rowmain" onClick={() => setExpanded((m) => ({ ...m, [i]: !m[i] }))}>
+                    <span className="rt-n">{s.index ?? i + 1}</span>
+                    <div className="rt-main">
+                      <div className="rt-title"><b>{s.agent || "Agent"}</b>{s.role ? <em>{s.role}</em> : null}<span className="rt-badge">{s.status || "完成"}</span></div>
+                      {s.summary ? <p className="rt-sum">{s.summary}</p> : null}
+                    </div>
+                    {dms ? <span className="rt-dur">耗时 {dms}</span> : null}
+                    <ChevronDown size={15} className="rt-caret" />
+                  </button>
+                  {open ? (
+                    <div className="rt-detail">
+                      {detail.input ? <div className="rt-det-sec"><b>输入</b><p>{typeof detail.input === "string" ? detail.input : JSON.stringify(detail.input)}</p></div> : null}
+                      {(detail.tool_calls || s.tool_calls) ? <div className="rt-det-sec"><b>工具调用</b><p>{renderToolCalls(detail.tool_calls || s.tool_calls)}</p></div> : null}
+                      {detail.output ? <div className="rt-det-sec"><b>输出</b><p>{typeof detail.output === "string" ? detail.output : JSON.stringify(detail.output)}</p></div> : null}
+                      {s.tokens ? <div className="rt-det-sec"><b>Token</b><p>{typeof s.tokens === "object" ? `共 ${s.tokens.total ?? "-"}（prompt ${s.tokens.prompt ?? "-"} / completion ${s.tokens.completion ?? "-"}）` : s.tokens}</p></div> : null}
+                      {!detail.input && !detail.output && !detail.tool_calls && !s.tool_calls ? <p className="empty-copy" style={{ padding: 4 }}>这一步暂无更多细节。</p> : null}
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
           </div>
           <div className="rt-foot">
-            <span className="rt-runid">运行 ID <b>{r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"}</b><button type="button" className="id-copy" title="复制运行 ID" onClick={() => { try { navigator.clipboard.writeText(r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"); } catch { /* ignore */ } }}><Copy size={13} /></button></span>
+            <span className="rt-runid">运行 ID <b>{runId || "—"}</b>{runId ? <button type="button" className="id-copy" title="复制运行 ID" onClick={() => { try { navigator.clipboard.writeText(runId); } catch { /* ignore */ } }}><Copy size={13} /></button> : null}</span>
             <span>触发方式 <b>用户启动</b></span>
-            <span>模型 <b>GPT-5.1</b></span>
-            <span>环境 <b>prod</b></span>
-            <button type="button" className="lnk lnk-btn">查看完整日志 ›</button>
+            <span>模型 <b>{models.chat || "GPT-5.1"}</b></span>
+            <button type="button" className="lnk lnk-btn" disabled={!runId} onClick={openLog}>查看完整日志 ›</button>
           </div>
         </section>
 
@@ -1819,8 +1911,28 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
           ) : null}
         </aside>
       </div>
+
+      <SideDrawer open={logOpen} title="完整运行日志" onClose={() => setLogOpen(false)}>
+        <div style={{ marginBottom: 10 }}><a className="dw-btn" href={runId ? runLogUrl(runId, "text") : undefined} target="_blank" rel="noreferrer"><Download size={14} />下载日志</a></div>
+        {logText ? <pre className="log-pre">{logText}</pre> : <p className="empty-copy"><Loader2 size={14} className="spin" /> 加载日志…</p>}
+      </SideDrawer>
     </main>
   );
+}
+
+function renderToolCalls(tcs) {
+  if (!tcs) return "";
+  if (Array.isArray(tcs)) {
+    return tcs.map((t, i) => {
+      if (typeof t === "string") return t;
+      const name = t.name || t.tool || "tool";
+      const cnt = t.count != null ? ` → ${t.count} 条` : "";
+      const ms = t.duration_ms != null ? ` · ${t.duration_ms}ms` : "";
+      return `${name}${cnt}${ms}`;
+    }).join("；");
+  }
+  if (typeof tcs === "object") return `${tcs.total ?? "-"} 次（成功 ${tcs.ok ?? "-"} / 失败 ${tcs.fail ?? "-"}）`;
+  return String(tcs);
 }
 
 const SET_MEMBERS = [
@@ -1831,15 +1943,19 @@ const SET_MEMBERS = [
 
 function SettingsCenter({ dashboard, observability }) {
   const health = dashboard?.health || {};
-  const deps = health.dependencies || {};
   const models = observability?.models || {};
   const [tab, setTab] = useState("about");
   const [probing, setProbing] = useState(false);
   const [probedAt, setProbedAt] = useState(null);
+  const [sys, setSys] = useState(null);
+  useEffect(() => { loadSystemStatus().then(setSys).catch(() => {}); }, []);
+  const deps = sys?.dependencies || health.dependencies || {};
   const reprobe = () => {
     if (probing) return;
     setProbing(true);
-    window.setTimeout(() => { setProbing(false); setProbedAt(new Date()); }, 1400);
+    loadSystemStatus().then(setSys).catch(() => {}).finally(() => {
+      window.setTimeout(() => { setProbing(false); setProbedAt(new Date()); }, 1200);
+    });
   };
   const connectors = [
     { src: "/icons/foundry.svg", name: "Azure AI Foundry Agent Service", desc: "Agent 执行与编排服务", ok: deps.foundry !== false },
@@ -1849,6 +1965,7 @@ function SettingsCenter({ dashboard, observability }) {
     { src: "/icons/speech.svg", name: "Azure AI Speech", desc: "语音识别与合成服务", ok: deps.speech !== false },
     { src: "/icons/content-safety.svg", name: "Azure AI Content Safety", desc: "内容安全与风险检测", ok: deps.content_safety !== false },
   ];
+  const connOk = connectors.filter((c) => c.ok).length;
   const kv = (k, v) => (<div className="set-kv"><span>{k}</span><b>{v}</b></div>);
   const cfgCard = (icon, title, rows, desc) => (
     <section className="card set-cfg">
@@ -1869,7 +1986,7 @@ function SettingsCenter({ dashboard, observability }) {
         <div className="card set-stat"><div className="set-stat-ic blue"><Boxes size={18} /></div><b>模型服务</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>在线模型 4 个</em></div>
         <div className="card set-stat"><div className="set-stat-ic blue"><Database size={18} /></div><b>数据存储</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>存储用量 68%</em></div>
         <div className="card set-stat"><div className="set-stat-ic blue"><ShieldCheck size={18} /></div><b>内容安全</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>Prompt Shield 已启用</em></div>
-        <div className="card set-stat"><div className="set-stat-ic blue"><Server size={18} /></div><b>连接器状态</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">全部正常</span></div><em>已连接 6 / 6</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><Server size={18} /></div><b>连接器状态</b><div className="set-stat-kv"><span>状态</span><span className={`dw-chip ${connOk === connectors.length ? "ok" : "warn"}`}>{connOk === connectors.length ? "全部正常" : "部分异常"}</span></div><em>已连接 {connOk} / {connectors.length}</em></div>
       </div>
 
       <div className="set-cfgs">

@@ -659,10 +659,11 @@ export function App() {
 
   const produce = async (kindsArg) => {
     if (producing) return;
-    const KIND_LABEL = { pdf: "项目文档 PDF", concept_image: "概念图", audio: "语音摘要" };
+    const KIND_LABEL = { pdf: "项目文档 PDF", concept_image: "概念图", audio: "语音摘要", roadmap: "路线图", validation_plan: "验证计划" };
+    const KIND_ALIAS = { audio_summary: "audio" };
     // kindsArg：产物类型数组（产物页按钮），或会话 chip 的 offer 对象，或缺省→文档+概念图
     let kinds;
-    if (Array.isArray(kindsArg)) kinds = kindsArg.filter((k) => KIND_LABEL[k]);
+    if (Array.isArray(kindsArg)) kinds = kindsArg.map((k) => KIND_ALIAS[k] || k).filter((k) => KIND_LABEL[k]);
     else if (kindsArg && kindsArg.kind === "poster") kinds = ["concept_image"];
     else {
       kinds = ["pdf", "concept_image"];
