@@ -665,11 +665,17 @@ svg { flex-shrink: 0; }
 .cc-label { font-size: 13px; color: var(--muted); font-weight: 500; }
 .cc-chip { font-size: 13px; padding: 7px 14px; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; color: var(--ink); cursor: pointer; }
 .cc-chip:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
-.conv-body { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 22px; align-items: start; }
+/* 两栏：左主区自适应、右上下文 500px（≥460px 才能容纳右侧 2 列小卡） */
+.conv-body { display: grid; grid-template-columns: minmax(0,1fr) 500px; gap: 24px; align-items: start; }
+@media (max-width: 1440px){ .conv-body { grid-template-columns: minmax(0,1fr) 460px; } }
 @media (max-width: 1100px){ .conv-body { grid-template-columns: 1fr; } }
 .conv-main { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
 .conv-context { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .conv-result { padding: 18px 20px; }
+/* 整页内容居中限宽，避免超宽屏左栏过宽、行长过长；各行对齐一致 */
+.conv-stage > .conv-head, .conv-stage > .conv-chips, .conv-stage > .conv-body, .conv-stage > .conv-composer { width: 100%; max-width: 1440px; margin-left: auto; margin-right: auto; }
+/* AI 卡片填满左栏，但正文段落/列表限制阅读行长 */
+.answer-card-body .rich-text > p, .answer-card-body .rich-text > ul, .answer-card-body .rich-text > ol, .cr-sec > p, .cr-basis, .user-ask p { max-width: 820px; }
 
 /* 主会话流：用户问题轻量条 + AI 全宽输出卡（无嵌套聊天框、无内层滚动） */
 .answer-flow { display: flex; flex-direction: column; gap: 16px; }
@@ -735,17 +741,17 @@ svg { flex-shrink: 0; }
 .qa-item b { font-size: 12.5px; font-weight: 600; display: block; }
 .qa-item em { font-size: 11px; color: var(--faint); font-style: normal; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 右侧侧栏编排：1 整行大卡 + 2×2 小卡网格（贴近参考图节奏，信息更紧凑） */
-.ctx-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
-@media (max-width: 1100px){ .ctx-grid2 { grid-template-columns: 1fr; } }
-.ctx-grid2 .ctx-card { padding: 14px 14px; }
-.ctx-grid2 .ctx-h { margin-bottom: 11px; font-size: 13px; }
-.ctx-grid2 .ctx-kv { margin-bottom: 8px; gap: 8px; font-size: 12.5px; }
-.ctx-grid2 .ctx-kv > span { width: 34px; }
-.ctx-grid2 .ctx-srcs { gap: 7px; margin-bottom: 10px; }
-.ctx-grid2 .ctx-src { font-size: 12px; gap: 7px; }
-.ctx-grid2 .qa-item { padding: 6px 6px; gap: 9px; }
-.ctx-grid2 .qa-ic { width: 28px; height: 28px; }
+/* 右侧侧栏编排：1 整行大卡 + 2×2 小卡网格（右栏≥460px 才有空间放 2 列） */
+.ctx-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 640px){ .ctx-grid2 { grid-template-columns: 1fr; } }
+.ctx-grid2 .ctx-card { padding: 15px 16px; min-width: 0; }
+.ctx-grid2 .ctx-h { margin-bottom: 12px; font-size: 13.5px; }
+.ctx-grid2 .ctx-kv { margin-bottom: 9px; gap: 10px; font-size: 13px; }
+.ctx-grid2 .ctx-kv > span { width: 36px; }
+.ctx-grid2 .ctx-srcs { gap: 8px; margin-bottom: 11px; }
+.ctx-grid2 .ctx-src { font-size: 12.5px; gap: 8px; }
+.ctx-grid2 .qa-item { padding: 7px 7px; gap: 10px; }
+.ctx-grid2 .qa-ic { width: 30px; height: 30px; }
 .ctx-grid2 .lnk-btn { margin-top: 2px; }
 .conv-composer { position: sticky; bottom: 0; z-index: 5; padding: 12px 0 16px; margin-top: 4px; background: linear-gradient(180deg, rgba(248,249,251,0) 0%, var(--bg) 22%); }
 /* 上下文里的 verdict badge 不竖向断行 */
