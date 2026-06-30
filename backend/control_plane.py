@@ -48,6 +48,11 @@ async def workspace_overview(workspace_id: str) -> dict[str, Any]:
     return await _call(build_workspace_overview, workspace_id)
 
 
+@router.get("/api/workspaces/{workspace_id}/latest-analysis")
+async def workspace_latest_analysis_endpoint(workspace_id: str) -> dict[str, Any]:
+    return await _call(workspace_latest_analysis, workspace_id)
+
+
 @router.get("/api/workspaces/{workspace_id}/pipeline")
 async def workspace_pipeline(workspace_id: str) -> dict[str, Any]:
     return await _call(workspace_pipeline_status, workspace_id)
@@ -156,7 +161,7 @@ def build_workspace_dashboard(workspace_id: str) -> dict[str, Any]:
             "ok": True,
             "service": "dataforge-backend",
             "search_endpoint": bool(os.environ.get("SEARCH_ENDPOINT")),
-            "workspace_default": "demo-corpus",
+            "workspace_default": "upload-cn-abe76cb16b-20260620102932",
             "dependencies": dependencies,
         },
         "dependency_details": health_value.get("dependency_details") or {},
@@ -197,6 +202,55 @@ def build_workspace_overview(workspace_id: str) -> dict[str, Any]:
         "latest_result": structured,
         "pipeline": pipeline,
         "artifacts": artifacts.get("artifacts") or [],
+    }
+
+
+def workspace_latest_analysis(workspace_id: str) -> dict[str, Any]:
+    started = time.perf_counter()
+    checked = 0
+    for summary in _with_duration(list_runs(workspace_id))[:100]:
+        run_id = str(summary.get("run_id") or "")
+        if not run_id:
+            continue
+        try:
+            run = get_run(run_id)
+        except FileNotFoundError:
+            continue
+        checked += 1
+        artifact = _strip_market_dump_from_artifact(_artifact(run))
+        if not _has_full_analysis_artifact(artifact):
+            continue
+        feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
+        return {
+            "workspace_id": workspace_id,
+            "found": True,
+            "run_id": run.get("run_id") or run_id,
+            "conversation_id": run.get("conversation_id"),
+            "artifact": artifact,
+            "feasibility": feasibility,
+            "trace": _flow_trace_from_run(run),
+            "run_trace": trace_from_run(run),
+            "pipeline": pipeline_from_run(run),
+            "summary": _safe_value(lambda: run_summary(run_id), {}),
+            "structured_result": structured_result_from_run(run),
+            "completed_at": run.get("completed_at") or run.get("updated_at") or summary.get("finished_at") or summary.get("time"),
+            "checked_runs": checked,
+            "duration_ms": _elapsed_ms(started),
+        }
+    return {
+        "workspace_id": workspace_id,
+        "found": False,
+        "run_id": None,
+        "conversation_id": None,
+        "artifact": {},
+        "feasibility": {},
+        "trace": [],
+        "run_trace": [],
+        "pipeline": {"workspace_id": workspace_id, "run_id": None, "stages": []},
+        "summary": {},
+        "structured_result": {},
+        "checked_runs": checked,
+        "duration_ms": _elapsed_ms(started),
     }
 
 
@@ -591,6 +645,50 @@ def _artifact(run: dict[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
+def _strip_market_dump_from_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(artifact, dict):
+        return {}
+    clone = dict(artifact)
+    answer = clone.get("answer")
+    if isinstance(answer, dict):
+        answer_clone = dict(answer)
+        for key in ("text", "markdown"):
+            if isinstance(answer_clone.get(key), str):
+                answer_clone[key] = _strip_market_dump(answer_clone[key])
+        clone["answer"] = answer_clone
+    return clone
+
+
+def _strip_market_dump(text: str) -> str:
+    value = str(text or "")
+    value = re.sub(r"(?ms)^[ \t]*(?:[-*][ \t]*)?外部市场只作为参考[：:][ \t]*\{.*?(?=^[ \t]*\*\*评分\*\*|^[ \t]*##|\Z)", "", value)
+    value = re.sub(r"(?ms)^[ \t]*(?:[-*][ \t]*)?市场补充[：:][ \t]*\{.*?(?=^[ \t]*##|\Z)", "", value)
+    return value.strip()
+
+
+def _has_full_analysis_artifact(artifact: dict[str, Any]) -> bool:
+    feasibility = artifact.get("feasibility") if isinstance(artifact, dict) else None
+    if not isinstance(feasibility, dict):
+        return False
+    dimensions = feasibility.get("dimensions")
+    return isinstance(dimensions, list) and any(isinstance(item, dict) for item in dimensions)
+
+
+def _flow_trace_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for step in run.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        event = str(step.get("event") or "").strip()
+        if not event:
+            continue
+        data = step.get("data") if isinstance(step.get("data"), dict) else {}
+        events.append({"event": event, "data": _sanitize_detail(data, depth=0), "time": step.get("time")})
+    if not any(item.get("event") == "final" for item in events) and _has_full_analysis_artifact(_artifact(run)):
+        events.append({"event": "final", "data": {"artifact": _artifact(run)}, "time": run.get("completed_at") or run.get("updated_at")})
+    return events[-60:]
+
+
 def _agents(run: dict[str, Any]) -> set[str]:
     agents: set[str] = set()
     for step in run.get("steps") or []:
@@ -636,6 +734,19 @@ def _step_status(step: dict[str, Any]) -> str:
 def _step_summary(step: dict[str, Any]) -> str:
     event = str(step.get("event") or "event")
     data = step.get("data") if isinstance(step.get("data"), dict) else {}
+    if event == "ready":
+        return _clean(f"运行已建立：{data.get('conversation_id') or data.get('run_id') or '等待智能体输出'}", 180)
+    if event in {"answer_delta", "delta"}:
+        return "答案正在流式生成"
+    if event == "final":
+        return _clean(f"最终结果已保存：{data.get('mode') or data.get('status') or 'analysis'}", 180)
+    if event == "error":
+        return _clean(f"运行失败：{data.get('message') or data.get('error') or '未知错误'}", 180)
+    if event == "progress":
+        return _clean(f"进度：{data.get('message') or data.get('stage') or data.get('status') or '处理中'}", 180)
+    if event == "clarify":
+        clarify = data.get("clarify") if isinstance(data.get("clarify"), dict) else data
+        return _clean(f"需要澄清：{clarify.get('question') or '补充关键信息'}", 180)
     if event == "route":
         experts = ", ".join(str(item) for item in data.get("experts") or [])
         return _clean(f"route: {data.get('intent') or 'unknown'} {experts}", 180)

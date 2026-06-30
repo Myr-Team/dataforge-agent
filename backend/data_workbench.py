@@ -574,10 +574,10 @@ def connect_sql(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
         tables = _sql_tables(payload)
     except RuntimeError as exc:
         _CONNECTORS.delete(connection_id)
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        _raise_sql_connector_error(exc, status_code=503)
     except Exception as exc:
         _CONNECTORS.delete(connection_id)
-        raise HTTPException(status_code=400, detail=_safe_connector_error(exc)) from exc
+        _raise_sql_connector_error(exc)
     return {
         "workspace_id": workspace_id,
         "connection_id": connection_id,
@@ -590,12 +590,26 @@ def connect_sql(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
 
 def list_sql_tables(workspace_id: str, connection_id: str) -> dict[str, Any]:
     payload = _CONNECTORS.get(connection_id, "sql", workspace_id)
-    return {"workspace_id": workspace_id, "connection_id": connection_id, "tables": _sql_tables(payload)}
+    try:
+        tables = _sql_tables(payload)
+    except RuntimeError as exc:
+        _raise_sql_connector_error(exc, status_code=503)
+    except Exception as exc:
+        _raise_sql_connector_error(exc)
+    return {"workspace_id": workspace_id, "connection_id": connection_id, "tables": tables}
 
 
 def preview_sql_table(workspace_id: str, connection_id: str, table: str, limit: int = 100) -> dict[str, Any]:
     payload = _CONNECTORS.get(connection_id, "sql", workspace_id)
-    return _sql_preview(payload, table, limit)
+    try:
+        return _sql_preview(payload, table, limit)
+    except ValueError:
+        raise
+    except RuntimeError as exc:
+        _raise_sql_connector_error(exc, status_code=503)
+    except Exception as exc:
+        _raise_sql_connector_error(exc)
+    raise RuntimeError("unreachable")
 
 
 def import_sql_table(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -1986,6 +2000,28 @@ class _ConnectorVault:
 
 
 _CONNECTORS = _ConnectorVault()
+
+
+def _raise_sql_connector_error(exc: BaseException, *, status_code: int = 400) -> None:
+    safe = _safe_connector_error(exc)
+    print(f"sql connector failed: {safe}", flush=True)
+    lowered = safe.lower()
+    if "driver is not installed" in lowered or "pymssql" in lowered and "pyodbc" in lowered:
+        message = "数据库连接组件不可用，请联系管理员检查后端镜像里的 SQL 驱动。"
+        hint = "需要安装 pymssql 或 pyodbc，并确认容器能加载对应驱动。"
+    elif any(term in lowered for term in ("login failed", "authentication", "password", "18456")):
+        message = "无法登录数据库，请检查账号、密码或身份连接串是否正确。"
+        hint = "建议先用只读账号验证；不要在截图或聊天里暴露密码。"
+    elif any(term in lowered for term in ("timeout", "timed out", "refused", "network", "db-lib", "server is unavailable", "could not open")):
+        message = "无法连接到数据库，请检查服务器地址、数据库名和防火墙是否允许当前后端访问。"
+        hint = "Azure SQL 常见原因是未放行客户端 IP、服务器名写错、端口 1433 不通或数据库暂不可用。"
+    else:
+        message = "数据库连接失败，请检查连接配置后重试。"
+        hint = "请确认服务器、数据库、账号权限和网络访问策略均正确。"
+    raise HTTPException(
+        status_code=status_code,
+        detail={"message": message, "hint": hint, "error_type": type(exc).__name__},
+    ) from exc
 
 
 def _safe_connector_error(exc: BaseException) -> str:

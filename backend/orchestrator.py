@@ -3014,9 +3014,6 @@ def _structured_answer(req: ChatRequest, decision: RoutingDecision, artifact: di
         "## 机会",
         f"- 机会方向：{_strip_inline_refs(opportunity_title)}。",
     ]
-    if market.get("positioning_note"):
-        market_markers = " ".join(f"[{item['marker']}]" for item in citations if item.get("source_type") == "market")[:24]
-        lines.append(f"- 市场补充：{_strip_inline_refs(market.get('positioning_note'))} {market_markers}".rstrip())
     lines.extend(["", "## 各维度评分与判断"])
     dimensions = feasibility.get("dimensions") or []
     if dimensions:
@@ -3768,9 +3765,6 @@ def _structured_answer_v10(req: ChatRequest, decision: RoutingDecision, artifact
         )
     elif artifact.get("verdict"):
         lines.append("经独立审计核验，结论未变。")
-    if market.get("positioning_note"):
-        market_markers = " ".join(f"[{item['marker']}]" for item in citations if item.get("source_type") == "market")
-        lines.append(f"外部市场只作为参考：{sanitize_customer_text(market.get('positioning_note'), field_labels)} {market_markers}".rstrip())
     dimensions = feasibility.get("dimensions") or []
     lines.append("")
     lines.append("**评分**")

@@ -114,6 +114,10 @@ export async function loadDashboard(workspaceId) {
   }
 }
 
+export async function loadLatestAnalysis(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/latest-analysis`);
+}
+
 export async function listWorkspaces() {
   const data = await request("/api/workspaces");
   return data.workspaces || [];

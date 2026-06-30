@@ -3,6 +3,7 @@ import {
   deleteWorkspace,
   loadConversation,
   loadDashboard,
+  loadLatestAnalysis,
   loadObservability,
   loadRun,
   produceArtifacts,
@@ -22,7 +23,12 @@ import {
 } from "./components.jsx";
 import { PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
 
-const DEFAULT_WORKSPACE = "demo-corpus";
+const DEFAULT_WORKSPACE = "upload-cn-abe76cb16b-20260620102932";
+
+const hasAnalysisDimensions = (artifact) => {
+  const dims = artifact?.feasibility?.dimensions;
+  return Array.isArray(dims) && dims.length > 0;
+};
 
 // 预览样例（?demo=1）：仅用于在云端接口就绪前，眼看工作区 BI 看板的填充效果；真实数据由后端接口替换。
 const DEMO_SEED = typeof window !== "undefined" && /[?&]demo=1/.test(window.location.search);
@@ -205,15 +211,38 @@ export function App() {
 
   // 恢复该工作区上次的可行性分析 + Agent Flow 流水线状态（刷新/换工作区后看板结论、五维、流水线都不丢）
   useEffect(() => {
+    let cancelled = false;
+    let restoredArtifact = null;
+    let restoredTrace = [];
     try {
       const raw = window.localStorage.getItem(`df-analysis:${workspaceId}`);
-      setFinalArtifact(raw ? JSON.parse(raw) : null);
-    } catch { setFinalArtifact(null); }
+      const parsed = raw ? JSON.parse(raw) : null;
+      restoredArtifact = hasAnalysisDimensions(parsed) ? parsed : null;
+    } catch { restoredArtifact = null; }
+    setFinalArtifact(restoredArtifact);
     setArtifacts({});
     try {
       const rawTrace = window.localStorage.getItem(`df-trace:${workspaceId}`);
-      setTrace(rawTrace ? JSON.parse(rawTrace) : []);
-    } catch { setTrace([]); }
+      restoredTrace = rawTrace ? JSON.parse(rawTrace) : [];
+    } catch { restoredTrace = []; }
+    setTrace(Array.isArray(restoredTrace) ? restoredTrace : []);
+    if (restoredArtifact) return () => { cancelled = true; };
+    loadLatestAnalysis(workspaceId)
+      .then((data) => {
+        if (cancelled || !data?.found || !hasAnalysisDimensions(data.artifact)) return;
+        setFinalArtifact(data.artifact);
+        const nextTrace = Array.isArray(data.trace) ? data.trace : [];
+        setTrace(nextTrace);
+        if (data.conversation_id) {
+          try { window.localStorage.setItem(`df-conv:${workspaceId}`, data.conversation_id); } catch { /* ignore */ }
+        }
+        try { window.localStorage.setItem(`df-analysis:${workspaceId}`, JSON.stringify(data.artifact)); } catch { /* ignore */ }
+        if (nextTrace.length) {
+          try { window.localStorage.setItem(`df-trace:${workspaceId}`, JSON.stringify(nextTrace.slice(-44))); } catch { /* ignore */ }
+        }
+      })
+      .catch(() => { /* overview fallback below still handles older dashboard snapshots */ });
+    return () => { cancelled = true; };
   }, [workspaceId]);
 
   // 本浏览器没有缓存时，用后端保存的 last_analysis 兜底，让工作区在任意设备

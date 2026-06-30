@@ -1340,6 +1340,26 @@ def _best_effort_text_field(text: str) -> str:
     return raw.replace("\\n", "\n").replace('\\"', '"').strip()
 
 
+def _market_text_field(value: Any, *, limit: int = 360) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if text.startswith(("{", "[")) or '"source_url"' in lowered or '"external_findings"' in lowered or '"数据字段"' in text:
+        return ""
+    return text[:limit]
+
+
+def _market_finding_value(finding: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = finding.get(key)
+        if value:
+            text = str(value).strip()
+            if text:
+                return text
+    return ""
+
+
 def run_market_web_research(payload: dict[str, Any]) -> dict[str, Any]:
     client = _project_client()
     openai_client = client.get_openai_client()
@@ -1384,17 +1404,19 @@ def run_market_web_research(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         data = _extract_json(text)
     except Exception:
-        data = {"external_findings": [], "positioning_note": text.strip()}
-    findings = data.get("external_findings") or []
+        data = {"external_findings": [], "positioning_note": _market_text_field(text)}
+    findings = data.get("external_findings")
+    if not isinstance(findings, list):
+        findings = next((value for value in data.values() if isinstance(value, list)), [])
     clean_findings: list[dict[str, Any]] = []
     for idx, finding in enumerate(findings[:4]):
         if not isinstance(finding, dict):
             continue
         source = sources[idx] if idx < len(sources) else {}
         item = {
-            "claim": str(finding.get("claim") or "").strip(),
-            "source_title": str(finding.get("source_title") or source.get("title") or "").strip(),
-            "source_url": str(finding.get("source_url") or source.get("url") or "").strip(),
+            "claim": _market_finding_value(finding, "claim", "结论", "summary", "description", "说明"),
+            "source_title": _market_finding_value(finding, "source_title", "title", "标题") or str(source.get("title") or "").strip(),
+            "source_url": _market_finding_value(finding, "source_url", "url", "链接", "来源") or str(source.get("url") or "").strip(),
             "confidence": "market_inferred",
             "source_type": "market",
         }
@@ -1419,7 +1441,7 @@ def run_market_web_research(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "external_findings": clean_findings,
         "sources": sources,
-        "positioning_note": str(data.get("positioning_note") or "").strip(),
+        "positioning_note": _market_text_field(data.get("positioning_note")),
         "_llm": meta,
     }
 
