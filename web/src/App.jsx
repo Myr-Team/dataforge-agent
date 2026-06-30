@@ -796,6 +796,7 @@ export function App() {
             producing={producing}
             observability={observability}
             onOpenConversation={openConversation}
+            tasks={tasks}
           />
         </div>
       </div>

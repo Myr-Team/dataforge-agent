@@ -64,7 +64,6 @@ const TABS = [
 
 // 能落地的标 available（可接入），尚未就绪的标 planned（计划上线）
 const CONNECTORS = [
-  { id: "purview", name: "Microsoft Purview", src: "/icons/purview.svg", state: "available", hint: "数据治理与统一编目" },
   { id: "blob", name: "Azure Blob Storage", src: "/icons/azure-blob.svg", state: "available", hint: "对象存储 · 支持连接接入" },
   { id: "sql", name: "SQL Database", src: "/icons/sql-database.svg", state: "available", hint: "数据库 · 账号密码连接" },
   { id: "adl", name: "Azure Data Lake", src: "/icons/data-lake.svg", state: "planned", hint: "数据湖 · 计划上线" },

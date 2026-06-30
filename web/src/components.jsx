@@ -528,6 +528,7 @@ export function WorkbenchMain({
   producing,
   observability,
   onOpenConversation,
+  tasks,
 }) {
   if (view === "conversations") {
     return (
@@ -559,7 +560,7 @@ export function WorkbenchMain({
     return <ArtifactsCenter dashboard={dashboard} artifacts={artifacts} artifact={finalArtifact} onProduce={onProduce} producing={producing} onUploadReference={onUploadReference} />;
   }
   if (view === "runs") {
-    return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} />;
+    return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} tasks={tasks} />;
   }
   if (view === "settings") {
     return <SettingsCenter dashboard={dashboard} observability={observability} />;
@@ -1785,6 +1786,19 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
               <button type="button" disabled={histPage >= histPages - 1} onClick={() => setHistPage((p) => Math.min(histPages - 1, p + 1))}><ChevronRight size={15} /></button>
             </div>
           ) : null}
+
+          <div className="rh-tasks">
+            <div className="rh-head"><strong>任务记录</strong><span className="rh-tasks-sub">{tasks?.length ? `近 ${tasks.length} 条` : ""}</span></div>
+            <div className="rh-list">
+              {tasks && tasks.length ? tasks.slice(0, 5).map((t, i) => (
+                <div className="rh-task" key={t.id || i}>
+                  <span className={`rh-task-ic ${t.status}`}>{t.status === "running" ? <Loader2 size={13} className="spin" /> : t.status === "error" ? <AlertTriangle size={13} /> : <CheckCircle2 size={13} />}</span>
+                  <div className="rh-task-main"><b>{t.label}</b>{t.detail ? <span>{t.detail}</span> : null}</div>
+                  {t.time ? <em>{formatTime(t.time)}</em> : null}
+                </div>
+              )) : <p className="empty-copy">暂无任务记录。发起分析或生成产物后会在这里归档。</p>}
+            </div>
+          </div>
         </aside>
       </div>
     </main>
