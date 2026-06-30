@@ -654,11 +654,11 @@ const _CV_RANK = { not_yet_feasible: 1, not_feasible: 1, rejected: 1, conditiona
 const _CV_LABEL = { 1: "暂不可行", 2: "有条件可行", 3: "可行" };
 const _CV_COLOR = { 1: "#8a5a00", 2: "#0A84E0", 3: "#0a7d4f" };
 function ConvergenceChart({ versions, flagshipId }) {
-  const vers = (versions || []).slice(-6);
+  const vers = (versions || []).slice(-8);
   if (vers.length < 2) return null;
   const n = vers.length;
-  const padL = 72;
-  const padR = 22;
+  const padL = 104;
+  const padR = 24;
   const H = 178;
   const padT = 30;
   const padB = 40;
@@ -690,7 +690,7 @@ function ConvergenceChart({ versions, flagshipId }) {
       {[1, 2, 3].map((r) => (
         <g key={r}>
           {r !== 3 ? <line x1={padL} y1={y(r)} x2={W - padR} y2={y(r)} stroke="#eef1f5" strokeWidth="1" /> : null}
-          <text x={padL - 12} y={y(r) + 3} fontSize="10.5" fill="#9aa3af" textAnchor="end">{_CV_LABEL[r]}</text>
+          <text x={padL - 26} y={y(r) + 3} fontSize="10.5" fill="#9aa3af" textAnchor="end">{_CV_LABEL[r]}</text>
         </g>
       ))}
       <path d={areaD} fill={`url(#${gid})`} />
@@ -738,6 +738,11 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
   const [cmpB, setCmpB] = useState("");
   const [diff, setDiff] = useState(null);
   const [diffLoading, setDiffLoading] = useState(false);
+  const [customRows, setCustomRows] = useState([]); // 用户自定义对比字段 {label,a,b}
+  const addCustomRow = () => setCustomRows((rs) => [...rs, { label: "", a: "", b: "" }]);
+  const editCustomRow = (i, patch) => setCustomRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const delCustomRow = (i) => setCustomRows((rs) => rs.filter((_, j) => j !== i));
+  const numDelta = (a, b) => { const x = parseFloat(a), y = parseFloat(b); if (Number.isNaN(x) || Number.isNaN(y)) return null; return y - x; };
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -847,25 +852,53 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
         ))}
       </div>
 
-      {/* 版本对比：一条工具栏 */}
+      {/* 版本对比：一条工具栏 + 按需展开的对比明细（含自定义字段） */}
       {versions.length >= 2 ? (
-        <div className="pi2-cmp">
-          <span className="pi2-cmp-t">版本对比</span>
-          <select value={cmpA} onChange={(e) => { setCmpA(e.target.value); setDiff(null); }}>
-            {versions.map((v) => <option key={v.id} value={v.id}>{v.vlabel}</option>)}
-          </select>
-          <span className="pi2-cmp-arrow">→</span>
-          <select value={cmpB} onChange={(e) => { setCmpB(e.target.value); setDiff(null); }}>
-            {versions.map((v) => <option key={v.id} value={v.id}>{v.vlabel}</option>)}
-          </select>
-          <button type="button" className="pi2-cmp-go" onClick={compare} disabled={!cmpA || !cmpB || cmpA === cmpB || diffLoading}>
-            {diffLoading ? <Loader2 className="spin" size={13} /> : <BarChart3 size={13} />} 对比
-          </button>
-          {diff ? (
-            <span className="pi2-cmp-sum">
-              {diff.verdict.dir > 0 ? "结论提升" : diff.verdict.dir < 0 ? "结论下降" : "结论未改善"}
-              {diff.gaps.added.length ? `，仍缺 ${String(diff.gaps.added[0]).slice(0, 28)}` : "，可行性指标无明显变化"}
-            </span>
+        <div className="pi2-cmpwrap">
+          <div className="pi2-cmp">
+            <span className="pi2-cmp-t">版本对比</span>
+            <select value={cmpA} onChange={(e) => { setCmpA(e.target.value); setDiff(null); }}>
+              {versions.map((v) => <option key={v.id} value={v.id}>{v.vlabel}</option>)}
+            </select>
+            <span className="pi2-cmp-arrow">→</span>
+            <select value={cmpB} onChange={(e) => { setCmpB(e.target.value); setDiff(null); }}>
+              {versions.map((v) => <option key={v.id} value={v.id}>{v.vlabel}</option>)}
+            </select>
+            <button type="button" className="pi2-cmp-go" onClick={compare} disabled={!cmpA || !cmpB || cmpA === cmpB || diffLoading}>
+              {diffLoading ? <Loader2 className="spin" size={13} /> : <BarChart3 size={13} />} 对比
+            </button>
+            <button type="button" className="pi2-cmp-add" onClick={addCustomRow}><Plus size={13} /> 自定义字段</button>
+            {diff ? (
+              <span className="pi2-cmp-sum">
+                {diff.verdict.dir > 0 ? "结论提升" : diff.verdict.dir < 0 ? "结论下降" : "结论未改善"}
+                {diff.gaps.added.length ? `，仍缺 ${String(diff.gaps.added[0]).slice(0, 24)}` : ""}
+              </span>
+            ) : null}
+          </div>
+
+          {diff || customRows.length ? (
+            <div className="pi2-diff">
+              <div className="pi2-diff-row head"><span>字段</span><span>{vlabelOf(cmpA)}</span><span>{vlabelOf(cmpB)}</span><span>变化</span></div>
+              {diff ? (
+                <>
+                  <div className="pi2-diff-row"><span>可行性结论</span><span>{VERDICT_LABELS[diff.verdict.from] || diff.verdict.from || "—"}</span><span>{VERDICT_LABELS[diff.verdict.to] || diff.verdict.to || "—"}</span><span className={`pi2-delta ${diff.verdict.dir > 0 ? "up" : diff.verdict.dir < 0 ? "down" : "flat"}`}>{diff.verdict.dir > 0 ? "↑" : diff.verdict.dir < 0 ? "↓" : "—"}</span></div>
+                  {diff.dims.map((d) => (
+                    <div className="pi2-diff-row" key={d.name}><span>{d.label}</span><span>{d.base}/5</span><span>{d.target}/5</span><span className={`pi2-delta ${d.delta > 0 ? "up" : d.delta < 0 ? "down" : "flat"}`}>{d.delta > 0 ? `+${d.delta}` : d.delta < 0 ? `${d.delta}` : "—"}</span></div>
+                  ))}
+                </>
+              ) : null}
+              {customRows.map((r, i) => {
+                const dl = numDelta(r.a, r.b);
+                return (
+                  <div className="pi2-diff-row custom" key={i}>
+                    <input className="pi2-cin" placeholder="字段名" value={r.label} onChange={(e) => editCustomRow(i, { label: e.target.value })} />
+                    <input className="pi2-cin" placeholder={vlabelOf(cmpA)} value={r.a} onChange={(e) => editCustomRow(i, { a: e.target.value })} />
+                    <input className="pi2-cin" placeholder={vlabelOf(cmpB)} value={r.b} onChange={(e) => editCustomRow(i, { b: e.target.value })} />
+                    <span className={`pi2-delta ${dl > 0 ? "up" : dl < 0 ? "down" : "flat"}`}>{dl == null ? <button type="button" className="pi2-cdel" onClick={() => delCustomRow(i)}>✕</button> : (dl > 0 ? `+${+dl.toFixed(2)}` : dl < 0 ? `${+dl.toFixed(2)}` : "—")}</span>
+                  </div>
+                );
+              })}
+            </div>
           ) : null}
         </div>
       ) : null}
