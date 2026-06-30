@@ -19,6 +19,7 @@ from starlette.concurrency import run_in_threadpool
 try:
     from . import cache_store
     from . import content_safety
+    from .blob_store import upload_artifact
     from .chat_loop_primitives import sse
     from .conversation_store import append_message, conversation_context
     from .customer_text import (
@@ -49,6 +50,7 @@ try:
         run_coordinator_direct_reply,
         run_coordinator_guidance,
         run_coordinator_route,
+        run_followup_assessment,
         run_followup_rewrite,
         run_action_plan,
         run_data_overview,
@@ -76,6 +78,7 @@ try:
 except ImportError:
     import cache_store
     import content_safety
+    from blob_store import upload_artifact
     from chat_loop_primitives import sse
     from conversation_store import append_message, conversation_context
     from customer_text import (
@@ -106,6 +109,7 @@ except ImportError:
         run_coordinator_direct_reply,
         run_coordinator_guidance,
         run_coordinator_route,
+        run_followup_assessment,
         run_followup_rewrite,
         run_action_plan,
         run_data_overview,
@@ -144,6 +148,8 @@ PRODUCT_TERMS = (
     "\u65b9\u6848",
     "\u53d8\u73b0",
 )
+ROOT = Path(__file__).resolve().parents[1]
+OUT_DIR = ROOT / "generated-outputs"
 _MARKET_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _MARKET_CACHE_SECONDS = float(os.environ.get("DF_MARKET_CACHE_SECONDS", "600"))
 MCP_TOOL_ALLOWLIST: dict[str, dict[str, Any]] = {
@@ -432,6 +438,22 @@ def _artifact_verdict(artifact: dict[str, Any], fallback: str | None = None) -> 
     if isinstance(feasibility, dict) and feasibility.get("verdict"):
         return str(feasibility.get("verdict"))
     return fallback
+
+
+def _last_analysis_from_context(context: dict[str, Any]) -> dict[str, Any]:
+    analysis = context.get("last_analysis") if isinstance(context, dict) else None
+    if not isinstance(analysis, dict):
+        return {}
+    if analysis.get("verdict") or analysis.get("opportunity_id") or analysis.get("text"):
+        return analysis
+    return {}
+
+
+def _workspace_last_analysis(workspace_id: str) -> dict[str, Any]:
+    try:
+        return _last_analysis_from_context(workspace_context(workspace_id))
+    except Exception:
+        return {}
 
 
 def _slug(value: str, fallback: str = "generated-data-product") -> str:
@@ -841,10 +863,11 @@ def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tu
     market_context = _market_context_requested(current_message)
     auto_analyze = _is_auto_analyze_request(req)
     heavy = _explicit_heavy_analysis_requested(current_message) or auto_analyze or requested_analysis_mode
+    last_analysis = _last_analysis_from_context(context)
     if (
         req.conversation_id
         and history
-        and _looks_like_context_followup(current_message)
+        and last_analysis
         and not heavy
         and not wants_artifact
         and not market_context
@@ -859,9 +882,10 @@ def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tu
             reason="同会话短追问命中快速路径，复用上一轮上下文，跳过 coordinator、检索和市场工具。",
         )
         return decision, {
-            "mode": "preflight_fast_route",
-            "fast_path": "followup_edit",
+            "mode": "preflight_followup_route",
+            "fast_path": "lightweight_followup",
             "market_tools_allowed": False,
+            "last_analysis_available": True,
         }
     if (
         _ordinary_workspace_qa_requested(current_message)
@@ -903,10 +927,16 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
     explicit_heavy = _explicit_heavy_analysis_requested(current_message) or auto_analyze or requested_analysis_mode
     ordinary_qa = _ordinary_workspace_qa_requested(current_message)
     followup_context = bool(req.conversation_id) and _looks_like_context_followup(current_message)
+    last_analysis = _last_analysis_from_context(context)
     allow_market_tools = bool((market_context or auto_analyze) and not data_only)
     forced_grounded_answer = False
     forced_fast_path = False
-    if doc_count > 0 and followup_context and not explicit_heavy and not wants_artifact and not market_context:
+    if doc_count > 0 and last_analysis and bool(req.conversation_id) and not explicit_heavy and not wants_artifact and not market_context:
+        intent = "followup_edit"
+        raw["needs_clarification"] = False
+        raw["output_mode"] = "chat"
+        forced_fast_path = True
+    elif doc_count > 0 and followup_context and not explicit_heavy and not wants_artifact and not market_context:
         intent = "followup_edit"
         raw["needs_clarification"] = False
         raw["output_mode"] = "chat"
@@ -2044,14 +2074,150 @@ def _clean_exec_summary_fallback(text: Any) -> str:
     return cleaned.strip()[:1600]
 
 
-_PRODUCE_KINDS = ("pdf", "concept_image", "audio")
+_PRODUCE_KINDS = ("pdf", "concept_image", "audio", "pilot_plan", "action_plan")
+
+
+def _run_text_artifact(proposal: dict[str, Any], kind: str) -> dict[str, Any]:
+    if kind == "pilot_plan":
+        title = "试点实验设计一页纸"
+        markdown = _pilot_plan_markdown(proposal)
+    elif kind == "action_plan":
+        title = "30/60/90 天行动清单"
+        markdown = _action_plan_markdown(proposal)
+    else:
+        raise ValueError(f"Unsupported text artifact kind: {kind}")
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    safe = _slug(str(proposal.get("opportunity_id") or proposal.get("title") or "dataforge"))
+    path = OUT_DIR / f"{safe}-{kind}-{int(time.time())}.md"
+    path.write_text(markdown, encoding="utf-8")
+    result: dict[str, Any] = {
+        "title": title,
+        "kind": kind,
+        "content_type": "text/markdown; charset=utf-8",
+        "markdown": markdown,
+        "artifact_name": path.name,
+        "artifact_url": f"/api/artifacts/{path.name}",
+        "local_path": str(path),
+        "bytes": path.stat().st_size,
+        "mode": "markdown-data-driven",
+    }
+    try:
+        blob = upload_artifact(path.name, path.read_bytes(), "text/markdown; charset=utf-8")
+        result["blob_name"] = blob.get("blob_name")
+        result["blob_url"] = blob.get("blob_url")
+    except Exception as exc:
+        result["blob_error"] = _clean_text(exc, 300)
+    return result
+
+
+def _pilot_plan_markdown(proposal: dict[str, Any]) -> str:
+    feasibility = proposal.get("feasibility") or {}
+    title = _clean_text(proposal.get("title") or proposal.get("opportunity_id") or "DataForge opportunity", 100)
+    verdict = _clean_text(feasibility.get("verdict") or "unknown", 40)
+    confidence = _clean_text(feasibility.get("overall_confidence") or "unknown", 40)
+    gaps = [str(item).strip() for item in (feasibility.get("gap_list") or []) if str(item).strip()][:5]
+    actions = [str(item).strip() for item in (feasibility.get("action_plan") or []) if str(item).strip()][:5]
+    evidence = proposal.get("evidence_appendix") or []
+    dimensions = [item for item in (feasibility.get("dimensions") or []) if isinstance(item, dict)]
+    metric_candidates = [
+        str(item.get("name") or "") for item in dimensions if int(item.get("score") or 0) >= 3
+    ][:2]
+    stop_gap = gaps[0] if gaps else "关键指标无法被当前数据验证"
+    lines = [
+        f"# 试点实验设计一页纸 - {title}",
+        "",
+        f"- 当前结论档位：{verdict}",
+        f"- 当前置信度：{confidence}",
+        "",
+        "## 1. 试点目标",
+        f"验证“{title}”是否能从现有数据信号走向可重复的业务机会，重点校准需求强度、转化路径和执行成本。",
+        "",
+        "## 2. 核心假设",
+        f"- 如果上一轮证据支撑的强项（{', '.join(metric_candidates) or '需求与执行信号'}）在小样本中继续成立，则进入扩大验证。",
+        f"- 如果出现“{stop_gap}”，则维持或下调结论档位。",
+        "",
+        "## 3. 样本与范围",
+        "- 选择一个可控渠道、一个目标人群和一个明确周期，避免一次验证覆盖过多变量。",
+        "- 样本量以能观察趋势为目标，不以证明规模化为目标。",
+        "",
+        "## 4. 指标",
+        "- 需求指标：触达后的点击、咨询、报名、试用或留资。",
+        "- 转化指标：从兴趣到付费/使用/复购的最短路径。",
+        "- 成本指标：人力、投放、交付和售后消耗。",
+        "- 证据指标：能否补齐上一轮缺口，而不是只证明想法好听。",
+        "",
+        "## 5. 缺口驱动的验证动作",
+    ]
+    for idx, gap in enumerate(gaps or ["补齐可核验的需求、转化和成本数据。"], start=1):
+        action = actions[idx - 1] if idx - 1 < len(actions) else "设计一个能直接观测该缺口的小实验。"
+        lines.append(f"{idx}. 缺口：{gap}；动作：{action}")
+    lines.extend(["", "## 6. Go / No-Go 标准"])
+    lines.append("- Go：关键需求和转化指标达到预设阈值，且最大缺口有新增证据支撑。")
+    lines.append("- Hold：有兴趣信号但转化、成本或数据口径仍不稳定。")
+    lines.append("- No-Go：新增证据无法支撑上一轮结论，或主要风险变成前置阻断。")
+    if evidence:
+        lines.extend(["", "## 7. 证据引用"])
+        for idx, item in enumerate(evidence[:6], start=1):
+            source = _clean_text(item.get("source_file") or item.get("ref") or "workspace evidence", 80)
+            quote = _clean_text(item.get("quote") or "", 140)
+            lines.append(f"- [{idx}] {source}" + (f"：{quote}" if quote else ""))
+    return "\n".join(lines).strip() + "\n"
+
+
+def _action_plan_markdown(proposal: dict[str, Any]) -> str:
+    feasibility = proposal.get("feasibility") or {}
+    title = _clean_text(proposal.get("title") or proposal.get("opportunity_id") or "DataForge opportunity", 100)
+    gaps = [str(item).strip() for item in (feasibility.get("gap_list") or []) if str(item).strip()]
+    actions = [str(item).strip() for item in (feasibility.get("action_plan") or []) if str(item).strip()]
+    risk_register = [item for item in (proposal.get("risk_register") or []) if isinstance(item, dict)]
+    roadmap = [item for item in (proposal.get("roadmap") or []) if isinstance(item, dict)]
+    def action_at(index: int, fallback: str) -> str:
+        return actions[index] if index < len(actions) else fallback
+    lines = [
+        f"# 30/60/90 天行动清单 - {title}",
+        "",
+        "## 0-30 天：校准证据",
+        f"- {action_at(0, '把上一轮结论拆成一个可验证的最小试点。')}",
+        f"- {action_at(1, '补齐需求、转化和成本三类核心数据。')}",
+        f"- 重点缺口：{gaps[0] if gaps else '确认当前证据能否支撑进入试点。'}",
+        "",
+        "## 31-60 天：扩大验证",
+        f"- {action_at(2, '扩大到第二个样本或渠道，验证结论是否可重复。')}",
+        f"- {action_at(3, '记录转化率、单位成本和交付压力，避免只看表层兴趣。')}",
+        f"- 风险处理：{_risk_line(risk_register, 0)}",
+        "",
+        "## 61-90 天：决策沉淀",
+        f"- {action_at(4, '形成 Go/Hold/No-Go 决策，并把证据沉淀为可复用方案。')}",
+        "- 若指标达标：准备产品化范围、资源预算和上线节奏。",
+        "- 若指标不达标：保留有证据的局部方向，停止没有新增证据的扩张。",
+    ]
+    if roadmap:
+        lines.extend(["", "## 来自分析的阶段路线"])
+        for item in roadmap[:3]:
+            phase = _clean_text(item.get("phase") or "", 80)
+            metric = _clean_text(item.get("metric") or "", 120)
+            steps = [str(step).strip() for step in (item.get("steps") or []) if str(step).strip()]
+            lines.append(f"- {phase}" + (f"：{metric}" if metric else ""))
+            for step in steps[:3]:
+                lines.append(f"  - {step}")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _risk_line(risks: list[dict[str, Any]], index: int) -> str:
+    if index < len(risks):
+        risk = risks[index]
+        gap = _clean_text(risk.get("gap") or "", 90)
+        mitigation = _clean_text(risk.get("mitigation") or "", 110)
+        if gap or mitigation:
+            return (gap + ("；" if gap and mitigation else "") + mitigation).strip("；")
+    return "优先处理会改变结论档位的证据缺口。"
 
 
 def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> dict[str, Any]:
     # 默认只生成项目文档(PDF)+概念图，语音摘要按需（非必要产物）
-    wanted = [k for k in (kinds or ["pdf", "concept_image"]) if k in _PRODUCE_KINDS]
+    wanted = [k for k in (kinds or ["pdf", "concept_image", "pilot_plan", "action_plan"]) if k in _PRODUCE_KINDS]
     if not wanted:
-        wanted = ["pdf", "concept_image"]
+        wanted = ["pdf", "concept_image", "pilot_plan", "action_plan"]
     if not artifact.get("reference_images"):
         artifact["reference_images"] = workspace_reference_images(str(artifact.get("workspace_id") or ""))
     proposal = _proposal_payload(artifact)
@@ -2070,8 +2236,10 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
         except Exception as exc:
             return {"mode": f"{key}_error", "error": _clean_text(exc, 500)}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dataforge-producer") as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5, thread_name_prefix="dataforge-producer") as pool:
         pdf_future = pool.submit(render_pdf_report, proposal, "project_proposal") if "pdf" in wanted else None
+        pilot_future = pool.submit(_run_text_artifact, proposal, "pilot_plan") if "pilot_plan" in wanted else None
+        action_future = pool.submit(_run_text_artifact, proposal, "action_plan") if "action_plan" in wanted else None
         image_future = None
         if "concept_image" in wanted:
             image_prompt = _image_prompt_from_proposal(proposal)
@@ -2091,6 +2259,20 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
             result["pdf"] = pdf
             if pdf.get("artifact_url"):
                 result["artifact_urls"]["pdf"] = pdf.get("artifact_url")
+        if pilot_future:
+            pilot = collect_future(pilot_future, "pilot_plan") or {}
+            result["pilot_plan"] = pilot
+            if pilot.get("artifact_url"):
+                result["artifact_urls"]["pilot_plan"] = pilot.get("artifact_url")
+            else:
+                result.setdefault("warnings", []).append({"kind": "pilot_plan", "message": "试点实验设计生成失败。", "error": _clean_text(pilot.get("error") or "no artifact url", 300)})
+        if action_future:
+            action = collect_future(action_future, "action_plan") or {}
+            result["action_plan"] = action
+            if action.get("artifact_url"):
+                result["artifact_urls"]["action_plan"] = action.get("artifact_url")
+            else:
+                result.setdefault("warnings", []).append({"kind": "action_plan", "message": "30/60/90 天行动清单生成失败。", "error": _clean_text(action.get("error") or "no artifact url", 300)})
         if image_future:
             image = collect_future(image_future, "concept_image") or {}
             result["concept_image"] = image
@@ -2235,7 +2417,7 @@ def generate_playbook_detail(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
-    kinds = payload.get("kinds") or ["pdf", "concept_image"]
+    kinds = payload.get("kinds") or ["pdf", "concept_image", "pilot_plan", "action_plan"]
     artifact = {
         "workspace_id": payload.get("workspace_id") or "demo-corpus",
         "conversation_id": payload.get("conversation_id"),
@@ -3775,9 +3957,11 @@ async def _producer_frames(artifact: dict[str, Any], conversation_id: str) -> As
     reference_count = len(artifact.get("reference_images") or workspace_reference_images(str(artifact.get("workspace_id") or "")))
     routing = artifact.get("routing") if isinstance(artifact.get("routing"), dict) else {}
     output_mode = str(routing.get("output_mode") or "")
-    wanted = ["pdf", "concept_image", "audio"] if output_mode == "full_package" else ["pdf", "concept_image"]
+    wanted = ["pdf", "concept_image", "pilot_plan", "action_plan", "audio"] if output_mode == "full_package" else ["pdf", "concept_image", "pilot_plan", "action_plan"]
     yield _frame("tool_call", {"agent": "df-producer", "name": "render_pdf_report", "args": {"template": "project_proposal"}}, conversation_id)
     yield _frame("tool_call", {"agent": "df-producer", "name": "generate_image", "args": {"size": "1024x1024", "reference_count": reference_count}}, conversation_id)
+    yield _frame("tool_call", {"agent": "df-producer", "name": "pilot_plan", "args": {"format": "markdown"}}, conversation_id)
+    yield _frame("tool_call", {"agent": "df-producer", "name": "action_plan", "args": {"format": "markdown"}}, conversation_id)
     if "audio" in wanted:
         yield _frame("tool_call", {"agent": "df-producer", "name": "narrate_summary", "args": {"voice": "zh-CN-XiaoxiaoNeural"}}, conversation_id)
     producer_task = asyncio.create_task(run_in_threadpool(_run_producer, artifact, wanted))
@@ -3824,6 +4008,16 @@ async def _producer_frames(artifact: dict[str, Any], conversation_id: str) -> As
     yield _frame(
         "tool_result",
         tool_result_payload("generate_image", "concept_image", "concept_image"),
+        conversation_id,
+    )
+    yield _frame(
+        "tool_result",
+        tool_result_payload("pilot_plan", "pilot_plan", "pilot_plan"),
+        conversation_id,
+    )
+    yield _frame(
+        "tool_result",
+        tool_result_payload("action_plan", "action_plan", "action_plan"),
         conversation_id,
     )
     if "audio" in wanted:
@@ -3884,13 +4078,51 @@ def _fast_followup_reply(req: ChatRequest, history: list[dict[str, Any]]) -> dic
     }
 
 
+def _fallback_followup_assessment(req: ChatRequest, previous: str, last_analysis: dict[str, Any]) -> dict[str, Any]:
+    gaps = [str(item).strip() for item in (last_analysis.get("gap_list") or []) if str(item).strip()][:4]
+    action_plan = [str(item).strip() for item in (last_analysis.get("action_plan") or []) if str(item).strip()]
+    verdict = str(last_analysis.get("verdict") or "").strip()
+    opportunity = _clean_text(last_analysis.get("opportunity_id") or _last_history_user_topic({"workspace_id": req.workspace_id, "_conversation_history": _compact_history([{"role": "assistant", "text": previous}] )}), 80)
+    current = _clean_text(_intent_message(req.message), 180)
+    if len(re.sub(r"\s+", "", current)) < 6:
+        clarify = "这条跟进还缺少目标、范围或判断标准。你希望我评估哪个对象、用什么指标判断？"
+        text = f"我能基于上一轮结论继续判断，但这条补充还不够明确。{clarify}"
+        assessment = "unclear"
+        should_clarify = True
+    else:
+        gap_text = "；".join(gaps[:2]) if gaps else "需要补充能验证需求、转化或执行成本的数据"
+        next_step = action_plan[0] if action_plan else "先把新增约束转成可验证的小样本实验。"
+        text = (
+            f"这是轻量跟进判断，不会重跑完整多智能体链。围绕{opportunity or '上一轮方案'}，"
+            f"当前结论仍参考上一轮档位 {verdict or 'unknown'}；新增想法需要先补齐：{gap_text}。"
+            f"建议下一步：{next_step}"
+        )
+        assessment = "needs_more_evidence" if gaps else "supported"
+        clarify = ""
+        should_clarify = False
+    return {
+        "text": text,
+        "mode": "followup_local_fallback",
+        "response_id": None,
+        "usage": {},
+        "assessment": assessment,
+        "gaps": gaps,
+        "clarify": clarify,
+        "should_clarify": should_clarify,
+    }
+
+
 def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: list[dict[str, Any]]) -> dict[str, Any]:
-    if decision.intent == "followup_edit" and _looks_like_context_followup(req.message):
-        return _fast_followup_reply(req, history)
     context = workspace_context(req.workspace_id)
     payload = {
         "workspace_id": req.workspace_id,
-        "workspace_context": context,
+        "workspace_context": {
+            "workspace_id": context.get("workspace_id"),
+            "name": context.get("name"),
+            "doc_count": context.get("doc_count"),
+            "profile_summary": context.get("profile_summary"),
+            "customer_summary": context.get("customer_summary"),
+        },
         "current_message": req.message,
         "conversation_history": _compact_history(history),
         "routing": decision.model_dump(),
@@ -3898,15 +4130,26 @@ def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: lis
     }
     if decision.intent == "followup_edit":
         previous = _last_assistant_text(history)
-        if not previous:
+        last_analysis = _last_analysis_from_context(context)
+        if not previous and not last_analysis:
             return {
                 "text": "我需要先有上一轮分析结果，才能按你的要求改写。请先完成一次分析，或把要改写的内容贴给我。",
                 "mode": "followup_missing_context",
                 "response_id": None,
                 "usage": {},
+                "assessment": "unclear",
+                "gaps": ["missing_previous_analysis"],
+                "clarify": "请先完成一次分析，或贴出要跟进判断的上一轮结论。",
+                "should_clarify": True,
             }
-        payload["previous_assistant_answer"] = previous
-        return run_followup_rewrite(payload)
+        payload["previous_assistant_answer"] = previous[:1800]
+        payload["last_analysis"] = last_analysis
+        try:
+            return run_followup_assessment(payload)
+        except Exception as exc:
+            fallback = _fallback_followup_assessment(req, previous, last_analysis)
+            fallback["error"] = _clean_text(exc, 300)
+            return fallback
     return run_coordinator_direct_reply(payload)
 
 
@@ -3929,6 +4172,21 @@ async def _emit_lightweight_final(
         yield _frame("answer_delta", {"delta": delta}, conv_id)
         await asyncio.sleep(0)
     meta = {key: result.get(key) for key in ("mode", "response_id", "usage", "error") if key in result}
+    gaps = [str(item).strip() for item in (result.get("gaps") or []) if str(item).strip()]
+    clarify_text = str(result.get("clarify") or "").strip()
+    clarify_payload = {"question": clarify_text, "reason": "followup_needs_scope"} if clarify_text else None
+    artifact["mode"] = "followup" if decision.intent == "followup_edit" else "analysis"
+    artifact["followup"] = {
+        "assessment": result.get("assessment"),
+        "gaps": gaps,
+        "clarify": clarify_payload,
+        "should_clarify": bool(result.get("should_clarify")),
+        "mode": meta.get("mode"),
+    }
+    if gaps:
+        artifact["gaps"] = gaps
+    if clarify_payload:
+        artifact["clarify"] = clarify_payload
     artifact["answer"] = {
         "markdown": text,
         "text": text,
@@ -3940,12 +4198,28 @@ async def _emit_lightweight_final(
     artifact["output_contract"] = _chat_output_contract(decision.intent)
     final_payload = {
         "text": text,
+        "mode": artifact["mode"],
+        "gaps": gaps,
+        "clarify": clarify_payload,
         "routing": decision.model_dump(),
         "artifact": artifact,
         "output_contract": artifact["output_contract"],
         "confidence": "speculative",
         "confidence_label": confidence_label("speculative"),
     }
+    if decision.intent == "followup_edit":
+        yield _frame(
+            "followup",
+            {
+                "mode": "followup",
+                "assessment": result.get("assessment"),
+                "gaps": gaps,
+                "clarify": clarify_payload,
+                "lightweight": True,
+                "experts": decision.experts,
+            },
+            conv_id,
+        )
     yield _frame("model_response", {"agent": "df-coordinator", **meta}, conv_id)
     yield _frame("final", final_payload, conv_id)
     asyncio.create_task(
@@ -4033,6 +4307,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         "route",
         {
             "intent": decision.intent,
+            "mode": "followup" if decision.intent == "followup_edit" else "analysis",
             "reason": decision.reason,
             "experts": decision.experts,
             "output_mode": decision.output_mode,
@@ -4453,6 +4728,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
             artifact.setdefault("output_contract", _output_contract(decision.intent))
             final_payload = {
                 "text": summary,
+                "mode": "analysis",
                 "routing": decision.model_dump(),
                 "artifact": artifact,
                 "output_contract": artifact["output_contract"],
@@ -4485,6 +4761,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     artifact.setdefault("output_contract", _output_contract(decision.intent))
     final_payload = {
         "text": summary,
+        "mode": "analysis",
         "routing": decision.model_dump(),
         "artifact": artifact,
         "output_contract": artifact["output_contract"],
