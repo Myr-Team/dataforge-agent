@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from backend import data_workbench as dw  # noqa: E402
 from backend import orchestrator  # noqa: E402
+from backend.schemas import ChatRequest  # noqa: E402
 from backend.workspace_store import create_workspace_upload_job, delete_workspace, run_workspace_ingest_job  # noqa: E402
 
 
@@ -42,6 +43,13 @@ def _create_workspace() -> dict[str, Any]:
         "3,west,999,outlier\n"
     ).encode("utf-8")
     md_content = "# Market notes\n\nCustomers mention installation friction and missing parts.\n".encode("utf-8")
+    json_content = json.dumps(
+        [
+            {"region": "north", "demand_score": 8, "pilot_cost": 1200},
+            {"region": "south", "demand_score": 3, "pilot_cost": None},
+        ],
+        ensure_ascii=False,
+    ).encode("utf-8")
     result = create_workspace_upload_job(
         files=[
             {"filename": "device_events.csv", "content": csv_content, "content_type": "text/csv"},
@@ -51,6 +59,7 @@ def _create_workspace() -> dict[str, Any]:
                 "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             },
             {"filename": "market_notes.md", "content": md_content, "content_type": "text/markdown"},
+            {"filename": "pilot_regions.json", "content": json_content, "content_type": "application/json"},
         ],
         name=f"Round3 Workbench Contract {uuid.uuid4().hex[:6]}",
     )
@@ -72,6 +81,7 @@ def test_files_content_quality_edit_history() -> None:
 
         csv_file = next(item for item in data_files if item["type"] == "csv")
         xlsx_file = next(item for item in data_files if item["type"] == "xlsx")
+        json_file = next(item for item in data_files if item["type"] == "json")
         md_file = next(item for item in doc_files if item["type"] == "md")
 
         csv_preview = dw.preview_file_content(workspace_id, csv_file["id"], limit=2, offset=1)
@@ -90,6 +100,14 @@ def test_files_content_quality_edit_history() -> None:
         assert quality["quality"]["missing_pct"] > 0
         assert quality["quality"]["duplicate_pct"] > 0
         assert quality["validation"]["status"] in {"warn", "failed"}
+
+        json_preview = dw.preview_file_content(workspace_id, json_file["id"], limit=2, offset=0)
+        assert json_preview["kind"] == "json"
+        assert json_preview["total_chars"] > 20
+        assert "pilot_cost" in json_preview["text"]
+        json_quality = dw.file_quality(workspace_id, json_file["id"])
+        assert json_quality["field_mapping"]["total"] == 3
+        assert json_quality["quality"]["missing_pct"] > 0
 
         saved = dw.save_table_cells(workspace_id, csv_file["id"], {"edits": [{"row": 0, "col": "score", "value": "11"}]})
         assert saved["saved_at"]
@@ -124,8 +142,24 @@ def test_files_content_quality_edit_history() -> None:
         assert created_csv_preview["rows"][0] == ["trial_signup", "12"]
         assert created_csv_preview["total_cols"] == 2
 
+        structured = dw.save_table_cells(
+            workspace_id,
+            created_csv["file"]["id"],
+            {
+                "add_rows": [{"values": ["pilot_retention", "0.62"]}],
+                "add_cols": [{"name": "owner", "values": ["growth", "finance", "ops"]}],
+                "delete_rows": [1],
+            },
+        )
+        assert structured["changes"]["rows_added"] == 1
+        assert structured["changes"]["rows_deleted"] == 1
+        assert structured["changes"]["cols_added"] == 1
+        structured_preview = dw.preview_file_content(workspace_id, created_csv["file"]["id"], limit=10, offset=0)
+        assert [col["name"] for col in structured_preview["columns"]] == ["metric", "value", "owner"]
+        assert structured_preview["total_rows"] == 2
+
         initial_mapping = dw.file_field_mapping(workspace_id, created_csv["file"]["id"])
-        assert initial_mapping["field_mapping"]["total"] == 2
+        assert initial_mapping["field_mapping"]["total"] == 3
         saved_mapping = dw.save_file_field_mapping(
             workspace_id,
             created_csv["file"]["id"],
@@ -136,6 +170,11 @@ def test_files_content_quality_edit_history() -> None:
         metric_field = next(item for item in mapped_quality["field_mapping"]["fields"] if item["name"] == "metric")
         assert metric_field["target"] == "business_metric"
         assert metric_field["mapping_source"] == "user"
+
+        deleted = dw.delete_workspace_file(workspace_id, created_md["file"]["id"])
+        assert deleted["deleted"] is True
+        after_delete = dw.list_workspace_files(workspace_id)
+        assert all(created_md["file"]["id"] != item["id"] for group in after_delete["groups"] for item in group["files"])
     finally:
         delete_workspace(workspace_id)
 
@@ -197,6 +236,19 @@ def test_connector_credentials_are_session_scoped_and_not_echoed() -> None:
         dw._sql_tables = original_sql
 
 
+def test_followup_clarifies_when_requested_evidence_is_missing() -> None:
+    req = ChatRequest(workspace_id="demo-contract", message="应该在哪个区域先做试点？")
+    result = orchestrator._followup_evidence_clarification(
+        req,
+        {"gap_list": ["上一轮分析缺少区域、门店或城市层面的对比证据。"]},
+        {"profile_summary": "工作区只有总体需求和成本摘要。", "customer_summary": "", "documents": []},
+    )
+    assert result is not None
+    assert result["should_clarify"] is True
+    assert result["assessment"] == "needs_clarification"
+    assert "区域" in result["clarify"]
+
+
 def test_produce_roadmap_and_validation_plan_contract() -> None:
     original_summary = orchestrator.run_executive_summary
     original_references = orchestrator.workspace_reference_images
@@ -243,6 +295,7 @@ def main() -> None:
         test_files_content_quality_edit_history,
         test_analyze_selected_files_contract,
         test_connector_credentials_are_session_scoped_and_not_echoed,
+        test_followup_clarifies_when_requested_evidence_is_missing,
         test_produce_roadmap_and_validation_plan_contract,
     ]
     for test in tests:

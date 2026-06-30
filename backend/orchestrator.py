@@ -4238,6 +4238,65 @@ def _fallback_followup_assessment(req: ChatRequest, previous: str, last_analysis
     }
 
 
+def _followup_evidence_clarification(req: ChatRequest, last_analysis: dict[str, Any], context: dict[str, Any]) -> dict[str, Any] | None:
+    current = _clean_text(_intent_message(req.message), 240)
+    if not current:
+        return None
+    asks_choice = bool(
+        re.search(
+            r"(哪里|在哪|哪个|哪一|优先|首选|排名|比较|选择|选址|试点|落地|先做|where|which|best|prioriti[sz]e|pilot|site)",
+            current,
+            re.I,
+        )
+    )
+    if not asks_choice:
+        return None
+
+    dimensions = [
+        ("候选区域/场点", r"(哪里|在哪|区域|地区|城市|地点|场地|场点|门店|网点|站点|选址|site|location|region|city|store|branch)"),
+        ("目标客群/使用对象", r"(客户|客群|用户|人群|画像|对象|segment|persona|customer|user)"),
+        ("成本/预算边界", r"(成本|预算|价格|投入|费用|毛利|单价|cost|budget|price|margin)"),
+        ("转化/需求指标", r"(需求|转化|报名|订单|留存|使用率|点击|访问|conversion|demand|retention|usage|order)"),
+        ("执行资源/时间窗口", r"(周期|时间|排期|人力|资源|容量|交付|上线|timeline|capacity|delivery|resource)"),
+    ]
+    requested = [(label, pattern) for label, pattern in dimensions if re.search(pattern, current, re.I)]
+    if not requested:
+        return None
+
+    source_text = " ".join(
+        _clean_text(part, 1500)
+        for part in [
+            context.get("profile_summary"),
+            context.get("customer_summary"),
+            json.dumps(context.get("documents") or [], ensure_ascii=False),
+        ]
+        if part
+    )
+    gap_text = " ".join(_clean_text(item, 240) for item in (last_analysis.get("gap_list") or []) if str(item).strip())
+    missing: list[str] = []
+    for label, pattern in requested:
+        source_has_dimension = bool(re.search(pattern, source_text, re.I))
+        gap_says_missing = bool(re.search(rf"(缺|不足|未覆盖|未提供|没有|missing|insufficient).{{0,18}}{pattern}|{pattern}.{{0,18}}(缺|不足|未覆盖|未提供|没有|missing|insufficient)", gap_text, re.I))
+        if gap_says_missing or not source_has_dimension:
+            missing.append(label)
+
+    if not missing:
+        return None
+    missing = missing[:3]
+    gap = "、".join(missing)
+    question = f"要判断{current[:40]}，还需要补充{gap}的候选项和对应证据。你希望比较哪些候选，分别有什么需求、成本或转化数据？"
+    return {
+        "text": f"这一步不能直接给确定建议，因为当前工作区证据不足以支撑这个选择题。缺口是：{gap}。{question}",
+        "mode": "followup_evidence_guard",
+        "response_id": None,
+        "usage": {},
+        "assessment": "needs_clarification",
+        "gaps": [f"缺少{item}证据" for item in missing],
+        "clarify": question,
+        "should_clarify": True,
+    }
+
+
 def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: list[dict[str, Any]]) -> dict[str, Any]:
     context = workspace_context(req.workspace_id)
     payload = {
@@ -4268,6 +4327,9 @@ def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: lis
                 "clarify": "请先完成一次分析，或贴出要跟进判断的上一轮结论。",
                 "should_clarify": True,
             }
+        clarification = _followup_evidence_clarification(req, last_analysis, context)
+        if clarification:
+            return clarification
         payload["previous_assistant_answer"] = previous[:1800]
         payload["last_analysis"] = last_analysis
         try:

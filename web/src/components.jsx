@@ -583,7 +583,7 @@ function WorkbenchMainInner({
   if (view === "data") {
     return (
       <Suspense fallback={<main className="agent-studio data-stage"><div style={{ padding: 40, color: "var(--muted)" }}>加载数据工作台…</div></main>}>
-        <DataWorkbench dashboard={dashboard} onUpload={onAppendUpload} onOpenConversation={onOpenConversation} />
+        <DataWorkbench dashboard={dashboard} onUpload={onAppendUpload} onOpenConversation={onOpenConversation} onRun={onRun} />
       </Suspense>
     );
   }
@@ -1207,7 +1207,26 @@ function AuditCard({ artifact }) {
   const contract = artifact?.verdict || {};
   const fe = artifact?.feasibility || {};
   const hasAnalysis = Boolean(fe.verdict || (fe.dimensions && fe.dimensions.length));
-  if (!audit || !hasAnalysis) return null;
+  if (!audit || !hasAnalysis) {
+    return (
+      <section className="audit-card is-placeholder">
+        <div className="audit-head">
+          <ShieldCheck size={16} />
+          <div className="audit-title">
+            <strong>独立审计 · 待运行</strong>
+            <span>完成一次分析后，这里会展示盲判复核、降档原因和复修结果。</span>
+          </div>
+          <span className="audit-badge">待审计</span>
+        </div>
+        <div className="audit-revision unchanged">
+          <span className="av-from">初判</span>
+          <span className="av-arrow">→</span>
+          <span className="av-to">审计结论</span>
+          <em>等待真实证据进入审计链路</em>
+        </div>
+      </section>
+    );
+  }
   const revised = contract.revised || null;
   const blindLabel = contract.blind?.judgment || VERDICT_LABELS[fe.verdict] || "初判";
   const disagreement = (contract.disagreement || []).slice(0, 4);
@@ -1298,34 +1317,36 @@ function verdictTone(v) {
 // 中央英雄区：可行性结论大字 + 五维可行性评分横条（对齐 效果.png）
 function VerdictRadar({ dims }) {
   const items = (dims || []).slice(0, 5);
-  if (items.length < 3) return null;
+  const displayItems = items.length >= 3
+    ? items
+    : Object.keys(DIMENSION_LABELS).slice(0, 5).map((name) => ({ name, score: 0 }));
   const size = 192;
   const cx = size / 2;
   const cy = size / 2;
   const R = size * 0.31;
-  const n = items.length;
+  const n = displayItems.length;
   const pt = (i, r) => {
     const a = -Math.PI / 2 + (i * 2 * Math.PI) / n;
     return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
   };
-  const ring = (k) => items.map((_, i) => pt(i, R * k).map((v) => v.toFixed(1)).join(",")).join(" ");
+  const ring = (k) => displayItems.map((_, i) => pt(i, R * k).map((v) => v.toFixed(1)).join(",")).join(" ");
   const sc = (d) => Math.max(0, Math.min(5, Number(d.score || 0)));
-  const shape = items.map((d, i) => pt(i, R * (sc(d) / 5)).map((v) => v.toFixed(1)).join(",")).join(" ");
+  const shape = displayItems.map((d, i) => pt(i, R * (sc(d) / 5)).map((v) => v.toFixed(1)).join(",")).join(" ");
   return (
-    <svg className="verdict-radar" viewBox={`0 0 ${size} ${size}`} role="img" aria-label="五维雷达图">
+    <svg className={`verdict-radar ${items.length < 3 ? "is-placeholder" : ""}`} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="五维雷达图">
       {[0.25, 0.5, 0.75, 1].map((k) => (
         <polygon key={k} points={ring(k)} fill="none" stroke="#e5e7eb" strokeWidth="1" />
       ))}
-      {items.map((_, i) => {
+      {displayItems.map((_, i) => {
         const [x, y] = pt(i, R);
         return <line key={i} x1={cx} y1={cy} x2={x.toFixed(1)} y2={y.toFixed(1)} stroke="#e5e7eb" strokeWidth="1" />;
       })}
       <polygon points={shape} fill="rgba(37,99,235,0.14)" stroke="#2563eb" strokeWidth="2" />
-      {items.map((d, i) => {
+      {displayItems.map((d, i) => {
         const [x, y] = pt(i, R * (sc(d) / 5));
         return <circle key={i} cx={x.toFixed(1)} cy={y.toFixed(1)} r="3" fill="#2563eb" />;
       })}
-      {items.map((d, i) => {
+      {displayItems.map((d, i) => {
         const [lx, ly] = pt(i, R + 16);
         return (
           <text key={i} x={lx.toFixed(1)} y={ly.toFixed(1)} fontSize="10.5" fill="#6e6e73" textAnchor="middle" dominantBaseline="middle">
@@ -1333,6 +1354,7 @@ function VerdictRadar({ dims }) {
           </text>
         );
       })}
+      {items.length < 3 ? <text x={cx} y={cy} fontSize="12" fill="#6e6e73" textAnchor="middle">等待分析</text> : null}
     </svg>
   );
 }
@@ -1468,8 +1490,8 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
       </header>
 
       <section className="card out-status">
-        <div className="os-item"><div className="os-ic blue"><Sparkles size={18} /></div><div><span>当前分析状态</span><b>{hasAnalysis ? "分析已完成" : "等待分析"}</b><em>最后更新：2024-05-02 10:22</em></div></div>
-        <div className="os-item"><div className="os-ic ok"><ShieldCheck size={18} /></div><div><span>审核状态</span><b className="ok">已通过</b><em>审核时间：2024-05-02 10:22</em></div></div>
+        <div className="os-item"><div className="os-ic blue"><Sparkles size={18} /></div><div><span>当前分析状态</span><b>{hasAnalysis ? "分析已完成" : "等待分析"}</b><em>{producing ? "正在生成产物，请勿重复点击" : "产物会基于最近一次真实分析生成"}</em></div></div>
+        <div className="os-item"><div className={hasAnalysis ? "os-ic ok" : "os-ic amber"}><ShieldCheck size={18} /></div><div><span>审核状态</span><b className={hasAnalysis ? "ok" : ""}>{hasAnalysis ? "已通过" : "待审计"}</b><em>{hasAnalysis ? "基于最近一次分析结果" : "完成分析后才会进入审计"}</em></div></div>
         <div className="os-item"><div className="os-ic amber"><Lightbulb size={18} /></div><div><span>建议操作</span><b>上传透明 PNG Logo</b><em>建议上传透明 PNG 格式 Logo，以生成更专业的概念图</em></div></div>
         <button className="dw-btn" type="button" onClick={onUploadReference}><UploadCloud size={15} />上传 Logo</button>
       </section>
@@ -1488,7 +1510,7 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
                   <div className="out-tags">{p.tags.map((t) => <span key={t} className="out-tag">{t}</span>)}</div>
                 </div>
                 <div className="out-prod-r">
-                  <span className="out-badge"><span className="d" />可生成</span>
+                  <span className="out-badge"><span className="d" />{producing ? "生成中" : hasAnalysis ? "可生成" : "需先分析"}</span>
                   <button className="dw-btn primary" type="button" disabled={producing} onClick={() => onProduce && onProduce([p.id])}>
                     {producing ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}生成
                   </button>

@@ -1112,6 +1112,9 @@ svg { flex-shrink: 0; }
 .dw-grid { border-collapse: collapse; width: 100%; font-size: 13px; }
 .dw-grid th, .dw-grid td { border: 1px solid #eef0f3; padding: 7px 11px; text-align: left; white-space: nowrap; }
 .dw-grid thead th { background: #f7f8fa; color: var(--muted); font-weight: 600; font-size: 11.5px; text-align: center; position: sticky; top: 0; z-index: 1; }
+.dw-grid thead th span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.dw-grid thead th.sel-col { color: var(--blue); background: #edf4ff; }
+.dw-col-resize { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; }
 .dw-rownum { width: 38px; text-align: center; color: var(--faint); background: #f7f8fa; font-size: 11.5px; }
 .dw-rownum.active { background: var(--blue-soft); color: var(--blue); font-weight: 600; }
 .dw-fieldrow td.dw-fieldname { font-weight: 600; color: var(--ink); background: #fbfcfe; }
@@ -1122,6 +1125,13 @@ svg { flex-shrink: 0; }
 .dw-grid td.dw-cell { padding: 0; }
 .dw-cell-in { width: 100%; min-width: 90px; border: 0; outline: 0; background: transparent; padding: 7px 11px; font: inherit; font-size: 13px; color: var(--ink); }
 .dw-cell-in:focus { box-shadow: inset 0 0 0 2px var(--blue); background: #fff; border-radius: 2px; }
+.dw-table-tools { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--line); background: #fff; }
+.dw-tool-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--ink); font-size: 12px; font-weight: 700; cursor: pointer; }
+.dw-tool-btn:hover:not(:disabled) { background: #f7f9fd; }
+.dw-tool-btn:disabled { opacity: .45; cursor: default; }
+.dw-formula { margin-left: auto; min-width: 260px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: #fff; }
+.dw-formula span { width: 54px; text-align: center; color: var(--muted); font-size: 12px; font-weight: 800; border-right: 1px solid var(--line); }
+.dw-formula input { flex: 1; height: 30px; border: 0; outline: 0; padding: 0 10px; font: inherit; font-size: 12.5px; }
 .dw-file-rc { margin-left: auto; font-style: normal; font-size: 11px; color: var(--faint); }
 .dw-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
 .dw-hist { list-style: none; margin: 0; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
@@ -1143,6 +1153,7 @@ svg { flex-shrink: 0; }
 .dw-mini.active { background: var(--blue-soft); color: var(--blue); border-color: #c7d8f7; }
 .dw-md-time { font-size: 11.5px; color: var(--faint); }
 .dw-md-area { flex: 1; border: 0; outline: 0; resize: none; padding: 16px 18px; font-size: 13.5px; line-height: 1.7; color: var(--ink); font-family: inherit; }
+.dw-json-note { padding: 8px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; background: #fbfcfe; }
 
 /* 数据状态面板 */
 .dw-status { display: flex; flex-direction: column; overflow-y: auto; }
@@ -2231,6 +2242,14 @@ svg { flex-shrink: 0; }
 .file-row button { display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
 .file-row button:hover { color: var(--red); background: var(--red-soft); }
 .modal-actions { justify-content: flex-end; margin-top: 16px; }
+.dw-small-modal { width: min(460px, calc(100vw - 32px)); }
+.dw-connector-modal { width: min(640px, calc(100vw - 32px)); }
+.dw-modal-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.dw-connector-result { max-height: 220px; overflow: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.dw-result-row { width: 100%; height: 38px; display: flex; align-items: center; gap: 9px; padding: 0 12px; border: 0; border-bottom: 1px solid #eef0f3; background: #fff; color: var(--ink); font-size: 12.5px; text-align: left; cursor: pointer; }
+.dw-result-row:last-child { border-bottom: 0; }
+.dw-result-row:hover { background: #f7f9fd; }
+.dw-result-row span { margin-left: auto; color: var(--blue); font-weight: 800; }
 
 .notice-stack {
   position: fixed;
@@ -2559,6 +2578,7 @@ svg { flex-shrink: 0; }
 /* 独立审计 · 自我校验卡片 */
 .audit-card { margin: 14px 0; padding: 16px 18px; border-radius: 14px; border: 1px solid var(--line, #e5e7eb); background: linear-gradient(180deg, #fbfdff, #f6f9fc); }
 .audit-card.is-revise { border-color: rgba(214, 158, 46, 0.4); background: linear-gradient(180deg, #fffdf6, #fdf8ec); }
+.audit-card.is-placeholder { background: #fbfcfe; border-style: dashed; }
 .audit-head { display: flex; align-items: flex-start; gap: 10px; }
 .audit-head > svg { color: var(--blue); margin-top: 2px; flex: none; }
 .audit-card.is-revise .audit-head > svg { color: #c9881f; }
@@ -2566,6 +2586,7 @@ svg { flex-shrink: 0; }
 .audit-title strong { display: block; font-size: 14px; color: var(--ink, #1d2433); }
 .audit-title span { display: block; font-size: 12px; color: var(--muted, #6b7280); margin-top: 2px; line-height: 1.5; }
 .audit-badge { flex: none; align-self: center; padding: 4px 11px; border-radius: 999px; font-size: 11.5px; font-weight: 700; }
+.audit-card.is-placeholder .audit-badge { background: #eef2f7; color: var(--muted, #6b7280); }
 .audit-badge.pass { background: rgba(34, 160, 110, 0.12); color: #1f8f63; }
 .audit-badge.revise { background: rgba(214, 158, 46, 0.16); color: #b9801c; }
 .audit-revision { display: flex; align-items: center; gap: 9px; margin-top: 12px; font-size: 14px; }
@@ -3222,6 +3243,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 
 /* ---- 五维雷达图 / 消息时间戳 / 引用移动端 ---- */
 .verdict-radar { width: 192px; height: 192px; max-width: 100%; display: block; margin: 2px auto 10px; }
+.verdict-radar.is-placeholder polygon:last-of-type { stroke-dasharray: 4 4; fill: rgba(37,99,235,0.06); }
 .msg-time { display: block; margin-top: 6px; font-size: 11px; color: var(--faint, #9aa3af); }
 .cite-ref:focus-within .cite-tip, .cite-ref:active .cite-tip { opacity: 1; transform: translateX(-50%) translateY(0); }
 

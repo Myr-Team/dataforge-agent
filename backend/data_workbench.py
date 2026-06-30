@@ -23,7 +23,7 @@ from ingest.profiler import build_data_profile, profile_to_search_document
 from ingest.adapters.upload_to_records import upload_to_records
 
 try:
-    from .blob_store import download_blob_content, upload_workspace_blob
+    from .blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
     from .orchestrator import orchestrate_chat
     from .schemas import ChatRequest
     from .workspace_store import (
@@ -31,6 +31,7 @@ try:
         _CONTEXT_CACHE,
         _index_documents_batched,
         _load_workspace_bundle,
+        _normalize_documents,
         _persist_workspace_state,
         _rebuild_workspace_profile,
         create_workspace_upload_job,
@@ -38,7 +39,7 @@ try:
         run_workspace_ingest_job,
     )
 except ImportError:
-    from blob_store import download_blob_content, upload_workspace_blob
+    from blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
     from orchestrator import orchestrate_chat
     from schemas import ChatRequest
     from workspace_store import (
@@ -46,6 +47,7 @@ except ImportError:
         _CONTEXT_CACHE,
         _index_documents_batched,
         _load_workspace_bundle,
+        _normalize_documents,
         _persist_workspace_state,
         _rebuild_workspace_profile,
         create_workspace_upload_job,
@@ -67,6 +69,7 @@ STORAGE_TOTAL_BYTES = int(os.environ.get("DF_WORKSPACE_STORAGE_TOTAL_BYTES", str
 
 TABLE_TYPES = {"csv", "xlsx", "xlsm", "excel"}
 MARKDOWN_TYPES = {"md", "markdown", "txt", "text"}
+JSON_TYPES = {"json"}
 
 
 @router.get("/files")
@@ -100,6 +103,11 @@ async def workspace_file_cells(workspace_id: str, file_id: str, request: Request
 async def workspace_file_markdown(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
     body = await _json_body(request)
     return await _call(save_markdown_content, workspace_id, file_id, body)
+
+
+@router.delete("/files/{file_id}")
+async def workspace_file_delete(workspace_id: str, file_id: str) -> dict[str, Any]:
+    return await _call(delete_workspace_file, workspace_id, file_id)
 
 
 @router.get("/files/{file_id}/quality")
@@ -278,9 +286,12 @@ def save_table_cells(workspace_id: str, file_id: str, body: dict[str, Any]) -> d
     file_type = _file_type(document)
     if file_type not in TABLE_TYPES:
         raise ValueError("Only CSV/XLSX files support cell edits")
-    edits = body.get("edits")
-    if not isinstance(edits, list) or not edits:
-        raise ValueError("edits must be a non-empty list")
+    edits = body.get("edits") or []
+    operations = _table_operations_from_body(body)
+    if not isinstance(edits, list):
+        raise ValueError("edits must be a list")
+    if not edits and not operations:
+        raise ValueError("edits or table operations are required")
     if len(edits) > MAX_CELL_EDITS:
         raise ValueError(f"Too many edits; max {MAX_CELL_EDITS}")
     content, _ = _read_document_bytes(workspace_id, document)
@@ -289,13 +300,13 @@ def save_table_cells(workspace_id: str, file_id: str, body: dict[str, Any]) -> d
 
     version = _snapshot_version(workspace_id, document, content)
     if file_type == "csv":
-        new_content, row_count, col_count = _apply_csv_edits(content, edits)
+        new_content, row_count, col_count, change_counts = _apply_csv_table_update(content, edits, operations)
         content_type = "text/csv; charset=utf-8"
     else:
-        new_content, row_count, col_count = _apply_xlsx_edits(content, edits)
+        new_content, row_count, col_count, change_counts = _apply_xlsx_table_update(content, edits, operations)
         content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     saved_at = _utc_now()
-    summary = f"更新了 {len(edits)} 个单元格"
+    summary = _table_change_summary(change_counts)
     _write_document_bytes(workspace_id, document, new_content, content_type)
     _update_document_after_save(workspace_id, document, new_content, saved_at, summary, version, row_count=row_count, col_count=col_count)
     return {
@@ -304,6 +315,7 @@ def save_table_cells(workspace_id: str, file_id: str, body: dict[str, Any]) -> d
         "change_summary": summary,
         "row_count": row_count,
         "col_count": col_count,
+        "changes": change_counts,
     }
 
 
@@ -326,6 +338,65 @@ def save_markdown_content(workspace_id: str, file_id: str, body: dict[str, Any])
     line_count = len(text.splitlines())
     _update_document_after_save(workspace_id, document, content, saved_at, summary, version, row_count=line_count, col_count=1)
     return {"saved_at": saved_at, "version_id": version["version_id"], "change_summary": summary}
+
+
+def delete_workspace_file(workspace_id: str, file_id: str) -> dict[str, Any]:
+    meta, profile = _workspace_state(workspace_id)
+    documents = meta.get("documents")
+    if not isinstance(documents, list):
+        documents = _normalize_documents(WORKSPACES / workspace_id, meta, profile)
+        meta["documents"] = documents
+    document = _find_document(workspace_id, file_id, detail={"documents": documents})
+    fid = _file_id(document)
+    source = _safe_source_file(document)
+    profile_file = str(document.get("profile_file") or "")
+    removed_at = _utc_now()
+
+    meta["documents"] = [
+        item for item in documents if not (isinstance(item, dict) and str(item.get("source_file") or "") == source)
+    ]
+    if isinstance(meta.get("workbench_field_mappings"), dict):
+        meta["workbench_field_mappings"].pop(fid, None)
+    deleted = meta.setdefault("workbench_deleted_files", [])
+    if isinstance(deleted, list):
+        deleted.insert(
+            0,
+            {
+                "file_id": fid,
+                "name": document.get("name") or Path(source).name,
+                "source_file": source,
+                "profile_file": profile_file or None,
+                "deleted_at": removed_at,
+            },
+        )
+        del deleted[50:]
+    if isinstance(meta.get("workbench_history"), dict):
+        meta["workbench_history"].pop(fid, None)
+
+    for rel in [source, profile_file]:
+        if not rel:
+            continue
+        local_path = WORKSPACES / workspace_id / rel
+        try:
+            if local_path.exists() and local_path.is_file():
+                local_path.unlink()
+        except OSError:
+            pass
+        try:
+            delete_blob_name(f"workspaces/{workspace_id}/{rel}")
+        except Exception:
+            pass
+
+    profile = _rebuild_workspace_profile(workspace_id, WORKSPACES / workspace_id, meta, profile)
+    _persist_workspace_state(workspace_id, WORKSPACES / workspace_id, meta, profile, include_raw_payloads=True)
+    _CONTEXT_CACHE.pop(workspace_id, None)
+    return {
+        "workspace_id": workspace_id,
+        "file_id": fid,
+        "deleted": True,
+        "deleted_at": removed_at,
+        "name": document.get("name") or Path(source).name,
+    }
 
 
 def file_quality(workspace_id: str, file_id: str) -> dict[str, Any]:
@@ -353,6 +424,8 @@ def file_quality(workspace_id: str, file_id: str) -> dict[str, Any]:
             "validation": {"status": status, "checked_at": checked_at},
         }
         return _apply_mapping_overrides(workspace_id, _file_id(document), result)
+    if file_type in JSON_TYPES:
+        return _apply_mapping_overrides(workspace_id, _file_id(document), _quality_from_json(workspace_id, document, content, checked_at))
     table = _table_from_bytes(content, file_type)
     return _apply_mapping_overrides(workspace_id, _file_id(document), _quality_from_table(workspace_id, document, table, checked_at))
 
@@ -415,7 +488,38 @@ async def analyze_selected_files(workspace_id: str, body: dict[str, Any]) -> dic
     if not file_ids:
         raise HTTPException(status_code=400, detail="file_ids is required")
     detail = get_workspace_detail(workspace_id)
-    selected = [_file_entry(_find_document(workspace_id, file_id, detail=detail)) for file_id in file_ids]
+    selected_documents = [_find_document(workspace_id, file_id, detail=detail) for file_id in file_ids]
+    warnings: list[str] = []
+    for document in selected_documents:
+        if _api_status(document) == "indexed":
+            continue
+        job_id = str(document.get("ingest_job_id") or "").strip()
+        if not job_id:
+            warnings.append(f"{document.get('name') or _file_id(document)} 尚未完成索引，但文件内容可直接引用。")
+            continue
+        try:
+            run_workspace_ingest_job(workspace_id, job_id)
+            warnings.append(f"{document.get('name') or _file_id(document)} 已触发补索引。")
+        except Exception as exc:
+            warnings.append(f"{document.get('name') or _file_id(document)} 补索引未完成：{type(exc).__name__}")
+    detail = get_workspace_detail(workspace_id)
+    selected_documents = [_find_document(workspace_id, file_id, detail=detail) for file_id in file_ids]
+    unavailable: list[str] = []
+    for document in selected_documents:
+        try:
+            _read_document_bytes(workspace_id, document)
+        except Exception:
+            unavailable.append(str(document.get("name") or _file_id(document)))
+    if unavailable:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "选中的文件还不能用于分析，请等待上传/索引完成或重新选择文件。",
+                "unavailable_files": unavailable,
+                "recoverable": True,
+            },
+        )
+    selected = [_file_entry(document) for document in selected_documents]
     names = ", ".join(item["name"] for item in selected[:6])
     message = str(body.get("message") or "").strip() or (
         f"请只基于数据工作台中选中的文件（{names}）发起一次数据商机化分析，输出机会、证据强度、风险缺口和下一步验证计划。"
@@ -431,6 +535,8 @@ async def analyze_selected_files(workspace_id: str, body: dict[str, Any]) -> dic
             "entrypoint": "data_workbench",
             "selected_file_ids": [item["id"] for item in selected],
             "selected_files": selected,
+            "selected_file_status": {item["id"]: item.get("status") for item in selected},
+            "workbench_warnings": warnings,
         },
     )
     final_payload: dict[str, Any] | None = None
@@ -460,6 +566,7 @@ async def analyze_selected_files(workspace_id: str, body: dict[str, Any]) -> dic
         "status": "started",
         "mode": "analysis",
         "selected_files": selected,
+        "warnings": warnings,
         "jump": {"view": "agent_flow", "conversation_id": conversation_id},
         "final": final_payload,
         "text": str(final_payload.get("text") or "".join(answer_parts)),
@@ -686,6 +793,18 @@ def _fill_file_counts_from_content(workspace_id: str, document: dict[str, Any], 
         if needs_fields:
             entry["field_count"] = 1
             entry["fields"] = 1
+    elif file_type in JSON_TYPES:
+        try:
+            content, _ = _read_document_bytes(workspace_id, document)
+            table = _json_table(content)
+        except Exception:
+            return
+        if needs_records:
+            entry["record_count"] = len(table.get("rows") or [])
+            entry["records"] = entry["record_count"]
+        if needs_fields:
+            entry["field_count"] = len(table.get("headers") or [])
+            entry["fields"] = entry["field_count"]
 
 
 def _file_id(document: dict[str, Any]) -> str:
@@ -720,7 +839,7 @@ def _api_status(document: dict[str, Any]) -> str:
     status = str(document.get("status") or "").lower()
     if "ready" in status or "indexed" in status or "就绪" in status:
         return "indexed"
-    if _file_type(document) in MARKDOWN_TYPES and not document.get("error"):
+    if _file_type(document) in MARKDOWN_TYPES | JSON_TYPES and not document.get("error"):
         return "indexed"
     return "needs_review"
 
@@ -781,6 +900,8 @@ def _preview_bytes(content: bytes, file_type: str, name: str, limit: int, offset
         text = _decode_text(content)
         end = min(len(text), offset + min(limit * 1200, MAX_MARKDOWN_BYTES))
         return {"kind": "markdown", "text": text[offset:end], "total_chars": len(text), "offset": offset, "limit": limit}
+    if file_type in JSON_TYPES:
+        return _preview_json(content, limit, offset)
     return {"kind": "binary", "name": name, "bytes": len(content), "message": "Preview is not available for this file type"}
 
 
@@ -836,6 +957,31 @@ def _preview_xlsx(content: bytes, limit: int, offset: int) -> dict[str, Any]:
         workbook.close()
 
 
+def _preview_json(content: bytes, limit: int, offset: int) -> dict[str, Any]:
+    raw = _decode_text(content)
+    try:
+        value = json.loads(raw)
+        text = json.dumps(value, ensure_ascii=False, indent=2)
+        table = _json_table(content)
+        return {
+            "kind": "json",
+            "text": text[offset : min(len(text), offset + min(limit * 1200, MAX_MARKDOWN_BYTES))],
+            "total_chars": len(text),
+            "offset": offset,
+            "limit": limit,
+            "shape": {"rows": len(table.get("rows") or []), "fields": len(table.get("headers") or [])},
+        }
+    except json.JSONDecodeError as exc:
+        return {
+            "kind": "json",
+            "text": raw[offset : min(len(raw), offset + min(limit * 1200, MAX_MARKDOWN_BYTES))],
+            "total_chars": len(raw),
+            "offset": offset,
+            "limit": limit,
+            "parse_error": f"{exc.msg} at line {exc.lineno}, column {exc.colno}",
+        }
+
+
 def _table_from_bytes(content: bytes, file_type: str) -> dict[str, Any]:
     if file_type == "csv":
         preview = _preview_csv(content, limit=10_000_000, offset=0)
@@ -852,6 +998,51 @@ def _table_from_bytes(content: bytes, file_type: str) -> dict[str, Any]:
         finally:
             workbook.close()
     return {"headers": [], "rows": []}
+
+
+def _json_table(content: bytes) -> dict[str, Any]:
+    value = json.loads(_decode_text(content))
+    records: list[dict[str, Any]]
+    if isinstance(value, list):
+        if all(isinstance(item, dict) for item in value):
+            records = [item for item in value if isinstance(item, dict)]
+        else:
+            records = [{"value": item} for item in value]
+    elif isinstance(value, dict):
+        list_key = next(
+            (
+                key
+                for key, item in value.items()
+                if isinstance(item, list) and item and all(isinstance(row, dict) for row in item)
+            ),
+            None,
+        )
+        if list_key:
+            records = [item for item in value[list_key] if isinstance(item, dict)]
+        else:
+            records = [value]
+    else:
+        records = [{"value": value}]
+
+    headers: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        for key in record.keys():
+            name = str(key or "").strip() or "value"
+            if name not in seen:
+                seen.add(name)
+                headers.append(name)
+    if not headers:
+        headers = ["value"]
+    return {"headers": headers, "rows": [[_json_cell(record.get(header)) for header in headers] for record in records]}
+
+
+def _json_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return _cell(value)
 
 
 def _new_file_name_and_type(body: dict[str, Any]) -> tuple[str, str]:
@@ -1002,6 +1193,29 @@ def _compact_upload_result(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _quality_from_json(workspace_id: str, document: dict[str, Any], content: bytes, checked_at: str) -> dict[str, Any]:
+    try:
+        table = _json_table(content)
+    except json.JSONDecodeError as exc:
+        return {
+            "workspace_id": workspace_id,
+            "file_id": _file_id(document),
+            "field_mapping": {"mapped": 0, "total": 0, "pct": 0.0, "fields": []},
+            "quality": {
+                "missing_pct": 100.0,
+                "duplicate_pct": 0.0,
+                "outlier_count": 0,
+                "outlier_pct": 0.0,
+                "type_warnings": 1,
+                "row_count": 0,
+                "column_count": 0,
+                "parse_error": f"{exc.msg} at line {exc.lineno}, column {exc.colno}",
+            },
+            "validation": {"status": "failed", "checked_at": checked_at},
+        }
+    return _quality_from_table(workspace_id, document, table, checked_at)
+
+
 def _quality_from_table(workspace_id: str, document: dict[str, Any], table: dict[str, Any], checked_at: str) -> dict[str, Any]:
     headers = [str(item) for item in table.get("headers") or []]
     rows = [[str(cell) for cell in row] for row in (table.get("rows") or [])]
@@ -1142,6 +1356,193 @@ def _field_quality(idx: int, name: str, rows: list[list[str]]) -> dict[str, Any]
     }
 
 
+def _table_operations_from_body(body: dict[str, Any]) -> dict[str, Any]:
+    aliases = {
+        "add_rows": ("add_rows", "insert_rows"),
+        "delete_rows": ("delete_rows", "remove_rows"),
+        "add_cols": ("add_cols", "insert_cols", "add_columns", "insert_columns"),
+        "delete_cols": ("delete_cols", "remove_cols", "delete_columns", "remove_columns"),
+    }
+    operations: dict[str, Any] = {}
+    for target, keys in aliases.items():
+        for key in keys:
+            if key in body and body.get(key) not in (None, "", [], {}):
+                operations[target] = body.get(key)
+                break
+    return operations
+
+
+def _apply_csv_table_update(content: bytes, edits: list[Any], operations: dict[str, Any]) -> tuple[bytes, int, int, dict[str, int]]:
+    rows = _csv_rows(content)
+    if not rows:
+        raise ValueError("CSV file has no rows")
+    width = max(len(row) for row in rows)
+    headers = _headers(rows[0], width)
+    data_rows = [_pad(row, width) for row in rows[1:]]
+    headers, data_rows, counts = _apply_table_update(headers, data_rows, edits, operations)
+    return _table_to_csv_bytes(headers, data_rows), len(data_rows), len(headers), counts
+
+
+def _apply_xlsx_table_update(content: bytes, edits: list[Any], operations: dict[str, Any]) -> tuple[bytes, int, int, dict[str, int]]:
+    table = _table_from_bytes(content, "xlsx")
+    headers, data_rows, counts = _apply_table_update(table.get("headers") or [], table.get("rows") or [], edits, operations)
+    workbook = Workbook()
+    try:
+        sheet = workbook.active
+        sheet.title = "Sheet1"
+        sheet.append(headers)
+        for row in data_rows:
+            sheet.append(row)
+        out = io.BytesIO()
+        workbook.save(out)
+        return out.getvalue(), len(data_rows), len(headers), counts
+    finally:
+        workbook.close()
+
+
+def _apply_table_update(
+    headers: list[str],
+    rows: list[list[Any]],
+    edits: list[Any],
+    operations: dict[str, Any],
+) -> tuple[list[str], list[list[str]], dict[str, int]]:
+    headers = [_column_name(name, idx) for idx, name in enumerate(headers or ["column_1"])]
+    rows = [_pad(list(row), len(headers)) for row in rows]
+    counts = {"cells": len(edits), "rows_added": 0, "rows_deleted": 0, "cols_added": 0, "cols_deleted": 0}
+
+    for row_idx in sorted(_row_indexes(operations.get("delete_rows"), len(rows)), reverse=True):
+        del rows[row_idx]
+        counts["rows_deleted"] += 1
+
+    for col_idx in sorted(_col_indexes(operations.get("delete_cols"), headers), reverse=True):
+        del headers[col_idx]
+        for row in rows:
+            del row[col_idx]
+        counts["cols_deleted"] += 1
+    if not headers:
+        headers = ["column_1"]
+        for row in rows:
+            row.append("")
+
+    for item in _row_inserts(operations.get("add_rows"), headers):
+        idx, values = item
+        idx = max(0, min(len(rows), idx))
+        rows.insert(idx, values)
+        counts["rows_added"] += 1
+
+    for item in _col_inserts(operations.get("add_cols"), headers, len(rows)):
+        idx, name, values = item
+        idx = max(0, min(len(headers), idx))
+        unique = _unique_column_name(name, headers)
+        headers.insert(idx, unique)
+        for row_idx, row in enumerate(rows):
+            row.insert(idx, values[row_idx] if row_idx < len(values) else "")
+        counts["cols_added"] += 1
+
+    if len(edits) > MAX_CELL_EDITS:
+        raise ValueError(f"Too many edits; max {MAX_CELL_EDITS}")
+    normalized = [_normalize_edit(edit, headers, len(rows), len(headers)) for edit in edits]
+    for row_idx, col_idx, value in normalized:
+        rows[row_idx][col_idx] = value
+    return headers, rows, counts
+
+
+def _row_indexes(raw: Any, row_count: int) -> list[int]:
+    if raw in (None, "", [], {}):
+        return []
+    values = raw if isinstance(raw, list) else [raw]
+    indexes = sorted({_clamp_int(item, 0, max(0, row_count - 1), None) for item in values})
+    return indexes if row_count else []
+
+
+def _col_indexes(raw: Any, headers: list[str]) -> list[int]:
+    if raw in (None, "", [], {}):
+        return []
+    values = raw if isinstance(raw, list) else [raw]
+    indexes: set[int] = set()
+    for item in values:
+        if isinstance(item, str) and not item.isdigit():
+            if item not in headers:
+                raise ValueError(f"Unknown column: {item}")
+            indexes.add(headers.index(item))
+        else:
+            indexes.add(_clamp_int(item, 0, max(0, len(headers) - 1), None))
+    return sorted(indexes)
+
+
+def _row_inserts(raw: Any, headers: list[str]) -> list[tuple[int, list[str]]]:
+    if raw in (None, "", [], {}):
+        return []
+    if isinstance(raw, int):
+        return [(10**9, ["" for _ in headers]) for _ in range(max(0, raw))]
+    items = raw if isinstance(raw, list) else [raw]
+    inserts: list[tuple[int, list[str]]] = []
+    for item in items:
+        idx = 10**9
+        values: Any = item
+        if isinstance(item, dict) and ("values" in item or "index" in item):
+            idx = _clamp_int(item.get("index"), 0, 10**9, 10**9)
+            values = item.get("values", {})
+        inserts.append((idx, _row_values(values, headers)))
+    return inserts
+
+
+def _col_inserts(raw: Any, headers: list[str], row_count: int) -> list[tuple[int, str, list[str]]]:
+    if raw in (None, "", [], {}):
+        return []
+    if isinstance(raw, int):
+        return [(10**9, f"column_{len(headers) + idx + 1}", ["" for _ in range(row_count)]) for idx in range(max(0, raw))]
+    items = raw if isinstance(raw, list) else [raw]
+    inserts: list[tuple[int, str, list[str]]] = []
+    for idx, item in enumerate(items):
+        if isinstance(item, dict):
+            name = _column_name(item.get("name") or item.get("header"), len(headers) + idx)
+            insert_at = _clamp_int(item.get("index"), 0, 10**9, 10**9)
+            values = item.get("values") if isinstance(item.get("values"), list) else []
+            inserts.append((insert_at, name, [str(value if value is not None else "")[:MAX_CELL_CHARS] for value in values]))
+        else:
+            inserts.append((10**9, _column_name(item, len(headers) + idx), ["" for _ in range(row_count)]))
+    return inserts
+
+
+def _row_values(raw: Any, headers: list[str]) -> list[str]:
+    if isinstance(raw, dict):
+        values = [raw.get(header, "") for header in headers]
+    elif isinstance(raw, list):
+        values = [raw[idx] if idx < len(raw) else "" for idx in range(len(headers))]
+    else:
+        values = ["" for _ in headers]
+    result = [str(value if value is not None else "") for value in values]
+    if any(len(value) > MAX_CELL_CHARS for value in result):
+        raise ValueError("Cell value is too long")
+    return result
+
+
+def _unique_column_name(name: str, headers: list[str]) -> str:
+    base = _column_name(name, len(headers))
+    if base not in headers:
+        return base
+    idx = 2
+    while f"{base}_{idx}" in headers:
+        idx += 1
+    return f"{base}_{idx}"
+
+
+def _table_change_summary(counts: dict[str, int]) -> str:
+    parts: list[str] = []
+    if counts.get("cells"):
+        parts.append(f"更新了 {counts['cells']} 个单元格")
+    if counts.get("rows_added"):
+        parts.append(f"新增 {counts['rows_added']} 行")
+    if counts.get("rows_deleted"):
+        parts.append(f"删除 {counts['rows_deleted']} 行")
+    if counts.get("cols_added"):
+        parts.append(f"新增 {counts['cols_added']} 列")
+    if counts.get("cols_deleted"):
+        parts.append(f"删除 {counts['cols_deleted']} 列")
+    return "，".join(parts) if parts else "更新了表格结构"
+
+
 def _apply_csv_edits(content: bytes, edits: list[Any]) -> tuple[bytes, int, int]:
     rows = _csv_rows(content)
     if not rows:
@@ -1220,6 +1621,8 @@ def _update_document_after_save(
     meta, profile = _workspace_state(workspace_id)
     fid = _file_id(document)
     source = _safe_source_file(document)
+    if not isinstance(meta.get("documents"), list) or not meta.get("documents"):
+        meta["documents"] = _normalize_documents(WORKSPACES / workspace_id, meta, profile)
     changed = False
     for item in meta.get("documents") or []:
         if isinstance(item, dict) and str(item.get("source_file") or "") == source:
