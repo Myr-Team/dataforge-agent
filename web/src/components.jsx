@@ -266,19 +266,19 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
         <NotificationBell tasks={tasks} />
         <div className="user-menu" ref={menuRef}>
           <button className="user-trigger" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen} title="账户">
-            <div className="avatar" title={user?.email || "DataForge"}>
-              {(user?.name || user?.email || "D").trim().slice(0, 1).toUpperCase()}
+            <div className="avatar" title={user?.email || "fuzh084711@gmail.com"}>
+              {(user?.name || user?.email || "傅").trim().slice(0, 1).toUpperCase()}
             </div>
           </button>
           {menuOpen ? (
             <div className="account-menu" role="menu">
               <div className="account-card">
                 <div className="avatar large">
-                  {(user?.name || user?.email || "D").trim().slice(0, 1).toUpperCase()}
+                  {(user?.name || user?.email || "傅").trim().slice(0, 1).toUpperCase()}
                 </div>
                 <div>
-                  <strong>{user?.name || "Demo User"}</strong>
-                  <span>{authState === "authenticated" ? user?.email || "Azure 登录" : "本地演示态"}</span>
+                  <strong>{user?.name || "傅子豪"}</strong>
+                  <span>{user?.email || "fuzh084711@gmail.com"}</span>
                 </div>
               </div>
               <button type="button" role="menuitem">
@@ -621,37 +621,68 @@ function buildPlanDiff(runA, runB) {
 const _CV_RANK = { not_yet_feasible: 1, not_feasible: 1, rejected: 1, conditional: 2, feasible: 3, recommended: 3 };
 const _CV_LABEL = { 1: "暂不可行", 2: "有条件可行", 3: "可行" };
 const _CV_COLOR = { 1: "#8a5a00", 2: "#0A84E0", 3: "#0a7d4f" };
-function ConvergenceChart({ versions }) {
+function ConvergenceChart({ versions, flagshipId }) {
   const vers = (versions || []).slice(-6);
   if (vers.length < 2) return null;
   const n = vers.length;
-  const padL = 80;
-  const padR = 18;
-  const H = 132;
-  const padT = 22;
-  const padB = 30;
-  const W = Math.max(300, padL + padR + (n - 1) * 66);
+  const padL = 72;
+  const padR = 22;
+  const H = 178;
+  const padT = 30;
+  const padB = 40;
+  const W = Math.max(320, padL + padR + (n - 1) * 92);
   const usableW = W - padL - padR;
   const usableH = H - padT - padB;
   const x = (i) => padL + (n > 1 ? (usableW * i) / (n - 1) : usableW / 2);
   const y = (r) => padT + usableH * (1 - (r - 1) / 2);
   const rankOf = (v) => _CV_RANK[v.verdict] || 1;
   const pts = vers.map((v, i) => [x(i), y(rankOf(v))]);
+  const firstRank = rankOf(vers[0]);
+  const lastRank = rankOf(vers[n - 1]);
+  const delta = lastRank - firstRank;
+  const gid = "cvg-" + n;
+  const baseY = y(1);
+  const linePts = pts.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(" ");
+  const areaD = `M ${pts[0][0].toFixed(1)},${baseY.toFixed(1)} L ` + pts.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(" L ") + ` L ${pts[n - 1][0].toFixed(1)},${baseY.toFixed(1)} Z`;
   return (
-    <svg className="conv-chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="迭代收敛图">
+    <svg className="conv-chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="迭代收敛图" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#2563eb" stopOpacity="0.20" />
+          <stop offset="100%" stopColor="#2563eb" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      {/* 目标线：公司重点方案档位（可行） */}
+      <line x1={padL} y1={y(3)} x2={W - padR} y2={y(3)} stroke="#0a7d4f" strokeWidth="1.2" strokeDasharray="5 4" opacity="0.55" />
+      <text x={W - padR} y={y(3) - 7} fontSize="10.5" fill="#0a7d4f" textAnchor="end" fontWeight="600">目标 · 公司重点</text>
       {[1, 2, 3].map((r) => (
         <g key={r}>
-          <line x1={padL} y1={y(r)} x2={W - padR} y2={y(r)} stroke="#eef1f5" strokeWidth="1" />
-          <text x={padL - 10} y={y(r) + 3} fontSize="10" fill="#9aa3af" textAnchor="end">{_CV_LABEL[r]}</text>
+          {r !== 3 ? <line x1={padL} y1={y(r)} x2={W - padR} y2={y(r)} stroke="#eef1f5" strokeWidth="1" /> : null}
+          <text x={padL - 12} y={y(r) + 3} fontSize="10.5" fill="#9aa3af" textAnchor="end">{_CV_LABEL[r]}</text>
         </g>
       ))}
-      <polyline points={pts.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(" ")} fill="none" stroke="#0A84E0" strokeWidth="2" />
-      {pts.map(([px, py], i) => (
-        <g key={i}>
-          <circle cx={px.toFixed(1)} cy={py.toFixed(1)} r="4.5" fill={_CV_COLOR[rankOf(vers[i])]} />
-          <text x={px.toFixed(1)} y={H - 10} fontSize="10" fill="#6e6e73" textAnchor="middle">{vers[i].vlabel}</text>
-        </g>
-      ))}
+      <path d={areaD} fill={`url(#${gid})`} />
+      <polyline points={linePts} fill="none" stroke="#2563eb" strokeWidth="2.4" strokeLinejoin="round" strokeLinecap="round" />
+      {pts.map(([px, py], i) => {
+        const isFlag = vers[i].id === flagshipId;
+        const isLast = i === n - 1;
+        return (
+          <g key={i}>
+            {(isFlag || isLast) ? <circle cx={px.toFixed(1)} cy={py.toFixed(1)} r="8" fill={_CV_COLOR[rankOf(vers[i])]} opacity="0.16" /> : null}
+            <circle cx={px.toFixed(1)} cy={py.toFixed(1)} r={isFlag || isLast ? 5.2 : 4} fill={_CV_COLOR[rankOf(vers[i])]} stroke="#fff" strokeWidth="1.5" />
+            <text x={px.toFixed(1)} y={(py - 12).toFixed(1)} fontSize="10" fill={_CV_COLOR[rankOf(vers[i])]} textAnchor="middle" fontWeight="600">{_CV_LABEL[rankOf(vers[i])]}</text>
+            <text x={px.toFixed(1)} y={H - 12} fontSize="11" fill={isFlag ? "#b8860b" : "#6e6e73"} textAnchor="middle" fontWeight={isFlag || isLast ? "700" : "500"}>{vers[i].vlabel}{isFlag ? " ★" : ""}</text>
+          </g>
+        );
+      })}
+      {/* 改进幅度标注 */}
+      <g transform={`translate(${padL}, 12)`}>
+        {delta > 0 ? (
+          <text fontSize="11.5" fill="#0a7d4f" fontWeight="700">↑ 迭代 {n} 版 · 可行性跃迁 {delta} 档，逼近公司重点方案</text>
+        ) : (
+          <text fontSize="11.5" fill="#6e6e73" fontWeight="600">迭代 {n} 版 · 结论稳定在「{_CV_LABEL[lastRank]}」，需补证据再上一档</text>
+        )}
+      </g>
     </svg>
   );
 }
@@ -742,7 +773,7 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
       {versions.length >= 2 ? (
         <div className="pi-converge">
           <div className="pi-converge-head">结论随迭代收敛</div>
-          <ConvergenceChart versions={versions} />
+          <ConvergenceChart versions={versions} flagshipId={flagshipId} />
         </div>
       ) : null}
 
@@ -1368,181 +1399,19 @@ function ConversationStudio({
   setSelectedPlaybook,
 }) {
   const workspace = dashboard?.workspace || {};
-  const docsRaw = workspace.documents || [];
-  // 按文件名去重，避免「当前数据源」出现重复条目
-  const docs = (() => {
-    const seen = new Set();
-    const out = [];
-    for (const d of docsRaw) {
-      const key = String(d?.name || "").trim();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      out.push(d);
-    }
-    return out;
-  })();
-  const recent = (dashboard?.runs || [])[0] || {};
-  const recentVerdict = recent.verdict ? (VERDICT_LABELS[recent.verdict] || recent.verdict) : "有条件可行";
-  // 当前数据源：每页 4 个（与右侧「快捷操作」4 项对齐），多余用翻页查看
-  const SRC_FALLBACK = [
-    { name: "product_manual.md", format: "md" },
-    { name: "sensor_data_dictionary.md", format: "md" },
-    { name: "customer_feedback_summary.md", format: "md" },
-    { name: "internal_technical_wiki.md", format: "md" },
-    { name: "market_research_notes.md", format: "md" },
-    { name: "competitor_landscape.md", format: "md" },
-    { name: "device_firmware_notes.md", format: "md" },
-    { name: "field_test_log.csv", format: "csv" },
-    { name: "support_tickets.csv", format: "csv" },
-  ];
-  const allSrcs = docs.length ? docs : SRC_FALLBACK;
-  const SRC_PER = 4;
-  const [srcPage, setSrcPage] = useState(0);
-  const srcPages = Math.max(1, Math.ceil(allSrcs.length / SRC_PER));
-  const curSrcPage = Math.min(srcPage, srcPages - 1);
-  const pageSrcs = allSrcs.slice(curSrcPage * SRC_PER, curSrcPage * SRC_PER + SRC_PER);
   const presentation = useAgentPresentation(trace, running);
-  const chips = ["做一场拉新活动", "能产品化成什么?", "先试点哪个客群?", "生成 PRD 草案", "评估定价", "看外部市场"];
-  const hasMsgs = messages.length || streamText;
-  const quickActions = [
-    { icon: FileDown, title: "生成 PRD 草案", desc: "基于当前结论生成产品需求文档", onClick: () => onRun("基于当前结论生成一份 PRD 草案。") },
-    { icon: ImagePlus, title: "生成概念图", desc: "生成产品概念图 / 逻辑关系图", onClick: () => onProduce && onProduce(["concept_image"]) },
-    { icon: Route, title: "查看运行记录", desc: "查看最近的数据分析运行记录", onClick: () => {} },
-    { icon: MoreHorizontal, title: "更多操作", desc: "", onClick: () => {} },
-  ];
-
   return (
-    <main className="agent-studio conv-stage">
-      <header className="conv-head">
-        <span className="eyeless-label">Conversation</span>
-        <h1>AI Agent 会话</h1>
-        <p>基于当前工作区的证据与数据，AI Agent 为你提供分析结论与可执行建议。</p>
-      </header>
-
-      <div className="conv-chips">
-        <span className="cc-label">你可以尝试问</span>
-        {chips.map((c) => (
-          <button key={c} type="button" className="cc-chip" disabled={running} onClick={() => onRun(c)}>{c}</button>
-        ))}
-      </div>
-
-      <div className="conv-body">
-        <div className="conv-main">
-          {hasMsgs ? (
-            <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} trace={trace} onStop={onStop} />
-          ) : (
-            <div className="answer-flow">
-              <div className="user-ask">
-                <span className="user-ask-tag">用户问题</span>
-                <p>请只根据工作区数据，列出支持产品化的最强证据和最大的证据缺口。</p>
-              </div>
-              <article className="card answer-card">
-                <div className="cr-top"><span className="cr-av">AI</span><b>AI Agent</b><em>· 2 分钟前</em></div>
-                <div className="cr-sec"><div className="cr-h"><FileText size={15} />结论摘要</div>
-                  <p>基于当前工作区已有资料，{workspace.name || "TrailSense Outdoor IoT"} 已积累一定数量的产品、传感器与客户反馈资料，具备继续做方向性产品探索的基础。但当前数据仍缺少真实用户需求、商业化指标和技术验证数据，因此<b>不建议直接进入完整产品化阶段</b>，建议先进行小范围验证。</p>
-                </div>
-                <div className="cr-sec"><div className="cr-h"><Lightbulb size={15} />核心建议</div>
-                  <div className="cr-advice">
-                    <div className="cra"><b>优先验证场景</b><strong>户外设备监测与异常预警</strong><em>基于产品手册、传感器字段和客户反馈初步推断</em></div>
-                    <div className="cra"><b>关键证据缺口</b><strong>用户需求 · 使用频率 · 付费意愿</strong><em>当前资料未覆盖真实访谈和需求优先级</em></div>
-                    <div className="cra"><b>建议下一步</b><strong>设计 2 周验证实验</strong><em>补充客户访谈、POC 指标和成本测算</em></div>
-                  </div>
-                </div>
-                <div className="cr-sec"><div className="cr-h"><BookOpen size={15} />依据</div>
-                  <ul className="cr-basis">
-                    <li><b>product_manual.md</b>：产品功能和设备能力说明</li>
-                    <li><b>sensor_data_dictionary.md</b>：传感器字段和数据结构</li>
-                    <li><b>customer_feedback_summary.md</b>：客户反馈与问题线索</li>
-                    <li><b>internal_technical_wiki.md</b>：内部技术约束与实现说明</li>
-                  </ul>
-                </div>
-                <div className="cr-sec"><div className="cr-h"><FileText size={15} />证据</div>
-                  <div className="cr-evid">
-                    {(docs.length ? docs.slice(0, 3) : [{ name: "product_manual.md", format: "md" }, { name: "sensor_data_dictionary.md", format: "md" }, { name: "customer_feedback_summary.md", format: "md" }]).map((d, i) => (
-                      <div className="cre" key={i}><FileTypeIcon doc={d} size={22} /><div><b>{d.name}</b><em>{d.format || "文档"}</em></div></div>
-                    ))}
-                    <div className="cre muted"><Database size={18} /><div><b>共 {docs.length || 9} 个数据源</b><em>已关联分析</em></div></div>
-                  </div>
-                </div>
-                <div className="cr-foot">
-                  <div className="trust-badges">
-                    <span className="tb ok"><CheckCircle2 size={13} />数据已证实</span>
-                    <span className="tb warn"><AlertTriangle size={13} />证据不足</span>
-                    <span className="tb info">需要补充验证</span>
-                  </div>
-                  <div className="cr-acts">
-                    <button type="button"><Copy size={14} />复制</button>
-                    <button type="button"><RotateCcw size={14} />重新生成</button>
-                    <button type="button" className="cr-prd"><FileDown size={14} />生成 PRD 草案</button>
-                    <button type="button" className="cr-ico" title="有帮助"><ThumbsUp size={14} /></button>
-                    <button type="button" className="cr-ico" title="需改进"><ThumbsDown size={14} /></button>
-                  </div>
-                </div>
-              </article>
-            </div>
-          )}
+    <main className="agent-studio conversation-stage">
+      <section className="conversation-head">
+        <div>
+          <span className="eyeless-label">Conversation</span>
+          <h1>AI Agent 会话</h1>
+          <p>围绕「{workspace.name || "当前工作区"}」直接提问，Agent 会结合工作区证据、记住整段对话来回答，不把外部来源当作内部事实。</p>
         </div>
-
-        <aside className="conv-context">
-          {/* 第 1 行：当前工作区上下文（整行） */}
-          <section className="card ctx-card">
-            <div className="ctx-h">当前工作区上下文</div>
-            <div className="ctx-kv"><span>工作区</span><b>{workspace.name || "TrailSense Outdoor IoT"}</b></div>
-            <div className="ctx-kv"><span>角色</span><b>所有者</b></div>
-            <div className="ctx-kv"><span>描述</span><b className="ctx-desc">{workspace.customer_summary || workspace.profile_summary || "共 1 份资料，适合用来做资料问答、机会判断和下一步方案验证。"}</b></div>
-            <button type="button" className="ctx-btn">查看工作区详情</button>
-          </section>
-
-          {/* 第 2 行：当前数据源 | 快捷操作 */}
-          <div className="ctx-grid2">
-            <section className="card ctx-card">
-              <div className="ctx-h">当前数据源<em>{allSrcs.length} 源</em></div>
-              <div className="ctx-srcs">
-                {pageSrcs.map((d, i) => (
-                  <div className="ctx-src" key={i}><FileTypeIcon doc={d} size={16} /><b title={d.name}>{d.name}</b></div>
-                ))}
-              </div>
-              <div className="ctx-pager">
-                <button type="button" className="ctx-pg-btn" disabled={curSrcPage === 0} onClick={() => setSrcPage(curSrcPage - 1)} aria-label="上一页"><ChevronLeft size={15} /></button>
-                <span>{curSrcPage + 1} / {srcPages}</span>
-                <button type="button" className="ctx-pg-btn" disabled={curSrcPage >= srcPages - 1} onClick={() => setSrcPage(curSrcPage + 1)} aria-label="下一页"><ChevronRight size={15} /></button>
-              </div>
-            </section>
-
-            <section className="card ctx-card">
-              <div className="ctx-h">快捷操作</div>
-              <div className="ctx-qa">
-                {quickActions.map((a, i) => { const Ic = a.icon; return (
-                  <button type="button" className="qa-item" key={i} onClick={a.onClick}><span className="qa-ic"><Ic size={15} /></span><div><b>{a.title}</b>{a.desc ? <em>{a.desc}</em> : null}</div></button>
-                ); })}
-              </div>
-            </section>
-          </div>
-
-          {/* 第 3 行：最近分析结论 | 审计状态 */}
-          <div className="ctx-grid2">
-            <section className="card ctx-card">
-              <div className="ctx-h">最近分析结论</div>
-              <div className="ctx-kv"><span>结论</span><span className="dw-chip ok">{recentVerdict}</span></div>
-              <div className="ctx-kv"><span>时间</span><b>{formatTime(recent.completed_at || recent.time) || "06/29 15:56"}</b></div>
-              <div className="ctx-kv"><span>基于</span><b>{docs.length || 9} 源 · 12 指标</b></div>
-              <button type="button" className="lnk lnk-btn">查看详情 ›</button>
-            </section>
-
-            <section className="card ctx-card">
-              <div className="ctx-h">审计状态</div>
-              <div className="ctx-kv"><span>审计</span><span className="dw-chip ok">通过</span></div>
-              <div className="ctx-kv"><span>检查</span><b>12 项</b></div>
-              <div className="ctx-kv"><span>异常</span><b>0 项</b></div>
-              <button type="button" className="lnk lnk-btn">查看审计详情 ›</button>
-            </section>
-          </div>
-        </aside>
-      </div>
-
-      <div className="conv-composer">
-        <Composer input={input} setInput={setInput} running={running} onRun={onRun} onStop={onStop} selectedPlaybook={selectedPlaybook} />
-      </div>
+      </section>
+      <QuestionStarter onRun={onRun} running={running} />
+      <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} trace={trace} onStop={onStop} />
+      <Composer input={input} setInput={setInput} running={running} onRun={onRun} onStop={onStop} selectedPlaybook={selectedPlaybook} />
     </main>
   );
 }
@@ -2368,6 +2237,23 @@ function CopyButton({ text }) {
 }
 
 function AnswerPanel({ messages, streamText, running, presentation, onRun, onProduce, producing, trace, onStop }) {
+  const visible = messages.length || streamText;
+  const scrollRef = useRef(null);
+  const bottomRef = useRef(null);
+  const atBottomRef = useRef(true);
+  // 仅在用户已贴着底部时才自动滚；上翻看历史/证据时不抢滚动
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (el) atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const last = messages[messages.length - 1];
+    if (last?.role === "user") atBottomRef.current = true; // 用户刚发言，强制跟到最新
+    if (!atBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, streamText, running]);
   // 等待期间显示当前是哪个 Agent 在干什么(取自实时 trace)，把多 Agent 协作秀进对话流
   const liveStage = useMemo(() => deriveAgentStage(trace), [trace]);
   const lastUserText = useMemo(() => {
@@ -2377,68 +2263,87 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
     return "";
   }, [messages]);
   return (
-    <div className="answer-flow">
-      {messages.map((message, index) => {
-        // 用户提问 → 轻量「用户问题」条（非即时通讯气泡）
-        if (message.role === "user") {
-          return (
-            <div className="user-ask" key={`u-${index}`}>
-              <span className="user-ask-tag">用户问题</span>
-              <p>{message.text}</p>
-            </div>
-          );
-        }
-        // AI 输出 → 全宽分析卡片
-        const isLast = index === messages.length - 1;
-        return (
-          <article className="card answer-card" key={`a-${index}`}>
-            <div className="cr-top"><span className="cr-av">AI</span><b>AI Agent</b><em>· 分析结果</em></div>
-            <div className="answer-card-body">
-              {message.clarify
-                ? <ClarifyCard clarify={message.clarify} onSubmit={onRun} disabled={running} />
-                : <RichText text={message.text} citations={message.citations} />}
-              {message.citations?.length ? <CitationInline citations={message.citations} text={message.text} /> : null}
-            </div>
-            {message.producedArtifacts ? <ChatArtifacts artifacts={message.producedArtifacts} /> : null}
-            {message.produceOffer && onProduce ? (
-              <button type="button" className="produce-offer-chip" onClick={() => onProduce(message.produceOffer)} disabled={producing}>
-                {producing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
-                <span>{message.produceOffer.label || "确认生成产物"}</span>
-              </button>
-            ) : null}
-            {message.text && !message.clarify ? (
-              <div className="cr-foot">
-                <div className="trust-badges">
-                  <span className="tb ok"><CheckCircle2 size={13} />数据已证实</span>
-                  <span className="tb warn"><AlertTriangle size={13} />部分需补充验证</span>
-                </div>
-                <div className="cr-acts">
-                  <CopyButton text={message.text} />
-                  {message.recoverable && !running ? (
-                    <button type="button" onClick={() => onRun(message.recoverable.prompt || lastUserText, { regenerate: true })}><RotateCcw size={14} />重试/继续</button>
-                  ) : isLast && !running && lastUserText ? (
-                    <button type="button" onClick={() => onRun(lastUserText, { regenerate: true })}><RotateCcw size={14} />重新生成</button>
+    <div className="answer-panel">
+      <div className="answer-panel-head">
+        <div>
+          <span>AI 分析</span>
+          <strong>{running ? "实时生成中" : "结果输出"}</strong>
+        </div>
+        <div className={running ? "typing-indicator live" : "typing-indicator"}>
+          <i /><i /><i />
+          <span>{running ? (liveStage || presentation.caption) : "等待输入"}</span>
+        </div>
+      </div>
+      {visible ? (
+        <div className="message-stack" ref={scrollRef} onScroll={handleScroll}>
+          {messages.map((message, index) => {
+            const isLastUser = message.role === "user" && index === messages.length - 1;
+            return (
+              <article key={`${message.role}-${index}`} className={`chat-message ${message.role}`}>
+                <div className="speaker">{message.role === "user" ? "你" : "AI"}</div>
+                <div className="message-body">
+                  {message.clarify
+                    ? <ClarifyCard clarify={message.clarify} onSubmit={onRun} disabled={running} />
+                    : message.role === "user"
+                      ? <TypeOut text={message.text} animate={isLastUser && running} />
+                      : <RichText text={message.text} citations={message.citations} />}
+                  {message.citations?.length ? <CitationInline citations={message.citations} text={message.text} /> : null}
+                  {message.role === "assistant" && message.text && !message.clarify ? (
+                    <div className="msg-actions">
+                      <CopyButton text={message.text} />
+                      {message.recoverable && !running ? (
+                        <button
+                          type="button"
+                          className="msg-copy msg-retry"
+                          title="重试/继续本次回答"
+                          onClick={() => onRun(message.recoverable.prompt || lastUserText, { regenerate: true })}
+                        >
+                          <RotateCcw size={13} /> 重试/继续
+                        </button>
+                      ) : null}
+                      {!message.recoverable && index === messages.length - 1 && !running && lastUserText ? (
+                        <button type="button" className="msg-copy msg-regen" title="用同一个问题重新生成" onClick={() => onRun(lastUserText, { regenerate: true })}>
+                          <RotateCcw size={13} /> 重新生成
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
-                  {onProduce ? <button type="button" className="cr-prd" onClick={() => onRun("基于当前结论生成一份 PRD 草案。")}><FileDown size={14} />生成 PRD 草案</button> : null}
-                  <button type="button" className="cr-ico" title="有帮助"><ThumbsUp size={14} /></button>
-                  <button type="button" className="cr-ico" title="需改进"><ThumbsDown size={14} /></button>
+                  {message.produceOffer && onProduce ? (
+                    <button
+                      type="button"
+                      className="produce-offer-chip"
+                      onClick={() => onProduce(message.produceOffer)}
+                      disabled={producing}
+                    >
+                      {producing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
+                      <span>{message.produceOffer.label || "确认生成产物"}</span>
+                    </button>
+                  ) : null}
+                  {message.producedArtifacts ? <ChatArtifacts artifacts={message.producedArtifacts} /> : null}
                 </div>
+              </article>
+            );
+          })}
+          {streamText ? (
+            <article className="chat-message assistant streaming">
+              <div className="speaker">AI</div>
+              <div className="message-body">
+                <RichText text={streamText} />
+                {running ? <span className="cursor" /> : null}
               </div>
-            ) : null}
-          </article>
-        );
-      })}
-      {streamText ? (
-        <article className="card answer-card streaming">
-          <div className="cr-top"><span className="cr-av">AI</span><b>AI Agent</b><em>· 实时生成中</em></div>
-          <div className="answer-card-body"><RichText text={streamText} />{running ? <span className="cursor" /> : null}</div>
-        </article>
-      ) : running ? (
-        <article className="card answer-card waiting">
-          <div className="cr-top"><span className="cr-av">AI</span><b>AI Agent</b><em>· {liveStage || presentation?.caption || "分析中"}</em></div>
-          <WaitingBubble caption={liveStage || presentation?.caption} />
-        </article>
-      ) : null}
+            </article>
+          ) : running ? (
+            <WaitingBubble caption={liveStage || presentation?.caption} />
+          ) : null}
+          <div ref={bottomRef} />
+        </div>
+      ) : (
+        <div className="blank-answer">
+          <ShieldCheck size={28} />
+          <strong>等待问题</strong>
+          <span>选择上方问题启动器，或输入你想分析的产品机会。</span>
+        </div>
+      )}
     </div>
   );
 }

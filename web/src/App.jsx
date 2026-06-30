@@ -91,7 +91,15 @@ export function App() {
   const [user, setUser] = useState({ name: "Demo User", email: "local.demo@dataforge" });
   const [authState, setAuthState] = useState("local");
   const [observability, setObservability] = useState(null);
-  const [tasks, setTasks] = useState(() => { try { return JSON.parse(window.localStorage.getItem("df-tasks") || "[]"); } catch { return []; } });
+  const [tasks, setTasks] = useState(() => {
+    // 刷新后没有任何任务真正在跑：把上次残留的"进行中"收尾，避免幽灵角标(永远的 1)与卡住的"可行性分析"
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("df-tasks") || "[]");
+      const cleaned = saved.map((t) => (t.status === "running" ? { ...t, status: "done", detail: "已结束（刷新页面）" } : t));
+      try { window.localStorage.setItem("df-tasks", JSON.stringify(cleaned)); } catch { /* ignore */ }
+      return cleaned;
+    } catch { return []; }
+  });
   const pushTask = useCallback((task) => {
     setTasks((list) => {
       const next = [{ time: new Date().toISOString(), ...task }, ...list].slice(0, 30);
