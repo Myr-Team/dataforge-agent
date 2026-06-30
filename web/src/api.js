@@ -290,6 +290,86 @@ export async function produceArtifacts(payload) {
   });
 }
 
+const wsPath = (id) => `/api/workspaces/${encodeURIComponent(id)}`;
+const queryString = (params) => new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "")).toString();
+
+export async function dwListFiles(workspaceId) {
+  return loadWorkspaceFiles(workspaceId);
+}
+export async function dwFileContent(workspaceId, fileId, { limit = 100, offset = 0 } = {}) {
+  return loadWorkspaceFileContent(workspaceId, fileId, { limit, offset });
+}
+export async function dwCreateFile(workspaceId, body) {
+  return createWorkspaceFile(workspaceId, body);
+}
+export async function dwSaveCells(workspaceId, fileId, payload) {
+  const body = Array.isArray(payload) ? { edits: payload } : payload || {};
+  return request(`${wsPath(workspaceId)}/files/${encodeURIComponent(fileId)}/cells`, { method: "PUT", body: JSON.stringify(body) });
+}
+export async function dwSaveContent(workspaceId, fileId, text) {
+  return saveWorkspaceFileContent(workspaceId, fileId, text);
+}
+export async function dwDeleteFile(workspaceId, fileId) {
+  return request(`${wsPath(workspaceId)}/files/${encodeURIComponent(fileId)}`, { method: "DELETE" });
+}
+export async function dwFileQuality(workspaceId, fileId) {
+  return loadWorkspaceFileQuality(workspaceId, fileId);
+}
+export async function dwFieldMapping(workspaceId, fileId) {
+  return loadWorkspaceFieldMapping(workspaceId, fileId);
+}
+export async function dwSaveFieldMapping(workspaceId, fileId, mapping) {
+  return saveWorkspaceFieldMapping(workspaceId, fileId, mapping);
+}
+export async function dwFileHistory(workspaceId, fileId) {
+  return loadWorkspaceFileHistory(workspaceId, fileId);
+}
+export async function dwAnalyzeFiles(workspaceId, fileIds, message) {
+  return analyzeWorkspaceFiles(workspaceId, { file_ids: fileIds, message: message || "请分析这些文件里的机会" });
+}
+
+export function runLogUrl(runId, format = "json") {
+  return `${API_BASE}/api/runs/${encodeURIComponent(runId)}/log?format=${format}`;
+}
+
+export async function loadArtifactsList(workspaceId) {
+  return loadWorkspaceArtifacts(workspaceId);
+}
+export async function loadMembers(workspaceId) {
+  return loadWorkspaceMembers(workspaceId);
+}
+
+export async function dwConnectorCapabilities(workspaceId) {
+  return loadConnectorCapabilities(workspaceId);
+}
+export async function dwBlobConnect(workspaceId, payload) {
+  return connectWorkspaceBlob(workspaceId, payload);
+}
+export async function dwBlobContainers(workspaceId, connectionId) {
+  return request(`${wsPath(workspaceId)}/connectors/blob/containers?${queryString({ connection_id: connectionId })}`);
+}
+export async function dwBlobItems(workspaceId, connectionId, container, prefix = "", limit = 100) {
+  return request(`${wsPath(workspaceId)}/connectors/blob/blobs?${queryString({ connection_id: connectionId, container, prefix, limit })}`);
+}
+export async function dwBlobPreview(workspaceId, connectionId, container, blob, { limit = 100, offset = 0 } = {}) {
+  return request(`${wsPath(workspaceId)}/connectors/blob/preview?${queryString({ connection_id: connectionId, container, blob, limit, offset })}`);
+}
+export async function dwBlobImport(workspaceId, payload) {
+  return request(`${wsPath(workspaceId)}/connectors/blob/import`, { method: "POST", body: JSON.stringify(payload) });
+}
+export async function dwSqlConnect(workspaceId, payload) {
+  return connectWorkspaceSql(workspaceId, payload);
+}
+export async function dwSqlTables(workspaceId, connectionId) {
+  return request(`${wsPath(workspaceId)}/connectors/sql/tables?${queryString({ connection_id: connectionId })}`);
+}
+export async function dwSqlPreview(workspaceId, connectionId, table, limit = 100) {
+  return request(`${wsPath(workspaceId)}/connectors/sql/preview?${queryString({ connection_id: connectionId, table, limit })}`);
+}
+export async function dwSqlImport(workspaceId, payload) {
+  return request(`${wsPath(workspaceId)}/connectors/sql/import`, { method: "POST", body: JSON.stringify(payload) });
+}
+
 export async function streamChat(payload, onEvent, signal) {
   let deliveredEvents = 0;
   for (let attempt = 0; attempt < 2; attempt += 1) {

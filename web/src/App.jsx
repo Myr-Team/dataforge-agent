@@ -179,38 +179,6 @@ export function App() {
     setUploadOpen(true);
   };
 
-  const handleDataWorkbenchAnalysis = useCallback((result) => {
-    const conversationId = result?.conversation_id;
-    const final = result?.final || {};
-    const artifact = final.artifact || {};
-    const text = result?.text || final.text || "数据工作台分析已完成。";
-    if (conversationId) {
-      setActiveConversationId(conversationId);
-      try { window.localStorage.setItem(`df-conv:${workspaceId}`, conversationId); } catch { /* ignore */ }
-    }
-    if (artifact?.feasibility?.verdict || artifact?.feasibility?.dimensions?.length) {
-      setFinalArtifact(artifact);
-      try { window.localStorage.setItem(`df-analysis:${workspaceId}`, JSON.stringify(artifact)); } catch { /* ignore */ }
-    }
-    if (Array.isArray(result?.events)) {
-      setTrace(result.events);
-      try { window.localStorage.setItem(`df-trace:${workspaceId}`, JSON.stringify(result.events.slice(-44))); } catch { /* ignore */ }
-    }
-    setMessages((items) => [
-      ...items,
-      {
-        role: "assistant",
-        text,
-        time: new Date().toISOString(),
-        citations: artifact.citations || artifact.answer?.citations || [],
-      },
-    ]);
-    setActiveView("conversations");
-    setInspectorTab("evidence");
-    setNotice({ type: "done", message: "数据工作台文件已发送到分析，结果已打开。" });
-    refreshDashboard(workspaceId);
-  }, [refreshDashboard, workspaceId]);
-
   useEffect(() => {
     if (DEMO_SEED) { setDashboard(DEMO_DASHBOARD); setDashboardLoading(false); return; }
     refreshDashboard(workspaceId);
@@ -824,9 +792,8 @@ export function App() {
             finalArtifact={finalArtifact}
             artifacts={artifacts}
             onProduce={produce}
-            onUploadAppend={openAppendUpload}
             onUploadReference={openReferenceUpload}
-            onAnalysisResult={handleDataWorkbenchAnalysis}
+            onAppendUpload={openAppendUpload}
             onNewConversation={startNewConversation}
             producing={producing}
             observability={observability}

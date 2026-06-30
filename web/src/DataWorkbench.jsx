@@ -1,387 +1,472 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertTriangle,
-  ArrowUpDown,
+  FileSpreadsheet,
+  FileText,
+  RefreshCw,
+  Plus,
+  Table2,
+  Search,
   Check,
+  AlertTriangle,
+  UploadCloud,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
-  Cloud,
-  Database,
-  FileSpreadsheet,
-  FileText,
-  FileUp,
-  Filter,
-  HardDrive,
-  History,
-  Info,
-  LayoutGrid,
-  List,
-  Loader2,
-  MoreHorizontal,
-  Plus,
-  RefreshCw,
-  Save,
-  Search,
   Send,
-  Settings2,
-  Table2,
-  Undo2,
-  UploadCloud,
+  Save,
   X,
+  Info,
+  History,
+  Loader2,
+  FileUp,
+  Trash2,
+  Rows3,
+  Columns3,
+  Database,
+  Cloud,
 } from "lucide-react";
 import {
-  analyzeWorkspaceFiles,
-  connectWorkspaceBlob,
-  connectWorkspaceSql,
-  createWorkspaceFile,
-  loadConnectorCapabilities,
-  loadWorkspaceFieldMapping,
-  loadWorkspaceFileContent,
-  loadWorkspaceFileHistory,
-  loadWorkspaceFileQuality,
-  loadWorkspaceFiles,
-  saveWorkspaceFieldMapping,
-  saveWorkspaceFileContent,
-  saveWorkspaceTableCells,
+  dwListFiles,
+  dwFileContent,
+  dwCreateFile,
+  dwSaveCells,
+  dwSaveContent,
+  dwFileQuality,
+  dwFieldMapping,
+  dwSaveFieldMapping,
+  dwFileHistory,
+  dwAnalyzeFiles,
+  dwDeleteFile,
+  dwBlobConnect,
+  dwBlobContainers,
+  dwBlobItems,
+  dwBlobImport,
+  dwSqlConnect,
+  dwSqlTables,
+  dwSqlImport,
 } from "./api.js";
 
 const TABS = [
-  { id: "files", label: "文件库" },
-  { id: "table", label: "表格编辑" },
-  { id: "mapping", label: "字段映射" },
+  { id: "table", label: "内容编辑" },
   { id: "quality", label: "数据质量" },
-  { id: "connectors", label: "连接器" },
+  { id: "mapping", label: "字段映射" },
+  { id: "history", label: "版本历史" },
 ];
 
 const CONNECTORS = [
-  { id: "blob", name: "Azure Blob Storage", src: "/icons/azure-blob.svg", state: "available", hint: "对象存储，支持手填连接串真连接" },
-  { id: "sql", name: "SQL Database", src: "/icons/sql-database.svg", state: "available", hint: "数据库，只读预览与导入" },
-  { id: "adl", name: "Azure Data Lake", src: "/icons/data-lake.svg", state: "planned", hint: "保持 Demo，暂不接真连" },
-  { id: "upload", name: "CSV / Excel Upload", icon: FileUp, state: "available", hint: "复用当前工作区上传入口" },
+  { id: "blob", name: "Azure Blob Storage", src: "/icons/azure-blob.svg", state: "available", hint: "对象存储 · 支持连接接入" },
+  { id: "sql", name: "SQL Database", src: "/icons/sql-database.svg", state: "available", hint: "数据库 · 账号密码连接" },
+  { id: "adl", name: "Azure Data Lake", src: "/icons/data-lake.svg", state: "planned", hint: "数据湖 · 计划上线" },
+  { id: "upload", name: "CSV / Excel 上传", icon: FileUp, state: "available", hint: "本地上传文件" },
 ];
 
-const TABLE_TYPES = new Set(["csv", "xlsx", "xlsm", "excel"]);
-const MARKDOWN_TYPES = new Set(["md", "markdown", "txt", "text"]);
-const PREVIEW_LIMIT = 100;
+const PAGE = 100;
 
-function workspaceIdFrom(workspaceId, dashboard) {
-  return workspaceId || dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "demo-corpus";
+function fileIconFor(type, name = "") {
+  const t = (type || (name.split(".").pop() || "")).toLowerCase();
+  if (t === "md" || t === "markdown" || t === "txt") return <FileText size={15} className="fi fi-md" />;
+  if (t === "xlsx") return <FileSpreadsheet size={15} className="fi fi-xlsx" />;
+  return <FileSpreadsheet size={15} className="fi fi-csv" />;
 }
 
-function flattenGroups(groups) {
-  return (groups || []).flatMap((group) => (group.files || []).map((file) => ({ ...file, group: group.label })));
+function fmtBytes(b) {
+  const n = Number(b || 0);
+  if (!n) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+function fmtTime(v) {
+  if (!v) return "";
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-function formatBytes(bytes) {
-  const n = Number(bytes || 0);
-  if (n >= 1024 * 1024 * 1024) return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
-  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${n} B`;
-}
-
-function fileIcon(file) {
-  const type = String(file?.type || file || "").toLowerCase();
-  if (MARKDOWN_TYPES.has(type) || String(file?.name || file || "").endsWith(".md")) return <FileText size={15} className="fi fi-md" />;
-  return <FileSpreadsheet size={15} className={type.includes("xlsx") ? "fi fi-xlsx" : "fi fi-csv"} />;
-}
-
-function columnLetter(index) {
-  let n = index + 1;
-  let out = "";
-  while (n > 0) {
-    const rem = (n - 1) % 26;
-    out = String.fromCharCode(65 + rem) + out;
-    n = Math.floor((n - 1) / 26);
-  }
-  return out;
-}
-
-function statusLabel(status) {
-  return status === "indexed" ? "已入库" : "待复核";
-}
-
-function qualityStatusLabel(status) {
-  if (status === "passed") return "通过";
-  if (status === "failed") return "失败";
-  return "提醒";
-}
-
-export function DataWorkbench({ dashboard, workspaceId: explicitWorkspaceId, onRun, onUploadAppend, onAnalysisResult }) {
-  const workspaceId = workspaceIdFrom(explicitWorkspaceId, dashboard);
-  const [tab, setTab] = useState("files");
-  const [filePayload, setFilePayload] = useState(null);
+export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun }) {
+  const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
+  const [tab, setTab] = useState("table");
+  const [groups, setGroups] = useState([]);
+  const [storage, setStorage] = useState(null);
   const [filesLoading, setFilesLoading] = useState(false);
-  const [activeFileId, setActiveFileId] = useState("");
+
+  const [active, setActive] = useState(null); // {id,name,type}
   const [openTabs, setOpenTabs] = useState([]);
-  const [content, setContent] = useState(null);
+  const [content, setContent] = useState(null); // table or markdown
   const [contentLoading, setContentLoading] = useState(false);
+  const [rows, setRows] = useState([]); // editable table rows (current page)
+  const [tableColumns, setTableColumns] = useState([]);
+  const [mdText, setMdText] = useState("");
+  const [edits, setEdits] = useState({}); // "rowIdx:colName" -> value (page-relative rows + offset)
+  const [tableOps, setTableOps] = useState({});
+  const [selectedCell, setSelectedCell] = useState(null);
+  const [colWidths, setColWidths] = useState({});
   const [offset, setOffset] = useState(0);
-  const [tableRows, setTableRows] = useState([]);
-  const [markdownText, setMarkdownText] = useState("");
-  const [edits, setEdits] = useState({});
-  const [cell, setCell] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [toast, setToast] = useState("");
+
   const [quality, setQuality] = useState(null);
   const [mapping, setMapping] = useState(null);
-  const [mappingDraft, setMappingDraft] = useState({});
+  const [mapDraft, setMapDraft] = useState({});
   const [history, setHistory] = useState([]);
-  const [query, setQuery] = useState("");
-  const [connectorState, setConnectorState] = useState({});
-  const [connectorBusy, setConnectorBusy] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
-
-  const files = useMemo(() => flattenGroups(filePayload?.groups), [filePayload]);
-  const activeFile = useMemo(() => files.find((file) => file.id === activeFileId) || null, [files, activeFileId]);
-  const isMarkdown = content?.kind === "markdown" || MARKDOWN_TYPES.has(String(activeFile?.type || "").toLowerCase());
-  const isTable = content?.kind === "table" || TABLE_TYPES.has(String(activeFile?.type || "").toLowerCase());
-  const totalPages = Math.max(1, Math.ceil(Number(content?.total_rows || 0) / PREVIEW_LIMIT));
-  const currentPage = Math.floor(offset / PREVIEW_LIMIT) + 1;
-  const filteredGroups = useMemo(() => {
-    const kw = query.trim().toLowerCase();
-    return (filePayload?.groups || []).map((group) => ({
-      ...group,
-      files: kw
-        ? (group.files || []).filter((file) => `${file.name || ""} ${file.type || ""}`.toLowerCase().includes(kw))
-        : group.files || [],
-    }));
-  }, [filePayload, query]);
+  const [toast, setToast] = useState("");
+  const [q, setQ] = useState("");
+  const [collapsed, setCollapsed] = useState({});
+  const [createModal, setCreateModal] = useState(null);
+  const [connectorModal, setConnectorModal] = useState(null);
+  const [connectorBusy, setConnectorBusy] = useState(false);
+  const [connectorResult, setConnectorResult] = useState(null);
+  const toastT = useRef(null);
 
   const showToast = useCallback((msg) => {
     setToast(msg);
-    window.clearTimeout(showToast._t);
-    showToast._t = window.setTimeout(() => setToast(""), 2600);
+    window.clearTimeout(toastT.current);
+    toastT.current = window.setTimeout(() => setToast(""), 2600);
   }, []);
 
-  const refreshFiles = useCallback(async (preferredFileId = "") => {
+  const reloadFiles = useCallback(async () => {
+    if (!workspaceId) return;
     setFilesLoading(true);
     try {
-      const data = await loadWorkspaceFiles(workspaceId);
-      setFilePayload(data);
-      const nextFiles = flattenGroups(data.groups);
-      const nextActive = nextFiles.find((file) => file.id === preferredFileId) || nextFiles[0] || null;
-      setActiveFileId(nextActive?.id || "");
-      setOpenTabs((tabs) => {
-        const kept = tabs.filter((id) => nextFiles.some((file) => file.id === id));
-        return nextActive && !kept.includes(nextActive.id) ? [...kept, nextActive.id] : kept;
-      });
-    } catch (error) {
-      showToast(`文件库加载失败：${error instanceof Error ? error.message : String(error)}`);
+      const data = await dwListFiles(workspaceId);
+      setGroups(data.groups || []);
+      setStorage(data.storage || null);
+      return data;
+    } catch (e) {
+      showToast(`加载文件库失败：${e.message}`);
     } finally {
       setFilesLoading(false);
     }
-  }, [showToast, workspaceId]);
+  }, [workspaceId, showToast]);
 
+  // 初次/切工作区：拉文件库，默认打开第一个文件
   useEffect(() => {
-    refreshFiles("");
-    loadConnectorCapabilities(workspaceId)
-      .then((data) => setConnectorState((state) => ({ ...state, capabilities: data.connectors || [] })))
-      .catch(() => {});
-  }, [refreshFiles, workspaceId]);
-
-  useEffect(() => {
-    if (!activeFileId) {
-      setContent(null);
-      setQuality(null);
-      setMapping(null);
-      setHistory([]);
-      return;
-    }
     let cancelled = false;
-    setContentLoading(true);
-    setDirty(false);
-    setEdits({});
-    setCell("");
-    Promise.all([
-      loadWorkspaceFileContent(workspaceId, activeFileId, { limit: PREVIEW_LIMIT, offset }),
-      loadWorkspaceFileQuality(workspaceId, activeFileId).catch((error) => ({ error: error.message })),
-      loadWorkspaceFieldMapping(workspaceId, activeFileId).catch((error) => ({ error: error.message })),
-      loadWorkspaceFileHistory(workspaceId, activeFileId).catch(() => []),
-    ]).then(([nextContent, nextQuality, nextMapping, nextHistory]) => {
-      if (cancelled) return;
-      setContent(nextContent);
-      setTableRows((nextContent.rows || []).map((row) => [...row]));
-      setMarkdownText(nextContent.text || "");
-      setQuality(nextQuality);
-      setMapping(nextMapping);
-      setHistory(Array.isArray(nextHistory) ? nextHistory : []);
-      const draft = {};
-      for (const field of nextMapping?.field_mapping?.fields || []) {
-        draft[field.name] = field.target || field.standard_name || "";
-      }
-      for (const [name, value] of Object.entries(nextMapping?.overrides || {})) {
-        draft[name] = typeof value === "string" ? value : value?.target || "";
-      }
-      setMappingDraft(draft);
-    }).catch((error) => {
-      if (!cancelled) showToast(`内容加载失败：${error instanceof Error ? error.message : String(error)}`);
-    }).finally(() => {
-      if (!cancelled) setContentLoading(false);
-    });
+    (async () => {
+      const data = await reloadFiles();
+      if (cancelled || !data) return;
+      const first = (data.groups || []).flatMap((g) => g.files || [])[0];
+      if (first && !active) openFile(first);
+    })();
     return () => { cancelled = true; };
-  }, [activeFileId, offset, showToast, workspaceId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId]);
 
-  const openFile = (file) => {
-    if (!file?.id) return;
-    setActiveFileId(file.id);
-    setOpenTabs((tabs) => (tabs.includes(file.id) ? tabs : [...tabs, file.id]));
-    setOffset(0);
-    setTab(MARKDOWN_TYPES.has(String(file.type || "").toLowerCase()) ? "table" : "table");
-  };
+  const isMd = active && ["md", "markdown", "txt"].includes(String(active.type || "").toLowerCase());
+  const isJson = active && String(active.type || "").toLowerCase() === "json";
+  const isTextPreview = isMd || isJson || content?.kind === "markdown" || content?.kind === "json";
 
-  const closeTab = (fileId, event) => {
-    event.stopPropagation();
+  const loadContent = useCallback(async (file, off = 0) => {
+    setContentLoading(true);
+    setEdits({});
+    setTableOps({});
+    setSelectedCell(null);
+    setDirty(false);
+    try {
+      const data = await dwFileContent(workspaceId, file.id, { limit: PAGE, offset: off });
+      setContent(data);
+      setOffset(off);
+      if (data.kind === "markdown" || data.kind === "json") {
+        setMdText(data.text || "");
+        setRows([]);
+        setTableColumns([]);
+      } else {
+        const nextColumns = (data.columns || []).map((c) => (typeof c === "string" ? c : c.name));
+        setTableColumns(nextColumns);
+        setRows((data.rows || []).map((r) => [...r]));
+        setColWidths((old) => {
+          const next = {};
+          for (const col of nextColumns) next[col] = old[col] || 136;
+          return next;
+        });
+      }
+    } catch (e) {
+      showToast(`加载内容失败：${e.message}`);
+    } finally {
+      setContentLoading(false);
+    }
+  }, [workspaceId, showToast]);
+
+  const loadSidePanels = useCallback(async (file) => {
+    setQuality(null); setMapping(null); setHistory([]); setMapDraft({});
+    dwFileQuality(workspaceId, file.id).then(setQuality).catch(() => {});
+    dwFieldMapping(workspaceId, file.id).then(setMapping).catch(() => {});
+    dwFileHistory(workspaceId, file.id).then((h) => setHistory(Array.isArray(h) ? h : [])).catch(() => {});
+  }, [workspaceId]);
+
+  const openFile = useCallback((file) => {
+    setActive(file);
+    setOpenTabs((tabs) => (tabs.find((t) => t.id === file.id) ? tabs : [...tabs, file]));
+    setTab("table");
+    loadContent(file, 0);
+    loadSidePanels(file);
+  }, [loadContent, loadSidePanels]);
+
+  const closeTab = (file, e) => {
+    e.stopPropagation();
     setOpenTabs((tabs) => {
-      const next = tabs.filter((id) => id !== fileId);
-      if (fileId === activeFileId) setActiveFileId(next[next.length - 1] || files[0]?.id || "");
+      const next = tabs.filter((t) => t.id !== file.id);
+      if (active?.id === file.id) {
+        const nx = next[next.length - 1];
+        if (nx) openFile(nx); else { setActive(null); setContent(null); }
+      }
       return next;
     });
   };
 
-  const updateCell = (rowIndex, colIndex, value) => {
-    const absoluteRow = Number(content?.offset || 0) + rowIndex;
-    const columnName = content?.columns?.[colIndex]?.name || colIndex;
-    setTableRows((rows) => rows.map((row, r) => (r === rowIndex ? row.map((cellValue, c) => (c === colIndex ? value : cellValue)) : row)));
-    setEdits((items) => ({ ...items, [`${absoluteRow}:${colIndex}`]: { row: absoluteRow, col: columnName, value } }));
+  const onCellChange = (pageRowIdx, colName, value) => {
+    setRows((rs) => { const copy = rs.map((r) => [...r]); const ci = colIndex(colName); if (ci >= 0) copy[pageRowIdx][ci] = value; return copy; });
+    setEdits((m) => ({ ...m, [`${offset + pageRowIdx}:${colName}`]: value }));
     setDirty(true);
   };
+  const columns = tableColumns;
+  const colIndex = (name) => columns.indexOf(name);
 
-  const saveChanges = async () => {
-    if (!activeFile || !dirty || saving) return;
+  const onMdChange = (v) => {
+    setMdText(v);
+    if (!isJson) setDirty(true);
+  };
+
+  const save = async () => {
+    if (!active || !dirty || saving) return;
     setSaving(true);
     try {
-      if (isMarkdown) {
-        await saveWorkspaceFileContent(workspaceId, activeFile.id, markdownText);
-      } else if (isTable) {
-        const changed = Object.values(edits);
-        if (changed.length) await saveWorkspaceTableCells(workspaceId, activeFile.id, changed);
+      if (isMd) {
+        await dwSaveContent(workspaceId, active.id, mdText);
+      } else {
+        const editList = Object.entries(edits).map(([k, value]) => { const [row, col] = k.split(/:(.+)/); return { row: Number(row), col, value }; });
+        const payload = { edits: editList, ...tableOps };
+        if (editList.length || Object.keys(tableOps).length) await dwSaveCells(workspaceId, active.id, payload);
       }
-      setDirty(false);
-      setEdits({});
-      showToast("已保存到后端");
-      await refreshFiles(activeFile.id);
-      const fresh = await loadWorkspaceFileContent(workspaceId, activeFile.id, { limit: PREVIEW_LIMIT, offset });
-      setContent(fresh);
-      setTableRows((fresh.rows || []).map((row) => [...row]));
-      setMarkdownText(fresh.text || "");
-      const [nextQuality, nextMapping, nextHistory] = await Promise.all([
-        loadWorkspaceFileQuality(workspaceId, activeFile.id).catch((error) => ({ error: error.message })),
-        loadWorkspaceFieldMapping(workspaceId, activeFile.id).catch((error) => ({ error: error.message })),
-        loadWorkspaceFileHistory(workspaceId, activeFile.id).catch(() => []),
-      ]);
-      setQuality(nextQuality);
-      setMapping(nextMapping);
-      setHistory(Array.isArray(nextHistory) ? nextHistory : []);
-    } catch (error) {
-      showToast(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      setDirty(false); setEdits({}); setTableOps({});
+      showToast("已保存");
+      await loadContent(active, offset); // 重新载入校验持久化
+      loadSidePanels(active);
+      reloadFiles();
+    } catch (e) {
+      showToast(`保存失败：${e.message}`);
     } finally {
       setSaving(false);
     }
   };
 
-  const createMarkdown = async () => {
-    const name = window.prompt("Markdown 文件名", "untitled.md");
-    if (!name) return;
-    try {
-      const result = await createWorkspaceFile(workspaceId, { name, type: "md", text: "# Untitled\n\n" });
-      await refreshFiles(result.file?.id);
-      showToast("Markdown 已创建并入库");
-    } catch (error) {
-      showToast(`新建失败：${error instanceof Error ? error.message : String(error)}`);
-    }
+  const createFile = async (kind) => {
+    setCreateModal({
+      kind,
+      name: kind === "md" ? "新建笔记" : "新建表格",
+      columns: "列1, 列2",
+      text: kind === "md" ? "# 新建笔记\n\n" : "",
+    });
   };
 
-  const createTable = async () => {
-    const name = window.prompt("表格文件名", "untitled.csv");
-    if (!name) return;
+  const submitCreateFile = async () => {
+    if (!createModal?.name?.trim()) {
+      showToast("请输入文件名");
+      return;
+    }
     try {
-      const result = await createWorkspaceFile(workspaceId, {
-        name,
-        kind: "table",
-        columns: ["column_1", "column_2"],
-        rows: [["", ""]],
-      });
-      await refreshFiles(result.file?.id);
-      showToast("表格已创建并入库");
-    } catch (error) {
-      showToast(`新建失败：${error instanceof Error ? error.message : String(error)}`);
+      const name = createModal.name.trim();
+      const body = createModal.kind === "md"
+        ? { name, type: "md", text: createModal.text || `# ${name}\n\n` }
+        : { name, kind: "table", columns: createModal.columns.split(",").map((x) => x.trim()).filter(Boolean), rows: [["", ""]] };
+      const res = await dwCreateFile(workspaceId, body);
+      showToast("已创建并入库");
+      setCreateModal(null);
+      const data = await reloadFiles();
+      const created = (data?.groups || []).flatMap((g) => g.files || []).find((f) => f.id === res.file?.id) || res.file;
+      if (created?.id) openFile(created);
+    } catch (e) {
+      showToast(`新建失败：${e.message}`);
     }
   };
 
   const saveMapping = async () => {
-    if (!activeFile) return;
-    const fields = mapping?.field_mapping?.fields || [];
+    if (!active || !mapping) return;
+    const m = {};
+    for (const [src, target] of Object.entries(mapDraft)) if (target && target.trim()) m[src] = target.trim();
     try {
-      const payload = fields.map((field) => ({ source: field.name, target: mappingDraft[field.name] || "" })).filter((item) => item.target);
-      const next = await saveWorkspaceFieldMapping(workspaceId, activeFile.id, payload);
-      setMapping(next);
-      const nextQuality = await loadWorkspaceFileQuality(workspaceId, activeFile.id);
-      setQuality(nextQuality);
+      const res = await dwSaveFieldMapping(workspaceId, active.id, m);
+      setMapping(res); setMapDraft({});
       showToast("字段映射已保存");
-    } catch (error) {
-      showToast(`映射保存失败：${error instanceof Error ? error.message : String(error)}`);
+      dwFileQuality(workspaceId, active.id).then(setQuality).catch(() => {});
+    } catch (e) {
+      showToast(`保存映射失败：${e.message}`);
+    }
+  };
+
+  const selectedCol = selectedCell ? columns[selectedCell.col] : null;
+
+  const addRow = () => {
+    if (!columns.length) return;
+    const values = columns.map(() => "");
+    setRows((rs) => [...rs, values]);
+    setTableOps((ops) => ({ ...ops, add_rows: [...(ops.add_rows || []), { values }] }));
+    setDirty(true);
+  };
+
+  const deleteRow = () => {
+    if (!selectedCell) {
+      showToast("先选中要删除的行");
+      return;
+    }
+    const absolute = offset + selectedCell.row;
+    setRows((rs) => rs.filter((_, idx) => idx !== selectedCell.row));
+    setTableOps((ops) => ({ ...ops, delete_rows: [...(ops.delete_rows || []), absolute] }));
+    setSelectedCell(null);
+    setDirty(true);
+  };
+
+  const addColumn = () => {
+    const base = `column_${columns.length + 1}`;
+    let name = base;
+    let n = 2;
+    while (columns.includes(name)) {
+      name = `${base}_${n}`;
+      n += 1;
+    }
+    setTableColumns((cols) => [...cols, name]);
+    setRows((rs) => rs.map((row) => [...row, ""]));
+    setColWidths((m) => ({ ...m, [name]: 136 }));
+    setTableOps((ops) => ({ ...ops, add_cols: [...(ops.add_cols || []), { name }] }));
+    setDirty(true);
+  };
+
+  const deleteColumn = () => {
+    if (!selectedCol) {
+      showToast("先选中要删除的列");
+      return;
+    }
+    const idx = columns.indexOf(selectedCol);
+    setTableColumns((cols) => cols.filter((col) => col !== selectedCol));
+    setRows((rs) => rs.map((row) => row.filter((_, colIdx) => colIdx !== idx)));
+    setTableOps((ops) => ({ ...ops, delete_cols: [...(ops.delete_cols || []), selectedCol] }));
+    setSelectedCell(null);
+    setDirty(true);
+  };
+
+  const resizeColumn = (name, startX) => {
+    const start = colWidths[name] || 136;
+    const onMove = (event) => {
+      const width = Math.max(90, Math.min(320, start + event.clientX - startX));
+      setColWidths((m) => ({ ...m, [name]: width }));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const updateSelectedCell = (value) => {
+    if (!selectedCell || !selectedCol) return;
+    onCellChange(selectedCell.row, selectedCol, value);
+  };
+
+  const deleteActiveFile = async () => {
+    if (!active) return;
+    try {
+      await dwDeleteFile(workspaceId, active.id);
+      showToast("文件已删除");
+      setOpenTabs((tabs) => tabs.filter((t) => t.id !== active.id));
+      setActive(null);
+      setContent(null);
+      await reloadFiles();
+    } catch (e) {
+      showToast(`删除失败：${e.message}`);
     }
   };
 
   const sendToAnalysis = async () => {
-    if (!activeFile || analyzing) return;
+    if (!active || analyzing) return;
     setAnalyzing(true);
+    const message = `请基于数据工作台文件 ${active.name} 做一次可行性分析，说明证据强弱、机会、风险缺口和下一步验证计划。`;
+    showToast("已发送到分析，正在打开会话…");
     try {
-      const result = await analyzeWorkspaceFiles(workspaceId, {
-        file_ids: [activeFile.id],
-        message: `请基于数据工作台选中的文件 ${activeFile.name} 发起一次数据商机化分析。`,
-      });
-      showToast("已发送到分析");
-      onAnalysisResult?.(result);
-      if (!onAnalysisResult && onRun) onRun(`请分析数据工作台文件 ${activeFile.name}`);
-    } catch (error) {
-      showToast(`发送失败：${error instanceof Error ? error.message : String(error)}`);
+      if (onRun) {
+        onRun(message, { stayOnDashboard: false });
+      } else {
+        const res = await dwAnalyzeFiles(workspaceId, [active.id], message);
+        const cid = res?.conversation_id || res?.jump?.conversation_id;
+        if (cid && onOpenConversation) onOpenConversation(cid);
+      }
+    } catch (e) {
+      showToast(`发送分析失败：${e.message}`);
     } finally {
       setAnalyzing(false);
     }
   };
 
-  const connectExternal = async (connector) => {
-    if (connector.id === "upload") {
-      onUploadAppend?.();
-      return;
-    }
-    if (connector.id === "adl") return;
-    setConnectorBusy(connector.id);
+  const submitConnector = async (event) => {
+    event.preventDefault();
+    if (!connectorModal || connectorBusy) return;
+    setConnectorBusy(true);
+    setConnectorResult(null);
+    const form = new FormData(event.currentTarget);
+    const value = (key) => String(form.get(key) || "").trim();
     try {
-      if (connector.id === "blob") {
-        const connectionString = window.prompt("Azure Blob connection string（仅发送后端，不回显）", "");
-        if (!connectionString) return;
-        await connectWorkspaceBlob(workspaceId, { connection_string: connectionString });
-      } else if (connector.id === "sql") {
-        const server = window.prompt("SQL server", "");
-        const database = server ? window.prompt("Database", "") : "";
-        const username = database ? window.prompt("Username", "") : "";
-        const password = username ? window.prompt("Password（仅发送后端，不回显）", "") : "";
-        if (!server || !database || !username) return;
-        await connectWorkspaceSql(workspaceId, { server, database, username, password });
+      if (connectorModal === "blob") {
+        const connected = await dwBlobConnect(workspaceId, {
+          connection_string: value("connection_string"),
+          account: value("account"),
+          sas: value("sas"),
+        });
+        const containers = connected.containers?.length ? connected.containers : (await dwBlobContainers(workspaceId, connected.connection_id)).containers;
+        setConnectorResult({ kind: "blob", connection_id: connected.connection_id, containers: containers || [] });
+        showToast("Blob 已连接，凭证仅保存在服务端会话");
+      } else if (connectorModal === "sql") {
+        const connected = await dwSqlConnect(workspaceId, {
+          server: value("server"),
+          database: value("database"),
+          username: value("username"),
+          password: value("password"),
+          connection_string: value("connection_string"),
+        });
+        const tables = connected.tables?.length ? connected.tables : (await dwSqlTables(workspaceId, connected.connection_id)).tables;
+        setConnectorResult({ kind: "sql", connection_id: connected.connection_id, tables: tables || [] });
+        showToast("SQL 已连接，凭证仅保存在服务端会话");
       }
-      setConnectorState((state) => ({ ...state, [connector.id]: "connected" }));
-      showToast(`${connector.name} 已连接`);
-    } catch (error) {
-      showToast(`连接失败：${error instanceof Error ? error.message : String(error)}`);
+    } catch (e) {
+      showToast(`连接失败：${e.message}`);
     } finally {
-      setConnectorBusy("");
+      setConnectorBusy(false);
     }
   };
 
-  const storageUsed = Number(filePayload?.storage?.used_bytes || 0);
-  const storageTotal = Number(filePayload?.storage?.total_bytes || 0);
-  const storagePct = storageTotal ? Math.min(100, Math.max(1, (storageUsed / storageTotal) * 100)) : 0;
-  const mappingStats = quality?.field_mapping || {};
-  const q = quality?.quality || {};
-  const validation = quality?.validation || {};
-  const fields = mapping?.field_mapping?.fields || quality?.field_mapping?.fields || [];
+  const importConnectorItem = async (item) => {
+    if (!connectorResult) return;
+    setConnectorBusy(true);
+    try {
+      let res;
+      if (connectorResult.kind === "blob") {
+        res = await dwBlobImport(workspaceId, { connection_id: connectorResult.connection_id, container: item.container, blob: item.name });
+      } else {
+        res = await dwSqlImport(workspaceId, { connection_id: connectorResult.connection_id, table: item.id || `${item.schema}.${item.name}` });
+      }
+      showToast("已导入文件库");
+      const data = await reloadFiles();
+      const imported = (data?.groups || []).flatMap((g) => g.files || []).find((f) => f.id === res?.upload?.documents?.[0]?.id);
+      if (imported) openFile(imported);
+    } catch (e) {
+      showToast(`导入失败：${e.message}`);
+    } finally {
+      setConnectorBusy(false);
+    }
+  };
+
+  const totalRows = Math.max(content?.total_rows ?? rows.length, offset + rows.length);
+  const totalCols = columns.length || content?.total_cols || 0;
+  const pageCount = Math.max(1, Math.ceil(totalRows / PAGE));
+  const curPage = Math.floor(offset / PAGE);
+  const gotoPage = (p) => { if (active && !isMd) loadContent(active, Math.max(0, Math.min(pageCount - 1, p)) * PAGE); };
+
+  const filteredGroups = useMemo(() => {
+    const kw = q.trim().toLowerCase();
+    if (!kw) return groups;
+    return groups.map((g) => ({ ...g, files: (g.files || []).filter((f) => String(f.name || "").toLowerCase().includes(kw)) })).filter((g) => (g.files || []).length);
+  }, [groups, q]);
 
   return (
     <main className="agent-studio data-stage">
@@ -390,294 +475,450 @@ export function DataWorkbench({ dashboard, workspaceId: explicitWorkspaceId, onR
       <header className="dw-head">
         <div>
           <div className="dw-title"><h1>数据工作台</h1><Info size={16} className="dw-info" /></div>
-          <p>在工作区内上传、创建、预览和轻量编辑数据，支持 Markdown、CSV、Excel 文件；外部 Blob / SQL 支持手填配置真连接。</p>
+          <p>在工作区内上传、新建、预览和编辑数据（Markdown / CSV / Excel）；保存后即入库，可被 Agent 分析引用。</p>
         </div>
         <div className="dw-save">
           {dirty ? <span className="dw-save-state dirty"><span className="dot" />有未保存更改</span> : <span className="dw-save-state ok"><Check size={14} />已保存</span>}
-          <span className="dw-save-sub">{dirty ? "保存后会写入新版本并刷新质量统计" : "所有更改已保存"}</span>
+          <span className="dw-save-sub">{dirty ? "记得保存你的修改" : "所有更改已保存"}</span>
         </div>
       </header>
 
       <div className="dw-actions">
         <div className="dw-actions-l">
-          <button className="dw-btn primary" type="button" onClick={() => onUploadAppend?.()}><UploadCloud size={15} />上传文件</button>
-          <button className="dw-btn" type="button" onClick={createMarkdown}><FileText size={15} />新建 Markdown</button>
-          <button className="dw-btn" type="button" onClick={createTable}><Table2 size={15} />新建表格</button>
-          <button className="dw-btn" type="button" disabled={!dirty || saving} onClick={saveChanges}>{saving ? <Loader2 size={15} className="spin" /> : <Save size={15} />}保存更改</button>
-          <button className="dw-btn ghost-blue" type="button" disabled={!activeFile || analyzing} onClick={sendToAnalysis}>{analyzing ? <Loader2 size={15} className="spin" /> : <Send size={15} />}发送到分析</button>
+          <button className="dw-btn primary" type="button" onClick={() => onUpload && onUpload(workspaceId)}><UploadCloud size={15} />上传文件</button>
+          <button className="dw-btn" type="button" onClick={() => createFile("md")}><FileText size={15} />新建 Markdown</button>
+          <button className="dw-btn" type="button" onClick={() => createFile("table")}><Table2 size={15} />新建表格</button>
+          <button className="dw-btn" type="button" disabled={!dirty || saving} onClick={save}>{saving ? <Loader2 size={15} className="spin" /> : <Save size={15} />}保存更改</button>
+          <button className="dw-btn ghost-blue" type="button" disabled={!active || analyzing} onClick={sendToAnalysis}>{analyzing ? <Loader2 size={15} className="spin" /> : <Send size={15} />}发送到分析</button>
+          <button className="dw-btn" type="button" disabled={!active} onClick={deleteActiveFile}><Trash2 size={15} />删除文件</button>
         </div>
         <div className="dw-actions-r">
-          <div className="dw-search"><Search size={15} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索文件或字段..." /></div>
-          <div className="dw-iconset">
-            <button className="dw-ic active" type="button" title="列表视图"><List size={16} /></button>
-            <button className="dw-ic" type="button" title="网格视图"><LayoutGrid size={16} /></button>
-            <button className="dw-ic" type="button" title="筛选"><Filter size={16} /></button>
-          </div>
+          <div className="dw-search"><Search size={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索文件或字段…" /></div>
         </div>
       </div>
 
       <nav className="dw-tabs">
-        {TABS.map((item) => (
-          <button key={item.id} type="button" className={tab === item.id ? "dw-tab active" : "dw-tab"} onClick={() => setTab(item.id)}>{item.label}</button>
+        {TABS.map((t) => (
+          <button key={t.id} type="button" className={tab === t.id ? "dw-tab active" : "dw-tab"} onClick={() => setTab(t.id)}>{t.label}</button>
         ))}
       </nav>
 
       <div className="dw-body">
+        {/* 左：文件库 */}
         <aside className="card dw-tree">
           <div className="dw-tree-head">
             <span className="t">文件库</span>
             <div className="dw-tree-acts">
-              <button type="button" title="新建 Markdown" onClick={createMarkdown}><Plus size={15} /></button>
-              <button type="button" title="刷新" onClick={() => refreshFiles(activeFileId)}>{filesLoading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}</button>
+              <button type="button" title="新建表格" onClick={() => createFile("table")}><Plus size={15} /></button>
+              <button type="button" title="刷新" onClick={reloadFiles}>{filesLoading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}</button>
             </div>
           </div>
           <div className="dw-tree-body">
-            {filteredGroups.map((group) => (
-              <div className="dw-group" key={group.label}>
-                <div className="dw-group-head"><ChevronDown size={13} />{group.label}</div>
-                {(group.files || []).map((file) => (
-                  <button key={file.id} type="button" className={activeFileId === file.id ? "dw-file active" : "dw-file"} onClick={() => openFile(file)}>
-                    {fileIcon(file)}
-                    <span>{file.name}</span>
-                    <em className="dw-file-meta">{file.records ?? file.record_count ?? "-"} 行 / {file.fields ?? file.field_count ?? "-"} 字段</em>
-                  </button>
-                ))}
-              </div>
-            ))}
-            {!files.length && !filesLoading ? <div className="dw-empty">当前工作区还没有文件。</div> : null}
-          </div>
-          <div className="dw-tree-foot">
-            <div className="dw-store"><span>{formatBytes(storageUsed)} / {formatBytes(storageTotal)} 已使用</span><div className="dw-store-bar"><i style={{ width: `${storagePct}%` }} /></div></div>
-          </div>
-        </aside>
-
-        <section className="card dw-editor">
-          <div className="dw-ftabs">
-            {openTabs.map((id) => {
-              const file = files.find((item) => item.id === id);
-              if (!file) return null;
+            {!filteredGroups.length && !filesLoading ? <p className="empty-copy" style={{ padding: "16px 12px" }}>暂无文件。上传或新建一个文件开始。</p> : null}
+            {filteredGroups.map((g) => {
+              const isCollapsed = collapsed[g.label];
               return (
-                <div key={id} className={activeFileId === id ? "dw-ftab active" : "dw-ftab"} onClick={() => openFile(file)}>
-                  {fileIcon(file)}<span>{file.name}</span><button type="button" className="dw-ftab-x" onClick={(event) => closeTab(id, event)}><X size={12} /></button>
+                <div className="dw-group" key={g.label}>
+                  <button type="button" className="dw-group-head" onClick={() => setCollapsed((m) => ({ ...m, [g.label]: !m[g.label] }))}>
+                    <ChevronDown size={13} className="dw-group-caret" style={{ transform: isCollapsed ? "rotate(-90deg)" : "none" }} />{g.label}
+                    <em style={{ marginLeft: "auto", fontStyle: "normal", color: "var(--faint)" }}>{(g.files || []).length}</em>
+                  </button>
+                  {!isCollapsed && (g.files || []).map((f) => (
+                    <button key={f.id} type="button" className={active?.id === f.id ? "dw-file active" : "dw-file"} onClick={() => openFile(f)} title={f.name}>
+                      {fileIconFor(f.type, f.name)}<span>{f.name}</span>
+                      {f.record_count ? <em className="dw-file-rc">{f.record_count}</em> : null}
+                    </button>
+                  ))}
                 </div>
               );
             })}
-            <button type="button" className="dw-ftab-add" onClick={createMarkdown}><Plus size={14} /></button>
+          </div>
+          <div className="dw-tree-foot">
+            <div className="dw-store">
+              <span>{storage ? `${fmtBytes(storage.used_bytes)} / ${fmtBytes(storage.total_bytes)} 已使用` : "—"}</span>
+              <div className="dw-store-bar"><i style={{ width: storage && storage.total_bytes ? `${Math.min(100, (storage.used_bytes / storage.total_bytes) * 100)}%` : "2%" }} /></div>
+            </div>
+          </div>
+        </aside>
+
+        {/* 中：编辑区 */}
+        <section className="card dw-editor">
+          <div className="dw-ftabs">
+            {openTabs.map((f) => (
+              <div key={f.id} className={active?.id === f.id ? "dw-ftab active" : "dw-ftab"} onClick={() => openFile(f)}>
+                {fileIconFor(f.type, f.name)}<span>{f.name}</span><button type="button" className="dw-ftab-x" onClick={(e) => closeTab(f, e)}><X size={12} /></button>
+              </div>
+            ))}
           </div>
 
-          {contentLoading ? (
-            <div className="dw-loading"><Loader2 className="spin" size={18} />加载文件内容...</div>
-          ) : !activeFile ? (
-            <div className="dw-loading">请选择一个文件。</div>
-          ) : tab === "mapping" ? (
-            <div className="dw-panel-view">
-              <div className="dw-panel-head">
-                <div>
-                  <div className="dw-panel-title"><Settings2 size={16} />字段映射</div>
-                  <p className="dw-panel-sub">{activeFile.name} · {mappingStats.mapped ?? 0}/{mappingStats.total ?? 0} 已映射</p>
-                </div>
-                <button type="button" className="dw-btn ghost-blue" onClick={saveMapping}>保存映射</button>
-              </div>
-              <div className="dw-map-editor">
-                {fields.map((field, index) => (
-                  <label className="dw-map-row" key={field.name || index}>
-                    <span>{field.name}</span>
-                    <input value={mappingDraft[field.name] || ""} onChange={(e) => setMappingDraft((draft) => ({ ...draft, [field.name]: e.target.value }))} placeholder="目标字段名" />
-                  </label>
-                ))}
-                {!fields.length ? <p className="empty-copy">没有可映射字段。</p> : null}
-              </div>
-            </div>
-          ) : tab === "quality" ? (
-            <div className="dw-panel-view">
-              <div className="dw-panel-head">
-                <div>
-                  <div className="dw-panel-title"><AlertTriangle size={16} />数据质量</div>
-                  <p className="dw-panel-sub">{activeFile.name} · {validation.checked_at ? new Date(validation.checked_at).toLocaleString() : "尚未校验"}</p>
-                </div>
-                <span className={`dw-chip ${validation.status === "passed" ? "ok" : ""}`}>{qualityStatusLabel(validation.status)}</span>
-              </div>
-              {quality?.error ? <p className="dw-status-error">{quality.error}</p> : (
-                <>
-                  <div className="dw-quality-grid">
-                    <div className="dw-quality-metric"><span>缺失值</span><b>{q.missing_pct ?? 0}%</b></div>
-                    <div className="dw-quality-metric"><span>重复值</span><b>{q.duplicate_pct ?? 0}%</b></div>
-                    <div className="dw-quality-metric"><span>异常值</span><b>{q.outlier_count ?? 0}</b></div>
-                    <div className="dw-quality-metric"><span>类型警告</span><b>{q.type_warnings ?? 0}</b></div>
-                  </div>
-                  <table className="dw-field-quality">
-                    <thead><tr><th>字段</th><th>类型</th><th>映射状态</th><th>质量状态</th></tr></thead>
-                    <tbody>
-                      {fields.map((field, index) => (
-                        <tr key={field.name || index}>
-                          <td>{field.name}</td>
-                          <td>{field.type || "-"}</td>
-                          <td>{field.mapped ? "已映射" : "待映射"}</td>
-                          <td>{field.warning || field.status || "通过"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {!fields.length ? <p className="empty-copy">没有可展示的字段质量结果。</p> : null}
-                </>
-              )}
-            </div>
-          ) : isMarkdown ? (
+          {!active ? (
+            <div className="empty-copy" style={{ padding: 40 }}>从左侧选择一个文件，或新建/上传文件。</div>
+          ) : contentLoading ? (
+            <div className="empty-copy" style={{ padding: 40, display: "flex", gap: 8, alignItems: "center", justifyContent: "center" }}><Loader2 size={16} className="spin" />加载内容…</div>
+          ) : tab === "table" && isTextPreview ? (
             <div className="dw-md">
               <div className="dw-md-bar">
-                <span className="dw-md-name"><FileText size={14} />{activeFile.name}</span>
-                <div className="dw-md-bar-r">
-                  <button type="button" className="dw-mini active">编辑</button>
-                  <span className="dw-md-time">最近修改 {activeFile.updated_at ? new Date(activeFile.updated_at).toLocaleString() : "-"}</span>
-                </div>
+                <span className="dw-md-name"><FileText size={14} />{active.name}</span>
+                <span className="dw-md-time">{content?.total_chars != null ? `${content.total_chars} 字` : ""}</span>
               </div>
-              <textarea className="dw-md-area" value={markdownText} onChange={(e) => { setMarkdownText(e.target.value); setDirty(true); }} />
+              <textarea className="dw-md-area" value={mdText} readOnly={isJson} onChange={(e) => onMdChange(e.target.value)} />
+              {isJson ? <div className="dw-json-note">JSON 当前支持预览与质量校验；需要修改时请导入为表格或上传新版本。</div> : null}
             </div>
-          ) : (
+          ) : tab === "table" ? (
             <>
-              <div className="dw-toolbar">
-                <button type="button" title="撤销"><Undo2 size={15} /></button>
-                <button type="button" title="重做"><Undo2 size={15} /></button>
-                <span className="dw-tb-sep" />
-                <button type="button"><Filter size={14} />筛选</button>
-                <button type="button"><ArrowUpDown size={14} />排序</button>
-                <button type="button"><Table2 size={14} />冻结首行</button>
-                <button type="button"><Settings2 size={14} />列配置</button>
-                <button type="button" className="dw-tb-more"><MoreHorizontal size={15} />更多<ChevronDown size={13} /></button>
+              <div className="dw-table-tools">
+                <button type="button" className="dw-tool-btn" onClick={addRow}><Rows3 size={14} />新增行</button>
+                <button type="button" className="dw-tool-btn" onClick={deleteRow} disabled={!selectedCell}><Trash2 size={14} />删除行</button>
+                <button type="button" className="dw-tool-btn" onClick={addColumn}><Columns3 size={14} />新增列</button>
+                <button type="button" className="dw-tool-btn" onClick={deleteColumn} disabled={!selectedCol}><Trash2 size={14} />删除列</button>
+                <div className="dw-formula">
+                  <span>{selectedCell ? `${selectedCol}${offset + selectedCell.row + 1}` : "fx"}</span>
+                  <input
+                    value={selectedCell && selectedCol ? rows[selectedCell.row]?.[selectedCell.col] ?? "" : ""}
+                    onChange={(e) => updateSelectedCell(e.target.value)}
+                    disabled={!selectedCell}
+                    placeholder="选择单元格后编辑内容"
+                  />
+                </div>
               </div>
               <div className="dw-grid-wrap">
                 <table className="dw-grid">
+                  <colgroup>
+                    <col style={{ width: 54 }} />
+                    {columns.map((c) => <col key={c} style={{ width: colWidths[c] || 136 }} />)}
+                  </colgroup>
                   <thead>
-                    <tr><th className="dw-rownum" />{(content?.columns || []).map((_, index) => <th key={index}>{columnLetter(index)}</th>)}</tr>
+                    <tr><th className="dw-rownum" />{columns.map((c, i) => (
+                      <th key={i} className={selectedCell?.col === i ? "sel-col" : ""}>
+                        <span>{c}</span>
+                        <i className="dw-col-resize" onMouseDown={(e) => { e.preventDefault(); resizeColumn(c, e.clientX); }} />
+                      </th>
+                    ))}</tr>
                   </thead>
                   <tbody>
-                    <tr className="dw-fieldrow">
-                      <td className="dw-rownum">1</td>
-                      {(content?.columns || []).map((col, index) => <td key={index} className="dw-fieldname">{col.name}</td>)}
-                    </tr>
-                    {tableRows.map((row, rowIndex) => (
-                      <tr key={rowIndex}>
-                        <td className="dw-rownum">{Number(content?.offset || 0) + rowIndex + 2}</td>
-                        {(content?.columns || []).map((col, colIndex) => {
-                          const id = `${columnLetter(colIndex)}${Number(content?.offset || 0) + rowIndex + 2}`;
-                          return (
-                            <td key={`${rowIndex}-${col.name || colIndex}`} className={id === cell ? "dw-cell sel" : "dw-cell"} onClick={() => setCell(id)}>
-                              <input
-                                className="dw-cell-input"
-                                value={row[colIndex] ?? ""}
-                                onFocus={() => setCell(id)}
-                                onChange={(event) => updateCell(rowIndex, colIndex, event.target.value)}
-                              />
-                            </td>
-                          );
-                        })}
+                    {rows.map((row, ri) => (
+                      <tr key={ri}>
+                        <td className="dw-rownum">{offset + ri + 1}</td>
+                        {columns.map((c, ci) => (
+                          <td key={ci} className={selectedCell?.row === ri && selectedCell?.col === ci ? "dw-cell sel" : "dw-cell"} onClick={() => setSelectedCell({ row: ri, col: ci })}>
+                            <input className="dw-cell-in" value={row[ci] ?? ""} onFocus={() => setSelectedCell({ row: ri, col: ci })} onChange={(e) => onCellChange(ri, c, e.target.value)} />
+                          </td>
+                        ))}
                       </tr>
                     ))}
+                    {!rows.length ? <tr><td className="dw-rownum">1</td>{columns.map((c, ci) => <td key={ci} className="dw-cell" />)}</tr> : null}
                   </tbody>
                 </table>
               </div>
               <div className="dw-grid-foot">
-                <span>共 {content?.total_rows ?? 0} 行，{content?.total_cols ?? 0} 列</span>
-                <span className="dw-rows-sel">显示 {PREVIEW_LIMIT} 行<ChevronDown size={12} /></span>
+                <span>共 {totalRows} 行, {totalCols} 列</span>
+                <span className="dw-rows-sel">第 {offset + 1}–{offset + rows.length} 行</span>
                 <div className="dw-pager">
-                  <button type="button" disabled={offset === 0} onClick={() => setOffset(0)}><ChevronsLeft size={14} /></button>
-                  <button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PREVIEW_LIMIT))}><ChevronLeft size={14} /></button>
-                  <span className="dw-page">{currentPage}</span><span className="dw-page-of">/ {totalPages}</span>
-                  <button type="button" disabled={currentPage >= totalPages} onClick={() => setOffset(offset + PREVIEW_LIMIT)}><ChevronRight size={14} /></button>
-                  <button type="button" disabled={currentPage >= totalPages} onClick={() => setOffset((totalPages - 1) * PREVIEW_LIMIT)}><ChevronsRight size={14} /></button>
+                  <button type="button" disabled={curPage === 0} onClick={() => gotoPage(0)}><ChevronsLeft size={14} /></button>
+                  <button type="button" disabled={curPage === 0} onClick={() => gotoPage(curPage - 1)}><ChevronLeft size={14} /></button>
+                  <span className="dw-page">{curPage + 1}</span><span className="dw-page-of">/ {pageCount}</span>
+                  <button type="button" disabled={curPage >= pageCount - 1} onClick={() => gotoPage(curPage + 1)}><ChevronRight size={14} /></button>
+                  <button type="button" disabled={curPage >= pageCount - 1} onClick={() => gotoPage(pageCount - 1)}><ChevronsRight size={14} /></button>
                 </div>
               </div>
             </>
+          ) : tab === "quality" ? (
+            <QualityPanel quality={quality} />
+          ) : tab === "mapping" ? (
+            <MappingPanel mapping={mapping} mapDraft={mapDraft} setMapDraft={setMapDraft} onSave={saveMapping} />
+          ) : (
+            <HistoryPanel history={history} />
           )}
         </section>
 
+        {/* 右：数据状态 */}
         <aside className="card dw-status">
-          <div className="dw-status-head"><span className="t">数据状态</span><ChevronDown size={15} /></div>
-
+          <div className="dw-status-head"><span className="t">数据状态</span></div>
           <div className="dw-sec">
-            <div className="dw-sec-row"><span className="dw-sec-t">字段映射</span><span className="dw-sec-v">{mappingStats.mapped ?? 0} / {mappingStats.total ?? 0} <b className="ok">{mappingStats.pct ?? 0}%</b></span></div>
-            <div className="dw-prog"><i style={{ width: `${Math.min(100, Number(mappingStats.pct || 0))}%` }} /></div>
+            <div className="dw-sec-row"><span className="dw-sec-t">字段映射</span><span className="dw-sec-v">{mapping?.field_mapping ? `${mapping.field_mapping.mapped} / ${mapping.field_mapping.total} ` : "— "}<b className="ok">{mapping?.field_mapping ? `${Math.round(mapping.field_mapping.pct || 0)}%` : ""}</b></span></div>
+            <div className="dw-prog"><i style={{ width: `${mapping?.field_mapping?.pct || 0}%` }} /></div>
             <button type="button" className="dw-link-btn" onClick={() => setTab("mapping")}>查看映射详情</button>
           </div>
-
           <div className="dw-sec">
             <div className="dw-sec-t">数据质量</div>
-            {quality?.error ? <p className="dw-status-error">{quality.error}</p> : (
-              <ul className="dw-qlist">
-                <li><span>缺失值</span><span className="qv">{q.missing_pct ?? 0}% <Check size={14} className="ok" /></span></li>
-                <li><span>重复值</span><span className="qv">{q.duplicate_pct ?? 0}% <Check size={14} className="ok" /></span></li>
-                <li><span>异常值</span><span className="qv">{q.outlier_count ?? 0} <AlertTriangle size={14} className={(q.outlier_count || 0) ? "warn" : "ok"} /></span></li>
-                <li><span>类型警告</span><span className="qv">{q.type_warnings ?? 0} <Check size={14} className="ok" /></span></li>
-              </ul>
-            )}
+            <ul className="dw-qlist">
+              <li><span>缺失值</span><span className="qv">{fmtPct(quality?.quality?.missing_pct)} {qIcon((quality?.quality?.missing_pct || 0) < 5)}</span></li>
+              <li><span>重复值</span><span className="qv">{fmtPct(quality?.quality?.duplicate_pct)} {qIcon((quality?.quality?.duplicate_pct || 0) < 1)}</span></li>
+              <li><span>异常值</span><span className="qv">{quality?.quality?.outlier_count ?? "—"} {qIcon((quality?.quality?.outlier_count || 0) === 0)}</span></li>
+              <li><span>类型警告</span><span className="qv">{quality?.quality?.type_warnings ?? "—"} {qIcon((quality?.quality?.type_warnings || 0) === 0)}</span></li>
+            </ul>
           </div>
-
-          {tab === "mapping" ? (
-            <div className="dw-sec">
-              <div className="dw-sec-row"><span className="dw-sec-t">映射编辑</span><button type="button" className="dw-link-btn" onClick={saveMapping}>保存映射</button></div>
-              <div className="dw-map-list">
-                {fields.map((field) => (
-                  <label className="dw-map-row" key={field.name}>
-                    <span>{field.name}</span>
-                    <input value={mappingDraft[field.name] || ""} onChange={(e) => setMappingDraft((draft) => ({ ...draft, [field.name]: e.target.value }))} placeholder="目标字段名" />
-                  </label>
-                ))}
-                {!fields.length ? <p className="empty-copy">没有可映射字段。</p> : null}
-              </div>
-            </div>
-          ) : null}
-
           <div className="dw-sec">
-            <div className="dw-sec-row"><span className="dw-sec-t">校验结果</span><span className={`dw-chip ${validation.status === "passed" ? "ok" : ""}`}>{qualityStatusLabel(validation.status)}</span></div>
-            <div className="dw-sec-sub">{validation.checked_at ? new Date(validation.checked_at).toLocaleString() : "-"} 校验完成</div>
+            <div className="dw-sec-row"><span className="dw-sec-t">校验结果</span><span className={`dw-chip ${quality?.validation?.status === "passed" ? "ok" : "warn"}`}>{validationLabel(quality?.validation?.status)}</span></div>
+            {quality?.validation?.checked_at ? <div className="dw-sec-sub">{fmtTime(quality.validation.checked_at)} 校验完成</div> : null}
           </div>
-
           <div className="dw-sec">
             <div className="dw-sec-t">最近修改</div>
-            <div className="dw-history-list">
-              {history.slice(0, 3).map((item, index) => (
-                <div className="dw-mod" key={`${item.at}-${index}`}>
-                  <div className="dw-mod-av">{String(item.user || "D").slice(0, 1).toUpperCase()}</div>
-                  <div className="dw-mod-meta">
-                    <div className="dw-mod-top"><span className="dw-mod-mail">{item.email || item.user || "DataForge"}</span><span className="dw-mod-time">{item.at ? new Date(item.at).toLocaleString() : "-"}</span></div>
-                    <div className="dw-mod-desc">{item.change_summary || "文件版本更新"}</div>
-                  </div>
+            {history.length ? (
+              <div className="dw-mod">
+                <div className="dw-mod-av">{(history[0].user || "D").slice(0, 1)}</div>
+                <div className="dw-mod-meta">
+                  <div className="dw-mod-top"><span className="dw-mod-mail">{history[0].email || history[0].user || "DataForge"}</span><span className="dw-mod-time">{fmtTime(history[0].at)}</span></div>
+                  <div className="dw-mod-desc">{history[0].change_summary || "—"}</div>
                 </div>
-              ))}
-            </div>
-            <button type="button" className="dw-link-btn" onClick={() => setTab("quality")}><History size={13} />查看版本历史</button>
+              </div>
+            ) : <div className="dw-sec-sub">暂无修改记录</div>}
+            <button type="button" className="dw-link-btn" onClick={() => setTab("history")}><History size={13} />查看版本历史</button>
           </div>
         </aside>
       </div>
 
+      {/* 底部：外部数据接入 */}
       <section className="card dw-connectors">
         <div className="dw-conn-head">
           <h2>外部数据接入</h2>
-          <p>当前支持 Azure Blob Storage 和 SQL Database 手填配置真连接；Azure Data Lake 保持 Demo 入口。</p>
+          <p>统一连接与管理企业对象存储、数据库等数据源；标注「计划上线」的连接器即将开放。</p>
         </div>
         <div className="dw-conn-grid">
-          {CONNECTORS.map((connector) => {
-            const Icon = connector.icon;
-            const planned = connector.state === "planned";
-            const busy = connectorBusy === connector.id;
-            const connected = connectorState[connector.id] === "connected";
+          {CONNECTORS.map((c) => {
+            const Icon = c.icon;
+            const planned = c.state === "planned";
             return (
-              <div className="dw-conn-card" key={connector.id}>
+              <div className="dw-conn-card" key={c.id}>
                 <div className="dw-conn-top">
-                  <div className="dw-conn-ic">{connector.src ? <img src={connector.src} width="22" height="22" alt="" /> : <Icon size={20} />}</div>
-                  {planned ? <span className="dw-badge planned">计划上线</span> : <span className="dw-badge ok">{connected ? "已连接" : "可用"}</span>}
+                  <div className="dw-conn-ic">{c.src ? <img src={c.src} width="22" height="22" alt="" /> : <Icon size={20} />}</div>
+                  {planned ? <span className="dw-badge planned">计划上线</span> : <span className="dw-badge ok">可用</span>}
                 </div>
-                <div className="dw-conn-name">{connector.name}</div>
-                <div className="dw-conn-status">{connector.hint}</div>
-                <button type="button" className={planned ? "dw-conn-btn" : "dw-conn-btn primary"} disabled={planned || busy} onClick={() => connectExternal(connector)}>
-                  {busy ? <Loader2 size={14} className="spin" /> : null}
-                  {planned ? "敬请期待" : connector.id === "upload" ? "上传文件" : connected ? "重新连接" : "连接"}
+                <div className="dw-conn-name">{c.name}</div>
+                <div className="dw-conn-status">{c.hint}</div>
+                <button type="button" className={planned ? "dw-conn-btn" : "dw-conn-btn primary"} disabled={planned}
+                  onClick={() => {
+                    if (planned) return;
+                    if (c.id === "upload") {
+                      onUpload && onUpload(workspaceId);
+                    } else {
+                      setConnectorResult(null);
+                      setConnectorModal(c.id);
+                    }
+                  }}>
+                  {planned ? "敬请期待" : c.id === "upload" ? "上传文件" : "接入"}
                 </button>
               </div>
             );
           })}
         </div>
       </section>
+      {createModal ? (
+        <CreateFileModal
+          state={createModal}
+          setState={setCreateModal}
+          onClose={() => setCreateModal(null)}
+          onSubmit={submitCreateFile}
+        />
+      ) : null}
+      {connectorModal ? (
+        <ConnectorModal
+          kind={connectorModal}
+          busy={connectorBusy}
+          result={connectorResult}
+          onClose={() => { setConnectorModal(null); setConnectorResult(null); }}
+          onSubmit={submitConnector}
+          onImport={importConnectorItem}
+          onListBlob={async (container) => {
+            if (!connectorResult?.connection_id) return;
+            setConnectorBusy(true);
+            try {
+              const data = await dwBlobItems(workspaceId, connectorResult.connection_id, container.name || container);
+              setConnectorResult((prev) => ({ ...prev, blobs: (data.blobs || []).map((item) => ({ ...item, container: container.name || container })) }));
+            } catch (e) {
+              showToast(`列出 Blob 失败：${e.message}`);
+            } finally {
+              setConnectorBusy(false);
+            }
+          }}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function CreateFileModal({ state, setState, onClose, onSubmit }) {
+  const isMd = state.kind === "md";
+  const Icon = isMd ? FileText : Table2;
+  return (
+    <div className="modal-overlay" role="presentation">
+      <div className="upload-modal dw-small-modal" role="dialog" aria-modal="true" aria-label={isMd ? "新建 Markdown" : "新建表格"}>
+        <div className="modal-head">
+          <div>
+            <strong>{isMd ? "新建 Markdown" : "新建表格"}</strong>
+            <span>创建后立即进入文件库，可编辑并发送到分析。</span>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
+            <X size={17} />
+          </button>
+        </div>
+        <label className="modal-field">
+          <span>文件名</span>
+          <input value={state.name} onChange={(e) => setState((m) => ({ ...m, name: e.target.value }))} autoFocus />
+        </label>
+        {isMd ? (
+          <label className="modal-field">
+            <span>初始内容</span>
+            <textarea rows={6} value={state.text} onChange={(e) => setState((m) => ({ ...m, text: e.target.value }))} />
+          </label>
+        ) : (
+          <label className="modal-field">
+            <span>列名（逗号分隔）</span>
+            <input value={state.columns} onChange={(e) => setState((m) => ({ ...m, columns: e.target.value }))} />
+          </label>
+        )}
+        <div className="modal-actions">
+          <button className="ghost-button" type="button" onClick={onClose}>取消</button>
+          <button className="primary-button icon-label" type="button" onClick={onSubmit}>
+            <Icon size={15} />
+            创建
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConnectorModal({ kind, busy, result, onClose, onSubmit, onImport, onListBlob }) {
+  const isBlob = kind === "blob";
+  const title = isBlob ? "接入 Azure Blob Storage" : "接入 SQL Database";
+  const Icon = isBlob ? Cloud : Database;
+  return (
+    <div className="modal-overlay" role="presentation">
+      <form className="upload-modal dw-connector-modal" role="dialog" aria-modal="true" aria-label={title} onSubmit={onSubmit}>
+        <div className="modal-head">
+          <div>
+            <strong>{title}</strong>
+            <span>凭证只发送到后端会话，不会保存在浏览器状态、日志或响应里。</span>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} disabled={busy} aria-label="关闭">
+            <X size={17} />
+          </button>
+        </div>
+        {isBlob ? (
+          <>
+            <label className="modal-field"><span>连接字符串</span><textarea name="connection_string" rows={3} placeholder="DefaultEndpointsProtocol=..." /></label>
+            <div className="dw-modal-split">
+              <label className="modal-field"><span>Storage Account</span><input name="account" autoComplete="off" /></label>
+              <label className="modal-field"><span>SAS Token</span><input name="sas" type="password" autoComplete="new-password" /></label>
+            </div>
+          </>
+        ) : (
+          <>
+            <label className="modal-field"><span>连接字符串（可选）</span><textarea name="connection_string" rows={2} placeholder="DRIVER=...;SERVER=..." /></label>
+            <div className="dw-modal-split">
+              <label className="modal-field"><span>Server</span><input name="server" autoComplete="off" /></label>
+              <label className="modal-field"><span>Database</span><input name="database" autoComplete="off" /></label>
+            </div>
+            <div className="dw-modal-split">
+              <label className="modal-field"><span>Username</span><input name="username" autoComplete="off" /></label>
+              <label className="modal-field"><span>Password</span><input name="password" type="password" autoComplete="new-password" /></label>
+            </div>
+          </>
+        )}
+        {result ? (
+          <div className="dw-connector-result">
+            {isBlob ? (
+              <>
+                {(result.containers || []).map((item) => (
+                  <button className="dw-result-row" type="button" key={item.name} onClick={() => onListBlob(item)}>
+                    <Cloud size={14} />{item.name}<span>列出</span>
+                  </button>
+                ))}
+                {(result.blobs || []).map((item) => (
+                  <button className="dw-result-row" type="button" key={`${item.container}/${item.name}`} onClick={() => onImport(item)}>
+                    <FileText size={14} />{item.name}<span>导入</span>
+                  </button>
+                ))}
+              </>
+            ) : (
+              (result.tables || []).map((item) => (
+                <button className="dw-result-row" type="button" key={item.id || `${item.schema}.${item.name}`} onClick={() => onImport(item)}>
+                  <Database size={14} />{item.id || `${item.schema}.${item.name}`}<span>导入</span>
+                </button>
+              ))
+            )}
+          </div>
+        ) : null}
+        <div className="modal-actions">
+          <button className="ghost-button" type="button" onClick={onClose} disabled={busy}>取消</button>
+          <button className="primary-button icon-label" type="submit" disabled={busy}>
+            {busy ? <Loader2 className="spin" size={15} /> : <Icon size={15} />}
+            连接
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function fmtPct(v) { return v == null ? "—" : `${Number(v).toFixed(1)}%`; }
+function qIcon(ok) { return ok ? <Check size={14} className="ok" /> : <AlertTriangle size={14} className="warn" />; }
+function validationLabel(s) { return s === "passed" ? "通过" : s === "warn" ? "需复核" : s === "failed" ? "未通过" : "待校验"; }
+
+function QualityPanel({ quality }) {
+  if (!quality) return <div className="empty-copy" style={{ padding: 40 }}>暂无质量数据。</div>;
+  const fields = quality.field_mapping?.fields || [];
+  return (
+    <div className="dw-panel">
+      <div className="dw-grid-wrap">
+        <table className="dw-grid">
+          <thead><tr><th className="dw-rownum" /><th>字段</th><th>类型</th><th>缺失率</th><th>异常数</th><th>类型警告</th></tr></thead>
+          <tbody>
+            {fields.map((f, i) => (
+              <tr key={i}><td className="dw-rownum">{i + 1}</td>
+                <td className="dw-cell">{f.name}</td><td className="dw-cell">{f.type || "—"}</td>
+                <td className="dw-cell">{f.missing_pct != null ? `${Number(f.missing_pct).toFixed(1)}%` : "—"}</td>
+                <td className="dw-cell">{f.outlier_count ?? 0}</td>
+                <td className="dw-cell">{f.type_warning ? "是" : "否"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MappingPanel({ mapping, mapDraft, setMapDraft, onSave }) {
+  if (!mapping) return <div className="empty-copy" style={{ padding: 40 }}>暂无字段映射。</div>;
+  const fields = mapping.field_mapping?.fields || [];
+  return (
+    <div className="dw-panel">
+      <div className="dw-grid-wrap">
+        <table className="dw-grid">
+          <thead><tr><th className="dw-rownum" /><th>源字段</th><th>类型</th><th>目标字段（可改）</th><th>来源</th></tr></thead>
+          <tbody>
+            {fields.map((f, i) => (
+              <tr key={i}><td className="dw-rownum">{i + 1}</td>
+                <td className="dw-cell">{f.name}</td><td className="dw-cell">{f.type || "—"}</td>
+                <td className="dw-cell"><input className="dw-cell-in" placeholder={f.target || "—"} value={mapDraft[f.name] ?? (f.target || "")} onChange={(e) => setMapDraft({ ...mapDraft, [f.name]: e.target.value })} /></td>
+                <td className="dw-cell">{f.mapping_source === "user" ? "用户" : "自动"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ padding: "12px 14px" }}><button className="dw-btn primary" type="button" onClick={onSave}><Save size={15} />保存字段映射</button></div>
+    </div>
+  );
+}
+
+function HistoryPanel({ history }) {
+  if (!history.length) return <div className="empty-copy" style={{ padding: 40 }}>暂无版本历史。保存修改后会在这里出现。</div>;
+  return (
+    <div className="dw-panel">
+      <ul className="dw-hist">
+        {history.map((h, i) => (
+          <li key={i} className="dw-hist-row">
+            <div className="dw-mod-av">{(h.user || "D").slice(0, 1)}</div>
+            <div className="dw-mod-meta">
+              <div className="dw-mod-top"><span className="dw-mod-mail">{h.email || h.user || "DataForge"}</span><span className="dw-mod-time">{fmtTime(h.at)}</span></div>
+              <div className="dw-mod-desc">{h.change_summary || "—"}</div>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

@@ -65,23 +65,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import {
-  API_BASE,
-  artifactLink,
-  loadDataOverview,
-  loadFlagship,
-  loadPlanMetrics,
-  loadPlaybookDetail,
-  loadRun,
-  loadRunLog,
-  loadRunSummary,
-  loadRunTrace,
-  loadSystemStatus,
-  loadWorkspaceArtifacts,
-  loadWorkspaceMembers,
-  loadWorkspaceSettings,
-  setFlagship,
-} from "./api.js";
+import { API_BASE, artifactLink, loadDataOverview, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadMembers } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -554,7 +538,6 @@ function WorkbenchMainInner({
   view,
   setView,
   dashboard,
-  workspaceId,
   messages,
   trace,
   streamText,
@@ -571,12 +554,11 @@ function WorkbenchMainInner({
   finalArtifact,
   artifacts,
   onProduce,
-  onUploadAppend,
   onUploadReference,
-  onAnalysisResult,
   producing,
   observability,
   onOpenConversation,
+  onAppendUpload,
   tasks,
 }) {
   if (view === "conversations") {
@@ -601,7 +583,7 @@ function WorkbenchMainInner({
   if (view === "data") {
     return (
       <Suspense fallback={<main className="agent-studio data-stage"><div style={{ padding: 40, color: "var(--muted)" }}>加载数据工作台…</div></main>}>
-        <DataWorkbench dashboard={dashboard} workspaceId={workspaceId} onRun={onRun} onUploadAppend={onUploadAppend} onAnalysisResult={onAnalysisResult} />
+        <DataWorkbench dashboard={dashboard} onUpload={onAppendUpload} onOpenConversation={onOpenConversation} onRun={onRun} />
       </Suspense>
     );
   }
@@ -1243,7 +1225,26 @@ function AuditCard({ artifact }) {
   const contract = artifact?.verdict || {};
   const fe = artifact?.feasibility || {};
   const hasAnalysis = Boolean(fe.verdict || (fe.dimensions && fe.dimensions.length));
-  if (!audit || !hasAnalysis) return null;
+  if (!audit || !hasAnalysis) {
+    return (
+      <section className="audit-card is-placeholder">
+        <div className="audit-head">
+          <ShieldCheck size={16} />
+          <div className="audit-title">
+            <strong>独立审计 · 待运行</strong>
+            <span>完成一次分析后，这里会展示盲判复核、降档原因和复修结果。</span>
+          </div>
+          <span className="audit-badge">待审计</span>
+        </div>
+        <div className="audit-revision unchanged">
+          <span className="av-from">初判</span>
+          <span className="av-arrow">→</span>
+          <span className="av-to">审计结论</span>
+          <em>等待真实证据进入审计链路</em>
+        </div>
+      </section>
+    );
+  }
   const revised = contract.revised || null;
   const blindLabel = contract.blind?.judgment || VERDICT_LABELS[fe.verdict] || "初判";
   const disagreement = (contract.disagreement || []).slice(0, 4);
@@ -1334,34 +1335,36 @@ function verdictTone(v) {
 // 中央英雄区：可行性结论大字 + 五维可行性评分横条（对齐 效果.png）
 function VerdictRadar({ dims }) {
   const items = (dims || []).slice(0, 5);
-  if (items.length < 3) return null;
+  const displayItems = items.length >= 3
+    ? items
+    : Object.keys(DIMENSION_LABELS).slice(0, 5).map((name) => ({ name, score: 0 }));
   const size = 192;
   const cx = size / 2;
   const cy = size / 2;
   const R = size * 0.31;
-  const n = items.length;
+  const n = displayItems.length;
   const pt = (i, r) => {
     const a = -Math.PI / 2 + (i * 2 * Math.PI) / n;
     return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
   };
-  const ring = (k) => items.map((_, i) => pt(i, R * k).map((v) => v.toFixed(1)).join(",")).join(" ");
+  const ring = (k) => displayItems.map((_, i) => pt(i, R * k).map((v) => v.toFixed(1)).join(",")).join(" ");
   const sc = (d) => Math.max(0, Math.min(5, Number(d.score || 0)));
-  const shape = items.map((d, i) => pt(i, R * (sc(d) / 5)).map((v) => v.toFixed(1)).join(",")).join(" ");
+  const shape = displayItems.map((d, i) => pt(i, R * (sc(d) / 5)).map((v) => v.toFixed(1)).join(",")).join(" ");
   return (
-    <svg className="verdict-radar" viewBox={`0 0 ${size} ${size}`} role="img" aria-label="五维雷达图">
+    <svg className={`verdict-radar ${items.length < 3 ? "is-placeholder" : ""}`} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="五维雷达图">
       {[0.25, 0.5, 0.75, 1].map((k) => (
         <polygon key={k} points={ring(k)} fill="none" stroke="#e5e7eb" strokeWidth="1" />
       ))}
-      {items.map((_, i) => {
+      {displayItems.map((_, i) => {
         const [x, y] = pt(i, R);
         return <line key={i} x1={cx} y1={cy} x2={x.toFixed(1)} y2={y.toFixed(1)} stroke="#e5e7eb" strokeWidth="1" />;
       })}
       <polygon points={shape} fill="rgba(37,99,235,0.14)" stroke="#2563eb" strokeWidth="2" />
-      {items.map((d, i) => {
+      {displayItems.map((d, i) => {
         const [x, y] = pt(i, R * (sc(d) / 5));
         return <circle key={i} cx={x.toFixed(1)} cy={y.toFixed(1)} r="3" fill="#2563eb" />;
       })}
-      {items.map((d, i) => {
+      {displayItems.map((d, i) => {
         const [lx, ly] = pt(i, R + 16);
         return (
           <text key={i} x={lx.toFixed(1)} y={ly.toFixed(1)} fontSize="10.5" fill="#6e6e73" textAnchor="middle" dominantBaseline="middle">
@@ -1369,6 +1372,7 @@ function VerdictRadar({ dims }) {
           </text>
         );
       })}
+      {items.length < 3 ? <text x={cx} y={cy} fontSize="12" fill="#6e6e73" textAnchor="middle">等待分析</text> : null}
     </svg>
   );
 }
@@ -1483,26 +1487,18 @@ const OUTPUT_RECENT = [
 
 function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing, onUploadReference }) {
   const hasAnalysis = Boolean(artifact?.feasibility?.verdict);
-  const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "demo-corpus";
-  const [serverArtifacts, setServerArtifacts] = useState([]);
-  const [catalogOpen, setCatalogOpen] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    loadWorkspaceArtifacts(workspaceId)
-      .then((data) => { if (!cancelled) setServerArtifacts(data.artifacts || []); })
-      .catch(() => { if (!cancelled) setServerArtifacts([]); });
-    return () => { cancelled = true; };
-  }, [workspaceId, producing]);
-  const recentArtifacts = serverArtifacts.length
-    ? serverArtifacts.map((item) => ({
-      name: item.name || item.artifact_name || "artifact",
-      type: String(item.type || item.content_type || "").split("/").pop()?.toUpperCase() || "FILE",
-      size: formatBytes(item.bytes || 0),
-      time: formatTime(item.created_at || item.updated_at),
-      url: item.url || item.artifact_url || item.blob_url,
-      status: item.status || "ready",
-    }))
-    : OUTPUT_RECENT;
+  const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
+  const [recent, setRecent] = useState(null);
+  const [dirOpen, setDirOpen] = useState(false);
+  const [lightbox, setLightbox] = useState(null);
+  const reloadRecent = React.useCallback(() => {
+    if (!workspaceId) return;
+    loadArtifactsList(workspaceId).then((d) => setRecent(d.artifacts || [])).catch(() => setRecent([]));
+  }, [workspaceId]);
+  useEffect(() => { reloadRecent(); }, [reloadRecent, producing]);
+  const recentItems = recent || [];
+  const isImage = (a) => /^(png|jpg|jpeg|webp|image)$/i.test(String(a.type || "")) || /\.(png|jpe?g|webp)$/i.test(String(a.name || ""));
+  const openArtifact = (a) => { const href = artifactLink(a); if (!href) return; if (isImage(a)) setLightbox(href); else window.open(href, "_blank", "noopener"); };
   return (
     <main className="agent-studio outputs-stage">
       <header className="conv-head">
@@ -1512,8 +1508,8 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
       </header>
 
       <section className="card out-status">
-        <div className="os-item"><div className="os-ic blue"><Sparkles size={18} /></div><div><span>当前分析状态</span><b>{hasAnalysis ? "分析已完成" : "等待分析"}</b><em>最后更新：2024-05-02 10:22</em></div></div>
-        <div className="os-item"><div className="os-ic ok"><ShieldCheck size={18} /></div><div><span>审核状态</span><b className="ok">已通过</b><em>审核时间：2024-05-02 10:22</em></div></div>
+        <div className="os-item"><div className="os-ic blue"><Sparkles size={18} /></div><div><span>当前分析状态</span><b>{hasAnalysis ? "分析已完成" : "等待分析"}</b><em>{producing ? "正在生成产物，请勿重复点击" : "产物会基于最近一次真实分析生成"}</em></div></div>
+        <div className="os-item"><div className={hasAnalysis ? "os-ic ok" : "os-ic amber"}><ShieldCheck size={18} /></div><div><span>审核状态</span><b className={hasAnalysis ? "ok" : ""}>{hasAnalysis ? "已通过" : "待审计"}</b><em>{hasAnalysis ? "基于最近一次分析结果" : "完成分析后才会进入审计"}</em></div></div>
         <div className="os-item"><div className="os-ic amber"><Lightbulb size={18} /></div><div><span>建议操作</span><b>上传透明 PNG Logo</b><em>建议上传透明 PNG 格式 Logo，以生成更专业的概念图</em></div></div>
         <button className="dw-btn" type="button" onClick={onUploadReference}><UploadCloud size={15} />上传 Logo</button>
       </section>
@@ -1532,8 +1528,8 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
                   <div className="out-tags">{p.tags.map((t) => <span key={t} className="out-tag">{t}</span>)}</div>
                 </div>
                 <div className="out-prod-r">
-                  <span className="out-badge"><span className="d" />可生成</span>
-                  <button className="dw-btn primary" type="button" disabled={producing} onClick={() => onProduce && onProduce(p.id === "roadmap" ? ["roadmap", "validation_plan"] : [p.id])}>
+                  <span className="out-badge"><span className="d" />{producing ? "生成中" : hasAnalysis ? "可生成" : "需先分析"}</span>
+                  <button className="dw-btn primary" type="button" disabled={producing} onClick={() => onProduce && onProduce([p.id])}>
                     {producing ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}生成
                   </button>
                 </div>
@@ -1544,39 +1540,61 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
         </section>
 
         <aside className="card out-recent">
-          <div className="cardhead"><span className="t">最近产物</span><span className="lnk">查看全部</span></div>
+          <div className="cardhead"><span className="t">最近产物</span><button type="button" className="lnk lnk-btn" onClick={reloadRecent}>刷新</button></div>
           <div className="out-recent-list">
-            {recentArtifacts.map((a, i) => {
-              const href = a.url ? artifactLink(a) : "";
-              return (
-              <div className="out-rec" key={`${a.name}-${i}`}>
+            {recent === null ? <p className="empty-copy" style={{ padding: 16 }}><Loader2 size={14} className="spin" /> 加载产物…</p> : null}
+            {recent !== null && !recentItems.length ? <p className="empty-copy" style={{ padding: 16 }}>暂无产物。生成后会在这里出现。</p> : null}
+            {recentItems.slice(0, 6).map((a, i) => (
+              <button type="button" className="out-rec" key={i} onClick={() => openArtifact(a)} title="点击在线查看">
                 <FileTypeIcon doc={{ name: a.name }} size={22} />
-                <div className="out-rec-main"><b>{a.name}</b><em>{a.type} · {a.size}</em></div>
-                <span className="out-rec-time">{a.time}</span>
-                <span className="dw-chip ok">{a.status === "ready" ? "已完成" : a.status}</span>
-                {href ? <a className="out-rec-more" href={href} target="_blank" rel="noreferrer" title="下载"><FileDown size={15} /></a> : <button type="button" className="out-rec-more"><MoreHorizontal size={15} /></button>}
-              </div>
+                <div className="out-rec-main"><b>{a.name}</b><em>{(a.type || "").toUpperCase()}{a.bytes ? ` · ${formatBytes(a.bytes)}` : ""}</em></div>
+                <span className="out-rec-time">{formatTime(a.created_at)}</span>
+                <span className={`dw-chip ${a.status === "ready" || !a.status ? "ok" : ""}`}>{a.status === "ready" || !a.status ? "已完成" : a.status}</span>
+              </button>
+            ))}
+          </div>
+          <button type="button" className="out-open" onClick={() => setDirOpen(true)}><FolderOpen size={15} />打开产物目录<ChevronRight size={14} /></button>
+        </aside>
+      </div>
+
+      <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />
+      <SideDrawer open={dirOpen} title="产物目录" onClose={() => setDirOpen(false)}>
+        {!recentItems.length ? <p className="empty-copy">该工作区暂无产物。</p> : (
+          <div className="drawer-list">
+            {recentItems.map((a, i) => {
+              const href = artifactLink(a);
+              return (
+                <a className="drawer-row" key={i} href={href || undefined} target="_blank" rel="noreferrer" style={href ? undefined : { pointerEvents: "none", opacity: .6 }}>
+                  <FileTypeIcon doc={{ name: a.name }} size={20} />
+                  <div className="drawer-row-main"><b>{a.name}</b><em>{(a.type || "").toUpperCase()}{a.bytes ? ` · ${formatBytes(a.bytes)}` : ""} · {formatTime(a.created_at)}</em></div>
+                  {href ? <Download size={15} /> : null}
+                </a>
               );
             })}
           </div>
-          <button type="button" className="out-open" onClick={() => setCatalogOpen((value) => !value)}><FolderOpen size={15} />打开产物目录<ChevronRight size={14} /></button>
-          {catalogOpen ? (
-            <div className="out-catalog">
-              {recentArtifacts.map((a, i) => {
-                const href = a.url ? artifactLink(a) : "";
-                return (
-                  <a key={`${a.name}-catalog-${i}`} href={href || undefined} target="_blank" rel="noreferrer" className={href ? "out-cat-row" : "out-cat-row disabled"}>
-                    <FileTypeIcon doc={{ name: a.name }} size={18} />
-                    <span>{a.name}</span>
-                    <em>{a.size} · {a.time}</em>
-                  </a>
-                );
-              })}
-            </div>
-          ) : null}
-        </aside>
-      </div>
+        )}
+      </SideDrawer>
     </main>
+  );
+}
+
+// 通用右侧抽屉
+function SideDrawer({ open, title, onClose, children }) {
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return createPortal(
+    <div className="drawer-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <aside className="side-drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="drawer-head"><strong>{title}</strong><button type="button" className="icon-button" onClick={onClose}><X size={17} /></button></div>
+        <div className="drawer-body">{children}</div>
+      </aside>
+    </div>,
+    document.body,
   );
 }
 
@@ -1724,63 +1742,28 @@ const RUN_TIMELINE = [
 
 function RunsCenter({ dashboard, trace, running, observability, onOpenConversation, tasks }) {
   const runs = dashboard?.runs || [];
-  const [selectedRunId, setSelectedRunId] = useState("");
-  const [runSummary, setRunSummary] = useState(null);
-  const [runTrace, setRunTrace] = useState([]);
-  const [expandedStep, setExpandedStep] = useState(null);
-  const [logOpen, setLogOpen] = useState(false);
-  const [runLog, setRunLog] = useState(null);
-  const [logLoading, setLogLoading] = useState(false);
+  const r = runs[0] || {};
+  const runId = r.run_id || r.conversation_id || "";
   const [q, setQ] = useState("");
   const [histExpanded, setHistExpanded] = useState(false);
   const [histPage, setHistPage] = useState(0);
+  const [summary, setSummary] = useState(null);
+  const [rtrace, setRtrace] = useState(null);
+  const [tracePage, setTracePage] = useState(0);
+  const [logOpen, setLogOpen] = useState(false);
+  const [logText, setLogText] = useState("");
   useEffect(() => {
-    const first = runs[0]?.run_id || runs[0]?.conversation_id || "";
-    if (!selectedRunId && first) setSelectedRunId(first);
-  }, [runs, selectedRunId]);
-  const selectedRun = useMemo(
-    () => runs.find((run) => (run.run_id || run.conversation_id) === selectedRunId) || runs[0] || {},
-    [runs, selectedRunId],
-  );
-  const r = selectedRun || {};
-  const currentRunId = selectedRunId || r.run_id || r.conversation_id || "";
-  useEffect(() => {
-    if (!currentRunId) return undefined;
-    let cancelled = false;
-    Promise.all([
-      loadRunSummary(currentRunId).catch(() => null),
-      loadRunTrace(currentRunId).catch(() => []),
-    ]).then(([summary, rows]) => {
-      if (cancelled) return;
-      setRunSummary(summary);
-      setRunTrace(Array.isArray(rows) ? rows : []);
-    });
-    return () => { cancelled = true; };
-  }, [currentRunId]);
-  const openLog = async () => {
-    if (!currentRunId) return;
-    setLogOpen(true);
-    setLogLoading(true);
-    try {
-      setRunLog(await loadRunLog(currentRunId, "json"));
-    } catch (error) {
-      setRunLog({ error: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setLogLoading(false);
-    }
+    if (!runId) return;
+    setSummary(null); setRtrace(null); setTracePage(0);
+    loadRunSummary(runId).then(setSummary).catch(() => {});
+    loadRunTrace(runId).then((d) => setRtrace(Array.isArray(d) ? d : (d?.trace || []))).catch(() => {});
+  }, [runId]);
+  const openLog = () => {
+    setLogOpen(true); setLogText("");
+    loadRunLog(runId, "text").then((d) => setLogText(typeof d === "string" ? d : (d?.text || JSON.stringify(d, null, 2)))).catch((e) => setLogText(`加载日志失败：${e.message}`));
   };
-  const downloadLog = () => {
-    const blob = new Blob([JSON.stringify(runLog || {}, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${currentRunId || "run"}-log.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-  const okRun = runSummary?.status === "completed" || r.status === "done" || Boolean(r.completed_at) || (!r.status && Boolean(r.verdict));
-  const summaryVerdict = runSummary?.verdict || r.verdict;
-  const verdictLabel = summaryVerdict ? (VERDICT_LABELS[summaryVerdict] || summaryVerdict) : "有条件可行";
+  const okRun = r.status === "done" || Boolean(r.completed_at) || (!r.status && Boolean(r.verdict));
+  const verdictLabel = r.verdict ? (VERDICT_LABELS[r.verdict] || r.verdict) : "有条件可行";
   let dur = "10 分 18 秒";
   if (r.created_at && r.completed_at) {
     const ms = new Date(r.completed_at) - new Date(r.created_at);
@@ -1789,26 +1772,20 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
   const t = observability?.tracing || {};
   const models = observability?.models || {};
   const cg = observability?.eval?.calibration_gate || null;
+  const sm = summary || {};
+  const smDur = sm.duration_ms ? (sm.duration_ms >= 60000 ? `${Math.floor(sm.duration_ms / 60000)} 分 ${Math.round((sm.duration_ms % 60000) / 1000)} 秒` : `${Math.round(sm.duration_ms / 1000)} 秒`) : dur;
+  const tc = sm.tool_calls || {};
+  const tk = sm.tokens || {};
+  const au = sm.audit || {};
   const cards = [
-    { ic: CheckCircle2, tone: "ok", label: "当前运行状态", value: okRun ? "成功" : "运行中", sub: r.completed_at ? `完成于 ${formatTime(r.completed_at)}` : "完成于 2024-06-02 10:22" },
-    { ic: Target, tone: "blue", label: "结论", value: verdictLabel, sub: `置信度 ${r.confidence || runSummary?.confidence || "0.80"}` },
-    { ic: Clock3, label: "总耗时", value: runSummary?.duration_ms ? `${Math.round(runSummary.duration_ms / 1000)} 秒` : dur, sub: runSummary?.started_at ? `开始于 ${formatTime(runSummary.started_at)}` : "开始于 10:11:59" },
-    { ic: Users, label: "Agent 数量", value: String(runSummary?.agent_count ?? 6), sub: "全部完成" },
-    { ic: Wrench, label: "工具调用", value: String(runSummary?.tool_calls?.total ?? 23), sub: `成功 ${runSummary?.tool_calls?.ok ?? 22} / 失败 ${runSummary?.tool_calls?.fail ?? 1}` },
-    { ic: Coins, label: "Token 用量", value: String(runSummary?.tokens?.total ?? "11,148"), sub: `Prompt ${runSummary?.tokens?.prompt ?? "5,204"} / Completion ${runSummary?.tokens?.completion ?? "5,944"}` },
-    { ic: ShieldCheck, tone: "ok", label: "审计状态", value: runSummary?.audit?.status || "通过", sub: `风险项 ${runSummary?.audit?.risks?.length ?? 0} / 告警 ${runSummary?.audit?.warnings?.length ?? 0}` },
+    { ic: CheckCircle2, tone: "ok", label: "当前运行状态", value: sm.status ? (sm.status === "done" ? "成功" : sm.status) : (okRun ? "成功" : "运行中"), sub: sm.finished_at ? `完成于 ${formatTime(sm.finished_at)}` : r.completed_at ? `完成于 ${formatTime(r.completed_at)}` : "" },
+    { ic: Target, tone: "blue", label: "结论", value: sm.verdict ? (VERDICT_LABELS[sm.verdict] || sm.verdict) : verdictLabel, sub: `置信度 ${r.confidence || "0.80"}` },
+    { ic: Clock3, label: "总耗时", value: smDur, sub: sm.started_at ? `开始于 ${formatTime(sm.started_at)}` : "" },
+    { ic: Users, label: "Agent 数量", value: String(sm.agent_count ?? "6"), sub: "全部完成" },
+    { ic: Wrench, label: "工具调用", value: String(tc.total ?? "23"), sub: `成功 ${tc.ok ?? 22} / 失败 ${tc.fail ?? 1}` },
+    { ic: Coins, label: "Token 用量", value: (tk.total != null ? tk.total.toLocaleString() : "11,148"), sub: `Prompt ${tk.prompt ?? 5204} / Completion ${tk.completion ?? 5944}` },
+    { ic: ShieldCheck, tone: "ok", label: "审计状态", value: au.status === "pass" || !au.status ? "通过" : au.status, sub: `风险项 ${au.risks ?? 0} / 告警 ${au.warnings ?? 0}` },
   ];
-  const traceRows = runTrace.length
-    ? runTrace.map((item, index) => ({
-      icon: item.event === "tool_call" || item.tool_calls ? Wrench : item.event === "audit" ? ShieldCheck : item.event === "route" ? Workflow : Activity,
-      name: item.agent || item.event || `step-${index + 1}`,
-      role: item.role || item.status || "event",
-      sum: item.summary || stepDetail({ event: item.event, data: item.detail || item }),
-      dur: item.duration_ms ? `${item.duration_ms}ms` : "",
-      detail: item.detail || item,
-      status: item.status || "completed",
-    }))
-    : RUN_TIMELINE.map((item) => ({ ...item, detail: item, status: "完成" }));
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase();
     if (!kw) return runs;
@@ -1829,7 +1806,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
           <h1>运行记录 · 可观测性</h1>
           <p>追踪每个 Agent 的执行过程、工具调用、模型输出与评测结果，保障分析结果的可解释性与可信度。</p>
         </div>
-        <button className="ghost-button icon-label" type="button" onClick={openLog}><Download size={15} />导出日志</button>
+        <a className="ghost-button icon-label" href={runId ? runLogUrl(runId, "text") : undefined} target="_blank" rel="noreferrer" style={runId ? undefined : { pointerEvents: "none", opacity: .5 }}><Download size={15} />导出日志</a>
       </section>
 
       <div className="run-cards">
@@ -1873,48 +1850,53 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
       <div className="run-body2">
         <section className="card run-trace">
           <div className="rt-head"><strong>本次运行追踪</strong><Info size={14} /></div>
-          <div className="rt-list">
-            {traceRows.map((s, i) => {
-              const Ic = s.icon;
-              return (
-                <div className="rt-wrap" key={`${s.name}-${i}`}>
-                  <button type="button" className="rt-row" onClick={() => setExpandedStep(expandedStep === i ? null : i)}>
-                    <span className="rt-n">{i + 1}</span>
-                    <span className="rt-ic"><Ic size={15} /></span>
-                    <div className="rt-main">
-                      <div className="rt-title"><b>{s.name}</b><em>{s.role}</em><span className="rt-badge">{s.status || "完成"}</span></div>
-                      <p className="rt-sum">{s.sum}</p>
-                    </div>
-                    <span className="rt-dur">{s.dur ? `耗时 ${s.dur}` : ""}</span>
-                    <CheckCircle2 size={16} className="rt-ok" />
-                    <ChevronDown size={15} className="rt-caret" />
-                  </button>
-                  {expandedStep === i ? <pre className="rt-detail">{JSON.stringify(s.detail || {}, null, 2)}</pre> : null}
+          {(() => {
+            const list = (rtrace && rtrace.length) ? rtrace.map((s, i) => ({
+              icon: traceIcon(s.agent || s.role),
+              name: s.agent || "Agent", role: s.role || "", status: s.status || "完成",
+              sum: s.summary || "", dur: s.duration_ms ? (s.duration_ms >= 1000 ? `${(s.duration_ms / 1000).toFixed(1)} 秒` : `${s.duration_ms} ms`) : "",
+            })) : (rtrace === null ? null : RUN_TIMELINE.map((s) => ({ icon: s.icon, name: s.name, role: s.role, status: "完成", sum: s.sum, dur: s.dur })));
+            const TPER = 8;
+            const tpages = list ? Math.max(1, Math.ceil(list.length / TPER)) : 1;
+            const cur = Math.min(tracePage, tpages - 1);
+            const shown = list ? list.slice(cur * TPER, cur * TPER + TPER) : [];
+            return (
+              <>
+                <div className="rt-list">
+                  {list === null ? <p className="empty-copy" style={{ padding: 14 }}><Loader2 size={14} className="spin" /> 加载追踪…</p> : null}
+                  {shown.map((s, i) => {
+                    const Ic = s.icon;
+                    return (
+                      <div className="rt-row" key={i}>
+                        <span className="rt-n">{cur * TPER + i + 1}</span>
+                        <span className="rt-ic"><Ic size={15} /></span>
+                        <div className="rt-main">
+                          <div className="rt-title"><b>{s.name}</b>{s.role ? <em>{s.role}</em> : null}<span className="rt-badge">{s.status}</span></div>
+                          {s.sum ? <p className="rt-sum">{s.sum}</p> : null}
+                        </div>
+                        {s.dur ? <span className="rt-dur">耗时 {s.dur}</span> : null}
+                        <CheckCircle2 size={16} className="rt-ok" />
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
+                {list && tpages > 1 ? (
+                  <div className="rh-pager" style={{ justifyContent: "center" }}>
+                    <button type="button" disabled={cur === 0} onClick={() => setTracePage(cur - 1)}><ChevronLeft size={15} /></button>
+                    <span>{cur + 1} / {tpages}</span>
+                    <button type="button" disabled={cur >= tpages - 1} onClick={() => setTracePage(cur + 1)}><ChevronRight size={15} /></button>
+                  </div>
+                ) : null}
+              </>
+            );
+          })()}
           <div className="rt-foot">
-            <span className="rt-runid">运行 ID <b>{r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"}</b><button type="button" className="id-copy" title="复制运行 ID" onClick={() => { try { navigator.clipboard.writeText(r.run_id || "run_01JY6W3N9Z2Q3B2TK9M7C6F8P1"); } catch { /* ignore */ } }}><Copy size={13} /></button></span>
+            <span className="rt-runid">运行 ID <b>{runId || "—"}</b>{runId ? <button type="button" className="id-copy" title="复制运行 ID" onClick={() => { try { navigator.clipboard.writeText(runId); } catch { /* ignore */ } }}><Copy size={13} /></button> : null}</span>
             <span>触发方式 <b>用户启动</b></span>
-            <span>模型 <b>GPT-5.1</b></span>
-            <span>环境 <b>prod</b></span>
-            <button type="button" className="lnk lnk-btn" onClick={openLog}>查看完整日志 ›</button>
+            <span>模型 <b>{models.chat || "GPT-5.1"}</b></span>
+            <button type="button" className="lnk lnk-btn" disabled={!runId} onClick={openLog}>查看完整日志 ›</button>
           </div>
         </section>
-
-        {logOpen ? (
-          <section className="card run-log-drawer">
-            <div className="rt-head">
-              <strong>完整运行日志</strong>
-              <div className="modal-actions">
-                <button type="button" className="dw-link-btn" onClick={downloadLog} disabled={!runLog || logLoading}><FileDown size={13} />下载 JSON</button>
-                <button type="button" className="dw-link-btn" onClick={() => setLogOpen(false)}><X size={13} />关闭</button>
-              </div>
-            </div>
-            {logLoading ? <div className="dw-loading"><Loader2 className="spin" size={16} />加载日志...</div> : <pre className="rt-detail log">{JSON.stringify(runLog || {}, null, 2)}</pre>}
-          </section>
-        ) : null}
 
         <aside className="card run-history2">
           <div className="rh-head"><strong>历史运行</strong></div>
@@ -1928,10 +1910,10 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
               const v = run.verdict ? (VERDICT_LABELS[run.verdict] || run.verdict) : null;
               const tone = run.verdict === "feasible" ? "ok" : run.verdict === "not_yet_feasible" ? "warn" : "blue";
               return (
-                <button type="button" className="rh-row" key={id || i} onClick={() => { if (id) setSelectedRunId(id); if (id && onOpenConversation) onOpenConversation(id); }} disabled={!id}>
+                <button type="button" className="rh-row" key={id || i} onClick={() => id && onOpenConversation && onOpenConversation(id)} disabled={!id || !onOpenConversation} title={id}>
                   <CheckCircle2 size={15} className="rh-row-ic" />
                   <div className="rh-row-main">
-                    <b>{String(id || "run").slice(0, 30)}</b>
+                    <b>{runDisplayName(run)}</b>
                     <span>{run.status || "completed"}{run.step_count ? ` · ${run.step_count} 步` : ""}</span>
                   </div>
                   {v ? <span className={`rh-verdict ${tone}`}>{v}</span> : null}
@@ -1952,8 +1934,40 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
           ) : null}
         </aside>
       </div>
+
+      <SideDrawer open={logOpen} title="完整运行日志" onClose={() => setLogOpen(false)}>
+        <div style={{ marginBottom: 10 }}><a className="dw-btn" href={runId ? runLogUrl(runId, "text") : undefined} target="_blank" rel="noreferrer"><Download size={14} />下载日志</a></div>
+        {logText ? <pre className="log-pre">{logText}</pre> : <p className="empty-copy"><Loader2 size={14} className="spin" /> 加载日志…</p>}
+      </SideDrawer>
     </main>
   );
+}
+
+// 历史运行展示名：优先后端 title/摘要；否则用「结论 · 日期」汇总，不直接暴露运行 ID（ID 仅用于搜索）
+function runDisplayName(run) {
+  const t = run.title || run.summary || run.question;
+  if (t && String(t).trim()) return String(t).trim().slice(0, 36);
+  const v = run.verdict ? (VERDICT_LABELS[run.verdict] || run.verdict) : "可行性分析";
+  const when = formatTime(run.time || run.completed_at || run.created_at);
+  return `${v}${when ? ` · ${when}` : ""}`;
+}
+
+// 服务图标：SVG 加载失败时回退到 lucide 图标，避免出现裂图
+function SvcIcon({ src, size = 26, fallback: Fallback = Server }) {
+  const [failed, setFailed] = useState(false);
+  if (failed || !src) return <span className="set-conn-lic"><Fallback size={Math.round(size * 0.76)} /></span>;
+  return <img className="svc-ic" src={src} width={size} height={size} alt="" onError={() => setFailed(true)} />;
+}
+
+function traceIcon(label) {
+  const s = String(label || "").toLowerCase();
+  if (s.includes("协调") || s.includes("orchestr") || s.includes("coordinat") || s.includes("route") || s.includes("plan")) return Workflow;
+  if (s.includes("语料") || s.includes("corpus") || s.includes("检索") || s.includes("search") || s.includes("retriev")) return Search;
+  if (s.includes("可行") || s.includes("feasib") || s.includes("评分") || s.includes("score")) return TrendingUp;
+  if (s.includes("市场") || s.includes("market")) return Activity;
+  if (s.includes("审计") || s.includes("audit") || s.includes("校验") || s.includes("shield")) return ShieldCheck;
+  if (s.includes("回答") || s.includes("writer") || s.includes("produc") || s.includes("输出")) return FileText;
+  return Activity;
 }
 
 const SET_MEMBERS = [
@@ -1963,51 +1977,21 @@ const SET_MEMBERS = [
 ];
 
 function SettingsCenter({ dashboard, observability }) {
-  const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "demo-corpus";
-  const [systemStatus, setSystemStatus] = useState(null);
-  const [settingsData, setSettingsData] = useState(null);
-  const [membersData, setMembersData] = useState(null);
+  const health = dashboard?.health || {};
+  const models = observability?.models || {};
   const [tab, setTab] = useState("about");
   const [probing, setProbing] = useState(false);
   const [probedAt, setProbedAt] = useState(null);
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      loadSystemStatus().catch(() => null),
-      loadWorkspaceSettings(workspaceId).catch(() => null),
-      loadWorkspaceMembers(workspaceId).catch(() => null),
-    ]).then(([status, settings, members]) => {
-      if (cancelled) return;
-      setSystemStatus(status);
-      setSettingsData(settings);
-      setMembersData(members);
-    });
-    return () => { cancelled = true; };
-  }, [workspaceId]);
-  const reprobe = async () => {
+  const [sys, setSys] = useState(null);
+  useEffect(() => { loadSystemStatus().then(setSys).catch(() => {}); }, []);
+  const deps = sys?.dependencies || health.dependencies || {};
+  const reprobe = () => {
     if (probing) return;
     setProbing(true);
-    try {
-      setSystemStatus(await loadSystemStatus());
-      setProbedAt(new Date());
-    } finally {
-      setProbing(false);
-    }
+    loadSystemStatus().then(setSys).catch(() => {}).finally(() => {
+      window.setTimeout(() => { setProbing(false); setProbedAt(new Date()); }, 1200);
+    });
   };
-  const health = systemStatus?.health || dashboard?.health || {};
-  const deps = systemStatus?.dependencies || health.dependencies || {};
-  const models = systemStatus?.models || observability?.models || {};
-  const storage = settingsData?.storage || settingsData?.workspace?.storage || {};
-  const compliance = systemStatus?.compliance || settingsData?.compliance || {};
-  const members = (membersData?.members || []).length
-    ? membersData.members.map((member, index) => ({
-      initial: String(member.user || member.email || "U").slice(0, 1).toUpperCase(),
-      name: member.user || member.name || member.email || "Workspace member",
-      email: member.email || "",
-      role: member.role || "viewer",
-      you: index === 0,
-    }))
-    : SET_MEMBERS;
   const connectors = [
     { src: "/icons/foundry.svg", name: "Azure AI Foundry Agent Service", desc: "Agent 执行与编排服务", ok: deps.foundry !== false },
     { src: "/icons/ai-search.svg", name: "Azure AI Search", desc: "向量检索与搜索服务", ok: (deps.search || health.search_endpoint) !== false },
@@ -2016,11 +2000,12 @@ function SettingsCenter({ dashboard, observability }) {
     { src: "/icons/speech.svg", name: "Azure AI Speech", desc: "语音识别与合成服务", ok: deps.speech !== false },
     { src: "/icons/content-safety.svg", name: "Azure AI Content Safety", desc: "内容安全与风险检测", ok: deps.content_safety !== false },
   ];
-  const kv = (k, v, key) => (<div className="set-kv" key={key}><span>{k}</span><b>{v}</b></div>);
+  const connOk = connectors.filter((c) => c.ok).length;
+  const kv = (k, v) => (<div className="set-kv"><span>{k}</span><b>{v}</b></div>);
   const cfgCard = (icon, title, rows, desc) => (
     <section className="card set-cfg">
       <div className="set-cfg-h">{icon}<strong>{title}</strong><span className="lnk lnk-btn">管理</span></div>
-      <div className="set-cfg-rows">{rows.map(([k, v]) => kv(k, v, k))}</div>
+      <div className="set-cfg-rows">{rows.map(([k, v]) => kv(k, v))}</div>
       <p className="set-cfg-desc">{desc}</p>
     </section>
   );
@@ -2033,16 +2018,16 @@ function SettingsCenter({ dashboard, observability }) {
       </header>
 
       <div className="set-stats">
-        <div className="card set-stat"><div className="set-stat-ic blue"><Boxes size={18} /></div><b>模型服务</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">{health.ok === false ? "需检查" : "健康"}</span></div><em>对话模型 {models.chat || "gpt-5.1"}</em></div>
-        <div className="card set-stat"><div className="set-stat-ic blue"><Database size={18} /></div><b>数据存储</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">{deps.blob === false ? "需检查" : "健康"}</span></div><em>存储用量 {storage.used_bytes && storage.total_bytes ? `${Math.round((storage.used_bytes / storage.total_bytes) * 100)}%` : "按工作区统计"}</em></div>
-        <div className="card set-stat"><div className="set-stat-ic blue"><ShieldCheck size={18} /></div><b>内容安全</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">{deps.content_safety === false ? "未配置" : "健康"}</span></div><em>{compliance.prompt_shield === false ? "Prompt Shield 未启用" : "Prompt Shield 已启用"}</em></div>
-        <div className="card set-stat"><div className="set-stat-ic blue"><Server size={18} /></div><b>连接器状态</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">{connectors.filter((c) => c.ok).length}/{connectors.length}</span></div><em>来自 system-status</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><Boxes size={18} /></div><b>模型服务</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>在线模型 4 个</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><Database size={18} /></div><b>数据存储</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>存储用量 68%</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><ShieldCheck size={18} /></div><b>内容安全</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>Prompt Shield 已启用</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><Server size={18} /></div><b>连接器状态</b><div className="set-stat-kv"><span>状态</span><span className={`dw-chip ${connOk === connectors.length ? "ok" : "warn"}`}>{connOk === connectors.length ? "全部正常" : "部分异常"}</span></div><em>已连接 {connOk} / {connectors.length}</em></div>
       </div>
 
       <div className="set-cfgs">
-        {cfgCard(<Sparkles size={16} />, "模型与生成", [["对话 / 推理模型", models.chat || "gpt-5.1"], ["概念图模型", models.image || "gpt-image-2"], ["向量模型（RAG）", models.embedding || "text-embedding-3-small"], ["检索增强", systemStatus?.rag?.enabled === false ? "未启用" : "Azure AI Search · 向量 + 关键词"], ["默认生成音频摘要", settingsData?.preferences?.audio_summary ? "已启用" : "已禁用"]], "控制模型选择、检索增强与生成输出行为。")}
-        {cfgCard(<ShieldCheck size={16} />, "数据与合规", [["内容安全（RAI）", deps.content_safety === false ? "未配置" : "已启用 · Prompt Shield"], ["身份认证", "Microsoft Entra ID · Easy Auth"], ["数据驻留", systemStatus?.region || "Azure · East US 2"], ["分布式追踪", systemStatus?.observability?.enabled === false ? "未启用" : "App Insights · OpenTelemetry"], ["审计日志保留", compliance.audit_retention_days ? `${compliance.audit_retention_days} 天` : "180 天"]], "保障数据安全、合规与可观测性。")}
-        {cfgCard(<Cpu size={16} />, "工作区偏好", [["界面语言", settingsData?.preferences?.language || "简体中文"], ["主题", settingsData?.preferences?.theme || "浅色（深色即将支持）"], ["时区", settingsData?.preferences?.timezone || "跟随系统"], ["数据持久化", "Azure Blob（工作区/会话/产物）"], ["默认时区显示", settingsData?.preferences?.timezone || "跟随系统"]], "自定义界面语言、主题、时区与数据持久化偏好。")}
+        {cfgCard(<Sparkles size={16} />, "模型与生成", [["对话 / 推理模型", models.chat || "gpt-5.1"], ["概念图模型", models.image || "gpt-image-2"], ["向量模型（RAG）", models.embedding || "text-embedding-3-small"], ["检索增强", "Azure AI Search · 向量 + 关键词"], ["默认生成音频摘要", "已禁用"]], "控制模型选择、检索增强与生成输出行为。")}
+        {cfgCard(<ShieldCheck size={16} />, "数据与合规", [["内容安全（RAI）", "已启用 · Prompt Shield"], ["身份认证", "Microsoft Entra ID · Easy Auth"], ["数据驻留", "Azure · East US 2"], ["分布式追踪", "App Insights · OpenTelemetry"], ["审计日志保留", "180 天"]], "保障数据安全、合规与可观测性。")}
+        {cfgCard(<Cpu size={16} />, "工作区偏好", [["界面语言", "简体中文"], ["主题", "浅色（深色即将支持）"], ["时区", "跟随系统"], ["数据持久化", "Azure Blob（工作区/会话/产物）"], ["默认时区显示", "跟随系统"]], "自定义界面语言、主题、时区与数据持久化偏好。")}
       </div>
 
       <div className="set-bottom">
@@ -2053,11 +2038,11 @@ function SettingsCenter({ dashboard, observability }) {
             </button>
           </div>
           <div className="set-conn-grid">
-            {connectors.map((c) => {
+            {connectors.map((c, i) => {
               const Ic = c.icon;
               return (
-                <div className={probing ? "set-conn-card probing" : "set-conn-card"} key={c.name}>
-                  {c.src ? <img className="svc-ic" src={c.src} width="26" height="26" alt="" /> : <span className="set-conn-lic"><Ic size={20} /></span>}
+                <div className={probing ? "set-conn-card probing" : "set-conn-card"} key={i}>
+                  {c.src ? <SvcIcon src={c.src} size={26} fallback={Server} /> : <span className="set-conn-lic"><Ic size={20} /></span>}
                   <div className="set-conn-main"><b>{c.name}</b><em>{c.desc}</em></div>
                   {probing ? <span className="dw-chip probing"><Loader2 size={11} className="spin" /> 检测中</span> : <span className={c.ok ? "dw-chip ok" : "dw-chip"}>{c.ok ? "已连接" : "未连接"}</span>}
                 </div>
@@ -2083,9 +2068,9 @@ function SettingsCenter({ dashboard, observability }) {
             </div>
           ) : (
             <div className="set-members">
-              <div className="set-members-head"><span>成员（{members.length}）</span><button type="button" className="lnk lnk-btn">管理成员</button></div>
-              {members.map((m) => (
-                <div className="set-member" key={m.email || m.name}>
+              <div className="set-members-head"><span>成员（{SET_MEMBERS.length}）</span><button type="button" className="lnk lnk-btn">管理成员</button></div>
+              {SET_MEMBERS.map((m, i) => (
+                <div className="set-member" key={i}>
                   <span className="mbr-av">{m.initial}</span>
                   <div className="mbr-main"><b>{m.name}</b><em>{m.email}</em></div>
                   {m.you ? <span className="dw-chip ok">所有者</span> : <span className="mbr-role">{m.role}<ChevronDown size={13} /></span>}
@@ -3343,8 +3328,6 @@ export function extractArtifacts(artifact) {
     pdf: proposal.pdf ? { ...proposal.pdf, artifact_url: proposal.pdf.artifact_url || urls.pdf } : artifact?.artifact_urls?.pdf ? { artifact_url: artifact.artifact_urls.pdf } : null,
     concept_image: proposal.concept_image ? { ...proposal.concept_image, artifact_url: proposal.concept_image.artifact_url || urls.concept_image } : artifact?.artifact_urls?.concept_image ? { artifact_url: artifact.artifact_urls.concept_image } : null,
     audio_summary: proposal.audio_summary ? { ...proposal.audio_summary, artifact_url: proposal.audio_summary.artifact_url || urls.audio_summary } : artifact?.artifact_urls?.audio_summary ? { artifact_url: artifact.artifact_urls.audio_summary } : null,
-    roadmap: proposal.roadmap ? { ...proposal.roadmap, artifact_url: proposal.roadmap.artifact_url || urls.roadmap } : artifact?.artifact_urls?.roadmap ? { artifact_url: artifact.artifact_urls.roadmap } : null,
-    validation_plan: proposal.validation_plan ? { ...proposal.validation_plan, artifact_url: proposal.validation_plan.artifact_url || urls.validation_plan } : artifact?.artifact_urls?.validation_plan ? { artifact_url: artifact.artifact_urls.validation_plan } : null,
   };
 }
 
