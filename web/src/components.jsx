@@ -1383,6 +1383,24 @@ function ConversationStudio({
   })();
   const recent = (dashboard?.runs || [])[0] || {};
   const recentVerdict = recent.verdict ? (VERDICT_LABELS[recent.verdict] || recent.verdict) : "有条件可行";
+  // 当前数据源：每页 4 个（与右侧「快捷操作」4 项对齐），多余用翻页查看
+  const SRC_FALLBACK = [
+    { name: "product_manual.md", format: "md" },
+    { name: "sensor_data_dictionary.md", format: "md" },
+    { name: "customer_feedback_summary.md", format: "md" },
+    { name: "internal_technical_wiki.md", format: "md" },
+    { name: "market_research_notes.md", format: "md" },
+    { name: "competitor_landscape.md", format: "md" },
+    { name: "device_firmware_notes.md", format: "md" },
+    { name: "field_test_log.csv", format: "csv" },
+    { name: "support_tickets.csv", format: "csv" },
+  ];
+  const allSrcs = docs.length ? docs : SRC_FALLBACK;
+  const SRC_PER = 4;
+  const [srcPage, setSrcPage] = useState(0);
+  const srcPages = Math.max(1, Math.ceil(allSrcs.length / SRC_PER));
+  const curSrcPage = Math.min(srcPage, srcPages - 1);
+  const pageSrcs = allSrcs.slice(curSrcPage * SRC_PER, curSrcPage * SRC_PER + SRC_PER);
   const presentation = useAgentPresentation(trace, running);
   const chips = ["做一场拉新活动", "能产品化成什么?", "先试点哪个客群?", "生成 PRD 草案", "评估定价", "看外部市场"];
   const hasMsgs = messages.length || streamText;
@@ -1478,13 +1496,17 @@ function ConversationStudio({
           {/* 第 2 行：当前数据源 | 快捷操作 */}
           <div className="ctx-grid2">
             <section className="card ctx-card">
-              <div className="ctx-h">当前数据源<em>{docs.length || 9} 源</em></div>
+              <div className="ctx-h">当前数据源<em>{allSrcs.length} 源</em></div>
               <div className="ctx-srcs">
-                {(docs.length ? docs.slice(0, 5) : [{ name: "product_manual.md", format: "md" }, { name: "sensor_data_dictionary.md", format: "md" }, { name: "customer_feedback_summary.md", format: "md" }, { name: "internal_technical_wiki.md", format: "md" }]).map((d, i) => (
+                {pageSrcs.map((d, i) => (
                   <div className="ctx-src" key={i}><FileTypeIcon doc={d} size={16} /><b title={d.name}>{d.name}</b></div>
                 ))}
               </div>
-              <button type="button" className="lnk lnk-btn">查看全部数据源 ›</button>
+              <div className="ctx-pager">
+                <button type="button" className="ctx-pg-btn" disabled={curSrcPage === 0} onClick={() => setSrcPage(curSrcPage - 1)} aria-label="上一页"><ChevronLeft size={15} /></button>
+                <span>{curSrcPage + 1} / {srcPages}</span>
+                <button type="button" className="ctx-pg-btn" disabled={curSrcPage >= srcPages - 1} onClick={() => setSrcPage(curSrcPage + 1)} aria-label="下一页"><ChevronRight size={15} /></button>
+              </div>
             </section>
 
             <section className="card ctx-card">
@@ -1901,17 +1923,16 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
 }
 
 const SET_MEMBERS = [
-  { initial: "博", name: "博文（你）", email: "bowen@example.com", role: "所有者", you: true },
+  { initial: "傅", name: "傅子豪（你）", email: "fuzh084711@gmail.com", role: "所有者", you: true },
   { initial: "李", name: "李思运", email: "lisiyun@example.com", role: "管理员" },
   { initial: "王", name: "王敏", email: "wangmin@example.com", role: "编辑者" },
-  { initial: "张", name: "张悦", email: "zhangyue@example.com", role: "查看者" },
 ];
 
 function SettingsCenter({ dashboard, observability }) {
   const health = dashboard?.health || {};
   const deps = health.dependencies || {};
   const models = observability?.models || {};
-  const [tab, setTab] = useState("members");
+  const [tab, setTab] = useState("about");
   const connectors = [
     { src: "/icons/foundry.svg", name: "Azure AI Foundry Agent Service", desc: "Agent 执行与编排服务", ok: deps.foundry !== false },
     { src: "/icons/ai-search.svg", name: "Azure AI Search", desc: "向量检索与搜索服务", ok: (deps.search || health.search_endpoint) !== false },
@@ -1951,7 +1972,7 @@ function SettingsCenter({ dashboard, observability }) {
 
       <div className="set-bottom">
         <section className="card set-conn">
-          <div className="cardhead"><span className="t">集成与连接状态</span><button type="button" className="lnk lnk-btn"><RefreshCw size={13} /> 刷新状态</button></div>
+          <div className="set-conn-h"><strong>集成与连接状态</strong><button type="button" className="set-refresh"><RefreshCw size={14} /> 刷新状态</button></div>
           <div className="set-conn-grid">
             {connectors.map((c, i) => {
               const Ic = c.icon;
