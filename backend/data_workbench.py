@@ -2020,7 +2020,7 @@ def _raise_sql_connector_error(exc: BaseException, *, status_code: int = 400) ->
         hint = "请确认服务器、数据库、账号权限和网络访问策略均正确。"
     raise HTTPException(
         status_code=status_code,
-        detail={"message": message, "hint": hint, "error_type": type(exc).__name__},
+        detail={"message": message, "hint": hint, "error_type": "sql_connection_error"},
     ) from exc
 
 
