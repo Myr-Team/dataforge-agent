@@ -3069,7 +3069,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 @media (max-width: 900px){ .pi2-main { grid-template-columns: 1fr; min-height: 0; } }
 .pi2-chart { border: 1px solid var(--line); border-radius: 10px; background: #fbfcfe; padding: 12px 14px; display: flex; flex-direction: column; min-width: 0; }
 .pi2-chart-head { font-size: 12.5px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
-.pi2-chart .conv-chart { width: 100%; height: auto; display: block; flex: 1; min-height: 150px; }
+.pi2-chart .conv-chart { width: 100%; height: auto; display: block; margin: auto 0; }
 .pi2-chart-empty { flex: 1; display: grid; place-items: center; color: var(--faint); font-size: 12.5px; min-height: 150px; }
 .pi2-summary { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 14px 15px; display: flex; flex-direction: column; gap: 11px; min-width: 0; }
 .pi2-sum-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; }
