@@ -51,7 +51,7 @@ def _minimal_pdf(text: str) -> bytes:
 def render_pdf_report(proposal: dict[str, Any], template: str = "project_proposal") -> dict[str, Any]:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = int(time.time())
-    path = OUT_DIR / f"{_safe_name(proposal.get('opportunity_id') or 'proposal')}-{stamp}.pdf"
+    path = OUT_DIR / f"{_artifact_file_base(proposal, 'project-document')}-{stamp}.pdf"
     mode = "reportlab-project-document-v2"
     pdf_error = ""
     try:
@@ -682,6 +682,15 @@ def _xml(text: Any) -> str:
 def _safe_name(value: Any) -> str:
     text = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value or "")).strip("-")
     return text[:90] or "proposal"
+
+
+def _artifact_file_base(proposal: dict[str, Any], suffix: str) -> str:
+    slug = _safe_name(proposal.get("artifact_slug") or proposal.get("opportunity_id") or proposal.get("title") or "proposal").lower()
+    version = str((proposal.get("doc_meta") or {}).get("version") or proposal.get("version") or "v1").strip().lower()
+    if not re.fullmatch(r"v\d+", version):
+        version = "v1"
+    clean_suffix = _safe_name(suffix or "artifact").lower()
+    return f"{slug}-{version}-{clean_suffix}"
 
 
 def _truncate(value: Any, limit: int) -> str:

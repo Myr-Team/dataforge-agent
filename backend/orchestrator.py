@@ -67,7 +67,7 @@ try:
     from .pm_skills import playbook_suggestion
     from .rag import search
     from .router import deterministic_route
-    from .run_store import complete_run, get_run, record_event, start_run, update_run_proposal
+    from .run_store import complete_run, get_run, list_runs, record_event, start_run, update_run_proposal
     from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
     from .tracing import trace_event
     from .maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -126,7 +126,7 @@ except ImportError:
     from pm_skills import playbook_suggestion
     from rag import search
     from router import deterministic_route
-    from run_store import complete_run, get_run, record_event, start_run, update_run_proposal
+    from run_store import complete_run, get_run, list_runs, record_event, start_run, update_run_proposal
     from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
     from tracing import trace_event
     from maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -1947,6 +1947,20 @@ def _doc_meta(opportunity_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _artifact_slug_for_proposal(opportunity_id: str, artifact: dict[str, Any]) -> str:
+    candidates = [
+        opportunity_id
+        or (artifact.get("feasibility") or {}).get("opportunity_id"),
+        artifact.get("workspace_id"),
+        "dataforge-proposal",
+    ]
+    for candidate in candidates:
+        slug = _slug(str(candidate or ""), "")
+        if slug:
+            return slug
+    return "dataforge-proposal"
+
+
 def _doc_background(profile: dict[str, Any], title: str) -> str:
     summary = str((profile or {}).get("profile_summary") or (profile or {}).get("customer_summary") or "").strip()
     parts = [f"本建议书基于工作区现有数据，评估「{title}」的产品可行性与下一步路径。"]
@@ -2056,6 +2070,7 @@ def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
         "reference_images": artifact.get("reference_images") or [],
         # 文档独有层（让 PDF 不等于聊天速览，具备存档/汇报质感）
         "doc_meta": _doc_meta(opportunity_id, artifact),
+        "artifact_slug": _artifact_slug_for_proposal(opportunity_id, artifact),
         "background": _doc_background(corpus.get("profile", {}), title),
         "methodology": list(_DOC_METHODOLOGY),
         "risk_register": _doc_risk_register(feasibility),
@@ -2093,8 +2108,7 @@ def _run_text_artifact(proposal: dict[str, Any], kind: str) -> dict[str, Any]:
     else:
         raise ValueError(f"Unsupported text artifact kind: {kind}")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    safe = _slug(str(proposal.get("opportunity_id") or proposal.get("title") or "dataforge"))
-    path = OUT_DIR / f"{safe}-{kind}-{int(time.time())}.md"
+    path = OUT_DIR / f"{_artifact_file_base(proposal, kind)}-{int(time.time())}.md"
     path.write_text(markdown, encoding="utf-8")
     result: dict[str, Any] = {
         "title": title,
@@ -2114,6 +2128,15 @@ def _run_text_artifact(proposal: dict[str, Any], kind: str) -> dict[str, Any]:
     except Exception as exc:
         result["blob_error"] = _clean_text(exc, 300)
     return result
+
+
+def _artifact_file_base(proposal: dict[str, Any], suffix: str) -> str:
+    slug = str(proposal.get("artifact_slug") or "").strip() or _slug(str(proposal.get("opportunity_id") or proposal.get("title") or "dataforge"))
+    version = str((proposal.get("doc_meta") or {}).get("version") or proposal.get("version") or "v1").strip().lower()
+    if not re.fullmatch(r"v\d+", version):
+        version = "v1"
+    clean_suffix = _slug(str(suffix or "artifact"), "artifact")
+    return f"{slug}-{version}-{clean_suffix}"
 
 
 def _pilot_plan_markdown(proposal: dict[str, Any]) -> str:
@@ -2315,6 +2338,42 @@ def _risk_line(risks: list[dict[str, Any]], index: int) -> str:
     return "优先处理会改变结论档位的证据缺口。"
 
 
+def _artifact_version_for_run(workspace_id: str, run_id: str) -> str:
+    if not workspace_id:
+        return "v1"
+    full_runs: list[str] = []
+    try:
+        summaries = list_runs(workspace_id)
+    except Exception:
+        summaries = []
+    for summary in reversed(summaries):
+        candidate_id = str(summary.get("run_id") or "")
+        if not candidate_id:
+            continue
+        try:
+            run = get_run(candidate_id)
+        except Exception:
+            continue
+        artifact = _run_artifact(run)
+        feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
+        dimensions = feasibility.get("dimensions")
+        if isinstance(dimensions, list) and any(isinstance(item, dict) for item in dimensions):
+            full_runs.append(candidate_id)
+    if run_id and run_id in full_runs:
+        return f"v{full_runs.index(run_id) + 1}"
+    return f"v{max(1, len(full_runs) + 1)}"
+
+
+def _run_artifact(run: dict[str, Any]) -> dict[str, Any]:
+    artifact = run.get("artifact")
+    if isinstance(artifact, dict):
+        return artifact
+    final = run.get("final") if isinstance(run.get("final"), dict) else {}
+    if isinstance(final.get("artifact"), dict):
+        return final["artifact"]
+    return {}
+
+
 def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> dict[str, Any]:
     # 默认只生成项目文档(PDF)+概念图，语音摘要按需（非必要产物）
     wanted = [k for k in (kinds or ["pdf", "concept_image", "pilot_plan", "action_plan"]) if k in _PRODUCE_KINDS]
@@ -2358,6 +2417,7 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
                 _reference_image_urls(proposal.get("reference_images") or []),
                 str(proposal.get("title") or proposal.get("opportunity_id") or "").strip(),
                 _logo_reference_url(proposal.get("reference_images") or []),
+                _artifact_file_base(proposal, "concept-image"),
             )
         audio_future = pool.submit(narrate_summary, _concise_narration_from_proposal(proposal), "zh-CN-XiaoxiaoNeural") if "audio" in wanted else None
         if pdf_future:
@@ -2554,10 +2614,18 @@ def generate_playbook_detail(payload: dict[str, Any]) -> dict[str, Any]:
 def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
     kinds = payload.get("kinds") or ["pdf", "concept_image", "pilot_plan", "action_plan"]
     run_id = str(payload.get("conversation_id") or payload.get("run_id") or "").strip()
+    workspace_id = str(payload.get("workspace_id") or "demo-corpus")
+    feasibility = dict(payload.get("feasibility") or {})
+    version = str(payload.get("plan_version") or payload.get("version") or feasibility.get("plan_version") or "").strip()
+    if not re.fullmatch(r"v\d+", version.lower()):
+        version = _artifact_version_for_run(workspace_id, run_id)
+    version = version.lower()
+    feasibility["plan_version"] = version
     artifact = {
-        "workspace_id": payload.get("workspace_id") or "demo-corpus",
+        "workspace_id": workspace_id,
         "conversation_id": run_id or payload.get("conversation_id"),
-        "feasibility": payload.get("feasibility") or {},
+        "plan_version": version,
+        "feasibility": feasibility,
         "corpus": payload.get("corpus") or {},
         "market": payload.get("market") or {},
         "audit": payload.get("audit") or {},

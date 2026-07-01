@@ -14,6 +14,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from openpyxl import Workbook, load_workbook
@@ -1824,6 +1825,18 @@ def _safe_filename(value: str) -> str:
 def _clean_sql_payload(body: dict[str, Any]) -> dict[str, Any]:
     connection_string = str(body.get("connection_string") or "").strip()
     if connection_string:
+        parsed = _parse_kv_connection_string(connection_string)
+        server = _first_conn_value(parsed, "server", "data source", "address", "addr", "network address")
+        database = _first_conn_value(parsed, "database", "initial catalog")
+        username = _first_conn_value(parsed, "user id", "uid", "user", "username")
+        password = _first_conn_value(parsed, "password", "pwd")
+        if server and database and (username or password):
+            payload = {"server": server, "database": database, "username": username, "password": password}
+            normalized = _normalize_sql_server(server)
+            payload["server"] = normalized["server"]
+            if normalized.get("port"):
+                payload["port"] = normalized["port"]
+            return payload
         return {"connection_string": connection_string}
     server = str(body.get("server") or "").strip()
     database = str(body.get("database") or "").strip()
@@ -1833,7 +1846,48 @@ def _clean_sql_payload(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("server and database are required")
     if not username and not str(body.get("entra_connection_string") or "").strip():
         raise ValueError("username/password or connection_string is required")
-    return {"server": server, "database": database, "username": username, "password": password}
+    normalized = _normalize_sql_server(server)
+    payload = {"server": normalized["server"], "database": database, "username": username, "password": password}
+    if normalized.get("port"):
+        payload["port"] = normalized["port"]
+    return payload
+
+
+def _parse_kv_connection_string(value: str) -> dict[str, str]:
+    pairs: dict[str, str] = {}
+    for part in str(value or "").split(";"):
+        if "=" not in part:
+            continue
+        key, raw = part.split("=", 1)
+        normalized = re.sub(r"\s+", " ", key.strip().lower())
+        if normalized:
+            pairs[normalized] = raw.strip().strip('"')
+    return pairs
+
+
+def _first_conn_value(values: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = values.get(key)
+        if value:
+            return value
+    return ""
+
+
+def _normalize_sql_server(server: str) -> dict[str, str]:
+    value = str(server or "").strip()
+    if value.lower().startswith("tcp:"):
+        value = value[4:]
+    host, port = value, ""
+    if "," in value:
+        host, port = value.rsplit(",", 1)
+    elif ":" in value and not value.startswith("["):
+        maybe_host, maybe_port = value.rsplit(":", 1)
+        if maybe_port.isdigit():
+            host, port = maybe_host, maybe_port
+    result = {"server": host.strip()}
+    if port.strip().isdigit():
+        result["port"] = port.strip()
+    return result
 
 
 def _sql_tables(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1868,6 +1922,7 @@ def _sql_connection(payload: dict[str, Any]) -> Any:
             user=payload.get("username") or None,
             password=payload.get("password") or None,
             database=payload["database"],
+            port=int(payload.get("port") or 1433),
             login_timeout=5,
             timeout=15,
         )
@@ -1898,14 +1953,38 @@ def _quote_table(table: str) -> str:
 def _clean_blob_payload(body: dict[str, Any]) -> dict[str, Any]:
     connection_string = str(body.get("connection_string") or "").strip()
     if connection_string:
+        parsed_url = _parse_blob_sas_url(connection_string)
+        if parsed_url:
+            return parsed_url
         return {"connection_string": connection_string}
     account = str(body.get("account") or "").strip()
     sas = str(body.get("sas") or "").strip().lstrip("?")
+    parsed_url = _parse_blob_sas_url(account) or _parse_blob_sas_url(sas)
+    if parsed_url:
+        return parsed_url
     if not account or not sas:
         raise ValueError("connection_string or account+sas is required")
     if not re.match(r"^[a-z0-9]{3,24}$", account):
         raise ValueError("Invalid storage account name")
     return {"account": account, "sas": sas}
+
+
+def _parse_blob_sas_url(value: str) -> dict[str, str] | None:
+    text = str(value or "").strip()
+    if not text.lower().startswith(("http://", "https://")):
+        return None
+    parsed = urlparse(text)
+    host = parsed.netloc.lower()
+    match = re.match(r"^([a-z0-9]{3,24})\.blob\.core\.windows\.net$", host)
+    if not match or not parsed.query:
+        return None
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    payload = {"account": match.group(1), "sas": parsed.query.lstrip("?")}
+    if parts:
+        payload["container"] = parts[0]
+    if len(parts) > 1:
+        payload["blob"] = "/".join(parts[1:])
+    return payload
 
 
 def _blob_service(payload: dict[str, Any]) -> Any:
@@ -1917,6 +1996,8 @@ def _blob_service(payload: dict[str, Any]) -> Any:
 
 
 def _blob_containers(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if payload.get("container"):
+        return [{"name": str(payload["container"]), "updated_at": None, "scope": "sas_url"}]
     service = _blob_service(payload)
     containers = []
     for container in service.list_containers():

@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import urllib.error
 import struct
 import time
@@ -104,9 +105,10 @@ def generate_image(
     reference_image_urls: list[str] | None = None,
     overlay_title: str | None = None,
     logo_url: str | None = None,
+    artifact_name_base: str | None = None,
 ) -> dict[str, Any]:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUT_DIR / f"concept-{int(time.time())}.png"
+    path = OUT_DIR / f"{_safe_artifact_base(artifact_name_base or 'concept-image')}-{int(time.time())}.png"
     width, height = (1024, 1024)
     if size == "1536x1024":
         width, height = (1536, 1024)
@@ -171,6 +173,11 @@ def generate_image(
     except Exception as exc:
         result["blob_error"] = f"{type(exc).__name__}: {exc}"[:500]
     return result
+
+
+def _safe_artifact_base(value: Any) -> str:
+    text = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value or "")).strip("-").lower()
+    return text[:110] or "concept-image"
 
 
 def _load_reference_images(urls: list[str]) -> list[dict[str, Any]]:
