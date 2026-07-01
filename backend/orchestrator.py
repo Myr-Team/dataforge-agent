@@ -1948,17 +1948,48 @@ def _doc_meta(opportunity_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
 
 
 def _artifact_slug_for_proposal(opportunity_id: str, artifact: dict[str, Any]) -> str:
+    workspace_slug = _workspace_slug_for_artifacts(str(artifact.get("workspace_id") or ""))
     candidates = [
-        opportunity_id
-        or (artifact.get("feasibility") or {}).get("opportunity_id"),
+        workspace_slug,
+        (artifact.get("corpus", {}).get("profile", {}) or {}).get("name"),
+        (artifact.get("proposal") or {}).get("title"),
+        opportunity_id or (artifact.get("feasibility") or {}).get("opportunity_id"),
         artifact.get("workspace_id"),
         "dataforge-proposal",
     ]
-    for candidate in candidates:
+    for index, candidate in enumerate(candidates):
         slug = _slug(str(candidate or ""), "")
-        if slug:
+        if slug and (index >= 4 or not _looks_like_technical_slug(slug)):
             return slug
     return "dataforge-proposal"
+
+
+def _workspace_slug_for_artifacts(workspace_id: str) -> str:
+    if not workspace_id:
+        return ""
+    try:
+        detail = get_workspace_detail(workspace_id)
+    except Exception:
+        return ""
+    return str(detail.get("name") or detail.get("display_name") or "")
+
+
+def _looks_like_technical_slug(slug: str) -> bool:
+    value = str(slug or "").strip("-").lower()
+    if not value:
+        return True
+    tokens = [token for token in value.split("-") if token]
+    if not tokens:
+        return True
+    letters = sum(ch.isalpha() for ch in value)
+    digits = sum(ch.isdigit() for ch in value)
+    if digits >= 4 and digits >= letters:
+        return True
+    technical_tokens = 0
+    for token in tokens:
+        if re.fullmatch(r"[a-z]{1,5}\d{2,}", token) or re.fullmatch(r"\d{4,}", token):
+            technical_tokens += 1
+    return bool(technical_tokens and technical_tokens >= max(1, len(tokens) // 2))
 
 
 def _doc_background(profile: dict[str, Any], title: str) -> str:
@@ -2131,7 +2162,7 @@ def _run_text_artifact(proposal: dict[str, Any], kind: str) -> dict[str, Any]:
 
 
 def _artifact_file_base(proposal: dict[str, Any], suffix: str) -> str:
-    slug = str(proposal.get("artifact_slug") or "").strip() or _slug(str(proposal.get("opportunity_id") or proposal.get("title") or "dataforge"))
+    slug = _slug(str(proposal.get("artifact_slug") or ""), "") or _slug(str(proposal.get("opportunity_id") or proposal.get("title") or "dataforge"))
     version = str((proposal.get("doc_meta") or {}).get("version") or proposal.get("version") or "v1").strip().lower()
     if not re.fullmatch(r"v\d+", version):
         version = "v1"
