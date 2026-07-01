@@ -52,15 +52,21 @@ def render_pdf_report(proposal: dict[str, Any], template: str = "project_proposa
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = int(time.time())
     path = OUT_DIR / f"{_safe_name(proposal.get('opportunity_id') or 'proposal')}-{stamp}.pdf"
-    mode = "reportlab-project-document-v2"
+    mode = "weasyprint-html-v1"
     pdf_error = ""
+    pdf_bytes = None
     try:
-        pdf_bytes = _rich_pdf(proposal, template)
+        pdf_bytes = _html_pdf(proposal, template)
     except Exception as exc:
-        mode = "minimal-fallback"
-        pdf_error = f"{type(exc).__name__}: {exc}"[:700]
-        text = f"DataForge {template}\n\n{json.dumps(proposal, indent=2, ensure_ascii=False)}"
-        pdf_bytes = _minimal_pdf(text)
+        pdf_error = f"html:{type(exc).__name__}: {exc}"[:400]
+        try:
+            pdf_bytes = _rich_pdf(proposal, template)
+            mode = "reportlab-fallback"
+        except Exception as exc2:
+            mode = "minimal-fallback"
+            pdf_error = (pdf_error + f" | reportlab:{type(exc2).__name__}: {exc2}")[:700]
+            text = f"DataForge {template}\n\n{json.dumps(proposal, indent=2, ensure_ascii=False)}"
+            pdf_bytes = _minimal_pdf(text)
     path.write_bytes(pdf_bytes)
     result: dict[str, Any] = {
         "pdf_blob_url": path.as_uri(),
@@ -89,6 +95,211 @@ _VERDICT = {
     "not_feasible": ("暂不建议", "#A4262C", "#FDE7E9"),
     "rejected": ("暂不建议", "#A4262C", "#FDE7E9"),
 }
+
+
+_HTML_CSS = """
+@page {
+  size: A4;
+  margin: 20mm 16mm 18mm 16mm;
+  @bottom-center { content: "DataForge · 可行性分析报告"; font-size: 8px; color: #9aa1ae; }
+  @bottom-right { content: counter(page) " / " counter(pages); font-size: 8px; color: #9aa1ae; }
+}
+@page :first { margin: 0; @bottom-center { content: ""; } @bottom-right { content: ""; } }
+* { box-sizing: border-box; }
+html { -weasy-hyphens: none; }
+body { font-family: "WenQuanYi Micro Hei","Microsoft YaHei","Noto Sans CJK SC",sans-serif; color: #2b303a; font-size: 10.3px; line-height: 1.72; margin: 0; }
+h1,h2,h3 { margin: 0; font-weight: 700; }
+p { margin: 0 0 7px; }
+.cover { height: 297mm; padding: 0; position: relative; page-break-after: always; }
+.cover-band { height: 128mm; background: linear-gradient(135deg,#1e40af 0%,#2563eb 55%,#3b82f6 100%); color: #fff; padding: 26mm 20mm 0; position: relative; }
+.cover-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 34mm; }
+.cover-brand img { height: 30px; }
+.cover-brand .bt { font-size: 15px; font-weight: 700; letter-spacing: .3px; }
+.cover-kicker { font-size: 12px; opacity: .9; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 12px; }
+.cover-title { font-size: 30px; line-height: 1.28; font-weight: 800; max-width: 150mm; }
+.cover-body { padding: 16mm 20mm 0; }
+.cover-badges { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
+.badge { display: inline-block; padding: 6px 16px; border-radius: 999px; font-size: 13px; font-weight: 700; }
+.badge-sub { font-size: 10.5px; color: #6b7280; }
+.cover-meta { margin-top: 10mm; color: #6b7280; font-size: 10px; border-top: 1px solid #e5e7eb; padding-top: 8px; }
+.cover-meta span { margin-right: 18px; }
+.cover-brandlogo { position: absolute; right: 20mm; bottom: 8mm; height: 40px; opacity: .95; }
+h1.sec { font-size: 15px; color: #0f3a75; border-left: 4px solid #2563eb; padding: 3px 0 3px 12px; margin: 20px 0 11px; background: linear-gradient(90deg,#f4f8ff,transparent); }
+h2.sub { font-size: 12px; color: #1d4ed8; margin: 12px 0 6px; }
+.lead { color: #374151; }
+ul.dots { margin: 4px 0 8px; padding-left: 2px; list-style: none; }
+ul.dots li { position: relative; padding-left: 16px; margin-bottom: 5px; }
+ul.dots li::before { content: "•"; color: #2563eb; position: absolute; left: 2px; font-weight: 700; }
+.scorecard { border: 1px solid #e8edf5; border-radius: 10px; padding: 12px 14px; }
+.scorerow { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid #f1f4f9; }
+.scorerow:last-child { border-bottom: 0; }
+.scorerow .nm { width: 92px; font-weight: 600; color: #374151; flex: none; font-size: 10px; }
+.scorerow .track { display: block; flex: 1; height: 8px; background: #eef1f6; border-radius: 999px; overflow: hidden; }
+.scorerow .fill { display: block; height: 8px; border-radius: 999px; background: #2563eb; }
+.scorerow .sc { width: 34px; text-align: right; font-weight: 700; color: #1d4ed8; flex: none; font-size: 10px; }
+.scorerow .cf { width: 56px; flex: none; }
+.scorerow .rt { flex: 1.6; color: #6b7280; font-size: 9px; line-height: 1.5; }
+.chip { display: inline-block; padding: 1px 8px; border-radius: 6px; font-size: 8.5px; font-weight: 600; }
+.chip.data_confirmed { background: #e7f4ee; color: #0a7d4f; }
+.chip.market_inferred { background: #fdf3e6; color: #b45309; }
+.chip.speculative { background: #eef2f7; color: #475569; }
+table.grid { width: 100%; border-collapse: collapse; margin: 8px 0 6px; font-size: 9.2px; }
+table.grid th { background: #2563eb; color: #fff; text-align: left; padding: 7px 9px; font-weight: 600; font-size: 9px; }
+table.grid td { padding: 7px 9px; border-bottom: 1px solid #eef1f6; vertical-align: top; color: #374151; }
+table.grid tr:nth-child(even) td { background: #fafbfe; }
+.sev { display: inline-block; padding: 1px 7px; border-radius: 5px; font-size: 8.5px; font-weight: 700; }
+.sev.high,.sev.高 { background: #fde7e9; color: #a4262c; }
+.sev.medium,.sev.中 { background: #fff4ce; color: #986f0b; }
+.sev.low,.sev.低 { background: #e7f4ee; color: #0a7d4f; }
+.mk { margin: 6px 0; }
+.mk .tag { color: #b45309; font-weight: 700; font-size: 9px; }
+.mk .src { color: #9aa1ae; font-size: 8.5px; }
+.phase { border: 1px solid #e8edf5; border-radius: 9px; padding: 10px 12px; margin-bottom: 8px; }
+.phase .ph { font-weight: 700; color: #0f3a75; font-size: 11px; }
+.phase .metric { color: #6b7280; font-size: 9px; margin-top: 2px; }
+"""
+
+
+def _logo_data_uri(source_bytes: bytes | None) -> str:
+    if not source_bytes:
+        return ""
+    import base64 as _b64
+    return "data:image/png;base64," + _b64.b64encode(source_bytes).decode("ascii")
+
+
+def _brand_logo_bytes(proposal: dict[str, Any]) -> bytes | None:
+    for source in _brand_logo_sources(proposal):
+        loaded = _load_logo_bytes(source)
+        if loaded:
+            return loaded
+    return None
+
+
+def _html_pdf(proposal: dict[str, Any], template: str) -> bytes:
+    from weasyprint import HTML
+    from html import escape as esc
+
+    feasibility = proposal.get("feasibility") or {}
+    verdict_raw = str(feasibility.get("verdict") or "unknown")
+    v_label, v_color, v_bg = _VERDICT.get(verdict_raw, ("待判断", "#475569", "#F3F6FA"))
+    confidence = _CONF_LABEL.get(str(feasibility.get("overall_confidence") or ""), str(feasibility.get("overall_confidence") or "unknown"))
+    title = esc(str(proposal.get("title") or proposal.get("opportunity_id") or "DataForge 可行性分析报告"))
+    opp = esc(str(proposal.get("opportunity_id") or ""))
+    date_str = time.strftime("%Y-%m-%d", time.localtime())
+
+    try:
+        df_logo = _logo_data_uri(LOGO_PATH.read_bytes() if LOGO_PATH.exists() else None)
+    except Exception:
+        df_logo = ""
+    brand_logo = _logo_data_uri(_brand_logo_bytes(proposal))
+
+    def para(text: str) -> str:
+        parts = [esc(p.strip()) for p in str(text or "").split("\n") if p.strip()]
+        return "".join(f"<p class='lead'>{p}</p>" for p in parts)
+
+    def dots(items: list, limit: int = 8) -> str:
+        li = "".join(f"<li>{esc(str(x).strip())}</li>" for x in (items or []) if str(x).strip())
+        return f"<ul class='dots'>{li}</ul>" if li else ""
+
+    S: list[str] = []
+    # ---- 执行摘要 ----
+    S.append("<h1 class='sec'>执行摘要</h1>")
+    S.append(f"<div class='cover-badges'><span class='badge' style='background:{v_bg};color:{v_color}'>{esc(v_label)}</span><span class='badge-sub'>整体置信度：{esc(confidence)}</span></div>")
+    headline = str(proposal.get("executive_headline") or "").strip()
+    points = [str(p).strip() for p in (proposal.get("executive_points") or []) if str(p).strip()]
+    if headline:
+        S.append(para(headline))
+    if points:
+        S.append(dots(points, 6))
+    elif proposal.get("executive_summary"):
+        S.append(para(proposal.get("executive_summary")))
+
+    # ---- 可行性评分（分数条） ----
+    dims = [d for d in (feasibility.get("dimensions") or []) if isinstance(d, dict)]
+    if dims:
+        S.append("<h1 class='sec'>可行性评分</h1><div class='scorecard'>")
+        for d in dims:
+            try:
+                sc = float(d.get("score") or 0)
+            except Exception:
+                sc = 0
+            pct = max(0, min(100, sc / 5 * 100))
+            conf = str(d.get("confidence") or "speculative")
+            conf_label = _CONF_LABEL.get(conf, conf)
+            S.append(
+                f"<div class='scorerow'><span class='nm'>{esc(str(d.get('name') or ''))}</span>"
+                f"<span class='track'><span class='fill' style='width:{pct:.0f}%'></span></span>"
+                f"<span class='sc'>{esc(str(d.get('score') if d.get('score') not in (None,'') else '-'))}/5</span>"
+                f"<span class='cf'><span class='chip {esc(conf)}'>{esc(conf_label)}</span></span>"
+                f"<span class='rt'>{esc(str(d.get('rationale') or ''))}</span></div>"
+            )
+        S.append("</div>")
+
+    # ---- 背景与方法 ----
+    background = str(proposal.get("background") or "").strip()
+    methodology = [str(m).strip() for m in (proposal.get("methodology") or []) if str(m).strip()]
+    if background or methodology:
+        S.append("<h1 class='sec'>背景与方法</h1>")
+        if background:
+            S.append("<h2 class='sub'>项目背景</h2>" + para(background))
+        if methodology:
+            S.append("<h2 class='sub'>评估方法</h2>" + dots(methodology))
+
+    # ---- 风险与缓解 ----
+    risks = [r for r in (proposal.get("risk_register") or []) if isinstance(r, dict)]
+    if risks:
+        S.append("<h1 class='sec'>风险与缓解清单</h1><table class='grid'><thead><tr><th>缺口/风险</th><th>影响</th><th>缓解动作</th><th>级别</th></tr></thead><tbody>")
+        for r in risks[:8]:
+            sev = str(r.get("severity") or "").strip()
+            sev_cls = {"high": "high", "medium": "medium", "low": "low", "高": "high", "中": "medium", "低": "low"}.get(sev.lower() if sev.isascii() else sev, "medium")
+            S.append(f"<tr><td>{esc(str(r.get('gap') or ''))}</td><td>{esc(str(r.get('impact') or ''))}</td><td>{esc(str(r.get('mitigation') or ''))}</td><td><span class='sev {sev_cls}'>{esc(sev or '中')}</span></td></tr>")
+        S.append("</tbody></table>")
+
+    # ---- 路线图 ----
+    roadmap = [p for p in (proposal.get("roadmap") or []) if isinstance(p, dict)]
+    if roadmap:
+        S.append("<h1 class='sec'>路线图</h1>")
+        for ph in roadmap[:4]:
+            steps = "".join(f"<li>{esc(str(s).strip())}</li>" for s in (ph.get("steps") or [])[:4] if str(s).strip())
+            metric = esc(str(ph.get("metric") or ""))
+            S.append(f"<div class='phase'><div class='ph'>{esc(str(ph.get('phase') or ''))}</div>" + (f"<ul class='dots'>{steps}</ul>" if steps else "") + (f"<div class='metric'>里程碑指标：{metric}</div>" if metric else "") + "</div>")
+
+    # ---- 市场与外部参考 ----
+    market = proposal.get("market") or {}
+    findings = [f for f in (market.get("external_findings") or []) if isinstance(f, dict)]
+    S.append("<h1 class='sec'>市场与外部参考</h1>")
+    if findings:
+        for f in findings[:5]:
+            src = f.get("source_title") or f.get("source_url")
+            S.append(f"<div class='mk'><span class='tag'>[市场推断]</span> {esc(str(f.get('claim') or ''))}" + (f"<div class='src'>来源：{esc(str(src))}</div>" if src else "") + "</div>")
+    else:
+        S.append(para(market.get("positioning_note") or "暂无外部市场补充。"))
+
+    # ---- 证据附录 ----
+    ev = [e for e in (proposal.get("evidence_appendix") or []) if isinstance(e, dict)]
+    if ev:
+        S.append("<h1 class='sec'>证据附录</h1><table class='grid'><thead><tr><th style='width:34px'>编号</th><th style='width:130px'>来源</th><th>摘录</th></tr></thead><tbody>")
+        for i, e in enumerate(ev[:10], start=1):
+            S.append(f"<tr><td>{i}</td><td>{esc(str(e.get('source_file') or e.get('ref') or 'unknown'))}</td><td>{esc(str(e.get('quote') or ''))}</td></tr>")
+        S.append("</tbody></table>")
+
+    cover = (
+        "<div class='cover'>"
+        "<div class='cover-band'>"
+        f"<div class='cover-brand'>{('<img src=\"'+df_logo+'\"/>') if df_logo else ''}<span class='bt'>DataForge</span></div>"
+        "<div class='cover-kicker'>Feasibility Analysis Report</div>"
+        f"<div class='cover-title'>{title}</div>"
+        "</div>"
+        "<div class='cover-body'>"
+        f"<div class='cover-badges'><span class='badge' style='background:{v_bg};color:{v_color}'>{esc(v_label)}</span><span class='badge-sub'>整体置信度：{esc(confidence)}</span></div>"
+        "<p class='lead'>本报告由 DataForge 多智能体协作生成：语料分析、可行性评分、外部市场检索与独立审计校验，结论可溯源、不自欺地放大。</p>"
+        f"<div class='cover-meta'><span>生成日期：{date_str}</span>{('<span>机会编号：'+opp+'</span>') if opp else ''}<span>引擎：Azure AI Foundry · gpt-5.1</span></div>"
+        + (f"<img class='cover-brandlogo' src='{brand_logo}'/>" if brand_logo else "")
+        + "</div></div>"
+    )
+
+    html_str = f"<!doctype html><html><head><meta charset='utf-8'><style>{_HTML_CSS}</style></head><body>{cover}{''.join(S)}</body></html>"
+    return HTML(string=html_str, base_url=str(ROOT)).write_pdf()
 
 
 def _rich_pdf(proposal: dict[str, Any], template: str) -> bytes:
