@@ -1355,7 +1355,7 @@ function ConnectorModal({ kind, busy, result, onClose, onSubmit, onImport, onLis
           </>
         ) : (
           <>
-            <label className="modal-field"><span>连接字符串（可选）</span><textarea name="connection_string" rows={2} placeholder="DRIVER=...;SERVER=..." /></label>
+            <label className="modal-field"><span>连接字符串（可选）</span><textarea name="connection_string" rows={2} placeholder="Server=tcp:...;Initial Catalog=...;User ID=...;Password=..." /></label>
             <div className="dw-modal-split">
               <label className="modal-field"><span>Server</span><input name="server" autoComplete="off" /></label>
               <label className="modal-field"><span>Database</span><input name="database" autoComplete="off" /></label>

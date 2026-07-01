@@ -1892,6 +1892,9 @@ def _safe_filename(value: str) -> str:
 def _clean_sql_payload(body: dict[str, Any]) -> dict[str, Any]:
     connection_string = str(body.get("connection_string") or "").strip()
     if connection_string:
+        parsed = _parse_sql_connection_string(connection_string)
+        if parsed:
+            return parsed
         return {"connection_string": connection_string}
     server = str(body.get("server") or "").strip()
     database = str(body.get("database") or "").strip()
@@ -1926,18 +1929,27 @@ def _sql_preview(payload: dict[str, Any], table: str, limit: int) -> dict[str, A
 
 
 def _sql_connection(payload: dict[str, Any]) -> Any:
+    driver_payload = payload
+    if payload.get("connection_string"):
+        driver_payload = _parse_sql_connection_string(str(payload["connection_string"])) or payload
     try:
         import pymssql  # type: ignore
 
-        if payload.get("connection_string"):
-            raise RuntimeError("pymssql does not accept ODBC connection strings; provide server/database/username/password or install pyodbc")
+        if driver_payload.get("connection_string"):
+            raise RuntimeError("This SQL connection string requires pyodbc, but the backend image only has pymssql.")
+        server, port = _split_sql_server(str(driver_payload["server"]))
+        options: dict[str, Any] = {
+            "server": server,
+            "user": driver_payload.get("username") or None,
+            "password": driver_payload.get("password") or None,
+            "database": driver_payload["database"],
+            "login_timeout": int(driver_payload.get("login_timeout") or 8),
+            "timeout": int(driver_payload.get("timeout") or 15),
+        }
+        if port:
+            options["port"] = port
         return pymssql.connect(
-            server=payload["server"],
-            user=payload.get("username") or None,
-            password=payload.get("password") or None,
-            database=payload["database"],
-            login_timeout=5,
-            timeout=15,
+            **options,
         )
     except ImportError:
         try:
@@ -1949,11 +1961,53 @@ def _sql_connection(payload: dict[str, Any]) -> Any:
         else:
             connection_string = (
                 "DRIVER={ODBC Driver 18 for SQL Server};"
-                f"SERVER={payload['server']};DATABASE={payload['database']};"
-                f"UID={payload.get('username')};PWD={payload.get('password')};"
+                f"SERVER={driver_payload['server']};DATABASE={driver_payload['database']};"
+                f"UID={driver_payload.get('username')};PWD={driver_payload.get('password')};"
                 "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=5;"
             )
         return pyodbc.connect(connection_string, timeout=8)
+
+
+def _parse_sql_connection_string(connection_string: str) -> dict[str, Any] | None:
+    values: dict[str, str] = {}
+    for part in str(connection_string or "").split(";"):
+        if not part.strip() or "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        normalized = re.sub(r"[\s_-]+", "", key.strip().lower())
+        values[normalized] = value.strip().strip('"')
+    server = values.get("server") or values.get("datasource") or values.get("address") or values.get("addr") or values.get("networkaddress")
+    database = values.get("database") or values.get("initialcatalog")
+    username = values.get("userid") or values.get("uid") or values.get("user")
+    password = values.get("password") or values.get("pwd")
+    if not server or not database or not username or password is None:
+        return None
+    result: dict[str, Any] = {
+        "server": server,
+        "database": database,
+        "username": username,
+        "password": password,
+    }
+    timeout = values.get("connectiontimeout") or values.get("connecttimeout") or values.get("timeout")
+    if timeout:
+        try:
+            result["login_timeout"] = max(1, min(30, int(float(timeout))))
+        except ValueError:
+            pass
+    return result
+
+
+def _split_sql_server(server: str) -> tuple[str, int | None]:
+    value = str(server or "").strip()
+    if value.lower().startswith("tcp:"):
+        value = value[4:]
+    if "," in value:
+        host, raw_port = value.rsplit(",", 1)
+        try:
+            return host.strip(), int(raw_port.strip())
+        except ValueError:
+            return value, None
+    return value, None
 
 
 def _quote_table(table: str) -> str:

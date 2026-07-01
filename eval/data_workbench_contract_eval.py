@@ -231,6 +231,26 @@ def test_connector_credentials_are_session_scoped_and_not_echoed() -> None:
         assert sql["tables"][0]["id"] == "dbo.Events"
         assert sql["credential_echo"] is None
         assert "secret" not in json.dumps(sql)
+        sql_from_string = dw.connect_sql(
+            workspace_id,
+            {
+                "connection_string": (
+                    "Server=tcp:server.example,1433;Initial Catalog=db;"
+                    "Persist Security Info=False;User ID=user;Password=secret;"
+                    "MultipleActiveResultSets=False;Encrypt=True;"
+                    "TrustServerCertificate=False;Connection Timeout=30;"
+                )
+            },
+        )
+        assert sql_from_string["status"] == "connected"
+        assert sql_from_string["tables"][0]["id"] == "dbo.Events"
+        stored_sql = dw._CONNECTORS.get(sql_from_string["connection_id"], "sql", workspace_id)
+        assert stored_sql["server"] == "tcp:server.example,1433"
+        assert stored_sql["database"] == "db"
+        assert stored_sql["username"] == "user"
+        assert stored_sql["password"] == "secret"
+        assert "connection_string" not in stored_sql
+        assert "secret" not in json.dumps(sql_from_string)
         status = dw.connector_status(workspace_id, "sql", sql["connection_id"])
         assert status["status"] == "connected"
         assert status["expires_at"]
