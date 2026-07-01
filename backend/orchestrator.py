@@ -67,7 +67,7 @@ try:
     from .pm_skills import playbook_suggestion
     from .rag import search
     from .router import deterministic_route
-    from .run_store import complete_run, get_run, list_runs, record_event, start_run, update_run_proposal
+    from .run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, start_run, update_run_proposal
     from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
     from .tracing import trace_event
     from .maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -126,7 +126,7 @@ except ImportError:
     from pm_skills import playbook_suggestion
     from rag import search
     from router import deterministic_route
-    from run_store import complete_run, get_run, list_runs, record_event, start_run, update_run_proposal
+    from run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, start_run, update_run_proposal
     from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
     from tracing import trace_event
     from maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -2745,8 +2745,27 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
     persistence_errors: list[str] = []
     for candidate_run_id in _produce_persistence_candidates(workspace_id, run_id):
         try:
-            update_run_proposal(candidate_run_id, result)
+            updated_run = update_run_proposal(candidate_run_id, result)
             result["persisted_run_id"] = candidate_run_id
+            try:
+                source_artifact = _produce_run_artifact(updated_run) or _produce_run_artifact(get_run(candidate_run_id)) or artifact
+                version = record_artifact_version(
+                    workspace_id=workspace_id,
+                    source_run_id=candidate_run_id,
+                    artifact=source_artifact,
+                    proposal=(source_artifact.get("proposal") if isinstance(source_artifact, dict) else None) or result,
+                    kinds=[str(kind) for kind in kinds if str(kind).strip()],
+                )
+                if version and version.get("run_id"):
+                    result["version_run_id"] = version["run_id"]
+            except Exception as exc:
+                result.setdefault("warnings", []).append(
+                    {
+                        "kind": "version_snapshot",
+                        "message": "产物已生成，但版本迭代记录写入失败；刷新后可能暂时看不到新版本。",
+                        "error": _clean_text(exc, 300),
+                    }
+                )
             break
         except Exception as exc:
             persistence_errors.append(f"{candidate_run_id}: {type(exc).__name__}: {exc}"[:500])
@@ -4445,7 +4464,7 @@ def _fallback_followup_assessment(req: ChatRequest, previous: str, last_analysis
     }
 
 
-def _followup_evidence_clarification(req: ChatRequest, last_analysis: dict[str, Any], context: dict[str, Any]) -> dict[str, Any] | None:
+def _followup_provisional_choice_assessment(req: ChatRequest, last_analysis: dict[str, Any], context: dict[str, Any]) -> dict[str, Any] | None:
     current = _clean_text(_intent_message(req.message), 240)
     if not current:
         return None
@@ -4490,17 +4509,52 @@ def _followup_evidence_clarification(req: ChatRequest, last_analysis: dict[str, 
     if not missing:
         return None
     missing = missing[:3]
-    gap = "、".join(missing)
-    question = f"要判断{current[:40]}，还需要补充{gap}的候选项和对应证据。你希望比较哪些候选，分别有什么需求、成本或转化数据？"
+
+    opportunity = _clean_text(
+        last_analysis.get("opportunity_id") or last_analysis.get("recommendation") or "当前方案",
+        100,
+    )
+    verdict = verdict_label(str(last_analysis.get("verdict") or "unknown"))
+    confidence = confidence_label(str(last_analysis.get("overall_confidence") or "unknown"))
+    action_plan = [str(item).strip() for item in (last_analysis.get("action_plan") or []) if str(item).strip()]
+    cited_signals: list[str] = []
+    for item in (last_analysis.get("citations") or [])[:5]:
+        if not isinstance(item, dict):
+            continue
+        snippet = _clean_text(item.get("snippet") or item.get("quote") or item.get("text"), 110)
+        marker = _clean_text(item.get("marker") or item.get("ref") or item.get("source"), 24)
+        if snippet:
+            cited_signals.append(f"{marker} {snippet}".strip())
+    if not cited_signals:
+        summary = _clean_text(context.get("profile_summary") or context.get("customer_summary"), 180)
+        if summary:
+            cited_signals.append(summary)
+
+    next_step = action_plan[0] if action_plan else "先选 2-3 个证据最强的候选点位做一轮小样本验证，记录转化、执行成本和反馈。"
+    evidence_lines = cited_signals[:3] or ["当前工作区已有数据可支持初步筛选，但还不足以承诺规模化收益。"]
+    text = (
+        f"可以先给暂定建议：围绕“{opportunity}”，当前更适合做低成本试点，而不是直接承诺成熟产品化。"
+        f"上一轮结论是{verdict}，置信度为{confidence}；这代表可以推进验证，但要把缺口写进试点条件。\n\n"
+        "**优先候选点位**\n"
+        "- 先选“人流/访问强、停留或互动更高、环境信号更稳定、周边场景更清晰”的 2-3 个候选点位。\n"
+        "- 如果当前数据里已有楼层、区域或门店字段，就按这些指标做暂定排序；没有候选名称时，先把这一步定义为候选筛选规则，而不是硬编点位。\n\n"
+        "**依据**\n"
+        + "".join(f"- {signal}\n" for signal in evidence_lines)
+        + "\n**风险/缺口**\n"
+        + "".join(f"- {item}证据还不完整，不能拿来支撑定价或大规模铺开。\n" for item in missing)
+        + "\n**低成本试点**\n"
+        f"- {next_step}\n"
+        "- 试点只看少数硬指标：候选命中率、商户/运营方接受度、单次交付成本、转化或咨询量；达标再生成下一版方案。"
+    )
     return {
-        "text": f"这一步不能直接给确定建议，因为当前工作区证据不足以支撑这个选择题。缺口是：{gap}。{question}",
-        "mode": "followup_evidence_guard",
+        "text": text,
+        "mode": "followup_provisional_choice",
         "response_id": None,
         "usage": {},
-        "assessment": "needs_clarification",
-        "gaps": [f"缺少{item}证据" for item in missing],
-        "clarify": question,
-        "should_clarify": True,
+        "assessment": "provisional_supported_with_gaps",
+        "gaps": [f"{item}证据不足，作为试点验证项处理" for item in missing],
+        "clarify": "",
+        "should_clarify": False,
     }
 
 
@@ -4534,7 +4588,7 @@ def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: lis
                 "clarify": "请先完成一次分析，或贴出要跟进判断的上一轮结论。",
                 "should_clarify": True,
             }
-        clarification = _followup_evidence_clarification(req, last_analysis, context)
+        clarification = _followup_provisional_choice_assessment(req, last_analysis, context)
         if clarification:
             return clarification
         payload["previous_assistant_answer"] = previous[:1800]

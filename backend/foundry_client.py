@@ -1255,9 +1255,12 @@ def run_followup_assessment(payload: dict[str, Any]) -> dict[str, Any]:
         "previous assistant answer, workspace summary, and current user message. Do not rerun retrieval, "
         "market research, feasibility scoring, or audit. Judge whether the user's new idea or constraint "
         "is supported by the previous evidence, identify the most important missing information, and ask "
-        "one concise clarifying question when the user intent is ambiguous or the decision depends on a "
-        "missing scope, target user, metric, budget, timing, or data source. Do not use a keyword checklist "
-        "or scenario-specific templates. Never invent workspace facts. Return JSON only, in the user's language."
+        "one concise clarifying question only when the user intent is ambiguous or there is no meaningful "
+        "provisional answer from the provided context. If the user explicitly asks for a recommendation "
+        "based on current evidence, give a calibrated provisional recommendation, state assumptions and "
+        "evidence gaps, and turn missing budget, timing, metric, or data-source details into validation "
+        "steps instead of blocking the answer. Set should_clarify=false in that case. Do not use a keyword "
+        "checklist or scenario-specific templates. Never invent workspace facts. Return JSON only, in the user's language."
     )
     create_args: dict[str, Any] = {
         "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),

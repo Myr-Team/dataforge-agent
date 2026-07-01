@@ -175,7 +175,7 @@ function NotificationBell({ tasks = [] }) {
   );
 }
 
-function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange }) {
+function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange, onDelete, deleting = false }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -189,6 +189,16 @@ function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange }) {
   const sorted = [...workspaces].sort(
     (a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0),
   );
+  const handleDelete = (event, workspace) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!onDelete || !workspace?.workspace_id?.startsWith("upload-")) return;
+    const name = workspace.name || workspace.workspace_id;
+    const confirmed = window.confirm(`删除工作区「${name}」？\n\n这会移除该工作区的文件、运行索引和产物记录。`);
+    if (!confirmed) return;
+    setOpen(false);
+    onDelete(workspace.workspace_id);
+  };
   return (
     <div className="ws-switch" ref={ref}>
       <span className="ws-sep">/</span>
@@ -210,14 +220,29 @@ function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange }) {
                     : w.format
                       ? String(w.format).toUpperCase()
                       : "";
+                const canDelete = w.workspace_id?.startsWith("upload-");
                 return (
-                  <button key={w.workspace_id} type="button" className={active ? "ws-dd-item cur" : "ws-dd-item"} role="menuitem" onClick={() => { onChange(w.workspace_id); setOpen(false); }}>
-                    <span className="ws-ck">{active ? <Check size={15} /> : null}</span>
-                    <span className="ws-dd-meta">
-                      <span className="ws-dd-name">{w.name || w.workspace_id}</span>
-                      {sub ? <span className="ws-dd-sub">{sub}</span> : null}
-                    </span>
-                  </button>
+                  <div key={w.workspace_id} className={active ? "ws-dd-row cur" : "ws-dd-row"} role="none">
+                    <button type="button" className="ws-dd-item" role="menuitem" onClick={() => { onChange(w.workspace_id); setOpen(false); }}>
+                      <span className="ws-ck">{active ? <Check size={15} /> : null}</span>
+                      <span className="ws-dd-meta">
+                        <span className="ws-dd-name">{w.name || w.workspace_id}</span>
+                        {sub ? <span className="ws-dd-sub">{sub}</span> : null}
+                      </span>
+                    </button>
+                    {canDelete ? (
+                      <button
+                        type="button"
+                        className="ws-dd-delete"
+                        title={`删除工作区：${w.name || w.workspace_id}`}
+                        aria-label={`删除工作区：${w.name || w.workspace_id}`}
+                        disabled={deleting}
+                        onClick={(event) => handleDelete(event, w)}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    ) : null}
+                  </div>
                 );
               })
             ) : (
@@ -230,7 +255,7 @@ function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange }) {
   );
 }
 
-export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, onNewConversation, loading, user, authState, onLogout, tasks }) {
+export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, onNewConversation, onDeleteWorkspace, loading, deleting = false, user, authState, onLogout, tasks }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
   const workspaces = dashboard?.workspaces || [];
@@ -252,7 +277,7 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
           <img className="brand-logo-sm" src="/dataforge-logo.png" alt="" />
           <strong>DataForge</strong>
         </div>
-        <WorkspaceSwitcher workspaces={workspaces} workspaceId={workspaceId} onChange={onWorkspaceChange} />
+        <WorkspaceSwitcher workspaces={workspaces} workspaceId={workspaceId} onChange={onWorkspaceChange} onDelete={onDeleteWorkspace} deleting={deleting} />
       </div>
       <div className="topbar-actions">
         <button className="tour-button icon-label" type="button" onClick={startTour} title="新手引导：一步步了解产品流程">
@@ -619,23 +644,46 @@ function WorkbenchMainInner({
 
 const KIND_LABEL = { assumption: "假设", observed: "实测", target: "目标" };
 const VERDICT_RANK = { not_yet_feasible: 1, conditional: 2, feasible: 3 };
+const ARTIFACT_KIND_LABEL = { pdf: "项目文档", concept_image: "概念图", audio_summary: "语音摘要", audio: "语音摘要", pilot_plan: "试点设计", action_plan: "行动清单", roadmap: "路线图", validation_plan: "验证计划" };
 
 function feasibilityOf(run) {
-  return run?.final?.artifact?.feasibility || run?.artifact?.feasibility || {};
+  return run?.final?.artifact?.feasibility || run?.artifact?.feasibility || run?.feasibility || {};
 }
 function iterInputsOf(run) {
   return run?.final?.artifact?.iteration_inputs || run?.artifact?.iteration_inputs || [];
 }
+function artifactOf(run) {
+  return run?.final?.artifact || run?.artifact || {};
+}
+function artifactUrlsOf(run) {
+  const artifact = artifactOf(run);
+  return artifact?.proposal?.artifact_urls || run?.artifact_urls || {};
+}
+function citationLabelsOf(run) {
+  const artifact = artifactOf(run);
+  const items = artifact?.citations || artifact?.answer?.citations || [];
+  return (Array.isArray(items) ? items : [])
+    .map((item) => item?.title || item?.source_file || item?.ref || item?.marker)
+    .filter(Boolean)
+    .slice(0, 4);
+}
 function buildPlanDiff(runA, runB) {
   const a = feasibilityOf(runA);
   const b = feasibilityOf(runB);
-  const baseDims = {};
-  (a.dimensions || []).forEach((d) => { if (d?.name) baseDims[d.name] = d; });
-  const dims = (b.dimensions || []).map((d) => {
-    const prev = baseDims[d.name] || {};
-    const base = Number(prev.score ?? 0);
-    const target = Number(d.score ?? 0);
-    return { name: d.name, label: (DIMENSION_LABELS && DIMENSION_LABELS[d.name]) || d.name, base, target, delta: target - base, baseConf: prev.confidence, targetConf: d.confidence };
+  const dimsA = Array.isArray(a.dimensions) ? a.dimensions : [];
+  const dimsB = Array.isArray(b.dimensions) ? b.dimensions : [];
+  const byNameA = {};
+  const byNameB = {};
+  dimsA.forEach((d) => { if (d?.name) byNameA[d.name] = d; });
+  dimsB.forEach((d) => { if (d?.name) byNameB[d.name] = d; });
+  const names = [...new Set([...dimsA.map((d) => d?.name).filter(Boolean), ...dimsB.map((d) => d?.name).filter(Boolean)])];
+  const dims = names.map((name) => {
+    const prev = byNameA[name] || {};
+    const d = byNameB[name] || {};
+    const base = prev.score === undefined || prev.score === null ? null : Number(prev.score);
+    const target = d.score === undefined || d.score === null ? null : Number(d.score);
+    const delta = Number.isFinite(base) && Number.isFinite(target) ? target - base : null;
+    return { name, label: (DIMENSION_LABELS && DIMENSION_LABELS[name]) || name, base, target, delta, baseConf: prev.confidence, targetConf: d.confidence };
   });
   const gapsA = new Set((a.gap_list || []).map(String));
   const gapsB = (b.gap_list || []).map(String);
@@ -643,11 +691,23 @@ function buildPlanDiff(runA, runB) {
   const added = gapsB.filter((g) => !gapsA.has(g));
   const resolved = [...gapsA].filter((g) => !gapsBset.has(g));
   const vr = (v) => VERDICT_RANK[v] || 0;
+  const urlsA = artifactUrlsOf(runA);
+  const urlsB = artifactUrlsOf(runB);
+  const artifactKinds = [...new Set([...Object.keys(urlsA || {}), ...Object.keys(urlsB || {})])].filter((key) => urlsA?.[key] || urlsB?.[key]);
   return {
+    from: { title: runA?.title, summary: runA?.summary, versionKind: runA?.version_kind, producedKinds: runA?.produced_kinds || [] },
+    to: { title: runB?.title, summary: runB?.summary, versionKind: runB?.version_kind, producedKinds: runB?.produced_kinds || [] },
     verdict: { from: a.verdict, to: b.verdict, dir: Math.sign(vr(b.verdict) - vr(a.verdict)) },
     confidence: { from: a.confidence || a.overall_confidence, to: b.confidence || b.overall_confidence },
     dims,
     iterationInputs: iterInputsOf(runB),
+    artifacts: {
+      kinds: artifactKinds,
+      added: artifactKinds.filter((kind) => !urlsA?.[kind] && urlsB?.[kind]),
+      fromCount: Object.values(urlsA || {}).filter(Boolean).length,
+      toCount: Object.values(urlsB || {}).filter(Boolean).length,
+    },
+    evidence: { from: citationLabelsOf(runA), to: citationLabelsOf(runB) },
     gaps: { added, resolved },
   };
 }
@@ -760,6 +820,8 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
   }, [versions.length]);
 
   const vlabelOf = (id) => versions.find((v) => v.id === id)?.vlabel || "";
+  const versionKindLabel = (v) => (v?.version_kind || v?.versionKind) === "artifact_generation" ? "产物版" : "分析版";
+  const scoreText = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(1).replace(/\.0$/, "") : "—";
   const compare = async () => {
     if (!cmpA || !cmpB || cmpA === cmpB) return;
     setDiffLoading(true); setDiff(null);
@@ -840,6 +902,7 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
             <button type="button" className={`pi2-pill ${v.id === effectiveBase ? "cur" : ""}`} onClick={() => setBaseId(v.id)} title={`以 ${v.vlabel} 为基准`}>
               <span className={`pi2-pdot ${verdictTone(v.verdict)}`} />
               <b>{v.vlabel}</b><em>{VERDICT_LABELS[v.verdict] || v.verdict}</em>
+              {v.version_kind === "artifact_generation" ? <small className="pi2-kind">产物版</small> : null}
               <span className={`pi2-star ${v.id === flagshipId ? "on" : ""}`} onClick={(e) => { e.stopPropagation(); markFlagship(v.id); }} title={v.id === flagshipId ? "取消公司重点" : "标为公司重点"}><Star size={12} /></span>
             </button>
             {i < versions.length - 1 ? <span className="pi2-sep">—</span> : null}
@@ -864,9 +927,58 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
           {diff ? (
             <span className="pi2-cmp-sum">
               {diff.verdict.dir > 0 ? "结论提升" : diff.verdict.dir < 0 ? "结论下降" : "结论未改善"}
-              {diff.gaps.added.length ? `，仍缺 ${String(diff.gaps.added[0]).slice(0, 28)}` : ""}
+              {diff.artifacts.added.length ? `，新增${diff.artifacts.added.map((k) => ARTIFACT_KIND_LABEL[k] || k).join("、")}` : diff.gaps.added.length ? `，仍缺 ${String(diff.gaps.added[0]).slice(0, 28)}` : ""}
             </span>
           ) : null}
+        </div>
+      ) : null}
+
+      {diff ? (
+        <div className="pi-diff">
+          <div className="pi-diff-row head">
+            <span>对比项</span><span>{vlabelOf(cmpA)} · {versionKindLabel(diff.from)}</span><span>{vlabelOf(cmpB)} · {versionKindLabel(diff.to)}</span><span>变化</span>
+          </div>
+          <div className="pi-diff-row">
+            <span className="pi-diff-k">结论档位</span>
+            <span>{VERDICT_LABELS[diff.verdict.from] || diff.verdict.from || "—"}</span>
+            <span>{VERDICT_LABELS[diff.verdict.to] || diff.verdict.to || "—"}</span>
+            <b className={diff.verdict.dir > 0 ? "up" : diff.verdict.dir < 0 ? "down" : ""}>{diff.verdict.dir > 0 ? "提升" : diff.verdict.dir < 0 ? "下降" : "持平"}</b>
+          </div>
+          {diff.dims.length ? diff.dims.map((d) => (
+            <div className="pi-diff-row" key={d.name}>
+              <span className="pi-diff-k">{d.label}</span>
+              <span>{scoreText(d.base)} / 5</span>
+              <span>{scoreText(d.target)} / 5</span>
+              <b className={d.delta > 0 ? "up" : d.delta < 0 ? "down" : ""}>{d.delta === null ? "—" : d.delta > 0 ? `+${d.delta}` : d.delta}</b>
+            </div>
+          )) : (
+            <div className="pi-diff-note">
+              <em>维度评分</em>
+              <span className="pi-diff-chip">这两版缺少可对齐的五维分，已用摘要、产物和回填指标辅助对比。</span>
+            </div>
+          )}
+          <div className="pi-diff-note">
+            <em>产物变化</em>
+            <span className="pi-diff-chip">{diff.artifacts.fromCount || 0} → {diff.artifacts.toCount || 0} 个产物</span>
+            {diff.artifacts.added.length ? diff.artifacts.added.map((kind) => <span className="pi-diff-chip" key={kind}>新增 {ARTIFACT_KIND_LABEL[kind] || kind}</span>) : <span className="pi-diff-chip">未新增产物</span>}
+          </div>
+          {diff.iterationInputs.length ? (
+            <div className="pi-diff-note">
+              <em>回填指标</em>
+              {diff.iterationInputs.slice(0, 5).map((m, i) => <span className="pi-diff-chip" key={`${m.label}-${i}`}>{m.label}: {m.value || "—"}{m.unit || ""}</span>)}
+            </div>
+          ) : null}
+          <div className="pi-diff-gaps">
+            <span className="g-res">已解决 {diff.gaps.resolved.length}</span>
+            <span className="g-add">新增/保留 {diff.gaps.added.length}</span>
+            {diff.gaps.resolved.slice(0, 2).map((g, i) => <span className="g-item" key={`r-${i}`}>解决：{g}</span>)}
+            {diff.gaps.added.slice(0, 2).map((g, i) => <span className="g-item" key={`a-${i}`}>仍需验证：{g}</span>)}
+            {!diff.gaps.resolved.length && !diff.gaps.added.length ? <span className="g-item">两版没有显式缺口变化；请结合回填指标或产物变化判断。</span> : null}
+          </div>
+          <div className="pi-diff-note">
+            <em>证据来源</em>
+            {(diff.evidence.to.length ? diff.evidence.to : ["暂无可展示来源"]).map((item, i) => <span className="pi-diff-chip" key={`${item}-${i}`}>{String(item).slice(0, 28)}</span>)}
+          </div>
         </div>
       ) : null}
 

@@ -192,6 +192,80 @@ def update_run_proposal(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]
         return _persist_run(run)
 
 
+def record_artifact_version(
+    *,
+    workspace_id: str,
+    source_run_id: str,
+    artifact: dict[str, Any],
+    proposal: dict[str, Any],
+    kinds: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any] | None:
+    """Persist a lightweight version snapshot when artifacts are generated from a real analysis.
+
+    This does not create a new feasibility judgement. It records that the current
+    analysis has produced a deliverable version, so the demo's iteration track and
+    comparison UI have a concrete vN entry to show after a user clicks "生成产物".
+    """
+    workspace_id = str(workspace_id or "").strip()
+    source_run_id = str(source_run_id or "").strip()
+    if not workspace_id or not source_run_id or not isinstance(artifact, dict):
+        return None
+    feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
+    if not (feasibility.get("verdict") or feasibility.get("dimensions")):
+        return None
+
+    now = _utc_now()
+    source_safe = _safe_name(source_run_id)
+    suffix = hashlib.sha1(f"{source_run_id}:{now}:{json.dumps(kinds or [], ensure_ascii=False, default=str)}".encode("utf-8")).hexdigest()[:8]
+    version_run_id = f"{source_safe}-artifact-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{suffix}"
+    merged_artifact = _plain(dict(artifact))
+    merged_proposal = _plain(proposal if isinstance(proposal, dict) else {})
+    if merged_proposal:
+        merged_artifact["proposal"] = merged_proposal
+    produced_kinds = [str(kind) for kind in (kinds or []) if str(kind).strip()]
+    title_base = _clean_opportunity_text(feasibility.get("opportunity_id")) or _message_topic(merged_artifact.get("answer", {}).get("text") if isinstance(merged_artifact.get("answer"), dict) else "")
+    run = {
+        "run_id": version_run_id,
+        "conversation_id": source_run_id,
+        "workspace_id": workspace_id,
+        "message": f"生成产物版本：{', '.join(produced_kinds) or 'artifact'}",
+        "status": "completed",
+        "started_at": now,
+        "completed_at": now,
+        "updated_at": now,
+        "duration_ms": 0,
+        "steps": [
+            {
+                "time": now,
+                "event": "artifact_version",
+                "data": {
+                    "source_run_id": source_run_id,
+                    "produced_kinds": produced_kinds,
+                    "artifact_urls": (merged_proposal.get("artifact_urls") if isinstance(merged_proposal, dict) else {}) or {},
+                },
+            }
+        ],
+        "models": [],
+        "artifact": merged_artifact,
+        "final": {
+            "text": f"{title_base or '当前方案'} 已生成产物版本。",
+            "artifact": merged_artifact,
+            "source_run_id": source_run_id,
+            "version_kind": "artifact_generation",
+        },
+        "version_kind": "artifact_generation",
+        "source_run_id": source_run_id,
+        "produced_kinds": produced_kinds,
+    }
+    run["verdict"] = _verdict(run)
+    run["confidence"] = _confidence(run)
+    base_title = _run_title(run)
+    run["title"] = _clean_phrase(f"{base_title} · 产物版", 44)
+    run["summary"] = _run_summary_text(run)
+    run["registry_summary"] = _run_summary(run)
+    return _persist_run(run)
+
+
 PLAN_FLAGSHIP_BLOB = "registry/plan-flagship.json"
 
 
@@ -277,6 +351,9 @@ def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
+    artifact = run.get("artifact") or (run.get("final") or {}).get("artifact") or {}
+    proposal = artifact.get("proposal") if isinstance(artifact, dict) and isinstance(artifact.get("proposal"), dict) else {}
+    artifact_urls = proposal.get("artifact_urls") if isinstance(proposal.get("artifact_urls"), dict) else {}
     steps = []
     for step in (run.get("steps") or [])[:24]:
         data = step.get("data") or {}
@@ -301,6 +378,10 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "verdict": run.get("verdict"),
         "confidence": run.get("confidence"),
         "status": run.get("status"),
+        "version_kind": run.get("version_kind"),
+        "source_run_id": run.get("source_run_id"),
+        "produced_kinds": run.get("produced_kinds") or [],
+        "artifact_urls": {key: value for key, value in (artifact_urls or {}).items() if value},
         "steps": steps,
         "step_count": len(run.get("steps") or []),
         "maf": _maf_summary(run),

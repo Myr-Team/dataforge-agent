@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteWorkspace,
+  listWorkspaces,
   loadConversation,
   loadDashboard,
   loadLatestAnalysis,
@@ -154,6 +155,19 @@ export function App() {
       setDashboard(data);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (/Workspace not found/i.test(message)) {
+        try {
+          const workspaces = await listWorkspaces();
+          const fallback = workspaces.find((item) => item?.workspace_id)?.workspace_id;
+          if (fallback && fallback !== id) {
+            setWorkspaceId(fallback);
+            setNotice({ type: "done", message: "当前工作区不可用，已切换到最近的可用工作区。" });
+            return;
+          }
+        } catch {
+          // Fall through to the original load error.
+        }
+      }
       setDashboardError(message);
       setNotice({ type: "error", message: `工作区加载失败：${message}` });
     } finally {
@@ -642,16 +656,20 @@ export function App() {
     }
   };
 
-  const removeWorkspace = async () => {
-    if (!workspaceId?.startsWith("upload-")) {
+  const removeWorkspace = async (targetWorkspaceId = workspaceId) => {
+    if (!targetWorkspaceId?.startsWith("upload-")) {
       setNotice({ type: "error", message: "内置工作区不能删除。" });
       return;
     }
     setDeleting(true);
     try {
-      await deleteWorkspace(workspaceId);
+      await deleteWorkspace(targetWorkspaceId);
       setNotice({ type: "done", message: "工作区已删除。" });
-      changeWorkspace(DEFAULT_WORKSPACE);
+      if (targetWorkspaceId === workspaceId) {
+        changeWorkspace(DEFAULT_WORKSPACE);
+      } else {
+        await refreshDashboard(workspaceId);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNotice({ type: "error", message: `删除失败：${message}` });
@@ -717,6 +735,7 @@ export function App() {
     let kinds;
     if (Array.isArray(kindsArg)) kinds = kindsArg.map((k) => KIND_ALIAS[k] || k).filter((k) => KIND_LABEL[k]);
     else if (kindsArg && kindsArg.kind === "poster") kinds = ["concept_image"];
+    else if (kindsArg && kindsArg.kind === "proposal") kinds = ["pdf", "concept_image", "audio"];
     else {
       kinds = ["pdf", "concept_image"];
       try { if (window.localStorage.getItem("df-pref-audio") === "1") kinds.push("audio"); } catch { /* ignore */ }
@@ -827,7 +846,9 @@ export function App() {
         onWorkspaceChange={changeWorkspace}
         onUpload={openWorkspaceUpload}
         onNewConversation={startNewConversation}
+        onDeleteWorkspace={removeWorkspace}
         loading={dashboardLoading || displayRunning || producing}
+        deleting={deleting}
         user={user}
         authState={authState}
         onLogout={logout}

@@ -4,7 +4,7 @@
 
 **DataForge is a multi-agent system that turns an enterprise's existing data into product opportunities** — and then quantifies whether each opportunity is actually feasible, grounded in evidence. Upload your business data; multiple specialist agents collaborate to discover non-obvious, high-value product directions, score their feasibility on a five-dimension rubric, and produce deliverables (a PDF proposal, a concept image, and an audio summary) in one click.
 
-> Built for the Microsoft GCR *AI Agent Frontier Hackathon* — **Track B (Pro Code)**. Orchestration, the feasibility engine, and the guardrails are all written in code; nothing here is a low-code drag-and-drop flow.
+> Built for the Microsoft GCR *AI Agent Frontier Hackathon* — **Track B (Pro Code)**. Orchestration, the feasibility engine, and the guardrails are all written in code; nothing here is a low-code drag-and-drop automation.
 
 ---
 
@@ -22,7 +22,7 @@ DataForge automates exactly that.
 
 ---
 
-## How it works
+## Agent Execution Path
 
 ```
 Upload data → auto profiling + indexing
@@ -35,9 +35,34 @@ Upload data → auto profiling + indexing
 
 Everything is streamed to the UI in real time (SSE), so you watch the reasoning happen — not just the final answer.
 
+## PPT / Agent Briefing
+
+Use this section when another agent needs to understand the product quickly and create slides.
+
+**One-line positioning:** DataForge is a Pro-Code multi-agent productization studio for enterprise data: it turns existing files, tables, and external data connections into evidence-grounded business opportunities, then audits, discusses, produces, and iterates the proposal.
+
+**Primary demo story:** a floor-level anti-loss / IoT signal dataset is reframed as a location-intelligence asset. DataForge evaluates whether it can become a "pop-up store / small-store site-selection advisory" service, surfaces evidence and gaps, generates a project PDF plus concept image, and then iterates v1 → v2 after pilot metrics are backfilled.
+
+**What to show in a 5-minute product video:**
+
+1. Open the default workspace and show the left navigation: Workspace, Data, Runs, Conversation, Artifacts, Settings.
+2. Upload or select a site-selection dataset; show automatic parsing, file assets, and field/quality status in the Data Workbench.
+3. Run auto analysis; explain the visible multi-agent execution path and the auditor's ability to revise or downgrade conclusions.
+4. Ask a follow-up question in Conversation; the agent should give a calibrated provisional recommendation, gaps, and a low-cost pilot instead of blocking on missing evidence.
+5. Generate artifacts; the PDF / concept image / audio are persisted to the Artifacts page and also recorded as a version entry.
+6. Return to Workspace; show plan iteration, v1/v2 comparison, backfilled metrics, and the convergence chart toward a flagship plan.
+7. Optional: connect SQL Database / Blob Storage by connection string, preview external data, import it into the file library, and send it to analysis.
+
+**Slide angles that matter:**
+
+- "Not a chatbot": it has data ingestion, retrieval, scoring, audit, artifact generation, and versioned iteration.
+- "Not self-deceiving": evidence strength controls verdicts; unsupported claims stay as gaps or validation tasks.
+- "Enterprise extensibility": local uploads, SQL / Blob connection, Azure AI Search, Foundry web search, Blob persistence, Container Apps deployment.
+- "Continuous use": a team can keep importing pilot data, comparing versions, and converging toward a decision-ready flagship plan.
+
 ## Multi-agent design
 
-Six specialists, coordinated by a router, instead of one fixed pipeline:
+Six specialists, coordinated by a router, instead of one fixed scripted path:
 
 | Agent | Role |
 |---|---|
@@ -50,7 +75,7 @@ Six specialists, coordinated by a router, instead of one fixed pipeline:
 
 ### The audit ⇄ revise loop (Microsoft Agent Framework)
 
-This is the heart of "a system that actually judges, not a straight-line pipeline." The auditor's verdict drives a **conditional workflow** built with the [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) (`agent-framework-core`):
+This is the heart of "a system that actually judges, not a straight-line script." The auditor's verdict drives a **conditional Agent execution graph** built with the [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) (`agent-framework-core`):
 
 - `verdict = needs-revision` → carry the auditor's feedback **back** to the analysis agent and re-analyze.
 - `verdict = pass` → converge and finalize.
@@ -97,8 +122,8 @@ Protocols / frameworks: **Microsoft Agent Framework · MCP · A2A (roadmap)**.
 ## Repository layout
 
 ```
-backend/      FastAPI app, orchestrator, MAF workflow, Azure clients, feasibility engine
-web/          React + Vite frontend (streaming UI, agent flow, plan iteration)
+backend/      FastAPI app, orchestrator, MAF audit loop, Azure clients, feasibility engine
+web/          React + Vite frontend (streaming UI, Agent execution view, plan iteration)
 agents/       Agent prompts (analyst, auditor, …)
 mcp-market/   MCP market-lookup tool
 ingest/       Document ingestion / indexing
@@ -143,7 +168,7 @@ terraform init && terraform apply
 - `infra/envs/dev/terraform.tfvars.example` — deployment identifiers. Copy to `terraform.tfvars`.
 - `.env`, `*.tfvars`, and `*.tfstate*` are git-ignored. **Never commit real keys or subscription IDs.**
 
-Key feature flags: `DF_USE_MAF` (enable the audit⇄revise workflow), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search).
+Key feature flags: `DF_USE_MAF` (enable the audit⇄revise Agent loop), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search).
 
 ## Responsible AI
 

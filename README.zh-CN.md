@@ -4,7 +4,7 @@
 
 **DataForge 是一个把企业「现有数据」商机化的多 Agent 系统** —— 并进一步用证据量化每个机会到底可不可行。把业务数据上传进来，多个专家 Agent 协作，发现非显而易见、有高价值的产品方向，按五维标准给可行性打分，并一键产出交付物（PDF 提案、概念图、语音摘要）。
 
-> 为微软 GCR *AI Agent Frontier 黑客松* —— **赛道 B（Pro Code）** 而建。编排逻辑、可行性引擎、护栏全部用代码写成，没有任何低代码拖拽流程。
+> 为微软 GCR *AI Agent Frontier 黑客松* —— **赛道 B（Pro Code）** 而建。编排逻辑、可行性引擎、护栏全部用代码写成，没有任何低代码拖拽自动化。
 
 ---
 
@@ -22,7 +22,7 @@ DataForge 把这件事自动化了。
 
 ---
 
-## 它怎么工作
+## Agent 执行链路
 
 ```
 上传数据 → 自动画像 + 建索引
@@ -34,6 +34,31 @@ DataForge 把这件事自动化了。
 ```
 
 整个推理过程通过 SSE 实时流式呈现在界面上 —— 你看到的是「推理在发生」，而不只是最终答案。
+
+## PPT / Agent 简报
+
+其他 Agent 如果要理解这个应用、产出介绍 PPT，优先看这一段。
+
+**一句话定位：** DataForge 是一个面向企业数据商机化的 Pro-Code 多 Agent 产品工作台：把已有文件、表格和外部数据连接转成有证据支撑的商业机会，再完成审计、讨论、产物生成和版本迭代。
+
+**核心演示故事：** 楼层级防丢硬件 / IoT 信号数据，原本只用于定位；DataForge 将它重新识别为位置与人流情报，判断是否能产品化为「快闪店 / 小店选址建议」服务，给出证据、风险、低成本试点，生成项目 PDF 与概念图，并在回填试点指标后从 v1 迭代到 v2。
+
+**5 分钟视频建议路线：**
+
+1. 打开默认工作区，介绍左侧导航：工作区、数据、运行记录、会话、产物、设置。
+2. 上传或选择开店选址数据，展示数据工作台里的文件库、字段质量、表格编辑与 Markdown 补充。
+3. 点击自动分析，展示多 Agent 执行链路与审计员如何复修 / 降档。
+4. 在会话中追问方案，Agent 应给出可校准的暂定建议、证据缺口和低成本试点，而不是因缺预算直接拒答。
+5. 生成产物，展示 PDF、概念图、语音摘要会同步进入产物页，并记录为新的方案版本。
+6. 回到工作区，展示方案迭代、v1/v2 对比、指标回填和收敛图。
+7. 可选：用连接字符串接入 SQL Database / Blob Storage，预览外部数据，导入文件库并发送到分析。
+
+**PPT 叙事重点：**
+
+- 「不是聊天机器人」：它包含数据接入、检索、评分、审计、产物生成、版本迭代。
+- 「不自欺」：证据强度控制结论档位；不够支撑的内容会变成缺口或验证任务。
+- 「企业可扩展」：本地上传、SQL / Blob 连接、Azure AI Search、Foundry 联网搜索、Blob 持久化、Container Apps 部署。
+- 「可持续使用」：团队能持续导入试点数据、对比版本，逐步收敛到可决策的重点方案。
 
 ## 多 Agent 设计
 
@@ -50,7 +75,7 @@ DataForge 把这件事自动化了。
 
 ### 审计 ⇄ 复修 回流（Microsoft Agent Framework）
 
-这是「真会判断、而非一条直线」的核心。审计员的结论驱动一张用 [Microsoft Agent Framework](https://github.com/microsoft/agent-framework)（`agent-framework-core`）搭的**条件工作流**：
+这是「真会判断、而非一条直线」的核心。审计员的结论驱动一张用 [Microsoft Agent Framework](https://github.com/microsoft/agent-framework)（`agent-framework-core`）搭的**条件 Agent 执行图**：
 
 - `verdict = 需复修` → 携审计反馈**回流**给分析 Agent，重新分析。
 - `verdict = 通过` → 收敛、定稿。
@@ -97,8 +122,8 @@ DataForge 把这件事自动化了。
 ## 仓库结构
 
 ```
-backend/      FastAPI 应用、编排器、MAF 工作流、Azure 客户端、可行性引擎
-web/          React + Vite 前端（流式 UI、Agent Flow、方案迭代）
+backend/      FastAPI 应用、编排器、MAF 审计回流、Azure 客户端、可行性引擎
+web/          React + Vite 前端（流式 UI、Agent 执行视图、方案迭代）
 agents/       Agent 提示词（分析、审计……）
 mcp-market/   MCP 市场查询工具
 ingest/       文档摄取 / 索引
@@ -143,7 +168,7 @@ terraform init && terraform apply
 - `infra/envs/dev/terraform.tfvars.example` —— 部署标识，复制为 `terraform.tfvars`。
 - `.env`、`*.tfvars`、`*.tfstate*` 已被 git 忽略。**绝不要提交真实密钥或订阅 ID。**
 
-关键特性开关：`DF_USE_MAF`（启用审计⇄复修工作流）、`DF_MAF_MAX_REVISIONS`（复修上限）、`DF_AUDIT_STRICT_GATE`（旧版保守审计门）、`DF_WEB_MARKET`（Foundry 联网搜索）。
+关键特性开关：`DF_USE_MAF`（启用审计⇄复修 Agent 回流）、`DF_MAF_MAX_REVISIONS`（复修上限）、`DF_AUDIT_STRICT_GATE`（旧版保守审计门）、`DF_WEB_MARKET`（Foundry 联网搜索）。
 
 ## 负责任 AI
 
