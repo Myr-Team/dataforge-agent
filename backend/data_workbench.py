@@ -161,6 +161,11 @@ async def sql_connect(workspace_id: str, request: Request) -> dict[str, Any]:
     return await _call(connect_sql, workspace_id, body)
 
 
+@router.get("/connectors/sql/status")
+async def sql_status(workspace_id: str, connection_id: str) -> dict[str, Any]:
+    return await _call(connector_status, workspace_id, "sql", connection_id)
+
+
 @router.get("/connectors/sql/tables")
 async def sql_tables(workspace_id: str, connection_id: str) -> dict[str, Any]:
     return await _call(list_sql_tables, workspace_id, connection_id)
@@ -181,6 +186,11 @@ async def sql_import(workspace_id: str, request: Request) -> dict[str, Any]:
 async def blob_connect(workspace_id: str, request: Request) -> dict[str, Any]:
     body = await _json_body(request)
     return await _call(connect_blob, workspace_id, body)
+
+
+@router.get("/connectors/blob/status")
+async def blob_status(workspace_id: str, connection_id: str) -> dict[str, Any]:
+    return await _call(connector_status, workspace_id, "blob", connection_id)
 
 
 @router.get("/connectors/blob/containers")
@@ -215,6 +225,12 @@ async def blob_preview(
 async def blob_import(workspace_id: str, request: Request) -> dict[str, Any]:
     body = await _json_body(request)
     return await _call(import_blob_item, workspace_id, body)
+
+
+@router.post("/connectors/disconnect")
+async def connectors_disconnect(workspace_id: str, request: Request) -> dict[str, Any]:
+    body = await _json_body(request)
+    return await _call(disconnect_connector, workspace_id, body)
 
 
 def list_workspace_files(workspace_id: str) -> dict[str, Any]:
@@ -623,6 +639,21 @@ def connect_sql(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
         "tables": tables,
         "credential_echo": None,
     }
+
+
+def connector_status(workspace_id: str, kind: str, connection_id: str) -> dict[str, Any]:
+    return _CONNECTORS.status(connection_id, kind, workspace_id)
+
+
+def disconnect_connector(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    connection_id = str(body.get("connection_id") or "")
+    kind = str(body.get("kind") or "").strip().lower()
+    if kind not in {"sql", "blob"}:
+        raise ValueError("kind must be sql or blob")
+    if not connection_id:
+        raise ValueError("connection_id is required")
+    deleted = _CONNECTORS.delete(connection_id, kind=kind, workspace_id=workspace_id)
+    return {"workspace_id": workspace_id, "kind": kind, "connection_id": connection_id, "disconnected": deleted}
 
 
 def list_sql_tables(workspace_id: str, connection_id: str) -> dict[str, Any]:
@@ -2001,8 +2032,32 @@ class _ConnectorVault:
             raise ValueError("Connector session not found or expired")
         return self._decrypt(bytes(item["payload"]))
 
-    def delete(self, connection_id: str) -> None:
-        self._store.pop(connection_id, None)
+    def delete(self, connection_id: str, *, kind: str | None = None, workspace_id: str | None = None) -> bool:
+        self._purge()
+        key = str(connection_id or "")
+        item = self._store.get(key)
+        if not item:
+            return False
+        if kind and item.get("kind") != kind:
+            return False
+        if workspace_id and item.get("workspace_id") != workspace_id:
+            return False
+        self._store.pop(key, None)
+        return True
+
+    def status(self, connection_id: str, kind: str, workspace_id: str) -> dict[str, Any]:
+        self._purge()
+        key = str(connection_id or "")
+        item = self._store.get(key)
+        if not item or item.get("kind") != kind or item.get("workspace_id") != workspace_id:
+            raise ValueError("Connector session not found or expired")
+        return {
+            "workspace_id": workspace_id,
+            "kind": kind,
+            "connection_id": key,
+            "status": "connected",
+            "expires_at": self.expires_at(key),
+        }
 
     def expires_at(self, connection_id: str) -> str | None:
         item = self._store.get(connection_id)

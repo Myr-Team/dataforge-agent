@@ -231,6 +231,16 @@ def test_connector_credentials_are_session_scoped_and_not_echoed() -> None:
         assert sql["tables"][0]["id"] == "dbo.Events"
         assert sql["credential_echo"] is None
         assert "secret" not in json.dumps(sql)
+        status = dw.connector_status(workspace_id, "sql", sql["connection_id"])
+        assert status["status"] == "connected"
+        assert status["expires_at"]
+        disconnected = dw.disconnect_connector(workspace_id, {"kind": "sql", "connection_id": sql["connection_id"]})
+        assert disconnected["disconnected"] is True
+        try:
+            dw.connector_status(workspace_id, "sql", sql["connection_id"])
+            raise AssertionError("disconnected connector should not validate")
+        except ValueError as exc:
+            assert "not found or expired" in str(exc)
     finally:
         dw._blob_containers = original_blob
         dw._sql_tables = original_sql

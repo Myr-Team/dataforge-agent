@@ -1285,13 +1285,19 @@ svg { flex-shrink: 0; }
 .dw-badge.demo { background: var(--surface-soft); color: var(--muted); }
 .dw-badge.planned { background: var(--amber-soft); color: var(--amber); }
 .dw-badge.ok { background: var(--mint-soft); color: var(--mint); }
+.dw-badge.connected { background: rgba(37, 99, 235, .12); color: var(--blue); }
 .dw-conn-ic img { display: block; }
 .dw-conn-btn:disabled { opacity: .55; cursor: not-allowed; }
 .dw-conn-name { font-size: 13.5px; font-weight: 600; margin-top: 12px; }
 .dw-conn-status { font-size: 12px; color: var(--faint); margin-top: 3px; }
+.dw-conn-exp { margin-top: 7px; font-size: 11.5px; color: var(--muted); }
+.dw-conn-actions { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 13px; }
 .dw-conn-btn { margin-top: 13px; height: 32px; width: 100%; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 7px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.dw-conn-actions .dw-conn-btn { margin-top: 0; }
 .dw-conn-btn:hover { background: var(--surface-soft); }
 .dw-conn-btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+.dw-conn-btn.danger { border-color: rgba(220, 38, 38, .18); background: rgba(220, 38, 38, .06); color: #b91c1c; }
+.dw-conn-btn.danger:hover { background: rgba(220, 38, 38, .1); }
 @media (max-width: 1200px){ .dw-body { grid-template-columns: 220px minmax(0,1fr); } .dw-status { display: none; } .dw-conn-grid { grid-template-columns: repeat(2,1fr); } }
 .dashboard-stage {
   display: flex;

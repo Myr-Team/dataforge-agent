@@ -349,6 +349,9 @@ export async function dwConnectorCapabilities(workspaceId) {
 export async function dwBlobConnect(workspaceId, payload) {
   return connectWorkspaceBlob(workspaceId, payload);
 }
+export async function dwBlobStatus(workspaceId, connectionId) {
+  return request(`${wsPath(workspaceId)}/connectors/blob/status?${queryString({ connection_id: connectionId })}`);
+}
 export async function dwBlobContainers(workspaceId, connectionId) {
   return request(`${wsPath(workspaceId)}/connectors/blob/containers?${queryString({ connection_id: connectionId })}`);
 }
@@ -364,6 +367,9 @@ export async function dwBlobImport(workspaceId, payload) {
 export async function dwSqlConnect(workspaceId, payload) {
   return connectWorkspaceSql(workspaceId, payload);
 }
+export async function dwSqlStatus(workspaceId, connectionId) {
+  return request(`${wsPath(workspaceId)}/connectors/sql/status?${queryString({ connection_id: connectionId })}`);
+}
 export async function dwSqlTables(workspaceId, connectionId) {
   return request(`${wsPath(workspaceId)}/connectors/sql/tables?${queryString({ connection_id: connectionId })}`);
 }
@@ -372,6 +378,9 @@ export async function dwSqlPreview(workspaceId, connectionId, table, limit = 100
 }
 export async function dwSqlImport(workspaceId, payload) {
   return request(`${wsPath(workspaceId)}/connectors/sql/import`, { method: "POST", body: JSON.stringify(payload) });
+}
+export async function dwDisconnectConnector(workspaceId, payload) {
+  return request(`${wsPath(workspaceId)}/connectors/disconnect`, { method: "POST", body: JSON.stringify(payload) });
 }
 
 export async function streamChat(payload, onEvent, signal) {
