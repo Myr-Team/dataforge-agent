@@ -2090,12 +2090,23 @@ def _doc_evidence_appendix(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     return appendix
 
 
+def _proposal_title_from_opportunity(opportunity_id: str) -> str:
+    title = str(opportunity_id or "workspace-product").replace("-", " ").strip()
+    if not title:
+        return "workspace product"
+    # Keep CJK and other non-ASCII text byte-stable; str.title() corrupts mojibake
+    # beyond repair and also lowercases IDs such as EV0005/TAG2489 in Chinese titles.
+    if any(ord(ch) > 127 for ch in title):
+        return title
+    return title.title()
+
+
 def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
     feasibility = artifact.get("feasibility", {})
     corpus = artifact.get("corpus", {})
     market = artifact.get("market", {})
     opportunity_id = str(feasibility.get("opportunity_id") or "workspace-product")
-    title = opportunity_id.replace("-", " ").title()
+    title = _proposal_title_from_opportunity(opportunity_id)
     narrative = (
         artifact.get("answer", {}).get("text")
         or artifact.get("narrative")
