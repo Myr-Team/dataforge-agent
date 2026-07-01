@@ -542,29 +542,66 @@ async def analyze_selected_files(workspace_id: str, body: dict[str, Any], backgr
     )
     if background_tasks is not None:
         background_tasks.add_task(_consume_workbench_analysis, req)
+        consume_result: dict[str, Any] = {"events": [], "final": None, "conversation_id": conversation_id}
     else:
-        await _consume_workbench_analysis(req)
+        consume_result = await _consume_workbench_analysis(req, collect=True)
+    resolved_conversation_id = str(consume_result.get("conversation_id") or conversation_id)
+    final = consume_result.get("final") if isinstance(consume_result.get("final"), dict) else None
     return {
         "workspace_id": workspace_id,
-        "conversation_id": conversation_id,
-        "status": "accepted",
+        "conversation_id": resolved_conversation_id,
+        "status": "started",
         "mode": "analysis",
         "selected_files": selected,
         "warnings": warnings,
-        "jump": {"view": "agent_flow", "conversation_id": conversation_id},
+        "jump": {"view": "agent_flow", "conversation_id": resolved_conversation_id},
         "background": True,
-        "final": None,
-        "text": "",
-        "events": [],
+        "final": final,
+        "text": str((final or {}).get("text") or ""),
+        "events": consume_result.get("events") if isinstance(consume_result.get("events"), list) else [],
     }
 
 
-async def _consume_workbench_analysis(req: ChatRequest) -> None:
+async def _consume_workbench_analysis(req: ChatRequest, *, collect: bool = False) -> dict[str, Any]:
+    events: list[dict[str, Any]] = []
+    final: dict[str, Any] | None = None
+    conversation_id = req.conversation_id
     try:
-        async for _ in orchestrate_chat(req):
-            pass
+        async for chunk in orchestrate_chat(req):
+            if not collect:
+                continue
+            for event in _parse_sse_chunk(chunk):
+                events.append(event)
+                data = event.get("data")
+                if event.get("event") == "ready" and isinstance(data, dict) and data.get("conversation_id"):
+                    conversation_id = str(data["conversation_id"])
+                if event.get("event") == "final" and isinstance(data, dict):
+                    final = data
     except Exception as exc:
         print(f"workbench analyze background failed: {type(exc).__name__}", flush=True)
+    return {"conversation_id": conversation_id, "events": events, "final": final}
+
+
+def _parse_sse_chunk(chunk: Any) -> list[dict[str, Any]]:
+    frames: list[dict[str, Any]] = []
+    for raw_frame in str(chunk or "").split("\n\n"):
+        event_name = "message"
+        data_lines: list[str] = []
+        for raw_line in raw_frame.splitlines():
+            line = raw_line.strip()
+            if line.startswith("event:"):
+                event_name = line.removeprefix("event:").strip() or event_name
+            elif line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").strip())
+        if not data_lines:
+            continue
+        data_text = "\n".join(data_lines)
+        try:
+            data: Any = json.loads(data_text)
+        except json.JSONDecodeError:
+            data = data_text
+        frames.append({"event": event_name, "data": data})
+    return frames
 
 
 def connect_sql(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
