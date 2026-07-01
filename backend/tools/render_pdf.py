@@ -155,7 +155,7 @@ p { margin: 0 0 7px; }
 .cover-brand img { height: 30px; }
 .cover-brand .bt { font-size: 15px; font-weight: 700; letter-spacing: .3px; }
 .cover-kicker { font-size: 12px; opacity: .9; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 12px; }
-.cover-title { font-size: 30px; line-height: 1.28; font-weight: 800; max-width: 150mm; }
+.cover-title { font-size: 27px; line-height: 1.24; font-weight: 800; max-width: 170mm; }
 .cover-body { padding: 16mm 20mm 0; }
 .cover-badges { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
 .badge { display: inline-block; padding: 6px 16px; border-radius: 999px; font-size: 13px; font-weight: 700; }
