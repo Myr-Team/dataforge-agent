@@ -23,6 +23,44 @@ LOGO_PATH = ROOT / "backend" / "assets" / "dataforge-logo.png"
 _EMOJI_RE = re.compile(
     "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U00002190-\U000021FF\U00002B00-\U00002BFF\uFE0F]"
 )
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_MOJIBAKE_RE = re.compile(r"[\u0080-\u009f]|[ÃÂÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ]{2,}")
+
+
+def _repair_mojibake_text(value: Any) -> str:
+    text = str(value or "")
+    if not text or not _MOJIBAKE_RE.search(text):
+        return text
+
+    def score(candidate: str) -> int:
+        cjk = len(_CJK_RE.findall(candidate))
+        markers = len(_MOJIBAKE_RE.findall(candidate))
+        controls = sum(1 for ch in candidate if 0x80 <= ord(ch) <= 0x9F)
+        replacements = candidate.count("\ufffd")
+        return cjk * 8 - markers * 5 - controls * 12 - replacements * 20
+
+    best = text
+    best_score = score(text)
+    for encoding in ("latin1", "cp1252"):
+        try:
+            candidate = text.encode(encoding).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        candidate_score = score(candidate)
+        if candidate_score > best_score:
+            best = candidate
+            best_score = candidate_score
+    return best
+
+
+def _repair_mojibake_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _repair_mojibake_text(value)
+    if isinstance(value, list):
+        return [_repair_mojibake_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _repair_mojibake_value(item) for key, item in value.items()}
+    return value
 
 
 def _minimal_pdf(text: str) -> bytes:
@@ -49,6 +87,7 @@ def _minimal_pdf(text: str) -> bytes:
 
 
 def render_pdf_report(proposal: dict[str, Any], template: str = "project_proposal") -> dict[str, Any]:
+    proposal = _repair_mojibake_value(proposal)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = int(time.time())
     path = OUT_DIR / f"{_safe_name(proposal.get('opportunity_id') or 'proposal')}-{stamp}.pdf"
