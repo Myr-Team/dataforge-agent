@@ -553,6 +553,7 @@ function WorkbenchMainInner({
   setArtifactMode,
   finalArtifact,
   artifacts,
+  artifactRefreshKey,
   onProduce,
   onUploadReference,
   producing,
@@ -589,7 +590,7 @@ function WorkbenchMainInner({
     );
   }
   if (view === "artifacts") {
-    return <ArtifactsCenter dashboard={dashboard} artifacts={artifacts} artifact={finalArtifact} onProduce={onProduce} producing={producing} onUploadReference={onUploadReference} />;
+    return <ArtifactsCenter dashboard={dashboard} artifacts={artifacts} artifact={finalArtifact} artifactRefreshKey={artifactRefreshKey} onProduce={onProduce} producing={producing} onUploadReference={onUploadReference} />;
   }
   if (view === "runs") {
     return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} tasks={tasks} />;
@@ -1469,7 +1470,7 @@ const OUTPUT_RECENT = [
   { name: "数据与来源清单.pdf", type: "PDF", size: "0.9 MB", time: "昨天 16:40" },
 ];
 
-function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing, onUploadReference }) {
+function ArtifactsCenter({ dashboard, artifacts, artifact, artifactRefreshKey = 0, onProduce, producing, onUploadReference }) {
   const hasAnalysis = Boolean(artifact?.feasibility?.verdict);
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
   const [recent, setRecent] = useState(null);
@@ -1479,8 +1480,37 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, onProduce, producing,
     if (!workspaceId) return;
     loadArtifactsList(workspaceId).then((d) => setRecent(d.artifacts || [])).catch(() => setRecent([]));
   }, [workspaceId]);
-  useEffect(() => { reloadRecent(); }, [reloadRecent, producing]);
-  const recentItems = recent || [];
+  useEffect(() => { reloadRecent(); }, [reloadRecent, producing, artifactRefreshKey]);
+  const generatedItems = useMemo(() => {
+    const typeByKind = { pdf: "pdf", concept_image: "png", audio_summary: "mp3", pilot_plan: "md", action_plan: "md", roadmap: "md", validation_plan: "md" };
+    return Object.entries(artifacts || {})
+      .filter(([, value]) => value && !value.error && artifactLink(value))
+      .map(([kind, value]) => {
+        const href = artifactLink(value);
+        const rawName = value.name || value.filename || value.title || decodeURIComponent(String(href || "").split("/").pop() || kind);
+        return {
+          ...value,
+          kind,
+          name: rawName,
+          type: value.type || typeByKind[kind] || kind,
+          url: value.url || value.artifact_url,
+          artifact_url: value.artifact_url || value.url,
+          status: value.status || "ready",
+          created_at: value.created_at || new Date().toISOString(),
+          local_generated: true,
+        };
+      });
+  }, [artifacts]);
+  const recentItems = useMemo(() => {
+    const seen = new Set();
+    return [...generatedItems, ...((recent || []))]
+      .filter((item) => {
+        const key = artifactLink(item) || item.url || item.artifact_url || item.name;
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  }, [generatedItems, recent]);
   const isImage = (a) => /^(png|jpg|jpeg|webp|image)$/i.test(String(a.type || "")) || /\.(png|jpe?g|webp)$/i.test(String(a.name || ""));
   const openArtifact = (a) => { const href = artifactLink(a); if (!href) return; if (isImage(a)) setLightbox(href); else window.open(href, "_blank", "noopener"); };
   return (

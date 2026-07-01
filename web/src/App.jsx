@@ -84,6 +84,7 @@ export function App() {
   const [producing, setProducing] = useState(false);
   const [finalArtifact, setFinalArtifact] = useState(null);
   const [artifacts, setArtifacts] = useState({});
+  const [artifactRefreshKey, setArtifactRefreshKey] = useState(0);
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [selectedPlaybook, setSelectedPlaybook] = useState("opportunity-tree");
   const [artifactMode, setArtifactMode] = useState("report");
@@ -234,6 +235,7 @@ export function App() {
         const nextTrace = Array.isArray(data.trace) ? data.trace : [];
         setTrace(nextTrace);
         if (data.conversation_id) {
+          setActiveConversationId(data.conversation_id);
           try { window.localStorage.setItem(`df-conv:${workspaceId}`, data.conversation_id); } catch { /* ignore */ }
         }
         try { window.localStorage.setItem(`df-analysis:${workspaceId}`, JSON.stringify(data.artifact)); } catch { /* ignore */ }
@@ -267,6 +269,10 @@ export function App() {
       conversation_id: la.conversation_id,
       recommendation: la.recommendation,
     });
+    if (la.conversation_id) {
+      setActiveConversationId(la.conversation_id);
+      try { window.localStorage.setItem(`df-conv:${workspaceId}`, la.conversation_id); } catch { /* ignore */ }
+    }
   }, [dashboard, finalArtifact, running, workspaceId]);
 
   // 持久化 Agent Flow 轨迹（有真实运行事件时），刷新后流水线状态保持
@@ -765,6 +771,7 @@ export function App() {
       setFinalArtifact(nextArtifact);
       const arts = extractArtifacts(nextArtifact);
       setArtifacts(arts);
+      setArtifactRefreshKey((value) => value + 1);
       const warningText = warnings.map((w) => w?.message).filter(Boolean).join("；");
       // 在会话里就地展示产物，点了能立刻看到 PDF / 概念图 / 语音，而不是“好像没反应”
       if (arts && (arts.pdf || arts.concept_image || arts.audio_summary)) {
@@ -848,6 +855,7 @@ export function App() {
             setArtifactMode={setArtifactMode}
             finalArtifact={finalArtifact}
             artifacts={artifacts}
+            artifactRefreshKey={artifactRefreshKey}
             onProduce={produce}
             onUploadReference={openReferenceUpload}
             onAppendUpload={openAppendUpload}

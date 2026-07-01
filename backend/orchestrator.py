@@ -67,7 +67,7 @@ try:
     from .pm_skills import playbook_suggestion
     from .rag import search
     from .router import deterministic_route
-    from .run_store import complete_run, get_run, record_event, start_run, update_run_proposal
+    from .run_store import complete_run, get_run, list_runs, record_event, start_run, update_run_proposal
     from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
     from .tracing import trace_event
     from .maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -126,7 +126,7 @@ except ImportError:
     from pm_skills import playbook_suggestion
     from rag import search
     from router import deterministic_route
-    from run_store import complete_run, get_run, record_event, start_run, update_run_proposal
+    from run_store import complete_run, get_run, list_runs, record_event, start_run, update_run_proposal
     from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
     from tracing import trace_event
     from maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -345,6 +345,65 @@ def _looks_like_context_followup(message: str) -> bool:
     )
 
 
+def _analysis_followup_requested(message: str) -> bool:
+    text = _intent_message(message)
+    compact = re.sub(r"\s+", "", text)
+    if not compact or len(compact) > 180:
+        return False
+    if _market_context_requested(text) or _artifact_generation_requested(text) or _preset_outcome_requested(text):
+        return False
+    if re.search(
+        r"(full package|feasibility report|rerun|deep analysis|generate|export)",
+        text,
+        re.I,
+    ):
+        return False
+    unicode_terms = (
+        "\u4e0a\u4e00\u7248",
+        "\u4e0a\u4e00\u8f6e",
+        "\u521a\u624d",
+        "\u521a\u521a",
+        "\u8fd9\u4e2a\u65b9\u6848",
+        "\u8fd9\u7248\u65b9\u6848",
+        "\u65b9\u6848",
+        "\u5efa\u8bae",
+        "\u60f3\u6cd5",
+        "\u53cd\u9988",
+        "\u7ea6\u675f",
+        "\u8c03\u6574",
+        "\u4f18\u5316",
+        "\u6539\u6210",
+        "\u6539\u4e00\u4e0b",
+        "\u9884\u7b97",
+        "\u5468\u671f",
+        "\u98ce\u9669",
+        "\u7f3a\u4ec0\u4e48",
+        "\u53ef\u884c",
+        "\u80fd\u4e0d\u80fd",
+        "\u662f\u5426",
+        "\u5982\u679c",
+        "\u7ee7\u7eed",
+        "\u4e0b\u4e00\u7248",
+        "previous",
+        "last",
+        "this plan",
+        "that plan",
+        "feedback",
+        "constraint",
+        "budget",
+        "timeline",
+        "risk",
+        "gap",
+        "iterate",
+        "revise",
+        "adjust",
+        "what if",
+    )
+    if any(term in text or term in compact for term in unicode_terms):
+        return True
+    return _looks_like_context_followup(text)
+
+
 def _request_with_history(req: ChatRequest, history: list[dict[str, Any]]) -> ChatRequest:
     context_blocks: list[str] = []
     if history:
@@ -451,9 +510,41 @@ def _last_analysis_from_context(context: dict[str, Any]) -> dict[str, Any]:
 
 def _workspace_last_analysis(workspace_id: str) -> dict[str, Any]:
     try:
-        return _last_analysis_from_context(workspace_context(workspace_id))
+        return _last_analysis_for_workspace(workspace_id, workspace_context(workspace_id))
     except Exception:
         return {}
+
+
+def _last_analysis_for_workspace(workspace_id: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    analysis = _last_analysis_from_context(context or {})
+    if analysis:
+        return analysis
+    if not workspace_id:
+        return {}
+    try:
+        summaries = list_runs(workspace_id)
+    except Exception:
+        return {}
+    for summary in summaries[:100]:
+        run_id = str(summary.get("run_id") or "")
+        if not run_id:
+            continue
+        try:
+            run = get_run(run_id)
+        except Exception:
+            continue
+        artifact = _produce_run_artifact(run)
+        feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
+        dimensions = feasibility.get("dimensions")
+        has_dimensions = isinstance(dimensions, list) and any(isinstance(item, dict) for item in dimensions)
+        if feasibility.get("verdict") or feasibility.get("opportunity_id") or has_dimensions:
+            return {
+                **{key: value for key, value in feasibility.items() if key != "_llm"},
+                "text": (artifact.get("answer") or {}).get("text") if isinstance(artifact.get("answer"), dict) else None,
+                "conversation_id": artifact.get("conversation_id") or run.get("conversation_id") or run_id,
+                "run_id": run_id,
+            }
+    return {}
 
 
 def _slug(value: str, fallback: str = "generated-data-product") -> str:
@@ -862,12 +953,12 @@ def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tu
     wants_artifact = requested_mode in {"full_package", "proposal"} or _artifact_generation_requested(current_message)
     market_context = _market_context_requested(current_message)
     auto_analyze = _is_auto_analyze_request(req)
-    heavy = _explicit_heavy_analysis_requested(current_message) or auto_analyze or requested_analysis_mode
-    last_analysis = _last_analysis_from_context(context)
+    last_analysis = _last_analysis_for_workspace(req.workspace_id, context)
+    workspace_followup = bool(last_analysis and requested_mode == "chat" and _analysis_followup_requested(current_message))
+    heavy = auto_analyze or requested_analysis_mode or (_explicit_heavy_analysis_requested(current_message) and not workspace_followup)
     if (
-        req.conversation_id
-        and history
-        and last_analysis
+        last_analysis
+        and ((req.conversation_id and history) or workspace_followup)
         and not heavy
         and not wants_artifact
         and not market_context
@@ -886,6 +977,7 @@ def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tu
             "fast_path": "lightweight_followup",
             "market_tools_allowed": False,
             "last_analysis_available": True,
+            "workspace_followup": workspace_followup,
         }
     if (
         _ordinary_workspace_qa_requested(current_message)
@@ -927,11 +1019,12 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
     explicit_heavy = _explicit_heavy_analysis_requested(current_message) or auto_analyze or requested_analysis_mode
     ordinary_qa = _ordinary_workspace_qa_requested(current_message)
     followup_context = bool(req.conversation_id) and _looks_like_context_followup(current_message)
-    last_analysis = _last_analysis_from_context(context)
+    last_analysis = _last_analysis_for_workspace(req.workspace_id, context)
+    workspace_followup = bool(last_analysis and requested_mode == "chat" and _analysis_followup_requested(current_message))
     allow_market_tools = bool((market_context or auto_analyze) and not data_only)
     forced_grounded_answer = False
     forced_fast_path = False
-    if doc_count > 0 and last_analysis and bool(req.conversation_id) and not explicit_heavy and not wants_artifact and not market_context:
+    if doc_count > 0 and last_analysis and (bool(req.conversation_id) or workspace_followup) and not explicit_heavy and not wants_artifact and not market_context:
         intent = "followup_edit"
         raw["needs_clarification"] = False
         raw["output_mode"] = "chat"
@@ -2551,35 +2644,99 @@ def generate_playbook_detail(payload: dict[str, Any]) -> dict[str, Any]:
     return {"method": method, "summary": "", "points": [], "goal": "", "mode": "empty"}
 
 
+def _produce_run_artifact(run: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(run, dict):
+        return {}
+    artifact = run.get("artifact")
+    if isinstance(artifact, dict):
+        return artifact
+    final = run.get("final")
+    if isinstance(final, dict) and isinstance(final.get("artifact"), dict):
+        return final["artifact"]
+    return {}
+
+
+def _produce_artifact_has_analysis(artifact: dict[str, Any]) -> bool:
+    feasibility = artifact.get("feasibility") if isinstance(artifact, dict) else None
+    if not isinstance(feasibility, dict):
+        return False
+    dimensions = feasibility.get("dimensions")
+    return isinstance(dimensions, list) and any(isinstance(item, dict) for item in dimensions)
+
+
+def _produce_persistence_candidates(workspace_id: str, preferred_run_id: str | None) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(run_id: Any) -> None:
+        value = str(run_id or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            candidates.append(value)
+
+    add(preferred_run_id)
+    if not workspace_id:
+        return candidates
+    try:
+        summaries = list_runs(workspace_id)
+    except Exception:
+        return candidates
+
+    fallback: list[str] = []
+    for summary in summaries[:100]:
+        run_id = str(summary.get("run_id") or "")
+        if not run_id:
+            continue
+        try:
+            run = get_run(run_id)
+        except Exception:
+            fallback.append(run_id)
+            continue
+        artifact = _produce_run_artifact(run)
+        if _produce_artifact_has_analysis(artifact):
+            add(run_id)
+        else:
+            fallback.append(run_id)
+    for run_id in fallback[:20]:
+        add(run_id)
+    return candidates
+
+
 def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
     kinds = payload.get("kinds") or ["pdf", "concept_image", "pilot_plan", "action_plan"]
     run_id = str(payload.get("conversation_id") or payload.get("run_id") or "").strip()
+    workspace_id = str(payload.get("workspace_id") or "demo-corpus").strip() or "demo-corpus"
     artifact = {
-        "workspace_id": payload.get("workspace_id") or "demo-corpus",
+        "workspace_id": workspace_id,
         "conversation_id": run_id or payload.get("conversation_id"),
         "feasibility": payload.get("feasibility") or {},
         "corpus": payload.get("corpus") or {},
         "market": payload.get("market") or {},
         "audit": payload.get("audit") or {},
         "answer": payload.get("answer") or {},
+        "proposal": payload.get("proposal") or {},
         "reference_images": payload.get("reference_images") or [],
         "narrative": payload.get("narrative") or payload.get("text"),
     }
     result = _run_producer(artifact, kinds)
-    if run_id:
+    persistence_errors: list[str] = []
+    for candidate_run_id in _produce_persistence_candidates(workspace_id, run_id):
         try:
-            update_run_proposal(run_id, result)
-            result["persisted_run_id"] = run_id
+            update_run_proposal(candidate_run_id, result)
+            result["persisted_run_id"] = candidate_run_id
+            break
         except Exception as exc:
-            if not isinstance(result.get("warnings"), list):
-                result["warnings"] = []
-            result["warnings"].append(
-                {
-                    "kind": "persistence",
-                    "message": "产物已生成，但同步到产物中心失败；请稍后刷新或重试。",
-                    "error": f"{type(exc).__name__}: {exc}"[:500],
-                }
-            )
+            persistence_errors.append(f"{candidate_run_id}: {type(exc).__name__}: {exc}"[:500])
+    if not result.get("persisted_run_id") and (run_id or workspace_id):
+        if not isinstance(result.get("warnings"), list):
+            result["warnings"] = []
+        result["warnings"].append(
+            {
+                "kind": "persistence",
+                "message": "产物已生成，但同步到产物中心失败；请稍后刷新或重试。",
+                "error": "; ".join(persistence_errors[-3:])[:500] or "No analysis run was available for this workspace.",
+            }
+        )
     return result
 
 
@@ -4342,7 +4499,7 @@ def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: lis
     }
     if decision.intent == "followup_edit":
         previous = _last_assistant_text(history)
-        last_analysis = _last_analysis_from_context(context)
+        last_analysis = _last_analysis_for_workspace(req.workspace_id, context)
         if not previous and not last_analysis:
             return {
                 "text": "我需要先有上一轮分析结果，才能按你的要求改写。请先完成一次分析，或把要改写的内容贴给我。",
