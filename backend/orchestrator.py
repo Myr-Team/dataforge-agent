@@ -2026,7 +2026,8 @@ def _artifact_slug_for_proposal(opportunity_id: str, artifact: dict[str, Any]) -
         "dataforge-proposal",
     ]
     for index, candidate in enumerate(candidates):
-        slug = _artifact_name_slug(candidate, "")
+        label = _artifact_title_label(candidate)
+        slug = _artifact_name_slug(label, "")
         if slug and (index >= len(candidates) - 2 or not _looks_like_technical_slug(slug)):
             return slug
     return "dataforge-proposal"
@@ -2034,7 +2035,7 @@ def _artifact_slug_for_proposal(opportunity_id: str, artifact: dict[str, Any]) -
 
 def _proposal_display_title(artifact: dict[str, Any], opportunity_id: str) -> str:
     for candidate in _artifact_title_candidates(opportunity_id, artifact):
-        title = _clean_text(candidate, 120)
+        title = _artifact_title_label(candidate)
         if title and not _looks_like_technical_slug(_artifact_name_slug(title, "")):
             return title
     fallback = _clean_text(opportunity_id, 120)
@@ -2054,12 +2055,29 @@ def _artifact_title_candidates(opportunity_id: str, artifact: dict[str, Any]) ->
         feasibility.get("title"),
         feasibility.get("opportunity_title"),
         feasibility.get("opportunity_name"),
+        opportunity_id,
+        feasibility.get("opportunity_id"),
     ]
     for item in opportunities[:3]:
         if isinstance(item, dict):
             candidates.extend([item.get("title"), item.get("name"), item.get("label")])
-    candidates.extend([opportunity_id, feasibility.get("opportunity_id")])
     return [candidate for candidate in candidates if str(candidate or "").strip()]
+
+
+def _artifact_title_label(value: Any) -> str:
+    title = _clean_text(value, 140)
+    if not title:
+        return ""
+    cleaned = re.sub(r"(资产标签|设备标签|数据标签|标签编号|资产编号|设备编号|编号|ID|id)[:：]?", "", title)
+    cleaned = re.sub(r"[A-Z]{1,8}[-_\s]?\d{3,}", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\d{4,}", "", cleaned)
+    cleaned = re.sub(r"[×xX/&+_]+", "-", cleaned)
+    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-._ \t")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    semantic_chars = re.findall(r"[\w\u4e00-\u9fff]", cleaned, flags=re.UNICODE)
+    if len(semantic_chars) >= 4:
+        return cleaned
+    return title
 
 
 def _workspace_slug_for_artifacts(workspace_id: str) -> str:
