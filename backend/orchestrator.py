@@ -359,6 +359,64 @@ def _analysis_followup_requested(message: str) -> bool:
         re.I,
     ):
         return False
+    explicit_terms = (
+        "上一版",
+        "上一轮",
+        "刚才",
+        "刚刚",
+        "这个方案",
+        "这版方案",
+        "方案",
+        "建议",
+        "想法",
+        "反馈",
+        "约束",
+        "调整",
+        "优化",
+        "改成",
+        "改一下",
+        "预算",
+        "周期",
+        "风险",
+        "缺什么",
+        "可行",
+        "能不能",
+        "是否",
+        "如果",
+        "继续",
+        "下一版",
+    )
+    if any(term in text or term in compact for term in explicit_terms):
+        return True
+    unicode_terms = (
+        "\u4e0a\u4e00\u7248",
+        "\u4e0a\u4e00\u8f6e",
+        "\u521a\u624d",
+        "\u521a\u521a",
+        "\u8fd9\u4e2a\u65b9\u6848",
+        "\u8fd9\u7248\u65b9\u6848",
+        "\u65b9\u6848",
+        "\u5efa\u8bae",
+        "\u60f3\u6cd5",
+        "\u53cd\u9988",
+        "\u7ea6\u675f",
+        "\u8c03\u6574",
+        "\u4f18\u5316",
+        "\u6539\u6210",
+        "\u6539\u4e00\u4e0b",
+        "\u9884\u7b97",
+        "\u5468\u671f",
+        "\u98ce\u9669",
+        "\u7f3a\u4ec0\u4e48",
+        "\u53ef\u884c",
+        "\u80fd\u4e0d\u80fd",
+        "\u662f\u5426",
+        "\u5982\u679c",
+        "\u7ee7\u7eed",
+        "\u4e0b\u4e00\u7248",
+    )
+    if any(term in text or term in compact for term in unicode_terms):
+        return True
     if _looks_like_context_followup(text):
         return True
     return bool(
@@ -486,7 +544,7 @@ def _last_analysis_for_workspace(workspace_id: str, context: dict[str, Any] | No
         summaries = list_runs(workspace_id)
     except Exception:
         return {}
-    for summary in summaries[:30]:
+    for summary in summaries[:100]:
         run_id = str(summary.get("run_id") or "")
         if not run_id:
             continue
@@ -496,7 +554,9 @@ def _last_analysis_for_workspace(workspace_id: str, context: dict[str, Any] | No
             continue
         artifact = _run_artifact(run)
         feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
-        if feasibility.get("verdict") or feasibility.get("opportunity_id") or feasibility.get("dimensions"):
+        dimensions = feasibility.get("dimensions")
+        has_dimensions = isinstance(dimensions, list) and any(isinstance(item, dict) for item in dimensions)
+        if feasibility.get("verdict") or feasibility.get("opportunity_id") or has_dimensions:
             return {
                 **{key: value for key, value in feasibility.items() if key != "_llm"},
                 "text": (artifact.get("answer") or {}).get("text") if isinstance(artifact.get("answer"), dict) else None,
