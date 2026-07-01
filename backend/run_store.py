@@ -150,9 +150,21 @@ def update_run_proposal(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]
             if isinstance(source, dict):
                 merged_urls.update({key: value for key, value in source.items() if value})
 
+        merged_generated_at = {}
+        for source in (previous.get("artifact_generated_at"), incoming.get("artifact_generated_at")):
+            if isinstance(source, dict):
+                merged_generated_at.update({key: value for key, value in source.items() if value})
+        incoming_generated_at = incoming.get("generated_at")
+        if incoming_generated_at and isinstance(incoming.get("artifact_urls"), dict):
+            for key, value in incoming["artifact_urls"].items():
+                if value:
+                    merged_generated_at.setdefault(key, incoming_generated_at)
+
         merged = {**previous, **incoming}
         if merged_urls:
             merged["artifact_urls"] = merged_urls
+        if merged_generated_at:
+            merged["artifact_generated_at"] = merged_generated_at
 
         warnings: list[Any] = []
         for source in (previous.get("warnings"), incoming.get("warnings")):

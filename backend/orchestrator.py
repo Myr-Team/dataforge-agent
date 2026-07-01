@@ -2418,12 +2418,24 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
         workspace_reference_images(str(artifact.get("workspace_id") or "")),
     )
     proposal = _proposal_payload(artifact)
+    generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     result: dict[str, Any] = {
         "opportunity_id": proposal["opportunity_id"],
         "proposal": proposal,
         "kinds": wanted,
         "artifact_urls": {},
+        "generated_at": generated_at,
+        "artifact_generated_at": {},
     }
+
+    def remember_artifact(kind: str, value: dict[str, Any]) -> None:
+        url = value.get("artifact_url") if isinstance(value, dict) else None
+        if not url:
+            return
+        value.setdefault("generated_at", generated_at)
+        result["artifact_urls"][kind] = url
+        result["artifact_generated_at"][kind] = generated_at
+
     def collect_future(future: concurrent.futures.Future[Any] | None, key: str) -> dict[str, Any] | None:
         if future is None:
             return None
@@ -2457,40 +2469,40 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
             pdf = collect_future(pdf_future, "pdf") or {}
             result["pdf"] = pdf
             if pdf.get("artifact_url"):
-                result["artifact_urls"]["pdf"] = pdf.get("artifact_url")
+                remember_artifact("pdf", pdf)
         if pilot_future:
             pilot = collect_future(pilot_future, "pilot_plan") or {}
             result["pilot_plan"] = pilot
             if pilot.get("artifact_url"):
-                result["artifact_urls"]["pilot_plan"] = pilot.get("artifact_url")
+                remember_artifact("pilot_plan", pilot)
             else:
                 result.setdefault("warnings", []).append({"kind": "pilot_plan", "message": "试点实验设计生成失败。", "error": _clean_text(pilot.get("error") or "no artifact url", 300)})
         if action_future:
             action = collect_future(action_future, "action_plan") or {}
             result["action_plan"] = action
             if action.get("artifact_url"):
-                result["artifact_urls"]["action_plan"] = action.get("artifact_url")
+                remember_artifact("action_plan", action)
             else:
                 result.setdefault("warnings", []).append({"kind": "action_plan", "message": "30/60/90 天行动清单生成失败。", "error": _clean_text(action.get("error") or "no artifact url", 300)})
         if roadmap_future:
             roadmap = collect_future(roadmap_future, "roadmap") or {}
             result["roadmap"] = roadmap
             if roadmap.get("artifact_url"):
-                result["artifact_urls"]["roadmap"] = roadmap.get("artifact_url")
+                remember_artifact("roadmap", roadmap)
             else:
                 result.setdefault("warnings", []).append({"kind": "roadmap", "message": "路线图与里程碑生成失败。", "error": _clean_text(roadmap.get("error") or "no artifact url", 300)})
         if validation_future:
             validation = collect_future(validation_future, "validation_plan") or {}
             result["validation_plan"] = validation
             if validation.get("artifact_url"):
-                result["artifact_urls"]["validation_plan"] = validation.get("artifact_url")
+                remember_artifact("validation_plan", validation)
             else:
                 result.setdefault("warnings", []).append({"kind": "validation_plan", "message": "验证计划与资源风险生成失败。", "error": _clean_text(validation.get("error") or "no artifact url", 300)})
         if image_future:
             image = collect_future(image_future, "concept_image") or {}
             result["concept_image"] = image
             if image.get("artifact_url"):
-                result["artifact_urls"]["concept_image"] = image.get("artifact_url")
+                remember_artifact("concept_image", image)
             else:
                 result["degraded"] = True
                 result.setdefault("warnings", []).append(
@@ -2504,7 +2516,7 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
             audio = collect_future(audio_future, "audio_summary") or {}
             result["audio_summary"] = audio
             if audio.get("artifact_url"):
-                result["artifact_urls"]["audio_summary"] = audio.get("artifact_url")
+                remember_artifact("audio_summary", audio)
     return result
 
 

@@ -496,7 +496,7 @@ def list_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
         proposal = artifact.get("proposal") if isinstance(artifact.get("proposal"), dict) else {}
         urls = proposal.get("artifact_urls") if isinstance(proposal.get("artifact_urls"), dict) else {}
         for kind, url in urls.items():
-            item = _artifact_item(str(kind), str(url or ""), run)
+            item = _artifact_item(str(kind), str(url or ""), run, proposal)
             key = str(item.get("url") or item.get("name"))
             if key and key not in seen:
                 seen.add(key)
@@ -504,7 +504,7 @@ def list_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
         for kind in ("pdf", "concept_image", "audio_summary", "pilot_plan", "action_plan"):
             value = proposal.get(kind)
             if isinstance(value, dict) and value.get("artifact_url"):
-                item = _artifact_item(kind, str(value.get("artifact_url")), run)
+                item = _artifact_item(kind, str(value.get("artifact_url")), run, proposal)
                 key = str(item.get("url") or item.get("name"))
                 if key and key not in seen:
                     seen.add(key)
@@ -973,7 +973,7 @@ def _asset_rows(files: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _artifact_item(kind: str, url: str, run: dict[str, Any]) -> dict[str, Any]:
+def _artifact_item(kind: str, url: str, run: dict[str, Any], proposal: dict[str, Any] | None = None) -> dict[str, Any]:
     name = _artifact_name(url) or f"{kind}-{run.get('run_id') or 'artifact'}"
     local = ARTIFACT_DIR / name
     bytes_value = local.stat().st_size if local.exists() else None
@@ -983,11 +983,20 @@ def _artifact_item(kind: str, url: str, run: dict[str, Any]) -> dict[str, Any]:
         if downloaded:
             bytes_value = len(downloaded[0])
             content_type = downloaded[1] or content_type
+    proposal = proposal if isinstance(proposal, dict) else {}
+    generated_by_kind = proposal.get("artifact_generated_at") if isinstance(proposal.get("artifact_generated_at"), dict) else {}
+    created_at = (
+        generated_by_kind.get(kind)
+        or proposal.get("generated_at")
+        or run.get("completed_at")
+        or run.get("updated_at")
+        or run.get("started_at")
+    )
     return {
         "name": name,
         "type": _artifact_type(kind, name),
         "bytes": bytes_value,
-        "created_at": run.get("completed_at") or run.get("updated_at") or run.get("started_at"),
+        "created_at": created_at,
         "status": "ready" if url else "missing",
         "url": url,
         "run_id": run.get("run_id"),
