@@ -476,9 +476,40 @@ def _last_analysis_from_context(context: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _last_analysis_for_workspace(workspace_id: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    analysis = _last_analysis_from_context(context or {})
+    if analysis:
+        return analysis
+    if not workspace_id:
+        return {}
+    try:
+        summaries = list_runs(workspace_id)
+    except Exception:
+        return {}
+    for summary in summaries[:30]:
+        run_id = str(summary.get("run_id") or "")
+        if not run_id:
+            continue
+        try:
+            run = get_run(run_id)
+        except Exception:
+            continue
+        artifact = _run_artifact(run)
+        feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
+        if feasibility.get("verdict") or feasibility.get("opportunity_id") or feasibility.get("dimensions"):
+            return {
+                **{key: value for key, value in feasibility.items() if key != "_llm"},
+                "text": (artifact.get("answer") or {}).get("text") if isinstance(artifact.get("answer"), dict) else None,
+                "conversation_id": artifact.get("conversation_id") or run.get("conversation_id") or run_id,
+                "run_id": run_id,
+            }
+    return {}
+
+
 def _workspace_last_analysis(workspace_id: str) -> dict[str, Any]:
     try:
-        return _last_analysis_from_context(workspace_context(workspace_id))
+        context = workspace_context(workspace_id)
+        return _last_analysis_for_workspace(workspace_id, context)
     except Exception:
         return {}
 
@@ -899,7 +930,7 @@ def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tu
     wants_artifact = requested_mode in {"full_package", "proposal"} or _artifact_generation_requested(current_message)
     market_context = _market_context_requested(current_message)
     auto_analyze = _is_auto_analyze_request(req)
-    last_analysis = _last_analysis_from_context(context)
+    last_analysis = _last_analysis_for_workspace(req.workspace_id, context)
     workspace_followup = bool(last_analysis and requested_mode == "chat" and _analysis_followup_requested(current_message))
     heavy = auto_analyze or requested_analysis_mode or (_explicit_heavy_analysis_requested(current_message) and not workspace_followup)
     if (
@@ -963,7 +994,7 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
     market_context = _market_context_requested(current_message)
     auto_analyze = _is_auto_analyze_request(req)
     ordinary_qa = _ordinary_workspace_qa_requested(current_message)
-    last_analysis = _last_analysis_from_context(context)
+    last_analysis = _last_analysis_for_workspace(req.workspace_id, context)
     workspace_followup = bool(last_analysis and requested_mode == "chat" and _analysis_followup_requested(current_message))
     explicit_heavy = auto_analyze or requested_analysis_mode or (_explicit_heavy_analysis_requested(current_message) and not workspace_followup)
     followup_context = (bool(req.conversation_id) and _looks_like_context_followup(current_message)) or workspace_followup
@@ -4509,7 +4540,7 @@ def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: lis
     }
     if decision.intent == "followup_edit":
         previous = _last_assistant_text(history)
-        last_analysis = _last_analysis_from_context(context)
+        last_analysis = _last_analysis_for_workspace(req.workspace_id, context)
         if not previous and not last_analysis:
             return {
                 "text": "我需要先有上一轮分析结果，才能按你的要求改写。请先完成一次分析，或把要改写的内容贴给我。",
