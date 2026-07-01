@@ -680,7 +680,8 @@ def _xml(text: Any) -> str:
 
 
 def _safe_name(value: Any) -> str:
-    text = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value or "")).strip("-")
+    text = re.sub(r"[^\w\u4e00-\u9fff.-]+", "-", str(value or ""), flags=re.UNICODE).strip("-._")
+    text = re.sub(r"-{2,}", "-", text)
     return text[:90] or "proposal"
 
 

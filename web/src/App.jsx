@@ -234,6 +234,7 @@ export function App() {
         const nextTrace = Array.isArray(data.trace) ? data.trace : [];
         setTrace(nextTrace);
         if (data.conversation_id) {
+          setActiveConversationId(data.conversation_id);
           try { window.localStorage.setItem(`df-conv:${workspaceId}`, data.conversation_id); } catch { /* ignore */ }
         }
         try { window.localStorage.setItem(`df-analysis:${workspaceId}`, JSON.stringify(data.artifact)); } catch { /* ignore */ }
@@ -251,6 +252,10 @@ export function App() {
     if (finalArtifact || running) return;
     const la = dashboard?.workspace?.last_analysis || dashboard?.last_analysis;
     if (!la || !(la.verdict || (la.dimensions && la.dimensions.length))) return;
+    if (la.conversation_id) {
+      setActiveConversationId(la.conversation_id);
+      try { window.localStorage.setItem(`df-conv:${workspaceId}`, la.conversation_id); } catch { /* ignore */ }
+    }
     setFinalArtifact({
       feasibility: {
         verdict: la.verdict,

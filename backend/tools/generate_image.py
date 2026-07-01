@@ -176,7 +176,8 @@ def generate_image(
 
 
 def _safe_artifact_base(value: Any) -> str:
-    text = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value or "")).strip("-").lower()
+    text = re.sub(r"[^\w\u4e00-\u9fff.-]+", "-", str(value or ""), flags=re.UNICODE).strip("-._").lower()
+    text = re.sub(r"-{2,}", "-", text)
     return text[:110] or "concept-image"
 
 

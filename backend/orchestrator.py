@@ -345,6 +345,33 @@ def _looks_like_context_followup(message: str) -> bool:
     )
 
 
+def _analysis_followup_requested(message: str) -> bool:
+    text = _intent_message(message)
+    compact = re.sub(r"\s+", "", text)
+    if not compact or len(compact) > 180:
+        return False
+    if _market_context_requested(text) or _artifact_generation_requested(text) or _preset_outcome_requested(text):
+        return False
+    if re.search(
+        r"(自动分析|完整分析|深度分析|系统分析|重新分析|重跑|重新跑|五维|评分|报告|项目书|prd|路线图|实验计划|生成|输出|"
+        r"full package|feasibility report|rerun|deep analysis|generate|export)",
+        text,
+        re.I,
+    ):
+        return False
+    if _looks_like_context_followup(text):
+        return True
+    return bool(
+        re.search(
+            r"(上一版|上版|上一轮|上轮|刚才|刚刚|这个|这样|它|方案|建议|想法|约束|反馈|调整|优化|改成|改一下|预算|周期|"
+            r"风险|缺什么|可行|能不能|是否|如果|那|继续|下一版|v\d+|"
+            r"previous|last|this plan|that plan|feedback|constraint|budget|timeline|risk|gap|iterate|revise|adjust|what if)",
+            text,
+            re.I,
+        )
+    )
+
+
 def _request_with_history(req: ChatRequest, history: list[dict[str, Any]]) -> ChatRequest:
     context_blocks: list[str] = []
     if history:
@@ -463,6 +490,16 @@ def _slug(value: str, fallback: str = "generated-data-product") -> str:
     if len(tokens) > 8:
         slug = "-".join(tokens[:8])
     return slug[:72].strip("-") or fallback
+
+
+def _artifact_name_slug(value: Any, fallback: str = "") -> str:
+    compact = _collapse_repeated_slug(value)
+    slug = re.sub(r"[^\w\u4e00-\u9fff.-]+", "-", str(compact or ""), flags=re.UNICODE).strip("-._")
+    slug = re.sub(r"-{2,}", "-", slug)
+    tokens = [token for token in re.split(r"[-_\s]+", slug) if token]
+    if len(tokens) > 10:
+        slug = "-".join(tokens[:10])
+    return slug[:90].strip("-._") or fallback
 
 
 def _collapse_repeated_slug(value: Any) -> str:
@@ -862,12 +899,12 @@ def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tu
     wants_artifact = requested_mode in {"full_package", "proposal"} or _artifact_generation_requested(current_message)
     market_context = _market_context_requested(current_message)
     auto_analyze = _is_auto_analyze_request(req)
-    heavy = _explicit_heavy_analysis_requested(current_message) or auto_analyze or requested_analysis_mode
     last_analysis = _last_analysis_from_context(context)
+    workspace_followup = bool(last_analysis and requested_mode == "chat" and _analysis_followup_requested(current_message))
+    heavy = auto_analyze or requested_analysis_mode or (_explicit_heavy_analysis_requested(current_message) and not workspace_followup)
     if (
-        req.conversation_id
-        and history
-        and last_analysis
+        last_analysis
+        and ((req.conversation_id and history) or workspace_followup)
         and not heavy
         and not wants_artifact
         and not market_context
@@ -886,6 +923,7 @@ def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tu
             "fast_path": "lightweight_followup",
             "market_tools_allowed": False,
             "last_analysis_available": True,
+            "workspace_followup": workspace_followup,
         }
     if (
         _ordinary_workspace_qa_requested(current_message)
@@ -924,14 +962,15 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
     data_only = _data_only_requested(current_message)
     market_context = _market_context_requested(current_message)
     auto_analyze = _is_auto_analyze_request(req)
-    explicit_heavy = _explicit_heavy_analysis_requested(current_message) or auto_analyze or requested_analysis_mode
     ordinary_qa = _ordinary_workspace_qa_requested(current_message)
-    followup_context = bool(req.conversation_id) and _looks_like_context_followup(current_message)
     last_analysis = _last_analysis_from_context(context)
+    workspace_followup = bool(last_analysis and requested_mode == "chat" and _analysis_followup_requested(current_message))
+    explicit_heavy = auto_analyze or requested_analysis_mode or (_explicit_heavy_analysis_requested(current_message) and not workspace_followup)
+    followup_context = (bool(req.conversation_id) and _looks_like_context_followup(current_message)) or workspace_followup
     allow_market_tools = bool((market_context or auto_analyze) and not data_only)
     forced_grounded_answer = False
     forced_fast_path = False
-    if doc_count > 0 and last_analysis and bool(req.conversation_id) and not explicit_heavy and not wants_artifact and not market_context:
+    if doc_count > 0 and last_analysis and (bool(req.conversation_id) or workspace_followup) and not explicit_heavy and not wants_artifact and not market_context:
         intent = "followup_edit"
         raw["needs_clarification"] = False
         raw["output_mode"] = "chat"
@@ -1949,19 +1988,47 @@ def _doc_meta(opportunity_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
 
 def _artifact_slug_for_proposal(opportunity_id: str, artifact: dict[str, Any]) -> str:
     workspace_slug = _workspace_slug_for_artifacts(str(artifact.get("workspace_id") or ""))
-    candidates = [
+    candidates = _artifact_title_candidates(opportunity_id, artifact) + [
         workspace_slug,
         (artifact.get("corpus", {}).get("profile", {}) or {}).get("name"),
-        (artifact.get("proposal") or {}).get("title"),
-        opportunity_id or (artifact.get("feasibility") or {}).get("opportunity_id"),
         artifact.get("workspace_id"),
         "dataforge-proposal",
     ]
     for index, candidate in enumerate(candidates):
-        slug = _slug(str(candidate or ""), "")
-        if slug and (index >= 4 or not _looks_like_technical_slug(slug)):
+        slug = _artifact_name_slug(candidate, "")
+        if slug and (index >= len(candidates) - 2 or not _looks_like_technical_slug(slug)):
             return slug
     return "dataforge-proposal"
+
+
+def _proposal_display_title(artifact: dict[str, Any], opportunity_id: str) -> str:
+    for candidate in _artifact_title_candidates(opportunity_id, artifact):
+        title = _clean_text(candidate, 120)
+        if title and not _looks_like_technical_slug(_artifact_name_slug(title, "")):
+            return title
+    fallback = _clean_text(opportunity_id, 120)
+    if fallback:
+        return fallback.replace("-", " ").title()
+    return "DataForge Opportunity"
+
+
+def _artifact_title_candidates(opportunity_id: str, artifact: dict[str, Any]) -> list[Any]:
+    proposal = artifact.get("proposal") if isinstance(artifact.get("proposal"), dict) else {}
+    feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
+    corpus = artifact.get("corpus") if isinstance(artifact.get("corpus"), dict) else {}
+    opportunities = corpus.get("opportunities") if isinstance(corpus.get("opportunities"), list) else []
+    candidates: list[Any] = [
+        proposal.get("title"),
+        proposal.get("opportunity_title"),
+        feasibility.get("title"),
+        feasibility.get("opportunity_title"),
+        feasibility.get("opportunity_name"),
+    ]
+    for item in opportunities[:3]:
+        if isinstance(item, dict):
+            candidates.extend([item.get("title"), item.get("name"), item.get("label")])
+    candidates.extend([opportunity_id, feasibility.get("opportunity_id")])
+    return [candidate for candidate in candidates if str(candidate or "").strip()]
 
 
 def _workspace_slug_for_artifacts(workspace_id: str) -> str:
@@ -2047,7 +2114,7 @@ def _proposal_payload(artifact: dict[str, Any]) -> dict[str, Any]:
     corpus = artifact.get("corpus", {})
     market = artifact.get("market", {})
     opportunity_id = str(feasibility.get("opportunity_id") or "workspace-product")
-    title = opportunity_id.replace("-", " ").title()
+    title = _proposal_display_title(artifact, opportunity_id)
     narrative = (
         artifact.get("answer", {}).get("text")
         or artifact.get("narrative")
@@ -2162,11 +2229,11 @@ def _run_text_artifact(proposal: dict[str, Any], kind: str) -> dict[str, Any]:
 
 
 def _artifact_file_base(proposal: dict[str, Any], suffix: str) -> str:
-    slug = _slug(str(proposal.get("artifact_slug") or ""), "") or _slug(str(proposal.get("opportunity_id") or proposal.get("title") or "dataforge"))
+    slug = _artifact_name_slug(proposal.get("artifact_slug"), "") or _artifact_name_slug(proposal.get("title"), "") or _artifact_name_slug(proposal.get("opportunity_id"), "dataforge")
     version = str((proposal.get("doc_meta") or {}).get("version") or proposal.get("version") or "v1").strip().lower()
     if not re.fullmatch(r"v\d+", version):
         version = "v1"
-    clean_suffix = _slug(str(suffix or "artifact"), "artifact")
+    clean_suffix = _artifact_name_slug(suffix or "artifact", "artifact")
     return f"{slug}-{version}-{clean_suffix}"
 
 
@@ -2661,6 +2728,7 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
         "market": payload.get("market") or {},
         "audit": payload.get("audit") or {},
         "answer": payload.get("answer") or {},
+        "proposal": payload.get("proposal") or {},
         "reference_images": payload.get("reference_images") or [],
         "narrative": payload.get("narrative") or payload.get("text"),
     }
