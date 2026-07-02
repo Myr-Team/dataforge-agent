@@ -121,8 +121,12 @@ FOLLOWUP_ASSESSMENT_SCHEMA = {
         },
         "clarify": {"type": "string"},
         "should_clarify": {"type": "boolean"},
+        "clarify_options": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
     },
-    "required": ["text", "assessment", "gaps", "clarify", "should_clarify"],
+    "required": ["text", "assessment", "gaps", "clarify", "should_clarify", "clarify_options"],
 }
 
 
@@ -1254,19 +1258,31 @@ def run_followup_assessment(payload: dict[str, Any]) -> dict[str, Any]:
         "You are the lightweight DataForge follow-up evaluator. Use only the provided last_analysis, "
         "previous assistant answer, workspace summary, and current user message. Do not rerun retrieval, "
         "market research, feasibility scoring, or audit. Judge whether the user's new idea or constraint "
-        "is supported by the previous evidence, identify the most important missing information, and ask "
-        "one concise clarifying question only when the user intent is ambiguous or there is no meaningful "
-        "provisional answer from the provided context. If the user explicitly asks for a recommendation "
-        "based on current evidence, give a calibrated provisional recommendation, state assumptions and "
-        "evidence gaps, and turn missing budget, timing, metric, or data-source details into validation "
-        "steps instead of blocking the answer. Set should_clarify=false in that case. Do not use a keyword "
-        "checklist or scenario-specific templates. Never invent workspace facts. Return JSON only, in the user's language."
+        "is supported by the previous evidence.\n\n"
+        "Formatting: write `text` as clean Markdown, never one run-on paragraph strung together with "
+        "semicolons. Start with a one-sentence lead-in, then 1-3 short `##` section headers driven by the "
+        "actual content (not a fixed template like '业务目标/数据维度'), each followed by `-` bullet points "
+        "for concrete items. Keep it tight and skimmable.\n\n"
+        "Clarifying question: by default, ask one concise clarifying question only when the user intent is "
+        "ambiguous or there is no meaningful provisional answer from the provided context; otherwise give a "
+        "calibrated provisional recommendation and turn missing budget, timing, metric, or data-source "
+        "details into validation steps instead of blocking the answer (should_clarify=false, "
+        "clarify_options=[]).\n"
+        "Exception: if the user's own message explicitly asks you to push back or clarify when evidence is "
+        "insufficient (e.g. '如果证据不够，请反问我' / 'ask me if unclear'), and there is a real, material "
+        "evidence gap for what they are asking, honor that instead of defaulting to a provisional answer: "
+        "set should_clarify=true, write one focused question in `clarify`, and give 2-4 short (<=12 "
+        "characters each), concrete, mutually exclusive choices in `clarify_options` the user can click "
+        "instead of typing (distinct next-step directions or scope options grounded in the evidence, not "
+        "generic filler). Leave clarify_options=[] whenever should_clarify is false.\n\n"
+        "Do not use a keyword checklist or scenario-specific templates. Never invent workspace facts. "
+        "Return JSON only, in the user's language."
     )
     create_args: dict[str, Any] = {
         "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
-        "max_output_tokens": 850,
+        "max_output_tokens": 900,
         "text": _schema_format("followup_assessment", FOLLOWUP_ASSESSMENT_SCHEMA),
     }
     try:
@@ -1279,12 +1295,14 @@ def run_followup_assessment(payload: dict[str, Any]) -> dict[str, Any]:
     text = getattr(response, "output_text", "") or ""
     data = _extract_json(text)
     gaps = [str(item).strip() for item in (data.get("gaps") or []) if str(item).strip()]
+    clarify_options = [str(item).strip() for item in (data.get("clarify_options") or []) if str(item).strip()]
     return {
         "text": str(data.get("text") or "").strip(),
         "assessment": str(data.get("assessment") or "unclear"),
         "gaps": gaps[:6],
         "clarify": str(data.get("clarify") or "").strip(),
         "should_clarify": bool(data.get("should_clarify")),
+        "clarify_options": clarify_options[:4],
         "response_id": getattr(response, "id", None),
         "usage": _usage_dict(getattr(response, "usage", None)),
         "mode": "followup_assessment",

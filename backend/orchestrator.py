@@ -4617,6 +4617,35 @@ async def _emit_lightweight_final(
     # 原始表名/列名（如 signal_density、surrounding_env），不替换就会让客户看到
     # 半生不熟的占位词甚至裸字段名。
     field_labels = _workspace_field_labels(req.workspace_id)
+    gaps = [
+        sanitize_customer_text(_strip_raw_ref_leaks(str(item).strip()), field_labels)
+        for item in (result.get("gaps") or [])
+        if str(item).strip()
+    ]
+    clarify_text = str(result.get("clarify") or "").strip()
+    clarify_text = sanitize_customer_text(_strip_raw_ref_leaks(clarify_text), field_labels) if clarify_text else ""
+    clarify_options = [
+        sanitize_customer_text(_strip_raw_ref_leaks(str(item).strip()), field_labels)
+        for item in (result.get("clarify_options") or [])
+        if str(item).strip()
+    ]
+    clarify_payload = (
+        {"question": clarify_text, "reason": "followup_needs_scope", "options": clarify_options}
+        if clarify_text and result.get("should_clarify")
+        else None
+    )
+    if clarify_payload:
+        # 证据不够、且用户明确要求"不够就反问"时，直接给带选项的反问卡片，
+        # 别再把叙述性 text 先流式吐出来再被反问卡片盖掉——两段内容会打架。
+        await run_in_threadpool(
+            _persist_assistant_message,
+            conv_id,
+            req.workspace_id,
+            clarify_text,
+            "clarify",
+        )
+        yield _frame("clarify", {"question": clarify_text, "options": clarify_options}, conv_id)
+        return
     text = sanitize_customer_text(
         _strip_raw_ref_leaks(str(result.get("text") or "").strip() or "我可以继续帮你处理当前工作区。"),
         field_labels,
@@ -4626,13 +4655,6 @@ async def _emit_lightweight_final(
         yield _frame("answer_delta", {"delta": delta}, conv_id)
         await asyncio.sleep(0)
     meta = {key: result.get(key) for key in ("mode", "response_id", "usage", "error") if key in result}
-    gaps = [
-        sanitize_customer_text(_strip_raw_ref_leaks(str(item).strip()), field_labels)
-        for item in (result.get("gaps") or [])
-        if str(item).strip()
-    ]
-    clarify_text = str(result.get("clarify") or "").strip()
-    clarify_payload = {"question": clarify_text, "reason": "followup_needs_scope"} if clarify_text else None
     artifact["mode"] = "followup" if decision.intent == "followup_edit" else "analysis"
     artifact["followup"] = {
         "assessment": result.get("assessment"),
