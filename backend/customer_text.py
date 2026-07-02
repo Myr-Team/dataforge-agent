@@ -14,6 +14,7 @@ GENERIC_TOKEN_LABELS = {
     "asset": "资产",
     "avg": "平均",
     "average": "平均",
+    "battery": "电量",
     "bucket": "时段",
     "branch": "门店",
     "brand": "品牌",
@@ -39,11 +40,15 @@ GENERIC_TOKEN_LABELS = {
     "devices": "设备",
     "duration": "时长",
     "dwell": "停留",
+    "env": "环境",
+    "environment": "环境",
     "event": "活动",
     "first": "首次",
     "floor": "楼层",
     "frequency": "频次",
+    "gap": "缺口",
     "goal": "目标",
+    "gps": "定位",
     "group": "分组",
     "home": "归属",
     "hour": "时段",
@@ -68,6 +73,7 @@ GENERIC_TOKEN_LABELS = {
     "price": "价格",
     "product": "产品",
     "purchase": "购买",
+    "quality": "质量",
     "rate": "比例",
     "ratio": "比例",
     "region": "区域",
@@ -78,6 +84,7 @@ GENERIC_TOKEN_LABELS = {
     "retention": "留存",
     "risk": "风险",
     "revenue": "收入",
+    "route": "路径",
     "score": "评分",
     "segment": "客群",
     "signal": "信号",
@@ -89,7 +96,10 @@ GENERIC_TOKEN_LABELS = {
     "status": "状态",
     "store": "门店",
     "support": "服务",
+    "surrounding": "周边",
     "tag": "标签",
+    "temp": "温度",
+    "temperature": "温度",
     "time": "时间",
     "topic": "主题",
     "transit": "交通",
@@ -231,6 +241,9 @@ def sanitize_customer_text(text: Any, field_labels: dict[str, str] | None = None
     value = re.sub(r"\[?(?:raw_docs|external)/[^\]\s,;，。；：）)]+#?[^\]\s,;，。；：）)]*\]?", "", value)
     value = re.sub(r"\[?profile\.json[^\]\s,;，。；：）)]*\]?", "", value)
     value = re.sub(r"\b(?:chunk_id|source_file|workspace_id|document_type|content_vector)\b", "", value)
+    # SQL 连接器导入的表在内部按 sql-<schema>-<table> 命名（如 sql-dbo-route_quality），
+    # 这个前缀是内部命名约定，不该原样漏给客户，剥掉后剩的表名再走下面的友好名替换。
+    value = re.sub(r"\bsql[-_][A-Za-z0-9]+[-_]", "", value, flags=re.IGNORECASE)
     for pattern, replacement in CUSTOMER_TERM_REPLACEMENTS:
         value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
     for raw, label in sorted((field_labels or {}).items(), key=lambda item: len(item[0]), reverse=True):
@@ -419,6 +432,17 @@ def _replace_leftover_identifier(match: re.Match[str]) -> str:
     lowered = value.lower()
     if "batch" in lowered or lowered.endswith(("signals", "records", "metrics", "table")):
         return "资料集合"
+    # 优先按词根拼出有意义的标签（如 signal_density -> 信号密度），
+    # 拼不出来才退回通用占位词——避免不同表名/字段名都被替换成同一句
+    # "数据字段"，读起来像坏掉的模板。
+    tokens = [token for token in field_tokens(value) if token not in {"the", "a", "an"}]
+    mapped = [GENERIC_TOKEN_LABELS[token] for token in tokens if token in GENERIC_TOKEN_LABELS]
+    if mapped:
+        seen: list[str] = []
+        for label in mapped:
+            if label not in seen:
+                seen.append(label)
+        return _compact_label("".join(seen))
     return "数据字段"
 
 
