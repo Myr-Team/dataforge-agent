@@ -958,11 +958,14 @@ def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tu
     heavy = auto_analyze or requested_analysis_mode or (_explicit_heavy_analysis_requested(current_message) and not workspace_followup)
     if (
         last_analysis
-        and ((req.conversation_id and history) or workspace_followup)
         and not heavy
         and not wants_artifact
         and not market_context
     ):
+        # 工作区已有完整分析时，默认把 chat 消息当作对该分析的追问处理——
+        # 不再要求"已有会话历史"或命中关键词白名单，否则全新会话的第一句
+        # 具体追问（如"目标客户主要是谁"）会被误判成普通语料检索，答不上来
+        # 已知内容，还吐出跟已有分析无关的"证据不足"模板。
         decision = RoutingDecision(
             workspace_id=req.workspace_id,
             intent="followup_edit",
@@ -970,7 +973,7 @@ def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tu
             output_mode="chat",
             needs_clarification=False,
             clarifying_question=None,
-            reason="同会话短追问命中快速路径，复用上一轮上下文，跳过 coordinator、检索和市场工具。",
+            reason="工作区已有完整分析，命中快速路径复用分析结果作答，跳过 coordinator、检索和市场工具。",
         )
         return decision, {
             "mode": "preflight_followup_route",
