@@ -4613,8 +4613,10 @@ async def _emit_lightweight_final(
     history: list[dict[str, Any]],
 ) -> AsyncIterator[str]:
     result = await run_in_threadpool(_lightweight_reply, req, decision, history)
-    fast_path = (artifact.get("routing_meta") or {}).get("fast_path")
-    field_labels = {} if fast_path else _workspace_field_labels(req.workspace_id)
+    # 别再按 fast_path 跳过字段友好名替换——轻量跟进路径同样会在文本里带出
+    # 原始表名/列名（如 signal_density、surrounding_env），不替换就会让客户看到
+    # 半生不熟的占位词甚至裸字段名。
+    field_labels = _workspace_field_labels(req.workspace_id)
     text = sanitize_customer_text(
         _strip_raw_ref_leaks(str(result.get("text") or "").strip() or "我可以继续帮你处理当前工作区。"),
         field_labels,
@@ -4624,7 +4626,11 @@ async def _emit_lightweight_final(
         yield _frame("answer_delta", {"delta": delta}, conv_id)
         await asyncio.sleep(0)
     meta = {key: result.get(key) for key in ("mode", "response_id", "usage", "error") if key in result}
-    gaps = [str(item).strip() for item in (result.get("gaps") or []) if str(item).strip()]
+    gaps = [
+        sanitize_customer_text(_strip_raw_ref_leaks(str(item).strip()), field_labels)
+        for item in (result.get("gaps") or [])
+        if str(item).strip()
+    ]
     clarify_text = str(result.get("clarify") or "").strip()
     clarify_payload = {"question": clarify_text, "reason": "followup_needs_scope"} if clarify_text else None
     artifact["mode"] = "followup" if decision.intent == "followup_edit" else "analysis"
