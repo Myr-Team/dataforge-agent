@@ -35,3 +35,17 @@ The forced runtime failure recorded `fallback_attempts=1`. Token usage is absent
 - `npm run build` in `web`: passed; 1,750 modules transformed.
 - `python -m pytest -q`: 103 passed, 1 failed. The failure is outside Task 6 ownership in `tests/test_tracing_telemetry.py::test_agent_trace_emits_foundry_agent_identity_without_raw_actor_email`; the installed OpenTelemetry `Status` object representation does not contain the test's expected `OK` string.
 - No deployment or canary environment changes were performed.
+
+## Stable MAF Compatibility Fix (2026-07-12)
+
+Stable MAF collaboration now validates sequential participants against the runtime-checkable `SupportsAgentRun` protocol. The Task 6 deterministic fake previously exposed only `id`, `name`, and an async `run`, so `SequentialBuilder` rejected concurrent-case participants before execution.
+
+The deterministic fake now matches the stable Task 3 test-double contract: it exposes `description`, stream-aware `run`, `AgentResponse`/`ResponseStream` results, and `create_session`/`get_session`, while retaining queued local outputs and injected failures with no network calls. Regression coverage verifies both direct protocol acceptance by `SequentialBuilder` and execution of every configured case.
+
+Exact verification results:
+
+- `python -m pytest tests/test_maf_evaluation_contract.py -q`: 7 passed, 1 upstream MAF experimental-workflow warning, in 3.63 seconds.
+- `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`: completed all 7 cases. Metrics were `selection_accuracy=1.0`, `groundedness=1.0`, `unsupported_claim_rate=0.0`, `latency_ms=37.236957`, `tokens=null/unknown`, `task_completion=1.0`, and `fallback_rate=0.142857`. The forced failure retained `fallback_attempts=1`.
+- `python -m pytest -q`: 135 passed, 1 upstream MAF experimental-workflow warning, in 7.98 seconds.
+- `npm run build` in `web`: passed; Vite 8.0.16 transformed 1,751 modules and built in 488 ms.
+- No deployment or canary environment changes were performed.

@@ -4,8 +4,12 @@ import asyncio
 import json
 from pathlib import Path
 
+from agent_framework import SupportsAgentRun
+from agent_framework_orchestrations import SequentialBuilder
+
 from eval.run_maf_runtime_eval import (
     REQUIRED_METRICS,
+    _DeterministicRegistry,
     empty_report_schema,
     run_deterministic_evaluation,
 )
@@ -79,8 +83,17 @@ def test_empty_report_marks_every_metric_unknown_instead_of_defaulting_to_succes
         assert metric["sample_size"] == 0
 
 
+def test_deterministic_fake_satisfies_stable_agent_builder_protocol() -> None:
+    registry = _DeterministicRegistry(_cases()[0])
+    agent = registry.agent("df-coordinator")
+
+    assert isinstance(agent, SupportsAgentRun)
+    assert SequentialBuilder(participants=[agent]).build() is not None
+
+
 def test_deterministic_eval_measures_metrics_and_preserves_unknown_tokens() -> None:
     report = asyncio.run(run_deterministic_evaluation(CASES))
+    cases = _cases()
 
     assert report["mode"] == "deterministic"
     assert set(report["metrics"]) == REQUIRED_METRICS
@@ -90,6 +103,9 @@ def test_deterministic_eval_measures_metrics_and_preserves_unknown_tokens() -> N
     assert report["metrics"]["tokens"]["status"] == "unknown"
     assert report["metrics"]["fallback_rate"]["value"] > 0
     assert {case["actual_pattern"] for case in report["cases"]} == EXPECTED_PATTERNS
+    assert {case["case_id"] for case in report["cases"]} == {
+        case["id"] for case in cases
+    }
 
 
 def test_forced_runtime_failure_falls_back_exactly_once() -> None:

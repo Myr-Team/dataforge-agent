@@ -16,6 +16,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from agent_framework import (  # noqa: E402
+    AgentResponse,
+    AgentResponseUpdate,
+    AgentSession,
+    ResponseStream,
+)
 from backend.maf_team_runtime import (  # noqa: E402
     MafTeamRequest,
     MafTeamRuntime,
@@ -64,9 +70,18 @@ class _DeterministicAgent:
     def __init__(self, agent_id: str, registry: "_DeterministicRegistry") -> None:
         self.id = agent_id
         self.name = agent_id
+        self.description = f"Deterministic {agent_id}"
         self._registry = registry
 
-    async def run(self, _payload: str) -> dict[str, Any]:
+    @staticmethod
+    def _payload_text(messages: Any) -> str:
+        if isinstance(messages, str):
+            return messages
+        if isinstance(messages, list) and messages:
+            return str(getattr(messages[-1], "text", "{}") or "{}")
+        return "{}"
+
+    async def _execute(self, payload: str) -> dict[str, Any]:
         self._registry.calls.append(self.id)
         await asyncio.sleep(0)
         failure = self._registry.failures.get(self.id)
@@ -74,6 +89,37 @@ class _DeterministicAgent:
             raise failure
         queued = self._registry.outputs[self.id]
         return queued.popleft() if queued else {"completed": True}
+
+    def run(self, messages: Any = None, *, stream: bool = False, **_kwargs: Any) -> Any:
+        payload = self._payload_text(messages)
+        if not stream:
+            async def complete() -> AgentResponse[dict[str, Any]]:
+                output = await self._execute(payload)
+                return AgentResponse(messages=[], agent_id=self.id, value=output)
+
+            return complete()
+
+        holder: dict[str, dict[str, Any]] = {}
+
+        async def updates():
+            holder["output"] = await self._execute(payload)
+            yield AgentResponseUpdate(agent_id=self.id)
+
+        def finalize(_updates: Any) -> AgentResponse[dict[str, Any]]:
+            return AgentResponse(messages=[], agent_id=self.id, value=holder["output"])
+
+        return ResponseStream(updates(), finalizer=finalize)
+
+    def create_session(self, *, session_id: str | None = None) -> AgentSession:
+        return AgentSession(session_id=session_id)
+
+    def get_session(
+        self,
+        service_session_id: str,
+        *,
+        session_id: str | None = None,
+    ) -> AgentSession:
+        return AgentSession(service_session_id=service_session_id, session_id=session_id)
 
 
 class _DeterministicRegistry:
