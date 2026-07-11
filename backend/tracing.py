@@ -113,6 +113,16 @@ def _otel_event_attributes(data: dict[str, Any]) -> dict[str, Any]:
     return attributes
 
 
+def _set_span_status(span: Any, status_name: str, description: str | None = None) -> None:
+    try:
+        from opentelemetry.trace import Status, StatusCode
+
+        code = StatusCode.OK if status_name == "OK" else StatusCode.ERROR
+        span.set_status(Status(code, description))
+    except ImportError:
+        span.set_status(status_name)
+
+
 @contextmanager
 def agent_trace(
     *,
@@ -147,12 +157,15 @@ def agent_trace(
         except Exception as exc:
             try:
                 span.record_exception(exc)
-                from opentelemetry.trace.status import Status, StatusCode
-
-                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                _set_span_status(span, "ERROR", type(exc).__name__)
             except Exception:
                 pass
             raise
+        else:
+            try:
+                _set_span_status(span, "OK")
+            except Exception:
+                pass
         finally:
             _CURRENT_AGENT_SPAN.reset(token)
 

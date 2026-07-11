@@ -7,6 +7,7 @@ class _FakeSpan:
     def __init__(self) -> None:
         self.attributes: dict[str, object] = {}
         self.events: list[tuple[str, dict[str, object]]] = []
+        self.statuses: list[object] = []
 
     def set_attribute(self, key: str, value: object) -> None:
         self.attributes[key] = value
@@ -20,8 +21,8 @@ class _FakeSpan:
     def record_exception(self, _exc: BaseException) -> None:
         return None
 
-    def set_status(self, _status: object) -> None:
-        return None
+    def set_status(self, status: object) -> None:
+        self.statuses.append(status)
 
 
 class _SpanContext:
@@ -96,3 +97,5 @@ def test_agent_trace_emits_foundry_agent_identity_without_raw_actor_email() -> N
     assert attributes["enduser.id"]
     assert "person@example.com" not in repr(attributes)
     assert tracer.span.events[0][0] == "dataforge.ready"
+    assert tracer.span.statuses
+    assert "OK" in repr(tracer.span.statuses[-1])
