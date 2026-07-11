@@ -18,6 +18,7 @@ from agent_framework import (
 from backend import maf_team_runtime
 from backend.maf_contracts import CollaborationPattern
 from backend.maf_team_runtime import (
+    MafRuntimeEvent,
     MafTeamRequest,
     MafTeamRuntime,
     TransientAgentError,
@@ -228,6 +229,143 @@ async def test_direct_path_invokes_only_registry_coordinator(fake_registry: Fake
     assert isinstance(runtime.last_workflow, FunctionalWorkflow)
     assert fake_registry.calls == ["df-coordinator"]
     assert result.summary.mode == "direct"
+
+
+@pytest.mark.asyncio
+async def test_unknown_agent_telemetry_is_omitted(fake_registry: FakeRegistry):
+    request = MafTeamRequest(
+        intent="qa",
+        output_mode="chat",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=False,
+        payload={"query": "summarize"},
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    completed = next(event for event in result.events if event.event == "maf_agent_completed")
+    payload = completed.model_dump(mode="json", exclude_none=True)
+    for key in (
+        "response_id",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "retry_count",
+        "tool_names",
+        "cache_hit",
+    ):
+        assert key not in payload
+
+
+def test_typed_agent_telemetry_rejects_unsafe_identifiers() -> None:
+    with pytest.raises(ValueError):
+        MafRuntimeEvent(
+            sequence=1,
+            event="maf_agent_completed",
+            status="completed",
+            agent_id="df-coordinator",
+            response_id="person@example.com",
+        )
+    with pytest.raises(ValueError):
+        MafRuntimeEvent(
+            sequence=1,
+            event="maf_agent_completed",
+            status="completed",
+            agent_id="df-coordinator",
+            tool_names=("search_pack_context", "AccountKey=secret"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_completed_agent_event_carries_only_bounded_safe_telemetry(fake_registry: FakeRegistry):
+    secret_prompt = "private customer prompt"
+    secret_email = "person@example.com"
+    fake_registry.outputs["df-coordinator"].append(
+        {
+            "answer": "bounded result",
+            "_llm": {
+                "response_id": "resp-safe-1",
+                "usage": {"input_tokens": 21, "output_tokens": 8, "total_tokens": 29},
+                "retry_count": 2,
+                "tool_names": [
+                    "search_pack_context",
+                    "render_pdf_report",
+                    secret_email,
+                    *[f"tool_{index}" for index in range(20)],
+                ],
+                "cache": {"hit": True},
+                "prompt": secret_prompt,
+                "evidence": "private evidence row",
+                "credentials": "AccountKey=secret",
+                "email": secret_email,
+            },
+        }
+    )
+    request = MafTeamRequest(
+        intent="qa",
+        output_mode="chat",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=False,
+        payload={"query": secret_prompt},
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    completed = next(
+        event
+        for event in result.events
+        if event.event == "maf_agent_completed" and event.agent_id == "df-coordinator"
+    )
+    assert completed.response_id == "resp-safe-1"
+    assert completed.input_tokens == 21
+    assert completed.output_tokens == 8
+    assert completed.total_tokens == 29
+    assert completed.retry_count == 2
+    assert completed.tool_names[:2] == ("search_pack_context", "render_pdf_report")
+    assert len(completed.tool_names) == 12
+    assert completed.cache_hit is True
+    assert completed.started_ns is not None
+    assert completed.completed_ns is not None
+    assert completed.completed_ns >= completed.started_ns
+    assert completed.duration_ms == pytest.approx(
+        (completed.completed_ns - completed.started_ns) / 1_000_000
+    )
+    serialized = repr(completed)
+    for secret in (secret_prompt, secret_email, "private evidence row", "AccountKey=secret"):
+        assert secret not in serialized
+
+
+@pytest.mark.asyncio
+async def test_concurrent_branch_completion_carries_safe_telemetry(fake_registry: FakeRegistry):
+    fake_registry.outputs["df-corpus-analyst"].clear()
+    fake_registry.outputs["df-corpus-analyst"].append(
+        {
+            "hits": [{"id": "workspace-1"}],
+            "_llm": {
+                "response_id": "resp-corpus-1",
+                "usage": {"input_tokens": 13, "output_tokens": 5, "total_tokens": 18},
+                "tool_names": ["search_pack_context"],
+                "cache_hit": False,
+            },
+        }
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(concurrent_request())
+
+    completed = next(
+        event
+        for event in result.events
+        if event.event == "maf_agent_completed" and event.agent_id == "df-corpus-analyst"
+    )
+    assert completed.response_id == "resp-corpus-1"
+    assert completed.total_tokens == 18
+    assert completed.tool_names == ("search_pack_context",)
+    assert completed.cache_hit is False
+    assert completed.started_ns is not None
+    assert completed.completed_ns is not None
+    assert completed.completed_ns >= completed.started_ns
 
 
 @pytest.mark.asyncio

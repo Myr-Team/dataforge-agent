@@ -79,3 +79,55 @@ Both fail because `eval/run_maf_runtime_eval.py::_DeterministicAgent` is rejecte
 
 - The current typed runtime events contain participant duration/status/branch/handoff data but do not carry token usage, tool names, or retry counts. The span API records those values when supplied and otherwise omits unknown values rather than fabricating them.
 - The deterministic evaluation double needs to adopt the same current `SupportsAgentRun` contract used by `tests/test_maf_team_runtime.py`, but that fix belongs to its owner.
+
+## Review Fix: Terminal Ownership, Safe Metadata, and Persistence
+
+This section supersedes the first concern above. Typed completion events now carry observed safe metadata when present and omit unknown fields.
+
+### RED
+
+Tests were added before the review implementation for:
+
+- post-runtime event adaptation failure without legacy fallback;
+- post-runtime finalization failure after an answer delta without legacy fallback;
+- `asyncio.CancelledError` propagation without fallback or legacy execution;
+- legacy-compatible `model_response` frames and actual participant span inputs;
+- direct and concurrent completion-event metadata extraction and redaction;
+- real `start_run` / `record_event` / `complete_run` / `list_runs` / `get_run` persistence and schema parity;
+- actual measured participant `started_ns` / `completed_ns` attributes;
+- omission of unknown telemetry fields;
+- typed-contract rejection of unsafe response and tool identifiers;
+- redaction of unsafe model-response tool names and customer content.
+
+Initial focused RED result: `7 failed, 29 passed, 1 warning`. The cancellation test already passed because `CancelledError` was not caught by `Exception`; the implementation now preserves that behavior explicitly. The timing RED check then failed in both the runtime event and tracing API because measured start/end fields were absent. The unknown-field RED check failed because `tool_names` serialized as an empty list instead of being omitted.
+
+### Implementation
+
+- The fallback catch now encloses only authorization-bound registry construction and `MafTeamRuntime.run(...)`. Runtime cancellation is explicitly re-raised.
+- Once a typed MAF result exists, adaptation/finalization has separate terminal ownership. A failure emits one redacted `error` and one `final`, records `maf_terminal_error`, returns, and never enters legacy execution.
+- Completed agent events carry bounded `response_id`, token counts, retry count, up to 12 safe tool names, cache state, status/error category, and actual monotonic start/end measurements. Unknown metadata is omitted.
+- Direct invocation and isolated concurrent branches both extract the same safe projection from normalized output metadata and Agent Framework response metadata. Prompt, message, evidence, credential, email, and arbitrary metadata fields are not copied to events.
+- Every successful completion emits a legacy-compatible `model_response` containing only agent/mode/status plus observed safe metadata and usage.
+- Participant observation spans receive the event's actual timing and metadata. No unknown retry, token, tool, cache, response, or timing value is fabricated.
+- MAF run summaries consume token counts from typed completion events. A real persistence-path test validates list/detail MAF parity, model usage persistence, and `RunSummary` / `RunDetailResponse` validation.
+
+### GREEN
+
+Focused Task 2-4 command:
+
+```powershell
+python -m pytest tests/test_maf_contracts.py tests/test_maf_agents.py tests/test_maf_team_runtime.py tests/test_maf_integration.py tests/test_tracing_telemetry.py -q
+```
+
+Result: `69 passed, 1 warning in 5.78s`. The warning is the upstream experimental Functional Workflow warning.
+
+Static gates:
+
+```powershell
+git diff --check
+python -m compileall -q backend tests
+```
+
+Result: both exited successfully.
+
+Full suite result: `132 passed, 2 failed, 1 warning in 7.57s`. The only failures remain the Task 6 deterministic evaluation fake in `tests/test_maf_evaluation_contract.py`; `_DeterministicAgent` does not implement the installed Agent Framework `SupportsAgentRun` protocol. Per instruction, no evaluation file was edited.

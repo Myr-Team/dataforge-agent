@@ -683,9 +683,9 @@ def _maf_summary(run: dict[str, Any]) -> dict[str, Any] | None:
             if isinstance(data.get("duration_ms"), (int, float)):
                 duration_ms += max(0.0, float(data["duration_ms"]))
             usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-            token_usage["prompt"] += int(usage.get("input_tokens") or 0)
-            token_usage["completion"] += int(usage.get("output_tokens") or 0)
-            token_usage["total"] += int(usage.get("total_tokens") or 0)
+            token_usage["prompt"] += int(data.get("input_tokens") or usage.get("input_tokens") or 0)
+            token_usage["completion"] += int(data.get("output_tokens") or usage.get("output_tokens") or 0)
+            token_usage["total"] += int(data.get("total_tokens") or usage.get("total_tokens") or 0)
         elif event == "maf_review":
             for code in data.get("reason_codes") or []:
                 match = re.fullmatch(r"revision:(\d+)", str(code))

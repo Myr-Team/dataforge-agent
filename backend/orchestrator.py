@@ -5515,6 +5515,15 @@ def _record_maf_agent_span(
     if event.event != "maf_agent_completed" or not event.agent_id:
         return
     source, target = handoffs.get(event.agent_id, ("", ""))
+    token_usage = {
+        key: value
+        for key, value in (
+            ("input_tokens", event.input_tokens),
+            ("output_tokens", event.output_tokens),
+            ("total_tokens", event.total_tokens),
+        )
+        if value is not None
+    }
     with maf_agent_trace(
         agent_id=event.agent_id,
         agent_name=_MAF_AGENT_NAMES.get(event.agent_id, event.agent_id),
@@ -5527,6 +5536,13 @@ def _record_maf_agent_span(
         handoff_source=source or None,
         handoff_target=target or None,
         duration_ms=event.duration_ms,
+        started_ns=event.started_ns,
+        completed_ns=event.completed_ns,
+        response_id=event.response_id,
+        token_usage=token_usage or None,
+        retry_count=event.retry_count,
+        tool_names=event.tool_names or (),
+        cache_hit=event.cache_hit,
         status=event.status,
         error_category=event.error_category,
     ):
@@ -5541,6 +5557,40 @@ def _record_maf_agent_span(
             },
             conversation_id,
         )
+
+
+def _maf_model_response_payload(
+    event: MafRuntimeEvent,
+    result: MafTeamRunResult,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "agent": event.agent_id,
+        "orchestrator": "maf_full",
+        "mode": result.summary.mode,
+        "status": event.status,
+    }
+    if event.response_id:
+        payload["response_id"] = event.response_id
+    usage = {
+        key: value
+        for key, value in (
+            ("input_tokens", event.input_tokens),
+            ("output_tokens", event.output_tokens),
+            ("total_tokens", event.total_tokens),
+        )
+        if value is not None
+    }
+    if usage:
+        payload["usage"] = usage
+    if event.retry_count is not None:
+        payload["retry_count"] = event.retry_count
+    if event.tool_names:
+        payload["tool_names"] = list(event.tool_names)
+    if event.cache_hit is not None:
+        payload["cache_hit"] = event.cache_hit
+    if event.error_category:
+        payload["error_category"] = event.error_category
+    return payload
 
 
 def _merge_maf_artifact(artifact: dict[str, Any], result: MafTeamRunResult) -> None:
@@ -5572,6 +5622,12 @@ async def _emit_full_maf_result(
         payload = _maf_event_payload(event)
         yield _frame(event.event, payload, conversation_id)
         _record_maf_agent_span(event, result, req, conversation_id, actor, handoffs)
+        if event.event == "maf_agent_completed" and event.status == "completed" and event.agent_id:
+            yield _frame(
+                "model_response",
+                _maf_model_response_payload(event, result),
+                conversation_id,
+            )
         if event.event == "maf_agent_started" and event.agent_id:
             yield _frame(
                 "role_change",
@@ -5631,6 +5687,50 @@ async def _emit_full_maf_result(
         await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
     complete_run(conversation_id, status="completed", final=final_payload, artifact=artifact)
     yield _frame("final", final_payload, conversation_id)
+
+
+def _maf_terminal_failure_frames(
+    decision: RoutingDecision,
+    artifact: dict[str, Any],
+    conversation_id: str,
+    error: Exception,
+) -> tuple[str, str]:
+    error_payload = {
+        "agent": "maf-runtime",
+        "orchestrator": "maf_full",
+        "status": "error",
+        "error_type": type(error).__name__,
+        "error_category": _maf_error_category(error),
+        "message": "MAF response processing failed after runtime completion.",
+    }
+    maf = artifact.setdefault("maf", {})
+    if isinstance(maf, dict):
+        maf["status"] = "error"
+        maf["fallback"] = False
+        maf["error_category"] = error_payload["error_category"]
+    artifact.setdefault("output_contract", _output_contract(decision.intent))
+    summary = "MAF response processing failed after runtime completion. No legacy execution was started."
+    final_payload = {
+        "text": summary,
+        "mode": "analysis",
+        "routing": decision.model_dump(),
+        "artifact": artifact,
+        "output_contract": artifact["output_contract"],
+        "maf": artifact.get("maf"),
+        "error": error_payload,
+    }
+    error_frame = _frame("error", error_payload, conversation_id)
+    final_frame = _frame("final", final_payload, conversation_id)
+    try:
+        complete_run(
+            conversation_id,
+            status="maf_terminal_error",
+            final=final_payload,
+            artifact=artifact,
+        )
+    except Exception:
+        pass
+    return error_frame, final_frame
 
 
 async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
@@ -5779,17 +5879,8 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
     full_maf_result: MafTeamRunResult | None = None
     try:
         full_maf_result = await _try_full_maf_runtime(req, decision, artifact, conv_id)
-        if full_maf_result is not None:
-            async for frame in _emit_full_maf_result(
-                working_req,
-                decision,
-                artifact,
-                conv_id,
-                actor,
-                full_maf_result,
-            ):
-                yield frame
-            return
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         yield _frame(
             "maf_fallback",
@@ -5802,6 +5893,29 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
             },
             conv_id,
         )
+
+    if full_maf_result is not None:
+        try:
+            async for frame in _emit_full_maf_result(
+                working_req,
+                decision,
+                artifact,
+                conv_id,
+                actor,
+                full_maf_result,
+            ):
+                yield frame
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            for frame in _maf_terminal_failure_frames(
+                decision,
+                artifact,
+                conv_id,
+                exc,
+            ):
+                yield frame
+        return
 
     if "df-corpus-analyst" in decision.experts:
         fast_corpus_path = route_meta.get("fast_path") == "corpus_qa"

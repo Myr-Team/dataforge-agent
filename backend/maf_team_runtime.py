@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -18,7 +19,7 @@ from agent_framework import (
     workflow,
 )
 from agent_framework.orchestrations import SequentialBuilder
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .maf_agents import MafAgentRegistry
 from .maf_contracts import (
@@ -83,11 +84,11 @@ class RuntimeCollaborationPlan(CollaborationPlan):
 class MafRuntimeEvent(BaseModel):
     sequence: int = Field(ge=1)
     event: RuntimeEventName
-    status: str
-    agent_id: str | None = None
+    status: Literal["running", "completed", "failed", "revision_requested"]
+    agent_id: AgentId | None = None
     branch_id: str | None = None
-    source_agent_id: str | None = None
-    target_agent_id: str | None = None
+    source_agent_id: AgentId | None = None
+    target_agent_id: AgentId | None = None
     duration_ms: float | None = Field(default=None, ge=0)
     reason_codes: tuple[str, ...] = ()
     mode: str | None = None
@@ -95,7 +96,30 @@ class MafRuntimeEvent(BaseModel):
     skipped_agents: tuple[str, ...] = ()
     max_revisions: int | None = Field(default=None, ge=0, le=MAX_MAF_REVISIONS)
     verdict: str | None = None
-    error_category: str | None = None
+    error_category: Literal["transient", "content_policy", "contract_validation", "permanent"] | None = None
+    response_id: str | None = Field(default=None, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    retry_count: int | None = Field(default=None, ge=0, le=100)
+    tool_names: tuple[str, ...] | None = Field(default=None, max_length=12)
+    cache_hit: bool | None = None
+    started_ns: int | None = Field(default=None, ge=0)
+    completed_ns: int | None = Field(default=None, ge=0)
+
+    @field_validator("tool_names")
+    @classmethod
+    def _validate_tool_names(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        if any(
+            not name
+            or len(name) > 80
+            or _SAFE_TELEMETRY_NAME.fullmatch(name) is None
+            for name in value
+        ):
+            raise ValueError("tool_names must contain bounded telemetry identifiers")
+        return value
 
 
 class MafBranchResult(BaseModel):
@@ -252,6 +276,7 @@ class _BranchObservation:
     observed_ns: int
     output: dict[str, Any] = field(default_factory=dict)
     error_category: str | None = None
+    telemetry: dict[str, Any] = field(default_factory=dict)
 
 
 def _normalize_agent_output(response: Any) -> dict[str, Any]:
@@ -268,6 +293,106 @@ def _normalize_agent_output(response: Any) -> dict[str, Any]:
             return {"text": text}
         return dict(parsed) if isinstance(parsed, Mapping) else {"value": parsed}
     return {"value": value if value is not None else response}
+
+
+_SAFE_TELEMETRY_NAME = re.compile(r"^[A-Za-z0-9_.:-]+$")
+
+
+def _safe_telemetry_name(value: Any, *, limit: int) -> str | None:
+    text = str(value or "").strip()
+    if not text or len(text) > limit or not _SAFE_TELEMETRY_NAME.fullmatch(text):
+        return None
+    return text
+
+
+def _safe_nonnegative_int(value: Any, *, maximum: int | None = None) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    normalized = max(0, int(value))
+    return min(normalized, maximum) if maximum is not None else normalized
+
+
+def _safe_agent_telemetry(response: Any, output: Mapping[str, Any]) -> dict[str, Any]:
+    sources: list[Mapping[str, Any]] = []
+    for key in ("_llm", "telemetry", "metadata"):
+        value = output.get(key)
+        if isinstance(value, Mapping):
+            sources.append(value)
+    additional = getattr(response, "additional_properties", None)
+    if isinstance(additional, Mapping):
+        sources.append(additional)
+
+    response_id = _safe_telemetry_name(getattr(response, "response_id", None), limit=128)
+    if response_id is None:
+        response_id = next(
+            (
+                safe
+                for source in sources
+                if (safe := _safe_telemetry_name(source.get("response_id"), limit=128)) is not None
+            ),
+            None,
+        )
+
+    usage_sources: list[Mapping[str, Any]] = []
+    response_usage = getattr(response, "usage_details", None)
+    if isinstance(response_usage, Mapping):
+        usage_sources.append(response_usage)
+    for source in sources:
+        for key in ("usage", "token_usage"):
+            value = source.get(key)
+            if isinstance(value, Mapping):
+                usage_sources.append(value)
+
+    def token_value(*names: str) -> int | None:
+        for usage in usage_sources:
+            for name in names:
+                value = _safe_nonnegative_int(usage.get(name))
+                if value is not None:
+                    return value
+        return None
+
+    retry_count = next(
+        (
+            value
+            for source in sources
+            if (value := _safe_nonnegative_int(source.get("retry_count"), maximum=100)) is not None
+        ),
+        None,
+    )
+    tool_names: list[str] = []
+    for source in sources:
+        candidates = source.get("tool_names")
+        if not isinstance(candidates, (list, tuple)):
+            continue
+        for candidate in candidates:
+            safe = _safe_telemetry_name(candidate, limit=80)
+            if safe and safe not in tool_names:
+                tool_names.append(safe)
+            if len(tool_names) >= 12:
+                break
+        if len(tool_names) >= 12:
+            break
+
+    cache_hit: bool | None = None
+    for source in sources:
+        direct = source.get("cache_hit")
+        cache = source.get("cache")
+        nested = cache.get("hit") if isinstance(cache, Mapping) else None
+        candidate = direct if isinstance(direct, bool) else nested
+        if isinstance(candidate, bool):
+            cache_hit = candidate
+            break
+
+    metadata = {
+        "response_id": response_id,
+        "input_tokens": token_value("input_tokens", "input_token_count"),
+        "output_tokens": token_value("output_tokens", "output_token_count"),
+        "total_tokens": token_value("total_tokens", "total_token_count"),
+        "retry_count": retry_count,
+        "tool_names": tuple(tool_names),
+        "cache_hit": cache_hit,
+    }
+    return {key: value for key, value in metadata.items() if value is not None and value != ()}
 
 
 def _error_category(error: Exception) -> str:
@@ -416,23 +541,31 @@ class MafTeamRuntime:
                 json.dumps(payload, ensure_ascii=False, default=str)
             )
         except Exception as error:
+            completed_ns = time.perf_counter_ns()
             await state.emit(
                 "maf_agent_completed",
                 "failed",
                 agent_id=agent_id,
                 branch_id=branch_id,
-                duration_ms=(time.perf_counter_ns() - started_ns) / 1_000_000,
+                duration_ms=(completed_ns - started_ns) / 1_000_000,
                 error_category=_error_category(error),
+                started_ns=started_ns,
+                completed_ns=completed_ns,
             )
             return {}, error
         output = _normalize_agent_output(response)
+        telemetry = _safe_agent_telemetry(response, output)
         state.completed_agents.add(agent_id)
+        completed_ns = time.perf_counter_ns()
         await state.emit(
             "maf_agent_completed",
             "completed",
             agent_id=agent_id,
             branch_id=branch_id,
-            duration_ms=(time.perf_counter_ns() - started_ns) / 1_000_000,
+            duration_ms=(completed_ns - started_ns) / 1_000_000,
+            started_ns=started_ns,
+            completed_ns=completed_ns,
+            **telemetry,
         )
         return output, None
 
@@ -612,6 +745,7 @@ class MafTeamRuntime:
                         None,
                     )
                     if response is not None:
+                        output = _normalize_agent_output(response)
                         terminal_observed = True
                         await observations.put(
                             _BranchObservation(
@@ -620,7 +754,8 @@ class MafTeamRuntime:
                                 agent_id,
                                 required,
                                 observed_ns,
-                                output=_normalize_agent_output(response),
+                                output=output,
+                                telemetry=_safe_agent_telemetry(response, output),
                             )
                         )
                 elif framework_event.type == "executor_failed":
@@ -689,6 +824,9 @@ class MafTeamRuntime:
                 branch_id=observation.branch_id,
                 duration_ms=duration_ms,
                 error_category=observation.error_category,
+                started_ns=started,
+                completed_ns=observation.observed_ns,
+                **observation.telemetry,
             )
             await state.emit(
                 "maf_branch_joined",

@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
@@ -20,6 +21,7 @@ if not LOGGER.handlers:
 
 
 _CURRENT_AGENT_SPAN: ContextVar[Any | None] = ContextVar("dataforge_agent_span", default=None)
+_SAFE_TELEMETRY_NAME = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
 def _actor_fingerprint(actor: Any) -> str | None:
@@ -53,7 +55,6 @@ def _telemetry_event_data(event: str, data: Any) -> dict[str, Any]:
         "output_mode",
         "pattern",
         "provider",
-        "response_id",
         "revision",
         "status",
         "target_expert",
@@ -61,6 +62,28 @@ def _telemetry_event_data(event: str, data: Any) -> dict[str, Any]:
         "workspace_id",
     }
     safe: dict[str, Any] = {key: data[key] for key in safe_keys if key in data and data[key] is not None}
+
+    response_id = str(data.get("response_id") or "").strip()
+    if response_id and len(response_id) <= 128 and _SAFE_TELEMETRY_NAME.fullmatch(response_id):
+        safe["response_id"] = response_id
+    retry_count = data.get("retry_count")
+    if isinstance(retry_count, (int, float)) and not isinstance(retry_count, bool):
+        safe["retry_count"] = max(0, min(100, int(retry_count)))
+    if isinstance(data.get("cache_hit"), bool):
+        safe["cache_hit"] = data["cache_hit"]
+    if data.get("error_category") in {"transient", "content_policy", "contract_validation", "permanent"}:
+        safe["error_category"] = data["error_category"]
+    tool_names = data.get("tool_names")
+    if isinstance(tool_names, (list, tuple)):
+        bounded_names = [
+            name
+            for item in tool_names[:12]
+            if (name := str(item).strip())
+            and len(name) <= 80
+            and _SAFE_TELEMETRY_NAME.fullmatch(name)
+        ]
+        if bounded_names:
+            safe["tool_names"] = bounded_names
 
     actor = data.get("actor")
     actor_id = _actor_fingerprint(actor)
@@ -184,9 +207,13 @@ def maf_agent_trace(
     handoff_source: str | None = None,
     handoff_target: str | None = None,
     duration_ms: float | None = None,
+    started_ns: int | None = None,
+    completed_ns: int | None = None,
+    response_id: str | None = None,
     token_usage: dict[str, Any] | None = None,
-    retry_count: int = 0,
+    retry_count: int | None = None,
     tool_names: list[str] | tuple[str, ...] = (),
+    cache_hit: bool | None = None,
     status: str = "completed",
     error_category: str | None = None,
     tracer: Any | None = None,
@@ -207,7 +234,8 @@ def maf_agent_trace(
         span.set_attribute("gen_ai.agent.name", agent_name)
         span.set_attribute("dataforge.maf.collaboration_mode", collaboration_mode)
         span.set_attribute("dataforge.workspace.id", workspace_id)
-        span.set_attribute("dataforge.maf.retry_count", max(0, int(retry_count)))
+        if retry_count is not None:
+            span.set_attribute("dataforge.maf.retry_count", max(0, min(100, int(retry_count))))
         safe_status = status if status in {"completed", "failed"} else "unknown"
         span.set_attribute("dataforge.maf.status", safe_status)
         safe_error = error_category if error_category in {"transient", "content_policy", "contract_validation", "permanent"} else None
@@ -225,8 +253,24 @@ def maf_agent_trace(
             span.set_attribute("dataforge.maf.handoff.target", handoff_target)
         if duration_ms is not None:
             span.set_attribute("dataforge.maf.duration_ms", max(0.0, float(duration_ms)))
-        if tool_names:
-            span.set_attribute("dataforge.maf.tool_names", tuple(str(name) for name in tool_names))
+        if started_ns is not None:
+            span.set_attribute("dataforge.maf.started_ns", max(0, int(started_ns)))
+        if completed_ns is not None:
+            span.set_attribute("dataforge.maf.completed_ns", max(0, int(completed_ns)))
+        safe_response_id = str(response_id or "").strip()
+        if safe_response_id and len(safe_response_id) <= 128 and _SAFE_TELEMETRY_NAME.fullmatch(safe_response_id):
+            span.set_attribute("gen_ai.response.id", safe_response_id)
+        safe_tool_names = tuple(
+            name
+            for item in tool_names[:12]
+            if (name := str(item).strip())
+            and len(name) <= 80
+            and _SAFE_TELEMETRY_NAME.fullmatch(name)
+        )
+        if safe_tool_names:
+            span.set_attribute("dataforge.maf.tool_names", safe_tool_names)
+        if isinstance(cache_hit, bool):
+            span.set_attribute("dataforge.maf.cache_hit", cache_hit)
         usage = token_usage if isinstance(token_usage, dict) else {}
         for source, target in (
             ("input_tokens", "gen_ai.usage.input_tokens"),

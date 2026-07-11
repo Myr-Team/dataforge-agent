@@ -76,6 +76,33 @@ def test_telemetry_event_data_redacts_user_and_tool_content() -> None:
     assert "secret" not in repr(tool)
 
 
+def test_model_response_telemetry_keeps_only_bounded_safe_metadata() -> None:
+    safe = _telemetry_event_data(
+        "model_response",
+        {
+            "agent": "df-corpus-analyst",
+            "response_id": "resp-safe-1",
+            "usage": {"input_tokens": 12, "output_tokens": 4, "total_tokens": 16},
+            "retry_count": 1,
+            "tool_names": ["search_pack_context", "person@example.com"],
+            "cache_hit": False,
+            "error_category": "permanent",
+            "prompt": "private prompt",
+            "evidence": "private evidence",
+            "credentials": "AccountKey=secret",
+            "email": "person@example.com",
+        },
+    )
+
+    assert safe["retry_count"] == 1
+    assert safe["tool_names"] == ["search_pack_context"]
+    assert safe["cache_hit"] is False
+    assert safe["error_category"] == "permanent"
+    combined = repr(safe)
+    for secret in ("private prompt", "private evidence", "AccountKey=secret", "person@example.com"):
+        assert secret not in combined
+
+
 def test_agent_trace_emits_foundry_agent_identity_without_raw_actor_email() -> None:
     tracer = _FakeTracer()
 
@@ -121,9 +148,12 @@ def test_maf_agent_trace_has_redacted_collaboration_attributes() -> None:
         handoff_source="df-coordinator",
         handoff_target="df-corpus-analyst",
         duration_ms=42,
+        started_ns=1_000_000,
+        completed_ns=43_000_000,
         token_usage={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
         retry_count=1,
         tool_names=["search_pack_context"],
+        cache_hit=True,
         status="completed",
         error_category=None,
         tracer=tracer,
@@ -138,6 +168,9 @@ def test_maf_agent_trace_has_redacted_collaboration_attributes() -> None:
     assert attributes["dataforge.maf.handoff.source"] == "df-coordinator"
     assert attributes["dataforge.maf.handoff.target"] == "df-corpus-analyst"
     assert attributes["dataforge.maf.status"] == "completed"
+    assert attributes["dataforge.maf.cache_hit"] is True
+    assert attributes["dataforge.maf.started_ns"] == 1_000_000
+    assert attributes["dataforge.maf.completed_ns"] == 43_000_000
     assert attributes["enduser.id"]
     assert tracer.span.statuses[-1].status_code is StatusCode.OK
     combined = repr((attributes, tracer.span.events))
