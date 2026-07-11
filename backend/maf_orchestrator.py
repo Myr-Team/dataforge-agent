@@ -87,18 +87,18 @@ def graph_description(max_revisions: int) -> dict[str, Any]:
         "framework": "Microsoft Agent Framework",
         "framework_version": "1.0 (GA)",
         "package": "agent-framework",
-        "pattern": "graph workflow · conditional cyclic edges",
+        "pattern": "graph workflow with conditional cyclic edges",
         "start": "auditor",
         "max_revisions": max_revisions,
         "nodes": [
             {"id": "auditor", "agent": "df-auditor", "role": "审计 / 出具 verdict"},
-            {"id": "reviser", "agent": "df-feasibility-analyst", "role": "依据审计反馈复修"},
-            {"id": "finalize", "agent": None, "role": "收敛产出"},
+            {"id": "reviser", "agent": "df-feasibility-analyst", "role": "依据审计反馈修订"},
+            {"id": "finalize", "agent": None, "role": "收敛输出"},
         ],
         "edges": [
-            {"from": "auditor", "to": "reviser", "condition": "verdict==revise 且未达复修上限"},
-            {"from": "auditor", "to": "finalize", "condition": "verdict==pass 或达上限"},
-            {"from": "reviser", "to": "auditor", "condition": "复修后重新审计"},
+            {"from": "auditor", "to": "reviser", "condition": "verdict==revise 且未达到修订上限"},
+            {"from": "auditor", "to": "finalize", "condition": "verdict==pass 或达到上限"},
+            {"from": "reviser", "to": "auditor", "condition": "修订后重新审计"},
         ],
     }
 
