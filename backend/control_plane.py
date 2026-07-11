@@ -335,6 +335,7 @@ def run_summary(run_id: str) -> dict[str, Any]:
         "agent_count": len(_agents(run)),
         "tool_calls": _tool_counts(run),
         "tokens": _token_usage(run),
+        "maf": run.get("maf") if isinstance(run.get("maf"), dict) else None,
         "actor": public_actor(run.get("actor") if isinstance(run.get("actor"), dict) else {}),
         "audit": audit,
         "started_at": run.get("started_at"),

@@ -60,3 +60,27 @@ None within Task 5 scope. End-to-end production visibility depends on Task 4 per
 - `python -m pytest tests/test_ui_truthfulness_contract.py -q`: `6 passed`; this executes the five-case Node behavior suite.
 - `npm run build` from `web`: Vite transformed `1751` modules and completed successfully.
 - `git diff --check` on all owned files: no whitespace errors.
+
+## Persisted Summary Integration Fix - 2026-07-12
+
+### Root Cause
+
+`run_store.get_run()` already normalized each persisted run with the real event-derived `maf` summary. `control_plane.run_summary()` manually projected the normalized detail into the `/api/runs/{run_id}/summary` payload but omitted that field, so Runs Center received `summary.maf` as missing even though it correctly passed `summary?.maf` into the view model.
+
+### Fix
+
+- Added the normalized `run["maf"]` object to the existing summary projection without reconstructing, defaulting, or fabricating MAF facts.
+- Left the route, endpoint signature, `_call` error handling, existing response fields, and authentication boundary unchanged.
+- Added a real integration test that persists MAF plan/completion events, calls the actual summary and trace endpoint functions, compares the endpoint MAF object with normalized run detail, and sends those exact JSON payloads through `deriveMafViewModel()` in Node.
+
+### TDD Evidence
+
+1. Added `tests/test_run_summary_maf_integration.py` before the endpoint projection change.
+2. Confirmed RED at the expected boundary: `KeyError: 'maf'` from the real summary endpoint payload.
+3. Forwarded the normalized persisted field and re-ran the integration test: `1 passed`.
+
+### Verification
+
+- Focused persisted-summary, control-plane evidence, MAF run-store, and UI behavioral tests: `10 passed`.
+- `npm run build` from `web`: Vite transformed `1751` modules and completed successfully.
+- `git diff --check` on the scoped files: no whitespace errors.
