@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 from agent_framework import Agent, tool
 from agent_framework.foundry import FoundryChatClient
@@ -19,6 +20,7 @@ from .rag import search
 from .tools.generate_image import generate_image
 from .tools.narrate_summary import narrate_summary
 from .tools.render_pdf import render_pdf_report
+from .workspace_store import workspace_reference_images
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +77,11 @@ class _NarrateSummaryInput(_StrictToolInput):
     voice: str
 
 
+_PDF_SOURCE_KEYS = frozenset({"brand_logo_url", "logo_url", "reference_images"})
+_PDF_REFERENCE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+_PDF_REFERENCE_ROLES = frozenset({"logo", "activity", "reference"})
+
+
 def _search_pack_context_tool(workspace_id: str) -> Any:
     @tool(
         name="search_pack_context",
@@ -88,14 +95,66 @@ def _search_pack_context_tool(workspace_id: str) -> Any:
     return search_authorized_workspace
 
 
-@tool(
-    name="render_pdf_report",
-    approval_mode="never_require",
-    schema=_RenderPdfReportInput,
-)
-def render_pdf_report_tool(proposal: dict[str, Any], template: str) -> dict[str, Any]:
-    """Render a structured DataForge proposal to PDF."""
-    return render_pdf_report(proposal, template)
+def _strip_pdf_source_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _strip_pdf_source_fields(item)
+            for key, item in value.items()
+            if key not in _PDF_SOURCE_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_pdf_source_fields(item) for item in value]
+    return value
+
+
+def _trusted_pdf_reference_images(workspace_id: str) -> list[dict[str, str]]:
+    try:
+        candidates = workspace_reference_images(workspace_id)
+    except Exception:
+        return []
+
+    trusted: list[dict[str, str]] = []
+    seen: set[str] = set()
+    workspace_segment = quote(workspace_id, safe="")
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        filename = str(item.get("filename") or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+        if not filename or filename in {".", ".."} or Path(filename).suffix.lower() not in _PDF_REFERENCE_SUFFIXES:
+            continue
+        if filename in seen:
+            continue
+        seen.add(filename)
+        role = str(item.get("role") or "reference").strip().lower()
+        if role not in _PDF_REFERENCE_ROLES:
+            role = "reference"
+        trusted.append(
+            {
+                "filename": filename,
+                "role": role,
+                "url": f"/api/workspaces/{workspace_segment}/reference-images/{quote(filename, safe='')}",
+            }
+        )
+        if len(trusted) == 3:
+            break
+    return trusted
+
+
+def _render_pdf_report_tool(workspace_id: str) -> Any:
+    @tool(
+        name="render_pdf_report",
+        approval_mode="never_require",
+        schema=_RenderPdfReportInput,
+    )
+    def render_authorized_workspace_pdf(proposal: dict[str, Any], template: str) -> dict[str, Any]:
+        """Render a proposal using only reference assets from the authorized workspace."""
+        sanitized = _strip_pdf_source_fields(proposal)
+        trusted_references = _trusted_pdf_reference_images(workspace_id)
+        if trusted_references:
+            sanitized["reference_images"] = trusted_references
+        return render_pdf_report(sanitized, template)
+
+    return render_authorized_workspace_pdf
 
 
 @tool(
@@ -124,7 +183,7 @@ def narrate_summary_tool(text: str, voice: str) -> dict[str, Any]:
 def _local_tools(workspace_id: str) -> dict[str, Any]:
     return {
         "search_pack_context": _search_pack_context_tool(workspace_id),
-        "render_pdf_report": render_pdf_report_tool,
+        "render_pdf_report": _render_pdf_report_tool(workspace_id),
         "generate_image": generate_image_tool,
         "narrate_summary": narrate_summary_tool,
     }

@@ -227,6 +227,128 @@ async def test_image_tool_rejects_model_controlled_references_and_invalid_size(
         await image_tool.invoke(arguments={"prompt": "concept", "size": "2048x2048"})
 
 
+@pytest.mark.asyncio
+async def test_pdf_tool_strips_model_controlled_logo_and_reference_sources(
+    materialized_registry,
+    monkeypatch,
+):
+    registry, _helper_calls = materialized_registry
+    renderer_calls = []
+    workspace_calls = []
+    monkeypatch.setattr(
+        maf_agents,
+        "workspace_reference_images",
+        lambda workspace_id: workspace_calls.append(workspace_id) or [],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        maf_agents,
+        "render_pdf_report",
+        lambda proposal, template: renderer_calls.append((proposal, template)) or {"ok": True},
+    )
+    pdf_tool = registry.agent("df-producer").tools[0]
+    malicious_proposal = {
+        "title": "Safe title",
+        "brand_logo_url": "file:///C:/Windows/win.ini",
+        "logo_url": "https://attacker.invalid/logo.png",
+        "reference_images": [
+            {
+                "url": "/api/workspaces/workspace-other/reference-images/secret.png",
+                "artifact_url": "https://attacker.invalid/artifact.png",
+                "source_file": "C:/private/logo.png",
+                "local_path": "C:/private/logo.png",
+            }
+        ],
+        "nested": {
+            "keep": "value",
+            "brand_logo_url": "file:///C:/nested-secret.txt",
+            "reference_images": [{"url": "https://attacker.invalid/nested.png"}],
+        },
+    }
+
+    assert await pdf_tool.invoke(arguments={"proposal": malicious_proposal, "template": "project_proposal"})
+
+    assert workspace_calls == ["workspace-authorized"]
+    assert renderer_calls == [
+        (
+            {"title": "Safe title", "nested": {"keep": "value"}},
+            "project_proposal",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pdf_tool_injects_only_rebound_same_workspace_reference_assets(
+    materialized_registry,
+    monkeypatch,
+):
+    registry, _helper_calls = materialized_registry
+    renderer_calls = []
+    workspace_calls = []
+    monkeypatch.setattr(
+        maf_agents,
+        "workspace_reference_images",
+        lambda workspace_id: workspace_calls.append(workspace_id)
+        or [
+            {
+                "filename": "brand logo.png",
+                "role": "logo",
+                "url": "/api/workspaces/workspace-other/reference-images/secret.png",
+                "blob_url": "https://attacker.invalid/logo.png",
+                "local_path": "C:/private/logo.png",
+            },
+            {
+                "filename": "campaign.webp",
+                "role": "activity",
+                "url": "file:///C:/private/campaign.webp",
+            },
+            {"filename": "not-an-image.txt", "role": "logo"},
+        ],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        maf_agents,
+        "render_pdf_report",
+        lambda proposal, template: renderer_calls.append((proposal, template)) or {"ok": True},
+    )
+    pdf_tool = registry.agent("df-producer").tools[0]
+
+    assert await pdf_tool.invoke(
+        arguments={
+            "proposal": {
+                "title": "Safe title",
+                "logo_url": "https://attacker.invalid/model-logo.png",
+                "reference_images": [
+                    {"url": "/api/workspaces/workspace-other/reference-images/model-secret.png"}
+                ],
+            },
+            "template": "project_proposal",
+        }
+    )
+
+    assert workspace_calls == ["workspace-authorized"]
+    assert renderer_calls == [
+        (
+            {
+                "title": "Safe title",
+                "reference_images": [
+                    {
+                        "filename": "brand logo.png",
+                        "role": "logo",
+                        "url": "/api/workspaces/workspace-authorized/reference-images/brand%20logo.png",
+                    },
+                    {
+                        "filename": "campaign.webp",
+                        "role": "activity",
+                        "url": "/api/workspaces/workspace-authorized/reference-images/campaign.webp",
+                    },
+                ],
+            },
+            "project_proposal",
+        )
+    ]
+
+
 def test_all_local_tool_schemas_forbid_extra_model_arguments(materialized_registry):
     registry, _helper_calls = materialized_registry
 

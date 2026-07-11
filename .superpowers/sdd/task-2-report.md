@@ -80,4 +80,24 @@ Offline imports of `ConcurrentBuilder` and `HandoffBuilder` from `agent_framewor
 
 - Reproduce the full requirements install with the project-supported Python version or update the existing Pydantic/toolchain baseline in a separate dependency-maintenance task.
 - Replace the tracing test's `repr(Status)` assertion with a semantic `StatusCode.OK` assertion in a separate, out-of-scope test maintenance task.
-- Workspace reference images remain intentionally unavailable to the MAF producer tool until a resolver can supply only assets authorized for the bound workspace.
+- MAF PDF generation can use only sanitized internal references returned for the registry's bound workspace; model-provided source locations remain unsupported.
+
+## Critical PDF Source Remediation (2026-07-12)
+
+- Replaced the global PDF function tool with a registry-scoped tool that closes over the authorized `workspace_id`.
+- Recursively strips model-controlled `brand_logo_url`, `logo_url`, and `reference_images` fields before calling `render_pdf_report`.
+- Resolves reference metadata only through `workspace_reference_images(authorized_workspace_id)` and ignores every supplied URL, blob URL, source path, local path, or cross-workspace path.
+- Rebuilds at most three trusted PNG/JPEG/WebP references as encoded internal URLs for the exact authorized workspace. Non-image filenames and duplicate filenames are discarded.
+- Preserved the strict `_RenderPdfReportInput` schema and all existing role-scoping behavior.
+
+TDD red command:
+
+`python -m pytest tests/test_maf_agents.py -q`
+
+- Result before implementation: `12 passed, 2 failed`; both failures showed that workspace resolution and proposal sanitization were absent.
+
+Focused verification command:
+
+`python -m pytest tests/test_maf_agents.py -q`
+
+- Result after implementation: `14 passed`.
