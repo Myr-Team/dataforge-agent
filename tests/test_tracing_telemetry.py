@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from opentelemetry.trace import StatusCode
+
+import backend.tracing as tracing
 from backend.tracing import _telemetry_event_data, agent_trace, trace_event
 
 
@@ -98,4 +101,45 @@ def test_agent_trace_emits_foundry_agent_identity_without_raw_actor_email() -> N
     assert "person@example.com" not in repr(attributes)
     assert tracer.span.events[0][0] == "dataforge.ready"
     assert tracer.span.statuses
-    assert "OK" in repr(tracer.span.statuses[-1])
+    assert tracer.span.statuses[-1].status_code is StatusCode.OK
+
+
+def test_maf_agent_trace_has_redacted_collaboration_attributes() -> None:
+    tracer = _FakeTracer()
+    raw_message = "private customer prompt"
+    actor_email = "person@example.com"
+
+    with tracing.maf_agent_trace(
+        agent_id="df-corpus-analyst",
+        agent_name="Workspace evidence analyst",
+        collaboration_mode="concurrent_research",
+        branch_id="workspace",
+        workspace_id="workspace-1",
+        conversation_id="conversation-1",
+        run_id="run-1",
+        actor={"email": actor_email, "source": "easy_auth"},
+        handoff_source="df-coordinator",
+        handoff_target="df-corpus-analyst",
+        duration_ms=42,
+        token_usage={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+        retry_count=1,
+        tool_names=["search_pack_context"],
+        status="completed",
+        error_category=None,
+        tracer=tracer,
+    ):
+        trace_event("maf_agent_completed", {"agent": "df-corpus-analyst", "message": raw_message})
+
+    attributes = tracer.span.attributes
+    assert attributes["gen_ai.agent.id"] == "df-corpus-analyst"
+    assert attributes["gen_ai.agent.name"] == "Workspace evidence analyst"
+    assert attributes["dataforge.maf.collaboration_mode"] == "concurrent_research"
+    assert attributes["dataforge.maf.branch_id"] == "workspace"
+    assert attributes["dataforge.maf.handoff.source"] == "df-coordinator"
+    assert attributes["dataforge.maf.handoff.target"] == "df-corpus-analyst"
+    assert attributes["dataforge.maf.status"] == "completed"
+    assert attributes["enduser.id"]
+    assert tracer.span.statuses[-1].status_code is StatusCode.OK
+    combined = repr((attributes, tracer.span.events))
+    assert raw_message not in combined
+    assert actor_email not in combined

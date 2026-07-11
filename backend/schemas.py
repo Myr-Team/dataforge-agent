@@ -298,6 +298,7 @@ class RunDetailResponse(BaseModel):
     answer_delta_summary: dict[str, Any] = Field(default_factory=dict)
     models: list[dict[str, Any]] = Field(default_factory=list)
     audit: dict[str, Any] | None = None
+    maf: dict[str, Any] | None = None
     final: dict[str, Any] | None = None
     artifact: dict[str, Any] | None = None
     persistence: dict[str, Any] | None = None

@@ -501,6 +501,7 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
         normalized["summary"] = _run_summary_text(normalized)
     normalized["actor"] = public_actor(normalized.get("actor") if isinstance(normalized.get("actor"), dict) else {})
     normalized["tokens"] = _token_usage(normalized)
+    normalized["maf"] = _maf_summary(normalized)
     normalized.setdefault("registry_summary", _run_summary(normalized))
     return normalized
 
@@ -659,17 +660,54 @@ def _clean_phrase(value: Any, limit: int) -> str:
 def _maf_summary(run: dict[str, Any]) -> dict[str, Any] | None:
     """Summarise the Microsoft Agent Framework workflow activity for run history."""
     graph: dict[str, Any] | None = None
+    plan: dict[str, Any] | None = None
     revisions = 0
     audit_rounds = 0
+    fallback = False
+    completed_agents: list[str] = []
+    duration_ms = 0.0
+    token_usage = {"prompt": 0, "completion": 0, "total": 0}
     for step in run.get("steps") or []:
         event = step.get("event")
         data = step.get("data") if isinstance(step.get("data"), dict) else {}
         if event == "maf_workflow":
             graph = data
+        elif event == "maf_plan":
+            plan = data
+        elif event == "maf_fallback":
+            fallback = True
+        elif event == "maf_agent_completed":
+            agent_id = str(data.get("agent_id") or data.get("agent") or "").strip()
+            if data.get("status") == "completed" and agent_id and agent_id not in completed_agents:
+                completed_agents.append(agent_id)
+            if isinstance(data.get("duration_ms"), (int, float)):
+                duration_ms += max(0.0, float(data["duration_ms"]))
+            usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+            token_usage["prompt"] += int(usage.get("input_tokens") or 0)
+            token_usage["completion"] += int(usage.get("output_tokens") or 0)
+            token_usage["total"] += int(usage.get("total_tokens") or 0)
+        elif event == "maf_review":
+            for code in data.get("reason_codes") or []:
+                match = re.fullmatch(r"revision:(\d+)", str(code))
+                if match:
+                    revisions = max(revisions, int(match.group(1)))
         elif event == "audit":
             audit_rounds += 1
         elif event == "role_change" and data.get("orchestrator") == "maf" and data.get("agent") == "df-feasibility-analyst":
             revisions += 1
+    if plan is not None or fallback:
+        selected_agents = [str(item) for item in (plan or {}).get("selected_agents") or []]
+        return {
+            "runtime": "maf",
+            "mode": (plan or {}).get("mode"),
+            "selected_agents": selected_agents,
+            "completed_agents": completed_agents,
+            "selection_reason_codes": [str(item) for item in (plan or {}).get("reason_codes") or []],
+            "fallback": fallback,
+            "rounds": revisions,
+            "duration_ms": int(round(duration_ms)),
+            "tokens": token_usage,
+        }
     if graph is None:
         return None
     return {

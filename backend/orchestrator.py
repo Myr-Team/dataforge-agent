@@ -71,8 +71,11 @@ try:
     from .router import deterministic_route
     from .run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
     from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
-    from .tracing import agent_trace, trace_event
+    from .tracing import agent_trace, maf_agent_trace, trace_event
+    from .maf_agents import create_agent_registry
+    from .maf_contracts import MafRuntimeMode, canary_selected, runtime_mode
     from .maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
+    from .maf_team_runtime import MafRuntimeEvent, MafTeamRequest, MafTeamRunResult, MafTeamRuntime
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
@@ -132,8 +135,11 @@ except ImportError:
     from router import deterministic_route
     from run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
     from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
-    from tracing import agent_trace, trace_event
+    from tracing import agent_trace, maf_agent_trace, trace_event
+    from maf_agents import create_agent_registry
+    from maf_contracts import MafRuntimeMode, canary_selected, runtime_mode
     from maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
+    from maf_team_runtime import MafRuntimeEvent, MafTeamRequest, MafTeamRunResult, MafTeamRuntime
     from tools.generate_image import generate_image
     from tools.narrate_summary import narrate_summary
     from tools.render_pdf import render_pdf_report
@@ -5426,6 +5432,207 @@ def _is_plan_draft_artifact(artifact: dict[str, Any]) -> bool:
     )
 
 
+_MAF_AGENT_NAMES = {
+    "df-coordinator": "DataForge coordinator",
+    "df-corpus-analyst": "Workspace evidence analyst",
+    "df-market-researcher": "Market researcher",
+    "df-feasibility-analyst": "Feasibility analyst",
+    "df-auditor": "Evidence auditor",
+    "df-producer": "Artifact producer",
+}
+
+
+def _maf_team_request(
+    req: ChatRequest,
+    decision: RoutingDecision,
+    artifact: dict[str, Any],
+    conversation_id: str,
+) -> MafTeamRequest:
+    experts = set(decision.experts)
+    return MafTeamRequest(
+        intent=decision.intent,
+        output_mode=decision.output_mode,
+        needs_workspace="df-corpus-analyst" in experts,
+        needs_external="df-market-researcher" in experts,
+        high_impact="df-auditor" in experts,
+        payload={
+            "workspace_id": req.workspace_id,
+            "conversation_id": conversation_id,
+            "query": req.message,
+            "routing": decision.model_dump(),
+            "conversation_history": artifact.get("_conversation_history", []),
+        },
+    )
+
+
+async def _try_full_maf_runtime(
+    req: ChatRequest,
+    decision: RoutingDecision,
+    artifact: dict[str, Any],
+    conversation_id: str,
+) -> MafTeamRunResult | None:
+    if runtime_mode() is not MafRuntimeMode.FULL:
+        return None
+    if not canary_selected(req.workspace_id, conversation_id):
+        return None
+    registry = create_agent_registry(workspace_id=req.workspace_id)
+    runtime = MafTeamRuntime(registry)
+    return await runtime.run(_maf_team_request(req, decision, artifact, conversation_id))
+
+
+def _maf_error_category(error: Exception) -> str:
+    if isinstance(error, (TimeoutError, ConnectionError)):
+        return "transient"
+    if isinstance(error, (TypeError, ValueError)):
+        return "contract_validation"
+    return "permanent"
+
+
+def _maf_event_payload(event: MafRuntimeEvent) -> dict[str, Any]:
+    return event.model_dump(mode="json", exclude_none=True)
+
+
+def _maf_handoffs(events: list[MafRuntimeEvent]) -> dict[str, tuple[str, str]]:
+    handoffs: dict[str, tuple[str, str]] = {}
+    for event in events:
+        if event.event != "maf_handoff" or not event.target_agent_id:
+            continue
+        handoffs[event.target_agent_id] = (
+            str(event.source_agent_id or ""),
+            str(event.target_agent_id),
+        )
+    return handoffs
+
+
+def _record_maf_agent_span(
+    event: MafRuntimeEvent,
+    result: MafTeamRunResult,
+    req: ChatRequest,
+    conversation_id: str,
+    actor: dict[str, Any],
+    handoffs: dict[str, tuple[str, str]],
+) -> None:
+    if event.event != "maf_agent_completed" or not event.agent_id:
+        return
+    source, target = handoffs.get(event.agent_id, ("", ""))
+    with maf_agent_trace(
+        agent_id=event.agent_id,
+        agent_name=_MAF_AGENT_NAMES.get(event.agent_id, event.agent_id),
+        collaboration_mode=result.summary.mode,
+        branch_id=event.branch_id,
+        workspace_id=req.workspace_id,
+        conversation_id=conversation_id,
+        run_id=conversation_id,
+        actor=actor,
+        handoff_source=source or None,
+        handoff_target=target or None,
+        duration_ms=event.duration_ms,
+        status=event.status,
+        error_category=event.error_category,
+    ):
+        trace_event(
+            "maf_agent_completed",
+            {
+                "agent": event.agent_id,
+                "mode": result.summary.mode,
+                "status": event.status,
+                "elapsed_ms": event.duration_ms,
+                "error_type": event.error_category,
+            },
+            conversation_id,
+        )
+
+
+def _merge_maf_artifact(artifact: dict[str, Any], result: MafTeamRunResult) -> None:
+    runtime_artifact = result.artifact.model_dump(mode="json") if hasattr(result.artifact, "model_dump") else dict(result.artifact)
+    artifact.update(runtime_artifact)
+    if "hits" in runtime_artifact:
+        corpus = dict(artifact.get("corpus") or {})
+        corpus["hits"] = list(runtime_artifact.get("hits") or [])
+        artifact["corpus"] = corpus
+    if "external_signals" in runtime_artifact:
+        market = dict(artifact.get("market") or {})
+        market["signals"] = list(runtime_artifact.get("external_signals") or [])
+        artifact["market"] = market
+    artifact["maf"] = result.summary.model_dump(mode="json", exclude_none=True)
+    artifact["maf"]["gaps"] = list(result.gaps)
+    artifact["maf"]["degraded"] = result.degraded
+
+
+async def _emit_full_maf_result(
+    req: ChatRequest,
+    decision: RoutingDecision,
+    artifact: dict[str, Any],
+    conversation_id: str,
+    actor: dict[str, Any],
+    result: MafTeamRunResult,
+) -> AsyncIterator[str]:
+    handoffs = _maf_handoffs(result.events)
+    for event in result.events:
+        payload = _maf_event_payload(event)
+        yield _frame(event.event, payload, conversation_id)
+        _record_maf_agent_span(event, result, req, conversation_id, actor, handoffs)
+        if event.event == "maf_agent_started" and event.agent_id:
+            yield _frame(
+                "role_change",
+                {
+                    "agent": event.agent_id,
+                    "orchestrator": "maf_full",
+                    "branch_id": event.branch_id,
+                    "status": event.status,
+                },
+                conversation_id,
+            )
+        if event.event == "maf_review" and event.status != "running":
+            yield _frame(
+                "audit",
+                {
+                    "agent": event.agent_id or "df-auditor",
+                    "orchestrator": "maf_full",
+                    "status": event.status,
+                    "verdict": event.verdict or "unknown",
+                    "reason_codes": list(event.reason_codes),
+                    "issues": [],
+                    "target_expert": None,
+                },
+                conversation_id,
+            )
+
+    _merge_maf_artifact(artifact, result)
+    required_corpus_failed = "workspace_evidence_unavailable" in result.gaps
+    if required_corpus_failed:
+        summary = "insufficient_evidence: required workspace evidence was unavailable; no stronger conclusion was produced."
+        artifact["answer"] = {"markdown": summary, "text": summary, "citations": [], "_llm": {"mode": "maf_required_evidence_guard"}}
+        artifact["citations"] = []
+    else:
+        answer_state: dict[str, Any] = {}
+        async for frame in _stream_answer_frames(req, decision, artifact, conversation_id, answer_state):
+            yield frame
+        summary = _customer_text(answer_state.get("text") or _final_text(decision, artifact), artifact)
+
+    artifact.setdefault("output_contract", _output_contract(decision.intent))
+    final_payload = {
+        "text": summary,
+        "mode": "analysis",
+        "routing": decision.model_dump(),
+        "artifact": artifact,
+        "output_contract": artifact["output_contract"],
+        "maf": artifact["maf"],
+    }
+    await run_in_threadpool(
+        _persist_assistant_message,
+        conversation_id,
+        req.workspace_id,
+        summary,
+        _artifact_verdict(artifact, "completed"),
+        artifact.get("citations") or [],
+    )
+    if decision.intent == "feasibility_analysis":
+        await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
+    complete_run(conversation_id, status="completed", final=final_payload, artifact=artifact)
+    yield _frame("final", final_payload, conversation_id)
+
+
 async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     actor = public_actor(actor_from_ui_context(req.ui_context))
     with agent_trace(
@@ -5568,6 +5775,33 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
         async for frame in _emit_lightweight_final(req, decision, artifact, conv_id, history):
             yield frame
         return
+
+    full_maf_result: MafTeamRunResult | None = None
+    try:
+        full_maf_result = await _try_full_maf_runtime(req, decision, artifact, conv_id)
+        if full_maf_result is not None:
+            async for frame in _emit_full_maf_result(
+                working_req,
+                decision,
+                artifact,
+                conv_id,
+                actor,
+                full_maf_result,
+            ):
+                yield frame
+            return
+    except Exception as exc:
+        yield _frame(
+            "maf_fallback",
+            {
+                "runtime": "maf",
+                "mode": "full",
+                "status": "fallback",
+                "error_type": type(exc).__name__,
+                "error_category": _maf_error_category(exc),
+            },
+            conv_id,
+        )
 
     if "df-corpus-analyst" in decision.experts:
         fast_corpus_path = route_meta.get("fast_path") == "corpus_qa"
