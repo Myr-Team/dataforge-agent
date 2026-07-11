@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Callable, Literal
 from uuid import uuid4
 
 from agent_framework import (
     AgentExecutorResponse,
-    AgentResponse,
-    AgentSession,
     FunctionalWorkflow,
     Workflow,
     workflow,
@@ -91,6 +90,10 @@ class MafRuntimeEvent(BaseModel):
     target_agent_id: str | None = None
     duration_ms: float | None = Field(default=None, ge=0)
     reason_codes: tuple[str, ...] = ()
+    mode: str | None = None
+    selected_agents: tuple[str, ...] = ()
+    skipped_agents: tuple[str, ...] = ()
+    max_revisions: int | None = Field(default=None, ge=0, le=MAX_MAF_REVISIONS)
     verdict: str | None = None
     error_category: str | None = None
 
@@ -164,6 +167,21 @@ def _specialist_for_intent(intent: str) -> AgentId:
     return specialists.get(intent, "df-feasibility-analyst")
 
 
+def _intent_reason_code(intent: str) -> str:
+    """Return a bounded observability code without echoing untrusted intent text."""
+    known_intents = {
+        "corpus_qa",
+        "workspace_research",
+        "market_research",
+        "feasibility_analysis",
+        "audit",
+        "review",
+        "produce",
+        "artifact_generation",
+    }
+    return f"intent:{intent}" if intent in known_intents else "intent:other"
+
+
 def select_collaboration_plan(
     *,
     intent: str,
@@ -190,6 +208,7 @@ def select_collaboration_plan(
             ),
             ("workspace_evidence_required", "external_signal_required"),
             required_branches=("workspace",),
+            max_revisions=MAX_MAF_REVISIONS if high_impact else 0,
         )
     if high_impact:
         return _plan(
@@ -202,7 +221,7 @@ def select_collaboration_plan(
     return _plan(
         CollaborationPattern.SPECIALIST_HANDOFF,
         ("df-coordinator", specialist),
-        (f"intent:{intent}",),
+        (_intent_reason_code(intent),),
     )
 
 
@@ -224,37 +243,12 @@ class _RunState:
             return item
 
 
-class _ObservedParticipant:
-    """Adapt a registry agent to MAF while retaining typed branch observations."""
-
-    def __init__(
-        self,
-        agent_id: AgentId,
-        invoke: Callable[[], Awaitable[MafBranchResult]],
-    ) -> None:
-        self.id = agent_id
-        self.name = agent_id
-        self.description = f"Observed DataForge participant {agent_id}."
-        self._invoke = invoke
-
-    async def run(self, _messages: Any = None, **_kwargs: Any) -> AgentResponse[dict[str, Any]]:
-        branch = await self._invoke()
-        return AgentResponse(messages=[], value=branch.model_dump())
-
-    def create_session(self, *, session_id: str | None = None) -> AgentSession:
-        return AgentSession(session_id=session_id)
-
-    def get_session(
-        self,
-        service_session_id: str,
-        *,
-        session_id: str | None = None,
-    ) -> AgentSession:
-        return AgentSession(service_session_id=service_session_id, session_id=session_id)
-
-
-def _aggregate_branch_responses(results: list[AgentExecutorResponse]) -> list[dict[str, Any]]:
-    return [dict(result.agent_response.value or {}) for result in results]
+def _aggregate_branch_responses(results: list[AgentExecutorResponse]) -> dict[str, dict[str, Any]]:
+    """Keep MAF's native agent fan-in while retaining participant identity."""
+    return {
+        result.executor_id: _normalize_agent_output(result.agent_response)
+        for result in results
+    }
 
 
 def _normalize_agent_output(response: Any) -> dict[str, Any]:
@@ -281,6 +275,22 @@ def _error_category(error: Exception) -> str:
     return "permanent"
 
 
+def _force_insufficient_evidence(value: Any) -> Any:
+    """Preserve usable content while removing every nested positive verdict claim."""
+    if isinstance(value, Mapping):
+        return {
+            str(key): (
+                "insufficient_evidence"
+                if str(key) == "verdict" or str(key).endswith("_verdict")
+                else _force_insufficient_evidence(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_force_insufficient_evidence(item) for item in value]
+    return value
+
+
 class MafTeamRuntime:
     """Run a selected team using agents from an authorization-bound registry."""
 
@@ -299,8 +309,8 @@ class MafTeamRuntime:
             needs_external=normalized.needs_external,
             high_impact=normalized.high_impact,
         )
-        if plan.pattern is CollaborationPattern.BOUNDED_REVIEW:
-            plan = plan.model_copy(update={"max_revisions": self._max_revisions})
+        if plan.max_revisions:
+            plan = plan.model_copy(update={"max_revisions": min(plan.max_revisions, self._max_revisions)})
         state = _RunState()
 
         @workflow(name=f"dataforge-{plan.pattern.value}")
@@ -324,11 +334,17 @@ class MafTeamRuntime:
             "maf_plan",
             "completed",
             reason_codes=plan.reason_codes,
+            mode=plan.pattern.value,
+            selected_agents=plan.selected_agents,
+            skipped_agents=tuple(agent_id for agent_id in ALL_AGENT_IDS if agent_id not in plan.selected_agents),
+            max_revisions=plan.max_revisions,
         )
         if plan.pattern is CollaborationPattern.DIRECT:
             artifact, gaps, degraded, branches, overlap, rounds = await self._run_direct(request, state)
         elif plan.pattern is CollaborationPattern.CONCURRENT_RESEARCH:
-            artifact, gaps, degraded, branches, overlap, rounds = await self._run_concurrent(request, state)
+            artifact, gaps, degraded, branches, overlap, rounds = await self._run_concurrent(
+                request, state, max_revisions=plan.max_revisions
+            )
         elif plan.pattern is CollaborationPattern.SPECIALIST_HANDOFF:
             artifact, gaps, degraded, branches, overlap, rounds = await self._run_handoff(request, state)
         else:
@@ -452,43 +468,120 @@ class MafTeamRuntime:
         )
 
     async def _run_concurrent(
-        self, request: MafTeamRequest, state: _RunState
+        self,
+        request: MafTeamRequest,
+        state: _RunState,
+        *,
+        max_revisions: int,
     ) -> tuple[dict[str, Any], list[str], bool, list[MafBranchResult], float, int]:
-        participants = [
-            _ObservedParticipant(
-                "df-corpus-analyst",
-                lambda: self._run_branch(
-                    "workspace",
-                    "df-corpus-analyst",
-                    True,
-                    request.payload,
-                    state,
-                ),
-            ),
-            _ObservedParticipant(
-                "df-market-researcher",
-                lambda: self._run_branch(
-                    "external",
-                    "df-market-researcher",
-                    False,
-                    request.payload,
-                    state,
-                ),
-            ),
-        ]
+        branch_specs: tuple[tuple[str, AgentId, bool], ...] = (
+            ("workspace", "df-corpus-analyst", True),
+            ("external", "df-market-researcher", False),
+        )
+        participants = [self._registry.agent(agent_id) for _, agent_id, _ in branch_specs]
         concurrent_workflow = (
             ConcurrentBuilder(participants=participants)
             .with_aggregator(_aggregate_branch_responses)
             .build()
         )
         self.last_pattern_workflow = concurrent_workflow
-        workflow_result = await concurrent_workflow.run(
-            json.dumps(request.payload, ensure_ascii=False, default=str)
+        started_ns: dict[AgentId, int] = {}
+        outputs: dict[AgentId, dict[str, Any]] = {}
+        run_error: Exception | None = None
+        agent_ids = {agent_id for _, agent_id, _ in branch_specs}
+        run_stream = concurrent_workflow.run(
+            json.dumps(request.payload, ensure_ascii=False, default=str), stream=True
         )
-        outputs = workflow_result.get_outputs()
-        if not outputs or not isinstance(outputs[-1], list):
-            raise RuntimeError("MAF concurrent workflow did not join typed branches")
-        branch_results = [MafBranchResult.model_validate(item) for item in outputs[-1]]
+        try:
+            async for framework_event in run_stream:
+                agent_id = framework_event.executor_id
+                if agent_id not in agent_ids:
+                    continue
+                typed_agent_id = agent_id
+                if framework_event.type == "executor_invoked":
+                    started_ns[typed_agent_id] = time.perf_counter_ns()
+                    branch_id = next(branch for branch, candidate, _ in branch_specs if candidate == typed_agent_id)
+                    await state.emit("maf_branch_started", "running", agent_id=typed_agent_id, branch_id=branch_id)
+                    await state.emit("maf_agent_started", "running", agent_id=typed_agent_id, branch_id=branch_id)
+                elif framework_event.type == "executor_completed":
+                    response = next(
+                        (
+                            item.agent_response
+                            for item in (framework_event.data or [])
+                            if isinstance(item, AgentExecutorResponse) and item.executor_id == typed_agent_id
+                        ),
+                        None,
+                    )
+                    if response is None:
+                        continue
+                    outputs[typed_agent_id] = _normalize_agent_output(response)
+                    completed_ns = time.perf_counter_ns()
+                    branch_id = next(branch for branch, candidate, _ in branch_specs if candidate == typed_agent_id)
+                    duration_ms = (completed_ns - started_ns[typed_agent_id]) / 1_000_000
+                    state.completed_agents.add(typed_agent_id)
+                    await state.emit(
+                        "maf_agent_completed",
+                        "completed",
+                        agent_id=typed_agent_id,
+                        branch_id=branch_id,
+                        duration_ms=duration_ms,
+                    )
+                    await state.emit(
+                        "maf_branch_joined",
+                        "completed",
+                        agent_id=typed_agent_id,
+                        branch_id=branch_id,
+                        duration_ms=duration_ms,
+                    )
+            await run_stream.get_final_response()
+        except Exception as error:
+            run_error = error
+
+        branch_results: list[MafBranchResult] = []
+        for branch_id, agent_id, required in branch_specs:
+            completed_ns = time.perf_counter_ns()
+            started = started_ns.get(agent_id, completed_ns)
+            if agent_id in outputs:
+                branch_results.append(
+                    MafBranchResult(
+                        branch_id=branch_id,
+                        agent_id=agent_id,
+                        required=required,
+                        status="completed",
+                        output=outputs[agent_id],
+                        started_ns=started,
+                        completed_ns=completed_ns,
+                    )
+                )
+                continue
+            error_category = _error_category(run_error) if run_error else "permanent"
+            await state.emit(
+                "maf_agent_completed",
+                "failed",
+                agent_id=agent_id,
+                branch_id=branch_id,
+                duration_ms=(completed_ns - started) / 1_000_000,
+                error_category=error_category,
+            )
+            await state.emit(
+                "maf_branch_joined",
+                "failed",
+                agent_id=agent_id,
+                branch_id=branch_id,
+                duration_ms=(completed_ns - started) / 1_000_000,
+                error_category=error_category,
+            )
+            branch_results.append(
+                MafBranchResult(
+                    branch_id=branch_id,
+                    agent_id=agent_id,
+                    required=required,
+                    status="failed",
+                    started_ns=started,
+                    completed_ns=completed_ns,
+                    error_category=error_category,
+                )
+            )
         by_id = {branch.branch_id: branch for branch in branch_results}
         corpus = by_id["workspace"]
         market = by_id["external"]
@@ -517,28 +610,38 @@ class MafTeamRuntime:
         artifact["feasibility"] = feasibility
         if feasibility_error:
             gaps.append("feasibility_unavailable")
+        if feasibility_error:
+            return (
+                _force_insufficient_evidence(artifact) | {"verdict": "insufficient_evidence"},
+                gaps,
+                True,
+                branches,
+                overlap_ns / 1_000_000,
+                0,
+            )
 
-        await state.emit("maf_review", "running", agent_id="df-auditor")
-        audit, audit_error = await self._invoke(
-            "df-auditor",
-            {"artifact": artifact, "gaps": gaps},
-            state,
-        )
-        artifact["audit"] = audit
-        if audit_error:
-            gaps.append("audit_unavailable")
-        if corpus.status == "failed":
-            artifact["verdict"] = "insufficient_evidence"
+        if max_revisions:
+            artifact, review_gaps, rounds = await self._run_bounded_audit(
+                request,
+                state,
+                artifact,
+                max_revisions=max_revisions,
+                replace_analysis=lambda current, analysis: {**current, "feasibility": analysis},
+            )
+            gaps.extend(gap for gap in review_gaps if gap not in gaps)
         else:
-            artifact["verdict"] = audit.get("verdict", feasibility.get("verdict"))
-        await state.emit(
-            "maf_review",
-            "completed" if not audit_error else "failed",
-            agent_id="df-auditor",
-            verdict=str(artifact.get("verdict") or "unknown"),
-            error_category=_error_category(audit_error) if audit_error else None,
-        )
-        return artifact, gaps, bool(gaps), branches, overlap_ns / 1_000_000, 0
+            audit, audit_error = await self._run_audit(state, artifact, revision=0)
+            artifact["audit"] = audit
+            if audit_error:
+                gaps.append("audit_unavailable")
+                artifact = _force_insufficient_evidence(artifact) | {"verdict": "insufficient_evidence"}
+            else:
+                artifact["verdict"] = audit.get("verdict", feasibility.get("verdict"))
+            rounds = 0
+
+        if corpus.status == "failed":
+            artifact = _force_insufficient_evidence(artifact) | {"verdict": "insufficient_evidence"}
+        return artifact, gaps, bool(gaps), branches, overlap_ns / 1_000_000, rounds
 
     async def _run_handoff(
         self, request: MafTeamRequest, state: _RunState
@@ -550,7 +653,7 @@ class MafTeamRuntime:
             "running",
             source_agent_id="df-coordinator",
             target_agent_id=target,
-            reason_codes=(f"intent:{request.intent}",),
+            reason_codes=(_intent_reason_code(request.intent),),
         )
         specialist, specialist_error = await self._invoke(
             target,
@@ -562,7 +665,7 @@ class MafTeamRuntime:
             "completed" if not specialist_error else "failed",
             source_agent_id="df-coordinator",
             target_agent_id=target,
-            reason_codes=(f"intent:{request.intent}",),
+            reason_codes=(_intent_reason_code(request.intent),),
             error_category=_error_category(specialist_error) if specialist_error else None,
         )
         gaps = []
@@ -572,42 +675,59 @@ class MafTeamRuntime:
             gaps.append("specialist_unavailable")
         return specialist, gaps, bool(gaps), [], 0, 0
 
-    async def _run_review(
-        self, request: MafTeamRequest, state: _RunState
-    ) -> tuple[dict[str, Any], list[str], bool, list[MafBranchResult], float, int]:
-        gaps: list[str] = []
-        artifact, analyst_error = await self._invoke(
-            "df-feasibility-analyst", request.payload, state
+    async def _run_audit(
+        self,
+        state: _RunState,
+        artifact: Mapping[str, Any],
+        *,
+        revision: int,
+    ) -> tuple[dict[str, Any], Exception | None]:
+        await state.emit(
+            "maf_review",
+            "running",
+            agent_id="df-auditor",
+            reason_codes=(f"revision:{revision}",),
         )
-        if analyst_error:
-            gaps.append("feasibility_unavailable")
+        audit, audit_error = await self._invoke(
+            "df-auditor",
+            {"artifact": dict(artifact), "revision": revision},
+            state,
+        )
+        verdict = str(audit.get("verdict") or "unknown")
+        await state.emit(
+            "maf_review",
+            "completed" if not audit_error else "failed",
+            agent_id="df-auditor",
+            verdict=verdict,
+            reason_codes=(f"revision:{revision}",),
+            error_category=_error_category(audit_error) if audit_error else None,
+        )
+        return audit, audit_error
+
+    async def _run_bounded_audit(
+        self,
+        request: MafTeamRequest,
+        state: _RunState,
+        artifact: Mapping[str, Any],
+        *,
+        max_revisions: int,
+        replace_analysis: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]],
+    ) -> tuple[dict[str, Any], list[str], int]:
+        """Audit a valid analyst artifact, preserving it if a later revision fails."""
+        gaps: list[str] = []
         revisions = 0
+        last_valid_artifact = copy.deepcopy(dict(artifact))
         while True:
-            await state.emit(
-                "maf_review",
-                "running",
-                agent_id="df-auditor",
-                reason_codes=(f"revision:{revisions}",),
-            )
-            audit, audit_error = await self._invoke(
-                "df-auditor",
-                {"artifact": artifact, "revision": revisions},
-                state,
-            )
+            audit, audit_error = await self._run_audit(state, last_valid_artifact, revision=revisions)
+            verdict = str(audit.get("verdict") or "unknown")
             if audit_error:
                 gaps.append("audit_unavailable")
-            verdict = str(audit.get("verdict") or "unknown")
-            if verdict != "revise" or revisions >= self._max_revisions or audit_error:
-                artifact = {**artifact, "audit": audit, "verdict": verdict}
-                await state.emit(
-                    "maf_review",
-                    "completed" if not audit_error else "failed",
-                    agent_id="df-auditor",
-                    verdict=verdict,
-                    reason_codes=(f"revision:{revisions}",),
-                    error_category=_error_category(audit_error) if audit_error else None,
-                )
-                break
+                return _force_insufficient_evidence(last_valid_artifact) | {"verdict": "insufficient_evidence"}, gaps, revisions
+            if verdict != "revise":
+                return {**last_valid_artifact, "audit": audit, "verdict": verdict}, gaps, revisions
+            if revisions >= max_revisions:
+                return _force_insufficient_evidence(last_valid_artifact) | {"verdict": "insufficient_evidence"}, gaps, revisions
+
             await state.emit(
                 "maf_review",
                 "revision_requested",
@@ -616,18 +736,34 @@ class MafTeamRuntime:
                 reason_codes=(f"revision:{revisions}",),
             )
             revisions += 1
-            artifact, analyst_error = await self._invoke(
+            analysis, analyst_error = await self._invoke(
                 "df-feasibility-analyst",
                 {
                     "request": request.payload,
-                    "previous_artifact": artifact,
+                    "previous_artifact": last_valid_artifact,
                     "audit": audit,
                     "revision": revisions,
                 },
                 state,
             )
-            if analyst_error and "feasibility_unavailable" not in gaps:
+            if analyst_error:
                 gaps.append("feasibility_unavailable")
+                return _force_insufficient_evidence(last_valid_artifact) | {"verdict": "insufficient_evidence"}, gaps, revisions
+            last_valid_artifact = replace_analysis(last_valid_artifact, analysis)
+
+    async def _run_review(
+        self, request: MafTeamRequest, state: _RunState
+    ) -> tuple[dict[str, Any], list[str], bool, list[MafBranchResult], float, int]:
+        artifact, analyst_error = await self._invoke("df-feasibility-analyst", request.payload, state)
+        if analyst_error:
+            return {"verdict": "insufficient_evidence"}, ["feasibility_unavailable"], True, [], 0, 0
+        artifact, gaps, revisions = await self._run_bounded_audit(
+            request,
+            state,
+            artifact,
+            max_revisions=self._max_revisions,
+            replace_analysis=lambda _current, analysis: analysis,
+        )
         return artifact, gaps, bool(gaps), [], 0, revisions
 
 

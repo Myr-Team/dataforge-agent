@@ -90,3 +90,63 @@ The remaining failure is outside Task 3 in `tests/test_tracing_telemetry.py::tes
 - Full-suite completion is blocked by the unrelated OpenTelemetry representation assertion described above.
 - `HandoffBuilder` is model/tool-directed and only accepts concrete `Agent` instances because it clones agents and injects tools. Task 3 instead performs the already-selected semantic handoff deterministically inside the MAF functional workflow, preserving the offline structural fake boundary and preventing model-controlled routing.
 - Other workers modified Task 2 and UI files concurrently. Those files were not edited or staged by Task 3.
+
+## Review Remediation
+
+### RED
+
+Command:
+
+```powershell
+python -m pytest tests/test_maf_team_runtime.py -q
+```
+
+Result: `8 passed, 9 failed, 1 warning in 5.73s`.
+
+The failing regressions covered the missing concurrent revision budget, adapter participants instead of registry agents, missing `maf_plan` rendering metadata, nested positive verdicts after required corpus failure, ignored concurrent `revise` results, unbounded handoff intent text, and analyst failure paths that could still return a positive verdict.
+
+### Implementation
+
+- High-impact workspace-plus-external plans now carry `max_revisions=2`, and the concurrent path applies the same bounded `revise` loop as the dedicated review path.
+- A failed initial feasibility analysis skips audit and returns `insufficient_evidence`; a failed revision keeps the last valid analyst artifact, sanitizes every nested `verdict` and `*_verdict`, and returns `insufficient_evidence`.
+- Required corpus failure applies that same recursive verdict ceiling to feasibility and audit payloads, not only the top-level verdict.
+- `ConcurrentBuilder` now receives `MafAgentRegistry.agent(...)` objects directly. The runtime consumes supported `Workflow.run(..., stream=True)` events (`executor_invoked` and `executor_completed`) for typed branch and participant observations, replacing the captured participant wrapper.
+- The offline fake is a narrow MAF `SupportsAgentRun`-compatible double: `id`, `name`, `description`, `run(..., stream=...)`, `create_session`, and `get_session`. This matches the current stable `ConcurrentBuilder` participant contract without requiring a Foundry connection.
+- `maf_plan` includes `mode`, `selected_agents`, `skipped_agents`, and `max_revisions`; handoff intent reasons are limited to known codes or `intent:other`.
+
+### Stable MAF API Check
+
+The installed dependency set is `agent-framework-core==1.11.0`, `agent-framework-foundry==1.10.1`, and `agent-framework-orchestrations==1.0.0`.
+
+`ConcurrentBuilder` accepts `participants: Sequence[SupportsAgentRun | Executor]`, exposes `with_aggregator(...)`, and builds a `Workflow`. `Workflow.run(..., stream=True)` emits supported workflow lifecycle and executor events. The implementation uses that public surface; it does not depend on MAF-private participant wrappers.
+
+### GREEN
+
+Command:
+
+```powershell
+python -m pytest tests/test_maf_team_runtime.py -q
+```
+
+Result: `17 passed, 1 warning in 5.36s`.
+
+Command:
+
+```powershell
+python -m pytest tests/test_maf_contracts.py tests/test_maf_agents.py tests/test_maf_team_runtime.py -q
+```
+
+Result: `47 passed, 1 warning in 5.28s`.
+
+Command:
+
+```powershell
+python -m compileall -q backend/maf_team_runtime.py tests/test_maf_team_runtime.py
+git diff --check
+```
+
+Result: both commands exited `0`.
+
+### Remaining Concern
+
+MAF aborts a concurrent workflow when any participant raises. The runtime records the successful direct-agent participant observations emitted before that failure and marks any unfinished branch failed; the required workspace branch still fails closed. The focused optional-market regression verifies corpus evidence remains available in this case.
