@@ -15,6 +15,7 @@ weasyprint==69.0
 pydyf==0.12.1
 redis==5.2.1
 Pillow==11.3.0
-agent-framework-core==1.8.1
-agent-framework-foundry==1.8.1
+agent-framework-core==1.11.0
+agent-framework-foundry==1.10.1
+agent-framework-orchestrations==1.0.0
 pymssql==2.3.13

@@ -6,11 +6,12 @@ import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from agent_framework import Agent, tool
 from agent_framework.foundry import FoundryChatClient
 from azure.identity import DefaultAzureCredential
+from pydantic import BaseModel, ConfigDict, Field
 
 from agents.build_agents import AGENTS
 
@@ -50,40 +51,83 @@ class MafAgentRegistry:
         return tuple(self._specs)
 
 
-@tool(name="search_pack_context", approval_mode="never_require")
-def search_pack_context(workspace_id: str, query: str, top_k: int) -> dict[str, Any]:
-    """Search the active DataForge workspace corpus with a workspace filter."""
-    return {"hits": search(workspace_id, query, top_k)}
+class _StrictToolInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-@tool(name="render_pdf_report", approval_mode="never_require")
+class _SearchPackContextInput(_StrictToolInput):
+    query: str
+    top_k: int = Field(ge=1, le=20)
+
+
+class _RenderPdfReportInput(_StrictToolInput):
+    proposal: dict[str, Any]
+    template: str
+
+
+class _GenerateImageInput(_StrictToolInput):
+    prompt: str
+    size: Literal["1024x1024", "1024x1536", "1536x1024"]
+
+
+class _NarrateSummaryInput(_StrictToolInput):
+    text: str
+    voice: str
+
+
+def _search_pack_context_tool(workspace_id: str) -> Any:
+    @tool(
+        name="search_pack_context",
+        approval_mode="never_require",
+        schema=_SearchPackContextInput,
+    )
+    def search_authorized_workspace(query: str, top_k: int) -> dict[str, Any]:
+        """Search the authorized DataForge workspace corpus."""
+        return {"hits": search(workspace_id, query, top_k)}
+
+    return search_authorized_workspace
+
+
+@tool(
+    name="render_pdf_report",
+    approval_mode="never_require",
+    schema=_RenderPdfReportInput,
+)
 def render_pdf_report_tool(proposal: dict[str, Any], template: str) -> dict[str, Any]:
     """Render a structured DataForge proposal to PDF."""
     return render_pdf_report(proposal, template)
 
 
-@tool(name="generate_image", approval_mode="never_require")
+@tool(
+    name="generate_image",
+    approval_mode="never_require",
+    schema=_GenerateImageInput,
+)
 def generate_image_tool(
     prompt: str,
-    size: str,
-    reference_image_urls: list[str],
+    size: Literal["1024x1024", "1024x1536", "1536x1024"],
 ) -> dict[str, Any]:
     """Generate a concept image for an approved product opportunity."""
-    return generate_image(prompt, size, reference_image_urls)
+    return generate_image(prompt, size, [])
 
 
-@tool(name="narrate_summary", approval_mode="never_require")
+@tool(
+    name="narrate_summary",
+    approval_mode="never_require",
+    schema=_NarrateSummaryInput,
+)
 def narrate_summary_tool(text: str, voice: str) -> dict[str, Any]:
     """Generate a Chinese spoken executive summary as playable audio."""
     return narrate_summary(text, voice)
 
 
-LOCAL_TOOLS = {
-    "search_pack_context": search_pack_context,
-    "render_pdf_report": render_pdf_report_tool,
-    "generate_image": generate_image_tool,
-    "narrate_summary": narrate_summary_tool,
-}
+def _local_tools(workspace_id: str) -> dict[str, Any]:
+    return {
+        "search_pack_context": _search_pack_context_tool(workspace_id),
+        "render_pdf_report": render_pdf_report_tool,
+        "generate_image": generate_image_tool,
+        "narrate_summary": narrate_summary_tool,
+    }
 
 
 def _market_mcp_url() -> str:
@@ -92,11 +136,12 @@ def _market_mcp_url() -> str:
     return url if url.endswith("/mcp") else f"{url}/mcp"
 
 
-def _tools_for(spec: AgentSpec) -> list[Any]:
+def _tools_for(spec: AgentSpec, workspace_id: str) -> list[Any]:
+    local_tools = _local_tools(workspace_id)
     tools: list[Any] = []
     for tool_name in spec.tool_names:
-        if tool_name in LOCAL_TOOLS:
-            tools.append(LOCAL_TOOLS[tool_name])
+        if tool_name in local_tools:
+            tools.append(local_tools[tool_name])
         elif tool_name == "code_interpreter":
             tools.append(FoundryChatClient.get_code_interpreter_tool())
         elif tool_name == "market_lookup_mcp":
@@ -128,21 +173,27 @@ def _agent_specs() -> tuple[AgentSpec, ...]:
     )
 
 
-def _create_foundry_agent(spec: AgentSpec, client: FoundryChatClient) -> Agent:
+def _create_foundry_agent(spec: AgentSpec, client: FoundryChatClient, workspace_id: str) -> Agent:
     return Agent(
         client=client,
         id=spec.agent_id,
         name=spec.agent_id,
         description=spec.description,
         instructions=spec.instructions,
-        tools=_tools_for(spec),
+        tools=_tools_for(spec, workspace_id),
     )
 
 
 def create_agent_registry(
     client_factory: Callable[[AgentSpec], Agent] | None = None,
+    *,
+    workspace_id: str | None = None,
 ) -> MafAgentRegistry:
     """Build all six DataForge agents without persisting their definitions to Foundry."""
+    authorized_workspace_id = str(workspace_id or "").strip()
+    if not authorized_workspace_id:
+        raise ValueError("workspace_id is required to create a DataForge agent registry")
+
     specs = _agent_specs()
     if client_factory is None:
         client = FoundryChatClient(
@@ -150,6 +201,6 @@ def create_agent_registry(
             model=os.environ["DF_CHAT_DEPLOYMENT"],
             credential=DefaultAzureCredential(),
         )
-        client_factory = lambda spec: _create_foundry_agent(spec, client)
+        client_factory = lambda spec: _create_foundry_agent(spec, client, authorized_workspace_id)
 
     return MafAgentRegistry(specs, {spec.agent_id: client_factory(spec) for spec in specs})
