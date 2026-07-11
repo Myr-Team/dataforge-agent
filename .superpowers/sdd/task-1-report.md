@@ -27,3 +27,17 @@ Implemented the MAF runtime contracts and deterministic runtime configuration in
 ## Concerns
 
 None identified within the Task 1 scope.
+
+## Review Fix Evidence
+
+The review identified four valid runtime issues. Tests were added before implementation and the focused suite was run in the expected failing state: `6 failed, 10 passed`.
+
+- `maf_enabled()` now uses `runtime_mode()` and requires MAF import availability; explicit `off` disables the graph while `audit` and `full` enable it.
+- A present blank or invalid `DF_MAF_RUNTIME` now resolves to `off` and never falls back to `DF_USE_MAF`; the legacy flag is consulted only when the variable is absent.
+- `MAX_MAF_REVISIONS = 2` is enforced by `CollaborationPlan`, `default_max_revisions()`, and the direct `run_feasibility_audit_loop(..., max_revisions=...)` argument.
+- Canary selection remains a standalone contract helper and is not integrated into the orchestrator, as required for Task 4 scope control.
+
+Post-fix verification:
+
+- `python -m pytest tests/test_maf_contracts.py -q`: `16 passed`
+- `python -m pytest -q`: `74 passed`

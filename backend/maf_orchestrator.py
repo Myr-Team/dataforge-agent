@@ -28,6 +28,11 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Never
 
+try:
+    from .maf_contracts import MAX_MAF_REVISIONS, MafRuntimeMode, runtime_mode
+except ImportError:  # pragma: no cover - supports direct module execution
+    from maf_contracts import MAX_MAF_REVISIONS, MafRuntimeMode, runtime_mode
+
 try:  # MAF is optional: if the package is absent we degrade to the legacy path.
     from agent_framework import WorkflowBuilder, WorkflowContext, executor
 
@@ -40,12 +45,12 @@ except Exception as exc:  # pragma: no cover - exercised only when dep missing
 
 def maf_enabled() -> bool:
     """True when the operator opted into the MAF reasoning core *and* it imports."""
-    return MAF_AVAILABLE and os.environ.get("DF_USE_MAF") == "1"
+    return MAF_AVAILABLE and runtime_mode() in (MafRuntimeMode.AUDIT, MafRuntimeMode.FULL)
 
 
 def default_max_revisions() -> int:
     try:
-        return max(0, int(os.environ.get("DF_MAF_MAX_REVISIONS", "2")))
+        return min(MAX_MAF_REVISIONS, max(0, int(os.environ.get("DF_MAF_MAX_REVISIONS", "2"))))
     except ValueError:
         return 2
 
@@ -200,7 +205,7 @@ async def run_feasibility_audit_loop(
     log the orchestrator turns into SSE frames, and ``artifact`` is mutated
     in place exactly like the legacy path.
     """
-    rounds = default_max_revisions() if max_revisions is None else max_revisions
+    rounds = default_max_revisions() if max_revisions is None else min(MAX_MAF_REVISIONS, max(0, max_revisions))
     workflow = build_feasibility_workflow(req, run_analyst, audit_fn)
     initial = MafState(artifact=artifact, max_revisions=rounds)
     result = await workflow.run(initial)

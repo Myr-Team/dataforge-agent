@@ -10,6 +10,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+MAX_MAF_REVISIONS = 2
+
+
 class MafRuntimeMode(str, Enum):
     OFF = "off"
     AUDIT = "audit"
@@ -33,7 +36,7 @@ class MafAgentRecord(BaseModel):
 class CollaborationPlan(BaseModel):
     pattern: CollaborationPattern
     agents: list[MafAgentRecord] = Field(default_factory=list)
-    max_revisions: int = Field(default=0, ge=0)
+    max_revisions: int = Field(default=0, ge=0, le=MAX_MAF_REVISIONS)
 
 
 class MafRunSummary(BaseModel):
@@ -49,8 +52,11 @@ class MafRunSummary(BaseModel):
 def runtime_mode() -> MafRuntimeMode:
     """Resolve explicit MAF runtime configuration before the legacy flag."""
     configured = os.environ.get("DF_MAF_RUNTIME")
-    if configured is not None and configured.strip():
-        return MafRuntimeMode(configured.strip().lower())
+    if configured is not None:
+        try:
+            return MafRuntimeMode(configured.strip().lower())
+        except ValueError:
+            return MafRuntimeMode.OFF
     if os.environ.get("DF_USE_MAF") == "1":
         return MafRuntimeMode.AUDIT
     return MafRuntimeMode.OFF
