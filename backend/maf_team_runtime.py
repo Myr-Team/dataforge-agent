@@ -637,19 +637,35 @@ class MafTeamRuntime:
         observer = asyncio.create_task(
             self._observe_concurrent_branches(observations, state, expected=len(branch_specs))
         )
-        branch_runs = [
-            self._run_isolated_branch(
-                workflow,
-                branch_id=branch_id,
-                agent_id=agent_id,
-                required=required,
-                payload=request.payload,
-                observations=observations,
+        branch_tasks = [
+            asyncio.create_task(
+                self._run_isolated_branch(
+                    workflow,
+                    branch_id=branch_id,
+                    agent_id=agent_id,
+                    required=required,
+                    payload=request.payload,
+                    observations=observations,
+                )
             )
             for branch_id, agent_id, required, workflow in workflows
         ]
-        await asyncio.gather(*branch_runs, return_exceptions=True)
-        observed_results = await observer
+        try:
+            gathered = await asyncio.gather(*branch_tasks, return_exceptions=True)
+            cancellation = next(
+                (result for result in gathered if isinstance(result, asyncio.CancelledError)),
+                None,
+            )
+            if cancellation is not None:
+                raise cancellation
+            observed_results = await observer
+        finally:
+            for task in branch_tasks:
+                if not task.done():
+                    task.cancel()
+            if not observer.done():
+                observer.cancel()
+            await asyncio.gather(*branch_tasks, observer, return_exceptions=True)
         branch_results = [observed_results[agent_id] for _, agent_id, _ in branch_specs]
         by_id = {branch.branch_id: branch for branch in branch_results}
         corpus = by_id["workspace"]

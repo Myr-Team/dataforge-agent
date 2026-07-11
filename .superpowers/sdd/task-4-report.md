@@ -131,3 +131,36 @@ python -m compileall -q backend tests
 Result: both exited successfully.
 
 Full suite result: `132 passed, 2 failed, 1 warning in 7.57s`. The only failures remain the Task 6 deterministic evaluation fake in `tests/test_maf_evaluation_contract.py`; `_DeterministicAgent` does not implement the installed Agent Framework `SupportsAgentRun` protocol. Per instruction, no evaluation file was edited.
+
+## Final Cancellation Fix: Concurrent Branch Cleanup
+
+### RED
+
+Added `test_branch_local_cancellation_propagates_and_cleans_up_tasks` before the runtime change. The test injects `asyncio.CancelledError` into the market branch, wraps the runtime in a `0.25s` timeout, tracks both isolated branch tasks and the observer task, and requires cancellation propagation plus completed cleanup.
+
+The initial run failed with `TimeoutError`: `gather(..., return_exceptions=True)` retained the branch-local cancellation as a result, then `_observe_concurrent_branches(...)` waited indefinitely for the canceled branch's missing terminal observation. The outer timeout canceled the observer.
+
+### Implementation
+
+- Concurrent branch coroutines are now explicit tasks.
+- Gathered results are inspected and any branch-local `asyncio.CancelledError` is re-raised.
+- A `finally` block cancels unfinished branch and observer tasks and awaits all of them with `return_exceptions=True`, preventing leaked tasks or observer hangs.
+- Ordinary branch exceptions still publish failed observations and retain existing optional degradation behavior.
+
+### GREEN
+
+Targeted cancellation and degradation command:
+
+```powershell
+python -m pytest tests/test_maf_team_runtime.py::test_branch_local_cancellation_propagates_and_cleans_up_tasks tests/test_maf_team_runtime.py::test_optional_market_failure_degrades_without_losing_corpus tests/test_maf_team_runtime.py::test_immediate_market_failure_does_not_cancel_slow_corpus -q
+```
+
+Result: `3 passed, 1 warning in 3.55s`.
+
+Focused Task 3/4 command:
+
+```powershell
+python -m pytest tests/test_maf_team_runtime.py tests/test_maf_integration.py -q
+```
+
+Result: `36 passed, 1 warning in 5.76s`. The warning is the existing upstream experimental Functional Workflow warning.
