@@ -251,11 +251,11 @@ async def test_internal_and_external_research_run_concurrently(fake_registry: Fa
 
 
 @pytest.mark.asyncio
-async def test_concurrent_builder_receives_registry_agents(
+async def test_isolated_branch_builders_receive_registry_agents(
     fake_registry: FakeRegistry,
     monkeypatch,
 ):
-    actual_builder = maf_team_runtime.ConcurrentBuilder
+    actual_builder = maf_team_runtime.SequentialBuilder
     captured: list[Any] = []
 
     class RecordingBuilder:
@@ -263,14 +263,10 @@ async def test_concurrent_builder_receives_registry_agents(
             captured.extend(participants)
             self._builder = actual_builder(participants=participants, **kwargs)
 
-        def with_aggregator(self, aggregator):
-            self._builder.with_aggregator(aggregator)
-            return self
-
         def build(self):
             return self._builder.build()
 
-    monkeypatch.setattr(maf_team_runtime, "ConcurrentBuilder", RecordingBuilder)
+    monkeypatch.setattr(maf_team_runtime, "SequentialBuilder", RecordingBuilder)
 
     await MafTeamRuntime(fake_registry).run(concurrent_request())
 
@@ -322,6 +318,57 @@ async def test_optional_market_failure_degrades_without_losing_corpus(fake_regis
     assert result.artifact["hits"]
     assert "external_signal_unavailable" in result.gaps
     assert result.artifact["strong_verdict_allowed"] is True
+
+
+@pytest.mark.asyncio
+async def test_immediate_market_failure_does_not_cancel_slow_corpus(fake_registry: FakeRegistry):
+    fake_registry.delays["df-market-researcher"] = 0
+    fake_registry.delays["df-corpus-analyst"] = 0.05
+    fake_registry.fail("df-market-researcher", TransientAgentError("market unavailable"))
+
+    result = await MafTeamRuntime(fake_registry).run(concurrent_request())
+
+    assert result.artifact["hits"] == [{"id": "workspace-1"}]
+    assert result.degraded is True
+    assert "external_signal_unavailable" in result.gaps
+    assert result.branch_overlap_ms > 0
+    assert fake_registry.calls.count("df-corpus-analyst") == 1
+    assert fake_registry.calls.count("df-market-researcher") == 1
+
+    market_failed = next(
+        event.sequence
+        for event in result.events
+        if event.event == "maf_agent_completed"
+        and event.agent_id == "df-market-researcher"
+        and event.status == "failed"
+    )
+    corpus_completed = next(
+        event.sequence
+        for event in result.events
+        if event.event == "maf_agent_completed"
+        and event.agent_id == "df-corpus-analyst"
+        and event.status == "completed"
+    )
+    assert market_failed < corpus_completed
+
+
+@pytest.mark.asyncio
+async def test_native_branch_failures_emit_in_arrival_order(fake_registry: FakeRegistry):
+    fake_registry.delays["df-market-researcher"] = 0
+    fake_registry.delays["df-corpus-analyst"] = 0.04
+    fake_registry.fail("df-market-researcher", TransientAgentError("market unavailable"))
+    fake_registry.fail("df-corpus-analyst", RuntimeError("corpus unavailable"))
+
+    result = await MafTeamRuntime(fake_registry).run(concurrent_request())
+
+    failures = [
+        event.agent_id
+        for event in result.events
+        if event.event == "maf_agent_completed" and event.status == "failed"
+    ]
+    assert failures[:2] == ["df-market-researcher", "df-corpus-analyst"]
+    assert failures.count("df-market-researcher") == 1
+    assert failures.count("df-corpus-analyst") == 1
 
 
 @pytest.mark.asyncio

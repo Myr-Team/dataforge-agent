@@ -17,7 +17,7 @@ from agent_framework import (
     Workflow,
     workflow,
 )
-from agent_framework.orchestrations import ConcurrentBuilder
+from agent_framework.orchestrations import SequentialBuilder
 from pydantic import BaseModel, Field
 
 from .maf_agents import MafAgentRegistry
@@ -243,12 +243,15 @@ class _RunState:
             return item
 
 
-def _aggregate_branch_responses(results: list[AgentExecutorResponse]) -> dict[str, dict[str, Any]]:
-    """Keep MAF's native agent fan-in while retaining participant identity."""
-    return {
-        result.executor_id: _normalize_agent_output(result.agent_response)
-        for result in results
-    }
+@dataclass(frozen=True)
+class _BranchObservation:
+    event: Literal["started", "completed", "failed"]
+    branch_id: str
+    agent_id: AgentId
+    required: bool
+    observed_ns: int
+    output: dict[str, Any] = field(default_factory=dict)
+    error_category: str | None = None
 
 
 def _normalize_agent_output(response: Any) -> dict[str, Any]:
@@ -271,6 +274,15 @@ def _error_category(error: Exception) -> str:
     if isinstance(error, TransientAgentError):
         return "transient"
     if isinstance(error, (TypeError, ValueError)):
+        return "contract_validation"
+    return "permanent"
+
+
+def _workflow_error_category(details: Any) -> str:
+    error_type = str(getattr(details, "error_type", ""))
+    if error_type == TransientAgentError.__name__:
+        return "transient"
+    if error_type in {TypeError.__name__, ValueError.__name__}:
         return "contract_validation"
     return "permanent"
 
@@ -478,110 +490,34 @@ class MafTeamRuntime:
             ("workspace", "df-corpus-analyst", True),
             ("external", "df-market-researcher", False),
         )
-        participants = [self._registry.agent(agent_id) for _, agent_id, _ in branch_specs]
-        concurrent_workflow = (
-            ConcurrentBuilder(participants=participants)
-            .with_aggregator(_aggregate_branch_responses)
-            .build()
+        workflows = [
+            (
+                branch_id,
+                agent_id,
+                required,
+                SequentialBuilder(participants=[self._registry.agent(agent_id)]).build(),
+            )
+            for branch_id, agent_id, required in branch_specs
+        ]
+        self.last_pattern_workflow = workflows[0][3]
+        observations: asyncio.Queue[_BranchObservation] = asyncio.Queue()
+        observer = asyncio.create_task(
+            self._observe_concurrent_branches(observations, state, expected=len(branch_specs))
         )
-        self.last_pattern_workflow = concurrent_workflow
-        started_ns: dict[AgentId, int] = {}
-        outputs: dict[AgentId, dict[str, Any]] = {}
-        run_error: Exception | None = None
-        agent_ids = {agent_id for _, agent_id, _ in branch_specs}
-        run_stream = concurrent_workflow.run(
-            json.dumps(request.payload, ensure_ascii=False, default=str), stream=True
-        )
-        try:
-            async for framework_event in run_stream:
-                agent_id = framework_event.executor_id
-                if agent_id not in agent_ids:
-                    continue
-                typed_agent_id = agent_id
-                if framework_event.type == "executor_invoked":
-                    started_ns[typed_agent_id] = time.perf_counter_ns()
-                    branch_id = next(branch for branch, candidate, _ in branch_specs if candidate == typed_agent_id)
-                    await state.emit("maf_branch_started", "running", agent_id=typed_agent_id, branch_id=branch_id)
-                    await state.emit("maf_agent_started", "running", agent_id=typed_agent_id, branch_id=branch_id)
-                elif framework_event.type == "executor_completed":
-                    response = next(
-                        (
-                            item.agent_response
-                            for item in (framework_event.data or [])
-                            if isinstance(item, AgentExecutorResponse) and item.executor_id == typed_agent_id
-                        ),
-                        None,
-                    )
-                    if response is None:
-                        continue
-                    outputs[typed_agent_id] = _normalize_agent_output(response)
-                    completed_ns = time.perf_counter_ns()
-                    branch_id = next(branch for branch, candidate, _ in branch_specs if candidate == typed_agent_id)
-                    duration_ms = (completed_ns - started_ns[typed_agent_id]) / 1_000_000
-                    state.completed_agents.add(typed_agent_id)
-                    await state.emit(
-                        "maf_agent_completed",
-                        "completed",
-                        agent_id=typed_agent_id,
-                        branch_id=branch_id,
-                        duration_ms=duration_ms,
-                    )
-                    await state.emit(
-                        "maf_branch_joined",
-                        "completed",
-                        agent_id=typed_agent_id,
-                        branch_id=branch_id,
-                        duration_ms=duration_ms,
-                    )
-            await run_stream.get_final_response()
-        except Exception as error:
-            run_error = error
-
-        branch_results: list[MafBranchResult] = []
-        for branch_id, agent_id, required in branch_specs:
-            completed_ns = time.perf_counter_ns()
-            started = started_ns.get(agent_id, completed_ns)
-            if agent_id in outputs:
-                branch_results.append(
-                    MafBranchResult(
-                        branch_id=branch_id,
-                        agent_id=agent_id,
-                        required=required,
-                        status="completed",
-                        output=outputs[agent_id],
-                        started_ns=started,
-                        completed_ns=completed_ns,
-                    )
-                )
-                continue
-            error_category = _error_category(run_error) if run_error else "permanent"
-            await state.emit(
-                "maf_agent_completed",
-                "failed",
-                agent_id=agent_id,
+        branch_runs = [
+            self._run_isolated_branch(
+                workflow,
                 branch_id=branch_id,
-                duration_ms=(completed_ns - started) / 1_000_000,
-                error_category=error_category,
-            )
-            await state.emit(
-                "maf_branch_joined",
-                "failed",
                 agent_id=agent_id,
-                branch_id=branch_id,
-                duration_ms=(completed_ns - started) / 1_000_000,
-                error_category=error_category,
+                required=required,
+                payload=request.payload,
+                observations=observations,
             )
-            branch_results.append(
-                MafBranchResult(
-                    branch_id=branch_id,
-                    agent_id=agent_id,
-                    required=required,
-                    status="failed",
-                    started_ns=started,
-                    completed_ns=completed_ns,
-                    error_category=error_category,
-                )
-            )
+            for branch_id, agent_id, required, workflow in workflows
+        ]
+        await asyncio.gather(*branch_runs, return_exceptions=True)
+        observed_results = await observer
+        branch_results = [observed_results[agent_id] for _, agent_id, _ in branch_specs]
         by_id = {branch.branch_id: branch for branch in branch_results}
         corpus = by_id["workspace"]
         market = by_id["external"]
@@ -642,6 +578,137 @@ class MafTeamRuntime:
         if corpus.status == "failed":
             artifact = _force_insufficient_evidence(artifact) | {"verdict": "insufficient_evidence"}
         return artifact, gaps, bool(gaps), branches, overlap_ns / 1_000_000, rounds
+
+    async def _run_isolated_branch(
+        self,
+        workflow_instance: Workflow,
+        *,
+        branch_id: str,
+        agent_id: AgentId,
+        required: bool,
+        payload: Mapping[str, Any],
+        observations: asyncio.Queue[_BranchObservation],
+    ) -> None:
+        terminal_observed = False
+        run_stream = workflow_instance.run(
+            json.dumps(payload, ensure_ascii=False, default=str), stream=True
+        )
+        try:
+            async for framework_event in run_stream:
+                if framework_event.executor_id != agent_id:
+                    continue
+                observed_ns = time.perf_counter_ns()
+                if framework_event.type == "executor_invoked":
+                    await observations.put(
+                        _BranchObservation("started", branch_id, agent_id, required, observed_ns)
+                    )
+                elif framework_event.type == "executor_completed":
+                    response = next(
+                        (
+                            item.agent_response
+                            for item in (framework_event.data or [])
+                            if isinstance(item, AgentExecutorResponse) and item.executor_id == agent_id
+                        ),
+                        None,
+                    )
+                    if response is not None:
+                        terminal_observed = True
+                        await observations.put(
+                            _BranchObservation(
+                                "completed",
+                                branch_id,
+                                agent_id,
+                                required,
+                                observed_ns,
+                                output=_normalize_agent_output(response),
+                            )
+                        )
+                elif framework_event.type == "executor_failed":
+                    terminal_observed = True
+                    await observations.put(
+                        _BranchObservation(
+                            "failed",
+                            branch_id,
+                            agent_id,
+                            required,
+                            observed_ns,
+                            error_category=_workflow_error_category(framework_event.data),
+                        )
+                    )
+            await run_stream.get_final_response()
+        except Exception as error:
+            if not terminal_observed:
+                await observations.put(
+                    _BranchObservation(
+                        "failed",
+                        branch_id,
+                        agent_id,
+                        required,
+                        time.perf_counter_ns(),
+                        error_category=_error_category(error),
+                    )
+                )
+            raise
+
+    async def _observe_concurrent_branches(
+        self,
+        observations: asyncio.Queue[_BranchObservation],
+        state: _RunState,
+        *,
+        expected: int,
+    ) -> dict[AgentId, MafBranchResult]:
+        started_ns: dict[AgentId, int] = {}
+        results: dict[AgentId, MafBranchResult] = {}
+        while len(results) < expected:
+            observation = await observations.get()
+            if observation.event == "started":
+                started_ns[observation.agent_id] = observation.observed_ns
+                await state.emit(
+                    "maf_branch_started",
+                    "running",
+                    agent_id=observation.agent_id,
+                    branch_id=observation.branch_id,
+                )
+                await state.emit(
+                    "maf_agent_started",
+                    "running",
+                    agent_id=observation.agent_id,
+                    branch_id=observation.branch_id,
+                )
+                continue
+
+            started = started_ns.get(observation.agent_id, observation.observed_ns)
+            status: Literal["completed", "failed"] = observation.event
+            duration_ms = (observation.observed_ns - started) / 1_000_000
+            if status == "completed":
+                state.completed_agents.add(observation.agent_id)
+            await state.emit(
+                "maf_agent_completed",
+                status,
+                agent_id=observation.agent_id,
+                branch_id=observation.branch_id,
+                duration_ms=duration_ms,
+                error_category=observation.error_category,
+            )
+            await state.emit(
+                "maf_branch_joined",
+                status,
+                agent_id=observation.agent_id,
+                branch_id=observation.branch_id,
+                duration_ms=duration_ms,
+                error_category=observation.error_category,
+            )
+            results[observation.agent_id] = MafBranchResult(
+                branch_id=observation.branch_id,
+                agent_id=observation.agent_id,
+                required=observation.required,
+                status=status,
+                output=observation.output,
+                started_ns=started,
+                completed_ns=observation.observed_ns,
+                error_category=observation.error_category,
+            )
+        return results
 
     async def _run_handoff(
         self, request: MafTeamRequest, state: _RunState
