@@ -78,6 +78,31 @@ def test_run_store_persists_actor_and_token_summary(tmp_path, monkeypatch) -> No
     assert summary["tokens"]["total"] == 15
 
 
+def test_token_summary_keeps_route_usage_when_model_response_usage_is_empty(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+
+    run_store.start_run("run-route-usage", "ws-actor", "analyze")
+    run_store.record_event(
+        "run-route-usage",
+        "route",
+        {"usage": {"input_tokens": 12, "output_tokens": 7, "total_tokens": 19}},
+    )
+    run_store.record_event(
+        "run-route-usage",
+        "model_response",
+        {"agent": "df-answer-writer", "usage": {}},
+    )
+    run_store.complete_run("run-route-usage", final={"text": "done"}, artifact={})
+
+    detail = run_store.get_run("run-route-usage")
+
+    assert detail["tokens"] == {"total": 19, "prompt": 12, "completion": 7}
+    assert control_plane.run_summary("run-route-usage")["tokens"]["total"] == 19
+
+
 def test_run_summary_and_trace_expose_dynamic_evidence(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)

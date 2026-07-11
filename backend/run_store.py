@@ -735,12 +735,17 @@ def _plain(value: Any) -> Any:
 
 def _token_usage(run: dict[str, Any]) -> dict[str, int]:
     total = {"total": 0, "prompt": 0, "completion": 0}
-    sources = [item.get("usage") for item in run.get("models") or [] if isinstance(item, dict)]
-    if not sources:
-        for step in run.get("steps") or []:
-            data = step.get("data") if isinstance(step, dict) and isinstance(step.get("data"), dict) else {}
-            if data.get("usage"):
-                sources.append(data.get("usage"))
+    model_sources = [item.get("usage") for item in run.get("models") or [] if isinstance(item, dict)]
+    has_model_usage = any(_usage_from_dict(item if isinstance(item, dict) else {}).get("total") for item in model_sources)
+    sources = list(model_sources)
+    for step in run.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        if step.get("event") == "model_response" and has_model_usage:
+            continue
+        data = step.get("data") if isinstance(step.get("data"), dict) else {}
+        if data.get("usage"):
+            sources.append(data.get("usage"))
     for usage in sources:
         item = _usage_from_dict(usage if isinstance(usage, dict) else {})
         total["total"] += item.get("total") or 0
