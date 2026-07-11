@@ -14,7 +14,7 @@ The runtime consumes an already-created, authorization-bound `MafAgentRegistry`.
 
 - Selects direct, concurrent research, specialist handoff, or bounded review exclusively from normalized intent, output mode, workspace/external evidence requirements, and impact level.
 - Executes every participant through the object returned by `MafAgentRegistry.agent(...)`.
-- Runs corpus and market branches through MAF `ConcurrentBuilder` imported from `agent_framework.orchestrations`, with typed fan-in results and measured timing overlap.
+- Runs corpus and market as two failure-isolated, single-participant MAF `SequentialBuilder` workflows. Each receives the actual registry Agent, and both workflows are launched concurrently with `asyncio.gather(..., return_exceptions=True)`.
 - Keeps deterministic specialist transfer and bounded review inside a real MAF `FunctionalWorkflow`.
 - Emits sequenced Pydantic events for plans, participants, branches, handoffs, and review decisions.
 - Degrades on optional market failure while preserving corpus evidence.
@@ -33,7 +33,7 @@ python -m pytest tests/test_maf_team_runtime.py -q
 
 Result before production implementation: collection failed with `ModuleNotFoundError: No module named 'backend.maf_team_runtime'`.
 
-After the concrete orchestration requirement was clarified, an additional focused RED run asserted a MAF graph workflow for the concurrent pattern. It failed with `AttributeError: 'MafTeamRuntime' object has no attribute 'last_pattern_workflow'` before the `ConcurrentBuilder` implementation.
+Historical initial RED: after the concrete orchestration requirement was clarified, an additional focused run asserted a MAF graph workflow for the concurrent pattern. It failed with `AttributeError: 'MafTeamRuntime' object has no attribute 'last_pattern_workflow'` before the first, since-superseded shared-workflow implementation.
 
 ### GREEN
 
@@ -79,11 +79,10 @@ The remaining failure is outside Task 3 in `tests/test_tracing_telemetry.py::tes
 
 ## API and Dependency Notes
 
-- Installed core/foundry packages are `1.8.1`.
-- `ConcurrentBuilder` and `HandoffBuilder` are lazily exported from `agent_framework.orchestrations` and require the separate orchestration distribution.
-- `agent-framework-orchestrations==1.0.0rc3` is compatible with core `>=1.8.0,<2` and is the pin tested here.
-- Stable `agent-framework-orchestrations==1.0.0` requires core `>=1.9.0,<2`, so it conflicts with this repository's exact `agent-framework-core==1.8.1` pin.
-- MAF marks `FunctionalWorkflow` experimental in this release. The concurrent fan-out/fan-in itself uses the concrete `ConcurrentBuilder` graph API.
+- The installed dependency set is `agent-framework-core==1.11.0`, `agent-framework-foundry==1.10.1`, and `agent-framework-orchestrations==1.0.0`.
+- Current evidence execution uses two `SequentialBuilder(participants=[registry_agent])` workflows. Both are real MAF graph workflows whose sole participant is the actual authorization-bound registry Agent.
+- Stable `ConcurrentBuilder` cannot provide the required one-Agent failure-isolated branch: its fan-out construction rejects fewer than two targets. It is therefore not used by the current Task 3 implementation.
+- MAF marks the outer `FunctionalWorkflow` experimental in this release. The isolated evidence branches use stable graph workflows and public workflow events.
 
 ## Concerns
 
@@ -110,15 +109,15 @@ The failing regressions covered the missing concurrent revision budget, adapter 
 - High-impact workspace-plus-external plans now carry `max_revisions=2`, and the concurrent path applies the same bounded `revise` loop as the dedicated review path.
 - A failed initial feasibility analysis skips audit and returns `insufficient_evidence`; a failed revision keeps the last valid analyst artifact, sanitizes every nested `verdict` and `*_verdict`, and returns `insufficient_evidence`.
 - Required corpus failure applies that same recursive verdict ceiling to feasibility and audit payloads, not only the top-level verdict.
-- `ConcurrentBuilder` now receives `MafAgentRegistry.agent(...)` objects directly. The runtime consumes supported `Workflow.run(..., stream=True)` events (`executor_invoked` and `executor_completed`) for typed branch and participant observations, replacing the captured participant wrapper.
-- The offline fake is a narrow MAF `SupportsAgentRun`-compatible double: `id`, `name`, `description`, `run(..., stream=...)`, `create_session`, and `get_session`. This matches the current stable `ConcurrentBuilder` participant contract without requiring a Foundry connection.
+- Two single-participant `SequentialBuilder` workflows receive `MafAgentRegistry.agent(...)` objects directly. They are launched concurrently, while a shared queue consumes supported `Workflow.run(..., stream=True)` events (`executor_invoked`, `executor_completed`, and `executor_failed`) in arrival order.
+- The offline fake is a narrow MAF `SupportsAgentRun`-compatible double: `id`, `name`, `description`, `run(..., stream=...)`, `create_session`, and `get_session`. This matches the current stable Agent participant contract without requiring a Foundry connection.
 - `maf_plan` includes `mode`, `selected_agents`, `skipped_agents`, and `max_revisions`; handoff intent reasons are limited to known codes or `intent:other`.
 
 ### Stable MAF API Check
 
 The installed dependency set is `agent-framework-core==1.11.0`, `agent-framework-foundry==1.10.1`, and `agent-framework-orchestrations==1.0.0`.
 
-`ConcurrentBuilder` accepts `participants: Sequence[SupportsAgentRun | Executor]`, exposes `with_aggregator(...)`, and builds a `Workflow`. `Workflow.run(..., stream=True)` emits supported workflow lifecycle and executor events. The implementation uses that public surface; it does not depend on MAF-private participant wrappers.
+`SequentialBuilder` accepts `participants: Sequence[SupportsAgentRun | Executor]` and supports one actual Agent participant. `Workflow.run(..., stream=True)` emits the lifecycle and executor events consumed by the shared observer. Stable `ConcurrentBuilder` requires at least two fan-out targets, so it cannot supply the required one-Agent failure-isolated branch and is not part of the current implementation.
 
 ### GREEN
 
@@ -147,13 +146,13 @@ git diff --check
 
 Result: both commands exited `0`.
 
-### Remaining Concern
+### Superseded Shared-Workflow Concern
 
-MAF aborts a concurrent workflow when any participant raises. The runtime records the successful direct-agent participant observations emitted before that failure and marks any unfinished branch failed; the required workspace branch still fails closed. The focused optional-market regression verifies corpus evidence remains available in this case.
+Historical note: the first remediation still used one shared multi-participant workflow, where a participant failure could terminate the shared orchestration. The second re-review replaced that design with two independently failing `SequentialBuilder` workflows, so this is not a current implementation concern.
 
 ## Second Re-review: Failure Isolation and Native Event Order
 
-This section supersedes the preceding shared-`ConcurrentBuilder` failure-handling note.
+This section defines the current Task 3 implementation and supersedes all preceding shared-workflow implementation notes.
 
 ### RED
 
