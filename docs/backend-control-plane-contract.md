@@ -141,6 +141,41 @@ Returns stage status inferred from persisted trace events.
 
 Returns full persisted run log with credential-like fields redacted.
 
+## Identity, Usage, And Audit
+
+`GET /api/workspaces/{workspace_id}/members`
+
+Returns the current Easy Auth / Entra actor as owner plus any additional actors observed in persisted runs. This endpoint is read-only; Graph invitation and RBAC writes are intentionally not enabled in the demo build.
+
+```json
+{
+  "workspace_id": "demo-corpus",
+  "rbac_enforced": false,
+  "source": "easy_auth",
+  "roles": ["owner", "admin", "editor", "viewer"],
+  "members": [
+    {
+      "user": "傅子豪",
+      "email": "fuzihao@gdjiuyun.onmicrosoft.com",
+      "role": "owner",
+      "status": "active",
+      "usage": { "runs": 50, "total_tokens": 191500, "prompt_tokens": 100000, "completion_tokens": 91500 },
+      "last_seen_at": "2026-07-01T20:33:00+08:00"
+    }
+  ],
+  "usage": { "totals": { "runs": 50, "total_tokens": 191500 }, "source": "run_store" },
+  "invite": { "status": "preview", "mode": "entra_email_placeholder" }
+}
+```
+
+`GET /api/workspaces/{workspace_id}/usage-summary`
+
+Returns the same token/run aggregation grouped by actor for ROI and chargeback UI.
+
+`GET /api/workspaces/{workspace_id}/audit-events`
+
+Returns recent run and conversation audit events with actor, timestamp, status, title, and token usage where available.
+
 ## Structured Result
 
 `GET /api/runs/{run_id}/structured-result`
@@ -233,7 +268,7 @@ Aggregates health, dependency details, model config, RAG config, connector modes
 
 `GET /api/workspaces/{workspace_id}/settings`
 
-Adds workspace storage usage and member role placeholder data to `/api/system-status`.
+Adds workspace storage usage and member role display data to `/api/system-status`.
 
 `GET /api/workspaces/{workspace_id}/members`
 
@@ -243,10 +278,10 @@ Minimal workspace role contract:
 {
   "workspace_id": "demo-corpus",
   "rbac_enforced": false,
-  "source": "workspace_placeholder",
+  "source": "easy_auth",
   "roles": ["owner", "admin", "editor", "viewer"],
-  "members": [{ "user": "Workspace owner", "email": "owner@example.com", "role": "owner", "status": "active" }]
+  "members": [{ "user": "傅子豪", "email": "fuzihao@gdjiuyun.onmicrosoft.com", "role": "owner", "status": "active" }]
 }
 ```
 
-This does not implement real RBAC and does not change auth.
+This reads the current Easy Auth user when available, falls back to the workspace owner defaults, and does not implement real RBAC or change auth.

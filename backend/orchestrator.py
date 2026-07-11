@@ -47,6 +47,7 @@ try:
     )
     from .foundry_client import (
         run_agent,
+        run_answer_composer,
         run_coordinator_direct_reply,
         run_coordinator_guidance,
         run_coordinator_route,
@@ -64,10 +65,11 @@ try:
         stream_grounded_answer,
         stream_grounded_chat_answer,
     )
+    from .identity import actor_from_ui_context, public_actor
     from .pm_skills import playbook_suggestion
     from .rag import search
     from .router import deterministic_route
-    from .run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, start_run, update_run_proposal
+    from .run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
     from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
     from .tracing import trace_event
     from .maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -106,6 +108,7 @@ except ImportError:
     )
     from foundry_client import (
         run_agent,
+        run_answer_composer,
         run_coordinator_direct_reply,
         run_coordinator_guidance,
         run_coordinator_route,
@@ -123,10 +126,11 @@ except ImportError:
         stream_grounded_answer,
         stream_grounded_chat_answer,
     )
+    from identity import actor_from_ui_context, public_actor
     from pm_skills import playbook_suggestion
     from rag import search
     from router import deterministic_route
-    from run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, start_run, update_run_proposal
+    from run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
     from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
     from tracing import trace_event
     from maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -217,7 +221,36 @@ def _looks_like_solution_request(message: str) -> bool:
 
 
 def _artifact_generation_requested(message: str) -> bool:
-    return bool(re.search(r"(生成|输出|制作|产出).{0,16}(项目书|prd|路线图|实验计划|方案|报告|文档)", _intent_message(message), re.I))
+    text = _intent_message(message)
+    return bool(
+        re.search(r"(生成|输出|制作|产出|导出).{0,16}(pdf|项目书|prd|路线图|实验计划|报告|文档|计划书|产物)", text, re.I)
+        or re.search(r"(方案|计划).{0,10}(pdf|文档|项目书|计划书|产物|导出|下载)", text, re.I)
+    )
+
+
+def _plan_draft_requested(message: str) -> bool:
+    text = _intent_message(message)
+    compact = re.sub(r"\s+", "", text)
+    if not compact:
+        return False
+    if _artifact_generation_requested(text):
+        return True
+    return bool(
+        re.search(
+            r"(整理|形成|写|做|出|给|生成|输出|组织|梳理|总结).{0,12}(一版|新版|v\d+|完整)?"
+            r"(方案|计划|项目书|报告|落地方案|试点方案|活动方案|产品方案|验证方案)",
+            compact,
+            re.I,
+        )
+        or re.search(
+            r"(整理|形成|写|做|生成|输出|组织|梳理|总结).{0,24}"
+            r"(方案|计划|落地方案|试点方案|活动方案|产品方案|验证方案)",
+            compact,
+            re.I,
+        )
+        or re.search(r"(方案|计划|报告|项目书).{0,8}(看看|看下|出来|成稿|草案|初稿|一版)", compact, re.I)
+        or re.search(r"\b(plan|proposal|draft|project document|pilot plan)\b", text, re.I)
+    )
 
 
 def _data_only_requested(message: str) -> bool:
@@ -471,9 +504,9 @@ def _compact_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return compact
 
 
-def _persist_user_message(conversation_id: str, workspace_id: str, text: str, assume_new: bool = False) -> None:
+def _persist_user_message(conversation_id: str, workspace_id: str, text: str, assume_new: bool = False, actor: dict[str, Any] | None = None) -> None:
     try:
-        append_message(conversation_id, workspace_id=workspace_id, role="user", text=text, remote_load=not assume_new)
+        append_message(conversation_id, workspace_id=workspace_id, role="user", text=text, actor=actor, remote_load=not assume_new)
     except Exception:
         pass
 
@@ -612,6 +645,11 @@ def _human_title_from_opportunity(value: Any) -> str:
 
 def _query_action_title(message: str) -> str:
     raw = str(message or "").strip()
+    for quoted in re.findall(r"[“\"']([^”\"']{2,40})[”\"']", raw):
+        if re.search(r"(服务|产品|方案|建议|试点|活动|选址|计划|清单|报告)", quoted):
+            title = _complete_short_phrase(quoted, fallback="")
+            if title:
+                return title
     text = re.sub(r"\s+", "", raw)
     text = re.sub(r"[，。！？!?；;：:、,.]", "", text)
     text = re.sub(r"^(我想|请|帮我|能不能|可以|想要|需要|基于|围绕)", "", text)
@@ -635,6 +673,8 @@ _TITLE_SKIP_FIELDS = {
     "chunk_id",
     "workspace_id",
     "document_type",
+    "资料范围",
+    "数据画像摘要",
 }
 _TITLE_SCENE_FIELDS = ("store", "branch", "location", "region", "city", "venue", "门店", "区域", "城市", "地点")
 _TITLE_ACTION_FIELDS = (
@@ -703,6 +743,8 @@ def _title_value(value: Any, limit: int = 18) -> str:
     text = sanitize_customer_text(str(value or ""))
     text = re.sub(r"\s+", " ", text).strip(" ，。；;：:-_\"'“”")
     text = re.sub(r"\b(raw_docs|profile|chunk|row-\d+)\b", "", text, flags=re.I).strip()
+    if re.search(r"(已就绪|解析中|部分字段|数据字段|当前工作区包含|profile\.json|\.(?:md|csv|json|xlsx|xls|pdf)\b)", text, re.I):
+        return ""
     if not text or re.fullmatch(r"[-+]?\d+(?:\.\d+)?%?", text):
         return ""
     first_clause = re.split(r"[。；;\n]", text, maxsplit=1)[0].strip(" ，、")
@@ -796,7 +838,13 @@ def _clean_opportunity_label(raw: Any, req: ChatRequest, artifact: dict[str, Any
     raw_text = str(raw or "")
     raw_tokens = [token for token in re.split(r"[-_\s]+", raw_text.lower()) if token]
     collapsed_tokens = [token for token in re.split(r"\s+", collapsed.lower()) if token]
-    source_like = bool(re.search(r"\b(raw_docs|upload|workspace|profile|json|csv|xlsx|batch\d+)\b", raw_text, re.I))
+    source_like = bool(
+        re.search(
+            r"\b(raw_docs|upload|workspace|profile|json|csv|xlsx|batch\d+)\b|已就绪|解析中|部分字段|数据字段|\.(?:md|csv|json|xlsx|xls|pdf)\b",
+            raw_text,
+            re.I,
+        )
+    )
     repeated_or_truncated = source_like or len(raw_tokens) > len(collapsed_tokens) + 2 or len(raw_text) > 72 or "…" in collapsed
     if evidence_title and (
         repeated_or_truncated
@@ -813,7 +861,11 @@ def _customer_opportunity_title(req: ChatRequest, artifact: dict[str, Any], raw:
     if evidence_title and (
         not cleaned
         or not re.search(r"[\u4e00-\u9fff]", cleaned)
-        or re.search(r"\b(raw|docs|upload|workspace|profile|batch\d+)\b", cleaned, re.I)
+        or re.search(
+            r"\b(raw|docs|upload|workspace|profile|batch\d+)\b|已就绪|解析中|部分字段|数据字段|\.(?:md|csv|json|xlsx|xls|pdf)\b",
+            cleaned,
+            re.I,
+        )
         or "…" in cleaned
         or _looks_like_query_echo(cleaned, req.message)
     ):
@@ -948,18 +1000,25 @@ def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tu
     if doc_count <= 0:
         return None
     current_message = _intent_message(req.message)
-    requested_mode = str(getattr(req, "artifact_mode", "") or "").strip()
+    requested_mode = str(getattr(req, "artifact_mode", "") or "").strip() or "chat"
     requested_analysis_mode = requested_mode in {"report", "full_package", "proposal"}
     wants_artifact = requested_mode in {"full_package", "proposal"} or _artifact_generation_requested(current_message)
     market_context = _market_context_requested(current_message)
     auto_analyze = _is_auto_analyze_request(req)
     last_analysis = _last_analysis_for_workspace(req.workspace_id, context)
+    plan_draft_followup = bool(
+        last_analysis
+        and requested_mode == "chat"
+        and _plan_draft_requested(current_message)
+        and not _artifact_generation_requested(current_message)
+        and not auto_analyze
+        and not requested_analysis_mode
+    )
     workspace_followup = bool(last_analysis and requested_mode == "chat" and _analysis_followup_requested(current_message))
-    heavy = auto_analyze or requested_analysis_mode or (_explicit_heavy_analysis_requested(current_message) and not workspace_followup)
+    heavy = auto_analyze or requested_analysis_mode or _explicit_heavy_analysis_requested(current_message)
     if (
         last_analysis
-        and ((req.conversation_id and history) or workspace_followup)
-        and not heavy
+        and ((((req.conversation_id and history) or workspace_followup) and not heavy) or plan_draft_followup)
         and not wants_artifact
         and not market_context
     ):
@@ -978,6 +1037,7 @@ def _preflight_fast_route(req: ChatRequest, history: list[dict[str, Any]]) -> tu
             "market_tools_allowed": False,
             "last_analysis_available": True,
             "workspace_followup": workspace_followup,
+            "plan_draft_followup": plan_draft_followup,
         }
     if (
         _ordinary_workspace_qa_requested(current_message)
@@ -1010,7 +1070,7 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
     context = workspace_context(req.workspace_id)
     doc_count = int(context.get("doc_count") or 0)
     current_message = _intent_message(req.message)
-    requested_mode = str(getattr(req, "artifact_mode", "") or "").strip()
+    requested_mode = str(getattr(req, "artifact_mode", "") or "").strip() or "chat"
     requested_analysis_mode = requested_mode in {"report", "full_package", "proposal"}
     wants_artifact = requested_mode in {"full_package", "proposal"} or _artifact_generation_requested(current_message)
     data_only = _data_only_requested(current_message)
@@ -1020,11 +1080,24 @@ def _routing_decision_from_llm(req: ChatRequest, raw: dict[str, Any]) -> Routing
     ordinary_qa = _ordinary_workspace_qa_requested(current_message)
     followup_context = bool(req.conversation_id) and _looks_like_context_followup(current_message)
     last_analysis = _last_analysis_for_workspace(req.workspace_id, context)
+    plan_draft_followup = bool(
+        last_analysis
+        and requested_mode == "chat"
+        and _plan_draft_requested(current_message)
+        and not _artifact_generation_requested(current_message)
+        and not auto_analyze
+        and not requested_analysis_mode
+    )
     workspace_followup = bool(last_analysis and requested_mode == "chat" and _analysis_followup_requested(current_message))
     allow_market_tools = bool((market_context or auto_analyze) and not data_only)
     forced_grounded_answer = False
     forced_fast_path = False
-    if doc_count > 0 and last_analysis and (bool(req.conversation_id) or workspace_followup) and not explicit_heavy and not wants_artifact and not market_context:
+    if doc_count > 0 and last_analysis and plan_draft_followup and not wants_artifact and not market_context:
+        intent = "followup_edit"
+        raw["needs_clarification"] = False
+        raw["output_mode"] = "chat"
+        forced_fast_path = True
+    elif doc_count > 0 and last_analysis and (bool(req.conversation_id) or workspace_followup) and not explicit_heavy and not wants_artifact and not market_context:
         intent = "followup_edit"
         raw["needs_clarification"] = False
         raw["output_mode"] = "chat"
@@ -1327,32 +1400,51 @@ def _run_corpus_analyst(req: ChatRequest, top_k: int = 8, use_vector: bool = Tru
     }
 
 
+def _workspace_document_scope_line(documents: list[dict[str, Any]]) -> str:
+    if not documents:
+        return ""
+    counts = {"结构化数据": 0, "业务说明": 0, "参考素材": 0, "外部数据": 0, "其他资料": 0}
+    for item in documents:
+        fmt = str(item.get("format") or "").strip(".").lower()
+        if str(item.get("external") or "").lower() == "true" or fmt in {"external", "sql", "blob"}:
+            counts["外部数据"] += 1
+        elif fmt in {"csv", "tsv", "xlsx", "xls", "xlsm", "json", "parquet"}:
+            counts["结构化数据"] += 1
+        elif fmt in {"md", "markdown", "txt", "pdf", "doc", "docx", "ppt", "pptx"}:
+            counts["业务说明"] += 1
+        elif fmt in {"png", "jpg", "jpeg", "webp", "gif", "svg"}:
+            counts["参考素材"] += 1
+        else:
+            counts["其他资料"] += 1
+    parts = [f"{count} 份{label}" for label, count in counts.items() if count]
+    if not parts:
+        return ""
+    return "资料范围: 当前工作区包含" + "、".join(parts) + "，用于支撑基于证据的机会判断。"
+
+
 def _workspace_profile_fallback_hits(workspace_id: str) -> list[dict[str, Any]]:
     context = workspace_context(workspace_id)
     summary = _clean_text(context.get("profile_summary"), 1200)
     documents = [item for item in (context.get("documents") or []) if isinstance(item, dict)]
-    doc_lines = []
-    for item in documents[:5]:
-        name = _clean_text(item.get("name") or item.get("source_file") or "工作区资料", 80)
-        status = _clean_text(item.get("status") or item.get("format") or "", 40)
-        if name:
-            doc_lines.append(f"{name}: {status}".strip(": "))
+    scope_line = _workspace_document_scope_line(documents)
     content_parts = []
     if summary:
         content_parts.append(f"数据画像摘要: {summary}")
-    if doc_lines:
-        content_parts.append("已上传资料: " + "；".join(doc_lines))
+    if scope_line:
+        content_parts.append(scope_line)
     if not content_parts:
         name = _clean_text(context.get("name") or workspace_id, 80)
         doc_count = int(context.get("doc_count") or 0)
         if doc_count <= 0:
             return []
         content_parts.append(f"工作区 {name} 已有 {doc_count} 份资料，可先用于方向性问答，但需要更具体的问题来命中细节证据。")
+    workspace_name = _clean_text(context.get("name") or "", 40)
+    title = f"{workspace_name}数据画像摘要" if workspace_name else "工作区数据画像摘要"
     return [
         {
             "id": f"{workspace_id}-profile-fast-fallback",
             "workspace_id": workspace_id,
-            "title": "工作区数据画像摘要",
+            "title": title,
             "raw_title": "Workspace profile summary",
             "content": "\n".join(content_parts),
             "source_file": "profile.json",
@@ -1368,6 +1460,9 @@ def _workspace_profile_fallback_hits(workspace_id: str) -> list[dict[str, Any]]:
 
 
 def _infer_title(message: str, hits: list[dict[str, Any]]) -> str:
+    query_title = _query_action_title(message)
+    if query_title:
+        return query_title
     evidence_title = _evidence_topic_from_hits(hits)
     if evidence_title:
         return evidence_title
@@ -2473,7 +2568,7 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
                 "1024x1024",
                 _reference_image_urls(proposal.get("reference_images") or []),
                 str(proposal.get("title") or proposal.get("opportunity_id") or "").strip(),
-                _logo_reference_url(proposal.get("reference_images") or []),
+                None,
             )
         audio_future = pool.submit(narrate_summary, _concise_narration_from_proposal(proposal), "zh-CN-XiaoxiaoNeural") if "audio" in wanted else None
         if pdf_future:
@@ -2873,7 +2968,8 @@ def _image_prompt_from_proposal(proposal: dict[str, Any]) -> str:
         "floating disconnected objects, an office or meeting scene, or people around screens. "
         f"Use this only as background context, do NOT print it as text: {scene_brief} "
         "Composition: one clear hero subject in the upper two-thirds; keep the BOTTOM ~28% as calm low-detail "
-        "negative space or a soft gradient so a title caption can be overlaid later; keep the TOP-LEFT corner clean for a small logo. "
+        "negative space or a soft gradient so a title caption can be overlaid later; keep the TOP-LEFT corner clean, "
+        "with no floating logo chip, pasted reference image, white tile, or transparency checkerboard. "
         "Text: no paragraphs, no headlines, no Chinese characters; at most one or two very short English label marks. "
         "Style: clean, modern, premium, tangible and realistic (not conceptual or abstract), with a confident blue accent."
     )
@@ -3301,7 +3397,7 @@ def _structured_corpus_answer(req: ChatRequest, artifact: dict[str, Any]) -> dic
 
 
 def _evidence_signals(hits: list[dict[str, Any]], citations: list[dict[str, Any]]) -> list[dict[str, str]]:
-    items: list[dict[str, str]] = []
+    items: list[dict[str, Any]] = []
     seen: set[str] = set()
     ordered_hits = sorted(
         hits[:8],
@@ -3316,8 +3412,22 @@ def _evidence_signals(hits: list[dict[str, Any]], citations: list[dict[str, Any]
             continue
         seen.add(key)
         markers = _evidence_markers([_evidence_from_hit(hit).model_dump()], citations)
-        items.append({"text": text, "markers": markers})
-    return items
+        items.append({"text": text, "markers": markers, "_priority": _signal_priority(text)})
+    items.sort(key=lambda item: item.get("_priority", 10))
+    return [{"text": item["text"], "markers": item["markers"]} for item in items]
+
+
+def _signal_priority(text: str) -> int:
+    value = str(text or "")
+    if re.search(r"(差异明显|高人流|高停留)", value):
+        return 0
+    if re.search(r"(候选|优先|预算|风险|缺口|限制|不能直接承诺)", value):
+        return 1
+    if re.search(r"(试点|产品化|服务|转化|人流|停留|复访|周边)", value):
+        return 2
+    if re.search(r"(背景|希望|请判断|资料范围|数据画像)", value):
+        return 4
+    return 3
 
 
 def _compact_hit_signal(hit: dict[str, Any]) -> str:
@@ -3348,14 +3458,21 @@ def _compact_hit_signal(hit: dict[str, Any]) -> str:
 
 
 def _compact_hit_signal_customer(hit: dict[str, Any]) -> str:
-    content = _clean_text(hit.get("content"), 900)
+    raw_content = str(hit.get("content") or "")
+    content = _clean_text(raw_content, 900)
     if not content:
         return ""
     field_labels = field_label_map_from_hits([hit])
-    if str(hit.get("document_type") or "") == "profile":
-        match = re.search(r"(?:高信号|交叉信号)[：:]\s*([^。\n]+)", content)
-        if match:
-            return _clip_customer_signal(_profile_signal_sentence(match.group(1), field_labels))
+    document_type = str(hit.get("document_type") or "").lower()
+    if document_type == "profile":
+        for match in re.finditer(r"(?:交叉信号|高信号)[：:]\s*([^。\n]+)", raw_content):
+            signal = str(match.group(1) or "")
+            if re.search(r"(文档|标题层级|中文内容|缺失率|常量|标识符)", signal):
+                continue
+            return _clip_customer_signal(_profile_signal_sentence(signal, field_labels))
+    if document_type in {"markdown", "md"}:
+        signal = _markdown_signal_sentence(raw_content, field_labels)
+        return signal
     selected: list[tuple[str, str]] = []
     skip_names = {"collection", "id", "row", "source", "source_file", "chunk_id", "workspace_id", "document_type"}
     for index, (name, value) in enumerate(record_pairs(content), start=1):
@@ -3375,6 +3492,31 @@ def _compact_hit_signal_customer(hit: dict[str, Any]) -> str:
         (label_a, value_a), (label_b, value_b) = selected[0], selected[1]
         text = f"{label_a}为“{value_a}”，{label_b}为“{value_b}”"
     return _clip_customer_signal(sanitize_customer_text(_strip_inline_refs(text), field_labels))
+
+
+def _markdown_signal_sentence(content: str, field_labels: dict[str, str]) -> str:
+    if re.search(r"(?m)^#+\s*(希望输出|输出要求|交付要求|交付物)\s*$", str(content or "")):
+        return ""
+    lines: list[str] = []
+    for raw in str(content or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        line = re.sub(r"^#+\s*", "", line)
+        line = re.sub(r"^[-*]\s*", "", line)
+        line = line.strip()
+        if not line or re.fullmatch(r"(背景|希望输出|已知约束|本次希望\s*Agent\s*判断的问题)", line, re.I):
+            continue
+        if re.match(r"^请判断[:：]?$", line):
+            continue
+        if len(line) < 14 and line.endswith(("；", ";")):
+            continue
+        lines.append(line)
+    if not lines:
+        return ""
+    priority_terms = re.compile(r"(评估|产品化|服务|试点|候选|预算|风险|不能直接承诺|证据|人流|停留|复访)")
+    chosen = next((line for line in lines if priority_terms.search(line)), lines[0])
+    return _clip_customer_signal(sanitize_customer_text(_strip_inline_refs(chosen), field_labels))
 
 
 def _profile_signal_sentence(signal: str, field_labels: dict[str, str]) -> str:
@@ -3492,10 +3634,10 @@ def _chat_output_contract(intent: str) -> dict[str, Any]:
     contract = _output_contract(intent)
     contract.update(
         {
-            "version": "batch12.conversation_chat.v1",
-            "sections": ["direct_answer", "brief_reasoning", "next_step"],
-            "answer_style": "concise_conversation",
-            "max_target_chars": 300,
+            "version": "batch13.conversation_markdown.v1",
+            "sections": ["综合判断", "依据", "下一步"],
+            "answer_style": "structured_markdown_conversation",
+            "max_target_chars": 700,
             "no_numbered_action_plan": True,
             "no_dimension_scores": True,
         }
@@ -3527,10 +3669,16 @@ def _last_history_user_topic(artifact: dict[str, Any]) -> str:
         if not isinstance(item, dict) or item.get("role") != "user":
             continue
         text = _current_user_message(ChatRequest(workspace_id=str(artifact.get("workspace_id") or "demo-corpus"), message=str(item.get("text") or "")))
+        quoted_title = _query_action_title(text)
+        if quoted_title:
+            safe_title = _safe_chat_topic_label(quoted_title)
+            if safe_title != "当前工作区机会":
+                return safe_title
         text = re.sub(r"(值得|能不能|是否|可以|怎么|如何|那如果|如果|呢|吗|？|\?)", "", text).strip(" ，。；;：:-_")
         candidate = _complete_short_phrase(text, fallback="", limit=26)
-        if candidate:
-            return candidate
+        safe_candidate = _safe_chat_topic_label(candidate)
+        if safe_candidate != "当前工作区机会":
+            return safe_candidate
     return ""
 
 
@@ -3566,11 +3714,33 @@ def _chat_topic(req: ChatRequest, artifact: dict[str, Any], feasibility: dict[st
         topic = _last_history_user_topic(artifact)
         if topic:
             return _safe_chat_topic_label(topic)
+    corpus_title = next(
+        (
+            str(item.get("title") or "").strip()
+            for item in (artifact.get("corpus", {}).get("opportunities") or [])
+            if isinstance(item, dict) and str(item.get("title") or "").strip()
+        ),
+        "",
+    )
+    explicit_title = _query_action_title(current)
+    direct_topic = corpus_title or explicit_title
+    if direct_topic:
+        safe_topic = _safe_chat_topic_label(direct_topic)
+        if safe_topic != "当前工作区机会":
+            return safe_topic
+        context_topic = feasibility.get("opportunity_id") or _evidence_topic_from_hits(artifact.get("corpus", {}).get("hits", []))
+        context_safe = _safe_chat_topic_label(context_topic)
+        if context_safe != "当前工作区机会":
+            return context_safe
     title_req = req.model_copy(update={"message": current})
     topic = _customer_opportunity_title(
         title_req,
         artifact,
-        feasibility.get("opportunity_id") or _evidence_topic_from_hits(artifact.get("corpus", {}).get("hits", [])) or "当前机会",
+        corpus_title
+        or explicit_title
+        or feasibility.get("opportunity_id")
+        or _evidence_topic_from_hits(artifact.get("corpus", {}).get("hits", []))
+        or "当前机会",
     )
     return _safe_chat_topic_label(topic)
 
@@ -3578,6 +3748,8 @@ def _chat_topic(req: ChatRequest, artifact: dict[str, Any], feasibility: dict[st
 def _safe_chat_topic_label(topic: Any) -> str:
     cleaned = _complete_short_phrase(topic, fallback="", limit=28)
     if not cleaned:
+        return "当前工作区机会"
+    if re.fullmatch(r"(当前问题|这个|这个方向.*|方向.*靠谱.*|.*靠谱吗|是否靠谱|最大红队质疑|最大的红队质疑|最大质疑|红队质疑|请把上面.*|把上面.*整理.*|上面.*结论.*|.*上面.*整理.*|.*整理成.*方案.*)", cleaned):
         return "当前工作区机会"
     if re.fullmatch(r"(required|optional|true|false|yes|no|none|null|unknown|n/?a|id|row|profile)", cleaned, re.I):
         return "当前工作区机会"
@@ -3604,11 +3776,20 @@ def _trim_conversation_answer(text: str, *, limit: int = 320) -> str:
     return head.rstrip(" ，；、") + "。"
 
 
-def _looks_like_plan_markdown(text: str) -> bool:
-    """LLM 是否按方案模板输出了结构化内容（有 ## 小节标题且多行）。"""
+def _has_markdown_sections(text: str) -> bool:
     if not text:
         return False
     return bool(re.search(r"(?m)^\s*#{2,4}\s+\S", text)) and text.count("\n") >= 2
+
+
+def _looks_like_plan_markdown(text: str) -> bool:
+    """LLM 是否按方案模板输出了结构化内容。普通问答也会有 ##，不能误判成方案。"""
+    if not _has_markdown_sections(text):
+        return False
+    plan_heading = re.compile(
+        r"(?m)^\s*#{2,4}\s*(?:[^\w\s#]{0,4}\s*)?(一句话方案|目标|主指标|目标人群|活动机制|试点动作|行动方案|节奏|时间线|漏斗指标|路线图|验证计划|风险与待验证|风险与先验证|项目方案|落地方案)"
+    )
+    return bool(plan_heading.search(text))
 
 
 def _sanitize_plan_markdown(text: str, field_labels: dict[str, str]) -> str:
@@ -3642,6 +3823,77 @@ def _trim_plan_answer(md: str, *, limit: int = 1500) -> str:
         kept.append(line)
         total += len(line) + 1
     return "\n".join(kept).rstrip()
+
+
+def _customer_sentence(text: Any, field_labels: dict[str, str], *, limit: int = 170) -> str:
+    cleaned = _sanitize_chat_sentence(text, field_labels)
+    cleaned = _clip_customer_signal(cleaned, limit)
+    return cleaned.strip(" ，；")
+
+
+def _format_conversation_markdown(
+    lead: Any,
+    evidence_lines: list[Any],
+    next_lines: list[Any],
+    field_labels: dict[str, str],
+    *,
+    limit: int = 900,
+) -> str:
+    lead_text = _customer_sentence(lead, field_labels, limit=190) or "当前问题可以继续讨论，但需要按证据强度控制结论边界。"
+    evidence = [_customer_sentence(item, field_labels, limit=190) for item in evidence_lines]
+    evidence = [item for item in evidence if item]
+    next_steps = [_customer_sentence(item, field_labels, limit=170) for item in next_lines]
+    next_steps = [item for item in next_steps if item]
+    if not evidence:
+        evidence = ["当前工作区证据有限，需要先补齐可复盘的数据再扩大判断。"]
+    if not next_steps:
+        next_steps = ["先补一个可量化主指标，再用小样本验证是否值得生成完整方案。"]
+    md = "\n\n".join(
+        [
+            f"## 综合判断\n{lead_text}",
+            "## 依据\n" + "\n".join(f"- {item}" for item in evidence[:3]),
+            "## 下一步\n" + "\n".join(f"- {item}" for item in next_steps[:3]),
+        ]
+    )
+    return _trim_plan_answer(_sanitize_plan_markdown(md, field_labels), limit=limit)
+
+
+def _split_conversation_sentences(text: str) -> list[str]:
+    chunks: list[str] = []
+    for raw in re.split(r"\n+", str(text or "")):
+        line = re.sub(r"^\s*#{1,4}\s*", "", raw).strip()
+        line = re.sub(r"^\s*[-*]\s*", "", line).strip()
+        if not line:
+            continue
+        if re.fullmatch(r"(综合判断|依据|下一步|当前依据|仍需注意|建议动作|关键判断)", line):
+            continue
+        parts = [part.strip() for part in re.split(r"(?<=[。！？!?])\s*", line) if part.strip()]
+        chunks.extend(parts or [line])
+    return chunks
+
+
+def _ensure_conversation_markdown_structure(md: str, field_labels: dict[str, str]) -> str:
+    has_required = (
+        re.search(r"(?m)^\s*#{2,4}\s*综合判断", md)
+        and re.search(r"(?m)^\s*#{2,4}\s*依据", md)
+        and re.search(r"(?m)^\s*#{2,4}\s*下一步", md)
+    )
+    if has_required or _looks_like_plan_markdown(md):
+        return md
+    sentences = _split_conversation_sentences(md)
+    if not sentences:
+        return md
+    lead = sentences[0]
+    evidence: list[str] = []
+    next_steps: list[str] = []
+    for sentence in sentences[1:]:
+        if re.search(r"(下一步|建议|先|需要|补|验证|试点|风险|缺口)", sentence):
+            next_steps.append(sentence)
+        else:
+            evidence.append(sentence)
+    if not evidence and len(sentences) > 1:
+        evidence = sentences[1:3]
+    return _format_conversation_markdown(lead, evidence[:3], next_steps[:3], field_labels)
 
 
 def _produce_offer_for(
@@ -3689,11 +3941,27 @@ def _grounded_chat_payload(
         except Exception:
             history = []
     corpus_profile = (artifact.get("corpus", {}) or {}).get("profile", {}) or {}
+    workspace_profile: dict[str, Any] = {}
+    try:
+        workspace_profile = workspace_context(req.workspace_id) or {}
+    except Exception:
+        workspace_profile = {}
+    summary_parts = [
+        str(corpus_profile.get("customer_summary") or corpus_profile.get("profile_summary") or ""),
+        str(workspace_profile.get("customer_summary") or workspace_profile.get("profile_summary") or ""),
+    ]
+    doc_names = [
+        str((doc or {}).get("name") or (doc or {}).get("source_file") or "").strip()
+        for doc in (workspace_profile.get("documents") or [])[:8]
+        if isinstance(doc, dict)
+    ]
+    if doc_names:
+        summary_parts.append("工作区资料包括：" + "、".join(name for name in doc_names if name))
     return {
         "current_question": _current_user_message(req),
         "conversation_history": history[-8:],
         "evidence": evidence,
-        "workspace_summary": _clip_customer_signal(str(corpus_profile.get("customer_summary") or corpus_profile.get("profile_summary") or ""), 220),
+        "workspace_summary": _clip_customer_signal("；".join(part for part in summary_parts if part), 420),
         "feasibility_hint": {
             "verdict": feasibility.get("verdict"),
             "opportunity": feasibility.get("opportunity_id"),
@@ -3708,6 +3976,8 @@ def _finalize_grounded_chat_text(raw: str, field_labels: Any) -> tuple[str, bool
         return None
     is_plan = _looks_like_plan_markdown(raw)
     md = _trim_plan_answer(_sanitize_plan_markdown(raw, field_labels), limit=1900 if is_plan else 820)
+    if not is_plan:
+        md = _ensure_conversation_markdown_structure(md, field_labels)
     if md and len(md) >= 12:
         return md, is_plan
     return None
@@ -3766,41 +4036,43 @@ def _structured_chat_answer_v10(req: ChatRequest, decision: RoutingDecision, art
     current = _current_user_message(req)
     constraint = _chat_constraint_phrase(current)
     topic = _sanitize_chat_sentence(_chat_topic(req, artifact, feasibility), field_labels) or "当前机会"
+    display_topic = "这个方向" if topic == "当前工作区机会" else topic
     marker_hint = _combined_markers(signals[:3], 2) or _marker_hint_from_citations(citations)
     verdict = str(feasibility.get("verdict") or "").lower()
 
     if constraint:
-        lead = f"如果继续围绕“{topic}”，在{constraint}的前提下，不建议照原规模复刻，应该缩成一轮更小的验证。"
+        lead = f"如果继续围绕“{display_topic}”，在{constraint}的前提下，不建议照原规模复刻，应该缩成一轮更小的验证。"
     elif verdict in {"feasible", "recommended"}:
-        lead = f"直接看，“{topic}”可以继续推进，但仍建议先做可复盘的小范围验证。"
+        lead = f"直接看，“{display_topic}”可以继续推进，但仍建议先做可复盘的小范围验证。"
     elif verdict in {"not_yet_feasible", "not_feasible", "rejected"}:
-        lead = f"直接看，“{topic}”现在不适合直接放大，证据还不足以支撑高投入。"
+        lead = f"直接看，“{display_topic}”现在不适合直接放大，证据还不足以支撑高投入。"
     else:
-        lead = f"直接看，“{topic}”可以继续讨论，但要按证据强弱先收窄试点范围。"
+        lead = f"直接看，“{display_topic}”可以继续讨论，但要按证据强弱先收窄试点范围。"
 
-    lines = [lead]
+    evidence_lines: list[str] = []
     if signals:
         first = _sanitize_chat_sentence(signals[0].get("text"), field_labels)
         second = _sanitize_chat_sentence(signals[1].get("text"), field_labels) if len(signals) > 1 else ""
         if second and second != first:
-            lines.append(f"目前较强的依据是{first}，同时{second}。{marker_hint}".strip())
+            evidence_lines.append(f"{first}。{marker_hint}".strip())
+            evidence_lines.append(second)
         else:
-            lines.append(f"目前较强的依据是{first}。{marker_hint}".strip())
+            evidence_lines.append(f"{first}。{marker_hint}".strip())
     elif citations:
-        lines.append(f"当前只命中少量工作区证据，结论应保守处理。{marker_hint}".strip())
+        evidence_lines.append(f"当前只命中少量工作区证据，结论应保守处理。{marker_hint}".strip())
     else:
-        lines.append("当前工作区还没有足够证据支撑明确判断，需要先补充可复盘的数据。")
+        evidence_lines.append("当前工作区还没有足够证据支撑明确判断，需要先补充可复盘的数据。")
 
     gaps = [_sanitize_chat_sentence(item, field_labels) for item in (feasibility.get("gap_list") or []) if str(item).strip()]
+    next_lines: list[str] = []
     if gaps:
-        lines.append(f"最大的缺口是{_clip_customer_signal(gaps[0], 58)}，所以先验证成本、参与或转化阈值。")
+        next_lines.append(f"最大的缺口是{_clip_customer_signal(gaps[0], 58)}，所以先验证成本、参与或转化阈值。")
     elif constraint:
-        lines.append("下一步只保留最能证明效果的门店、人群或渠道，其他动作先暂停。")
+        next_lines.append("下一步只保留最能证明效果的门店、人群或渠道，其他动作先暂停。")
     else:
-        lines.append("下一步建议先定一个主指标，再用一轮小样本验证决定是否生成完整项目书。")
+        next_lines.append("下一步建议先定一个主指标，再用一轮小样本验证决定是否生成完整项目书。")
 
-    markdown = _trim_conversation_answer("".join(line if line.endswith(("。", "！", "？", ".", "!", "?")) else line + "。" for line in lines))
-    markdown = _sanitize_chat_sentence(markdown, field_labels)
+    markdown = _format_conversation_markdown(lead, evidence_lines, next_lines, field_labels)
     return {
         "markdown": markdown,
         "citations": citations,
@@ -4431,24 +4703,70 @@ def _fast_followup_reply(req: ChatRequest, history: list[dict[str, Any]]) -> dic
 
 
 def _fallback_followup_assessment(req: ChatRequest, previous: str, last_analysis: dict[str, Any]) -> dict[str, Any]:
-    gaps = [str(item).strip() for item in (last_analysis.get("gap_list") or []) if str(item).strip()][:4]
-    action_plan = [str(item).strip() for item in (last_analysis.get("action_plan") or []) if str(item).strip()]
+    gaps = [_clean_text(sanitize_customer_text(item), 120) for item in (last_analysis.get("gap_list") or []) if str(item).strip()][:4]
+    action_plan = [_clean_text(sanitize_customer_text(item), 120) for item in (last_analysis.get("action_plan") or []) if str(item).strip()]
+    citations = _citations_from_last_analysis(last_analysis)
     verdict = str(last_analysis.get("verdict") or "").strip()
-    opportunity = _clean_text(last_analysis.get("opportunity_id") or _last_history_user_topic({"workspace_id": req.workspace_id, "_conversation_history": _compact_history([{"role": "assistant", "text": previous}] )}), 80)
+    opportunity = _safe_chat_topic_label(
+        last_analysis.get("opportunity_id")
+        or _last_history_user_topic({"workspace_id": req.workspace_id, "_conversation_history": _compact_history([{"role": "assistant", "text": previous}])})
+    )
     current = _clean_text(_intent_message(req.message), 180)
+    current_label = sanitize_customer_text(current)
     if len(re.sub(r"\s+", "", current)) < 6:
         clarify = "这条跟进还缺少目标、范围或判断标准。你希望我评估哪个对象、用什么指标判断？"
-        text = f"我能基于上一轮结论继续判断，但这条补充还不够明确。{clarify}"
+        text = f"这条补充还不够明确。{clarify}"
         assessment = "unclear"
         should_clarify = True
-    else:
-        gap_text = "；".join(gaps[:2]) if gaps else "需要补充能验证需求、转化或执行成本的数据"
-        next_step = action_plan[0] if action_plan else "先把新增约束转成可验证的小样本实验。"
-        text = (
-            f"这是轻量跟进判断，不会重跑完整多智能体链。围绕{opportunity or '上一轮方案'}，"
-            f"当前结论仍参考上一轮档位 {verdict or 'unknown'}；新增想法需要先补齐：{gap_text}。"
-            f"建议下一步：{next_step}"
+    elif re.search(r"(依据|证据|为什么|支撑|来源|最强|最弱)", current, re.I):
+        evidence_lines = []
+        for item in citations[:3]:
+            snippet = _clean_text(sanitize_customer_text(item.get("snippet") or item.get("quote") or item.get("text") or ""), 110)
+            marker = _clean_text(item.get("marker") or item.get("ref") or item.get("source"), 24)
+            if snippet:
+                evidence_lines.append(f"- {marker} {snippet}".strip())
+        if not evidence_lines:
+            evidence_lines = ["- 当前工作区已有上一轮分析结果，但这次没有拿到可展开的引用片段，建议到运行记录里核对证据来源。"]
+        gap_lines = [f"- {gap}" for gap in gaps[:3]] or ["- 仍需要用真实试点数据验证需求、转化和成本，不能把方向性信号当成确定结论。"]
+        text = "\n".join(
+            [
+                f"针对“{current_label}”，可以先按上一轮结论做证据复核。",
+                "",
+                "## 当前依据",
+                *evidence_lines,
+                "",
+                "## 仍需注意",
+                *gap_lines,
+            ]
         )
+        assessment = "needs_more_evidence" if gaps else "supported"
+        clarify = ""
+        should_clarify = False
+    elif re.search(r"(下一步|怎么做|如何做|建议|行动|落地|试点|推进|优化)", current, re.I):
+        steps = action_plan[:3] or [
+            "先把目标对象、试点范围和预算上限写清楚。",
+            "选 2-3 个证据最强的候选点做小样本验证。",
+            "用真实反馈、转化和成本回填下一版方案。",
+        ]
+        text = "\n".join(
+            [
+                f"针对“{current_label}”，建议把上一轮结论拆成一组可验证动作：",
+                "",
+                *[f"{idx}. {step}" for idx, step in enumerate(steps, start=1)],
+            ]
+        )
+        assessment = "needs_more_evidence" if gaps else "supported"
+        clarify = ""
+        should_clarify = False
+    else:
+        gap_text = "；".join(gaps[:2]) if gaps else "还需要补充能验证需求、转化或执行成本的数据"
+        next_step = action_plan[0] if action_plan else "先把这个问题转成一轮可复盘的小样本验证。"
+        text = (
+            f"针对“{current_label}”，暂定回答是：它可以作为“{opportunity or '当前方案'}”的补充判断，"
+            f"但结论边界仍是 {verdict_label(verdict) if verdict else '有待验证'}。"
+            f"需要注意：{gap_text}。\n\n下一步建议：{next_step}"
+        )
+        text = sanitize_customer_text(text)
         assessment = "needs_more_evidence" if gaps else "supported"
         clarify = ""
         should_clarify = False
@@ -4461,6 +4779,222 @@ def _fallback_followup_assessment(req: ChatRequest, previous: str, last_analysis
         "gaps": gaps,
         "clarify": clarify,
         "should_clarify": should_clarify,
+    }
+
+
+def _feasibility_from_last_analysis(last_analysis: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(last_analysis, dict):
+        return {}
+    return {
+        key: value
+        for key, value in {
+            "verdict": last_analysis.get("verdict"),
+            "opportunity_id": last_analysis.get("opportunity_id"),
+            "overall_confidence": last_analysis.get("overall_confidence"),
+            "recommendation": last_analysis.get("recommendation"),
+            "dimensions": last_analysis.get("dimensions") or [],
+            "action_plan": last_analysis.get("action_plan") or [],
+            "gap_list": last_analysis.get("gap_list") or [],
+        }.items()
+        if value not in (None, "", [], {})
+    }
+
+
+def _citations_from_last_analysis(last_analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    citations = [item for item in (last_analysis.get("citations") or []) if isinstance(item, dict)]
+    return sanitize_citations(citations[:8], {}) if citations else []
+
+
+def _red_team_followup_requested(message: Any) -> bool:
+    return bool(
+        re.search(
+            r"(红队|质疑|反方|反驳|挑战|漏洞|最大风险|最大问题|最担心|为什么不成立|red\s*team|objection|critique|challenge|risk)",
+            str(message or ""),
+            re.I,
+        )
+    )
+
+
+def _followup_red_team_assessment(
+    req: ChatRequest,
+    previous: str,
+    last_analysis: dict[str, Any],
+    context: dict[str, Any],
+    history: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    if not _red_team_followup_requested(req.message):
+        return None
+    feasibility = _feasibility_from_last_analysis(last_analysis)
+    if not feasibility and not previous:
+        return None
+
+    history_topic = _last_history_user_topic(
+        {"workspace_id": req.workspace_id, "_conversation_history": _compact_history(history or [])}
+    )
+    opportunity = ""
+    for candidate in (
+        history_topic,
+        feasibility.get("opportunity_id") if feasibility else "",
+        last_analysis.get("title"),
+        last_analysis.get("summary"),
+        context.get("name"),
+    ):
+        label = _safe_chat_topic_label(candidate)
+        if label and label != "当前工作区机会":
+            opportunity = label
+            break
+    opportunity = opportunity or "当前方案"
+
+    gaps = [sanitize_customer_text(item) for item in (last_analysis.get("gap_list") or []) if str(item).strip()]
+    actions = [sanitize_customer_text(item) for item in (last_analysis.get("action_plan") or []) if str(item).strip()]
+    citations = _citations_from_last_analysis(last_analysis)
+    evidence_lines: list[str] = []
+    for item in citations[:3]:
+        snippet = sanitize_customer_text(item.get("snippet") or item.get("quote") or item.get("text") or "")
+        if snippet:
+            evidence_lines.append(_clip_customer_signal(snippet, 120))
+    if not evidence_lines:
+        summary = sanitize_customer_text(context.get("customer_summary") or context.get("profile_summary") or "")
+        if summary:
+            evidence_lines.append(_clip_customer_signal(summary, 140))
+
+    if gaps:
+        challenge_lines = [f"- {gap}" for gap in gaps[:3]]
+    else:
+        challenge_lines = [
+            "- 现有证据还偏方向性，缺少真实试点后的转化、成本和复盘数据。",
+            "- 需要证明数据指标能稳定改善业务判断，而不是只生成一份看起来合理的分析报告。",
+            "- 还要验证目标用户是否愿意使用和付费，以及交付成本能否被商业模式覆盖。",
+        ]
+    action_lines = [f"- {item}" for item in actions[:3]] or [
+        "- 先做一轮小样本试点，记录真实转化、反馈、成本和执行周期。",
+        "- 用试点数据回填生成下一版方案，再比较新旧方案的证据强度变化。",
+    ]
+    evidence_block = "\n".join(f"- {item}" for item in evidence_lines[:3]) or "- 当前工作区有可用于初筛的资料，但仍需要试点数据补强。"
+    text = sanitize_customer_text(
+        "\n".join(
+            [
+                f"最大的红队质疑是：围绕“{opportunity}”，现有证据能支持继续试点，但还不足以证明它已经可以稳定产品化或规模化。",
+                "",
+                "## 红队会追问什么",
+                *challenge_lines,
+                "",
+                "## 当前已有支撑",
+                evidence_block,
+                "",
+                "## 应对方式",
+                *action_lines,
+                "",
+                "所以展示时可以这样讲：DataForge 不会把方向性信号包装成确定结论，它会把这些质疑显式变成下一轮试点和回填指标。",
+            ]
+        )
+    )
+    return {
+        "text": text,
+        "mode": "followup_red_team_assessment",
+        "response_id": None,
+        "usage": {},
+        "assessment": "red_team_gaps",
+        "gaps": gaps[:4],
+        "clarify": "",
+        "should_clarify": False,
+        "feasibility": feasibility,
+        "citations": citations,
+    }
+
+
+def _followup_plan_draft(
+    req: ChatRequest,
+    previous: str,
+    last_analysis: dict[str, Any],
+    context: dict[str, Any],
+    history: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    if not _plan_draft_requested(req.message):
+        return None
+    feasibility = _feasibility_from_last_analysis(last_analysis)
+    if not feasibility:
+        return None
+    citations = _citations_from_last_analysis(last_analysis)
+    gaps = [sanitize_customer_text(item) for item in (feasibility.get("gap_list") or []) if str(item).strip()][:4]
+    action_plan = [sanitize_customer_text(item) for item in (feasibility.get("action_plan") or []) if str(item).strip()][:5]
+    opportunity = ""
+    history_topic = _last_history_user_topic(
+        {"workspace_id": req.workspace_id, "_conversation_history": _compact_history(history or [])}
+    )
+    for candidate in (
+        history_topic,
+        feasibility.get("opportunity_id"),
+        last_analysis.get("title"),
+        last_analysis.get("summary"),
+        feasibility.get("recommendation"),
+        _last_history_user_topic({"workspace_id": req.workspace_id, "_conversation_history": _compact_history([{"role": "assistant", "text": previous}])}),
+        context.get("name"),
+        "当前工作区机会",
+    ):
+        label = _safe_chat_topic_label(candidate)
+        if label.startswith("围绕") and len(label) > 8:
+            continue
+        if label and label != "当前工作区机会":
+            opportunity = label
+            break
+    opportunity = opportunity or "当前工作区机会"
+    verdict = verdict_label(str(feasibility.get("verdict") or "unknown"))
+    confidence = confidence_label(str(feasibility.get("overall_confidence") or "unknown"))
+    recommendation = sanitize_customer_text(feasibility.get("recommendation") or last_analysis.get("text") or "")
+    if not action_plan:
+        action_plan = [
+            "先把目标客群、执行范围和预算边界收敛成一轮小样本试点。",
+            "只保留能复盘的关键指标，试点后再决定是否进入下一版。",
+        ]
+    evidence_lines: list[str] = []
+    for item in citations[:4]:
+        marker = str(item.get("marker") or item.get("ref") or "").strip()
+        snippet = sanitize_customer_text(item.get("snippet") or item.get("quote") or item.get("text") or "")
+        if snippet:
+            evidence_lines.append(f"- {marker} {_clip_customer_signal(snippet, 120)}".strip())
+    if not evidence_lines:
+        summary = sanitize_customer_text(context.get("customer_summary") or context.get("profile_summary") or "")
+        if summary:
+            evidence_lines.append(f"- {_clip_customer_signal(summary, 140)}")
+    gap_lines = [f"- {gap}" for gap in gaps] or ["- 仍需要用真实试点数据验证需求、成本和转化，不能把方向性信号当成规模化承诺。"]
+    action_lines = [f"{idx}. {step}" for idx, step in enumerate(action_plan[:4], start=1)]
+    text = "\n".join(
+        [
+            "## 一句话方案",
+            f"围绕“{opportunity}”先形成一版可验证方案：当前判断是 **{verdict}**，置信度 **{confidence}**，适合进入低成本试点，而不是直接规模化承诺。",
+            "",
+            "## 核心判断",
+            recommendation
+            or f"这版方案应以最近一次分析结论为边界，把证据强的部分推进到试点，把证据不足的部分写成待验证假设。",
+            "",
+            "## 试点动作",
+            *action_lines,
+            "",
+            "## 证据依据",
+            *(evidence_lines or ["- 当前工作区已有分析结果，但证据摘录不足，建议先打开运行记录核验来源。"]),
+            "",
+            "## 风险与待验证",
+            *gap_lines,
+            "",
+            "## 产物建议",
+            "这版内容可以继续生成项目文档 PDF、概念图和语音摘要，用于团队评审；试点回填真实指标后再生成下一版。",
+        ]
+    )
+    offer = _produce_offer_for(req, feasibility, plan=True)
+    return {
+        "text": text,
+        "mode": "followup_plan_draft",
+        "response_id": None,
+        "usage": {},
+        "assessment": "supported" if not gaps else "needs_more_evidence",
+        "gaps": gaps,
+        "clarify": "",
+        "should_clarify": False,
+        "is_plan": True,
+        "produce_offer": offer,
+        "feasibility": feasibility,
+        "citations": citations,
     }
 
 
@@ -4558,6 +5092,89 @@ def _followup_provisional_choice_assessment(req: ChatRequest, last_analysis: dic
     }
 
 
+def _answer_composer_enabled() -> bool:
+    return str(os.environ.get("DF_ANSWER_COMPOSER_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _answer_composer_payload(
+    req: ChatRequest,
+    decision: RoutingDecision,
+    previous: str,
+    last_analysis: dict[str, Any],
+    context: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    feasibility = _feasibility_from_last_analysis(last_analysis)
+    citations = _citations_from_last_analysis(last_analysis)
+    return {
+        "workspace_id": req.workspace_id,
+        "current_message": _intent_message(req.message),
+        "decision": decision.model_dump(),
+        "workspace_summary": {
+            "name": context.get("name"),
+            "doc_count": context.get("doc_count"),
+            "format": context.get("format"),
+            "customer_summary": context.get("customer_summary"),
+            "profile_summary": _clean_text(context.get("profile_summary"), 1200),
+            "documents": [
+                {
+                    "name": item.get("name"),
+                    "format": item.get("format"),
+                    "record_count": item.get("record_count"),
+                    "external": item.get("external"),
+                }
+                for item in (context.get("documents") or [])[:10]
+                if isinstance(item, dict)
+            ],
+        },
+        "conversation_history": _compact_history(history),
+        "previous_assistant_answer": previous[:1800],
+        "last_analysis": feasibility,
+        "last_recommendation": _clean_text(last_analysis.get("recommendation") or "", 1000),
+        "last_action_plan": [_clean_text(item, 220) for item in (last_analysis.get("action_plan") or []) if str(item).strip()][:6],
+        "last_gaps": [_clean_text(item, 180) for item in (last_analysis.get("gap_list") or []) if str(item).strip()][:6],
+        "citations": citations[:8],
+        "ui_context": getattr(req, "ui_context", {}) if isinstance(getattr(req, "ui_context", {}), dict) else {},
+    }
+
+
+def _run_answer_composer_first(
+    req: ChatRequest,
+    decision: RoutingDecision,
+    previous: str,
+    last_analysis: dict[str, Any],
+    context: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not _answer_composer_enabled():
+        return None
+    payload = _answer_composer_payload(req, decision, previous, last_analysis, context, history)
+    result = run_answer_composer(payload)
+    text = str(result.get("text") or "").strip()
+    if not text and result.get("should_clarify"):
+        text = str(result.get("clarify") or "").strip()
+        if text:
+            result["text"] = text
+    if not text and not result.get("should_clarify"):
+        return None
+    feasibility = _feasibility_from_last_analysis(last_analysis)
+    citations = _citations_from_last_analysis(last_analysis)
+    result["feasibility"] = feasibility
+    result["citations"] = citations
+    result["assessment"] = result.get("assessment") or ("needs_more_evidence" if result.get("gaps") else "supported")
+    if result.get("is_plan") or result.get("answer_type") == "plan" or result.get("route_hint") == "plan_draft":
+        result["is_plan"] = True
+        offer = _produce_offer_for(req, feasibility, plan=True)
+        if offer:
+            result["produce_offer"] = offer
+    elif not result.get("should_clarify"):
+        result["text"] = _ensure_conversation_markdown_structure(text, {})
+    if result.get("needs_full_analysis"):
+        result["assessment"] = "needs_more_evidence"
+        result["gaps"] = [*result.get("gaps", []), "needs_full_analysis"][:6]
+    return result
+
+
 def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: list[dict[str, Any]]) -> dict[str, Any]:
     context = workspace_context(req.workspace_id)
     payload = {
@@ -4588,16 +5205,48 @@ def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: lis
                 "clarify": "请先完成一次分析，或贴出要跟进判断的上一轮结论。",
                 "should_clarify": True,
             }
+        composer_error = ""
+        try:
+            composed = _run_answer_composer_first(req, decision, previous, last_analysis, context, history)
+            if composed:
+                return composed
+        except Exception as exc:
+            composer_error = _clean_text(exc, 300)
+        red_team = _followup_red_team_assessment(req, previous, last_analysis, context, history)
+        if red_team:
+            if composer_error:
+                red_team["composer_error"] = composer_error
+            return red_team
+        plan_draft = _followup_plan_draft(req, previous, last_analysis, context, history)
+        if plan_draft:
+            if composer_error:
+                plan_draft["composer_error"] = composer_error
+            return plan_draft
         clarification = _followup_provisional_choice_assessment(req, last_analysis, context)
         if clarification:
+            if _plan_draft_requested(req.message):
+                feasibility = _feasibility_from_last_analysis(last_analysis)
+                offer = _produce_offer_for(req, feasibility, plan=True)
+                if offer:
+                    clarification["produce_offer"] = offer
+                    clarification["is_plan"] = True
+                    clarification["feasibility"] = feasibility
+                    clarification["citations"] = _citations_from_last_analysis(last_analysis)
+            if composer_error:
+                clarification["composer_error"] = composer_error
             return clarification
         payload["previous_assistant_answer"] = previous[:1800]
         payload["last_analysis"] = last_analysis
         try:
-            return run_followup_assessment(payload)
+            result = run_followup_assessment(payload)
+            if composer_error:
+                result["composer_error"] = composer_error
+            return result
         except Exception as exc:
             fallback = _fallback_followup_assessment(req, previous, last_analysis)
             fallback["error"] = _clean_text(exc, 300)
+            if composer_error:
+                fallback["composer_error"] = composer_error
             return fallback
     return run_coordinator_direct_reply(payload)
 
@@ -4609,7 +5258,28 @@ async def _emit_lightweight_final(
     conv_id: str,
     history: list[dict[str, Any]],
 ) -> AsyncIterator[str]:
-    result = await run_in_threadpool(_lightweight_reply, req, decision, history)
+    yield _frame(
+        "progress",
+        {
+            "agent": "df-coordinator",
+            "name": "compose_followup",
+            "status": "running",
+            "mode": "followup" if decision.intent == "followup_edit" else "analysis",
+            "lightweight": True,
+        },
+        conv_id,
+    )
+    reply_task = asyncio.create_task(run_in_threadpool(_lightweight_reply, req, decision, history))
+    async for frame in _progress_frames(
+        reply_task,
+        conv_id,
+        "df-coordinator",
+        "compose_followup",
+        interval=2,
+        extra={"mode": "followup" if decision.intent == "followup_edit" else "analysis", "lightweight": True},
+    ):
+        yield frame
+    result = await reply_task
     fast_path = (artifact.get("routing_meta") or {}).get("fast_path")
     field_labels = {} if fast_path else _workspace_field_labels(req.workspace_id)
     text = sanitize_customer_text(
@@ -4617,20 +5287,39 @@ async def _emit_lightweight_final(
         field_labels,
     )
     text = _ensure_next_step_hint(text)
-    for delta in _chunk_text(text, 96):
+    if not result.get("is_plan") and not result.get("should_clarify"):
+        text = _ensure_conversation_markdown_structure(text, field_labels)
+    chunks = _chunk_text(text, 28)
+    target_seconds = min(3.2, max(1.4, len(text) / 500))
+    pace = max(0.035, min(0.18, target_seconds / max(len(chunks), 1)))
+    for delta in chunks:
         yield _frame("answer_delta", {"delta": delta}, conv_id)
-        await asyncio.sleep(0)
-    meta = {key: result.get(key) for key in ("mode", "response_id", "usage", "error") if key in result}
+        await asyncio.sleep(pace)
+    meta = {key: result.get(key) for key in ("mode", "response_id", "usage", "error", "composer_error") if key in result}
     gaps = [str(item).strip() for item in (result.get("gaps") or []) if str(item).strip()]
     clarify_text = str(result.get("clarify") or "").strip()
     clarify_payload = {"question": clarify_text, "reason": "followup_needs_scope"} if clarify_text else None
+    result_feasibility = result.get("feasibility") if isinstance(result.get("feasibility"), dict) else {}
+    result_citations = result.get("citations") if isinstance(result.get("citations"), list) else []
+    produce_offer = result.get("produce_offer") if isinstance(result.get("produce_offer"), dict) else None
+    if not produce_offer and result.get("is_plan"):
+        produce_offer = _produce_offer_for(req, result_feasibility, plan=True)
     artifact["mode"] = "followup" if decision.intent == "followup_edit" else "analysis"
+    if result_feasibility:
+        artifact["feasibility"] = result_feasibility
+    if result_citations:
+        artifact["citations"] = sanitize_citations([item for item in result_citations if isinstance(item, dict)], field_labels)
+    if produce_offer:
+        artifact["produce_offer"] = produce_offer
     artifact["followup"] = {
         "assessment": result.get("assessment"),
         "gaps": gaps,
         "clarify": clarify_payload,
         "should_clarify": bool(result.get("should_clarify")),
         "mode": meta.get("mode"),
+        "route_hint": result.get("route_hint"),
+        "answer_type": result.get("answer_type"),
+        "needs_full_analysis": bool(result.get("needs_full_analysis")),
     }
     if gaps:
         artifact["gaps"] = gaps
@@ -4639,12 +5328,22 @@ async def _emit_lightweight_final(
     artifact["answer"] = {
         "markdown": text,
         "text": text,
-        "citations": [],
+        "citations": artifact.get("citations") or [],
         "confidence": "speculative",
         "confidence_label": confidence_label("speculative"),
         "_llm": meta,
     }
     artifact["output_contract"] = _chat_output_contract(decision.intent)
+    if result.get("is_plan"):
+        artifact["output_contract"].update(
+            {
+                "version": "batch12.followup_plan_draft.v1",
+                "sections": ["一句话方案", "核心判断", "试点动作", "证据依据", "风险与待验证", "产物建议"],
+                "answer_style": "structured_plan",
+                "max_target_chars": 1200,
+                "no_numbered_action_plan": False,
+            }
+        )
     final_payload = {
         "text": text,
         "mode": artifact["mode"],
@@ -4656,6 +5355,8 @@ async def _emit_lightweight_final(
         "confidence": "speculative",
         "confidence_label": confidence_label("speculative"),
     }
+    if produce_offer:
+        final_payload["produce_offer"] = produce_offer
     if decision.intent == "followup_edit":
         yield _frame(
             "followup",
@@ -4699,8 +5400,30 @@ async def _persist_chat_completion(
             citations = artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or []
         await run_in_threadpool(_persist_assistant_message, conversation_id, workspace_id, text, verdict, citations)
         await run_in_threadpool(complete_run, conversation_id, status=status, final=final_payload, artifact=artifact)
+        if _is_plan_draft_artifact(artifact):
+            await run_in_threadpool(
+                record_plan_version,
+                workspace_id=workspace_id,
+                source_run_id=conversation_id,
+                artifact=artifact,
+                text=text,
+            )
     except Exception:
         return
+
+
+def _is_plan_draft_artifact(artifact: dict[str, Any]) -> bool:
+    if not isinstance(artifact, dict):
+        return False
+    followup = artifact.get("followup") if isinstance(artifact.get("followup"), dict) else {}
+    if followup.get("should_clarify"):
+        return False
+    contract = artifact.get("output_contract") if isinstance(artifact.get("output_contract"), dict) else {}
+    return (
+        followup.get("answer_type") == "plan"
+        or followup.get("route_hint") == "plan_draft"
+        or contract.get("answer_style") == "structured_plan"
+    )
 
 
 async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
@@ -4708,20 +5431,23 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     new_conversation = req.conversation_id is None
     history = conversation_context(req.conversation_id, limit=20) if req.conversation_id else []
     working_req = _request_with_history(req, history)
+    actor = public_actor(actor_from_ui_context(req.ui_context))
     artifact: dict[str, Any] = {
         "workspace_id": req.workspace_id,
         "conversation_id": conv_id,
         "_conversation_history": _compact_history(history),
     }
+    if actor:
+        artifact["actor"] = actor
     iteration_inputs = _iteration_inputs(req)
     if iteration_inputs:
         artifact["iteration_inputs"] = iteration_inputs
-    start_run(conv_id, req.workspace_id, req.message)
-    yield _frame("ready", {"conversation_id": conv_id, "workspace_id": req.workspace_id}, conv_id)
-    yield _frame("user", {"text": req.message}, conv_id)
+    start_run(conv_id, req.workspace_id, req.message, actor=actor)
+    yield _frame("ready", {"conversation_id": conv_id, "workspace_id": req.workspace_id, "actor": actor}, conv_id)
+    yield _frame("user", {"text": req.message, "actor": actor}, conv_id)
     if iteration_inputs:
         yield _frame("iteration_inputs", {"metrics": iteration_inputs, "count": len(iteration_inputs)}, conv_id)
-    await run_in_threadpool(_persist_user_message, conv_id, req.workspace_id, req.message, new_conversation)
+    await run_in_threadpool(_persist_user_message, conv_id, req.workspace_id, req.message, new_conversation, actor)
 
     # 负责任 AI：先用 Azure AI Content Safety 过一遍用户输入（jailbreak 注入 + 有害类别），
     # 命中就安全拒答、不进入多 Agent 链。服务异常时 fail-open（screen_input 内部兜底），不影响正常使用。
@@ -4836,7 +5562,7 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
         fast_corpus_path = route_meta.get("fast_path") == "corpus_qa"
         corpus_query = _intent_message(req.message) if fast_corpus_path else working_req.message
         corpus_req = req.model_copy(update={"message": corpus_query})
-        corpus_top_k = 5 if fast_corpus_path else 8
+        corpus_top_k = 8 if fast_corpus_path else 8
         corpus_use_vector = not fast_corpus_path
         yield _frame("role_change", {"agent": "df-corpus-analyst"}, conv_id)
         yield _frame(

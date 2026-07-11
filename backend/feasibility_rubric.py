@@ -221,7 +221,20 @@ def finalize_verdict_contract(artifact: dict[str, Any], audit: dict[str, Any] | 
     changed = _verdict_changed(blind, current) or bool(disagreement)
     before_verdict = str(blind.get("verdict") or "")
     after_verdict = str(current.get("verdict") or "")
-    downgraded = bool(before_verdict and after_verdict and _verdict_rank(after_verdict) < _verdict_rank(before_verdict))
+    dimension_downgrade = next(
+        (
+            item
+            for item in disagreement
+            if isinstance(item.get("delta"), (int, float)) and float(item.get("delta") or 0) < 0
+        ),
+        None,
+    )
+    verdict_downgrade = bool(
+        before_verdict
+        and after_verdict
+        and _verdict_rank(after_verdict) < _verdict_rank(before_verdict)
+    )
+    downgraded = verdict_downgrade or bool(dimension_downgrade)
     contract = {
         "blind": make_blind_verdict(blind),
         "revised": make_blind_verdict(current) if changed else None,
@@ -231,6 +244,7 @@ def finalize_verdict_contract(artifact: dict[str, Any], audit: dict[str, Any] | 
     if downgraded:
         reason = _downgrade_reason(disagreement, audit, current)
         downgrade = {
+            "kind": "verdict" if verdict_downgrade else "dimension",
             "verdict_before": before_verdict,
             "verdict_after": after_verdict,
             "verdict_before_label": verdict_label(before_verdict),
@@ -238,6 +252,14 @@ def finalize_verdict_contract(artifact: dict[str, Any], audit: dict[str, Any] | 
             "downgrade_reason": reason,
             "source": "audit_guardrail",
         }
+        if dimension_downgrade:
+            downgrade.update(
+                {
+                    "dimension": dimension_downgrade.get("dim"),
+                    "score_before": dimension_downgrade.get("blind"),
+                    "score_after": dimension_downgrade.get("revised"),
+                }
+            )
         contract.update(downgrade)
         contract["downgrade"] = downgrade
         artifact["verdict_downgrade"] = downgrade

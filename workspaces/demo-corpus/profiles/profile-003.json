@@ -1,0 +1,412 @@
+{
+  "workspace_id": "demo-corpus",
+  "name": "surrounding_env.csv",
+  "format": "csv",
+  "source_file": "raw_docs/surrounding_env.csv",
+  "created_at": "2026-07-01T12:49:23.266246+00:00",
+  "tables": [
+    {
+      "name": "surrounding_env",
+      "row_count": 8,
+      "column_count": 10,
+      "columns": [
+        {
+          "name": "site_name",
+          "type": "text",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "城心天街-中庭",
+            "城心天街-地下美食街",
+            "滨江写字楼-大堂"
+          ],
+          "top_values": [
+            {
+              "value": "城心天街-中庭",
+              "count": 1
+            },
+            {
+              "value": "城心天街-地下美食街",
+              "count": 1
+            },
+            {
+              "value": "滨江写字楼-大堂",
+              "count": 1
+            },
+            {
+              "value": "滨江写字楼-3F通廊",
+              "count": 1
+            },
+            {
+              "value": "老城步行街-临街口",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "name": "business_area",
+          "type": "text",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 4,
+          "examples": [
+            "城心商圈",
+            "城心商圈",
+            "滨江CBD"
+          ],
+          "top_values": [
+            {
+              "value": "城心商圈",
+              "count": 2
+            },
+            {
+              "value": "滨江CBD",
+              "count": 2
+            },
+            {
+              "value": "老城商业街",
+              "count": 2
+            },
+            {
+              "value": "高新园区",
+              "count": 2
+            }
+          ]
+        },
+        {
+          "name": "nearby_business_types",
+          "type": "text",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "餐饮,服饰,影院,儿童",
+            "餐饮,小吃,饮品",
+            "写字楼,咖啡,便利店"
+          ],
+          "top_values": [
+            {
+              "value": "餐饮,服饰,影院,儿童",
+              "count": 1
+            },
+            {
+              "value": "餐饮,小吃,饮品",
+              "count": 1
+            },
+            {
+              "value": "写字楼,咖啡,便利店",
+              "count": 1
+            },
+            {
+              "value": "写字楼,会议",
+              "count": 1
+            },
+            {
+              "value": "餐饮,服饰,小商品,小吃",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "name": "competitor_count_500m",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "12",
+            "18",
+            "5"
+          ],
+          "top_values": [
+            {
+              "value": "12",
+              "count": 1
+            },
+            {
+              "value": "18",
+              "count": 1
+            },
+            {
+              "value": "5",
+              "count": 1
+            },
+            {
+              "value": "2",
+              "count": 1
+            },
+            {
+              "value": "22",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 2,
+            "max": 22,
+            "mean": 10.25
+          }
+        },
+        {
+          "name": "nearest_transit_m",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 5,
+          "examples": [
+            "180",
+            "180",
+            "520"
+          ],
+          "top_values": [
+            {
+              "value": "180",
+              "count": 2
+            },
+            {
+              "value": "520",
+              "count": 2
+            },
+            {
+              "value": "240",
+              "count": 2
+            },
+            {
+              "value": "700",
+              "count": 1
+            },
+            {
+              "value": "60",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 60,
+            "max": 700,
+            "mean": 330
+          }
+        },
+        {
+          "name": "daytime_population_density",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 5,
+          "examples": [
+            "26000",
+            "26000",
+            "14000"
+          ],
+          "top_values": [
+            {
+              "value": "26000",
+              "count": 2
+            },
+            {
+              "value": "14000",
+              "count": 2
+            },
+            {
+              "value": "31000",
+              "count": 2
+            },
+            {
+              "value": "9000",
+              "count": 1
+            },
+            {
+              "value": "12000",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 9000,
+            "max": 31000,
+            "mean": 20375
+          }
+        },
+        {
+          "name": "residential_ratio",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 6,
+          "examples": [
+            "0.25",
+            "0.25",
+            "0.1"
+          ],
+          "top_values": [
+            {
+              "value": "0.25",
+              "count": 2
+            },
+            {
+              "value": "0.4",
+              "count": 2
+            },
+            {
+              "value": "0.1",
+              "count": 1
+            },
+            {
+              "value": "0.08",
+              "count": 1
+            },
+            {
+              "value": "0.05",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 0.05,
+            "max": 0.4,
+            "mean": 0.2063
+          }
+        },
+        {
+          "name": "rent_index",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "92",
+            "88",
+            "76"
+          ],
+          "top_values": [
+            {
+              "value": "92",
+              "count": 1
+            },
+            {
+              "value": "88",
+              "count": 1
+            },
+            {
+              "value": "76",
+              "count": 1
+            },
+            {
+              "value": "70",
+              "count": 1
+            },
+            {
+              "value": "84",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 58,
+            "max": 92,
+            "mean": 75.75
+          }
+        },
+        {
+          "name": "parking_spaces",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 5,
+          "examples": [
+            "320",
+            "320",
+            "140"
+          ],
+          "top_values": [
+            {
+              "value": "320",
+              "count": 2
+            },
+            {
+              "value": "140",
+              "count": 2
+            },
+            {
+              "value": "60",
+              "count": 2
+            },
+            {
+              "value": "400",
+              "count": 1
+            },
+            {
+              "value": "200",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 60,
+            "max": 400,
+            "mean": 205
+          }
+        },
+        {
+          "name": "note",
+          "type": "text",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 1,
+          "examples": [
+            "模拟周边环境",
+            "模拟周边环境",
+            "模拟周边环境"
+          ],
+          "top_values": [
+            {
+              "value": "模拟周边环境",
+              "count": 8
+            }
+          ]
+        }
+      ],
+      "distribution": {
+        "row_count": 8,
+        "column_count": 10,
+        "missing_cell_rate": 0.0,
+        "duplicate_row_count": 0
+      },
+      "signals": [
+        "site_name 有 8 个不同取值，可用于分群、筛选或解释差异",
+        "business_area 有 4 个不同取值，可用于分群、筛选或解释差异",
+        "nearby_business_types 有 8 个不同取值，可用于分群、筛选或解释差异",
+        "competitor_count_500m 是完整度较高的数值字段，范围 2 到 22",
+        "nearest_transit_m 是完整度较高的数值字段，范围 60 到 700",
+        "daytime_population_density 是完整度较高的数值字段，范围 9000 到 31000",
+        "rent_index 是完整度较高的数值字段，范围 58 到 92",
+        "parking_spaces 是完整度较高的数值字段，范围 60 到 400"
+      ],
+      "cross_signals": [
+        "competitor_count_500m 按 business_area 分组均值差异明显：老城商业街=18(n=2)，滨江CBD=3.5(n=2)，差值 14.5",
+        "nearest_transit_m 按 business_area 分组均值差异明显：滨江CBD=520(n=2)，城心商圈=180(n=2)，差值 340",
+        "daytime_population_density 按 business_area 分组均值差异明显：老城商业街=31000(n=2)，高新园区=10500(n=2)，差值 20500",
+        "residential_ratio 按 business_area 分组均值差异明显：老城商业街=0.4(n=2)，高新园区=0.085(n=2)，差值 0.315",
+        "rent_index 按 business_area 分组均值差异明显：城心商圈=90(n=2)，高新园区=62(n=2)，差值 28",
+        "parking_spaces 按 business_area 分组均值差异明显：城心商圈=320(n=2)，老城商业街=60(n=2)，差值 260"
+      ],
+      "noise": [
+        "site_name 取值分布近似均匀，暂不作为核心分群结论",
+        "business_area 取值分布近似均匀，暂不作为核心分群结论",
+        "nearby_business_types 取值分布近似均匀，暂不作为核心分群结论",
+        "competitor_count_500m 取值分布近似均匀，暂不作为核心分群结论",
+        "residential_ratio 更像标识符，可用于追踪但不宜单独推导业务结论",
+        "rent_index 取值分布近似均匀，暂不作为核心分群结论",
+        "note 几乎为常量，对分群或产品判断贡献较低"
+      ]
+    }
+  ],
+  "profile_summary": "surrounding_env.csv: 1 table/section(s), 8 rows, 10 fields.",
+  "profile_id": "profile-003",
+  "profile_file": "profiles/profile-003.json"
+}

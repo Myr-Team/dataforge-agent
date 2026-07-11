@@ -219,9 +219,15 @@ class RunSummary(BaseModel):
     verdict: str | None = None
     confidence: str | None = None
     status: str | None = None
+    version_kind: str | None = None
+    source_run_id: str | None = None
+    produced_kinds: list[str] = Field(default_factory=list)
+    artifact_urls: dict[str, str] = Field(default_factory=dict)
     steps: list[RunStep] = Field(default_factory=list)
     step_count: int = 0
     maf: dict[str, Any] | None = None
+    tokens: dict[str, int] = Field(default_factory=dict)
+    actor: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunsResponse(BaseModel):
@@ -235,6 +241,7 @@ class ConversationSummary(BaseModel):
     updated_at: str | None = None
     turn_count: int = 0
     last_verdict: str | None = None
+    actors: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ConversationsResponse(BaseModel):
@@ -256,6 +263,7 @@ class ConversationMessage(BaseModel):
     text: str
     time: str | None = None
     verdict: str | None = None
+    actor: dict[str, Any] | None = None
 
 
 class ConversationDetailResponse(BaseModel):
@@ -280,7 +288,13 @@ class RunDetailResponse(BaseModel):
     completed_at: str | None = None
     verdict: str | None = None
     confidence: str | None = None
+    version_kind: str | None = None
+    source_run_id: str | None = None
+    produced_kinds: list[str] = Field(default_factory=list)
+    artifact_urls: dict[str, str] = Field(default_factory=dict)
     steps: list[RunStep] = Field(default_factory=list)
+    tokens: dict[str, int] = Field(default_factory=dict)
+    actor: dict[str, Any] = Field(default_factory=dict)
     answer_delta_summary: dict[str, Any] = Field(default_factory=dict)
     models: list[dict[str, Any]] = Field(default_factory=list)
     audit: dict[str, Any] | None = None

@@ -1,0 +1,1546 @@
+{
+  "version": "dataforge.canonical_manifest.v1",
+  "workspace_id": "demo-corpus",
+  "name": "选址情报演示（模拟）",
+  "created_at": "2026-07-01T12:49:23.187160+00:00",
+  "updated_at": "2026-07-01T12:49:23.276875+00:00",
+  "format": "mixed",
+  "customer_summary": "共 437 条记录，覆盖 5 个表/集合，可观察业务类别、资料分组、数量、点位名称、业态区域、设备数量，适合用来做资料问答、机会判断和下一步方案验证。",
+  "profile_summary": "默认演示工作区包含楼层级资产防丢硬件沉淀的人流、停留、复访、周边业态和候选点位数据。当前证据适合评估“快闪店/小店选址建议”服务的 v1 试点，但不能直接承诺销售结果。",
+  "metrics": {
+    "row_count": 437,
+    "field_count": 46,
+    "indexed_count": 0,
+    "fill_rate": 1.0,
+    "signal_score": 0.6514,
+    "signal_distribution": {
+      "strong": 0.5217,
+      "mid": 0.0,
+      "noise": 0.4783
+    }
+  },
+  "documents": [
+    {
+      "source_file": "raw_docs/demo_brief.md",
+      "name": "demo_brief.md",
+      "format": "md",
+      "bytes": 1887,
+      "record_count": 1,
+      "indexed_count": 5,
+      "status": "已就绪",
+      "error": null,
+      "ingest_job_id": null,
+      "content_sha256": "afee9aef33ddf4274f1e1383c4f8239bf3983fab1747ad35cdca44e3fd49c81f",
+      "content_type": null,
+      "created_at": "2026-07-01T12:49:23.187160+00:00",
+      "updated_at": "2026-07-01T12:49:23.191380+00:00",
+      "profile_file": "profiles/profile-000.json",
+      "external": false
+    },
+    {
+      "source_file": "raw_docs/candidate_sites.csv",
+      "name": "candidate_sites.csv",
+      "format": "csv",
+      "bytes": 2859,
+      "record_count": 8,
+      "indexed_count": 8,
+      "status": "已就绪",
+      "error": null,
+      "ingest_job_id": null,
+      "content_sha256": "e6d7ee178f27ddad0e7307e61d0d30e637c2f1b6175cc8be17f133c5c672ccae",
+      "content_type": null,
+      "created_at": "2026-07-01T12:49:23.202655+00:00",
+      "updated_at": "2026-07-01T12:49:23.206850+00:00",
+      "profile_file": "profiles/profile-001.json",
+      "external": false
+    },
+    {
+      "source_file": "raw_docs/signal_density.csv",
+      "name": "signal_density.csv",
+      "format": "csv",
+      "bytes": 33957,
+      "record_count": 400,
+      "indexed_count": 400,
+      "status": "已就绪",
+      "error": null,
+      "ingest_job_id": null,
+      "content_sha256": "debb10c894e9b0b6f67a3f878dd744999f391234c0faa72abf82acd5730f7ee2",
+      "content_type": null,
+      "created_at": "2026-07-01T12:49:23.243582+00:00",
+      "updated_at": "2026-07-01T12:49:23.262613+00:00",
+      "profile_file": "profiles/profile-002.json",
+      "external": false
+    },
+    {
+      "source_file": "raw_docs/surrounding_env.csv",
+      "name": "surrounding_env.csv",
+      "format": "csv",
+      "bytes": 1021,
+      "record_count": 8,
+      "indexed_count": 8,
+      "status": "已就绪",
+      "error": null,
+      "ingest_job_id": null,
+      "content_sha256": "20d005f96aa2642f25efb3743b6be8409d2994db7e10c10fd4c4ef1480749b83",
+      "content_type": null,
+      "created_at": "2026-07-01T12:49:23.266246+00:00",
+      "updated_at": "2026-07-01T12:49:23.269683+00:00",
+      "profile_file": "profiles/profile-003.json",
+      "external": false
+    },
+    {
+      "source_file": "raw_docs/device_events_summary.json",
+      "name": "device_events_summary.json",
+      "format": "json",
+      "bytes": 5467,
+      "record_count": 20,
+      "indexed_count": 28,
+      "status": "已就绪",
+      "error": null,
+      "ingest_job_id": null,
+      "content_sha256": "468ae8e778c9bf990901ba0f59497993bc472b2ed786b534bdc1d451ede64e42",
+      "content_type": null,
+      "created_at": "2026-07-01T12:49:23.272865+00:00",
+      "updated_at": "2026-07-01T12:49:23.276153+00:00",
+      "profile_file": "profiles/profile-004.json",
+      "external": false
+    }
+  ],
+  "columns": [
+    {
+      "table": "demo_brief",
+      "name": "title",
+      "friendly_label": "业务类别",
+      "role": "text",
+      "signal": "strong",
+      "signal_score": 0.88,
+      "signal_reason": "业务类别 完整度较高且有 5 个可区分取值，可作为重点观察信号",
+      "missing_rate": 0,
+      "unique_count": 5,
+      "non_empty": 1,
+      "top_values": []
+    },
+    {
+      "table": "demo_brief",
+      "name": "body",
+      "friendly_label": "资料分组",
+      "role": "long_text",
+      "signal": "strong",
+      "signal_score": 0.8,
+      "signal_reason": "资料分组 完整度较高且有 1 个可区分取值，可作为重点观察信号",
+      "missing_rate": 0,
+      "unique_count": 1,
+      "non_empty": 1,
+      "top_values": []
+    },
+    {
+      "table": "demo_brief",
+      "name": "word_count",
+      "friendly_label": "数量",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 0.92,
+      "signal_reason": "数量 完整度较高且有 1 个可区分取值，可作为重点观察信号",
+      "missing_rate": 0,
+      "unique_count": 1,
+      "non_empty": 1,
+      "top_values": []
+    },
+    {
+      "table": "demo_brief",
+      "name": "heading_count",
+      "friendly_label": "数量",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 0.92,
+      "signal_reason": "数量 完整度较高且有 1 个可区分取值，可作为重点观察信号",
+      "missing_rate": 0,
+      "unique_count": 1,
+      "non_empty": 1,
+      "top_values": []
+    },
+    {
+      "table": "candidate_sites",
+      "name": "site_name",
+      "friendly_label": "点位名称",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "点位名称 有 8 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "城心天街-地下美食街",
+          "count": 1
+        },
+        {
+          "value": "老城步行街-临街口",
+          "count": 1
+        },
+        {
+          "value": "城心天街-中庭",
+          "count": 1
+        },
+        {
+          "value": "高新园区-地铁接驳厅",
+          "count": 1
+        },
+        {
+          "value": "滨江写字楼-大堂",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "business_area",
+      "friendly_label": "业态区域",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "业态区域 有 4 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 4,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "城心商圈",
+          "count": 2
+        },
+        {
+          "value": "老城商业街",
+          "count": 2
+        },
+        {
+          "value": "高新园区",
+          "count": 2
+        },
+        {
+          "value": "滨江CBD",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "fit_scenario",
+      "friendly_label": "描述信息",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "描述信息 有 8 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "周末快闪/饮品轻食/高频补给",
+          "count": 1
+        },
+        {
+          "value": "周末零售/户外小件/文旅联名",
+          "count": 1
+        },
+        {
+          "value": "品牌展示/新品发布/家庭客群触达",
+          "count": 1
+        },
+        {
+          "value": "通勤补给/工作日便捷零售",
+          "count": 1
+        },
+        {
+          "value": "白领服务咨询/企业团购线索",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "device_ping_count",
+      "friendly_label": "设备数量",
+      "role": "number",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "设备数量 是完整度较高的数值字段，范围 1632 到 8444",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "8444",
+          "count": 1
+        },
+        {
+          "value": "8337",
+          "count": 1
+        },
+        {
+          "value": "8320",
+          "count": 1
+        },
+        {
+          "value": "4420",
+          "count": 1
+        },
+        {
+          "value": "4475",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "unique_device_count",
+      "friendly_label": "去重设备数量",
+      "role": "number",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "去重设备数量 是完整度较高的数值字段，范围 342 到 1674",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "1665",
+          "count": 1
+        },
+        {
+          "value": "1674",
+          "count": 1
+        },
+        {
+          "value": "1645",
+          "count": 1
+        },
+        {
+          "value": "863",
+          "count": 1
+        },
+        {
+          "value": "857",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "avg_dwell_minutes",
+      "friendly_label": "平均停留",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "平均停留 是完整度较高的数值字段，范围 4.3 到 10.3",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "6.4",
+          "count": 3
+        },
+        {
+          "value": "10.1",
+          "count": 2
+        },
+        {
+          "value": "10.3",
+          "count": 1
+        },
+        {
+          "value": "4.3",
+          "count": 1
+        },
+        {
+          "value": "4.4",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "repeat_visit_ratio",
+      "friendly_label": "复访到访比例",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "复访到访比例 是完整度较高的数值字段，范围 0.17 到 0.29",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "0.29",
+          "count": 2
+        },
+        {
+          "value": "0.18",
+          "count": 2
+        },
+        {
+          "value": "0.17",
+          "count": 2
+        },
+        {
+          "value": "0.27",
+          "count": 1
+        },
+        {
+          "value": "0.19",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "competitor_count_500m",
+      "friendly_label": "竞品数量",
+      "role": "number",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "竞品数量 是完整度较高的数值字段，范围 2 到 22",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "18",
+          "count": 1
+        },
+        {
+          "value": "22",
+          "count": 1
+        },
+        {
+          "value": "12",
+          "count": 1
+        },
+        {
+          "value": "6",
+          "count": 1
+        },
+        {
+          "value": "5",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "nearest_transit_m",
+      "friendly_label": "最近交通",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "最近交通 是完整度较高的数值字段，范围 60 到 700",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "180",
+          "count": 2
+        },
+        {
+          "value": "240",
+          "count": 2
+        },
+        {
+          "value": "520",
+          "count": 2
+        },
+        {
+          "value": "60",
+          "count": 1
+        },
+        {
+          "value": "700",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "daytime_population_density",
+      "friendly_label": "日间人流密度",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "日间人流密度 是完整度较高的数值字段，范围 9000 到 31000",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "26000",
+          "count": 2
+        },
+        {
+          "value": "31000",
+          "count": 2
+        },
+        {
+          "value": "14000",
+          "count": 2
+        },
+        {
+          "value": "12000",
+          "count": 1
+        },
+        {
+          "value": "9000",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "rent_index",
+      "friendly_label": "租金指数",
+      "role": "number",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "租金指数 按 业态区域 分组均值差异明显：城心商圈=90(n=2)，高新园区=62(n=2)，差值 28",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "88",
+          "count": 1
+        },
+        {
+          "value": "84",
+          "count": 1
+        },
+        {
+          "value": "92",
+          "count": 1
+        },
+        {
+          "value": "66",
+          "count": 1
+        },
+        {
+          "value": "76",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "parking_spaces",
+      "friendly_label": "停车车位",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 0.83,
+      "signal_reason": "停车车位 完整度较高且有 5 个可区分取值，可作为重点观察信号",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "320",
+          "count": 2
+        },
+        {
+          "value": "60",
+          "count": 2
+        },
+        {
+          "value": "140",
+          "count": 2
+        },
+        {
+          "value": "200",
+          "count": 1
+        },
+        {
+          "value": "400",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "evidence_strength",
+      "friendly_label": "资料分组",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "资料分组 更像标识符，可用于追踪但不宜单独推导业务结论",
+      "missing_rate": 0.0,
+      "unique_count": 3,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "strong",
+          "count": 3
+        },
+        {
+          "value": "medium",
+          "count": 3
+        },
+        {
+          "value": "weak",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "key_signal",
+      "friendly_label": "信号",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "信号 取值分布近似均匀，暂不作为核心分群结论",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "高人流、高停留、复访稳定，餐饮小吃业态密集，适合验证即时转化",
+          "count": 1
+        },
+        {
+          "value": "人流与停留接近最高，居民比例较高，适合周末逛街型消费",
+          "count": 1
+        },
+        {
+          "value": "核心中庭人流强、停留稳定，适合品牌曝光和新品展示",
+          "count": 1
+        },
+        {
+          "value": "离地铁最近，租金较低，适合通勤即时消费",
+          "count": 1
+        },
+        {
+          "value": "CBD 大堂稳定但停留不长，适合收集团购和企业客户线索",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "key_risk",
+      "friendly_label": "风险",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "风险 取值分布近似均匀，暂不作为核心分群结论",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "竞品密度高，租金压力中高，容易被同质化摊位淹没",
+          "count": 1
+        },
+        {
+          "value": "竞品最多，停车弱，天气和街区活动波动可能放大",
+          "count": 1
+        },
+        {
+          "value": "租金指数最高，若只做销售回本压力大",
+          "count": 1
+        },
+        {
+          "value": "停留短，周末弱，品牌体验型活动可能转化不足",
+          "count": 1
+        },
+        {
+          "value": "交通距离和自然流量不如商圈，直接零售效率未验证",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "candidate_sites",
+      "name": "recommended_test",
+      "friendly_label": "描述信息",
+      "role": "text",
+      "signal": "strong",
+      "signal_score": 0.88,
+      "signal_reason": "描述信息 完整度较高且有 8 个可区分取值，可作为重点观察信号",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "周五晚高峰+周末午后各半天，测试扫码留资、试吃/试用转化和单位时段成交",
+          "count": 1
+        },
+        {
+          "value": "周末两天设置轻户外小件展台，记录进店询问、加购、客单和天气影响",
+          "count": 1
+        },
+        {
+          "value": "半天品牌展示+互动抽奖，重点看停留转化和二维码关注成本",
+          "count": 1
+        },
+        {
+          "value": "工作日早晚高峰测试便捷补给，观察 3 分钟内完成购买的比例",
+          "count": 1
+        },
+        {
+          "value": "午休+下班两个时段设咨询台，验证企业团购线索和预约率",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "signal_density",
+      "name": "site_name",
+      "friendly_label": "点位名称",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "点位名称 有 8 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 400,
+      "top_values": [
+        {
+          "value": "城心天街-地下美食街",
+          "count": 50
+        },
+        {
+          "value": "高新园区-科技馆",
+          "count": 50
+        },
+        {
+          "value": "城心天街-中庭",
+          "count": 50
+        },
+        {
+          "value": "滨江写字楼-3F通廊",
+          "count": 50
+        },
+        {
+          "value": "滨江写字楼-大堂",
+          "count": 50
+        }
+      ]
+    },
+    {
+      "table": "signal_density",
+      "name": "floor",
+      "friendly_label": "楼层",
+      "role": "text",
+      "signal": "strong",
+      "signal_score": 0.868,
+      "signal_reason": "楼层 有 4 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 4,
+      "non_empty": 400,
+      "top_values": [
+        {
+          "value": "1F",
+          "count": 200
+        },
+        {
+          "value": "B1",
+          "count": 100
+        },
+        {
+          "value": "3F",
+          "count": 50
+        },
+        {
+          "value": "2F",
+          "count": 50
+        }
+      ]
+    },
+    {
+      "table": "signal_density",
+      "name": "zone",
+      "friendly_label": "区域",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "区域 有 5 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 400,
+      "top_values": [
+        {
+          "value": "corridor",
+          "count": 80
+        },
+        {
+          "value": "foodcourt",
+          "count": 80
+        },
+        {
+          "value": "entrance",
+          "count": 80
+        },
+        {
+          "value": "atrium",
+          "count": 80
+        },
+        {
+          "value": "exit",
+          "count": 80
+        }
+      ]
+    },
+    {
+      "table": "signal_density",
+      "name": "day_type",
+      "friendly_label": "日期类型",
+      "role": "text",
+      "signal": "strong",
+      "signal_score": 0.844,
+      "signal_reason": "日期类型 有 2 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 2,
+      "non_empty": 400,
+      "top_values": [
+        {
+          "value": "weekend",
+          "count": 200
+        },
+        {
+          "value": "weekday",
+          "count": 200
+        }
+      ]
+    },
+    {
+      "table": "signal_density",
+      "name": "hour_bucket",
+      "friendly_label": "时段",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "时段 有 5 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 400,
+      "top_values": [
+        {
+          "value": "17-20",
+          "count": 80
+        },
+        {
+          "value": "20-22",
+          "count": 80
+        },
+        {
+          "value": "14-17",
+          "count": 80
+        },
+        {
+          "value": "12-14",
+          "count": 80
+        },
+        {
+          "value": "10-12",
+          "count": 80
+        }
+      ]
+    },
+    {
+      "table": "signal_density",
+      "name": "device_ping_count",
+      "friendly_label": "设备数量",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "设备数量 是完整度较高的数值字段，范围 14 到 341",
+      "missing_rate": 0.0,
+      "unique_count": 180,
+      "non_empty": 400,
+      "top_values": [
+        {
+          "value": "95",
+          "count": 8
+        },
+        {
+          "value": "105",
+          "count": 8
+        },
+        {
+          "value": "31",
+          "count": 7
+        },
+        {
+          "value": "63",
+          "count": 6
+        },
+        {
+          "value": "101",
+          "count": 6
+        }
+      ]
+    },
+    {
+      "table": "signal_density",
+      "name": "unique_device_count",
+      "friendly_label": "去重设备数量",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "去重设备数量 是完整度较高的数值字段，范围 2 到 72",
+      "missing_rate": 0.0,
+      "unique_count": 59,
+      "non_empty": 400,
+      "top_values": [
+        {
+          "value": "6",
+          "count": 25
+        },
+        {
+          "value": "12",
+          "count": 20
+        },
+        {
+          "value": "9",
+          "count": 18
+        },
+        {
+          "value": "7",
+          "count": 18
+        },
+        {
+          "value": "16",
+          "count": 16
+        }
+      ]
+    },
+    {
+      "table": "signal_density",
+      "name": "avg_dwell_minutes",
+      "friendly_label": "平均停留",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "平均停留 是完整度较高的数值字段，范围 2.5 到 14.2",
+      "missing_rate": 0.0,
+      "unique_count": 109,
+      "non_empty": 400,
+      "top_values": [
+        {
+          "value": "4.4",
+          "count": 11
+        },
+        {
+          "value": "5.0",
+          "count": 10
+        },
+        {
+          "value": "5.7",
+          "count": 10
+        },
+        {
+          "value": "4.1",
+          "count": 9
+        },
+        {
+          "value": "4.2",
+          "count": 9
+        }
+      ]
+    },
+    {
+      "table": "signal_density",
+      "name": "repeat_visit_ratio",
+      "friendly_label": "复访到访比例",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "复访到访比例 是完整度较高的数值字段，范围 0.13 到 0.36",
+      "missing_rate": 0.0,
+      "unique_count": 24,
+      "non_empty": 400,
+      "top_values": [
+        {
+          "value": "0.21",
+          "count": 47
+        },
+        {
+          "value": "0.19",
+          "count": 28
+        },
+        {
+          "value": "0.18",
+          "count": 28
+        },
+        {
+          "value": "0.2",
+          "count": 27
+        },
+        {
+          "value": "0.22",
+          "count": 26
+        }
+      ]
+    },
+    {
+      "table": "signal_density",
+      "name": "note",
+      "friendly_label": "备注",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "备注 几乎为常量，对分群或产品判断贡献较低",
+      "missing_rate": 0.0,
+      "unique_count": 1,
+      "non_empty": 400,
+      "top_values": [
+        {
+          "value": "模拟设备信号",
+          "count": 400
+        }
+      ]
+    },
+    {
+      "table": "surrounding_env",
+      "name": "site_name",
+      "friendly_label": "点位名称",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "点位名称 有 8 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "城心天街-中庭",
+          "count": 1
+        },
+        {
+          "value": "城心天街-地下美食街",
+          "count": 1
+        },
+        {
+          "value": "滨江写字楼-大堂",
+          "count": 1
+        },
+        {
+          "value": "滨江写字楼-3F通廊",
+          "count": 1
+        },
+        {
+          "value": "老城步行街-临街口",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "surrounding_env",
+      "name": "business_area",
+      "friendly_label": "业态区域",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "业态区域 有 4 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 4,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "城心商圈",
+          "count": 2
+        },
+        {
+          "value": "滨江CBD",
+          "count": 2
+        },
+        {
+          "value": "老城商业街",
+          "count": 2
+        },
+        {
+          "value": "高新园区",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "table": "surrounding_env",
+      "name": "nearby_business_types",
+      "friendly_label": "周边业态类型",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "周边业态类型 有 8 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "餐饮,服饰,影院,儿童",
+          "count": 1
+        },
+        {
+          "value": "餐饮,小吃,饮品",
+          "count": 1
+        },
+        {
+          "value": "写字楼,咖啡,便利店",
+          "count": 1
+        },
+        {
+          "value": "写字楼,会议",
+          "count": 1
+        },
+        {
+          "value": "餐饮,服饰,小商品,小吃",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "surrounding_env",
+      "name": "competitor_count_500m",
+      "friendly_label": "竞品数量",
+      "role": "number",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "竞品数量 是完整度较高的数值字段，范围 2 到 22",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "12",
+          "count": 1
+        },
+        {
+          "value": "18",
+          "count": 1
+        },
+        {
+          "value": "5",
+          "count": 1
+        },
+        {
+          "value": "2",
+          "count": 1
+        },
+        {
+          "value": "22",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "surrounding_env",
+      "name": "nearest_transit_m",
+      "friendly_label": "最近交通",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "最近交通 是完整度较高的数值字段，范围 60 到 700",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "180",
+          "count": 2
+        },
+        {
+          "value": "520",
+          "count": 2
+        },
+        {
+          "value": "240",
+          "count": 2
+        },
+        {
+          "value": "700",
+          "count": 1
+        },
+        {
+          "value": "60",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "surrounding_env",
+      "name": "daytime_population_density",
+      "friendly_label": "日间人流密度",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "日间人流密度 是完整度较高的数值字段，范围 9000 到 31000",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "26000",
+          "count": 2
+        },
+        {
+          "value": "14000",
+          "count": 2
+        },
+        {
+          "value": "31000",
+          "count": 2
+        },
+        {
+          "value": "9000",
+          "count": 1
+        },
+        {
+          "value": "12000",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "surrounding_env",
+      "name": "residential_ratio",
+      "friendly_label": "居住比例",
+      "role": "number",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "居住比例 按 业态区域 分组均值差异明显：老城商业街=0.4(n=2)，高新园区=0.085(n=2)，差值 0.315",
+      "missing_rate": 0.0,
+      "unique_count": 6,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "0.25",
+          "count": 2
+        },
+        {
+          "value": "0.4",
+          "count": 2
+        },
+        {
+          "value": "0.1",
+          "count": 1
+        },
+        {
+          "value": "0.08",
+          "count": 1
+        },
+        {
+          "value": "0.05",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "surrounding_env",
+      "name": "rent_index",
+      "friendly_label": "租金指数",
+      "role": "number",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "租金指数 是完整度较高的数值字段，范围 58 到 92",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "92",
+          "count": 1
+        },
+        {
+          "value": "88",
+          "count": 1
+        },
+        {
+          "value": "76",
+          "count": 1
+        },
+        {
+          "value": "70",
+          "count": 1
+        },
+        {
+          "value": "84",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "surrounding_env",
+      "name": "parking_spaces",
+      "friendly_label": "停车车位",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "停车车位 是完整度较高的数值字段，范围 60 到 400",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "320",
+          "count": 2
+        },
+        {
+          "value": "140",
+          "count": 2
+        },
+        {
+          "value": "60",
+          "count": 2
+        },
+        {
+          "value": "400",
+          "count": 1
+        },
+        {
+          "value": "200",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "surrounding_env",
+      "name": "note",
+      "friendly_label": "备注",
+      "role": "text",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "备注 几乎为常量，对分群或产品判断贡献较低",
+      "missing_rate": 0.0,
+      "unique_count": 1,
+      "non_empty": 8,
+      "top_values": [
+        {
+          "value": "模拟周边环境",
+          "count": 8
+        }
+      ]
+    },
+    {
+      "table": "sample_events",
+      "name": "site_name",
+      "friendly_label": "点位名称",
+      "role": "text",
+      "signal": "strong",
+      "signal_score": 0.916,
+      "signal_reason": "点位名称 有 8 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 8,
+      "non_empty": 20,
+      "top_values": [
+        {
+          "value": "高新园区-科技馆",
+          "count": 4
+        },
+        {
+          "value": "老城步行街-临街口",
+          "count": 3
+        },
+        {
+          "value": "城心天街-地下美食街",
+          "count": 3
+        },
+        {
+          "value": "城心天街-中庭",
+          "count": 3
+        },
+        {
+          "value": "老城步行街-2F",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "table": "sample_events",
+      "name": "floor",
+      "friendly_label": "楼层",
+      "role": "text",
+      "signal": "strong",
+      "signal_score": 0.868,
+      "signal_reason": "楼层 有 4 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 4,
+      "non_empty": 20,
+      "top_values": [
+        {
+          "value": "1F",
+          "count": 12
+        },
+        {
+          "value": "B1",
+          "count": 4
+        },
+        {
+          "value": "2F",
+          "count": 2
+        },
+        {
+          "value": "3F",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "table": "sample_events",
+      "name": "zone",
+      "friendly_label": "区域",
+      "role": "text",
+      "signal": "strong",
+      "signal_score": 0.88,
+      "signal_reason": "区域 有 5 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 20,
+      "top_values": [
+        {
+          "value": "exit",
+          "count": 8
+        },
+        {
+          "value": "entrance",
+          "count": 4
+        },
+        {
+          "value": "foodcourt",
+          "count": 4
+        },
+        {
+          "value": "corridor",
+          "count": 2
+        },
+        {
+          "value": "atrium",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "table": "sample_events",
+      "name": "event_type",
+      "friendly_label": "活动类型",
+      "role": "text",
+      "signal": "strong",
+      "signal_score": 0.88,
+      "signal_reason": "活动类型 有 5 个不同取值，可用于分群、筛选或解释差异",
+      "missing_rate": 0.0,
+      "unique_count": 5,
+      "non_empty": 20,
+      "top_values": [
+        {
+          "value": "move",
+          "count": 5
+        },
+        {
+          "value": "recovered",
+          "count": 5
+        },
+        {
+          "value": "floor_change",
+          "count": 5
+        },
+        {
+          "value": "checkin",
+          "count": 3
+        },
+        {
+          "value": "lost_alert",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "table": "sample_events",
+      "name": "timestamp",
+      "friendly_label": "时间维度",
+      "role": "date",
+      "signal": "noise",
+      "signal_score": 0.34,
+      "signal_reason": "时间维度 更像标识符，可用于追踪但不宜单独推导业务结论",
+      "missing_rate": 0.0,
+      "unique_count": 20,
+      "non_empty": 20,
+      "top_values": [
+        {
+          "value": "2026-05-08T11:30:00",
+          "count": 1
+        },
+        {
+          "value": "2026-05-25T17:51:00",
+          "count": 1
+        },
+        {
+          "value": "2026-05-17T16:33:00",
+          "count": 1
+        },
+        {
+          "value": "2026-05-17T12:36:00",
+          "count": 1
+        },
+        {
+          "value": "2026-05-04T19:13:00",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "table": "sample_events",
+      "name": "accuracy_m",
+      "friendly_label": "定位精度",
+      "role": "number",
+      "signal": "strong",
+      "signal_score": 1.0,
+      "signal_reason": "定位精度 是完整度较高的数值字段，范围 0.9 到 3.1",
+      "missing_rate": 0.0,
+      "unique_count": 16,
+      "non_empty": 20,
+      "top_values": [
+        {
+          "value": "1.2",
+          "count": 2
+        },
+        {
+          "value": "2.6",
+          "count": 2
+        },
+        {
+          "value": "2.7",
+          "count": 2
+        },
+        {
+          "value": "1.0",
+          "count": 2
+        },
+        {
+          "value": "2.2",
+          "count": 1
+        }
+      ]
+    }
+  ],
+  "signals": [
+    "文档包含 5 个标题层级，可作为主题导航",
+    "包含中文内容，适合中文检索与中文交互",
+    "device_ping_count 按 business_area 分组均值差异明显：城心商圈=8382(n=2)，高新园区=3026.5(n=2)，差值 5355.5",
+    "unique_device_count 按 business_area 分组均值差异明显：城心商圈=1655(n=2)，滨江CBD=602(n=2)，差值 1053",
+    "avg_dwell_minutes 按 business_area 分组均值差异明显：城心商圈=10.1(n=2)，高新园区=5.35(n=2)，差值 4.75",
+    "repeat_visit_ratio 按 business_area 分组均值差异明显：城心商圈=0.28(n=2)，滨江CBD=0.175(n=2)，差值 0.105",
+    "competitor_count_500m 按 business_area 分组均值差异明显：老城商业街=18(n=2)，滨江CBD=3.5(n=2)，差值 14.5",
+    "nearest_transit_m 按 business_area 分组均值差异明显：滨江CBD=520(n=2)，城心商圈=180(n=2)，差值 340",
+    "daytime_population_density 按 business_area 分组均值差异明显：老城商业街=31000(n=2)，高新园区=10500(n=2)，差值 20500",
+    "rent_index 按 business_area 分组均值差异明显：城心商圈=90(n=2)，高新园区=62(n=2)，差值 28",
+    "site_name 有 8 个不同取值，可用于分群、筛选或解释差异",
+    "business_area 有 4 个不同取值，可用于分群、筛选或解释差异",
+    "fit_scenario 有 8 个不同取值，可用于分群、筛选或解释差异",
+    "device_ping_count 是完整度较高的数值字段，范围 1632 到 8444",
+    "unique_device_count 是完整度较高的数值字段，范围 342 到 1674",
+    "avg_dwell_minutes 是完整度较高的数值字段，范围 4.3 到 10.3",
+    "repeat_visit_ratio 是完整度较高的数值字段，范围 0.17 到 0.29",
+    "competitor_count_500m 是完整度较高的数值字段，范围 2 到 22",
+    "device_ping_count 按 site_name 分组均值差异明显：城心天街-地下美食街=168.88(n=50)，滨江写字楼-3F通廊=32.64(n=50)，差值 136.24",
+    "device_ping_count 按 floor 分组均值差异明显：B1=128.64(n=100)，3F=32.64(n=50)，差值 96"
+  ],
+  "reference_images": []
+}

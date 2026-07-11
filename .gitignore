@@ -20,6 +20,7 @@ build/
 coverage/
 generated-outputs/
 artifacts/
+tmp/
 workspaces/upload-*/
 *.log
 agents/.agents_state.json

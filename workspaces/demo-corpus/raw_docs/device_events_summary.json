@@ -1,0 +1,220 @@
+{
+  "source": "楼层级资产防丢硬件模拟事件",
+  "business_meaning": "这些事件用于说明人流、停留、复访和楼层动线信号来自设备行为，不是问卷填报。",
+  "event_count": 48,
+  "covered_sites": [
+    "城心天街-中庭",
+    "城心天街-地下美食街",
+    "滨江写字楼-3F通廊",
+    "滨江写字楼-大堂",
+    "老城步行街-2F",
+    "老城步行街-临街口",
+    "高新园区-地铁接驳厅",
+    "高新园区-科技馆"
+  ],
+  "events_by_site": {
+    "老城步行街-临街口": 8,
+    "高新园区-地铁接驳厅": 8,
+    "高新园区-科技馆": 7,
+    "滨江写字楼-3F通廊": 6,
+    "滨江写字楼-大堂": 6,
+    "城心天街-中庭": 5,
+    "老城步行街-2F": 4,
+    "城心天街-地下美食街": 4
+  },
+  "events_by_type": {
+    "floor_change": 14,
+    "recovered": 11,
+    "move": 10,
+    "checkin": 7,
+    "lost_alert": 6
+  },
+  "floor_distribution_by_site": {
+    "老城步行街-临街口": {
+      "1F": 8
+    },
+    "老城步行街-2F": {
+      "2F": 4
+    },
+    "滨江写字楼-3F通廊": {
+      "3F": 6
+    },
+    "城心天街-地下美食街": {
+      "B1": 4
+    },
+    "滨江写字楼-大堂": {
+      "1F": 6
+    },
+    "高新园区-地铁接驳厅": {
+      "B1": 8
+    },
+    "高新园区-科技馆": {
+      "1F": 7
+    },
+    "城心天街-中庭": {
+      "1F": 5
+    }
+  },
+  "sample_events": [
+    {
+      "site_name": "老城步行街-临街口",
+      "floor": "1F",
+      "zone": "exit",
+      "event_type": "move",
+      "timestamp": "2026-05-08T11:30:00",
+      "accuracy_m": 1.2
+    },
+    {
+      "site_name": "老城步行街-2F",
+      "floor": "2F",
+      "zone": "exit",
+      "event_type": "recovered",
+      "timestamp": "2026-05-25T17:51:00",
+      "accuracy_m": 2.6
+    },
+    {
+      "site_name": "滨江写字楼-3F通廊",
+      "floor": "3F",
+      "zone": "exit",
+      "event_type": "checkin",
+      "timestamp": "2026-05-17T16:33:00",
+      "accuracy_m": 2.7
+    },
+    {
+      "site_name": "城心天街-地下美食街",
+      "floor": "B1",
+      "zone": "entrance",
+      "event_type": "floor_change",
+      "timestamp": "2026-05-17T12:36:00",
+      "accuracy_m": 2.2
+    },
+    {
+      "site_name": "滨江写字楼-大堂",
+      "floor": "1F",
+      "zone": "exit",
+      "event_type": "recovered",
+      "timestamp": "2026-05-04T19:13:00",
+      "accuracy_m": 2.7
+    },
+    {
+      "site_name": "高新园区-地铁接驳厅",
+      "floor": "B1",
+      "zone": "exit",
+      "event_type": "recovered",
+      "timestamp": "2026-05-26T09:29:00",
+      "accuracy_m": 1.2
+    },
+    {
+      "site_name": "高新园区-科技馆",
+      "floor": "1F",
+      "zone": "exit",
+      "event_type": "checkin",
+      "timestamp": "2026-05-18T16:43:00",
+      "accuracy_m": 3.0
+    },
+    {
+      "site_name": "城心天街-中庭",
+      "floor": "1F",
+      "zone": "corridor",
+      "event_type": "checkin",
+      "timestamp": "2026-05-24T12:37:00",
+      "accuracy_m": 1.0
+    },
+    {
+      "site_name": "高新园区-科技馆",
+      "floor": "1F",
+      "zone": "entrance",
+      "event_type": "floor_change",
+      "timestamp": "2026-05-02T10:59:00",
+      "accuracy_m": 2.1
+    },
+    {
+      "site_name": "老城步行街-临街口",
+      "floor": "1F",
+      "zone": "atrium",
+      "event_type": "move",
+      "timestamp": "2026-05-25T19:46:00",
+      "accuracy_m": 2.5
+    },
+    {
+      "site_name": "高新园区-科技馆",
+      "floor": "1F",
+      "zone": "foodcourt",
+      "event_type": "recovered",
+      "timestamp": "2026-05-28T15:24:00",
+      "accuracy_m": 1.0
+    },
+    {
+      "site_name": "滨江写字楼-大堂",
+      "floor": "1F",
+      "zone": "entrance",
+      "event_type": "move",
+      "timestamp": "2026-05-18T15:33:00",
+      "accuracy_m": 1.1
+    },
+    {
+      "site_name": "滨江写字楼-3F通廊",
+      "floor": "3F",
+      "zone": "entrance",
+      "event_type": "lost_alert",
+      "timestamp": "2026-05-15T19:46:00",
+      "accuracy_m": 2.3
+    },
+    {
+      "site_name": "高新园区-科技馆",
+      "floor": "1F",
+      "zone": "atrium",
+      "event_type": "recovered",
+      "timestamp": "2026-05-12T11:17:00",
+      "accuracy_m": 1.3
+    },
+    {
+      "site_name": "城心天街-地下美食街",
+      "floor": "B1",
+      "zone": "foodcourt",
+      "event_type": "floor_change",
+      "timestamp": "2026-05-25T09:15:00",
+      "accuracy_m": 1.4
+    },
+    {
+      "site_name": "城心天街-地下美食街",
+      "floor": "B1",
+      "zone": "foodcourt",
+      "event_type": "floor_change",
+      "timestamp": "2026-05-22T20:55:00",
+      "accuracy_m": 0.9
+    },
+    {
+      "site_name": "城心天街-中庭",
+      "floor": "1F",
+      "zone": "foodcourt",
+      "event_type": "move",
+      "timestamp": "2026-05-18T12:48:00",
+      "accuracy_m": 3.1
+    },
+    {
+      "site_name": "城心天街-中庭",
+      "floor": "1F",
+      "zone": "exit",
+      "event_type": "lost_alert",
+      "timestamp": "2026-05-08T20:36:00",
+      "accuracy_m": 1.7
+    },
+    {
+      "site_name": "老城步行街-2F",
+      "floor": "2F",
+      "zone": "corridor",
+      "event_type": "move",
+      "timestamp": "2026-05-22T17:14:00",
+      "accuracy_m": 1.9
+    },
+    {
+      "site_name": "老城步行街-临街口",
+      "floor": "1F",
+      "zone": "exit",
+      "event_type": "floor_change",
+      "timestamp": "2026-05-24T11:40:00",
+      "accuracy_m": 2.6
+    }
+  ]
+}

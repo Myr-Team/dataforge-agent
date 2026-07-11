@@ -231,6 +231,80 @@ def sanitize_customer_text(text: Any, field_labels: dict[str, str] | None = None
     value = re.sub(r"\[?(?:raw_docs|external)/[^\]\s,;，。；：）)]+#?[^\]\s,;，。；：）)]*\]?", "", value)
     value = re.sub(r"\[?profile\.json[^\]\s,;，。；：）)]*\]?", "", value)
     value = re.sub(r"\b(?:chunk_id|source_file|workspace_id|document_type|content_vector)\b", "", value)
+    value = re.sub(r"已上传资料[:：][^\n。]*", "", value)
+    value = re.sub(
+        r"(?:数据字段|资料文件)\.?(?:md|markdown|csv|json|xlsx|xls|pdf)?\s*[:：]?\s*(?:已就绪|部分字段|解析中)[；;、，,\s]*",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"这是轻量跟进判断[，,]?不会重跑完整多智能体链[。.]?", "", value)
+    value = re.sub(r"(?:现有\s*)?数据字段\s*(?:与|和|及|、|\+)\s*数据字段", "现有数据字段", value)
+    value = re.sub(r"在\s*现有数据字段\s*上", "基于现有数据基础", value)
+    value = re.sub(r"现有数据字段\s*上", "现有数据基础上", value)
+    value = re.sub(r"字段结构\s+里", "字段结构里", value)
+    value = re.sub(r"(?<![A-Za-z0-9])floor(?![A-Za-z0-9])", "楼层", value, flags=re.IGNORECASE)
+    value = re.sub(r"(?<![A-Za-z0-9])zone(?![A-Za-z0-9])", "区域", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bfoodcourt\b", "美食区", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bcorridor\b", "通道", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bentrance\b", "入口", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bexit\b", "出口", value, flags=re.IGNORECASE)
+    value = re.sub(r"\batrium\b", "中庭", value, flags=re.IGNORECASE)
+    value = _replace_floor_codes(value)
+    value = re.sub(
+        r"看不到真实\s*\*{0,2}租金、业态、成交/转化\*{0,2}等字段",
+        "还缺真实**成交/转化、商户反馈或付费意愿**等验证数据",
+        value,
+    )
+    value = re.sub(
+        r"缺少真实\s*\*{0,2}租金、业态、成交/转化\*{0,2}等字段",
+        "缺少真实**成交/转化、商户反馈或付费意愿**等验证数据",
+        value,
+    )
+    value = re.sub(
+        r"没有真实的?\s*\*{0,2}租金/坪效/业态匹配/转化率\*{0,2}\s*数据",
+        "还缺真实**坪效/转化率、商户反馈或付费意愿**等验证数据",
+        value,
+    )
+    value = re.sub(
+        r"周边环境信号只在摘要中提到，?并未看到可用结构化字段（[^）]*）",
+        "周边环境已有初步字段，但仍需要与真实效果数据拼接",
+        value,
+    )
+    value = re.sub(r"，?workspace_summary已体现为[^，。；\n]+", "", value)
+    value = re.sub(
+        r"\*{0,2}客流量/进店人数提升\s*≥\s*20%\*{0,2}\s*相比客户自选点位（需客户提供对照店数据）",
+        "**客流量/进店人数是否优于对照点位**（需客户提供对照数据，阈值由试点前定义）",
+        value,
+    )
+    value = re.sub(r"预算可以压在几万级以内", "预算需要在试点前明确上限", value)
+    value = re.sub(
+        r"\b(?:profile|raw_docs)\.?(?:json|csv|xlsx|xls|md)?\b\s*[:：]?\s*(?:已就绪|部分字段|解析中)?",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    # Hide internal evidence shard ids such as S05/S12 from customer-facing text.
+    # Structured citations still carry source metadata for the evidence panel.
+    value = re.sub(
+        r"(?<![A-Za-z0-9])S\d{2,3}(?:\s*(?:/|、|和|与|及)\s*S\d{2,3})+(?:\s*(?:都|均))?",
+        "这些证据",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        r"(?<![A-Za-z0-9])(?:[\[【(（]\s*)?S\d{2,3}(?:\s*[\]】)）])?(?![A-Za-z0-9])\s*[:：、,，;；-]?",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"^\s*等\s+", "", value)
+    value = re.sub(r"(围绕|聚焦|选择|优先|针对|做|跑|开展|验证|测试|试点|覆盖|面向|在|到|于|按|基于|以|从)\s*等\s+", r"\1", value)
+    value = re.sub(r"(拆成|落到|定位为|作为)\s*等\s+", r"\1", value)
+    value = re.sub(r"([，。；：、(（])\s*等\s+", r"\1", value)
+    value = re.sub(r"(^|[\s，。；：、(（])/\s*([A-Za-z0-9])", r"\1\2", value)
+    value = re.sub(r"在\s+类([\u4e00-\u9fffA-Za-z0-9]+)", r"在相似\1", value)
+    value = re.sub(r"切分\s+及", "切分，并纳入", value)
     for pattern, replacement in CUSTOMER_TERM_REPLACEMENTS:
         value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
     for raw, label in sorted((field_labels or {}).items(), key=lambda item: len(item[0]), reverse=True):
@@ -244,8 +318,44 @@ def sanitize_customer_text(text: Any, field_labels: dict[str, str] | None = None
     value = re.sub(r"\s+([，。；：、！？])", r"\1", value)
     value = re.sub(r"([！？?])。", r"\1", value)
     value = re.sub(r"([。！？]){2,}", r"\1", value)
+    # A removed quoted field can leave a closing quote and separator at a new line's start.
+    # That sequence has no customer-facing meaning and otherwise leaks into Markdown bullets.
+    value = re.sub(
+        r"(?m)^(\s*(?:(?:[-*+]\s+|\d+[.)]\s+))?)(?:[”’」』]+|\"(?=[，,;；:：、\-–—]))[，,;；:：、\-–—]*\s*",
+        r"\1",
+        value,
+    )
     value = re.sub(r"\n{3,}", "\n\n", value)
+    if re.fullmatch(r"[\s，。；：、,.!?！？;:-]*", value):
+        return ""
     return value.strip()
+
+
+def _replace_floor_codes(value: str) -> str:
+    def basement(match: re.Match[str]) -> str:
+        return f"负{_cn_small_number(match.group(1))}层"
+
+    def above_with_suffix(match: re.Match[str]) -> str:
+        return f"{_cn_small_number(match.group(1))}层"
+
+    def above_with_prefix(match: re.Match[str]) -> str:
+        return f"{_cn_small_number(match.group(1))}层"
+
+    value = re.sub(r"(?<![A-Za-z0-9])B([1-9]\d?)(?![A-Za-z0-9])", basement, value, flags=re.IGNORECASE)
+    value = re.sub(r"(?<![A-Za-z0-9])([1-9]\d?)F(?![A-Za-z0-9])", above_with_suffix, value, flags=re.IGNORECASE)
+    value = re.sub(r"(?<![A-Za-z0-9])F([1-9]\d?)(?![A-Za-z0-9])", above_with_prefix, value, flags=re.IGNORECASE)
+    return value
+
+
+def _cn_small_number(value: str) -> str:
+    digits = "零一二三四五六七八九"
+    number = int(value)
+    if number <= 10:
+        return "十" if number == 10 else digits[number]
+    if number < 20:
+        return "十" + digits[number % 10]
+    tens, ones = divmod(number, 10)
+    return digits[tens] + "十" + (digits[ones] if ones else "")
 
 
 def _clean_citation_snippet(snippet: Any) -> str:

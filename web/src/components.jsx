@@ -65,7 +65,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, loadDataOverview, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadMembers } from "./api.js";
+import { API_BASE, artifactLink, loadDataOverview, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -81,8 +81,43 @@ import {
 } from "./constants.js";
 
 const agentMap = new Map(AGENTS.map((agent) => [agent.id, agent]));
+const DEFAULT_OWNER_NAME = "傅子豪";
+const DEFAULT_OWNER_EMAIL = "fuzihao@gdjiuyun.onmicrosoft.com";
 
-export function ShellNav({ active = "workspaces", onChange = () => {}, workspace = {} }) {
+function cleanUserValue(value) {
+  return String(value || "").trim();
+}
+
+function normalizedCurrentUser(user = {}, { allowDefault = true } = {}) {
+  const rawName = cleanUserValue(user?.name);
+  const rawEmail = cleanUserValue(user?.email);
+  const isPlaceholderEmail = !rawEmail || /^(local\.demo@dataforge|owner@example\.com|fuzh084711@gmail\.com)$/i.test(rawEmail);
+  const email = isPlaceholderEmail ? (allowDefault ? DEFAULT_OWNER_EMAIL : "") : rawEmail;
+  let name = rawName && rawName !== "Demo User" ? rawName : "";
+  if (!name && email) name = email.split("@", 1)[0].replace(/[._-]+/g, " ");
+  if (email.toLowerCase() === DEFAULT_OWNER_EMAIL) name = DEFAULT_OWNER_NAME;
+  return {
+    name: name || (allowDefault ? DEFAULT_OWNER_NAME : ""),
+    email,
+    reliable: !isPlaceholderEmail,
+  };
+}
+
+function memberInitial(name, email) {
+  const source = cleanUserValue(name).replace(/（你）$/, "") || cleanUserValue(email) || "成";
+  return source.slice(0, 1).toUpperCase();
+}
+
+function memberRoleLabel(role) {
+  const key = cleanUserValue(role).toLowerCase();
+  if (key === "owner") return "所有者";
+  if (key === "admin") return "管理员";
+  if (key === "editor") return "编辑者";
+  if (key === "viewer") return "查看者";
+  return cleanUserValue(role) || "成员";
+}
+
+export function ShellNav({ active = "workspaces", onChange = () => {}, workspace = {}, onInviteMembers = () => {} }) {
   return (
     <nav className="shell-nav" aria-label="Primary">
       <div className="nav-stack">
@@ -108,7 +143,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, workspace
         <div className="wsf-v">{workspace.name || "当前工作区"}</div>
         <div className="wsf-k">Role</div>
         <div className="wsf-v wsf-last">Owner</div>
-        <button className="wsf-invite" type="button" title="团队协作能力即将上线">
+        <button className="wsf-invite" type="button" title="打开成员、权限和用量溯源" onClick={onInviteMembers}>
           <UserPlus size={15} /> Invite members
         </button>
       </div>
@@ -261,6 +296,7 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
   const workspaces = dashboard?.workspaces || [];
   const health = dashboard?.health || {};
   const deps = health.dependencies || {};
+  const account = normalizedCurrentUser(user);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -291,19 +327,19 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
         <NotificationBell tasks={tasks} />
         <div className="user-menu" ref={menuRef}>
           <button className="user-trigger" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen} title="账户">
-            <div className="avatar" title={user?.email || "fuzh084711@gmail.com"}>
-              {(user?.name || user?.email || "傅").trim().slice(0, 1).toUpperCase()}
+            <div className="avatar" title={account.email}>
+              {memberInitial(account.name, account.email)}
             </div>
           </button>
           {menuOpen ? (
             <div className="account-menu" role="menu">
               <div className="account-card">
                 <div className="avatar large">
-                  {(user?.name || user?.email || "傅").trim().slice(0, 1).toUpperCase()}
+                  {memberInitial(account.name, account.email)}
                 </div>
                 <div>
-                  <strong>{user?.name || "傅子豪"}</strong>
-                  <span>{user?.email || "fuzh084711@gmail.com"}</span>
+                  <strong>{account.name}</strong>
+                  <span>{account.email}</span>
                 </div>
               </div>
               <button type="button" role="menuitem">
@@ -587,6 +623,8 @@ function WorkbenchMainInner({
   onAppendUpload,
   tasks,
   user,
+  settingsInitialTab,
+  onWorkspaceDataChanged,
 }) {
   if (view === "conversations") {
     return (
@@ -610,7 +648,7 @@ function WorkbenchMainInner({
   if (view === "data") {
     return (
       <Suspense fallback={<main className="agent-studio data-stage"><div style={{ padding: 40, color: "var(--muted)" }}>加载数据工作台…</div></main>}>
-        <DataWorkbench dashboard={dashboard} onUpload={onAppendUpload} onOpenConversation={onOpenConversation} onRun={onRun} user={user} />
+        <DataWorkbench dashboard={dashboard} onUpload={onAppendUpload} onOpenConversation={onOpenConversation} onRun={onRun} user={user} onWorkspaceDataChanged={onWorkspaceDataChanged} />
       </Suspense>
     );
   }
@@ -621,7 +659,7 @@ function WorkbenchMainInner({
     return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} tasks={tasks} />;
   }
   if (view === "settings") {
-    return <SettingsCenter dashboard={dashboard} observability={observability} />;
+    return <SettingsCenter dashboard={dashboard} observability={observability} user={user} initialTab={settingsInitialTab} />;
   }
   return (
     <DashboardStudio
@@ -650,7 +688,7 @@ function feasibilityOf(run) {
   return run?.final?.artifact?.feasibility || run?.artifact?.feasibility || run?.feasibility || {};
 }
 function iterInputsOf(run) {
-  return run?.final?.artifact?.iteration_inputs || run?.artifact?.iteration_inputs || [];
+  return run?.iteration_inputs || run?.final?.artifact?.iteration_inputs || run?.artifact?.iteration_inputs || [];
 }
 function artifactOf(run) {
   return run?.final?.artifact || run?.artifact || {};
@@ -666,6 +704,47 @@ function citationLabelsOf(run) {
     .map((item) => item?.title || item?.source_file || item?.ref || item?.marker)
     .filter(Boolean)
     .slice(0, 4);
+}
+function producedKindLabels(run) {
+  const keys = [
+    ...((run?.produced_kinds || []).map(String)),
+    ...Object.keys(run?.artifact_urls || {}),
+    ...Object.keys(artifactUrlsOf(run) || {}),
+  ].filter(Boolean);
+  return [...new Set(keys)].map((key) => ARTIFACT_KIND_LABEL[key] || key);
+}
+function versionSummaryText(run, fallback) {
+  if (!run) return fallback || "";
+  const inputs = iterInputsOf(run).filter((m) => m?.label);
+  const kind = run.version_kind || run.versionKind;
+  if (kind === "plan_draft") {
+    const draft = run.artifact?.plan_draft?.text || run.final?.artifact?.plan_draft?.text;
+    if (draft) {
+      const firstLine = String(draft).split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+      if (firstLine) return `本版沉淀了一版可执行方案：${firstLine.replace(/^#+\s*/, "").slice(0, 80)}`;
+    }
+    return run.summary || "本版把会话反馈整理成方案草案，可继续生成项目文档、验证计划或回填试点指标。";
+  }
+  if (kind === "artifact_generation") {
+    const labels = producedKindLabels(run);
+    return labels.length
+      ? `本版把上一轮分析沉淀为${labels.join("、")}，用于评审交付；试点回填后可继续生成下一版。`
+      : "本版是产物沉淀版本，记录了当前方案已进入交付环节，可继续回填指标推进下一轮。";
+  }
+  if (inputs.length) {
+    const preview = inputs.slice(0, 4).map((m) => `${m.label}${m.value ? ` ${m.value}${m.unit || ""}` : ""}`).join("、");
+    return `本版基于回填指标重新判断：${preview}；用于观察结论、缺口和五维评分是否收敛。`;
+  }
+  return run.summary || run.recommendation || run.title || fallback || "";
+}
+function isPlanVersionRun(run) {
+  if (!run?.verdict || !(run.run_id || run.conversation_id)) return false;
+  const hasArtifacts = Boolean((run.produced_kinds || []).length || Object.keys(run.artifact_urls || {}).length);
+  if (run.version_kind === "plan_draft") return true;
+  if (run.version_kind === "artifact_generation") return hasArtifacts;
+  if (iterInputsOf(run).length) return true;
+  const status = String(run.status || "").toLowerCase();
+  return !["followup", "followup_edit"].includes(status);
 }
 function buildPlanDiff(runA, runB) {
   const a = feasibilityOf(runA);
@@ -783,9 +862,9 @@ function ConvergenceChart({ versions, flagshipId }) {
 }
 
 function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
-  // 版本 = 该工作区的可行性分析 run（有 verdict 的），按时间正序编号 v1/v2…
+  // 版本 = 分析版 + 产物版 + 回填指标版，按时间正序编号 v1/v2…
   const versions = useMemo(() => {
-    const list = (runs || []).filter((r) => r.verdict && (r.run_id || r.conversation_id));
+    const list = (runs || []).filter(isPlanVersionRun);
     return list
       .slice()
       .sort((a, b) => String(a.time || "").localeCompare(String(b.time || "")))
@@ -820,7 +899,12 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
   }, [versions.length]);
 
   const vlabelOf = (id) => versions.find((v) => v.id === id)?.vlabel || "";
-  const versionKindLabel = (v) => (v?.version_kind || v?.versionKind) === "artifact_generation" ? "产物版" : "分析版";
+  const versionKindLabel = (v) => {
+    const kind = v?.version_kind || v?.versionKind;
+    if (kind === "artifact_generation") return "产物版";
+    if (kind === "plan_draft") return "方案版";
+    return "分析版";
+  };
   const scoreText = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(1).replace(/\.0$/, "") : "—";
   const compare = async () => {
     if (!cmpA || !cmpB || cmpA === cmpB) return;
@@ -836,7 +920,9 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
     if (!effectiveBase) return;
     setOpen(true); setLoading(true); setMetrics(null);
     try {
-      const d = await loadPlanMetrics(effectiveBase);
+      const source = versions.find((v) => v.id === effectiveBase);
+      const metricRunId = source?.version_kind === "artifact_generation" && source?.source_run_id ? source.source_run_id : effectiveBase;
+      const d = await loadPlanMetrics(metricRunId);
       setMetrics((d?.metrics || []).map((m) => ({ ...m })));
     } catch { setMetrics([]); } finally { setLoading(false); }
   };
@@ -867,8 +953,10 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
   const selected = versions.find((v) => v.id === effectiveBase) || latest || {};
   const selVerdict = VERDICT_LABELS[selected.verdict] || selected.verdict || "—";
   const verdictTone = (vd) => (vd === "feasible" || vd === "recommended" ? "ok" : vd === "conditional" ? "blue" : "warn");
-  const selSummary = selected.summary || selected.recommendation || selected.title
-    || `第 ${selected.vlabel ? selected.vlabel.replace(/\D/g, "") : versions.length} 版结论为「${selVerdict}」，回填客获率/转化率/价格/成本等关键商业指标可推进下一版判断。`;
+  const selSummary = versionSummaryText(
+    selected,
+    `第 ${selected.vlabel ? selected.vlabel.replace(/\D/g, "") : versions.length} 版结论为「${selVerdict}」，回填客获率/转化率/价格/成本等关键商业指标可推进下一版判断。`,
+  );
   const PENDING_METRICS = ["客获率", "转化率", "价格", "成本", "毛利", "目标客群"];
   const baseLabel = selected.vlabel || "当前";
   return (
@@ -902,7 +990,7 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
             <button type="button" className={`pi2-pill ${v.id === effectiveBase ? "cur" : ""}`} onClick={() => setBaseId(v.id)} title={`以 ${v.vlabel} 为基准`}>
               <span className={`pi2-pdot ${verdictTone(v.verdict)}`} />
               <b>{v.vlabel}</b><em>{VERDICT_LABELS[v.verdict] || v.verdict}</em>
-              {v.version_kind === "artifact_generation" ? <small className="pi2-kind">产物版</small> : null}
+              {["artifact_generation", "plan_draft"].includes(v.version_kind) ? <small className="pi2-kind">{versionKindLabel(v)}</small> : null}
               <span className={`pi2-star ${v.id === flagshipId ? "on" : ""}`} onClick={(e) => { e.stopPropagation(); markFlagship(v.id); }} title={v.id === flagshipId ? "取消公司重点" : "标为公司重点"}><Star size={12} /></span>
             </button>
             {i < versions.length - 1 ? <span className="pi2-sep">—</span> : null}
@@ -1023,33 +1111,76 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
   );
 }
 
-function WebSearchPanel({ trace }) {
+function normalizeMarketSource(source, fallbackTitle = "外部网页来源") {
+  if (!source) return null;
+  if (typeof source === "string") return { url: source, title: source };
+  const url = source.url || source.source || source.link || source.href || "";
+  const title = source.title || source.name || source.claim || source.snippet || fallbackTitle;
+  if (!url && !title) return null;
+  return { ...source, url, title };
+}
+
+function webSearchFromArtifact(artifact) {
+  const market = artifact?.market || {};
+  const provenance = market?.tool_provenance?.foundry_native_web_search || {};
+  const sources = [];
+  const seen = new Set();
+  const add = (item, fallbackTitle) => {
+    const normalized = normalizeMarketSource(item, fallbackTitle);
+    if (!normalized) return;
+    const key = normalized.url || normalized.title;
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    sources.push(normalized);
+  };
+  (market.sources || []).forEach((s) => add(s));
+  (provenance.sources || []).forEach((s) => add(s));
+  (market.external_findings || []).forEach((finding) => add(finding, finding?.claim || "市场参考"));
+  if (!sources.length && !market?._llm?.error && !market?.positioning_note) return null;
+  return {
+    name: "foundry_native_web_search",
+    count: market.external_findings?.length || sources.length,
+    sources,
+    mode: market?._llm?.mode,
+    verification: market?._llm?.verification,
+    error: market?._llm?.error,
+    provenance,
+    restored_from_artifact: true,
+  };
+}
+
+function WebSearchPanel({ trace, artifact }) {
   const hit = useMemo(() => {
     let found = null;
     (trace || []).forEach((e) => {
       if (e.event === "tool_result" && e.data?.name === "foundry_native_web_search") found = e.data;
     });
-    return found;
-  }, [trace]);
-  const sources = (hit?.sources || []).filter((s) => s && (s.url || s.title));
-  if (!hit || !sources.length) return null;
+    if (found && Array.isArray(found.sources) && found.sources.length) return found;
+    return webSearchFromArtifact(artifact) || found;
+  }, [trace, artifact]);
+  const sources = (hit?.sources || []).map((s) => normalizeMarketSource(s)).filter((s) => s && (s.url || s.title));
+  if (!hit || (!sources.length && !hit.error)) return null;
   const domain = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
   return (
     <section className="websearch-card">
       <div className="ws-head">
         <Globe size={15} />
         <strong>联网检索 · Foundry Web Search</strong>
-        <span className="ws-tag">{sources.length} 条外部来源 · market_inferred</span>
+        <span className="ws-tag">{sources.length} 条外部来源 · market_inferred{hit.restored_from_artifact ? " · 已保存" : ""}</span>
       </div>
-      <div className="ws-list">
-        {sources.slice(0, 6).map((s, i) => (
-          <a className="ws-item" key={i} href={s.url || undefined} target="_blank" rel="noreferrer" title={s.url || ""}>
-            <span className="ws-dot" />
-            <span className="ws-title">{String(s.title || s.url).slice(0, 76)}</span>
-            <span className="ws-domain">{domain(s.url)}</span>
-          </a>
-        ))}
-      </div>
+      {sources.length ? (
+        <div className="ws-list">
+          {sources.slice(0, 6).map((s, i) => (
+            <a className="ws-item" key={i} href={s.url || undefined} target="_blank" rel="noreferrer" title={s.url || ""}>
+              <span className="ws-dot" />
+              <span className="ws-title">{String(s.title || s.url).slice(0, 76)}</span>
+              <span className="ws-domain">{domain(s.url)}</span>
+            </a>
+          ))}
+        </div>
+      ) : (
+        <div className="ws-empty">本次联网检索未返回可展示来源；市场判断仍按 market_inferred 处理，不提升为工作区事实。</div>
+      )}
     </section>
   );
 }
@@ -1297,7 +1428,7 @@ function DashboardStudio({
 
       <DataAssetsTable documents={documents} workspace={workspace} detailOpen={showDataDetail} onViewDetails={() => setShowDataDetail((v) => !v)} workspaceId={dashboard?.workspace_id || workspace?.workspace_id} />
 
-      <WebSearchPanel trace={trace} />
+      <WebSearchPanel trace={trace} artifact={finalArtifact} />
 
       <Collapsible title="高级分析" hint="运行更深入的模型与仿真分析">
         <section className="studio-methods">
@@ -1508,7 +1639,11 @@ function VerdictHero({ feasibility, verdict, running, artifact, compact, onViewR
         {downgrade ? (
           <div className="vh-downgrade">
             <AlertTriangle size={15} />
-            <span>审计已将结论从 {beforeLabel} 降为 {afterLabel}，因为{downgradeReason}。</span>
+            {downgrade?.kind === "dimension" ? (
+              <span>审计已将{downgrade.dimension || "一项评分"}从 {downgrade.score_before} 调整为 {downgrade.score_after}，因为{downgradeReason}。</span>
+            ) : (
+              <span>审计已将结论从 {beforeLabel} 降为 {afterLabel}，因为{downgradeReason}。</span>
+            )}
           </div>
         ) : null}
         {compact ? (
@@ -1865,15 +2000,6 @@ function ObsIcon({ name }) {
   return <img className="svc-ic" src={SVC_ICONS[name]} alt="" width="22" height="22" aria-hidden="true" />;
 }
 
-const RUN_TIMELINE = [
-  { icon: Workflow, name: "协调器", role: "任务编排", sum: "解析需求与约束 · 规划 Agent 执行顺序 · 分配任务与数据依赖", dur: "4 秒" },
-  { icon: Search, name: "语料分析师", role: "检索与画像", sum: "搜索关键词 pack_context · 产出 8 条检索结果", dur: "2 秒" },
-  { icon: TrendingUp, name: "可行性分析师", role: "评分与机会", sum: "完成 5 维度评分 · blind_verdict · 模型解码 8,826 tokens", dur: "3 秒" },
-  { icon: Activity, name: "市场研究员", role: "外部行情", sum: "调用 4 个市场数据源 · market_lookup · 4 条结果", dur: "5 秒" },
-  { icon: ShieldCheck, name: "审计员", role: "证据校验", sum: "核验 11,148 tokens · 覆盖 7 项审计要求", dur: "2 秒" },
-  { icon: FileText, name: "回答撰写", role: "结构化输出", sum: "生成最终结论与行动方案 · 输出字数 502", dur: "2 秒" },
-];
-
 function formatTraceDuration(ms) {
   const n = Number(ms || 0);
   if (!n) return "";
@@ -1886,6 +2012,8 @@ const TRACE_EVENT_LABELS = {
   ready: "接收请求",
   user: "读取输入",
   route: "识别意图",
+  followup: "跟进回复",
+  followup_edit: "跟进回复",
   plan: "规划路径",
   role_change: "切换 Agent",
   tool_call: "调用工具",
@@ -1894,6 +2022,7 @@ const TRACE_EVENT_LABELS = {
   audit: "审计检查",
   final: "生成结果",
   clarify: "澄清问题",
+  followup: "跟进回复",
   progress: "执行进度",
   cache: "读取缓存",
   blind_verdict: "生成初判",
@@ -1911,15 +2040,64 @@ function traceStatusLabel(status) {
   const raw = String(status || "").trim();
   const key = raw.toLowerCase();
   if (!raw || ["done", "ok", "success", "completed", "complete"].includes(key)) return "完成";
+  if (["followup_edit", "followup"].includes(key)) return "完成";
   if (["running", "pending", "started", "streaming"].includes(key)) return "进行中";
   if (["error", "failed", "fail"].includes(key)) return "异常";
   return raw;
+}
+
+function runStatusLabel(status, okRun) {
+  const raw = String(status || "").trim();
+  const key = raw.toLowerCase();
+  if (!raw) return okRun ? "成功" : "运行中";
+  if (["done", "ok", "success", "completed", "complete"].includes(key)) return "成功";
+  if (["followup_edit", "followup"].includes(key)) return "轻量跟进完成";
+  if (["running", "pending", "started", "streaming"].includes(key)) return "运行中";
+  if (["error", "failed", "fail"].includes(key)) return "异常";
+  return raw;
+}
+
+function auditStatusLabel(status, runStatus) {
+  const raw = String(status || "").trim();
+  const key = raw.toLowerCase();
+  const routeKey = String(runStatus || "").trim().toLowerCase();
+  if (!raw || key === "pass" || key === "passed") return "通过";
+  if (key === "unknown") return ["followup_edit", "followup"].includes(routeKey) ? "轻量跟进" : "未记录";
+  if (key === "warn" || key === "warning") return "有提示";
+  if (key === "fail" || key === "failed") return "未通过";
+  return raw;
+}
+
+function auditStatusSub(status, runStatus, audit) {
+  const key = String(status || "").trim().toLowerCase();
+  const routeKey = String(runStatus || "").trim().toLowerCase();
+  if (key === "unknown" && ["followup_edit", "followup"].includes(routeKey)) return "跟进轮未触发完整审计";
+  return `风险项 ${audit.risks ?? 0} / 告警 ${audit.warnings ?? 0}`;
+}
+
+function runEvidenceLabel(value, fallback = "run_store") {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  return raw
+    .replace("run.started_at -> run.completed_at", "started_at / completed_at")
+    .replace("run.started_at -> run.updated_at", "started_at / updated_at")
+    .replace("run.models[].usage or steps[].data.usage", "模型 usage 汇总")
+    .replace("run.models[].usage", "模型 usage 汇总")
+    .replace("run.steps[].data.usage", "步骤 usage 汇总")
+    .replace("unique run.steps[].data.agent / target_expert / name", "步骤里的 Agent 标识")
+    .replace("run.steps event=tool_call/tool_result", "工具调用步骤")
+    .replace("run.steps", "运行步骤");
 }
 
 function cleanTraceSummary(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
   if (/^[a-z_]+:\s*$/i.test(text)) return "";
+  if (/^route:\s*(unknown)?$/i.test(text)) return "";
+  if (/^route:\s*followup_edit$/i.test(text)) return "已识别为跟进讨论，采用轻量路径。";
+  if (/^model:\s*[\w-]+(?:\s+tokens=0)?$/i.test(text)) return "";
+  if (/^tool_result:\s*workspace_evidence$/i.test(text)) return "已汇总当前工作区证据与数据画像。";
+  if (/^(progress|进度)[:：]\s*running$/i.test(text)) return "正在处理当前跟进任务。";
   return text;
 }
 
@@ -1938,6 +2116,7 @@ function traceDetailText(detail) {
   if (event === "audit") return "审计环节已检查证据一致性与结论边界。";
   if (event === "final") return "最终回答已生成，并写入运行结果。";
   if (event === "clarify") return "当前信息不足，已转入澄清问题。";
+  if (event === "followup") return "已根据当前工作区上下文生成轻量跟进回复。";
   if (event.includes("error")) return "该步骤出现异常，详情可查看完整日志。";
   return "已记录该阶段的执行事件。";
 }
@@ -1963,6 +2142,7 @@ function traceStepView(step) {
   const s = role.toLowerCase();
   if (["ready", "user"].includes(s)) return { key: "system:entry", icon: Workflow, name: "运行入口", role: "请求接收" };
   if (["route", "plan"].includes(s)) return { key: "system:route", icon: Route, name: "路由与计划", role: "任务拆解" };
+  if (s.includes("followup")) return { key: "system:followup", icon: Activity, name: "跟进回复", role: "轻量路径" };
   if (s.includes("audit") || s.includes("revised")) return { key: "system:audit", icon: ShieldCheck, name: "审计与修订", role: "证据校验" };
   if (s.includes("tool")) return { key: "system:tools", icon: Wrench, name: "工具调用", role: "外部能力" };
   if (s.includes("final")) return { key: "system:final", icon: FileText, name: "最终输出", role: "结果汇总" };
@@ -2001,8 +2181,83 @@ function groupTraceRows(items) {
   }));
 }
 
+function GovernanceSummaryPanel({ governance, compact = false }) {
+  const roi = governance?.roi || {};
+  const chargeback = governance?.chargeback || {};
+  const security = governance?.security || {};
+  const members = Array.isArray(chargeback.members) ? chargeback.members : [];
+  const events = Array.isArray(governance?.audit?.events) ? governance.audit.events : [];
+  if (!governance) {
+    return (
+      <section className="card gov-panel">
+        <div className="gov-head"><strong>治理与 ROI</strong><span className="dw-chip probing"><Loader2 size={11} className="spin" /> 加载中</span></div>
+        <p className="gov-empty">正在读取工作区用量、审计事件和 ROI 估算。</p>
+      </section>
+    );
+  }
+  const topMembers = members.slice(0, compact ? 3 : 6);
+  const controls = Array.isArray(security.controls) ? security.controls : [];
+  return (
+    <section className={`card gov-panel ${compact ? "compact" : ""}`}>
+      <div className="gov-head">
+        <strong>治理与 ROI</strong>
+        <span className="dw-chip ok">真实运行聚合</span>
+      </div>
+      <div className="gov-kpis">
+        <div><span>Token 成本</span><b>{formatCurrencyUsd(roi.estimated_cost_usd)}</b><em>{formatCount(roi.inputs?.total_tokens)} tokens</em></div>
+        <div><span>估算价值</span><b>{formatCurrencyUsd(roi.estimated_value_usd)}</b><em>{formatCount(roi.inputs?.analysis_runs)} 次运行</em></div>
+        <div><span>ROI 倍数</span><b>{roi.roi_multiple ? `${roi.roi_multiple}x` : "待积累"}</b><em>{roi.confidence || "estimated"}</em></div>
+      </div>
+      <div className="gov-grid">
+        <div className="gov-box">
+          <div className="gov-box-h"><Users size={14} /><b>成员用量归因</b></div>
+          {topMembers.length ? topMembers.map((row) => (
+            <div className="gov-row" key={row.actor?.email || row.actor?.actor_id || row.last_run_id || row.total_tokens}>
+              <span>{row.actor?.name || row.actor?.email || "成员"}</span>
+              <b>{formatCount(row.total_tokens)} tokens</b>
+              <em>{formatCurrencyUsd(row.estimated_cost_usd)}</em>
+            </div>
+          )) : <p className="gov-empty">暂无可归因的运行。</p>}
+        </div>
+        <div className="gov-box">
+          <div className="gov-box-h"><ShieldCheck size={14} /><b>安全与溯源</b></div>
+          <div className="gov-row"><span>身份源</span><b>{security.identity_provider || "Microsoft Entra ID"}</b></div>
+          <div className="gov-row"><span>审计事件</span><b>{formatCount(governance.audit?.count)}</b></div>
+          <div className="gov-row"><span>Graph 邀请</span><b>{security.graph_directory?.status === "optional" ? "待授权" : security.graph_directory?.status || "待授权"}</b></div>
+        </div>
+      </div>
+      {!compact ? (
+        <div className="gov-detail">
+          <div className="gov-box">
+            <div className="gov-box-h"><Activity size={14} /><b>最近审计事件</b></div>
+            {events.slice(0, 6).map((event, index) => (
+              <div className="gov-event" key={`${event.type}-${event.run_id || event.conversation_id || index}`}>
+                <span>{event.actor?.name || event.actor?.email || "系统"}</span>
+                <b>{event.action || event.type}</b>
+                <em>{formatTime(event.at)}</em>
+              </div>
+            ))}
+            {!events.length ? <p className="gov-empty">暂无审计事件。</p> : null}
+          </div>
+          <div className="gov-box">
+            <div className="gov-box-h"><ShieldCheck size={14} /><b>控制项状态</b></div>
+            {controls.map((item) => (
+              <div className="gov-control" key={item.name}>
+                <span className={`dw-chip ${item.status === "enabled" ? "ok" : "warn"}`}>{item.status === "enabled" ? "已启用" : "需配置"}</span>
+                <div><b>{item.name}</b><em>{item.detail}</em></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <p className="gov-note">ROI 当前为 DataForge 估算口径；接入 Azure AI Foundry 原生 ROI 后可切换为 Foundry 项目报表口径。</p>
+    </section>
+  );
+}
+
 function RunsCenter({ dashboard, trace, running, observability, onOpenConversation, tasks }) {
   const runs = dashboard?.runs || [];
+  const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
   const r = runs[0] || {};
   const runId = r.run_id || r.conversation_id || "";
   const [q, setQ] = useState("");
@@ -2014,39 +2269,57 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
   const [traceOpen, setTraceOpen] = useState({});
   const [logOpen, setLogOpen] = useState(false);
   const [logText, setLogText] = useState("");
+  const [governance, setGovernance] = useState(null);
   useEffect(() => {
     if (!runId) return;
     setSummary(null); setRtrace(null); setTracePage(0); setTraceOpen({});
     loadRunSummary(runId).then(setSummary).catch(() => {});
     loadRunTrace(runId).then((d) => setRtrace(Array.isArray(d) ? d : (d?.trace || []))).catch(() => {});
   }, [runId]);
+  useEffect(() => {
+    if (!workspaceId) {
+      setGovernance(null);
+      return undefined;
+    }
+    let cancelled = false;
+    loadWorkspaceGovernance(workspaceId)
+      .then((data) => { if (!cancelled) setGovernance(data); })
+      .catch(() => { if (!cancelled) setGovernance(null); });
+    return () => { cancelled = true; };
+  }, [workspaceId]);
   const openLog = () => {
     setLogOpen(true); setLogText("");
     loadRunLog(runId, "text").then((d) => setLogText(typeof d === "string" ? d : (d?.text || JSON.stringify(d, null, 2)))).catch((e) => setLogText(`加载日志失败：${e.message}`));
   };
   const okRun = r.status === "done" || Boolean(r.completed_at) || (!r.status && Boolean(r.verdict));
-  const verdictLabel = r.verdict ? (VERDICT_LABELS[r.verdict] || r.verdict) : "有条件可行";
-  let dur = "10 分 18 秒";
-  if (r.created_at && r.completed_at) {
-    const ms = new Date(r.completed_at) - new Date(r.created_at);
-    if (ms > 0) { const s = Math.round(ms / 1000); dur = s >= 60 ? `${Math.floor(s / 60)} 分 ${s % 60} 秒` : `${s} 秒`; }
-  }
+  const verdictLabel = r.verdict ? (VERDICT_LABELS[r.verdict] || r.verdict) : "未记录";
   const t = observability?.tracing || {};
   const models = observability?.models || {};
   const cg = observability?.eval?.calibration_gate || null;
   const sm = summary || {};
-  const smDur = sm.duration_ms ? (sm.duration_ms >= 60000 ? `${Math.floor(sm.duration_ms / 60000)} 分 ${Math.round((sm.duration_ms % 60000) / 1000)} 秒` : `${Math.round(sm.duration_ms / 1000)} 秒`) : dur;
+  const startedAt = sm.started_at || r.started_at || r.created_at;
+  const finishedAt = sm.finished_at || r.finished_at || r.completed_at || r.updated_at;
+  const directDuration = Number(sm.duration_ms || r.duration_ms || 0);
+  const rangedDuration = startedAt && finishedAt ? new Date(finishedAt) - new Date(startedAt) : 0;
+  const smDur = directDuration > 0
+    ? formatTraceDuration(directDuration)
+    : rangedDuration > 0
+      ? formatTraceDuration(rangedDuration)
+      : (okRun ? "未记录" : "计算中");
   const tc = sm.tool_calls || {};
   const tk = sm.tokens || {};
   const au = sm.audit || {};
+  const basis = sm.evidence || {};
+  const statusValue = runStatusLabel(sm.status || r.status, okRun);
+  const auditValue = auditStatusLabel(au.status, sm.status || r.status);
   const cards = [
-    { ic: CheckCircle2, tone: "ok", label: "当前运行状态", value: sm.status ? (sm.status === "done" ? "成功" : sm.status) : (okRun ? "成功" : "运行中"), sub: sm.finished_at ? `完成于 ${formatTime(sm.finished_at)}` : r.completed_at ? `完成于 ${formatTime(r.completed_at)}` : "" },
-    { ic: Target, tone: "blue", label: "结论", value: sm.verdict ? (VERDICT_LABELS[sm.verdict] || sm.verdict) : verdictLabel, sub: `置信度 ${r.confidence || "0.80"}` },
-    { ic: Clock3, label: "总耗时", value: smDur, sub: sm.started_at ? `开始于 ${formatTime(sm.started_at)}` : "" },
-    { ic: Users, label: "Agent 数量", value: String(sm.agent_count ?? "6"), sub: "全部完成" },
-    { ic: Wrench, label: "工具调用", value: String(tc.total ?? "23"), sub: `成功 ${tc.ok ?? 22} / 失败 ${tc.fail ?? 1}` },
-    { ic: Coins, label: "Token 用量", value: (tk.total != null ? tk.total.toLocaleString() : "11,148"), sub: `Prompt ${tk.prompt ?? 5204} / Completion ${tk.completion ?? 5944}` },
-    { ic: ShieldCheck, tone: "ok", label: "审计状态", value: au.status === "pass" || !au.status ? "通过" : au.status, sub: `风险项 ${au.risks ?? 0} / 告警 ${au.warnings ?? 0}` },
+    { ic: CheckCircle2, tone: "ok", label: "当前运行状态", value: statusValue, sub: sm.finished_at ? `完成于 ${formatTime(sm.finished_at)}` : r.completed_at ? `完成于 ${formatTime(r.completed_at)}` : "", basis: runEvidenceLabel(basis.source, "run_store") },
+    { ic: Target, tone: "blue", label: "结论", value: sm.verdict ? (VERDICT_LABELS[sm.verdict] || sm.verdict) : verdictLabel, sub: `置信度 ${sm.confidence || r.confidence || "未记录"}`, basis: "artifact.feasibility" },
+    { ic: Clock3, label: "总耗时", value: smDur, sub: sm.started_at ? `开始于 ${formatTime(sm.started_at)}` : "", basis: runEvidenceLabel(basis.duration) },
+    { ic: Users, label: "Agent 数量", value: sm.agent_count != null ? String(sm.agent_count) : "未记录", sub: sm.agent_count != null ? "按真实步骤去重" : "等待后端写入", basis: runEvidenceLabel(basis.agent_count) },
+    { ic: Wrench, label: "工具调用", value: tc.total != null ? String(tc.total) : "未记录", sub: tc.total != null ? `成功 ${tc.ok ?? 0} / 失败 ${tc.fail ?? 0}` : "等待工具步骤", basis: runEvidenceLabel(basis.tool_calls) },
+    { ic: Coins, label: "Token 用量", value: (tk.total != null ? tk.total.toLocaleString() : "未记录"), sub: tk.total != null ? `Prompt ${tk.prompt ?? 0} / Completion ${tk.completion ?? 0}` : "等待模型 usage", basis: runEvidenceLabel(basis.tokens) },
+    { ic: ShieldCheck, tone: "ok", label: "审计状态", value: auditValue, sub: auditStatusSub(au.status, sm.status || r.status, au), basis: "artifact.audit" },
   ];
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase();
@@ -2080,6 +2353,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
               <span className="runc-label">{c.label}</span>
               <b className={`runc-v ${c.tone === "ok" ? "ok" : c.tone === "blue" ? "blue" : ""}`}>{c.value}</b>
               <em className="runc-sub">{c.sub}</em>
+              {c.basis ? <small className="runc-basis">依据：{c.basis}</small> : null}
             </div>
           );
         })}
@@ -2087,31 +2361,33 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
 
       <div className="run-mid">
         <section className="card obs2">
-          <div className="obs2-head"><strong>可观测性集成</strong><span className="dw-chip ok">已接入</span></div>
+          <div className="obs2-head"><strong>可观测性集成</strong><span className={`dw-chip ${t.app_insights && t.otel_sdk ? "ok" : "warn"}`}>{t.app_insights && t.otel_sdk ? "已接入" : "未完整配置"}</span></div>
           <div className="obs2-items">
-            <div className="obs2-item"><ObsIcon name="monitor" /><div><b>Azure Monitor</b><em>已启用</em></div></div>
-            <div className="obs2-item"><ObsIcon name="appinsights" /><div><b>App Insights</b><em>已启用</em></div></div>
-            <div className="obs2-item"><ObsIcon name="otel" /><div><b>OpenTelemetry</b><em>已启用</em></div></div>
+            <div className="obs2-item"><ObsIcon name="monitor" /><div><b>Azure Monitor</b><em>{t.app_insights ? "已接入" : "未配置"}</em></div></div>
+            <div className="obs2-item"><ObsIcon name="appinsights" /><div><b>App Insights</b><em>{t.app_insights ? "已接入" : "未配置"}</em></div></div>
+            <div className="obs2-item"><ObsIcon name="otel" /><div><b>OpenTelemetry</b><em>{t.otel_sdk ? "已启用" : "未配置"}</em></div></div>
           </div>
           <div className="obs2-meta">
-            <div><span>导出器</span><b>{t.exporter || "azure-monitor-opentelemetry"}</b></div>
-            <div><span>对话模型</span><b>{models.chat || "GPT-5.1"}</b></div>
+            <div><span>导出器</span><b>{t.exporter || "未记录"}</b></div>
+            <div><span>对话模型</span><b>{models.chat || "未记录"}</b></div>
           </div>
         </section>
         <section className="card rubric2">
-          <div className="obs2-head"><strong>可行性 rubric 校准可靠性</strong><span className={`dw-chip ${cg && !cg.passed ? "" : "ok"}`}>{cg && !cg.passed ? "未过" : "通过"}</span></div>
+          <div className="obs2-head"><strong>可行性 rubric 校准可靠性</strong><span className={`dw-chip ${cg?.passed ? "ok" : "warn"}`}>{cg ? (cg.passed ? "通过" : "未过") : "未记录"}</span></div>
           <div className="rubric2-grid">
-            <div className="rubric2-cell"><em>Spearman 相关</em><b>{cg?.spearman ?? "1.00"}</b><small>阈值 ≥ {cg?.min_spearman ?? "0.8"}</small></div>
-            <div className="rubric2-cell"><em>评分反馈</em><b>{cg?.inversion_count ?? 0}</b><small>越低越好</small></div>
-            <div className="rubric2-cell"><em>校准用例</em><b>{cg?.cases ?? 5}</b><small>标注一致</small></div>
+            <div className="rubric2-cell"><em>Spearman 相关</em><b>{cg?.spearman ?? "未记录"}</b><small>{cg ? `阈值 ≥ ${cg.min_spearman}` : "阈值未记录"}</small></div>
+            <div className="rubric2-cell"><em>评分反馈</em><b>{cg?.inversion_count ?? "未记录"}</b><small>越低越好</small></div>
+            <div className="rubric2-cell"><em>校准用例</em><b>{cg?.cases ?? "未记录"}</b><small>标注一致</small></div>
           </div>
-          <p className="rubric2-note">rubric {cg?.rubric_version || "feasibility-rubric-v2026-06-13"} · 预测分与人工标注分单调一致，说明可行性评分趋势一致、可信。</p>
+          <p className="rubric2-note">{cg ? `rubric ${cg.rubric_version || "未记录"} · 预测分与人工标注分单调一致，说明可行性评分趋势一致、可信。` : "本工作区尚未返回 rubric 校准结果，不能据此宣称评分已校准。"}</p>
         </section>
       </div>
 
+      <GovernanceSummaryPanel governance={governance} compact />
+
       <div className="run-body2">
         <section className="card run-trace">
-          <div className="rt-head"><strong>本次运行追踪</strong><Info size={14} /></div>
+          <div className="rt-head"><strong>本次运行追踪</strong><span className="rt-source">来源：{runEvidenceLabel(basis.trace, "后端运行步骤")}</span><Info size={14} /></div>
           {(() => {
             const list = (rtrace && rtrace.length) ? rtrace.map((s) => {
               const view = traceStepView(s);
@@ -2130,12 +2406,15 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
                 agent: s.agent || "",
                 toolName: s.name || detail.name || detail.tool || "",
                 detail,
+                source: s.source || "",
+                evidence: s.evidence || {},
+                tokens: s.tokens || {},
               };
               return {
                 ...item,
                 sum: cleanTraceSummary(s.summary) || traceDetailText(item),
               };
-            }) : (rtrace === null ? null : RUN_TIMELINE.map((s) => ({ icon: s.icon, name: s.name, role: s.role, status: "完成", sum: s.sum, dur: s.dur })));
+            }) : (rtrace === null ? null : []);
             const TPER = 8;
             const grouped = list ? groupTraceRows(list) : null;
             const tpages = grouped ? Math.max(1, Math.ceil(grouped.length / TPER)) : 1;
@@ -2145,6 +2424,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
               <>
                 <div className="rt-list">
                   {list === null ? <p className="empty-copy" style={{ padding: 14 }}><Loader2 size={14} className="spin" /> 加载追踪…</p> : null}
+                  {list && !list.length ? <p className="empty-copy" style={{ padding: 14 }}>这次运行没有后端步骤记录；新运行会按 run_store.steps 动态显示。</p> : null}
                   {shown.map((s, i) => {
                     const Ic = s.icon;
                     const rowIndex = cur * TPER + i + 1;
@@ -2167,7 +2447,14 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
                             {s.details.map((d, j) => (
                               <div className="rt-det-sec" key={`${s.key}-${j}`}>
                                 <b>{traceDetailTitle(d, j)}</b>
-                                <p>{cleanTraceSummary(d.sum) || traceDetailText(d)}</p>
+                                <div>
+                                  <p>{cleanTraceSummary(d.sum) || traceDetailText(d)}</p>
+                                  <small className="rt-det-meta">
+                                    来源：{runEvidenceLabel(d.source, "run_store.steps")}
+                                    {d.tokens?.total ? ` · ${d.tokens.total.toLocaleString()} tokens` : ""}
+                                    {d.evidence?.duration ? ` · ${runEvidenceLabel(d.evidence.duration, "step.time")}` : ""}
+                                  </small>
+                                </div>
                               </div>
                             ))}
                           </div>
@@ -2210,7 +2497,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
                   <CheckCircle2 size={15} className="rh-row-ic" />
                   <div className="rh-row-main">
                     <b>{runDisplayName(run)}</b>
-                    <span>{run.status || "completed"}{run.step_count ? ` · ${run.step_count} 步` : ""}</span>
+                    <span>{runStatusLabel(run.status, Boolean(run.completed_at || run.time))}{run.step_count ? ` · ${run.step_count} 步` : ""}</span>
                   </div>
                   {v ? <span className={`rh-verdict ${tone}`}>{v}</span> : null}
                   <em>{formatTime(run.time || run.completed_at || run.updated_at || run.created_at)}</em>
@@ -2272,20 +2559,113 @@ function traceIcon(label) {
   return Activity;
 }
 
-const SET_MEMBERS = [
-  { initial: "傅", name: "傅子豪（你）", email: "fuzh084711@gmail.com", role: "所有者", you: true },
-  { initial: "李", name: "李思运", email: "lisiyun@example.com", role: "管理员" },
-  { initial: "王", name: "王敏", email: "wangmin@example.com", role: "编辑者" },
-];
+function displayMembersFromApi(rawMembers, user) {
+  const current = normalizedCurrentUser(user);
+  const apiRows = Array.isArray(rawMembers)
+    ? rawMembers.filter((member, index) => {
+      const rawEmail = cleanUserValue(member?.email);
+      const rawName = cleanUserValue(member?.user || member?.name);
+      const status = cleanUserValue(member?.status).toLowerCase();
+      const isOldPlaceholder = !rawEmail && /^(dataforge demo reviewer|workspace reviewer|demo reviewer)$/i.test(rawName);
+      return !(index > 0 && (status === "placeholder" || isOldPlaceholder));
+    })
+    : [];
+  const rows = apiRows.length
+    ? apiRows
+    : [{ user: current.name, email: current.email, role: "owner", status: "active" }];
+  return rows.map((member, index) => {
+    const role = cleanUserValue(member?.role) || (index === 0 ? "owner" : "viewer");
+    const isOwner = role.toLowerCase() === "owner" || index === 0;
+    const rawEmail = cleanUserValue(member?.email);
+    const placeholderEmail = !rawEmail || /^(owner@example\.com|local\.demo@dataforge|fuzh084711@gmail\.com)$/i.test(rawEmail);
+    const email = isOwner && current.email ? current.email : (placeholderEmail ? "" : rawEmail);
+    const rawName = cleanUserValue(member?.user || member?.name);
+    const placeholderName = !rawName || /^(workspace owner|demo user|dataforge demo reviewer)$/i.test(rawName);
+    let name = isOwner && current.name ? current.name : (placeholderName ? "" : rawName);
+    if (!name && email) name = email.split("@", 1)[0].replace(/[._-]+/g, " ");
+    if (isOwner && name && !/（你）$/.test(name)) name = `${name}（你）`;
+    return {
+      initial: memberInitial(name, email),
+      name: name || "成员",
+      email: email || "未绑定邮箱",
+      role,
+      roleLabel: memberRoleLabel(role),
+      owner: isOwner,
+      status: member?.status || "active",
+      statusLabel: memberStatusLabel(member?.status || "active"),
+      source: member?.source || "",
+      usage: member?.usage || {},
+      lastSeenAt: member?.last_seen_at || member?.lastSeenAt || "",
+      invitedAt: member?.invited_at || member?.invitedAt || "",
+      invitedBy: member?.invited_by || member?.invitedBy || {},
+    };
+  });
+}
 
-function SettingsCenter({ dashboard, observability }) {
+function memberStatusLabel(status) {
+  const key = cleanUserValue(status).toLowerCase();
+  if (key === "active") return "已激活";
+  if (key === "pending") return "待加入";
+  return cleanUserValue(status) || "成员";
+}
+
+function SettingsCenter({ dashboard, observability, user, initialTab = "about" }) {
   const health = dashboard?.health || {};
-  const models = observability?.models || {};
+  const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
   const [tab, setTab] = useState("about");
   const [probing, setProbing] = useState(false);
   const [probedAt, setProbedAt] = useState(null);
   const [sys, setSys] = useState(null);
+  const [memberRows, setMemberRows] = useState([]);
+  const [memberMeta, setMemberMeta] = useState(null);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [memberAction, setMemberAction] = useState("");
+  const [memberNotice, setMemberNotice] = useState("");
+  const [memberError, setMemberError] = useState("");
+  const [inviteForm, setInviteForm] = useState({ email: "", name: "", role: "editor" });
+  const [directoryQuery, setDirectoryQuery] = useState("");
+  const [directoryState, setDirectoryState] = useState({ connected: null, users: [], error: null });
+  const [directoryLoading, setDirectoryLoading] = useState(false);
+  const [sendGraphInvite, setSendGraphInvite] = useState(false);
+  const [governance, setGovernance] = useState(null);
+  const [workspaceSettings, setWorkspaceSettings] = useState(null);
+  const [settingsDrawer, setSettingsDrawer] = useState(null);
+  const applyMemberPayload = (data) => {
+    setMemberRows(Array.isArray(data?.members) ? data.members : []);
+    setMemberMeta(data || null);
+  };
   useEffect(() => { loadSystemStatus().then(setSys).catch(() => {}); }, []);
+  useEffect(() => {
+    if (initialTab === "members") setTab("members");
+  }, [initialTab]);
+  useEffect(() => {
+    if (!workspaceId) {
+      setMemberRows([]);
+      setMemberMeta(null);
+      setGovernance(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setMembersLoading(true);
+    loadMembers(workspaceId)
+      .then((data) => {
+        if (!cancelled) applyMemberPayload(data);
+      })
+      .catch(() => { if (!cancelled) { setMemberRows([]); setMemberMeta(null); } })
+      .finally(() => { if (!cancelled) setMembersLoading(false); });
+    return () => { cancelled = true; };
+  }, [workspaceId]);
+  useEffect(() => {
+    if (!workspaceId) return undefined;
+    let cancelled = false;
+    loadWorkspaceSettings(workspaceId)
+      .then((data) => { if (!cancelled) setWorkspaceSettings(data); })
+      .catch(() => { if (!cancelled) setWorkspaceSettings(null); });
+    loadWorkspaceGovernance(workspaceId)
+      .then((data) => { if (!cancelled) setGovernance(data); })
+      .catch(() => { if (!cancelled) setGovernance(null); });
+    return () => { cancelled = true; };
+  }, [workspaceId]);
   useEffect(() => {
     const nodes = SETTINGS_ICON_SRCS.map((href) => {
       const node = document.createElement("link");
@@ -2298,7 +2678,27 @@ function SettingsCenter({ dashboard, observability }) {
     });
     return () => nodes.forEach((node) => node.remove());
   }, []);
-  const deps = sys?.dependencies || health.dependencies || {};
+  const systemStatus = sys || {};
+  const deps = systemStatus.dependencies || health.dependencies || {};
+  const models = systemStatus.models || observability?.models || {};
+  const storage = workspaceSettings?.storage || {};
+  const usedBytes = Number(storage.used_bytes || 0);
+  const totalBytes = Number(storage.total_bytes || 0);
+  const storagePct = totalBytes > 0 ? Math.min(100, Math.round((usedBytes / totalBytes) * 100)) : null;
+  const modelCount = Object.values(models).filter(Boolean).length;
+  const release = systemStatus.release || {};
+  const tracing = systemStatus.observability?.tracing || observability?.tracing || {};
+  const rag = systemStatus.rag || {};
+  const contentSafetyLabel = deps.content_safety === true ? "已启用 · Prompt Shield" : deps.content_safety === false ? "未连接" : "未记录";
+  const tracingLabel = tracing.app_insights && tracing.otel_sdk ? "App Insights · OpenTelemetry" : "未完整配置";
+  const ragLabel = rag.configured ? "Azure AI Search · 向量 + 关键词" : "未连接";
+  const stateLabel = (value) => value === true ? "健康" : value === false ? "异常" : "未记录";
+  const stateClass = (value) => value === true ? "ok" : value === false ? "warn" : "";
+  const dependencyState = (key, fallback) => {
+    if (Object.prototype.hasOwnProperty.call(deps, key)) return Boolean(deps[key]);
+    if (fallback !== undefined) return Boolean(fallback);
+    return null;
+  };
   const reprobe = () => {
     if (probing) return;
     setProbing(true);
@@ -2306,19 +2706,174 @@ function SettingsCenter({ dashboard, observability }) {
       window.setTimeout(() => { setProbing(false); setProbedAt(new Date()); }, 1200);
     });
   };
+  const submitDirectorySearch = (event) => {
+    event.preventDefault();
+    if (!workspaceId || directoryLoading) return;
+    setDirectoryLoading(true);
+    setMemberError("");
+    searchEntraUsers(workspaceId, directoryQuery, 8)
+      .then((data) => {
+        setDirectoryState({
+          connected: Boolean(data?.connected),
+          users: Array.isArray(data?.users) ? data.users : [],
+          error: data?.error || null,
+        });
+        if (data?.connected === false) {
+          setMemberNotice("Microsoft Graph 尚未连接或缺少授权，仍可手填邮箱加入工作区。");
+        } else if (!data?.users?.length) {
+          setMemberNotice("未找到匹配的 Entra 用户，可以继续手填邮箱邀请。");
+        } else {
+          setMemberNotice("");
+        }
+      })
+      .catch((error) => {
+        setDirectoryState({ connected: false, users: [], error: { message: error instanceof Error ? error.message : String(error || "") } });
+        setMemberError(error instanceof Error ? error.message : String(error || "Entra 用户搜索失败"));
+      })
+      .finally(() => setDirectoryLoading(false));
+  };
+  const pickDirectoryUser = (account) => {
+    const email = cleanUserValue(account?.email || account?.user_principal_name).toLowerCase();
+    if (!email) return;
+    setInviteForm((form) => ({
+      ...form,
+      email,
+      name: cleanUserValue(account?.display_name),
+    }));
+    setMemberNotice("已选择 Entra 用户，确认角色后即可加入当前工作区。");
+  };
+  const submitInvite = (event) => {
+    event.preventDefault();
+    if (!workspaceId || memberAction) return;
+    const email = cleanUserValue(inviteForm.email).toLowerCase();
+    if (!email || !email.includes("@")) {
+      setMemberError("请输入有效的成员邮箱。");
+      setMemberNotice("");
+      return;
+    }
+    setMemberAction("invite");
+    setMemberError("");
+    setMemberNotice("");
+    inviteEntraMember(workspaceId, {
+      email,
+      name: cleanUserValue(inviteForm.name),
+      role: inviteForm.role || "editor",
+      send_email: sendGraphInvite,
+      fallback_to_workspace_member: true,
+      redirect_url: window.location.origin,
+    })
+      .then((data) => {
+        applyMemberPayload(data);
+        setInviteForm({ email: "", name: "", role: "editor" });
+        const graphStatus = data?.graph_invite?.status;
+        if (sendGraphInvite && graphStatus === "sent") {
+          setMemberNotice("成员已加入工作区，Entra 邀请邮件已发送。");
+        } else if (sendGraphInvite && graphStatus && graphStatus !== "skipped") {
+          setMemberNotice(`成员已加入工作区；Entra 邮件未发送：${data?.graph_invite?.error?.message || "需要管理员授权 Graph 权限"}`);
+        } else {
+          setMemberNotice("成员已加入工作区列表，可用于后续协作、用量和审计溯源展示。");
+        }
+      })
+      .catch((error) => {
+        setMemberError(error instanceof Error ? error.message : String(error || "邀请失败"));
+      })
+      .finally(() => setMemberAction(""));
+  };
+  const removeWorkspaceMember = (email) => {
+    const target = cleanUserValue(email);
+    if (!workspaceId || !target || memberAction) return;
+    setMemberAction(`remove:${target}`);
+    setMemberError("");
+    setMemberNotice("");
+    removeMember(workspaceId, target)
+      .then((data) => {
+        applyMemberPayload(data);
+        setMemberNotice("成员已从当前工作区移除。");
+      })
+      .catch((error) => {
+        setMemberError(error instanceof Error ? error.message : String(error || "移除失败"));
+      })
+      .finally(() => setMemberAction(""));
+  };
+  const updateWorkspaceMemberRole = (email, role) => {
+    const target = cleanUserValue(email);
+    if (!workspaceId || !target || memberAction) return;
+    setMemberAction(`role:${target}`);
+    setMemberError("");
+    setMemberNotice("");
+    updateMemberRole(workspaceId, target, role)
+      .then((data) => {
+        applyMemberPayload(data);
+        setMemberNotice("成员角色已更新，后续运行会按新角色展示协作与用量归因。");
+      })
+      .catch((error) => {
+        setMemberError(error instanceof Error ? error.message : String(error || "角色更新失败"));
+      })
+      .finally(() => setMemberAction(""));
+  };
+  const openSettingsHelp = (kind) => setSettingsDrawer(kind);
   const connectors = [
-    { src: "/icons/foundry.svg", name: "Azure AI Foundry Agent Service", desc: "Agent 执行与编排服务", ok: deps.foundry !== false },
-    { src: "/icons/ai-search.svg", name: "Azure AI Search", desc: "向量检索与搜索服务", ok: (deps.search || health.search_endpoint) !== false },
-    { src: "/icons/azure-blob.svg", name: "Azure Blob Storage", desc: "数据与文件存储服务", ok: deps.blob !== false },
-    { icon: Server, name: "MCP Server", desc: "外部工具与能力连接器", ok: deps.mcp !== false },
-    { src: "/icons/speech.svg", name: "Azure AI Speech", desc: "语音识别与合成服务", ok: deps.speech !== false },
-    { src: "/icons/content-safety.svg", name: "Azure AI Content Safety", desc: "内容安全与风险检测", ok: deps.content_safety !== false },
+    { src: "/icons/foundry.svg", name: "Azure AI Foundry Agent Service", desc: "Agent 执行与编排服务", ok: dependencyState("foundry") },
+    { src: "/icons/ai-search.svg", name: "Azure AI Search", desc: "向量检索与搜索服务", ok: dependencyState("search", health.search_endpoint) },
+    { src: "/icons/azure-blob.svg", name: "Azure Blob Storage", desc: "数据与文件存储服务", ok: dependencyState("blob") },
+    { icon: Server, name: "MCP Server", desc: "外部工具与能力连接器", ok: dependencyState("mcp") },
+    { src: "/icons/speech.svg", name: "Azure AI Speech", desc: "语音识别与合成服务", ok: dependencyState("speech") },
+    { src: "/icons/content-safety.svg", name: "Azure AI Content Safety", desc: "内容安全与风险检测", ok: dependencyState("content_safety") },
   ];
-  const connOk = connectors.filter((c) => c.ok).length;
+ const connOk = connectors.filter((c) => c.ok === true).length;
+ const connKnown = connectors.filter((c) => typeof c.ok === "boolean").length;
+  const probeSummary = connKnown < connectors.length
+    ? "已记录 " + connKnown + " / " + connectors.length + " 个连接器"
+    : connOk === connectors.length
+      ? "全部连接器健康"
+      : connOk + " / " + connectors.length + " 个连接器可用";
+  const members = useMemo(() => displayMembersFromApi(memberRows, user), [memberRows, user]);
+  const usageTotals = memberMeta?.usage?.totals || {};
+  const settingsDrawerCopy = {
+    models: {
+      title: "模型与生成管理",
+      body: [
+        "当前演示环境由后端统一管理模型部署，前端只展示实际连接状态。",
+        "对话、分析、概念图与语音摘要分别走独立配置，后续可以在这里开放模型切换、默认产物类型和生成成本策略。",
+      ],
+    },
+    compliance: {
+      title: "数据与合规管理",
+      body: [
+        "登录入口由 Microsoft Entra ID 和 Container Apps Easy Auth 保护；运行、会话、产物会记录 actor，用于审计和用量归因。",
+        "内容安全、Blob 持久化、Search 检索和 App Insights 追踪保持后端统一配置，避免前端暴露敏感凭证。",
+      ],
+    },
+    preferences: {
+      title: "工作区偏好",
+      body: [
+        "当前版本已保存工作区、会话、数据文件和产物；主题、语言和默认产物偏好仍由平台统一配置。",
+        "下一步可以把工作区默认 logo、报告语气、默认时区和产物命名规则做成可配置项。",
+      ],
+    },
+    terms: {
+      title: "服务协议",
+      body: [
+        "DataForge 当前为演示环境：分析结论用于业务验证和方案讨论，不替代正式经营、法律或财务决策。",
+        "平台会标注证据来源、市场推断和缺口；用户仍需要基于真实试点数据复核最终落地决策。",
+      ],
+    },
+    privacy: {
+      title: "隐私政策",
+      body: [
+        "上传数据、会话记录和产物保存在工作区范围内，用于检索、分析、版本迭代和审计展示。",
+        "外部连接器凭证只发送到后端连接会话，不写入前端状态、不返回给浏览器；生产使用前仍应配置正式密钥管理和权限边界。",
+      ],
+    },
+  };
   const kv = (k, v) => (<div className="set-kv" key={k}><span>{k}</span><b>{v}</b></div>);
-  const cfgCard = (icon, title, rows, desc) => (
+  const cfgCard = (icon, title, rows, desc, manageKind) => (
     <section className="card set-cfg">
-      <div className="set-cfg-h">{icon}<strong>{title}</strong><span className="lnk lnk-btn">管理</span></div>
+      <div className="set-cfg-h">
+        {icon}
+        <strong>{title}</strong>
+        <button type="button" className="lnk lnk-btn" onClick={() => openSettingsHelp(manageKind)}>管理</button>
+      </div>
       <div className="set-cfg-rows">{rows.map(([k, v]) => kv(k, v))}</div>
       <p className="set-cfg-desc">{desc}</p>
     </section>
@@ -2332,16 +2887,16 @@ function SettingsCenter({ dashboard, observability }) {
       </header>
 
       <div className="set-stats">
-        <div className="card set-stat"><div className="set-stat-ic blue"><Boxes size={18} /></div><b>模型服务</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>在线模型 4 个</em></div>
-        <div className="card set-stat"><div className="set-stat-ic blue"><Database size={18} /></div><b>数据存储</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>存储用量 68%</em></div>
-        <div className="card set-stat"><div className="set-stat-ic blue"><ShieldCheck size={18} /></div><b>内容安全</b><div className="set-stat-kv"><span>状态</span><span className="dw-chip ok">健康</span></div><em>Prompt Shield 已启用</em></div>
-        <div className="card set-stat"><div className="set-stat-ic blue"><Server size={18} /></div><b>连接器状态</b><div className="set-stat-kv"><span>状态</span><span className={`dw-chip ${connOk === connectors.length ? "ok" : "warn"}`}>{connOk === connectors.length ? "全部正常" : "部分异常"}</span></div><em>已连接 {connOk} / {connectors.length}</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><Boxes size={18} /></div><b>模型服务</b><div className="set-stat-kv"><span>状态</span><span className={"dw-chip " + (modelCount > 0 ? "ok" : "")}>{modelCount > 0 ? "健康" : "未记录"}</span></div><em>已配置模型 {modelCount} 个</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><Database size={18} /></div><b>数据存储</b><div className="set-stat-kv"><span>状态</span><span className={"dw-chip " + (totalBytes > 0 ? "ok" : "")}>{totalBytes > 0 ? "健康" : "未记录"}</span></div><em>{totalBytes > 0 ? "已用 " + formatBytes(usedBytes) + " / " + formatBytes(totalBytes) + "（" + storagePct + "%）" : "容量未返回"}</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><ShieldCheck size={18} /></div><b>内容安全</b><div className="set-stat-kv"><span>状态</span><span className={"dw-chip " + stateClass(deps.content_safety)}>{stateLabel(deps.content_safety)}</span></div><em>{deps.content_safety === true ? "Prompt Shield 已启用" : deps.content_safety === false ? "服务未连接" : "状态未返回"}</em></div>
+        <div className="card set-stat"><div className="set-stat-ic blue"><Server size={18} /></div><b>连接器状态</b><div className="set-stat-kv"><span>状态</span><span className={"dw-chip " + (connKnown === connectors.length && connOk === connectors.length ? "ok" : "warn")}>{connKnown < connectors.length ? "部分未记录" : connOk === connectors.length ? "全部正常" : "部分异常"}</span></div><em>已连接 {connOk} / {connectors.length}（已记录 {connKnown}）</em></div>
       </div>
 
       <div className="set-cfgs">
-        {cfgCard(<Sparkles size={16} />, "模型与生成", [["对话 / 推理模型", models.chat || "gpt-5.1"], ["概念图模型", models.image || "gpt-image-2"], ["向量模型（RAG）", models.embedding || "text-embedding-3-small"], ["检索增强", "Azure AI Search · 向量 + 关键词"], ["默认生成音频摘要", "已禁用"]], "控制模型选择、检索增强与生成输出行为。")}
-        {cfgCard(<ShieldCheck size={16} />, "数据与合规", [["内容安全（RAI）", "已启用 · Prompt Shield"], ["身份认证", "Microsoft Entra ID · Easy Auth"], ["数据驻留", "Azure · East US 2"], ["分布式追踪", "App Insights · OpenTelemetry"], ["审计日志保留", "180 天"]], "保障数据安全、合规与可观测性。")}
-        {cfgCard(<Cpu size={16} />, "工作区偏好", [["界面语言", "简体中文"], ["主题", "浅色（深色即将支持）"], ["时区", "跟随系统"], ["数据持久化", "Azure Blob（工作区/会话/产物）"], ["默认时区显示", "跟随系统"]], "自定义界面语言、主题、时区与数据持久化偏好。")}
+        {cfgCard(<Sparkles size={16} />, "模型与生成", [["对话 / 推理模型", models.chat || "未记录"], ["概念图模型", models.image || "未记录"], ["向量模型（RAG）", models.embedding || "未记录"], ["检索增强", ragLabel], ["默认生成音频摘要", "已禁用"]], "控制模型选择、检索增强与生成输出行为。", "models")}
+        {cfgCard(<ShieldCheck size={16} />, "数据与合规", [["内容安全（RAI）", contentSafetyLabel], ["身份认证", "Microsoft Entra ID · Easy Auth"], ["数据驻留", "Azure · East US 2"], ["分布式追踪", tracingLabel], ["审计日志保留", "180 天"]], "保障数据安全、合规与可观测性。", "compliance")}
+        {cfgCard(<Cpu size={16} />, "工作区偏好", [["界面语言", "简体中文"], ["主题", "浅色（深色即将支持）"], ["时区", "跟随系统"], ["数据持久化", "Azure Blob（工作区/会话/产物）"], ["默认时区显示", "跟随系统"]], "自定义界面语言、主题、时区与数据持久化偏好。", "preferences")}
       </div>
 
       <div className="set-bottom">
@@ -2363,38 +2918,167 @@ function SettingsCenter({ dashboard, observability }) {
               );
             })}
           </div>
-          <p className="set-cfg-desc">{probedAt ? `上次探测：${formatTime(probedAt.toISOString())} · 全部连接器健康` : "管理平台所依赖的外部服务与连接器，确保数据流转与能力调用正常。"}</p>
+          <p className="set-cfg-desc">{probedAt ? "上次探测：" + formatTime(probedAt.toISOString()) + " · " + probeSummary : "管理平台所依赖的外部服务与连接器，确保数据流转与能力调用正常。"}</p>
         </section>
 
         <section className="card set-about">
           <div className="set-tabs">
             <button type="button" className={tab === "about" ? "set-tab active" : "set-tab"} onClick={() => setTab("about")}>关于</button>
             <button type="button" className={tab === "members" ? "set-tab active" : "set-tab"} onClick={() => setTab("members")}>成员与权限</button>
+            <button type="button" className={tab === "governance" ? "set-tab active" : "set-tab"} onClick={() => setTab("governance")}>治理与 ROI</button>
           </div>
           {tab === "about" ? (
             <div className="set-about-body">
               {kv("产品名称", "DataForge")}
-              {kv("版本", "v1.0.0")}
-              {kv("构建编号", "2024.05.02.1021")}
-              {kv("部署环境", "生产环境")}
-              <div className="set-kv"><span>服务协议</span><span className="lnk lnk-btn">查看服务协议</span></div>
-              <div className="set-kv"><span>隐私政策</span><span className="lnk lnk-btn">查看隐私政策</span></div>
+              {kv("版本", release.version || "未记录")}
+              {kv("构建编号", release.build || "未记录")}
+              {kv("部署环境", release.environment || "未记录")}
+              <div className="set-kv"><span>服务协议</span><button type="button" className="lnk lnk-btn" onClick={() => openSettingsHelp("terms")}>查看服务协议</button></div>
+              <div className="set-kv"><span>隐私政策</span><button type="button" className="lnk lnk-btn" onClick={() => openSettingsHelp("privacy")}>查看隐私政策</button></div>
+            </div>
+          ) : tab === "governance" ? (
+            <div className="set-governance">
+              <GovernanceSummaryPanel governance={governance} />
             </div>
           ) : (
             <div className="set-members">
-              <div className="set-members-head"><span>成员（{SET_MEMBERS.length}）</span><button type="button" className="lnk lnk-btn">管理成员</button></div>
-              {SET_MEMBERS.map((m, i) => (
+              <div className="set-members-head">
+                <span>成员（{members.length}）{membersLoading ? " · 同步中" : ""}</span>
+                <span className="member-mode">工作区成员 · Entra 登录后归因</span>
+              </div>
+              <form className="member-directory-search" onSubmit={submitDirectorySearch}>
+                <div className="member-directory-input">
+                  <Search size={14} />
+                  <input
+                    type="search"
+                    value={directoryQuery}
+                    onChange={(event) => setDirectoryQuery(event.target.value)}
+                    placeholder="搜索 Entra 用户或邮箱"
+                  />
+                </div>
+                <button type="submit" disabled={directoryLoading}>
+                  {directoryLoading ? <Loader2 size={14} className="spin" /> : <Search size={14} />}
+                  搜索
+                </button>
+              </form>
+              {directoryState.connected === false ? (
+                <div className="member-msg warn">
+                  Graph 目录未连接：{directoryState.error?.message || "需要启用 token store 或配置 Graph app-only 权限。"}
+                </div>
+              ) : null}
+              {directoryState.users?.length ? (
+                <div className="member-directory-results">
+                  {directoryState.users.map((account) => (
+                    <button
+                      type="button"
+                      key={account.id || account.email}
+                      onClick={() => pickDirectoryUser(account)}
+                    >
+                      <span className="mbr-av">{memberInitial(account.display_name, account.email)}</span>
+                      <span>
+                        <b>{account.display_name || account.email}</b>
+                        <em>{account.email || account.user_principal_name}</em>
+                      </span>
+                      <small>{account.user_type || "Entra"}</small>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <form className="member-invite-form" onSubmit={submitInvite}>
+                <input
+                  type="email"
+                  value={inviteForm.email}
+                  onChange={(event) => setInviteForm((form) => ({ ...form, email: event.target.value }))}
+                  placeholder="成员邮箱"
+                  autoComplete="email"
+                />
+                <input
+                  type="text"
+                  value={inviteForm.name}
+                  onChange={(event) => setInviteForm((form) => ({ ...form, name: event.target.value }))}
+                  placeholder="姓名（可选）"
+                />
+                <select
+                  value={inviteForm.role}
+                  onChange={(event) => setInviteForm((form) => ({ ...form, role: event.target.value }))}
+                  aria-label="成员角色"
+                >
+                  <option value="admin">管理员</option>
+                  <option value="editor">编辑者</option>
+                  <option value="viewer">查看者</option>
+                </select>
+                <button type="submit" disabled={memberAction === "invite"}>
+                  {memberAction === "invite" ? <Loader2 size={14} className="spin" /> : <UserPlus size={14} />}
+                  邀请
+                </button>
+              </form>
+              <label className="member-mail-toggle">
+                <input
+                  type="checkbox"
+                  checked={sendGraphInvite}
+                  onChange={(event) => setSendGraphInvite(event.target.checked)}
+                />
+                <span>发送 Entra 邀请邮件</span>
+              </label>
+              {memberError ? <div className="member-msg error">{memberError}</div> : null}
+              {memberNotice ? <div className="member-msg ok">{memberNotice}</div> : null}
+              <div className="member-usage-strip">
+                <span>Runs <b>{formatCount(usageTotals.runs)}</b></span>
+                <span>Tokens <b>{formatCount(usageTotals.total_tokens)}</b></span>
+                <span>Source <b>{memberMeta?.source || "easy_auth"}</b></span>
+              </div>
+              {members.map((m, i) => (
                 <div className="set-member" key={i}>
                   <span className="mbr-av">{m.initial}</span>
-                  <div className="mbr-main"><b>{m.name}</b><em>{m.email}</em></div>
-                  {m.you ? <span className="dw-chip ok">所有者</span> : <span className="mbr-role">{m.role}<ChevronDown size={13} /></span>}
+                  <div className="mbr-main">
+                    <b>{m.name}</b>
+                    <em>{m.email}</em>
+                    <small>{formatCount(m.usage?.runs)} runs · {formatCount(m.usage?.total_tokens)} tokens{m.lastSeenAt ? ` · ${formatTime(m.lastSeenAt)}` : ""}</small>
+                  </div>
+                  <span className={`dw-chip ${m.status === "active" ? "ok" : "warn"}`}>{m.statusLabel}</span>
+                  {m.owner ? (
+                    <span className="dw-chip ok">{m.roleLabel}</span>
+                  ) : (
+                    <label className="mbr-role-select" title="修改成员角色">
+                      <select
+                        value={m.role || "viewer"}
+                        disabled={memberAction === `role:${m.email}`}
+                        onChange={(event) => updateWorkspaceMemberRole(m.email, event.target.value)}
+                        aria-label={`${m.email} 的成员角色`}
+                      >
+                        <option value="admin">管理员</option>
+                        <option value="editor">编辑者</option>
+                        <option value="viewer">查看者</option>
+                      </select>
+                      {memberAction === `role:${m.email}` ? <Loader2 size={13} className="spin" /> : <ChevronDown size={13} />}
+                    </label>
+                  )}
+                  {!m.owner ? (
+                    <button
+                      type="button"
+                      className="mbr-remove"
+                      title="从当前工作区移除"
+                      disabled={memberAction === `remove:${m.email}`}
+                      onClick={() => removeWorkspaceMember(m.email)}
+                    >
+                      {memberAction === `remove:${m.email}` ? <Loader2 size={13} className="spin" /> : <Trash2 size={13} />}
+                    </button>
+                  ) : null}
                 </div>
               ))}
-              <button type="button" className="lnk lnk-btn set-more-mbr">查看更多成员 ›</button>
             </div>
           )}
         </section>
       </div>
+      <SideDrawer
+        open={Boolean(settingsDrawer)}
+        title={settingsDrawerCopy[settingsDrawer]?.title || "设置说明"}
+        onClose={() => setSettingsDrawer(null)}
+      >
+        <div className="settings-info-drawer">
+          {(settingsDrawerCopy[settingsDrawer]?.body || []).map((line, index) => <p key={index}>{line}</p>)}
+        </div>
+      </SideDrawer>
     </main>
   );
 }
@@ -2643,7 +3327,7 @@ function QualityBar({ quality }) {
 
 // 用户消息打字机：发出问题后逐字"流式打出来"（仅对刚发出的最后一条动画；历史/加载会话直接整段显示）
 function TypeOut({ text, animate }) {
-  const safe = text == null ? "" : String(text);
+  const safe = sanitizeReply(text == null ? "" : String(text));
   const reduce = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const [shown, setShown] = useState(animate && !reduce ? "" : safe);
   useEffect(() => {
@@ -2904,6 +3588,8 @@ function inlineNodes(text, kp = "i", citeMap) {
 // 显示前清洗后端答案里被抄进来的原文与坏标点（内容质量仍需后端修，这里只做显示兜底）
 function sanitizeReply(text) {
   return String(text || "")
+    // Backend removes these at the source; keep old history and in-flight stream chunks clean too.
+    .replace(/(^|\n)(\s*(?:(?:[-*+]\s+|\d+[.)]\s+))?)(?:[”’」』]+|"(?=[，,;；:：、\-–—]))[，,;；:：、\-–—]*\s*/g, "$1$2")
     // 被抄进正文的"演示/合成数据"免责声明（限定一句，避免贪吃后文）
     .replace(/[>＞]?\s*注[:：][^。\n]{0,80}(演示数据|合成数据|演示用)[^。\n]{0,80}。?/g, "")
     // 旧 run 曾把联网检索结构化 JSON 拼进正文；显示层兜底剥离，来源仍由结构化 market.sources 面板展示。
@@ -3738,6 +4424,21 @@ function formatBytes(value) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatCount(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num) || num <= 0) return "0";
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+  return String(Math.round(num));
+}
+
+function formatCurrencyUsd(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return "$0.00";
+  if (Math.abs(num) >= 1000) return `$${num.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  return `$${num.toFixed(2)}`;
 }
 
 function absoluteApiUrl(value) {

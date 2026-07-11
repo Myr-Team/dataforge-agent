@@ -25,6 +25,7 @@ try:
     from .control_plane import build_workspace_dashboard, router as control_plane_router
     from .data_workbench import router as data_workbench_router
     from .dependency_health import health_dependencies, health_dependency_details
+    from .identity import actor_from_request, merge_actor_into_ui_context
     from .observability import observability_snapshot
     from .orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from .rag import search
@@ -70,6 +71,7 @@ except ImportError:
     from control_plane import build_workspace_dashboard, router as control_plane_router
     from data_workbench import router as data_workbench_router
     from dependency_health import health_dependencies, health_dependency_details
+    from identity import actor_from_request, merge_actor_into_ui_context
     from observability import observability_snapshot
     from orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from rag import search
@@ -269,12 +271,12 @@ async def workspace_auto_analyze(workspace_id: str, request: Request) -> dict[st
         conversation_id=body.get("conversation_id"),
         playbook=body.get("playbook") or "opportunity_tree",
         artifact_mode=body.get("artifact_mode") or "report",
-        ui_context={
+        ui_context=merge_actor_into_ui_context({
             **(body.get("ui_context") if isinstance(body.get("ui_context"), dict) else {}),
             "entrypoint": "workspace_dashboard",
             "auto_analyze": True,
             "cache_bust": cache_bust,
-        },
+        }, actor_from_request(request)),
     )
 
     final_payload: dict[str, Any] | None = None
@@ -487,7 +489,9 @@ async def _sse_keepalive(agen, interval: float = 10.0):
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest) -> StreamingResponse:
+async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
+    actor = actor_from_request(request)
+    req = req.model_copy(update={"ui_context": merge_actor_into_ui_context(req.ui_context, actor)})
     return StreamingResponse(
         _sse_keepalive(orchestrate_chat(req)),
         media_type="text/event-stream",

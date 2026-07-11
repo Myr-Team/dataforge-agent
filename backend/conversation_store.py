@@ -11,8 +11,10 @@ from typing import Any
 
 try:
     from .blob_store import download_blob_json, upload_blob_json
+    from .identity import public_actor
 except ImportError:
     from blob_store import download_blob_json, upload_blob_json
+    from identity import public_actor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,9 +56,11 @@ def append_message(
     text: str,
     verdict: str | None = None,
     citations: list[dict[str, Any]] | None = None,
+    actor: dict[str, Any] | None = None,
     remote_load: bool = True,
 ) -> dict[str, Any]:
     now = _utc_now()
+    clean_actor = public_actor(actor or {}) if actor else {}
     with _LOCK:
         loader = _load_conversation if remote_load else _load_local_conversation
         conversation = loader(conversation_id) or {
@@ -70,6 +74,9 @@ def append_message(
         conversation["updated_at"] = now
         messages = list(conversation.get("messages") or [])
         message: dict[str, Any] = {"role": role, "text": str(text or ""), "time": now}
+        if clean_actor:
+            message["actor"] = clean_actor
+            conversation["actors"] = _merge_actor(conversation.get("actors"), clean_actor)
         if verdict:
             message["verdict"] = verdict
             conversation["last_verdict"] = verdict
@@ -177,7 +184,20 @@ def _summary(conversation: dict[str, Any]) -> dict[str, Any]:
         "updated_at": conversation.get("updated_at"),
         "turn_count": sum(1 for item in messages if item.get("role") == "user"),
         "last_verdict": conversation.get("last_verdict"),
+        "actors": conversation.get("actors") or [],
     }
+
+
+def _merge_actor(existing: Any, actor: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = [item for item in (existing or []) if isinstance(item, dict)]
+    key = str(actor.get("email") or actor.get("actor_id") or actor.get("name") or "").lower()
+    rows = [
+        item
+        for item in rows
+        if str(item.get("email") or item.get("actor_id") or item.get("name") or "").lower() != key
+    ]
+    rows.insert(0, actor)
+    return rows[:20]
 
 
 def _title_from_messages(messages: list[dict[str, Any]]) -> str:

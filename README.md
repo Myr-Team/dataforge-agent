@@ -83,6 +83,14 @@ This is the heart of "a system that actually judges, not a straight-line script.
 
 Routing is decided at runtime by the auditor's conclusion via conditional edges — it is *code-controlled judgment*, not a hand-written `if`. We reuse MAF only for orchestration topology; the analysis/audit engines remain our own, so there is zero behavior drift.
 
+### Current implementation boundary
+
+- MAF currently owns the conditional audit/revise graph. Specialist behavior is still provided by the existing Foundry-backed functions; independent first-class MAF agents, dynamic handoffs, and concurrent collaboration are the next architecture phase.
+- The governance page exposes a clearly labelled DataForge ROI estimate based on token usage and configurable time-value assumptions. Foundry native ROI is not connected yet.
+- Plan, artifact, and feedback runs are persisted as version snapshots. A full experiment ledger with source-backed evidence and decision deltas is planned and is not represented as complete today.
+
+The release and evolution design is documented in [`docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md`](docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md).
+
 ## Key capabilities
 
 - **Discovers non-obvious opportunities** — nobody tells it "do site selection"; it infers the opportunity from the evidence in your data.

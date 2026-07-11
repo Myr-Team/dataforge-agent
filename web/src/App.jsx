@@ -24,51 +24,11 @@ import {
 } from "./components.jsx";
 import { PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
 
-const DEFAULT_WORKSPACE = "upload-cn-abe76cb16b-20260620102932";
+const DEFAULT_WORKSPACE = "demo-corpus";
 
 const hasAnalysisDimensions = (artifact) => {
   const dims = artifact?.feasibility?.dimensions;
   return Array.isArray(dims) && dims.length > 0;
-};
-
-// 预览样例（?demo=1）：仅用于在云端接口就绪前，眼看工作区 BI 看板的填充效果；真实数据由后端接口替换。
-const DEMO_SEED = typeof window !== "undefined" && /[?&]demo=1/.test(window.location.search);
-const DEMO_DASHBOARD = {
-  workspace_id: "ws-demo-electronics",
-  workspace: {
-    workspace_id: "ws_01J7Z3B7V98F2KQ8X0FX90",
-    name: "消费电子新品机会评估",
-    created_at: "2025-06-13T10:42:00Z",
-    format: "mixed",
-    doc_count: 5,
-    row_count: 128,
-    field_count: 128,
-    indexed_count: 128,
-    fill_rate: 0.487,
-    signal_score: 0.84,
-    customer_summary: "5 份消费电子销售/调研/竞品数据已接入，整体信号可用度 84，价格敏感度与复购周期信号最强。",
-    documents: [
-      { name: "消费电子销售_2024Q1-Q4.xlsx", format: "xlsx", bytes: 8720000, status: "已就绪" },
-      { name: "用户调研反馈_清洗版.csv", format: "csv", bytes: 2310000, status: "已就绪" },
-      { name: "竞品价格表_2025-06.json", format: "json", bytes: 512000, status: "部分字段" },
-      { name: "产品PRD_初稿_v1.2.md", format: "md", bytes: 48000, status: "已就绪" },
-      { name: "成本结构明细_供应链.xlsx", format: "xlsx", bytes: 1240000, status: "已就绪" },
-    ],
-    columns: [
-      { name: "price_sensitivity", friendly_label: "价格敏感度", signal: "strong", signal_score: 0.86 },
-      { name: "repurchase_cycle", friendly_label: "复购周期", signal: "strong", signal_score: 0.78 },
-      { name: "config_pref", friendly_label: "配置偏好", signal: "strong", signal_score: 0.72 },
-      { name: "channel_conc", friendly_label: "渠道集中度", signal: "strong", signal_score: 0.65 },
-      { name: "after_sales", friendly_label: "售后口碑", signal: "strong", signal_score: 0.61 },
-      ...Array.from({ length: 12 }, (_, i) => ({ name: `s${i}`, friendly_label: `信号字段${i + 1}`, signal: "strong" })),
-      ...Array.from({ length: 6 }, (_, i) => ({ name: `m${i}`, friendly_label: `中等字段${i + 1}`, signal: "mid" })),
-      ...Array.from({ length: 2 }, (_, i) => ({ name: `n${i}`, friendly_label: `噪音字段${i + 1}`, signal: "noise" })),
-    ],
-    reference_images: [],
-  },
-  runs: [],
-  conversations: [],
-  health: { ok: true, dependencies: { foundry: true, search: true, blob: true, mcp: true } },
 };
 
 export function App() {
@@ -91,6 +51,7 @@ export function App() {
   const [artifactMode, setArtifactMode] = useState("report");
   const [inspectorTab, setInspectorTab] = useState("evidence");
   const [activeView, setActiveView] = useState("workspaces");
+  const [settingsInitialTab, setSettingsInitialTab] = useState("about");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadContext, setUploadContext] = useState({ mode: "workspace", workspaceId: "" });
   const [uploadState, setUploadState] = useState(null);
@@ -206,7 +167,6 @@ export function App() {
   };
 
   useEffect(() => {
-    if (DEMO_SEED) { setDashboard(DEMO_DASHBOARD); setDashboardLoading(false); return; }
     refreshDashboard(workspaceId);
   }, [workspaceId, refreshDashboard]);
 
@@ -214,7 +174,6 @@ export function App() {
   // 让数据集状态「解析中→已就绪」与数据画像/TOP5 自动填充；封顶 ~2 分钟，避免个别卡住的文件无限轮询。
   const ingestPollRef = useRef(0);
   useEffect(() => {
-    if (DEMO_SEED) return undefined;
     const docs = dashboard?.workspace?.documents || [];
     const processing = docs.some((d) => /解析中|处理中|processing|pending/i.test(String(d.status || "")));
     if (!processing) { ingestPollRef.current = 0; return undefined; }
@@ -241,12 +200,11 @@ export function App() {
       restoredTrace = rawTrace ? JSON.parse(rawTrace) : [];
     } catch { restoredTrace = []; }
     setTrace(Array.isArray(restoredTrace) ? restoredTrace : []);
-    if (restoredArtifact) return () => { cancelled = true; };
     loadLatestAnalysis(workspaceId)
       .then((data) => {
         if (cancelled || !data?.found || !hasAnalysisDimensions(data.artifact)) return;
         setFinalArtifact(data.artifact);
-        const nextTrace = Array.isArray(data.trace) ? data.trace : [];
+        const nextTrace = Array.isArray(data.trace) && data.trace.length ? data.trace : (Array.isArray(restoredTrace) ? restoredTrace : []);
         setTrace(nextTrace);
         if (data.conversation_id) {
           setActiveConversationId(data.conversation_id);
@@ -374,6 +332,25 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    try {
+      const email = String(user?.email || "").trim();
+      if (authState === "authenticated" && email && email.includes("@")) {
+        window.localStorage.setItem(
+          "df-current-user",
+          JSON.stringify({
+            name: String(user?.name || "").trim(),
+            email,
+          }),
+        );
+      } else {
+        window.localStorage.removeItem("df-current-user");
+      }
+    } catch {
+      // Local storage can be unavailable in restricted browser modes.
+    }
+  }, [authState, user]);
+
   useEffect(() => () => clearReveal(), []);
 
   const changeWorkspace = (id) => {
@@ -382,6 +359,16 @@ export function App() {
     setActiveConversationId(null);
     resetRunState();
     setActiveView("workspaces");
+  };
+
+  const changePrimaryView = (view) => {
+    if (view === "settings") setSettingsInitialTab("about");
+    setActiveView(view);
+  };
+
+  const openMembersSettings = () => {
+    setSettingsInitialTab("members");
+    setActiveView("settings");
   };
 
   const startNewConversation = () => {
@@ -562,6 +549,10 @@ export function App() {
       }
       refreshDashboard(workspaceId);
     } catch (error) {
+      if (terminalEvent) {
+        refreshDashboard(workspaceId);
+        return;
+      }
       if (error?.name === "AbortError" || controller.signal.aborted) {
         // 用户主动点了「停止生成」——不当作错误
         setMessages((items) => [...items, { role: "assistant", text: "已停止本次生成。", time: new Date().toISOString() }]);
@@ -854,9 +845,9 @@ export function App() {
         onLogout={logout}
         tasks={tasks}
       />
-      <ShellNav active={activeView} onChange={setActiveView} workspace={dashboard?.workspace} />
+      <ShellNav active={activeView} onChange={changePrimaryView} workspace={dashboard?.workspace} onInviteMembers={openMembersSettings} />
       <div className="workbench">
-        <MobileNav active={activeView} onChange={setActiveView} />
+        <MobileNav active={activeView} onChange={changePrimaryView} />
         <div className="workbench-grid">
           <WorkbenchMain
             view={activeView}
@@ -886,6 +877,8 @@ export function App() {
             onOpenConversation={openConversation}
             tasks={tasks}
             user={user}
+            settingsInitialTab={settingsInitialTab}
+            onWorkspaceDataChanged={() => refreshDashboard(workspaceId)}
           />
         </div>
       </div>

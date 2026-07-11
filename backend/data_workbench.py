@@ -24,6 +24,7 @@ from ingest.adapters.upload_to_records import upload_to_records
 
 try:
     from .blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
+    from .identity import actor_for_history, actor_from_request, merge_actor_into_ui_context
     from .orchestrator import orchestrate_chat
     from .schemas import ChatRequest
     from .workspace_store import (
@@ -40,6 +41,7 @@ try:
     )
 except ImportError:
     from blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
+    from identity import actor_for_history, actor_from_request, merge_actor_into_ui_context
     from orchestrator import orchestrate_chat
     from schemas import ChatRequest
     from workspace_store import (
@@ -80,7 +82,7 @@ async def workspace_files(workspace_id: str) -> dict[str, Any]:
 @router.post("/files")
 async def workspace_file_create(workspace_id: str, request: Request) -> dict[str, Any]:
     body = await _json_body(request)
-    return await _call(create_workspace_file, workspace_id, body)
+    return await _call(create_workspace_file, workspace_id, body, actor_from_request(request))
 
 
 @router.get("/files/{file_id}/content")
@@ -96,18 +98,18 @@ async def workspace_file_content(
 @router.put("/files/{file_id}/cells")
 async def workspace_file_cells(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
     body = await _json_body(request)
-    return await _call(save_table_cells, workspace_id, file_id, body)
+    return await _call(save_table_cells, workspace_id, file_id, body, actor_from_request(request))
 
 
 @router.put("/files/{file_id}/content")
 async def workspace_file_markdown(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
     body = await _json_body(request)
-    return await _call(save_markdown_content, workspace_id, file_id, body)
+    return await _call(save_markdown_content, workspace_id, file_id, body, actor_from_request(request))
 
 
 @router.delete("/files/{file_id}")
-async def workspace_file_delete(workspace_id: str, file_id: str) -> dict[str, Any]:
-    return await _call(delete_workspace_file, workspace_id, file_id)
+async def workspace_file_delete(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
+    return await _call(delete_workspace_file, workspace_id, file_id, actor_from_request(request))
 
 
 @router.get("/files/{file_id}/quality")
@@ -123,7 +125,7 @@ async def workspace_file_field_mapping(workspace_id: str, file_id: str) -> dict[
 @router.put("/files/{file_id}/field-mapping")
 async def workspace_file_field_mapping_save(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
     body = await _json_body(request)
-    return await _call(save_file_field_mapping, workspace_id, file_id, body)
+    return await _call(save_file_field_mapping, workspace_id, file_id, body, actor_from_request(request))
 
 
 @router.get("/files/{file_id}/history")
@@ -134,6 +136,7 @@ async def workspace_file_history(workspace_id: str, file_id: str) -> list[dict[s
 @router.post("/files/analyze")
 async def workspace_files_analyze(workspace_id: str, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     body = await _json_body(request)
+    body["ui_context"] = merge_actor_into_ui_context(body.get("ui_context") if isinstance(body.get("ui_context"), dict) else {}, actor_from_request(request))
     return await analyze_selected_files(workspace_id, body, background_tasks)
 
 
@@ -179,7 +182,7 @@ async def sql_preview(workspace_id: str, connection_id: str, table: str, limit: 
 @router.post("/connectors/sql/import")
 async def sql_import(workspace_id: str, request: Request) -> dict[str, Any]:
     body = await _json_body(request)
-    return await _call(import_sql_table, workspace_id, body)
+    return await _call(import_sql_table, workspace_id, body, actor_from_request(request))
 
 
 @router.post("/connectors/blob/connect")
@@ -224,7 +227,7 @@ async def blob_preview(
 @router.post("/connectors/blob/import")
 async def blob_import(workspace_id: str, request: Request) -> dict[str, Any]:
     body = await _json_body(request)
-    return await _call(import_blob_item, workspace_id, body)
+    return await _call(import_blob_item, workspace_id, body, actor_from_request(request))
 
 
 @router.post("/connectors/disconnect")
@@ -265,7 +268,7 @@ def preview_file_content(workspace_id: str, file_id: str, limit: int = 100, offs
     return _preview_bytes(content, _file_type(document), Path(str(document.get("name") or "")).name, limit, offset)
 
 
-def create_workspace_file(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
+def create_workspace_file(workspace_id: str, body: dict[str, Any], actor: dict[str, Any] | None = None) -> dict[str, Any]:
     filename, file_type = _new_file_name_and_type(body)
     content, content_type = _new_file_content(body, file_type)
     result = create_workspace_upload_job(
@@ -289,6 +292,14 @@ def create_workspace_file(workspace_id: str, body: dict[str, Any]) -> dict[str, 
                 break
         if created:
             break
+    if created:
+        _append_workbench_history(
+            workspace_id,
+            str(created.get("id") or ""),
+            actor,
+            _utc_now(),
+            f"Created {created.get('name') or filename}",
+        )
     return {
         "workspace_id": workspace_id,
         "saved_at": _utc_now(),
@@ -297,7 +308,7 @@ def create_workspace_file(workspace_id: str, body: dict[str, Any]) -> dict[str, 
     }
 
 
-def save_table_cells(workspace_id: str, file_id: str, body: dict[str, Any]) -> dict[str, Any]:
+def save_table_cells(workspace_id: str, file_id: str, body: dict[str, Any], actor: dict[str, Any] | None = None) -> dict[str, Any]:
     document = _find_document(workspace_id, file_id)
     file_type = _file_type(document)
     if file_type not in TABLE_TYPES:
@@ -324,7 +335,7 @@ def save_table_cells(workspace_id: str, file_id: str, body: dict[str, Any]) -> d
     saved_at = _utc_now()
     summary = _table_change_summary(change_counts)
     _write_document_bytes(workspace_id, document, new_content, content_type)
-    _update_document_after_save(workspace_id, document, new_content, saved_at, summary, version, row_count=row_count, col_count=col_count)
+    _update_document_after_save(workspace_id, document, new_content, saved_at, summary, version, row_count=row_count, col_count=col_count, actor=actor)
     return {
         "saved_at": saved_at,
         "version_id": version["version_id"],
@@ -335,7 +346,7 @@ def save_table_cells(workspace_id: str, file_id: str, body: dict[str, Any]) -> d
     }
 
 
-def save_markdown_content(workspace_id: str, file_id: str, body: dict[str, Any]) -> dict[str, Any]:
+def save_markdown_content(workspace_id: str, file_id: str, body: dict[str, Any], actor: dict[str, Any] | None = None) -> dict[str, Any]:
     document = _find_document(workspace_id, file_id)
     file_type = _file_type(document)
     if file_type not in MARKDOWN_TYPES:
@@ -352,11 +363,11 @@ def save_markdown_content(workspace_id: str, file_id: str, body: dict[str, Any])
     summary = "更新了 Markdown 内容"
     _write_document_bytes(workspace_id, document, content, "text/markdown; charset=utf-8")
     line_count = len(text.splitlines())
-    _update_document_after_save(workspace_id, document, content, saved_at, summary, version, row_count=line_count, col_count=1)
+    _update_document_after_save(workspace_id, document, content, saved_at, summary, version, row_count=line_count, col_count=1, actor=actor)
     return {"saved_at": saved_at, "version_id": version["version_id"], "change_summary": summary}
 
 
-def delete_workspace_file(workspace_id: str, file_id: str) -> dict[str, Any]:
+def delete_workspace_file(workspace_id: str, file_id: str, actor: dict[str, Any] | None = None) -> dict[str, Any]:
     meta, profile = _workspace_state(workspace_id)
     documents = meta.get("documents")
     if not isinstance(documents, list):
@@ -383,6 +394,7 @@ def delete_workspace_file(workspace_id: str, file_id: str) -> dict[str, Any]:
                 "source_file": source,
                 "profile_file": profile_file or None,
                 "deleted_at": removed_at,
+                "actor": actor_for_history(actor),
             },
         )
         del deleted[50:]
@@ -461,7 +473,7 @@ def file_field_mapping(workspace_id: str, file_id: str) -> dict[str, Any]:
     }
 
 
-def save_file_field_mapping(workspace_id: str, file_id: str, body: dict[str, Any]) -> dict[str, Any]:
+def save_file_field_mapping(workspace_id: str, file_id: str, body: dict[str, Any], actor: dict[str, Any] | None = None) -> dict[str, Any]:
     document = _find_document(workspace_id, file_id)
     fid = _file_id(document)
     quality = file_quality(workspace_id, fid)
@@ -481,6 +493,7 @@ def save_file_field_mapping(workspace_id: str, file_id: str, body: dict[str, Any
         "saved_at": saved_at,
     }
     _persist_workspace_state(workspace_id, WORKSPACES / workspace_id, meta, profile, include_raw_payloads=True)
+    _append_workbench_history(workspace_id, fid, actor, saved_at, "Updated field mapping")
     _CONTEXT_CACHE.pop(workspace_id, None)
     updated = file_field_mapping(workspace_id, fid)
     updated["saved_at"] = saved_at
@@ -680,7 +693,7 @@ def preview_sql_table(workspace_id: str, connection_id: str, table: str, limit: 
     raise RuntimeError("unreachable")
 
 
-def import_sql_table(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
+def import_sql_table(workspace_id: str, body: dict[str, Any], actor: dict[str, Any] | None = None) -> dict[str, Any]:
     connection_id = str(body.get("connection_id") or "")
     table = str(body.get("table") or "")
     limit = _clamp_int(body.get("limit"), 1, 10000, 1000)
@@ -694,6 +707,7 @@ def import_sql_table(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
         asset_role="reference",
     )
     _run_ingest_if_present(result)
+    _record_import_history(workspace_id, result, actor, f"Imported SQL table {table}")
     return {"workspace_id": workspace_id, "connection_id": connection_id, "imported": True, "source": {"kind": "sql", "table": table}, "upload": result}
 
 
@@ -752,7 +766,7 @@ def preview_blob_item(workspace_id: str, connection_id: str, container: str, blo
     return result
 
 
-def import_blob_item(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
+def import_blob_item(workspace_id: str, body: dict[str, Any], actor: dict[str, Any] | None = None) -> dict[str, Any]:
     connection_id = str(body.get("connection_id") or "")
     container = str(body.get("container") or "")
     blob = str(body.get("blob") or "")
@@ -774,6 +788,7 @@ def import_blob_item(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
         asset_role="reference",
     )
     _run_ingest_if_present(result)
+    _record_import_history(workspace_id, result, actor, f"Imported Blob {blob}")
     return {"workspace_id": workspace_id, "connection_id": connection_id, "imported": True, "source": {"kind": "blob", "container": container, "blob": blob}, "upload": result}
 
 
@@ -1682,6 +1697,56 @@ def _snapshot_version(workspace_id: str, document: dict[str, Any], content: byte
     return {"version_id": version_id, "source_file": rel, "bytes": len(content)}
 
 
+def _record_import_history(workspace_id: str, result: dict[str, Any], actor: dict[str, Any] | None, summary: str) -> None:
+    created_sources = {
+        str(item.get("source_file") or "")
+        for item in result.get("documents") or []
+        if isinstance(item, dict) and item.get("ingest_job_id") == result.get("ingest_job_id")
+    }
+    if not created_sources:
+        return
+    try:
+        detail = get_workspace_detail(workspace_id)
+    except Exception:
+        return
+    for document in detail.get("documents") or []:
+        if isinstance(document, dict) and str(document.get("source_file") or "") in created_sources:
+            _append_workbench_history(workspace_id, _file_id(document), actor, _utc_now(), summary)
+
+
+def _append_workbench_history(
+    workspace_id: str,
+    file_id: str,
+    actor: dict[str, Any] | None,
+    at: str,
+    summary: str,
+    *,
+    version_id: str | None = None,
+    previous_source_file: str | None = None,
+) -> None:
+    fid = str(file_id or "").strip()
+    if not fid:
+        return
+    try:
+        meta, profile = _workspace_state(workspace_id)
+        history = meta.setdefault("workbench_history", {})
+        items = history.setdefault(fid, [])
+        item = {
+            **actor_for_history(actor),
+            "at": at,
+            "change_summary": summary,
+        }
+        if version_id:
+            item["version_id"] = version_id
+        if previous_source_file:
+            item["previous_source_file"] = previous_source_file
+        items.insert(0, item)
+        del items[20:]
+        _persist_workspace_state(workspace_id, WORKSPACES / workspace_id, meta, profile, include_raw_payloads=True)
+    except Exception:
+        return
+
+
 def _update_document_after_save(
     workspace_id: str,
     document: dict[str, Any],
@@ -1692,6 +1757,7 @@ def _update_document_after_save(
     *,
     row_count: int,
     col_count: int,
+    actor: dict[str, Any] | None = None,
 ) -> None:
     meta, profile = _workspace_state(workspace_id)
     fid = _file_id(document)
@@ -1723,8 +1789,7 @@ def _update_document_after_save(
     items.insert(
         0,
         {
-            "user": "DataForge",
-            "email": None,
+            **actor_for_history(actor),
             "at": saved_at,
             "change_summary": summary,
             "version_id": version["version_id"],

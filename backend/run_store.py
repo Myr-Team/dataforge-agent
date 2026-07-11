@@ -10,8 +10,10 @@ from typing import Any
 
 try:
     from .blob_store import delete_blob_name, download_blob_json, upload_blob_json
+    from .identity import public_actor
 except ImportError:
     from blob_store import delete_blob_name, download_blob_json, upload_blob_json
+    from identity import public_actor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,8 +25,9 @@ _ACTIVE: dict[str, dict[str, Any]] = {}
 _LOCK = threading.RLock()
 
 
-def start_run(run_id: str, workspace_id: str, message: str) -> None:
+def start_run(run_id: str, workspace_id: str, message: str, actor: dict[str, Any] | None = None) -> None:
     now = _utc_now()
+    clean_actor = public_actor(actor or {})
     with _LOCK:
         _ACTIVE[run_id] = {
             "run_id": run_id,
@@ -38,6 +41,8 @@ def start_run(run_id: str, workspace_id: str, message: str) -> None:
             "models": [],
             "answer_delta_summary": {"count": 0, "chars": 0},
         }
+        if clean_actor:
+            _ACTIVE[run_id]["actor"] = clean_actor
 
 
 def record_event(run_id: str | None, event: str, data: Any) -> None:
@@ -114,7 +119,9 @@ def list_runs(workspace_id: str | None = None) -> list[dict[str, Any]]:
     registry = download_blob_json(RUN_REGISTRY_BLOB) or {}
     for item in registry.get("runs") or []:
         if isinstance(item, dict) and item.get("run_id"):
-            by_id[str(item["run_id"])] = item
+            # A local full run is newer and contains the authoritative steps/models.
+            # Do not overwrite its recomputed summary with an older Blob registry row.
+            by_id.setdefault(str(item["run_id"]), item)
     items = list(by_id.values())
     if workspace_id:
         items = [item for item in items if item.get("workspace_id") == workspace_id]
@@ -215,6 +222,11 @@ def record_artifact_version(
         return None
 
     now = _utc_now()
+    source_actor: dict[str, Any] = {}
+    try:
+        source_actor = public_actor(get_run(source_run_id).get("actor") or {})
+    except Exception:
+        source_actor = {}
     source_safe = _safe_name(source_run_id)
     suffix = hashlib.sha1(f"{source_run_id}:{now}:{json.dumps(kinds or [], ensure_ascii=False, default=str)}".encode("utf-8")).hexdigest()[:8]
     version_run_id = f"{source_safe}-artifact-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{suffix}"
@@ -246,6 +258,7 @@ def record_artifact_version(
             }
         ],
         "models": [],
+        "actor": source_actor,
         "artifact": merged_artifact,
         "final": {
             "text": f"{title_base or '当前方案'} 已生成产物版本。",
@@ -261,6 +274,85 @@ def record_artifact_version(
     run["confidence"] = _confidence(run)
     base_title = _run_title(run)
     run["title"] = _clean_phrase(f"{base_title} · 产物版", 44)
+    run["summary"] = _run_summary_text(run)
+    run["registry_summary"] = _run_summary(run)
+    return _persist_run(run)
+
+
+def record_plan_version(
+    *,
+    workspace_id: str,
+    source_run_id: str,
+    artifact: dict[str, Any],
+    text: str,
+) -> dict[str, Any] | None:
+    """Persist a lightweight version snapshot when a follow-up creates a plan draft."""
+    workspace_id = str(workspace_id or "").strip()
+    source_run_id = str(source_run_id or "").strip()
+    if not workspace_id or not source_run_id or not isinstance(artifact, dict):
+        return None
+    feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
+    if not (feasibility.get("verdict") or feasibility.get("dimensions")):
+        return None
+
+    now = _utc_now()
+    source_actor: dict[str, Any] = {}
+    try:
+        source_actor = public_actor(get_run(source_run_id).get("actor") or {})
+    except Exception:
+        source_actor = public_actor(artifact.get("actor") or {})
+    source_safe = _safe_name(source_run_id)
+    suffix = hashlib.sha1(f"{source_run_id}:{now}:plan_draft".encode("utf-8")).hexdigest()[:8]
+    version_run_id = f"{source_safe}-plan-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{suffix}"
+    merged_artifact = _plain(dict(artifact))
+    plan_text = str(text or "").strip() or str((artifact.get("answer") or {}).get("text") or "").strip()
+    merged_artifact["plan_draft"] = {
+        "text": plan_text,
+        "generated_at": now,
+        "source_run_id": source_run_id,
+    }
+    title_base = (
+        _clean_opportunity_text(feasibility.get("opportunity_id"))
+        or _message_topic(plan_text)
+        or _message_topic((merged_artifact.get("answer") or {}).get("text") if isinstance(merged_artifact.get("answer"), dict) else "")
+        or "当前方案"
+    )
+    run = {
+        "run_id": version_run_id,
+        "conversation_id": source_run_id,
+        "workspace_id": workspace_id,
+        "message": "生成方案草稿版本",
+        "status": "completed",
+        "started_at": now,
+        "completed_at": now,
+        "updated_at": now,
+        "duration_ms": 0,
+        "steps": [
+            {
+                "time": now,
+                "event": "plan_draft_version",
+                "data": {
+                    "source_run_id": source_run_id,
+                    "produced_kinds": ["plan_draft"],
+                },
+            }
+        ],
+        "models": [],
+        "actor": source_actor,
+        "artifact": merged_artifact,
+        "final": {
+            "text": plan_text,
+            "artifact": merged_artifact,
+            "source_run_id": source_run_id,
+            "version_kind": "plan_draft",
+        },
+        "version_kind": "plan_draft",
+        "source_run_id": source_run_id,
+        "produced_kinds": ["plan_draft"],
+    }
+    run["verdict"] = _verdict(run)
+    run["confidence"] = _confidence(run)
+    run["title"] = _clean_phrase(f"{title_base} · 方案版", 44)
     run["summary"] = _run_summary_text(run)
     run["registry_summary"] = _run_summary(run)
     return _persist_run(run)
@@ -354,6 +446,12 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
     artifact = run.get("artifact") or (run.get("final") or {}).get("artifact") or {}
     proposal = artifact.get("proposal") if isinstance(artifact, dict) and isinstance(artifact.get("proposal"), dict) else {}
     artifact_urls = proposal.get("artifact_urls") if isinstance(proposal.get("artifact_urls"), dict) else {}
+    iteration_inputs = artifact.get("iteration_inputs") if isinstance(artifact, dict) and isinstance(artifact.get("iteration_inputs"), list) else []
+    computed_duration = _duration_ms(
+        run.get("started_at"),
+        run.get("completed_at") or run.get("updated_at"),
+    )
+    duration_ms = computed_duration if computed_duration is not None else run.get("duration_ms")
     steps = []
     for step in (run.get("steps") or [])[:24]:
         data = step.get("data") or {}
@@ -370,7 +468,7 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "time": run.get("completed_at") or run.get("updated_at") or run.get("started_at"),
         "started_at": run.get("started_at"),
         "finished_at": run.get("completed_at"),
-        "duration_ms": run.get("duration_ms") or _duration_ms(run.get("started_at"), run.get("completed_at") or run.get("updated_at")),
+        "duration_ms": duration_ms,
         "workspace_id": run.get("workspace_id"),
         "title": run.get("title") or _run_title(run),
         "summary": run.get("summary") if isinstance(run.get("summary"), str) else _run_summary_text(run),
@@ -381,10 +479,13 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "version_kind": run.get("version_kind"),
         "source_run_id": run.get("source_run_id"),
         "produced_kinds": run.get("produced_kinds") or [],
+        "iteration_inputs": iteration_inputs[:12],
         "artifact_urls": {key: value for key, value in (artifact_urls or {}).items() if value},
         "steps": steps,
         "step_count": len(run.get("steps") or []),
         "maf": _maf_summary(run),
+        "tokens": _token_usage(run),
+        "actor": public_actor(run.get("actor") if isinstance(run.get("actor"), dict) else {}),
     }
 
 
@@ -398,6 +499,8 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
     normalized.setdefault("title", _run_title(normalized))
     if not isinstance(normalized.get("summary"), str):
         normalized["summary"] = _run_summary_text(normalized)
+    normalized["actor"] = public_actor(normalized.get("actor") if isinstance(normalized.get("actor"), dict) else {})
+    normalized["tokens"] = _token_usage(normalized)
     normalized.setdefault("registry_summary", _run_summary(normalized))
     return normalized
 
@@ -588,12 +691,9 @@ def _local_run_summaries() -> list[dict[str, Any]]:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        summary = data.get("registry_summary") if isinstance(data, dict) else None
-        if not isinstance(summary, dict):
-            legacy_summary = data.get("summary") if isinstance(data, dict) else None
-            summary = legacy_summary if isinstance(legacy_summary, dict) else None
-        if not isinstance(summary, dict) and isinstance(data, dict):
-            summary = _run_summary(_normalize_run_detail(data))
+        # Rebuild from the full run every time. Persisted registry_summary values
+        # can predate later steps, token usage, or artifact updates.
+        summary = _run_summary(_normalize_run_detail(data)) if isinstance(data, dict) else None
         if isinstance(summary, dict):
             items.append(summary)
     return items
@@ -631,6 +731,32 @@ def _plain(value: Any) -> Any:
         return value
     except TypeError:
         return str(value)
+
+
+def _token_usage(run: dict[str, Any]) -> dict[str, int]:
+    total = {"total": 0, "prompt": 0, "completion": 0}
+    sources = [item.get("usage") for item in run.get("models") or [] if isinstance(item, dict)]
+    if not sources:
+        for step in run.get("steps") or []:
+            data = step.get("data") if isinstance(step, dict) and isinstance(step.get("data"), dict) else {}
+            if data.get("usage"):
+                sources.append(data.get("usage"))
+    for usage in sources:
+        item = _usage_from_dict(usage if isinstance(usage, dict) else {})
+        total["total"] += item.get("total") or 0
+        total["prompt"] += item.get("prompt") or 0
+        total["completion"] += item.get("completion") or 0
+    return total
+
+
+def _usage_from_dict(data: dict[str, Any]) -> dict[str, int]:
+    usage = data.get("usage") if "usage" in data else data
+    if not isinstance(usage, dict):
+        return {"total": 0, "prompt": 0, "completion": 0}
+    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    total = int(usage.get("total_tokens") or usage.get("total") or prompt + completion)
+    return {"total": total, "prompt": prompt, "completion": completion}
 
 
 def _verdict(run: dict[str, Any]) -> str | None:

@@ -1,4 +1,25 @@
 export const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
+const ACTOR_STORAGE_KEY = "df-current-user";
+
+function clientActorHeaders() {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(ACTOR_STORAGE_KEY);
+    if (!raw) return {};
+    const actor = JSON.parse(raw);
+    const email = String(actor?.email || "").trim();
+    if (!email || !email.includes("@")) return {};
+    const payload = {
+      name: String(actor?.name || "").trim(),
+      email,
+      actor_id: String(actor?.actor_id || actor?.id || "").trim(),
+      tenant_id: String(actor?.tenant_id || actor?.tid || "").trim(),
+    };
+    return { "X-DataForge-Actor": encodeURIComponent(JSON.stringify(payload)) };
+  } catch {
+    return {};
+  }
+}
 
 function errorMessageFromPayload(data, fallback) {
   const raw = data?.detail ?? data?.message ?? fallback;
@@ -28,6 +49,7 @@ async function request(path, options = {}) {
     headers: {
       Accept: "application/json",
       ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+      ...clientActorHeaders(),
       ...(options.headers || {}),
     },
     ...options,
@@ -242,6 +264,53 @@ export async function loadWorkspaceMembers(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members`);
 }
 
+export async function searchWorkspaceEntraUsers(workspaceId, query, limit = 8) {
+  const params = new URLSearchParams({
+    query: query || "",
+    limit: String(limit || 8),
+  });
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/entra-users?${params.toString()}`);
+}
+
+export async function inviteWorkspaceMember(workspaceId, payload) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/invite`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function inviteWorkspaceEntraMember(workspaceId, payload) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/entra-invite`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function removeWorkspaceMember(workspaceId, email) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(email)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function updateWorkspaceMemberRole(workspaceId, email, role) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(email)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ role }),
+  });
+}
+
+export async function loadWorkspaceUsageSummary(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/usage-summary`);
+}
+
+export async function loadWorkspaceAuditEvents(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events`);
+}
+
+export async function loadWorkspaceGovernance(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance-summary`);
+}
+
 export async function loadConversationStructuredResult(conversationId) {
   return request(`/api/conversations/${encodeURIComponent(conversationId)}/structured-result`);
 }
@@ -342,6 +411,21 @@ export async function loadArtifactsList(workspaceId) {
 export async function loadMembers(workspaceId) {
   return loadWorkspaceMembers(workspaceId);
 }
+export async function searchEntraUsers(workspaceId, query, limit = 8) {
+  return searchWorkspaceEntraUsers(workspaceId, query, limit);
+}
+export async function inviteMember(workspaceId, payload) {
+  return inviteWorkspaceMember(workspaceId, payload);
+}
+export async function inviteEntraMember(workspaceId, payload) {
+  return inviteWorkspaceEntraMember(workspaceId, payload);
+}
+export async function removeMember(workspaceId, email) {
+  return removeWorkspaceMember(workspaceId, email);
+}
+export async function updateMemberRole(workspaceId, email, role) {
+  return updateWorkspaceMemberRole(workspaceId, email, role);
+}
 
 export async function dwConnectorCapabilities(workspaceId) {
   return loadConnectorCapabilities(workspaceId);
@@ -389,7 +473,7 @@ export async function streamChat(payload, onEvent, signal) {
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...clientActorHeaders() },
         body: JSON.stringify(payload),
         signal,
       });

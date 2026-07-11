@@ -1,0 +1,392 @@
+{
+  "workspace_id": "demo-corpus",
+  "name": "signal_density.csv",
+  "format": "csv",
+  "source_file": "raw_docs/signal_density.csv",
+  "created_at": "2026-07-01T12:49:23.243582+00:00",
+  "tables": [
+    {
+      "name": "signal_density",
+      "row_count": 400,
+      "column_count": 10,
+      "columns": [
+        {
+          "name": "site_name",
+          "type": "text",
+          "non_empty": 400,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "城心天街-地下美食街",
+            "高新园区-科技馆",
+            "城心天街-中庭"
+          ],
+          "top_values": [
+            {
+              "value": "城心天街-地下美食街",
+              "count": 50
+            },
+            {
+              "value": "高新园区-科技馆",
+              "count": 50
+            },
+            {
+              "value": "城心天街-中庭",
+              "count": 50
+            },
+            {
+              "value": "滨江写字楼-3F通廊",
+              "count": 50
+            },
+            {
+              "value": "滨江写字楼-大堂",
+              "count": 50
+            }
+          ]
+        },
+        {
+          "name": "floor",
+          "type": "text",
+          "non_empty": 400,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 4,
+          "examples": [
+            "B1",
+            "1F",
+            "1F"
+          ],
+          "top_values": [
+            {
+              "value": "1F",
+              "count": 200
+            },
+            {
+              "value": "B1",
+              "count": 100
+            },
+            {
+              "value": "3F",
+              "count": 50
+            },
+            {
+              "value": "2F",
+              "count": 50
+            }
+          ]
+        },
+        {
+          "name": "zone",
+          "type": "text",
+          "non_empty": 400,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 5,
+          "examples": [
+            "corridor",
+            "corridor",
+            "foodcourt"
+          ],
+          "top_values": [
+            {
+              "value": "corridor",
+              "count": 80
+            },
+            {
+              "value": "foodcourt",
+              "count": 80
+            },
+            {
+              "value": "entrance",
+              "count": 80
+            },
+            {
+              "value": "atrium",
+              "count": 80
+            },
+            {
+              "value": "exit",
+              "count": 80
+            }
+          ]
+        },
+        {
+          "name": "day_type",
+          "type": "text",
+          "non_empty": 400,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 2,
+          "examples": [
+            "weekend",
+            "weekend",
+            "weekday"
+          ],
+          "top_values": [
+            {
+              "value": "weekend",
+              "count": 200
+            },
+            {
+              "value": "weekday",
+              "count": 200
+            }
+          ]
+        },
+        {
+          "name": "hour_bucket",
+          "type": "text",
+          "non_empty": 400,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 5,
+          "examples": [
+            "17-20",
+            "20-22",
+            "14-17"
+          ],
+          "top_values": [
+            {
+              "value": "17-20",
+              "count": 80
+            },
+            {
+              "value": "20-22",
+              "count": 80
+            },
+            {
+              "value": "14-17",
+              "count": 80
+            },
+            {
+              "value": "12-14",
+              "count": 80
+            },
+            {
+              "value": "10-12",
+              "count": 80
+            }
+          ]
+        },
+        {
+          "name": "device_ping_count",
+          "type": "number",
+          "non_empty": 400,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 180,
+          "examples": [
+            "180",
+            "17",
+            "123"
+          ],
+          "top_values": [
+            {
+              "value": "95",
+              "count": 8
+            },
+            {
+              "value": "105",
+              "count": 8
+            },
+            {
+              "value": "31",
+              "count": 7
+            },
+            {
+              "value": "63",
+              "count": 6
+            },
+            {
+              "value": "101",
+              "count": 6
+            }
+          ],
+          "numeric": {
+            "min": 14,
+            "max": 341,
+            "mean": 104.1425
+          }
+        },
+        {
+          "name": "unique_device_count",
+          "type": "number",
+          "non_empty": 400,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 59,
+          "examples": [
+            "37",
+            "4",
+            "31"
+          ],
+          "top_values": [
+            {
+              "value": "6",
+              "count": 25
+            },
+            {
+              "value": "12",
+              "count": 20
+            },
+            {
+              "value": "9",
+              "count": 18
+            },
+            {
+              "value": "7",
+              "count": 18
+            },
+            {
+              "value": "16",
+              "count": 16
+            }
+          ],
+          "numeric": {
+            "min": 2,
+            "max": 72,
+            "mean": 20.5125
+          }
+        },
+        {
+          "name": "avg_dwell_minutes",
+          "type": "number",
+          "non_empty": 400,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 109,
+          "examples": [
+            "7.7",
+            "2.5",
+            "13.3"
+          ],
+          "top_values": [
+            {
+              "value": "4.4",
+              "count": 11
+            },
+            {
+              "value": "5.0",
+              "count": 10
+            },
+            {
+              "value": "5.7",
+              "count": 10
+            },
+            {
+              "value": "4.1",
+              "count": 9
+            },
+            {
+              "value": "4.2",
+              "count": 9
+            }
+          ],
+          "numeric": {
+            "min": 2.5,
+            "max": 14.2,
+            "mean": 7.3077
+          }
+        },
+        {
+          "name": "repeat_visit_ratio",
+          "type": "number",
+          "non_empty": 400,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 24,
+          "examples": [
+            "0.23",
+            "0.21",
+            "0.22"
+          ],
+          "top_values": [
+            {
+              "value": "0.21",
+              "count": 47
+            },
+            {
+              "value": "0.19",
+              "count": 28
+            },
+            {
+              "value": "0.18",
+              "count": 28
+            },
+            {
+              "value": "0.2",
+              "count": 27
+            },
+            {
+              "value": "0.22",
+              "count": 26
+            }
+          ],
+          "numeric": {
+            "min": 0.13,
+            "max": 0.36,
+            "mean": 0.2192
+          }
+        },
+        {
+          "name": "note",
+          "type": "text",
+          "non_empty": 400,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 1,
+          "examples": [
+            "模拟设备信号",
+            "模拟设备信号",
+            "模拟设备信号"
+          ],
+          "top_values": [
+            {
+              "value": "模拟设备信号",
+              "count": 400
+            }
+          ]
+        }
+      ],
+      "distribution": {
+        "row_count": 400,
+        "column_count": 10,
+        "missing_cell_rate": 0.0,
+        "duplicate_row_count": 0
+      },
+      "signals": [
+        "site_name 有 8 个不同取值，可用于分群、筛选或解释差异",
+        "floor 有 4 个不同取值，可用于分群、筛选或解释差异",
+        "zone 有 5 个不同取值，可用于分群、筛选或解释差异",
+        "day_type 有 2 个不同取值，可用于分群、筛选或解释差异",
+        "hour_bucket 有 5 个不同取值，可用于分群、筛选或解释差异",
+        "device_ping_count 是完整度较高的数值字段，范围 14 到 341",
+        "unique_device_count 是完整度较高的数值字段，范围 2 到 72",
+        "avg_dwell_minutes 是完整度较高的数值字段，范围 2.5 到 14.2",
+        "repeat_visit_ratio 是完整度较高的数值字段，范围 0.13 到 0.36"
+      ],
+      "cross_signals": [
+        "device_ping_count 按 site_name 分组均值差异明显：城心天街-地下美食街=168.88(n=50)，滨江写字楼-3F通廊=32.64(n=50)，差值 136.24",
+        "device_ping_count 按 floor 分组均值差异明显：B1=128.64(n=100)，3F=32.64(n=50)，差值 96",
+        "device_ping_count 按 zone 分组均值差异明显：foodcourt=126.3125(n=80)，corridor=69.6375(n=80)，差值 56.675",
+        "device_ping_count 按 day_type 分组均值差异明显：weekend=124.515(n=200)，weekday=83.77(n=200)，差值 40.745",
+        "device_ping_count 按 hour_bucket 分组均值差异明显：12-14=131.9(n=80)，10-12=82.0875(n=80)，差值 49.8125",
+        "unique_device_count 按 site_name 分组均值差异明显：老城步行街-临街口=33.48(n=50)，高新园区-科技馆=6.84(n=50)，差值 26.64",
+        "unique_device_count 按 floor 分组均值差异明显：B1=25.28(n=100)，3F=6.94(n=50)，差值 18.34",
+        "unique_device_count 按 zone 分组均值差异明显：foodcourt=24.625(n=80)，corridor=13.4375(n=80)，差值 11.1875",
+        "unique_device_count 按 day_type 分组均值差异明显：weekend=24.475(n=200)，weekday=16.55(n=200)，差值 7.925",
+        "unique_device_count 按 hour_bucket 分组均值差异明显：12-14=26.125(n=80)，10-12=15.8875(n=80)，差值 10.2375"
+      ],
+      "noise": [
+        "site_name 取值分布近似均匀，暂不作为核心分群结论",
+        "zone 取值分布近似均匀，暂不作为核心分群结论",
+        "hour_bucket 取值分布近似均匀，暂不作为核心分群结论",
+        "note 几乎为常量，对分群或产品判断贡献较低"
+      ]
+    }
+  ],
+  "profile_summary": "signal_density.csv: 1 table/section(s), 400 rows, 10 fields.",
+  "profile_id": "profile-002",
+  "profile_file": "profiles/profile-002.json"
+}

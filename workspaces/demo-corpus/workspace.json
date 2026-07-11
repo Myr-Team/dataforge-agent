@@ -1,20 +1,94 @@
 {
   "workspace_id": "demo-corpus",
-  "name": "TrailSense Outdoor IoT",
-  "persona": "Strategy lead evaluating data-product opportunities for an outdoor sports hardware company",
+  "name": "选址情报演示（模拟）",
+  "persona": "负责将楼层级资产防丢硬件数据转化为选址情报服务的产品与策略负责人",
   "ask_when": [
-    "The target audience is not specified as B2B fleet/coaching teams or consumer subscribers.",
-    "The requested output asks for medical diagnosis, treatment advice, or regulated clinical claims."
+    "用户没有说明目标业态、试点预算或时间窗口。",
+    "用户要求把高人流直接等同于高销售，但缺少客单价、转化率或租约成本证据。"
   ],
   "raw_docs": [
-    "raw_docs/product_manual.md",
-    "raw_docs/sensor_data_dictionary.md",
-    "raw_docs/customer_feedback_summary.md",
-    "raw_docs/internal_technical_wiki.md",
-    "raw_docs/market_research_notes.md",
-    "raw_docs/privacy_and_consent_review.md",
-    "raw_docs/operations_cost_notes.md",
-    "raw_docs/partnership_pipeline.md",
-    "raw_docs/operations_metrics.xlsx"
-  ]
+    "raw_docs/demo_brief.md",
+    "raw_docs/candidate_sites.csv",
+    "raw_docs/signal_density.csv",
+    "raw_docs/surrounding_env.csv",
+    "raw_docs/device_events_summary.json"
+  ],
+  "demo_notes": {
+    "iteration_sample": "iteration_samples/pilot_feedback_v1.csv",
+    "purpose": "默认工作区只包含试点前证据；pilot_feedback_v1.csv 用于录制后半段上传并生成 v2。"
+  },
+  "documents": [
+    {
+      "source_file": "raw_docs/demo_brief.md",
+      "name": "demo_brief.md",
+      "format": "md",
+      "bytes": 1887,
+      "record_count": 1,
+      "indexed_count": 5,
+      "status": "已就绪",
+      "profile_file": "profiles/profile-000.json",
+      "content_sha256": "afee9aef33ddf4274f1e1383c4f8239bf3983fab1747ad35cdca44e3fd49c81f",
+      "updated_at": "2026-07-01T12:49:23.191380+00:00"
+    },
+    {
+      "source_file": "raw_docs/candidate_sites.csv",
+      "name": "candidate_sites.csv",
+      "format": "csv",
+      "bytes": 2859,
+      "record_count": 8,
+      "indexed_count": 8,
+      "status": "已就绪",
+      "profile_file": "profiles/profile-001.json",
+      "content_sha256": "e6d7ee178f27ddad0e7307e61d0d30e637c2f1b6175cc8be17f133c5c672ccae",
+      "updated_at": "2026-07-01T12:49:23.206850+00:00"
+    },
+    {
+      "source_file": "raw_docs/signal_density.csv",
+      "name": "signal_density.csv",
+      "format": "csv",
+      "bytes": 33957,
+      "record_count": 400,
+      "indexed_count": 400,
+      "status": "已就绪",
+      "profile_file": "profiles/profile-002.json",
+      "content_sha256": "debb10c894e9b0b6f67a3f878dd744999f391234c0faa72abf82acd5730f7ee2",
+      "updated_at": "2026-07-01T12:49:23.262613+00:00"
+    },
+    {
+      "source_file": "raw_docs/surrounding_env.csv",
+      "name": "surrounding_env.csv",
+      "format": "csv",
+      "bytes": 1021,
+      "record_count": 8,
+      "indexed_count": 8,
+      "status": "已就绪",
+      "profile_file": "profiles/profile-003.json",
+      "content_sha256": "20d005f96aa2642f25efb3743b6be8409d2994db7e10c10fd4c4ef1480749b83",
+      "updated_at": "2026-07-01T12:49:23.269683+00:00"
+    },
+    {
+      "source_file": "raw_docs/device_events_summary.json",
+      "name": "device_events_summary.json",
+      "format": "json",
+      "bytes": 5467,
+      "record_count": 20,
+      "indexed_count": 28,
+      "status": "已就绪",
+      "profile_file": "profiles/profile-004.json",
+      "content_sha256": "468ae8e778c9bf990901ba0f59497993bc472b2ed786b534bdc1d451ede64e42",
+      "updated_at": "2026-07-01T12:49:23.276153+00:00"
+    }
+  ],
+  "profile_files": [
+    "profiles/profile-000.json",
+    "profiles/profile-001.json",
+    "profiles/profile-002.json",
+    "profiles/profile-003.json",
+    "profiles/profile-004.json"
+  ],
+  "profile_file": "profile.json",
+  "format": "mixed",
+  "updated_at": "2026-07-01T12:49:23.276875+00:00",
+  "profile_summary": "默认演示工作区包含楼层级资产防丢硬件沉淀的人流、停留、复访、周边业态和候选点位数据。当前证据适合评估“快闪店/小店选址建议”服务的 v1 试点，但不能直接承诺销售结果。",
+  "customer_summary": "共 437 条记录，覆盖 5 个表/集合，可观察业务类别、资料分组、数量、点位名称、业态区域、设备数量，适合用来做资料问答、机会判断和下一步方案验证。"
 }

@@ -127,7 +127,7 @@ function historyUser(item, currentUser) {
   };
 }
 
-export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, user }) {
+export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, user, onWorkspaceDataChanged }) {
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
   const [tab, setTab] = useState("table");
   const [groups, setGroups] = useState([]);
@@ -160,6 +160,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   const [collapsed, setCollapsed] = useState({});
   const [createModal, setCreateModal] = useState(null);
   const [connectorModal, setConnectorModal] = useState(null);
+  const [plannedConnector, setPlannedConnector] = useState(null);
   const [connectorBusy, setConnectorBusy] = useState(false);
   const [connectorResult, setConnectorResult] = useState(null);
   const [externalGroups, setExternalGroups] = useState([]);
@@ -173,6 +174,15 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     window.clearTimeout(toastT.current);
     toastT.current = window.setTimeout(() => setToast(""), 2600);
   }, []);
+
+  const notifyWorkspaceDataChanged = useCallback(() => {
+    if (onWorkspaceDataChanged) onWorkspaceDataChanged();
+    try {
+      window.dispatchEvent(new CustomEvent("df-workspace-data-changed", { detail: { workspaceId } }));
+    } catch {
+      // Best-effort cross-view refresh signal for older browsers/tests.
+    }
+  }, [onWorkspaceDataChanged, workspaceId]);
 
   const clearConnectorState = useCallback((kind = null, message = "") => {
     const normalizedKind = kind ? String(kind).toLowerCase() : null;
@@ -506,6 +516,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
       await loadContent(active, offset); // 重新载入校验持久化
       loadSidePanels(active);
       reloadFiles();
+      notifyWorkspaceDataChanged();
     } catch (e) {
       showToast(`保存失败：${e.message}`);
     } finally {
@@ -538,6 +549,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
       const data = await reloadFiles();
       const created = (data?.groups || []).flatMap((g) => g.files || []).find((f) => f.id === res.file?.id) || res.file;
       if (created?.id) openFile(created);
+      notifyWorkspaceDataChanged();
     } catch (e) {
       showToast(`新建失败：${e.message}`);
     }
@@ -697,6 +709,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
       setActive(null);
       setContent(null);
       await reloadFiles();
+      notifyWorkspaceDataChanged();
     } catch (e) {
       showToast(`删除失败：${e.message}`);
     }
@@ -824,6 +837,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
       const data = await reloadFiles();
       const imported = findImportedFile(data, res, source);
       if (imported) openFile(imported);
+      notifyWorkspaceDataChanged();
     } catch (e) {
       if (isConnectorSessionError(e)) {
         clearConnectorState(source.externalKind, "外部连接会话已失效，请重新连接。");
@@ -911,6 +925,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
       const data = await reloadFiles();
       const imported = (data?.groups || []).flatMap((g) => g.files || []).find((f) => f.id === res?.upload?.documents?.[0]?.id);
       if (imported) openFile(imported);
+      notifyWorkspaceDataChanged();
     } catch (e) {
       if (isConnectorSessionError(e)) {
         clearConnectorState(connectorResult.kind, "外部连接会话已失效，请重新连接。");
@@ -1210,16 +1225,19 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
                 <div className="dw-conn-status">{c.hint}</div>
                 {connected && connectorResult?.expires_at ? <div className="dw-conn-exp">有效期至 {fmtTime(connectorResult.expires_at)}</div> : null}
                 <div className="dw-conn-actions">
-                  <button type="button" className={planned ? "dw-conn-btn" : "dw-conn-btn primary"} disabled={planned}
+                  <button type="button" className={planned ? "dw-conn-btn planned" : "dw-conn-btn primary"}
                     onClick={() => {
-                      if (planned) return;
+                      if (planned) {
+                        setPlannedConnector(c);
+                        return;
+                      }
                       if (c.id === "upload") {
                         onUpload && onUpload(workspaceId);
                       } else {
                         setConnectorModal(c.id);
                       }
                     }}>
-                    {planned ? "敬请期待" : c.id === "upload" ? "上传文件" : connected ? "重新接入" : "接入"}
+                    {planned ? "查看计划" : c.id === "upload" ? "上传文件" : connected ? "重新接入" : "接入"}
                   </button>
                   {connected ? (
                     <button type="button" className="dw-conn-btn danger" disabled={connectorBusy} onClick={() => disconnectConnector(c.id, connectorResult.connection_id)}>
@@ -1264,6 +1282,12 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
               setConnectorBusy(false);
             }
           }}
+        />
+      ) : null}
+      {plannedConnector ? (
+        <PlannedConnectorModal
+          connector={plannedConnector}
+          onClose={() => setPlannedConnector(null)}
         />
       ) : null}
       {contextMenu ? (
@@ -1322,6 +1346,36 @@ function CreateFileModal({ state, setState, onClose, onSubmit }) {
           <button className="primary-button icon-label" type="button" onClick={onSubmit}>
             <Icon size={15} />
             创建
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlannedConnectorModal({ connector, onClose }) {
+  const Icon = connector?.icon || Cloud;
+  return (
+    <div className="modal-overlay" role="presentation">
+      <div className="upload-modal dw-small-modal" role="dialog" aria-modal="true" aria-label={`${connector?.name || "连接器"} 计划说明`}>
+        <div className="modal-head">
+          <div>
+            <strong>{connector?.name || "连接器"} 计划上线</strong>
+            <span>当前演示环境先开放 Blob、SQL 和本地上传的真连接能力。</span>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="dw-planned-body">
+          <span className="dw-planned-icon">{connector?.src ? <img src={connector.src} alt="" /> : <Icon size={22} />}</span>
+          <p>Azure Data Lake 会复用同一套服务端连接会话、凭证保护、预览和导入流程。现阶段如需演示数据湖型文件，可以先通过 Azure Blob Storage 连接到容器，再把目标文件导入工作区。</p>
+          <p>导入后的数据会进入文件库、质量检查、字段映射和 Agent 分析上下文，体验路径与正式 Data Lake 接入保持一致。</p>
+        </div>
+        <div className="modal-actions">
+          <button className="primary-button icon-label" type="button" onClick={onClose}>
+            <Check size={15} />
+            知道了
           </button>
         </div>
       </div>

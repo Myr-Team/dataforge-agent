@@ -1,0 +1,652 @@
+{
+  "workspace_id": "demo-corpus",
+  "name": "candidate_sites.csv",
+  "format": "csv",
+  "source_file": "raw_docs/candidate_sites.csv",
+  "created_at": "2026-07-01T12:49:23.202655+00:00",
+  "tables": [
+    {
+      "name": "candidate_sites",
+      "row_count": 8,
+      "column_count": 16,
+      "columns": [
+        {
+          "name": "site_name",
+          "type": "text",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "城心天街-地下美食街",
+            "老城步行街-临街口",
+            "城心天街-中庭"
+          ],
+          "top_values": [
+            {
+              "value": "城心天街-地下美食街",
+              "count": 1
+            },
+            {
+              "value": "老城步行街-临街口",
+              "count": 1
+            },
+            {
+              "value": "城心天街-中庭",
+              "count": 1
+            },
+            {
+              "value": "高新园区-地铁接驳厅",
+              "count": 1
+            },
+            {
+              "value": "滨江写字楼-大堂",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "name": "business_area",
+          "type": "text",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 4,
+          "examples": [
+            "城心商圈",
+            "老城商业街",
+            "城心商圈"
+          ],
+          "top_values": [
+            {
+              "value": "城心商圈",
+              "count": 2
+            },
+            {
+              "value": "老城商业街",
+              "count": 2
+            },
+            {
+              "value": "高新园区",
+              "count": 2
+            },
+            {
+              "value": "滨江CBD",
+              "count": 2
+            }
+          ]
+        },
+        {
+          "name": "fit_scenario",
+          "type": "text",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "周末快闪/饮品轻食/高频补给",
+            "周末零售/户外小件/文旅联名",
+            "品牌展示/新品发布/家庭客群触达"
+          ],
+          "top_values": [
+            {
+              "value": "周末快闪/饮品轻食/高频补给",
+              "count": 1
+            },
+            {
+              "value": "周末零售/户外小件/文旅联名",
+              "count": 1
+            },
+            {
+              "value": "品牌展示/新品发布/家庭客群触达",
+              "count": 1
+            },
+            {
+              "value": "通勤补给/工作日便捷零售",
+              "count": 1
+            },
+            {
+              "value": "白领服务咨询/企业团购线索",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "name": "device_ping_count",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "8444",
+            "8337",
+            "8320"
+          ],
+          "top_values": [
+            {
+              "value": "8444",
+              "count": 1
+            },
+            {
+              "value": "8337",
+              "count": 1
+            },
+            {
+              "value": "8320",
+              "count": 1
+            },
+            {
+              "value": "4420",
+              "count": 1
+            },
+            {
+              "value": "4475",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 1632,
+            "max": 8444,
+            "mean": 5207.125
+          }
+        },
+        {
+          "name": "unique_device_count",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "1665",
+            "1674",
+            "1645"
+          ],
+          "top_values": [
+            {
+              "value": "1665",
+              "count": 1
+            },
+            {
+              "value": "1674",
+              "count": 1
+            },
+            {
+              "value": "1645",
+              "count": 1
+            },
+            {
+              "value": "863",
+              "count": 1
+            },
+            {
+              "value": "857",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 342,
+            "max": 1674,
+            "mean": 1025.625
+          }
+        },
+        {
+          "name": "avg_dwell_minutes",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 5,
+          "examples": [
+            "10.1",
+            "10.3",
+            "10.1"
+          ],
+          "top_values": [
+            {
+              "value": "6.4",
+              "count": 3
+            },
+            {
+              "value": "10.1",
+              "count": 2
+            },
+            {
+              "value": "10.3",
+              "count": 1
+            },
+            {
+              "value": "4.3",
+              "count": 1
+            },
+            {
+              "value": "4.4",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 4.3,
+            "max": 10.3,
+            "mean": 7.3
+          }
+        },
+        {
+          "name": "repeat_visit_ratio",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 5,
+          "examples": [
+            "0.29",
+            "0.29",
+            "0.27"
+          ],
+          "top_values": [
+            {
+              "value": "0.29",
+              "count": 2
+            },
+            {
+              "value": "0.18",
+              "count": 2
+            },
+            {
+              "value": "0.17",
+              "count": 2
+            },
+            {
+              "value": "0.27",
+              "count": 1
+            },
+            {
+              "value": "0.19",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 0.17,
+            "max": 0.29,
+            "mean": 0.2175
+          }
+        },
+        {
+          "name": "competitor_count_500m",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "18",
+            "22",
+            "12"
+          ],
+          "top_values": [
+            {
+              "value": "18",
+              "count": 1
+            },
+            {
+              "value": "22",
+              "count": 1
+            },
+            {
+              "value": "12",
+              "count": 1
+            },
+            {
+              "value": "6",
+              "count": 1
+            },
+            {
+              "value": "5",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 2,
+            "max": 22,
+            "mean": 10.25
+          }
+        },
+        {
+          "name": "nearest_transit_m",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 5,
+          "examples": [
+            "180",
+            "240",
+            "180"
+          ],
+          "top_values": [
+            {
+              "value": "180",
+              "count": 2
+            },
+            {
+              "value": "240",
+              "count": 2
+            },
+            {
+              "value": "520",
+              "count": 2
+            },
+            {
+              "value": "60",
+              "count": 1
+            },
+            {
+              "value": "700",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 60,
+            "max": 700,
+            "mean": 330
+          }
+        },
+        {
+          "name": "daytime_population_density",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 5,
+          "examples": [
+            "26000",
+            "31000",
+            "26000"
+          ],
+          "top_values": [
+            {
+              "value": "26000",
+              "count": 2
+            },
+            {
+              "value": "31000",
+              "count": 2
+            },
+            {
+              "value": "14000",
+              "count": 2
+            },
+            {
+              "value": "12000",
+              "count": 1
+            },
+            {
+              "value": "9000",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 9000,
+            "max": 31000,
+            "mean": 20375
+          }
+        },
+        {
+          "name": "rent_index",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "88",
+            "84",
+            "92"
+          ],
+          "top_values": [
+            {
+              "value": "88",
+              "count": 1
+            },
+            {
+              "value": "84",
+              "count": 1
+            },
+            {
+              "value": "92",
+              "count": 1
+            },
+            {
+              "value": "66",
+              "count": 1
+            },
+            {
+              "value": "76",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 58,
+            "max": 92,
+            "mean": 75.75
+          }
+        },
+        {
+          "name": "parking_spaces",
+          "type": "number",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 5,
+          "examples": [
+            "320",
+            "60",
+            "320"
+          ],
+          "top_values": [
+            {
+              "value": "320",
+              "count": 2
+            },
+            {
+              "value": "60",
+              "count": 2
+            },
+            {
+              "value": "140",
+              "count": 2
+            },
+            {
+              "value": "200",
+              "count": 1
+            },
+            {
+              "value": "400",
+              "count": 1
+            }
+          ],
+          "numeric": {
+            "min": 60,
+            "max": 400,
+            "mean": 205
+          }
+        },
+        {
+          "name": "evidence_strength",
+          "type": "text",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 3,
+          "examples": [
+            "strong",
+            "strong",
+            "strong"
+          ],
+          "top_values": [
+            {
+              "value": "strong",
+              "count": 3
+            },
+            {
+              "value": "medium",
+              "count": 3
+            },
+            {
+              "value": "weak",
+              "count": 2
+            }
+          ]
+        },
+        {
+          "name": "key_signal",
+          "type": "text",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "高人流、高停留、复访稳定，餐饮小吃业态密集，适合验证即时转化",
+            "人流与停留接近最高，居民比例较高，适合周末逛街型消费",
+            "核心中庭人流强、停留稳定，适合品牌曝光和新品展示"
+          ],
+          "top_values": [
+            {
+              "value": "高人流、高停留、复访稳定，餐饮小吃业态密集，适合验证即时转化",
+              "count": 1
+            },
+            {
+              "value": "人流与停留接近最高，居民比例较高，适合周末逛街型消费",
+              "count": 1
+            },
+            {
+              "value": "核心中庭人流强、停留稳定，适合品牌曝光和新品展示",
+              "count": 1
+            },
+            {
+              "value": "离地铁最近，租金较低，适合通勤即时消费",
+              "count": 1
+            },
+            {
+              "value": "CBD 大堂稳定但停留不长，适合收集团购和企业客户线索",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "name": "key_risk",
+          "type": "text",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "竞品密度高，租金压力中高，容易被同质化摊位淹没",
+            "竞品最多，停车弱，天气和街区活动波动可能放大",
+            "租金指数最高，若只做销售回本压力大"
+          ],
+          "top_values": [
+            {
+              "value": "竞品密度高，租金压力中高，容易被同质化摊位淹没",
+              "count": 1
+            },
+            {
+              "value": "竞品最多，停车弱，天气和街区活动波动可能放大",
+              "count": 1
+            },
+            {
+              "value": "租金指数最高，若只做销售回本压力大",
+              "count": 1
+            },
+            {
+              "value": "停留短，周末弱，品牌体验型活动可能转化不足",
+              "count": 1
+            },
+            {
+              "value": "交通距离和自然流量不如商圈，直接零售效率未验证",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "name": "recommended_test",
+          "type": "text",
+          "non_empty": 8,
+          "missing": 0,
+          "missing_rate": 0.0,
+          "unique_count": 8,
+          "examples": [
+            "周五晚高峰+周末午后各半天，测试扫码留资、试吃/试用转化和单位时段成交",
+            "周末两天设置轻户外小件展台，记录进店询问、加购、客单和天气影响",
+            "半天品牌展示+互动抽奖，重点看停留转化和二维码关注成本"
+          ],
+          "top_values": [
+            {
+              "value": "周五晚高峰+周末午后各半天，测试扫码留资、试吃/试用转化和单位时段成交",
+              "count": 1
+            },
+            {
+              "value": "周末两天设置轻户外小件展台，记录进店询问、加购、客单和天气影响",
+              "count": 1
+            },
+            {
+              "value": "半天品牌展示+互动抽奖，重点看停留转化和二维码关注成本",
+              "count": 1
+            },
+            {
+              "value": "工作日早晚高峰测试便捷补给，观察 3 分钟内完成购买的比例",
+              "count": 1
+            },
+            {
+              "value": "午休+下班两个时段设咨询台，验证企业团购线索和预约率",
+              "count": 1
+            }
+          ]
+        }
+      ],
+      "distribution": {
+        "row_count": 8,
+        "column_count": 16,
+        "missing_cell_rate": 0.0,
+        "duplicate_row_count": 0
+      },
+      "signals": [
+        "site_name 有 8 个不同取值，可用于分群、筛选或解释差异",
+        "business_area 有 4 个不同取值，可用于分群、筛选或解释差异",
+        "fit_scenario 有 8 个不同取值，可用于分群、筛选或解释差异",
+        "device_ping_count 是完整度较高的数值字段，范围 1632 到 8444",
+        "unique_device_count 是完整度较高的数值字段，范围 342 到 1674",
+        "avg_dwell_minutes 是完整度较高的数值字段，范围 4.3 到 10.3",
+        "repeat_visit_ratio 是完整度较高的数值字段，范围 0.17 到 0.29",
+        "competitor_count_500m 是完整度较高的数值字段，范围 2 到 22",
+        "nearest_transit_m 是完整度较高的数值字段，范围 60 到 700",
+        "daytime_population_density 是完整度较高的数值字段，范围 9000 到 31000"
+      ],
+      "cross_signals": [
+        "device_ping_count 按 business_area 分组均值差异明显：城心商圈=8382(n=2)，高新园区=3026.5(n=2)，差值 5355.5",
+        "unique_device_count 按 business_area 分组均值差异明显：城心商圈=1655(n=2)，滨江CBD=602(n=2)，差值 1053",
+        "avg_dwell_minutes 按 business_area 分组均值差异明显：城心商圈=10.1(n=2)，高新园区=5.35(n=2)，差值 4.75",
+        "repeat_visit_ratio 按 business_area 分组均值差异明显：城心商圈=0.28(n=2)，滨江CBD=0.175(n=2)，差值 0.105",
+        "competitor_count_500m 按 business_area 分组均值差异明显：老城商业街=18(n=2)，滨江CBD=3.5(n=2)，差值 14.5",
+        "nearest_transit_m 按 business_area 分组均值差异明显：滨江CBD=520(n=2)，城心商圈=180(n=2)，差值 340",
+        "daytime_population_density 按 business_area 分组均值差异明显：老城商业街=31000(n=2)，高新园区=10500(n=2)，差值 20500",
+        "rent_index 按 business_area 分组均值差异明显：城心商圈=90(n=2)，高新园区=62(n=2)，差值 28"
+      ],
+      "noise": [
+        "site_name 取值分布近似均匀，暂不作为核心分群结论",
+        "business_area 取值分布近似均匀，暂不作为核心分群结论",
+        "fit_scenario 取值分布近似均匀，暂不作为核心分群结论",
+        "device_ping_count 取值分布近似均匀，暂不作为核心分群结论",
+        "unique_device_count 取值分布近似均匀，暂不作为核心分群结论",
+        "competitor_count_500m 取值分布近似均匀，暂不作为核心分群结论",
+        "rent_index 取值分布近似均匀，暂不作为核心分群结论",
+        "evidence_strength 更像标识符，可用于追踪但不宜单独推导业务结论",
+        "key_signal 取值分布近似均匀，暂不作为核心分群结论",
+        "key_risk 取值分布近似均匀，暂不作为核心分群结论"
+      ]
+    }
+  ],
+  "profile_summary": "candidate_sites.csv: 1 table/section(s), 8 rows, 16 fields.",
+  "profile_id": "profile-001",
+  "profile_file": "profiles/profile-001.json"
+}

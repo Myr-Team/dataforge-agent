@@ -10,6 +10,7 @@ from typing import Any
 
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
+from openai import AzureOpenAI
 from openai.types.responses.response_input_param import FunctionCallOutput
 
 
@@ -123,6 +124,46 @@ FOLLOWUP_ASSESSMENT_SCHEMA = {
         "should_clarify": {"type": "boolean"},
     },
     "required": ["text", "assessment", "gaps", "clarify", "should_clarify"],
+}
+
+
+ANSWER_COMPOSER_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "route_hint": {
+            "type": "string",
+            "enum": ["direct_answer", "clarify", "plan_draft", "rewrite_only", "upgrade_analysis"],
+        },
+        "answer_type": {
+            "type": "string",
+            "enum": ["brief_answer", "evidence_answer", "plan", "clarify", "meta", "rewrite", "upgrade"],
+        },
+        "text": {"type": "string"},
+        "assessment": {
+            "type": "string",
+            "enum": ["supported", "needs_more_evidence", "risky", "unclear", "not_applicable"],
+        },
+        "gaps": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "clarify": {"type": "string"},
+        "should_clarify": {"type": "boolean"},
+        "is_plan": {"type": "boolean"},
+        "needs_full_analysis": {"type": "boolean"},
+    },
+    "required": [
+        "route_hint",
+        "answer_type",
+        "text",
+        "assessment",
+        "gaps",
+        "clarify",
+        "should_clarify",
+        "is_plan",
+        "needs_full_analysis",
+    ],
 }
 
 
@@ -506,7 +547,40 @@ def run_action_plan(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _project_client() -> AIProjectClient:
+class _DirectOpenAIProjectAdapter:
+    """Keep existing call sites compatible when Azure OpenAI key auth is configured."""
+
+    def __init__(self, openai_client: Any) -> None:
+        self._openai_client = openai_client
+
+    def get_openai_client(self) -> Any:
+        return self._openai_client
+
+
+def _configured_azure_openai_client() -> Any | None:
+    endpoint = str(os.environ.get("OPENAI_ENDPOINT") or os.environ.get("AZURE_OPENAI_ENDPOINT") or "").strip()
+    api_key = str(os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not endpoint or not api_key:
+        return None
+    return AzureOpenAI(
+        azure_endpoint=endpoint,
+        api_key=api_key,
+        api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview"),
+        max_retries=0,
+    )
+
+
+def _openai_client() -> Any:
+    direct = _configured_azure_openai_client()
+    if direct is not None:
+        return direct
+    return _project_client().get_openai_client()
+
+
+def _project_client() -> Any:
+    direct = _configured_azure_openai_client()
+    if direct is not None:
+        return _DirectOpenAIProjectAdapter(direct)
     return AIProjectClient(
         endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
         credential=DefaultAzureCredential(),
@@ -1164,38 +1238,28 @@ def run_coordinator_direct_reply(payload: dict[str, Any]) -> dict[str, Any]:
 _GROUNDED_CHAT_BODY = (
     "你是 DataForge 的数据分析助手，正在和客户多轮对话。请针对用户【当前这一条】消息作答，绝不套固定句式模板。\n"
     "\n"
-    "先判断用户这条是【普通问答/判断】还是【要你出方案/策划/活动/计划/落地步骤】：\n"
+    "先判断用户这条是【直接问答】、【分析/判断】、【方案/计划】还是【信息不足需要澄清】：\n"
     "\n"
-    "A) 普通问答/判断（如“会员数据怎样”“值得办吗”“证据有多强”“缺什么数据”）：\n"
-    "  - 先一句话给结论，开头可用一个贴切的 emoji 点题（✅ 可行 / ⚠️ 谨慎 / ❌ 不建议 / 📊 数据情况 / 💡 建议 / 🔍 发现），再结合证据解释。一般 120-280 字。\n"
-    "  - 把【关键结论、数字、指标、人群】用 **加粗** 突出；有【多个并列要点】时【换行】用 `- ` 列点，必要时每点前加一个贴切 emoji（如 📈 增长、💰 成本、👥 人群、⚠️ 风险、🧩 缺口），让回答更易读。\n"
-    "  - 但这种问答【不要】加 `## 大标题`、不要套方案那套小节骨架。\n"
+    "A) 直接问答：先直接回答用户问题，再补一条最关键依据或边界；能在 2-5 句说清就不要扩写成报告。\n"
+    "B) 分析/判断：用轻量 Markdown，通常包含 `## 综合判断`、`## 依据`、`## 风险或缺口`、`## 下一步`；只保留与当前问题有关的章节。\n"
+    "  - 一般 180-500 字，不要重复上一轮整份报告，不要主动重列五维评分。\n"
     "\n"
-    "B) 要你出方案/策划/活动/计划（如“做一场拉新活动”“帮我策划…”“这个怎么落地”“给个推广方案”）：\n"
-    "  - 按下面模板输出【真正可执行的方案】，用 Markdown：每个小节用 `## 标题` 单独成行，要点用 `- ` 或 `1.` 列表，小节之间空一行。直接照这个骨架填，缺的小节可省略：\n"
-    "    ## 一句话方案\n"
-    "    （定位+主线，一句话）\n"
-    "    ## 🎯 目标与主指标\n"
-    "    - 目标：… / 主指标（北极星）：…\n"
-    "    ## 👥 目标人群\n"
-    "    - 结合资料里的真实人群/痛点\n"
-    "    ## 🎬 活动机制（主线玩法）\n"
-    "    1. …\n"
-    "    2. …\n"
-    "    ## 📅 节奏（时间线）\n"
-    "    - 第1周：… / 第2-3周：… / 第4周：复盘\n"
-    "    ## 📊 漏斗指标\n"
-    "    - 曝光 → 报名 → 到店 → 转化/复购，每段给一个可量化阈值\n"
-    "    ## ⚠️ 风险与先验证\n"
-    "    - 最大风险 + 先用小样本验证什么\n"
-    "  - 方案必须结合 evidence 里的真实信号；没有数据支撑的地方写“需补：…”，绝不编造数字。\n"
+    "C) 方案/计划：输出可执行的 Markdown，根据任务选择最有用的章节，不要因为行业不同而强套固定章节。\n"
+    "  - 可选章节包括：`## 一句话方案`、`## 目标与成功标准`、`## 适用对象或范围`、`## 核心策略`、`## 执行步骤`、`## 指标与验证`、`## 资源与依赖`、`## 风险与待补证据`。\n"
+    "  - 通常选择 4-7 个章节；产品、运营、选址、制造、专业服务、公共事务等问题应体现各自任务结构，而不是复用活动策划措辞。\n"
+    "  - 方案必须结合 evidence 里的真实信号；没有数据支撑的目标值、成本或收益写成待验证假设，绝不编造数字。\n"
+    "D) 需要澄清：只有当缺少的信息会导致完全不同的判断或执行路径时才反问；能给带条件的暂定答案时，先回答再列缺口。\n"
     "\n"
     "通用规则：\n"
     "1) 只用 evidence 提供的证据，不编造工作区事实；需要引用时在句末用 [n]（n=evidence 的 marker 数字）。\n"
     "2) 绝不整段照抄证据原文，不输出字段名或 '会员编号为\"Mxxxx\"'、'数值为\"…\"' 这类原始值；综合成人话。\n"
     "3) 结合 conversation_history 记住上文，理解指代与新增约束（如“预算减半”“只看旗舰店”）。\n"
     "4) 不同问题给明显不同的答案；证据不足就直说缺什么。\n"
-    "5) 排版友好：适度用 emoji 与 **加粗** 让回答更生动、易扫读，但保持专业、克制——别每句都加、别堆砌。"
+    "5) 先检查 workspace_summary 和 evidence 中实际存在的文件、字段语义、记录规模和来源，再判断什么已有、什么缺失；不要因没有熟悉的字段名就宣称没有数据。\n"
+    "6) 用户要求比较、排序或选择时，优先使用证据中真实存在的候选实体和可比指标；若候选名称不足，给筛选规则并明确缺口，不要编造候选。\n"
+    "7) 把内部字段转成业务语言，但保留关键数字、时间范围、样本量和来源标记；事实、推断、假设不要混写。\n"
+    "8) 不要把内部执行模式写给用户：禁止出现“轻量跟进判断”“不会重跑完整多智能体链”“followup_edit”“corpus_qa”“数据字段与数据字段”等工程语。\n"
+    "9) 排版友好：用标题、短段落和列表提高可读性；emoji 只在确实帮助扫读时少量使用。"
 )
 
 
@@ -1260,7 +1324,9 @@ def run_followup_assessment(payload: dict[str, Any]) -> dict[str, Any]:
         "based on current evidence, give a calibrated provisional recommendation, state assumptions and "
         "evidence gaps, and turn missing budget, timing, metric, or data-source details into validation "
         "steps instead of blocking the answer. Set should_clarify=false in that case. Do not use a keyword "
-        "checklist or scenario-specific templates. Never invent workspace facts. Return JSON only, in the user's language."
+        "checklist or scenario-specific templates. Never invent workspace facts. Do not mention internal execution "
+        "modes such as lightweight follow-up, fast path, full multi-agent rerun, followup_edit, or corpus_qa in "
+        "the customer-facing text. Return JSON only, in the user's language."
     )
     create_args: dict[str, Any] = {
         "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
@@ -1288,6 +1354,69 @@ def run_followup_assessment(payload: dict[str, Any]) -> dict[str, Any]:
         "response_id": getattr(response, "id", None),
         "usage": _usage_dict(getattr(response, "usage", None)),
         "mode": "followup_assessment",
+    }
+
+
+def run_answer_composer(payload: dict[str, Any]) -> dict[str, Any]:
+    client = _project_client()
+    openai_client = client.get_openai_client()
+    instructions = (
+        "You are DataForge Answer Composer, a customer-facing conversation agent. Your job is to decide "
+        "how to answer the current user message using the provided workspace summary, previous answer, "
+        "last analysis, citations, gaps, and conversation history. Prefer a natural consultant-style Chinese "
+        "reply instead of rigid templates. Do not expose internal route names, fast paths, corpus_qa, "
+        "followup_edit, or implementation details.\n\n"
+        "Decision policy:\n"
+        "- For simple questions, answer directly and briefly with the most relevant evidence boundary.\n"
+        "- For evidence questions, explain the strongest support and the weakest gap in plain language.\n"
+        "- For plan/proposal requests, draft a useful Markdown plan, but only from provided evidence. Set "
+        "is_plan=true and route_hint=plan_draft.\n"
+        "- Ask one concise clarification only when the message is too ambiguous to give a provisional answer. "
+        "If you can give a bounded answer with assumptions, do that instead of blocking.\n"
+        "- Set needs_full_analysis=true and route_hint=upgrade_analysis only when the user clearly asks to "
+        "rerun deep analysis, add market/web research, rescore feasibility, regenerate audit results, or when "
+        "the requested answer would require facts not present in the provided context.\n\n"
+        "Content rules:\n"
+        "- Never invent workspace facts, metrics, candidate sites, customers, costs, or citations.\n"
+        "- Keep verdicts calibrated to last_analysis. You may explain or reframe them, but do not upgrade a "
+        "verdict or confidence level.\n"
+        "- Missing data should become validation steps, not a dead-end refusal.\n"
+        "- Use natural Markdown. For normal non-plan answers, use exactly these lightweight sections: "
+        "## 综合判断, ## 依据, ## 下一步. Keep each section short and useful.\n"
+        "- For plan answers, use readable sections such as: 一句话方案, 关键判断, 试点动作, 证据依据, 风险与待验证.\n"
+        "- Keep most answers under 700 Chinese characters; plans can be longer but should stay concise.\n"
+        "Return JSON only."
+    )
+    create_args: dict[str, Any] = {
+        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False, indent=2),
+        "max_output_tokens": int(os.environ.get("DF_ANSWER_COMPOSER_MAX_TOKENS", "1200")),
+        "text": _schema_format("answer_composer", ANSWER_COMPOSER_SCHEMA),
+    }
+    try:
+        response = _responses_create_with_retry(openai_client, **create_args)
+    except Exception as exc:
+        if not _can_retry_without_schema(exc):
+            raise
+        create_args.pop("text", None)
+        response = _responses_create_with_retry(openai_client, **create_args)
+    text = getattr(response, "output_text", "") or ""
+    data = _extract_json(text)
+    gaps = [str(item).strip() for item in (data.get("gaps") or []) if str(item).strip()]
+    return {
+        "text": str(data.get("text") or "").strip(),
+        "assessment": str(data.get("assessment") or "unclear"),
+        "gaps": gaps[:6],
+        "clarify": str(data.get("clarify") or "").strip(),
+        "should_clarify": bool(data.get("should_clarify")),
+        "is_plan": bool(data.get("is_plan")),
+        "needs_full_analysis": bool(data.get("needs_full_analysis")),
+        "route_hint": str(data.get("route_hint") or "direct_answer"),
+        "answer_type": str(data.get("answer_type") or "brief_answer"),
+        "response_id": getattr(response, "id", None),
+        "usage": _usage_dict(getattr(response, "usage", None)),
+        "mode": "answer_composer",
     }
 
 

@@ -83,6 +83,14 @@ DataForge 把这件事自动化了。
 
 路由由审计员在运行时的结论经条件边决定 —— 是**代码控制的判断**，不是写死的 `if`。我们只借用 MAF 做编排拓扑，分析/审计引擎仍是自研的，因此零行为漂移。
 
+### 当前实现边界
+
+- 目前由 MAF 承担的是审计与复修的条件执行图；各专家能力仍由现有 Foundry 调用函数提供。独立的一等 MAF Agent、动态 handoff 和并发协作属于下一阶段。
+- 治理页面当前展示的是明确标注为“估算”的 DataForge ROI，依据 token 用量和可配置的时间价值假设计算；尚未接入 Foundry 原生 ROI。
+- 方案、产物和反馈运行会保存为版本快照，但完整的实验账本、客户数据来源谱系、证据变化和决策变化仍在演进计划中，当前不宣称已经完成。
+
+完整发布与演进设计见 [`docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md`](docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md)。
+
 ## 核心能力
 
 - **发现非显而易见的机会** —— 没人告诉它「去做选址」，它是从你数据里的证据自己推断出机会的。

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import mimetypes
 import os
@@ -11,27 +12,31 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 try:
-    from .blob_store import blob_configured, download_artifact, probe_blob_container
+    from .blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
     from .conversation_store import get_conversation, list_conversations
     from .data_workbench import list_workspace_files
     from .dependency_health import health_dependencies, health_dependency_details
+    from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
+    from .identity import actor_from_request, member_from_actor, public_actor
     from .observability import observability_snapshot
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
-    from .workspace_store import get_workspace_detail, list_workspaces
+    from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
 except ImportError:
-    from blob_store import blob_configured, download_artifact, probe_blob_container
+    from blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
     from conversation_store import get_conversation, list_conversations
     from data_workbench import list_workspace_files
     from dependency_health import health_dependencies, health_dependency_details
+    from graph_client import GraphClientError, search_entra_users, send_graph_invitation
+    from identity import actor_from_request, member_from_actor, public_actor
     from observability import observability_snapshot
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
-    from workspace_store import get_workspace_detail, list_workspaces
+    from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
 
 
 router = APIRouter(tags=["control-plane"])
@@ -39,6 +44,8 @@ router = APIRouter(tags=["control-plane"])
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_DIR = ROOT / "generated-outputs"
 HEALTH_CACHE_SECONDS = float(os.environ.get("DF_DASHBOARD_HEALTH_CACHE_SECONDS", "8"))
+WORKSPACE_MEMBER_ROLES = {"admin", "editor", "viewer"}
+WORKSPACE_MEMBER_STATUSES = {"pending", "active"}
 
 _HEALTH_CACHE: dict[str, Any] = {"expires": 0.0, "value": None}
 
@@ -69,13 +76,58 @@ async def workspace_artifacts(workspace_id: str) -> dict[str, Any]:
 
 
 @router.get("/api/workspaces/{workspace_id}/settings")
-async def workspace_settings(workspace_id: str) -> dict[str, Any]:
-    return await _call(workspace_settings_summary, workspace_id)
+async def workspace_settings(workspace_id: str, request: Request) -> dict[str, Any]:
+    return await _call(workspace_settings_summary, workspace_id, request)
 
 
 @router.get("/api/workspaces/{workspace_id}/members")
-async def workspace_members(workspace_id: str) -> dict[str, Any]:
-    return await _call(workspace_member_roles, workspace_id)
+async def workspace_members(workspace_id: str, request: Request) -> dict[str, Any]:
+    return await _call(workspace_member_roles, workspace_id, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/members/entra-users")
+async def workspace_member_entra_users(
+    workspace_id: str,
+    request: Request,
+    query: str = Query(default="", max_length=80),
+    limit: int = Query(default=8, ge=1, le=20),
+) -> dict[str, Any]:
+    return await _call(workspace_entra_users, workspace_id, request, query, limit)
+
+
+@router.post("/api/workspaces/{workspace_id}/members/invite")
+async def workspace_member_invite(workspace_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+    return await _call(invite_workspace_member, workspace_id, body, request)
+
+
+@router.post("/api/workspaces/{workspace_id}/members/entra-invite")
+async def workspace_member_entra_invite(workspace_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+    return await _call(invite_entra_workspace_member, workspace_id, body, request)
+
+
+@router.patch("/api/workspaces/{workspace_id}/members/{email}")
+async def workspace_member_update(workspace_id: str, email: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+    return await _call(update_workspace_member_role, workspace_id, email, body, request)
+
+
+@router.delete("/api/workspaces/{workspace_id}/members/{email}")
+async def workspace_member_remove(workspace_id: str, email: str, request: Request) -> dict[str, Any]:
+    return await _call(remove_workspace_member, workspace_id, email, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/usage-summary")
+async def workspace_usage(workspace_id: str, request: Request) -> dict[str, Any]:
+    return await _call(workspace_usage_summary, workspace_id, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/audit-events")
+async def workspace_audit(workspace_id: str, request: Request) -> dict[str, Any]:
+    return await _call(workspace_audit_events, workspace_id, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/governance-summary")
+async def workspace_governance(workspace_id: str, request: Request) -> dict[str, Any]:
+    return await _call(workspace_governance_summary, workspace_id, request)
 
 
 @router.get("/api/runs/{run_id}/summary")
@@ -161,7 +213,7 @@ def build_workspace_dashboard(workspace_id: str) -> dict[str, Any]:
             "ok": True,
             "service": "dataforge-backend",
             "search_endpoint": bool(os.environ.get("SEARCH_ENDPOINT")),
-            "workspace_default": "upload-cn-abe76cb16b-20260620102932",
+            "workspace_default": os.environ.get("DF_DEFAULT_WORKSPACE_ID") or workspace_id,
             "dependencies": dependencies,
         },
         "dependency_details": health_value.get("dependency_details") or {},
@@ -217,21 +269,25 @@ def workspace_latest_analysis(workspace_id: str) -> dict[str, Any]:
         except FileNotFoundError:
             continue
         checked += 1
+        if _is_lightweight_followup_run(run):
+            continue
         artifact = _strip_market_dump_from_artifact(_artifact(run))
         if not _has_full_analysis_artifact(artifact):
             continue
         feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
+        trace_run = _analysis_trace_run(run)
         return {
             "workspace_id": workspace_id,
             "found": True,
             "run_id": run.get("run_id") or run_id,
             "conversation_id": run.get("conversation_id"),
+            "source_run_id": trace_run.get("run_id") if trace_run is not run else run.get("source_run_id"),
             "artifact": artifact,
             "feasibility": feasibility,
-            "trace": _flow_trace_from_run(run),
-            "run_trace": trace_from_run(run),
-            "pipeline": pipeline_from_run(run),
-            "summary": _safe_value(lambda: run_summary(run_id), {}),
+            "trace": _flow_trace_from_run(trace_run, artifact),
+            "run_trace": trace_from_run(trace_run),
+            "pipeline": pipeline_from_run(trace_run),
+            "summary": _safe_value(lambda: run_summary(str(trace_run.get("run_id") or run_id)), {}),
             "structured_result": structured_result_from_run(run),
             "completed_at": run.get("completed_at") or run.get("updated_at") or summary.get("finished_at") or summary.get("time"),
             "checked_runs": checked,
@@ -267,6 +323,7 @@ def run_summary(run_id: str) -> dict[str, Any]:
     run = get_run(run_id)
     artifact = _artifact(run)
     audit = _audit_summary(run)
+    evidence = _run_dynamic_evidence(run)
     return {
         "run_id": run.get("run_id") or run_id,
         "conversation_id": run.get("conversation_id"),
@@ -278,11 +335,13 @@ def run_summary(run_id: str) -> dict[str, Any]:
         "agent_count": len(_agents(run)),
         "tool_calls": _tool_counts(run),
         "tokens": _token_usage(run),
+        "actor": public_actor(run.get("actor") if isinstance(run.get("actor"), dict) else {}),
         "audit": audit,
         "started_at": run.get("started_at"),
         "finished_at": run.get("completed_at"),
         "title": run.get("title"),
         "summary": run.get("summary") if isinstance(run.get("summary"), str) else _text_summary(run),
+        "evidence": evidence,
     }
 
 
@@ -313,7 +372,8 @@ def trace_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
     for index, step in enumerate(steps):
         data = step.get("data") if isinstance(step.get("data"), dict) else {}
         next_step = steps[index + 1] if index + 1 < len(steps) else None
-        duration = _duration_ms(step.get("time"), next_step.get("time") if isinstance(next_step, dict) else None)
+        next_time = next_step.get("time") if isinstance(next_step, dict) else None
+        duration = _duration_ms(step.get("time"), next_time)
         agent = _step_agent(step)
         items.append(
             {
@@ -328,9 +388,38 @@ def trace_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "tool_calls": 1 if step.get("event") in {"tool_call", "tool_result"} else 0,
                 "tokens": _usage_from_dict(data),
                 "detail": _sanitize_detail(data, depth=0),
+                "source": "run_store.steps",
+                "dynamic": True,
+                "evidence": {
+                    "event": step.get("event"),
+                    "time": step.get("time"),
+                    "next_time": next_time,
+                    "duration": "step.time -> next_step.time",
+                    "tokens": "step.data.usage" if isinstance(data.get("usage"), dict) else "",
+                    "detail": "step.data",
+                },
             }
         )
     return items
+
+
+def _run_dynamic_evidence(run: dict[str, Any]) -> dict[str, Any]:
+    finished_basis = "run.completed_at" if run.get("completed_at") else "run.updated_at"
+    token_source = "run.models[].usage"
+    if not run.get("models"):
+        token_source = "run.steps[].data.usage"
+    return {
+        "dynamic": True,
+        "source": "run_store",
+        "run_id": run.get("run_id"),
+        "duration": f"run.started_at -> {finished_basis}",
+        "agent_count": "unique run.steps[].data.agent / target_expert / name",
+        "tool_calls": "run.steps event=tool_call/tool_result",
+        "tokens": "run.models[].usage or steps[].data.usage",
+        "token_source": token_source,
+        "trace": "run.steps",
+        "step_count": len(run.get("steps") or []),
+    }
 
 
 def pipeline_from_run(run: dict[str, Any]) -> dict[str, Any]:
@@ -517,9 +606,19 @@ def system_status() -> dict[str, Any]:
     health = _cached_health()
     obs = observability_snapshot()
     details = health.get("dependency_details") or {}
+    release = {
+        "version": os.environ.get("DATAFORGE_VERSION", "1.0.0"),
+        "build": os.environ.get("DATAFORGE_BUILD_ID") or os.environ.get("BUILD_ID") or "local",
+        "environment": (
+            "production"
+            if os.environ.get("CONTAINER_APP_NAME") or os.environ.get("WEBSITE_SITE_NAME")
+            else "local"
+        ),
+    }
     return {
         "ok": all(bool(value) for value in (health.get("dependencies") or {}).values()),
         "checked_at": _now(),
+        "release": release,
         "dependencies": health.get("dependencies") or {},
         "dependency_details": details,
         "models": obs.get("models") or {},
@@ -551,14 +650,14 @@ def system_status() -> dict[str, Any]:
     }
 
 
-def workspace_settings_summary(workspace_id: str) -> dict[str, Any]:
+def workspace_settings_summary(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
     files = _safe_value(lambda: list_workspace_files(workspace_id), {"storage": {}, "groups": []})
     status = system_status()
     return {
         "workspace_id": workspace_id,
         "system_status": status,
         "storage": files.get("storage") or {},
-        "members": workspace_member_roles(workspace_id).get("members") or [],
+        "members": workspace_member_roles(workspace_id, request).get("members") or [],
         "configuration": {
             "models": status.get("models") or {},
             "rag": status.get("rag") or {},
@@ -567,19 +666,656 @@ def workspace_settings_summary(workspace_id: str) -> dict[str, Any]:
     }
 
 
-def workspace_member_roles(workspace_id: str) -> dict[str, Any]:
-    owner_email = os.environ.get("DF_WORKSPACE_OWNER_EMAIL") or os.environ.get("USER_EMAIL") or "owner@example.com"
-    owner_name = os.environ.get("DF_WORKSPACE_OWNER_NAME") or "Workspace owner"
+def workspace_member_roles(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
+    current_actor = actor_from_request(request)
+    usage = _workspace_usage_by_actor(workspace_id)
+    owner = member_from_actor(current_actor, role="owner")
+    owner["status"] = "active"
+    owner["source"] = owner.get("source") or current_actor.get("source") or "workspace_default"
+    members_by_key: dict[str, dict[str, Any]] = {_actor_key(owner) or "workspace_owner": owner}
+    stored = _workspace_invited_members(workspace_id)
+    for item in stored:
+        key = _actor_key(item)
+        if not key:
+            continue
+        if key in members_by_key:
+            members_by_key[key].update({k: v for k, v in item.items() if k not in {"role"} or members_by_key[key].get("role") != "owner"})
+            continue
+        members_by_key[key] = dict(item)
+    for item in usage.get("members") or []:
+        actor = item.get("actor") if isinstance(item, dict) else {}
+        key = _actor_key(actor if isinstance(actor, dict) else {})
+        if not key:
+            continue
+        if key in members_by_key:
+            row = members_by_key[key]
+            if row.get("status") == "pending":
+                row["status"] = "active"
+            if not row.get("source") or row.get("source") == "workspace_invite":
+                row["source"] = "workspace_invite"
+        else:
+            row = member_from_actor(actor, role="editor", status="active")
+            members_by_key[key] = row
+        row["usage"] = item.get("usage") or {}
+        row["last_seen_at"] = item.get("last_seen_at")
+    members = sorted(
+        members_by_key.values(),
+        key=lambda item: (0 if str(item.get("role") or "").lower() == "owner" else 1, str(item.get("status") or ""), str(item.get("email") or "")),
+    )
     return {
         "workspace_id": workspace_id,
         "rbac_enforced": False,
-        "source": "workspace_placeholder",
+        "source": current_actor.get("source") or "workspace_default",
         "roles": ["owner", "admin", "editor", "viewer"],
-        "members": [
-            {"user": owner_name, "email": owner_email, "role": "owner", "status": "active"},
-            {"user": "DataForge demo reviewer", "email": None, "role": "viewer", "status": "placeholder"},
-        ],
+        "members": members,
+        "usage": usage,
+        "invite": {
+            "status": "available",
+            "mode": "workspace_members_with_optional_entra_graph",
+            "message": "Members are persisted in the workspace for collaboration, token attribution, and audit display. Entra directory search and email invite are used when Microsoft Graph permissions are available.",
+        },
     }
+
+
+def workspace_entra_users(workspace_id: str, request: Request | None = None, query: str = "", limit: int = 8) -> dict[str, Any]:
+    _safe_workspace_id(workspace_id)
+    result = search_entra_users(query, request, limit=limit)
+    return {
+        "workspace_id": workspace_id,
+        "query": _clean_text(query),
+        **result,
+    }
+
+
+def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
+    email = _member_email((body or {}).get("email"))
+    if not email:
+        raise ValueError("A valid member email is required")
+    role = _member_role((body or {}).get("role"))
+    name = _clean_text((body or {}).get("name")) or _display_name_from_email(email)
+    current_actor = public_actor(actor_from_request(request))
+    meta = _load_workspace_meta(workspace_id)
+    members = _stored_workspace_members(meta)
+    now = _now()
+    invited_by = public_actor(current_actor)
+    updated = False
+    for member in members:
+        if str(member.get("email") or "").lower() != email:
+            continue
+        member.update(
+            {
+                "user": name,
+                "name": name,
+                "email": email,
+                "role": role,
+                "status": member.get("status") if member.get("status") in WORKSPACE_MEMBER_STATUSES else "pending",
+                "updated_at": now,
+                "invited_by": member.get("invited_by") or invited_by,
+            }
+        )
+        updated = True
+        break
+    if not updated:
+        members.append(
+            {
+                "user": name,
+                "name": name,
+                "email": email,
+                "role": role,
+                "status": "pending",
+                "source": "workspace_invite",
+                "invited_at": now,
+                "updated_at": now,
+                "invited_by": invited_by,
+            }
+        )
+    meta["workspace_members"] = members
+    _save_workspace_meta(workspace_id, meta)
+    result = workspace_member_roles(workspace_id, request)
+    result["invited_member"] = next((item for item in result.get("members") or [] if str(item.get("email") or "").lower() == email), None)
+    return result
+
+
+def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
+    payload = dict(body or {})
+    email = _member_email(payload.get("email"))
+    if not email:
+        raise ValueError("A valid member email is required")
+    name = _clean_text(payload.get("name")) or _display_name_from_email(email)
+    role = _member_role(payload.get("role"))
+    send_email = bool(payload.get("send_email"))
+    fallback = payload.get("fallback_to_workspace_member", True) is not False
+    graph_invite: dict[str, Any] = {"status": "skipped", "source": "microsoft_graph"}
+    if send_email:
+        try:
+            graph_invite = send_graph_invitation(
+                email,
+                _graph_invite_redirect_url(payload),
+                request,
+                display_name=name,
+                message=_clean_text(payload.get("message")),
+            )
+        except GraphClientError as exc:
+            graph_invite = {
+                "status": "unavailable" if exc.code in {"graph_token_missing", "graph_permission_denied"} else "failed",
+                "source": "microsoft_graph",
+                "error": exc.to_payload(),
+            }
+            if not fallback:
+                return {
+                    "workspace_id": workspace_id,
+                    "members": workspace_member_roles(workspace_id, request).get("members") or [],
+                    "graph_invite": graph_invite,
+                }
+    result = invite_workspace_member(workspace_id, {"email": email, "name": name, "role": role}, request)
+    result["graph_invite"] = graph_invite
+    return result
+
+
+def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
+    target = _member_email(email)
+    if not target:
+        raise ValueError("A valid member email is required")
+    role = _member_role((body or {}).get("role"))
+    current_actor = public_actor(actor_from_request(request))
+    if target == _actor_key(current_actor):
+        raise ValueError("The current owner role cannot be changed from the members panel")
+    meta = _load_workspace_meta(workspace_id)
+    members = _stored_workspace_members(meta)
+    now = _now()
+    updated = False
+    for member in members:
+        if str(member.get("email") or "").lower() != target:
+            continue
+        member["role"] = role
+        member["updated_at"] = now
+        member["updated_by"] = public_actor(current_actor)
+        updated = True
+        break
+    if not updated:
+        raise ValueError("Workspace member not found")
+    meta["workspace_members"] = members
+    _save_workspace_meta(workspace_id, meta)
+    result = workspace_member_roles(workspace_id, request)
+    result["updated_member"] = next((item for item in result.get("members") or [] if str(item.get("email") or "").lower() == target), None)
+    return result
+
+
+def remove_workspace_member(workspace_id: str, email: str, request: Request | None = None) -> dict[str, Any]:
+    target = _member_email(email)
+    if not target:
+        raise ValueError("A valid member email is required")
+    current_key = _actor_key(actor_from_request(request))
+    if target == current_key:
+        raise ValueError("The current owner cannot be removed from the workspace")
+    meta = _load_workspace_meta(workspace_id)
+    members = [item for item in _stored_workspace_members(meta) if str(item.get("email") or "").lower() != target]
+    meta["workspace_members"] = members
+    _save_workspace_meta(workspace_id, meta)
+    result = workspace_member_roles(workspace_id, request)
+    result["removed_member"] = {"email": target}
+    return result
+
+
+def workspace_usage_summary(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
+    current_actor = public_actor(actor_from_request(request))
+    usage = _workspace_usage_by_actor(workspace_id)
+    return {
+        "workspace_id": workspace_id,
+        "current_actor": current_actor,
+        **usage,
+    }
+
+
+def workspace_audit_events(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
+    current_actor = public_actor(actor_from_request(request))
+    events: list[dict[str, Any]] = []
+    for summary in list_runs(workspace_id)[:120]:
+        run = _safe_value(lambda run_id=summary.get("run_id"): get_run(str(run_id)), summary)
+        actor = public_actor((run or {}).get("actor") if isinstance(run, dict) else {})
+        tokens = _token_usage(run if isinstance(run, dict) else summary)
+        events.append(
+            {
+                "type": "run",
+                "action": "analysis_completed" if not run.get("version_kind") else str(run.get("version_kind")),
+                "at": run.get("completed_at") or run.get("updated_at") or summary.get("time"),
+                "actor": actor,
+                "run_id": run.get("run_id") or summary.get("run_id"),
+                "title": run.get("title") or summary.get("title"),
+                "summary": run.get("summary") if isinstance(run.get("summary"), str) else summary.get("summary"),
+                "tokens": tokens,
+                "status": run.get("status") or summary.get("status"),
+            }
+        )
+    for conv in list_conversations(workspace_id)[:80]:
+        for actor in conv.get("actors") or []:
+            if not isinstance(actor, dict):
+                continue
+            events.append(
+                {
+                    "type": "conversation",
+                    "action": "message_sent",
+                    "at": conv.get("updated_at"),
+                    "actor": public_actor(actor),
+                    "conversation_id": conv.get("conversation_id"),
+                    "title": conv.get("title"),
+                    "turn_count": conv.get("turn_count") or 0,
+                }
+            )
+    events = sorted(events, key=lambda item: str(item.get("at") or ""), reverse=True)[:120]
+    return {
+        "workspace_id": workspace_id,
+        "current_actor": current_actor,
+        "events": events,
+        "count": len(events),
+    }
+
+
+def workspace_governance_summary(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
+    current_actor = public_actor(actor_from_request(request))
+    usage = _workspace_usage_by_actor(workspace_id)
+    audit = workspace_audit_events(workspace_id, request)
+    roi = _workspace_roi_summary(usage, audit)
+    return {
+        "workspace_id": workspace_id,
+        "generated_at": _now(),
+        "current_actor": current_actor,
+        "security": {
+            "identity_provider": "Microsoft Entra ID",
+            "auth_surface": "Azure Container Apps Easy Auth",
+            "rbac_enforced": False,
+            "actor_attribution": "easy_auth_or_client_actor_header",
+            "graph_directory": {
+                "status": "optional",
+                "permissions": ["User.ReadBasic.All", "User.Invite.All"],
+                "note": "Directory search and email invite activate after Microsoft Graph admin consent; workspace-local invite remains available.",
+            },
+            "controls": [
+                {"name": "登录身份", "status": "enabled", "detail": "Easy Auth 保护前端入口，并把当前账号用于审计归因。"},
+                {"name": "成员用量归因", "status": "enabled", "detail": "每次运行和会话消息保存 actor、token 与时间戳。"},
+                {"name": "Graph 邀请邮件", "status": "permission_required", "detail": "需要 Graph 权限授权后才会发送真实 Entra 邀请邮件。"},
+            ],
+        },
+        "usage": usage,
+        "chargeback": _workspace_chargeback(usage, roi),
+        "audit": {
+            "count": audit.get("count") or 0,
+            "events": (audit.get("events") or [])[:20],
+            "by_action": _count_by_key(audit.get("events") or [], "action"),
+            "by_actor": _count_audit_by_actor(audit.get("events") or []),
+        },
+        "roi": roi,
+    }
+
+
+def _workspace_usage_by_actor(workspace_id: str) -> dict[str, Any]:
+    by_actor: dict[str, dict[str, Any]] = {}
+    totals = {
+        "runs": 0,
+        "agent_runs": 0,
+        "snapshot_runs": 0,
+        "total_tokens": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+    }
+    for summary in list_runs(workspace_id)[:300]:
+        run_id = str(summary.get("run_id") or "")
+        detail = _safe_value(lambda: get_run(run_id), summary) if run_id else summary
+        if not isinstance(detail, dict):
+            detail = summary
+        actor = public_actor(detail.get("actor") if isinstance(detail.get("actor"), dict) else summary.get("actor") if isinstance(summary.get("actor"), dict) else {})
+        key = _actor_key(actor) or "workspace_default"
+        row = by_actor.setdefault(
+            key,
+            {
+                "actor": actor,
+                "usage": {
+                    "runs": 0,
+                    "agent_runs": 0,
+                    "snapshot_runs": 0,
+                    "total_tokens": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                },
+                "last_seen_at": None,
+                "last_run_id": None,
+            },
+        )
+        tokens = detail.get("tokens") if isinstance(detail.get("tokens"), dict) else summary.get("tokens") if isinstance(summary.get("tokens"), dict) else {}
+        if not tokens or not any(int(tokens.get(k) or 0) for k in ("total", "prompt", "completion")):
+            tokens = _token_usage(detail)
+        usage = row["usage"]
+        is_snapshot = bool(str(detail.get("version_kind") or "").strip())
+        usage["runs"] += 1
+        usage["snapshot_runs" if is_snapshot else "agent_runs"] += 1
+        usage["total_tokens"] += int(tokens.get("total") or tokens.get("total_tokens") or 0)
+        usage["prompt_tokens"] += int(tokens.get("prompt") or tokens.get("prompt_tokens") or tokens.get("input_tokens") or 0)
+        usage["completion_tokens"] += int(tokens.get("completion") or tokens.get("completion_tokens") or tokens.get("output_tokens") or 0)
+        seen_at = detail.get("completed_at") or detail.get("updated_at") or summary.get("time")
+        if seen_at and str(seen_at) > str(row.get("last_seen_at") or ""):
+            row["last_seen_at"] = seen_at
+            row["last_run_id"] = run_id
+        totals["runs"] += 1
+        totals["snapshot_runs" if is_snapshot else "agent_runs"] += 1
+        totals["total_tokens"] += int(tokens.get("total") or tokens.get("total_tokens") or 0)
+        totals["prompt_tokens"] += int(tokens.get("prompt") or tokens.get("prompt_tokens") or tokens.get("input_tokens") or 0)
+        totals["completion_tokens"] += int(tokens.get("completion") or tokens.get("completion_tokens") or tokens.get("output_tokens") or 0)
+    members = sorted(by_actor.values(), key=lambda item: str(item.get("last_seen_at") or ""), reverse=True)
+    return {
+        "totals": totals,
+        "members": members,
+        "source": "run_store",
+    }
+
+
+def _workspace_roi_summary(usage: dict[str, Any], audit: dict[str, Any]) -> dict[str, Any]:
+    totals = usage.get("totals") if isinstance(usage.get("totals"), dict) else {}
+    events = audit.get("events") if isinstance(audit.get("events"), list) else []
+    total_tokens = int(totals.get("total_tokens") or 0)
+    analysis_runs = int(totals.get("agent_runs") or totals.get("runs") or 0)
+    snapshot_runs = int(totals.get("snapshot_runs") or 0)
+    conversation_turns_by_id: dict[str, int] = {}
+    for index, item in enumerate(events):
+        if item.get("type") != "conversation":
+            continue
+        conversation_id = str(item.get("conversation_id") or f"conversation_event_{index}")
+        conversation_turns_by_id[conversation_id] = max(
+            conversation_turns_by_id.get(conversation_id, 0),
+            int(item.get("turn_count") or 0),
+        )
+    conversation_turns = sum(conversation_turns_by_id.values())
+    token_cost_per_1m = _float_env("DF_ROI_TOKEN_COST_PER_1M", 3.0)
+    hourly_value = _float_env("DF_ROI_HOURLY_VALUE_USD", 80.0)
+    analysis_minutes = _float_env("DF_ROI_MINUTES_SAVED_PER_ANALYSIS", 45.0)
+    followup_minutes = _float_env("DF_ROI_MINUTES_SAVED_PER_FOLLOWUP", 8.0)
+    estimated_cost = (total_tokens / 1_000_000.0) * token_cost_per_1m
+    estimated_hours_saved = ((analysis_runs * analysis_minutes) + (conversation_turns * followup_minutes)) / 60.0
+    estimated_value = estimated_hours_saved * hourly_value
+    roi_multiple = (estimated_value / estimated_cost) if estimated_cost > 0 else None
+    assumption_names = (
+        "DF_ROI_TOKEN_COST_PER_1M",
+        "DF_ROI_HOURLY_VALUE_USD",
+        "DF_ROI_MINUTES_SAVED_PER_ANALYSIS",
+        "DF_ROI_MINUTES_SAVED_PER_FOLLOWUP",
+    )
+    configured_assumptions = sum(1 for name in assumption_names if str(os.environ.get(name) or "").strip())
+    assumptions_source = (
+        "environment"
+        if configured_assumptions == len(assumption_names)
+        else "environment_with_defaults"
+        if configured_assumptions
+        else "defaults"
+    )
+    return {
+        "method": "dataforge_estimate",
+        "native_foundry_roi": {
+            "status": "not_configured",
+            "availability": "private_preview",
+            "note": "Use this workspace estimate until Azure AI Foundry ROI reporting is connected for the project.",
+        },
+        "currency": "USD",
+        "estimated_cost_usd": _round_money(estimated_cost),
+        "estimated_value_usd": _round_money(estimated_value),
+        "net_value_usd": _round_money(estimated_value - estimated_cost),
+        "roi_multiple": round(roi_multiple, 2) if roi_multiple is not None else None,
+        "estimated_hours_saved": round(estimated_hours_saved, 2),
+        "inputs": {
+            "total_tokens": total_tokens,
+            "analysis_runs": analysis_runs,
+            "snapshot_runs_excluded": snapshot_runs,
+            "conversation_turns": conversation_turns,
+            "token_cost_per_1m": token_cost_per_1m,
+            "hourly_value_usd": hourly_value,
+            "minutes_saved_per_analysis": analysis_minutes,
+            "minutes_saved_per_followup": followup_minutes,
+        },
+        "assumptions_source": assumptions_source,
+        "confidence": "estimated",
+    }
+
+
+def _workspace_chargeback(usage: dict[str, Any], roi: dict[str, Any]) -> dict[str, Any]:
+    totals = usage.get("totals") if isinstance(usage.get("totals"), dict) else {}
+    total_tokens = max(0, int(totals.get("total_tokens") or 0))
+    cost_per_1m = float((roi.get("inputs") or {}).get("token_cost_per_1m") or 0)
+    rows = []
+    for item in usage.get("members") or []:
+        actor = public_actor(item.get("actor") if isinstance(item, dict) else {})
+        item_usage = item.get("usage") if isinstance(item.get("usage"), dict) else {}
+        tokens = int(item_usage.get("total_tokens") or 0)
+        share = (tokens / total_tokens) if total_tokens > 0 else 0.0
+        rows.append(
+            {
+                "actor": actor,
+                "runs": int(item_usage.get("runs") or 0),
+                "total_tokens": tokens,
+                "prompt_tokens": int(item_usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(item_usage.get("completion_tokens") or 0),
+                "token_share_pct": round(share * 100, 1),
+                "estimated_cost_usd": _round_money((tokens / 1_000_000.0) * cost_per_1m),
+                "last_seen_at": item.get("last_seen_at"),
+                "last_run_id": item.get("last_run_id"),
+            }
+        )
+    rows.sort(key=lambda item: (item.get("total_tokens") or 0, item.get("runs") or 0), reverse=True)
+    return {
+        "basis": "run_store_actor_token_usage",
+        "members": rows,
+        "totals": {
+            "members": len(rows),
+            "total_tokens": total_tokens,
+            "estimated_cost_usd": roi.get("estimated_cost_usd") or 0,
+        },
+    }
+
+
+def _count_by_key(items: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        value = _clean_text(item.get(key)) or "unknown"
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _count_audit_by_actor(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, dict[str, Any]] = {}
+    for item in items:
+        actor = public_actor(item.get("actor") if isinstance(item.get("actor"), dict) else {})
+        key = _actor_key(actor) or "unknown"
+        row = counts.setdefault(key, {"actor": actor, "events": 0})
+        row["events"] += 1
+    return sorted(counts.values(), key=lambda item: int(item.get("events") or 0), reverse=True)
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _round_money(value: float) -> float:
+    return round(float(value or 0), 2)
+
+
+def _actor_key(actor: dict[str, Any] | None) -> str:
+    if not isinstance(actor, dict):
+        return ""
+    return str(actor.get("email") or actor.get("actor_id") or actor.get("name") or "").strip().lower()
+
+
+def _workspace_invited_members(workspace_id: str) -> list[dict[str, Any]]:
+    try:
+        meta = _load_workspace_meta(workspace_id)
+    except FileNotFoundError:
+        return []
+    return _stored_workspace_members(meta)
+
+
+def _stored_workspace_members(meta: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = meta.get("workspace_members")
+    if not isinstance(raw, list):
+        raw = []
+    members: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        member = _normalize_workspace_member(item if isinstance(item, dict) else {})
+        key = _actor_key(member)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        members.append(member)
+    return members
+
+
+def _normalize_workspace_member(item: dict[str, Any]) -> dict[str, Any]:
+    email = _member_email(item.get("email"))
+    if not email:
+        return {}
+    name = _clean_text(item.get("user") or item.get("name")) or _display_name_from_email(email)
+    role = str(item.get("role") or "viewer").strip().lower()
+    if role not in WORKSPACE_MEMBER_ROLES:
+        role = "viewer"
+    status = str(item.get("status") or "pending").strip().lower()
+    if status not in WORKSPACE_MEMBER_STATUSES:
+        status = "pending"
+    invited_by = item.get("invited_by") if isinstance(item.get("invited_by"), dict) else {}
+    return {
+        "user": name,
+        "name": name,
+        "email": email,
+        "actor_id": _clean_text(item.get("actor_id")),
+        "tenant_id": _clean_text(item.get("tenant_id")),
+        "role": role,
+        "status": status,
+        "source": "workspace_invite",
+        "invited_at": _clean_text(item.get("invited_at")),
+        "updated_at": _clean_text(item.get("updated_at")),
+        "invited_by": public_actor(invited_by),
+    }
+
+
+def _load_workspace_meta(workspace_id: str) -> dict[str, Any]:
+    workspace_id = _safe_workspace_id(workspace_id)
+    blob_name = f"workspaces/{workspace_id}/workspace.json"
+    meta = _safe_value(lambda: download_blob_json(blob_name), {}) or {}
+    meta_path = WORKSPACES / workspace_id / "workspace.json"
+    if not isinstance(meta, dict) or not meta:
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if not isinstance(meta, dict) or not meta:
+        raise FileNotFoundError(workspace_id)
+    return dict(meta)
+
+
+def _save_workspace_meta(workspace_id: str, meta: dict[str, Any]) -> None:
+    workspace_id = _safe_workspace_id(workspace_id)
+    meta = dict(meta or {})
+    meta["workspace_id"] = str(meta.get("workspace_id") or workspace_id)
+    meta["updated_at"] = _now()
+    workspace_dir = WORKSPACES / workspace_id
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "workspace.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    upload_blob_json(f"workspaces/{workspace_id}/workspace.json", meta)
+
+
+def _safe_workspace_id(workspace_id: str) -> str:
+    value = str(workspace_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
+        raise ValueError("Invalid workspace_id")
+    return value
+
+
+def _member_email(value: Any) -> str:
+    email = _clean_text(value).lower()
+    return email if _looks_like_email(email) else ""
+
+
+def _member_role(value: Any) -> str:
+    role = str(value or "viewer").strip().lower()
+    if role == "owner":
+        raise ValueError("Owner role cannot be assigned by invitation")
+    if role not in WORKSPACE_MEMBER_ROLES:
+        raise ValueError("role must be admin, editor, or viewer")
+    return role
+
+
+def _graph_invite_redirect_url(body: dict[str, Any]) -> str:
+    raw = _clean_text(body.get("redirect_url")) or os.environ.get("DF_WEB_BASE_URL") or os.environ.get("WEB_BASE_URL")
+    if raw:
+        parsed = urlparse(raw)
+        if parsed.scheme in {"https", "http"} and parsed.netloc:
+            return raw
+    return "https://ca-dataforge-web.thankfultree-c0fc8321.eastus2.azurecontainerapps.io/"
+
+
+def _current_user_from_request(request: Request | None) -> dict[str, str]:
+    if request is None:
+        return {}
+    headers = request.headers
+    principal = _decoded_easy_auth_principal(headers.get("x-ms-client-principal"))
+    claims = principal.get("claims") if isinstance(principal.get("claims"), list) else []
+    header_name = _clean_text(headers.get("x-ms-client-principal-name"))
+    email = (
+        _claim_value(claims, "preferred_username", "upn", "email", "emailaddress")
+        or principal.get("userDetails")
+        or principal.get("user_details")
+        or header_name
+    )
+    email = _clean_text(email)
+    if not _looks_like_email(email):
+        email = ""
+    name = (
+        _claim_value(claims, "name", "displayname", "given_name")
+        or principal.get("name")
+        or principal.get("displayName")
+        or ""
+    )
+    name = _clean_text(name)
+    if not name and email:
+        name = _display_name_from_email(email)
+    return {k: v for k, v in {"name": name, "email": email}.items() if v}
+
+
+def _decoded_easy_auth_principal(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        padded = raw + ("=" * (-len(raw) % 4))
+        data = base64.urlsafe_b64decode(padded)
+        parsed = json.loads(data.decode("utf-8"))
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _claim_value(claims: list[Any], *names: str) -> str:
+    wanted = {name.lower() for name in names}
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        typ = str(claim.get("typ") or claim.get("type") or claim.get("name") or "").lower()
+        tail = typ.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+        if typ in wanted or tail in wanted:
+            value = _clean_text(claim.get("val") or claim.get("value"))
+            if value:
+                return value
+    return ""
+
+
+def _clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _looks_like_email(value: str) -> bool:
+    return bool(value and "@" in value and "." in value.rsplit("@", 1)[-1])
+
+
+def _display_name_from_email(email: str) -> str:
+    if email.lower() == "fuzihao@gdjiuyun.onmicrosoft.com":
+        return "傅子豪"
+    local = email.split("@", 1)[0] if email else ""
+    return local.replace(".", " ").replace("_", " ").strip().title() or "Workspace owner"
 
 
 def _cached_health() -> dict[str, Any]:
@@ -674,7 +1410,32 @@ def _has_full_analysis_artifact(artifact: dict[str, Any]) -> bool:
     return isinstance(dimensions, list) and any(isinstance(item, dict) for item in dimensions)
 
 
-def _flow_trace_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
+def _is_lightweight_followup_run(run: dict[str, Any]) -> bool:
+    if not isinstance(run, dict) or run.get("version_kind") == "artifact_generation":
+        return False
+    status = str(run.get("status") or "").strip().lower()
+    artifact = _artifact(run)
+    routing = artifact.get("routing") if isinstance(artifact.get("routing"), dict) else {}
+    intent = str(routing.get("intent") or "").strip().lower()
+    mode = str(routing.get("mode") or artifact.get("mode") or "").strip().lower()
+    return status in {"followup", "followup_edit"} or intent == "followup_edit" or mode == "followup"
+
+
+def _analysis_trace_run(run: dict[str, Any]) -> dict[str, Any]:
+    """Artifact snapshots are versions, not the original Agent execution trace."""
+    if not isinstance(run, dict) or run.get("version_kind") != "artifact_generation":
+        return run
+    source_run_id = str(run.get("source_run_id") or run.get("conversation_id") or "").strip()
+    if not source_run_id or source_run_id == str(run.get("run_id") or ""):
+        return run
+    try:
+        source = get_run(source_run_id)
+    except FileNotFoundError:
+        return run
+    return source if _has_full_analysis_artifact(_artifact(source)) else run
+
+
+def _flow_trace_from_run(run: dict[str, Any], artifact_override: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for step in run.get("steps") or []:
         if not isinstance(step, dict):
@@ -684,9 +1445,64 @@ def _flow_trace_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         data = step.get("data") if isinstance(step.get("data"), dict) else {}
         events.append({"event": event, "data": _sanitize_detail(data, depth=0), "time": step.get("time")})
-    if not any(item.get("event") == "final" for item in events) and _has_full_analysis_artifact(_artifact(run)):
-        events.append({"event": "final", "data": {"artifact": _artifact(run)}, "time": run.get("completed_at") or run.get("updated_at")})
-    return events[-60:]
+    artifact = artifact_override if isinstance(artifact_override, dict) else _artifact(run)
+    if not _has_web_search_event(events):
+        market_event = _web_search_event_from_artifact(artifact, run)
+        if market_event:
+            events.append(market_event)
+    if not any(item.get("event") == "final" for item in events) and _has_full_analysis_artifact(artifact):
+        events.append({"event": "final", "data": {"artifact": artifact}, "time": run.get("completed_at") or run.get("updated_at")})
+    return _keep_important_tail(events, limit=60)
+
+
+def _has_web_search_event(events: list[dict[str, Any]]) -> bool:
+    return any(
+        item.get("event") == "tool_result"
+        and isinstance(item.get("data"), dict)
+        and item["data"].get("name") == "foundry_native_web_search"
+        for item in events
+    )
+
+
+def _web_search_event_from_artifact(artifact: dict[str, Any], run: dict[str, Any]) -> dict[str, Any] | None:
+    market = artifact.get("market") if isinstance(artifact, dict) and isinstance(artifact.get("market"), dict) else {}
+    sources = market.get("sources") if isinstance(market.get("sources"), list) else []
+    findings = market.get("external_findings") if isinstance(market.get("external_findings"), list) else []
+    if not sources and not findings and not market.get("_llm"):
+        return None
+    provenance = (market.get("tool_provenance") or {}).get("foundry_native_web_search") if isinstance(market.get("tool_provenance"), dict) else None
+    llm = market.get("_llm") if isinstance(market.get("_llm"), dict) else {}
+    return {
+        "event": "tool_result",
+        "time": run.get("completed_at") or run.get("updated_at") or run.get("started_at"),
+        "data": {
+            "agent": "df-market-researcher",
+            "name": "foundry_native_web_search",
+            "count": len(findings),
+            "sources": sources,
+            "mode": llm.get("mode"),
+            "verification": llm.get("verification"),
+            "error": llm.get("error"),
+            "provenance": provenance,
+            "restored_from_artifact": True,
+        },
+    }
+
+
+def _keep_important_tail(events: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    tail = events[-limit:]
+    if _has_web_search_event(tail):
+        return tail
+    important = [
+        item for item in events[:-limit]
+        if item.get("event") == "tool_result"
+        and isinstance(item.get("data"), dict)
+        and item["data"].get("name") == "foundry_native_web_search"
+    ]
+    if not important:
+        return tail
+    merged = important[-1:] + tail
+    return merged[-limit:]
 
 
 def _agents(run: dict[str, Any]) -> set[str]:
@@ -735,7 +1551,7 @@ def _step_summary(step: dict[str, Any]) -> str:
     event = str(step.get("event") or "event")
     data = step.get("data") if isinstance(step.get("data"), dict) else {}
     if event == "ready":
-        return _clean(f"运行已建立：{data.get('conversation_id') or data.get('run_id') or '等待智能体输出'}", 180)
+        return _clean(f"运行上下文已创建，运行 ID：{data.get('conversation_id') or data.get('run_id') or '等待写入'}", 180)
     if event in {"answer_delta", "delta"}:
         return "答案正在流式生成"
     if event == "final":
@@ -749,14 +1565,25 @@ def _step_summary(step: dict[str, Any]) -> str:
         return _clean(f"需要澄清：{clarify.get('question') or '补充关键信息'}", 180)
     if event == "route":
         experts = ", ".join(str(item) for item in data.get("experts") or [])
-        return _clean(f"route: {data.get('intent') or 'unknown'} {experts}", 180)
+        mode = "轻量跟进" if data.get("mode") == "followup" else "完整分析"
+        return _clean(f"{mode}路由：{data.get('intent') or 'unknown'}；参与节点 {experts or '待定'}", 180)
     if event in {"tool_call", "tool_result"}:
-        return _clean(f"{event}: {data.get('name') or data.get('tool') or data.get('agent') or ''}", 180)
+        name = data.get("name") or data.get("tool") or data.get("agent") or ""
+        if name == "foundry_native_web_search":
+            count = data.get("count")
+            source_count = len(data.get("sources") or []) if isinstance(data.get("sources"), list) else 0
+            if event == "tool_call":
+                query = ((data.get("args") or {}).get("query") if isinstance(data.get("args"), dict) else "") or data.get("input")
+                return _clean(f"联网检索：查询 {query or '市场参考信号'}", 180)
+            return _clean(f"联网检索完成：{source_count or count or 0} 条外部来源，按 market_inferred 标记", 180)
+        if name == "market_lookup":
+            return _clean("市场参考检索完成，结果仅作为 market_inferred", 180)
+        return _clean(f"{'工具调用' if event == 'tool_call' else '工具返回'}：{name}", 180)
     if event == "model_response":
         usage = _usage_from_dict(data)
-        return _clean(f"model: {data.get('agent') or data.get('mode') or ''} tokens={usage.get('total') or 0}", 180)
+        return _clean(f"模型响应完成：{data.get('agent') or data.get('mode') or '默认模型'}，记录 {usage.get('total') or 0} tokens", 180)
     if event == "audit":
-        return _clean(f"audit: {data.get('verdict') or data.get('status') or ''}", 180)
+        return _clean(f"审计完成：{data.get('verdict') or data.get('status') or '已记录'}", 180)
     return _clean(f"{event}: {data.get('agent') or data.get('name') or data.get('status') or ''}", 180)
 
 
