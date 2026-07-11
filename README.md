@@ -97,7 +97,7 @@ Routing is decided at runtime by the auditor's conclusion via conditional edges 
 - `DF_MAF_TRAFFIC_PERCENT` accepts `0..100`. Canary assignment uses a stable hash of workspace ID and conversation ID; it never routes on a business, dataset, industry, or demo name.
 - A MAF construction or runtime failure emits fallback evidence and invokes the legacy execution path exactly once. Optional market failure degrades to workspace-only evidence; it does not trigger a full replay.
 - The pinned stable packages are `agent-framework-core==1.11.0`, `agent-framework-foundry==1.10.1`, and `agent-framework-orchestrations==1.0.0`.
-- Run the connector-free gate with `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`. Selection accuracy, groundedness, unsupported-claim rate, latency, tokens, task completion, and fallback rate are measured when observations exist; unavailable values remain `null`/`unknown`.
+- Run the connector-free gate with `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`. Its report declares `measurement_scope='deterministic_harness'` and `production_quality_claim=false`. Groundedness and unsupported-claim rate are fixture/reference-propagation contract checks, not production answer quality measurements. Other metrics are measured only when harness observations exist; unavailable values, including tokens without usage telemetry, remain `null`/`unknown`.
 
 The release and evolution design is documented in [`docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md`](docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md).
 

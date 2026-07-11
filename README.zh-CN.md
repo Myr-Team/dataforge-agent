@@ -97,7 +97,7 @@ DataForge 把这件事自动化了。
 - `DF_MAF_TRAFFIC_PERCENT` 取值为 `0..100`。灰度选择基于工作区 ID 与会话 ID 的稳定哈希，不使用业务名、数据集名、行业名或演示名称做路由触发器。
 - MAF 构造或运行失败时会记录回退证据，并执行旧版路径 exactly once（恰好一次）。可选市场分支失败只降级为工作区证据，不会触发整条链路重放。
 - 稳定依赖版本固定为 `agent-framework-core==1.11.0`、`agent-framework-foundry==1.10.1` 和 `agent-framework-orchestrations==1.0.0`。
-- 无连接器评估命令为 `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`。selection accuracy、groundedness、unsupported-claim rate、latency、tokens、task completion 和 fallback rate 只在有实测数据时给值；缺失值保持 `null`/`unknown`。
+- 无连接器评估命令为 `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`。报告明确声明 `measurement_scope='deterministic_harness'` 和 `production_quality_claim=false`。groundedness 与 unsupported-claim rate 只是 fixture/reference-propagation contract checks，not production answer quality（不是生产答案质量评价）。其他指标仅在确定性夹具观测存在时给值；没有用量遥测的 tokens 等缺失值保持 `null`/`unknown`。
 
 完整发布与演进设计见 [`docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md`](docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md)。
 

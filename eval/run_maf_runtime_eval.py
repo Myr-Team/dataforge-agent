@@ -41,10 +41,26 @@ REQUIRED_METRICS = frozenset(
         "fallback_rate",
     }
 )
+MEASUREMENT_SCOPE = "deterministic_harness"
+FIXTURE_REFERENCE_INTERPRETATION = "fixture_reference_propagation_contract_check"
+REPORT_DISCLAIMER = (
+    "groundedness and unsupported_claim_rate are fixture/reference-propagation "
+    "contract checks, not production answer quality measurements"
+)
 
 
-def _unknown_metric(unit: str) -> dict[str, Any]:
-    return {"value": None, "status": "unknown", "unit": unit, "sample_size": 0}
+def _unknown_metric(unit: str, *, interpretation: str | None = None) -> dict[str, Any]:
+    metric = {
+        "value": None,
+        "status": "unknown",
+        "unit": unit,
+        "sample_size": 0,
+        "measurement_scope": MEASUREMENT_SCOPE,
+        "production_quality_claim": False,
+    }
+    if interpretation is not None:
+        metric["interpretation"] = interpretation
+    return metric
 
 
 def empty_report_schema() -> dict[str, Any]:
@@ -52,10 +68,17 @@ def empty_report_schema() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "mode": "unknown",
+        "measurement_scope": MEASUREMENT_SCOPE,
+        "production_quality_claim": False,
+        "disclaimer": REPORT_DISCLAIMER,
         "metrics": {
             "selection_accuracy": _unknown_metric("ratio"),
-            "groundedness": _unknown_metric("ratio"),
-            "unsupported_claim_rate": _unknown_metric("ratio"),
+            "groundedness": _unknown_metric(
+                "ratio", interpretation=FIXTURE_REFERENCE_INTERPRETATION
+            ),
+            "unsupported_claim_rate": _unknown_metric(
+                "ratio", interpretation=FIXTURE_REFERENCE_INTERPRETATION
+            ),
             "latency_ms": _unknown_metric("milliseconds"),
             "tokens": _unknown_metric("tokens"),
             "task_completion": _unknown_metric("ratio"),
@@ -184,13 +207,24 @@ def _evidence_observation(result: Mapping[str, Any], available: set[str]) -> dic
     }
 
 
-def _measured(value: float | int, unit: str, sample_size: int) -> dict[str, Any]:
-    return {
+def _measured(
+    value: float | int,
+    unit: str,
+    sample_size: int,
+    *,
+    interpretation: str | None = None,
+) -> dict[str, Any]:
+    metric = {
         "value": round(float(value), 6),
         "status": "measured",
         "unit": unit,
         "sample_size": sample_size,
+        "measurement_scope": MEASUREMENT_SCOPE,
+        "production_quality_claim": False,
     }
+    if interpretation is not None:
+        metric["interpretation"] = interpretation
+    return metric
 
 
 def _aggregate_metrics(rows: list[dict[str, Any]], *, selection_applicable: bool) -> dict[str, Any]:
@@ -206,9 +240,17 @@ def _aggregate_metrics(rows: list[dict[str, Any]], *, selection_applicable: bool
     supported = sum(row["evidence"]["supported_claim_count"] for row in rows)
     unsupported = sum(row["evidence"]["unsupported_claim_count"] for row in rows)
     if claim_count:
-        metrics["groundedness"] = _measured(supported / claim_count, "ratio", claim_count)
+        metrics["groundedness"] = _measured(
+            supported / claim_count,
+            "ratio",
+            claim_count,
+            interpretation=FIXTURE_REFERENCE_INTERPRETATION,
+        )
         metrics["unsupported_claim_rate"] = _measured(
-            unsupported / claim_count, "ratio", claim_count
+            unsupported / claim_count,
+            "ratio",
+            claim_count,
+            interpretation=FIXTURE_REFERENCE_INTERPRETATION,
         )
 
     metrics["latency_ms"] = _measured(

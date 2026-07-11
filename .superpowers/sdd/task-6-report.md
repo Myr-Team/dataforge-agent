@@ -15,13 +15,15 @@ Command:
 python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json
 ```
 
-Measured result from this checkout:
+Deterministic harness result from this checkout:
+
+The report scope is `measurement_scope='deterministic_harness'` with `production_quality_claim=false`. Groundedness and unsupported-claim rate are fixture/reference-propagation contract checks, not production answer quality measurements.
 
 | Metric | Value | Status | Sample size |
 |---|---:|---|---:|
 | selection_accuracy | 1.0 | measured | 7 |
-| groundedness | 1.0 | measured | 7 claims |
-| unsupported_claim_rate | 0.0 | measured | 7 claims |
+| groundedness (fixture contract check) | 1.0 | measured | 7 claims |
+| unsupported_claim_rate (fixture contract check) | 0.0 | measured | 7 claims |
 | latency_ms | 35.325371 | measured | 7 cases |
 | tokens | null | unknown | 0 |
 | task_completion | 1.0 | measured | 7 cases |
@@ -45,7 +47,17 @@ The deterministic fake now matches the stable Task 3 test-double contract: it ex
 Exact verification results:
 
 - `python -m pytest tests/test_maf_evaluation_contract.py -q`: 7 passed, 1 upstream MAF experimental-workflow warning, in 3.63 seconds.
-- `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`: completed all 7 cases. Metrics were `selection_accuracy=1.0`, `groundedness=1.0`, `unsupported_claim_rate=0.0`, `latency_ms=37.236957`, `tokens=null/unknown`, `task_completion=1.0`, and `fallback_rate=0.142857`. The forced failure retained `fallback_attempts=1`.
+- `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`: completed all 7 cases. Deterministic harness metrics were `selection_accuracy=1.0`, `groundedness=1.0`, `unsupported_claim_rate=0.0`, `latency_ms=37.236957`, `tokens=null/unknown`, `task_completion=1.0`, and `fallback_rate=0.142857`. The groundedness values were fixture contract checks rather than production quality measurements, and the forced failure retained `fallback_attempts=1`.
 - `python -m pytest -q`: 135 passed, 1 upstream MAF experimental-workflow warning, in 7.98 seconds.
 - `npm run build` in `web`: passed; Vite 8.0.16 transformed 1,751 modules and built in 488 ms.
+- No deployment or canary environment changes were performed.
+
+## P1 Evaluation Truthfulness Fix (2026-07-12)
+
+The deterministic JSON now declares `measurement_scope='deterministic_harness'` and `production_quality_claim=false` at the report level and on every metric. `groundedness` and `unsupported_claim_rate` additionally declare `interpretation='fixture_reference_propagation_contract_check'`: they are fixture/reference-propagation contract checks, not production answer quality measurements. Tokens remain `null`/`unknown` because the harness has no usage telemetry.
+
+Exact verification results:
+
+- `python -m pytest tests/test_maf_evaluation_contract.py -q`: 7 passed, 1 upstream MAF experimental-workflow warning, in 3.51 seconds.
+- `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`: completed all 7 cases with `selection_accuracy=1.0`, fixture-contract `groundedness=1.0`, fixture-contract `unsupported_claim_rate=0.0`, `latency_ms=37.640143`, `tokens=null/unknown`, `task_completion=1.0`, and `fallback_rate=0.142857`; forced fallback remained exactly once with `fallback_attempts=1`.
 - No deployment or canary environment changes were performed.

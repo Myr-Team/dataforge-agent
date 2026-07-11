@@ -76,11 +76,15 @@ def test_eval_cases_route_only_on_normalized_semantic_fields() -> None:
 def test_empty_report_marks_every_metric_unknown_instead_of_defaulting_to_success() -> None:
     report = empty_report_schema()
 
+    assert report["measurement_scope"] == "deterministic_harness"
+    assert report["production_quality_claim"] is False
     assert set(report["metrics"]) == REQUIRED_METRICS
     for metric in report["metrics"].values():
         assert metric["value"] is None
         assert metric["status"] == "unknown"
         assert metric["sample_size"] == 0
+        assert metric["measurement_scope"] == "deterministic_harness"
+        assert metric["production_quality_claim"] is False
 
 
 def test_deterministic_fake_satisfies_stable_agent_builder_protocol() -> None:
@@ -96,6 +100,8 @@ def test_deterministic_eval_measures_metrics_and_preserves_unknown_tokens() -> N
     cases = _cases()
 
     assert report["mode"] == "deterministic"
+    assert report["measurement_scope"] == "deterministic_harness"
+    assert report["production_quality_claim"] is False
     assert set(report["metrics"]) == REQUIRED_METRICS
     assert report["metrics"]["selection_accuracy"]["status"] == "measured"
     assert report["metrics"]["selection_accuracy"]["value"] == 1.0
@@ -106,6 +112,15 @@ def test_deterministic_eval_measures_metrics_and_preserves_unknown_tokens() -> N
     assert {case["case_id"] for case in report["cases"]} == {
         case["id"] for case in cases
     }
+    for metric in report["metrics"].values():
+        assert metric["measurement_scope"] == "deterministic_harness"
+        assert metric["production_quality_claim"] is False
+    for name in ("groundedness", "unsupported_claim_rate"):
+        assert (
+            report["metrics"][name]["interpretation"]
+            == "fixture_reference_propagation_contract_check"
+        )
+    assert "not production answer quality" in report["disclaimer"]
 
 
 def test_forced_runtime_failure_falls_back_exactly_once() -> None:
@@ -121,9 +136,12 @@ def test_forced_runtime_failure_falls_back_exactly_once() -> None:
     assert forced["runtime_error_category"] == "forced_runtime_failure"
 
 
-def test_readmes_document_stable_runtime_contract() -> None:
+def test_docs_document_stable_runtime_and_evaluation_scope() -> None:
     english = (ROOT / "README.md").read_text(encoding="utf-8")
     chinese = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+    report = (ROOT / ".superpowers" / "sdd" / "task-6-report.md").read_text(
+        encoding="utf-8"
+    )
 
     for content in (english, chinese):
         assert "agent-framework-core==1.11.0" in content
@@ -134,3 +152,9 @@ def test_readmes_document_stable_runtime_contract() -> None:
         assert "Magentic" in content
         assert "Hosted Agents" in content
         assert "exactly once" in content
+
+    for content in (english, chinese, report):
+        assert "measurement_scope='deterministic_harness'" in content
+        assert "production_quality_claim=false" in content
+        assert "fixture/reference-propagation contract checks" in content
+        assert "not production answer quality" in content
