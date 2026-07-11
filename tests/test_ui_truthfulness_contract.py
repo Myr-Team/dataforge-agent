@@ -46,3 +46,39 @@ def test_production_app_has_no_query_string_fake_dashboard() -> None:
     assert "DEMO_SEED" not in app_source
     assert "消费电子新品机会评估" not in app_source
     assert "health: { ok: true" not in app_source
+
+
+def test_agent_flow_reads_dynamic_maf_events() -> None:
+    source = COMPONENTS.read_text(encoding="utf-8")
+
+    for event in (
+        "maf_plan",
+        "maf_agent_started",
+        "maf_agent_completed",
+        "maf_agent_failed",
+        "maf_branch_started",
+        "maf_branch_joined",
+        "maf_handoff",
+        "maf_review",
+        "maf_fallback",
+    ):
+        assert event in source
+
+
+def test_maf_ui_does_not_render_fixed_participant_success() -> None:
+    source = COMPONENTS.read_text(encoding="utf-8")
+
+    assert "function deriveMafViewModel(" in source
+    assert "selected_agents" in source
+    assert "skipped_agents" in source
+    assert "summary?.maf" in source
+    for mode in ("direct", "concurrent_research", "specialist_handoff", "bounded_review"):
+        assert mode in source
+
+
+def test_dynamic_maf_preserves_legacy_workflow_rendering() -> None:
+    source = COMPONENTS.read_text(encoding="utf-8")
+
+    assert 'item.event === "maf_workflow"' in source
+    assert 'className="maf-panel"' in source
+    assert "mafTimeline" in source

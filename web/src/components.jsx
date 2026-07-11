@@ -1859,6 +1859,279 @@ function SideDrawer({ open, title, onClose, children }) {
   );
 }
 
+const MAF_EVENT_NAMES = new Set([
+  "maf_plan",
+  "maf_agent_started",
+  "maf_agent_completed",
+  "maf_agent_failed",
+  "maf_branch_started",
+  "maf_branch_joined",
+  "maf_handoff",
+  "maf_review",
+  "maf_fallback",
+]);
+
+const MAF_MODES = [
+  { id: "direct", label: "直接响应" },
+  { id: "concurrent_research", label: "并行研究" },
+  { id: "specialist_handoff", label: "专家交接" },
+  { id: "bounded_review", label: "限轮复核" },
+];
+
+function mafEventData(item) {
+  const detail = item?.detail && typeof item.detail === "object" ? item.detail : {};
+  const data = item?.data && typeof item.data === "object" ? item.data : {};
+  return { ...(item || {}), ...detail, ...data };
+}
+
+function mafAgentId(value) {
+  if (typeof value === "string") return value;
+  return value?.agent_id || value?.id || value?.agent || "";
+}
+
+function mafArray(value) {
+  return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function mafRevisionNumber(data) {
+  const explicit = Number(data.round ?? data.review_round ?? data.revision);
+  if (Number.isFinite(explicit)) return explicit + (data.revision != null && data.round == null ? 1 : 0);
+  const revisionCode = mafArray(data.reason_codes).find((code) => String(code).startsWith("revision:"));
+  const revision = Number(String(revisionCode || "").split(":")[1]);
+  return Number.isFinite(revision) ? revision + 1 : null;
+}
+
+function deriveMafViewModel(trace = [], persistedMaf = null) {
+  const persisted = persistedMaf?.maf || persistedMaf || {};
+  const events = (trace || [])
+    .filter((item) => MAF_EVENT_NAMES.has(String(item?.event || item?.rawEvent || "").toLowerCase()))
+    .map((item, index) => ({
+      event: String(item.event || item.rawEvent).toLowerCase(),
+      data: mafEventData(item),
+      index,
+    }));
+  const plan = events.find((item) => item.event === "maf_plan")?.data || {};
+  const collaboration = persisted.collaboration || plan.collaboration || {};
+  const mode = persisted.mode || collaboration.pattern || plan.mode || plan.pattern || "";
+  const selectedFromData = mafArray(persisted.selected_agents).length
+    ? mafArray(persisted.selected_agents)
+    : mafArray(plan.selected_agents).length
+      ? mafArray(plan.selected_agents)
+      : mafArray(collaboration.selected_agents).length
+        ? mafArray(collaboration.selected_agents)
+        : mafArray(collaboration.agents).map(mafAgentId).filter(Boolean);
+  const eventAgentIds = events.flatMap(({ data }) => [
+    data.agent_id || data.agent,
+    data.source_agent_id,
+    data.target_agent_id,
+  ]).filter(Boolean);
+  const selectedAgents = [...new Set([...selectedFromData.map(mafAgentId), ...eventAgentIds].filter(Boolean))];
+  const skippedCandidates = mafArray(persisted.skipped_agents).length
+    ? mafArray(persisted.skipped_agents).map(mafAgentId).filter(Boolean)
+    : mafArray(plan.skipped_agents).map(mafAgentId).filter(Boolean);
+  const skippedAgents = skippedCandidates.filter((id) => !selectedAgents.includes(id));
+  const persistedAgentRecords = mafArray(persisted.agents).length ? mafArray(persisted.agents) : mafArray(collaboration.agents);
+  const persistedAgentMap = new Map(persistedAgentRecords.map((record) => [mafAgentId(record), record]));
+  const agentState = new Map(selectedAgents.map((id) => {
+    const record = persistedAgentMap.get(id) || {};
+    const metadata = record.metadata || {};
+    return [id, {
+      id,
+      status: record.status || "selected",
+      durationMs: record.duration_ms ?? metadata.duration_ms ?? null,
+      tokens: record.tokens || metadata.tokens || null,
+      tools: mafArray(record.tool_names || record.tools || metadata.tool_names || metadata.tools),
+      retries: record.retry_count ?? record.retries ?? metadata.retry_count ?? null,
+      error: record.error_category || record.error || metadata.error_category || "",
+    }];
+  }));
+  const branches = new Map();
+  const handoffs = new Map();
+  const reviews = new Map();
+  let fallback = persisted.fallback ? (typeof persisted.fallback === "object" ? persisted.fallback : { status: "recorded" }) : null;
+
+  for (const item of events) {
+    const { event, data } = item;
+    const id = data.agent_id || data.agent;
+    if (id) {
+      const current = agentState.get(id) || { id, status: "selected", durationMs: null, tokens: null, tools: [], retries: null, error: "" };
+      const semanticStatus = event === "maf_agent_started"
+        ? "running"
+        : event === "maf_agent_failed"
+          ? "failed"
+          : event === "maf_agent_completed"
+            ? (data.status || "completed")
+            : current.status;
+      agentState.set(id, {
+        ...current,
+        status: semanticStatus,
+        durationMs: data.duration_ms ?? current.durationMs,
+        tokens: data.tokens || data.usage || current.tokens,
+        tools: mafArray(data.tool_names || data.tools).length ? mafArray(data.tool_names || data.tools) : current.tools,
+        retries: data.retry_count ?? data.retries ?? current.retries,
+        error: data.error_category || data.error || current.error,
+      });
+    }
+    if ((event === "maf_branch_started" || event === "maf_branch_joined") && data.branch_id) {
+      const current = branches.get(data.branch_id) || { id: data.branch_id };
+      branches.set(data.branch_id, {
+        ...current,
+        agentId: data.agent_id || data.agent || current.agentId || "",
+        required: data.required ?? current.required,
+        status: data.status || (event === "maf_branch_started" ? "running" : "joined"),
+        durationMs: data.duration_ms ?? current.durationMs ?? null,
+        error: data.error_category || data.error || current.error || "",
+      });
+    }
+    if (event === "maf_handoff") {
+      const source = data.source_agent_id || data.source_agent || "";
+      const target = data.target_agent_id || data.target_agent || "";
+      const key = `${source}:${target}:${mafArray(data.reason_codes).join(",")}`;
+      handoffs.set(key, {
+        source,
+        target,
+        status: data.status || "recorded",
+        reasons: mafArray(data.reason_codes),
+        error: data.error_category || data.error || "",
+      });
+    }
+    if (event === "maf_review") {
+      const explicitRound = mafRevisionNumber(data);
+      const pendingRound = [...reviews.values()].reverse().find((review) => review.status === "running")?.round;
+      const round = explicitRound || pendingRound || reviews.size + 1;
+      reviews.set(round, {
+        round,
+        status: data.status || "recorded",
+        verdict: data.verdict || "",
+        agentId: data.agent_id || data.agent || "",
+        reasons: mafArray(data.reason_codes),
+        error: data.error_category || data.error || "",
+      });
+    }
+    if (event === "maf_fallback") fallback = data;
+  }
+
+  if (!events.length && !mode && !selectedAgents.length && !skippedAgents.length && !fallback) return null;
+  return {
+    mode,
+    selectedAgents,
+    skippedAgents,
+    agents: [...agentState.values()],
+    branches: [...branches.values()],
+    handoffs: [...handoffs.values()],
+    reviews: [...reviews.values()].sort((a, b) => a.round - b.round),
+    fallback,
+    reasonCodes: mafArray(persisted.selection_reason_codes || collaboration.reason_codes || plan.reason_codes),
+  };
+}
+
+function mafStatusLabel(status) {
+  const raw = String(status || "").trim();
+  const key = raw.toLowerCase();
+  if (key === "selected") return "已选择";
+  if (["running", "started", "streaming"].includes(key)) return "进行中";
+  if (["completed", "complete", "joined", "done", "success", "ok"].includes(key)) return "已完成";
+  if (["failed", "fail", "error"].includes(key)) return "异常";
+  if (key === "revision_requested") return "要求复修";
+  if (key === "degraded") return "降级完成";
+  if (key === "recorded") return "已记录";
+  return raw || "未记录";
+}
+
+function mafAgentMeta(id) {
+  return AGENTS.find((agent) => agent.id === id) || { id, zh: String(id || "Agent").replace(/^df-/, ""), role: "", icon: Activity };
+}
+
+function MafCollaborationView({ model, compact = false }) {
+  if (!model) return null;
+  const modeLabel = MAF_MODES.find((item) => item.id === model.mode)?.label || model.mode || "未记录";
+  return (
+    <div className={`maf-collab ${compact ? "compact" : ""}`}>
+      <div className="maf-collab-head">
+        <span><Workflow size={14} /><strong>MAF 动态协作</strong></span>
+        <em>{modeLabel}</em>
+      </div>
+      <div className="maf-mode-segments" aria-label="协作模式">
+        {MAF_MODES.map((item) => <span className={item.id === model.mode ? "active" : ""} key={item.id}>{item.label}</span>)}
+      </div>
+      <div className="maf-participants">
+        <div className="maf-section-label">实际参与</div>
+        <div className="maf-agent-strip" role="list">
+          {model.agents.map((agent) => {
+            const meta = mafAgentMeta(agent.id);
+            const Icon = meta.icon || Activity;
+            const status = mafStatusLabel(agent.status);
+            const tokenTotal = agent.tokens?.total ?? agent.tokens?.total_tokens;
+            return (
+              <div className={`maf-agent-state ${String(agent.status || "unknown").toLowerCase()}`} role="listitem" key={agent.id}>
+                <span className="maf-agent-icon">{agent.status === "running" ? <Loader2 className="spin" size={14} /> : <Icon size={14} />}</span>
+                <span><b>{meta.zh}</b><small>{status}</small></span>
+                <em>
+                  {agent.durationMs != null ? formatTraceDuration(agent.durationMs) : ""}
+                  {tokenTotal != null ? `${agent.durationMs != null ? " · " : ""}${Number(tokenTotal).toLocaleString()} tokens` : ""}
+                  {agent.retries != null ? ` · 重试 ${agent.retries}` : ""}
+                </em>
+                {agent.error ? <i>{String(agent.error)}</i> : null}
+                {agent.tools.length ? <i className="tools">工具：{agent.tools.join("、")}</i> : null}
+              </div>
+            );
+          })}
+          {!model.agents.length ? <span className="maf-empty">未记录参与 Agent</span> : null}
+        </div>
+        {model.skippedAgents.length ? <p className="maf-skipped">未调用：{model.skippedAgents.map((id) => mafAgentMeta(id).zh).join("、")}</p> : null}
+      </div>
+      {model.branches.length ? (
+        <div className="maf-collab-section">
+          <div className="maf-section-label"><Users size={13} /> 并行分支</div>
+          <div className="maf-branch-lanes">
+            {model.branches.map((branch) => (
+              <div className={`maf-branch ${String(branch.status || "unknown").toLowerCase()}`} key={branch.id}>
+                <span className="maf-branch-line" />
+                <b>{branch.id}</b>
+                <span>{branch.agentId ? mafAgentMeta(branch.agentId).zh : "Agent 未记录"}</span>
+                <em>{mafStatusLabel(branch.status)}{branch.durationMs != null ? ` · ${formatTraceDuration(branch.durationMs)}` : ""}</em>
+                {branch.error ? <i>{String(branch.error)}</i> : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {model.handoffs.length ? (
+        <div className="maf-collab-section">
+          <div className="maf-section-label"><Route size={13} /> 任务交接</div>
+          <div className="maf-handoffs">
+            {model.handoffs.map((handoff, index) => (
+              <div className="maf-handoff" key={`${handoff.source}-${handoff.target}-${index}`}>
+                <b>{mafAgentMeta(handoff.source).zh}</b><ArrowUpRight size={14} /><b>{mafAgentMeta(handoff.target).zh}</b>
+                <span>{mafStatusLabel(handoff.status)}</span>
+                {handoff.reasons.length ? <em>{handoff.reasons.join(" · ")}</em> : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {model.reviews.length ? (
+        <div className="maf-collab-section">
+          <div className="maf-section-label"><ShieldCheck size={13} /> 复核轮次</div>
+          <div className="maf-review-rounds">
+            {model.reviews.map((review) => (
+              <div className="maf-review-round" key={review.round}>
+                <b>第 {review.round} 轮</b>
+                <span>{review.verdict || mafStatusLabel(review.status)}</span>
+                <em>{mafStatusLabel(review.status)}</em>
+                {review.error ? <i>{String(review.error)}</i> : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {model.fallback ? (
+        <div className="maf-fallback"><AlertTriangle size={14} /><span><b>已记录回退</b><em>{model.fallback.error_category || model.fallback.reason || model.fallback.status || "原因未记录"}</em></span></div>
+      ) : null}
+    </div>
+  );
+}
+
 // 一步的输出/结果摘要
 function stepDetail(ev) {
   const d = ev.data || {};
@@ -2027,6 +2300,15 @@ const TRACE_EVENT_LABELS = {
   cache: "读取缓存",
   blind_verdict: "生成初判",
   maf_workflow: "多智能体编排",
+  maf_plan: "MAF 协作计划",
+  maf_agent_started: "MAF Agent 启动",
+  maf_agent_completed: "MAF Agent 完成",
+  maf_agent_failed: "MAF Agent 异常",
+  maf_branch_started: "MAF 分支启动",
+  maf_branch_joined: "MAF 分支汇合",
+  maf_handoff: "MAF 任务交接",
+  maf_review: "MAF 复核",
+  maf_fallback: "MAF 回退",
   error: "异常事件",
 };
 
@@ -2039,7 +2321,8 @@ function traceEventLabel(event) {
 function traceStatusLabel(status) {
   const raw = String(status || "").trim();
   const key = raw.toLowerCase();
-  if (!raw || ["done", "ok", "success", "completed", "complete"].includes(key)) return "完成";
+  if (!raw) return "未记录";
+  if (["done", "ok", "success", "completed", "complete", "joined"].includes(key)) return "完成";
   if (["followup_edit", "followup"].includes(key)) return "完成";
   if (["running", "pending", "started", "streaming"].includes(key)) return "进行中";
   if (["error", "failed", "fail"].includes(key)) return "异常";
@@ -2127,7 +2410,8 @@ function traceDetailTitle(detail, index) {
 }
 
 function traceStepView(step) {
-  const agentId = String(step?.agent || "").trim();
+  const eventData = mafEventData(step);
+  const agentId = String(step?.agent || step?.agent_id || eventData.agent_id || eventData.agent || "").trim();
   const role = String(step?.role || step?.event || "").trim();
   if (agentId) {
     const meta = AGENTS.find((item) => item.id === agentId);
@@ -2162,7 +2446,7 @@ function groupTraceRows(items) {
         icon: item.icon,
         name: item.name || "Agent",
         role: item.role || "",
-        status: item.status || "完成",
+        status: item.status || "未记录",
         sum: item.sum || "",
         durationMs: 0,
         details: [],
@@ -2170,7 +2454,7 @@ function groupTraceRows(items) {
       seen.set(key, group);
       groups.push(group);
     }
-    group.status = item.status || group.status || "完成";
+    group.status = item.status || group.status || "未记录";
     if (!group.sum && item.sum) group.sum = item.sum;
     group.durationMs += Number(item.durationMs || 0);
     group.details.push(item);
@@ -2270,6 +2554,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
   const [logOpen, setLogOpen] = useState(false);
   const [logText, setLogText] = useState("");
   const [governance, setGovernance] = useState(null);
+  const runMaf = useMemo(() => deriveMafViewModel(rtrace || [], summary?.maf), [rtrace, summary?.maf]);
   useEffect(() => {
     if (!runId) return;
     setSummary(null); setRtrace(null); setTracePage(0); setTraceOpen({});
@@ -2388,6 +2673,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
       <div className="run-body2">
         <section className="card run-trace">
           <div className="rt-head"><strong>本次运行追踪</strong><span className="rt-source">来源：{runEvidenceLabel(basis.trace, "后端运行步骤")}</span><Info size={14} /></div>
+          <MafCollaborationView model={runMaf} compact />
           {(() => {
             const list = (rtrace && rtrace.length) ? rtrace.map((s) => {
               const view = traceStepView(s);
@@ -2398,12 +2684,12 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
                 icon: view.icon,
                 name: view.name,
                 role: view.role,
-                status: traceStatusLabel(s.status),
-                durationMs: Number(s.duration_ms || 0),
-                dur: formatTraceDuration(s.duration_ms),
+                status: traceStatusLabel(s.status || detail.status),
+                durationMs: Number(s.duration_ms ?? detail.duration_ms ?? 0),
+                dur: formatTraceDuration(s.duration_ms ?? detail.duration_ms),
                 rawEvent,
                 event: traceEventLabel(rawEvent),
-                agent: s.agent || "",
+                agent: s.agent || s.agent_id || detail.agent_id || detail.agent || "",
                 toolName: s.name || detail.name || detail.tool || "",
                 detail,
                 source: s.source || "",
@@ -2429,6 +2715,9 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
                     const Ic = s.icon;
                     const rowIndex = cur * TPER + i + 1;
                     const open = Boolean(traceOpen[s.key]);
+                    const rowRunning = s.status === "进行中";
+                    const rowFailed = s.status === "异常";
+                    const rowCompleted = s.status === "完成";
                     return (
                       <div className={open ? "rt-xrow open" : "rt-xrow"} key={s.key || i}>
                         <button type="button" className="rt-rowmain" onClick={() => setTraceOpen((m) => ({ ...m, [s.key]: !m[s.key] }))}>
@@ -2438,8 +2727,8 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
                             <div className="rt-title"><b>{s.name}</b>{s.role ? <em>{s.role}</em> : null}<span className="rt-badge">{s.status}</span>{s.details.length > 1 ? <span className="rt-count">{s.details.length} 条</span> : null}</div>
                             {s.sum ? <p className="rt-sum">{s.sum}</p> : null}
                           </div>
-                          <span className="rt-dur">{s.dur ? `耗时 ${s.dur}` : "已记录"}</span>
-                          <CheckCircle2 size={16} className="rt-ok" />
+                          <span className="rt-dur">{s.dur ? `耗时 ${s.dur}` : "耗时未记录"}</span>
+                          {rowRunning ? <Loader2 size={16} className="rt-state running spin" /> : rowFailed ? <AlertTriangle size={16} className="rt-state failed" /> : rowCompleted ? <CheckCircle2 size={16} className="rt-state completed" /> : <Activity size={16} className="rt-state unknown" />}
                           <ChevronDown size={16} className="rt-caret" />
                         </button>
                         {open ? (
@@ -3136,9 +3425,13 @@ function AgentRoute({ trace, running, presentation, producing = false, hasArtifa
   // 连接线 i（节点 i 与 i+1 之间）：分析段=该节点完成才亮；审计员→产物生成器仅在生成产物时亮
   const linkLit = (i) => (i < PRODUCER - 1 ? nodeState(i) === "done" : producing || hasArtifacts);
 
-  const current = AGENTS.find((agent) => agent.id === actualActive) || (producing ? AGENTS[PRODUCER] : AGENTS[0]);
   const live = running || producing;
-  const maf = trace.find((item) => item.event === "maf_workflow")?.data || null;
+  const dynamicMaf = useMemo(() => deriveMafViewModel(trace), [trace]);
+  const maf = dynamicMaf ? null : trace.find((item) => item.event === "maf_workflow")?.data || null;
+  const dynamicCurrent = dynamicMaf?.agents.find((agent) => agent.status === "running") || dynamicMaf?.agents.at(-1);
+  const current = dynamicCurrent
+    ? mafAgentMeta(dynamicCurrent.id)
+    : AGENTS.find((agent) => agent.id === actualActive) || (producing ? AGENTS[PRODUCER] : AGENTS[0]);
   const mafRevisions = trace.filter(
     (item) => item.event === "role_change" && item.data?.orchestrator === "maf" && item.data?.agent === "df-feasibility-analyst",
   ).length;
@@ -3160,6 +3453,11 @@ function AgentRoute({ trace, running, presentation, producing = false, hasArtifa
   const foot = producing || running
     ? presentation.caption
     : hasFinal ? "分析完成 · 拍板后点右下「生成产物」输出文档" : "选择一个问题后开始编排多 Agent 分析";
+  const dynamicFoot = dynamicMaf
+    ? (dynamicMaf.reasonCodes.length
+      ? dynamicMaf.reasonCodes.join(" · ")
+      : `协作模式：${MAF_MODES.find((item) => item.id === dynamicMaf.mode)?.label || dynamicMaf.mode || "未记录"}`)
+    : foot;
   return (
     <section className="agent-route-card">
       <div className="route-card-head">
@@ -3172,20 +3470,22 @@ function AgentRoute({ trace, running, presentation, producing = false, hasArtifa
           {producing ? "生成产物中" : running ? "运行中" : "待命"}
         </div>
       </div>
-      <div className="pipe-flow" role="list" aria-label="Agent 流水线">
-        {AGENTS.map((agent, index) => {
-          const state = nodeState(index);
-          const Icon = agent.icon;
-          return (
-            <div className={`pf-node ${state}`} role="listitem" key={agent.id}>
-              <span className="pf-ic">{state === "active" ? <Loader2 className="spin" size={18} /> : <Icon size={18} strokeWidth={2.1} />}</span>
-              <span className="pf-name">{agent.zh}</span>
-              <span className="pf-role">{agent.role}</span>
-              {index < AGENTS.length - 1 ? <span className={linkLit(index) ? "pf-link lit" : "pf-link"} aria-hidden="true" /> : null}
-            </div>
-          );
-        })}
-      </div>
+      {dynamicMaf ? <MafCollaborationView model={dynamicMaf} /> : (
+        <div className="pipe-flow" role="list" aria-label="Agent 流水线">
+          {AGENTS.map((agent, index) => {
+            const state = nodeState(index);
+            const Icon = agent.icon;
+            return (
+              <div className={`pf-node ${state}`} role="listitem" key={agent.id}>
+                <span className="pf-ic">{state === "active" ? <Loader2 className="spin" size={18} /> : <Icon size={18} strokeWidth={2.1} />}</span>
+                <span className="pf-name">{agent.zh}</span>
+                <span className="pf-role">{agent.role}</span>
+                {index < AGENTS.length - 1 ? <span className={linkLit(index) ? "pf-link lit" : "pf-link"} aria-hidden="true" /> : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
       {maf ? (
         <div className="maf-panel">
           <div className="maf-head">
@@ -3249,7 +3549,7 @@ function AgentRoute({ trace, running, presentation, producing = false, hasArtifa
       ) : null}
       <div className="route-card-foot">
         <span>{current.zh}</span>
-        <strong>{foot}</strong>
+        <strong>{dynamicFoot}</strong>
         {hasFinal && !producing && !hasArtifacts && onProduce ? (
           <button data-tour="produce" className="produce-cta" type="button" onClick={onProduce}>
             <FileDown size={14} /> 确认方案 · 生成产物
@@ -4384,7 +4684,7 @@ function groupEvidence(evidence) {
 }
 
 function eventTitle(item) {
-  const data = item.data || {};
+  const data = mafEventData(item);
   switch (item.event) {
     case "ready": return "连接运行通道";
     case "user": return "接收用户问题";
@@ -4397,6 +4697,15 @@ function eventTitle(item) {
     case "audit": return data.verdict === "pass" ? "审计通过" : "审计要求修订";
     case "revised_verdict": return "生成修订后结论";
     case "cache": return "读取缓存";
+    case "maf_plan": return `MAF 协作计划${data.mode || data.pattern ? ` · ${data.mode || data.pattern}` : ""}`;
+    case "maf_agent_started": return `${mafAgentMeta(data.agent_id || data.agent).zh} 开始执行`;
+    case "maf_agent_completed": return `${mafAgentMeta(data.agent_id || data.agent).zh} · ${mafStatusLabel(data.status)}`;
+    case "maf_agent_failed": return `${mafAgentMeta(data.agent_id || data.agent).zh} · ${mafStatusLabel(data.status || "failed")}`;
+    case "maf_branch_started": return `分支 ${data.branch_id || "未记录"} 启动`;
+    case "maf_branch_joined": return `分支 ${data.branch_id || "未记录"} · ${mafStatusLabel(data.status)}`;
+    case "maf_handoff": return `${mafAgentMeta(data.source_agent_id).zh} 交接给 ${mafAgentMeta(data.target_agent_id).zh}`;
+    case "maf_review": return `第 ${mafRevisionNumber(data) || "未记录"} 轮复核 · ${mafStatusLabel(data.status)}`;
+    case "maf_fallback": return `MAF 回退 · ${data.error_category || data.reason || mafStatusLabel(data.status)}`;
     case "clarify": return data.question || "需要澄清";
     case "final": return "最终输出完成";
     case "error": return data.message || "运行错误";
