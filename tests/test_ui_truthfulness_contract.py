@@ -1,7 +1,9 @@
 from pathlib import Path
+import subprocess
 
 
 COMPONENTS = Path(__file__).resolve().parents[1] / "web" / "src" / "components.jsx"
+MAF_VIEW_MODEL_TEST = COMPONENTS.parent / "mafViewModel.test.mjs"
 
 
 def test_runs_center_does_not_fake_missing_observability_or_calibration() -> None:
@@ -48,37 +50,14 @@ def test_production_app_has_no_query_string_fake_dashboard() -> None:
     assert "health: { ok: true" not in app_source
 
 
-def test_agent_flow_reads_dynamic_maf_events() -> None:
-    source = COMPONENTS.read_text(encoding="utf-8")
+def test_dynamic_maf_view_model_behavior() -> None:
+    result = subprocess.run(
+        ["node", "--test", str(MAF_VIEW_MODEL_TEST)],
+        cwd=COMPONENTS.parents[2],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
 
-    for event in (
-        "maf_plan",
-        "maf_agent_started",
-        "maf_agent_completed",
-        "maf_agent_failed",
-        "maf_branch_started",
-        "maf_branch_joined",
-        "maf_handoff",
-        "maf_review",
-        "maf_fallback",
-    ):
-        assert event in source
-
-
-def test_maf_ui_does_not_render_fixed_participant_success() -> None:
-    source = COMPONENTS.read_text(encoding="utf-8")
-
-    assert "function deriveMafViewModel(" in source
-    assert "selected_agents" in source
-    assert "skipped_agents" in source
-    assert "summary?.maf" in source
-    for mode in ("direct", "concurrent_research", "specialist_handoff", "bounded_review"):
-        assert mode in source
-
-
-def test_dynamic_maf_preserves_legacy_workflow_rendering() -> None:
-    source = COMPONENTS.read_text(encoding="utf-8")
-
-    assert 'item.event === "maf_workflow"' in source
-    assert 'className="maf-panel"' in source
-    assert "mafTimeline" in source
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"

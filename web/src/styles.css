@@ -649,7 +649,11 @@ svg { flex-shrink: 0; }
 .rt-title { display: flex; align-items: center; gap: 9px; }
 .rt-title b { font-size: 13.5px; font-weight: 600; }
 .rt-title em { font-size: 12px; color: var(--muted); font-style: normal; }
-.rt-badge { font-size: 11px; font-weight: 600; color: var(--mint); background: var(--mint-soft); padding: 1px 8px; border-radius: 5px; }
+.rt-badge { font-size: 11px; font-weight: 600; color: var(--muted); background: var(--surface-soft); padding: 1px 8px; border-radius: 5px; }
+.rt-badge.completed { color: var(--mint); background: var(--mint-soft); }
+.rt-badge.running { color: var(--amber); background: var(--amber-soft); }
+.rt-badge.failed { color: var(--red); background: var(--red-soft); }
+.rt-badge.neutral { color: var(--muted); background: var(--surface-soft); }
 .rt-sum { font-size: 12px; color: var(--muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rt-dur { font-size: 12px; color: var(--faint); white-space: nowrap; }
 .rt-ok { color: var(--mint); }
@@ -3261,16 +3265,21 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   border-left: 2px solid var(--line);
   background: var(--surface-soft);
 }
-.maf-agent-state.running { border-left-color: var(--blue); }
+.maf-agent-state.running { border-left-color: var(--amber); }
 .maf-agent-state.completed { border-left-color: var(--mint); }
 .maf-agent-state.failed { border-left-color: var(--red); }
 .maf-agent-icon { display: grid; place-items: center; width: 24px; height: 24px; color: var(--muted); }
-.maf-agent-state.running .maf-agent-icon { color: var(--blue); }
+.maf-agent-state.running .maf-agent-icon { color: var(--amber); }
 .maf-agent-state.completed .maf-agent-icon { color: var(--mint); }
 .maf-agent-state.failed .maf-agent-icon { color: var(--red); }
 .maf-agent-state b, .maf-agent-state small { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maf-agent-state b { color: var(--ink); font-size: 11.5px; }
 .maf-agent-state small { margin-top: 1px; color: var(--muted); font-size: 10px; }
+.maf-status { display: inline-flex; align-items: center; width: max-content; padding: 1px 5px; border-radius: 4px; color: var(--muted); background: var(--surface-soft); font-size: 10px; font-style: normal; }
+.maf-status.completed { color: var(--mint); background: var(--mint-soft); }
+.maf-status.running { color: var(--amber); background: var(--amber-soft); }
+.maf-status.failed { color: var(--red); background: var(--red-soft); }
+.maf-status.neutral { color: var(--muted); background: var(--surface-soft); }
 .maf-agent-state > em { color: var(--faint); font-size: 10px; font-style: normal; white-space: nowrap; }
 .maf-agent-state > i { grid-column: 2 / -1; color: var(--red); font-size: 10px; font-style: normal; overflow-wrap: anywhere; }
 .maf-agent-state > i.tools { color: var(--faint); }
@@ -3287,7 +3296,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   font-size: 10.5px;
 }
 .maf-branch-line { height: 2px; background: var(--line); }
-.maf-branch.running .maf-branch-line { background: var(--blue); }
+.maf-branch.running .maf-branch-line { background: var(--amber); }
 .maf-branch.completed .maf-branch-line, .maf-branch.joined .maf-branch-line { background: var(--mint); }
 .maf-branch.failed .maf-branch-line { background: var(--red); }
 .maf-branch b { color: var(--ink); font-size: 11px; }

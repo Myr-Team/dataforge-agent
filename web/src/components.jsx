@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { startTour } from "./tour.js";
+import { MAF_MODES, deriveMafViewModel, mafEventData, mafRevisionNumber, mafStatusLabel, mafStatusTone } from "./mafViewModel.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 import {
   Activity,
@@ -1859,185 +1860,6 @@ function SideDrawer({ open, title, onClose, children }) {
   );
 }
 
-const MAF_EVENT_NAMES = new Set([
-  "maf_plan",
-  "maf_agent_started",
-  "maf_agent_completed",
-  "maf_agent_failed",
-  "maf_branch_started",
-  "maf_branch_joined",
-  "maf_handoff",
-  "maf_review",
-  "maf_fallback",
-]);
-
-const MAF_MODES = [
-  { id: "direct", label: "直接响应" },
-  { id: "concurrent_research", label: "并行研究" },
-  { id: "specialist_handoff", label: "专家交接" },
-  { id: "bounded_review", label: "限轮复核" },
-];
-
-function mafEventData(item) {
-  const detail = item?.detail && typeof item.detail === "object" ? item.detail : {};
-  const data = item?.data && typeof item.data === "object" ? item.data : {};
-  return { ...(item || {}), ...detail, ...data };
-}
-
-function mafAgentId(value) {
-  if (typeof value === "string") return value;
-  return value?.agent_id || value?.id || value?.agent || "";
-}
-
-function mafArray(value) {
-  return Array.isArray(value) ? value.filter(Boolean) : [];
-}
-
-function mafRevisionNumber(data) {
-  const explicit = Number(data.round ?? data.review_round ?? data.revision);
-  if (Number.isFinite(explicit)) return explicit + (data.revision != null && data.round == null ? 1 : 0);
-  const revisionCode = mafArray(data.reason_codes).find((code) => String(code).startsWith("revision:"));
-  const revision = Number(String(revisionCode || "").split(":")[1]);
-  return Number.isFinite(revision) ? revision + 1 : null;
-}
-
-function deriveMafViewModel(trace = [], persistedMaf = null) {
-  const persisted = persistedMaf?.maf || persistedMaf || {};
-  const events = (trace || [])
-    .filter((item) => MAF_EVENT_NAMES.has(String(item?.event || item?.rawEvent || "").toLowerCase()))
-    .map((item, index) => ({
-      event: String(item.event || item.rawEvent).toLowerCase(),
-      data: mafEventData(item),
-      index,
-    }));
-  const plan = events.find((item) => item.event === "maf_plan")?.data || {};
-  const collaboration = persisted.collaboration || plan.collaboration || {};
-  const mode = persisted.mode || collaboration.pattern || plan.mode || plan.pattern || "";
-  const selectedFromData = mafArray(persisted.selected_agents).length
-    ? mafArray(persisted.selected_agents)
-    : mafArray(plan.selected_agents).length
-      ? mafArray(plan.selected_agents)
-      : mafArray(collaboration.selected_agents).length
-        ? mafArray(collaboration.selected_agents)
-        : mafArray(collaboration.agents).map(mafAgentId).filter(Boolean);
-  const eventAgentIds = events.flatMap(({ data }) => [
-    data.agent_id || data.agent,
-    data.source_agent_id,
-    data.target_agent_id,
-  ]).filter(Boolean);
-  const selectedAgents = [...new Set([...selectedFromData.map(mafAgentId), ...eventAgentIds].filter(Boolean))];
-  const skippedCandidates = mafArray(persisted.skipped_agents).length
-    ? mafArray(persisted.skipped_agents).map(mafAgentId).filter(Boolean)
-    : mafArray(plan.skipped_agents).map(mafAgentId).filter(Boolean);
-  const skippedAgents = skippedCandidates.filter((id) => !selectedAgents.includes(id));
-  const persistedAgentRecords = mafArray(persisted.agents).length ? mafArray(persisted.agents) : mafArray(collaboration.agents);
-  const persistedAgentMap = new Map(persistedAgentRecords.map((record) => [mafAgentId(record), record]));
-  const agentState = new Map(selectedAgents.map((id) => {
-    const record = persistedAgentMap.get(id) || {};
-    const metadata = record.metadata || {};
-    return [id, {
-      id,
-      status: record.status || "selected",
-      durationMs: record.duration_ms ?? metadata.duration_ms ?? null,
-      tokens: record.tokens || metadata.tokens || null,
-      tools: mafArray(record.tool_names || record.tools || metadata.tool_names || metadata.tools),
-      retries: record.retry_count ?? record.retries ?? metadata.retry_count ?? null,
-      error: record.error_category || record.error || metadata.error_category || "",
-    }];
-  }));
-  const branches = new Map();
-  const handoffs = new Map();
-  const reviews = new Map();
-  let fallback = persisted.fallback ? (typeof persisted.fallback === "object" ? persisted.fallback : { status: "recorded" }) : null;
-
-  for (const item of events) {
-    const { event, data } = item;
-    const id = data.agent_id || data.agent;
-    if (id) {
-      const current = agentState.get(id) || { id, status: "selected", durationMs: null, tokens: null, tools: [], retries: null, error: "" };
-      const semanticStatus = event === "maf_agent_started"
-        ? "running"
-        : event === "maf_agent_failed"
-          ? "failed"
-          : event === "maf_agent_completed"
-            ? (data.status || "completed")
-            : current.status;
-      agentState.set(id, {
-        ...current,
-        status: semanticStatus,
-        durationMs: data.duration_ms ?? current.durationMs,
-        tokens: data.tokens || data.usage || current.tokens,
-        tools: mafArray(data.tool_names || data.tools).length ? mafArray(data.tool_names || data.tools) : current.tools,
-        retries: data.retry_count ?? data.retries ?? current.retries,
-        error: data.error_category || data.error || current.error,
-      });
-    }
-    if ((event === "maf_branch_started" || event === "maf_branch_joined") && data.branch_id) {
-      const current = branches.get(data.branch_id) || { id: data.branch_id };
-      branches.set(data.branch_id, {
-        ...current,
-        agentId: data.agent_id || data.agent || current.agentId || "",
-        required: data.required ?? current.required,
-        status: data.status || (event === "maf_branch_started" ? "running" : "joined"),
-        durationMs: data.duration_ms ?? current.durationMs ?? null,
-        error: data.error_category || data.error || current.error || "",
-      });
-    }
-    if (event === "maf_handoff") {
-      const source = data.source_agent_id || data.source_agent || "";
-      const target = data.target_agent_id || data.target_agent || "";
-      const key = `${source}:${target}:${mafArray(data.reason_codes).join(",")}`;
-      handoffs.set(key, {
-        source,
-        target,
-        status: data.status || "recorded",
-        reasons: mafArray(data.reason_codes),
-        error: data.error_category || data.error || "",
-      });
-    }
-    if (event === "maf_review") {
-      const explicitRound = mafRevisionNumber(data);
-      const pendingRound = [...reviews.values()].reverse().find((review) => review.status === "running")?.round;
-      const round = explicitRound || pendingRound || reviews.size + 1;
-      reviews.set(round, {
-        round,
-        status: data.status || "recorded",
-        verdict: data.verdict || "",
-        agentId: data.agent_id || data.agent || "",
-        reasons: mafArray(data.reason_codes),
-        error: data.error_category || data.error || "",
-      });
-    }
-    if (event === "maf_fallback") fallback = data;
-  }
-
-  if (!events.length && !mode && !selectedAgents.length && !skippedAgents.length && !fallback) return null;
-  return {
-    mode,
-    selectedAgents,
-    skippedAgents,
-    agents: [...agentState.values()],
-    branches: [...branches.values()],
-    handoffs: [...handoffs.values()],
-    reviews: [...reviews.values()].sort((a, b) => a.round - b.round),
-    fallback,
-    reasonCodes: mafArray(persisted.selection_reason_codes || collaboration.reason_codes || plan.reason_codes),
-  };
-}
-
-function mafStatusLabel(status) {
-  const raw = String(status || "").trim();
-  const key = raw.toLowerCase();
-  if (key === "selected") return "已选择";
-  if (["running", "started", "streaming"].includes(key)) return "进行中";
-  if (["completed", "complete", "joined", "done", "success", "ok"].includes(key)) return "已完成";
-  if (["failed", "fail", "error"].includes(key)) return "异常";
-  if (key === "revision_requested") return "要求复修";
-  if (key === "degraded") return "降级完成";
-  if (key === "recorded") return "已记录";
-  return raw || "未记录";
-}
-
 function mafAgentMeta(id) {
   return AGENTS.find((agent) => agent.id === id) || { id, zh: String(id || "Agent").replace(/^df-/, ""), role: "", icon: Activity };
 }
@@ -2049,7 +1871,7 @@ function MafCollaborationView({ model, compact = false }) {
     <div className={`maf-collab ${compact ? "compact" : ""}`}>
       <div className="maf-collab-head">
         <span><Workflow size={14} /><strong>MAF 动态协作</strong></span>
-        <em>{modeLabel}</em>
+        <em>{modeLabel}{model.maxRevisions != null ? ` · 最多复修 ${model.maxRevisions} 轮` : ""}</em>
       </div>
       <div className="maf-mode-segments" aria-label="协作模式">
         {MAF_MODES.map((item) => <span className={item.id === model.mode ? "active" : ""} key={item.id}>{item.label}</span>)}
@@ -2063,9 +1885,9 @@ function MafCollaborationView({ model, compact = false }) {
             const status = mafStatusLabel(agent.status);
             const tokenTotal = agent.tokens?.total ?? agent.tokens?.total_tokens;
             return (
-              <div className={`maf-agent-state ${String(agent.status || "unknown").toLowerCase()}`} role="listitem" key={agent.id}>
-                <span className="maf-agent-icon">{agent.status === "running" ? <Loader2 className="spin" size={14} /> : <Icon size={14} />}</span>
-                <span><b>{meta.zh}</b><small>{status}</small></span>
+              <div className={`maf-agent-state ${agent.tone}`} role="listitem" key={agent.id}>
+                <span className="maf-agent-icon">{agent.tone === "running" ? <Loader2 className="spin" size={14} /> : <Icon size={14} />}</span>
+                <span><b>{meta.zh}</b><small className={`maf-status ${agent.tone}`}>{status}</small></span>
                 <em>
                   {agent.durationMs != null ? formatTraceDuration(agent.durationMs) : ""}
                   {tokenTotal != null ? `${agent.durationMs != null ? " · " : ""}${Number(tokenTotal).toLocaleString()} tokens` : ""}
@@ -2089,7 +1911,7 @@ function MafCollaborationView({ model, compact = false }) {
                 <span className="maf-branch-line" />
                 <b>{branch.id}</b>
                 <span>{branch.agentId ? mafAgentMeta(branch.agentId).zh : "Agent 未记录"}</span>
-                <em>{mafStatusLabel(branch.status)}{branch.durationMs != null ? ` · ${formatTraceDuration(branch.durationMs)}` : ""}</em>
+                <em className={`maf-status ${mafStatusTone(branch.status)}`}>{mafStatusLabel(branch.status)}{branch.durationMs != null ? ` · ${formatTraceDuration(branch.durationMs)}` : ""}</em>
                 {branch.error ? <i>{String(branch.error)}</i> : null}
               </div>
             ))}
@@ -2103,7 +1925,7 @@ function MafCollaborationView({ model, compact = false }) {
             {model.handoffs.map((handoff, index) => (
               <div className="maf-handoff" key={`${handoff.source}-${handoff.target}-${index}`}>
                 <b>{mafAgentMeta(handoff.source).zh}</b><ArrowUpRight size={14} /><b>{mafAgentMeta(handoff.target).zh}</b>
-                <span>{mafStatusLabel(handoff.status)}</span>
+                <span className={`maf-status ${mafStatusTone(handoff.status)}`}>{mafStatusLabel(handoff.status)}</span>
                 {handoff.reasons.length ? <em>{handoff.reasons.join(" · ")}</em> : null}
               </div>
             ))}
@@ -2118,7 +1940,7 @@ function MafCollaborationView({ model, compact = false }) {
               <div className="maf-review-round" key={review.round}>
                 <b>第 {review.round} 轮</b>
                 <span>{review.verdict || mafStatusLabel(review.status)}</span>
-                <em>{mafStatusLabel(review.status)}</em>
+                <em className={`maf-status ${mafStatusTone(review.status)}`}>{mafStatusLabel(review.status)}</em>
                 {review.error ? <i>{String(review.error)}</i> : null}
               </div>
             ))}
@@ -2447,6 +2269,7 @@ function groupTraceRows(items) {
         name: item.name || "Agent",
         role: item.role || "",
         status: item.status || "未记录",
+        statusTone: item.statusTone || "neutral",
         sum: item.sum || "",
         durationMs: 0,
         details: [],
@@ -2455,6 +2278,7 @@ function groupTraceRows(items) {
       groups.push(group);
     }
     group.status = item.status || group.status || "未记录";
+    group.statusTone = item.statusTone || group.statusTone || "neutral";
     if (!group.sum && item.sum) group.sum = item.sum;
     group.durationMs += Number(item.durationMs || 0);
     group.details.push(item);
@@ -2679,14 +2503,21 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
               const view = traceStepView(s);
               const rawEvent = s.event || s.role || "";
               const detail = s.detail || s.data || {};
+              const mafDetail = mafEventData(s);
+              const isMafEvent = String(rawEvent).startsWith("maf_") && rawEvent !== "maf_workflow";
+              const statusRaw = isMafEvent ? mafDetail.status : (s.status || detail.status);
+              const measuredDuration = isMafEvent
+                ? (rawEvent === "maf_agent_completed" ? mafDetail.duration_ms : null)
+                : (s.duration_ms ?? detail.duration_ms);
               const item = {
                 groupKey: view.key,
                 icon: view.icon,
                 name: view.name,
                 role: view.role,
-                status: traceStatusLabel(s.status || detail.status),
-                durationMs: Number(s.duration_ms ?? detail.duration_ms ?? 0),
-                dur: formatTraceDuration(s.duration_ms ?? detail.duration_ms),
+                status: traceStatusLabel(statusRaw),
+                statusTone: mafStatusTone(statusRaw),
+                durationMs: Number(measuredDuration ?? 0),
+                dur: formatTraceDuration(measuredDuration),
                 rawEvent,
                 event: traceEventLabel(rawEvent),
                 agent: s.agent || s.agent_id || detail.agent_id || detail.agent || "",
@@ -2715,16 +2546,16 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
                     const Ic = s.icon;
                     const rowIndex = cur * TPER + i + 1;
                     const open = Boolean(traceOpen[s.key]);
-                    const rowRunning = s.status === "进行中";
-                    const rowFailed = s.status === "异常";
-                    const rowCompleted = s.status === "完成";
+                    const rowRunning = s.statusTone === "running";
+                    const rowFailed = s.statusTone === "failed";
+                    const rowCompleted = s.statusTone === "completed";
                     return (
                       <div className={open ? "rt-xrow open" : "rt-xrow"} key={s.key || i}>
                         <button type="button" className="rt-rowmain" onClick={() => setTraceOpen((m) => ({ ...m, [s.key]: !m[s.key] }))}>
                           <span className="rt-n">{rowIndex}</span>
                           <span className="rt-ic"><Ic size={15} /></span>
                           <div className="rt-main">
-                            <div className="rt-title"><b>{s.name}</b>{s.role ? <em>{s.role}</em> : null}<span className="rt-badge">{s.status}</span>{s.details.length > 1 ? <span className="rt-count">{s.details.length} 条</span> : null}</div>
+                            <div className="rt-title"><b>{s.name}</b>{s.role ? <em>{s.role}</em> : null}<span className={`rt-badge ${s.statusTone}`}>{s.status}</span>{s.details.length > 1 ? <span className="rt-count">{s.details.length} 条</span> : null}</div>
                             {s.sum ? <p className="rt-sum">{s.sum}</p> : null}
                           </div>
                           <span className="rt-dur">{s.dur ? `耗时 ${s.dur}` : "耗时未记录"}</span>
@@ -3428,7 +3259,7 @@ function AgentRoute({ trace, running, presentation, producing = false, hasArtifa
   const live = running || producing;
   const dynamicMaf = useMemo(() => deriveMafViewModel(trace), [trace]);
   const maf = dynamicMaf ? null : trace.find((item) => item.event === "maf_workflow")?.data || null;
-  const dynamicCurrent = dynamicMaf?.agents.find((agent) => agent.status === "running") || dynamicMaf?.agents.at(-1);
+  const dynamicCurrent = dynamicMaf?.agents.find((agent) => agent.tone === "running") || dynamicMaf?.agents.at(-1);
   const current = dynamicCurrent
     ? mafAgentMeta(dynamicCurrent.id)
     : AGENTS.find((agent) => agent.id === actualActive) || (producing ? AGENTS[PRODUCER] : AGENTS[0]);

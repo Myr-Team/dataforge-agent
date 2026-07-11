@@ -35,3 +35,28 @@ Self-review covered all Task 5 event names, live and persisted payload shapes, p
 ## Concerns
 
 None within Task 5 scope. End-to-end production visibility depends on Task 4 persisting and exposing the documented MAF summary and trace events.
+
+## Review Fixes - 2026-07-12
+
+### Findings Addressed
+
+- Extracted the pure transformer to `web/src/mafViewModel.js` and replaced Task 5 source-string assertions with executable Node behavior tests invoked by the Python UI contract.
+- Made live/persisted `maf_plan` facts authoritative for mode, selected agents, skipped agents, reason codes, and `max_revisions`; persisted `summary.maf` is now only a merge source when trace fields are absent.
+- Ignored inferred top-level MAF trace intervals. Agent latency now sums only nested `duration_ms` measurements from `maf_agent_completed` events; start, failure, branch, handoff, and review events cannot inflate it.
+- Cleared persisted latency when newer trace facts show start/failure without a completed measurement.
+- Added data-derived status tone classes: completed is mint, running is amber, failed is red, and unknown/recorded is neutral.
+- Preserved the legacy `maf_workflow` path; the pure helper explicitly returns no dynamic model for a legacy-only trace.
+
+### TDD Evidence
+
+1. Added the executable behavior fixture before creating the module and ran the focused Python contract.
+2. Confirmed RED: `1 failed, 5 passed`; Node reported `ERR_MODULE_NOT_FOUND` for `mafViewModel.js`.
+3. Added the pure module and reached `5/5` passing Node behavior scenarios.
+4. Added the stale persisted-latency case and confirmed a second RED result: expected `null`, received `888`.
+5. Restricted duration precedence to completed-event detail and re-ran the Node fixture: `5 passed`.
+
+### Final Verification
+
+- `python -m pytest tests/test_ui_truthfulness_contract.py -q`: `6 passed`; this executes the five-case Node behavior suite.
+- `npm run build` from `web`: Vite transformed `1751` modules and completed successfully.
+- `git diff --check` on all owned files: no whitespace errors.
