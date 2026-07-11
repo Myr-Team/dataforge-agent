@@ -85,9 +85,19 @@ DataForge 把这件事自动化了。
 
 ### 当前实现边界
 
-- 目前由 MAF 承担的是审计与复修的条件执行图；各专家能力仍由现有 Foundry 调用函数提供。独立的一等 MAF Agent、动态 handoff 和并发协作属于下一阶段。
+- 一等 MAF 团队运行时支持四种有界协作模式：`direct`、`concurrent_research`、`specialist_handoff` 和 `bounded_review`。原有审计/复修图仍可通过 `audit` 模式使用。
 - 治理页面当前展示的是明确标注为“估算”的 DataForge ROI，依据 token 用量和可配置的时间价值假设计算；尚未接入 Foundry 原生 ROI。
 - 方案、产物和反馈运行会保存为版本快照，但完整的实验账本、客户数据来源谱系、证据变化和决策变化仍在演进计划中，当前不宣称已经完成。
+- 当前没有启用开放式 Magentic 编排，也没有启用 Foundry Hosted Agents。
+
+### MAF 运行模式、灰度与评估
+
+- `DF_MAF_RUNTIME=off` 使用旧版编排器；`audit` 仅启用现有的有界审计/复修图；`full` 允许请求进入一等 MAF 团队运行时。
+- 未设置 `DF_MAF_RUNTIME` 时，`DF_USE_MAF=1` 为兼容旧配置映射到 `audit`。
+- `DF_MAF_TRAFFIC_PERCENT` 取值为 `0..100`。灰度选择基于工作区 ID 与会话 ID 的稳定哈希，不使用业务名、数据集名、行业名或演示名称做路由触发器。
+- MAF 构造或运行失败时会记录回退证据，并执行旧版路径 exactly once（恰好一次）。可选市场分支失败只降级为工作区证据，不会触发整条链路重放。
+- 稳定依赖版本固定为 `agent-framework-core==1.11.0`、`agent-framework-foundry==1.10.1` 和 `agent-framework-orchestrations==1.0.0`。
+- 无连接器评估命令为 `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`。selection accuracy、groundedness、unsupported-claim rate、latency、tokens、task completion 和 fallback rate 只在有实测数据时给值；缺失值保持 `null`/`unknown`。
 
 完整发布与演进设计见 [`docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md`](docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md)。
 
@@ -122,7 +132,7 @@ DataForge 把这件事自动化了。
 
 ## 技术栈
 
-- **后端：** Python · FastAPI · SSE 流式 · Microsoft Agent Framework（`agent-framework-core`）· Azure SDK
+- **后端：** Python · FastAPI · SSE 流式 · Microsoft Agent Framework（`agent-framework-core==1.11.0`、`agent-framework-foundry==1.10.1`、`agent-framework-orchestrations==1.0.0`）· Azure SDK
 - **前端：** React · Vite · 实时流式交互
 - **基础设施：** Terraform（模块化）· Azure Container Apps · ACR
 - **可观测：** OpenTelemetry → Application Insights
@@ -176,7 +186,7 @@ terraform init && terraform apply
 - `infra/envs/dev/terraform.tfvars.example` —— 部署标识，复制为 `terraform.tfvars`。
 - `.env`、`*.tfvars`、`*.tfstate*` 已被 git 忽略。**绝不要提交真实密钥或订阅 ID。**
 
-关键特性开关：`DF_USE_MAF`（启用审计⇄复修 Agent 回流）、`DF_MAF_MAX_REVISIONS`（复修上限）、`DF_AUDIT_STRICT_GATE`（旧版保守审计门）、`DF_WEB_MARKET`（Foundry 联网搜索）。
+关键特性开关：`DF_MAF_RUNTIME`（`off`、`audit` 或 `full`）、`DF_MAF_TRAFFIC_PERCENT`（稳定灰度百分比）、`DF_USE_MAF`（兼容旧配置并映射到 `audit`）、`DF_MAF_MAX_REVISIONS`（复修上限）、`DF_AUDIT_STRICT_GATE`（旧版保守审计门）、`DF_WEB_MARKET`（Foundry 联网搜索）。
 
 ## 负责任 AI
 

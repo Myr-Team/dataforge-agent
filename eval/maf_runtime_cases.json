@@ -1,0 +1,139 @@
+[
+  {
+    "id": "ambiguous-followup",
+    "conditions": ["ambiguous_followup"],
+    "expected_pattern": "direct",
+    "request": {
+      "intent": "qa",
+      "output_mode": "chat",
+      "needs_workspace": true,
+      "needs_external": false,
+      "high_impact": false,
+      "payload": {"query": "How does that affect the earlier option?"}
+    },
+    "available_evidence": ["workspace:summary-1"],
+    "agent_outputs": {
+      "df-coordinator": [{"completed": true, "claims": [{"text": "The earlier option remains provisional.", "evidence_refs": ["workspace:summary-1"]}]}]
+    },
+    "legacy_result": {"completed": true, "claims": [{"text": "The earlier option remains provisional.", "evidence_refs": ["workspace:summary-1"]}], "tokens": null}
+  },
+  {
+    "id": "internal-and-external-research",
+    "conditions": ["complete_evidence"],
+    "expected_pattern": "concurrent_research",
+    "request": {
+      "intent": "feasibility_analysis",
+      "output_mode": "report",
+      "needs_workspace": true,
+      "needs_external": true,
+      "high_impact": false,
+      "payload": {"query": "Compare internal evidence with external signals."}
+    },
+    "available_evidence": ["workspace:record-1", "market:source-1"],
+    "agent_outputs": {
+      "df-corpus-analyst": [{"hits": [{"id": "workspace:record-1"}]}],
+      "df-market-researcher": [{"signals": [{"id": "market:source-1"}]}],
+      "df-feasibility-analyst": [{"completed": true, "claims": [{"text": "Both evidence channels support a limited pilot.", "evidence_refs": ["workspace:record-1", "market:source-1"]}], "verdict": "supported"}],
+      "df-auditor": [{"verdict": "pass"}]
+    },
+    "legacy_result": {"completed": true, "claims": [{"text": "A limited pilot is supportable.", "evidence_refs": ["workspace:record-1"]}], "tokens": null}
+  },
+  {
+    "id": "optional-market-unavailable",
+    "conditions": ["missing_optional_market"],
+    "expected_pattern": "concurrent_research",
+    "request": {
+      "intent": "feasibility_analysis",
+      "output_mode": "report",
+      "needs_workspace": true,
+      "needs_external": true,
+      "high_impact": false,
+      "payload": {"query": "Assess the evidence and separate unavailable external signals."}
+    },
+    "available_evidence": ["workspace:record-2"],
+    "failing_agents": ["df-market-researcher"],
+    "agent_outputs": {
+      "df-corpus-analyst": [{"hits": [{"id": "workspace:record-2"}]}],
+      "df-feasibility-analyst": [{"completed": true, "claims": [{"text": "Workspace evidence supports only an internal finding.", "evidence_refs": ["workspace:record-2"]}], "verdict": "limited"}],
+      "df-auditor": [{"verdict": "limited"}]
+    },
+    "legacy_result": {"completed": true, "claims": [{"text": "External evidence is unavailable.", "evidence_refs": []}], "tokens": null}
+  },
+  {
+    "id": "single-specialist-ownership",
+    "conditions": ["single_bounded_domain"],
+    "expected_pattern": "specialist_handoff",
+    "request": {
+      "intent": "corpus_qa",
+      "output_mode": "report",
+      "needs_workspace": true,
+      "needs_external": false,
+      "high_impact": false,
+      "payload": {"query": "Summarize the strongest workspace evidence."}
+    },
+    "available_evidence": ["workspace:record-3"],
+    "agent_outputs": {
+      "df-coordinator": [{"completed": true}],
+      "df-corpus-analyst": [{"completed": true, "claims": [{"text": "One workspace observation is directly supported.", "evidence_refs": ["workspace:record-3"]}]}]
+    },
+    "legacy_result": {"completed": true, "claims": [{"text": "One workspace observation is directly supported.", "evidence_refs": ["workspace:record-3"]}], "tokens": null}
+  },
+  {
+    "id": "weak-evidence-review",
+    "conditions": ["weak_evidence"],
+    "expected_pattern": "bounded_review",
+    "request": {
+      "intent": "feasibility_analysis",
+      "output_mode": "report",
+      "needs_workspace": true,
+      "needs_external": false,
+      "high_impact": true,
+      "payload": {"query": "Review a material conclusion with limited support."}
+    },
+    "available_evidence": ["workspace:record-4"],
+    "agent_outputs": {
+      "df-feasibility-analyst": [
+        {"completed": true, "claims": [{"text": "A limited observation is supported.", "evidence_refs": ["workspace:record-4"]}, {"text": "Demand is proven.", "evidence_refs": []}]},
+        {"completed": true, "claims": [{"text": "Only the limited observation is supported.", "evidence_refs": ["workspace:record-4"]}]}
+      ],
+      "df-auditor": [{"verdict": "revise"}, {"verdict": "insufficient_evidence"}]
+    },
+    "legacy_result": {"completed": true, "claims": [{"text": "Demand is proven.", "evidence_refs": []}], "tokens": null}
+  },
+  {
+    "id": "high-impact-conclusion",
+    "conditions": ["high_impact_conclusion"],
+    "expected_pattern": "bounded_review",
+    "request": {
+      "intent": "feasibility_analysis",
+      "output_mode": "report",
+      "needs_workspace": true,
+      "needs_external": false,
+      "high_impact": true,
+      "payload": {"query": "Validate this decision before it is used."}
+    },
+    "available_evidence": ["workspace:record-5"],
+    "agent_outputs": {
+      "df-feasibility-analyst": [{"completed": true, "claims": [{"text": "The decision is bounded by the recorded observation.", "evidence_refs": ["workspace:record-5"]}]}],
+      "df-auditor": [{"verdict": "pass"}]
+    },
+    "legacy_result": {"completed": true, "claims": [{"text": "The decision is bounded by the recorded observation.", "evidence_refs": ["workspace:record-5"]}], "tokens": null}
+  },
+  {
+    "id": "forced-team-runtime-failure",
+    "conditions": ["forced_runtime_failure"],
+    "expected_pattern": "specialist_handoff",
+    "request": {
+      "intent": "corpus_qa",
+      "output_mode": "report",
+      "needs_workspace": true,
+      "needs_external": false,
+      "high_impact": false,
+      "payload": {"query": "Return a bounded evidence summary."}
+    },
+    "available_evidence": ["workspace:record-6"],
+    "force_runtime_failure": true,
+    "agent_outputs": {},
+    "legacy_result": {"completed": true, "claims": [{"text": "The legacy path returned the bounded summary.", "evidence_refs": ["workspace:record-6"]}], "tokens": null}
+  }
+]

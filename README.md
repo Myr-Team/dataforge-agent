@@ -85,9 +85,19 @@ Routing is decided at runtime by the auditor's conclusion via conditional edges 
 
 ### Current implementation boundary
 
-- MAF currently owns the conditional audit/revise graph. Specialist behavior is still provided by the existing Foundry-backed functions; independent first-class MAF agents, dynamic handoffs, and concurrent collaboration are the next architecture phase.
+- The first-class MAF team runtime supports four bounded collaboration patterns: `direct`, `concurrent_research`, `specialist_handoff`, and `bounded_review`. The legacy audit/revise graph remains available in `audit` mode.
 - The governance page exposes a clearly labelled DataForge ROI estimate based on token usage and configurable time-value assumptions. Foundry native ROI is not connected yet.
 - Plan, artifact, and feedback runs are persisted as version snapshots. A full experiment ledger with source-backed evidence and decision deltas is planned and is not represented as complete today.
+- Open-ended Magentic orchestration and Foundry Hosted Agents are not enabled.
+
+### MAF runtime rollout and evaluation
+
+- `DF_MAF_RUNTIME=off` uses the legacy orchestrator, `audit` enables only the existing bounded audit/revise graph, and `full` makes the first-class team runtime eligible.
+- When `DF_MAF_RUNTIME` is absent, `DF_USE_MAF=1` maps to `audit` for backward compatibility.
+- `DF_MAF_TRAFFIC_PERCENT` accepts `0..100`. Canary assignment uses a stable hash of workspace ID and conversation ID; it never routes on a business, dataset, industry, or demo name.
+- A MAF construction or runtime failure emits fallback evidence and invokes the legacy execution path exactly once. Optional market failure degrades to workspace-only evidence; it does not trigger a full replay.
+- The pinned stable packages are `agent-framework-core==1.11.0`, `agent-framework-foundry==1.10.1`, and `agent-framework-orchestrations==1.0.0`.
+- Run the connector-free gate with `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`. Selection accuracy, groundedness, unsupported-claim rate, latency, tokens, task completion, and fallback rate are measured when observations exist; unavailable values remain `null`/`unknown`.
 
 The release and evolution design is documented in [`docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md`](docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md).
 
@@ -122,7 +132,7 @@ Protocols / frameworks: **Microsoft Agent Framework · MCP · A2A (roadmap)**.
 
 ## Tech stack
 
-- **Backend:** Python · FastAPI · SSE streaming · Microsoft Agent Framework (`agent-framework-core`) · Azure SDKs
+- **Backend:** Python · FastAPI · SSE streaming · Microsoft Agent Framework (`agent-framework-core==1.11.0`, `agent-framework-foundry==1.10.1`, `agent-framework-orchestrations==1.0.0`) · Azure SDKs
 - **Frontend:** React · Vite · live streaming UX
 - **Infra:** Terraform (modular) · Azure Container Apps · ACR
 - **Observability:** OpenTelemetry → Application Insights
@@ -176,7 +186,7 @@ terraform init && terraform apply
 - `infra/envs/dev/terraform.tfvars.example` — deployment identifiers. Copy to `terraform.tfvars`.
 - `.env`, `*.tfvars`, and `*.tfstate*` are git-ignored. **Never commit real keys or subscription IDs.**
 
-Key feature flags: `DF_USE_MAF` (enable the audit⇄revise Agent loop), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search).
+Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search).
 
 ## Responsible AI
 
