@@ -71,7 +71,7 @@ try:
     from .router import deterministic_route
     from .run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
     from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
-    from .tracing import trace_event
+    from .tracing import agent_trace, trace_event
     from .maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
@@ -132,7 +132,7 @@ except ImportError:
     from router import deterministic_route
     from run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
     from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
-    from tracing import trace_event
+    from tracing import agent_trace, trace_event
     from maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
     from tools.generate_image import generate_image
     from tools.narrate_summary import narrate_summary
@@ -5427,6 +5427,17 @@ def _is_plan_draft_artifact(artifact: dict[str, Any]) -> bool:
 
 
 async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
+    actor = public_actor(actor_from_ui_context(req.ui_context))
+    with agent_trace(
+        workspace_id=req.workspace_id,
+        conversation_id=req.conversation_id,
+        actor=actor,
+    ):
+        async for frame in _orchestrate_chat_impl(req):
+            yield frame
+
+
+async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
     conv_id = req.conversation_id or str(uuid.uuid4())
     new_conversation = req.conversation_id is None
     history = conversation_context(req.conversation_id, limit=20) if req.conversation_id else []
