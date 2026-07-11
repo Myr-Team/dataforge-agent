@@ -651,13 +651,14 @@ class MafTeamRuntime:
             for branch_id, agent_id, required, workflow in workflows
         ]
         try:
-            gathered = await asyncio.gather(*branch_tasks, return_exceptions=True)
-            cancellation = next(
-                (result for result in gathered if isinstance(result, asyncio.CancelledError)),
-                None,
-            )
-            if cancellation is not None:
-                raise cancellation
+            pending = set(branch_tasks)
+            while pending:
+                completed, pending = await asyncio.wait(
+                    pending,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if any(task.cancelled() for task in completed):
+                    raise asyncio.CancelledError()
             observed_results = await observer
         finally:
             for task in branch_tasks:

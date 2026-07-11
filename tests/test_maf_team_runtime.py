@@ -491,15 +491,27 @@ async def test_immediate_market_failure_does_not_cancel_slow_corpus(fake_registr
 
 
 @pytest.mark.asyncio
-async def test_branch_local_cancellation_propagates_and_cleans_up_tasks(
+async def test_branch_local_cancellation_is_immediate_and_cleans_up_blocked_sibling(
     fake_registry: FakeRegistry,
     monkeypatch,
 ):
     fake_registry.fail("df-market-researcher", asyncio.CancelledError())
+    fake_registry.delays["df-market-researcher"] = 0.01
+    corpus_started = asyncio.Event()
+    corpus_cancelled = asyncio.Event()
+    never_release = asyncio.Event()
     branch_tasks: list[asyncio.Task[Any]] = []
     observer_tasks: list[asyncio.Task[Any]] = []
     actual_branch = MafTeamRuntime._run_isolated_branch
     actual_observer = MafTeamRuntime._observe_concurrent_branches
+
+    async def blocking_corpus(_payload: str) -> dict[str, Any]:
+        corpus_started.set()
+        try:
+            await never_release.wait()
+        finally:
+            corpus_cancelled.set()
+        return {"hits": []}
 
     async def tracking_branch(self, *args, **kwargs):
         task = asyncio.current_task()
@@ -515,13 +527,16 @@ async def test_branch_local_cancellation_propagates_and_cleans_up_tasks(
 
     monkeypatch.setattr(MafTeamRuntime, "_run_isolated_branch", tracking_branch)
     monkeypatch.setattr(MafTeamRuntime, "_observe_concurrent_branches", tracking_observer)
+    monkeypatch.setattr(fake_registry.agent("df-corpus-analyst"), "_execute", blocking_corpus)
 
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(
             MafTeamRuntime(fake_registry).run(concurrent_request()),
-            timeout=0.25,
+            timeout=0.15,
         )
 
+    assert corpus_started.is_set()
+    assert corpus_cancelled.is_set()
     assert len(branch_tasks) == 2
     assert len(observer_tasks) == 1
     assert all(task.done() for task in [*branch_tasks, *observer_tasks])

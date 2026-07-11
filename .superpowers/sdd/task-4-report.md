@@ -164,3 +164,36 @@ python -m pytest tests/test_maf_team_runtime.py tests/test_maf_integration.py -q
 ```
 
 Result: `36 passed, 1 warning in 5.76s`. The warning is the existing upstream experimental Functional Workflow warning.
+
+## Cancellation Latency Fix: Blocked Sibling
+
+### RED
+
+Strengthened the branch-local cancellation regression so the corpus branch blocks indefinitely until canceled while the market branch raises `asyncio.CancelledError`. The runtime is wrapped in a `0.15s` timeout and must raise `CancelledError`, cancel the blocked corpus sibling, finish the observer, and leave every tracked task done.
+
+The initial run failed with `TimeoutError`. Although gathered cancellation was eventually inspected, `asyncio.gather(..., return_exceptions=True)` waited for the blocked corpus sibling first, so cancellation propagation was not prompt.
+
+### Implementation
+
+- Replaced all-branch gather waiting with `asyncio.wait(..., return_when=asyncio.FIRST_COMPLETED)` over the explicit branch tasks.
+- Each completion batch is inspected immediately; a canceled branch raises `asyncio.CancelledError` without waiting for siblings.
+- The existing `finally` cancels and awaits unfinished siblings and the observer.
+- Ordinary branch exceptions continue through failed observations, and normal execution still waits for both branches.
+
+### GREEN
+
+Targeted cancellation, degradation, and normal-concurrency command:
+
+```powershell
+python -m pytest tests/test_maf_team_runtime.py::test_branch_local_cancellation_is_immediate_and_cleans_up_blocked_sibling tests/test_maf_team_runtime.py::test_optional_market_failure_degrades_without_losing_corpus tests/test_maf_team_runtime.py::test_immediate_market_failure_does_not_cancel_slow_corpus tests/test_maf_team_runtime.py::test_internal_and_external_research_run_concurrently -q
+```
+
+Result: `4 passed, 1 warning in 3.79s`.
+
+Focused Task 3 runtime plus Task 4 cancellation command:
+
+```powershell
+python -m pytest tests/test_maf_team_runtime.py tests/test_maf_integration.py::test_full_runtime_cancellation_propagates_without_fallback_or_legacy -q
+```
+
+Result: `25 passed, 1 warning in 5.44s`. The warning is the existing upstream experimental Functional Workflow warning.
