@@ -372,6 +372,22 @@ export async function produceArtifacts(payload) {
   });
 }
 
+export async function createArtifactJob(payload, idempotencyKey) {
+  return request("/api/artifact-jobs", {
+    method: "POST",
+    headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {},
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function loadArtifactJob(jobId) {
+  return request(`/api/artifact-jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function loadArtifactJobs(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/artifact-jobs`);
+}
+
 const wsPath = (id) => `/api/workspaces/${encodeURIComponent(id)}`;
 const queryString = (params) => new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "")).toString();
 

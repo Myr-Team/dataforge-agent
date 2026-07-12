@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 try:
+    from .artifact_jobs import list_artifact_jobs
     from .blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
     from .conversation_store import get_conversation, list_conversations
     from .data_workbench import list_workspace_files
@@ -30,6 +31,7 @@ try:
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
     from .workspace_authz import rbac_enabled, require_workspace_permission, workspace_role
 except ImportError:
+    from artifact_jobs import list_artifact_jobs
     from blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
     from conversation_store import get_conversation, list_conversations
     from data_workbench import list_workspace_files
@@ -661,7 +663,11 @@ def list_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
                     seen.add(key)
                     items.append(item)
     items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
-    return {"workspace_id": workspace_id, "artifacts": items}
+    return {
+        "workspace_id": workspace_id,
+        "artifacts": items,
+        "jobs": list_artifact_jobs(workspace_id)[:20],
+    }
 
 
 def system_status() -> dict[str, Any]:

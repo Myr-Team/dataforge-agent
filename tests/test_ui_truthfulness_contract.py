@@ -82,3 +82,14 @@ def test_iteration_ui_uses_backend_experiment_deltas_and_source_lineage() -> Non
     assert "evidence_delta" in source
     assert "source_ref" in source
     assert "/experiments/compare" in api_source
+
+
+def test_artifact_generation_uses_refresh_safe_background_jobs() -> None:
+    app_source = (COMPONENTS.parent / "App.jsx").read_text(encoding="utf-8")
+    api_source = (COMPONENTS.parent / "api.js").read_text(encoding="utf-8")
+
+    assert "createArtifactJob" in app_source
+    assert "loadArtifactJobs" in app_source
+    assert "waitForArtifactJob" in app_source
+    assert "/api/artifact-jobs" in api_source
+    assert "/artifact-jobs`" in api_source

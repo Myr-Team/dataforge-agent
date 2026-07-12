@@ -2844,6 +2844,7 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
         "proposal": payload.get("proposal") or {},
         "reference_images": payload.get("reference_images") or [],
         "narrative": payload.get("narrative") or payload.get("text"),
+        "plan_version": payload.get("plan_version") or "V1",
     }
     result = _run_producer(artifact, kinds)
     persistence_errors: list[str] = []

@@ -1806,24 +1806,18 @@ const OUTPUT_PRODUCTS = [
   { id: "audio_summary", icon: Mic, cls: "prod-audio", title: "语音摘要", desc: "将关键结论与建议生成语音摘要，便于快速收听与分享。", tags: ["关键结论", "行动建议", "风险提示", "时长 2-5 分钟"] },
   { id: "roadmap", icon: Route, cls: "prod-route", title: "路线图 / 验证计划", desc: "生成路线图与验证计划，明确关键里程碑与验证实验。", tags: ["阶段路线图", "关键里程碑", "验证实验", "资源与风险"] },
 ];
-const OUTPUT_RECENT = [
-  { name: "选址情报演示-项目提案.pdf", type: "PDF", size: "12.4 MB", time: "10:22" },
-  { name: "选址概念图_v1.png", type: "PNG", size: "2.1 MB", time: "10:20" },
-  { name: "选址情报演示-语音摘要.mp3", type: "MP3", size: "4.5 MB", time: "10:18" },
-  { name: "路线图与验证计划_v1.pdf", type: "PDF", size: "1.8 MB", time: "10:15" },
-  { name: "配色与视觉参考.png", type: "PNG", size: "1.6 MB", time: "昨天 16:42" },
-  { name: "数据与来源清单.pdf", type: "PDF", size: "0.9 MB", time: "昨天 16:40" },
-];
-
 function ArtifactsCenter({ dashboard, artifacts, artifact, artifactRefreshKey = 0, onProduce, producing, onUploadReference }) {
   const hasAnalysis = Boolean(artifact?.feasibility?.verdict);
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
   const [recent, setRecent] = useState(null);
+  const [artifactJobs, setArtifactJobs] = useState([]);
   const [dirOpen, setDirOpen] = useState(false);
   const [lightbox, setLightbox] = useState(null);
   const reloadRecent = React.useCallback(() => {
     if (!workspaceId) return;
-    loadArtifactsList(workspaceId).then((d) => setRecent(d.artifacts || [])).catch(() => setRecent([]));
+    loadArtifactsList(workspaceId)
+      .then((d) => { setRecent(d.artifacts || []); setArtifactJobs(d.jobs || []); })
+      .catch(() => { setRecent([]); setArtifactJobs([]); });
   }, [workspaceId]);
   useEffect(() => { reloadRecent(); }, [reloadRecent, producing, artifactRefreshKey]);
   const generatedItems = useMemo(() => {
@@ -1857,6 +1851,7 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, artifactRefreshKey = 
       });
   }, [generatedItems, recent]);
   const isImage = (a) => /^(png|jpg|jpeg|webp|image)$/i.test(String(a.type || "")) || /\.(png|jpe?g|webp)$/i.test(String(a.name || ""));
+  const visibleJobs = artifactJobs.filter((job) => job.status !== "completed").slice(0, 4);
   const openArtifact = (a) => { const href = artifactLink(a); if (!href) return; if (isImage(a)) setLightbox(href); else window.open(href, "_blank", "noopener"); };
   return (
     <main className="agent-studio outputs-stage">
@@ -1900,6 +1895,19 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, artifactRefreshKey = 
 
         <aside className="card out-recent">
           <div className="cardhead"><span className="t">最近产物</span><button type="button" className="lnk lnk-btn" onClick={reloadRecent}>刷新</button></div>
+          {visibleJobs.length ? (
+            <div className="out-job-list">
+              {visibleJobs.map((job) => (
+                <div className="out-job" key={job.job_id}>
+                  <span className={`out-job-dot ${job.status}`} />
+                  <div><b>{job.display_name || "产物任务"}</b><em>{(job.requested_kinds || []).map((kind) => ARTIFACT_KIND_LABEL[kind] || kind).join(" / ")}</em></div>
+                  <span className={`dw-chip ${["queued", "running"].includes(job.status) ? "probing" : job.status === "partial" ? "warn" : ""}`}>
+                    {["queued", "running"].includes(job.status) ? "生成中" : job.status === "partial" ? "部分完成" : "可重试"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="out-recent-list">
             {recent === null ? <p className="empty-copy" style={{ padding: 16 }}><Loader2 size={14} className="spin" /> 加载产物…</p> : null}
             {recent !== null && !recentItems.length ? <p className="empty-copy" style={{ padding: 16 }}>暂无产物。生成后会在这里出现。</p> : null}

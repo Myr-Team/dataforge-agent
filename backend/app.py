@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi import BackgroundTasks
 from fastapi import File
 from fastapi import Form
 from fastapi import HTTPException
@@ -20,6 +21,7 @@ from pathlib import Path
 from starlette.concurrency import run_in_threadpool
 
 try:
+    from .artifact_jobs import create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
     from .control_plane import build_workspace_dashboard, router as control_plane_router
@@ -42,6 +44,7 @@ try:
         workspace_ingest_status,
         workspace_pending_ingest_jobs,
     )
+    from .workspace_authz import require_workspace_permission
     from .schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -66,6 +69,7 @@ try:
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
 except ImportError:
+    from artifact_jobs import create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
     from control_plane import build_workspace_dashboard, router as control_plane_router
@@ -88,6 +92,7 @@ except ImportError:
         workspace_ingest_status,
         workspace_pending_ingest_jobs,
     )
+    from workspace_authz import require_workspace_permission
     from schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -406,6 +411,44 @@ async def speech_token() -> dict[str, Any]:
 @app.post("/api/produce")
 async def produce(req: ProduceRequest) -> dict[str, Any]:
     return await run_in_threadpool(produce_from_existing_report, req.model_dump())
+
+
+@app.post("/api/artifact-jobs", status_code=202)
+async def artifact_job_create(
+    req: ProduceRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    try:
+        actor = actor_from_request(request)
+        require_workspace_permission(req.workspace_id, actor, "artifact.generate")
+        job = await run_in_threadpool(
+            create_artifact_job,
+            req.model_dump(),
+            actor=actor,
+            idempotency_key=request.headers.get("idempotency-key"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if job.get("status") not in {"partial", "completed", "failed", "cancelled", "running"}:
+        background_tasks.add_task(run_artifact_job, job["job_id"])
+    return job
+
+
+@app.get("/api/artifact-jobs/{job_id}")
+async def artifact_job_detail(job_id: str) -> dict[str, Any]:
+    try:
+        return await run_in_threadpool(get_artifact_job, job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Artifact job not found: {job_id}") from exc
+
+
+@app.get("/api/workspaces/{workspace_id}/artifact-jobs")
+async def workspace_artifact_jobs(workspace_id: str) -> dict[str, Any]:
+    jobs = await run_in_threadpool(list_artifact_jobs, workspace_id)
+    return {"workspace_id": workspace_id, "jobs": jobs, "count": len(jobs)}
 
 
 @app.post("/api/playbook")

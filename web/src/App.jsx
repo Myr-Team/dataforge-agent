@@ -1,13 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  createArtifactJob,
   deleteWorkspace,
   listWorkspaces,
   loadConversation,
   loadDashboard,
   loadLatestAnalysis,
   loadObservability,
+  loadArtifactJob,
+  loadArtifactJobs,
   loadRun,
-  produceArtifacts,
   isTransientFetchError,
   streamChat,
   uploadWorkspace,
@@ -25,6 +27,37 @@ import {
 import { PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
 
 const DEFAULT_WORKSPACE = "demo-corpus";
+const ARTIFACT_JOB_TERMINAL = new Set(["partial", "completed", "failed", "cancelled"]);
+
+const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+async function waitForArtifactJob(jobId, onUpdate, { timeoutMs = 20 * 60 * 1000 } = {}) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const job = await loadArtifactJob(jobId);
+    onUpdate?.(job);
+    if (ARTIFACT_JOB_TERMINAL.has(job.status)) return job;
+    await wait(1400);
+  }
+  throw new Error("产物任务仍在后台运行，可稍后回到产物中心查看。");
+}
+
+function artifactJobResult(job) {
+  const artifacts = job?.artifacts || {};
+  const artifactUrls = Object.fromEntries(
+    Object.entries(artifacts)
+      .map(([kind, value]) => [kind, value?.artifact_url])
+      .filter(([, url]) => Boolean(url)),
+  );
+  return {
+    ...artifacts,
+    ...(job?.result_meta || {}),
+    artifact_urls: artifactUrls,
+    warnings: job?.warnings || [],
+    job_id: job?.job_id,
+    job_status: job?.status,
+  };
+}
 
 const hasAnalysisDimensions = (artifact) => {
   const dims = artifact?.feasibility?.dimensions;
@@ -169,6 +202,37 @@ export function App() {
   useEffect(() => {
     refreshDashboard(workspaceId);
   }, [workspaceId, refreshDashboard]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadArtifactJobs(workspaceId)
+      .then(async (data) => {
+        const active = (data?.jobs || []).find((job) => ["queued", "running"].includes(job.status));
+        if (!active || cancelled) return;
+        const taskId = active.job_id;
+        setProducing(true);
+        pushTask({ id: taskId, label: "生成产物", detail: "后台任务已恢复…", status: "running" });
+        try {
+          const completed = await waitForArtifactJob(taskId, (job) => {
+            if (!cancelled) updateTask(taskId, { detail: job.status === "running" ? "后台生成中…" : `任务状态：${job.status}` });
+          });
+          if (cancelled) return;
+          setArtifactRefreshKey((value) => value + 1);
+          updateTask(taskId, { status: completed.status === "failed" ? "error" : "done", detail: completed.status === "partial" ? "部分生成完成" : completed.status === "completed" ? "已生成" : "生成失败" });
+          setNotice({
+            type: completed.status === "failed" ? "error" : "done",
+            message: completed.status === "partial" ? "产物已部分生成，可在产物中心查看并重试失败项。" : completed.status === "completed" ? "后台产物任务已完成。" : "后台产物任务失败，可重新生成。",
+            actionLabel: completed.status === "failed" ? undefined : "查看产物",
+            action: completed.status === "failed" ? undefined : () => setActiveView("artifacts"),
+          });
+          refreshDashboard(workspaceId);
+        } finally {
+          if (!cancelled) setProducing(false);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [workspaceId, pushTask, refreshDashboard, updateTask]);
 
   // 异步摄取轮询：上传后/选中仍在解析的工作区时，每 ~3.5s 刷新看板，
   // 让数据集状态「解析中→已就绪」与数据画像/TOP5 自动填充；封顶 ~2 分钟，避免个别卡住的文件无限轮询。
@@ -751,7 +815,7 @@ export function App() {
         return;
       }
       setNotice({ type: "loading", message: `正在生成${kinds.map((k) => KIND_LABEL[k]).join(" / ")}…` });
-      const result = await produceArtifacts({
+      const job = await createArtifactJob({
         workspace_id: workspaceId,
         conversation_id: activeConversationId || base.conversation_id,
         feasibility: base.feasibility || {},
@@ -764,7 +828,16 @@ export function App() {
         narrative: base.narrative,
         text: base.answer?.text || base.answer?.markdown,
         kinds,
+      }, prodTaskId);
+      updateTask(prodTaskId, { detail: `${kinds.map((k) => KIND_LABEL[k]).join(" / ")} · 后台生成中…`, backendJobId: job.job_id });
+      const completedJob = await waitForArtifactJob(job.job_id, (current) => {
+        updateTask(prodTaskId, { detail: current.status === "running" ? "后台生成中…" : `任务状态：${current.status}` });
       });
+      const result = artifactJobResult(completedJob);
+      if (completedJob.status === "failed" && !Object.keys(result.artifact_urls || {}).length) {
+        const firstError = Object.values(completedJob.errors || {})[0];
+        throw new Error(firstError?.message || "产物后台任务失败，可重新生成。");
+      }
       // 合并：produce 只返回本次生成的产物，保留之前已生成的，别覆盖丢失
       const prevProposal = base.proposal || {};
       const warnings = [

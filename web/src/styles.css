@@ -851,6 +851,15 @@ svg { flex-shrink: 0; }
 .out-badge .d { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); }
 .out-note { font-size: 12px; color: var(--faint); display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .out-recent { display: flex; flex-direction: column; }
+.out-job-list { padding: 8px 10px; border-bottom: 1px solid var(--line); background: #fbfcff; }
+.out-job { display: grid; grid-template-columns: 8px minmax(0,1fr) auto; align-items: center; gap: 9px; padding: 7px 0; }
+.out-job + .out-job { border-top: 1px solid #edf2f7; }
+.out-job-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.out-job-dot.queued, .out-job-dot.running { background: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+.out-job-dot.partial { background: #b7791f; }
+.out-job-dot.failed { background: var(--red); }
+.out-job b { display: block; overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.out-job em { display: block; margin-top: 2px; overflow: hidden; color: var(--faint); font-size: 10.5px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .out-recent-list { padding: 6px 8px; }
 .out-rec { display: flex; align-items: center; gap: 11px; padding: 10px; border-radius: 9px; width: 100%; border: 0; background: transparent; text-align: left; cursor: pointer; font: inherit; color: var(--ink); }
 .out-rec:hover { background: var(--surface-soft); }

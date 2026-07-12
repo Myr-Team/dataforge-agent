@@ -90,7 +90,9 @@ def render_pdf_report(proposal: dict[str, Any], template: str = "project_proposa
     proposal = _repair_mojibake_value(proposal)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = int(time.time())
-    path = OUT_DIR / f"{_safe_name(proposal.get('opportunity_id') or 'proposal')}-{stamp}.pdf"
+    doc_meta = proposal.get("doc_meta") if isinstance(proposal.get("doc_meta"), dict) else {}
+    version = _safe_name(doc_meta.get("version") or "V1")
+    path = OUT_DIR / f"{_safe_name(proposal.get('opportunity_id') or 'proposal')}-{version}-{stamp}.pdf"
     mode = "weasyprint-html-v1"
     pdf_error = ""
     pdf_bytes = None
