@@ -701,6 +701,15 @@ def _safe_error_diagnostic(error: Any) -> dict[str, Any]:
         r"['\"]code['\"]\s*:\s*['\"]([A-Za-z0-9_.-]{1,80})",
         message,
     )
+    missing_attribute_match = re.search(
+        r"has no attribute\s+['\"]([A-Za-z_][A-Za-z0-9_]{0,79})['\"]",
+        message,
+    )
+    traceback_text = str(getattr(error, "traceback", None) or "")[:12000]
+    traceback_frames = re.findall(
+        r'File\s+"([^"]+)",\s+line\s+(\d+),\s+in\s+([A-Za-z_][A-Za-z0-9_]*)',
+        traceback_text,
+    )
     inner_error_types = [
         candidate
         for candidate in re.findall(r"\b([A-Z][A-Za-z0-9_]*(?:Error|Exception))\(", message)
@@ -733,8 +742,15 @@ def _safe_error_diagnostic(error: Any) -> dict[str, Any]:
         diagnostic["status_code"] = status_code
     if provider_match:
         diagnostic["provider_code"] = provider_match.group(1)
+    if missing_attribute_match:
+        diagnostic["missing_attribute"] = missing_attribute_match.group(1)
     if inner_error_types:
         diagnostic["inner_error_type"] = inner_error_types[-1][:80]
+    if traceback_frames:
+        path, line, function = traceback_frames[-1]
+        diagnostic["origin_file"] = re.split(r"[/\\]", path)[-1][:80]
+        diagnostic["origin_function"] = function[:80]
+        diagnostic["origin_line"] = int(line)
     return diagnostic
 
 
@@ -742,7 +758,8 @@ def _log_agent_failure(agent_id: str, branch_id: str | None, error: Any) -> None
     diagnostic = _safe_error_diagnostic(error)
     logger.warning(
         "maf_agent_failure agent=%s branch=%s error_type=%s inner_error_type=%s "
-        "status_code=%s provider_code=%s reason_hint=%s message_length=%s fingerprint=%s",
+        "status_code=%s provider_code=%s reason_hint=%s missing_attribute=%s "
+        "origin=%s:%s:%s message_length=%s fingerprint=%s",
         agent_id,
         branch_id or "none",
         diagnostic.get("error_type", "unknown"),
@@ -750,6 +767,10 @@ def _log_agent_failure(agent_id: str, branch_id: str | None, error: Any) -> None
         diagnostic.get("status_code", "none"),
         diagnostic.get("provider_code", "none"),
         diagnostic.get("reason_hint", "unclassified"),
+        diagnostic.get("missing_attribute", "none"),
+        diagnostic.get("origin_file", "none"),
+        diagnostic.get("origin_line", "none"),
+        diagnostic.get("origin_function", "none"),
         diagnostic.get("message_length", 0),
         diagnostic.get("message_fingerprint", "none"),
     )

@@ -368,6 +368,26 @@ def test_error_diagnostic_exposes_only_bounded_provider_codes() -> None:
     assert "raw prompt" not in repr(diagnostic)
 
 
+def test_error_diagnostic_reduces_traceback_to_code_location() -> None:
+    class WorkflowError:
+        error_type = "ChatClientException"
+        message = "AttributeError: object has no attribute 'active_span'"
+        traceback = (
+            "raw prompt must not survive\n"
+            '  File "/app/agent_framework_openai/_chat_client.py", line 720, in _stream\n'
+            '  File "/app/opentelemetry/context/__init__.py", line 155, in detach\n'
+        )
+
+    diagnostic = maf_team_runtime._safe_error_diagnostic(WorkflowError())
+
+    assert diagnostic["missing_attribute"] == "active_span"
+    assert diagnostic["origin_file"] == "__init__.py"
+    assert diagnostic["origin_function"] == "detach"
+    assert diagnostic["origin_line"] == 155
+    assert "/app/" not in repr(diagnostic)
+    assert "raw prompt" not in repr(diagnostic)
+
+
 @pytest.mark.asyncio
 async def test_direct_path_invokes_only_registry_coordinator(fake_registry: FakeRegistry):
     request = MafTeamRequest(
