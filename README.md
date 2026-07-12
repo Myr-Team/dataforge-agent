@@ -94,6 +94,7 @@ Routing is decided at runtime by the auditor's conclusion via conditional edges 
 
 - `DF_MAF_RUNTIME=off` uses the legacy orchestrator, `audit` enables only the existing bounded audit/revise graph, and `full` makes the first-class team runtime eligible.
 - When `DF_MAF_RUNTIME` is absent, `DF_USE_MAF=1` maps to `audit` for backward compatibility.
+- `DF_MAF_AUTH_MODE=auto` uses the configured Azure OpenAI API key when `AZURE_OPENAI_API_KEY` and `OPENAI_ENDPOINT` are available, otherwise it uses the Foundry project managed identity. Set `api_key` or `managed_identity` to require one mode explicitly. Azure Responses API-key routing defaults to API version `preview` unless `AZURE_OPENAI_API_VERSION` is set.
 - `DF_MAF_TRAFFIC_PERCENT` accepts `0..100`. Canary assignment uses a stable hash of workspace ID and conversation ID; it never routes on a business, dataset, industry, or demo name. Keep it at `0` through full tests, deterministic evaluation, backend image import/start smoke, broad review, and a separately approved production canary.
 - A MAF construction or runtime failure before its first live event emits fallback evidence and invokes the legacy execution path exactly once. After MAF output begins, MAF owns the terminal response and legacy execution is not restarted. Optional market failure degrades to workspace-only evidence; it does not trigger a full replay.
 - Every FULL request that needs workspace data uses authoritative backend retrieval and typed corpus/evidence/rubric contracts; evidence must be non-empty and trace to a retrieved hit. Feasibility and audit output are Pydantic-validated with one contract-correction retry, and the existing rubric, evidence verifier, and typed pre/post-audit guardrail results remain authoritative. `full_package` still runs the producer for PDF, image, plan, and audio delivery.
@@ -188,7 +189,7 @@ terraform init && terraform apply
 - `infra/envs/dev/terraform.tfvars.example` — deployment identifiers. Copy to `terraform.tfvars`.
 - `.env`, `*.tfvars`, and `*.tfstate*` are git-ignored. **Never commit real keys or subscription IDs.**
 
-Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search).
+Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_AUTH_MODE` (`auto`, `api_key`, or `managed_identity`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search).
 
 ## Responsible AI
 

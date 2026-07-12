@@ -131,6 +131,7 @@ def materialized_registry(monkeypatch):
     monkeypatch.setattr(maf_agents, "DefaultAzureCredential", lambda: "offline-credential")
     monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example.invalid/project")
     monkeypatch.setenv("DF_CHAT_DEPLOYMENT", "offline-model")
+    monkeypatch.setenv("DF_MAF_AUTH_MODE", "managed_identity")
 
     return create_agent_registry(workspace_id="workspace-authorized"), helper_calls
 
@@ -160,6 +161,74 @@ def test_materialized_agents_have_exact_role_tools_and_restricted_mcp(materializ
     ]
     assert helper_calls["web"] == [{}]
     assert helper_calls["code"] == [{}]
+
+
+def test_registry_prefers_azure_openai_key_client_when_configured(monkeypatch):
+    created = []
+
+    class FakeAzureOpenAIChatClient:
+        def __init__(self, **kwargs) -> None:
+            created.append(kwargs)
+
+    class UnexpectedFoundryChatClient:
+        def __init__(self, **kwargs) -> None:
+            raise AssertionError("managed identity client should not be created")
+
+    monkeypatch.setattr(maf_agents, "OpenAIChatClient", FakeAzureOpenAIChatClient)
+    monkeypatch.setattr(maf_agents, "FoundryChatClient", UnexpectedFoundryChatClient)
+    monkeypatch.setattr(
+        maf_agents,
+        "_create_foundry_agent",
+        lambda spec, client, workspace_id: FakeFoundryAgent(spec),
+    )
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "secret-key")
+    monkeypatch.setenv("OPENAI_ENDPOINT", "https://example.openai.azure.com/")
+    monkeypatch.setenv("DF_CHAT_DEPLOYMENT", "gpt-test")
+    monkeypatch.delenv("DF_MAF_AUTH_MODE", raising=False)
+
+    registry = create_agent_registry(workspace_id="workspace-authorized")
+
+    assert registry.ids()
+    assert created == [
+        {
+            "model": "gpt-test",
+            "api_key": "secret-key",
+            "azure_endpoint": "https://example.openai.azure.com/",
+            "api_version": "preview",
+        }
+    ]
+
+
+def test_registry_can_force_managed_identity_client(monkeypatch):
+    created = []
+
+    class FakeManagedIdentityClient:
+        def __init__(self, **kwargs) -> None:
+            created.append(kwargs)
+
+    monkeypatch.setattr(maf_agents, "FoundryChatClient", FakeManagedIdentityClient)
+    monkeypatch.setattr(maf_agents, "DefaultAzureCredential", lambda: "managed-credential")
+    monkeypatch.setattr(
+        maf_agents,
+        "_create_foundry_agent",
+        lambda spec, client, workspace_id: FakeFoundryAgent(spec),
+    )
+    monkeypatch.setenv("DF_MAF_AUTH_MODE", "managed_identity")
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example.services.ai.azure.com/api/projects/test")
+    monkeypatch.setenv("DF_CHAT_DEPLOYMENT", "gpt-test")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "ignored-key")
+    monkeypatch.setenv("OPENAI_ENDPOINT", "https://example.openai.azure.com/")
+
+    registry = create_agent_registry(workspace_id="workspace-authorized")
+
+    assert registry.ids()
+    assert created == [
+        {
+            "project_endpoint": "https://example.services.ai.azure.com/api/projects/test",
+            "model": "gpt-test",
+            "credential": "managed-credential",
+        }
+    ]
 
 
 @pytest.mark.asyncio

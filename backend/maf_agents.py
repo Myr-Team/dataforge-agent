@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from agent_framework import Agent, tool
 from agent_framework.foundry import FoundryChatClient
+from agent_framework.openai import OpenAIChatClient
 from azure.identity import DefaultAzureCredential
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -232,7 +233,7 @@ def _agent_specs() -> tuple[AgentSpec, ...]:
     )
 
 
-def _create_foundry_agent(spec: AgentSpec, client: FoundryChatClient, workspace_id: str) -> Agent:
+def _create_foundry_agent(spec: AgentSpec, client: Any, workspace_id: str) -> Agent:
     return Agent(
         client=client,
         id=spec.agent_id,
@@ -240,6 +241,36 @@ def _create_foundry_agent(spec: AgentSpec, client: FoundryChatClient, workspace_
         description=spec.description,
         instructions=spec.instructions,
         tools=_tools_for(spec, workspace_id),
+    )
+
+
+def _create_maf_chat_client() -> Any:
+    auth_mode = str(os.environ.get("DF_MAF_AUTH_MODE") or "auto").strip().lower()
+    if auth_mode not in {"auto", "api_key", "managed_identity"}:
+        raise ValueError("DF_MAF_AUTH_MODE must be auto, api_key, or managed_identity")
+
+    model = os.environ["DF_CHAT_DEPLOYMENT"]
+    api_key = str(os.environ.get("AZURE_OPENAI_API_KEY") or "").strip()
+    azure_endpoint = str(
+        os.environ.get("OPENAI_ENDPOINT") or os.environ.get("AZURE_OPENAI_ENDPOINT") or ""
+    ).strip()
+    use_api_key = auth_mode == "api_key" or (auth_mode == "auto" and bool(api_key and azure_endpoint))
+    if use_api_key:
+        if not api_key or not azure_endpoint:
+            raise RuntimeError(
+                "DF_MAF_AUTH_MODE=api_key requires AZURE_OPENAI_API_KEY and OPENAI_ENDPOINT"
+            )
+        return OpenAIChatClient(
+            model=model,
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "preview"),
+        )
+
+    return FoundryChatClient(
+        project_endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
+        model=model,
+        credential=DefaultAzureCredential(),
     )
 
 
@@ -255,11 +286,7 @@ def create_agent_registry(
 
     specs = _agent_specs()
     if client_factory is None:
-        client = FoundryChatClient(
-            project_endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
-            model=os.environ["DF_CHAT_DEPLOYMENT"],
-            credential=DefaultAzureCredential(),
-        )
+        client = _create_maf_chat_client()
         client_factory = lambda spec: _create_foundry_agent(spec, client, authorized_workspace_id)
 
     return MafAgentRegistry(specs, {spec.agent_id: client_factory(spec) for spec in specs})

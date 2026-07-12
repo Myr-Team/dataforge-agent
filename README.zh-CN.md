@@ -94,6 +94,7 @@ DataForge 把这件事自动化了。
 
 - `DF_MAF_RUNTIME=off` 使用旧版编排器；`audit` 仅启用现有的有界审计/复修图；`full` 允许请求进入一等 MAF 团队运行时。
 - 未设置 `DF_MAF_RUNTIME` 时，`DF_USE_MAF=1` 为兼容旧配置映射到 `audit`。
+- `DF_MAF_AUTH_MODE=auto` 会在 `AZURE_OPENAI_API_KEY` 与 `OPENAI_ENDPOINT` 可用时使用 Azure OpenAI API Key，否则使用 Foundry 项目的托管身份。可设置为 `api_key` 或 `managed_identity` 强制指定认证模式。Azure Responses 的 Key 路由默认使用 `preview` API 版本，也可通过 `AZURE_OPENAI_API_VERSION` 覆盖。
 - `DF_MAF_TRAFFIC_PERCENT` 取值为 `0..100`。灰度选择基于工作区 ID 与会话 ID 的稳定哈希，不使用业务名、数据集名、行业名或演示名称做路由触发器。在完整测试、确定性评估、后端镜像导入/启动 smoke、广泛评审以及单独批准的生产 canary 通过前，保持为 `0`。
 - MAF 在首个实时事件发出前构造或运行失败时，会记录回退证据并执行旧版路径 exactly once（恰好一次）；一旦 MAF 输出开始，终态由 MAF 持有，不再启动旧版执行。可选市场分支失败只降级为工作区证据，不会触发整条链路重放。
 - FULL 模式中，凡是需要工作区数据的请求都先走后端权威检索，并使用 typed corpus/evidence/rubric contract，证据必须有效、非空且能回溯到真实检索命中。可行性和审计输出使用 Pydantic 校验，合同纠正最多重试一次；现有 rubric、证据核验以及经过 typed contract 复核的审计前后 guardrail 继续作为权威边界。`full_package` 仍会运行 producer，保留 PDF、图片、计划和音频交付。
@@ -188,7 +189,7 @@ terraform init && terraform apply
 - `infra/envs/dev/terraform.tfvars.example` —— 部署标识，复制为 `terraform.tfvars`。
 - `.env`、`*.tfvars`、`*.tfstate*` 已被 git 忽略。**绝不要提交真实密钥或订阅 ID。**
 
-关键特性开关：`DF_MAF_RUNTIME`（`off`、`audit` 或 `full`）、`DF_MAF_TRAFFIC_PERCENT`（稳定灰度百分比）、`DF_USE_MAF`（兼容旧配置并映射到 `audit`）、`DF_MAF_MAX_REVISIONS`（复修上限）、`DF_AUDIT_STRICT_GATE`（旧版保守审计门）、`DF_WEB_MARKET`（Foundry 联网搜索）。
+关键特性开关：`DF_MAF_RUNTIME`（`off`、`audit` 或 `full`）、`DF_MAF_AUTH_MODE`（`auto`、`api_key` 或 `managed_identity`）、`DF_MAF_TRAFFIC_PERCENT`（稳定灰度百分比）、`DF_USE_MAF`（兼容旧配置并映射到 `audit`）、`DF_MAF_MAX_REVISIONS`（复修上限）、`DF_AUDIT_STRICT_GATE`（旧版保守审计门）、`DF_WEB_MARKET`（Foundry 联网搜索）。
 
 ## 负责任 AI
 
