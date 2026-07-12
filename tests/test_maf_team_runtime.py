@@ -358,11 +358,12 @@ def test_error_diagnostic_exposes_only_bounded_provider_codes() -> None:
 
     diagnostic = maf_team_runtime._safe_error_diagnostic(WorkflowError())
 
-    assert diagnostic == {
-        "error_type": "ChatClientException",
-        "status_code": 401,
-        "provider_code": "PermissionDenied",
-    }
+    assert diagnostic["error_type"] == "ChatClientException"
+    assert diagnostic["status_code"] == 401
+    assert diagnostic["provider_code"] == "PermissionDenied"
+    assert diagnostic["reason_hint"] == "permission_denied"
+    assert diagnostic["message_length"] == len(WorkflowError.message)
+    assert len(diagnostic["message_fingerprint"]) == 12
     assert "credential-value" not in repr(diagnostic)
     assert "raw prompt" not in repr(diagnostic)
 

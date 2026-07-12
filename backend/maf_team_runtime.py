@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import inspect
 import json
 import logging
@@ -690,6 +691,7 @@ def _error_descriptor(error: Any) -> str:
 def _safe_error_diagnostic(error: Any) -> dict[str, Any]:
     error_type = str(getattr(error, "error_type", None) or type(error).__name__)[:80]
     message = str(getattr(error, "message", None) or str(error))[:2000]
+    lowered = message.lower()
     status_code = _error_status_code(error)
     if status_code is None:
         status_match = re.search(r"(?:error|status)\s+code\s*[:=]\s*(\d{3})", message, re.IGNORECASE)
@@ -699,23 +701,57 @@ def _safe_error_diagnostic(error: Any) -> dict[str, Any]:
         r"['\"]code['\"]\s*:\s*['\"]([A-Za-z0-9_.-]{1,80})",
         message,
     )
-    diagnostic: dict[str, Any] = {"error_type": error_type}
+    inner_error_types = [
+        candidate
+        for candidate in re.findall(r"\b([A-Z][A-Za-z0-9_]*(?:Error|Exception))\(", message)
+        if candidate != error_type
+    ]
+    reason_hint = "unclassified"
+    for markers, label in (
+        (("permissiondenied", "permission denied"), "permission_denied"),
+        (("invalid subscription key", "invalid api key"), "invalid_credential"),
+        (("api version not supported", "unsupported api version"), "api_version_unsupported"),
+        (("different context", "contextvar", "different event loop"), "context_mismatch"),
+        (("event loop is closed",), "event_loop_closed"),
+        (("client has been closed", "client is closed"), "client_closed"),
+        (("unexpected keyword argument",), "client_signature"),
+        (("maximum context length", "too many tokens", "context_length_exceeded"), "context_limit"),
+        (("no running event loop", "cannot be called from a running event loop"), "event_loop"),
+        (("not supported", "unsupported"), "unsupported_operation"),
+        (("not iterable", "not subscriptable", "indices must be integers"), "client_contract"),
+    ):
+        if any(marker in lowered for marker in markers):
+            reason_hint = label
+            break
+    diagnostic: dict[str, Any] = {
+        "error_type": error_type,
+        "reason_hint": reason_hint,
+        "message_length": len(message),
+        "message_fingerprint": hashlib.sha256(message.encode("utf-8")).hexdigest()[:12],
+    }
     if status_code is not None:
         diagnostic["status_code"] = status_code
     if provider_match:
         diagnostic["provider_code"] = provider_match.group(1)
+    if inner_error_types:
+        diagnostic["inner_error_type"] = inner_error_types[-1][:80]
     return diagnostic
 
 
 def _log_agent_failure(agent_id: str, branch_id: str | None, error: Any) -> None:
     diagnostic = _safe_error_diagnostic(error)
     logger.warning(
-        "maf_agent_failure agent=%s branch=%s error_type=%s status_code=%s provider_code=%s",
+        "maf_agent_failure agent=%s branch=%s error_type=%s inner_error_type=%s "
+        "status_code=%s provider_code=%s reason_hint=%s message_length=%s fingerprint=%s",
         agent_id,
         branch_id or "none",
         diagnostic.get("error_type", "unknown"),
+        diagnostic.get("inner_error_type", "none"),
         diagnostic.get("status_code", "none"),
         diagnostic.get("provider_code", "none"),
+        diagnostic.get("reason_hint", "unclassified"),
+        diagnostic.get("message_length", 0),
+        diagnostic.get("message_fingerprint", "none"),
     )
 
 
