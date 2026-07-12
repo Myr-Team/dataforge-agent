@@ -8,6 +8,7 @@ import pytest
 
 from backend import maf_agents
 from backend.maf_agents import AgentSpec, create_agent_registry
+from backend.schemas import AuditVerdict, FeasibilityReport, MarketComparison
 
 
 @dataclass(frozen=True)
@@ -94,13 +95,14 @@ class FakeHostedTool:
 
 
 class FakeFrameworkAgent:
-    def __init__(self, *, client, id, name, description, instructions, tools) -> None:
+    def __init__(self, *, client, id, name, description, instructions, tools, default_options=None) -> None:
         self.client = client
         self.id = id
         self.name = name
         self.description = description
         self.instructions = instructions
         self.tools = tuple(tools)
+        self.default_options = default_options or {}
 
 
 @pytest.fixture
@@ -165,6 +167,15 @@ def test_materialized_agents_have_exact_role_tools_and_restricted_mcp(materializ
     ]
     assert helper_calls["web"] == [{}]
     assert helper_calls["code"] == [{}]
+
+
+def test_structured_specialists_use_provider_enforced_response_formats(materialized_registry):
+    registry, _helper_calls = materialized_registry
+
+    assert registry.agent("df-feasibility-analyst").default_options["response_format"] is FeasibilityReport
+    assert registry.agent("df-auditor").default_options["response_format"] is AuditVerdict
+    assert registry.agent("df-market-researcher").default_options["response_format"] is MarketComparison
+    assert registry.agent("df-coordinator").default_options == {}
 
 
 def test_registry_prefers_azure_openai_key_client_when_configured(monkeypatch):

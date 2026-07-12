@@ -4,7 +4,8 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi import BackgroundTasks
@@ -396,8 +397,13 @@ async def image(req: GenerateImageRequest) -> dict[str, Any]:
 
 
 @app.get("/api/artifacts/{name}")
-def artifact(name: str) -> Response:
+def artifact(name: str, request: Request) -> Response:
     safe_name = Path(name).name
+    if rbac_enabled():
+        workspace_ids = _artifact_workspace_ids(safe_name)
+        if len(workspace_ids) != 1:
+            raise HTTPException(status_code=404, detail=f"Artifact not found: {safe_name}")
+        _require_workspace_action(next(iter(workspace_ids)), request, "artifact.read")
     path = ARTIFACT_DIR / safe_name
     if path.exists():
         return FileResponse(path)
@@ -636,6 +642,38 @@ def _require_workspace_action(workspace_id: str, request: Request, action: str) 
         return require_workspace_permission(workspace_id, actor_from_request(request), action)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _artifact_workspace_ids(safe_name: str) -> set[str]:
+    workspace_ids: set[str] = set()
+    for job in list_artifact_jobs():
+        workspace_id = str(job.get("workspace_id") or "")
+        if workspace_id and safe_name in _artifact_names(job.get("artifacts")):
+            workspace_ids.add(workspace_id)
+    for run in list_runs():
+        workspace_id = str(run.get("workspace_id") or "")
+        if workspace_id and safe_name in _artifact_names(run.get("artifact_urls")):
+            workspace_ids.add(workspace_id)
+    return workspace_ids
+
+
+def _artifact_names(value: Any, *, depth: int = 0) -> set[str]:
+    if depth > 4:
+        return set()
+    if isinstance(value, str):
+        path = urlparse(value).path
+        return {Path(path).name} if path else set()
+    if isinstance(value, Mapping):
+        names: set[str] = set()
+        for item in list(value.values())[:50]:
+            names.update(_artifact_names(item, depth=depth + 1))
+        return names
+    if isinstance(value, (list, tuple)):
+        names = set()
+        for item in value[:50]:
+            names.update(_artifact_names(item, depth=depth + 1))
+        return names
+    return set()
 
 
 async def _recover_stale_upload_ingest(workspace_id: str) -> None:

@@ -200,27 +200,41 @@ async def workspace_outcome_verify(
 
 
 @router.get("/api/runs/{run_id}/summary")
-async def run_summary_endpoint(run_id: str) -> dict[str, Any]:
+async def run_summary_endpoint(run_id: str, request: Request) -> dict[str, Any]:
+    run = await _call(get_run, run_id)
+    _require_workspace_action(str(run.get("workspace_id") or ""), request, "run.read")
     return await _call(run_summary, run_id)
 
 
 @router.get("/api/runs/{run_id}/trace")
-async def run_trace_endpoint(run_id: str) -> list[dict[str, Any]]:
+async def run_trace_endpoint(run_id: str, request: Request) -> list[dict[str, Any]]:
+    run = await _call(get_run, run_id)
+    _require_workspace_action(str(run.get("workspace_id") or ""), request, "run.read")
     return await _call(run_trace, run_id)
 
 
 @router.get("/api/runs/{run_id}/pipeline")
-async def run_pipeline_endpoint(run_id: str) -> dict[str, Any]:
+async def run_pipeline_endpoint(run_id: str, request: Request) -> dict[str, Any]:
+    run = await _call(get_run, run_id)
+    _require_workspace_action(str(run.get("workspace_id") or ""), request, "run.read")
     return await _call(run_pipeline_status, run_id)
 
 
 @router.get("/api/runs/{run_id}/structured-result")
-async def run_structured_result_endpoint(run_id: str) -> dict[str, Any]:
+async def run_structured_result_endpoint(run_id: str, request: Request) -> dict[str, Any]:
+    run = await _call(get_run, run_id)
+    _require_workspace_action(str(run.get("workspace_id") or ""), request, "run.read")
     return await _call(structured_result_for_run, run_id)
 
 
 @router.get("/api/runs/{run_id}/log")
-async def run_log_endpoint(run_id: str, format: str = Query(default="json", pattern="^(json|text)$")) -> Any:
+async def run_log_endpoint(
+    run_id: str,
+    request: Request,
+    format: str = Query(default="json", pattern="^(json|text)$"),
+) -> Any:
+    run = await _call(get_run, run_id)
+    _require_workspace_action(str(run.get("workspace_id") or ""), request, "run.read")
     result = await _call(run_log, run_id)
     if format == "text":
         return Response(_run_log_text(result), media_type="text/plain; charset=utf-8")
@@ -228,17 +242,23 @@ async def run_log_endpoint(run_id: str, format: str = Query(default="json", patt
 
 
 @router.get("/api/conversations/{conversation_id}/structured-result")
-async def conversation_structured_result_endpoint(conversation_id: str) -> dict[str, Any]:
+async def conversation_structured_result_endpoint(conversation_id: str, request: Request) -> dict[str, Any]:
+    conversation = await _call(get_conversation, conversation_id)
+    _require_workspace_action(str(conversation.get("workspace_id") or ""), request, "workspace.read")
     return await _call(structured_result_for_conversation, conversation_id)
 
 
 @router.get("/api/conversations/{conversation_id}/context")
-async def conversation_context_endpoint(conversation_id: str) -> dict[str, Any]:
+async def conversation_context_endpoint(conversation_id: str, request: Request) -> dict[str, Any]:
+    conversation = await _call(get_conversation, conversation_id)
+    _require_workspace_action(str(conversation.get("workspace_id") or ""), request, "workspace.read")
     return await _call(conversation_context_summary, conversation_id)
 
 
 @router.get("/api/conversations/{conversation_id}/quick-actions")
-async def conversation_quick_actions_endpoint(conversation_id: str) -> dict[str, Any]:
+async def conversation_quick_actions_endpoint(conversation_id: str, request: Request) -> dict[str, Any]:
+    conversation = await _call(get_conversation, conversation_id)
+    _require_workspace_action(str(conversation.get("workspace_id") or ""), request, "workspace.read")
     return await _call(conversation_quick_actions, conversation_id)
 
 

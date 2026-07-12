@@ -477,12 +477,27 @@ def _normalize_agent_output(response: Any) -> dict[str, Any]:
     value = getattr(response, "value", None)
     if isinstance(value, Mapping):
         return dict(value)
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump(mode="json")
+        if isinstance(dumped, Mapping):
+            return dict(dumped)
     text = getattr(response, "text", None)
     if isinstance(text, str):
+        stripped = text.strip()
+        if stripped.startswith("```") and stripped.endswith("```"):
+            lines = stripped.splitlines()
+            stripped = "\n".join(lines[1:-1]).strip() if len(lines) >= 3 else stripped
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(stripped)
         except json.JSONDecodeError:
-            return {"text": text}
+            start = stripped.find("{")
+            end = stripped.rfind("}")
+            if start < 0 or end <= start:
+                return {"text": text}
+            try:
+                parsed = json.loads(stripped[start : end + 1])
+            except json.JSONDecodeError:
+                return {"text": text}
         return dict(parsed) if isinstance(parsed, Mapping) else {"value": parsed}
     return {"value": value if value is not None else response}
 

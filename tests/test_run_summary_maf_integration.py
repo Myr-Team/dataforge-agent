@@ -5,6 +5,7 @@ import subprocess
 
 import backend.control_plane as control_plane
 import backend.run_store as run_store
+from starlette.requests import Request
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -56,8 +57,9 @@ def test_real_run_summary_endpoint_exposes_persisted_maf_to_view_model(tmp_path,
     run_store.complete_run(run_id, final={"text": "done"}, artifact={})
 
     persisted_detail = run_store.get_run(run_id)
-    summary_payload = asyncio.run(control_plane.run_summary_endpoint(run_id))
-    trace_payload = asyncio.run(control_plane.run_trace_endpoint(run_id))
+    request = Request({"type": "http", "headers": []})
+    summary_payload = asyncio.run(control_plane.run_summary_endpoint(run_id, request))
+    trace_payload = asyncio.run(control_plane.run_trace_endpoint(run_id, request))
 
     assert summary_payload["maf"] == persisted_detail["maf"]
     assert summary_payload["maf"]["mode"] == "specialist_handoff"

@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agents.build_agents import AGENTS
 
 from .rag import search
+from .schemas import AuditVerdict, FeasibilityReport, MarketComparison
 from .tools.generate_image import generate_image
 from .tools.narrate_summary import narrate_summary
 from .tools.render_pdf import render_pdf_report
@@ -238,6 +239,12 @@ def _agent_specs() -> tuple[AgentSpec, ...]:
 
 
 def _create_foundry_agent(spec: AgentSpec, client: Any, workspace_id: str) -> Agent:
+    response_formats: dict[str, type[BaseModel]] = {
+        "df-feasibility-analyst": FeasibilityReport,
+        "df-auditor": AuditVerdict,
+        "df-market-researcher": MarketComparison,
+    }
+    response_format = response_formats.get(spec.agent_id)
     return Agent(
         client=client,
         id=spec.agent_id,
@@ -245,6 +252,7 @@ def _create_foundry_agent(spec: AgentSpec, client: Any, workspace_id: str) -> Ag
         description=spec.description,
         instructions=spec.instructions,
         tools=_tools_for(spec, workspace_id, type(client)),
+        default_options={"response_format": response_format} if response_format is not None else {},
     )
 
 

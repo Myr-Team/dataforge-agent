@@ -28,6 +28,7 @@ from backend.maf_team_runtime import (
     classify_workflow_error,
     select_collaboration_plan,
 )
+from backend.maf_team_runtime import _normalize_agent_output
 from backend.schemas import FeasibilityReport, MarketComparison
 
 
@@ -1451,3 +1452,11 @@ async def test_revision_failure_preserves_last_valid_artifact_and_forces_insuffi
     assert result.artifact["verdict"] == "insufficient_evidence"
     assert set(verdict_values(result.artifact)) == {"insufficient_evidence"}
     assert fake_registry.calls.count("df-auditor") == 1
+
+
+def test_agent_output_normalizer_accepts_fenced_json() -> None:
+    class Response:
+        value = None
+        text = '```json\n{"verdict":"conditional"}\n```'
+
+    assert _normalize_agent_output(Response()) == {"verdict": "conditional"}

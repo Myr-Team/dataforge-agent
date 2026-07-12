@@ -384,3 +384,70 @@ def test_workspace_list_only_returns_memberships_when_rbac_is_enforced(monkeypat
 
     assert response.status_code == 200
     assert [item["workspace_id"] for item in response.json()["workspaces"]] == ["ws-allowed"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/runs/run-private/summary",
+        "/api/runs/run-private/trace",
+        "/api/runs/run-private/pipeline",
+        "/api/runs/run-private/structured-result",
+        "/api/runs/run-private/log",
+        "/api/conversations/conv-private/structured-result",
+        "/api/conversations/conv-private/context",
+        "/api/conversations/conv-private/quick-actions",
+    ],
+)
+def test_non_member_cannot_read_run_or_conversation_objects(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    control_module = importlib.import_module("backend.control_plane")
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_EMAIL", "owner@contoso.com")
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: {})
+    monkeypatch.setattr(
+        control_module,
+        "get_run",
+        lambda run_id: {"run_id": run_id, "workspace_id": "ws-private"},
+    )
+    monkeypatch.setattr(
+        control_module,
+        "get_conversation",
+        lambda conversation_id: {"conversation_id": conversation_id, "workspace_id": "ws-private"},
+    )
+
+    response = TestClient(app).get(path, headers=_trusted_easy_auth_headers("outsider@contoso.com"))
+
+    assert response.status_code == 403
+    assert "read" in response.json()["detail"]
+
+
+def test_non_member_cannot_download_workspace_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
+    app_module = importlib.import_module("backend.app")
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_EMAIL", "owner@contoso.com")
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: {})
+    monkeypatch.setattr(
+        app_module,
+        "list_artifact_jobs",
+        lambda _workspace_id=None: [
+            {
+                "job_id": "artifact_job_private",
+                "workspace_id": "ws-private",
+                "artifacts": {"pdf": {"artifact_url": "/api/artifacts/private-plan.pdf"}},
+            }
+        ],
+    )
+    monkeypatch.setattr(app_module, "list_runs", lambda _workspace_id=None: [])
+
+    response = TestClient(app).get(
+        "/api/artifacts/private-plan.pdf",
+        headers=_trusted_easy_auth_headers("outsider@contoso.com"),
+    )
+
+    assert response.status_code == 403
+    assert "artifact.read" in response.json()["detail"]
