@@ -44,6 +44,10 @@ request
 
 The runtime uses the existing files under `agents/prompts/` as the single prompt source. It must not duplicate role instructions in Python. Each participant receives a bounded instruction set, a typed input contract, and only the tools required for its role.
 
+The verified stable dependency set is `agent-framework-core==1.11.0`, `agent-framework-foundry==1.10.1`, and `agent-framework-orchestrations==1.0.0`.
+
+FULL mode preserves the legacy analysis authorities instead of treating model dictionaries as authoritative. Required workspace paths run backend corpus retrieval first and carry typed corpus-hit, evidence, and rubric contracts; at least one non-empty evidence ref and quote must resolve to an actual retrieved hit. Feasibility output is Pydantic-validated, evidence-verified, rubric-scored, and pre-audit guarded; audit output is Pydantic-validated; final feasibility is post-audit guarded and revalidated as a typed guarded report. A contract-invalid feasibility or audit response receives exactly one schema-correction retry.
+
 ## Runtime Modes
 
 `DF_MAF_RUNTIME` controls the execution path:
@@ -80,7 +84,13 @@ Patterns:
 - `specialist_handoff`: coordinator transfers task ownership to one specialist when a single bounded domain dominates;
 - `bounded_review`: feasibility and audit agents execute a maximum of two revision rounds for material conclusions.
 
+Every plan with `needs_workspace=true`, including `direct` and `bounded_review`, owns a required workspace-evidence dependency and fails closed when the authoritative corpus is empty or invalid.
+
 Selection must not use business-name, file-name, dataset-name, or industry-name allowlists. The system records why an agent was selected and must also show that unnecessary agents were not invoked.
+
+### Concurrent Branch Implementation
+
+The accepted stable implementation launches two independent one-participant `SequentialBuilder` workflows together and observes their native events through one async queue. This is an intentional deviation from the original `ConcurrentBuilder` sketch: `agent-framework-orchestrations==1.0.0` rejects a fan-out with fewer than two targets, so one `ConcurrentBuilder` per failure-isolated branch is not valid. The two independent workflows preserve real overlap and prevent an optional market failure from cancelling required workspace work.
 
 ## Data Contracts
 
@@ -95,9 +105,12 @@ Run summaries add a backward-compatible `maf` object:
   "fallback": false,
   "rounds": 1,
   "duration_ms": 8420,
+  "agent_work_ms": 12910,
   "tokens": {"prompt": 4200, "completion": 960, "total": 5160}
 }
 ```
+
+`duration_ms` is observed workflow wall time from the earliest participant start to the latest participant completion. `agent_work_ms` is the sum of participant durations and may exceed wall time when branches overlap. Missing token usage remains `null` or absent; it is never converted to zero.
 
 New SSE and trace events are:
 
@@ -109,6 +122,8 @@ New SSE and trace events are:
 - `maf_fallback`.
 
 Existing `role_change`, `audit`, `model_response`, and final events remain available. New event payloads include IDs, status, durations, token counts, tool names, retry counts, and reason codes. They do not include raw prompts, user messages, evidence rows, connector credentials, or model reasoning.
+
+Runtime events are delivered through a live sink/async queue. SSE and detached participant spans open and close as execution happens; completed runs are not replayed to synthesize overlap.
 
 ## Frontend Behavior
 
@@ -131,14 +146,17 @@ Agent failures are classified as transient, content-policy, contract-validation,
 
 - A failed optional market branch degrades to internal-evidence-only analysis and records the gap.
 - A failed required corpus branch prevents a stronger verdict and routes to a truthful clarification or degraded response.
-- A contract-invalid agent response is rejected and may be retried once with schema correction.
-- A MAF construction, orchestration, or runtime failure emits `maf_fallback` and runs the existing path once.
-- A fallback never replays already emitted final content and never hides the original failure category.
+- A contract-invalid agent response is rejected and retried at most once with schema correction.
+- A MAF construction or runtime failure before the first MAF event emits `maf_fallback` and runs the existing path once.
+- After any MAF event is emitted, MAF owns the terminal result: adaptation/finalization failure emits one error and one final response and never starts legacy execution.
+- Content-policy, transient network/provider, contract-validation, and permanent errors are classified from bounded runtime/provider attributes.
 - Audit/revision remains capped at two rounds.
+
+Runtime artifact merge is allowlisted. MAF may contribute validated feasibility, validated audit, the blind feasibility snapshot, separated external signals, and its run summary. Workspace ID, conversation ID, routing, actor, output contract, and authoritative corpus remain owned by the orchestrator. `full_package` continues through the existing producer so PDF, image, plan, and audio assets are preserved.
 
 ## Observability
 
-Every participant emits an OpenTelemetry span with:
+Every participant emits an OpenTelemetry span opened on its live start event and closed on its live terminal event with:
 
 - `gen_ai.agent.id` and `gen_ai.agent.name`;
 - collaboration mode and branch ID;
@@ -147,6 +165,8 @@ Every participant emits an OpenTelemetry span with:
 - handoff source and target IDs where applicable.
 
 Existing telemetry redaction remains mandatory. Customer content and actor email are hashed or omitted. The MAF trace labels are UTF-8 clean and must not reproduce the current mojibake found in older `maf_workflow` records.
+
+Token, response, tool, retry, and cache telemetry comes only from trusted Agent Framework/provider response attributes and runtime-owned counters, never from the model-produced JSON value. Audit verdict telemetry uses a validated enum.
 
 ## Testing
 
@@ -173,9 +193,9 @@ Before production default enablement, the MAF runtime must be compared with the 
 
 1. Land the runtime behind `DF_MAF_RUNTIME=off` and pass the full backend/frontend suite.
 2. Run deterministic evaluations and connector-free production smoke tests through an explicit evaluation entrypoint.
-3. Deploy with `DF_MAF_RUNTIME=full` and `DF_MAF_TRAFFIC_PERCENT=10`.
-4. Inspect fallback rate, error rate, groundedness, latency, and token cost.
-5. Increase to `50`, then `100`, only when the evaluation gate passes.
+3. Keep `DF_MAF_TRAFFIC_PERCENT=0` through full tests, deterministic evaluation, backend image import/start smoke, and broad review.
+4. After those gates pass, run a separately approved production canary at `10` and inspect fallback rate, error rate, groundedness, latency, and token cost.
+5. Keep traffic at `0` if the production canary gate is not explicitly approved or does not pass; increase to `50`, then `100`, only after passing evidence.
 6. Keep `off` and `audit` as rollback modes until the full runtime has a stable production history.
 
 ## Acceptance Criteria

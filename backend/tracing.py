@@ -193,6 +193,105 @@ def agent_trace(
             _CURRENT_AGENT_SPAN.reset(token)
 
 
+def start_maf_agent_span(
+    *,
+    agent_id: str,
+    agent_name: str,
+    collaboration_mode: str,
+    branch_id: str | None,
+    workspace_id: str,
+    conversation_id: str | None,
+    run_id: str | None,
+    actor: dict[str, Any] | None,
+    handoff_source: str | None = None,
+    handoff_target: str | None = None,
+    tracer: Any | None = None,
+) -> Any | None:
+    """Start a detached participant span when its live start event arrives."""
+    if tracer is None:
+        try:
+            from opentelemetry import trace
+
+            tracer = trace.get_tracer("dataforge.maf.agent")
+        except Exception:
+            return None
+
+    span = tracer.start_span(f"invoke_agent {agent_id}")
+    span.set_attribute("gen_ai.operation.name", "invoke_agent")
+    span.set_attribute("gen_ai.agent.id", agent_id)
+    span.set_attribute("gen_ai.agent.name", agent_name)
+    span.set_attribute("dataforge.maf.collaboration_mode", collaboration_mode)
+    span.set_attribute("dataforge.workspace.id", workspace_id)
+    span.set_attribute("dataforge.maf.status", "running")
+    if branch_id:
+        span.set_attribute("dataforge.maf.branch_id", branch_id)
+    if conversation_id:
+        span.set_attribute("gen_ai.conversation.id", conversation_id)
+    if run_id:
+        span.set_attribute("dataforge.run.id", run_id)
+    if handoff_source:
+        span.set_attribute("dataforge.maf.handoff.source", handoff_source)
+    if handoff_target:
+        span.set_attribute("dataforge.maf.handoff.target", handoff_target)
+    actor_id = _actor_fingerprint(actor)
+    if actor_id:
+        span.set_attribute("enduser.id", actor_id)
+    return span
+
+
+def finish_maf_agent_span(
+    span: Any | None,
+    *,
+    status: str,
+    error_category: str | None,
+    duration_ms: float | None,
+    token_usage: dict[str, Any] | None,
+    response_id: str | None = None,
+    retry_count: int | None = None,
+    tool_names: list[str] | tuple[str, ...] = (),
+    cache_hit: bool | None = None,
+) -> None:
+    """Finish a detached participant span from its matching live terminal event."""
+    if span is None:
+        return
+    safe_status = status if status in {"completed", "failed"} else "failed"
+    span.set_attribute("dataforge.maf.status", safe_status)
+    safe_error = error_category if error_category in {"transient", "content_policy", "contract_validation", "permanent"} else None
+    if safe_error:
+        span.set_attribute("dataforge.maf.error_category", safe_error)
+    if duration_ms is not None:
+        span.set_attribute("dataforge.maf.duration_ms", max(0.0, float(duration_ms)))
+    if retry_count is not None:
+        span.set_attribute("dataforge.maf.retry_count", max(0, min(100, int(retry_count))))
+    safe_response_id = str(response_id or "").strip()
+    if safe_response_id and len(safe_response_id) <= 128 and _SAFE_TELEMETRY_NAME.fullmatch(safe_response_id):
+        span.set_attribute("gen_ai.response.id", safe_response_id)
+    safe_tool_names = tuple(
+        name
+        for item in tool_names[:12]
+        if (name := str(item).strip())
+        and len(name) <= 80
+        and _SAFE_TELEMETRY_NAME.fullmatch(name)
+    )
+    if safe_tool_names:
+        span.set_attribute("dataforge.maf.tool_names", safe_tool_names)
+    if isinstance(cache_hit, bool):
+        span.set_attribute("dataforge.maf.cache_hit", cache_hit)
+    usage = token_usage if isinstance(token_usage, dict) else {}
+    for source, target in (
+        ("input_tokens", "gen_ai.usage.input_tokens"),
+        ("output_tokens", "gen_ai.usage.output_tokens"),
+        ("total_tokens", "gen_ai.usage.total_tokens"),
+    ):
+        value = usage.get(source)
+        if isinstance(value, (int, float)):
+            span.set_attribute(target, max(0, int(value)))
+    try:
+        _set_span_status(span, "ERROR" if safe_status == "failed" else "OK", safe_error)
+    finally:
+        span.end()
+
+
 @contextmanager
 def maf_agent_trace(
     *,

@@ -28,6 +28,7 @@ from backend.maf_team_runtime import (  # noqa: E402
     TransientAgentError,
     select_collaboration_plan,
 )
+from backend.feasibility_rubric import load_rubric, rubric_version  # noqa: E402
 
 
 REQUIRED_METRICS = frozenset(
@@ -175,6 +176,43 @@ class ForcedRuntimeFailure(RuntimeError):
     pass
 
 
+def _request_with_authoritative_evidence(case: Mapping[str, Any]) -> dict[str, Any]:
+    request = json.loads(json.dumps(case["request"]))
+    request["rubric"] = load_rubric()
+    request["rubric_version"] = rubric_version(request["rubric"])
+    if not request.get("needs_workspace"):
+        return request
+    refs = [
+        str(ref)
+        for ref in case.get("available_evidence", [])
+        if str(ref).startswith("workspace:")
+    ]
+    hits = [
+        {
+            "id": ref,
+            "source_file": "deterministic-evidence.json",
+            "chunk_id": ref.replace(":", "-"),
+            "content": f"Deterministic fixture evidence for {ref}.",
+        }
+        for ref in refs
+    ]
+    catalog = [
+        {
+            "source_type": "corpus",
+            "ref": ref,
+            "quote": f"Deterministic fixture evidence for {ref}.",
+        }
+        for ref in refs
+    ]
+    request["authoritative_corpus"] = {
+        "hits": hits,
+        "profile": {"asset_evidence": catalog},
+        "opportunities": [],
+    }
+    request["evidence_catalog"] = catalog
+    return request
+
+
 def _claims(value: Any) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     if isinstance(value, Mapping):
@@ -292,7 +330,7 @@ async def _maf_case(
     if case.get("force_runtime_failure"):
         raise ForcedRuntimeFailure("forced deterministic runtime failure")
     registry = _DeterministicRegistry(case)
-    request = MafTeamRequest.model_validate(case["request"])
+    request = MafTeamRequest.model_validate(_request_with_authoritative_evidence(case))
     result = await MafTeamRuntime(registry).run(request)
     artifact = result.artifact.model_dump() if hasattr(result.artifact, "model_dump") else result.artifact
     tokens = result.summary.metadata.get("tokens")

@@ -4,9 +4,9 @@
 
 **Goal:** Add a progressively enabled first-class Microsoft Agent Framework team runtime with direct, concurrent, handoff, and bounded-review collaboration, truthful telemetry, UI visibility, and a single legacy fallback.
 
-**Architecture:** Keep the current preflight routing, evidence controls, persistence, and artifact contracts. Add typed MAF contracts, a prompt-backed Foundry agent registry, and a `MafTeamRuntime` selected behind `DF_MAF_RUNTIME`; normalize its events into existing SSE/run-store contracts and preserve the current orchestrator as fallback.
+**Architecture:** Keep the current preflight routing, evidence controls, persistence, and artifact contracts. Add typed MAF contracts, a prompt-backed Foundry agent registry, and a `MafTeamRuntime` selected behind `DF_MAF_RUNTIME`; stream its live events into existing SSE/run-store contracts, use legacy execution only for pre-emission fallback, and retain terminal ownership after MAF output begins.
 
-**Tech Stack:** Python 3.12, FastAPI, `agent-framework-core==1.8.1`, `agent-framework-foundry==1.8.1`, Azure Foundry Responses API, OpenTelemetry/Application Insights, React/Vite.
+**Tech Stack:** Python 3.12, FastAPI, `agent-framework-core==1.11.0`, `agent-framework-foundry==1.10.1`, `agent-framework-orchestrations==1.0.0`, Azure Foundry Responses API, OpenTelemetry/Application Insights, React/Vite.
 
 ## Global Constraints
 
@@ -19,6 +19,11 @@
 - New telemetry must not record raw prompts, user messages, evidence rows, connector credentials, or actor email.
 - MAF runtime failure falls back to the legacy path at most once.
 - Optional market failure degrades; required corpus failure cannot support a stronger verdict.
+- Every `needs_workspace` path requires a typed, valid, non-empty authoritative corpus with an evidence ref that resolves to a retrieved hit; direct and bounded paths cannot omit it.
+- The repository rubric and evidence catalog are typed runtime inputs. Feasibility/audit output receives Pydantic validation and at most one contract-correction retry; existing evidence verification, rubric, and typed pre/post-audit guardrail results remain authoritative.
+- Runtime artifact merge is allowlisted; workspace, conversation, routing, actor, output contract, and corpus ownership remain with the orchestrator.
+- Unknown usage is absent/null; workflow wall time and aggregate participant work are separate fields.
+- Keep `DF_MAF_TRAFFIC_PERCENT=0` until full tests, deterministic evaluation, image import/start smoke, broad review, and a separately approved production canary pass.
 - Do not change authentication or workspace authorization.
 
 ---
@@ -142,7 +147,7 @@ Expected: FAIL because `backend.maf_agents` does not exist.
 
 - [ ] **Step 3: Add the Foundry provider dependency and registry**
 
-Add `agent-framework-foundry==1.8.1` beside `agent-framework-core==1.8.1`.
+Pin the verified stable set: `agent-framework-core==1.11.0`, `agent-framework-foundry==1.10.1`, and `agent-framework-orchestrations==1.0.0`.
 
 ```python
 @dataclass(frozen=True)
@@ -164,7 +169,7 @@ Construct first-class `Agent` instances with `FoundryChatClient`, `DefaultAzureC
 
 Run: `python -m pip install -r backend/requirements.txt`
 
-Expected: compatible `agent-framework-core` and `agent-framework-foundry` 1.8.1 packages install.
+Expected: the exact stable package set resolves and imports together.
 
 Run: `python -m pytest tests/test_maf_agents.py -q`
 
@@ -227,7 +232,7 @@ Expected: FAIL because the selector and runtime do not exist.
 
 - [ ] **Step 3: Implement selector and bounded collaboration patterns**
 
-Implement direct, concurrent research, specialist handoff, and bounded review. Use MAF agents as participants. Use `asyncio.gather` through the MAF concurrent orchestration path for independent corpus and market branches. Emit typed runtime events before and after each participant, branch, handoff, and review decision.
+Implement direct, concurrent research, specialist handoff, and bounded review. Use MAF agents as participants. For concurrent research, launch two independent one-participant `SequentialBuilder` workflows together and observe their native lifecycle events through one shared async queue. This accepted stable-API deviation preserves branch failure isolation because `ConcurrentBuilder` in `agent-framework-orchestrations==1.0.0` rejects a one-target fan-out. Emit typed runtime events before and after each participant, branch, handoff, and review decision.
 
 Selection rules use semantic route fields only:
 
@@ -316,7 +321,7 @@ async def _try_full_maf_runtime(req, decision, artifact, conversation_id):
     return await MafTeamRuntime(create_agent_registry()).run(...)
 ```
 
-Translate typed events into SSE frames and existing compatibility events. Persist agent records and summaries. Wrap each participant in a redacted child span. On runtime failure emit one fallback event and invoke the legacy path once.
+Deliver typed events live through an async queue into SSE and compatibility events. Open detached redacted participant spans on start and close them on terminal events so concurrent overlap is real. On pre-emission runtime failure emit one fallback event and invoke the legacy path once; after any MAF event, emit a terminal error/final pair without legacy rerun.
 
 - [ ] **Step 4: Run focused and full backend tests**
 
@@ -389,7 +394,7 @@ git add web/src/components.jsx web/src/styles.css tests/test_ui_truthfulness_con
 git commit -m "feat: visualize dynamic MAF collaboration"
 ```
 
-### Task 6: Evaluation Gate, Production Canary, and Documentation
+### Task 6: Evaluation Gate, Production Canary Preparation, and Documentation
 
 **Files:**
 - Create: `eval/run_maf_runtime_eval.py`
@@ -444,9 +449,9 @@ Working directory: `web`
 
 Expected: exit code 0.
 
-- [ ] **Step 5: Build and deploy a 10% canary after code review**
+- [ ] **Step 5: Build and smoke images; prepare, but do not deploy, the canary**
 
-Build immutable backend and frontend image tags from the final commit. Deploy backend with `DF_MAF_RUNTIME=full` and `DF_MAF_TRAFFIC_PERCENT=10`. Verify system status, one run per collaboration pattern, no raw-text telemetry leakage, one forced fallback, and matching Agent Flow/run-record facts before increasing traffic.
+Build immutable backend and frontend image tags from the final commit and run backend import/start smoke. Keep `DF_MAF_TRAFFIC_PERCENT=0`. A later separately approved production canary may set `10` only after full tests, deterministic evaluation, container smoke, and broad review pass; verify system status, one run per collaboration pattern, no raw-text telemetry leakage, one forced fallback, and matching Agent Flow/run-record facts before any increase.
 
 - [ ] **Step 6: Commit**
 

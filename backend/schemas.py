@@ -66,6 +66,18 @@ class FeasibilityReport(BaseModel):
     gap_list: list[str]
 
 
+class GuardedFeasibilityReport(FeasibilityReport):
+    """Validated feasibility output after rubric scoring and guardrails."""
+
+    rubric_version: str = Field(min_length=1)
+    rubric_dimensions: list[dict[str, Any]]
+    rubric_scorecard: list[dict[str, Any]]
+    rubric_weighted_score: float
+    guardrail_version: str = Field(min_length=1)
+    guardrails: list[str] = Field(default_factory=list)
+    evidence_warnings: list[str] = Field(default_factory=list)
+
+
 class MarketComparison(BaseModel):
     opportunity_id: str
     competitors: list[dict[str, Any]]
@@ -226,7 +238,7 @@ class RunSummary(BaseModel):
     steps: list[RunStep] = Field(default_factory=list)
     step_count: int = 0
     maf: dict[str, Any] | None = None
-    tokens: dict[str, int] = Field(default_factory=dict)
+    tokens: dict[str, int] | None = None
     actor: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -293,7 +305,7 @@ class RunDetailResponse(BaseModel):
     produced_kinds: list[str] = Field(default_factory=list)
     artifact_urls: dict[str, str] = Field(default_factory=dict)
     steps: list[RunStep] = Field(default_factory=list)
-    tokens: dict[str, int] = Field(default_factory=dict)
+    tokens: dict[str, int] | None = None
     actor: dict[str, Any] = Field(default_factory=dict)
     answer_delta_summary: dict[str, Any] = Field(default_factory=dict)
     models: list[dict[str, Any]] = Field(default_factory=list)

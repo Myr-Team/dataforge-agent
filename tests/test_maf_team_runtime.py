@@ -18,12 +18,17 @@ from agent_framework import (
 from backend import maf_team_runtime
 from backend.maf_contracts import CollaborationPattern
 from backend.maf_team_runtime import (
+    AuthoritativeCorpus,
+    FeasibilityRubric,
     MafRuntimeEvent,
     MafTeamRequest,
     MafTeamRuntime,
     TransientAgentError,
+    classify_agent_error,
+    classify_workflow_error,
     select_collaboration_plan,
 )
+from backend.schemas import FeasibilityReport
 
 
 class FakeAgent:
@@ -57,18 +62,31 @@ class FakeAgent:
         if not stream:
             async def complete() -> AgentResponse[dict[str, Any]]:
                 output = await self._execute(payload)
-                return AgentResponse(messages=[], agent_id=self.id, value=output)
+                response_kwargs = self._registry.response_kwargs[self.id]
+                return AgentResponse(
+                    messages=[],
+                    agent_id=self.id,
+                    value=output,
+                    **(response_kwargs.popleft() if response_kwargs else {}),
+                )
 
             return complete()
 
-        holder: dict[str, dict[str, Any]] = {}
+        holder: dict[str, Any] = {}
 
         async def updates():
             holder["output"] = await self._execute(payload)
+            response_kwargs = self._registry.response_kwargs[self.id]
+            holder["response_kwargs"] = response_kwargs.popleft() if response_kwargs else {}
             yield AgentResponseUpdate(agent_id=self.id)
 
         def finalize(_updates: Any) -> AgentResponse[dict[str, Any]]:
-            return AgentResponse(messages=[], agent_id=self.id, value=holder["output"])
+            return AgentResponse(
+                messages=[],
+                agent_id=self.id,
+                value=holder["output"],
+                **holder["response_kwargs"],
+            )
 
         return ResponseStream(updates(), finalizer=finalize)
 
@@ -91,6 +109,7 @@ class FakeRegistry:
         self.delays: dict[str, float] = defaultdict(lambda: 0.005)
         self.failures: dict[str, deque[Exception | None]] = defaultdict(deque)
         self.outputs: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
+        self.response_kwargs: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
         self._agents = {
             agent_id: FakeAgent(agent_id, self)
             for agent_id in (
@@ -130,6 +149,77 @@ def fake_registry() -> FakeRegistry:
     return registry
 
 
+def authoritative_context() -> dict[str, Any]:
+    hit = {
+        "id": "workspace-1-row-1",
+        "source_file": "evidence.csv",
+        "chunk_id": "row-1",
+        "content": "Observed retention improved from 70% to 82%.",
+    }
+    return {
+        "authoritative_corpus": {
+            "hits": [hit],
+            "profile": {
+                "asset_evidence": [
+                    {
+                        "source_type": "corpus",
+                        "ref": "evidence.csv#row-1",
+                        "quote": hit["content"],
+                    }
+                ]
+            },
+            "opportunities": [],
+        },
+        "evidence_catalog": [
+            {
+                "source_type": "corpus",
+                "ref": "evidence.csv#row-1",
+                "quote": hit["content"],
+            }
+        ],
+    }
+
+
+def feasibility_rubric() -> dict[str, Any]:
+    return {
+        "rubric_version": "test-rubric-v1",
+        "score_scale": {"min": 0, "max": 5, "precision": 1},
+        "dimensions": [
+            {
+                "name": "asset_data",
+                "display_name": "Asset data",
+                "weight": 1.0,
+                "criteria": {"0": "No evidence", "5": "Strong evidence"},
+            }
+        ],
+        "verdict_thresholds": {"conditional": {"weighted_min": 2.0}},
+        "confidence_policy": {"speculative": "Use when evidence is thin."},
+        "calibration_gate": {"min_spearman": 0.8},
+    }
+
+
+def test_maf_request_types_authoritative_corpus_evidence_and_rubric() -> None:
+    context = authoritative_context()
+
+    request = MafTeamRequest(
+        intent="feasibility_analysis",
+        output_mode="report",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=True,
+        payload={"workspace_id": "workspace-1", "query": "evaluate"},
+        rubric=feasibility_rubric(),
+        rubric_version="test-rubric-v1",
+        **context,
+    )
+
+    assert isinstance(request.authoritative_corpus, AuthoritativeCorpus)
+    assert request.authoritative_corpus.hits[0].content.startswith("Observed retention")
+    assert request.evidence_catalog[0].ref == "evidence.csv#row-1"
+    assert isinstance(request.rubric, FeasibilityRubric)
+    assert request.rubric.rubric_version == request.rubric_version
+
+
 def concurrent_request() -> MafTeamRequest:
     return MafTeamRequest(
         intent="feasibility_analysis",
@@ -138,6 +228,7 @@ def concurrent_request() -> MafTeamRequest:
         needs_external=True,
         high_impact=True,
         payload={"workspace_id": "workspace-1", "query": "evaluate"},
+        **authoritative_context(),
     )
 
 
@@ -149,6 +240,7 @@ def review_request() -> MafTeamRequest:
         needs_external=False,
         high_impact=True,
         payload={"workspace_id": "workspace-1", "query": "material decision"},
+        **authoritative_context(),
     )
 
 
@@ -177,6 +269,7 @@ def test_simple_question_selects_direct_without_specialists():
 
     assert plan.pattern is CollaborationPattern.DIRECT
     assert plan.selected_agents == ("df-coordinator",)
+    assert plan.required_branches == ("workspace",)
 
 
 def test_selector_uses_only_normalized_semantic_fields():
@@ -210,6 +303,23 @@ def test_high_impact_concurrent_plan_carries_bounded_review():
 
     assert plan.pattern is CollaborationPattern.CONCURRENT_RESEARCH
     assert plan.max_revisions == 2
+    assert plan.required_branches == ("workspace",)
+
+
+def test_provider_errors_are_classified_from_bounded_runtime_attributes() -> None:
+    class ProviderError(RuntimeError):
+        def __init__(self, *, status_code: int | None = None, code: str | None = None):
+            super().__init__(code or "provider error")
+            self.status_code = status_code
+            self.code = code
+
+    class WorkflowError:
+        error_type = "ServiceRequestError"
+        message = "connection timeout"
+
+    assert classify_agent_error(ProviderError(status_code=429)) == "transient"
+    assert classify_agent_error(ProviderError(code="ResponsibleAIPolicyViolation")) == "content_policy"
+    assert classify_workflow_error(WorkflowError()) == "transient"
 
 
 @pytest.mark.asyncio
@@ -221,6 +331,7 @@ async def test_direct_path_invokes_only_registry_coordinator(fake_registry: Fake
         needs_external=False,
         high_impact=False,
         payload={"query": "summarize"},
+        **authoritative_context(),
     )
 
     runtime = MafTeamRuntime(fake_registry)
@@ -240,6 +351,7 @@ async def test_unknown_agent_telemetry_is_omitted(fake_registry: FakeRegistry):
         needs_external=False,
         high_impact=False,
         payload={"query": "summarize"},
+        **authoritative_context(),
     )
 
     result = await MafTeamRuntime(fake_registry).run(request)
@@ -258,7 +370,7 @@ async def test_unknown_agent_telemetry_is_omitted(fake_registry: FakeRegistry):
         assert key not in payload
 
 
-def test_typed_agent_telemetry_rejects_unsafe_identifiers() -> None:
+def test_typed_agent_telemetry_rejects_unsafe_identifiers_and_verdicts() -> None:
     with pytest.raises(ValueError):
         MafRuntimeEvent(
             sequence=1,
@@ -274,6 +386,14 @@ def test_typed_agent_telemetry_rejects_unsafe_identifiers() -> None:
             status="completed",
             agent_id="df-coordinator",
             tool_names=("search_pack_context", "AccountKey=secret"),
+        )
+    with pytest.raises(ValueError):
+        MafRuntimeEvent(
+            sequence=1,
+            event="maf_review",
+            status="completed",
+            agent_id="df-auditor",
+            verdict="approved",
         )
 
 
@@ -302,6 +422,26 @@ async def test_completed_agent_event_carries_only_bounded_safe_telemetry(fake_re
             },
         }
     )
+    fake_registry.response_kwargs["df-coordinator"].append(
+        {
+            "response_id": "resp-safe-1",
+            "usage_details": {
+                "input_token_count": 21,
+                "output_token_count": 8,
+                "total_token_count": 29,
+            },
+            "additional_properties": {
+                "retry_count": 2,
+                "tool_names": [
+                    "search_pack_context",
+                    "render_pdf_report",
+                    secret_email,
+                    *[f"tool_{index}" for index in range(20)],
+                ],
+                "cache_hit": True,
+            },
+        }
+    )
     request = MafTeamRequest(
         intent="qa",
         output_mode="chat",
@@ -309,6 +449,7 @@ async def test_completed_agent_event_carries_only_bounded_safe_telemetry(fake_re
         needs_external=False,
         high_impact=False,
         payload={"query": secret_prompt},
+        **authoritative_context(),
     )
 
     result = await MafTeamRuntime(fake_registry).run(request)
@@ -338,6 +479,42 @@ async def test_completed_agent_event_carries_only_bounded_safe_telemetry(fake_re
 
 
 @pytest.mark.asyncio
+async def test_model_dictionary_telemetry_is_never_trusted(fake_registry: FakeRegistry):
+    fake_registry.outputs["df-coordinator"].append(
+        {
+            "answer": "bounded result",
+            "_llm": {
+                "response_id": "model-invented-id",
+                "usage": {"input_tokens": 999, "output_tokens": 999, "total_tokens": 1998},
+                "retry_count": 9,
+                "tool_names": ["model_invented_tool"],
+                "cache_hit": True,
+            },
+        }
+    )
+    request = MafTeamRequest(
+        intent="qa",
+        output_mode="chat",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=False,
+        payload={"query": "summarize"},
+        **authoritative_context(),
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    completed = next(event for event in result.events if event.event == "maf_agent_completed")
+    assert completed.response_id is None
+    assert completed.input_tokens is None
+    assert completed.output_tokens is None
+    assert completed.total_tokens is None
+    assert completed.retry_count is None
+    assert completed.tool_names is None
+    assert completed.cache_hit is None
+
+
+@pytest.mark.asyncio
 async def test_concurrent_branch_completion_carries_safe_telemetry(fake_registry: FakeRegistry):
     fake_registry.outputs["df-corpus-analyst"].clear()
     fake_registry.outputs["df-corpus-analyst"].append(
@@ -346,6 +523,20 @@ async def test_concurrent_branch_completion_carries_safe_telemetry(fake_registry
             "_llm": {
                 "response_id": "resp-corpus-1",
                 "usage": {"input_tokens": 13, "output_tokens": 5, "total_tokens": 18},
+                "tool_names": ["search_pack_context"],
+                "cache_hit": False,
+            },
+        }
+    )
+    fake_registry.response_kwargs["df-corpus-analyst"].append(
+        {
+            "response_id": "resp-corpus-1",
+            "usage_details": {
+                "input_token_count": 13,
+                "output_token_count": 5,
+                "total_token_count": 18,
+            },
+            "additional_properties": {
                 "tool_names": ["search_pack_context"],
                 "cache_hit": False,
             },
@@ -366,6 +557,249 @@ async def test_concurrent_branch_completion_carries_safe_telemetry(fake_registry
     assert completed.started_ns is not None
     assert completed.completed_ns is not None
     assert completed.completed_ns >= completed.started_ns
+
+
+@pytest.mark.asyncio
+async def test_live_event_sink_observes_agent_start_before_execution_finishes(
+    fake_registry: FakeRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    release = asyncio.Event()
+    agent_entered = asyncio.Event()
+    observed: list[MafRuntimeEvent] = []
+
+    async def blocking_coordinator(_payload: str) -> dict[str, Any]:
+        agent_entered.set()
+        await release.wait()
+        return {"answer": "done"}
+
+    monkeypatch.setattr(fake_registry.agent("df-coordinator"), "_execute", blocking_coordinator)
+    request = MafTeamRequest(
+        intent="qa",
+        output_mode="chat",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=False,
+        payload={"query": "summarize"},
+        **authoritative_context(),
+    )
+
+    run_task = asyncio.create_task(
+        MafTeamRuntime(fake_registry).run(request, event_sink=observed.append)
+    )
+    try:
+        await asyncio.wait_for(agent_entered.wait(), timeout=0.2)
+        await asyncio.sleep(0)
+        assert any(event.event == "maf_agent_started" for event in observed)
+        assert not run_task.done()
+    finally:
+        release.set()
+
+    result = await run_task
+    assert observed == result.events
+
+
+@pytest.mark.asyncio
+async def test_concurrent_event_sink_exposes_both_branch_starts_before_first_completion(
+    fake_registry: FakeRegistry,
+):
+    fake_registry.delays["df-corpus-analyst"] = 0.03
+    fake_registry.delays["df-market-researcher"] = 0.03
+    observed: list[MafRuntimeEvent] = []
+
+    await MafTeamRuntime(fake_registry).run(
+        concurrent_request(),
+        event_sink=observed.append,
+    )
+
+    branch_starts = [
+        index
+        for index, event in enumerate(observed)
+        if event.event == "maf_agent_started"
+        and event.agent_id in {"df-corpus-analyst", "df-market-researcher"}
+    ]
+    first_completion = next(
+        index
+        for index, event in enumerate(observed)
+        if event.event == "maf_agent_completed"
+        and event.agent_id in {"df-corpus-analyst", "df-market-researcher"}
+    )
+    assert len(branch_starts) == 2
+    assert max(branch_starts) < first_completion
+
+
+@pytest.mark.asyncio
+async def test_feasibility_contract_validation_retries_once_then_accepts_typed_output(
+    fake_registry: FakeRegistry,
+):
+    fake_registry.outputs["df-feasibility-analyst"].clear()
+    fake_registry.outputs["df-feasibility-analyst"].extend(
+        [
+            {"verdict": "not-a-feasibility-report"},
+            {
+                "opportunity_id": "retention-workflow",
+                "dimensions": [
+                    {
+                        "name": "asset_data",
+                        "score": 3,
+                        "rationale": "The workspace contains a measured retention change.",
+                        "evidence": [
+                            {
+                                "source_type": "corpus",
+                                "ref": "evidence.csv#row-1",
+                                "quote": "Observed retention improved from 70% to 82%.",
+                            }
+                        ],
+                        "confidence": "data_confirmed",
+                    }
+                ],
+                "verdict": "conditional",
+                "overall_confidence": "data_confirmed",
+                "gap_list": ["Validate the result in a controlled pilot."],
+            },
+        ]
+    )
+
+    def validate(output: dict[str, Any]) -> dict[str, Any]:
+        return FeasibilityReport.model_validate(output).model_dump()
+
+    result = await MafTeamRuntime(
+        fake_registry,
+        feasibility_validator=validate,
+    ).run(review_request())
+
+    assert fake_registry.calls.count("df-feasibility-analyst") == 2
+    assert "contract_correction" in fake_registry.inputs["df-feasibility-analyst"][1]
+    completed = next(
+        event
+        for event in result.events
+        if event.event == "maf_agent_completed" and event.agent_id == "df-feasibility-analyst"
+    )
+    assert completed.retry_count == 1
+    assert result.artifact["feasibility"]["opportunity_id"] == "retention-workflow"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("output_mode", "high_impact"),
+    [("chat", False), ("report", True)],
+)
+async def test_workspace_required_direct_and_bounded_paths_fail_closed_without_valid_corpus(
+    fake_registry: FakeRegistry,
+    output_mode: str,
+    high_impact: bool,
+):
+    request = MafTeamRequest(
+        intent="feasibility_analysis" if high_impact else "qa",
+        output_mode=output_mode,
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=high_impact,
+        payload={"workspace_id": "workspace-1", "query": "evaluate"},
+        authoritative_corpus={"hits": [], "profile": {"asset_evidence": []}},
+        evidence_catalog=[],
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    assert result.degraded is True
+    assert result.artifact["verdict"] == "insufficient_evidence"
+    assert "workspace_evidence_unavailable" in result.gaps
+    assert fake_registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_successful_corpus_agent_call_is_not_valid_evidence_by_itself(
+    fake_registry: FakeRegistry,
+):
+    request = concurrent_request().model_copy(
+        update={
+            "authoritative_corpus": AuthoritativeCorpus(
+                hits=[],
+                profile={"asset_evidence": []},
+            ),
+            "evidence_catalog": [],
+        }
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    assert result.artifact["verdict"] == "insufficient_evidence"
+    assert "workspace_evidence_unavailable" in result.gaps
+    assert fake_registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_evidence_must_trace_to_an_authoritative_hit(
+    fake_registry: FakeRegistry,
+):
+    context = authoritative_context()
+    context["evidence_catalog"][0]["ref"] = "unrelated.csv#row-99"
+    request = MafTeamRequest(
+        intent="qa",
+        output_mode="chat",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=False,
+        payload={"workspace_id": "workspace-1", "query": "summarize"},
+        **context,
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    assert result.artifact["verdict"] == "insufficient_evidence"
+    assert "workspace_evidence_unavailable" in result.gaps
+    assert fake_registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_synthetic_unknown_hit_reference_is_not_authoritative(
+    fake_registry: FakeRegistry,
+):
+    request = MafTeamRequest(
+        intent="qa",
+        output_mode="chat",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=False,
+        payload={"workspace_id": "workspace-1", "query": "summarize"},
+        authoritative_corpus={"hits": [{"content": "Unidentified content."}]},
+        evidence_catalog=[
+            {
+                "source_type": "corpus",
+                "ref": "unknown#chunk",
+                "quote": "Unidentified content.",
+            }
+        ],
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    assert result.artifact["verdict"] == "insufficient_evidence"
+    assert fake_registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_malformed_authoritative_input_normalizes_to_empty_and_fails_closed(
+    fake_registry: FakeRegistry,
+):
+    request = MafTeamRequest(
+        intent="qa",
+        output_mode="chat",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=False,
+        payload={"workspace_id": "workspace-1", "query": "summarize"},
+        authoritative_corpus={"hits": "not-a-list", "profile": None},
+        evidence_catalog=[{"source_type": "corpus", "ref": None, "quote": 123}],
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    assert request.authoritative_corpus.hits == []
+    assert request.evidence_catalog == []
+    assert result.artifact["verdict"] == "insufficient_evidence"
+    assert fake_registry.calls == []
 
 
 @pytest.mark.asyncio
@@ -466,7 +900,7 @@ async def test_immediate_market_failure_does_not_cancel_slow_corpus(fake_registr
 
     result = await MafTeamRuntime(fake_registry).run(concurrent_request())
 
-    assert result.artifact["hits"] == [{"id": "workspace-1"}]
+    assert result.artifact["hits"] == authoritative_context()["authoritative_corpus"]["hits"]
     assert result.degraded is True
     assert "external_signal_unavailable" in result.gaps
     assert result.branch_overlap_ms > 0
@@ -627,6 +1061,7 @@ async def test_specialist_handoff_records_real_ownership_transfer(fake_registry:
         needs_external=False,
         high_impact=False,
         payload={"query": "grounded details"},
+        **authoritative_context(),
     )
 
     result = await MafTeamRuntime(fake_registry).run(request)
@@ -703,7 +1138,7 @@ async def test_revision_failure_preserves_last_valid_artifact_and_forces_insuffi
     result = await MafTeamRuntime(fake_registry).run(review_request())
 
     assert result.degraded is True
-    assert result.artifact["analysis"] == "preserve me"
+    assert result.artifact["feasibility"]["analysis"] == "preserve me"
     assert result.artifact["verdict"] == "insufficient_evidence"
     assert set(verdict_values(result.artifact)) == {"insufficient_evidence"}
     assert fake_registry.calls.count("df-auditor") == 1

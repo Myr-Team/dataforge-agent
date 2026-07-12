@@ -11,6 +11,7 @@ class _FakeSpan:
         self.attributes: dict[str, object] = {}
         self.events: list[tuple[str, dict[str, object]]] = []
         self.statuses: list[object] = []
+        self.ended = False
 
     def set_attribute(self, key: str, value: object) -> None:
         self.attributes[key] = value
@@ -27,6 +28,9 @@ class _FakeSpan:
     def set_status(self, status: object) -> None:
         self.statuses.append(status)
 
+    def end(self) -> None:
+        self.ended = True
+
 
 class _SpanContext:
     def __init__(self, span: _FakeSpan) -> None:
@@ -42,9 +46,15 @@ class _SpanContext:
 class _FakeTracer:
     def __init__(self) -> None:
         self.span = _FakeSpan()
+        self.spans: list[_FakeSpan] = []
 
     def start_as_current_span(self, _name: str) -> _SpanContext:
         return _SpanContext(self.span)
+
+    def start_span(self, _name: str) -> _FakeSpan:
+        span = _FakeSpan()
+        self.spans.append(span)
+        return span
 
 
 def test_telemetry_event_data_redacts_user_and_tool_content() -> None:
@@ -176,3 +186,56 @@ def test_maf_agent_trace_has_redacted_collaboration_attributes() -> None:
     combined = repr((attributes, tracer.span.events))
     assert raw_message not in combined
     assert actor_email not in combined
+
+
+def test_live_maf_participant_spans_overlap_and_close_in_completion_order() -> None:
+    tracer = _FakeTracer()
+
+    corpus = tracing.start_maf_agent_span(
+        agent_id="df-corpus-analyst",
+        agent_name="Workspace evidence analyst",
+        collaboration_mode="concurrent_research",
+        branch_id="workspace",
+        workspace_id="workspace-1",
+        conversation_id="conversation-1",
+        run_id="run-1",
+        actor={"email": "person@example.com", "source": "easy_auth"},
+        tracer=tracer,
+    )
+    market = tracing.start_maf_agent_span(
+        agent_id="df-market-researcher",
+        agent_name="Market researcher",
+        collaboration_mode="concurrent_research",
+        branch_id="external",
+        workspace_id="workspace-1",
+        conversation_id="conversation-1",
+        run_id="run-1",
+        actor={"email": "person@example.com", "source": "easy_auth"},
+        tracer=tracer,
+    )
+
+    assert corpus is tracer.spans[0]
+    assert market is tracer.spans[1]
+    assert corpus.ended is False
+    assert market.ended is False
+
+    tracing.finish_maf_agent_span(
+        market,
+        status="failed",
+        error_category="transient",
+        duration_ms=12,
+        token_usage=None,
+    )
+    assert market.ended is True
+    assert corpus.ended is False
+
+    tracing.finish_maf_agent_span(
+        corpus,
+        status="completed",
+        error_category=None,
+        duration_ms=30,
+        token_usage={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+    )
+    assert corpus.ended is True
+    assert corpus.attributes["gen_ai.usage.total_tokens"] == 14
+    assert "person@example.com" not in repr(corpus.attributes)

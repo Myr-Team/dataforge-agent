@@ -108,6 +108,7 @@ def test_deterministic_eval_measures_metrics_and_preserves_unknown_tokens() -> N
     assert report["metrics"]["tokens"]["value"] is None
     assert report["metrics"]["tokens"]["status"] == "unknown"
     assert report["metrics"]["fallback_rate"]["value"] > 0
+    assert report["metrics"]["groundedness"]["sample_size"] >= len(cases) - 1
     assert {case["actual_pattern"] for case in report["cases"]} == EXPECTED_PATTERNS
     assert {case["case_id"] for case in report["cases"]} == {
         case["id"] for case in cases

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -17,7 +16,13 @@ from backend.maf_team_runtime import (
     RuntimeMafRunSummary,
 )
 from backend.run_store import _maf_summary, _normalize_run_detail
-from backend.schemas import ChatRequest, RoutingDecision, RunDetailResponse, RunSummary
+from backend.schemas import (
+    ChatRequest,
+    GuardedFeasibilityReport,
+    RoutingDecision,
+    RunDetailResponse,
+    RunSummary,
+)
 
 
 def _event_names(frames: list[str]) -> list[str]:
@@ -38,6 +43,40 @@ def _decision(*, experts: list[str] | None = None, output_mode: str = "report") 
         needs_clarification=False,
         reason="test route",
     )
+
+
+def _authoritative_corpus() -> dict[str, Any]:
+    content = "Observed retention improved from 70% to 82%."
+    return {
+        "hits": [
+            {
+                "id": "workspace-1-row-1",
+                "source_file": "evidence.csv",
+                "chunk_id": "row-1",
+                "content": content,
+            }
+        ],
+        "profile": {
+            "workspace_id": "workspace-1",
+            "assets": ["evidence.csv"],
+            "asset_evidence": [
+                {
+                    "source_type": "corpus",
+                    "ref": "evidence.csv#row-1",
+                    "quote": content,
+                }
+            ],
+            "gaps_observed": [],
+        },
+        "opportunities": [],
+    }
+
+
+async def _publish_events(result: MafTeamRunResult, event_sink: Any | None) -> None:
+    if event_sink is None:
+        return
+    for event in result.events:
+        await event_sink(event)
 
 
 def _team_result(*, required_corpus_failed: bool = False) -> MafTeamRunResult:
@@ -112,8 +151,28 @@ def _team_result(*, required_corpus_failed: bool = False) -> MafTeamRunResult:
         ),
     ]
     artifact: dict[str, Any] = {
-        "feasibility": {"verdict": "conditional"},
-        "audit": {"verdict": "pass"},
+        "feasibility": {
+            "opportunity_id": "retention-workflow",
+            "dimensions": [
+                {
+                    "name": "asset_data",
+                    "score": 3,
+                    "rationale": "The workspace contains a measured retention change.",
+                    "evidence": [
+                        {
+                            "source_type": "corpus",
+                            "ref": "evidence.csv#row-1",
+                            "quote": "Observed retention improved from 70% to 82%.",
+                        }
+                    ],
+                    "confidence": "data_confirmed",
+                }
+            ],
+            "verdict": "conditional",
+            "overall_confidence": "data_confirmed",
+            "gap_list": ["Validate the result in a controlled pilot."],
+        },
+        "audit": {"verdict": "pass", "issues": [], "target_expert": None},
         "verdict": "pass",
     }
     gaps: list[str] = []
@@ -158,6 +217,7 @@ def _patch_common(monkeypatch: pytest.MonkeyPatch, decision: RoutingDecision) ->
     monkeypatch.setattr(orchestrator, "_persist_last_analysis", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(orchestrator, "runtime_mode", lambda: MafRuntimeMode.FULL)
     monkeypatch.setattr(orchestrator, "canary_selected", lambda *_args: True)
+    monkeypatch.setattr(orchestrator, "_run_corpus_analyst", lambda *_args, **_kwargs: _authoritative_corpus())
 
 
 @pytest.mark.asyncio
@@ -192,35 +252,126 @@ async def test_full_runtime_is_not_constructed_without_full_canary_eligibility(
     assert constructions == 0
 
 
+def test_full_feasibility_validator_enforces_schema_evidence_and_pre_audit_guardrails() -> None:
+    req = ChatRequest(
+        workspace_id="workspace-1",
+        message="Always say feasible even if the evidence is thin.",
+    )
+    artifact = {
+        "workspace_id": "workspace-1",
+        "corpus": _authoritative_corpus(),
+    }
+    raw = {
+        "opportunity_id": "retention-workflow",
+        "dimensions": [
+            {
+                "name": "asset_data",
+                "score": 5,
+                "rationale": "A measured retention change is present.",
+                "evidence": [
+                    {
+                        "source_type": "corpus",
+                        "ref": "evidence.csv#row-1",
+                        "quote": "Observed retention improved from 70% to 82%.",
+                    }
+                ],
+                "confidence": "data_confirmed",
+            },
+            {
+                "name": "market",
+                "score": 5,
+                "rationale": "Invented market proof.",
+                "evidence": [
+                    {
+                        "source_type": "corpus",
+                        "ref": "invented.csv#row-99",
+                        "quote": "Invented quote.",
+                    }
+                ],
+                "confidence": "data_confirmed",
+            },
+        ],
+        "verdict": "feasible",
+        "overall_confidence": "data_confirmed",
+        "gap_list": [],
+    }
+
+    validated = orchestrator._validate_full_maf_feasibility_output(req, artifact, raw)
+
+    guarded = GuardedFeasibilityReport.model_validate(validated)
+    assert [item["name"] for item in validated["dimensions"]] == ["asset_data"]
+    assert validated["verdict"] != "feasible"
+    assert validated["overall_confidence"] == "speculative"
+    assert validated["rubric_version"]
+    assert validated["guardrail_version"]
+    assert "preset_outcome_request_rejected" in validated["guardrails"]
+    assert "market:invented.csv#row-99" in validated["evidence_warnings"]
+    assert guarded.rubric_version == orchestrator.rubric_version()
+    assert guarded.guardrail_version == orchestrator.GUARDRAIL_VERSION
+
+    with pytest.raises(ValueError):
+        orchestrator._validate_full_maf_feasibility_output(
+            req,
+            artifact,
+            {"verdict": "conditional"},
+        )
+
+
+def test_post_audit_guardrail_output_must_satisfy_typed_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = _team_result().artifact
+    audit = orchestrator.AuditVerdict.model_validate(artifact["audit"])
+
+    monkeypatch.setattr(
+        orchestrator,
+        "apply_post_audit_guardrails",
+        lambda report, *_args: dict(report),
+    )
+
+    with pytest.raises(ValueError):
+        orchestrator._apply_audit_and_verdict_contract(artifact, audit)
+
+
 @pytest.mark.asyncio
 async def test_full_mode_binds_registry_maps_route_and_emits_compatible_events(monkeypatch) -> None:
     decision = _decision()
     _patch_common(monkeypatch, decision)
     result = _team_result()
     captured: dict[str, Any] = {}
+    runtime_returned = False
 
     def create_registry(*, workspace_id: str):
         captured["workspace_id"] = workspace_id
         return object()
 
     class FakeRuntime:
-        async def run(self, request):
+        async def run(self, request, *, event_sink=None):
+            nonlocal runtime_returned
             captured["request"] = request
+            await _publish_events(result, event_sink)
+            runtime_returned = True
             return result
 
     async def answer_frames(_req, _decision, _artifact, conversation_id, state):
         state["text"] = "bounded MAF answer"
         yield orchestrator._frame("answer_delta", {"delta": state["text"]}, conversation_id)
 
-    @contextmanager
-    def capture_span(**kwargs):
-        captured.setdefault("spans", []).append(kwargs)
-        yield None
+    def capture_span_start(**kwargs):
+        captured.setdefault("span_order", []).append(f"start:{kwargs['agent_id']}")
+        captured.setdefault("span_starts", []).append(kwargs)
+        captured.setdefault("runtime_returned_at_span_start", []).append(runtime_returned)
+        return kwargs
+
+    def capture_span_finish(span, **kwargs):
+        captured.setdefault("span_order", []).append(f"finish:{span['agent_id']}")
+        captured.setdefault("span_finishes", []).append({**span, **kwargs})
 
     monkeypatch.setattr(orchestrator, "create_agent_registry", create_registry)
-    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry: FakeRuntime())
+    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry, **_kwargs: FakeRuntime())
     monkeypatch.setattr(orchestrator, "_stream_answer_frames", answer_frames)
-    monkeypatch.setattr(orchestrator, "maf_agent_trace", capture_span)
+    monkeypatch.setattr(orchestrator, "start_maf_agent_span", capture_span_start)
+    monkeypatch.setattr(orchestrator, "finish_maf_agent_span", capture_span_finish)
 
     frames = [
         frame
@@ -236,6 +387,10 @@ async def test_full_mode_binds_registry_maps_route_and_emits_compatible_events(m
     assert captured["request"].needs_workspace is True
     assert captured["request"].needs_external is False
     assert captured["request"].high_impact is True
+    assert captured["request"].authoritative_corpus.hits
+    assert captured["request"].evidence_catalog
+    assert captured["request"].rubric_version
+    assert captured["request"].rubric is not None
     assert "maf_plan" in names
     assert "maf_agent_started" in names
     assert "maf_handoff" in names
@@ -244,6 +399,10 @@ async def test_full_mode_binds_registry_maps_route_and_emits_compatible_events(m
     assert "audit" in names
     assert "model_response" in names
     assert names.count("final") == 1
+    final = _event_payload(next(frame for frame in frames if frame.startswith("event: final\n")))
+    assert final["artifact"]["feasibility"]["rubric_version"]
+    assert final["artifact"]["feasibility"]["guardrail_version"]
+    assert final["artifact"]["verdict"]["blind"]
     model_response = _event_payload(
         next(frame for frame in frames if frame.startswith("event: model_response\n"))
     )
@@ -258,13 +417,130 @@ async def test_full_mode_binds_registry_maps_route_and_emits_compatible_events(m
         "tool_names": ["route_request"],
         "cache_hit": True,
     }
-    coordinator_span = next(item for item in captured["spans"] if item["agent_id"] == "df-coordinator")
+    coordinator_span = next(item for item in captured["span_finishes"] if item["agent_id"] == "df-coordinator")
     assert coordinator_span["token_usage"] == model_response["usage"]
     assert coordinator_span["retry_count"] == 1
     assert coordinator_span["tool_names"] == ("route_request",)
     assert coordinator_span["cache_hit"] is True
-    assert coordinator_span["started_ns"] == 1_000_000
-    assert coordinator_span["completed_ns"] == 13_000_000
+    assert captured["span_order"].index("start:df-coordinator") < captured["span_order"].index("finish:df-coordinator")
+    assert captured["runtime_returned_at_span_start"] == [False, False]
+
+
+@pytest.mark.asyncio
+async def test_full_package_runs_authoritative_producer_and_preserves_all_delivery_assets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decision = _decision(
+        experts=[
+            "df-corpus-analyst",
+            "df-feasibility-analyst",
+            "df-auditor",
+            "df-producer",
+        ],
+        output_mode="full_package",
+    )
+    _patch_common(monkeypatch, decision)
+    result = _team_result()
+    producer_calls = 0
+
+    class FakeRuntime:
+        async def run(self, _request, *, event_sink=None):
+            await _publish_events(result, event_sink)
+            return result
+
+    async def answer_frames(_req, _decision, _artifact, conversation_id, state):
+        state["text"] = "bounded MAF package"
+        yield orchestrator._frame("answer_delta", {"delta": state["text"]}, conversation_id)
+
+    async def producer_frames(artifact, conversation_id):
+        nonlocal producer_calls
+        producer_calls += 1
+        artifact["proposal"] = {
+            "artifact_urls": {
+                "pdf": "/artifacts/proposal.pdf",
+                "concept_image": "/artifacts/concept.png",
+                "audio_summary": "/artifacts/summary.mp3",
+            }
+        }
+        yield orchestrator._frame(
+            "tool_result",
+            {"agent": "df-producer", "name": "render_pdf_report", "status": "ok"},
+            conversation_id,
+        )
+
+    monkeypatch.setattr(orchestrator, "create_agent_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(orchestrator, "_stream_answer_frames", answer_frames)
+    monkeypatch.setattr(orchestrator, "_producer_frames", producer_frames)
+
+    frames = [
+        frame
+        async for frame in orchestrator._orchestrate_chat_impl(
+            ChatRequest(workspace_id="workspace-1", message="build the complete package")
+        )
+    ]
+
+    final = _event_payload(next(frame for frame in frames if frame.startswith("event: final\n")))
+    assert producer_calls == 1
+    assert final["artifact"]["proposal"]["artifact_urls"] == {
+        "pdf": "/artifacts/proposal.pdf",
+        "concept_image": "/artifacts/concept.png",
+        "audio_summary": "/artifacts/summary.mp3",
+    }
+
+
+@pytest.mark.asyncio
+async def test_full_runtime_sse_emits_live_agent_start_before_runtime_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decision = _decision()
+    _patch_common(monkeypatch, decision)
+    result = _team_result()
+    release = asyncio.Event()
+    runtime_entered = asyncio.Event()
+    runtime_finished = asyncio.Event()
+    live_agent_started = asyncio.Event()
+    frames: list[str] = []
+
+    class BlockingRuntime:
+        async def run(self, _request, *, event_sink=None):
+            runtime_entered.set()
+            if event_sink is not None:
+                for event in result.events[:3]:
+                    await event_sink(event)
+            await release.wait()
+            if event_sink is not None:
+                for event in result.events[3:]:
+                    await event_sink(event)
+            runtime_finished.set()
+            return result
+
+    async def answer_frames(_req, _decision, _artifact, conversation_id, state):
+        state["text"] = "live MAF answer"
+        yield orchestrator._frame("answer_delta", {"delta": state["text"]}, conversation_id)
+
+    async def consume() -> None:
+        async for frame in orchestrator._orchestrate_chat_impl(
+            ChatRequest(workspace_id="workspace-1", message="evaluate")
+        ):
+            frames.append(frame)
+            if frame.startswith("event: maf_agent_started\n"):
+                live_agent_started.set()
+
+    monkeypatch.setattr(orchestrator, "create_agent_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry, **_kwargs: BlockingRuntime())
+    monkeypatch.setattr(orchestrator, "_stream_answer_frames", answer_frames)
+
+    consumer = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(runtime_entered.wait(), timeout=0.2)
+        await asyncio.wait_for(live_agent_started.wait(), timeout=0.1)
+        assert runtime_finished.is_set() is False
+    finally:
+        release.set()
+        await consumer
+
+    assert _event_names(frames).count("final") == 1
 
 
 @pytest.mark.asyncio
@@ -275,7 +551,7 @@ async def test_runtime_failure_emits_one_fallback_and_runs_legacy_once(monkeypat
     legacy_calls = 0
 
     class FailingRuntime:
-        async def run(self, _request):
+        async def run(self, _request, *, event_sink=None):
             raise RuntimeError("workflow construction failed")
 
     def legacy_corpus(*_args, **_kwargs):
@@ -288,7 +564,7 @@ async def test_runtime_failure_emits_one_fallback_and_runs_legacy_once(monkeypat
         yield orchestrator._frame("answer_delta", {"delta": state["text"]}, conversation_id)
 
     monkeypatch.setattr(orchestrator, "create_agent_registry", lambda **_kwargs: object())
-    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry: FailingRuntime())
+    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry, **_kwargs: FailingRuntime())
     monkeypatch.setattr(orchestrator, "_run_corpus_analyst", legacy_corpus)
     monkeypatch.setattr(orchestrator, "_stream_answer_frames", answer_frames)
 
@@ -316,8 +592,10 @@ async def test_post_runtime_event_adaptation_failure_terminates_without_legacy(m
     legacy_calls = 0
 
     class FakeRuntime:
-        async def run(self, _request):
-            return _team_result()
+        async def run(self, _request, *, event_sink=None):
+            result = _team_result()
+            await _publish_events(result, event_sink)
+            return result
 
     def legacy_corpus(*_args, **_kwargs):
         nonlocal legacy_calls
@@ -325,7 +603,7 @@ async def test_post_runtime_event_adaptation_failure_terminates_without_legacy(m
         return {"hits": [], "profile": {}}
 
     monkeypatch.setattr(orchestrator, "create_agent_registry", lambda **_kwargs: object())
-    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry: FakeRuntime())
+    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry, **_kwargs: FakeRuntime())
     monkeypatch.setattr(orchestrator, "_run_corpus_analyst", legacy_corpus)
     monkeypatch.setattr(
         orchestrator,
@@ -341,7 +619,7 @@ async def test_post_runtime_event_adaptation_failure_terminates_without_legacy(m
     ]
 
     names = _event_names(frames)
-    assert legacy_calls == 0
+    assert legacy_calls == 1  # authoritative prefetch only; no legacy rerun
     assert names.count("maf_fallback") == 0
     assert names.count("error") == 1
     assert names.count("final") == 1
@@ -356,8 +634,10 @@ async def test_post_runtime_finalization_failure_terminates_without_legacy(monke
     legacy_calls = 0
 
     class FakeRuntime:
-        async def run(self, _request):
-            return _team_result()
+        async def run(self, _request, *, event_sink=None):
+            result = _team_result()
+            await _publish_events(result, event_sink)
+            return result
 
     def legacy_corpus(*_args, **_kwargs):
         nonlocal legacy_calls
@@ -372,7 +652,7 @@ async def test_post_runtime_finalization_failure_terminates_without_legacy(monke
         raise RuntimeError("private persistence failure")
 
     monkeypatch.setattr(orchestrator, "create_agent_registry", lambda **_kwargs: object())
-    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry: FakeRuntime())
+    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry, **_kwargs: FakeRuntime())
     monkeypatch.setattr(orchestrator, "_run_corpus_analyst", legacy_corpus)
     monkeypatch.setattr(orchestrator, "_stream_answer_frames", answer_frames)
     monkeypatch.setattr(orchestrator, "_persist_assistant_message", fail_finalization)
@@ -385,7 +665,7 @@ async def test_post_runtime_finalization_failure_terminates_without_legacy(monke
     ]
 
     names = _event_names(frames)
-    assert legacy_calls == 0
+    assert legacy_calls == 1  # authoritative prefetch only; no legacy rerun
     assert names.count("maf_fallback") == 0
     assert names.count("answer_delta") == 1
     assert names.count("error") == 1
@@ -401,7 +681,7 @@ async def test_full_runtime_cancellation_propagates_without_fallback_or_legacy(m
     legacy_calls = 0
 
     class CancelledRuntime:
-        async def run(self, _request):
+        async def run(self, _request, *, event_sink=None):
             raise asyncio.CancelledError()
 
     def legacy_corpus(*_args, **_kwargs):
@@ -410,7 +690,7 @@ async def test_full_runtime_cancellation_propagates_without_fallback_or_legacy(m
         return {"hits": [], "profile": {}}
 
     monkeypatch.setattr(orchestrator, "create_agent_registry", lambda **_kwargs: object())
-    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry: CancelledRuntime())
+    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry, **_kwargs: CancelledRuntime())
     monkeypatch.setattr(orchestrator, "_run_corpus_analyst", legacy_corpus)
 
     frames: list[str] = []
@@ -420,7 +700,7 @@ async def test_full_runtime_cancellation_propagates_without_fallback_or_legacy(m
         ):
             frames.append(frame)
 
-    assert legacy_calls == 0
+    assert legacy_calls == 1  # authoritative prefetch only; no legacy rerun
     assert "maf_fallback" not in _event_names(frames)
 
 
@@ -431,8 +711,10 @@ async def test_required_corpus_failure_cannot_be_strengthened_by_legacy_final(mo
     answer_calls = 0
 
     class FakeRuntime:
-        async def run(self, _request):
-            return _team_result(required_corpus_failed=True)
+        async def run(self, _request, *, event_sink=None):
+            result = _team_result(required_corpus_failed=True)
+            await _publish_events(result, event_sink)
+            return result
 
     async def unsafe_answer(*_args, **_kwargs):
         nonlocal answer_calls
@@ -440,7 +722,7 @@ async def test_required_corpus_failure_cannot_be_strengthened_by_legacy_final(mo
         yield "unused"
 
     monkeypatch.setattr(orchestrator, "create_agent_registry", lambda **_kwargs: object())
-    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry: FakeRuntime())
+    monkeypatch.setattr(orchestrator, "MafTeamRuntime", lambda _registry, **_kwargs: FakeRuntime())
     monkeypatch.setattr(orchestrator, "_stream_answer_frames", unsafe_answer)
 
     frames = [
@@ -456,6 +738,42 @@ async def test_required_corpus_failure_cannot_be_strengthened_by_legacy_final(mo
     assert final["artifact"]["verdict"] == "insufficient_evidence"
     assert final["artifact"]["feasibility"]["verdict"] == "insufficient_evidence"
     assert "insufficient" in final["text"].lower()
+
+
+def test_maf_artifact_merge_whitelists_runtime_owned_fields() -> None:
+    artifact = {
+        "workspace_id": "workspace-authoritative",
+        "conversation_id": "conversation-authoritative",
+        "routing": {"intent": "feasibility_analysis", "output_mode": "report"},
+        "actor": {"actor_id": "trusted-actor"},
+        "output_contract": {"answer_style": "structured_analysis"},
+        "corpus": _authoritative_corpus(),
+    }
+    result = _team_result()
+    result.artifact.update(
+        {
+            "workspace_id": "model-workspace",
+            "conversation_id": "model-conversation",
+            "routing": {"intent": "model-route"},
+            "actor": {"email": "model@example.com"},
+            "output_contract": {"answer_style": "model-contract"},
+            "corpus": {"hits": [{"id": "model-hit"}]},
+            "hits": [{"id": "model-flat-hit"}],
+            "external_signals": [{"id": "market-signal"}],
+        }
+    )
+
+    orchestrator._merge_maf_artifact(artifact, result)
+
+    assert artifact["workspace_id"] == "workspace-authoritative"
+    assert artifact["conversation_id"] == "conversation-authoritative"
+    assert artifact["routing"]["intent"] == "feasibility_analysis"
+    assert artifact["actor"] == {"actor_id": "trusted-actor"}
+    assert artifact["output_contract"] == {"answer_style": "structured_analysis"}
+    assert artifact["corpus"] == _authoritative_corpus()
+    assert artifact["feasibility"]["verdict"] == "conditional"
+    assert artifact["audit"]["verdict"] == "pass"
+    assert artifact["market"]["signals"] == [{"id": "market-signal"}]
 
 
 def test_maf_summary_is_derived_from_typed_runtime_events() -> None:
@@ -475,7 +793,37 @@ def test_maf_summary_is_derived_from_typed_runtime_events() -> None:
     assert summary["selection_reason_codes"] == ["intent:feasibility_analysis"]
     assert summary["fallback"] is False
     assert summary["rounds"] == 0
-    assert summary["duration_ms"] == 30
+    assert summary["duration_ms"] == 31
+    assert summary["agent_work_ms"] == 30
+
+
+def test_maf_summary_keeps_unknown_usage_and_timing_null() -> None:
+    run = {
+        "steps": [
+            {
+                "event": "maf_plan",
+                "data": {
+                    "mode": "direct",
+                    "selected_agents": ["df-coordinator"],
+                    "reason_codes": ["lightweight_chat"],
+                },
+            },
+            {
+                "event": "maf_agent_completed",
+                "data": {
+                    "agent_id": "df-coordinator",
+                    "status": "completed",
+                },
+            },
+        ]
+    }
+
+    summary = _maf_summary(run)
+
+    assert summary is not None
+    assert summary["tokens"] is None
+    assert summary["duration_ms"] is None
+    assert summary["agent_work_ms"] is None
 
 
 def test_run_detail_exposes_the_same_event_derived_maf_summary() -> None:

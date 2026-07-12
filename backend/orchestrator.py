@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import hashlib
 import json
 import os
@@ -33,6 +34,7 @@ try:
         sanitize_customer_text,
     )
     from .feasibility_rubric import (
+        GUARDRAIL_VERSION,
         apply_post_audit_guardrails,
         apply_pre_audit_guardrails,
         attach_rubric_metadata,
@@ -70,12 +72,12 @@ try:
     from .rag import search
     from .router import deterministic_route
     from .run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
-    from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
-    from .tracing import agent_trace, maf_agent_trace, trace_event
+    from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, GuardedFeasibilityReport, RoutingDecision
+    from .tracing import agent_trace, finish_maf_agent_span, start_maf_agent_span, trace_event
     from .maf_agents import create_agent_registry
     from .maf_contracts import MafRuntimeMode, canary_selected, runtime_mode
     from .maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
-    from .maf_team_runtime import MafRuntimeEvent, MafTeamRequest, MafTeamRunResult, MafTeamRuntime
+    from .maf_team_runtime import MafRuntimeEvent, MafTeamRequest, MafTeamRunResult, MafTeamRuntime, classify_agent_error
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
@@ -97,6 +99,7 @@ except ImportError:
         sanitize_customer_text,
     )
     from feasibility_rubric import (
+        GUARDRAIL_VERSION,
         apply_post_audit_guardrails,
         apply_pre_audit_guardrails,
         attach_rubric_metadata,
@@ -134,12 +137,12 @@ except ImportError:
     from rag import search
     from router import deterministic_route
     from run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
-    from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, RoutingDecision
-    from tracing import agent_trace, maf_agent_trace, trace_event
+    from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, GuardedFeasibilityReport, RoutingDecision
+    from tracing import agent_trace, finish_maf_agent_span, start_maf_agent_span, trace_event
     from maf_agents import create_agent_registry
     from maf_contracts import MafRuntimeMode, canary_selected, runtime_mode
     from maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
-    from maf_team_runtime import MafRuntimeEvent, MafTeamRequest, MafTeamRunResult, MafTeamRuntime
+    from maf_team_runtime import MafRuntimeEvent, MafTeamRequest, MafTeamRunResult, MafTeamRuntime, classify_agent_error
     from tools.generate_image import generate_image
     from tools.narrate_summary import narrate_summary
     from tools.render_pdf import render_pdf_report
@@ -3114,11 +3117,14 @@ def _apply_audit_and_verdict_contract(artifact: dict[str, Any], audit: AuditVerd
     artifact["audit"] = audit_data
     if not artifact.get("feasibility"):
         return {}
-    artifact["feasibility"] = apply_post_audit_guardrails(
+    guarded = apply_post_audit_guardrails(
         artifact.get("feasibility") or {},
         artifact.get("_blind_feasibility") or artifact.get("feasibility") or {},
         _evidence_catalog(artifact),
         audit_data,
+    )
+    artifact["feasibility"] = GuardedFeasibilityReport.model_validate(guarded).model_dump(
+        mode="json"
     )
     return finalize_verdict_contract(artifact, audit_data)
 
@@ -5447,6 +5453,9 @@ def _maf_team_request(
     decision: RoutingDecision,
     artifact: dict[str, Any],
     conversation_id: str,
+    *,
+    authoritative_corpus: dict[str, Any] | None = None,
+    evidence_catalog: list[dict[str, Any]] | None = None,
 ) -> MafTeamRequest:
     experts = set(decision.experts)
     return MafTeamRequest(
@@ -5462,7 +5471,39 @@ def _maf_team_request(
             "routing": decision.model_dump(),
             "conversation_history": artifact.get("_conversation_history", []),
         },
+        authoritative_corpus=authoritative_corpus or {},
+        evidence_catalog=evidence_catalog or [],
+        rubric=load_rubric(),
+        rubric_version=rubric_version(),
     )
+
+
+def _validate_full_maf_feasibility_output(
+    req: ChatRequest,
+    artifact: dict[str, Any],
+    output: dict[str, Any],
+) -> dict[str, Any]:
+    candidate = output.get("feasibility") if isinstance(output.get("feasibility"), dict) else output
+    report = FeasibilityReport.model_validate(candidate)
+    catalog = _evidence_catalog(artifact)
+    report, evidence_warnings = _verify_evidence(report, catalog)
+    if not report.dimensions:
+        raise ValueError("FeasibilityReport has no dimension with verified evidence")
+    report = _normalize_feasibility_confidence(report)
+    report = _normalize_feasibility_opportunity(report, req, artifact)
+    report = _diversify_feasibility_scores(report)
+    data = apply_pre_audit_guardrails(report.model_dump(), catalog, req.message)
+    if not data.get("dimensions"):
+        raise ValueError("FeasibilityReport lost all dimensions after evidence validation")
+    data["evidence_warnings"] = evidence_warnings
+    return GuardedFeasibilityReport.model_validate(data).model_dump(mode="json")
+
+
+def _validate_full_maf_audit_output(output: dict[str, Any]) -> dict[str, Any]:
+    candidate = output.get("audit") if isinstance(output.get("audit"), dict) else output
+    audit = AuditVerdict.model_validate(candidate)
+    audit, _adjustment = _normalize_audit_revision_gate(audit)
+    return audit.model_dump()
 
 
 async def _try_full_maf_runtime(
@@ -5470,103 +5511,151 @@ async def _try_full_maf_runtime(
     decision: RoutingDecision,
     artifact: dict[str, Any],
     conversation_id: str,
+    *,
+    event_sink: Any | None = None,
 ) -> MafTeamRunResult | None:
     if runtime_mode() is not MafRuntimeMode.FULL:
         return None
     if not canary_selected(req.workspace_id, conversation_id):
         return None
+    preliminary = _maf_team_request(req, decision, artifact, conversation_id)
+    authoritative_corpus: dict[str, Any] = {}
+    if preliminary.needs_workspace:
+        try:
+            authoritative_corpus = await run_in_threadpool(_run_corpus_analyst, req)
+        except Exception:
+            authoritative_corpus = {}
+        artifact["corpus"] = copy.deepcopy(authoritative_corpus)
+    catalog = _evidence_catalog(artifact)
+    team_request = _maf_team_request(
+        req,
+        decision,
+        artifact,
+        conversation_id,
+        authoritative_corpus=authoritative_corpus,
+        evidence_catalog=catalog,
+    )
     registry = create_agent_registry(workspace_id=req.workspace_id)
-    runtime = MafTeamRuntime(registry)
-    return await runtime.run(_maf_team_request(req, decision, artifact, conversation_id))
+    runtime = MafTeamRuntime(
+        registry,
+        feasibility_validator=lambda output: _validate_full_maf_feasibility_output(
+            req,
+            artifact,
+            output,
+        ),
+        audit_validator=_validate_full_maf_audit_output,
+    )
+    return await runtime.run(team_request, event_sink=event_sink)
 
 
 def _maf_error_category(error: Exception) -> str:
-    if isinstance(error, (TimeoutError, ConnectionError)):
-        return "transient"
-    if isinstance(error, (TypeError, ValueError)):
-        return "contract_validation"
-    return "permanent"
+    return classify_agent_error(error)
 
 
 def _maf_event_payload(event: MafRuntimeEvent) -> dict[str, Any]:
     return event.model_dump(mode="json", exclude_none=True)
 
 
-def _maf_handoffs(events: list[MafRuntimeEvent]) -> dict[str, tuple[str, str]]:
-    handoffs: dict[str, tuple[str, str]] = {}
-    for event in events:
-        if event.event != "maf_handoff" or not event.target_agent_id:
-            continue
-        handoffs[event.target_agent_id] = (
-            str(event.source_agent_id or ""),
-            str(event.target_agent_id),
-        )
-    return handoffs
+class _MafLiveTelemetry:
+    def __init__(
+        self,
+        *,
+        req: ChatRequest,
+        conversation_id: str,
+        actor: dict[str, Any],
+    ) -> None:
+        self.req = req
+        self.conversation_id = conversation_id
+        self.actor = actor
+        self.mode = "unknown"
+        self.handoffs: dict[str, tuple[str, str]] = {}
+        self.active: dict[tuple[str, str | None], list[Any]] = {}
 
+    def observe(self, event: MafRuntimeEvent) -> None:
+        if event.event == "maf_plan" and event.mode:
+            self.mode = event.mode
+        if event.event == "maf_handoff" and event.target_agent_id:
+            self.handoffs[event.target_agent_id] = (
+                str(event.source_agent_id or ""),
+                str(event.target_agent_id),
+            )
+        if event.event == "maf_agent_started" and event.agent_id:
+            source, target = self.handoffs.get(event.agent_id, ("", ""))
+            span = start_maf_agent_span(
+                agent_id=event.agent_id,
+                agent_name=_MAF_AGENT_NAMES.get(event.agent_id, event.agent_id),
+                collaboration_mode=self.mode,
+                branch_id=event.branch_id,
+                workspace_id=self.req.workspace_id,
+                conversation_id=self.conversation_id,
+                run_id=self.conversation_id,
+                actor=self.actor,
+                handoff_source=source or None,
+                handoff_target=target or None,
+            )
+            self.active.setdefault((event.agent_id, event.branch_id), []).append(span)
+            return
+        if event.event != "maf_agent_completed" or not event.agent_id:
+            return
 
-def _record_maf_agent_span(
-    event: MafRuntimeEvent,
-    result: MafTeamRunResult,
-    req: ChatRequest,
-    conversation_id: str,
-    actor: dict[str, Any],
-    handoffs: dict[str, tuple[str, str]],
-) -> None:
-    if event.event != "maf_agent_completed" or not event.agent_id:
-        return
-    source, target = handoffs.get(event.agent_id, ("", ""))
-    token_usage = {
-        key: value
-        for key, value in (
-            ("input_tokens", event.input_tokens),
-            ("output_tokens", event.output_tokens),
-            ("total_tokens", event.total_tokens),
+        key = (event.agent_id, event.branch_id)
+        spans = self.active.get(key) or []
+        span = spans.pop(0) if spans else None
+        if not spans:
+            self.active.pop(key, None)
+        token_usage = {
+            key: value
+            for key, value in (
+                ("input_tokens", event.input_tokens),
+                ("output_tokens", event.output_tokens),
+                ("total_tokens", event.total_tokens),
+            )
+            if value is not None
+        }
+        finish_maf_agent_span(
+            span,
+            status=event.status,
+            error_category=event.error_category,
+            duration_ms=event.duration_ms,
+            token_usage=token_usage or None,
+            response_id=event.response_id,
+            retry_count=event.retry_count,
+            tool_names=event.tool_names or (),
+            cache_hit=event.cache_hit,
         )
-        if value is not None
-    }
-    with maf_agent_trace(
-        agent_id=event.agent_id,
-        agent_name=_MAF_AGENT_NAMES.get(event.agent_id, event.agent_id),
-        collaboration_mode=result.summary.mode,
-        branch_id=event.branch_id,
-        workspace_id=req.workspace_id,
-        conversation_id=conversation_id,
-        run_id=conversation_id,
-        actor=actor,
-        handoff_source=source or None,
-        handoff_target=target or None,
-        duration_ms=event.duration_ms,
-        started_ns=event.started_ns,
-        completed_ns=event.completed_ns,
-        response_id=event.response_id,
-        token_usage=token_usage or None,
-        retry_count=event.retry_count,
-        tool_names=event.tool_names or (),
-        cache_hit=event.cache_hit,
-        status=event.status,
-        error_category=event.error_category,
-    ):
         trace_event(
             "maf_agent_completed",
             {
                 "agent": event.agent_id,
-                "mode": result.summary.mode,
+                "mode": self.mode,
                 "status": event.status,
                 "elapsed_ms": event.duration_ms,
                 "error_type": event.error_category,
             },
-            conversation_id,
+            self.conversation_id,
         )
+
+    def close(self) -> None:
+        for spans in self.active.values():
+            for span in spans:
+                finish_maf_agent_span(
+                    span,
+                    status="failed",
+                    error_category="permanent",
+                    duration_ms=None,
+                    token_usage=None,
+                )
+        self.active.clear()
 
 
 def _maf_model_response_payload(
     event: MafRuntimeEvent,
-    result: MafTeamRunResult,
+    mode: str,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "agent": event.agent_id,
         "orchestrator": "maf_full",
-        "mode": result.summary.mode,
+        "mode": mode,
         "status": event.status,
     }
     if event.response_id:
@@ -5593,16 +5682,68 @@ def _maf_model_response_payload(
     return payload
 
 
+def _maf_live_event_frames(
+    event: MafRuntimeEvent,
+    *,
+    mode: str,
+    conversation_id: str,
+) -> list[str]:
+    payload = _maf_event_payload(event)
+    frames = [_frame(event.event, payload, conversation_id)]
+    if event.event == "maf_agent_completed" and event.status == "completed" and event.agent_id:
+        frames.append(
+            _frame(
+                "model_response",
+                _maf_model_response_payload(event, mode),
+                conversation_id,
+            )
+        )
+    if event.event == "maf_agent_started" and event.agent_id:
+        frames.append(
+            _frame(
+                "role_change",
+                {
+                    "agent": event.agent_id,
+                    "orchestrator": "maf_full",
+                    "branch_id": event.branch_id,
+                    "status": event.status,
+                },
+                conversation_id,
+            )
+        )
+    if event.event == "maf_review" and event.status != "running":
+        verdict = event.verdict.value if event.verdict is not None else None
+        frames.append(
+            _frame(
+                "audit",
+                {
+                    "agent": event.agent_id or "df-auditor",
+                    "orchestrator": "maf_full",
+                    "status": event.status,
+                    "verdict": verdict,
+                    "reason_codes": list(event.reason_codes),
+                    "issues": [],
+                    "target_expert": None,
+                },
+                conversation_id,
+            )
+        )
+    return frames
+
+
 def _merge_maf_artifact(artifact: dict[str, Any], result: MafTeamRunResult) -> None:
     runtime_artifact = result.artifact.model_dump(mode="json") if hasattr(result.artifact, "model_dump") else dict(result.artifact)
-    artifact.update(runtime_artifact)
-    if "hits" in runtime_artifact:
-        corpus = dict(artifact.get("corpus") or {})
-        corpus["hits"] = list(runtime_artifact.get("hits") or [])
-        artifact["corpus"] = corpus
+    for key in ("feasibility", "audit", "_blind_feasibility"):
+        value = runtime_artifact.get(key)
+        if isinstance(value, dict):
+            artifact[key] = copy.deepcopy(value)
     if "external_signals" in runtime_artifact:
         market = dict(artifact.get("market") or {})
-        market["signals"] = list(runtime_artifact.get("external_signals") or [])
+        market["signals"] = [
+            copy.deepcopy(item)
+            for item in runtime_artifact.get("external_signals") or []
+            if isinstance(item, dict)
+        ]
         artifact["market"] = market
     artifact["maf"] = result.summary.model_dump(mode="json", exclude_none=True)
     artifact["maf"]["gaps"] = list(result.gaps)
@@ -5617,53 +5758,33 @@ async def _emit_full_maf_result(
     actor: dict[str, Any],
     result: MafTeamRunResult,
 ) -> AsyncIterator[str]:
-    handoffs = _maf_handoffs(result.events)
-    for event in result.events:
-        payload = _maf_event_payload(event)
-        yield _frame(event.event, payload, conversation_id)
-        _record_maf_agent_span(event, result, req, conversation_id, actor, handoffs)
-        if event.event == "maf_agent_completed" and event.status == "completed" and event.agent_id:
-            yield _frame(
-                "model_response",
-                _maf_model_response_payload(event, result),
-                conversation_id,
-            )
-        if event.event == "maf_agent_started" and event.agent_id:
-            yield _frame(
-                "role_change",
-                {
-                    "agent": event.agent_id,
-                    "orchestrator": "maf_full",
-                    "branch_id": event.branch_id,
-                    "status": event.status,
-                },
-                conversation_id,
-            )
-        if event.event == "maf_review" and event.status != "running":
-            yield _frame(
-                "audit",
-                {
-                    "agent": event.agent_id or "df-auditor",
-                    "orchestrator": "maf_full",
-                    "status": event.status,
-                    "verdict": event.verdict or "unknown",
-                    "reason_codes": list(event.reason_codes),
-                    "issues": [],
-                    "target_expert": None,
-                },
-                conversation_id,
-            )
-
     _merge_maf_artifact(artifact, result)
     required_corpus_failed = "workspace_evidence_unavailable" in result.gaps
     if required_corpus_failed:
         summary = "insufficient_evidence: required workspace evidence was unavailable; no stronger conclusion was produced."
+        artifact["verdict"] = "insufficient_evidence"
+        feasibility = dict(artifact.get("feasibility") or {})
+        feasibility["verdict"] = "insufficient_evidence"
+        artifact["feasibility"] = feasibility
+        audit = dict(artifact.get("audit") or {})
+        audit["verdict"] = "insufficient_evidence"
+        artifact["audit"] = audit
         artifact["answer"] = {"markdown": summary, "text": summary, "citations": [], "_llm": {"mode": "maf_required_evidence_guard"}}
         artifact["citations"] = []
     else:
+        feasibility = artifact.get("feasibility")
+        audit_data = artifact.get("audit")
+        if isinstance(feasibility, dict) and isinstance(audit_data, dict):
+            audit = AuditVerdict.model_validate(audit_data)
+            verdict_contract = _apply_audit_and_verdict_contract(artifact, audit)
+            if verdict_contract.get("revised"):
+                yield _frame("revised_verdict", verdict_contract, conversation_id)
         answer_state: dict[str, Any] = {}
         async for frame in _stream_answer_frames(req, decision, artifact, conversation_id, answer_state):
             yield frame
+        if decision.output_mode == "full_package" or "df-producer" in decision.experts:
+            async for frame in _producer_frames(artifact, conversation_id):
+                yield frame
         summary = _customer_text(answer_state.get("text") or _final_text(decision, artifact), artifact)
 
     artifact.setdefault("output_contract", _output_contract(decision.intent))
@@ -5877,11 +5998,65 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
         return
 
     full_maf_result: MafTeamRunResult | None = None
+    event_queue: asyncio.Queue[Any] = asyncio.Queue()
+    runtime_done = object()
+    live_telemetry = _MafLiveTelemetry(req=req, conversation_id=conv_id, actor=actor)
+    maf_execution_started = False
+
+    async def publish_full_maf_event(event: MafRuntimeEvent) -> None:
+        # Queue first so an instrumentation failure still transfers terminal
+        # ownership to MAF, then observe at the producer-side execution boundary.
+        event_queue.put_nowait(event)
+        live_telemetry.observe(event)
+
+    async def execute_full_maf() -> MafTeamRunResult | None:
+        try:
+            return await _try_full_maf_runtime(
+                req,
+                decision,
+                artifact,
+                conv_id,
+                event_sink=publish_full_maf_event,
+            )
+        finally:
+            await event_queue.put(runtime_done)
+
+    full_maf_task = asyncio.create_task(execute_full_maf())
     try:
-        full_maf_result = await _try_full_maf_runtime(req, decision, artifact, conv_id)
+        while True:
+            observed = await event_queue.get()
+            if observed is runtime_done:
+                break
+            if not isinstance(observed, MafRuntimeEvent):
+                raise TypeError("MAF live event sink received an invalid event")
+            maf_execution_started = True
+            for frame in _maf_live_event_frames(
+                observed,
+                mode=live_telemetry.mode,
+                conversation_id=conv_id,
+            ):
+                yield frame
+        full_maf_result = await full_maf_task
     except asyncio.CancelledError:
+        if not full_maf_task.done():
+            full_maf_task.cancel()
+        await asyncio.gather(full_maf_task, return_exceptions=True)
+        live_telemetry.close()
         raise
     except Exception as exc:
+        if not full_maf_task.done():
+            full_maf_task.cancel()
+        await asyncio.gather(full_maf_task, return_exceptions=True)
+        live_telemetry.close()
+        if maf_execution_started:
+            for frame in _maf_terminal_failure_frames(
+                decision,
+                artifact,
+                conv_id,
+                exc,
+            ):
+                yield frame
+            return
         yield _frame(
             "maf_fallback",
             {
@@ -5893,6 +6068,8 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
             },
             conv_id,
         )
+    else:
+        live_telemetry.close()
 
     if full_maf_result is not None:
         try:
@@ -5933,7 +6110,16 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
             },
             conv_id,
         )
-        artifact["corpus"] = await run_in_threadpool(_run_corpus_analyst, corpus_req, corpus_top_k, corpus_use_vector)
+        existing_corpus = artifact.get("corpus")
+        if isinstance(existing_corpus, dict):
+            artifact["corpus"] = existing_corpus
+        else:
+            artifact["corpus"] = await run_in_threadpool(
+                _run_corpus_analyst,
+                corpus_req,
+                corpus_top_k,
+                corpus_use_vector,
+            )
         retrieval_modes = sorted({str(hit.get("retrieval_mode") or "unknown") for hit in artifact["corpus"]["hits"]})
         yield _frame(
             "tool_result",

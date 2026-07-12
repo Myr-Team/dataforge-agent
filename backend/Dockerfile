@@ -18,8 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./backend/
 COPY ingest/ ./ingest/
 COPY workspaces/ ./workspaces/
+COPY agents/build_agents.py ./agents/build_agents.py
+COPY agents/tool_schemas.json ./agents/tool_schemas.json
 COPY agents/prompts/ ./agents/prompts/
 COPY agents/rubrics/ ./agents/rubrics/
+RUN python -m backend.import_smoke
 
 EXPOSE 80
 CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "80"]

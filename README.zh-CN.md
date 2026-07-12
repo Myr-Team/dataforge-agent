@@ -94,8 +94,10 @@ DataForge 把这件事自动化了。
 
 - `DF_MAF_RUNTIME=off` 使用旧版编排器；`audit` 仅启用现有的有界审计/复修图；`full` 允许请求进入一等 MAF 团队运行时。
 - 未设置 `DF_MAF_RUNTIME` 时，`DF_USE_MAF=1` 为兼容旧配置映射到 `audit`。
-- `DF_MAF_TRAFFIC_PERCENT` 取值为 `0..100`。灰度选择基于工作区 ID 与会话 ID 的稳定哈希，不使用业务名、数据集名、行业名或演示名称做路由触发器。
-- MAF 构造或运行失败时会记录回退证据，并执行旧版路径 exactly once（恰好一次）。可选市场分支失败只降级为工作区证据，不会触发整条链路重放。
+- `DF_MAF_TRAFFIC_PERCENT` 取值为 `0..100`。灰度选择基于工作区 ID 与会话 ID 的稳定哈希，不使用业务名、数据集名、行业名或演示名称做路由触发器。在完整测试、确定性评估、后端镜像导入/启动 smoke、广泛评审以及单独批准的生产 canary 通过前，保持为 `0`。
+- MAF 在首个实时事件发出前构造或运行失败时，会记录回退证据并执行旧版路径 exactly once（恰好一次）；一旦 MAF 输出开始，终态由 MAF 持有，不再启动旧版执行。可选市场分支失败只降级为工作区证据，不会触发整条链路重放。
+- FULL 模式中，凡是需要工作区数据的请求都先走后端权威检索，并使用 typed corpus/evidence/rubric contract，证据必须有效、非空且能回溯到真实检索命中。可行性和审计输出使用 Pydantic 校验，合同纠正最多重试一次；现有 rubric、证据核验以及经过 typed contract 复核的审计前后 guardrail 继续作为权威边界。`full_package` 仍会运行 producer，保留 PDF、图片、计划和音频交付。
+- MAF 事件和参与者 span 按真实执行实时发出。Token 只读取运行时/提供商响应字段，未知用量保持 `null`，工作流墙钟时长与参与者工作量总和分开记录，模型输出中的遥测字典不被采信。
 - 稳定依赖版本固定为 `agent-framework-core==1.11.0`、`agent-framework-foundry==1.10.1` 和 `agent-framework-orchestrations==1.0.0`。
 - 无连接器评估命令为 `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`。报告明确声明 `measurement_scope='deterministic_harness'` 和 `production_quality_claim=false`。groundedness 与 unsupported-claim rate 只是 fixture/reference-propagation contract checks，not production answer quality（不是生产答案质量评价）。其他指标仅在确定性夹具观测存在时给值；没有用量遥测的 tokens 等缺失值保持 `null`/`unknown`。
 

@@ -92,7 +92,18 @@ test("trace facts override persisted summary and expose failure collaboration de
 test("agent latency sums completed-event detail only and ignores inferred intervals", () => {
   const trace = [
     { event: "maf_plan", data: { mode: "direct", selected_agents: [COORDINATOR], skipped_agents: [] } },
-    { event: "maf_agent_completed", duration_ms: 1000, detail: { agent_id: COORDINATOR, status: "completed", duration_ms: 11 } },
+    {
+      event: "maf_agent_completed",
+      duration_ms: 1000,
+      detail: {
+        agent_id: COORDINATOR,
+        status: "completed",
+        duration_ms: 11,
+        input_tokens: 12,
+        output_tokens: 5,
+        total_tokens: 17,
+      },
+    },
     { event: "maf_branch_joined", duration_ms: 900, detail: { agent_id: COORDINATOR, branch_id: "ignored", status: "completed", duration_ms: 51 } },
     { event: "maf_review", duration_ms: 800, detail: { agent_id: COORDINATOR, revision: 0, status: "completed", duration_ms: 63 } },
     { event: "maf_agent_completed", duration_ms: 700, data: { agent_id: COORDINATOR, status: "completed", duration_ms: 13 } },
@@ -101,6 +112,11 @@ test("agent latency sums completed-event detail only and ignores inferred interv
   const model = deriveMafViewModel(trace);
 
   assert.equal(model.agents[0].durationMs, 24);
+  assert.deepEqual(model.agents[0].tokens, {
+    input_tokens: 12,
+    output_tokens: 5,
+    total_tokens: 17,
+  });
   assert.equal(model.agents[0].tone, "completed");
 });
 

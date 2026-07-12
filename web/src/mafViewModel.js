@@ -90,6 +90,16 @@ function initialAgentState(id, persistedAgentMap) {
   };
 }
 
+function mafEventTokens(data) {
+  const tokens = {};
+  for (const key of ["input_tokens", "output_tokens", "total_tokens"]) {
+    if (typeof data?.[key] === "number" && Number.isFinite(data[key])) {
+      tokens[key] = Math.max(0, data[key]);
+    }
+  }
+  return Object.keys(tokens).length ? tokens : null;
+}
+
 export function deriveMafViewModel(trace = [], persistedMaf = null) {
   const persisted = persistedMaf?.maf || persistedMaf || {};
   const events = (trace || [])
@@ -165,7 +175,7 @@ export function deriveMafViewModel(trace = [], persistedMaf = null) {
         ...current,
         status: semanticStatus,
         durationMs,
-        tokens: data.tokens || data.usage || current.tokens,
+        tokens: mafEventTokens(data) || data.tokens || data.usage || current.tokens,
         tools: mafArray(data.tool_names || data.tools).length ? mafArray(data.tool_names || data.tools) : current.tools,
         retries: data.retry_count ?? data.retries ?? current.retries,
         error: data.error_category || data.error || current.error,
