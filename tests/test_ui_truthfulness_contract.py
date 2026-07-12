@@ -71,3 +71,14 @@ def test_governance_ui_separates_estimated_roi_from_observed_outcomes() -> None:
     assert "security.rbac_enforced" in source
     assert "governance?.foundry_monitoring" in source
     assert "估算口径；接入 Azure AI Foundry 原生 ROI 后可切换" not in source
+
+
+def test_iteration_ui_uses_backend_experiment_deltas_and_source_lineage() -> None:
+    source = COMPONENTS.read_text(encoding="utf-8")
+    api_source = (COMPONENTS.parent / "api.js").read_text(encoding="utf-8")
+
+    assert "loadExperiments" in source
+    assert "compareExperiments" in source
+    assert "evidence_delta" in source
+    assert "source_ref" in source
+    assert "/experiments/compare" in api_source

@@ -67,7 +67,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, loadDataOverview, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance } from "./api.js";
+import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -793,6 +793,52 @@ function buildPlanDiff(runA, runB) {
   };
 }
 
+function buildExperimentDiff(payload) {
+  const from = payload?.from || {};
+  const to = payload?.to || {};
+  const fromDecision = from.decision || {};
+  const toDecision = to.decision || {};
+  const byName = (items) => Object.fromEntries((items || []).filter((item) => item?.name).map((item) => [item.name, item]));
+  const dimsA = byName(fromDecision.dimensions);
+  const dimsB = byName(toDecision.dimensions);
+  const names = [...new Set([...Object.keys(dimsA), ...Object.keys(dimsB)])];
+  const dims = names.map((name) => {
+    const base = dimsA[name]?.score == null ? null : Number(dimsA[name].score);
+    const target = dimsB[name]?.score == null ? null : Number(dimsB[name].score);
+    return {
+      name,
+      label: (DIMENSION_LABELS && DIMENSION_LABELS[name]) || name,
+      base,
+      target,
+      delta: Number.isFinite(base) && Number.isFinite(target) ? target - base : null,
+    };
+  });
+  const gapsA = new Set((fromDecision.gaps || from.gaps || []).map(String));
+  const gapsB = (toDecision.gaps || to.gaps || []).map(String);
+  const artifactUrls = (version) => (version?.attachments?.artifacts || []).flatMap((item) => Object.entries(item?.urls || {}).filter(([, url]) => url));
+  const fromArtifacts = artifactUrls(from);
+  const toArtifacts = artifactUrls(to);
+  const fromKinds = new Set(fromArtifacts.map(([kind]) => kind));
+  const toKinds = [...new Set(toArtifacts.map(([kind]) => kind))];
+  const evidenceDelta = payload?.evidence_delta || to.evidence_delta || { added: [], removed: [], strengthened: [], contradicted: [] };
+  return {
+    from: { title: from.title, summary: from.decision_delta?.summary, versionKind: "analysis" },
+    to: { title: to.title, summary: to.decision_delta?.summary, versionKind: "analysis" },
+    verdict: {
+      from: fromDecision.verdict,
+      to: toDecision.verdict,
+      dir: Math.sign((VERDICT_RANK[toDecision.verdict] || 0) - (VERDICT_RANK[fromDecision.verdict] || 0)),
+    },
+    dims,
+    iterationInputs: (to.metrics || []).map((item) => ({ label: item.metric_name, value: item.value, unit: item.unit, kind: item.kind, provenance: item.provenance })),
+    artifacts: { added: toKinds.filter((kind) => !fromKinds.has(kind)), fromCount: fromArtifacts.length, toCount: toArtifacts.length },
+    evidence: { from: (from.evidence || []).map((item) => item.ref), to: (to.evidence || []).map((item) => item.ref) },
+    gaps: { added: gapsB.filter((gap) => !gapsA.has(gap)), resolved: [...gapsA].filter((gap) => !gapsB.includes(gap)) },
+    evidence_delta: evidenceDelta,
+    decisionDelta: payload?.decision_delta || to.decision_delta || {},
+  };
+}
+
 const _CV_RANK = { not_yet_feasible: 1, not_feasible: 1, rejected: 1, conditional: 2, feasible: 3, recommended: 3 };
 const _CV_LABEL = { 1: "暂不可行", 2: "有条件可行", 3: "可行" };
 const _CV_COLOR = { 1: "#8a5a00", 2: "#0A84E0", 3: "#0a7d4f" };
@@ -864,14 +910,28 @@ function ConvergenceChart({ versions, flagshipId }) {
 }
 
 function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
-  // 版本 = 分析版 + 产物版 + 回填指标版，按时间正序编号 v1/v2…
-  const versions = useMemo(() => {
+  const runVersions = useMemo(() => {
     const list = (runs || []).filter(isPlanVersionRun);
     return list
       .slice()
       .sort((a, b) => String(a.time || "").localeCompare(String(b.time || "")))
       .map((r, i) => ({ ...r, vlabel: `v${i + 1}`, id: r.run_id || r.conversation_id }));
   }, [runs]);
+  const [experimentLedger, setExperimentLedger] = useState(null);
+  const versions = useMemo(() => {
+    const canonical = Array.isArray(experimentLedger?.versions) ? experimentLedger.versions : [];
+    if (!canonical.length) return runVersions;
+    return canonical.map((item) => ({
+      ...item,
+      id: item.run_id || item.version_id,
+      vlabel: item.label || `V${item.ordinal || 1}`,
+      verdict: item.decision?.verdict,
+      confidence: item.decision?.confidence,
+      summary: item.decision_delta?.summary,
+      time: item.created_at,
+      experimentVersion: true,
+    }));
+  }, [experimentLedger, runVersions]);
   const latest = versions[versions.length - 1];
   const [flagshipId, setFlagshipId] = useState(null);
   const [baseId, setBaseId] = useState(null);
@@ -887,6 +947,15 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
   const editCustomRow = (i, patch) => setCustomRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const delCustomRow = (i) => setCustomRows((rs) => rs.filter((_, j) => j !== i));
   const numDelta = (a, b) => { const x = parseFloat(a), y = parseFloat(b); if (Number.isNaN(x) || Number.isNaN(y)) return null; return y - x; };
+
+  useEffect(() => {
+    if (!workspaceId) { setExperimentLedger(null); return; }
+    let cancelled = false;
+    loadExperiments(workspaceId)
+      .then((data) => { if (!cancelled) setExperimentLedger(data); })
+      .catch(() => { if (!cancelled) setExperimentLedger(null); });
+    return () => { cancelled = true; };
+  }, [workspaceId, runs?.length]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -912,8 +981,13 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
     if (!cmpA || !cmpB || cmpA === cmpB) return;
     setDiffLoading(true); setDiff(null);
     try {
-      const [ra, rb] = await Promise.all([loadRun(cmpA), loadRun(cmpB)]);
-      setDiff(buildPlanDiff(ra, rb));
+      if (experimentLedger?.versions?.length) {
+        const result = await compareExperiments(workspaceId, `version:${cmpA}`, `version:${cmpB}`);
+        setDiff(buildExperimentDiff(result));
+      } else {
+        const [ra, rb] = await Promise.all([loadRun(cmpA), loadRun(cmpB)]);
+        setDiff(buildPlanDiff(ra, rb));
+      }
     } catch { setDiff(null); } finally { setDiffLoading(false); }
   };
 
@@ -925,7 +999,10 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
       const source = versions.find((v) => v.id === effectiveBase);
       const metricRunId = source?.version_kind === "artifact_generation" && source?.source_run_id ? source.source_run_id : effectiveBase;
       const d = await loadPlanMetrics(metricRunId);
-      setMetrics((d?.metrics || []).map((m) => ({ ...m })));
+      setMetrics((d?.metrics || []).map((m) => ({
+        ...m,
+        source_ref: m?.source?.file_id || m?.source?.run_id || "",
+      })));
     } catch { setMetrics([]); } finally { setLoading(false); }
   };
   const editMetric = (i, patch) => setMetrics((arr) => arr.map((m, j) => (j === i ? { ...m, ...patch } : m)));
@@ -936,7 +1013,14 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
     try { await setFlagship(workspaceId, next); } catch { /* ignore */ }
   };
   const runIteration = () => {
-    const inputs = (metrics || []).filter((m) => m.label && m.label.trim());
+    const inputs = (metrics || [])
+      .filter((m) => m.label && m.label.trim())
+      .map((metric) => ({
+        ...metric,
+        ...(metric.kind === "observed" && metric.source_ref
+          ? { source: { file_id: metric.source_ref } }
+          : {}),
+      }));
     if (!inputs.length || running) return;
     onIterate?.(inputs);
   };
@@ -1069,6 +1153,17 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
             <em>证据来源</em>
             {(diff.evidence.to.length ? diff.evidence.to : ["暂无可展示来源"]).map((item, i) => <span className="pi-diff-chip" key={`${item}-${i}`}>{String(item).slice(0, 28)}</span>)}
           </div>
+          {diff.evidence_delta ? (
+            <div className="pi-diff-note">
+              <em>证据变化</em>
+              {(diff.evidence_delta.added || []).slice(0, 3).map((item) => <span className="pi-diff-chip up" key={`added-${item.ref}`}>新增 {item.ref}</span>)}
+              {(diff.evidence_delta.removed || []).slice(0, 2).map((item) => <span className="pi-diff-chip" key={`removed-${item.ref}`}>移除 {item.ref}</span>)}
+              {(diff.evidence_delta.strengthened || []).slice(0, 2).map((item) => <span className="pi-diff-chip up" key={`strong-${item.ref}`}>增强 {item.ref}</span>)}
+              {!(diff.evidence_delta.added || []).length && !(diff.evidence_delta.removed || []).length && !(diff.evidence_delta.strengthened || []).length
+                ? <span className="pi-diff-chip">{diff.decisionDelta?.summary || "暂无可比较的新证据"}</span>
+                : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -1090,13 +1185,14 @@ function PlanIteratePanel({ workspaceId, runs, running, onIterate }) {
                       <option value="observed">实测</option>
                       <option value="target">目标</option>
                     </select>
+                    <input className="pi-source" value={m.source_ref || ""} placeholder="来源文件或运行 ID" onChange={(e) => editMetric(i, { source_ref: e.target.value })} disabled={m.kind !== "observed"} />
                     <button type="button" className="pi-del" onClick={() => removeMetric(i)} title="移除">✕</button>
                   </div>
                 ))}
                 {!(metrics && metrics.length) ? <div className="pi-empty-hint">没从这版方案自动抽到量化指标，可在下方「添加指标」手动回填。</div> : null}
               </div>
-              <button type="button" className="pi-addmetric" onClick={() => setMetrics((arr) => [...(arr || []), { label: "", value: "", unit: "", kind: "observed" }])}><Plus size={13} /> 添加指标</button>
-              <div className="pi-tip">把实际跑出来的值填进去并标为「实测」，分析会据此把方案做得更准——这些值仅作假设/回填，不会被当成工作区已证实数据。</div>
+              <button type="button" className="pi-addmetric" onClick={() => setMetrics((arr) => [...(arr || []), { label: "", value: "", unit: "", kind: "observed", source_ref: "" }])}><Plus size={13} /> 添加指标</button>
+              <div className="pi-tip">实测指标需要填写来源文件或运行 ID；没有来源的值会保留为“用户报告、未验证”，不会推动结论升档。</div>
               <div className="pi-actions">
                 <button type="button" className="pi-iterate" onClick={runIteration} disabled={running}>
                   {running ? <><Loader2 className="spin" size={14} /> 正在生成下一版…</> : <><RefreshCw size={14} /> 基于回填指标生成下一版方案</>}

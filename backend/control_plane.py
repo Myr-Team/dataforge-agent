@@ -21,6 +21,7 @@ try:
     from .data_workbench import list_workspace_files
     from .dependency_health import health_dependencies, health_dependency_details
     from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
+    from .experiment_store import compare_experiment_versions, sync_experiment_ledger
     from .identity import actor_from_request, default_actor, member_from_actor, public_actor
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, record_outcome_event, verify_outcome_event
@@ -34,6 +35,7 @@ except ImportError:
     from data_workbench import list_workspace_files
     from dependency_health import health_dependencies, health_dependency_details
     from graph_client import GraphClientError, search_entra_users, send_graph_invitation
+    from experiment_store import compare_experiment_versions, sync_experiment_ledger
     from identity import actor_from_request, default_actor, member_from_actor, public_actor
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, record_outcome_event, verify_outcome_event
@@ -138,6 +140,21 @@ async def workspace_governance(workspace_id: str, request: Request) -> dict[str,
 async def workspace_outcomes(workspace_id: str) -> dict[str, Any]:
     events = await _call(list_outcome_events, workspace_id)
     return {"workspace_id": workspace_id, "events": events, "count": len(events)}
+
+
+@router.get("/api/workspaces/{workspace_id}/experiments")
+async def workspace_experiments(workspace_id: str) -> dict[str, Any]:
+    return await _call(workspace_experiment_ledger, workspace_id)
+
+
+@router.get("/api/workspaces/{workspace_id}/experiments/compare")
+async def workspace_experiment_compare(
+    workspace_id: str,
+    from_id: str = Query(alias="from"),
+    to_id: str = Query(alias="to"),
+) -> dict[str, Any]:
+    ledger = await _call(workspace_experiment_ledger, workspace_id)
+    return await _call(compare_experiment_versions, ledger, from_id, to_id)
 
 
 @router.post("/api/workspaces/{workspace_id}/outcomes")
@@ -1000,6 +1017,27 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
         },
         "roi": roi,
     }
+
+
+def workspace_experiment_ledger(workspace_id: str) -> dict[str, Any]:
+    runs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for summary in list_runs(workspace_id)[:300]:
+        run_id = str(summary.get("run_id") or summary.get("conversation_id") or "").strip()
+        if not run_id or run_id in seen:
+            continue
+        seen.add(run_id)
+        try:
+            detail = get_run(run_id)
+        except FileNotFoundError:
+            detail = summary
+        if isinstance(detail, dict):
+            runs.append(detail)
+    return sync_experiment_ledger(
+        workspace_id,
+        runs,
+        outcomes=list_outcome_events(workspace_id),
+    )
 
 
 def _foundry_monitoring_status() -> dict[str, Any]:

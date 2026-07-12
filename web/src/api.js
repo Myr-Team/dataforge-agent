@@ -252,6 +252,15 @@ export async function loadWorkspaceArtifacts(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/artifacts`);
 }
 
+export async function loadExperiments(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/experiments`);
+}
+
+export async function compareExperiments(workspaceId, fromId, toId) {
+  const params = new URLSearchParams({ from: fromId, to: toId });
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/experiments/compare?${params.toString()}`);
+}
+
 export async function loadSystemStatus() {
   return request("/api/system-status");
 }

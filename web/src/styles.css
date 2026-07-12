@@ -3387,10 +3387,11 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .pi-loading { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); padding: 8px 2px; }
 .pi-loading svg { color: var(--blue); }
 .pi-rows { display: flex; flex-direction: column; gap: 6px; }
-.pi-row { display: grid; grid-template-columns: minmax(0,1fr) 92px 70px 76px 26px; gap: 7px; align-items: center; }
+.pi-row { display: grid; grid-template-columns: minmax(0,1fr) 92px 70px 76px minmax(140px,.7fr) 26px; gap: 7px; align-items: center; }
 .pi-label { font-size: 12.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pi-val, .pi-unit, .pi-kind { height: 32px; border: 1px solid var(--line); border-radius: 8px; padding: 0 8px; font-size: 12px; background: #fff; color: var(--ink); }
-.pi-val:focus, .pi-unit:focus, .pi-kind:focus { outline: none; border-color: var(--blue); }
+.pi-val, .pi-unit, .pi-kind, .pi-source { height: 32px; border: 1px solid var(--line); border-radius: 8px; padding: 0 8px; font-size: 12px; background: #fff; color: var(--ink); min-width: 0; }
+.pi-val:focus, .pi-unit:focus, .pi-kind:focus, .pi-source:focus { outline: none; border-color: var(--blue); }
+.pi-source:disabled { background: #f5f7fa; color: var(--faint); }
 .pi-label-in { height: 32px; border: 1px solid var(--line); border-radius: 8px; padding: 0 9px; font-size: 12px; background: #fff; color: var(--ink); min-width: 0; }
 .pi-label-in:focus { outline: none; border-color: var(--blue); }
 .pi-addmetric { display: inline-flex; align-items: center; gap: 5px; margin-top: 9px; padding: 6px 12px; border: 1px dashed var(--line-strong); border-radius: 8px; background: transparent; font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer; }
@@ -3398,6 +3399,11 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .pi-empty-hint { font-size: 12px; color: var(--faint); padding: 4px 2px; }
 .pi-del { width: 26px; height: 26px; border: 0; border-radius: 6px; background: #f4f5f8; color: var(--faint); cursor: pointer; font-size: 12px; }
 .pi-del:hover { background: var(--red-soft); color: var(--red); }
+@media (max-width: 900px) {
+  .pi-row { grid-template-columns: minmax(0,1fr) 76px 64px 74px 26px; }
+  .pi-source { grid-column: 1 / -2; }
+  .pi-del { grid-column: -2 / -1; grid-row: 1; }
+}
 .pi-tip { font-size: 11px; color: var(--muted); line-height: 1.55; margin: 10px 0; padding: 8px 10px; background: rgba(37,99,235,.05); border-radius: 8px; }
 .pi-actions { display: flex; align-items: center; gap: 10px; }
 .pi-iterate { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border: 0; border-radius: 10px; background: var(--blue); color: #fff; font-size: 12.5px; font-weight: 700; cursor: pointer; }
