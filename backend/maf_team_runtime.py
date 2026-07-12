@@ -474,7 +474,10 @@ class _BranchObservation:
 def _normalize_agent_output(response: Any) -> dict[str, Any]:
     if isinstance(response, Mapping):
         return dict(response)
-    value = getattr(response, "value", None)
+    try:
+        value = getattr(response, "value", None)
+    except (TypeError, ValueError):
+        value = None
     if isinstance(value, Mapping):
         return dict(value)
     if hasattr(value, "model_dump"):

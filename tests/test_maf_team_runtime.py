@@ -1460,3 +1460,14 @@ def test_agent_output_normalizer_accepts_fenced_json() -> None:
         text = '```json\n{"verdict":"conditional"}\n```'
 
     assert _normalize_agent_output(Response()) == {"verdict": "conditional"}
+
+
+def test_agent_output_normalizer_falls_back_to_text_when_typed_value_is_invalid() -> None:
+    class Response:
+        @property
+        def value(self):
+            raise ValueError("typed response failed schema validation")
+
+        text = '{"verdict":"conditional"}'
+
+    assert _normalize_agent_output(Response()) == {"verdict": "conditional"}
