@@ -44,7 +44,7 @@ try:
         workspace_ingest_status,
         workspace_pending_ingest_jobs,
     )
-    from .workspace_authz import require_workspace_permission
+    from .workspace_authz import authorize, rbac_enabled, require_workspace_permission, workspace_role
     from .schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -92,7 +92,7 @@ except ImportError:
         workspace_ingest_status,
         workspace_pending_ingest_jobs,
     )
-    from workspace_authz import require_workspace_permission
+    from workspace_authz import authorize, rbac_enabled, require_workspace_permission, workspace_role
     from schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -156,7 +156,8 @@ async def observability() -> dict[str, Any]:
 
 
 @app.post("/api/search-pack-context", response_model=SearchPackContextResponse)
-async def search_pack_context(req: SearchPackContextRequest) -> SearchPackContextResponse:
+async def search_pack_context(req: SearchPackContextRequest, request: Request) -> SearchPackContextResponse:
+    _require_workspace_action(req.workspace_id, request, "workspace.read")
     hits = await run_in_threadpool(search, req.workspace_id, req.query, req.top_k)
     return SearchPackContextResponse(
         workspace_id=req.workspace_id,
@@ -169,12 +170,15 @@ async def search_pack_context(req: SearchPackContextRequest) -> SearchPackContex
 
 @app.post("/api/upload", response_model=UploadResponse)
 async def upload_workspace(
+    request: Request,
     file: list[UploadFile] = File(...),
     name: str | None = Form(default=None),
     description: str | None = Form(default=None),
     workspace_id: str | None = Form(default=None),
     asset_role: str | None = Form(default=None),
 ) -> UploadResponse:
+    if workspace_id:
+        _require_workspace_action(workspace_id, request, "file.create")
     files = []
     for item in file:
         files.append(
@@ -192,6 +196,7 @@ async def upload_workspace(
             description=description,
             requested_workspace_id=workspace_id,
             asset_role=asset_role,
+            actor=actor_from_request(request),
         )
         _schedule_upload_ingest(result)
     except FileNotFoundError as exc:
@@ -202,12 +207,21 @@ async def upload_workspace(
 
 
 @app.get("/api/workspaces", response_model=WorkspacesResponse)
-async def workspaces() -> WorkspacesResponse:
-    return WorkspacesResponse(workspaces=await run_in_threadpool(list_workspaces))
+async def workspaces(request: Request) -> WorkspacesResponse:
+    items = await run_in_threadpool(list_workspaces)
+    if rbac_enabled():
+        actor = actor_from_request(request)
+        items = [
+            item
+            for item in items
+            if authorize(workspace_role(str(item.get("workspace_id") or ""), actor), "workspace.read")
+        ]
+    return WorkspacesResponse(workspaces=items)
 
 
 @app.get("/api/workspaces/{workspace_id}", response_model=WorkspaceDetailResponse)
-async def workspace_detail(workspace_id: str) -> WorkspaceDetailResponse:
+async def workspace_detail(workspace_id: str, request: Request) -> WorkspaceDetailResponse:
+    _require_workspace_action(workspace_id, request, "workspace.read")
     await _recover_stale_upload_ingest(workspace_id)
     try:
         result = await run_in_threadpool(get_workspace_detail, workspace_id)
@@ -219,7 +233,8 @@ async def workspace_detail(workspace_id: str) -> WorkspaceDetailResponse:
 
 
 @app.get("/api/workspaces/{workspace_id}/dashboard", response_model=WorkspaceDashboardResponse)
-async def workspace_dashboard(workspace_id: str) -> WorkspaceDashboardResponse:
+async def workspace_dashboard(workspace_id: str, request: Request) -> WorkspaceDashboardResponse:
+    _require_workspace_action(workspace_id, request, "workspace.read")
     await _recover_stale_upload_ingest(workspace_id)
     try:
         result = await run_in_threadpool(build_workspace_dashboard, workspace_id)
@@ -231,7 +246,8 @@ async def workspace_dashboard(workspace_id: str) -> WorkspaceDashboardResponse:
 
 
 @app.get("/api/workspaces/{workspace_id}/ingest-status")
-async def ingest_status(workspace_id: str) -> dict[str, Any]:
+async def ingest_status(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "workspace.read")
     await _recover_stale_upload_ingest(workspace_id)
     try:
         return await run_in_threadpool(workspace_ingest_status, workspace_id)
@@ -242,7 +258,8 @@ async def ingest_status(workspace_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/workspaces/{workspace_id}/manifest")
-async def workspace_manifest(workspace_id: str) -> dict[str, Any]:
+async def workspace_manifest(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "workspace.read")
     try:
         detail = await run_in_threadpool(get_workspace_detail, workspace_id)
     except FileNotFoundError as exc:
@@ -257,6 +274,7 @@ async def workspace_manifest(workspace_id: str) -> dict[str, Any]:
 
 @app.post("/api/workspaces/{workspace_id}/auto-analyze")
 async def workspace_auto_analyze(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "analysis.run")
     body: dict[str, Any] = {}
     try:
         body = await request.json()
@@ -344,7 +362,8 @@ async def workspace_auto_analyze(workspace_id: str, request: Request) -> dict[st
 
 
 @app.get("/api/workspaces/{workspace_id}/reference-images/{filename}")
-async def workspace_reference_image(workspace_id: str, filename: str) -> Response:
+async def workspace_reference_image(workspace_id: str, filename: str, request: Request) -> Response:
+    _require_workspace_action(workspace_id, request, "workspace.read")
     result = await run_in_threadpool(get_reference_image_content, workspace_id, filename)
     if not result:
         raise HTTPException(status_code=404, detail=f"Reference image not found: {filename}")
@@ -353,8 +372,9 @@ async def workspace_reference_image(workspace_id: str, filename: str) -> Respons
 
 
 @app.delete("/api/workspaces/{workspace_id}", response_model=WorkspaceDeleteResponse)
-async def remove_workspace(workspace_id: str) -> WorkspaceDeleteResponse:
+async def remove_workspace(workspace_id: str, request: Request) -> WorkspaceDeleteResponse:
     try:
+        require_workspace_permission(workspace_id, actor_from_request(request), "workspace.delete")
         result = await run_in_threadpool(delete_workspace, workspace_id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -409,7 +429,8 @@ async def speech_token() -> dict[str, Any]:
 
 
 @app.post("/api/produce")
-async def produce(req: ProduceRequest) -> dict[str, Any]:
+async def produce(req: ProduceRequest, request: Request) -> dict[str, Any]:
+    _require_workspace_action(req.workspace_id, request, "artifact.generate")
     return await run_in_threadpool(produce_from_existing_report, req.model_dump())
 
 
@@ -438,70 +459,85 @@ async def artifact_job_create(
 
 
 @app.get("/api/artifact-jobs/{job_id}")
-async def artifact_job_detail(job_id: str) -> dict[str, Any]:
+async def artifact_job_detail(job_id: str, request: Request) -> dict[str, Any]:
     try:
-        return await run_in_threadpool(get_artifact_job, job_id)
+        job = await run_in_threadpool(get_artifact_job, job_id)
+        _require_workspace_action(str(job.get("workspace_id") or ""), request, "artifact.read")
+        return job
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Artifact job not found: {job_id}") from exc
 
 
 @app.get("/api/workspaces/{workspace_id}/artifact-jobs")
-async def workspace_artifact_jobs(workspace_id: str) -> dict[str, Any]:
+async def workspace_artifact_jobs(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "artifact.read")
     jobs = await run_in_threadpool(list_artifact_jobs, workspace_id)
     return {"workspace_id": workspace_id, "jobs": jobs, "count": len(jobs)}
 
 
 @app.post("/api/playbook")
-async def playbook(req: PlaybookRequest) -> dict[str, Any]:
+async def playbook(req: PlaybookRequest, request: Request) -> dict[str, Any]:
+    _require_workspace_action(req.workspace_id, request, "analysis.run")
     return await run_in_threadpool(generate_playbook_detail, req.model_dump())
 
 
 @app.get("/api/workspaces/{workspace_id}/data-overview")
-async def data_overview(workspace_id: str) -> dict[str, Any]:
+async def data_overview(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "workspace.read")
     return await run_in_threadpool(generate_data_overview, workspace_id)
 
 
 @app.get("/api/runs", response_model=RunsResponse)
-async def runs(workspace_id: str | None = None) -> RunsResponse:
+async def runs(request: Request, workspace_id: str | None = None) -> RunsResponse:
+    if workspace_id:
+        _require_workspace_action(workspace_id, request, "run.read")
     return RunsResponse(runs=await run_in_threadpool(list_runs, workspace_id))
 
 
 @app.get("/api/runs/{run_id}", response_model=RunDetailResponse)
-async def run_detail(run_id: str) -> RunDetailResponse:
+async def run_detail(run_id: str, request: Request) -> RunDetailResponse:
     try:
         result = await run_in_threadpool(get_run, run_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}") from exc
+    _require_workspace_action(str(result.get("workspace_id") or ""), request, "run.read")
     return RunDetailResponse.model_validate(result)
 
 
 @app.get("/api/runs/{run_id}/plan-metrics")
-async def run_plan_metrics(run_id: str) -> dict:
+async def run_plan_metrics(run_id: str, request: Request) -> dict:
     """抽取该次分析方案里【可回填迭代的关键指标】（供二次分析编辑）。"""
+    run = await run_in_threadpool(get_run, run_id)
+    _require_workspace_action(str(run.get("workspace_id") or ""), request, "run.read")
     return await run_in_threadpool(extract_plan_metrics, run_id)
 
 
 @app.get("/api/workspaces/{workspace_id}/flagship")
-async def workspace_flagship(workspace_id: str) -> dict:
+async def workspace_flagship(workspace_id: str, request: Request) -> dict:
+    _require_workspace_action(workspace_id, request, "workspace.read")
     return {"workspace_id": workspace_id, "flagship_run_id": await run_in_threadpool(get_flagship_plan, workspace_id)}
 
 
 @app.post("/api/workspaces/{workspace_id}/flagship")
-async def set_workspace_flagship(workspace_id: str, body: PlanFlagshipRequest) -> dict:
+async def set_workspace_flagship(workspace_id: str, body: PlanFlagshipRequest, request: Request) -> dict:
+    _require_workspace_action(workspace_id, request, "analysis.run")
     return await run_in_threadpool(set_flagship_plan, workspace_id, body.run_id)
 
 
 @app.get("/api/conversations", response_model=ConversationsResponse)
-async def conversations(workspace_id: str | None = None) -> ConversationsResponse:
+async def conversations(request: Request, workspace_id: str | None = None) -> ConversationsResponse:
+    if workspace_id:
+        _require_workspace_action(workspace_id, request, "workspace.read")
     return ConversationsResponse(conversations=await run_in_threadpool(list_conversations, workspace_id))
 
 
 @app.get("/api/conversations/{conversation_id}", response_model=ConversationDetailResponse)
-async def conversation_detail(conversation_id: str) -> ConversationDetailResponse:
+async def conversation_detail(conversation_id: str, request: Request) -> ConversationDetailResponse:
     try:
         result = await run_in_threadpool(get_conversation, conversation_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Conversation not found: {conversation_id}") from exc
+    _require_workspace_action(str(result.get("workspace_id") or ""), request, "workspace.read")
     return ConversationDetailResponse.model_validate(result)
 
 
@@ -546,6 +582,7 @@ async def _sse_keepalive(agen, interval: float = 10.0):
 @app.post("/api/chat")
 async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     actor = actor_from_request(request)
+    _require_workspace_action(req.workspace_id, request, "analysis.run")
     req = req.model_copy(update={"ui_context": merge_actor_into_ui_context(req.ui_context, actor)})
     return StreamingResponse(
         _sse_keepalive(orchestrate_chat(req)),
@@ -592,6 +629,13 @@ def _compact_event_data(data: Any) -> Any:
             "keys": sorted(str(key) for key in compact["artifact"].keys())[:30],
         }
     return compact
+
+
+def _require_workspace_action(workspace_id: str, request: Request, action: str) -> str:
+    try:
+        return require_workspace_permission(workspace_id, actor_from_request(request), action)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 async def _recover_stale_upload_ingest(workspace_id: str) -> None:

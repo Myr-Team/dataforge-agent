@@ -11,11 +11,11 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 try:
-    from .blob_store import download_blob_json, upload_blob_json
+    from .blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
     from .identity import public_actor
     from .run_store import get_run, list_runs
 except ImportError:
-    from blob_store import download_blob_json, upload_blob_json
+    from blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
     from identity import public_actor
     from run_store import get_run, list_runs
 
@@ -46,6 +46,9 @@ def create_artifact_job(
         180,
     )
     kinds = _normalize_kinds(request.get("kinds"))
+    source_run = get_run(source_run_id)
+    if str(source_run.get("workspace_id") or "") != workspace_id:
+        raise ValueError("source run does not belong to the requested workspace")
     key_hash = _idempotency_hash(idempotency_key) if idempotency_key else None
     with _LOCK:
         if key_hash:
@@ -109,6 +112,12 @@ def list_artifact_jobs(workspace_id: str | None = None) -> list[dict[str, Any]]:
                 continue
             if isinstance(item, dict) and item.get("job_id"):
                 by_id[str(item["job_id"])] = item
+    for item in list_blob_json(f"{ARTIFACT_JOB_BLOB_PREFIX}/artifact_job_"):
+        if not isinstance(item, dict) or not item.get("job_id"):
+            continue
+        current = by_id.get(str(item["job_id"]))
+        if current is None or str(item.get("updated_at") or "") > str(current.get("updated_at") or ""):
+            by_id[str(item["job_id"])] = item
     registry = download_blob_json(ARTIFACT_JOB_REGISTRY_BLOB) or {}
     for item in registry.get("jobs") or []:
         if not isinstance(item, dict) or not item.get("job_id"):
@@ -123,7 +132,9 @@ def list_artifact_jobs(workspace_id: str | None = None) -> list[dict[str, Any]]:
 
 
 def run_artifact_job(job_id: str) -> dict[str, Any]:
-    job = _update_job(job_id, status="running", started_at=_now(), retryable=False)
+    job = _claim_job(job_id)
+    if job is None:
+        return get_artifact_job(job_id)
     try:
         result = _produce(_producer_payload(job))
     except Exception as exc:
@@ -172,6 +183,8 @@ def run_artifact_job(job_id: str) -> dict[str, Any]:
 def _producer_payload(job: Mapping[str, Any]) -> dict[str, Any]:
     source_run_id = str(job.get("source_run_id") or "")
     run = get_run(source_run_id)
+    if str(run.get("workspace_id") or "") != str(job.get("workspace_id") or ""):
+        raise ValueError("source run does not belong to the requested workspace")
     artifact = run.get("artifact") if isinstance(run.get("artifact"), dict) else {}
     if not artifact:
         final = run.get("final") if isinstance(run.get("final"), dict) else {}
@@ -211,18 +224,58 @@ def _update_job(job_id: str, **changes: Any) -> dict[str, Any]:
         return _persist_job(job)
 
 
+def _claim_job(job_id: str) -> dict[str, Any] | None:
+    with _LOCK:
+        job = get_artifact_job(job_id)
+        if str(job.get("status") or "") != "queued":
+            return None
+        changes = {
+            "status": "running",
+            "started_at": _now(),
+            "updated_at": _now(),
+            "retryable": False,
+        }
+        blob_state = (job.get("persistence") or {}).get("blob") if isinstance(job.get("persistence"), Mapping) else None
+        if blob_configured() and blob_state != "failed":
+            claimed = claim_blob_json(
+                _job_blob(job_id),
+                expected_status="queued",
+                changes=changes,
+            )
+            if claimed is None:
+                return None
+            _persist_local_job(claimed)
+            _persist_registry(claimed)
+            return claimed
+        job.update(changes)
+        return _persist_job(job)
+
+
 def _persist_job(job: dict[str, Any]) -> dict[str, Any]:
+    persistence = dict(job.get("persistence") or {}) if isinstance(job.get("persistence"), Mapping) else {}
+    persistence.update({"blob": "synced", "updated_at": _now()})
+    job["persistence"] = persistence
+    _persist_local_job(job)
+    try:
+        upload_blob_json(_job_blob(str(job.get("job_id") or "")), job)
+    except Exception as exc:
+        job["persistence"] = {
+            **persistence,
+            "blob": "failed",
+            "error_type": type(exc).__name__,
+            "updated_at": _now(),
+        }
+        _persist_local_job(job)
+    _persist_registry(job)
+    return dict(job)
+
+
+def _persist_local_job(job: Mapping[str, Any]) -> None:
     ARTIFACT_JOB_DIR.mkdir(parents=True, exist_ok=True)
     path = _job_path(str(job.get("job_id") or ""))
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)
-    try:
-        upload_blob_json(_job_blob(str(job.get("job_id") or "")), job)
-    except Exception:
-        pass
-    _persist_registry(job)
-    return dict(job)
 
 
 def _persist_registry(job: Mapping[str, Any]) -> None:

@@ -18,6 +18,7 @@ from ingest.profiler import build_data_profile, compact_profile_for_workspace, d
 
 try:
     from .customer_text import customer_summary_from_profile, friendly_label, sanitize_customer_text
+    from .identity import public_actor
     from .blob_store import (
         download_blob_content,
         download_blob_json,
@@ -31,6 +32,7 @@ try:
     from .search_admin import count_workspace_docs, delete_workspace_docs, index_documents, search_endpoint
 except ImportError:
     from customer_text import customer_summary_from_profile, friendly_label, sanitize_customer_text
+    from identity import public_actor
     from blob_store import (
         download_blob_content,
         download_blob_json,
@@ -141,6 +143,7 @@ def create_workspace_upload_job(
     description: str | None = None,
     requested_workspace_id: str | None = None,
     asset_role: str | None = None,
+    actor: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     clean_files = [item for item in files if item.get("content")]
     if not clean_files:
@@ -308,6 +311,7 @@ def create_workspace_upload_job(
         "profile_summary": aggregate_profile.get("profile_summary") or _processing_summary(display_name, documents),
         "reference_images": reference_images,
         "indexed_count": indexed_count,
+        "workspace_owner": existing_meta.get("workspace_owner") or public_actor(actor) or None,
         "ingest_jobs": _upsert_ingest_job(
             existing_meta.get("ingest_jobs"),
             {

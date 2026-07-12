@@ -149,6 +149,31 @@ def test_unverified_or_synthetic_feedback_cannot_promote_effective_verdict() -> 
     assert version["metrics"][0]["provenance"] == "reported_unverified"
 
 
+def test_synthetic_citation_cannot_promote_effective_verdict() -> None:
+    first = _analysis_run(
+        "run-v1",
+        verdict="conditional",
+        score=3,
+        evidence_ref="evidence.csv#row-1",
+    )
+    second = _analysis_run(
+        "run-v2",
+        verdict="feasible",
+        score=4,
+        evidence_ref="synthetic#row-1",
+    )
+    second["artifact"]["feasibility"]["dimensions"][0]["evidence"][0]["source_type"] = "synthetic"
+    second["final"]["artifact"] = second["artifact"]
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    version = ledger["versions"][1]
+    assert version["evidence_delta"]["added"] == []
+    assert version["decision"]["model_verdict"] == "feasible"
+    assert version["decision"]["verdict"] == "conditional"
+    assert version["decision"]["verdict_guard"]["reason"] == "no_new_traceable_evidence"
+
+
 def test_identical_versions_report_no_comparable_new_evidence() -> None:
     first = _analysis_run(
         "run-v1",

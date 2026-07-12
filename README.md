@@ -85,9 +85,11 @@ Routing is decided at runtime by the auditor's conclusion via conditional edges 
 
 ### Current implementation boundary
 
-- The first-class MAF team runtime supports four bounded collaboration patterns: `direct`, `concurrent_research`, `specialist_handoff`, and `bounded_review`. The legacy audit/revise graph remains available in `audit` mode.
-- The governance page exposes a clearly labelled DataForge ROI estimate based on token usage and configurable time-value assumptions. Foundry native ROI is not connected yet.
-- Plan, artifact, and feedback runs are persisted as version snapshots. A full experiment ledger with source-backed evidence and decision deltas is planned and is not represented as complete today.
+- The first-class MAF team runtime supports four bounded collaboration patterns: `direct`, `concurrent_research`, `specialist_handoff`, and `bounded_review`. Each run reports its selected-agent budget, revision cap, wall-clock time, participant work, and provider-reported token usage; unavailable usage stays `null`. The legacy audit/revise graph remains available in `audit` mode.
+- Governance separates three different facts: observed model usage/cost, estimated time-value assumptions, and source-linked business outcomes. Outcome records move from `measured` to `verified` only through an explicit reviewer action. Application Insights/OpenTelemetry connectivity is shown separately from Foundry native ROI, which is not connected yet.
+- Analysis runs form a canonical experiment ledger. Plan and artifact snapshots attach to their source analysis instead of pretending to be new experiments. Each version exposes evidence, metric provenance, evidence deltas, and decision deltas; synthetic, market-only, or untraceable inputs cannot promote the effective verdict.
+- Artifact generation runs as persisted background jobs with per-kind partial success, refresh recovery, idempotency, and atomic worker claims. PDF filenames carry the source plan version (`V1`, `V2`, ...).
+- Workspace roles (`owner`, `admin`, `editor`, `viewer`) are enforced when `DF_WORKSPACE_RBAC_ENFORCED=1`. The browser uses the Easy Auth-protected Web origin as a same-origin API proxy; the backend accepts identity only when the proxy signs the forwarded principal with `DF_WEB_PROXY_SECRET`. Pending invitations activate only when the matching Easy Auth object and tenant sign in.
 - Open-ended Magentic orchestration and Foundry Hosted Agents are not enabled.
 
 ### MAF runtime rollout and evaluation
@@ -110,7 +112,8 @@ The release and evolution design is documented in [`docs/superpowers/specs/2026-
 - **Self-auditing** — analysis is reviewed and revised before you ever see it; the whole judgment is visible step-by-step in the UI.
 - **Evidence-grounded & honest** — every verdict hangs on clickable citations; market inferences are kept strictly separate from workspace facts; missing evidence means an honest downgrade, never a fabricated "feasible."
 - **Plan iteration → flagship** — feed real pilot metrics (conversion, ARPU, price) back in as *measured* values, regenerate the next version, and diff v1 vs v2 to converge on a company flagship plan. It's a tool an enterprise keeps using, not a one-shot demo.
-- **One-click artifacts** — downloadable PDF proposal, a product concept image, and a spoken executive summary.
+- **Durable artifacts** — downloadable PDF proposal, product concept image, and spoken executive summary are generated as recoverable background jobs; successful files remain available even when another artifact type fails.
+- **Governed collaboration** — Entra-backed actors are attributed in audit/usage views, workspace roles can enforce read/edit/admin boundaries, and business outcomes retain source and reviewer lineage.
 - **Fully traceable** — every run is persisted with audit/revision tags; any historical run can be reopened and replayed, citations still hoverable.
 
 ## Azure integration (Pro Code)
@@ -189,7 +192,7 @@ terraform init && terraform apply
 - `infra/envs/dev/terraform.tfvars.example` — deployment identifiers. Copy to `terraform.tfvars`.
 - `.env`, `*.tfvars`, and `*.tfstate*` are git-ignored. **Never commit real keys or subscription IDs.**
 
-Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_AUTH_MODE` (`auto`, `api_key`, or `managed_identity`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search).
+Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_AUTH_MODE` (`auto`, `api_key`, or `managed_identity`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search), `DF_WORKSPACE_RBAC_ENFORCED` (workspace role enforcement), `DF_WEB_PROXY_SECRET` (shared secret for the Web-to-backend identity proxy), and `DF_ARTIFACT_JOB_STALE_SECONDS` (interrupted-job recovery window).
 
 ## Responsible AI
 

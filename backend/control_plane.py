@@ -59,37 +59,44 @@ _HEALTH_CACHE: dict[str, Any] = {"expires": 0.0, "value": None}
 
 
 @router.get("/api/workspaces/{workspace_id}/overview")
-async def workspace_overview(workspace_id: str) -> dict[str, Any]:
+async def workspace_overview(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "workspace.read")
     return await _call(build_workspace_overview, workspace_id)
 
 
 @router.get("/api/workspaces/{workspace_id}/latest-analysis")
-async def workspace_latest_analysis_endpoint(workspace_id: str) -> dict[str, Any]:
+async def workspace_latest_analysis_endpoint(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "run.read")
     return await _call(workspace_latest_analysis, workspace_id)
 
 
 @router.get("/api/workspaces/{workspace_id}/pipeline")
-async def workspace_pipeline(workspace_id: str) -> dict[str, Any]:
+async def workspace_pipeline(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "run.read")
     return await _call(workspace_pipeline_status, workspace_id)
 
 
 @router.post("/api/workspaces/{workspace_id}/action-plan")
-async def workspace_action_plan(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
+async def workspace_action_plan(workspace_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "analysis.run")
     return await _call(build_method_action_plan, workspace_id, body)
 
 
 @router.get("/api/workspaces/{workspace_id}/artifacts")
-async def workspace_artifacts(workspace_id: str) -> dict[str, Any]:
+async def workspace_artifacts(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "artifact.read")
     return await _call(list_workspace_artifacts, workspace_id)
 
 
 @router.get("/api/workspaces/{workspace_id}/settings")
 async def workspace_settings(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "workspace.read")
     return await _call(workspace_settings_summary, workspace_id, request)
 
 
 @router.get("/api/workspaces/{workspace_id}/members")
 async def workspace_members(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "member.read")
     return await _call(workspace_member_roles, workspace_id, request)
 
 
@@ -100,6 +107,7 @@ async def workspace_member_entra_users(
     query: str = Query(default="", max_length=80),
     limit: int = Query(default=8, ge=1, le=20),
 ) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "member.read")
     return await _call(workspace_entra_users, workspace_id, request, query, limit)
 
 
@@ -125,36 +133,43 @@ async def workspace_member_remove(workspace_id: str, email: str, request: Reques
 
 @router.get("/api/workspaces/{workspace_id}/usage-summary")
 async def workspace_usage(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "run.read")
     return await _call(workspace_usage_summary, workspace_id, request)
 
 
 @router.get("/api/workspaces/{workspace_id}/audit-events")
 async def workspace_audit(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "run.read")
     return await _call(workspace_audit_events, workspace_id, request)
 
 
 @router.get("/api/workspaces/{workspace_id}/governance-summary")
 async def workspace_governance(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "workspace.read")
     return await _call(workspace_governance_summary, workspace_id, request)
 
 
 @router.get("/api/workspaces/{workspace_id}/outcomes")
-async def workspace_outcomes(workspace_id: str) -> dict[str, Any]:
+async def workspace_outcomes(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "outcome.read")
     events = await _call(list_outcome_events, workspace_id)
     return {"workspace_id": workspace_id, "events": events, "count": len(events)}
 
 
 @router.get("/api/workspaces/{workspace_id}/experiments")
-async def workspace_experiments(workspace_id: str) -> dict[str, Any]:
+async def workspace_experiments(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "run.read")
     return await _call(workspace_experiment_ledger, workspace_id)
 
 
 @router.get("/api/workspaces/{workspace_id}/experiments/compare")
 async def workspace_experiment_compare(
     workspace_id: str,
+    request: Request,
     from_id: str = Query(alias="from"),
     to_id: str = Query(alias="to"),
 ) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "run.read")
     ledger = await _call(workspace_experiment_ledger, workspace_id)
     return await _call(compare_experiment_versions, ledger, from_id, to_id)
 

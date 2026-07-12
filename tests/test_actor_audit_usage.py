@@ -16,7 +16,8 @@ def _principal(claims):
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def test_actor_from_easy_auth_claims_extracts_entra_identity() -> None:
+def test_actor_from_easy_auth_claims_extracts_entra_identity(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     actor = actor_from_headers(
         {
             "x-ms-client-principal": _principal(
@@ -29,6 +30,7 @@ def test_actor_from_easy_auth_claims_extracts_entra_identity() -> None:
             ),
             "x-ms-client-principal-id": "fallback-id",
             "x-ms-client-principal-idp": "aad",
+            "x-dataforge-proxy-secret": "test-proxy-secret",
         }
     )
 
@@ -184,6 +186,7 @@ def test_conversation_store_persists_actor_on_user_message(tmp_path, monkeypatch
 
 
 def test_workspace_members_include_actor_usage(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     owner_actor = {"name": "Owner", "email": "owner@contoso.com", "actor_id": "owner-oid"}
     reviewer_actor = {"name": "Reviewer", "email": "reviewer@contoso.com", "actor_id": "reviewer-oid"}
     runs = [
@@ -201,7 +204,8 @@ def test_workspace_members_include_actor_usage(monkeypatch) -> None:
                     {"typ": "preferred_username", "val": "owner@contoso.com"},
                     {"typ": "oid", "val": "owner-oid"},
                 ]
-            )
+            ),
+            "x-dataforge-proxy-secret": "test-proxy-secret",
         }
 
     result = control_plane.workspace_member_roles("ws-usage", RequestStub())

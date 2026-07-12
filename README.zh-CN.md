@@ -85,9 +85,11 @@ DataForge 把这件事自动化了。
 
 ### 当前实现边界
 
-- 一等 MAF 团队运行时支持四种有界协作模式：`direct`、`concurrent_research`、`specialist_handoff` 和 `bounded_review`。原有审计/复修图仍可通过 `audit` 模式使用。
-- 治理页面当前展示的是明确标注为“估算”的 DataForge ROI，依据 token 用量和可配置的时间价值假设计算；尚未接入 Foundry 原生 ROI。
-- 方案、产物和反馈运行会保存为版本快照，但完整的实验账本、客户数据来源谱系、证据变化和决策变化仍在演进计划中，当前不宣称已经完成。
+- 一等 MAF 团队运行时支持四种有界协作模式：`direct`、`concurrent_research`、`specialist_handoff` 和 `bounded_review`。每次运行会记录所选 Agent 数量上限、复修上限、墙钟耗时、参与者工作量和提供商实际返回的 token；拿不到的用量保持 `null`。原有审计/复修图仍可通过 `audit` 模式使用。
+- 治理页面把三类事实分开：实际模型用量/成本、基于时间价值假设的估算，以及带来源的真实业务结果。结果只有经过单独的复核动作才能从 `measured` 进入 `verified`。Application Insights / OpenTelemetry 连接状态与 Foundry 原生 ROI 分开显示；后者当前仍未接入。
+- 分析运行会形成规范的实验账本。方案草稿和产物快照附着到源分析，不冒充新实验；每一版均包含证据、指标来源、证据变化和决策变化。合成、仅市场推断或不可追溯的输入不能抬高有效结论档位。
+- 产物生成使用可持久化的后台任务，支持逐项成功、刷新恢复、幂等请求和原子任务领取。PDF 文件名携带源方案版本（`V1`、`V2` 等）。
+- 设置 `DF_WORKSPACE_RBAC_ENFORCED=1` 后会执行 `owner`、`admin`、`editor`、`viewer` 工作区权限。浏览器通过受 Easy Auth 保护的 Web 同源代理请求 API；后端只接受由 `DF_WEB_PROXY_SECRET` 签名转发的登录身份。待接受邀请仅在匹配的 Easy Auth 对象 ID 与租户登录后激活。
 - 当前没有启用开放式 Magentic 编排，也没有启用 Foundry Hosted Agents。
 
 ### MAF 运行模式、灰度与评估
@@ -110,7 +112,8 @@ DataForge 把这件事自动化了。
 - **自我审计** —— 分析结果在给你看之前先经审核与复修；整个判断过程在界面上逐步可见。
 - **有据可查、不自欺** —— 每个结论都挂着可点开的引用；市场推断与工作区事实严格分离；缺证据就如实降级，绝不伪造「可行」。
 - **方案迭代 → 重点方案** —— 把真实试点指标（转化率、客单价、价格）作为「实测」值回填，生成下一版，并对比 v1 / v2，逐版逼近一个公司重点方案。它是企业能持续用的工具，不是一次性 demo。
-- **一键产出交付物** —— 可下载的 PDF 提案、产品概念图、口播版执行摘要。
+- **可恢复的产物生成** —— PDF 提案、产品概念图和口播版执行摘要通过后台任务生成；某一类失败时，已经成功的文件仍会保留。
+- **受治理的多人协作** —— Entra 用户会在审计和用量视图中归因；工作区角色可执行读、写和管理边界；业务结果保留来源与复核链路。
 - **全程可追溯** —— 每次运行都带审计/复修标签落盘；任意历史运行都能恢复回放，引用悬停依然可查。
 
 ## Azure 集成度（Pro Code）
@@ -189,7 +192,7 @@ terraform init && terraform apply
 - `infra/envs/dev/terraform.tfvars.example` —— 部署标识，复制为 `terraform.tfvars`。
 - `.env`、`*.tfvars`、`*.tfstate*` 已被 git 忽略。**绝不要提交真实密钥或订阅 ID。**
 
-关键特性开关：`DF_MAF_RUNTIME`（`off`、`audit` 或 `full`）、`DF_MAF_AUTH_MODE`（`auto`、`api_key` 或 `managed_identity`）、`DF_MAF_TRAFFIC_PERCENT`（稳定灰度百分比）、`DF_USE_MAF`（兼容旧配置并映射到 `audit`）、`DF_MAF_MAX_REVISIONS`（复修上限）、`DF_AUDIT_STRICT_GATE`（旧版保守审计门）、`DF_WEB_MARKET`（Foundry 联网搜索）。
+关键特性开关：`DF_MAF_RUNTIME`（`off`、`audit` 或 `full`）、`DF_MAF_AUTH_MODE`（`auto`、`api_key` 或 `managed_identity`）、`DF_MAF_TRAFFIC_PERCENT`（稳定灰度百分比）、`DF_USE_MAF`（兼容旧配置并映射到 `audit`）、`DF_MAF_MAX_REVISIONS`（复修上限）、`DF_AUDIT_STRICT_GATE`（旧版保守审计门）、`DF_WEB_MARKET`（Foundry 联网搜索）、`DF_WORKSPACE_RBAC_ENFORCED`（工作区角色强制执行）、`DF_WEB_PROXY_SECRET`（Web 到后端身份代理的共享密钥）和 `DF_ARTIFACT_JOB_STALE_SECONDS`（中断任务恢复窗口）。
 
 ## 负责任 AI
 

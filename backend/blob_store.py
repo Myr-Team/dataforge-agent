@@ -4,7 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+from azure.core import MatchConditions
+from azure.core.exceptions import ResourceExistsError, ResourceModifiedError, ResourceNotFoundError
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings
 
@@ -234,6 +235,59 @@ def download_blob_json(blob_name: str) -> dict[str, Any] | None:
         data = json.loads(raw)
         return data if isinstance(data, dict) else None
     except ResourceNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def list_blob_json(prefix: str) -> list[dict[str, Any]]:
+    if not blob_configured():
+        return []
+    items: list[dict[str, Any]] = []
+    try:
+        container = _container_client()
+        for entry in container.list_blobs(name_starts_with=str(prefix or "")):
+            name = str(getattr(entry, "name", "") or "")
+            if not name.endswith(".json"):
+                continue
+            try:
+                raw = container.get_blob_client(name).download_blob().readall().decode("utf-8")
+                value = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(value, dict):
+                items.append(value)
+    except Exception:
+        return []
+    return items
+
+
+def claim_blob_json(
+    blob_name: str,
+    *,
+    expected_status: str,
+    changes: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not blob_configured():
+        return None
+    try:
+        container = _container_client()
+        blob = container.get_blob_client(blob_name)
+        properties = blob.get_blob_properties()
+        raw = blob.download_blob().readall().decode("utf-8")
+        current = json.loads(raw)
+        if not isinstance(current, dict) or str(current.get("status") or "") != expected_status:
+            return None
+        updated = {**current, **changes}
+        blob.upload_blob(
+            json.dumps(updated, ensure_ascii=False).encode("utf-8"),
+            overwrite=True,
+            etag=properties.etag,
+            match_condition=MatchConditions.IfNotModified,
+            content_settings=ContentSettings(content_type="application/json; charset=utf-8"),
+        )
+        return updated
+    except (ResourceModifiedError, ResourceNotFoundError):
         return None
     except Exception:
         return None

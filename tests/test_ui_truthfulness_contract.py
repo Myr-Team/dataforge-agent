@@ -93,3 +93,18 @@ def test_artifact_generation_uses_refresh_safe_background_jobs() -> None:
     assert "waitForArtifactJob" in app_source
     assert "/api/artifact-jobs" in api_source
     assert "/artifact-jobs`" in api_source
+    assert "const active = (data?.jobs || []).filter" in app_source
+    assert "await Promise.all(active.map" in app_source
+    assert "if (isTransientFetchError(error))" in app_source
+
+
+def test_production_api_uses_authenticated_same_origin_proxy() -> None:
+    api_source = (COMPONENTS.parent / "api.js").read_text(encoding="utf-8")
+    docker_source = (COMPONENTS.parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    nginx_source = (COMPONENTS.parents[1] / "nginx.conf.template").read_text(encoding="utf-8")
+
+    assert 'import.meta.env.VITE_API_BASE ?? ""' in api_source
+    assert 'ARG VITE_API_BASE=""' in docker_source
+    assert "proxy_pass https://ca-dataforge-backend" in nginx_source
+    assert "X-DataForge-Proxy-Secret" in nginx_source
+    assert "X-MS-CLIENT-PRINCIPAL" in nginx_source

@@ -202,14 +202,22 @@ def _evidence_set(artifact: Mapping[str, Any], feasibility: Mapping[str, Any]) -
     for item in artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or []:
         if isinstance(item, Mapping):
             candidates.append(item)
+    untrusted_refs = {
+        str(item.get("ref") or item.get("source_file") or item.get("marker") or "").strip()
+        for item in candidates
+        if str(item.get("source_type") or "").strip().lower() in {"synthetic", "unknown", "market", "market_mcp", "foundry_web", "pm_skill"}
+    }
     by_ref: dict[str, dict[str, Any]] = {}
     for item in candidates:
         ref = str(item.get("ref") or item.get("source_file") or item.get("marker") or "").strip()
-        if not ref:
+        if not ref or ref in untrusted_refs:
+            continue
+        source_type = str(item.get("source_type") or ("corpus" if item.get("source_file") else "unknown")).strip().lower()
+        if source_type not in {"corpus", "computed", "workspace_computed"}:
             continue
         normalized = {
             "ref": ref,
-            "source_type": item.get("source_type") or ("corpus" if item.get("source_file") else "unknown"),
+            "source_type": source_type,
             "quote": str(item.get("quote") or item.get("snippet") or "")[:600] or None,
             "confidence": item.get("confidence"),
         }

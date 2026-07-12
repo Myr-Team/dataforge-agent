@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import os
 from typing import Any, Mapping
@@ -25,9 +26,16 @@ def actor_from_request(request: Any | None, *, fallback: bool = True) -> dict[st
 def actor_from_headers(headers: Mapping[str, Any] | None, *, fallback: bool = True) -> dict[str, Any]:
     if not headers:
         return default_actor() if fallback else {}
-    principal = _decoded_easy_auth_principal(_header(headers, "x-ms-client-principal"))
+    expected_proxy_secret = _clean(os.environ.get("DF_WEB_PROXY_SECRET"))
+    supplied_proxy_secret = _clean(_header(headers, "x-dataforge-proxy-secret"))
+    trusted_proxy = bool(
+        expected_proxy_secret
+        and supplied_proxy_secret
+        and hmac.compare_digest(expected_proxy_secret, supplied_proxy_secret)
+    )
+    principal = _decoded_easy_auth_principal(_header(headers, "x-ms-client-principal")) if trusted_proxy else {}
     claims = _claims(principal)
-    header_name = _clean(_header(headers, "x-ms-client-principal-name"))
+    header_name = _clean(_header(headers, "x-ms-client-principal-name")) if trusted_proxy else ""
     email = (
         _claim_value(claims, "preferred_username", "upn", "email", "emailaddress")
         or _clean(principal.get("userDetails"))
@@ -43,7 +51,7 @@ def actor_from_headers(headers: Mapping[str, Any] | None, *, fallback: bool = Tr
     )
     actor_id = (
         _claim_value(claims, "oid", "objectidentifier", "sub", "nameidentifier")
-        or _clean(_header(headers, "x-ms-client-principal-id"))
+        or (_clean(_header(headers, "x-ms-client-principal-id")) if trusted_proxy else "")
     )
     tenant_id = _claim_value(claims, "tid", "tenantid")
     roles = _claim_values(claims, "roles", "role")

@@ -6,12 +6,12 @@ RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
 ARG CACHE_BUST=0
 RUN echo "cache-bust=${CACHE_BUST}"
 COPY . .
-# 构建期注入后端地址（默认指向云端编排器后端）
-ARG VITE_API_BASE="https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io"
+# 生产默认走同源 nginx 代理，以便把 Easy Auth 身份安全转发给后端。
+ARG VITE_API_BASE=""
 ENV VITE_API_BASE=$VITE_API_BASE
 RUN npm run build -- --logLevel silent
 
 FROM nginx:1.27-alpine
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80

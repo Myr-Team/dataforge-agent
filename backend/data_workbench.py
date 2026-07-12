@@ -77,7 +77,8 @@ JSON_TYPES = {"json"}
 
 
 @router.get("/files")
-async def workspace_files(workspace_id: str) -> dict[str, Any]:
+async def workspace_files(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "file.read")
     return await _call(list_workspace_files, workspace_id)
 
 
@@ -92,9 +93,11 @@ async def workspace_file_create(workspace_id: str, request: Request) -> dict[str
 async def workspace_file_content(
     workspace_id: str,
     file_id: str,
+    request: Request,
     limit: int = Query(default=100, ge=1, le=MAX_PREVIEW_LIMIT),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
+    _require(request, workspace_id, "file.read")
     return await _call(preview_file_content, workspace_id, file_id, limit, offset)
 
 
@@ -119,12 +122,14 @@ async def workspace_file_delete(workspace_id: str, file_id: str, request: Reques
 
 
 @router.get("/files/{file_id}/quality")
-async def workspace_file_quality(workspace_id: str, file_id: str) -> dict[str, Any]:
+async def workspace_file_quality(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "file.read")
     return await _call(file_quality, workspace_id, file_id)
 
 
 @router.get("/files/{file_id}/field-mapping")
-async def workspace_file_field_mapping(workspace_id: str, file_id: str) -> dict[str, Any]:
+async def workspace_file_field_mapping(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "file.read")
     return await _call(file_field_mapping, workspace_id, file_id)
 
 
@@ -136,7 +141,8 @@ async def workspace_file_field_mapping_save(workspace_id: str, file_id: str, req
 
 
 @router.get("/files/{file_id}/history")
-async def workspace_file_history(workspace_id: str, file_id: str) -> list[dict[str, Any]]:
+async def workspace_file_history(workspace_id: str, file_id: str, request: Request) -> list[dict[str, Any]]:
+    _require(request, workspace_id, "file.read")
     return await _call(file_history, workspace_id, file_id)
 
 
@@ -149,7 +155,8 @@ async def workspace_files_analyze(workspace_id: str, request: Request, backgroun
 
 
 @router.get("/connectors/capabilities")
-async def connector_capabilities(workspace_id: str) -> dict[str, Any]:
+async def connector_capabilities(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "workspace.read")
     return {
         "workspace_id": workspace_id,
         "connectors": [
@@ -174,17 +181,20 @@ async def sql_connect(workspace_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.get("/connectors/sql/status")
-async def sql_status(workspace_id: str, connection_id: str) -> dict[str, Any]:
+async def sql_status(workspace_id: str, connection_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "workspace.read")
     return await _call(connector_status, workspace_id, "sql", connection_id)
 
 
 @router.get("/connectors/sql/tables")
-async def sql_tables(workspace_id: str, connection_id: str) -> dict[str, Any]:
+async def sql_tables(workspace_id: str, connection_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "workspace.read")
     return await _call(list_sql_tables, workspace_id, connection_id)
 
 
 @router.get("/connectors/sql/preview")
-async def sql_preview(workspace_id: str, connection_id: str, table: str, limit: int = Query(default=100, ge=1, le=1000)) -> dict[str, Any]:
+async def sql_preview(workspace_id: str, connection_id: str, table: str, request: Request, limit: int = Query(default=100, ge=1, le=1000)) -> dict[str, Any]:
+    _require(request, workspace_id, "workspace.read")
     return await _call(preview_sql_table, workspace_id, connection_id, table, limit)
 
 
@@ -203,12 +213,14 @@ async def blob_connect(workspace_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.get("/connectors/blob/status")
-async def blob_status(workspace_id: str, connection_id: str) -> dict[str, Any]:
+async def blob_status(workspace_id: str, connection_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "workspace.read")
     return await _call(connector_status, workspace_id, "blob", connection_id)
 
 
 @router.get("/connectors/blob/containers")
-async def blob_containers(workspace_id: str, connection_id: str) -> dict[str, Any]:
+async def blob_containers(workspace_id: str, connection_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "workspace.read")
     return await _call(list_blob_containers, workspace_id, connection_id)
 
 
@@ -217,9 +229,11 @@ async def blob_blobs(
     workspace_id: str,
     connection_id: str,
     container: str,
+    request: Request,
     prefix: str = "",
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict[str, Any]:
+    _require(request, workspace_id, "workspace.read")
     return await _call(list_blob_items, workspace_id, connection_id, container, prefix, limit)
 
 
@@ -229,9 +243,11 @@ async def blob_preview(
     connection_id: str,
     container: str,
     blob: str,
+    request: Request,
     limit: int = Query(default=100, ge=1, le=MAX_PREVIEW_LIMIT),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
+    _require(request, workspace_id, "workspace.read")
     return await _call(preview_blob_item, workspace_id, connection_id, container, blob, limit, offset)
 
 
