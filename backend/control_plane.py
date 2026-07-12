@@ -23,6 +23,7 @@ try:
     from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from .identity import actor_from_request, member_from_actor, public_actor
     from .observability import observability_snapshot
+    from .outcome_store import list_outcome_events, record_outcome_event, verify_outcome_event
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
@@ -34,6 +35,7 @@ except ImportError:
     from graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from identity import actor_from_request, member_from_actor, public_actor
     from observability import observability_snapshot
+    from outcome_store import list_outcome_events, record_outcome_event, verify_outcome_event
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
@@ -128,6 +130,35 @@ async def workspace_audit(workspace_id: str, request: Request) -> dict[str, Any]
 @router.get("/api/workspaces/{workspace_id}/governance-summary")
 async def workspace_governance(workspace_id: str, request: Request) -> dict[str, Any]:
     return await _call(workspace_governance_summary, workspace_id, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/outcomes")
+async def workspace_outcomes(workspace_id: str) -> dict[str, Any]:
+    events = await _call(list_outcome_events, workspace_id)
+    return {"workspace_id": workspace_id, "events": events, "count": len(events)}
+
+
+@router.post("/api/workspaces/{workspace_id}/outcomes")
+async def workspace_outcome_create(workspace_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+    event = await _call(record_outcome_event, workspace_id, body, actor_from_request(request))
+    return {"workspace_id": workspace_id, "event": event}
+
+
+@router.post("/api/workspaces/{workspace_id}/outcomes/{event_id}/verify")
+async def workspace_outcome_verify(
+    workspace_id: str,
+    event_id: str,
+    body: dict[str, Any],
+    request: Request,
+) -> dict[str, Any]:
+    event = await _call(
+        verify_outcome_event,
+        workspace_id,
+        event_id,
+        actor_from_request(request),
+        note=body.get("note"),
+    )
+    return {"workspace_id": workspace_id, "event": event}
 
 
 @router.get("/api/runs/{run_id}/summary")
@@ -916,7 +947,7 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
     current_actor = public_actor(actor_from_request(request))
     usage = _workspace_usage_by_actor(workspace_id)
     audit = workspace_audit_events(workspace_id, request)
-    roi = _workspace_roi_summary(usage, audit)
+    roi = _workspace_roi_summary(usage, audit, list_outcome_events(workspace_id))
     return {
         "workspace_id": workspace_id,
         "generated_at": _now(),
@@ -1021,7 +1052,11 @@ def _workspace_usage_by_actor(workspace_id: str) -> dict[str, Any]:
     }
 
 
-def _workspace_roi_summary(usage: dict[str, Any], audit: dict[str, Any]) -> dict[str, Any]:
+def _workspace_roi_summary(
+    usage: dict[str, Any],
+    audit: dict[str, Any],
+    outcomes: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     totals = usage.get("totals") if isinstance(usage.get("totals"), dict) else {}
     events = audit.get("events") if isinstance(audit.get("events"), list) else []
     total_tokens_value = totals.get("total_tokens")
@@ -1064,8 +1099,33 @@ def _workspace_roi_summary(usage: dict[str, Any], audit: dict[str, Any]) -> dict
         if configured_assumptions
         else "defaults"
     )
+    outcome_items = [item for item in (outcomes or []) if isinstance(item, dict)]
+    observed_outcomes = [
+        item
+        for item in outcome_items
+        if item.get("provenance") == "observed" and item.get("observed_value") is not None
+    ]
+    verified_outcomes = [
+        item
+        for item in observed_outcomes
+        if isinstance(item.get("verification"), dict)
+        and item["verification"].get("status") == "verified"
+    ]
+    synthetic_outcomes = [item for item in outcome_items if item.get("provenance") == "synthetic"]
+    outcome_status = (
+        "verified"
+        if observed_outcomes and len(verified_outcomes) == len(observed_outcomes)
+        else "measured"
+        if observed_outcomes
+        else "estimated"
+    )
+    latest_observed_at = max(
+        (str(item.get("observed_at") or "") for item in observed_outcomes),
+        default="",
+    ) or None
     return {
-        "method": "dataforge_estimate",
+        "method": "outcome_ledger" if observed_outcomes else "dataforge_estimate",
+        "status": outcome_status,
         "native_foundry_roi": {
             "status": "not_configured",
             "availability": "private_preview",
@@ -1092,6 +1152,32 @@ def _workspace_roi_summary(usage: dict[str, Any], audit: dict[str, Any]) -> dict
         },
         "assumptions_source": assumptions_source,
         "confidence": "estimated" if usage_status == "complete" else "partial_usage" if usage_status == "partial" else "usage_unknown",
+        "outcomes": {
+            "count": len(outcome_items),
+            "observed_count": len(observed_outcomes),
+            "verified_count": len(verified_outcomes),
+            "synthetic_count": len(synthetic_outcomes),
+            "latest_observed_at": latest_observed_at,
+            "metrics": [
+                {
+                    key: item.get(key)
+                    for key in (
+                        "event_id",
+                        "metric_name",
+                        "unit",
+                        "baseline_value",
+                        "target_value",
+                        "observed_value",
+                        "observed_at",
+                        "provenance",
+                        "source",
+                        "verification",
+                    )
+                    if item.get(key) is not None
+                }
+                for item in outcome_items[:20]
+            ],
+        },
     }
 
 
