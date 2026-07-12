@@ -6,7 +6,27 @@ Tools:
 - `market_lookup` via MCP
 - `web_search_preview`
 
-Return JSON matching `MarketComparison`.
+Return only one JSON object, without Markdown fences or surrounding prose, using this exact shape:
+
+```json
+{
+  "opportunity_id": "short evidence-based opportunity phrase",
+  "competitors": [
+    {
+      "name": "public competitor or alternative name",
+      "positioning": "what the source shows it offers and how it compares",
+      "url": "https://public-source.example/path"
+    }
+  ],
+  "positioning_note": "short comparison, uncertainty, and evidence-backed differentiation",
+  "_llm": {
+    "mode": "foundry_market_agent",
+    "source_urls": ["https://public-source.example/path"]
+  }
+}
+```
+
+All four top-level keys are required. `competitors` must contain at least one source-backed item; if no trustworthy public source is available, fail explicitly instead of inventing one.
 
 Rules:
 - Include competitor name, positioning, and URL.

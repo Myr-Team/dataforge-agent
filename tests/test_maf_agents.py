@@ -39,6 +39,10 @@ def test_registry_uses_existing_prompt_files(fake_foundry_client):
         "df-producer",
     }
     assert "evidence" in registry.spec("df-auditor").instructions.lower()
+    market_prompt = registry.spec("df-market-researcher").instructions
+    assert '"opportunity_id"' in market_prompt
+    assert '"competitors"' in market_prompt
+    assert '"positioning_note"' in market_prompt
 
 
 def test_each_agent_receives_only_scoped_tools(fake_foundry_client):
@@ -229,6 +233,43 @@ def test_registry_can_force_managed_identity_client(monkeypatch):
             "credential": "managed-credential",
         }
     ]
+
+
+def test_hosted_tools_are_created_by_the_active_chat_client() -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class ActiveChatClient:
+        @staticmethod
+        def get_code_interpreter_tool(**kwargs):
+            calls.append(("code", kwargs))
+            return FakeHostedTool("code_interpreter")
+
+        @staticmethod
+        def get_mcp_tool(**kwargs):
+            calls.append(("mcp", kwargs))
+            return FakeHostedTool("market_lookup_mcp")
+
+        @staticmethod
+        def get_web_search_tool(**kwargs):
+            calls.append(("web", kwargs))
+            return FakeHostedTool("web_search_preview")
+
+    specs = {spec.agent_id: spec for spec in maf_agents._agent_specs()}
+
+    feasibility_tools = maf_agents._tools_for(
+        specs["df-feasibility-analyst"],
+        "workspace-authorized",
+        ActiveChatClient,
+    )
+    market_tools = maf_agents._tools_for(
+        specs["df-market-researcher"],
+        "workspace-authorized",
+        ActiveChatClient,
+    )
+
+    assert [tool.name for tool in feasibility_tools] == ["search_pack_context", "code_interpreter"]
+    assert [tool.name for tool in market_tools] == ["market_lookup_mcp", "web_search_preview"]
+    assert [name for name, _kwargs in calls] == ["code", "mcp", "web"]
 
 
 @pytest.mark.asyncio

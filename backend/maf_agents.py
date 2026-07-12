@@ -196,17 +196,21 @@ def _market_mcp_url() -> str:
     return url if url.endswith("/mcp") else f"{url}/mcp"
 
 
-def _tools_for(spec: AgentSpec, workspace_id: str) -> list[Any]:
+def _tools_for(
+    spec: AgentSpec,
+    workspace_id: str,
+    hosted_tool_client: Any = FoundryChatClient,
+) -> list[Any]:
     local_tools = _local_tools(workspace_id)
     tools: list[Any] = []
     for tool_name in spec.tool_names:
         if tool_name in local_tools:
             tools.append(local_tools[tool_name])
         elif tool_name == "code_interpreter":
-            tools.append(FoundryChatClient.get_code_interpreter_tool())
+            tools.append(hosted_tool_client.get_code_interpreter_tool())
         elif tool_name == "market_lookup_mcp":
             tools.append(
-                FoundryChatClient.get_mcp_tool(
+                hosted_tool_client.get_mcp_tool(
                     name="dataforge_market",
                     url=_market_mcp_url(),
                     allowed_tools=["market_lookup"],
@@ -214,7 +218,7 @@ def _tools_for(spec: AgentSpec, workspace_id: str) -> list[Any]:
                 )
             )
         elif tool_name == "web_search_preview":
-            tools.append(FoundryChatClient.get_web_search_tool())
+            tools.append(hosted_tool_client.get_web_search_tool())
         else:
             raise ValueError(f"Unsupported DataForge MAF tool: {tool_name}")
     return tools
@@ -240,7 +244,7 @@ def _create_foundry_agent(spec: AgentSpec, client: Any, workspace_id: str) -> Ag
         name=spec.agent_id,
         description=spec.description,
         instructions=spec.instructions,
-        tools=_tools_for(spec, workspace_id),
+        tools=_tools_for(spec, workspace_id, type(client)),
     )
 
 

@@ -468,24 +468,36 @@ async def _sse_keepalive(agen, interval: float = 10.0):
     gap between frames, which proxies/ingress drop → the browser reports a network
     error mid-analysis. Emitting an SSE comment line (':' prefix, ignored by the
     client parser) during those waits keeps the stream alive."""
-    ait = agen.__aiter__()
-    pending = None
+    queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+    async def consume_source() -> None:
+        try:
+            async for item in agen:
+                await queue.put(("item", item))
+        except Exception as exc:
+            await queue.put(("error", exc))
+        finally:
+            await queue.put(("done", None))
+
+    producer = asyncio.create_task(consume_source())
     try:
         while True:
-            if pending is None:
-                pending = asyncio.ensure_future(ait.__anext__())
             try:
-                item = await asyncio.wait_for(asyncio.shield(pending), timeout=interval)
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=interval)
             except asyncio.TimeoutError:
                 yield ": keepalive\n\n"
                 continue
-            except StopAsyncIteration:
+            if kind == "item":
+                yield payload
+                continue
+            if kind == "error":
+                raise payload
+            if kind == "done":
                 return
-            pending = None
-            yield item
     finally:
-        if pending is not None and not pending.done():
-            pending.cancel()
+        if not producer.done():
+            producer.cancel()
+        await asyncio.gather(producer, return_exceptions=True)
 
 
 @app.post("/api/chat")
