@@ -8,7 +8,7 @@ import pytest
 
 from backend import maf_agents
 from backend.maf_agents import AgentSpec, create_agent_registry
-from backend.schemas import AuditVerdict, FeasibilityReport, MarketComparison
+from backend.schemas import AuditVerdict, FeasibilityReport
 
 
 @dataclass(frozen=True)
@@ -169,12 +169,12 @@ def test_materialized_agents_have_exact_role_tools_and_restricted_mcp(materializ
     assert helper_calls["code"] == [{}]
 
 
-def test_structured_specialists_use_provider_enforced_response_formats(materialized_registry):
+def test_review_specialists_use_provider_formats_but_hosted_search_agent_does_not(materialized_registry):
     registry, _helper_calls = materialized_registry
 
     assert registry.agent("df-feasibility-analyst").default_options["response_format"] is FeasibilityReport
     assert registry.agent("df-auditor").default_options["response_format"] is AuditVerdict
-    assert registry.agent("df-market-researcher").default_options["response_format"] is MarketComparison
+    assert registry.agent("df-market-researcher").default_options == {}
     assert registry.agent("df-coordinator").default_options == {}
 
 

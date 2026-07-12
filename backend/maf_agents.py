@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agents.build_agents import AGENTS
 
 from .rag import search
-from .schemas import AuditVerdict, FeasibilityReport, MarketComparison
+from .schemas import AuditVerdict, FeasibilityReport
 from .tools.generate_image import generate_image
 from .tools.narrate_summary import narrate_summary
 from .tools.render_pdf import render_pdf_report
@@ -242,7 +242,6 @@ def _create_foundry_agent(spec: AgentSpec, client: Any, workspace_id: str) -> Ag
     response_formats: dict[str, type[BaseModel]] = {
         "df-feasibility-analyst": FeasibilityReport,
         "df-auditor": AuditVerdict,
-        "df-market-researcher": MarketComparison,
     }
     response_format = response_formats.get(spec.agent_id)
     return Agent(
