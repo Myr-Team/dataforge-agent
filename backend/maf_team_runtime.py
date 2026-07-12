@@ -6,6 +6,7 @@ import asyncio
 import copy
 import inspect
 import json
+import logging
 import re
 import time
 from collections.abc import Mapping
@@ -33,6 +34,9 @@ from .maf_contracts import (
     MafRuntimeMode,
 )
 from .schemas import Evidence, MarketComparison
+
+
+logger = logging.getLogger("dataforge.maf")
 
 
 AgentId = Literal[
@@ -683,6 +687,38 @@ def _error_descriptor(error: Any) -> str:
     return " ".join(str(value) for value in values if value).lower()[:2000]
 
 
+def _safe_error_diagnostic(error: Any) -> dict[str, Any]:
+    error_type = str(getattr(error, "error_type", None) or type(error).__name__)[:80]
+    message = str(getattr(error, "message", None) or str(error))[:2000]
+    status_code = _error_status_code(error)
+    if status_code is None:
+        status_match = re.search(r"(?:error|status)\s+code\s*[:=]\s*(\d{3})", message, re.IGNORECASE)
+        if status_match:
+            status_code = int(status_match.group(1))
+    provider_match = re.search(
+        r"['\"]code['\"]\s*:\s*['\"]([A-Za-z0-9_.-]{1,80})",
+        message,
+    )
+    diagnostic: dict[str, Any] = {"error_type": error_type}
+    if status_code is not None:
+        diagnostic["status_code"] = status_code
+    if provider_match:
+        diagnostic["provider_code"] = provider_match.group(1)
+    return diagnostic
+
+
+def _log_agent_failure(agent_id: str, branch_id: str | None, error: Any) -> None:
+    diagnostic = _safe_error_diagnostic(error)
+    logger.warning(
+        "maf_agent_failure agent=%s branch=%s error_type=%s status_code=%s provider_code=%s",
+        agent_id,
+        branch_id or "none",
+        diagnostic.get("error_type", "unknown"),
+        diagnostic.get("status_code", "none"),
+        diagnostic.get("provider_code", "none"),
+    )
+
+
 def classify_agent_error(error: Exception) -> str:
     descriptor = _error_descriptor(error)
     if any(marker in descriptor for marker in _CONTENT_POLICY_MARKERS):
@@ -897,6 +933,7 @@ class MafTeamRuntime:
                     json.dumps(current_payload, ensure_ascii=False, default=str)
                 )
             except Exception as error:
+                _log_agent_failure(agent_id, branch_id, error)
                 completed_ns = time.perf_counter_ns()
                 telemetry = _aggregate_agent_telemetry(
                     attempts,
@@ -1255,6 +1292,7 @@ class MafTeamRuntime:
                         )
                 elif framework_event.type == "executor_failed":
                     terminal_observed = True
+                    _log_agent_failure(agent_id, branch_id, framework_event.data)
                     await observations.put(
                         _BranchObservation(
                             "failed",
@@ -1268,6 +1306,7 @@ class MafTeamRuntime:
             await run_stream.get_final_response()
         except Exception as error:
             if not terminal_observed:
+                _log_agent_failure(agent_id, branch_id, error)
                 await observations.put(
                     _BranchObservation(
                         "failed",

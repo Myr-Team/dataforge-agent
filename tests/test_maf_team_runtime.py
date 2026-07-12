@@ -347,6 +347,26 @@ def test_provider_errors_are_classified_from_bounded_runtime_attributes() -> Non
     assert classify_workflow_error(WorkflowError()) == "transient"
 
 
+def test_error_diagnostic_exposes_only_bounded_provider_codes() -> None:
+    class WorkflowError:
+        error_type = "ChatClientException"
+        message = (
+            "service failed: Error code: 401 - "
+            "{'error': {'code': 'PermissionDenied', 'message': 'credential-value'}}"
+        )
+        traceback = "raw prompt and credential-value must never be emitted"
+
+    diagnostic = maf_team_runtime._safe_error_diagnostic(WorkflowError())
+
+    assert diagnostic == {
+        "error_type": "ChatClientException",
+        "status_code": 401,
+        "provider_code": "PermissionDenied",
+    }
+    assert "credential-value" not in repr(diagnostic)
+    assert "raw prompt" not in repr(diagnostic)
+
+
 @pytest.mark.asyncio
 async def test_direct_path_invokes_only_registry_coordinator(fake_registry: FakeRegistry):
     request = MafTeamRequest(
