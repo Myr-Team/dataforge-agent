@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 Confidence = Literal["data_confirmed", "market_inferred", "speculative"]
@@ -78,13 +78,37 @@ class GuardedFeasibilityReport(FeasibilityReport):
     evidence_warnings: list[str] = Field(default_factory=list)
 
 
+class MarketCompetitor(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str = Field(min_length=1)
+    positioning: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+
+    @field_validator("name", "positioning", "url", mode="before")
+    @classmethod
+    def require_nonblank_text(cls, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("market competitor fields must be nonblank")
+        return text
+
+
 class MarketComparison(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     opportunity_id: str = Field(min_length=1)
-    competitors: list[dict[str, Any]]
+    competitors: list[MarketCompetitor] = Field(min_length=1)
     positioning_note: str = Field(min_length=1)
     llm_metadata: dict[str, Any] = Field(default_factory=dict, alias="_llm")
+
+    @field_validator("opportunity_id", "positioning_note", mode="before")
+    @classmethod
+    def require_nonblank_text(cls, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("market comparison fields must be nonblank")
+        return text
 
 
 class ProjectProposal(BaseModel):

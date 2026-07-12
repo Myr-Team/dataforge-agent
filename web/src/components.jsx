@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "rea
 import { createPortal } from "react-dom";
 import { startTour } from "./tour.js";
 import { MAF_MODES, deriveMafViewModel, mafEventData, mafRevisionNumber, mafStatusLabel, mafStatusTone } from "./mafViewModel.js";
+import { formatGovernanceTokenLabel, formatGovernanceTokens } from "./governanceUsage.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 import {
   Activity,
@@ -2312,7 +2313,7 @@ function GovernanceSummaryPanel({ governance, compact = false }) {
         <span className="dw-chip ok">真实运行聚合</span>
       </div>
       <div className="gov-kpis">
-        <div><span>Token 成本</span><b>{formatCurrencyUsd(roi.estimated_cost_usd)}</b><em>{formatCount(roi.inputs?.total_tokens)} tokens</em></div>
+        <div><span>Token 成本</span><b>{roi.estimated_cost_usd == null ? "未记录" : formatCurrencyUsd(roi.estimated_cost_usd)}</b><em>{formatGovernanceTokenLabel(roi.inputs)}</em></div>
         <div><span>估算价值</span><b>{formatCurrencyUsd(roi.estimated_value_usd)}</b><em>{formatCount(roi.inputs?.analysis_runs)} 次运行</em></div>
         <div><span>ROI 倍数</span><b>{roi.roi_multiple ? `${roi.roi_multiple}x` : "待积累"}</b><em>{roi.confidence || "estimated"}</em></div>
       </div>
@@ -2322,8 +2323,8 @@ function GovernanceSummaryPanel({ governance, compact = false }) {
           {topMembers.length ? topMembers.map((row) => (
             <div className="gov-row" key={row.actor?.email || row.actor?.actor_id || row.last_run_id || row.total_tokens}>
               <span>{row.actor?.name || row.actor?.email || "成员"}</span>
-              <b>{formatCount(row.total_tokens)} tokens</b>
-              <em>{formatCurrencyUsd(row.estimated_cost_usd)}</em>
+              <b>{formatGovernanceTokenLabel(row)}</b>
+              <em>{row.estimated_cost_usd == null ? "未记录" : formatCurrencyUsd(row.estimated_cost_usd)}</em>
             </div>
           )) : <p className="gov-empty">暂无可归因的运行。</p>}
         </div>
@@ -3144,7 +3145,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
               {memberNotice ? <div className="member-msg ok">{memberNotice}</div> : null}
               <div className="member-usage-strip">
                 <span>Runs <b>{formatCount(usageTotals.runs)}</b></span>
-                <span>Tokens <b>{formatCount(usageTotals.total_tokens)}</b></span>
+                <span>Tokens <b>{formatGovernanceTokens(usageTotals)}</b></span>
                 <span>Source <b>{memberMeta?.source || "easy_auth"}</b></span>
               </div>
               {members.map((m, i) => (
@@ -3153,7 +3154,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
                   <div className="mbr-main">
                     <b>{m.name}</b>
                     <em>{m.email}</em>
-                    <small>{formatCount(m.usage?.runs)} runs · {formatCount(m.usage?.total_tokens)} tokens{m.lastSeenAt ? ` · ${formatTime(m.lastSeenAt)}` : ""}</small>
+                    <small>{formatCount(m.usage?.runs)} runs · {formatGovernanceTokenLabel(m.usage)}{m.lastSeenAt ? ` · ${formatTime(m.lastSeenAt)}` : ""}</small>
                   </div>
                   <span className={`dw-chip ${m.status === "active" ? "ok" : "warn"}`}>{m.statusLabel}</span>
                   {m.owner ? (

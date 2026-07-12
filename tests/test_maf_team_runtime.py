@@ -856,13 +856,58 @@ async def test_placeholder_corpus_identities_fail_closed_even_with_matching_quot
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "direct_id",
+    [
+        "unknown#chunk",
+        "unknown:chunk",
+        "n/a#0",
+        "untitled#row-1",
+    ],
+)
+async def test_placeholder_direct_corpus_ids_fail_closed_even_with_matching_quote(
+    fake_registry: FakeRegistry,
+    direct_id: str,
+):
+    request = MafTeamRequest(
+        intent="qa",
+        output_mode="chat",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=False,
+        payload={"workspace_id": "workspace-1", "query": "summarize"},
+        authoritative_corpus={
+            "hits": [
+                {
+                    "id": direct_id,
+                    "content": "Matching but placeholder-identified content.",
+                }
+            ]
+        },
+        evidence_catalog=[
+            {
+                "source_type": "corpus",
+                "ref": direct_id,
+                "quote": "Matching but placeholder-identified content.",
+            }
+        ],
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    assert result.artifact["verdict"] == "insufficient_evidence"
+    assert "workspace_evidence_unavailable" in result.gaps
+    assert fake_registry.calls == []
+
+
+@pytest.mark.asyncio
 async def test_market_agent_output_uses_market_comparison_contract_and_reaches_feasibility(
     fake_registry: FakeRegistry,
 ):
     result = await MafTeamRuntime(fake_registry).run(concurrent_request())
 
     market = MarketComparison.model_validate(result.artifact["market"])
-    assert market.competitors[0]["name"] == "Retention Cloud"
+    assert market.competitors[0].name == "Retention Cloud"
     assert market.positioning_note == "Differentiate with workspace-confirmed evidence."
     assert result.artifact["market"]["_llm"] == {"mode": "foundry_market_agent"}
     assert fake_registry.inputs["df-feasibility-analyst"][0]["market"] == result.artifact["market"]
@@ -876,6 +921,48 @@ async def test_signals_only_market_output_is_rejected_as_contract_invalid(
     fake_registry.outputs["df-market-researcher"].append(
         {"signals": [{"id": "unsupported-shape"}]}
     )
+
+    result = await MafTeamRuntime(fake_registry).run(concurrent_request())
+
+    market_branch = next(item for item in result.branch_results if item.branch_id == "external")
+    assert market_branch.status == "failed"
+    assert market_branch.error_category == "contract_validation"
+    assert "external_signal_unavailable" in result.gaps
+    assert "market" not in result.artifact
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_market",
+    [
+        {
+            "opportunity_id": "retention-workflow",
+            "competitors": [],
+            "positioning_note": "Differentiate with evidence.",
+        },
+        {
+            "opportunity_id": "retention-workflow",
+            "competitors": [{"name": " ", "positioning": "Automated retention", "url": "https://example.com"}],
+            "positioning_note": "Differentiate with evidence.",
+        },
+        {
+            "opportunity_id": "retention-workflow",
+            "competitors": [{"name": "Retention Cloud", "positioning": " ", "url": "https://example.com"}],
+            "positioning_note": "Differentiate with evidence.",
+        },
+        {
+            "opportunity_id": "retention-workflow",
+            "competitors": [{"name": "Retention Cloud", "positioning": "Automated retention", "url": " "}],
+            "positioning_note": " ",
+        },
+    ],
+)
+async def test_invalid_market_comparison_degrades_optional_branch(
+    fake_registry: FakeRegistry,
+    invalid_market: dict[str, Any],
+):
+    fake_registry.outputs["df-market-researcher"].clear()
+    fake_registry.outputs["df-market-researcher"].append(invalid_market)
 
     result = await MafTeamRuntime(fake_registry).run(concurrent_request())
 

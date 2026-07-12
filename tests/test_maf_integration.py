@@ -810,7 +810,7 @@ def test_maf_artifact_merge_whitelists_runtime_owned_fields() -> None:
             "hits": [{"id": "model-flat-hit"}],
             "market": {
                 "opportunity_id": "retention-workflow",
-                "competitors": [{"name": "Retention Cloud"}],
+                "competitors": [{"name": "Retention Cloud", "positioning": "Automated retention workflows", "url": "https://example.com/retention-cloud"}],
                 "positioning_note": "Differentiate with workspace evidence.",
                 "_llm": {"mode": "foundry_market_agent"},
                 "signals": [{"id": "must-not-cross-market-contract"}],
@@ -831,7 +831,7 @@ def test_maf_artifact_merge_whitelists_runtime_owned_fields() -> None:
     assert artifact["audit"]["verdict"] == "pass"
     assert artifact["market"] == {
         "opportunity_id": "retention-workflow",
-        "competitors": [{"name": "Retention Cloud"}],
+        "competitors": [{"name": "Retention Cloud", "positioning": "Automated retention workflows", "url": "https://example.com/retention-cloud"}],
         "positioning_note": "Differentiate with workspace evidence.",
         "_llm": {"mode": "foundry_market_agent"},
     }

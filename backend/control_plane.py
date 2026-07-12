@@ -955,9 +955,11 @@ def _workspace_usage_by_actor(workspace_id: str) -> dict[str, Any]:
         "runs": 0,
         "agent_runs": 0,
         "snapshot_runs": 0,
-        "total_tokens": 0,
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
+        "known_usage_runs": 0,
+        "unknown_usage_runs": 0,
+        "total_tokens": None,
+        "prompt_tokens": None,
+        "completion_tokens": None,
     }
     for summary in list_runs(workspace_id)[:300]:
         run_id = str(summary.get("run_id") or "")
@@ -974,33 +976,43 @@ def _workspace_usage_by_actor(workspace_id: str) -> dict[str, Any]:
                     "runs": 0,
                     "agent_runs": 0,
                     "snapshot_runs": 0,
-                    "total_tokens": 0,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
+                    "known_usage_runs": 0,
+                    "unknown_usage_runs": 0,
+                    "total_tokens": None,
+                    "prompt_tokens": None,
+                    "completion_tokens": None,
                 },
                 "last_seen_at": None,
                 "last_run_id": None,
             },
         )
-        tokens = detail.get("tokens") if isinstance(detail.get("tokens"), dict) else summary.get("tokens") if isinstance(summary.get("tokens"), dict) else {}
-        if not tokens or not any(int(tokens.get(k) or 0) for k in ("total", "prompt", "completion")):
-            tokens = _token_usage(detail) or {}
+        detail_tokens = detail.get("tokens") if isinstance(detail.get("tokens"), dict) else None
+        summary_tokens = summary.get("tokens") if isinstance(summary.get("tokens"), dict) else None
+        direct_tokens = detail_tokens if _usage_is_observed(detail_tokens) else summary_tokens
+        tokens = _usage_from_dict(direct_tokens) if _usage_is_observed(direct_tokens) else _token_usage(detail)
         usage = row["usage"]
         is_snapshot = bool(str(detail.get("version_kind") or "").strip())
         usage["runs"] += 1
         usage["snapshot_runs" if is_snapshot else "agent_runs"] += 1
-        usage["total_tokens"] += int(tokens.get("total") or tokens.get("total_tokens") or 0)
-        usage["prompt_tokens"] += int(tokens.get("prompt") or tokens.get("prompt_tokens") or tokens.get("input_tokens") or 0)
-        usage["completion_tokens"] += int(tokens.get("completion") or tokens.get("completion_tokens") or tokens.get("output_tokens") or 0)
+        coverage_key = "known_usage_runs" if tokens is not None else "unknown_usage_runs"
+        usage[coverage_key] += 1
+        if tokens is not None:
+            for output_key, token_key in (("total_tokens", "total"), ("prompt_tokens", "prompt"), ("completion_tokens", "completion")):
+                usage[output_key] = int(usage[output_key] or 0) + int(tokens.get(token_key) or 0)
         seen_at = detail.get("completed_at") or detail.get("updated_at") or summary.get("time")
         if seen_at and str(seen_at) > str(row.get("last_seen_at") or ""):
             row["last_seen_at"] = seen_at
             row["last_run_id"] = run_id
         totals["runs"] += 1
         totals["snapshot_runs" if is_snapshot else "agent_runs"] += 1
-        totals["total_tokens"] += int(tokens.get("total") or tokens.get("total_tokens") or 0)
-        totals["prompt_tokens"] += int(tokens.get("prompt") or tokens.get("prompt_tokens") or tokens.get("input_tokens") or 0)
-        totals["completion_tokens"] += int(tokens.get("completion") or tokens.get("completion_tokens") or tokens.get("output_tokens") or 0)
+        totals[coverage_key] += 1
+        if tokens is not None:
+            for output_key, token_key in (("total_tokens", "total"), ("prompt_tokens", "prompt"), ("completion_tokens", "completion")):
+                totals[output_key] = int(totals[output_key] or 0) + int(tokens.get(token_key) or 0)
+    for usage in [totals, *(item["usage"] for item in by_actor.values())]:
+        known = int(usage.get("known_usage_runs") or 0)
+        unknown = int(usage.get("unknown_usage_runs") or 0)
+        usage["usage_status"] = "partial" if known and unknown else "complete" if known else "unknown"
     members = sorted(by_actor.values(), key=lambda item: str(item.get("last_seen_at") or ""), reverse=True)
     return {
         "totals": totals,
@@ -1012,7 +1024,11 @@ def _workspace_usage_by_actor(workspace_id: str) -> dict[str, Any]:
 def _workspace_roi_summary(usage: dict[str, Any], audit: dict[str, Any]) -> dict[str, Any]:
     totals = usage.get("totals") if isinstance(usage.get("totals"), dict) else {}
     events = audit.get("events") if isinstance(audit.get("events"), list) else []
-    total_tokens = int(totals.get("total_tokens") or 0)
+    total_tokens_value = totals.get("total_tokens")
+    total_tokens = int(total_tokens_value) if total_tokens_value is not None else None
+    usage_status = str(totals.get("usage_status") or ("complete" if total_tokens is not None else "unknown"))
+    known_usage_runs = int(totals.get("known_usage_runs") or (totals.get("runs") if total_tokens is not None else 0) or 0)
+    unknown_usage_runs = int(totals.get("unknown_usage_runs") or 0)
     analysis_runs = int(totals.get("agent_runs") or totals.get("runs") or 0)
     snapshot_runs = int(totals.get("snapshot_runs") or 0)
     conversation_turns_by_id: dict[str, int] = {}
@@ -1029,10 +1045,11 @@ def _workspace_roi_summary(usage: dict[str, Any], audit: dict[str, Any]) -> dict
     hourly_value = _float_env("DF_ROI_HOURLY_VALUE_USD", 80.0)
     analysis_minutes = _float_env("DF_ROI_MINUTES_SAVED_PER_ANALYSIS", 45.0)
     followup_minutes = _float_env("DF_ROI_MINUTES_SAVED_PER_FOLLOWUP", 8.0)
-    estimated_cost = (total_tokens / 1_000_000.0) * token_cost_per_1m
+    estimated_cost = (total_tokens / 1_000_000.0) * token_cost_per_1m if total_tokens is not None else None
     estimated_hours_saved = ((analysis_runs * analysis_minutes) + (conversation_turns * followup_minutes)) / 60.0
     estimated_value = estimated_hours_saved * hourly_value
-    roi_multiple = (estimated_value / estimated_cost) if estimated_cost > 0 else None
+    complete_cost = estimated_cost if usage_status == "complete" else None
+    roi_multiple = (estimated_value / complete_cost) if complete_cost is not None and complete_cost > 0 else None
     assumption_names = (
         "DF_ROI_TOKEN_COST_PER_1M",
         "DF_ROI_HOURLY_VALUE_USD",
@@ -1055,13 +1072,16 @@ def _workspace_roi_summary(usage: dict[str, Any], audit: dict[str, Any]) -> dict
             "note": "Use this workspace estimate until Azure AI Foundry ROI reporting is connected for the project.",
         },
         "currency": "USD",
-        "estimated_cost_usd": _round_money(estimated_cost),
+        "estimated_cost_usd": _round_money(estimated_cost) if estimated_cost is not None else None,
         "estimated_value_usd": _round_money(estimated_value),
-        "net_value_usd": _round_money(estimated_value - estimated_cost),
+        "net_value_usd": _round_money(estimated_value - complete_cost) if complete_cost is not None else None,
         "roi_multiple": round(roi_multiple, 2) if roi_multiple is not None else None,
         "estimated_hours_saved": round(estimated_hours_saved, 2),
         "inputs": {
             "total_tokens": total_tokens,
+            "known_usage_runs": known_usage_runs,
+            "unknown_usage_runs": unknown_usage_runs,
+            "usage_status": usage_status,
             "analysis_runs": analysis_runs,
             "snapshot_runs_excluded": snapshot_runs,
             "conversation_turns": conversation_turns,
@@ -1071,29 +1091,35 @@ def _workspace_roi_summary(usage: dict[str, Any], audit: dict[str, Any]) -> dict
             "minutes_saved_per_followup": followup_minutes,
         },
         "assumptions_source": assumptions_source,
-        "confidence": "estimated",
+        "confidence": "estimated" if usage_status == "complete" else "partial_usage" if usage_status == "partial" else "usage_unknown",
     }
 
 
 def _workspace_chargeback(usage: dict[str, Any], roi: dict[str, Any]) -> dict[str, Any]:
     totals = usage.get("totals") if isinstance(usage.get("totals"), dict) else {}
-    total_tokens = max(0, int(totals.get("total_tokens") or 0))
+    total_tokens_value = totals.get("total_tokens")
+    total_tokens = max(0, int(total_tokens_value)) if total_tokens_value is not None else None
+    usage_status = totals.get("usage_status") or ("complete" if total_tokens is not None else "unknown")
     cost_per_1m = float((roi.get("inputs") or {}).get("token_cost_per_1m") or 0)
     rows = []
     for item in usage.get("members") or []:
         actor = public_actor(item.get("actor") if isinstance(item, dict) else {})
         item_usage = item.get("usage") if isinstance(item.get("usage"), dict) else {}
-        tokens = int(item_usage.get("total_tokens") or 0)
-        share = (tokens / total_tokens) if total_tokens > 0 else 0.0
+        item_tokens = item_usage.get("total_tokens")
+        tokens = int(item_tokens) if item_tokens is not None else None
+        share = (tokens / total_tokens) if tokens is not None and total_tokens is not None and total_tokens > 0 else None
         rows.append(
             {
                 "actor": actor,
                 "runs": int(item_usage.get("runs") or 0),
                 "total_tokens": tokens,
-                "prompt_tokens": int(item_usage.get("prompt_tokens") or 0),
-                "completion_tokens": int(item_usage.get("completion_tokens") or 0),
-                "token_share_pct": round(share * 100, 1),
-                "estimated_cost_usd": _round_money((tokens / 1_000_000.0) * cost_per_1m),
+                "prompt_tokens": item_usage.get("prompt_tokens"),
+                "completion_tokens": item_usage.get("completion_tokens"),
+                "known_usage_runs": int(item_usage.get("known_usage_runs") or 0),
+                "unknown_usage_runs": int(item_usage.get("unknown_usage_runs") or 0),
+                "usage_status": item_usage.get("usage_status") or "unknown",
+                "token_share_pct": round(share * 100, 1) if share is not None else None,
+                "estimated_cost_usd": _round_money((tokens / 1_000_000.0) * cost_per_1m) if tokens is not None else None,
                 "last_seen_at": item.get("last_seen_at"),
                 "last_run_id": item.get("last_run_id"),
             }
@@ -1105,7 +1131,10 @@ def _workspace_chargeback(usage: dict[str, Any], roi: dict[str, Any]) -> dict[st
         "totals": {
             "members": len(rows),
             "total_tokens": total_tokens,
-            "estimated_cost_usd": roi.get("estimated_cost_usd") or 0,
+            "known_usage_runs": int(totals.get("known_usage_runs") or 0),
+            "unknown_usage_runs": int(totals.get("unknown_usage_runs") or 0),
+            "usage_status": usage_status,
+            "estimated_cost_usd": roi.get("estimated_cost_usd"),
         },
     }
 
@@ -1651,8 +1680,10 @@ def _usage_is_observed(data: Any) -> bool:
         and not isinstance(usage.get(key), bool)
         for key in (
             "prompt_tokens",
+            "prompt",
             "input_tokens",
             "completion_tokens",
+            "completion",
             "output_tokens",
             "total_tokens",
             "total",
@@ -1664,8 +1695,8 @@ def _usage_from_dict(data: dict[str, Any]) -> dict[str, int] | None:
     usage = data.get("usage") if "usage" in data else data
     if not _usage_is_observed(usage):
         return None
-    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    prompt = int(usage.get("prompt_tokens") or usage.get("prompt") or usage.get("input_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or usage.get("completion") or usage.get("output_tokens") or 0)
     total = int(usage.get("total_tokens") or usage.get("total") or prompt + completion)
     return {"total": total, "prompt": prompt, "completion": completion}
 

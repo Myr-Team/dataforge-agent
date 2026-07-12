@@ -2,6 +2,8 @@ import json
 from urllib.parse import quote
 
 import backend.control_plane as control_plane
+from backend.app import app
+from fastapi.testclient import TestClient
 
 
 class RequestStub:
@@ -140,3 +142,88 @@ def test_roi_deduplicates_multi_actor_conversation_turns() -> None:
     result = control_plane._workspace_roi_summary(usage, audit)
 
     assert result["inputs"]["conversation_turns"] == 4
+
+
+def test_governance_keeps_all_unknown_usage_null(monkeypatch) -> None:
+    runs = [
+        {
+            "run_id": "run-owner-unknown",
+            "workspace_id": "ws-unknown",
+            "actor": {"name": "Owner", "email": "owner@contoso.com"},
+            "status": "completed",
+            "completed_at": "2026-07-12T00:01:00Z",
+        },
+        {
+            "run_id": "run-reviewer-unknown",
+            "workspace_id": "ws-unknown",
+            "actor": {"name": "Reviewer", "email": "reviewer@contoso.com"},
+            "status": "completed",
+            "completed_at": "2026-07-12T00:02:00Z",
+        },
+    ]
+    monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: runs)
+    monkeypatch.setattr(control_plane, "get_run", lambda run_id: next(item for item in runs if item["run_id"] == run_id))
+    monkeypatch.setattr(control_plane, "list_conversations", lambda workspace_id=None: [])
+
+    result = control_plane.workspace_governance_summary("ws-unknown", RequestStub())
+
+    totals = result["usage"]["totals"]
+    assert totals["total_tokens"] is None
+    assert totals["prompt_tokens"] is None
+    assert totals["completion_tokens"] is None
+    assert totals["known_usage_runs"] == 0
+    assert totals["unknown_usage_runs"] == 2
+    assert totals["usage_status"] == "unknown"
+    assert all(item["usage"]["total_tokens"] is None for item in result["usage"]["members"])
+    assert result["roi"]["inputs"]["total_tokens"] is None
+    assert result["roi"]["estimated_cost_usd"] is None
+    assert result["roi"]["net_value_usd"] is None
+    assert result["chargeback"]["totals"]["total_tokens"] is None
+    assert all(item["estimated_cost_usd"] is None for item in result["chargeback"]["members"])
+
+    response = TestClient(app).get("/api/workspaces/ws-unknown/governance-summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["usage"]["totals"]["total_tokens"] is None
+    assert body["usage"]["totals"]["usage_status"] == "unknown"
+    assert body["roi"]["estimated_cost_usd"] is None
+
+
+def test_governance_sums_known_usage_and_marks_mixed_data_partial(monkeypatch) -> None:
+    actor = {"name": "Owner", "email": "owner@contoso.com"}
+    runs = [
+        {
+            "run_id": "run-known",
+            "workspace_id": "ws-partial",
+            "actor": actor,
+            "status": "completed",
+            "tokens": {"total": 120, "prompt": 80, "completion": 40},
+            "completed_at": "2026-07-12T00:01:00Z",
+        },
+        {
+            "run_id": "run-unknown",
+            "workspace_id": "ws-partial",
+            "actor": actor,
+            "status": "completed",
+            "completed_at": "2026-07-12T00:02:00Z",
+        },
+    ]
+    monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: runs)
+    monkeypatch.setattr(control_plane, "get_run", lambda run_id: next(item for item in runs if item["run_id"] == run_id))
+    monkeypatch.setattr(control_plane, "list_conversations", lambda workspace_id=None: [])
+
+    result = control_plane.workspace_governance_summary("ws-partial", RequestStub())
+
+    totals = result["usage"]["totals"]
+    assert totals["total_tokens"] == 120
+    assert totals["prompt_tokens"] == 80
+    assert totals["completion_tokens"] == 40
+    assert totals["known_usage_runs"] == 1
+    assert totals["unknown_usage_runs"] == 1
+    assert totals["usage_status"] == "partial"
+    member = result["usage"]["members"][0]["usage"]
+    assert member["known_usage_runs"] == 1
+    assert member["unknown_usage_runs"] == 1
+    assert member["usage_status"] == "partial"
+    assert result["roi"]["inputs"]["usage_status"] == "partial"
+    assert result["chargeback"]["totals"]["usage_status"] == "partial"

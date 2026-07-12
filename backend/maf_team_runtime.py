@@ -83,13 +83,17 @@ _PLACEHOLDER_CHUNK_IDENTITIES = _PLACEHOLDER_IDENTITIES | {"chunk"}
 
 def _identity_is_placeholder(value: Any, *, chunk: bool = False) -> bool:
     text = str(value or "").strip().lower()
-    compact = re.sub(r"[^a-z0-9]+", "", text)
     placeholders = _PLACEHOLDER_CHUNK_IDENTITIES if chunk else _PLACEHOLDER_IDENTITIES
-    if compact in placeholders:
-        return True
-    filename = re.split(r"[/\\]", text)[-1]
-    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
-    return re.sub(r"[^a-z0-9]+", "", stem) in placeholders
+    components = [text, *re.split(r"[#:]+", text)]
+    for component in components:
+        compact = re.sub(r"[^a-z0-9]+", "", component)
+        if compact in placeholders:
+            return True
+        filename = re.split(r"[/\\]", component)[-1]
+        stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+        if re.sub(r"[^a-z0-9]+", "", stem) in placeholders:
+            return True
+    return False
 
 
 class AuthoritativeCorpusHit(BaseModel):
@@ -622,6 +626,7 @@ def _valid_required_corpus(request: MafTeamRequest) -> bool:
     }
     return any(
         item.source_type == "corpus"
+        and not _identity_is_placeholder(item.ref, chunk=True)
         and item.ref.strip() in traceable_refs
         and str(item.quote or "").strip()
         for item in request.evidence_catalog

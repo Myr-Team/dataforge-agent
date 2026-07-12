@@ -78,3 +78,38 @@ Base reviewed: `553b695`
 ### Remaining Concern
 
 - Docker is still not installed in this environment, so the requested Docker smoke is represented by the clean Docker-context simulation and real production-entrypoint startup rather than a `docker build`/`docker run`.
+
+## Remaining Final Review Fixes (2026-07-12)
+
+### RED
+
+- The inherited tree was clean at `3ffb1b8`; no prior final-fix work was reverted.
+- Composite direct corpus IDs were parsed as opaque strings, so `unknown#chunk`, `unknown:chunk`, `n/a#0`, and `untitled#row-1` could pass when the catalog quote matched.
+- `MarketComparison` accepted an empty competitor list, arbitrary competitor dictionaries, and whitespace-only fields.
+- Workspace aggregation initialized every token total to zero and did not expose known/unknown run coverage. The governance endpoint and frontend therefore presented missing telemetry as measured zero.
+- The initial regressions failed as expected: `9` MAF tests failed, `2` governance tests failed, and the new frontend usage-view test could not load the not-yet-created helper.
+
+### Changes
+
+- Corpus identity validation now parses `#` and `:` composite references and rejects placeholder components in direct IDs and catalog refs, while retaining the existing source-file and chunk checks.
+- Added typed `MarketCompetitor` records. A valid `MarketComparison` now requires at least one competitor with stripped nonblank `name`, `positioning`, and `url`, plus nonblank opportunity and positioning text. Extra production competitor fields remain preserved; unsupported top-level `signals` remain outside the allowlisted artifact contract.
+- Invalid market output exhausts the existing bounded contract correction, fails the optional branch as `contract_validation`, records `external_signal_unavailable`, and does not enter feasibility or the final artifact as valid market data.
+- Workspace/member usage now keeps all-unknown token totals null, counts `known_usage_runs` and `unknown_usage_runs`, labels coverage as `complete`, `partial`, or `unknown`, and sums only runs with observed usage. Explicit measured zero remains known zero.
+- ROI and chargeback keep unknown costs/totals null. Mixed token totals are exposed as partial known totals, while net value and ROI are withheld when token cost coverage is incomplete.
+- Governance and member views render null usage as `未记录` and visibly label mixed totals as `部分已记录`. Added a pure frontend usage view model plus endpoint and UI-format regressions.
+
+### Verification
+
+- Focused backend: `python -m pytest tests/test_maf_team_runtime.py tests/test_maf_integration.py tests/test_governance_roi_summary.py tests/test_actor_audit_usage.py -q` -> `87 passed, 1 warning in 8.84s`.
+- Full backend: `python -m pytest -q` -> `176 passed, 1 warning in 12.09s`.
+- Deterministic evaluation: `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json` -> exit `0`; selection accuracy `1.0`, groundedness `0.916667`, unsupported-claim rate `0.083333`, task completion `1.0`, fallback rate `0.142857`, tokens `null` / `unknown`.
+- Frontend tests: `node --test src/*.test.mjs` -> `10 passed, 0 failed`.
+- Frontend build: `npm run build` -> exit `0`; Vite transformed `1752` modules.
+- Clean Docker-context import/start smoke: `python -m backend.import_smoke` exited `0`; `agents.build_agents`, `backend.maf_agents`, `backend.orchestrator`, and `backend.app` all resolved inside the isolated staged context; Uvicorn `/api/health` returned `ok=true`, `service=dataforge-backend`; the final smoke command exited `0`.
+- Syntax/diff checks: `python -m py_compile backend/schemas.py backend/maf_team_runtime.py backend/control_plane.py` and `git diff --check` exited `0`.
+
+### Concerns
+
+- Docker remains unavailable locally, so no literal `docker build` / `docker run` was possible. The Dockerfile contract test passed in the full suite, and the isolated context plus real production entrypoint smoke passed.
+- The sole pytest warning remains Agent Framework's expected `FUNCTIONAL_WORKFLOWS` experimental API warning.
+- `DF_MAF_TRAFFIC_PERCENT` remains unchanged at its safe default; no production canary was enabled.
