@@ -298,11 +298,33 @@ class MafBranchResult(BaseModel):
         return (self.completed_ns - self.started_ns) / 1_000_000
 
 
+class RuntimeExecutionBudget(BaseModel):
+    max_agent_calls: int = Field(ge=0)
+    agent_calls: int = Field(ge=0)
+    max_revision_rounds: int = Field(ge=0, le=MAX_MAF_REVISIONS)
+    workflow_duration_ms: float = Field(ge=0)
+    participant_duration_ms: float = Field(ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+
+
+def _unknown_execution_budget() -> RuntimeExecutionBudget:
+    return RuntimeExecutionBudget(
+        max_agent_calls=0,
+        agent_calls=0,
+        max_revision_rounds=0,
+        workflow_duration_ms=0,
+        participant_duration_ms=0,
+    )
+
+
 class RuntimeMafRunSummary(MafRunSummary):
     mode: str
     rounds: int = Field(default=0, ge=0, le=MAX_MAF_REVISIONS)
     selected_agents: tuple[str, ...] = ()
     skipped_agents: tuple[str, ...] = ()
+    execution_budget: RuntimeExecutionBudget = Field(default_factory=_unknown_execution_budget)
 
 
 class MafTeamRunResult(BaseModel):
@@ -419,6 +441,7 @@ class _RunState:
     completed_agents: set[str] = field(default_factory=set)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     event_sink: Callable[[MafRuntimeEvent], Any] | None = None
+    started_ns: int = field(default_factory=time.perf_counter_ns)
 
     async def emit(self, event: RuntimeEventName, status: str, **kwargs: Any) -> MafRuntimeEvent:
         async with self.lock:
@@ -940,6 +963,27 @@ class MafTeamRuntime:
             for agent_id in selected
         ]
         skipped = tuple(agent_id for agent_id in ALL_AGENT_IDS if agent_id not in selected)
+        completed_events = [
+            event
+            for event in state.events
+            if event.event == "maf_agent_completed"
+        ]
+
+        def observed_token_total(field_name: str) -> int | None:
+            if not completed_events or any(getattr(event, field_name) is None for event in completed_events):
+                return None
+            return sum(int(getattr(event, field_name) or 0) for event in completed_events)
+
+        execution_budget = RuntimeExecutionBudget(
+            max_agent_calls=len(selected) + (2 * plan.max_revisions),
+            agent_calls=sum(1 for event in state.events if event.event == "maf_agent_started"),
+            max_revision_rounds=plan.max_revisions,
+            workflow_duration_ms=(time.perf_counter_ns() - state.started_ns) / 1_000_000,
+            participant_duration_ms=sum(float(event.duration_ms or 0) for event in completed_events),
+            input_tokens=observed_token_total("input_tokens"),
+            output_tokens=observed_token_total("output_tokens"),
+            total_tokens=observed_token_total("total_tokens"),
+        )
         summary = RuntimeMafRunSummary(
             run_id=str(uuid4()),
             runtime_mode=MafRuntimeMode.FULL,
@@ -951,6 +995,7 @@ class MafTeamRuntime:
             rounds=rounds,
             selected_agents=selected,
             skipped_agents=skipped,
+            execution_budget=execution_budget,
             metadata={"gaps": gaps, "degraded": degraded},
         )
         return MafTeamRunResult(
@@ -1068,10 +1113,48 @@ class MafTeamRuntime:
 
     @staticmethod
     def _participant_payload(request: MafTeamRequest) -> dict[str, Any]:
+        payload = dict(request.payload)
+        history = payload.get("conversation_history")
+        if isinstance(history, list):
+            bounded_history: list[dict[str, str]] = []
+            for item in history[-6:]:
+                if not isinstance(item, Mapping):
+                    continue
+                role = str(item.get("role") or "user")[:24]
+                content = str(item.get("content") or item.get("text") or "")[:1200]
+                if content:
+                    bounded_history.append({"role": role, "content": content})
+            payload["conversation_history"] = bounded_history
+
+        corpus = request.authoritative_corpus.model_dump(mode="json", exclude_none=True)
+        bounded_hits: list[dict[str, Any]] = []
+        for item in (corpus.get("hits") or [])[:6]:
+            hit = dict(item)
+            hit["content"] = str(hit.get("content") or "")[:1800]
+            bounded_hits.append(hit)
+        corpus["hits"] = bounded_hits
+        corpus["opportunities"] = list(corpus.get("opportunities") or [])[:6]
+        profile = corpus.get("profile")
+        if isinstance(profile, dict):
+            bounded_profile = dict(profile)
+            asset_evidence = []
+            for item in (profile.get("asset_evidence") or [])[:12]:
+                if not isinstance(item, Mapping):
+                    continue
+                evidence = dict(item)
+                if "quote" in evidence:
+                    evidence["quote"] = str(evidence.get("quote") or "")[:600]
+                asset_evidence.append(evidence)
+            bounded_profile["asset_evidence"] = asset_evidence
+            corpus["profile"] = bounded_profile
+
         return {
-            **request.payload,
-            "authoritative_corpus": request.authoritative_corpus.model_dump(mode="json", exclude_none=True),
-            "evidence_catalog": [item.model_dump(mode="json", exclude_none=True) for item in request.evidence_catalog],
+            **payload,
+            "authoritative_corpus": corpus,
+            "evidence_catalog": [
+                item.model_dump(mode="json", exclude_none=True)
+                for item in request.evidence_catalog[:24]
+            ],
         }
 
     @staticmethod
@@ -1640,6 +1723,7 @@ __all__ = [
     "MafTeamRunResult",
     "MafTeamRuntime",
     "RuntimeCollaborationPlan",
+    "RuntimeExecutionBudget",
     "RuntimeMafRunSummary",
     "TransientAgentError",
     "classify_agent_error",

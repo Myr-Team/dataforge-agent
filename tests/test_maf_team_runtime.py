@@ -409,6 +409,80 @@ async def test_direct_path_invokes_only_registry_coordinator(fake_registry: Fake
 
 
 @pytest.mark.asyncio
+async def test_runtime_summary_exposes_observed_execution_budget(fake_registry: FakeRegistry):
+    fake_registry.response_kwargs["df-coordinator"].append(
+        {
+            "response_id": "resp-budget-1",
+            "usage_details": {
+                "input_token_count": 30,
+                "output_token_count": 12,
+                "total_token_count": 42,
+            },
+        }
+    )
+    request = MafTeamRequest(
+        intent="followup_edit",
+        output_mode="chat",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=False,
+        payload={"query": "summarize the current evidence"},
+        **authoritative_context(),
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    assert fake_registry.calls == ["df-coordinator"]
+    budget = result.summary.execution_budget
+    assert budget.max_agent_calls == 1
+    assert budget.agent_calls == 1
+    assert budget.max_revision_rounds == 0
+    assert budget.workflow_duration_ms >= 0
+    assert budget.participant_duration_ms >= 0
+    assert budget.input_tokens == 30
+    assert budget.output_tokens == 12
+    assert budget.total_tokens == 42
+
+
+def test_participant_payload_bounds_repeated_history_and_corpus_context():
+    history = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"message-{index}-" + ("x" * 2000)}
+        for index in range(12)
+    ]
+    hits = [
+        {
+            "id": f"hit-{index}",
+            "source_file": "evidence.csv",
+            "chunk_id": f"row-{index}",
+            "content": f"evidence-{index}-" + ("y" * 4000),
+        }
+        for index in range(10)
+    ]
+    request = MafTeamRequest(
+        intent="feasibility_analysis",
+        output_mode="report",
+        needs_workspace=True,
+        needs_external=True,
+        high_impact=True,
+        payload={
+            "workspace_id": "workspace-1",
+            "query": "evaluate",
+            "conversation_history": history,
+        },
+        authoritative_corpus={"hits": hits, "profile": {"asset_evidence": []}},
+        evidence_catalog=[],
+    )
+
+    payload = MafTeamRuntime._participant_payload(request)
+
+    assert [item["content"].split("-", 2)[:2] for item in payload["conversation_history"]] == [
+        ["message", str(index)] for index in range(6, 12)
+    ]
+    assert len(payload["authoritative_corpus"]["hits"]) == 6
+    assert all(len(item["content"]) <= 1800 for item in payload["authoritative_corpus"]["hits"])
+
+
+@pytest.mark.asyncio
 async def test_unknown_agent_telemetry_is_omitted(fake_registry: FakeRegistry):
     request = MafTeamRequest(
         intent="qa",
