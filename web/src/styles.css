@@ -615,6 +615,16 @@ svg { flex-shrink: 0; }
 .gov-kpis div { border: 1px solid var(--line); border-radius: 9px; background: #fbfcff; padding: 10px 11px; min-width: 0; }
 .gov-kpis span, .gov-kpis em { display: block; color: var(--muted); font-size: 11.5px; font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gov-kpis b { display: block; margin: 4px 0 3px; color: var(--ink); font-size: 18px; line-height: 1.15; }
+.gov-outcomes { margin-bottom: 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fbfcff; padding: 10px 11px; }
+.gov-outcomes-head, .gov-outcomes-head > div { display: flex; align-items: center; gap: 7px; }
+.gov-outcomes-head { justify-content: space-between; }
+.gov-outcomes-head > div { color: var(--blue); }
+.gov-outcomes-head b { color: var(--ink); font-size: 12.5px; }
+.gov-outcome-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; margin-top: 7px; }
+.gov-outcome-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; padding: 7px 0; border-top: 1px solid #edf2f7; min-width: 0; }
+.gov-outcome-row span { overflow: hidden; color: var(--muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.gov-outcome-row b { color: var(--ink); font-size: 12px; white-space: nowrap; }
+.gov-outcome-row em { grid-column: 1 / -1; color: var(--faint); font-size: 10.5px; font-style: normal; }
 .gov-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 12px; }
 .gov-detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-top: 12px; }
 .gov-box { border: 1px solid var(--line); border-radius: 9px; background: #fff; padding: 10px 11px; min-width: 0; }
@@ -632,7 +642,7 @@ svg { flex-shrink: 0; }
 .gov-control em { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); line-height: 1.45; font-style: normal; }
 .gov-note, .gov-empty { margin-top: 10px; color: var(--faint); font-size: 11.5px; line-height: 1.45; }
 .gov-empty { margin: 6px 0; }
-@media (max-width: 900px){ .gov-kpis, .gov-grid, .gov-detail { grid-template-columns: 1fr; } }
+@media (max-width: 900px){ .gov-kpis, .gov-grid, .gov-detail, .gov-outcome-list { grid-template-columns: 1fr; } }
 
 .run-body2 { display: grid; grid-template-columns: minmax(0,1fr) 380px; gap: 16px; }
 @media (max-width: 1100px){ .run-body2 { grid-template-columns: 1fr; } }

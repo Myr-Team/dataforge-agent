@@ -2292,6 +2292,7 @@ function groupTraceRows(items) {
 
 function GovernanceSummaryPanel({ governance, compact = false }) {
   const roi = governance?.roi || {};
+  const outcomes = roi.outcomes || {};
   const chargeback = governance?.chargeback || {};
   const security = governance?.security || {};
   const members = Array.isArray(chargeback.members) ? chargeback.members : [];
@@ -2306,6 +2307,10 @@ function GovernanceSummaryPanel({ governance, compact = false }) {
   }
   const topMembers = members.slice(0, compact ? 3 : 6);
   const controls = Array.isArray(security.controls) ? security.controls : [];
+  const outcomeMetrics = Array.isArray(outcomes.metrics) ? outcomes.metrics.slice(0, compact ? 2 : 4) : [];
+  const roiState = roi.status || "estimated";
+  const roiStateLabel = roiState === "verified" ? "已验证" : roiState === "measured" ? "已测量" : "估算";
+  const roiStateTone = roiState === "verified" ? "ok" : roiState === "measured" ? "info" : "warn";
   return (
     <section className={`card gov-panel ${compact ? "compact" : ""}`}>
       <div className="gov-head">
@@ -2316,6 +2321,23 @@ function GovernanceSummaryPanel({ governance, compact = false }) {
         <div><span>Token 成本</span><b>{roi.estimated_cost_usd == null ? "未记录" : formatCurrencyUsd(roi.estimated_cost_usd)}</b><em>{formatGovernanceTokenLabel(roi.inputs)}</em></div>
         <div><span>估算价值</span><b>{formatCurrencyUsd(roi.estimated_value_usd)}</b><em>{formatCount(roi.inputs?.analysis_runs)} 次运行</em></div>
         <div><span>ROI 倍数</span><b>{roi.roi_multiple ? `${roi.roi_multiple}x` : "待积累"}</b><em>{roi.confidence || "estimated"}</em></div>
+      </div>
+      <div className="gov-outcomes">
+        <div className="gov-outcomes-head">
+          <div><Activity size={14} /><b>真实业务结果</b></div>
+          <span className={`dw-chip ${roiStateTone}`}>{roiStateLabel}</span>
+        </div>
+        {outcomeMetrics.length ? (
+          <div className="gov-outcome-list">
+            {outcomeMetrics.map((metric) => (
+              <div className="gov-outcome-row" key={metric.event_id || `${metric.metric_name}-${metric.observed_at || metric.provenance}`}>
+                <span>{metric.metric_name || "未命名指标"}</span>
+                <b>{metric.observed_value == null ? "待观测" : `${metric.observed_value}${metric.unit ? ` ${metric.unit}` : ""}`}</b>
+                <em>{metric.verification?.status === "verified" ? "已审核" : metric.provenance === "observed" ? "来源已记录" : "模拟/假设"}</em>
+              </div>
+            ))}
+          </div>
+        ) : <p className="gov-empty">尚未回填带来源的试点结果，当前只展示运行成本与时间价值估算。</p>}
       </div>
       <div className="gov-grid">
         <div className="gov-box">
@@ -2331,6 +2353,7 @@ function GovernanceSummaryPanel({ governance, compact = false }) {
         <div className="gov-box">
           <div className="gov-box-h"><ShieldCheck size={14} /><b>安全与溯源</b></div>
           <div className="gov-row"><span>身份源</span><b>{security.identity_provider || "Microsoft Entra ID"}</b></div>
+          <div className="gov-row"><span>权限执行</span><b>{security.rbac_enforced ? "已启用" : "兼容模式"}</b></div>
           <div className="gov-row"><span>审计事件</span><b>{formatCount(governance.audit?.count)}</b></div>
           <div className="gov-row"><span>Graph 邀请</span><b>{security.graph_directory?.status === "optional" ? "待授权" : security.graph_directory?.status || "待授权"}</b></div>
         </div>
@@ -2359,7 +2382,7 @@ function GovernanceSummaryPanel({ governance, compact = false }) {
           </div>
         </div>
       ) : null}
-      <p className="gov-note">ROI 当前为 DataForge 估算口径；接入 Azure AI Foundry 原生 ROI 后可切换为 Foundry 项目报表口径。</p>
+      <p className="gov-note">Token 成本与时间价值采用明确假设；带来源的试点回填才计为已测量，审核通过后才计为已验证。App Insights 负责运行可观测，不替代业务结果证据。</p>
     </section>
   );
 }

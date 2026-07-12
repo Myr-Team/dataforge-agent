@@ -61,3 +61,12 @@ def test_dynamic_maf_view_model_behavior() -> None:
     )
 
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+
+def test_governance_ui_separates_estimated_roi_from_observed_outcomes() -> None:
+    source = COMPONENTS.read_text(encoding="utf-8")
+
+    assert "roi.outcomes" in source
+    assert "真实业务结果" in source
+    assert "security.rbac_enforced" in source
+    assert "估算口径；接入 Azure AI Foundry 原生 ROI 后可切换" not in source

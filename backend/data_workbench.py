@@ -27,6 +27,7 @@ try:
     from .identity import actor_for_history, actor_from_request, merge_actor_into_ui_context
     from .orchestrator import orchestrate_chat
     from .schemas import ChatRequest
+    from .workspace_authz import require_workspace_permission
     from .workspace_store import (
         WORKSPACES,
         _CONTEXT_CACHE,
@@ -44,6 +45,7 @@ except ImportError:
     from identity import actor_for_history, actor_from_request, merge_actor_into_ui_context
     from orchestrator import orchestrate_chat
     from schemas import ChatRequest
+    from workspace_authz import require_workspace_permission
     from workspace_store import (
         WORKSPACES,
         _CONTEXT_CACHE,
@@ -81,6 +83,7 @@ async def workspace_files(workspace_id: str) -> dict[str, Any]:
 
 @router.post("/files")
 async def workspace_file_create(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "file.create")
     body = await _json_body(request)
     return await _call(create_workspace_file, workspace_id, body, actor_from_request(request))
 
@@ -97,18 +100,21 @@ async def workspace_file_content(
 
 @router.put("/files/{file_id}/cells")
 async def workspace_file_cells(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "file.edit")
     body = await _json_body(request)
     return await _call(save_table_cells, workspace_id, file_id, body, actor_from_request(request))
 
 
 @router.put("/files/{file_id}/content")
 async def workspace_file_markdown(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "file.edit")
     body = await _json_body(request)
     return await _call(save_markdown_content, workspace_id, file_id, body, actor_from_request(request))
 
 
 @router.delete("/files/{file_id}")
 async def workspace_file_delete(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "file.delete")
     return await _call(delete_workspace_file, workspace_id, file_id, actor_from_request(request))
 
 
@@ -124,6 +130,7 @@ async def workspace_file_field_mapping(workspace_id: str, file_id: str) -> dict[
 
 @router.put("/files/{file_id}/field-mapping")
 async def workspace_file_field_mapping_save(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "file.edit")
     body = await _json_body(request)
     return await _call(save_file_field_mapping, workspace_id, file_id, body, actor_from_request(request))
 
@@ -135,6 +142,7 @@ async def workspace_file_history(workspace_id: str, file_id: str) -> list[dict[s
 
 @router.post("/files/analyze")
 async def workspace_files_analyze(workspace_id: str, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    _require(request, workspace_id, "analysis.run")
     body = await _json_body(request)
     body["ui_context"] = merge_actor_into_ui_context(body.get("ui_context") if isinstance(body.get("ui_context"), dict) else {}, actor_from_request(request))
     return await analyze_selected_files(workspace_id, body, background_tasks)
@@ -160,6 +168,7 @@ async def connector_capabilities(workspace_id: str) -> dict[str, Any]:
 
 @router.post("/connectors/sql/connect")
 async def sql_connect(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "connector.manage")
     body = await _json_body(request)
     return await _call(connect_sql, workspace_id, body)
 
@@ -181,12 +190,14 @@ async def sql_preview(workspace_id: str, connection_id: str, table: str, limit: 
 
 @router.post("/connectors/sql/import")
 async def sql_import(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "connector.manage")
     body = await _json_body(request)
     return await _call(import_sql_table, workspace_id, body, actor_from_request(request))
 
 
 @router.post("/connectors/blob/connect")
 async def blob_connect(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "connector.manage")
     body = await _json_body(request)
     return await _call(connect_blob, workspace_id, body)
 
@@ -226,12 +237,14 @@ async def blob_preview(
 
 @router.post("/connectors/blob/import")
 async def blob_import(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "connector.manage")
     body = await _json_body(request)
     return await _call(import_blob_item, workspace_id, body, actor_from_request(request))
 
 
 @router.post("/connectors/disconnect")
 async def connectors_disconnect(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "connector.manage")
     body = await _json_body(request)
     return await _call(disconnect_connector, workspace_id, body)
 
@@ -799,6 +812,15 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _require(request: Request, workspace_id: str, action: str) -> str:
+    try:
+        return require_workspace_permission(workspace_id, actor_from_request(request), action)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 async def _json_body(request: Request) -> dict[str, Any]:

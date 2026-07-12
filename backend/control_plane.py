@@ -21,24 +21,26 @@ try:
     from .data_workbench import list_workspace_files
     from .dependency_health import health_dependencies, health_dependency_details
     from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
-    from .identity import actor_from_request, member_from_actor, public_actor
+    from .identity import actor_from_request, default_actor, member_from_actor, public_actor
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, record_outcome_event, verify_outcome_event
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
+    from .workspace_authz import rbac_enabled, require_workspace_permission, workspace_role
 except ImportError:
     from blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
     from conversation_store import get_conversation, list_conversations
     from data_workbench import list_workspace_files
     from dependency_health import health_dependencies, health_dependency_details
     from graph_client import GraphClientError, search_entra_users, send_graph_invitation
-    from identity import actor_from_request, member_from_actor, public_actor
+    from identity import actor_from_request, default_actor, member_from_actor, public_actor
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, record_outcome_event, verify_outcome_event
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
+    from workspace_authz import rbac_enabled, require_workspace_permission, workspace_role
 
 
 router = APIRouter(tags=["control-plane"])
@@ -140,6 +142,7 @@ async def workspace_outcomes(workspace_id: str) -> dict[str, Any]:
 
 @router.post("/api/workspaces/{workspace_id}/outcomes")
 async def workspace_outcome_create(workspace_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "outcome.record")
     event = await _call(record_outcome_event, workspace_id, body, actor_from_request(request))
     return {"workspace_id": workspace_id, "event": event}
 
@@ -151,6 +154,7 @@ async def workspace_outcome_verify(
     body: dict[str, Any],
     request: Request,
 ) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "outcome.verify")
     event = await _call(
         verify_outcome_event,
         workspace_id,
@@ -216,6 +220,15 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _require_workspace_action(workspace_id: str, request: Request | None, action: str) -> str:
+    try:
+        return require_workspace_permission(workspace_id, actor_from_request(request), action)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 def build_workspace_dashboard(workspace_id: str) -> dict[str, Any]:
@@ -701,7 +714,10 @@ def workspace_settings_summary(workspace_id: str, request: Request | None = None
 def workspace_member_roles(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
     current_actor = actor_from_request(request)
     usage = _workspace_usage_by_actor(workspace_id)
-    owner = member_from_actor(current_actor, role="owner")
+    owner_actor = current_actor if not rbac_enabled() else default_actor()
+    if workspace_role(workspace_id, current_actor) == "owner":
+        owner_actor = {**default_actor(), **current_actor}
+    owner = member_from_actor(owner_actor, role="owner")
     owner["status"] = "active"
     owner["source"] = owner.get("source") or current_actor.get("source") or "workspace_default"
     members_by_key: dict[str, dict[str, Any]] = {_actor_key(owner) or "workspace_owner": owner}
@@ -736,7 +752,7 @@ def workspace_member_roles(workspace_id: str, request: Request | None = None) ->
     )
     return {
         "workspace_id": workspace_id,
-        "rbac_enforced": False,
+        "rbac_enforced": rbac_enabled(),
         "source": current_actor.get("source") or "workspace_default",
         "roles": ["owner", "admin", "editor", "viewer"],
         "members": members,
@@ -760,6 +776,7 @@ def workspace_entra_users(workspace_id: str, request: Request | None = None, que
 
 
 def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
+    require_workspace_permission(workspace_id, actor_from_request(request), "member.manage")
     email = _member_email((body or {}).get("email"))
     if not email:
         raise ValueError("A valid member email is required")
@@ -809,6 +826,7 @@ def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Re
 
 
 def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
+    require_workspace_permission(workspace_id, actor_from_request(request), "member.manage")
     payload = dict(body or {})
     email = _member_email(payload.get("email"))
     if not email:
@@ -845,6 +863,7 @@ def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], reque
 
 
 def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
+    require_workspace_permission(workspace_id, actor_from_request(request), "member.manage")
     target = _member_email(email)
     if not target:
         raise ValueError("A valid member email is required")
@@ -874,6 +893,7 @@ def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, 
 
 
 def remove_workspace_member(workspace_id: str, email: str, request: Request | None = None) -> dict[str, Any]:
+    require_workspace_permission(workspace_id, actor_from_request(request), "member.manage")
     target = _member_email(email)
     if not target:
         raise ValueError("A valid member email is required")
@@ -955,7 +975,7 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
         "security": {
             "identity_provider": "Microsoft Entra ID",
             "auth_surface": "Azure Container Apps Easy Auth",
-            "rbac_enforced": False,
+            "rbac_enforced": rbac_enabled(),
             "actor_attribution": "easy_auth_or_client_actor_header",
             "graph_directory": {
                 "status": "optional",
