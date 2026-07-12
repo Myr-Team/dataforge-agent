@@ -984,7 +984,7 @@ def _workspace_usage_by_actor(workspace_id: str) -> dict[str, Any]:
         )
         tokens = detail.get("tokens") if isinstance(detail.get("tokens"), dict) else summary.get("tokens") if isinstance(summary.get("tokens"), dict) else {}
         if not tokens or not any(int(tokens.get(k) or 0) for k in ("total", "prompt", "completion")):
-            tokens = _token_usage(detail)
+            tokens = _token_usage(detail) or {}
         usage = row["usage"]
         is_snapshot = bool(str(detail.get("version_kind") or "").strip())
         usage["runs"] += 1
@@ -1582,6 +1582,11 @@ def _step_summary(step: dict[str, Any]) -> str:
         return _clean(f"{'工具调用' if event == 'tool_call' else '工具返回'}：{name}", 180)
     if event == "model_response":
         usage = _usage_from_dict(data)
+        if usage is None:
+            return _clean(
+                f"model_response: {data.get('agent') or data.get('mode') or 'default_model'}",
+                180,
+            )
         return _clean(f"模型响应完成：{data.get('agent') or data.get('mode') or '默认模型'}，记录 {usage.get('total') or 0} tokens", 180)
     if event == "audit":
         return _clean(f"审计完成：{data.get('verdict') or data.get('status') or '已记录'}", 180)
@@ -1607,10 +1612,10 @@ def _tool_counts(run: dict[str, Any]) -> dict[str, int]:
     return {"total": total, "ok": max(0, results - failed), "fail": failed}
 
 
-def _token_usage(run: dict[str, Any]) -> dict[str, int]:
+def _token_usage(run: dict[str, Any]) -> dict[str, int] | None:
     total = {"total": 0, "prompt": 0, "completion": 0}
     model_sources = [item.get("usage") for item in run.get("models") or [] if isinstance(item, dict)]
-    has_model_usage = any(_usage_from_dict(item if isinstance(item, dict) else {}).get("total") for item in model_sources)
+    has_model_usage = any(_usage_is_observed(item) for item in model_sources)
     sources = list(model_sources)
     for step in run.get("steps") or []:
         if not isinstance(step, dict):
@@ -1618,20 +1623,47 @@ def _token_usage(run: dict[str, Any]) -> dict[str, int]:
         if step.get("event") == "model_response" and has_model_usage:
             continue
         data = step.get("data") if isinstance(step.get("data"), dict) else {}
-        if data.get("usage"):
+        if _usage_is_observed(data.get("usage")):
             sources.append(data.get("usage"))
+    observed = False
     for usage in sources:
+        if not _usage_is_observed(usage):
+            continue
         item = _usage_from_dict(usage if isinstance(usage, dict) else {})
+        if item is None:
+            continue
+        observed = True
         total["total"] += item.get("total") or 0
         total["prompt"] += item.get("prompt") or 0
         total["completion"] += item.get("completion") or 0
-    return total
+    return total if observed else None
 
 
-def _usage_from_dict(data: dict[str, Any]) -> dict[str, int]:
+def _usage_is_observed(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
     usage = data.get("usage") if "usage" in data else data
     if not isinstance(usage, dict):
-        return {"total": 0, "prompt": 0, "completion": 0}
+        return False
+    return any(
+        key in usage
+        and isinstance(usage.get(key), (int, float))
+        and not isinstance(usage.get(key), bool)
+        for key in (
+            "prompt_tokens",
+            "input_tokens",
+            "completion_tokens",
+            "output_tokens",
+            "total_tokens",
+            "total",
+        )
+    )
+
+
+def _usage_from_dict(data: dict[str, Any]) -> dict[str, int] | None:
+    usage = data.get("usage") if "usage" in data else data
+    if not _usage_is_observed(usage):
+        return None
     prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
     completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
     total = int(usage.get("total_tokens") or usage.get("total") or prompt + completion)

@@ -32,7 +32,7 @@ from .maf_contracts import (
     MafRunSummary,
     MafRuntimeMode,
 )
-from .schemas import Evidence
+from .schemas import Evidence, MarketComparison
 
 
 AgentId = Literal[
@@ -77,6 +77,21 @@ class MafAuditVerdict(str, Enum):
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 
+_PLACEHOLDER_IDENTITIES = {"", "na", "none", "null", "unknown", "untitled"}
+_PLACEHOLDER_CHUNK_IDENTITIES = _PLACEHOLDER_IDENTITIES | {"chunk"}
+
+
+def _identity_is_placeholder(value: Any, *, chunk: bool = False) -> bool:
+    text = str(value or "").strip().lower()
+    compact = re.sub(r"[^a-z0-9]+", "", text)
+    placeholders = _PLACEHOLDER_CHUNK_IDENTITIES if chunk else _PLACEHOLDER_IDENTITIES
+    if compact in placeholders:
+        return True
+    filename = re.split(r"[/\\]", text)[-1]
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    return re.sub(r"[^a-z0-9]+", "", stem) in placeholders
+
+
 class AuthoritativeCorpusHit(BaseModel):
     """Typed retrieval hit; semantic validity is checked fail-close at execution."""
 
@@ -90,6 +105,12 @@ class AuthoritativeCorpusHit(BaseModel):
     content: str | None = None
 
     def is_traceable(self) -> bool:
+        if self.source_file is not None and _identity_is_placeholder(self.source_file):
+            return False
+        if self.chunk_id is not None and _identity_is_placeholder(self.chunk_id, chunk=True):
+            return False
+        if self.id is not None and _identity_is_placeholder(self.id, chunk=True):
+            return False
         return bool(
             str(self.id or "").strip()
             or (
@@ -615,6 +636,14 @@ _CONTENT_POLICY_MARKERS = (
     "safety policy",
 )
 _TRANSIENT_MARKERS = (
+    "connecterror",
+    "connect error",
+    "connecttimeout",
+    "readtimeout",
+    "dns",
+    "getaddrinfo",
+    "name resolution",
+    "nodename nor servname",
     "timeout",
     "timed out",
     "connection",
@@ -730,6 +759,13 @@ class MafTeamRuntime:
         if verdict not in {MafAuditVerdict.PASS, MafAuditVerdict.REVISE}:
             raise ValueError("agent audit verdict must be pass or revise")
         return {**output, "verdict": verdict.value}
+
+    @staticmethod
+    def _validate_market_comparison(output: dict[str, Any]) -> dict[str, Any]:
+        return MarketComparison.model_validate(output).model_dump(
+            mode="json",
+            by_alias=True,
+        )
 
     async def run(
         self,
@@ -955,9 +991,7 @@ class MafTeamRuntime:
             "evidence_catalog": [item.model_dump(mode="json", exclude_none=True) for item in request.evidence_catalog],
             "rubric": request.rubric.model_dump(mode="json") if request.rubric is not None else None,
             "rubric_version": request.rubric_version,
-            "market": artifact.get("market") or {
-                "signals": artifact.get("external_signals") or []
-            },
+            "market": artifact.get("market") or {},
             "revision_round": revision,
         }
         if audit_feedback is not None:
@@ -1048,6 +1082,11 @@ class MafTeamRuntime:
                     required=required,
                     payload=self._participant_payload(request),
                     observations=observations,
+                    validator=(
+                        self._validate_market_comparison
+                        if agent_id == "df-market-researcher"
+                        else None
+                    ),
                 )
             )
             for branch_id, agent_id, required, workflow in workflows
@@ -1085,11 +1124,12 @@ class MafTeamRuntime:
         if market.status == "failed":
             gaps.append("external_signal_unavailable")
 
-        artifact = {
+        artifact: dict[str, Any] = {
             "hits": [item.model_dump(mode="json", exclude_none=True) for item in request.authoritative_corpus.hits],
-            "external_signals": market.output.get("signals", []),
             "strong_verdict_allowed": corpus.status == "completed" and _valid_required_corpus(request),
         }
+        if market.status == "completed":
+            artifact["market"] = market.output
         if not artifact["strong_verdict_allowed"]:
             return (
                 _force_insufficient_evidence(artifact)
@@ -1153,6 +1193,7 @@ class MafTeamRuntime:
         required: bool,
         payload: Mapping[str, Any],
         observations: asyncio.Queue[_BranchObservation],
+        validator: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         terminal_observed = False
         run_stream = workflow_instance.run(
@@ -1178,6 +1219,23 @@ class MafTeamRuntime:
                     )
                     if response is not None:
                         output = _normalize_agent_output(response)
+                        try:
+                            if validator is not None:
+                                output = validator(output)
+                        except (TypeError, ValueError):
+                            terminal_observed = True
+                            await observations.put(
+                                _BranchObservation(
+                                    "failed",
+                                    branch_id,
+                                    agent_id,
+                                    required,
+                                    observed_ns,
+                                    error_category="contract_validation",
+                                    telemetry=_safe_agent_telemetry(response),
+                                )
+                            )
+                            continue
                         terminal_observed = True
                         await observations.put(
                             _BranchObservation(
@@ -1365,9 +1423,7 @@ class MafTeamRuntime:
                 "revision_round": revision,
                 "feasibility": dict(artifact.get("feasibility") or {}),
                 "evidence_catalog": [item.model_dump(mode="json", exclude_none=True) for item in request.evidence_catalog],
-                "market": artifact.get("market") or {
-                    "signals": artifact.get("external_signals") or []
-                },
+                "market": artifact.get("market") or {},
             },
             state,
             validator=self._audit_validator,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 Confidence = Literal["data_confirmed", "market_inferred", "speculative"]
@@ -79,9 +79,12 @@ class GuardedFeasibilityReport(FeasibilityReport):
 
 
 class MarketComparison(BaseModel):
-    opportunity_id: str
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    opportunity_id: str = Field(min_length=1)
     competitors: list[dict[str, Any]]
-    positioning_note: str
+    positioning_note: str = Field(min_length=1)
+    llm_metadata: dict[str, Any] = Field(default_factory=dict, alias="_llm")
 
 
 class ProjectProposal(BaseModel):

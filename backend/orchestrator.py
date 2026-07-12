@@ -72,7 +72,7 @@ try:
     from .rag import search
     from .router import deterministic_route
     from .run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
-    from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, GuardedFeasibilityReport, RoutingDecision
+    from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, GuardedFeasibilityReport, MarketComparison, RoutingDecision
     from .tracing import agent_trace, finish_maf_agent_span, start_maf_agent_span, trace_event
     from .maf_agents import create_agent_registry
     from .maf_contracts import MafRuntimeMode, canary_selected, runtime_mode
@@ -137,7 +137,7 @@ except ImportError:
     from rag import search
     from router import deterministic_route
     from run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
-    from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, GuardedFeasibilityReport, RoutingDecision
+    from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, GuardedFeasibilityReport, MarketComparison, RoutingDecision
     from tracing import agent_trace, finish_maf_agent_span, start_maf_agent_span, trace_event
     from maf_agents import create_agent_registry
     from maf_contracts import MafRuntimeMode, canary_selected, runtime_mode
@@ -5518,6 +5518,8 @@ async def _try_full_maf_runtime(
         return None
     if not canary_selected(req.workspace_id, conversation_id):
         return None
+    if decision.intent == "corpus_qa":
+        return None
     preliminary = _maf_team_request(req, decision, artifact, conversation_id)
     authoritative_corpus: dict[str, Any] = {}
     if preliminary.needs_workspace:
@@ -5737,14 +5739,12 @@ def _merge_maf_artifact(artifact: dict[str, Any], result: MafTeamRunResult) -> N
         value = runtime_artifact.get(key)
         if isinstance(value, dict):
             artifact[key] = copy.deepcopy(value)
-    if "external_signals" in runtime_artifact:
-        market = dict(artifact.get("market") or {})
-        market["signals"] = [
-            copy.deepcopy(item)
-            for item in runtime_artifact.get("external_signals") or []
-            if isinstance(item, dict)
-        ]
-        artifact["market"] = market
+    market = runtime_artifact.get("market")
+    if isinstance(market, dict):
+        artifact["market"] = MarketComparison.model_validate(market).model_dump(
+            mode="json",
+            by_alias=True,
+        )
     artifact["maf"] = result.summary.model_dump(mode="json", exclude_none=True)
     artifact["maf"]["gaps"] = list(result.gaps)
     artifact["maf"]["degraded"] = result.degraded

@@ -137,6 +137,33 @@ test("persisted summary remains usable when dynamic trace facts are absent", () 
   assert.equal(model.fallback.error_category, "transient");
 });
 
+test("absent usage and legacy zero placeholders remain null", () => {
+  const model = deriveMafViewModel(
+    [
+      { event: "maf_plan", data: { mode: "direct", selected_agents: [COORDINATOR] } },
+      {
+        event: "maf_agent_completed",
+        data: {
+          agent_id: COORDINATOR,
+          status: "completed",
+          tokens: { total: 0, prompt: 0, completion: 0 },
+        },
+      },
+    ],
+    {
+      agents: [
+        {
+          agent_id: COORDINATOR,
+          status: "completed",
+          tokens: { total: 0, prompt: 0, completion: 0 },
+        },
+      ],
+    },
+  );
+
+  assert.equal(model.agents[0].tokens, null);
+});
+
 test("status tones are truthful and legacy maf_workflow remains outside the dynamic model", () => {
   assert.equal(mafStatusTone("completed"), "completed");
   assert.equal(mafStatusTone("running"), "running");

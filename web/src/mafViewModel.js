@@ -83,21 +83,25 @@ function initialAgentState(id, persistedAgentMap) {
     id,
     status: record.status || "selected",
     durationMs: record.duration_ms ?? metadata.duration_ms ?? null,
-    tokens: record.tokens || metadata.tokens || null,
+    tokens: normalizedTokenUsage(record.tokens) || normalizedTokenUsage(metadata.tokens),
     tools: mafArray(record.tool_names || record.tools || metadata.tool_names || metadata.tools),
     retries: record.retry_count ?? record.retries ?? metadata.retry_count ?? null,
     error: record.error_category || record.error || metadata.error_category || "",
   };
 }
 
-function mafEventTokens(data) {
+function normalizedTokenUsage(value) {
   const tokens = {};
-  for (const key of ["input_tokens", "output_tokens", "total_tokens"]) {
-    if (typeof data?.[key] === "number" && Number.isFinite(data[key])) {
-      tokens[key] = Math.max(0, data[key]);
+  for (const key of ["input_tokens", "output_tokens", "total_tokens", "prompt", "completion", "total"]) {
+    if (typeof value?.[key] === "number" && Number.isFinite(value[key])) {
+      tokens[key] = Math.max(0, value[key]);
     }
   }
-  return Object.keys(tokens).length ? tokens : null;
+  return Object.values(tokens).some((token) => token > 0) ? tokens : null;
+}
+
+function mafEventTokens(data) {
+  return normalizedTokenUsage(data);
 }
 
 export function deriveMafViewModel(trace = [], persistedMaf = null) {
@@ -175,7 +179,10 @@ export function deriveMafViewModel(trace = [], persistedMaf = null) {
         ...current,
         status: semanticStatus,
         durationMs,
-        tokens: mafEventTokens(data) || data.tokens || data.usage || current.tokens,
+        tokens: mafEventTokens(data)
+          || normalizedTokenUsage(data.tokens)
+          || normalizedTokenUsage(data.usage)
+          || current.tokens,
         tools: mafArray(data.tool_names || data.tools).length ? mafArray(data.tool_names || data.tools) : current.tools,
         retries: data.retry_count ?? data.retries ?? current.retries,
         error: data.error_category || data.error || current.error,

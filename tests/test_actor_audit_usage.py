@@ -6,6 +6,8 @@ import backend.conversation_store as conversation_store
 import backend.control_plane as control_plane
 import backend.run_store as run_store
 from backend.identity import actor_from_headers, actor_from_ui_context
+from fastapi.testclient import TestClient
+from backend.app import app
 
 
 def _principal(claims):
@@ -132,6 +134,33 @@ def test_run_summary_and_trace_expose_dynamic_evidence(tmp_path, monkeypatch) ->
     assert trace[0]["source"] == "run_store.steps"
     assert trace[0]["evidence"]["event"] == "ready"
     assert trace[1]["tokens"]["total"] == 19
+
+
+def test_run_summary_and_trace_endpoints_keep_unknown_usage_null(monkeypatch) -> None:
+    run = {
+        "run_id": "run-no-usage",
+        "workspace_id": "ws-no-usage",
+        "status": "completed",
+        "steps": [
+            {
+                "time": "2026-07-12T00:00:00Z",
+                "event": "model_response",
+                "data": {"agent": "df-answer-writer", "status": "completed"},
+            }
+        ],
+        "models": [],
+    }
+    monkeypatch.setattr(control_plane, "get_run", lambda _run_id: run)
+
+    client = TestClient(app)
+    summary = client.get("/api/runs/run-no-usage/summary")
+    trace = client.get("/api/runs/run-no-usage/trace")
+
+    assert summary.status_code == 200
+    assert summary.json()["tokens"] is None
+    assert trace.status_code == 200
+    assert trace.json()[0]["tokens"] is None
+    assert "0 tokens" not in trace.json()[0]["summary"]
 
 
 def test_conversation_store_persists_actor_on_user_message(tmp_path, monkeypatch) -> None:

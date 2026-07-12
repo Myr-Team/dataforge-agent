@@ -32,7 +32,16 @@
     "available_evidence": ["workspace:record-1", "market:source-1"],
     "agent_outputs": {
       "df-corpus-analyst": [{"hits": [{"id": "workspace:record-1"}]}],
-      "df-market-researcher": [{"signals": [{"id": "market:source-1"}]}],
+      "df-market-researcher": [{
+        "opportunity_id": "workspace-opportunity",
+        "competitors": [{
+          "name": "Comparable product",
+          "positioning": "External market reference",
+          "url": "https://example.com/comparable-product"
+        }],
+        "positioning_note": "Keep external comparison separate from workspace-confirmed evidence.",
+        "_llm": {"mode": "deterministic_fixture"}
+      }],
       "df-feasibility-analyst": [{"completed": true, "claims": [{"text": "Both evidence channels support a limited pilot.", "evidence_refs": ["workspace:record-1", "market:source-1"]}], "verdict": "supported"}],
       "df-auditor": [{"verdict": "pass"}]
     },

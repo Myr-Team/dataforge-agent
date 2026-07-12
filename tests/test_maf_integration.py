@@ -544,9 +544,58 @@ async def test_full_runtime_sse_emits_live_agent_start_before_runtime_completion
 
 
 @pytest.mark.asyncio
-async def test_runtime_failure_emits_one_fallback_and_runs_legacy_once(monkeypatch) -> None:
+async def test_full_corpus_qa_bypasses_maf_and_calls_retrieval_and_answer_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     decision = _decision(experts=["df-corpus-analyst"], output_mode="chat")
     decision.intent = "corpus_qa"
+    _patch_common(monkeypatch, decision)
+    calls: list[str] = []
+
+    def corpus_once(*_args, **_kwargs):
+        calls.append("corpus")
+        return _authoritative_corpus()
+
+    async def answer_once(_req, _decision, _artifact, conversation_id, state):
+        calls.append("answer")
+        state["text"] = "grounded direct answer"
+        yield orchestrator._frame("answer_delta", {"delta": state["text"]}, conversation_id)
+
+    monkeypatch.setattr(orchestrator, "_run_corpus_analyst", corpus_once)
+    monkeypatch.setattr(orchestrator, "_stream_answer_frames", answer_once)
+    monkeypatch.setattr(
+        orchestrator,
+        "create_agent_registry",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("MAF must be bypassed")),
+    )
+
+    frames = [
+        frame
+        async for frame in orchestrator._orchestrate_chat_impl(
+            ChatRequest(workspace_id="workspace-1", message="summarize the evidence")
+        )
+    ]
+    names = _event_names(frames)
+
+    assert calls == ["corpus", "answer"]
+    assert names == [
+        "ready",
+        "user",
+        "route",
+        "plan",
+        "role_change",
+        "tool_call",
+        "tool_result",
+        "answer_delta",
+        "final",
+    ]
+    assert not any(name.startswith("maf_") for name in names)
+
+
+@pytest.mark.asyncio
+async def test_runtime_failure_emits_one_fallback_and_runs_legacy_once(monkeypatch) -> None:
+    decision = _decision(experts=["df-corpus-analyst"], output_mode="chat")
+    decision.intent = "workspace_research"
     _patch_common(monkeypatch, decision)
     legacy_calls = 0
 
@@ -587,7 +636,7 @@ async def test_runtime_failure_emits_one_fallback_and_runs_legacy_once(monkeypat
 @pytest.mark.asyncio
 async def test_post_runtime_event_adaptation_failure_terminates_without_legacy(monkeypatch) -> None:
     decision = _decision(experts=["df-corpus-analyst"], output_mode="chat")
-    decision.intent = "corpus_qa"
+    decision.intent = "workspace_research"
     _patch_common(monkeypatch, decision)
     legacy_calls = 0
 
@@ -629,7 +678,7 @@ async def test_post_runtime_event_adaptation_failure_terminates_without_legacy(m
 @pytest.mark.asyncio
 async def test_post_runtime_finalization_failure_terminates_without_legacy(monkeypatch) -> None:
     decision = _decision(experts=["df-corpus-analyst"], output_mode="chat")
-    decision.intent = "corpus_qa"
+    decision.intent = "workspace_research"
     _patch_common(monkeypatch, decision)
     legacy_calls = 0
 
@@ -676,7 +725,7 @@ async def test_post_runtime_finalization_failure_terminates_without_legacy(monke
 @pytest.mark.asyncio
 async def test_full_runtime_cancellation_propagates_without_fallback_or_legacy(monkeypatch) -> None:
     decision = _decision(experts=["df-corpus-analyst"], output_mode="chat")
-    decision.intent = "corpus_qa"
+    decision.intent = "workspace_research"
     _patch_common(monkeypatch, decision)
     legacy_calls = 0
 
@@ -759,7 +808,14 @@ def test_maf_artifact_merge_whitelists_runtime_owned_fields() -> None:
             "output_contract": {"answer_style": "model-contract"},
             "corpus": {"hits": [{"id": "model-hit"}]},
             "hits": [{"id": "model-flat-hit"}],
-            "external_signals": [{"id": "market-signal"}],
+            "market": {
+                "opportunity_id": "retention-workflow",
+                "competitors": [{"name": "Retention Cloud"}],
+                "positioning_note": "Differentiate with workspace evidence.",
+                "_llm": {"mode": "foundry_market_agent"},
+                "signals": [{"id": "must-not-cross-market-contract"}],
+            },
+            "external_signals": [{"id": "must-not-be-normalized"}],
         }
     )
 
@@ -773,7 +829,12 @@ def test_maf_artifact_merge_whitelists_runtime_owned_fields() -> None:
     assert artifact["corpus"] == _authoritative_corpus()
     assert artifact["feasibility"]["verdict"] == "conditional"
     assert artifact["audit"]["verdict"] == "pass"
-    assert artifact["market"]["signals"] == [{"id": "market-signal"}]
+    assert artifact["market"] == {
+        "opportunity_id": "retention-workflow",
+        "competitors": [{"name": "Retention Cloud"}],
+        "positioning_note": "Differentiate with workspace evidence.",
+        "_llm": {"mode": "foundry_market_agent"},
+    }
 
 
 def test_maf_summary_is_derived_from_typed_runtime_events() -> None:

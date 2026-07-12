@@ -28,7 +28,7 @@ from backend.maf_team_runtime import (
     classify_workflow_error,
     select_collaboration_plan,
 )
-from backend.schemas import FeasibilityReport
+from backend.schemas import FeasibilityReport, MarketComparison
 
 
 class FakeAgent:
@@ -143,7 +143,20 @@ class FakeRegistry:
 def fake_registry() -> FakeRegistry:
     registry = FakeRegistry()
     registry.outputs["df-corpus-analyst"].append({"hits": [{"id": "workspace-1"}]})
-    registry.outputs["df-market-researcher"].append({"signals": [{"id": "market-1"}]})
+    registry.outputs["df-market-researcher"].append(
+        {
+            "opportunity_id": "retention-workflow",
+            "competitors": [
+                {
+                    "name": "Retention Cloud",
+                    "positioning": "Automated retention workflows",
+                    "url": "https://example.com/retention-cloud",
+                }
+            ],
+            "positioning_note": "Differentiate with workspace-confirmed evidence.",
+            "_llm": {"mode": "foundry_market_agent"},
+        }
+    )
     registry.outputs["df-feasibility-analyst"].append({"verdict": "supported"})
     registry.outputs["df-auditor"].append({"verdict": "pass"})
     return registry
@@ -317,8 +330,20 @@ def test_provider_errors_are_classified_from_bounded_runtime_attributes() -> Non
         error_type = "ServiceRequestError"
         message = "connection timeout"
 
+    class ConnectError(RuntimeError):
+        pass
+
+    class ReadTimeout(RuntimeError):
+        pass
+
+    class DnsFailure(RuntimeError):
+        pass
+
     assert classify_agent_error(ProviderError(status_code=429)) == "transient"
     assert classify_agent_error(ProviderError(code="ResponsibleAIPolicyViolation")) == "content_policy"
+    assert classify_agent_error(ConnectError("socket failed")) == "transient"
+    assert classify_agent_error(ReadTimeout("operation exceeded deadline")) == "transient"
+    assert classify_agent_error(DnsFailure("getaddrinfo failed")) == "transient"
     assert classify_workflow_error(WorkflowError()) == "transient"
 
 
@@ -777,6 +802,88 @@ async def test_synthetic_unknown_hit_reference_is_not_authoritative(
 
     assert result.artifact["verdict"] == "insufficient_evidence"
     assert fake_registry.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_file", "chunk_id", "ref"),
+    [
+        ("unknown", "row-1", "unknown#row-1"),
+        ("untitled.csv", "row-1", "untitled.csv#row-1"),
+        ("n/a", "row-1", "n/a#row-1"),
+        ("evidence.csv", "chunk", "evidence.csv#chunk"),
+        ("evidence.csv", "unknown", "evidence.csv#unknown"),
+        ("unknown", "chunk", "unknown#chunk"),
+    ],
+)
+async def test_placeholder_corpus_identities_fail_closed_even_with_matching_quote(
+    fake_registry: FakeRegistry,
+    source_file: str,
+    chunk_id: str,
+    ref: str,
+):
+    request = MafTeamRequest(
+        intent="qa",
+        output_mode="chat",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=False,
+        payload={"workspace_id": "workspace-1", "query": "summarize"},
+        authoritative_corpus={
+            "hits": [
+                {
+                    "id": "apparently-valid-id",
+                    "source_file": source_file,
+                    "chunk_id": chunk_id,
+                    "content": "Matching but untraceable content.",
+                }
+            ]
+        },
+        evidence_catalog=[
+            {
+                "source_type": "corpus",
+                "ref": ref,
+                "quote": "Matching but untraceable content.",
+            }
+        ],
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    assert result.artifact["verdict"] == "insufficient_evidence"
+    assert "workspace_evidence_unavailable" in result.gaps
+    assert fake_registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_market_agent_output_uses_market_comparison_contract_and_reaches_feasibility(
+    fake_registry: FakeRegistry,
+):
+    result = await MafTeamRuntime(fake_registry).run(concurrent_request())
+
+    market = MarketComparison.model_validate(result.artifact["market"])
+    assert market.competitors[0]["name"] == "Retention Cloud"
+    assert market.positioning_note == "Differentiate with workspace-confirmed evidence."
+    assert result.artifact["market"]["_llm"] == {"mode": "foundry_market_agent"}
+    assert fake_registry.inputs["df-feasibility-analyst"][0]["market"] == result.artifact["market"]
+
+
+@pytest.mark.asyncio
+async def test_signals_only_market_output_is_rejected_as_contract_invalid(
+    fake_registry: FakeRegistry,
+):
+    fake_registry.outputs["df-market-researcher"].clear()
+    fake_registry.outputs["df-market-researcher"].append(
+        {"signals": [{"id": "unsupported-shape"}]}
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(concurrent_request())
+
+    market_branch = next(item for item in result.branch_results if item.branch_id == "external")
+    assert market_branch.status == "failed"
+    assert market_branch.error_category == "contract_validation"
+    assert "external_signal_unavailable" in result.gaps
+    assert "market" not in result.artifact
 
 
 @pytest.mark.asyncio
