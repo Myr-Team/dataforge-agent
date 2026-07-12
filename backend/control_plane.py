@@ -968,6 +968,7 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
     usage = _workspace_usage_by_actor(workspace_id)
     audit = workspace_audit_events(workspace_id, request)
     roi = _workspace_roi_summary(usage, audit, list_outcome_events(workspace_id))
+    foundry_monitoring = _foundry_monitoring_status()
     return {
         "workspace_id": workspace_id,
         "generated_at": _now(),
@@ -990,6 +991,7 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
         },
         "usage": usage,
         "chargeback": _workspace_chargeback(usage, roi),
+        "foundry_monitoring": foundry_monitoring,
         "audit": {
             "count": audit.get("count") or 0,
             "events": (audit.get("events") or [])[:20],
@@ -997,6 +999,29 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
             "by_actor": _count_audit_by_actor(audit.get("events") or []),
         },
         "roi": roi,
+    }
+
+
+def _foundry_monitoring_status() -> dict[str, Any]:
+    snapshot = observability_snapshot()
+    tracing = snapshot.get("tracing") if isinstance(snapshot.get("tracing"), dict) else {}
+    app_insights = bool(tracing.get("app_insights"))
+    otel_sdk = bool(tracing.get("otel_sdk"))
+    status = "connected" if app_insights and otel_sdk else "partial" if app_insights or otel_sdk else "not_configured"
+    registered = str(os.environ.get("DF_FOUNDRY_AGENT_REGISTERED") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    return {
+        "status": status,
+        "source": "application_insights" if app_insights else None,
+        "exporter": tracing.get("exporter"),
+        "service_name": tracing.get("service_name"),
+        "gen_ai_semantic_conventions": app_insights and otel_sdk,
+        "foundry_agent_registered": registered,
+        "native_roi_status": "configured" if registered and str(os.environ.get("DF_FOUNDRY_ROI_ENABLED") or "0") == "1" else "not_configured",
+        "note": (
+            "Runtime spans are exported with gen_ai semantic attributes. Business outcomes remain sourced from the DataForge outcome ledger."
+            if status == "connected"
+            else "Connect Application Insights and the OpenTelemetry exporter before claiming Foundry-compatible monitoring."
+        ),
     }
 
 

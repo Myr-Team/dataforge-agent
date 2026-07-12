@@ -2295,6 +2295,7 @@ function GovernanceSummaryPanel({ governance, compact = false }) {
   const outcomes = roi.outcomes || {};
   const chargeback = governance?.chargeback || {};
   const security = governance?.security || {};
+  const foundryMonitoring = governance?.foundry_monitoring || {};
   const members = Array.isArray(chargeback.members) ? chargeback.members : [];
   const events = Array.isArray(governance?.audit?.events) ? governance.audit.events : [];
   if (!governance) {
@@ -2354,6 +2355,7 @@ function GovernanceSummaryPanel({ governance, compact = false }) {
           <div className="gov-box-h"><ShieldCheck size={14} /><b>安全与溯源</b></div>
           <div className="gov-row"><span>身份源</span><b>{security.identity_provider || "Microsoft Entra ID"}</b></div>
           <div className="gov-row"><span>权限执行</span><b>{security.rbac_enforced ? "已启用" : "兼容模式"}</b></div>
+          <div className="gov-row"><span>Foundry 监控</span><b>{foundryMonitoring.status === "connected" ? "已接入" : foundryMonitoring.status === "partial" ? "部分配置" : "未配置"}</b></div>
           <div className="gov-row"><span>审计事件</span><b>{formatCount(governance.audit?.count)}</b></div>
           <div className="gov-row"><span>Graph 邀请</span><b>{security.graph_directory?.status === "optional" ? "待授权" : security.graph_directory?.status || "待授权"}</b></div>
         </div>

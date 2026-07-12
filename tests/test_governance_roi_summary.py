@@ -227,3 +227,29 @@ def test_governance_sums_known_usage_and_marks_mixed_data_partial(monkeypatch) -
     assert member["usage_status"] == "partial"
     assert result["roi"]["inputs"]["usage_status"] == "partial"
     assert result["chargeback"]["totals"]["usage_status"] == "partial"
+
+
+def test_governance_reports_foundry_compatible_observability_truthfully(monkeypatch) -> None:
+    monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: [])
+    monkeypatch.setattr(control_plane, "list_conversations", lambda workspace_id=None: [])
+    monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [])
+    monkeypatch.setattr(
+        control_plane,
+        "observability_snapshot",
+        lambda: {
+            "tracing": {
+                "app_insights": True,
+                "otel_sdk": True,
+                "exporter": "azure-monitor-opentelemetry",
+                "service_name": "dataforge-backend",
+            }
+        },
+    )
+
+    result = control_plane.workspace_governance_summary("ws-observability", RequestStub())
+
+    monitoring = result["foundry_monitoring"]
+    assert monitoring["status"] == "connected"
+    assert monitoring["gen_ai_semantic_conventions"] is True
+    assert monitoring["source"] == "application_insights"
+    assert result["roi"]["native_foundry_roi"]["status"] == "not_configured"
