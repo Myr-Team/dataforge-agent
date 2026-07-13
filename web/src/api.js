@@ -1,4 +1,4 @@
-export const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+export const API_BASE = import.meta.env?.VITE_API_BASE ?? "";
 const ACTOR_STORAGE_KEY = "df-current-user";
 
 function clientActorHeaders() {
@@ -62,7 +62,9 @@ async function request(path, options = {}) {
     } catch {
       // Keep HTTP status text when the server does not return JSON.
     }
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
@@ -318,6 +320,31 @@ export async function loadWorkspaceAuditEvents(workspaceId) {
 
 export async function loadWorkspaceGovernance(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance-summary`);
+}
+
+export async function loadWorkspaceTraceStatus(workspaceId, { runId = "", correlationId = "" } = {}) {
+  const params = new URLSearchParams();
+  if (runId) params.set("run_id", runId);
+  if (correlationId) params.set("correlation_id", correlationId);
+  const query = params.toString();
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/trace-status${query ? `?${query}` : ""}`);
+}
+
+export async function loadWorkspaceRoi(workspaceId, { from, to }) {
+  const params = new URLSearchParams({ from, to });
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/roi?${params.toString()}`);
+}
+
+export async function loadWorkspaceChargeback(workspaceId, { from, to }) {
+  const params = new URLSearchParams({ from, to });
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/chargeback?${params.toString()}`);
+}
+
+export async function loadWorkspaceGovernanceAuditEvents(workspaceId, { limit = 50, cursor = "" } = {}) {
+  const boundedLimit = Math.max(1, Math.min(100, Number.parseInt(limit, 10) || 50));
+  const params = new URLSearchParams({ limit: String(boundedLimit) });
+  if (cursor) params.set("cursor", cursor);
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/audit-events?${params.toString()}`);
 }
 
 export async function loadConversationStructuredResult(conversationId) {

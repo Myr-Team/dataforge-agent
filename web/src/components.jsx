@@ -3,6 +3,15 @@ import { createPortal } from "react-dom";
 import { startTour } from "./tour.js";
 import { MAF_MODES, deriveMafViewModel, mafEventData, mafRevisionNumber, mafStatusLabel, mafStatusTone } from "./mafViewModel.js";
 import { formatGovernanceTokenLabel, formatGovernanceTokens } from "./governanceUsage.js";
+import {
+  appendAuditPage,
+  auditEventViewModel,
+  chargebackViewModel,
+  governancePermissions,
+  invitationLifecycleViewModel,
+  roiViewModel,
+  traceViewModel,
+} from "./governanceViewModel.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 import {
   Activity,
@@ -67,7 +76,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance } from "./api.js";
+import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceTraceStatus, loadWorkspaceRoi, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -2366,102 +2375,169 @@ function groupTraceRows(items) {
   }));
 }
 
-function GovernanceSummaryPanel({ governance, compact = false }) {
-  const roi = governance?.roi || {};
-  const outcomes = roi.outcomes || {};
-  const chargeback = governance?.chargeback || {};
-  const security = governance?.security || {};
-  const foundryMonitoring = governance?.foundry_monitoring || {};
-  const members = Array.isArray(chargeback.members) ? chargeback.members : [];
-  const events = Array.isArray(governance?.audit?.events) ? governance.audit.events : [];
-  if (!governance) {
+function GovernanceInlineState({ loading, error, empty, emptyText, onRetry, children }) {
+  if (loading) return <div className="gov-inline-state loading"><Loader2 size={14} className="spin" /><span>正在读取服务端证据</span></div>;
+  if (error) {
     return (
-      <section className="card gov-panel">
-        <div className="gov-head"><strong>治理与 ROI</strong><span className="dw-chip probing"><Loader2 size={11} className="spin" /> 加载中</span></div>
-        <p className="gov-empty">正在读取工作区用量、审计事件和 ROI 估算。</p>
-      </section>
+      <div className="gov-inline-state error" role="alert">
+        <AlertTriangle size={14} />
+        <span>{error}</span>
+        <button type="button" onClick={onRetry}><RefreshCw size={13} />重试</button>
+      </div>
     );
   }
-  const topMembers = members.slice(0, compact ? 3 : 6);
-  const controls = Array.isArray(security.controls) ? security.controls : [];
-  const outcomeMetrics = Array.isArray(outcomes.metrics) ? outcomes.metrics.slice(0, compact ? 2 : 4) : [];
-  const roiState = roi.status || "estimated";
-  const roiStateLabel = roiState === "verified" ? "已验证" : roiState === "measured" ? "已测量" : "估算";
-  const roiStateTone = roiState === "verified" ? "ok" : roiState === "measured" ? "info" : "warn";
+  if (empty) return <div className="gov-inline-state"><Info size={14} /><span>{emptyText || "未记录"}</span></div>;
+  return children;
+}
+
+function GovernanceSectionHead({ icon: Icon, title, description, badge }) {
   return (
-    <section className={`card gov-panel ${compact ? "compact" : ""}`}>
-      <div className="gov-head">
-        <strong>治理与 ROI</strong>
-        <span className="dw-chip ok">真实运行聚合</span>
-      </div>
-      <div className="gov-kpis">
-        <div><span>Token 成本</span><b>{roi.estimated_cost_usd == null ? "未记录" : formatCurrencyUsd(roi.estimated_cost_usd)}</b><em>{formatGovernanceTokenLabel(roi.inputs)}</em></div>
-        <div><span>估算价值</span><b>{formatCurrencyUsd(roi.estimated_value_usd)}</b><em>{formatCount(roi.inputs?.analysis_runs)} 次运行</em></div>
-        <div><span>ROI 倍数</span><b>{roi.roi_multiple ? `${roi.roi_multiple}x` : "待积累"}</b><em>{roi.confidence || "estimated"}</em></div>
-      </div>
-      <div className="gov-outcomes">
-        <div className="gov-outcomes-head">
-          <div><Activity size={14} /><b>真实业务结果</b></div>
-          <span className={`dw-chip ${roiStateTone}`}>{roiStateLabel}</span>
+    <div className="gov-section-head">
+      <div className="gov-section-title"><Icon size={16} /><div><h3>{title}</h3><p>{description}</p></div></div>
+      {badge ? <span className={`gov-status ${badge.tone || "neutral"}`}>{badge.label}</span> : null}
+    </div>
+  );
+}
+
+const auditActionLabels = {
+  "file.create": "创建文件",
+  "file.edit": "编辑文件",
+  "file.delete": "删除文件",
+  "analysis.run": "运行分析",
+  "message.create": "创建消息",
+  "member.update": "更新成员",
+  "member.remove": "移除成员",
+  "invitation.create": "创建邀请",
+  "invitation.send": "发送邀请",
+  "invitation.fail": "邀请失败",
+  "invitation.revoke": "撤销邀请",
+  "connector.sync": "同步连接器",
+  "artifact.generate": "生成产物",
+};
+
+function GovernanceSummaryPanel({ data, members, recentInvitations, windowValue, onWindowChange, onRetry, onLoadMore, loadingMore }) {
+  const trace = traceViewModel(data.trace || {});
+  const roi = roiViewModel({ local: data.roi || {} });
+  const chargeback = chargebackViewModel(data.chargeback || {});
+  const permissions = governancePermissions(data.audit || {});
+  const invitations = invitationLifecycleViewModel(members, recentInvitations);
+  const auditEvents = (data.audit?.events || []).map(auditEventViewModel);
+  const errors = data.errors || {};
+  const restrictedReason = data.permissionReason || permissions.reason;
+  const traceBadge = data.loading ? null : { label: trace.label, tone: trace.tone };
+  const localBadge = data.loading ? null : { label: roi.local.label, tone: roi.local.tone };
+  const providerBadge = data.loading ? null : { label: roi.provider.label, tone: roi.provider.tone };
+  return (
+    <div className="gov-workspace" data-testid="governance-frontend">
+      <div className="gov-toolbar">
+        <div>
+          <h2>治理证据</h2>
+          <p>状态来自当前工作区的服务端权限、遥测、ROI、归因和不可变审计接口。</p>
         </div>
-        {outcomeMetrics.length ? (
-          <div className="gov-outcome-list">
-            {outcomeMetrics.map((metric) => (
-              <div className="gov-outcome-row" key={metric.event_id || `${metric.metric_name}-${metric.observed_at || metric.provenance}`}>
-                <span>{metric.metric_name || "未命名指标"}</span>
-                <b>{metric.observed_value == null ? "待观测" : `${metric.observed_value}${metric.unit ? ` ${metric.unit}` : ""}`}</b>
-                <em>{metric.verification?.status === "verified" ? "已审核" : metric.provenance === "observed" ? "来源已记录" : "模拟/假设"}</em>
-              </div>
-            ))}
-          </div>
-        ) : <p className="gov-empty">尚未回填带来源的试点结果，当前只展示运行成本与时间价值估算。</p>}
+        <div className="gov-window" aria-label="治理统计时间范围">
+          <label><span>从</span><input type="date" value={windowValue.from} onChange={(event) => onWindowChange({ ...windowValue, from: event.target.value })} /></label>
+          <label><span>至（不含）</span><input type="date" value={windowValue.to} onChange={(event) => onWindowChange({ ...windowValue, to: event.target.value })} /></label>
+          <button type="button" className="icon-button gov-refresh" title="刷新治理证据" aria-label="刷新治理证据" onClick={onRetry} disabled={data.loading}>
+            {data.loading ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+          </button>
+        </div>
       </div>
-      <div className="gov-grid">
-        <div className="gov-box">
-          <div className="gov-box-h"><Users size={14} /><b>成员用量归因</b></div>
-          {topMembers.length ? topMembers.map((row) => (
-            <div className="gov-row" key={row.actor?.email || row.actor?.actor_id || row.last_run_id || row.total_tokens}>
-              <span>{row.actor?.name || row.actor?.email || "成员"}</span>
-              <b>{formatGovernanceTokenLabel(row)}</b>
-              <em>{row.estimated_cost_usd == null ? "未记录" : formatCurrencyUsd(row.estimated_cost_usd)}</em>
+
+      <section className="gov-section" aria-label="Azure 遥测送达">
+        <GovernanceSectionHead icon={Activity} title="Azure 遥测送达" description="区分配置、本地发出与远端确认；只有匹配的 Azure Monitor 证据才标记送达。" badge={traceBadge} />
+        <GovernanceInlineState loading={data.loading} error={errors.trace} onRetry={onRetry}>
+          <dl className="gov-facts">
+            <div><dt>配置状态</dt><dd>{trace.state === "not_configured" ? "未配置" : "已配置"}</dd></div>
+            <div><dt>本地发出</dt><dd>{trace.localEmitAt ? formatTime(trace.localEmitAt) : "未记录"}</dd></div>
+            <div><dt>导出回调</dt><dd>{trace.exporterState === "succeeded" ? "已记录成功" : trace.exporterState === "failed" ? "已记录失败" : "未记录"}</dd></div>
+            <div><dt>远端送达</dt><dd>{trace.deliveredAt ? formatTime(trace.deliveredAt) : "未确认"}</dd></div>
+          </dl>
+          {trace.errorType ? <p className="gov-evidence-note error">验证失败类型：{trace.errorType}</p> : null}
+          {trace.transactionUrl ? <a className="gov-external-link" href={trace.transactionUrl} target="_blank" rel="noreferrer">在 Azure Monitor 查看<ArrowUpRight size={13} /></a> : null}
+        </GovernanceInlineState>
+      </section>
+
+      <div className="gov-roi-band">
+        <section className="gov-section" aria-label="本地 ROI">
+          <GovernanceSectionHead icon={TrendingUp} title="本地 ROI" description="由工作区运行、价格配置和来源关联结果计算，不接受 Foundry 数值覆盖。" badge={localBadge} />
+          <GovernanceInlineState loading={data.loading} error={errors.roi} onRetry={onRetry}>
+            <dl className="gov-facts compact">
+              <div><dt>业务价值</dt><dd>{roi.local.businessValue.text}</dd></div>
+              <div><dt>模型成本</dt><dd>{roi.local.costText}</dd></div>
+              <div><dt>Token</dt><dd>{roi.local.tokenText}</dd></div>
+              <div><dt>结果证据</dt><dd>{roi.local.outcomeCount ? `${roi.local.outcomeCount} 条` : "未记录"}</dd></div>
+            </dl>
+            <p className="gov-evidence-note">{roi.local.unverifiedCount ? `${roi.local.unverifiedCount} 条结果尚未独立验证。` : roi.localStatus === "verified" ? "所有窗口内结果均有独立验证记录。" : "当前状态不会因 Foundry 证据而提升。"}</p>
+          </GovernanceInlineState>
+        </section>
+
+        <section className="gov-section" aria-label="Foundry ROI">
+          <GovernanceSectionHead icon={Server} title="Foundry ROI" description="独立展示外部签名快照；未配置、发现验证与数值验证互不替代。" badge={providerBadge} />
+          <GovernanceInlineState loading={data.loading} error={errors.roi} onRetry={onRetry}>
+            <dl className="gov-facts compact">
+              <div><dt>连接证据</dt><dd>{roi.foundryConnectionState === "connected" ? "快照签名已验证" : roi.provider.label}</dd></div>
+              <div><dt>业务价值</dt><dd>{roi.provider.businessValue.text}</dd></div>
+              <div><dt>供应方状态</dt><dd>{roi.provider.label}</dd></div>
+              <div><dt>本地差异</dt><dd>{roi.difference?.amount != null && roi.difference?.currency ? `${roi.difference.currency} ${roi.difference.amount}` : "未生成"}</dd></div>
+            </dl>
+            <p className="gov-evidence-note">Foundry 记录始终与本地 ROI 分开，不会合并或提升本地证据状态。</p>
+          </GovernanceInlineState>
+        </section>
+      </div>
+
+      <section className="gov-section" aria-label="成员 Token 与成本归因">
+        <GovernanceSectionHead icon={Coins} title="成员 Token 与成本归因" description="按可信成员身份和已记录用量归因；未知价格、混合币种和部分证据保持原状态。" badge={!data.loading && permissions.canReadChargeback ? { label: chargeback.totalCostText, tone: chargeback.evidenceStatus === "complete" ? "ok" : "warn" } : null} />
+        {errors.chargeback && !data.loading ? (
+          <GovernanceInlineState error={errors.chargeback} onRetry={onRetry} />
+        ) : !permissions.canReadChargeback && !data.loading ? (
+          <div className="gov-restricted"><ShieldCheck size={15} /><span>{restrictedReason}</span></div>
+        ) : (
+          <GovernanceInlineState loading={data.loading} error={errors.chargeback} empty={!chargeback.rows.length} emptyText="所选时间范围内没有可归因的成员用量。" onRetry={onRetry}>
+            <div className="gov-table-wrap">
+              <table className="gov-table">
+                <thead><tr><th>成员</th><th>Token</th><th>成本与币种</th><th>证据状态</th></tr></thead>
+                <tbody>{chargeback.rows.map((row, index) => <tr key={`${row.memberLabel}-${index}`}><td>{row.memberLabel}</td><td>{row.tokenText}</td><td>{row.costText}</td><td><span className={`gov-status ${row.evidenceStatus === "complete" ? "ok" : "warn"}`}>{row.evidenceStatus === "complete" ? "已计价" : row.evidenceStatus === "partial" ? "部分已计价" : "未记录"}</span></td></tr>)}</tbody>
+              </table>
             </div>
-          )) : <p className="gov-empty">暂无可归因的运行。</p>}
-        </div>
-        <div className="gov-box">
-          <div className="gov-box-h"><ShieldCheck size={14} /><b>安全与溯源</b></div>
-          <div className="gov-row"><span>身份源</span><b>{security.identity_provider || "Microsoft Entra ID"}</b></div>
-          <div className="gov-row"><span>权限执行</span><b>{security.rbac_enforced ? "已启用" : "兼容模式"}</b></div>
-          <div className="gov-row"><span>Foundry 监控</span><b>{foundryMonitoring.status === "connected" ? "已接入" : foundryMonitoring.status === "partial" ? "部分配置" : "未配置"}</b></div>
-          <div className="gov-row"><span>审计事件</span><b>{formatCount(governance.audit?.count)}</b></div>
-          <div className="gov-row"><span>Graph 邀请</span><b>{security.graph_directory?.status === "optional" ? "待授权" : security.graph_directory?.status || "待授权"}</b></div>
-        </div>
-      </div>
-      {!compact ? (
-        <div className="gov-detail">
-          <div className="gov-box">
-            <div className="gov-box-h"><Activity size={14} /><b>最近审计事件</b></div>
-            {events.slice(0, 6).map((event, index) => (
-              <div className="gov-event" key={`${event.type}-${event.run_id || event.conversation_id || index}`}>
-                <span>{event.actor?.name || event.actor?.email || "系统"}</span>
-                <b>{event.action || event.type}</b>
-                <em>{formatTime(event.at)}</em>
-              </div>
-            ))}
-            {!events.length ? <p className="gov-empty">暂无审计事件。</p> : null}
+          </GovernanceInlineState>
+        )}
+        {chargeback.truncated ? <p className="gov-evidence-note warn">结果已达到服务端读取上限；当前表格不是完整历史。</p> : null}
+      </section>
+
+      <section className="gov-section" aria-label="邀请生命周期">
+        <GovernanceSectionHead icon={UserPlus} title="邀请生命周期" description="展示工作区返回的待接受、已接受、失败、过期或撤销状态，不根据邮箱推断权限。" />
+        <GovernanceInlineState loading={data.loading} empty={!invitations.length} emptyText="尚无邀请记录。" onRetry={onRetry}>
+          <div className="gov-table-wrap">
+            <table className="gov-table">
+              <thead><tr><th>受邀成员</th><th>角色</th><th>状态</th><th>更新时间</th></tr></thead>
+              <tbody>{invitations.map((row, index) => <tr key={`${row.email}-${row.state}-${index}`}><td><b>{row.name || row.email || "未公开"}</b>{row.name && row.email ? <small>{row.email}</small> : null}</td><td>{row.role}</td><td><span className={`gov-status ${row.tone}`}>{row.stateLabel}</span></td><td>{row.updatedAt ? formatTime(row.updatedAt) : "未记录"}</td></tr>)}</tbody>
+            </table>
           </div>
-          <div className="gov-box">
-            <div className="gov-box-h"><ShieldCheck size={14} /><b>控制项状态</b></div>
-            {controls.map((item) => (
-              <div className="gov-control" key={item.name}>
-                <span className={`dw-chip ${item.status === "enabled" ? "ok" : "warn"}`}>{item.status === "enabled" ? "已启用" : "需配置"}</span>
-                <div><b>{item.name}</b><em>{item.detail}</em></div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-      <p className="gov-note">Token 成本与时间价值采用明确假设；带来源的试点回填才计为已测量，审核通过后才计为已验证。App Insights 负责运行可观测，不替代业务结果证据。</p>
-    </section>
+        </GovernanceInlineState>
+      </section>
+
+      <section className="gov-section" aria-label="不可变审计事件">
+        <GovernanceSectionHead icon={ShieldCheck} title="不可变审计事件" description="按服务端游标分页读取；界面不提供更新或删除，并只显示后端假名。" badge={!data.loading && permissions.canReadAudit ? { label: `${auditEvents.length} 条已加载`, tone: "info" } : null} />
+        {errors.audit && !data.loading ? (
+          <GovernanceInlineState error={errors.audit} onRetry={onRetry} />
+        ) : !permissions.canReadAudit && !data.loading ? (
+          <div className="gov-restricted"><ShieldCheck size={15} /><span>{restrictedReason}</span></div>
+        ) : (
+          <GovernanceInlineState loading={data.loading} error={errors.audit} empty={!auditEvents.length} emptyText="当前工作区尚无不可变审计事件。" onRetry={onRetry}>
+            <div className="gov-audit-list">
+              {auditEvents.map((event, index) => (
+                <article className="gov-audit-row" key={`${event.revision || "event"}-${index}`}>
+                  <span className={`gov-result ${event.result}`}>{event.result === "allowed" ? "允许" : event.result === "denied" ? "拒绝" : event.result === "failed" ? "失败" : "未记录"}</span>
+                  <div><b>{auditActionLabels[event.action] || event.action}</b><span>{event.actor} · {event.resourceType} / {event.resource}</span></div>
+                  <div className="gov-audit-meta"><span>#{event.revision || "-"}</span><time>{event.at ? formatTime(event.at) : "未记录"}</time></div>
+                </article>
+              ))}
+            </div>
+          </GovernanceInlineState>
+        )}
+        {permissions.canReadAudit && data.audit?.has_more ? <button type="button" className="gov-load-more" onClick={onLoadMore} disabled={loadingMore}>{loadingMore ? <Loader2 size={14} className="spin" /> : <ChevronDown size={14} />}加载更早事件</button> : null}
+      </section>
+    </div>
   );
 }
 
@@ -2479,7 +2555,6 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
   const [traceOpen, setTraceOpen] = useState({});
   const [logOpen, setLogOpen] = useState(false);
   const [logText, setLogText] = useState("");
-  const [governance, setGovernance] = useState(null);
   const runMaf = useMemo(() => deriveMafViewModel(rtrace || [], summary?.maf), [rtrace, summary?.maf]);
   useEffect(() => {
     if (!runId) return;
@@ -2487,17 +2562,6 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
     loadRunSummary(runId).then(setSummary).catch(() => {});
     loadRunTrace(runId).then((d) => setRtrace(Array.isArray(d) ? d : (d?.trace || []))).catch(() => {});
   }, [runId]);
-  useEffect(() => {
-    if (!workspaceId) {
-      setGovernance(null);
-      return undefined;
-    }
-    let cancelled = false;
-    loadWorkspaceGovernance(workspaceId)
-      .then((data) => { if (!cancelled) setGovernance(data); })
-      .catch(() => { if (!cancelled) setGovernance(null); });
-    return () => { cancelled = true; };
-  }, [workspaceId]);
   const openLog = () => {
     setLogOpen(true); setLogText("");
     loadRunLog(runId, "text").then((d) => setLogText(typeof d === "string" ? d : (d?.text || JSON.stringify(d, null, 2)))).catch((e) => setLogText(`加载日志失败：${e.message}`));
@@ -2572,10 +2636,10 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
 
       <div className="run-mid">
         <section className="card obs2">
-          <div className="obs2-head"><strong>可观测性集成</strong><span className={`dw-chip ${t.app_insights && t.otel_sdk ? "ok" : "warn"}`}>{t.app_insights && t.otel_sdk ? "已接入" : "未完整配置"}</span></div>
+          <div className="obs2-head"><strong>可观测性集成</strong><span className={`dw-chip ${t.app_insights && t.otel_sdk ? "ok" : "warn"}`}>{t.app_insights && t.otel_sdk ? "已配置" : "未完整配置"}</span></div>
           <div className="obs2-items">
-            <div className="obs2-item"><ObsIcon name="monitor" /><div><b>Azure Monitor</b><em>{t.app_insights ? "已接入" : "未配置"}</em></div></div>
-            <div className="obs2-item"><ObsIcon name="appinsights" /><div><b>App Insights</b><em>{t.app_insights ? "已接入" : "未配置"}</em></div></div>
+            <div className="obs2-item"><ObsIcon name="monitor" /><div><b>Azure Monitor</b><em>{t.app_insights ? "已配置" : "未配置"}</em></div></div>
+            <div className="obs2-item"><ObsIcon name="appinsights" /><div><b>App Insights</b><em>{t.app_insights ? "已配置" : "未配置"}</em></div></div>
             <div className="obs2-item"><ObsIcon name="otel" /><div><b>OpenTelemetry</b><em>{t.otel_sdk ? "已启用" : "未配置"}</em></div></div>
           </div>
           <div className="obs2-meta">
@@ -2593,8 +2657,6 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
           <p className="rubric2-note">{cg ? `rubric ${cg.rubric_version || "未记录"} · 预测分与人工标注分单调一致，说明可行性评分趋势一致、可信。` : "本工作区尚未返回 rubric 校准结果，不能据此宣称评分已校准。"}</p>
         </section>
       </div>
-
-      <GovernanceSummaryPanel governance={governance} compact />
 
       <div className="run-body2">
         <section className="card run-trace">
@@ -2831,6 +2893,21 @@ function memberStatusLabel(status) {
   return cleanUserValue(status) || "成员";
 }
 
+function initialGovernanceWindow() {
+  const to = new Date();
+  to.setUTCDate(to.getUTCDate() + 1);
+  const from = new Date(to);
+  from.setUTCDate(from.getUTCDate() - 30);
+  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+}
+
+function governanceIsoWindow(value) {
+  const from = new Date(`${value.from}T00:00:00.000Z`);
+  const to = new Date(`${value.to}T00:00:00.000Z`);
+  if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from >= to) return null;
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+
 function SettingsCenter({ dashboard, observability, user, initialTab = "about" }) {
   const health = dashboard?.health || {};
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
@@ -2849,12 +2926,72 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
   const [directoryState, setDirectoryState] = useState({ connected: null, users: [], error: null });
   const [directoryLoading, setDirectoryLoading] = useState(false);
   const [sendGraphInvite, setSendGraphInvite] = useState(false);
-  const [governance, setGovernance] = useState(null);
+  const [governanceData, setGovernanceData] = useState({ loading: true, trace: null, roi: null, chargeback: null, audit: null, errors: {}, permissionReason: "" });
+  const [governanceWindow, setGovernanceWindow] = useState(initialGovernanceWindow);
+  const [governanceLoadingMore, setGovernanceLoadingMore] = useState(false);
+  const [recentInvitations, setRecentInvitations] = useState([]);
+  const governanceRequestVersion = useRef(0);
   const [workspaceSettings, setWorkspaceSettings] = useState(null);
   const [settingsDrawer, setSettingsDrawer] = useState(null);
   const applyMemberPayload = (data) => {
     setMemberRows(Array.isArray(data?.members) ? data.members : []);
     setMemberMeta(data || null);
+  };
+  const memberPermissions = governancePermissions(governanceData.audit || {});
+  const memberPermissionReason = governanceData.loading ? "正在验证工作区管理权限" : (governanceData.permissionReason || memberPermissions.reason);
+  const loadGovernanceEvidence = async () => {
+    if (!workspaceId) return;
+    const windowQuery = governanceIsoWindow(governanceWindow);
+    if (!windowQuery) {
+      setGovernanceData((current) => ({ ...current, loading: false, errors: { trace: "请选择有效时间范围", roi: "请选择有效时间范围", chargeback: "请选择有效时间范围", audit: "请选择有效时间范围" } }));
+      return;
+    }
+    const requestVersion = ++governanceRequestVersion.current;
+    setGovernanceData((current) => ({ ...current, loading: true, errors: {}, permissionReason: "" }));
+    const [traceResult, roiResult, auditResult] = await Promise.allSettled([
+      loadWorkspaceTraceStatus(workspaceId),
+      loadWorkspaceRoi(workspaceId, windowQuery),
+      loadWorkspaceGovernanceAuditEvents(workspaceId, { limit: 25 }),
+    ]);
+    if (requestVersion !== governanceRequestVersion.current) return;
+    const next = { loading: false, trace: null, roi: null, chargeback: null, audit: null, errors: {}, permissionReason: "" };
+    if (traceResult.status === "fulfilled") next.trace = traceResult.value;
+    else next.errors.trace = "遥测送达状态读取失败，请重试";
+    if (roiResult.status === "fulfilled") next.roi = roiResult.value;
+    else next.errors.roi = "ROI 证据读取失败，请重试";
+    if (auditResult.status === "fulfilled") {
+      next.audit = auditResult.value;
+      const permissions = governancePermissions(auditResult.value);
+      if (permissions.canReadChargeback) {
+        try {
+          next.chargeback = await loadWorkspaceChargeback(workspaceId, windowQuery);
+        } catch {
+          next.errors.chargeback = "成员归因读取失败，请重试";
+        }
+      } else {
+        next.permissionReason = permissions.reason;
+      }
+    } else if (auditResult.reason?.status === 403) {
+      next.permissionReason = "需要工作区所有者或管理员权限";
+    } else {
+      next.errors.audit = "审计事件读取失败，请重试";
+      next.errors.chargeback = "权限验证失败，暂不读取成员归因";
+      next.permissionReason = "权限验证失败";
+    }
+    if (requestVersion === governanceRequestVersion.current) setGovernanceData(next);
+  };
+  const loadMoreGovernanceAudit = async () => {
+    const cursor = governanceData.audit?.next_cursor;
+    if (!workspaceId || !cursor || governanceLoadingMore) return;
+    setGovernanceLoadingMore(true);
+    try {
+      const page = await loadWorkspaceGovernanceAuditEvents(workspaceId, { limit: 25, cursor });
+      setGovernanceData((current) => ({ ...current, audit: appendAuditPage(current.audit, page), errors: { ...current.errors, audit: "" } }));
+    } catch {
+      setGovernanceData((current) => ({ ...current, errors: { ...current.errors, audit: "更早的审计事件读取失败，请重试" } }));
+    } finally {
+      setGovernanceLoadingMore(false);
+    }
   };
   useEffect(() => { loadSystemStatus().then(setSys).catch(() => {}); }, []);
   useEffect(() => {
@@ -2864,7 +3001,8 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
     if (!workspaceId) {
       setMemberRows([]);
       setMemberMeta(null);
-      setGovernance(null);
+      governanceRequestVersion.current += 1;
+      setGovernanceData({ loading: false, trace: null, roi: null, chargeback: null, audit: null, errors: {}, permissionReason: "" });
       return undefined;
     }
     let cancelled = false;
@@ -2883,11 +3021,12 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
     loadWorkspaceSettings(workspaceId)
       .then((data) => { if (!cancelled) setWorkspaceSettings(data); })
       .catch(() => { if (!cancelled) setWorkspaceSettings(null); });
-    loadWorkspaceGovernance(workspaceId)
-      .then((data) => { if (!cancelled) setGovernance(data); })
-      .catch(() => { if (!cancelled) setGovernance(null); });
     return () => { cancelled = true; };
   }, [workspaceId]);
+  useEffect(() => {
+    loadGovernanceEvidence();
+    return () => { governanceRequestVersion.current += 1; };
+  }, [workspaceId, governanceWindow.from, governanceWindow.to]);
   useEffect(() => {
     const nodes = SETTINGS_ICON_SRCS.map((href) => {
       const node = document.createElement("link");
@@ -2931,6 +3070,10 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
   const submitDirectorySearch = (event) => {
     event.preventDefault();
     if (!workspaceId || directoryLoading) return;
+    if (!memberPermissions.canManageMembers) {
+      setMemberError(memberPermissionReason);
+      return;
+    }
     setDirectoryLoading(true);
     setMemberError("");
     searchEntraUsers(workspaceId, directoryQuery, 8)
@@ -2967,6 +3110,10 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
   const submitInvite = (event) => {
     event.preventDefault();
     if (!workspaceId || memberAction) return;
+    if (!memberPermissions.canManageMembers) {
+      setMemberError(memberPermissionReason);
+      return;
+    }
     const email = cleanUserValue(inviteForm.email).toLowerCase();
     if (!email || !email.includes("@")) {
       setMemberError("请输入有效的成员邮箱。");
@@ -2986,6 +3133,15 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
     })
       .then((data) => {
         applyMemberPayload(data);
+        if (data?.invitation) {
+          setRecentInvitations((current) => [{
+            email,
+            name: cleanUserValue(inviteForm.name),
+            role: inviteForm.role || "editor",
+            state: data.invitation.state || data.invitation.status || "pending",
+            updated_at: data.invitation.updated_at || data.invitation.at || new Date().toISOString(),
+          }, ...current.filter((item) => item.email !== email)].slice(0, 12));
+        }
         setInviteForm({ email: "", name: "", role: "editor" });
         const graphStatus = data?.graph_invite?.status;
         if (sendGraphInvite && graphStatus === "sent") {
@@ -3004,6 +3160,10 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
   const removeWorkspaceMember = (email) => {
     const target = cleanUserValue(email);
     if (!workspaceId || !target || memberAction) return;
+    if (!memberPermissions.canManageMembers) {
+      setMemberError(memberPermissionReason);
+      return;
+    }
     setMemberAction(`remove:${target}`);
     setMemberError("");
     setMemberNotice("");
@@ -3020,6 +3180,10 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
   const updateWorkspaceMemberRole = (email, role) => {
     const target = cleanUserValue(email);
     if (!workspaceId || !target || memberAction) return;
+    if (!memberPermissions.canManageMembers) {
+      setMemberError(memberPermissionReason);
+      return;
+    }
     setMemberAction(`role:${target}`);
     setMemberError("");
     setMemberNotice("");
@@ -3121,7 +3285,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
         {cfgCard(<Cpu size={16} />, "工作区偏好", [["界面语言", "简体中文"], ["主题", "浅色（深色即将支持）"], ["时区", "跟随系统"], ["数据持久化", "Azure Blob（工作区/会话/产物）"], ["默认时区显示", "跟随系统"]], "自定义界面语言、主题、时区与数据持久化偏好。", "preferences")}
       </div>
 
-      <div className="set-bottom">
+      <div className={`set-bottom ${tab === "governance" ? "governance-active" : ""}`}>
         <section className="card set-conn">
           <div className="set-conn-h"><strong>集成与连接状态</strong>
             <button type="button" className="set-refresh" onClick={reprobe} disabled={probing}>
@@ -3160,7 +3324,16 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
             </div>
           ) : tab === "governance" ? (
             <div className="set-governance">
-              <GovernanceSummaryPanel governance={governance} />
+              <GovernanceSummaryPanel
+                data={governanceData}
+                members={memberRows}
+                recentInvitations={recentInvitations}
+                windowValue={governanceWindow}
+                onWindowChange={setGovernanceWindow}
+                onRetry={loadGovernanceEvidence}
+                onLoadMore={loadMoreGovernanceAudit}
+                loadingMore={governanceLoadingMore}
+              />
             </div>
           ) : (
             <div className="set-members">
@@ -3175,10 +3348,11 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
                     type="search"
                     value={directoryQuery}
                     onChange={(event) => setDirectoryQuery(event.target.value)}
+                    disabled={!memberPermissions.canManageMembers}
                     placeholder="搜索 Entra 用户或邮箱"
                   />
                 </div>
-                <button type="submit" disabled={directoryLoading}>
+                <button type="submit" disabled={directoryLoading || !memberPermissions.canManageMembers} title={!memberPermissions.canManageMembers ? memberPermissionReason : ""}>
                   {directoryLoading ? <Loader2 size={14} className="spin" /> : <Search size={14} />}
                   搜索
                 </button>
@@ -3213,23 +3387,26 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
                   onChange={(event) => setInviteForm((form) => ({ ...form, email: event.target.value }))}
                   placeholder="成员邮箱"
                   autoComplete="email"
+                  disabled={!memberPermissions.canManageMembers}
                 />
                 <input
                   type="text"
                   value={inviteForm.name}
                   onChange={(event) => setInviteForm((form) => ({ ...form, name: event.target.value }))}
                   placeholder="姓名（可选）"
+                  disabled={!memberPermissions.canManageMembers}
                 />
                 <select
                   value={inviteForm.role}
                   onChange={(event) => setInviteForm((form) => ({ ...form, role: event.target.value }))}
                   aria-label="成员角色"
+                  disabled={!memberPermissions.canManageMembers}
                 >
                   <option value="admin">管理员</option>
                   <option value="editor">编辑者</option>
                   <option value="viewer">查看者</option>
                 </select>
-                <button type="submit" disabled={memberAction === "invite"}>
+                <button type="submit" disabled={memberAction === "invite" || !memberPermissions.canManageMembers} title={!memberPermissions.canManageMembers ? memberPermissionReason : ""}>
                   {memberAction === "invite" ? <Loader2 size={14} className="spin" /> : <UserPlus size={14} />}
                   邀请
                 </button>
@@ -3239,9 +3416,11 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
                   type="checkbox"
                   checked={sendGraphInvite}
                   onChange={(event) => setSendGraphInvite(event.target.checked)}
+                  disabled={!memberPermissions.canManageMembers}
                 />
                 <span>发送 Entra 邀请邮件</span>
               </label>
+              {!memberPermissions.canManageMembers ? <div className="member-permission-note"><ShieldCheck size={13} />{memberPermissionReason}</div> : null}
               {memberError ? <div className="member-msg error">{memberError}</div> : null}
               {memberNotice ? <div className="member-msg ok">{memberNotice}</div> : null}
               <div className="member-usage-strip">
@@ -3264,7 +3443,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
                     <label className="mbr-role-select" title="修改成员角色">
                       <select
                         value={m.role || "viewer"}
-                        disabled={memberAction === `role:${m.email}`}
+                        disabled={memberAction === `role:${m.email}` || !memberPermissions.canManageMembers}
                         onChange={(event) => updateWorkspaceMemberRole(m.email, event.target.value)}
                         aria-label={`${m.email} 的成员角色`}
                       >
@@ -3280,7 +3459,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
                       type="button"
                       className="mbr-remove"
                       title="从当前工作区移除"
-                      disabled={memberAction === `remove:${m.email}`}
+                      disabled={memberAction === `remove:${m.email}` || !memberPermissions.canManageMembers}
                       onClick={() => removeWorkspaceMember(m.email)}
                     >
                       {memberAction === `remove:${m.email}` ? <Loader2 size={13} className="spin" /> : <Trash2 size={13} />}
