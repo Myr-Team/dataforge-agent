@@ -81,6 +81,12 @@ def provider_snapshot(
     )
 
 
+def raw_provider_snapshot(amount) -> dict:
+    snapshot = provider_snapshot().model_dump(mode="json")
+    snapshot["business_value"]["amount"] = amount
+    return snapshot
+
+
 def configure_target(monkeypatch) -> None:
     monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", TARGET_ENDPOINT)
     monkeypatch.setenv("FOUNDRY_AGENT_ID", TARGET_AGENT_ID)
@@ -630,6 +636,58 @@ def test_public_api_exposes_no_verified_read_or_two_step_reconciliation_bypass()
 def test_provider_rejects_non_finite_or_negative_amounts(amount: float) -> None:
     with pytest.raises(ValidationError):
         provider_snapshot(amount)
+
+
+@pytest.mark.parametrize("amount", [10**400, 10**1000])
+def test_provider_amount_beyond_finite_json_boundary_is_unavailable(monkeypatch, amount) -> None:
+    class Provider:
+        def discover(self, configured_target):
+            return proof(configured_target)
+
+        def read(self, configured_target, window):
+            return raw_provider_snapshot(amount)
+
+    configure_target(monkeypatch)
+    signing_key = Ed25519PrivateKey.generate()
+    configure_trusted_public_key(monkeypatch, signing_key)
+
+    read = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(signing_key))
+    reconciliation = reconcile_foundry_roi(local_snapshot(), provider=Provider(), verifier=FakeVerifier(signing_key))
+
+    assert read.status.state == "unavailable"
+    assert read.provider_snapshot is None
+    assert reconciliation["foundry_status"]["state"] == "unavailable"
+    assert reconciliation["provider"] is None
+    assert reconciliation["difference"] is None
+    json.dumps(read.model_dump(mode="json"), allow_nan=False)
+    json.dumps(reconciliation, allow_nan=False)
+
+
+def test_finite_float_boundary_amount_and_difference_remain_json_finite(monkeypatch) -> None:
+    max_finite_float = float.fromhex("0x1.fffffffffffffp+1023")
+
+    class Provider:
+        def discover(self, configured_target):
+            return proof(configured_target)
+
+        def read(self, configured_target, window):
+            return raw_provider_snapshot(max_finite_float)
+
+    configure_target(monkeypatch)
+    signing_key = Ed25519PrivateKey.generate()
+    configure_trusted_public_key(monkeypatch, signing_key)
+
+    read = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(signing_key))
+    reconciliation = reconcile_foundry_roi(local_snapshot(0.0), provider=Provider(), verifier=FakeVerifier(signing_key))
+
+    assert read.status.state == "connected"
+    assert read.provider_snapshot is not None
+    assert math.isfinite(read.provider_snapshot["business_value"]["amount"])
+    assert reconciliation["foundry_status"]["state"] == "connected"
+    assert reconciliation["difference"] is not None
+    assert math.isfinite(reconciliation["difference"]["amount"])
+    json.dumps(read.model_dump(mode="json"), allow_nan=False)
+    json.dumps(reconciliation, allow_nan=False)
 
 
 def test_provider_helper_preserves_explicit_empty_lineage_lists() -> None:

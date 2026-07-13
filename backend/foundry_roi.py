@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import sys
 from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
@@ -25,6 +26,7 @@ except ImportError:
 
 _ATTESTATION_PUBLIC_KEY_ENV = "DF_FOUNDRY_ROI_ATTESTATION_PUBLIC_KEY"
 _ATTESTATION_CONTEXT = "dataforge.foundry_roi.discovery_attestation.v2"
+_MAX_FINITE_JSON_FLOAT = Decimal(str(sys.float_info.max))
 
 
 class FoundryRoiTarget(BaseModel):
@@ -466,8 +468,14 @@ def _reconcile_snapshot(
         metadata["status"] = "reconciled"
         metadata["reconciled"] = True
         metadata["reason"] = "mapped run and outcome lineage exactly match window, currency, and unit"
+        difference_amount = snapshot.amount - Decimal(str(local_value["amount"]))
+        if not _is_finite_json_decimal(difference_amount):
+            metadata["status"] = "not_reconciled"
+            metadata["reconciled"] = False
+            metadata["reason"] = "provider/local ROI difference is outside the finite JSON range"
+            return {"local": local_copy, "provider": _canonical_snapshot_dict(snapshot), "difference": None, "reconciliation": metadata}
         difference = {
-            "amount": round(float(snapshot.amount - Decimal(str(local_value["amount"]))), 6),
+            "amount": round(_finite_decimal_to_float(difference_amount), 6),
             "currency": local_value["currency"],
             "unit": local_value["unit"],
         }
@@ -587,8 +595,8 @@ def _canonicalize_provider_snapshot(value: Any) -> _CanonicalProviderSnapshot:
     if type(raw_amount) not in {int, Decimal}:
         raise ValueError("provider amount is invalid")
     amount = Decimal(raw_amount)
-    if not amount.is_finite() or amount < 0:
-        raise ValueError("provider amount is invalid")
+    if not _is_finite_json_decimal(amount) or amount < 0:
+        raise ValueError("provider amount is outside the finite JSON range")
     currency = _required_string(business_value, "currency", "provider business value")
     unit = _required_string(business_value, "unit", "provider business value")
     if not re.fullmatch(r"[A-Z]{3}", currency):
@@ -688,8 +696,21 @@ def _canonical_snapshot_window(snapshot: _CanonicalProviderSnapshot) -> dict[str
 
 def _canonical_snapshot_dict(snapshot: _CanonicalProviderSnapshot) -> dict[str, Any]:
     output = json.loads(snapshot.canonical_bytes.decode("ascii"))
-    output["business_value"]["amount"] = float(Decimal(output["business_value"]["amount"]))
+    output["business_value"]["amount"] = _finite_decimal_to_float(Decimal(output["business_value"]["amount"]))
     return output
+
+
+def _is_finite_json_decimal(value: Decimal) -> bool:
+    return value.is_finite() and abs(value) <= _MAX_FINITE_JSON_FLOAT
+
+
+def _finite_decimal_to_float(value: Decimal) -> float:
+    if not _is_finite_json_decimal(value):
+        raise ValueError("ROI amount is outside the finite JSON range")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("ROI amount is outside the finite JSON range")
+    return result
 
 
 def _canonical_snapshot_payload(

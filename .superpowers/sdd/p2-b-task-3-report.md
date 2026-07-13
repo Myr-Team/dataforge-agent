@@ -113,6 +113,34 @@ Executed: `python -m compileall backend tests`; `python -c "from backend.foundry
 
 Output: all commands exited `0`; the import check printed `not_configured`.
 
+## Important Remediation: Finite Provider ROI Numeric Boundary (2026-07-14)
+
+This section closes the provider amount overflow path in the canonical snapshot and reconciliation output.
+
+- The adapter preserves its existing numeric API (`amount` and `difference.amount` remain JSON numbers), but now bounds canonical provider `Decimal` amounts to the largest finite IEEE-754 double value, `1.7976931348623157E+308`, before any signed snapshot is created. Values beyond that magnitude are `unavailable`, so they cannot be signed, connected, or emitted.
+- Public provider output converts `Decimal` through the same finite-bound helper. Difference generation separately validates the computed decimal before conversion and returns no difference if it is outside the finite JSON range. This is defense in depth even though normal local/provider inputs are each already bounded.
+- No provider business value or provider-derived difference can serialize as `Infinity`, `-Infinity`, or `NaN`. The existing maximum finite float value continues to round-trip as a finite JSON number, preserving compatibility for ordinary consumers.
+
+### Numeric-Boundary Remediation Test Evidence
+
+Executed: `python -m pytest tests/test_foundry_roi.py -q -k "finite_json_boundary or finite_float_boundary"`
+
+Output: `3 passed in 0.30s` after the implementation. The preceding RED run produced `2 failed, 1 passed`: raw provider amounts `10**400` and `10**1000` incorrectly reached `connected` before the bound was enforced.
+
+Coverage: raw provider integers at `10**400` and `10**1000` (huge decimal exponents) are `unavailable` with no provider/difference output; the maximum finite double value remains connected; its provider amount and computed difference are finite; and `json.dumps(..., allow_nan=False)` accepts both read and reconciliation output.
+
+Executed: `python -m pytest tests/test_foundry_roi.py tests/test_roi_service.py tests/test_governance_roi_summary.py -q`
+
+Output: `66 passed in 5.93s`.
+
+Executed: `python -m pytest -q`
+
+Output: `514 passed, 1 warning in 47.17s` (the existing experimental workflow warning in `backend/maf_team_runtime.py`).
+
+Executed: `python -m compileall backend tests`; `python -c "from backend.foundry_roi import SignedFoundryRoiAttestation, discover_foundry_roi, reconcile_foundry_roi; import backend.control_plane; import backend.dependency_health; print(discover_foundry_roi().state)"`; and `git diff --check`.
+
+Output: all commands exited `0`; the import check printed `not_configured`.
+
 ## Final Critical Remediation: Primitive-Subclass Canonicalization Boundary (2026-07-14)
 
 This section closes the remaining primitive-subclass bypass in the provider snapshot capture path. A Pydantic `model_validate(existing_model)` call can retain a provider-supplied model instance and its subclassed scalar values, so it is no longer used as the canonicalization source.
