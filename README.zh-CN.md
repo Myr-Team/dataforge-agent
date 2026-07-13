@@ -89,6 +89,10 @@ DataForge 把这件事自动化了。
 - 治理页面把三类事实分开：实际模型用量/成本、基于时间价值假设的估算，以及带来源的真实业务结果。结果只有经过单独的复核动作才能从 `measured` 进入 `verified`。Application Insights / OpenTelemetry 连接状态与 Foundry 原生 ROI 分开显示；后者当前仍未接入。
 - 分析运行会形成规范的实验账本。方案草稿和产物快照附着到源分析，不冒充新实验；每一版均包含证据、指标来源、证据变化和决策变化。合成、仅市场推断或不可追溯的输入不能抬高有效结论档位。
 - 产物生成使用可持久化的后台任务，支持逐项成功、刷新恢复、幂等请求和原子任务领取。PDF 文件名携带源方案版本（`V1`、`V2` 等）。
+- 全局任务中心读取分析、产物、导入和连接器流程的服务端持久化任务记录，提供真实的排队、运行和终态，支持刷新后恢复、取消，以及仅在服务端存在调度器时提供重试。
+- 市场相关性是严格的来源证据门禁：直接且与当前机会相关的来源才会被接受；无关、相邻、仅面向消费者或没有来源证据的说法会被拒绝，或降级为明确的不可用合同。
+- MAF 对证据包以及 Agent、复修和可选市场调用使用有界预算。确定性评估仍是 fixture 证据，不代表生产质量或 ROI。
+- 连接器记录只持久化脱敏元数据和不透明密钥引用。配置 `DF_KEY_VAULT_URL` 时，部署身份必须具有 Key Vault 密钥 `get`、`set`、`delete` 权限；失败不会回退到会话存储。未配置时，加密的进程内密钥为 `session_only`，会在 TTL 到期或进程重启后失效，必须使用新凭据重新连接。
 - 设置 `DF_WORKSPACE_RBAC_ENFORCED=1` 后会执行 `owner`、`admin`、`editor`、`viewer` 工作区权限。浏览器通过受 Easy Auth 保护的 Web 同源代理请求 API；后端只接受由 `DF_WEB_PROXY_SECRET` 签名转发的登录身份。待接受邀请仅在匹配的 Easy Auth 对象 ID 与租户登录后激活。
 - 当前没有启用开放式 Magentic 编排，也没有启用 Foundry Hosted Agents。
 
@@ -103,6 +107,7 @@ DataForge 把这件事自动化了。
 - MAF 事件和参与者 span 按真实执行实时发出。Token 只读取运行时/提供商响应字段，未知用量保持 `null`，工作流墙钟时长与参与者工作量总和分开记录，模型输出中的遥测字典不被采信。
 - 稳定依赖版本固定为 `agent-framework-core==1.11.0`、`agent-framework-foundry==1.10.1` 和 `agent-framework-orchestrations==1.0.0`。
 - 无连接器评估命令为 `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`。报告明确声明 `measurement_scope='deterministic_harness'` 和 `production_quality_claim=false`。groundedness 与 unsupported-claim rate 只是 fixture/reference-propagation contract checks，not production answer quality（不是生产答案质量评价）。其他指标仅在确定性夹具观测存在时给值；没有用量遥测的 tokens 等缺失值保持 `null`/`unknown`。
+- 集成 P2-A 门禁命令为 `python eval/run_p2_a_acceptance.py --output generated-outputs/p2-a-acceptance.json`。机器可读报告包含 baseline、市场相关性、MAF、任务和连接器门禁的证据类别、样本数、是否允许生产声明、失败原因和输入谱系；fixture 检查中的延迟和 token 均保持 `unmeasured`。
 
 完整发布与演进设计见 [`docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md`](docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md)。
 
