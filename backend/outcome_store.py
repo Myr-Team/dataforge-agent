@@ -58,6 +58,7 @@ def record_outcome_event(
     observed_at = _optional_text(data.get("observed_at"), 64)
     if provenance == "observed" and (observed is None or not observed_at):
         raise ValueError("observed outcomes require observed_value and observed_at")
+    business_value = _normalize_business_value(data.get("business_value"))
 
     now = _now()
     event = {
@@ -78,6 +79,7 @@ def record_outcome_event(
         "source": source,
         "actor": public_actor(dict(actor or {})),
         "verification": {"status": "unverified"},
+        "business_value": business_value,
         "created_at": now,
         "updated_at": now,
     }
@@ -99,8 +101,9 @@ def verify_outcome_event(
     normalized_workspace = _required_text(workspace_id, "workspace_id", 160)
     normalized_event_id = _required_text(event_id, "event_id", 80)
     clean_reviewer = public_actor(dict(reviewer or {}))
-    if not clean_reviewer.get("actor_id") and not clean_reviewer.get("email"):
-        raise ValueError("reviewer identity is required")
+    reviewer_id = _optional_text(clean_reviewer.get("actor_id"), 240)
+    if not reviewer_id:
+        raise ValueError("reviewer actor_id is required")
 
     with _LOCK:
         events = list_outcome_events(normalized_workspace)
@@ -111,8 +114,16 @@ def verify_outcome_event(
                 continue
             if item.get("provenance") != "observed":
                 raise ValueError("only observed outcomes can be verified")
+            if not _normalize_source(item.get("source")) or item.get("observed_value") is None:
+                raise ValueError("only source-linked observed outcomes can be verified")
+            actor = item.get("actor") if isinstance(item.get("actor"), Mapping) else {}
+            if reviewer_id == _optional_text(actor.get("actor_id"), 240):
+                raise ValueError("verification requires an independent reviewer")
+            if str((item.get("verification") or {}).get("status") or "").lower() == "verified":
+                raise ValueError("outcome is already verified")
             item["verification"] = {
                 "status": "verified",
+                "verification_event_id": f"verification_{uuid4().hex[:16]}",
                 "verified_at": now,
                 "reviewer": clean_reviewer,
                 **({"note": _optional_text(note, 500)} if _optional_text(note, 500) else {}),
@@ -229,6 +240,27 @@ def _optional_nonnegative_int(value: Any, field: str, *, maximum: int) -> int | 
     if number < 0 or number > maximum:
         raise ValueError(f"{field} must be between 0 and {maximum}")
     return number
+
+
+def _normalize_business_value(value: Any) -> dict[str, Any] | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("business_value must be an object")
+    amount = _optional_number(value.get("value"), "business_value.value")
+    currency = _optional_text(value.get("currency"), 12)
+    source = _optional_text(value.get("source"), 240)
+    formula = _optional_text(value.get("formula"), 500)
+    status = _optional_text(value.get("status"), 32)
+    if amount is None or not currency or not source or not formula or not status:
+        raise ValueError("business_value requires value, currency, source, formula, and status")
+    return {
+        "value": amount,
+        "currency": currency.upper(),
+        "source": source,
+        "formula": formula,
+        "status": status,
+    }
 
 
 def _now() -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -74,6 +75,7 @@ def test_outcome_verification_is_a_separate_reviewer_action(
     )
 
     assert verified["verification"]["status"] == "verified"
+    assert verified["verification"]["verification_event_id"].startswith("verification_")
     assert verified["verification"]["reviewer"]["actor_id"] == "oid-reviewer"
     assert outcome_store.list_outcome_events("ws-roi")[0]["event_id"] == event["event_id"]
 
@@ -98,6 +100,7 @@ def test_roi_states_follow_outcome_evidence() -> None:
     observed = {
         **_observed_payload(),
         "event_id": "outcome-observed",
+        "actor": {"actor_id": "oid-owner"},
         "verification": {"status": "unverified"},
     }
     measured = control_plane._workspace_roi_summary(usage, audit, [observed])
@@ -106,11 +109,36 @@ def test_roi_states_follow_outcome_evidence() -> None:
 
     verified_event = {
         **observed,
-        "verification": {"status": "verified", "verified_at": "2026-07-12T03:00:00Z"},
+        "verification": {
+            "status": "verified",
+            "verified_at": "2026-07-12T03:00:00Z",
+            "verification_event_id": "verification-1",
+            "reviewer": {"actor_id": "oid-reviewer"},
+        },
     }
     verified = control_plane._workspace_roi_summary(usage, audit, [verified_event])
     assert verified["status"] == "verified"
     assert verified["outcomes"]["verified_count"] == 1
+
+
+def test_outcome_verification_requires_independent_actor_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    event = outcome_store.record_outcome_event("ws-roi", _observed_payload(), _actor())
+
+    with pytest.raises(ValueError, match="independent"):
+        outcome_store.verify_outcome_event("ws-roi", event["event_id"], _actor())
+
+
+def test_business_value_requires_source_formula_and_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    payload = _observed_payload()
+    payload["business_value"] = {"value": 100, "currency": "USD", "source": "finance-ledger"}
+
+    with pytest.raises(ValueError, match="business_value"):
+        outcome_store.record_outcome_event("ws-roi", payload, _actor())
 
 
 def test_synthetic_outcome_does_not_promote_roi_state() -> None:
@@ -136,8 +164,10 @@ def test_outcome_api_persists_lists_and_verifies(
 ) -> None:
     _configure_store(tmp_path, monkeypatch)
     client = TestClient(app)
+    owner_headers = {"x-dataforge-actor": quote('{"name":"Owner","email":"owner@contoso.com","actor_id":"owner-oid"}')}
+    reviewer_headers = {"x-dataforge-actor": quote('{"name":"Reviewer","email":"reviewer@contoso.com","actor_id":"reviewer-oid"}')}
 
-    created = client.post("/api/workspaces/ws-roi/outcomes", json=_observed_payload())
+    created = client.post("/api/workspaces/ws-roi/outcomes", json=_observed_payload(), headers=owner_headers)
     assert created.status_code == 200
     event_id = created.json()["event"]["event_id"]
 
@@ -148,6 +178,7 @@ def test_outcome_api_persists_lists_and_verifies(
     verified = client.post(
         f"/api/workspaces/ws-roi/outcomes/{event_id}/verify",
         json={"note": "Reviewed against the imported feedback file."},
+        headers=reviewer_headers,
     )
     assert verified.status_code == 200
     assert verified.json()["event"]["verification"]["status"] == "verified"

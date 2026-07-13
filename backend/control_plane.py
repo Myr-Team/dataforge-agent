@@ -28,6 +28,7 @@ try:
     from .identity import actor_from_request, default_actor, member_from_actor, public_actor
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, record_outcome_event, verify_outcome_event
+    from .roi_service import build_roi_snapshot, member_chargeback
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
@@ -45,6 +46,7 @@ except ImportError:
     from identity import actor_from_request, default_actor, member_from_actor, public_actor
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, record_outcome_event, verify_outcome_event
+    from roi_service import build_roi_snapshot, member_chargeback
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
@@ -151,6 +153,30 @@ async def workspace_audit(workspace_id: str, request: Request) -> dict[str, Any]
 async def workspace_governance(workspace_id: str, request: Request) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "workspace.read")
     return await _call(workspace_governance_summary, workspace_id, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/governance/roi")
+async def workspace_roi(
+    workspace_id: str,
+    request: Request,
+    from_value: str = Query(alias="from", max_length=64),
+    to_value: str = Query(alias="to", max_length=64),
+) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "workspace.read")
+    return await _call(workspace_roi_snapshot, workspace_id, from_value, to_value)
+
+
+@router.get("/api/workspaces/{workspace_id}/governance/chargeback")
+async def workspace_chargeback(
+    workspace_id: str,
+    request: Request,
+    from_value: str = Query(alias="from", max_length=64),
+    to_value: str = Query(alias="to", max_length=64),
+) -> dict[str, Any]:
+    role = _require_workspace_action(workspace_id, request, "chargeback.read")
+    if role not in {"owner", "admin", "compatibility"}:
+        raise HTTPException(status_code=403, detail="workspace permission denied for chargeback.read")
+    return await _call(workspace_member_chargeback, workspace_id, from_value, to_value)
 
 
 @router.get("/api/workspaces/{workspace_id}/governance/trace-status")
@@ -1086,6 +1112,70 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
     }
 
 
+def workspace_roi_snapshot(workspace_id: str, from_value: str, to_value: str) -> dict[str, Any]:
+    return build_roi_snapshot(
+        workspace_id,
+        {"from": from_value, "to": to_value},
+        runs=_workspace_run_details_for_roi(workspace_id),
+        outcomes=list_outcome_events(workspace_id),
+    )
+
+
+def workspace_member_chargeback(workspace_id: str, from_value: str, to_value: str) -> dict[str, Any]:
+    return member_chargeback(
+        workspace_id,
+        {"from": from_value, "to": to_value},
+        runs=_workspace_run_details_for_roi(workspace_id),
+        messages=_workspace_messages_for_chargeback(workspace_id),
+        tasks=list_tasks(workspace_id)[:300],
+        memberships=_current_workspace_members_for_chargeback(workspace_id),
+    )
+
+
+def _workspace_run_details_for_roi(workspace_id: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for summary in list_runs(workspace_id)[:300]:
+        if str(summary.get("workspace_id") or "") != workspace_id:
+            continue
+        run_id = str(summary.get("run_id") or "").strip()
+        detail = _safe_value(lambda run_id=run_id: get_run(run_id), summary) if run_id else summary
+        if isinstance(detail, dict) and str(detail.get("workspace_id") or "") == workspace_id:
+            rows.append(detail)
+    return rows
+
+
+def _workspace_messages_for_chargeback(workspace_id: str) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for summary in list_conversations(workspace_id)[:100]:
+        if str(summary.get("workspace_id") or "") != workspace_id:
+            continue
+        conversation_id = str(summary.get("conversation_id") or "").strip()
+        detail = _safe_value(lambda conversation_id=conversation_id: get_conversation(conversation_id), summary)
+        if not isinstance(detail, dict) or str(detail.get("workspace_id") or "") != workspace_id:
+            continue
+        for item in (detail.get("messages") or [])[:300 - len(messages)]:
+            if isinstance(item, dict):
+                messages.append({"workspace_id": workspace_id, **item})
+        if len(messages) >= 300:
+            break
+    return messages
+
+
+def _current_workspace_members_for_chargeback(workspace_id: str) -> list[dict[str, Any]]:
+    try:
+        meta = _load_workspace_meta(workspace_id)
+    except FileNotFoundError:
+        return []
+    current: list[dict[str, Any]] = []
+    owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), dict) else {}
+    if owner and str(owner.get("actor_id") or "").strip():
+        current.append({**owner, "status": "active"})
+    for member in _stored_workspace_members(meta):
+        if str(member.get("status") or "").lower() == "active" and str(member.get("actor_id") or "").strip():
+            current.append(member)
+    return current
+
+
 def workspace_experiment_ledger(workspace_id: str) -> dict[str, Any]:
     runs: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1226,40 +1316,34 @@ def _workspace_roi_summary(
             int(item.get("turn_count") or 0),
         )
     conversation_turns = sum(conversation_turns_by_id.values())
-    token_cost_per_1m = _float_env("DF_ROI_TOKEN_COST_PER_1M", 3.0)
-    hourly_value = _float_env("DF_ROI_HOURLY_VALUE_USD", 80.0)
-    analysis_minutes = _float_env("DF_ROI_MINUTES_SAVED_PER_ANALYSIS", 45.0)
-    followup_minutes = _float_env("DF_ROI_MINUTES_SAVED_PER_FOLLOWUP", 8.0)
-    estimated_cost = (total_tokens / 1_000_000.0) * token_cost_per_1m if total_tokens is not None else None
-    estimated_hours_saved = ((analysis_runs * analysis_minutes) + (conversation_turns * followup_minutes)) / 60.0
-    estimated_value = estimated_hours_saved * hourly_value
-    complete_cost = estimated_cost if usage_status == "complete" else None
-    roi_multiple = (estimated_value / complete_cost) if complete_cost is not None and complete_cost > 0 else None
-    assumption_names = (
-        "DF_ROI_TOKEN_COST_PER_1M",
-        "DF_ROI_HOURLY_VALUE_USD",
-        "DF_ROI_MINUTES_SAVED_PER_ANALYSIS",
-        "DF_ROI_MINUTES_SAVED_PER_FOLLOWUP",
-    )
-    configured_assumptions = sum(1 for name in assumption_names if str(os.environ.get(name) or "").strip())
-    assumptions_source = (
-        "environment"
-        if configured_assumptions == len(assumption_names)
-        else "environment_with_defaults"
-        if configured_assumptions
-        else "defaults"
-    )
+    # Legacy governance summaries have no explicit UTC time window or versioned
+    # price catalog. They must not manufacture a cost or monetize saved time.
+    estimated_cost = None
+    estimated_hours_saved = None
+    estimated_value = None
+    complete_cost = None
+    roi_multiple = None
+    assumptions_source = "not_configured"
     outcome_items = [item for item in (outcomes or []) if isinstance(item, dict)]
     observed_outcomes = [
         item
         for item in outcome_items
-        if item.get("provenance") == "observed" and item.get("observed_value") is not None
+        if item.get("provenance") == "observed"
+        and item.get("observed_value") is not None
+        and isinstance(item.get("source"), dict)
+        and any(str(value or "").strip() for value in item["source"].values())
     ]
     verified_outcomes = [
         item
         for item in observed_outcomes
         if isinstance(item.get("verification"), dict)
         and item["verification"].get("status") == "verified"
+        and item["verification"].get("verification_event_id")
+        and isinstance(item["verification"].get("reviewer"), dict)
+        and item["verification"]["reviewer"].get("actor_id")
+        and isinstance(item.get("actor"), dict)
+        and item.get("actor", {}).get("actor_id")
+        and item["verification"]["reviewer"].get("actor_id") != item.get("actor", {}).get("actor_id")
     ]
     synthetic_outcomes = [item for item in outcome_items if item.get("provenance") == "synthetic"]
     outcome_status = (
@@ -1282,11 +1366,12 @@ def _workspace_roi_summary(
             "note": "Use this workspace estimate until Azure AI Foundry ROI reporting is connected for the project.",
         },
         "currency": "USD",
-        "estimated_cost_usd": _round_money(estimated_cost) if estimated_cost is not None else None,
-        "estimated_value_usd": _round_money(estimated_value),
-        "net_value_usd": _round_money(estimated_value - complete_cost) if complete_cost is not None else None,
+        "estimated_cost_usd": None,
+        "estimated_value_usd": None,
+        "net_value_usd": None,
         "roi_multiple": round(roi_multiple, 2) if roi_multiple is not None else None,
-        "estimated_hours_saved": round(estimated_hours_saved, 2),
+        "estimated_hours_saved": None,
+        "business_value": None,
         "inputs": {
             "total_tokens": total_tokens,
             "known_usage_runs": known_usage_runs,
@@ -1295,10 +1380,10 @@ def _workspace_roi_summary(
             "analysis_runs": analysis_runs,
             "snapshot_runs_excluded": snapshot_runs,
             "conversation_turns": conversation_turns,
-            "token_cost_per_1m": token_cost_per_1m,
-            "hourly_value_usd": hourly_value,
-            "minutes_saved_per_analysis": analysis_minutes,
-            "minutes_saved_per_followup": followup_minutes,
+            "token_cost_per_1m": None,
+            "hourly_value_usd": None,
+            "minutes_saved_per_analysis": None,
+            "minutes_saved_per_followup": None,
         },
         "assumptions_source": assumptions_source,
         "confidence": "estimated" if usage_status == "complete" else "partial_usage" if usage_status == "partial" else "usage_unknown",
@@ -1336,7 +1421,6 @@ def _workspace_chargeback(usage: dict[str, Any], roi: dict[str, Any]) -> dict[st
     total_tokens_value = totals.get("total_tokens")
     total_tokens = max(0, int(total_tokens_value)) if total_tokens_value is not None else None
     usage_status = totals.get("usage_status") or ("complete" if total_tokens is not None else "unknown")
-    cost_per_1m = float((roi.get("inputs") or {}).get("token_cost_per_1m") or 0)
     rows = []
     for item in usage.get("members") or []:
         actor = public_actor(item.get("actor") if isinstance(item, dict) else {})
@@ -1355,7 +1439,7 @@ def _workspace_chargeback(usage: dict[str, Any], roi: dict[str, Any]) -> dict[st
                 "unknown_usage_runs": int(item_usage.get("unknown_usage_runs") or 0),
                 "usage_status": item_usage.get("usage_status") or "unknown",
                 "token_share_pct": round(share * 100, 1) if share is not None else None,
-                "estimated_cost_usd": _round_money((tokens / 1_000_000.0) * cost_per_1m) if tokens is not None else None,
+                "estimated_cost_usd": None,
                 "last_seen_at": item.get("last_seen_at"),
                 "last_run_id": item.get("last_run_id"),
             }

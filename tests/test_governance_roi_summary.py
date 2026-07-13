@@ -50,22 +50,18 @@ def test_governance_summary_groups_token_cost_and_roi_by_actor(monkeypatch):
     monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: runs)
     monkeypatch.setattr(control_plane, "get_run", lambda run_id: next(item for item in runs if item["run_id"] == run_id))
     monkeypatch.setattr(control_plane, "list_conversations", lambda workspace_id=None: conversations)
-    monkeypatch.setenv("DF_ROI_TOKEN_COST_PER_1M", "10")
-    monkeypatch.setenv("DF_ROI_HOURLY_VALUE_USD", "120")
-    monkeypatch.setenv("DF_ROI_MINUTES_SAVED_PER_ANALYSIS", "30")
-    monkeypatch.setenv("DF_ROI_MINUTES_SAVED_PER_FOLLOWUP", "5")
-
     result = control_plane.workspace_governance_summary("ws-governance", RequestStub())
 
     assert result["usage"]["totals"]["total_tokens"] == 4000
     assert result["roi"]["inputs"]["analysis_runs"] == 2
     assert result["roi"]["inputs"]["conversation_turns"] == 2
-    assert result["roi"]["estimated_cost_usd"] == 0.04
-    assert result["roi"]["estimated_value_usd"] == 140.0
-    assert result["roi"]["net_value_usd"] == 139.96
+    assert result["roi"]["estimated_cost_usd"] is None
+    assert result["roi"]["estimated_value_usd"] is None
+    assert result["roi"]["net_value_usd"] is None
+    assert result["roi"]["business_value"] is None
     reviewer_row = next(row for row in result["chargeback"]["members"] if row["actor"]["email"] == "reviewer@contoso.com")
     assert reviewer_row["total_tokens"] == 3000
-    assert reviewer_row["estimated_cost_usd"] == 0.03
+    assert reviewer_row["estimated_cost_usd"] is None
     assert result["audit"]["count"] == 3
     assert result["security"]["identity_provider"] == "Microsoft Entra ID"
 
@@ -108,7 +104,7 @@ def test_roi_excludes_delivery_snapshots_from_analysis_value(monkeypatch):
     assert result["roi"]["inputs"]["analysis_runs"] == 1
     assert result["roi"]["inputs"]["snapshot_runs_excluded"] == 2
     assert result["roi"]["confidence"] == "estimated"
-    assert result["roi"]["assumptions_source"] in {"defaults", "environment"}
+    assert result["roi"]["assumptions_source"] == "not_configured"
 
 
 def test_dashboard_default_workspace_is_not_a_static_demo_id(monkeypatch):

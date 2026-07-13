@@ -37,6 +37,7 @@ _EDITOR_ACTIONS = {
     "artifact.generate",
 }
 _ADMIN_ACTIONS = {
+    "chargeback.read",
     "member.manage",
     "outcome.verify",
     "workspace.delete",

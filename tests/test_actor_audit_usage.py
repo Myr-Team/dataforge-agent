@@ -107,6 +107,23 @@ def test_token_summary_keeps_route_usage_when_model_response_usage_is_empty(tmp_
     assert control_plane.run_summary("run-route-usage")["tokens"]["total"] == 19
 
 
+def test_run_store_persists_observed_model_identifier_for_versioned_pricing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+
+    run_store.start_run("run-priced", "ws-priced", "analyze", actor={"actor_id": "owner-oid"})
+    run_store.record_event(
+        "run-priced",
+        "model_response",
+        {"agent": "df-analyst", "model": "gpt-5", "usage": {"input_tokens": 10, "output_tokens": 5}},
+    )
+    run_store.complete_run("run-priced", final={"text": "done"}, artifact={})
+
+    assert run_store.get_run("run-priced")["models"][0]["model"] == "gpt-5"
+
+
 def test_run_summary_and_trace_expose_dynamic_evidence(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
@@ -264,3 +281,49 @@ def test_invited_workspace_member_persists_and_merges_usage(tmp_path, monkeypatc
     saved = json.loads(workspace_path.read_text(encoding="utf-8"))
     assert saved["workspace_members"][0]["email"] == "reviewer@contoso.com"
     assert saved["workspace_members"][0]["invited_by"]["email"] == "owner@contoso.com"
+
+
+def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(monkeypatch) -> None:
+    run = {
+        "run_id": "run-roi-api",
+        "workspace_id": "ws-roi-api",
+        "actor": {"actor_id": "owner-oid", "email": "spoofed@example.com"},
+        "completed_at": "2026-07-10T12:00:00Z",
+        "models": [{"model": "gpt-5", "usage": {"input_tokens": 100, "output_tokens": 50}}],
+    }
+    monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: [run])
+    monkeypatch.setattr(control_plane, "get_run", lambda run_id: run)
+    monkeypatch.setattr(control_plane, "list_conversations", lambda workspace_id=None: [])
+    monkeypatch.setattr(control_plane, "list_tasks", lambda workspace_id=None: [])
+    monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [])
+    monkeypatch.setattr(
+        control_plane,
+        "_current_workspace_members_for_chargeback",
+        lambda workspace_id: [{"actor_id": "owner-oid", "email": "owner@example.com", "name": "Owner", "status": "active"}],
+        raising=False,
+    )
+    monkeypatch.setenv(
+        "DF_ROI_PRICE_CONFIG_JSON",
+        '[{"version":"test","model":"gpt-5","currency":"USD","unit":"per_1m_tokens","input_per_1m":2,"output_per_1m":8,"effective_from":"2026-07-01T00:00:00Z","effective_to":null,"source":"test"}]',
+    )
+    client = TestClient(app)
+    query = "?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"
+
+    roi = client.get(f"/api/workspaces/ws-roi-api/governance/roi{query}")
+    assert roi.status_code == 200, roi.text
+    assert roi.json()["business_value"] is None
+    assert roi.json()["cost"]["total"] == 0.0006
+    assert "spoofed@example.com" not in roi.text
+
+    invalid_window = client.get("/api/workspaces/ws-roi-api/governance/roi?from=2026-07-10&to=2026-07-11T00:00:00Z")
+    assert invalid_window.status_code == 400
+
+    monkeypatch.setattr(control_plane, "_require_workspace_action", lambda *_args: "editor")
+    denied = client.get(f"/api/workspaces/ws-roi-api/governance/chargeback{query}")
+    assert denied.status_code == 403
+
+    monkeypatch.setattr(control_plane, "_require_workspace_action", lambda *_args: "owner")
+    allowed = client.get(f"/api/workspaces/ws-roi-api/governance/chargeback{query}")
+    assert allowed.status_code == 200
+    assert allowed.json()["members"][0]["member"]["email"] == "owner@example.com"
+    assert "spoofed@example.com" not in allowed.text
