@@ -13,10 +13,11 @@ module "monitoring" {
 }
 
 module "storage" {
-  source               = "../../modules/storage"
-  resource_group_name  = module.resource_group.name
-  location             = module.resource_group.location
-  storage_account_name = var.storage_account_name
+  source                    = "../../modules/storage"
+  resource_group_name       = module.resource_group.name
+  location                  = module.resource_group.location
+  storage_account_name      = var.storage_account_name
+  audit_immutability_locked = var.audit_immutability_locked
 }
 
 module "search" {
@@ -58,6 +59,11 @@ module "container_apps" {
   search_key                       = var.search_key
   storage_account_name             = module.storage.storage_account_name
   storage_blob_endpoint            = module.storage.primary_blob_endpoint
+  storage_account_resource_id      = module.storage.storage_account_id
+  audit_container_name             = module.storage.audit_container_name
+  audit_hmac_active_key_id         = var.audit_hmac_active_key_id
+  audit_key_vault_id               = var.audit_key_vault_id
+  audit_hmac_keyring_secret_uri    = var.audit_hmac_keyring_secret_uri
   speech_endpoint                  = module.speech.speech_endpoint
   speech_region                    = var.region
   speech_key                       = var.speech_key
@@ -76,6 +82,12 @@ data "azurerm_cognitive_account" "foundry" {
 resource "azurerm_role_assignment" "backend_storage_blob" {
   scope                = module.storage.storage_account_id
   role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = module.container_apps.backend_principal_id
+}
+
+resource "azurerm_role_assignment" "backend_storage_contract_reader" {
+  scope                = module.storage.storage_account_id
+  role_definition_name = "Reader"
   principal_id         = module.container_apps.backend_principal_id
 }
 

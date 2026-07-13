@@ -33,6 +33,44 @@ variable "storage_account_name" {
   default     = ""
 }
 
+variable "audit_immutability_locked" {
+  type        = bool
+  description = "Irreversibly lock the dedicated audit container WORM policy. Must be true for Container Apps to accept mutations."
+  default     = false
+}
+
+variable "audit_hmac_active_key_id" {
+  type        = string
+  description = "Non-secret ID of the active audit HMAC key. Must match a key in the Key Vault JSON key ring."
+  default     = "v1"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$", var.audit_hmac_active_key_id))
+    error_message = "audit_hmac_active_key_id must be a valid retained key-ring identifier."
+  }
+}
+
+variable "audit_key_vault_id" {
+  type        = string
+  description = "Resource ID of the RBAC-enabled Key Vault that stores the audit HMAC key ring."
+
+  validation {
+    condition     = can(regex("(?i)^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.KeyVault/vaults/[^/]+$", var.audit_key_vault_id))
+    error_message = "audit_key_vault_id must be a complete Azure Key Vault resource ID."
+  }
+}
+
+variable "audit_hmac_keyring_secret_uri" {
+  type        = string
+  description = "Versionless Key Vault secret URI containing the audit HMAC JSON key ring."
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^https://[A-Za-z0-9-]+\\.vault\\.azure\\.net/secrets/[^/]+$", var.audit_hmac_keyring_secret_uri))
+    error_message = "audit_hmac_keyring_secret_uri must be a versionless Key Vault secret URI."
+  }
+}
+
 variable "search_service_name" {
   type    = string
   default = ""

@@ -1,19 +1,33 @@
 import base64
 import importlib
 import json
+import secrets
 from urllib.parse import quote
 
 import pytest
 
 import backend.conversation_store as conversation_store
+import backend.audit_store as audit_store
 import backend.control_plane as control_plane
 import backend.data_workbench as data_workbench
 import backend.run_store as run_store
 import backend.task_store as task_store
+import backend.workspace_store as workspace_store
 from backend.audit_store import AuditPersistenceError
 from backend.identity import actor_from_headers, actor_from_ui_context, is_trusted_identity, is_trusted_tenant_identity
 from fastapi.testclient import TestClient
 from backend.app import app
+
+
+@pytest.fixture(autouse=True)
+def _explicit_test_audit_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(audit_store, "AUDIT_DIR", tmp_path / "audit")
+    monkeypatch.setenv("DF_AUDIT_LOCAL_MODE", "1")
+    monkeypatch.setenv("DF_AUDIT_HMAC_ACTIVE_KEY_ID", "test-v1")
+    monkeypatch.setenv(
+        "DF_AUDIT_HMAC_KEYS",
+        json.dumps({"test-v1": base64.b64encode(secrets.token_bytes(32)).decode("ascii")}),
+    )
 
 
 def _principal(claims):
@@ -454,6 +468,56 @@ def test_existing_workspace_upload_stops_before_mutation_when_audit_is_unavailab
     assert writes == []
 
 
+def test_new_workspace_upload_reserves_and_audits_before_any_store_mutation(tmp_path, monkeypatch) -> None:
+    app_module = importlib.import_module("backend.app")
+    workspace_root = tmp_path / "workspaces"
+    monkeypatch.setattr(workspace_store, "WORKSPACES", workspace_root)
+    monkeypatch.setattr(app_module, "reserve_workspace_id", lambda _name=None: "upload-reserved-123")
+    monkeypatch.setattr(
+        app_module,
+        "record_audit_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AuditPersistenceError("offline")),
+    )
+    monkeypatch.setattr(app_module, "create_workspace_upload_job", workspace_store.create_workspace_upload_job)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/upload",
+        files={"file": ("data.csv", b"a,b\n1,2\n", "text/csv")},
+    )
+
+    assert response.status_code == 503
+    assert not workspace_root.exists()
+
+
+def test_reserved_workspace_id_is_passed_to_store_without_append_lookup(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(workspace_store, "WORKSPACES", tmp_path / "workspaces")
+    monkeypatch.setattr(workspace_store, "_persist_workspace_bundle", lambda **_kwargs: {"mode": "test"})
+    reserved = workspace_store.reserve_workspace_id("New workspace")
+
+    result = workspace_store.create_workspace_upload_job(
+        files=[{"filename": "data.csv", "content": b"a,b\n1,2\n", "content_type": "text/csv"}],
+        name="New workspace",
+        reserved_workspace_id=reserved,
+    )
+
+    assert result["workspace_id"] == reserved
+    assert (workspace_store.WORKSPACES / reserved / "raw_docs" / "data.csv").exists()
+
+
+def test_workspace_store_rejects_traversal_before_creating_paths(tmp_path, monkeypatch) -> None:
+    workspace_root = tmp_path / "workspaces"
+    monkeypatch.setattr(workspace_store, "WORKSPACES", workspace_root)
+
+    with pytest.raises(ValueError, match="requested_workspace_id"):
+        workspace_store.create_workspace_upload_job(
+            files=[{"filename": "data.csv", "content": b"a,b\n1,2\n"}],
+            requested_workspace_id="../escape",
+        )
+
+    assert not workspace_root.exists()
+
+
 def test_governance_audit_api_is_owner_admin_only_and_truthfully_read_only(monkeypatch) -> None:
     actor = {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"}
     reads: list[tuple[str, int, str | None]] = []
@@ -523,10 +587,14 @@ def test_durable_task_create_start_complete_and_cancel_are_audited(tmp_path, mon
     task_store.request_cancel(cancelled["task_id"])
 
     actions = [args[1] for args, _kwargs in events]
-    assert actions == ["task.create", "task.start", "task.complete", "task.create", "task.cancel"]
+    assert actions == [
+        "task.create", "task.start", "task.transition", "task.complete",
+        "task.create", "task.transition", "task.cancel",
+    ]
     assert all(args[2]["resource_type"] == "task" for args, _kwargs in events)
-    assert events[2][1]["correlation"]["task_id"] == completed["task_id"]
-    assert events[2][1]["reason_code"] == "task_completed"
+    assert events[2][1]["reason_code"] == "transition_attempt"
+    assert events[3][1]["correlation"]["task_id"] == completed["task_id"]
+    assert events[3][1]["reason_code"] == "task_completed"
     assert events[-1][1]["reason_code"] == "task_cancelled"
 
 
@@ -549,18 +617,21 @@ def test_task_create_fails_before_persistence_when_required_audit_is_unavailable
     assert not task_store.TASK_DIR.exists()
 
 
-def test_experiment_promotion_hook_accepts_only_safe_correlation(monkeypatch) -> None:
+def test_experiment_promotion_hook_has_truthful_attempt_success_and_failure_phases(monkeypatch) -> None:
     captured: list[tuple[tuple, dict]] = []
     monkeypatch.setattr(control_plane, "record_audit_event", lambda *args, **kwargs: captured.append((args, kwargs)) or {"event_id": "event-1"}, raising=False)
 
-    event = control_plane.audit_experiment_promotion(
+    attempt = control_plane.audit_experiment_promotion(
         "ws-audit",
         {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
         "experiment-v2",
+        phase="attempt",
         request_id="req-promote",
     )
+    control_plane.audit_experiment_promotion("ws-audit", {}, "experiment-v2", phase="succeeded")
+    control_plane.audit_experiment_promotion("ws-audit", {}, "experiment-v2", phase="failed")
 
-    assert event == {"event_id": "event-1"}
+    assert attempt == {"event_id": "event-1"}
     assert captured[0][0][1] == "experiment.promote"
     assert captured[0][0][2] == {
         "workspace_id": "ws-audit",
@@ -570,4 +641,88 @@ def test_experiment_promotion_hook_accepts_only_safe_correlation(monkeypatch) ->
     assert captured[0][1]["correlation"] == {
         "request_id": "req-promote",
         "experiment_version_id": "experiment-v2",
+    }
+    assert captured[0][1]["result"] == "allowed"
+    assert captured[0][1]["reason_code"] == "promotion_attempt"
+    assert captured[1][1]["result"] == "allowed"
+    assert captured[1][1]["reason_code"] == "experiment_promoted"
+    assert captured[2][1]["result"] == "failed"
+    assert captured[2][1]["reason_code"] == "promotion_failed"
+
+    with pytest.raises(ValueError, match="phase"):
+        control_plane.audit_experiment_promotion("ws-audit", {}, "experiment-v2", phase="unknown")
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "tool_name"),
+    [
+        ("/api/render-pdf-report", {"proposal": {}}, "render_pdf_report"),
+        ("/api/generate-image", {"prompt": "concept"}, "generate_image"),
+        ("/api/narrate-summary", {"text": "summary"}, "narrate_summary"),
+    ],
+)
+def test_artifact_mutation_endpoints_require_workspace_permission_and_audit(monkeypatch, path, payload, tool_name) -> None:
+    app_module = importlib.import_module("backend.app")
+    calls: list[str] = []
+    monkeypatch.setattr(app_module, tool_name, lambda *_args, **_kwargs: calls.append(tool_name) or {})
+    client = TestClient(app, raise_server_exceptions=False)
+
+    missing = client.post(path, json=payload)
+    assert missing.status_code == 422
+
+    unauthenticated = client.post(path, json={**payload, "workspace_id": "ws-artifacts"})
+    assert unauthenticated.status_code == 401
+    assert calls == []
+
+    monkeypatch.setattr(app_module, "is_trusted_tenant_identity", lambda _actor: True)
+    monkeypatch.setattr(
+        app_module,
+        "require_workspace_permission",
+        lambda *_args: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+    denied = client.post(path, json={**payload, "workspace_id": "ws-artifacts"})
+    assert denied.status_code == 403
+    assert calls == []
+
+    monkeypatch.setattr(app_module, "require_workspace_permission", lambda *_args: "editor")
+    monkeypatch.setattr(
+        app_module,
+        "record_audit_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AuditPersistenceError("offline")),
+    )
+    unavailable = client.post(path, json={**payload, "workspace_id": "ws-artifacts"})
+    assert unavailable.status_code == 503
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "tool_name", "resource_id"),
+    [
+        ("/api/render-pdf-report", {"proposal": {}}, "render_pdf_report", "pdf"),
+        ("/api/generate-image", {"prompt": "concept"}, "generate_image", "image"),
+        ("/api/narrate-summary", {"text": "summary"}, "narrate_summary", "narration"),
+    ],
+)
+def test_artifact_mutation_endpoints_audit_authorized_workspace_before_running(
+    monkeypatch, path, payload, tool_name, resource_id
+) -> None:
+    app_module = importlib.import_module("backend.app")
+    events: list[tuple[tuple, dict]] = []
+    calls: list[str] = []
+    monkeypatch.setattr(app_module, "is_trusted_tenant_identity", lambda _actor: True)
+    monkeypatch.setattr(app_module, "require_workspace_permission", lambda *_args: "editor")
+    monkeypatch.setattr(app_module, "record_audit_event", lambda *args, **kwargs: events.append((args, kwargs)) or {})
+    monkeypatch.setattr(app_module, tool_name, lambda *_args, **_kwargs: calls.append(tool_name) or {"mode": "test"})
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(path, json={**payload, "workspace_id": "ws-artifacts"})
+
+    assert response.status_code == 200, response.text
+    assert calls == [tool_name]
+    assert len(events) == 1
+    assert events[0][0][1] == "artifact.generate"
+    assert events[0][0][2] == {
+        "workspace_id": "ws-artifacts",
+        "resource_type": "artifact",
+        "resource_id": resource_id,
     }

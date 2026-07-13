@@ -437,17 +437,20 @@ class RunDetailResponse(BaseModel):
 
 
 class RenderPdfRequest(BaseModel):
+    workspace_id: str
     proposal: dict[str, Any]
     template: str = "project_proposal"
 
 
 class GenerateImageRequest(BaseModel):
+    workspace_id: str
     prompt: str
     size: str = "1024x1024"
     reference_image_urls: list[str] = Field(default_factory=list)
 
 
 class NarrateSummaryRequest(BaseModel):
+    workspace_id: str
     text: str
     voice: str = "zh-CN-XiaoxiaoNeural"
 

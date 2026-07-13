@@ -436,6 +436,7 @@ def _env_fingerprint() -> str:
         "AZURE_STORAGE_CONNECTION_STRING",
         "AZURE_STORAGE_KEY",
         "DF_STORAGE_KEY",
+        "STORAGE_ACCOUNT_NAME",
         "DF_STORAGE_ACCOUNT",
         "DF_WORKSPACE_CONTAINER",
         "DF_KEY_VAULT_URL",

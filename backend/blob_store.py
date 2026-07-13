@@ -22,7 +22,7 @@ class BlobJsonReadError(RuntimeError):
 
 
 def blob_configured() -> bool:
-    return bool(os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or os.environ.get("DF_STORAGE_ACCOUNT"))
+    return bool(os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or _storage_account_name())
 
 
 def probe_blob_container(timeout: float = 1.0) -> dict[str, Any]:
@@ -575,9 +575,11 @@ def _container_client() -> Any:
     if connection_string:
         service = BlobServiceClient.from_connection_string(connection_string)
     else:
-        account = os.environ.get("DF_STORAGE_ACCOUNT")
+        account = _storage_account_name()
         if not account:
-            raise RuntimeError("Missing DF_STORAGE_ACCOUNT or AZURE_STORAGE_CONNECTION_STRING for Blob persistence")
+            raise RuntimeError(
+                "Missing STORAGE_ACCOUNT_NAME, DF_STORAGE_ACCOUNT, or AZURE_STORAGE_CONNECTION_STRING for Blob persistence"
+            )
         storage_key = os.environ.get("AZURE_STORAGE_KEY") or os.environ.get("DF_STORAGE_KEY")
         service = BlobServiceClient(
             account_url=f"https://{account}.blob.core.windows.net",
@@ -598,10 +600,14 @@ def _ensure_container(container: Any) -> None:
 
 
 def _blob_url(blob_name: str) -> str:
-    account = os.environ.get("DF_STORAGE_ACCOUNT")
+    account = _storage_account_name()
     if account:
         return f"https://{account}.blob.core.windows.net/{_container_name()}/{blob_name}"
     return f"{_container_name()}/{blob_name}"
+
+
+def _storage_account_name() -> str:
+    return str(os.environ.get("STORAGE_ACCOUNT_NAME") or os.environ.get("DF_STORAGE_ACCOUNT") or "").strip()
 
 
 class PathSafe:

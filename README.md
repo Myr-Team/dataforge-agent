@@ -175,6 +175,16 @@ cp backend/.env.example backend/.env   # fill in your own values
 
 The backend has mock-safe fallbacks where Azure resources are not configured, so it can run partially offline.
 
+### Governance audit storage contract
+
+Audit persistence is deliberately excluded from the general mock/local fallback policy. Local audit storage runs only with `DF_AUDIT_LOCAL_MODE=1`; Azure Container Apps and `DF_ENVIRONMENT=production` reject that flag and fail closed if durable audit storage is unavailable.
+
+Production uses the dedicated private `dataforge-audit` container. The account must have Blob versioning, Blob soft delete, and container soft delete enabled. The audit container must have a **locked** time-based immutability policy with protected append writes enabled. The backend verifies those controls through Azure Resource Manager on every audit access by using `DF_AUDIT_STORAGE_ACCOUNT_RESOURCE_ID`; its managed identity therefore needs `Reader` on the storage account in addition to `Storage Blob Data Contributor`. Missing controls, a missing stream after it was anchored, a truncated stream, or a head older than the signed monotonic anchor is an operational failure, never an empty ledger.
+
+The ledger stores segmented append blobs and a separate signed append-only head stream. Every event carries a server-generated event ID, a key ID, a revision, and a chained HMAC. `DF_AUDIT_HMAC_KEYS` is a JSON object whose values are base64-encoded secrets that decode to at least 32 bytes; `DF_AUDIT_HMAC_ACTIVE_KEY_ID` selects the active entry. Keep previous entries during rotation so old events remain verifiable. The Terraform Container App accepts only a versionless Key Vault secret URI for this JSON (`audit_hmac_keyring_secret_uri`), creates a dedicated user-assigned identity, and grants it `Key Vault Secrets User` on `audit_key_vault_id` before creating the app. Never put key values in Terraform variables, source, logs, or API payloads.
+
+`audit_immutability_locked=true` is required before production mutations are enabled. Locking is irreversible and protects the container/account from deletion for the retention period, so release provisioning must review and apply it intentionally.
+
 ### Frontend
 
 ```bash

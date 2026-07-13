@@ -24,6 +24,30 @@ variable "search_key" {
 }
 variable "storage_account_name" { type = string }
 variable "storage_blob_endpoint" { type = string }
+variable "storage_account_resource_id" { type = string }
+variable "audit_container_name" { type = string }
+variable "audit_hmac_active_key_id" {
+  type = string
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$", var.audit_hmac_active_key_id))
+    error_message = "audit_hmac_active_key_id must be a valid retained key-ring identifier."
+  }
+}
+variable "audit_key_vault_id" {
+  type = string
+  validation {
+    condition     = can(regex("(?i)^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.KeyVault/vaults/[^/]+$", var.audit_key_vault_id))
+    error_message = "audit_key_vault_id must be a complete Azure Key Vault resource ID."
+  }
+}
+variable "audit_hmac_keyring_secret_uri" {
+  type      = string
+  sensitive = true
+  validation {
+    condition     = can(regex("^https://[A-Za-z0-9-]+\\.vault\\.azure\\.net/secrets/[^/]+$", var.audit_hmac_keyring_secret_uri))
+    error_message = "audit_hmac_keyring_secret_uri must be a versionless Key Vault secret URI."
+  }
+}
 variable "speech_endpoint" { type = string }
 variable "speech_region" { type = string }
 variable "speech_key" {
@@ -44,14 +68,29 @@ resource "azurerm_container_app_environment" "this" {
   log_analytics_workspace_id = var.log_analytics_workspace_id
 }
 
+resource "azurerm_user_assigned_identity" "audit_secrets" {
+  name                = "${var.backend_app_name}-audit-secrets"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+}
+
+resource "azurerm_role_assignment" "audit_secrets_user" {
+  scope                = var.audit_key_vault_id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.audit_secrets.principal_id
+}
+
 resource "azurerm_container_app" "backend" {
   name                         = var.backend_app_name
   container_app_environment_id = azurerm_container_app_environment.this.id
   resource_group_name          = var.resource_group_name
   revision_mode                = "Single"
 
+  depends_on = [azurerm_role_assignment.audit_secrets_user]
+
   identity {
-    type = "SystemAssigned"
+    type         = "SystemAssigned, UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.audit_secrets.id]
   }
 
   registry {
@@ -68,6 +107,12 @@ resource "azurerm_container_app" "backend" {
       name  = secret.key
       value = secret.value
     }
+  }
+
+  secret {
+    name                = "audit-hmac-keyring"
+    key_vault_secret_id = var.audit_hmac_keyring_secret_uri
+    identity            = azurerm_user_assigned_identity.audit_secrets.id
   }
 
   ingress {
@@ -112,6 +157,26 @@ resource "azurerm_container_app" "backend" {
       env {
         name  = "STORAGE_BLOB_ENDPOINT"
         value = var.storage_blob_endpoint
+      }
+      env {
+        name  = "DF_ENVIRONMENT"
+        value = "production"
+      }
+      env {
+        name  = "DF_AUDIT_CONTAINER"
+        value = var.audit_container_name
+      }
+      env {
+        name  = "DF_AUDIT_STORAGE_ACCOUNT_RESOURCE_ID"
+        value = var.storage_account_resource_id
+      }
+      env {
+        name  = "DF_AUDIT_HMAC_ACTIVE_KEY_ID"
+        value = var.audit_hmac_active_key_id
+      }
+      env {
+        name        = "DF_AUDIT_HMAC_KEYS"
+        secret_name = "audit-hmac-keyring"
       }
       env {
         name  = "SPEECH_ENDPOINT"

@@ -20,6 +20,7 @@ def _claim_from_separate_process(task_dir: str, task_id: str, start, results) ->
 
     child_store.TASK_DIR = Path(task_dir)
     child_store.blob_configured = lambda: False
+    child_store.record_audit_event = lambda *_args, **_kwargs: {}
     start.wait(10)
     results.put(child_store.claim_task(task_id, "process-worker") is not None)
 
@@ -38,6 +39,7 @@ def _race_local_terminal_transitions(
 
     child_store.TASK_DIR = Path(task_dir)
     child_store.blob_configured = lambda: False
+    child_store.record_audit_event = lambda *_args, **_kwargs: {}
     original_apply = child_store._apply_changes
     original_persist = child_store._persist_local_task
 
@@ -89,6 +91,7 @@ def _configure_store(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(task_store, "list_blob_json", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(task_store, "list_blob_json_strict", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(task_store, "upload_blob_json", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(task_store, "record_audit_event", lambda *_args, **_kwargs: {})
 
 
 def test_task_survives_local_store_loss_via_blob(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -343,6 +346,78 @@ def test_blob_cas_reloads_completed_instead_of_overwriting_it_with_cancel(tmp_pa
     cancelled = task_store.request_cancel(task["task_id"])
 
     assert cancelled["status"] == "completed"
+
+
+def test_terminal_audit_is_only_recorded_after_blob_cas_commit(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    remote: dict[str, dict] = {}
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(task_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
+    monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda name: remote.get(name))
+    monkeypatch.setattr(task_store, "record_audit_event", lambda *args, **kwargs: events.append((args, kwargs)) or {})
+    task = task_store.create_task(_payload(), _actor())
+    events.clear()
+    monkeypatch.setattr(task_store, "compare_and_swap_blob_json", lambda *_args, **_kwargs: None)
+
+    result = task_store.update_task(task["task_id"], status="cancelled")
+
+    assert result["status"] == "queued"
+    assert [args[1] for args, _kwargs in events] == ["task.transition", "task.transition"]
+    assert events[0][1]["result"] == "allowed"
+    assert events[0][1]["reason_code"] == "transition_attempt"
+    assert events[1][1]["result"] == "failed"
+    assert events[1][1]["reason_code"] == "conflict"
+
+
+def test_terminal_audit_is_not_recorded_when_blob_cas_raises(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    remote: dict[str, dict] = {}
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(task_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
+    monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda name: remote.get(name))
+    monkeypatch.setattr(task_store, "record_audit_event", lambda *args, **kwargs: events.append((args, kwargs)) or {})
+    task = task_store.create_task(_payload(), _actor())
+    events.clear()
+    monkeypatch.setattr(
+        task_store,
+        "compare_and_swap_blob_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    with pytest.raises(task_store.TaskPersistenceError):
+        task_store.update_task(task["task_id"], status="failed")
+
+    assert [args[1] for args, _kwargs in events] == ["task.transition", "task.transition"]
+    assert events[-1][1]["result"] == "failed"
+    assert events[-1][1]["reason_code"] == "persistence_failed"
+
+
+def test_terminal_audit_uses_the_state_returned_by_blob_cas(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    remote: dict[str, dict] = {}
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(task_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
+    monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda name: remote.get(name))
+    monkeypatch.setattr(task_store, "record_audit_event", lambda *args, **kwargs: events.append((args, kwargs)) or {})
+    task = task_store.create_task(_payload(), _actor())
+    events.clear()
+
+    def commit_non_terminal(_name, *, expected_revision, changes):
+        return {**changes, "status": "running", "revision": expected_revision + 1}
+
+    monkeypatch.setattr(task_store, "compare_and_swap_blob_json", commit_non_terminal)
+
+    result = task_store.update_task(task["task_id"], status="failed")
+
+    assert result["status"] == "running"
+    assert [args[1] for args, _kwargs in events] == ["task.transition"]
+    assert events[0][1]["reason_code"] == "transition_attempt"
 
 
 def test_blob_conditional_claim_allows_only_one_worker(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,4 +1,6 @@
+import base64
 import json
+import secrets
 
 import pytest
 
@@ -22,7 +24,12 @@ def _resource(resource_id: str = "file-1") -> dict[str, str]:
 def _local_audit_store(tmp_path, monkeypatch):
     monkeypatch.setattr(audit_store, "AUDIT_DIR", tmp_path / "audit")
     monkeypatch.setattr(audit_store, "blob_configured", lambda: False)
-    monkeypatch.setenv("DF_AUDIT_HMAC_KEY", "unit-test-audit-key")
+    monkeypatch.setenv("DF_AUDIT_LOCAL_MODE", "1")
+    monkeypatch.setenv("DF_AUDIT_HMAC_ACTIVE_KEY_ID", "test-v1")
+    monkeypatch.setenv(
+        "DF_AUDIT_HMAC_KEYS",
+        json.dumps({"test-v1": base64.b64encode(secrets.token_bytes(32)).decode("ascii")}),
+    )
 
 
 def test_audit_event_redacts_content_credentials_and_email() -> None:
@@ -58,25 +65,27 @@ def test_audit_event_redacts_content_credentials_and_email() -> None:
 
 
 def test_local_store_creates_and_reuses_private_hmac_key(monkeypatch) -> None:
-    monkeypatch.delenv("DF_AUDIT_HMAC_KEY", raising=False)
     monkeypatch.delenv("DF_ROI_PSEUDONYM_SALT", raising=False)
+    monkeypatch.delenv("DF_AUDIT_HMAC_KEYS", raising=False)
+    monkeypatch.delenv("DF_AUDIT_HMAC_ACTIVE_KEY_ID", raising=False)
 
     first = audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
     second = audit_store.record_audit_event(_actor(), "file.edit", _resource(), {})
 
-    key_path = audit_store.AUDIT_DIR / ".hmac-key"
+    key_path = audit_store.AUDIT_DIR / ".keyring.json"
     assert key_path.exists()
     assert len(key_path.read_bytes()) >= 32
     assert first["actor_hash"] == second["actor_hash"]
-    assert b"dataforge-local-audit-hmac-v1" not in key_path.read_bytes()
+    assert b"owner@contoso.com" not in key_path.read_bytes()
 
 
 def test_blob_store_requires_deployment_hmac_key(monkeypatch) -> None:
     monkeypatch.setattr(audit_store, "blob_configured", lambda: True)
-    monkeypatch.delenv("DF_AUDIT_HMAC_KEY", raising=False)
-    monkeypatch.delenv("DF_ROI_PSEUDONYM_SALT", raising=False)
+    monkeypatch.setattr(audit_store, "_backend", lambda: audit_store._LocalAppendBackend())
+    monkeypatch.delenv("DF_AUDIT_HMAC_KEYS", raising=False)
+    monkeypatch.delenv("DF_AUDIT_HMAC_ACTIVE_KEY_ID", raising=False)
 
-    with pytest.raises(audit_store.AuditPersistenceError, match="DF_AUDIT_HMAC_KEY"):
+    with pytest.raises(audit_store.AuditPersistenceError, match="DF_AUDIT_HMAC_KEYS"):
         audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
 
 
@@ -87,7 +96,7 @@ def test_audit_event_cannot_be_updated_or_deleted() -> None:
     assert not hasattr(audit_store, "delete_audit_event")
 
 
-def test_audit_event_chain_is_append_only_and_idempotent() -> None:
+def test_audit_event_chain_records_each_attempt_even_with_reused_request_id() -> None:
     first = audit_store.record_audit_event(
         _actor(),
         "file.create",
@@ -108,41 +117,224 @@ def test_audit_event_chain_is_append_only_and_idempotent() -> None:
     )
     page = audit_store.list_audit_events("ws-audit", limit=10)
 
-    assert replay == first
-    assert page["revision"] == 2
-    assert [item["event_id"] for item in page["events"]] == [second["event_id"], first["event_id"]]
+    assert replay["event_id"] != first["event_id"]
+    assert page["revision"] == 3
+    assert [item["event_id"] for item in page["events"]] == [second["event_id"], replay["event_id"], first["event_id"]]
     assert first["revision"] == 1
     assert first["previous_hash"] == audit_store.GENESIS_HASH
-    assert second["revision"] == 2
-    assert second["previous_hash"] == first["event_hash"]
+    assert replay["revision"] == 2
+    assert replay["previous_hash"] == first["event_hash"]
+    assert second["revision"] == 3
+    assert second["previous_hash"] == replay["event_hash"]
     assert second["event_hash"] != first["event_hash"]
+
+
+def test_remediation_local_storage_requires_explicit_flag(monkeypatch) -> None:
+    monkeypatch.delenv("DF_AUDIT_LOCAL_MODE", raising=False)
+
+    with pytest.raises(audit_store.AuditPersistenceError, match="explicit"):
+        audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
+
+
+def test_remediation_storage_account_name_is_recognized(monkeypatch) -> None:
+    monkeypatch.undo()
+    monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
+    monkeypatch.delenv("DF_STORAGE_ACCOUNT", raising=False)
+    monkeypatch.setenv("STORAGE_ACCOUNT_NAME", "deployedaccount")
+
+    from backend import blob_store
+
+    assert blob_store.blob_configured() is True
+
+
+def test_remediation_key_ring_rotates_and_validates_old_events(monkeypatch) -> None:
+    old = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+    new = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+    monkeypatch.setenv("DF_AUDIT_HMAC_ACTIVE_KEY_ID", "old")
+    monkeypatch.setenv("DF_AUDIT_HMAC_KEYS", json.dumps({"old": old}))
+    first = audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
+
+    monkeypatch.setenv("DF_AUDIT_HMAC_ACTIVE_KEY_ID", "new")
+    monkeypatch.setenv("DF_AUDIT_HMAC_KEYS", json.dumps({"new": new, "old": old}))
+    second = audit_store.record_audit_event(_actor(), "file.edit", _resource(), {})
+    listed = audit_store.list_audit_events("ws-audit")
+
+    assert first["key_id"] == "old"
+    assert second["key_id"] == "new"
+    assert listed["revision"] == 2
+
+
+def test_remediation_rejects_short_decoded_hmac_key(monkeypatch) -> None:
+    monkeypatch.setenv("DF_AUDIT_HMAC_ACTIVE_KEY_ID", "short")
+    monkeypatch.setenv(
+        "DF_AUDIT_HMAC_KEYS",
+        json.dumps({"short": base64.b64encode(b"too-short").decode("ascii")}),
+    )
+
+    with pytest.raises(audit_store.AuditPersistenceError, match="256-bit"):
+        audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
+
+
+@pytest.mark.parametrize("workspace_id", ["../escape", "a/b", "a\\b", ".", "..", "C:drive"])
+def test_remediation_rejects_workspace_path_traversal(workspace_id: str) -> None:
+    with pytest.raises(ValueError, match="workspace_id"):
+        audit_store.list_audit_events(workspace_id)
+
+
+def test_remediation_local_anchor_detects_ledger_delete_and_rollback() -> None:
+    audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
+    audit_store.record_audit_event(_actor(), "file.edit", _resource(), {})
+    event_path = audit_store._local_stream_path(audit_store._event_stream_name("ws-audit", 1))
+    original = event_path.read_bytes()
+    first_line = original.splitlines(keepends=True)[0]
+
+    event_path.write_bytes(first_line)
+    with pytest.raises(audit_store.AuditIntegrityError, match="rollback"):
+        audit_store.list_audit_events("ws-audit")
+
+    event_path.unlink()
+    with pytest.raises(audit_store.AuditIntegrityError, match="missing"):
+        audit_store.list_audit_events("ws-audit")
+
+
+def test_remediation_valid_unanchored_event_is_recovered_after_interrupted_writer(monkeypatch) -> None:
+    class InterruptedBackend:
+        def __init__(self) -> None:
+            self.streams: dict[str, bytes] = {}
+
+        def read(self, name: str) -> bytes:
+            return self.streams.get(name, b"")
+
+        def list_names(self, prefix: str) -> list[str]:
+            return sorted(name for name in self.streams if name.startswith(prefix))
+
+        def append(self, name: str, payload: bytes, expected_size: int) -> None:
+            current = self.streams.get(name, b"")
+            if len(current) != expected_size:
+                raise audit_store._AppendConflict()
+            self.streams[name] = current + payload
+
+    remote = InterruptedBackend()
+    first = audit_store._build_event(
+        _actor(),
+        "file.create",
+        _resource(),
+        {},
+        revision=1,
+        previous_hash=audit_store.GENESIS_HASH,
+    )
+    interrupted = audit_store._build_event(
+        _actor(),
+        "file.edit",
+        _resource(),
+        {},
+        revision=2,
+        previous_hash=first["event_hash"],
+    )
+    anchor = audit_store._build_anchor(
+        anchor_revision=1,
+        workspace_id="ws-audit",
+        workspace_revision=1,
+        workspace_event_hash=first["event_hash"],
+        previous_hash=audit_store.GENESIS_HASH,
+        key_id=first["key_id"],
+    )
+    remote.streams[audit_store._event_stream_name("ws-audit", 1)] = (
+        audit_store._line(first) + audit_store._line(interrupted)
+    )
+    remote.streams[audit_store._anchor_stream_name(1)] = audit_store._line(anchor)
+    monkeypatch.setattr(audit_store, "_backend", lambda: remote)
+
+    third = audit_store.record_audit_event(_actor(), "file.delete", _resource(), {})
+
+    assert third["revision"] == 3
+    listed = audit_store.list_audit_events("ws-audit")["events"]
+    assert [event["revision"] for event in listed] == [3, 2, 1]
+
+
+@pytest.mark.parametrize("name", ["/outside.jsonl", "\\outside.jsonl", "C:\\outside.jsonl", "\\\\server\\share\\x.jsonl"])
+def test_remediation_local_stream_rejects_absolute_paths(name: str) -> None:
+    with pytest.raises(ValueError, match="path"):
+        audit_store._local_stream_path(name)
+
+
+def test_remediation_production_contract_requires_all_blob_controls(monkeypatch) -> None:
+    service = {
+        "isVersioningEnabled": True,
+        "deleteRetentionPolicy": {"enabled": True, "days": 30},
+        "containerDeleteRetentionPolicy": {"enabled": True, "days": 30},
+    }
+    policy = {"state": "Locked", "allowProtectedAppendWrites": True}
+    audit_store._validate_production_contract(service, policy)
+
+    for broken_service, broken_policy in [
+        ({**service, "isVersioningEnabled": False}, policy),
+        ({**service, "deleteRetentionPolicy": {"enabled": False}}, policy),
+        ({**service, "containerDeleteRetentionPolicy": {"enabled": False}}, policy),
+        (service, {**policy, "state": "Unlocked"}),
+        (service, {**policy, "allowProtectedAppendWrites": False}),
+    ]:
+        with pytest.raises(audit_store.AuditPersistenceError, match="contract"):
+            audit_store._validate_production_contract(broken_service, broken_policy)
+
+
+def test_remediation_production_never_falls_back_to_local(monkeypatch) -> None:
+    monkeypatch.setenv("DF_ENVIRONMENT", "production")
+    monkeypatch.setenv("DF_AUDIT_LOCAL_MODE", "1")
+    monkeypatch.setattr(audit_store, "blob_configured", lambda: False)
+
+    with pytest.raises(audit_store.AuditPersistenceError, match="prohibited"):
+        audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
+
+
+def test_remediation_infra_preauthorizes_versionless_key_vault_reference() -> None:
+    module = (audit_store.ROOT / "infra" / "modules" / "container_app" / "main.tf").read_text(encoding="utf-8")
+    variables = (audit_store.ROOT / "infra" / "envs" / "dev" / "variables.tf").read_text(encoding="utf-8")
+
+    assert 'resource "azurerm_user_assigned_identity" "audit_secrets"' in module
+    assert 'role_definition_name = "Key Vault Secrets User"' in module
+    assert "identity            = azurerm_user_assigned_identity.audit_secrets.id" in module
+    assert "depends_on = [azurerm_role_assignment.audit_secrets_user]" in module
+    assert "audit_key_vault_id" in variables
+    assert "audit_hmac_keyring_secret_uri" in variables
+    assert "validation" in variables
+    assert "/secrets/[^/]+$" in variables
+
+
+def test_remediation_production_requires_configured_durable_blob(monkeypatch) -> None:
+    monkeypatch.setenv("DF_ENVIRONMENT", "production")
+    monkeypatch.delenv("DF_AUDIT_LOCAL_MODE", raising=False)
+    monkeypatch.setattr(audit_store, "blob_configured", lambda: False)
+
+    with pytest.raises(audit_store.AuditPersistenceError, match="durable Blob"):
+        audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
 
 
 def test_tampered_local_chain_fails_closed(tmp_path) -> None:
     audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
-    ledger_path = audit_store.AUDIT_DIR / "ws-audit.json"
-    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-    ledger["events"][0]["resource_id"] = "tampered"
-    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    ledger_path = audit_store._local_stream_path(audit_store._event_stream_name("ws-audit", 1))
+    event = json.loads(ledger_path.read_text(encoding="utf-8"))
+    event["resource_id"] = "tampered"
+    ledger_path.write_bytes(audit_store._line(event))
 
     with pytest.raises(audit_store.AuditIntegrityError):
         audit_store.list_audit_events("ws-audit")
     with pytest.raises(audit_store.AuditIntegrityError):
         audit_store.record_audit_event(_actor(), "file.delete", _resource(), {})
 
-    assert json.loads(ledger_path.read_text(encoding="utf-8"))["events"][0]["resource_id"] == "tampered"
+    assert json.loads(ledger_path.read_text(encoding="utf-8"))["resource_id"] == "tampered"
 
 
 def test_local_append_lock_failure_is_fail_closed(monkeypatch) -> None:
     audit_store.AUDIT_DIR.mkdir(parents=True)
-    lock_path = audit_store.AUDIT_DIR / "ws-audit.lock"
+    lock_path = audit_store.AUDIT_DIR / ".ledger.lock"
     lock_path.write_text("held-by-another-process", encoding="ascii")
     monkeypatch.setattr(audit_store, "LOCAL_LOCK_TIMEOUT_SECONDS", 0.0)
 
     with pytest.raises(audit_store.AuditPersistenceError, match="lock"):
         audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
 
-    assert not (audit_store.AUDIT_DIR / "ws-audit.json").exists()
+    assert not audit_store._local_stream_path(audit_store._event_stream_name("ws-audit", 1)).exists()
 
 
 @pytest.mark.parametrize(
@@ -155,11 +347,11 @@ def test_local_append_lock_failure_is_fail_closed(monkeypatch) -> None:
 )
 def test_rehashed_policy_invalid_event_is_rejected(field: str, value: str) -> None:
     audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
-    ledger_path = audit_store.AUDIT_DIR / "ws-audit.json"
-    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-    ledger["events"][0][field] = value
-    ledger["events"][0]["event_hash"] = audit_store._hash_event(ledger["events"][0])
-    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    ledger_path = audit_store._local_stream_path(audit_store._event_stream_name("ws-audit", 1))
+    event = json.loads(ledger_path.read_text(encoding="utf-8"))
+    event[field] = value
+    event["event_hash"] = audit_store._hash_event(event)
+    ledger_path.write_bytes(audit_store._line(event))
 
     with pytest.raises(audit_store.AuditIntegrityError):
         audit_store.list_audit_events("ws-audit")
@@ -187,33 +379,47 @@ def test_pagination_is_bounded_and_uses_opaque_revision_cursor() -> None:
 
 
 def test_blob_cas_retries_replica_conflict_without_losing_events(monkeypatch) -> None:
-    monkeypatch.setattr(audit_store, "blob_configured", lambda: True)
-    remote: dict[str, object] = {}
-    calls: list[int] = []
+    class ReplicaBackend:
+        def __init__(self) -> None:
+            self.streams: dict[str, bytes] = {}
+            self.event_calls: list[int] = []
 
-    def download(_name: str):
-        return json.loads(json.dumps(remote)) if remote else None
+        def read(self, name: str) -> bytes:
+            return self.streams.get(name, b"")
 
-    def cas(_name: str, *, expected_revision: int, changes: dict):
-        calls.append(expected_revision)
-        if len(calls) == 1:
-            competing = audit_store._build_event(
-                _actor(),
-                "message.create",
-                {"workspace_id": "ws-audit", "resource_type": "message", "resource_id": "message-other"},
-                {"correlation": {"request_id": "req-other"}},
-                revision=1,
-                previous_hash=audit_store.GENESIS_HASH,
-            )
-            remote.update({"revision": 1, "events": [competing]})
-            return None
-        if int(remote.get("revision", 0)) != expected_revision:
-            return None
-        remote.update(json.loads(json.dumps(changes)))
-        return json.loads(json.dumps(remote))
+        def list_names(self, prefix: str) -> list[str]:
+            return sorted(name for name in self.streams if name.startswith(prefix))
 
-    monkeypatch.setattr(audit_store, "download_blob_json", download)
-    monkeypatch.setattr(audit_store, "compare_and_swap_blob_json", cas)
+        def append(self, name: str, payload: bytes, expected_size: int) -> None:
+            if "/events/" in name:
+                self.event_calls.append(expected_size)
+                if len(self.event_calls) == 1:
+                    competing = audit_store._build_event(
+                        _actor(),
+                        "message.create",
+                        {"workspace_id": "ws-audit", "resource_type": "message", "resource_id": "message-other"},
+                        {"correlation": {"request_id": "req-other"}},
+                        revision=1,
+                        previous_hash=audit_store.GENESIS_HASH,
+                    )
+                    self.streams[name] = audit_store._line(competing)
+                    anchor = audit_store._build_anchor(
+                        anchor_revision=1,
+                        workspace_id="ws-audit",
+                        workspace_revision=1,
+                        workspace_event_hash=competing["event_hash"],
+                        previous_hash=audit_store.GENESIS_HASH,
+                        key_id=competing["key_id"],
+                    )
+                    self.streams[audit_store._anchor_stream_name(1)] = audit_store._line(anchor)
+                    raise audit_store._AppendConflict()
+            current = self.streams.get(name, b"")
+            if len(current) != expected_size:
+                raise audit_store._AppendConflict()
+            self.streams[name] = current + payload
+
+    remote = ReplicaBackend()
+    monkeypatch.setattr(audit_store, "_backend", lambda: remote)
 
     event = audit_store.record_audit_event(
         _actor(),
@@ -222,10 +428,12 @@ def test_blob_cas_retries_replica_conflict_without_losing_events(monkeypatch) ->
         {"correlation": {"request_id": "req-local"}},
     )
 
-    assert calls == [0, 1]
+    assert remote.event_calls[0] == 0
+    assert remote.event_calls[1] > 0
     assert event["revision"] == 2
-    assert event["previous_hash"] == remote["events"][0]["event_hash"]
-    assert len(remote["events"]) == 2
+    persisted = audit_store.list_audit_events("ws-audit")["events"]
+    assert event["previous_hash"] == persisted[1]["event_hash"]
+    assert len(persisted) == 2
 
 
 @pytest.mark.parametrize(

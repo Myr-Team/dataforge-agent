@@ -154,7 +154,9 @@ def update_task(task_id: str, *, audit_actor: Mapping[str, Any] | None = None, *
         updated = _apply_changes(task, changes)
         if updated is task:
             return task
-        _audit_task_transition(task, updated, actor=audit_actor)
+        requested_transition = _task_terminal_transition(task, updated)
+        if requested_transition:
+            _audit_task(updated, "task.transition", actor=audit_actor, reason_code="transition_attempt")
         try:
             committed = compare_and_swap_blob_json(
                 _task_blob(normalized),
@@ -162,10 +164,25 @@ def update_task(task_id: str, *, audit_actor: Mapping[str, Any] | None = None, *
                 changes=updated,
             )
         except Exception as exc:
+            if requested_transition:
+                _audit_task_best_effort(
+                    updated, "task.transition", actor=audit_actor, result="failed", reason_code="persistence_failed"
+                )
             raise TaskPersistenceError("durable task update failed") from exc
         if committed is None:
+            if requested_transition:
+                _audit_task(updated, "task.transition", actor=audit_actor, result="failed", reason_code="conflict")
             return get_task(normalized)
         cleaned = _clean_task(committed)
+        committed_transition = _task_terminal_transition(task, cleaned)
+        if committed_transition:
+            _audit_task(
+                cleaned,
+                committed_transition[0],
+                actor=audit_actor,
+                result=committed_transition[1],
+                reason_code=committed_transition[2],
+            )
         _persist_local_task(cleaned)
         return cleaned
 
@@ -237,21 +254,20 @@ def _audit_task_best_effort(
         pass
 
 
-def _audit_task_transition(
+def _task_terminal_transition(
     previous: Mapping[str, Any],
     updated: Mapping[str, Any],
-    *,
-    actor: Mapping[str, Any] | None = None,
-) -> None:
+) -> tuple[str, str, str] | None:
     old_status = str(previous.get("status") or "")
     new_status = str(updated.get("status") or "")
     cancel_became_requested = not bool(previous.get("cancel_requested")) and bool(updated.get("cancel_requested"))
     if (new_status == "cancelled" and old_status != "cancelled") or cancel_became_requested:
-        _audit_task(updated, "task.cancel", actor=actor, reason_code="task_cancelled")
+        return "task.cancel", "allowed", "task_cancelled"
     elif new_status == "completed" and old_status != "completed":
-        _audit_task(updated, "task.complete", actor=actor, reason_code="task_completed")
+        return "task.complete", "allowed", "task_completed"
     elif new_status in {"failed", "partial"} and old_status != new_status:
-        _audit_task(updated, "task.fail", actor=actor, result="failed", reason_code="task_failed")
+        return "task.fail", "failed", "task_failed"
+    return None
 
 
 def _persist_new(task: Mapping[str, Any]) -> dict[str, Any]:
@@ -312,9 +328,29 @@ def _update_local_task(
                 if expected_status is not None and task.get("status") != expected_status:
                     return None
                 updated = _apply_changes(task, changes)
-                if updated is not task:
-                    _audit_task_transition(task, updated, actor=audit_actor)
-                return task if updated is task else _persist_local_task(updated)
+                if updated is task:
+                    return task
+                requested_transition = _task_terminal_transition(task, updated)
+                if requested_transition:
+                    _audit_task(updated, "task.transition", actor=audit_actor, reason_code="transition_attempt")
+                try:
+                    persisted = _persist_local_task(updated)
+                except Exception:
+                    if requested_transition:
+                        _audit_task_best_effort(
+                            updated, "task.transition", actor=audit_actor, result="failed", reason_code="persistence_failed"
+                        )
+                    raise
+                committed_transition = _task_terminal_transition(task, persisted)
+                if committed_transition:
+                    _audit_task(
+                        persisted,
+                        committed_transition[0],
+                        actor=audit_actor,
+                        result=committed_transition[1],
+                        reason_code=committed_transition[2],
+                    )
+                return persisted
             finally:
                 _release_claim_lock(lock_path, token)
         _recover_stale_claim_lock(lock_path, {})

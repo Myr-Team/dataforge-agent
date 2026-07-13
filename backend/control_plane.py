@@ -1280,12 +1280,21 @@ def audit_experiment_promotion(
     actor: dict[str, Any],
     experiment_version_id: str,
     *,
+    phase: Literal["attempt", "succeeded", "failed"],
     request_id: str | None = None,
 ) -> dict[str, Any]:
-    """Required pre-mutation hook for a future experiment promotion endpoint."""
+    """Audit one truthful phase of a future experiment promotion mutation."""
     correlation = {"experiment_version_id": experiment_version_id}
     if request_id:
         correlation["request_id"] = request_id
+    phases = {
+        "attempt": ("allowed", "promotion_attempt"),
+        "succeeded": ("allowed", "experiment_promoted"),
+        "failed": ("failed", "promotion_failed"),
+    }
+    if phase not in phases:
+        raise ValueError("experiment promotion phase is invalid")
+    result, reason_code = phases[phase]
     return record_audit_event(
         actor,
         "experiment.promote",
@@ -1294,8 +1303,8 @@ def audit_experiment_promotion(
             "resource_type": "experiment",
             "resource_id": experiment_version_id,
         },
-        result="allowed",
-        reason_code="experiment_promoted",
+        result=result,
+        reason_code=reason_code,
         correlation=correlation,
     )
 

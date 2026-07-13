@@ -142,6 +142,7 @@ def create_workspace_upload_job(
     name: str | None = None,
     description: str | None = None,
     requested_workspace_id: str | None = None,
+    reserved_workspace_id: str | None = None,
     asset_role: str | None = None,
     actor: dict[str, Any] | None = None,
     force_new_version: bool = False,
@@ -153,6 +154,13 @@ def create_workspace_upload_job(
     data_files = [item for item in clean_files if not _is_reference_image(item)]
     reference_files = [item for item in clean_files if _is_reference_image(item)]
     append_workspace_id = str(requested_workspace_id or "").strip()
+    reserved_id = str(reserved_workspace_id or "").strip()
+    if append_workspace_id and reserved_id:
+        raise ValueError("requested_workspace_id and reserved_workspace_id are mutually exclusive")
+    if append_workspace_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,159}", append_workspace_id):
+        raise ValueError("requested_workspace_id is invalid")
+    if reserved_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,159}", reserved_id):
+        raise ValueError("reserved_workspace_id is invalid")
     existing_meta: dict[str, Any] = {}
     existing_profile: dict[str, Any] = {}
     if append_workspace_id:
@@ -171,8 +179,11 @@ def create_workspace_upload_job(
     )
     display_name = str(display_seed or "uploaded data").strip() or "uploaded data"
     description = str(description or "").strip() or existing_meta.get("description") or None
-    workspace_id = append_workspace_id or _unique_workspace_id(display_name)
-    workspace_dir = WORKSPACES / workspace_id
+    workspace_id = append_workspace_id or reserved_id or _unique_workspace_id(display_name)
+    workspace_root = WORKSPACES.resolve()
+    workspace_dir = (workspace_root / workspace_id).resolve()
+    if workspace_root not in workspace_dir.parents:
+        raise ValueError("workspace_id escapes workspace root")
     raw_dir = workspace_dir / "raw_docs"
     profiles_dir = workspace_dir / "profiles"
     reference_dir = workspace_dir / "reference_images"
@@ -1212,7 +1223,11 @@ def _registry_doc_count(item: dict[str, Any]) -> int:
 
 
 def _blob_configured_for_workspace() -> bool:
-    return bool(os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or os.environ.get("DF_STORAGE_ACCOUNT"))
+    return bool(
+        os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+        or os.environ.get("STORAGE_ACCOUNT_NAME")
+        or os.environ.get("DF_STORAGE_ACCOUNT")
+    )
 
 
 def _prefer_blob_workspace_state(workspace_id: str) -> bool:
@@ -2022,7 +2037,7 @@ def _reference_asset_url(workspace_id: str, filename: str) -> str:
 
 
 def _reference_asset_blob_url(blob_name: str) -> str:
-    account = os.environ.get("DF_STORAGE_ACCOUNT")
+    account = os.environ.get("STORAGE_ACCOUNT_NAME") or os.environ.get("DF_STORAGE_ACCOUNT")
     container = os.environ.get("DF_WORKSPACE_CONTAINER", "dataforge-workspaces")
     if account:
         return f"https://{account}.blob.core.windows.net/{container}/{blob_name}"
@@ -2086,6 +2101,15 @@ def _unique_workspace_id(value: str) -> str:
     if not (WORKSPACES / candidate).exists() and candidate not in existing:
         return candidate
     return f"{candidate}-{uuid.uuid4().hex[:6]}"
+
+
+def reserve_workspace_id(value: str | None = None) -> str:
+    """Return a collision-resistant ID without creating files or registry state."""
+    base = _safe_slug(str(value or "upload")) or "upload"
+    if not base.startswith("upload-"):
+        base = f"upload-{base}"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return f"{base[:120]}-{stamp}-{uuid.uuid4().hex[:12]}"
 
 
 def _safe_filename(filename: str) -> str:

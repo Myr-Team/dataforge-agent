@@ -31,7 +31,7 @@ try:
     from .control_plane import build_workspace_dashboard, router as control_plane_router
     from .data_workbench import router as data_workbench_router
     from .dependency_health import health_dependencies, health_dependency_details
-    from .identity import actor_from_request, merge_actor_into_ui_context
+    from .identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
     from .observability import observability_snapshot
     from .orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from .rag import search
@@ -40,6 +40,7 @@ try:
     from .tracing import configure_monitoring
     from .workspace_store import (
         create_workspace_upload_job,
+        reserve_workspace_id,
         delete_workspace,
         get_reference_image_content,
         get_workspace_detail,
@@ -81,7 +82,7 @@ except ImportError:
     from control_plane import build_workspace_dashboard, router as control_plane_router
     from data_workbench import router as data_workbench_router
     from dependency_health import health_dependencies, health_dependency_details
-    from identity import actor_from_request, merge_actor_into_ui_context
+    from identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
     from observability import observability_snapshot
     from orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from rag import search
@@ -90,6 +91,7 @@ except ImportError:
     from tracing import configure_monitoring
     from workspace_store import (
         create_workspace_upload_job,
+        reserve_workspace_id,
         delete_workspace,
         get_reference_image_content,
         get_workspace_detail,
@@ -183,9 +185,13 @@ async def upload_workspace(
     workspace_id: str | None = Form(default=None),
     asset_role: str | None = Form(default=None),
 ) -> UploadResponse:
+    reserved_workspace_id = None
     if workspace_id:
         _require_workspace_action(workspace_id, request, "file.create")
         _audit_required(request, workspace_id, "file.create", "file", "upload")
+    else:
+        reserved_workspace_id = reserve_workspace_id(name)
+        _audit_required(request, reserved_workspace_id, "file.create", "file", "upload")
     files = []
     for item in file:
         files.append(
@@ -203,11 +209,10 @@ async def upload_workspace(
             name=name,
             description=description,
             requested_workspace_id=workspace_id,
+            reserved_workspace_id=reserved_workspace_id,
             asset_role=asset_role,
             actor=actor,
         )
-        if not workspace_id:
-            _audit_required(request, str(result.get("workspace_id") or ""), "file.create", "file", "upload")
         _schedule_upload_ingest(result, actor=actor)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
@@ -401,12 +406,16 @@ async def remove_workspace(workspace_id: str, request: Request) -> WorkspaceDele
 
 
 @app.post("/api/render-pdf-report")
-async def render_pdf(req: RenderPdfRequest) -> dict[str, Any]:
+async def render_pdf(req: RenderPdfRequest, request: Request) -> dict[str, Any]:
+    _require_authenticated_workspace_action(req.workspace_id, request, "artifact.generate")
+    _audit_required(request, req.workspace_id, "artifact.generate", "artifact", "pdf")
     return await run_in_threadpool(render_pdf_report, req.proposal, req.template)
 
 
 @app.post("/api/generate-image")
-async def image(req: GenerateImageRequest) -> dict[str, Any]:
+async def image(req: GenerateImageRequest, request: Request) -> dict[str, Any]:
+    _require_authenticated_workspace_action(req.workspace_id, request, "artifact.generate")
+    _audit_required(request, req.workspace_id, "artifact.generate", "artifact", "image")
     return await run_in_threadpool(generate_image, req.prompt, req.size, req.reference_image_urls)
 
 
@@ -430,6 +439,8 @@ def artifact(name: str, request: Request) -> Response:
 
 @app.post("/api/narrate-summary")
 async def narrate(req: NarrateSummaryRequest, request: Request) -> dict[str, Any]:
+    _require_authenticated_workspace_action(req.workspace_id, request, "artifact.generate")
+    _audit_required(request, req.workspace_id, "artifact.generate", "artifact", "narration")
     result = await run_in_threadpool(narrate_summary, req.text, req.voice)
     local_path = result.get("local_path")
     if local_path:
@@ -790,6 +801,8 @@ def _compact_event_data(data: Any) -> Any:
 
 
 def _require_workspace_action(workspace_id: str, request: Request, action: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,159}", str(workspace_id or "")):
+        raise HTTPException(status_code=400, detail="workspace_id is invalid")
     try:
         return require_workspace_permission(workspace_id, actor_from_request(request), action)
     except PermissionError as exc:
@@ -805,6 +818,24 @@ def _require_workspace_action(workspace_id: str, request: Request, action: str) 
         except Exception:
             pass
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _require_authenticated_workspace_action(workspace_id: str, request: Request, action: str) -> str:
+    actor = actor_from_request(request, fallback=False)
+    if not is_trusted_tenant_identity(actor):
+        try:
+            record_audit_event(
+                actor,
+                action,
+                {"workspace_id": workspace_id, "resource_type": "artifact", "resource_id": "pending"},
+                result="denied",
+                reason_code="permission_denied",
+                correlation=_request_correlation(request),
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=401, detail="authenticated workspace identity is required")
+    return _require_workspace_action(workspace_id, request, action)
 
 
 def _audit_required(

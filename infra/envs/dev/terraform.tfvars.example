@@ -5,6 +5,10 @@ subscription_id = "00000000-0000-0000-0000-000000000000"
 
 # Globally-unique names you control:
 storage_account_name = "yourstorageacct"   # 3-24 lowercase alphanumerics
+audit_immutability_locked = true            # irreversible; required before production mutations
+audit_hmac_active_key_id = "v1"
+audit_key_vault_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/your-rg/providers/Microsoft.KeyVault/vaults/your-vault"
+audit_hmac_keyring_secret_uri = "https://your-vault.vault.azure.net/secrets/dataforge-audit-hmac-keys"
 search_service_name  = "your-search-svc"
 speech_account_name  = "your-speech-svc"
 acr_name             = "youracr"
@@ -21,3 +25,5 @@ openai_endpoint             = "https://your-foundry-account.openai.azure.com/"
 # Secrets — supply at apply time, never commit:
 # speech_key = "..."
 # search_key = "..."
+# The Key Vault secret above is JSON such as {"v1":"<base64-32+-byte-key>"}.
+# Terraform creates a dedicated identity and grants it Key Vault Secrets User on audit_key_vault_id.
