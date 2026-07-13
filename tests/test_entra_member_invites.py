@@ -452,6 +452,50 @@ def test_alias_revocation_canonicalizes_oid_and_tenant_independent_of_mapping_or
     assert invitation_store.effective_invitation_state(meta, second["invitation_id"]) == "revoked"
 
 
+@pytest.mark.parametrize(
+    "accepted",
+    [
+        {"event_type": "state", "invitation_id": "invite-1", "state": "accepted", "email": "user@contoso.com", "role": "admin", "accepted_identity": {"actor_id": "oid", "tenant_id": "tenant"}},
+        {"event_type": "state", "invitation_id": "invite-1", "state": "accepted", "email": "other@contoso.com", "role": "viewer", "accepted_identity": {"actor_id": "oid", "tenant_id": "tenant"}},
+    ],
+)
+def test_journal_replay_rejects_accepted_state_that_changes_pending_email_or_effective_role(accepted):
+    events = [
+        {"event_type": "state", "invitation_id": "invite-1", "state": "pending", "email": "user@contoso.com", "role": "viewer"},
+        accepted,
+    ]
+
+    with pytest.raises(invitation_store.InvitationPersistenceError, match="sequence"):
+        invitation_store._latest_events({"workspace_invitation_events": events})
+
+
+def test_journal_replay_allows_accepted_state_with_the_role_from_a_valid_role_change():
+    events = [
+        {"event_type": "state", "invitation_id": "invite-1", "state": "pending", "email": "user@contoso.com", "role": "admin"},
+        {"event_type": "role_change", "invitation_id": "invite-1", "email": "user@contoso.com", "role": "viewer"},
+        {"event_type": "state", "invitation_id": "invite-1", "state": "accepted", "email": "user@contoso.com", "role": "viewer", "accepted_identity": {"actor_id": "oid", "tenant_id": "tenant"}},
+    ]
+
+    assert invitation_store._latest_events({"workspace_invitation_events": events})["invite-1"]["role"] == "viewer"
+
+
+@pytest.mark.parametrize("malformed", [{}, "", 0, False, None])
+def test_local_present_falsy_malformed_journal_fails_closed_without_overwrite(malformed):
+    meta = {"workspace_invitation_events": malformed}
+
+    with pytest.raises(invitation_store.InvitationPersistenceError, match="schema"):
+        invitation_store.create_pending_invitation(meta, "ws", email="user@contoso.com", role="viewer", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
+    assert meta["workspace_invitation_events"] == malformed
+
+
+def test_local_absent_journal_is_a_valid_empty_journal():
+    meta = {}
+
+    pending = invitation_store.create_pending_invitation(meta, "ws", email="user@contoso.com", role="viewer", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
+
+    assert pending["state"] == "pending"
+
+
 def test_app_only_resource_tenant_must_match_trusted_inviter_and_never_persists_token(monkeypatch):
     monkeypatch.setenv("GRAPH_TENANT_ID", "tenant-a")
     monkeypatch.setattr(graph_client, "_app_only_token", lambda: "secret-token")

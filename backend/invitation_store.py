@@ -263,6 +263,7 @@ def _mutate(workspace_id: str, meta: dict[str, Any], mutation: Callable[[dict[st
     key = workspace_id or "local"
     with workspace_invitation_lock(key):
         if not blob_configured():
+            _local_events(meta)
             return mutation(meta)
         for _attempt in range(_MAX_CAS_RETRIES):
             snapshot = download_blob_json(_blob_name(workspace_id))
@@ -289,7 +290,7 @@ def _mutate(workspace_id: str, meta: dict[str, Any], mutation: Callable[[dict[st
 
 def _read(workspace_id: str, meta: Mapping[str, Any]) -> dict[str, Any]:
     if not blob_configured():
-        return {"workspace_invitation_events": copy.deepcopy(meta.get("workspace_invitation_events") or [])}
+        return {"workspace_invitation_events": copy.deepcopy(_local_events(meta))}
     snapshot = download_blob_json(_blob_name(workspace_id))
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("revision"), int) or not isinstance(snapshot.get("events"), list):
         raise InvitationPersistenceError("invitation event journal is unavailable")
@@ -302,6 +303,8 @@ def _validate_events(events: Any) -> None:
     if not isinstance(events, list):
         raise InvitationPersistenceError("invitation event journal schema is invalid")
     latest: dict[str, dict[str, Any]] = {}
+    original_emails: dict[str, str] = {}
+    effective_roles: dict[str, str] = {}
     activated: set[str] = set()
     for event in events:
         if not isinstance(event, Mapping):
@@ -325,7 +328,11 @@ def _validate_events(events: Any) -> None:
             if previous is None:
                 if state != "pending":
                     raise InvitationPersistenceError("invitation event journal sequence is invalid")
+                original_emails[invitation_id] = _email(event.get("email"))
+                effective_roles[invitation_id] = _role(event.get("role"))
             elif state not in _LEGAL_TRANSITIONS.get(str(previous["state"]), set()):
+                raise InvitationPersistenceError("invitation event journal sequence is invalid")
+            elif _email(event.get("email")) != original_emails[invitation_id] or _role(event.get("role")) != effective_roles[invitation_id]:
                 raise InvitationPersistenceError("invitation event journal sequence is invalid")
             if state == "accepted" and not _has_identity(event.get("accepted_identity")):
                 raise InvitationPersistenceError("invitation event journal schema is invalid")
@@ -343,6 +350,8 @@ def _validate_events(events: Any) -> None:
                 or accepted.get("state") != "accepted"
                 or not _has_identity(event.get("accepted_identity"))
                 or _identity_key(event.get("accepted_identity")) != _identity_key(accepted.get("accepted_identity"))
+                or _email(event.get("email")) != original_emails[invitation_id]
+                or _role(event.get("role")) != effective_roles[invitation_id]
             ):
                 raise InvitationPersistenceError("invitation event journal sequence is invalid")
             activated.add(invitation_id)
@@ -353,22 +362,40 @@ def _validate_events(events: Any) -> None:
             except InvitationTransitionError as exc:
                 raise InvitationPersistenceError("invitation event journal schema is invalid") from exc
             current = latest.get(invitation_id)
-            if current is None or current.get("state") not in {"pending", "accepted"}:
+            if (
+                current is None
+                or current.get("state") not in {"pending", "accepted"}
+                or _email(event.get("email")) != original_emails[invitation_id]
+            ):
                 raise InvitationPersistenceError("invitation event journal sequence is invalid")
+            effective_roles[invitation_id] = _role(event.get("role"))
 
 
 def _events(meta: dict[str, Any]) -> list[dict[str, Any]]:
-    events = meta.get("workspace_invitation_events")
-    if not isinstance(events, list):
+    if "workspace_invitation_events" not in meta:
         events = []
         meta["workspace_invitation_events"] = events
+        return events
+    events = meta["workspace_invitation_events"]
+    if not isinstance(events, list):
+        raise InvitationPersistenceError("invitation event journal schema is invalid")
+    return events
+
+
+def _local_events(meta: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if "workspace_invitation_events" not in meta:
+        return []
+    events = meta["workspace_invitation_events"]
+    if not isinstance(events, list):
+        raise InvitationPersistenceError("invitation event journal schema is invalid")
+    _validate_events(events)
     return events
 
 
 def _latest_events(meta: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    _validate_events(meta.get("workspace_invitation_events") or [])
+    events = _local_events(meta)
     latest: dict[str, dict[str, Any]] = {}
-    for raw in meta.get("workspace_invitation_events") or []:
+    for raw in events:
         if not isinstance(raw, Mapping) or str(raw.get("event_type") or "state") != "state":
             continue
         invitation_id = _clean(raw.get("invitation_id"))
