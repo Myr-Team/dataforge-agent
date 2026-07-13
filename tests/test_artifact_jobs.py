@@ -15,6 +15,7 @@ import backend.tools.render_pdf as render_pdf
 import backend.workspace_authz as workspace_authz
 from backend.app import app
 from backend.artifact_jobs import ArtifactJobPersistenceError
+from backend.blob_store import BlobJsonReadError
 from backend.task_store import TaskPersistenceError
 from fastapi.testclient import TestClient
 
@@ -58,6 +59,7 @@ def _run_local_artifact_job_from_process(task_dir: str, job_dir: str, job_id: st
 def _configure_store(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(artifact_jobs, "ARTIFACT_JOB_DIR", tmp_path / "artifact-jobs")
     monkeypatch.setattr(artifact_jobs, "download_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(artifact_jobs, "download_blob_json_strict", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(artifact_jobs, "upload_blob_json", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(artifact_jobs, "blob_configured", lambda: False, raising=False)
     monkeypatch.setattr(artifact_jobs, "list_blob_json", lambda *_args, **_kwargs: [], raising=False)
@@ -76,7 +78,9 @@ def _configure_task_store(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(task_store, "TASK_DIR", tmp_path / "tasks")
     monkeypatch.setattr(task_store, "blob_configured", lambda: False)
     monkeypatch.setattr(task_store, "download_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(task_store, "list_blob_json", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(task_store, "list_blob_json_strict", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(task_store, "upload_blob_json", lambda *_args, **_kwargs: {})
 
 
@@ -425,6 +429,46 @@ def test_artifact_api_returns_503_when_prepared_recovery_storage_fails(tmp_path:
     assert artifact_jobs.get_artifact_job(job_id)["status"] == "queued"
     assert task_store.get_task(prepared["task_id"])["status"] == "preparing"
     monkeypatch.setattr(artifact_jobs, "activate_prepared_task", original_activate)
+
+
+def test_artifact_api_returns_503_when_prepared_recovery_task_list_read_fails(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _configure_task_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(task_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(
+        task_store,
+        "list_blob_json_strict",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(BlobJsonReadError("blob list unavailable")),
+        raising=False,
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post("/api/artifact-jobs", json=_request(kinds=["pdf"]))
+
+    assert response.status_code == 503
+
+
+def test_prepared_recovery_raises_when_linked_artifact_blob_read_fails(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _configure_task_store(tmp_path, monkeypatch)
+    task_store.create_task(
+        {
+            "workspace_id": "ws-artifacts",
+            "task_type": "artifact.generate",
+            "action": "artifact.generate",
+            "initial_status": "preparing",
+            "result": {"artifact_job_id": "artifact_job_unavailable"},
+        },
+        {"email": "owner@contoso.com"},
+    )
+    monkeypatch.setattr(artifact_jobs, "blob_configured", lambda: True)
+    monkeypatch.setattr(
+        artifact_jobs,
+        "download_blob_json_strict",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(BlobJsonReadError("blob read unavailable")),
+    )
+
+    with pytest.raises(TaskPersistenceError, match="artifact job read"):
+        artifact_jobs.recover_prepared_artifact_tasks("ws-artifacts")
 
 
 def test_concurrent_prepared_recovery_returns_a_job_only_once(tmp_path: Path, monkeypatch) -> None:

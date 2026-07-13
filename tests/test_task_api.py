@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from urllib.parse import quote
 
 import pytest
@@ -9,13 +10,16 @@ from fastapi.testclient import TestClient
 import backend.task_store as task_store
 import backend.workspace_authz as workspace_authz
 from backend.app import app
+from backend.blob_store import BlobJsonReadError
 
 
 def _configure_store(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(task_store, "TASK_DIR", tmp_path / "tasks")
     monkeypatch.setattr(task_store, "blob_configured", lambda: False)
     monkeypatch.setattr(task_store, "download_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(task_store, "list_blob_json", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(task_store, "list_blob_json_strict", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(task_store, "upload_blob_json", lambda *_args, **_kwargs: {})
 
 
@@ -79,3 +83,32 @@ def test_workspace_task_list_rejects_member_of_a_different_workspace(tmp_path, m
     response = TestClient(app).get("/api/workspaces/ws-private/tasks", headers=_headers("owner@contoso.com"))
 
     assert response.status_code == 403
+
+
+def test_task_get_and_workspace_list_return_503_for_strict_blob_read_failures(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    remote: dict[str, dict] = {}
+    monkeypatch.setattr(task_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
+    task = _task()
+    shutil.rmtree(task_store.TASK_DIR)
+    monkeypatch.setattr(task_store, "download_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        task_store,
+        "download_blob_json_strict",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(BlobJsonReadError("transport unavailable")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        task_store,
+        "list_blob_json_strict",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(BlobJsonReadError("transport unavailable")),
+        raising=False,
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    detail = client.get(f"/api/tasks/{task['task_id']}")
+    listed = client.get("/api/workspaces/ws-private/tasks")
+
+    assert detail.status_code == 503
+    assert listed.status_code == 503

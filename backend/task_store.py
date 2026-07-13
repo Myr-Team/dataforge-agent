@@ -13,10 +13,10 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 try:
-    from .blob_store import blob_configured, claim_blob_json, compare_and_swap_blob_json, download_blob_json, list_blob_json, upload_blob_json
+    from .blob_store import BlobJsonReadError, blob_configured, claim_blob_json, compare_and_swap_blob_json, download_blob_json, download_blob_json_strict, list_blob_json, list_blob_json_strict, upload_blob_json
     from .identity import public_actor
 except ImportError:
-    from blob_store import blob_configured, claim_blob_json, compare_and_swap_blob_json, download_blob_json, list_blob_json, upload_blob_json
+    from blob_store import BlobJsonReadError, blob_configured, claim_blob_json, compare_and_swap_blob_json, download_blob_json, download_blob_json_strict, list_blob_json, list_blob_json_strict, upload_blob_json
     from identity import public_actor
 
 
@@ -67,7 +67,7 @@ def create_task(payload: Mapping[str, Any], actor: Mapping[str, Any] | None) -> 
 def get_task(task_id: str) -> dict[str, Any]:
     normalized = _required_text(task_id, "task_id", 100)
     local = _load_local(normalized)
-    remote = download_blob_json(_task_blob(normalized)) or {}
+    remote = _read_task_blob(_task_blob(normalized)) or {}
     task = remote if remote else local
     if not task:
         raise FileNotFoundError(normalized)
@@ -81,7 +81,7 @@ def list_tasks(workspace_id: str | None = None) -> list[dict[str, Any]]:
             item = _load_path(path)
             if item.get("task_id"):
                 by_id[str(item["task_id"])] = item
-    for item in list_blob_json(f"{TASK_BLOB_PREFIX}/task_"):
+    for item in _list_task_blobs(f"{TASK_BLOB_PREFIX}/task_"):
         cleaned = _clean_task(item)
         if cleaned.get("task_id"):
             by_id[str(cleaned["task_id"])] = cleaned
@@ -517,6 +517,28 @@ def _reclaim_lock_path(lock_path: Path) -> Path:
 
 def _task_blob(task_id: str) -> str:
     return f"{TASK_BLOB_PREFIX}/{_safe_key(task_id)}.json"
+
+
+def _read_task_blob(blob_name: str) -> dict[str, Any] | None:
+    if not blob_configured():
+        return None
+    try:
+        return download_blob_json_strict(blob_name)
+    except BlobJsonReadError as exc:
+        raise TaskPersistenceError("durable task read failed") from exc
+    except Exception as exc:
+        raise TaskPersistenceError("durable task read failed") from exc
+
+
+def _list_task_blobs(prefix: str) -> list[dict[str, Any]]:
+    if not blob_configured():
+        return []
+    try:
+        return list_blob_json_strict(prefix)
+    except BlobJsonReadError as exc:
+        raise TaskPersistenceError("durable task list failed") from exc
+    except Exception as exc:
+        raise TaskPersistenceError("durable task list failed") from exc
 
 
 def _safe_key(value: str) -> str:

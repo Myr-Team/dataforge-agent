@@ -11,12 +11,12 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 try:
-    from .blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
+    from .blob_store import BlobJsonReadError, blob_configured, claim_blob_json, download_blob_json, download_blob_json_strict, list_blob_json, upload_blob_json
     from .identity import public_actor
     from .run_store import get_run, list_runs
     from .task_store import TaskPersistenceError, activate_prepared_task, claim_task, create_task, get_task, list_tasks, update_task
 except ImportError:
-    from blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
+    from blob_store import BlobJsonReadError, blob_configured, claim_blob_json, download_blob_json, download_blob_json_strict, list_blob_json, upload_blob_json
     from identity import public_actor
     from run_store import get_run, list_runs
     from task_store import TaskPersistenceError, activate_prepared_task, claim_task, create_task, get_task, list_tasks, update_task
@@ -113,7 +113,7 @@ def create_artifact_job(
         return persisted
 
 
-def get_artifact_job(job_id: str) -> dict[str, Any]:
+def get_artifact_job(job_id: str, *, strict_blob_read: bool = False) -> dict[str, Any]:
     normalized = _required_text(job_id, "job_id", 100)
     path = _job_path(normalized)
     local: dict[str, Any] = {}
@@ -123,7 +123,10 @@ def get_artifact_job(job_id: str) -> dict[str, Any]:
             local = parsed if isinstance(parsed, dict) else {}
         except (OSError, json.JSONDecodeError):
             local = {}
-    remote = download_blob_json(_job_blob(normalized)) or {}
+    try:
+        remote = (download_blob_json_strict(_job_blob(normalized)) if strict_blob_read else download_blob_json(_job_blob(normalized))) or {}
+    except BlobJsonReadError as exc:
+        raise TaskPersistenceError("durable artifact job read failed") from exc
     job = remote if str(remote.get("updated_at") or "") > str(local.get("updated_at") or "") else local
     if not job:
         raise FileNotFoundError(normalized)
@@ -367,7 +370,7 @@ def recover_prepared_artifact_tasks(workspace_id: str | None = None) -> list[dic
         result = task.get("result") if isinstance(task.get("result"), Mapping) else {}
         job_id = str(result.get("artifact_job_id") or "")
         try:
-            job = get_artifact_job(job_id) if job_id else None
+            job = get_artifact_job(job_id, strict_blob_read=True) if job_id else None
         except FileNotFoundError:
             job = None
         if job is None:

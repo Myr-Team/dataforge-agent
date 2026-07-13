@@ -17,6 +17,10 @@ DELETED_WORKSPACE_PREFIX = "registry/deleted_workspaces"
 ARTIFACT_PREFIX = "artifacts"
 
 
+class BlobJsonReadError(RuntimeError):
+    """Raised when a configured Blob JSON read cannot establish durable state."""
+
+
 def blob_configured() -> bool:
     return bool(os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or os.environ.get("DF_STORAGE_ACCOUNT"))
 
@@ -240,6 +244,27 @@ def download_blob_json(blob_name: str) -> dict[str, Any] | None:
         return None
 
 
+def download_blob_json_strict(blob_name: str) -> dict[str, Any] | None:
+    """Read JSON without conflating a missing blob with a storage outage.
+
+    The existing permissive helper remains for legacy callers that treat Blob as
+    a best-effort cache. Durable task flows use this opt-in variant instead.
+    """
+    if not blob_configured():
+        return None
+    try:
+        container = _container_client()
+        raw = container.get_blob_client(blob_name).download_blob().readall().decode("utf-8")
+        data = json.loads(raw)
+    except ResourceNotFoundError:
+        return None
+    except Exception as exc:
+        raise BlobJsonReadError("blob JSON read failed") from exc
+    if not isinstance(data, dict):
+        raise BlobJsonReadError("blob JSON payload is invalid")
+    return data
+
+
 def list_blob_json(prefix: str) -> list[dict[str, Any]]:
     if not blob_configured():
         return []
@@ -259,6 +284,37 @@ def list_blob_json(prefix: str) -> list[dict[str, Any]]:
                 items.append(value)
     except Exception:
         return []
+    return items
+
+
+def list_blob_json_strict(prefix: str) -> list[dict[str, Any]]:
+    """List JSON records, treating only an absent Blob resource as empty."""
+    if not blob_configured():
+        return []
+    items: list[dict[str, Any]] = []
+    try:
+        container = _container_client()
+        for entry in container.list_blobs(name_starts_with=str(prefix or "")):
+            name = str(getattr(entry, "name", "") or "")
+            if not name.endswith(".json"):
+                continue
+            try:
+                raw = container.get_blob_client(name).download_blob().readall().decode("utf-8")
+                value = json.loads(raw)
+            except ResourceNotFoundError:
+                # A concurrent delete is equivalent to that list entry no longer existing.
+                continue
+            except Exception as exc:
+                raise BlobJsonReadError("blob JSON read failed") from exc
+            if not isinstance(value, dict):
+                raise BlobJsonReadError("blob JSON payload is invalid")
+            items.append(value)
+    except ResourceNotFoundError:
+        return []
+    except BlobJsonReadError:
+        raise
+    except Exception as exc:
+        raise BlobJsonReadError("blob JSON list failed") from exc
     return items
 
 

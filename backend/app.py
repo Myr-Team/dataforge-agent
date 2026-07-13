@@ -498,7 +498,10 @@ async def workspace_artifact_jobs(workspace_id: str, request: Request) -> dict[s
 @app.get("/api/workspaces/{workspace_id}/tasks")
 async def workspace_tasks(workspace_id: str, request: Request) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "workspace.read")
-    tasks = await run_in_threadpool(list_tasks, workspace_id)
+    try:
+        tasks = await run_in_threadpool(list_tasks, workspace_id)
+    except TaskPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Task persistence is unavailable") from exc
     return {"workspace_id": workspace_id, "tasks": tasks, "count": len(tasks)}
 
 
@@ -506,6 +509,8 @@ async def workspace_tasks(workspace_id: str, request: Request) -> dict[str, Any]
 async def task_detail(task_id: str, request: Request) -> dict[str, Any]:
     try:
         task = await run_in_threadpool(get_task, task_id)
+    except TaskPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Task persistence is unavailable") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}") from exc
     _require_workspace_action(str(task.get("workspace_id") or ""), request, "workspace.read")
@@ -516,6 +521,8 @@ async def task_detail(task_id: str, request: Request) -> dict[str, Any]:
 async def task_cancel(task_id: str, request: Request) -> dict[str, Any]:
     try:
         task = await run_in_threadpool(get_task, task_id)
+    except TaskPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Task persistence is unavailable") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}") from exc
     _require_workspace_action(str(task.get("workspace_id") or ""), request, str(task.get("action") or "workspace.read"))
@@ -528,6 +535,8 @@ async def task_retry(task_id: str, request: Request) -> dict[str, Any]:
         task = await run_in_threadpool(get_task, task_id)
         _require_workspace_action(str(task.get("workspace_id") or ""), request, str(task.get("action") or "workspace.read"))
         return await run_in_threadpool(retry_task, task_id, actor_from_request(request))
+    except TaskPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Task persistence is unavailable") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}") from exc
     except ValueError as exc:

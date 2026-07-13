@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import backend.task_store as task_store
+from backend.blob_store import BlobJsonReadError
 
 
 def _claim_from_separate_process(task_dir: str, task_id: str, start, results) -> None:
@@ -84,7 +85,9 @@ def _configure_store(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(task_store, "TASK_DIR", tmp_path / "tasks")
     monkeypatch.setattr(task_store, "blob_configured", lambda: False)
     monkeypatch.setattr(task_store, "download_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(task_store, "list_blob_json", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(task_store, "list_blob_json_strict", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(task_store, "upload_blob_json", lambda *_args, **_kwargs: {})
 
 
@@ -94,6 +97,7 @@ def test_task_survives_local_store_loss_via_blob(tmp_path, monkeypatch: pytest.M
     monkeypatch.setattr(task_store, "blob_configured", lambda: True)
     monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
     monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda name: remote.get(name))
 
     task = task_store.create_task(_payload(), _actor())
     shutil.rmtree(task_store.TASK_DIR)
@@ -103,6 +107,25 @@ def test_task_survives_local_store_loss_via_blob(tmp_path, monkeypatch: pytest.M
     assert recovered["workspace_id"] == "ws-tasks"
     assert recovered["actor"] == {"email": "owner@contoso.com", "actor_id": "oid-owner", "name": "owner", "source": "ui_context"}
     assert "access_token" not in recovered["actor"]
+
+
+def test_blob_read_failure_after_local_loss_raises_task_persistence_error(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    remote: dict[str, dict] = {}
+    monkeypatch.setattr(task_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
+    task = task_store.create_task(_payload(), _actor())
+    shutil.rmtree(task_store.TASK_DIR)
+    monkeypatch.setattr(task_store, "download_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        task_store,
+        "download_blob_json_strict",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(BlobJsonReadError("blob read failed")),
+        raising=False,
+    )
+
+    with pytest.raises(task_store.TaskPersistenceError, match="read"):
+        task_store.get_task(task["task_id"])
 
 
 def test_only_one_worker_claims_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,6 +271,7 @@ def test_blob_update_failure_preserves_remote_task_after_local_loss(tmp_path, mo
     monkeypatch.setattr(task_store, "blob_configured", lambda: True)
     monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
     monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda name: remote.get(name))
     task = task_store.create_task(_payload(), _actor())
     monkeypatch.setattr(task_store, "claim_blob_json", lambda name, **kwargs: remote.__setitem__(name, {**remote[name], **kwargs["changes"]}) or remote[name])
     task_store.claim_task(task["task_id"], "worker")
@@ -293,6 +317,7 @@ def test_blob_cas_reloads_completed_instead_of_overwriting_it_with_cancel(tmp_pa
     monkeypatch.setattr(task_store, "blob_configured", lambda: True)
     monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
     monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda name: remote.get(name))
     task = task_store.create_task(_payload(), _actor())
 
     def compare_and_swap(name, *, expected_revision, changes):
@@ -313,6 +338,7 @@ def test_blob_conditional_claim_allows_only_one_worker(tmp_path, monkeypatch: py
     monkeypatch.setattr(task_store, "blob_configured", lambda: True)
     monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
     monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda name: remote.get(name))
     task = task_store.create_task(_payload(), _actor())
 
     def conditional_claim(name, *, expected_status, changes):
@@ -337,6 +363,7 @@ def test_activate_prepared_task_uses_blob_revision_cas(tmp_path, monkeypatch: py
     monkeypatch.setattr(task_store, "blob_configured", lambda: True)
     monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
     monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda name: remote.get(name))
     task = task_store.create_task(_payload(initial_status="preparing"), _actor())
 
     def compare_and_swap(name, *, expected_revision, changes):
