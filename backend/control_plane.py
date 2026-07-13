@@ -25,6 +25,7 @@ try:
     from .dependency_health import health_dependencies, health_dependency_details
     from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
+    from .foundry_roi import discover_foundry_roi, read_foundry_roi, reconcile_roi
     from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
@@ -43,6 +44,7 @@ except ImportError:
     from dependency_health import health_dependencies, health_dependency_details
     from graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
+    from foundry_roi import discover_foundry_roi, read_foundry_roi, reconcile_roi
     from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
@@ -1123,7 +1125,7 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
 def workspace_roi_snapshot(workspace_id: str, from_value: str, to_value: str) -> dict[str, Any]:
     window = parse_time_window(from_value, to_value)
     runs, truncated = _workspace_run_details_for_roi(workspace_id, window)
-    return build_roi_snapshot(
+    local = build_roi_snapshot(
         workspace_id,
         window,
         runs=runs,
@@ -1132,6 +1134,15 @@ def workspace_roi_snapshot(workspace_id: str, from_value: str, to_value: str) ->
         verification_events=list_verification_events(workspace_id),
         truncated=truncated,
     )
+    provider = read_foundry_roi(local["window"])
+    reconciliation = reconcile_roi(local=local, provider=provider)
+    local["foundry_roi"] = {
+        "status": provider["status"],
+        "provider_snapshot": reconciliation["provider"],
+        "difference": reconciliation["difference"],
+        "reconciliation": reconciliation["reconciliation"],
+    }
+    return local
 
 
 def workspace_member_chargeback(workspace_id: str, from_value: str, to_value: str) -> dict[str, Any]:
@@ -1223,6 +1234,7 @@ def _foundry_monitoring_status() -> dict[str, Any]:
     otel_sdk = bool(tracing.get("otel_sdk"))
     status = "partial" if app_insights or otel_sdk else "not_configured"
     registered = str(os.environ.get("DF_FOUNDRY_AGENT_REGISTERED") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    native_roi = discover_foundry_roi().model_dump(mode="json")
     return {
         "status": status,
         "source": "application_insights" if app_insights else None,
@@ -1230,7 +1242,7 @@ def _foundry_monitoring_status() -> dict[str, Any]:
         "service_name": tracing.get("service_name"),
         "gen_ai_semantic_conventions": app_insights and otel_sdk,
         "foundry_agent_registered": registered,
-        "native_roi_status": "configured" if registered and str(os.environ.get("DF_FOUNDRY_ROI_ENABLED") or "0") == "1" else "not_configured",
+        "native_roi_status": native_roi["state"],
         "note": (
             "Exporter configuration is present, but remote trace delivery still requires a matching Azure Monitor query."
             if status == "partial"
@@ -1376,13 +1388,17 @@ def _workspace_roi_summary(
         (str(item.get("observed_at") or "") for item in observed_outcomes),
         default="",
     ) or None
+    native_roi = discover_foundry_roi().model_dump(mode="json")
     return {
         "method": "outcome_ledger" if observed_outcomes else "dataforge_estimate",
         "status": outcome_status,
         "native_foundry_roi": {
-            "status": "not_configured",
-            "availability": "private_preview",
-            "note": "Use this workspace estimate until Azure AI Foundry ROI reporting is connected for the project.",
+            "status": native_roi["state"],
+            "configured": native_roi["configured"],
+            "source": native_roi["source"],
+            "observed_at": native_roi["observed_at"],
+            "provider_version": native_roi["provider_version"],
+            "note": native_roi["reason"],
         },
         "currency": "USD",
         "estimated_cost_usd": None,

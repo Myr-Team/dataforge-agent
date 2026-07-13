@@ -19,9 +19,11 @@ except ImportError:
 
 try:
     from .blob_store import probe_blob_container
+    from .foundry_roi import discover_foundry_roi
     from .search_admin import API_VERSION, search_endpoint, search_index_name
 except ImportError:
     from blob_store import probe_blob_container
+    from foundry_roi import discover_foundry_roi
     from search_admin import API_VERSION, search_endpoint, search_index_name
 
 
@@ -70,6 +72,7 @@ def dependency_status() -> dict[str, Any]:
 def _probe_all() -> dict[str, dict[str, Any]]:
     probes = {
         "foundry": _probe_foundry,
+        "foundry_roi": _probe_foundry_roi,
         "search": _probe_search,
         "mcp": _probe_mcp,
         "speech": _probe_speech,
@@ -176,6 +179,18 @@ def _probe_foundry() -> dict[str, Any]:
         "attempt_details": attempts,
     }
     return _stale_ok_if_recent("foundry", detail)
+
+
+def _probe_foundry_roi() -> dict[str, Any]:
+    status = discover_foundry_roi()
+    return {
+        "ok": status.state == "connected",
+        "state": status.state,
+        "configured": status.configured,
+        "source": status.source,
+        "provider_version": status.provider_version,
+        "reason": status.reason,
+    }
 
 
 def _probe_speech() -> dict[str, Any]:
@@ -411,6 +426,8 @@ def _env_fingerprint() -> str:
         "OPENAI_ENDPOINT",
         "AZURE_OPENAI_ENDPOINT",
         "AZURE_OPENAI_API_BASE",
+        "FOUNDRY_PROJECT_ENDPOINT",
+        "FOUNDRY_AGENT_ID",
         "AZURE_OPENAI_API_KEY",
         "OPENAI_API_KEY",
         "SPEECH_KEY",

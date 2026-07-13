@@ -250,3 +250,15 @@ def test_governance_reports_foundry_compatible_observability_truthfully(monkeypa
     assert monitoring["gen_ai_semantic_conventions"] is True
     assert monitoring["source"] == "application_insights"
     assert result["roi"]["native_foundry_roi"]["status"] == "not_configured"
+
+
+def test_governance_ignores_foundry_roi_feature_flag_without_provider(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FOUNDRY_ROI_ENABLED", "1")
+    monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: [])
+    monkeypatch.setattr(control_plane, "list_conversations", lambda workspace_id=None: [])
+    monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [])
+
+    result = control_plane.workspace_governance_summary("ws-no-provider", RequestStub())
+
+    assert result["foundry_monitoring"]["native_roi_status"] == "not_configured"
+    assert result["roi"]["native_foundry_roi"]["status"] == "not_configured"
