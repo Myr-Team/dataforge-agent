@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import multiprocessing
 from pathlib import Path
 from urllib.parse import quote
 
@@ -16,6 +17,42 @@ from backend.app import app
 from backend.artifact_jobs import ArtifactJobPersistenceError
 from backend.task_store import TaskPersistenceError
 from fastapi.testclient import TestClient
+
+
+def _run_local_artifact_job_from_process(task_dir: str, job_dir: str, job_id: str, start, job_claim_barrier, results) -> None:
+    import backend.artifact_jobs as child_jobs
+    import backend.task_store as child_tasks
+
+    child_tasks.TASK_DIR = Path(task_dir)
+    child_tasks.blob_configured = lambda: False
+    child_tasks.download_blob_json = lambda *_args, **_kwargs: None
+    child_tasks.list_blob_json = lambda *_args, **_kwargs: []
+    child_tasks.upload_blob_json = lambda *_args, **_kwargs: {}
+    child_jobs.ARTIFACT_JOB_DIR = Path(job_dir)
+    child_jobs.blob_configured = lambda: False
+    child_jobs.download_blob_json = lambda *_args, **_kwargs: None
+    child_jobs.list_blob_json = lambda *_args, **_kwargs: []
+    child_jobs.upload_blob_json = lambda *_args, **_kwargs: {}
+    child_jobs._producer_payload = lambda _job: {}
+    original_get_job = child_jobs.get_artifact_job
+    first_get = True
+
+    def synchronized_get_job(current_job_id: str):
+        nonlocal first_get
+        value = original_get_job(current_job_id)
+        if first_get:
+            first_get = False
+            job_claim_barrier.wait(10)
+        return value
+
+    child_jobs.get_artifact_job = synchronized_get_job
+    child_jobs._produce = lambda _payload: results.put(("produce", job_id)) or {
+        "artifact_urls": {"pdf": "/api/artifacts/process.pdf"},
+        "pdf": {"artifact_url": "/api/artifacts/process.pdf"},
+    }
+    start.wait(10)
+    result = child_jobs.run_artifact_job(job_id)
+    results.put(("status", result["status"]))
 
 
 def _configure_store(tmp_path: Path, monkeypatch) -> None:
@@ -160,6 +197,36 @@ def test_concurrent_workers_claim_a_queued_job_only_once(tmp_path: Path, monkeyp
     assert calls["count"] == 1
     assert all(item["job_id"] == job["job_id"] for item in results)
     assert artifact_jobs.get_artifact_job(job["job_id"])["status"] == "completed"
+
+
+def test_separate_process_workers_use_linked_task_claim_as_the_authoritative_guard(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _configure_task_store(tmp_path, monkeypatch)
+    job = artifact_jobs.create_artifact_job(_request(kinds=["pdf"]), actor={}, idempotency_key="process-claim-once")
+    context = multiprocessing.get_context("spawn")
+    start = context.Event()
+    job_claim_barrier = context.Barrier(2)
+    results = context.Queue()
+    workers = [
+        context.Process(
+            target=_run_local_artifact_job_from_process,
+            args=(str(task_store.TASK_DIR), str(artifact_jobs.ARTIFACT_JOB_DIR), job["job_id"], start, job_claim_barrier, results),
+        )
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    start.set()
+    for worker in workers:
+        worker.join(20)
+
+    events = []
+    while len([event for event in events if event[0] == "status"]) < 2:
+        events.append(results.get(timeout=5))
+    assert all(worker.exitcode == 0 for worker in workers)
+    assert [event for event in events if event[0] == "produce"] == [("produce", job["job_id"])]
+    assert artifact_jobs.get_artifact_job(job["job_id"])["status"] == "completed"
+    assert task_store.get_task(job["task_id"])["status"] == "completed"
 
 
 def test_remote_job_blobs_are_authoritative_for_listing(tmp_path: Path, monkeypatch) -> None:
@@ -333,6 +400,31 @@ def test_artifact_api_recovers_durable_job_after_activation_failure_and_schedule
     assert artifact_jobs.get_artifact_job(job_id)["status"] == "completed"
     assert task_store.get_task(prepared["task_id"])["status"] == "completed"
     assert artifact_jobs.recover_prepared_artifact_tasks("ws-artifacts") == []
+
+
+def test_artifact_api_returns_503_when_prepared_recovery_storage_fails(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _configure_task_store(tmp_path, monkeypatch)
+    original_activate = artifact_jobs.activate_prepared_task
+    monkeypatch.setattr(artifact_jobs, "activate_prepared_task", lambda _task_id: None)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={"Idempotency-Key": "recover-storage-error"})
+
+    assert first.status_code == 503
+    prepared = task_store.list_tasks("ws-artifacts")[0]
+    job_id = str(prepared["result"]["artifact_job_id"])
+    monkeypatch.setattr(
+        artifact_jobs,
+        "activate_prepared_task",
+        lambda _task_id: (_ for _ in ()).throw(TaskPersistenceError("blob CAS unavailable")),
+    )
+    second = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={"Idempotency-Key": "recover-storage-error"})
+
+    assert second.status_code == 503
+    assert artifact_jobs.get_artifact_job(job_id)["status"] == "queued"
+    assert task_store.get_task(prepared["task_id"])["status"] == "preparing"
+    monkeypatch.setattr(artifact_jobs, "activate_prepared_task", original_activate)
 
 
 def test_concurrent_prepared_recovery_returns_a_job_only_once(tmp_path: Path, monkeypatch) -> None:

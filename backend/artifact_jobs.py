@@ -14,12 +14,12 @@ try:
     from .blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
     from .identity import public_actor
     from .run_store import get_run, list_runs
-    from .task_store import activate_prepared_task, claim_task, create_task, get_task, list_tasks, update_task
+    from .task_store import TaskPersistenceError, activate_prepared_task, claim_task, create_task, get_task, list_tasks, update_task
 except ImportError:
     from blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
     from identity import public_actor
     from run_store import get_run, list_runs
-    from task_store import activate_prepared_task, claim_task, create_task, get_task, list_tasks, update_task
+    from task_store import TaskPersistenceError, activate_prepared_task, claim_task, create_task, get_task, list_tasks, update_task
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -160,13 +160,23 @@ def list_artifact_jobs(workspace_id: str | None = None) -> list[dict[str, Any]]:
 
 
 def run_artifact_job(job_id: str) -> dict[str, Any]:
-    job = _claim_job(job_id)
-    if job is None:
-        return get_artifact_job(job_id)
-    task = _claim_linked_task(job)
-    if task is None and _linked_task_cancel_requested(job):
-        cancelled = _update_job(job_id, status="cancelled", completed_at=_now(), retryable=False)
-        return _sync_linked_task(cancelled)
+    candidate = get_artifact_job(job_id)
+    if candidate.get("task_id"):
+        if candidate.get("status") != "queued":
+            return candidate
+        task = _claim_linked_task(candidate)
+        if task is None:
+            if _linked_task_cancel_requested(candidate):
+                cancelled = _update_job(job_id, status="cancelled", completed_at=_now(), retryable=False)
+                return _sync_linked_task(cancelled)
+            return get_artifact_job(job_id)
+        job = _claim_job(job_id, linked_task_claimed=True)
+        if job is None:
+            return get_artifact_job(job_id)
+    else:
+        job = _claim_job(job_id)
+        if job is None:
+            return get_artifact_job(job_id)
     try:
         result = _produce(_producer_payload(job))
     except Exception as exc:
@@ -292,13 +302,13 @@ def _update_job(job_id: str, **changes: Any) -> dict[str, Any]:
         return _persist_job(job)
 
 
-def _claim_job(job_id: str) -> dict[str, Any] | None:
+def _claim_job(job_id: str, *, linked_task_claimed: bool = False) -> dict[str, Any] | None:
     with _LOCK:
         job = get_artifact_job(job_id)
         if str(job.get("status") or "") != "queued":
             return None
         task_id = str(job.get("task_id") or "")
-        if task_id:
+        if task_id and not linked_task_claimed:
             try:
                 if get_task(task_id).get("status") != "queued":
                     return None
@@ -360,24 +370,29 @@ def recover_prepared_artifact_tasks(workspace_id: str | None = None) -> list[dic
             job = get_artifact_job(job_id) if job_id else None
         except FileNotFoundError:
             job = None
-        try:
-            if job is None:
-                _compensate_task(task_id)
-            else:
-                target = str(job.get("status") or "queued")
-                if target in _TERMINAL:
-                    _sync_linked_task(job)
-                elif activate_prepared_task(task_id) is not None:
-                    recovered.append(dict(job))
-        except Exception:
+        if job is None:
+            update_task(task_id, status="failed", error={"category": "artifact_job", "code": "persistence_failed"})
             continue
+        target = str(job.get("status") or "queued")
+        if target in _TERMINAL:
+            _sync_linked_task(job)
+            continue
+        if target != "queued":
+            raise TaskPersistenceError("prepared artifact recovery found a non-queued job")
+        if activate_prepared_task(task_id) is not None:
+            recovered.append(dict(job))
+            continue
+        current = get_task(task_id)
+        if current.get("status") != "preparing":
+            continue
+        raise TaskPersistenceError("prepared artifact task activation did not commit")
     return recovered
 
 
 def _persist_local_job(job: Mapping[str, Any]) -> None:
     ARTIFACT_JOB_DIR.mkdir(parents=True, exist_ok=True)
     path = _job_path(str(job.get("job_id") or ""))
-    temporary = path.with_suffix(".tmp")
+    temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
     temporary.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)
 
