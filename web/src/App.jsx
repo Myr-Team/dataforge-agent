@@ -9,11 +9,15 @@ import {
   loadObservability,
   loadArtifactJob,
   loadArtifactJobs,
+  loadWorkspaceTasks,
+  cancelTask,
+  retryTask,
   loadRun,
   isTransientFetchError,
   streamChat,
   uploadWorkspace,
 } from "./api.js";
+import { TaskCenter, taskViewModel } from "./TaskCenter.jsx";
 import {
   extractArtifacts,
   MobileNav,
@@ -28,6 +32,8 @@ import { PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
 
 const DEFAULT_WORKSPACE = "demo-corpus";
 const ARTIFACT_JOB_TERMINAL = new Set(["partial", "completed", "failed", "cancelled"]);
+const TASK_TERMINAL = new Set(["partial", "completed", "failed", "cancelled"]);
+const DISMISSED_TASK_NOTIFICATIONS_KEY = "df-dismissed-task-notification-ids";
 
 const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -40,6 +46,10 @@ async function waitForArtifactJob(
   let transientFailures = 0;
   while (Date.now() - started < timeoutMs) {
     if (shouldCancel()) return null;
+    if (document.hidden) {
+      await wait(500);
+      continue;
+    }
     let job;
     try {
       job = await loadArtifactJob(jobId);
@@ -112,29 +122,13 @@ export function App() {
   const [authState, setAuthState] = useState("local");
   const [observability, setObservability] = useState(null);
   const activeViewRef = useRef(activeView);
-  const [tasks, setTasks] = useState(() => {
-    // 刷新后没有任何任务真正在跑：把上次残留的"进行中"收尾，避免幽灵角标(永远的 1)与卡住的"可行性分析"
-    try {
-      const saved = JSON.parse(window.localStorage.getItem("df-tasks") || "[]");
-      const cleaned = saved.map((t) => (t.status === "running" ? { ...t, status: "done", detail: "已结束（刷新页面）" } : t));
-      try { window.localStorage.setItem("df-tasks", JSON.stringify(cleaned)); } catch { /* ignore */ }
-      return cleaned;
-    } catch { return []; }
-  });
-  const pushTask = useCallback((task) => {
-    setTasks((list) => {
-      const next = [{ time: new Date().toISOString(), ...task }, ...list].slice(0, 30);
-      try { window.localStorage.setItem("df-tasks", JSON.stringify(next)); } catch { /* ignore */ }
-      return next;
-    });
-  }, []);
-  const updateTask = useCallback((id, patch) => {
-    setTasks((list) => {
-      const next = list.map((t) => (t.id === id ? { ...t, ...patch } : t));
-      try { window.localStorage.setItem("df-tasks", JSON.stringify(next)); } catch { /* ignore */ }
-      return next;
-    });
-  }, []);
+  const [tasks, setTasks] = useState([]);
+  const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
+  const [taskNotifications, setTaskNotifications] = useState([]);
+  const [taskActions, setTaskActions] = useState({});
+  // Legacy page callbacks are intentionally inert; task state is loaded from the server.
+  const pushTask = useCallback(() => {}, []);
+  const updateTask = useCallback(() => {}, []);
   // 恢复会话时，若消息没带 citations，从对应 run 的 artifact 证据池补上，保证 [n] 悬停索引可用
   const withRunCitations = useCallback(async (convId, msgs) => {
     const needs = msgs.some((m) => m.role === "assistant" && (!m.citations || !m.citations.length) && /\[\d+\]/.test(String(m.text || "")));
@@ -149,6 +143,9 @@ export function App() {
   const streamRef = useRef("");
   const revealTimerRef = useRef(null);
   const abortRef = useRef(null);
+  const taskSnapshotRef = useRef(new Map());
+  const taskHydratedRef = useRef(false);
+  const dismissedTaskNotificationsRef = useRef(new Set());
 
   useEffect(() => {
     activeViewRef.current = activeView;
@@ -187,6 +184,57 @@ export function App() {
     }
   }, [workspaceId]);
 
+  const refreshTasks = useCallback(async (id = workspaceId) => {
+    const fetched = await loadWorkspaceTasks(id);
+    const next = Array.isArray(fetched) ? fetched : [];
+    const previous = taskSnapshotRef.current;
+    const dismissed = dismissedTaskNotificationsRef.current;
+    const terminalUpdates = next.filter((task) => {
+      const model = taskViewModel(task);
+      if (!TASK_TERMINAL.has(model.status) || !model.notificationId) return false;
+      const previousUpdate = previous.get(model.taskId);
+      return taskHydratedRef.current && previousUpdate !== model.notificationId && !dismissed.has(model.notificationId);
+    });
+    taskSnapshotRef.current = new Map(next.map((task) => {
+      const model = taskViewModel(task);
+      return [model.taskId, model.notificationId];
+    }));
+    taskHydratedRef.current = true;
+    setTasks(next);
+    if (terminalUpdates.length) setTaskNotifications((current) => [...terminalUpdates, ...current].slice(0, 3));
+  }, [workspaceId]);
+
+  const dismissTaskNotification = useCallback((notificationId) => {
+    if (!notificationId) return;
+    dismissedTaskNotificationsRef.current.add(notificationId);
+    setTaskNotifications((current) => current.filter((task) => taskViewModel(task).notificationId !== notificationId));
+    try {
+      window.localStorage.setItem(DISMISSED_TASK_NOTIFICATIONS_KEY, JSON.stringify([...dismissedTaskNotificationsRef.current]));
+    } catch {
+      // Dismissal is convenience state only; task truth remains on the server.
+    }
+  }, []);
+
+  const performTaskAction = useCallback(async (task, action) => {
+    const taskId = task?.task_id;
+    if (!taskId) return;
+    setTaskActions((current) => ({ ...current, [taskId]: { pending: true, error: "" } }));
+    try {
+      await action(taskId);
+      await refreshTasks(workspaceId);
+    } catch (error) {
+      setTaskActions((current) => ({ ...current, [taskId]: { pending: false, error: error instanceof Error ? error.message : String(error) } }));
+      return;
+    }
+    setTaskActions((current) => ({ ...current, [taskId]: { pending: false, error: "" } }));
+  }, [refreshTasks, workspaceId]);
+
+  const openTaskResult = useCallback((task) => {
+    const destination = taskViewModel(task).destination;
+    if (destination) setActiveView(destination);
+    if (destination) setTaskDrawerOpen(false);
+  }, []);
+
   const clearReveal = () => {
     if (revealTimerRef.current) window.clearInterval(revealTimerRef.current);
     revealTimerRef.current = null;
@@ -222,6 +270,32 @@ export function App() {
   }, [workspaceId, refreshDashboard]);
 
   useEffect(() => {
+    taskHydratedRef.current = false;
+    taskSnapshotRef.current = new Map();
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(DISMISSED_TASK_NOTIFICATIONS_KEY) || "[]");
+      dismissedTaskNotificationsRef.current = new Set(Array.isArray(stored) ? stored.filter((value) => typeof value === "string") : []);
+    } catch {
+      dismissedTaskNotificationsRef.current = new Set();
+    }
+    refreshTasks(workspaceId).catch(() => {});
+  }, [workspaceId, refreshTasks]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (!document.hidden) refreshTasks(workspaceId).catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [workspaceId, refreshTasks]);
+
+  useEffect(() => {
+    if (document.hidden || !tasks.some((task) => ["queued", "running"].includes(task.status))) return undefined;
+    const timer = window.setInterval(() => refreshTasks(workspaceId).catch(() => {}), 2500);
+    return () => window.clearInterval(timer);
+  }, [tasks, workspaceId, refreshTasks]);
+
+  useEffect(() => { /*
     let cancelled = false;
     loadArtifactJobs(workspaceId)
       .then(async (data) => {
@@ -268,7 +342,7 @@ export function App() {
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [workspaceId, artifactRefreshKey, pushTask, refreshDashboard, updateTask]);
+  */ }, [workspaceId]);
 
   // 异步摄取轮询：上传后/选中仍在解析的工作区时，每 ~3.5s 刷新看板，
   // 让数据集状态「解析中→已就绪」与数据画像/TOP5 自动填充；封顶 ~2 分钟，避免个别卡住的文件无限轮询。
@@ -740,6 +814,7 @@ export function App() {
         resetRunState();
       }
       await refreshDashboard(result.workspace_id);
+      await refreshTasks(result.workspace_id);
       window.setTimeout(() => setUploadState(null), 2600);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -865,6 +940,7 @@ export function App() {
         text: base.answer?.text || base.answer?.markdown,
         kinds,
       }, prodTaskId);
+      await refreshTasks(workspaceId);
       updateTask(prodTaskId, { detail: `${kinds.map((k) => KIND_LABEL[k]).join(" / ")} · 后台生成中…`, backendJobId: job.job_id });
       const completedJob = await waitForArtifactJob(job.job_id, (current) => {
         updateTask(prodTaskId, { detail: current.status === "running" ? "后台生成中…" : `任务状态：${current.status}` });
@@ -918,10 +994,12 @@ export function App() {
       }
       updateTask(prodTaskId, { status: "done", detail: warningText ? "部分生成完成" : `${kinds.map((k) => KIND_LABEL[k]).join(" / ")} · 已生成` });
       refreshDashboard(workspaceId);
+      refreshTasks(workspaceId).catch(() => {});
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNotice({ type: "error", message: `生成产物失败：${message}` });
       updateTask(prodTaskId, { status: "error", detail: "生成失败" });
+      refreshTasks(workspaceId).catch(() => {});
     } finally {
       setProducing(false);
     }
@@ -953,6 +1031,7 @@ export function App() {
         authState={authState}
         onLogout={logout}
         tasks={tasks}
+        onOpenTaskCenter={() => setTaskDrawerOpen(true)}
       />
       <ShellNav active={activeView} onChange={changePrimaryView} workspace={dashboard?.workspace} onInviteMembers={openMembersSettings} />
       <div className="workbench">
@@ -988,6 +1067,7 @@ export function App() {
             user={user}
             settingsInitialTab={settingsInitialTab}
             onWorkspaceDataChanged={() => refreshDashboard(workspaceId)}
+            onOpenTaskCenter={() => setTaskDrawerOpen(true)}
           />
         </div>
       </div>
@@ -1008,6 +1088,17 @@ export function App() {
           setNotice(null);
           setDashboardError("");
         }}
+      />
+      <TaskCenter
+        open={taskDrawerOpen}
+        tasks={tasks}
+        notifications={taskNotifications}
+        actions={taskActions}
+        onClose={() => setTaskDrawerOpen(false)}
+        onCancel={(task) => performTaskAction(task, cancelTask)}
+        onRetry={(task) => performTaskAction(task, retryTask)}
+        onOpenResult={openTaskResult}
+        onDismissNotification={dismissTaskNotification}
       />
     </div>
   );

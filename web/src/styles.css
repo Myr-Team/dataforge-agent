@@ -2488,6 +2488,32 @@ svg { flex-shrink: 0; }
   white-space: nowrap;
 }
 .notice .notice-action:hover { background: #fff; }
+.task-center-layer { position: fixed; inset: 0; z-index: 140; display: flex; justify-content: flex-end; background: rgba(16, 24, 40, .24); }
+.task-center-drawer { width: min(440px, 100vw); height: 100%; overflow: auto; border-left: 1px solid var(--line); background: var(--surface); box-shadow: -16px 0 38px rgba(16, 24, 40, .16); }
+.task-center-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 18px 14px; border-bottom: 1px solid var(--line); }
+.task-center-head span { display: block; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.task-center-head h2 { margin: 3px 0 0; font-size: 18px; }
+.task-center-list { padding: 4px 18px 18px; }
+.task-center-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 10px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.task-center-status { display: grid; place-items: start center; padding-top: 1px; color: var(--blue); }
+.task-center-row.success .task-center-status { color: var(--mint); }
+.task-center-row.warning .task-center-status { color: var(--amber); }
+.task-center-row.error .task-center-status { color: var(--red); }
+.task-center-copy { min-width: 0; }
+.task-center-copy strong, .task-center-copy span, .task-center-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-center-copy strong { font-size: 13px; }
+.task-center-copy span, .task-center-copy small { margin-top: 3px; color: var(--muted); font-size: 11.5px; }
+.task-center-copy .task-action-error { color: var(--red); white-space: normal; }
+.task-center-actions { display: flex; align-items: flex-start; gap: 4px; }
+.task-icon-button { display: inline-grid; width: 30px; height: 30px; place-items: center; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.task-icon-button:hover:not(:disabled), .task-icon-button:focus-visible { border-color: var(--line-strong); background: var(--surface-soft); color: var(--ink); outline: none; }
+.task-icon-button:disabled { cursor: wait; opacity: .55; }
+.task-icon-button.danger { color: var(--red); }
+.task-center-empty { display: flex; align-items: center; gap: 8px; margin: 18px 0; color: var(--muted); font-size: 13px; }
+.task-toast-stack { position: fixed; top: 68px; right: 18px; z-index: 145; display: grid; gap: 8px; width: min(380px, calc(100vw - 28px)); }
+.task-toast { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto; align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); box-shadow: var(--shadow); color: var(--blue); }
+.task-toast.success { color: var(--mint); }.task-toast.warning { color: var(--amber); }.task-toast.error { color: var(--red); }
+.task-toast strong, .task-toast small { display: block; color: var(--ink); font-size: 12px; }.task-toast small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .sync-dot.loading svg { animation: spin 1s linear infinite; }
 
 @keyframes routeDash { to { stroke-dashoffset: -44; } }

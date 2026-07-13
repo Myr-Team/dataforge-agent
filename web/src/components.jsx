@@ -174,41 +174,12 @@ export function MobileNav({ active = "workspaces", onChange = () => {} }) {
   );
 }
 
-function NotificationBell({ tasks = [] }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  useEffect(() => {
-    if (!open) return undefined;
-    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    window.addEventListener("pointerdown", onDown);
-    return () => window.removeEventListener("pointerdown", onDown);
-  }, [open]);
-  const running = tasks.filter((t) => t.status === "running").length;
-  const recent = tasks.slice(0, 12);
-  const icon = (s) => (s === "running" ? <Loader2 className="spin" size={14} /> : s === "error" ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />);
+function NotificationBell({ count = 0, onOpen = () => {} }) {
   return (
-    <div className="notif" ref={ref}>
-      <button className="icon-button top-icon" type="button" title="任务通知" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <Bell size={16} />
-        {running ? <span className="notif-badge">{running}</span> : null}
-      </button>
-      {open ? (
-        <div className="notif-panel" role="menu">
-          <div className="notif-head"><strong>任务通知</strong><span>{running ? `${running} 个进行中` : "暂无进行中任务"}</span></div>
-          <div className="notif-list">
-            {recent.length ? recent.map((t) => (
-              <div className={`notif-item ${t.status}`} key={t.id}>
-                <span className="notif-ic">{icon(t.status)}</span>
-                <div className="notif-body">
-                  <strong>{t.label}</strong>
-                  <span>{(t.detail || (t.status === "running" ? "进行中…" : t.status === "error" ? "失败" : "已完成"))}{t.time ? ` · ${formatTime(t.time)}` : ""}</span>
-                </div>
-              </div>
-            )) : <p className="empty-copy">还没有任务。发起一次分析或生成产物，这里会记录进度。</p>}
-          </div>
-        </div>
-      ) : null}
-    </div>
+    <button className="icon-button top-icon" type="button" title="打开全局任务中心" aria-label="打开全局任务中心" onClick={onOpen}>
+      <Bell size={16} />
+      {count ? <span className="notif-badge">{count}</span> : null}
+    </button>
   );
 }
 
@@ -292,7 +263,7 @@ function WorkspaceSwitcher({ workspaces = [], workspaceId, onChange, onDelete, d
   );
 }
 
-export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, onNewConversation, onDeleteWorkspace, loading, deleting = false, user, authState, onLogout, tasks }) {
+export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, onNewConversation, onDeleteWorkspace, loading, deleting = false, user, authState, onLogout, tasks = [], onOpenTaskCenter }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
   const workspaces = dashboard?.workspaces || [];
@@ -326,7 +297,7 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
           <UploadCloud size={16} />
           上传数据
         </button>
-        <NotificationBell tasks={tasks} />
+        <NotificationBell count={tasks.filter((task) => ["queued", "running"].includes(task.status)).length} onOpen={onOpenTaskCenter} />
         <div className="user-menu" ref={menuRef}>
           <button className="user-trigger" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen} title="账户">
             <div className="avatar" title={account.email}>
@@ -627,6 +598,7 @@ function WorkbenchMainInner({
   user,
   settingsInitialTab,
   onWorkspaceDataChanged,
+  onOpenTaskCenter,
 }) {
   if (view === "conversations") {
     return (
@@ -650,7 +622,7 @@ function WorkbenchMainInner({
   if (view === "data") {
     return (
       <Suspense fallback={<main className="agent-studio data-stage"><div style={{ padding: 40, color: "var(--muted)" }}>加载数据工作台…</div></main>}>
-        <DataWorkbench dashboard={dashboard} onUpload={onAppendUpload} onOpenConversation={onOpenConversation} onRun={onRun} user={user} onWorkspaceDataChanged={onWorkspaceDataChanged} />
+        <DataWorkbench dashboard={dashboard} onUpload={onAppendUpload} onOpenConversation={onOpenConversation} onRun={onRun} user={user} tasks={tasks} onOpenTaskCenter={onOpenTaskCenter} onWorkspaceDataChanged={onWorkspaceDataChanged} />
       </Suspense>
     );
   }

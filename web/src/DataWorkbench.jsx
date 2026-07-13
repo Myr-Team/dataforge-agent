@@ -24,6 +24,7 @@ import {
   Trash2,
   Rows3,
   Columns3,
+  Clock3,
   Database,
   Cloud,
 } from "lucide-react";
@@ -127,7 +128,7 @@ function historyUser(item, currentUser) {
   };
 }
 
-export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, user, onWorkspaceDataChanged }) {
+export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, user, tasks = [], onOpenTaskCenter, onWorkspaceDataChanged }) {
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
   const [tab, setTab] = useState("table");
   const [groups, setGroups] = useState([]);
@@ -951,6 +952,10 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     return displayGroups.map((g) => ({ ...g, files: (g.files || []).filter((f) => String(f.name || "").toLowerCase().includes(kw)) })).filter((g) => (g.files || []).length);
   }, [displayGroups, q]);
   const latestHistoryUser = history.length ? historyUser(history[0], user) : null;
+  const workspaceTask = useMemo(
+    () => tasks.find((task) => ["queued", "running", "cancel_requested"].includes(task.status)) || tasks[0] || null,
+    [tasks],
+  );
 
   return (
     <main className="agent-studio data-stage">
@@ -977,6 +982,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
           <button className="dw-btn" type="button" disabled={!active || isExternal} onClick={deleteActiveFile}><Trash2 size={15} />删除文件</button>
         </div>
         <div className="dw-actions-r">
+          {workspaceTask ? <button className="dw-btn" type="button" title="Open the server task record" onClick={onOpenTaskCenter}><Clock3 size={15} />Task {workspaceTask.status === "running" ? "running" : "recorded"}</button> : null}
           <div className="dw-search"><Search size={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索文件或字段…" /></div>
         </div>
       </div>

@@ -388,6 +388,23 @@ export async function loadArtifactJobs(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/artifact-jobs`);
 }
 
+export async function loadWorkspaceTasks(workspaceId) {
+  const data = await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/tasks`);
+  return data.tasks || [];
+}
+
+export async function loadTask(taskId) {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}`);
+}
+
+export async function cancelTask(taskId) {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
+}
+
+export async function retryTask(taskId) {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}/retry`, { method: "POST" });
+}
+
 const wsPath = (id) => `/api/workspaces/${encodeURIComponent(id)}`;
 const queryString = (params) => new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "")).toString();
 
