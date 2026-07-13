@@ -9,12 +9,12 @@ from typing import Any, Mapping
 try:
     from .blob_store import upload_blob_json
     from .identity import canonical_actor_identity, default_actor, is_trusted_tenant_identity, public_actor
-    from .invitation_store import consume_accepted_invitation
+    from .invitation_store import InvitationPersistenceError, InvitationTransitionError, consume_accepted_invitation, current_invited_member_role
     from .workspace_store import WORKSPACES, _load_workspace_bundle
 except ImportError:
     from blob_store import upload_blob_json
     from identity import canonical_actor_identity, default_actor, is_trusted_tenant_identity, public_actor
-    from invitation_store import consume_accepted_invitation
+    from invitation_store import InvitationPersistenceError, InvitationTransitionError, consume_accepted_invitation, current_invited_member_role
     from workspace_store import WORKSPACES, _load_workspace_bundle
 
 
@@ -89,8 +89,13 @@ def workspace_role(workspace_id: str, actor: Mapping[str, Any] | None) -> str | 
             return "owner"
     elif _same_actor(actor_email, actor_id, actor_tenant, stored_owner):
         return "owner"
+    journal_role = current_invited_member_role(meta, workspace_id, clean_actor)
+    if journal_role is not None:
+        return journal_role
     for item in meta.get("workspace_members") or []:
         if not isinstance(item, Mapping):
+            continue
+        if item.get("invitation_id"):
             continue
         matches = canonical_actor_identity(item) == actor_identity if strict else _same_actor(actor_email, actor_id, actor_tenant, item)
         if not matches:
@@ -116,7 +121,12 @@ def active_workspace_role(workspace_id: str, actor: Mapping[str, Any] | None) ->
     owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), Mapping) else {}
     if canonical_actor_identity(owner) == actor_identity:
         return "owner"
+    journal_role = current_invited_member_role(meta, workspace_id, actor)
+    if journal_role is not None:
+        return journal_role
     for item in meta.get("workspace_members") or []:
+        if isinstance(item, Mapping) and item.get("invitation_id"):
+            continue
         if not isinstance(item, Mapping) or canonical_actor_identity(item) != actor_identity:
             continue
         if str(item.get("status") or "").strip().lower() != "active":
@@ -164,7 +174,10 @@ def _activate_accepted_invitation(
 ) -> str | None:
     if not is_trusted_tenant_identity(actor):
         return None
-    accepted = consume_accepted_invitation(meta, workspace_id, actor)
+    try:
+        accepted = consume_accepted_invitation(meta, workspace_id, actor)
+    except (InvitationPersistenceError, InvitationTransitionError):
+        return None
     if not accepted:
         return None
     invitation_id = str(accepted.get("invitation_id") or "")

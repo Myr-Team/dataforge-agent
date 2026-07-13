@@ -380,14 +380,27 @@ def test_accepted_bootstrap_is_consumed_once_and_cannot_overwrite_a_later_role_u
     actor = {"actor_id": "oid-invited", "tenant_id": "tenant-1", "source": "easy_auth"}
 
     assert workspace_authz.workspace_role("ws-roles", actor) == "admin"
-    activated = saves[-1]
-    activated["workspace_members"][0]["role"] = "viewer"
-    meta.update(activated)
+    invitation_store.update_invited_member_role(meta, "ws-roles", email="invited@contoso.com", role="viewer")
 
     assert workspace_authz.workspace_role("ws-roles", actor) == "viewer"
     assert len([event for event in meta["workspace_invitation_events"] if event.get("event_type") == "activation"]) == 1
     invitation_store.revoke_effective_invitations(meta, "ws-roles", email="invited@contoso.com")
     meta["workspace_members"] = []
+    assert workspace_authz.workspace_role("ws-roles", actor) is None
+
+
+def test_journal_role_is_authoritative_over_stale_metadata_and_interleaved_removal(monkeypatch: pytest.MonkeyPatch) -> None:
+    meta = {"workspace_members": [{"actor_id": "oid", "tenant_id": "tenant", "role": "admin", "status": "active", "invitation_id": "stale"}]}
+    pending = invitation_store.create_pending_invitation(meta, "ws-roles", email="alias@contoso.com", role="editor", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
+    invitation_store.transition_invitation(meta, pending["invitation_id"], "accepted", identity={"actor_id": "oid", "tenant_id": "tenant", "source": "easy_auth"})
+    actor = {"actor_id": "oid", "tenant_id": "tenant", "source": "easy_auth"}
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: meta)
+    monkeypatch.setattr(workspace_authz, "_save_workspace_meta", lambda *_args: None)
+
+    assert workspace_authz.workspace_role("ws-roles", actor) == "editor"
+    invitation_store.update_invited_member_role(meta, "ws-roles", email="alias@contoso.com", role="viewer")
+    assert workspace_authz.workspace_role("ws-roles", actor) == "viewer"
+    invitation_store.revoke_effective_invitations(meta, "ws-roles", email="alias@contoso.com")
     assert workspace_authz.workspace_role("ws-roles", actor) is None
 
 

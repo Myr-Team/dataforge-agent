@@ -27,7 +27,7 @@ try:
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
     from .foundry_roi import discover_foundry_roi, reconcile_foundry_roi
     from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
-    from .invitation_store import accept_provider_invitation, create_pending_invitation, revoke_effective_invitations, transition_invitation, workspace_invitation_lock
+    from .invitation_store import accept_provider_invitation, create_pending_invitation, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
@@ -47,7 +47,7 @@ except ImportError:
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
     from foundry_roi import discover_foundry_roi, reconcile_foundry_roi
     from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
-    from invitation_store import accept_provider_invitation, create_pending_invitation, revoke_effective_invitations, transition_invitation, workspace_invitation_lock
+    from invitation_store import accept_provider_invitation, create_pending_invitation, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
@@ -1019,7 +1019,7 @@ def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], reque
     elif invitation_id and graph_invite.get("status") == "sent":
         with workspace_invitation_lock(workspace_id):
             meta = _load_workspace_meta(workspace_id)
-            accepted = accept_provider_invitation(meta, workspace_id, invitation_id, graph_invite)
+            accepted = accept_provider_invitation(meta, workspace_id, invitation_id, graph_invite, inviter=actor_from_request(request))
             if accepted is not None:
                 result["invitation"] = accepted
                 _save_workspace_meta(workspace_id, meta)
@@ -1069,6 +1069,7 @@ def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, 
     if target == _actor_key(current_actor):
         raise ValueError("The current owner role cannot be changed from the members panel")
     meta = _load_workspace_meta(workspace_id)
+    update_invited_member_role(meta, workspace_id, email=target, role=role)
     members = _stored_workspace_members(meta)
     now = _now()
     updated = False

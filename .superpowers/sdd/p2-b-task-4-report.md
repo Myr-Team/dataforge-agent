@@ -79,6 +79,59 @@ imports ok
 git diff --check                 # exit 0
 ```
 
+## Second Review Remediation
+
+### Documented Graph identity binding
+
+- Graph invitation handling now uses only the documented `invitedUser.id` response field. It no longer expects or persists `invitedUser.tenantId`.
+- `accept_provider_invitation` receives the authenticated inviter and requires a trusted Easy Auth OID plus tenant ID. The accepted identity is the Graph `invitedUser.id` bound to that trusted inviter tenant.
+- Missing or untrusted inviter identity leaves the invitation pending. Provider status, email, and invitation ID alone do not create acceptance or access.
+
+### Journal-authoritative invited membership
+
+- The CAS invitation journal now records activation and role-change lifecycle events. Authorization derives invited-member access from the journal before considering metadata, and ignores metadata rows carrying an invitation ID.
+- Metadata remains a display mirror. A stale `workspace_members` write cannot restore an invited member, elevate a role, or override a journal downgrade/removal.
+- Reissue/removal revocation considers all effective pending or accepted grants linked by either target email or the accepted OID/tenant identity, preventing alias invitations from reactivating access.
+
+### Failure and schema handling
+
+- Activation catches durable journal persistence/validation errors and denies the current request rather than returning the bootstrap role.
+- Journal mutations compare before/after state and skip CAS writes for no-op lookups or identity mismatches.
+- Malformed journal documents or events now raise `InvitationPersistenceError`; they are never treated as empty state or overwritten.
+- Journal-derived roles validate against `admin`, `editor`, and `viewer`; malformed or legacy `owner` invitation events fail closed.
+
+### Second-remediation TDD evidence
+
+Initial red verification after adding the review regressions:
+
+```text
+3 failed, 60 passed in 6.08s
+```
+
+The failures demonstrated the undocumented Graph tenant assumption, missing inviter authentication at the provider-acceptance boundary, and metadata-first authorization.
+
+Final focused verification:
+
+```text
+63 passed in 5.42s
+```
+
+Final full verification:
+
+```text
+535 passed, 1 warning in 52.45s
+```
+
+The warning is unchanged and unrelated: `ExperimentalWarning` from `backend/maf_team_runtime.py:1060`.
+
+Final compile/import/diff verification:
+
+```text
+python -m compileall -q ...      # exit 0
+imports ok
+git diff --check                 # exit 0
+```
+
 ## Review Remediation
 
 This follow-up addresses every Critical and Important Task 4 review finding without changing Easy Auth configuration.

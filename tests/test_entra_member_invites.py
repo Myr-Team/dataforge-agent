@@ -174,6 +174,7 @@ def test_provider_identity_acceptance_requires_graph_oid_and_tenant():
         "ws-graph",
         pending["invitation_id"],
         {"source": "microsoft_graph", "status": "sent", "invited_user_id": "oid-reviewer"},
+        inviter={"actor_id": "owner", "source": "easy_auth"},
     ) is None
     accepted = invitation_store.accept_provider_invitation(
         meta,
@@ -186,6 +187,7 @@ def test_provider_identity_acceptance_requires_graph_oid_and_tenant():
             "invited_user_id": "oid-reviewer",
             "tenant_id": "tenant-1",
         },
+        inviter={"actor_id": "owner", "tenant_id": "tenant-1", "source": "easy_auth"},
     )
 
     assert accepted["state"] == "accepted"
@@ -335,6 +337,7 @@ def test_graph_invite_with_provider_oid_and_tenant_records_accepted_bootstrap(tm
             "tenant_id": "tenant-1",
         },
     )
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda _request: {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"})
 
     result = control_plane.invite_entra_workspace_member(
         "ws-graph",
@@ -361,6 +364,36 @@ def test_graph_invite_without_trusted_provider_tenant_remains_pending(tmp_path, 
     )
 
     assert result["invitation"]["state"] == "pending"
+
+
+def test_graph_id_only_binds_to_trusted_inviter_tenant_and_rejects_missing_tenant(tmp_path, monkeypatch):
+    workspace_path = _workspace(tmp_path, monkeypatch)
+    monkeypatch.setattr(control_plane, "send_graph_invitation", lambda *args, **kwargs: {"status": "sent", "source": "microsoft_graph", "invitation_id": "graph-1", "invited_user_id": "oid-reviewer"})
+    trusted = RequestStub()
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda _request: {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"})
+
+    result = control_plane.invite_entra_workspace_member("ws-graph", {"email": "reviewer@contoso.com", "role": "editor", "send_email": True}, trusted)
+
+    assert result["invitation"]["accepted_identity"] == {"actor_id": "oid-reviewer", "tenant_id": "tenant-1"}
+    assert "tenant_id" not in result["invitation"]["provider"]
+    meta = {}
+    pending = invitation_store.create_pending_invitation(meta, "ws-graph", email="other@contoso.com", role="viewer", invited_by={"actor_id": "owner", "tenant_id": "tenant-1", "source": "easy_auth"})
+    assert invitation_store.accept_provider_invitation(meta, "ws-graph", pending["invitation_id"], {"source": "microsoft_graph", "invited_user_id": "oid-other"}, inviter={"actor_id": "owner", "source": "easy_auth"}) is None
+    assert workspace_path.exists()
+
+
+def test_noop_and_malformed_durable_journal_fail_closed_without_cas_write(monkeypatch):
+    meta = {}
+    writes = []
+    monkeypatch.setattr(invitation_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(invitation_store, "download_blob_json", lambda _name: {"revision": 3, "events": []})
+    monkeypatch.setattr(invitation_store, "compare_and_swap_blob_json", lambda *_args, **kwargs: writes.append(kwargs) or kwargs["changes"])
+
+    assert invitation_store.accept_provider_invitation(meta, "ws-graph", "missing", {"source": "microsoft_graph", "invited_user_id": "oid"}, inviter={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"}) is None
+    assert writes == []
+    monkeypatch.setattr(invitation_store, "download_blob_json", lambda _name: {"revision": 3, "events": "broken"})
+    with pytest.raises(invitation_store.InvitationPersistenceError, match="schema"):
+        invitation_store.create_pending_invitation(meta, "ws-graph", email="bad@contoso.com", role="viewer", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
 
 
 def test_entra_invite_falls_back_to_workspace_member_when_graph_unavailable(tmp_path, monkeypatch):
