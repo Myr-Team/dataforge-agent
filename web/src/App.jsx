@@ -53,7 +53,7 @@ export async function performServerTaskAction({ task, workspaceId, currentWorksp
     await refreshTasks(workspaceId);
   } catch (error) {
     if (error?.name !== "AbortError" && actionWorkspaceId === currentWorkspaceId()) {
-      setActionState({ pending: false, error: `Task list refresh failed: ${error instanceof Error ? error.message : String(error)}` });
+      setActionState({ pending: false, error: `任务列表刷新失败：${error instanceof Error ? error.message : String(error)}` });
     }
   }
 }

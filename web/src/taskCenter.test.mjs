@@ -35,6 +35,25 @@ test("keeps a cancelling running task in the stopping state", async () => {
   assert.equal(model.statusLabel, "正在停止");
 });
 
+test("localizes task statuses and task type or action titles", async () => {
+  const { taskStatusLabel, taskTitle } = await loadTaskViewModel();
+  assert.equal(taskStatusLabel("queued"), "排队中");
+  assert.equal(taskStatusLabel("running"), "运行中");
+  assert.equal(taskStatusLabel("completed"), "已完成");
+  assert.equal(taskStatusLabel("partial"), "部分完成");
+  assert.equal(taskStatusLabel("failed"), "失败");
+  assert.equal(taskStatusLabel("cancelled"), "已取消");
+  assert.equal(taskTitle({ task_type: "analysis.run" }), "运行分析");
+  assert.equal(taskTitle({ task_type: "analysis.iterate" }), "迭代分析");
+  assert.equal(taskTitle({ task_type: "workspace.ingest" }), "导入数据");
+  assert.equal(taskTitle({ task_type: "analysis.ingest" }), "准备分析数据");
+  assert.equal(taskTitle({ task_type: "artifact.generate" }), "生成产物");
+  assert.equal(taskTitle({ task_type: "connector.blob.import" }), "导入 Blob 数据");
+  assert.equal(taskTitle({ task_type: "connector.sql.import" }), "导入 SQL 数据");
+  assert.equal(taskTitle({ action: "file.create" }), "创建文件");
+  assert.equal(taskTitle({ task_type: "vendor.internal.operation", action: "vendor.internal.operation" }), "后台任务");
+});
+
 test("keeps drawer focus behavior stable across callback updates", async () => {
   const { createTaskCenterFocusController } = await loadTaskViewModel();
   const listeners = new Map();
@@ -109,6 +128,17 @@ test("does not turn a superseded refresh into a task action error", async () => 
     setActionState: (value) => postStates.push(value),
   });
   assert.deepEqual(postStates.at(-1), { pending: false, error: "permission denied" });
+
+  const refreshStates = [];
+  await performServerTaskAction({
+    task: { task_id: "task-3", workspace_id: "ws-1" },
+    workspaceId: "ws-1",
+    currentWorkspaceId: () => "ws-1",
+    postAction: async () => ({ status: "running" }),
+    refreshTasks: async () => { throw new Error("network unavailable"); },
+    setActionState: (value) => refreshStates.push(value),
+  });
+  assert.deepEqual(refreshStates.at(-1), { pending: false, error: "任务列表刷新失败：network unavailable" });
 });
 
 test("keeps partial task results available after failure", async () => {

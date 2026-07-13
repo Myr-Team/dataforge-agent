@@ -12,6 +12,29 @@ import {
 
 const TERMINAL_STATUSES = new Set(["partial", "completed", "failed", "cancelled"]);
 
+const TASK_STATUS_LABELS = {
+  preparing: "准备中",
+  queued: "排队中",
+  running: "运行中",
+  cancel_requested: "正在停止",
+  completed: "已完成",
+  partial: "部分完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+const TASK_TITLES = {
+  "analysis.run": "运行分析",
+  "analysis.iterate": "迭代分析",
+  "workspace.ingest": "导入数据",
+  "analysis.ingest": "准备分析数据",
+  "artifact.generate": "生成产物",
+  "connector.blob.import": "导入 Blob 数据",
+  "connector.sql.import": "导入 SQL 数据",
+  "connector.manage": "管理连接器",
+  "file.create": "创建文件",
+};
+
 export function isCurrentWorkspaceTaskResponse({ requestSequence, currentSequence, requestWorkspaceId, currentWorkspaceId, aborted }) {
   return !aborted && requestSequence === currentSequence && requestWorkspaceId === currentWorkspaceId;
 }
@@ -25,6 +48,22 @@ export function terminalTaskNotifications(tasks, previousSnapshot, hydrated, dis
       && previousSnapshot.get(model.taskId) !== model.notificationId
       && !dismissed.has(model.notificationId);
   });
+}
+
+export function taskStatusLabel(status) {
+  return TASK_STATUS_LABELS[status] || "状态未知";
+}
+
+export function taskTitle(task = {}) {
+  return TASK_TITLES[task.task_type] || TASK_TITLES[task.action] || "后台任务";
+}
+
+function taskResultLabel(destination) {
+  return {
+    runs: "分析结果",
+    data: "数据结果",
+    artifacts: "产物结果",
+  }[destination] || "任务结果";
 }
 
 export function taskViewModel(task = {}) {
@@ -139,23 +178,6 @@ export function TaskCenter({
 
   if (!open && !notifications.length) return null;
 
-  const statusLabel = (status) => ({
-    preparing: "Preparing",
-    queued: "Queued",
-    running: "Running",
-    cancel_requested: "Cancel requested",
-    completed: "Completed",
-    partial: "Partial result",
-    failed: "Failed",
-    cancelled: "Cancelled",
-  }[status] || status);
-  const titleFor = (task) => ({
-    "workspace.ingest": "Ingest data",
-    "analysis.ingest": "Prepare analysis data",
-    "artifact.generate": "Generate artifacts",
-    "connector.blob.import": "Import Blob data",
-    "connector.sql.import": "Import SQL data",
-  }[task.task_type] || task.action || task.task_type || "Background task");
   const iconFor = (model) => {
     if (model.status === "running" || model.status === "queued") return <Loader2 size={16} className="spin" />;
     if (model.status === "cancelled") return <X size={16} />;
@@ -166,18 +188,18 @@ export function TaskCenter({
   return (
     <>
       {notifications.length ? (
-        <div className="task-toast-stack" aria-live="polite" aria-label="Task notifications">
+        <div className="task-toast-stack" aria-live="polite" aria-label="任务通知">
           {notifications.map((task) => {
             const model = taskViewModel(task);
             return (
               <div className={`task-toast ${model.severity}`} key={model.notificationId}>
                 <span>{iconFor(model)}</span>
                 <div>
-                  <strong>{titleFor(task)}</strong>
-                  <small>{statusLabel(model.status)}</small>
+                  <strong>{taskTitle(task)}</strong>
+                  <small>{model.statusLabel || taskStatusLabel(model.status)}</small>
                 </div>
-                {model.canOpenResult ? <button type="button" className="task-icon-button" title="Open result" aria-label="Open task result" onClick={() => onOpenResult(task)}><ArrowUpRight size={16} /></button> : null}
-                <button type="button" className="task-icon-button" title="Dismiss notification" aria-label="Dismiss task notification" onClick={() => onDismissNotification(model.notificationId)}><X size={16} /></button>
+                {model.canOpenResult ? <button type="button" className="task-icon-button" title="打开结果" aria-label="打开任务结果" onClick={() => onOpenResult(task)}><ArrowUpRight size={16} /></button> : null}
+                <button type="button" className="task-icon-button" title="忽略通知" aria-label="忽略任务通知" onClick={() => onDismissNotification(model.notificationId)}><X size={16} /></button>
               </div>
             );
           })}
@@ -185,10 +207,10 @@ export function TaskCenter({
       ) : null}
       {open ? (
         <div ref={layerRef} className="task-center-layer" role="presentation" onMouseDown={onClose}>
-          <aside ref={drawerRef} className="task-center-drawer" role="dialog" aria-modal="true" aria-label="Task center" onMouseDown={(event) => event.stopPropagation()}>
+          <aside ref={drawerRef} className="task-center-drawer" role="dialog" aria-modal="true" aria-label="任务中心" onMouseDown={(event) => event.stopPropagation()}>
             <header className="task-center-head">
-              <div><span>Operations</span><h2>Task center</h2></div>
-              <button ref={closeButtonRef} type="button" className="task-icon-button" title="Close task center" aria-label="Close task center" onClick={onClose}><X size={18} /></button>
+              <div><span>后台任务</span><h2>任务中心</h2></div>
+              <button ref={closeButtonRef} type="button" className="task-icon-button" title="关闭任务中心" aria-label="关闭任务中心" onClick={onClose}><X size={18} /></button>
             </header>
             <div className="task-center-list">
               {orderedTasks.length ? orderedTasks.map((task) => {
@@ -198,19 +220,19 @@ export function TaskCenter({
                   <article className={`task-center-row ${model.severity}`} key={model.taskId}>
                     <span className="task-center-status">{iconFor(model)}</span>
                     <div className="task-center-copy">
-                      <strong>{titleFor(task)}</strong>
-                      <span>{model.statusLabel || statusLabel(model.status)}{typeof task.progress === "number" ? ` · ${task.progress}%` : ""}</span>
+                      <strong>{taskTitle(task)}</strong>
+                      <span>{model.statusLabel || taskStatusLabel(model.status)}{typeof task.progress === "number" ? ` 进度 ${task.progress}%` : ""}</span>
                       {task.error?.message ? <small>{task.error.message}</small> : null}
                       {action.error ? <small className="task-action-error">{action.error}</small> : null}
                     </div>
                     <div className="task-center-actions">
-                      {model.canOpenResult ? <button type="button" className="task-icon-button" title={`Open ${model.destination || "task"} result`} aria-label="Open task result" onClick={() => onOpenResult(task)}><ArrowUpRight size={16} /></button> : null}
-                      {model.canCancel ? <button type="button" className="task-icon-button danger" title="Cancel task" aria-label="Cancel task" disabled={action.pending} onClick={() => onCancel(task)}>{action.pending ? <Loader2 size={16} className="spin" /> : <Square size={14} />}</button> : null}
-                      {model.canRetry ? <button type="button" className="task-icon-button" title="Retry task" aria-label="Retry task" disabled={action.pending} onClick={() => onRetry(task)}>{action.pending ? <Loader2 size={16} className="spin" /> : <RotateCcw size={16} />}</button> : null}
+                      {model.canOpenResult ? <button type="button" className="task-icon-button" title={`打开${taskResultLabel(model.destination)}`} aria-label={`打开${taskResultLabel(model.destination)}`} onClick={() => onOpenResult(task)}><ArrowUpRight size={16} /></button> : null}
+                      {model.canCancel ? <button type="button" className="task-icon-button danger" title="取消任务" aria-label="取消任务" disabled={action.pending} onClick={() => onCancel(task)}>{action.pending ? <Loader2 size={16} className="spin" /> : <Square size={14} />}</button> : null}
+                      {model.canRetry ? <button type="button" className="task-icon-button" title="重试任务" aria-label="重试任务" disabled={action.pending} onClick={() => onRetry(task)}>{action.pending ? <Loader2 size={16} className="spin" /> : <RotateCcw size={16} />}</button> : null}
                     </div>
                   </article>
                 );
-              }) : <p className="task-center-empty"><Clock3 size={18} />No server tasks recorded for this workspace.</p>}
+              }) : <p className="task-center-empty"><Clock3 size={18} />此工作区暂无服务端任务记录。</p>}
             </div>
           </aside>
         </div>

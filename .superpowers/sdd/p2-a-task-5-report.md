@@ -156,3 +156,33 @@
 ### Concerns
 
 - A currently executing third-party producer call cannot be preempted in-process. The worker waits for that call to return, then reads the durable cancellation signal and discards its output before any terminal artifact job result is committed.
+
+## Task Center Localization Iteration
+
+### RED / GREEN
+
+- RED: task-center statuses, task titles, empty state, notifications, tooltips, dialog labels, and the local refresh-error prefix were English. Unknown task types also exposed raw action/type codes.
+- GREEN: presentation-only mapping now provides concise Chinese labels for task state and supported task type/action values. Unknown values display `后台任务`; original server task ids and statuses are unchanged.
+
+### Changes
+
+- Added Chinese title mappings for analysis run and iteration, workspace and analysis ingest, artifact generation, Blob and SQL connector imports, connector management, and file creation.
+- Added Chinese status labels for preparing, queued, running, stopping, completed, partial, failed, and cancelled states.
+- Localized task-center notification labels, dialog labels, action tooltips and `aria-label`s, result destinations, progress, and the empty state.
+- Localized the task-list refresh error prefix while preserving the actual returned error detail.
+
+### Verification
+
+- RED: the node localization test failed because the shared display mapping did not exist; the refresh-error assertion failed with the prior English prefix.
+- GREEN: `node web/src/taskCenter.test.mjs` passed, 10 tests.
+- `npm run build --prefix web` passed.
+- `git diff --check` passed.
+
+### Self-check
+
+- Mapping is display-only and does not fabricate task state or change task id, status, result, retry, cancellation, polling, or workspace behavior.
+- Dynamic server error details remain intact; only locally owned static UI text is translated.
+
+### Concerns
+
+- Browser-generated workspace data remains unrelated to this localization patch and is intentionally excluded from the commit.
