@@ -13,9 +13,11 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 try:
+    from .audit_store import record_audit_event
     from .blob_store import BlobJsonReadError, blob_configured, claim_blob_json, compare_and_swap_blob_json, download_blob_json, download_blob_json_strict, list_blob_json, list_blob_json_strict, upload_blob_json
     from .identity import is_trusted_identity, public_actor
 except ImportError:
+    from audit_store import record_audit_event
     from blob_store import BlobJsonReadError, blob_configured, claim_blob_json, compare_and_swap_blob_json, download_blob_json, download_blob_json_strict, list_blob_json, list_blob_json_strict, upload_blob_json
     from identity import is_trusted_identity, public_actor
 
@@ -63,7 +65,12 @@ def create_task(payload: Mapping[str, Any], actor: Mapping[str, Any] | None) -> 
     }
     if source.get("retry_of"):
         task["retry_of"] = _required_text(source.get("retry_of"), "retry_of", 100)
-    return _persist_new(task)
+    _audit_task(task, "task.create", actor=actor)
+    try:
+        return _persist_new(task)
+    except Exception:
+        _audit_task_best_effort(task, "task.create", actor=actor, result="failed", reason_code="persistence_failed")
+        raise
 
 
 def get_task(task_id: str) -> dict[str, Any]:
@@ -101,6 +108,7 @@ def claim_task(task_id: str, worker: str) -> dict[str, Any] | None:
         task = get_task(normalized)
         if task.get("status") != "queued":
             return None
+        _audit_task(task, "task.start")
         changes = {"status": "running", "started_at": _now(), "updated_at": _now(), "revision": int(task.get("revision") or 0) + 1}
         try:
             claimed = claim_blob_json(_task_blob(normalized), expected_status="queued", changes=changes)
@@ -137,15 +145,16 @@ def activate_prepared_task(task_id: str) -> dict[str, Any] | None:
         return cleaned
 
 
-def update_task(task_id: str, **changes: Any) -> dict[str, Any]:
+def update_task(task_id: str, *, audit_actor: Mapping[str, Any] | None = None, **changes: Any) -> dict[str, Any]:
     normalized = _required_text(task_id, "task_id", 100)
     if not blob_configured():
-        return _update_local_task(normalized, changes)
+        return _update_local_task(normalized, changes, audit_actor=audit_actor)
     with _LOCK:
         task = get_task(normalized)
         updated = _apply_changes(task, changes)
         if updated is task:
             return task
+        _audit_task_transition(task, updated, actor=audit_actor)
         try:
             committed = compare_and_swap_blob_json(
                 _task_blob(normalized),
@@ -161,14 +170,14 @@ def update_task(task_id: str, **changes: Any) -> dict[str, Any]:
         return cleaned
 
 
-def request_cancel(task_id: str) -> dict[str, Any]:
+def request_cancel(task_id: str, actor: Mapping[str, Any] | None = None) -> dict[str, Any]:
     task = get_task(task_id)
     if task.get("status") in _TERMINAL:
         return task
     if task.get("status") in {"preparing", "queued"}:
-        return update_task(task_id, status="cancelled")
+        return update_task(task_id, status="cancelled", audit_actor=actor)
     if task.get("status") == "running":
-        return update_task(task_id, status="running", cancel_requested=True, cancel_requested_at=_now())
+        return update_task(task_id, status="running", cancel_requested=True, cancel_requested_at=_now(), audit_actor=actor)
     return task
 
 
@@ -189,6 +198,60 @@ def retry_task(task_id: str, actor: Mapping[str, Any] | None) -> dict[str, Any]:
         },
         actor,
     )
+
+
+def _audit_task(
+    task: Mapping[str, Any],
+    action: str,
+    *,
+    actor: Mapping[str, Any] | None = None,
+    result: str = "allowed",
+    reason_code: str = "authorized",
+) -> None:
+    task_id = str(task.get("task_id") or "")
+    workspace_id = str(task.get("workspace_id") or "")
+    try:
+        record_audit_event(
+            actor or (task.get("actor") if isinstance(task.get("actor"), Mapping) else {}),
+            action,
+            {"workspace_id": workspace_id, "resource_type": "task", "resource_id": task_id},
+            result=result,
+            reason_code=reason_code,
+            correlation={"task_id": task_id},
+        )
+    except Exception as exc:
+        raise TaskPersistenceError("required task audit write failed") from exc
+
+
+def _audit_task_best_effort(
+    task: Mapping[str, Any],
+    action: str,
+    *,
+    actor: Mapping[str, Any] | None = None,
+    result: str,
+    reason_code: str,
+) -> None:
+    try:
+        _audit_task(task, action, actor=actor, result=result, reason_code=reason_code)
+    except TaskPersistenceError:
+        pass
+
+
+def _audit_task_transition(
+    previous: Mapping[str, Any],
+    updated: Mapping[str, Any],
+    *,
+    actor: Mapping[str, Any] | None = None,
+) -> None:
+    old_status = str(previous.get("status") or "")
+    new_status = str(updated.get("status") or "")
+    cancel_became_requested = not bool(previous.get("cancel_requested")) and bool(updated.get("cancel_requested"))
+    if (new_status == "cancelled" and old_status != "cancelled") or cancel_became_requested:
+        _audit_task(updated, "task.cancel", actor=actor, reason_code="task_cancelled")
+    elif new_status == "completed" and old_status != "completed":
+        _audit_task(updated, "task.complete", actor=actor, reason_code="task_completed")
+    elif new_status in {"failed", "partial"} and old_status != new_status:
+        _audit_task(updated, "task.fail", actor=actor, result="failed", reason_code="task_failed")
 
 
 def _persist_new(task: Mapping[str, Any]) -> dict[str, Any]:
@@ -224,6 +287,7 @@ def _claim_local_task(task_id: str) -> dict[str, Any] | None:
             task = get_task(task_id)
             if task.get("status") != "queued":
                 return None
+            _audit_task(task, "task.start")
             task.update({"status": "running", "started_at": _now(), "updated_at": _now(), "revision": int(task.get("revision") or 0) + 1})
             return _persist_local_task(task)
         finally:
@@ -236,6 +300,7 @@ def _update_local_task(
     changes: Mapping[str, Any],
     *,
     expected_status: str | None = None,
+    audit_actor: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     lock_path = _claim_lock_path(task_id)
     deadline = time.monotonic() + LOCAL_TASK_LOCK_TIMEOUT_SECONDS
@@ -247,6 +312,8 @@ def _update_local_task(
                 if expected_status is not None and task.get("status") != expected_status:
                     return None
                 updated = _apply_changes(task, changes)
+                if updated is not task:
+                    _audit_task_transition(task, updated, actor=audit_actor)
                 return task if updated is task else _persist_local_task(updated)
             finally:
                 _release_claim_lock(lock_path, token)

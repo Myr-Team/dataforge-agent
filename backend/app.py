@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Mapping
 from urllib.parse import urlparse
@@ -22,6 +23,7 @@ from pathlib import Path
 from starlette.concurrency import run_in_threadpool
 
 try:
+    from .audit_store import record_audit_event
     from .artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, retry_artifact_task, run_artifact_job
     from .task_store import TaskPersistenceError, cancel_requested, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
     from .blob_store import download_artifact
@@ -71,6 +73,7 @@ try:
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
 except ImportError:
+    from audit_store import record_audit_event
     from artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, retry_artifact_task, run_artifact_job
     from task_store import TaskPersistenceError, cancel_requested, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
     from blob_store import download_artifact
@@ -182,6 +185,7 @@ async def upload_workspace(
 ) -> UploadResponse:
     if workspace_id:
         _require_workspace_action(workspace_id, request, "file.create")
+        _audit_required(request, workspace_id, "file.create", "file", "upload")
     files = []
     for item in file:
         files.append(
@@ -202,6 +206,8 @@ async def upload_workspace(
             asset_role=asset_role,
             actor=actor,
         )
+        if not workspace_id:
+            _audit_required(request, str(result.get("workspace_id") or ""), "file.create", "file", "upload")
         _schedule_upload_ingest(result, actor=actor)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
@@ -281,6 +287,8 @@ async def workspace_manifest(workspace_id: str, request: Request) -> dict[str, A
 @app.post("/api/workspaces/{workspace_id}/auto-analyze")
 async def workspace_auto_analyze(workspace_id: str, request: Request) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "analysis.run")
+    _audit_required(request, workspace_id, "analysis.run", "analysis", "auto-analysis")
+    _audit_required(request, workspace_id, "message.create", "message", "pending")
     body: dict[str, Any] = {}
     try:
         body = await request.json()
@@ -380,7 +388,8 @@ async def workspace_reference_image(workspace_id: str, filename: str, request: R
 @app.delete("/api/workspaces/{workspace_id}", response_model=WorkspaceDeleteResponse)
 async def remove_workspace(workspace_id: str, request: Request) -> WorkspaceDeleteResponse:
     try:
-        require_workspace_permission(workspace_id, actor_from_request(request), "workspace.delete")
+        _require_workspace_action(workspace_id, request, "workspace.delete")
+        _audit_required(request, workspace_id, "workspace.delete", "workspace", workspace_id)
         result = await run_in_threadpool(delete_workspace, workspace_id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -442,6 +451,7 @@ async def speech_token() -> dict[str, Any]:
 @app.post("/api/produce")
 async def produce(req: ProduceRequest, request: Request) -> dict[str, Any]:
     _require_workspace_action(req.workspace_id, request, "artifact.generate")
+    _audit_required(request, req.workspace_id, "artifact.generate", "artifact", "pending")
     return await run_in_threadpool(produce_from_existing_report, req.model_dump())
 
 
@@ -453,7 +463,8 @@ async def artifact_job_create(
 ) -> dict[str, Any]:
     try:
         actor = actor_from_request(request)
-        require_workspace_permission(req.workspace_id, actor, "artifact.generate")
+        _require_workspace_action(req.workspace_id, request, "artifact.generate")
+        _audit_required(request, req.workspace_id, "artifact.generate", "artifact", "pending")
         recovered_jobs = await run_in_threadpool(recover_prepared_artifact_tasks, req.workspace_id)
         job = await run_in_threadpool(
             create_artifact_job,
@@ -526,7 +537,7 @@ async def task_cancel(task_id: str, request: Request) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}") from exc
     _require_workspace_action(str(task.get("workspace_id") or ""), request, str(task.get("action") or "workspace.read"))
-    return await run_in_threadpool(request_cancel, task_id)
+    return await run_in_threadpool(request_cancel, task_id, actor_from_request(request))
 
 
 @app.post("/api/tasks/{task_id}/retry", status_code=202)
@@ -550,6 +561,7 @@ async def task_retry(task_id: str, request: Request, background_tasks: Backgroun
 @app.post("/api/playbook")
 async def playbook(req: PlaybookRequest, request: Request) -> dict[str, Any]:
     _require_workspace_action(req.workspace_id, request, "analysis.run")
+    _audit_required(request, req.workspace_id, "analysis.run", "analysis", "playbook")
     return await run_in_threadpool(generate_playbook_detail, req.model_dump())
 
 
@@ -593,6 +605,7 @@ async def workspace_flagship(workspace_id: str, request: Request) -> dict:
 @app.post("/api/workspaces/{workspace_id}/flagship")
 async def set_workspace_flagship(workspace_id: str, body: PlanFlagshipRequest, request: Request) -> dict:
     _require_workspace_action(workspace_id, request, "analysis.run")
+    _audit_required(request, workspace_id, "analysis.run", "analysis", body.run_id, correlation={"run_id": body.run_id})
     return await run_in_threadpool(set_flagship_plan, workspace_id, body.run_id)
 
 
@@ -713,6 +726,8 @@ async def _task_backed_chat_stream(req: ChatRequest, task_id: str):
 async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     actor = actor_from_request(request)
     _require_workspace_action(req.workspace_id, request, "analysis.run")
+    _audit_required(request, req.workspace_id, "analysis.run", "analysis", "chat")
+    _audit_required(request, req.workspace_id, "message.create", "message", "pending")
     req = req.model_copy(update={"ui_context": merge_actor_into_ui_context(req.ui_context, actor)})
     is_iteration = bool(req.ui_context.get("iteration_inputs")) if isinstance(req.ui_context, dict) else False
     task = create_task(
@@ -778,7 +793,56 @@ def _require_workspace_action(workspace_id: str, request: Request, action: str) 
     try:
         return require_workspace_permission(workspace_id, actor_from_request(request), action)
     except PermissionError as exc:
+        try:
+            record_audit_event(
+                actor_from_request(request),
+                action,
+                {"workspace_id": workspace_id, "resource_type": "workspace", "resource_id": workspace_id},
+                result="denied",
+                reason_code="permission_denied",
+                correlation=_request_correlation(request),
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _audit_required(
+    request: Request,
+    workspace_id: str,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    *,
+    correlation: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    try:
+        return record_audit_event(
+            actor_from_request(request),
+            action,
+            {
+                "workspace_id": workspace_id,
+                "resource_type": resource_type,
+                "resource_id": _safe_audit_id(resource_id, "pending"),
+            },
+            result="allowed",
+            reason_code="authorized",
+            correlation={**_request_correlation(request), **dict(correlation or {})},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Audit persistence is required") from exc
+
+
+def _request_correlation(request: Request | None) -> dict[str, str]:
+    if request is None:
+        return {}
+    value = str(request.headers.get("x-request-id") or request.headers.get("x-correlation-id") or request.headers.get("idempotency-key") or "").strip()
+    return {"request_id": value} if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}", value) else {}
+
+
+def _safe_audit_id(value: Any, fallback: str) -> str:
+    clean = str(value or "").strip()
+    return clean if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}", clean) else fallback
 
 
 def _artifact_workspace_ids(safe_name: str) -> set[str]:

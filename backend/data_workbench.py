@@ -21,6 +21,7 @@ from ingest.profiler import build_data_profile, profile_to_search_document
 from ingest.adapters.upload_to_records import upload_to_records
 
 try:
+    from .audit_store import record_audit_event
     from .blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
     from .connector_secret_store import SecretExpiredError, SecretStoreOperationError, secret_store_from_environment
     from .connector_store import ConnectorConflictError, ConnectorDeleteError, ConnectorStore, ConnectorStoreError
@@ -42,6 +43,7 @@ try:
         run_workspace_ingest_job,
     )
 except ImportError:
+    from audit_store import record_audit_event
     from blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
     from connector_secret_store import SecretExpiredError, SecretStoreOperationError, secret_store_from_environment
     from connector_store import ConnectorConflictError, ConnectorDeleteError, ConnectorStore, ConnectorStoreError
@@ -100,7 +102,7 @@ async def workspace_files(workspace_id: str, request: Request) -> dict[str, Any]
 async def workspace_file_create(workspace_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "file.create")
     body = await _json_body(request)
-    return await _call(create_workspace_file, workspace_id, body, actor_from_request(request))
+    return await _audited_call(request, workspace_id, "file.create", "file", "pending", create_workspace_file, workspace_id, body, actor_from_request(request))
 
 
 @router.get("/files/{file_id}/content")
@@ -119,20 +121,20 @@ async def workspace_file_content(
 async def workspace_file_cells(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "file.edit")
     body = await _json_body(request)
-    return await _call(save_table_cells, workspace_id, file_id, body, actor_from_request(request))
+    return await _audited_call(request, workspace_id, "file.edit", "file", file_id, save_table_cells, workspace_id, file_id, body, actor_from_request(request))
 
 
 @router.put("/files/{file_id}/content")
 async def workspace_file_markdown(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "file.edit")
     body = await _json_body(request)
-    return await _call(save_markdown_content, workspace_id, file_id, body, actor_from_request(request))
+    return await _audited_call(request, workspace_id, "file.edit", "file", file_id, save_markdown_content, workspace_id, file_id, body, actor_from_request(request))
 
 
 @router.delete("/files/{file_id}")
 async def workspace_file_delete(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "file.delete")
-    return await _call(delete_workspace_file, workspace_id, file_id, actor_from_request(request))
+    return await _audited_call(request, workspace_id, "file.delete", "file", file_id, delete_workspace_file, workspace_id, file_id, actor_from_request(request))
 
 
 @router.get("/files/{file_id}/quality")
@@ -151,7 +153,7 @@ async def workspace_file_field_mapping(workspace_id: str, file_id: str, request:
 async def workspace_file_field_mapping_save(workspace_id: str, file_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "file.edit")
     body = await _json_body(request)
-    return await _call(save_file_field_mapping, workspace_id, file_id, body, actor_from_request(request))
+    return await _audited_call(request, workspace_id, "file.edit", "file", file_id, save_file_field_mapping, workspace_id, file_id, body, actor_from_request(request))
 
 
 @router.get("/files/{file_id}/history")
@@ -165,10 +167,16 @@ async def workspace_files_analyze(workspace_id: str, request: Request, backgroun
     _require(request, workspace_id, "analysis.run")
     body = await _json_body(request)
     body["ui_context"] = merge_actor_into_ui_context(body.get("ui_context") if isinstance(body.get("ui_context"), dict) else {}, actor_from_request(request))
+    _audit_required(request, workspace_id, "analysis.run", "analysis", "selection")
+    _audit_required(request, workspace_id, "message.create", "message", "pending")
     try:
         return await analyze_selected_files(workspace_id, body, background_tasks)
     except TaskPersistenceError as exc:
+        _audit_failed(request, workspace_id, "analysis.run", "analysis", "selection")
         raise HTTPException(status_code=503, detail="Durable task storage is unavailable") from exc
+    except Exception:
+        _audit_failed(request, workspace_id, "analysis.run", "analysis", "selection")
+        raise
 
 
 @router.get("/connectors/capabilities")
@@ -194,7 +202,7 @@ async def connector_capabilities(workspace_id: str, request: Request) -> dict[st
 async def sql_connect(workspace_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "connector.manage")
     body = await _json_body(request)
-    return await _call(connect_sql, workspace_id, body)
+    return await _audited_call(request, workspace_id, "connector.connect", "connector", "pending", connect_sql, workspace_id, body)
 
 
 @router.get("/connectors")
@@ -206,19 +214,19 @@ async def connectors_list(workspace_id: str, request: Request) -> dict[str, Any]
 @router.post("/connectors/{connector_id}/reconnect")
 async def connectors_reconnect(workspace_id: str, connector_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "connector.manage")
-    return await _call(reconnect_connector, workspace_id, connector_id)
+    return await _audited_call(request, workspace_id, "connector.reconnect", "connector", connector_id, reconnect_connector, workspace_id, connector_id)
 
 
 @router.post("/connectors/{connector_id}/sync", status_code=202)
 async def connectors_sync(workspace_id: str, connector_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "connector.manage")
-    return await _call(sync_connector, workspace_id, connector_id, await _json_body(request), actor_from_request(request))
+    return await _audited_call(request, workspace_id, "connector.sync", "connector", connector_id, sync_connector, workspace_id, connector_id, await _json_body(request), actor_from_request(request))
 
 
 @router.delete("/connectors/{connector_id}")
 async def connectors_delete(workspace_id: str, connector_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "connector.manage")
-    return await _call(delete_connector, workspace_id, connector_id)
+    return await _audited_call(request, workspace_id, "connector.delete", "connector", connector_id, delete_connector, workspace_id, connector_id)
 
 
 @router.get("/connectors/sql/status")
@@ -243,14 +251,14 @@ async def sql_preview(workspace_id: str, connection_id: str, table: str, request
 async def sql_import(workspace_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "connector.manage")
     body = await _json_body(request)
-    return await _call(import_sql_table, workspace_id, body, actor_from_request(request))
+    return await _audited_call(request, workspace_id, "connector.import", "connector", _safe_audit_id(body.get("connection_id"), "pending"), import_sql_table, workspace_id, body, actor_from_request(request))
 
 
 @router.post("/connectors/blob/connect")
 async def blob_connect(workspace_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "connector.manage")
     body = await _json_body(request)
-    return await _call(connect_blob, workspace_id, body)
+    return await _audited_call(request, workspace_id, "connector.connect", "connector", "pending", connect_blob, workspace_id, body)
 
 
 @router.get("/connectors/blob/status")
@@ -296,14 +304,14 @@ async def blob_preview(
 async def blob_import(workspace_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "connector.manage")
     body = await _json_body(request)
-    return await _call(import_blob_item, workspace_id, body, actor_from_request(request))
+    return await _audited_call(request, workspace_id, "connector.import", "connector", _safe_audit_id(body.get("connection_id"), "pending"), import_blob_item, workspace_id, body, actor_from_request(request))
 
 
 @router.post("/connectors/disconnect")
 async def connectors_disconnect(workspace_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "connector.manage")
     body = await _json_body(request)
-    return await _call(disconnect_connector, workspace_id, body)
+    return await _audited_call(request, workspace_id, "connector.disconnect", "connector", _safe_audit_id(body.get("connection_id"), "pending"), disconnect_connector, workspace_id, body)
 
 
 def list_workspace_files(workspace_id: str) -> dict[str, Any]:
@@ -1214,11 +1222,88 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
         raise HTTPException(status_code=503, detail={"category": "connector", "code": "connector_operation_failed"}) from None
 
 
+async def _audited_call(
+    request: Request,
+    workspace_id: str,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    func: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    _audit_required(request, workspace_id, action, resource_type, resource_id)
+    try:
+        return await _call(func, *args, **kwargs)
+    except Exception:
+        _audit_failed(request, workspace_id, action, resource_type, resource_id)
+        raise
+
+
+def _audit_required(request: Request, workspace_id: str, action: str, resource_type: str, resource_id: str) -> None:
+    try:
+        record_audit_event(
+            actor_from_request(request),
+            action,
+            {
+                "workspace_id": workspace_id,
+                "resource_type": resource_type,
+                "resource_id": _safe_audit_id(resource_id, "pending"),
+            },
+            result="allowed",
+            reason_code="authorized",
+            correlation=_request_correlation(request),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={"code": "audit_persistence_required"}) from exc
+
+
+def _audit_failed(request: Request, workspace_id: str, action: str, resource_type: str, resource_id: str) -> None:
+    try:
+        record_audit_event(
+            actor_from_request(request),
+            action,
+            {
+                "workspace_id": workspace_id,
+                "resource_type": resource_type,
+                "resource_id": _safe_audit_id(resource_id, "pending"),
+            },
+            result="failed",
+            reason_code="operation_failed",
+            correlation=_request_correlation(request),
+        )
+    except Exception:
+        pass
+
+
 def _require(request: Request, workspace_id: str, action: str) -> str:
     try:
         return require_workspace_permission(workspace_id, actor_from_request(request), action)
     except PermissionError as exc:
+        try:
+            record_audit_event(
+                actor_from_request(request),
+                action,
+                {"workspace_id": workspace_id, "resource_type": "workspace", "resource_id": workspace_id},
+                result="denied",
+                reason_code="permission_denied",
+                correlation=_request_correlation(request),
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _request_correlation(request: Request | None) -> dict[str, str]:
+    if request is None:
+        return {}
+    value = str(request.headers.get("x-request-id") or request.headers.get("x-correlation-id") or request.headers.get("idempotency-key") or "").strip()
+    return {"request_id": value} if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}", value) else {}
+
+
+def _safe_audit_id(value: Any, fallback: str) -> str:
+    clean = str(value or "").strip()
+    return clean if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}", clean) else fallback
 
 
 async def _json_body(request: Request) -> dict[str, Any]:

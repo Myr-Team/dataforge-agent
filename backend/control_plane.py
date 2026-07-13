@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 try:
+    from .audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from .artifact_jobs import list_artifact_jobs
     from .azure_monitor_client import get_trace_delivery_status
     from .task_store import TaskPersistenceError, list_tasks
@@ -36,6 +37,7 @@ try:
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
     from .workspace_authz import active_workspace_role, rbac_enabled, require_workspace_permission, workspace_role
 except ImportError:
+    from audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from artifact_jobs import list_artifact_jobs
     from azure_monitor_client import get_trace_delivery_status
     from task_store import TaskPersistenceError, list_tasks
@@ -153,6 +155,19 @@ async def workspace_audit(workspace_id: str, request: Request) -> dict[str, Any]
     return await _call(workspace_audit_events, workspace_id, request)
 
 
+@router.get("/api/workspaces/{workspace_id}/governance/audit-events")
+async def workspace_governance_audit_events(
+    workspace_id: str,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=512),
+) -> dict[str, Any]:
+    role = _require_governance_role(workspace_id, request, {"owner", "admin"}, "member.read")
+    result = await _call(list_audit_events, workspace_id, limit=limit, cursor=cursor)
+    result["permissions"] = {"role": role, "can_read": True, "can_update": False, "can_delete": False}
+    return result
+
+
 @router.get("/api/workspaces/{workspace_id}/governance-summary")
 async def workspace_governance(workspace_id: str, request: Request) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "workspace.read")
@@ -228,7 +243,12 @@ async def workspace_experiment_compare(
 @router.post("/api/workspaces/{workspace_id}/outcomes")
 async def workspace_outcome_create(workspace_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "outcome.record")
-    event = await _call(record_outcome_event, workspace_id, body, actor_from_request(request))
+    _audit_required(request, workspace_id, "outcome.record", "outcome", "pending")
+    try:
+        event = await _call(record_outcome_event, workspace_id, body, actor_from_request(request))
+    except Exception:
+        _audit_failed(request, workspace_id, "outcome.record", "outcome", "pending")
+        raise
     return {"workspace_id": workspace_id, "event": event}
 
 
@@ -240,13 +260,18 @@ async def workspace_outcome_verify(
     request: Request,
 ) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "outcome.verify")
-    event = await _call(
-        verify_outcome_event,
-        workspace_id,
-        event_id,
-        actor_from_request(request),
-        note=body.get("note"),
-    )
+    _audit_required(request, workspace_id, "outcome.verify", "outcome", event_id, correlation={"outcome_event_id": event_id})
+    try:
+        event = await _call(
+            verify_outcome_event,
+            workspace_id,
+            event_id,
+            actor_from_request(request),
+            note=body.get("note"),
+        )
+    except Exception:
+        _audit_failed(request, workspace_id, "outcome.verify", "outcome", event_id, correlation={"outcome_event_id": event_id})
+        raise
     return {"workspace_id": workspace_id, "event": event}
 
 
@@ -323,6 +348,8 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
         return await run_in_threadpool(func, *args, **kwargs)
     except TaskPersistenceError as exc:
         raise HTTPException(status_code=503, detail="Task persistence is unavailable") from exc
+    except AuditPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Audit persistence is unavailable") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -335,17 +362,97 @@ def _require_workspace_action(workspace_id: str, request: Request | None, action
     try:
         return require_workspace_permission(workspace_id, actor_from_request(request), action)
     except PermissionError as exc:
+        _audit_denied(request, workspace_id, action)
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 def _require_governance_role(workspace_id: str, request: Request | None, allowed_roles: set[str], action: str) -> str:
     actor = actor_from_request(request, fallback=False)
     if not is_trusted_tenant_identity(actor):
+        _audit_denied(request, workspace_id, action, actor=actor)
         raise HTTPException(status_code=403, detail=f"trusted Easy Auth tenant identity is required for {action}")
     role = active_workspace_role(workspace_id, actor)
     if role not in allowed_roles:
+        _audit_denied(request, workspace_id, action, actor=actor)
         raise HTTPException(status_code=403, detail=f"workspace permission denied for {action}")
     return role
+
+
+def _audit_required(
+    request: Request | None,
+    workspace_id: str,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    *,
+    correlation: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    merged = {**_request_correlation(request), **(correlation or {})}
+    try:
+        return record_audit_event(
+            actor_from_request(request),
+            action,
+            {"workspace_id": workspace_id, "resource_type": resource_type, "resource_id": _safe_audit_id(resource_id, "pending")},
+            result="allowed",
+            reason_code="authorized",
+            correlation=merged,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Audit persistence is required") from exc
+
+
+def _audit_failed(
+    request: Request | None,
+    workspace_id: str,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    *,
+    correlation: dict[str, str] | None = None,
+) -> None:
+    try:
+        record_audit_event(
+            actor_from_request(request),
+            action,
+            {"workspace_id": workspace_id, "resource_type": resource_type, "resource_id": _safe_audit_id(resource_id, "pending")},
+            result="failed",
+            reason_code="operation_failed",
+            correlation={**_request_correlation(request), **(correlation or {})},
+        )
+    except Exception:
+        pass
+
+
+def _audit_denied(
+    request: Request | None,
+    workspace_id: str,
+    action: str,
+    *,
+    actor: dict[str, Any] | None = None,
+) -> None:
+    try:
+        record_audit_event(
+            actor if actor is not None else actor_from_request(request, fallback=False),
+            action,
+            {"workspace_id": workspace_id, "resource_type": "workspace", "resource_id": workspace_id},
+            result="denied",
+            reason_code="permission_denied",
+            correlation=_request_correlation(request),
+        )
+    except Exception:
+        pass
+
+
+def _request_correlation(request: Request | None) -> dict[str, str]:
+    if request is None:
+        return {}
+    value = str(request.headers.get("x-request-id") or request.headers.get("x-correlation-id") or request.headers.get("idempotency-key") or "").strip()
+    return {"request_id": value} if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}", value) else {}
+
+
+def _safe_audit_id(value: Any, fallback: str) -> str:
+    clean = str(value or "").strip()
+    return clean if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}", clean) else fallback
 
 
 def build_workspace_dashboard(workspace_id: str) -> dict[str, Any]:
@@ -898,12 +1005,13 @@ def workspace_entra_users(workspace_id: str, request: Request | None = None, que
 
 
 def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
-    require_workspace_permission(workspace_id, actor_from_request(request), "member.manage")
+    _require_workspace_action(workspace_id, request, "member.manage")
     email = _member_email((body or {}).get("email"))
     if not email:
         raise ValueError("A valid member email is required")
     role = _member_role((body or {}).get("role"))
     name = _clean_text((body or {}).get("name")) or _display_name_from_email(email)
+    _audit_required(request, workspace_id, "invitation.create", "invitation", "pending")
     current_actor = public_actor(actor_from_request(request))
     provider = (body or {}).get("_invitation_provider") if isinstance((body or {}).get("_invitation_provider"), dict) else {}
     with workspace_invitation_lock(workspace_id):
@@ -962,7 +1070,7 @@ def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Re
 
 
 def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
-    require_workspace_permission(workspace_id, actor_from_request(request), "member.manage")
+    _require_workspace_action(workspace_id, request, "member.manage")
     payload = dict(body or {})
     email = _member_email(payload.get("email"))
     if not email:
@@ -971,6 +1079,7 @@ def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], reque
     role = _member_role(payload.get("role"))
     send_email = bool(payload.get("send_email"))
     fallback = payload.get("fallback_to_workspace_member", True) is not False
+    _audit_required(request, workspace_id, "invitation.send", "invitation", "pending")
     graph_invite: dict[str, Any] = {"status": "skipped", "source": "microsoft_graph"}
     if send_email:
         try:
@@ -1060,7 +1169,7 @@ def _record_failed_entra_invitation(
 
 
 def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
-    require_workspace_permission(workspace_id, actor_from_request(request), "member.manage")
+    _require_workspace_action(workspace_id, request, "member.manage")
     target = _member_email(email)
     if not target:
         raise ValueError("A valid member email is required")
@@ -1068,6 +1177,7 @@ def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, 
     current_actor = public_actor(actor_from_request(request))
     if target == _actor_key(current_actor):
         raise ValueError("The current owner role cannot be changed from the members panel")
+    _audit_required(request, workspace_id, "member.update", "member", "member")
     meta = _load_workspace_meta(workspace_id)
     update_invited_member_role(meta, workspace_id, email=target, role=role)
     members = _stored_workspace_members(meta)
@@ -1091,13 +1201,15 @@ def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, 
 
 
 def remove_workspace_member(workspace_id: str, email: str, request: Request | None = None) -> dict[str, Any]:
-    require_workspace_permission(workspace_id, actor_from_request(request), "member.manage")
+    _require_workspace_action(workspace_id, request, "member.manage")
     target = _member_email(email)
     if not target:
         raise ValueError("A valid member email is required")
     current_key = _actor_key(actor_from_request(request))
     if target == current_key:
         raise ValueError("The current owner cannot be removed from the workspace")
+    _audit_required(request, workspace_id, "invitation.revoke", "invitation", "pending")
+    _audit_required(request, workspace_id, "member.remove", "member", "member")
     with workspace_invitation_lock(workspace_id):
         meta = _load_workspace_meta(workspace_id)
         members = _stored_workspace_members(meta)
@@ -1161,6 +1273,31 @@ def workspace_audit_events(workspace_id: str, request: Request | None = None) ->
         "events": events,
         "count": len(events),
     }
+
+
+def audit_experiment_promotion(
+    workspace_id: str,
+    actor: dict[str, Any],
+    experiment_version_id: str,
+    *,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    """Required pre-mutation hook for a future experiment promotion endpoint."""
+    correlation = {"experiment_version_id": experiment_version_id}
+    if request_id:
+        correlation["request_id"] = request_id
+    return record_audit_event(
+        actor,
+        "experiment.promote",
+        {
+            "workspace_id": workspace_id,
+            "resource_type": "experiment",
+            "resource_id": experiment_version_id,
+        },
+        result="allowed",
+        reason_code="experiment_promoted",
+        correlation=correlation,
+    )
 
 
 def workspace_governance_summary(workspace_id: str, request: Request | None = None) -> dict[str, Any]:

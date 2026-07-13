@@ -1,10 +1,16 @@
 import base64
+import importlib
 import json
 from urllib.parse import quote
 
+import pytest
+
 import backend.conversation_store as conversation_store
 import backend.control_plane as control_plane
+import backend.data_workbench as data_workbench
 import backend.run_store as run_store
+import backend.task_store as task_store
+from backend.audit_store import AuditPersistenceError
 from backend.identity import actor_from_headers, actor_from_ui_context, is_trusted_identity, is_trusted_tenant_identity
 from fastapi.testclient import TestClient
 from backend.app import app
@@ -389,3 +395,179 @@ def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(
     assert allowed.status_code == 200
     assert allowed.json()["members"][0]["member"]["email"] == "owner@example.com"
     assert "spoofed@example.com" not in allowed.text
+
+
+def test_workbench_audit_failure_blocks_write_but_never_allows_denial(monkeypatch) -> None:
+    writes: list[str] = []
+    monkeypatch.setattr(data_workbench, "require_workspace_permission", lambda *_args: "editor")
+    monkeypatch.setattr(
+        data_workbench,
+        "record_audit_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AuditPersistenceError("offline")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        data_workbench,
+        "create_workspace_file",
+        lambda workspace_id, *_args: writes.append(workspace_id) or {"workspace_id": workspace_id},
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    blocked = client.post("/api/workspaces/ws-audit/files", json={"name": "blocked.csv"})
+
+    assert blocked.status_code == 503
+    assert writes == []
+
+    def deny(*_args):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(data_workbench, "require_workspace_permission", deny)
+    denied = client.post("/api/workspaces/ws-audit/files", json={"name": "denied.csv"})
+
+    assert denied.status_code == 403
+    assert writes == []
+
+
+def test_existing_workspace_upload_stops_before_mutation_when_audit_is_unavailable(monkeypatch) -> None:
+    app_module = importlib.import_module("backend.app")
+    writes: list[str] = []
+    monkeypatch.setattr(app_module, "require_workspace_permission", lambda *_args: "editor")
+    monkeypatch.setattr(
+        app_module,
+        "record_audit_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AuditPersistenceError("offline")),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "create_workspace_upload_job",
+        lambda **kwargs: writes.append(str(kwargs.get("requested_workspace_id"))) or {},
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/upload",
+        data={"workspace_id": "ws-audit"},
+        files={"file": ("data.csv", b"a,b\n1,2\n", "text/csv")},
+    )
+
+    assert response.status_code == 503
+    assert writes == []
+
+
+def test_governance_audit_api_is_owner_admin_only_and_truthfully_read_only(monkeypatch) -> None:
+    actor = {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"}
+    reads: list[tuple[str, int, str | None]] = []
+    denied_events: list[tuple] = []
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: actor)
+    monkeypatch.setattr(control_plane, "is_trusted_tenant_identity", lambda _actor: True)
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "owner")
+    monkeypatch.setattr(
+        control_plane,
+        "list_audit_events",
+        lambda workspace_id, *, limit, cursor=None: reads.append((workspace_id, limit, cursor))
+        or {
+            "workspace_id": workspace_id,
+            "events": [],
+            "count": 0,
+            "revision": 0,
+            "has_more": False,
+            "next_cursor": None,
+            "permissions": {"can_read": True, "can_update": False, "can_delete": False},
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(control_plane, "record_audit_event", lambda *args, **kwargs: denied_events.append((args, kwargs)), raising=False)
+    client = TestClient(app)
+
+    allowed = client.get("/api/workspaces/ws-audit/governance/audit-events?limit=25&cursor=cursor-1")
+
+    assert allowed.status_code == 200, allowed.text
+    assert reads == [("ws-audit", 25, "cursor-1")]
+    assert allowed.json()["permissions"] == {
+        "role": "owner",
+        "can_read": True,
+        "can_update": False,
+        "can_delete": False,
+    }
+
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "viewer")
+    denied = client.get("/api/workspaces/ws-audit/governance/audit-events")
+
+    assert denied.status_code == 403
+    assert reads == [("ws-audit", 25, "cursor-1")]
+    assert denied_events[-1][0][1] == "member.read"
+    assert denied_events[-1][1]["result"] == "denied"
+
+
+def test_durable_task_create_start_complete_and_cancel_are_audited(tmp_path, monkeypatch) -> None:
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(task_store, "TASK_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_store, "blob_configured", lambda: False)
+    monkeypatch.setattr(task_store, "download_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(task_store, "download_blob_json_strict", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(task_store, "list_blob_json", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(task_store, "list_blob_json_strict", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(task_store, "record_audit_event", lambda *args, **kwargs: events.append((args, kwargs)) or {}, raising=False)
+    actor = {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"}
+
+    completed = task_store.create_task(
+        {"workspace_id": "ws-audit", "task_type": "analysis.run", "action": "analysis.run"},
+        actor,
+    )
+    task_store.claim_task(completed["task_id"], "worker")
+    task_store.update_task(completed["task_id"], status="completed", result={"run_id": "run-1"})
+    cancelled = task_store.create_task(
+        {"workspace_id": "ws-audit", "task_type": "artifact.generate", "action": "artifact.generate"},
+        actor,
+    )
+    task_store.request_cancel(cancelled["task_id"])
+
+    actions = [args[1] for args, _kwargs in events]
+    assert actions == ["task.create", "task.start", "task.complete", "task.create", "task.cancel"]
+    assert all(args[2]["resource_type"] == "task" for args, _kwargs in events)
+    assert events[2][1]["correlation"]["task_id"] == completed["task_id"]
+    assert events[2][1]["reason_code"] == "task_completed"
+    assert events[-1][1]["reason_code"] == "task_cancelled"
+
+
+def test_task_create_fails_before_persistence_when_required_audit_is_unavailable(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(task_store, "TASK_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_store, "blob_configured", lambda: False)
+    monkeypatch.setattr(
+        task_store,
+        "record_audit_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AuditPersistenceError("offline")),
+        raising=False,
+    )
+
+    with pytest.raises(task_store.TaskPersistenceError, match="audit"):
+        task_store.create_task(
+            {"workspace_id": "ws-audit", "task_type": "analysis.run", "action": "analysis.run"},
+            {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+        )
+
+    assert not task_store.TASK_DIR.exists()
+
+
+def test_experiment_promotion_hook_accepts_only_safe_correlation(monkeypatch) -> None:
+    captured: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(control_plane, "record_audit_event", lambda *args, **kwargs: captured.append((args, kwargs)) or {"event_id": "event-1"}, raising=False)
+
+    event = control_plane.audit_experiment_promotion(
+        "ws-audit",
+        {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+        "experiment-v2",
+        request_id="req-promote",
+    )
+
+    assert event == {"event_id": "event-1"}
+    assert captured[0][0][1] == "experiment.promote"
+    assert captured[0][0][2] == {
+        "workspace_id": "ws-audit",
+        "resource_type": "experiment",
+        "resource_id": "experiment-v2",
+    }
+    assert captured[0][1]["correlation"] == {
+        "request_id": "req-promote",
+        "experiment_version_id": "experiment-v2",
+    }
