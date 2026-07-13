@@ -36,7 +36,7 @@
 {
   "connector_id": "sql_7f2a...",
   "syncing": false,
-  "source": {"kind": "sql", "table": "dbo.sales", "cursor": "2026-07-13T00:00:00Z", "watermark": "id:1"},
+  "source": {"kind": "sql", "table": "dbo.sales", "observed_at": "2026-07-13T00:00:00+00:00", "source_rows": 100, "column_hash": "2d711642b726b04401627ca9fbac32f5"},
   "task": {"task_type": "connector.sql.sync", "result": {"ingest_job_id": "job_..."}}
 }
 ```
@@ -82,3 +82,9 @@
 
 - Focused security and lifecycle suite: `38 passed`.
 - Full Python suite: `380 passed, 1 warning`.
+
+### Second review follow-up
+
+- Key Vault and ConnectorStore now share `expected_secret_reference()` rather than independent string formats; integration coverage uses the real KeyVaultSecretStore with a fake Azure SecretClient.
+- `DF_KEY_VAULT_URL` accepts only an https host without path, user info, query, or fragment. Health emits only the canonical scheme and host.
+- The full test suite still contains one pre-existing experimental workflow warning; it is not treated as a connector health success signal.

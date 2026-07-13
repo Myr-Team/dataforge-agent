@@ -283,12 +283,17 @@ def _probe_key_vault() -> dict[str, Any]:
     if not vault_url:
         return {"ok": True, "state": "unconfigured", "persistence": "session_only"}
     try:
+        try:
+            from .connector_secret_store import validate_key_vault_url
+        except ImportError:
+            from connector_secret_store import validate_key_vault_url
         if KeyVaultSecretClient is None:
             raise RuntimeError("azure-keyvault-secrets is unavailable")
         credential = DefaultAzureCredential()
         credential.get_token("https://vault.azure.net/.default")
-        KeyVaultSecretClient(vault_url=vault_url.rstrip("/"), credential=credential)
-        return {"ok": False, "state": "configured_unverified", "persistence": "key_vault", "endpoint": _redact_endpoint(vault_url)}
+        endpoint = validate_key_vault_url(vault_url)
+        KeyVaultSecretClient(vault_url=endpoint, credential=credential)
+        return {"ok": False, "state": "configured_unverified", "persistence": "key_vault", "endpoint": _redact_endpoint(endpoint)}
     except Exception as exc:
         return {"ok": False, "state": "degraded", "persistence": "key_vault", "error_type": type(exc).__name__}
 

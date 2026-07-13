@@ -8,6 +8,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Mapping, Protocol
+from urllib.parse import urlparse
 
 try:
     from azure.identity import DefaultAzureCredential
@@ -118,7 +119,7 @@ class KeyVaultSecretStore:
     def __init__(self, vault_url: str) -> None:
         if not DefaultAzureCredential or not SecretClient:
             raise SecretStoreConfigurationError("DF_KEY_VAULT_URL is configured but azure-keyvault-secrets is unavailable")
-        self._client = SecretClient(vault_url=str(vault_url).rstrip("/"), credential=DefaultAzureCredential())
+        self._client = SecretClient(vault_url=validate_key_vault_url(vault_url), credential=DefaultAzureCredential())
 
     def put(self, workspace_id: str, connector_id: str, secret: Mapping[str, str]) -> str:
         name = _vault_secret_name(workspace_id, connector_id)
@@ -148,7 +149,7 @@ class KeyVaultSecretStore:
 def secret_store_from_environment() -> SecretStore:
     vault_url = str(os.environ.get("DF_KEY_VAULT_URL") or "").strip()
     if vault_url:
-        return KeyVaultSecretStore(vault_url)
+        return KeyVaultSecretStore(validate_key_vault_url(vault_url))
     return SessionSecretStore()
 
 
@@ -163,7 +164,14 @@ def _reference_for(prefix: str, workspace_id: str, connector_id: str) -> str:
 
 
 def expected_secret_reference(persistence: str, workspace_id: str, connector_id: str) -> str:
-    return _reference_for("kv" if persistence == "key_vault" else "session", workspace_id, connector_id)
+    return f"kv:{_vault_secret_name(workspace_id, connector_id)}" if persistence == "key_vault" else _reference_for("session", workspace_id, connector_id)
+
+
+def validate_key_vault_url(value: str) -> str:
+    parsed = urlparse(str(value or ""))
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+        raise SecretStoreConfigurationError("DF_KEY_VAULT_URL must be an https vault host")
+    return f"https://{parsed.hostname}"
 
 
 def _reference_name(reference: str) -> str:
@@ -194,4 +202,5 @@ __all__ = [
     "SessionSecretStore",
     "expected_secret_reference",
     "secret_store_from_environment",
+    "validate_key_vault_url",
 ]
