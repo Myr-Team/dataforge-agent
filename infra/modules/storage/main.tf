@@ -12,7 +12,12 @@ variable "storage_account_name" { type = string }
 variable "audit_immutability_locked" {
   type        = bool
   description = "Locks the audit WORM policy. Irreversible; production must set true."
-  default     = false
+  default     = true
+}
+variable "audit_immutability_lock_confirmation" {
+  type        = string
+  description = "Exact acknowledgement required before irreversibly locking both audit WORM policies."
+  default     = ""
 }
 variable "audit_legal_hold_tag" {
   type        = string
@@ -65,11 +70,44 @@ resource "azurerm_storage_container" "audit" {
   container_access_type = "private"
 }
 
+resource "azurerm_storage_container" "audit_sealed" {
+  name                  = "dataforge-audit-sealed"
+  storage_account_name  = azurerm_storage_account.this.name
+  container_access_type = "private"
+}
+
 resource "azurerm_storage_container_immutability_policy" "audit" {
   storage_container_resource_manager_id = azurerm_storage_container.audit.id
   immutability_period_in_days           = 365
   protected_append_writes_enabled       = true
   locked                                = var.audit_immutability_locked
+
+  lifecycle {
+    precondition {
+      condition = (
+        var.audit_immutability_locked &&
+        var.audit_immutability_lock_confirmation == "LOCK_DATAFORGE_AUDIT_WORM"
+      )
+      error_message = "Production audit WORM policies are irreversible: set audit_immutability_locked=true and audit_immutability_lock_confirmation=LOCK_DATAFORGE_AUDIT_WORM."
+    }
+  }
+}
+
+resource "azurerm_storage_container_immutability_policy" "audit_sealed" {
+  storage_container_resource_manager_id = azurerm_storage_container.audit_sealed.id
+  immutability_period_in_days           = 365
+  protected_append_writes_enabled       = false
+  locked                                = var.audit_immutability_locked
+
+  lifecycle {
+    precondition {
+      condition = (
+        var.audit_immutability_locked &&
+        var.audit_immutability_lock_confirmation == "LOCK_DATAFORGE_AUDIT_WORM"
+      )
+      error_message = "Production audit WORM policies are irreversible: set audit_immutability_locked=true and audit_immutability_lock_confirmation=LOCK_DATAFORGE_AUDIT_WORM."
+    }
+  }
 }
 
 resource "azapi_resource_action" "audit_legal_hold" {
@@ -86,6 +124,20 @@ resource "azapi_resource_action" "audit_legal_hold" {
   depends_on = [azurerm_storage_container_immutability_policy.audit]
 }
 
+resource "azapi_resource_action" "audit_sealed_legal_hold" {
+  type        = "Microsoft.Storage/storageAccounts/blobServices/containers@2025-06-01"
+  resource_id = "${azurerm_storage_account.this.id}/blobServices/default/containers/${azurerm_storage_container.audit_sealed.name}"
+  action      = "setLegalHold"
+  method      = "POST"
+
+  body = {
+    allowProtectedAppendWritesAll = false
+    tags                          = [var.audit_legal_hold_tag]
+  }
+
+  depends_on = [azurerm_storage_container_immutability_policy.audit_sealed]
+}
+
 output "storage_account_id" {
   value = azurerm_storage_account.this.id
 }
@@ -100,4 +152,8 @@ output "primary_blob_endpoint" {
 
 output "audit_container_name" {
   value = azurerm_storage_container.audit.name
+}
+
+output "audit_sealed_container_name" {
+  value = azurerm_storage_container.audit_sealed.name
 }

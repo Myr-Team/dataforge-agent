@@ -27,6 +27,7 @@ variable "storage_account_name" { type = string }
 variable "storage_blob_endpoint" { type = string }
 variable "storage_account_resource_id" { type = string }
 variable "audit_container_name" { type = string }
+variable "audit_sealed_container_name" { type = string }
 variable "audit_hmac_active_key_id" {
   type = string
   validation {
@@ -180,6 +181,10 @@ resource "azurerm_container_app" "backend" {
       env {
         name  = "DF_AUDIT_CONTAINER"
         value = var.audit_container_name
+      }
+      env {
+        name  = "DF_AUDIT_SEALED_CONTAINER"
+        value = var.audit_sealed_container_name
       }
       env {
         name  = "DF_AUDIT_STORAGE_ACCOUNT_RESOURCE_ID"

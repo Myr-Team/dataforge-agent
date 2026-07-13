@@ -13,12 +13,13 @@ module "monitoring" {
 }
 
 module "storage" {
-  source                    = "../../modules/storage"
-  resource_group_name       = module.resource_group.name
-  location                  = module.resource_group.location
-  storage_account_name      = var.storage_account_name
-  audit_immutability_locked = var.audit_immutability_locked
-  audit_legal_hold_tag      = var.audit_legal_hold_tag
+  source                               = "../../modules/storage"
+  resource_group_name                  = module.resource_group.name
+  location                             = module.resource_group.location
+  storage_account_name                 = var.storage_account_name
+  audit_immutability_locked            = var.audit_immutability_locked
+  audit_immutability_lock_confirmation = var.audit_immutability_lock_confirmation
+  audit_legal_hold_tag                 = var.audit_legal_hold_tag
 }
 
 module "search" {
@@ -63,6 +64,7 @@ module "container_apps" {
   storage_blob_endpoint            = module.storage.primary_blob_endpoint
   storage_account_resource_id      = module.storage.storage_account_id
   audit_container_name             = module.storage.audit_container_name
+  audit_sealed_container_name      = module.storage.audit_sealed_container_name
   audit_hmac_active_key_id         = var.audit_hmac_active_key_id
   audit_hmac_scope_key_id          = var.audit_hmac_scope_key_id
   audit_legal_hold_tag             = var.audit_legal_hold_tag

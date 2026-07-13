@@ -330,7 +330,18 @@ def test_remediation_production_contract_requires_all_blob_controls(monkeypatch)
             "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": True},
         },
     }
-    audit_store._validate_production_contract(service, policy, container, "dataforgeaudit")
+    sealed_policy = {"state": "Locked", "allowProtectedAppendWrites": False}
+    sealed_container = {
+        "hasLegalHold": True,
+        "legalHold": {
+            "hasLegalHold": True,
+            "tags": [{"tag": "dataforgeaudit"}],
+            "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": False},
+        },
+    }
+    audit_store._validate_production_contract(
+        service, policy, container, "dataforgeaudit", sealed_policy, sealed_container
+    )
 
     for broken_service, broken_policy in [
         ({**service, "isVersioningEnabled": False}, policy),
@@ -340,7 +351,14 @@ def test_remediation_production_contract_requires_all_blob_controls(monkeypatch)
         (service, {**policy, "allowProtectedAppendWrites": False}),
     ]:
         with pytest.raises(audit_store.AuditPersistenceError, match="contract"):
-            audit_store._validate_production_contract(broken_service, broken_policy, container, "dataforgeaudit")
+            audit_store._validate_production_contract(
+                broken_service,
+                broken_policy,
+                container,
+                "dataforgeaudit",
+                sealed_policy,
+                sealed_container,
+            )
 
 
 def _production_storage_env(monkeypatch, *, account: str = "writeaccount") -> str:
@@ -445,11 +463,12 @@ def test_production_contract_cache_is_bounded_and_rechecks_after_expiry(monkeypa
 
     def management_get(path: str):
         calls.append(path)
+        sealed = "/containers/dataforge-audit-sealed" in path
         if "immutabilityPolicies" in path:
             return {
                 "properties": {
                     "state": "Unlocked" if broken["value"] else "Locked",
-                    "allowProtectedAppendWrites": True,
+                    "allowProtectedAppendWrites": not sealed,
                 }
             }
         if "/containers/" in path:
@@ -459,7 +478,7 @@ def test_production_contract_cache_is_bounded_and_rechecks_after_expiry(monkeypa
                     "legalHold": {
                         "hasLegalHold": True,
                         "tags": [{"tag": "dataforgeaudit"}],
-                        "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": True},
+                        "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": not sealed},
                     },
                 }
             }
@@ -477,13 +496,13 @@ def test_production_contract_cache_is_bounded_and_rechecks_after_expiry(monkeypa
 
     assert audit_store._verify_production_storage_contract("writeaccount") == resource_id
     assert audit_store._verify_production_storage_contract("writeaccount") == resource_id
-    assert len(calls) == 3
+    assert len(calls) == 5
 
     broken["value"] = True
     clock["now"] += audit_store.PRODUCTION_CONTRACT_CACHE_TTL_SECONDS + 0.01
     with pytest.raises(audit_store.AuditPersistenceError, match="contract"):
         audit_store._verify_production_storage_contract("writeaccount")
-    assert len(calls) == 6
+    assert len(calls) == 10
 
 
 def test_remediation_production_never_falls_back_to_local(monkeypatch) -> None:
@@ -612,6 +631,7 @@ def test_blob_cas_retries_replica_conflict_without_losing_events(monkeypatch) ->
 class _SnapshotRaceBackend:
     def __init__(self, *, event_race: bool = False, anchor_race: bool = False, head_pair_race: bool = False) -> None:
         self.streams: dict[str, bytes] = {}
+        self.sealed_streams: dict[str, bytes] = {}
         self.versions: dict[str, int] = {}
         self.event_race = event_race
         self.anchor_race = anchor_race
@@ -624,9 +644,6 @@ class _SnapshotRaceBackend:
         self.range_reads = 0
         self.list_reads = 0
 
-    def _etag(self, name: str) -> str | None:
-        return f'"v{self.versions.get(name, 0)}"' if name in self.streams else None
-
     def read_snapshot(self, name: str):
         self.snapshot_reads += 1
         if self.head_pair_race and "/anchors" in name:
@@ -635,26 +652,32 @@ class _SnapshotRaceBackend:
             self.head_pair_race = False
             audit_store.record_audit_event(_actor(), "file.edit", _resource("file-race-2"), {})
             audit_store.record_audit_event(_actor(), "file.edit", _resource("file-race-3"), {})
-        data = self.streams.get(name, b"")
+        sealed = name in self.sealed_streams
+        data = self.sealed_streams.get(name, self.streams.get(name, b""))
         tail = data[-audit_store.STREAM_TAIL_BYTES :]
         return audit_store._snapshot_from_tail(
-            name, tail, len(data), self._etag(name), data.count(b"\n")
+            name, tail, len(data), self._etag(name, sealed=sealed), data.count(b"\n"), sealed=sealed
         )
+
+    def _etag(self, name: str, *, sealed: bool = False) -> str | None:
+        if sealed and name in self.sealed_streams:
+            return f'"sealed-{len(self.sealed_streams[name]):x}"'
+        return f'"v{self.versions.get(name, 0)}"' if name in self.streams else None
 
     def read_full(self, name: str) -> bytes:
         self.full_reads += 1
-        return self.streams.get(name, b"")
+        return self.sealed_streams.get(name, self.streams.get(name, b""))
 
     def read_range(self, name: str, offset: int, length: int, snapshot) -> bytes:
         self.range_reads += 1
-        data = self.streams.get(name, b"")
-        if len(data) != snapshot.length or self._etag(name) != snapshot.etag:
+        data = self.sealed_streams.get(name, self.streams.get(name, b""))
+        if len(data) != snapshot.length or self._etag(name, sealed=snapshot.sealed) != snapshot.etag:
             raise audit_store._AppendConflict("deterministic range interleaving")
         return data[offset : offset + length]
 
     def list_names(self, prefix: str, limit: int | None = None) -> list[str]:
         self.list_reads += 1
-        names = sorted(name for name in self.streams if name.startswith(prefix))
+        names = sorted({name for name in (*self.streams, *self.sealed_streams) if name.startswith(prefix)})
         return names[:limit] if limit is not None else names
 
     def _commit(self, name: str, payload: bytes) -> None:
@@ -664,6 +687,8 @@ class _SnapshotRaceBackend:
     def append(self, name: str, payload: bytes, snapshot) -> None:
         if isinstance(snapshot, int):
             raise AssertionError("append position was not bound to the validated stream snapshot")
+        if snapshot.sealed or name in self.sealed_streams:
+            raise audit_store.AuditIntegrityError("sealed audit segment cannot be appended")
         value = json.loads(payload)
         if "/events/" in name:
             self.event_attempt_revisions.append(int(value["revision"]))
@@ -685,6 +710,13 @@ class _SnapshotRaceBackend:
         if len(self.streams.get(name, b"")) != snapshot.length or self._etag(name) != snapshot.etag:
             raise audit_store._AppendConflict("deterministic interleaving")
         self._commit(name, payload)
+
+    def seal(self, name: str, snapshot) -> object:
+        if name not in self.sealed_streams:
+            if len(self.streams.get(name, b"")) != snapshot.length or self._etag(name) != snapshot.etag:
+                raise audit_store._AppendConflict("deterministic seal interleaving")
+            self.sealed_streams[name] = self.streams[name]
+        return self.read_snapshot(name)
 
 
 def test_event_append_reloads_revalidates_and_rebuilds_after_snapshot_interleaving(monkeypatch) -> None:
@@ -739,43 +771,46 @@ def test_mutation_uses_bounded_tail_snapshots_not_full_history(monkeypatch) -> N
     assert remote.range_reads <= 3
 
 
+def _canonical_local_files(predicate) -> list:
+    canonical: dict[str, object] = {}
+    for path in audit_store.AUDIT_DIR.rglob("*.jsonl"):
+        if not predicate(path):
+            continue
+        relative = path.relative_to(audit_store.AUDIT_DIR)
+        parts = relative.parts[1:] if relative.parts and relative.parts[0] in {"active", "sealed"} else relative.parts
+        key = "/".join(parts)
+        if key not in canonical or "sealed" in relative.parts:
+            canonical[key] = path
+    return sorted(canonical.values(), key=lambda path: int(path.stem))
+
+
+def _canonical_stream_name(path) -> str:
+    relative = path.relative_to(audit_store.AUDIT_DIR)
+    parts = relative.parts[1:] if relative.parts and relative.parts[0] in {"active", "sealed"} else relative.parts
+    return "/".join(parts)
+
+
 def _workspace_event_files() -> list:
-    return sorted(
-        [
-            path for path in audit_store.AUDIT_DIR.rglob("*.jsonl")
-            if "workspaces" in path.parts and ("events" in path.parts or path.name == "events.jsonl")
-        ],
-        key=lambda path: int(path.stem),
+    return _canonical_local_files(
+        lambda path: "workspaces" in path.parts and ("events" in path.parts or path.name == "events.jsonl")
     )
 
 
 def _workspace_anchor_files() -> list:
-    return sorted(
-        [
-            path for path in audit_store.AUDIT_DIR.rglob("*.jsonl")
-            if "workspaces" in path.parts and ("anchors" in path.parts or path.name == "anchors.jsonl")
-        ],
-        key=lambda path: int(path.stem),
+    return _canonical_local_files(
+        lambda path: "workspaces" in path.parts and ("anchors" in path.parts or path.name == "anchors.jsonl")
     )
 
 
 def _workspace_receipt_files() -> list:
-    return sorted(
-        [
-            path for path in audit_store.AUDIT_DIR.rglob("*.jsonl")
-            if "workspaces" in path.parts and "global-receipts" in path.parts
-        ],
-        key=lambda path: int(path.stem),
+    return _canonical_local_files(
+        lambda path: "global" in path.parts and "workspaces" in path.parts and "receipts" in path.parts
     )
 
 
 def _global_anchor_files() -> list:
-    return sorted(
-        [
-            path for path in audit_store.AUDIT_DIR.rglob("*.jsonl")
-            if "global" in path.parts and "anchors" in path.parts
-        ],
-        key=lambda path: int(path.stem),
+    return _canonical_local_files(
+        lambda path: "global" in path.parts and "anchors" in path.parts
     )
 
 
@@ -784,7 +819,7 @@ def test_r3_workspace_anchor_commits_exact_event_stream_coordinates() -> None:
 
     event_file = _workspace_event_files()[-1]
     anchor = json.loads(_workspace_anchor_files()[-1].read_bytes().splitlines()[-1])
-    relative_event_name = event_file.relative_to(audit_store.AUDIT_DIR).as_posix()
+    relative_event_name = _canonical_stream_name(event_file)
 
     assert anchor["workspace_revision"] == event["revision"] == 1
     assert anchor["workspace_event_hash"] == event["event_hash"]
@@ -850,9 +885,7 @@ def test_r3_global_anchor_commits_workspace_anchor_physical_coordinates() -> Non
     assert global_anchor["workspace_revision"] == event["revision"]
     assert global_anchor["workspace_anchor_hash"] == workspace_anchor["anchor_hash"]
     assert global_anchor["workspace_anchor_segment_index"] == 1
-    assert global_anchor["workspace_anchor_stream_name"] == workspace_anchor_file.relative_to(
-        audit_store.AUDIT_DIR
-    ).as_posix()
+    assert global_anchor["workspace_anchor_stream_name"] == _canonical_stream_name(workspace_anchor_file)
     assert global_anchor["workspace_anchor_stream_length"] == workspace_anchor_file.stat().st_size
     assert global_anchor["workspace_anchor_segment_record_count"] == 1
 
@@ -887,10 +920,8 @@ def test_r3_global_head_rejects_rolled_back_workspace_prefix_before_mutation() -
     audit_store.record_audit_event(_actor(), "file.edit", _resource("file-2"), {})
     event_file = _workspace_event_files()[0]
     anchor_file = _workspace_anchor_files()[0]
-    receipt_file = _workspace_receipt_files()[0]
     event_file.write_bytes(event_file.read_bytes().splitlines(keepends=True)[0])
     anchor_file.write_bytes(anchor_file.read_bytes().splitlines(keepends=True)[0])
-    receipt_file.write_bytes(receipt_file.read_bytes().splitlines(keepends=True)[0])
     event_bytes = event_file.read_bytes()
 
     with pytest.raises(audit_store.AuditIntegrityError, match="global.*later|prefix"):
@@ -922,9 +953,96 @@ def test_r3_blob_latest_segment_lookup_consumes_one_bounded_page() -> None:
 
     backend = audit_store._BlobAppendBackend.__new__(audit_store._BlobAppendBackend)
     backend.container = Container()
+    backend.sealed_container = Container()
 
     assert backend.list_names("events/", limit=1) == ["events/00000000/99999999.jsonl"]
-    assert calls == [1]
+    assert calls == [1, 1]
+
+
+def test_r4_blob_seal_is_etag_bound_and_sealed_copy_is_canonical(monkeypatch) -> None:
+    monkeypatch.setattr(audit_store, "MAX_RECORDS_PER_SEGMENT", 2)
+    name = "events/99999998/00000001.jsonl"
+    source_data = b'{"revision":1}\n{"revision":2}\n'
+    calls: list[dict] = []
+
+    class Downloader:
+        def __init__(self, data: bytes) -> None:
+            self.data = data
+
+        def readall(self) -> bytes:
+            return self.data
+
+    class Blob:
+        def __init__(self, *, data: bytes = b"", blob_type: str, etag: str, metadata=None) -> None:
+            self.data = data
+            self.blob_type = blob_type
+            self.etag = etag
+            self.metadata = metadata or {}
+            self.exists = bool(data)
+            self.url = f"https://writeaccount.blob.core.windows.net/container/{name}"
+
+        def get_blob_properties(self):
+            if not self.exists:
+                raise audit_store.ResourceNotFoundError("missing")
+            return type(
+                "Properties",
+                (),
+                {
+                    "size": len(self.data),
+                    "etag": self.etag,
+                    "blob_type": self.blob_type,
+                    "metadata": self.metadata,
+                    "append_blob_committed_block_count": self.data.count(b"\n"),
+                },
+            )()
+
+        def download_blob(self, *, offset=0, length=None, **kwargs):
+            end = None if length is None else offset + length
+            return Downloader(self.data[offset:end])
+
+        def upload_blob_from_url(self, source_url: str, **kwargs) -> None:
+            calls.append({"source_url": source_url, **kwargs})
+            assert kwargs["source_etag"] == active.etag
+            self.data = active.data
+            self.blob_type = "BlockBlob"
+            self.etag = '"sealed-v1"'
+            self.metadata = kwargs["metadata"]
+            self.exists = True
+
+    class Container:
+        def __init__(self, blob: Blob) -> None:
+            self.blob = blob
+
+        def get_blob_client(self, requested_name: str) -> Blob:
+            assert requested_name == name
+            return self.blob
+
+    class Credential:
+        def get_token(self, scope: str):
+            assert scope == "https://storage.azure.com/.default"
+            return type("Token", (), {"token": "managed-identity-token"})()
+
+    active = Blob(data=source_data, blob_type="AppendBlob", etag='"active-v1"')
+    sealed_blob = Blob(blob_type="BlockBlob", etag='"missing"')
+    backend = audit_store._BlobAppendBackend.__new__(audit_store._BlobAppendBackend)
+    backend.container = Container(active)
+    backend.sealed_container = Container(sealed_blob)
+    backend.credential = Credential()
+    source = audit_store._snapshot_from_tail(
+        name, source_data, len(source_data), active.etag, 2
+    )
+
+    sealed = backend.seal(name, source)
+    active.data += source_data.splitlines(keepends=True)[-1]
+    canonical = backend.read_snapshot(name)
+
+    assert len(calls) == 1
+    assert calls[0]["source_authorization"] == "Bearer managed-identity-token"
+    assert calls[0]["source_match_condition"] == audit_store.MatchConditions.IfNotModified
+    assert sealed.sealed is True
+    assert canonical.sealed is True
+    assert canonical.length == len(source_data)
+    assert canonical.head == {"revision": 2}
 
 
 def test_r3_segment_rotation_is_deterministic_and_old_segments_are_not_reopened(monkeypatch) -> None:
@@ -983,7 +1101,7 @@ def test_r3_mutation_call_count_is_constant_across_many_segments(monkeypatch) ->
     assert appended["revision"] == 21
     assert remote.full_reads == 0
     assert remote.list_reads <= 6
-    assert remote.snapshot_reads <= 12
+    assert remote.snapshot_reads <= 16
     assert remote.range_reads <= 3
 
 
@@ -1026,8 +1144,19 @@ def test_r3_production_contract_requires_configured_legal_hold_tag() -> None:
             "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": True},
         },
     }
+    sealed_policy = {"state": "Locked", "allowProtectedAppendWrites": False}
+    sealed_container = {
+        "hasLegalHold": True,
+        "legalHold": {
+            "hasLegalHold": True,
+            "tags": [{"tag": "dataforgeaudit"}],
+            "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": False},
+        },
+    }
 
-    audit_store._validate_production_contract(service, policy, container, "dataforgeaudit")
+    audit_store._validate_production_contract(
+        service, policy, container, "dataforgeaudit", sealed_policy, sealed_container
+    )
     for broken in [
         {**container, "hasLegalHold": False},
         {**container, "legalHold": {**container["legalHold"], "tags": [{"tag": "otherhold"}]}},
@@ -1040,7 +1169,9 @@ def test_r3_production_contract_requires_configured_legal_hold_tag() -> None:
         },
     ]:
         with pytest.raises(audit_store.AuditPersistenceError, match="legal hold|contract"):
-            audit_store._validate_production_contract(service, policy, broken, "dataforgeaudit")
+            audit_store._validate_production_contract(
+                service, policy, broken, "dataforgeaudit", sealed_policy, sealed_container
+            )
 
 
 def test_r3_terraform_applies_exact_container_legal_hold_action() -> None:
@@ -1054,6 +1185,159 @@ def test_r3_terraform_applies_exact_container_legal_hold_action() -> None:
     assert 'method      = "POST"' in storage
     assert "allowProtectedAppendWritesAll = true" in storage
     assert "tags                          = [var.audit_legal_hold_tag]" in storage
+
+
+@pytest.mark.parametrize("rollback", ["empty", "older"])
+def test_r4_global_workspace_receipt_rejects_a_rollback_after_b_advances_global_head(rollback: str) -> None:
+    workspace_a = "workspace-a"
+    workspace_b = "workspace-b"
+    resource_a = {"workspace_id": workspace_a, "resource_type": "file", "resource_id": "file-a"}
+    resource_b = {"workspace_id": workspace_b, "resource_type": "file", "resource_id": "file-b"}
+    audit_store.record_audit_event(_actor(), "file.create", resource_a, {})
+    if rollback == "older":
+        audit_store.record_audit_event(_actor(), "file.edit", resource_a, {})
+    audit_store.record_audit_event(_actor(), "file.create", resource_b, {})
+    scope_a = audit_store._pseudonymize_workspace_id(workspace_a)
+    local_files = sorted(
+        path for path in audit_store.AUDIT_DIR.rglob("*.jsonl")
+        if f"/workspaces/{scope_a}/" in f"/{path.relative_to(audit_store.AUDIT_DIR).as_posix()}"
+        and "/global/" not in f"/{path.relative_to(audit_store.AUDIT_DIR).as_posix()}"
+    )
+    global_receipts = sorted(
+        path for path in audit_store.AUDIT_DIR.rglob("*.jsonl")
+        if f"global/workspaces/{scope_a}/receipts/" in path.relative_to(audit_store.AUDIT_DIR).as_posix()
+    )
+    assert global_receipts
+    receipt_bytes = b"".join(path.read_bytes() for path in global_receipts)
+    if rollback == "empty":
+        for path in local_files:
+            path.unlink()
+    else:
+        for path in local_files:
+            path.write_bytes(path.read_bytes().splitlines(keepends=True)[0])
+
+    with pytest.raises(audit_store.AuditIntegrityError, match="global.*workspace|receipt|prefix"):
+        audit_store.record_audit_event(_actor(), "file.delete", resource_a, {})
+
+    assert b"".join(path.read_bytes() for path in global_receipts) == receipt_bytes
+    assert audit_store.list_audit_events(workspace_b)["revision"] == 1
+
+
+def test_r4_rotated_segments_use_sealed_canonical_copy_and_ignore_active_replay(monkeypatch) -> None:
+    monkeypatch.setattr(audit_store, "MAX_RECORDS_PER_SEGMENT", 2)
+    audit_store.record_audit_event(_actor(), "file.create", _resource("file-1"), {})
+    audit_store.record_audit_event(_actor(), "file.edit", _resource("file-2"), {})
+    audit_store.record_audit_event(_actor(), "file.delete", _resource("file-3"), {})
+    active_segments = sorted((audit_store.AUDIT_DIR / "active").rglob("00000001.jsonl"))
+    sealed_segments = sorted((audit_store.AUDIT_DIR / "sealed").rglob("00000001.jsonl"))
+    assert active_segments
+    assert len(active_segments) == len(sealed_segments)
+    sealed_before = {path.relative_to(audit_store.AUDIT_DIR): path.read_bytes() for path in sealed_segments}
+    for path in active_segments:
+        duplicate = path.read_bytes().splitlines(keepends=True)[-1]
+        with path.open("ab") as stream:
+            stream.write(duplicate)
+
+    listed = audit_store.list_audit_events("ws-audit")
+    fourth = audit_store.record_audit_event(_actor(), "file.edit", _resource("file-4"), {})
+
+    assert listed["revision"] == 3
+    assert fourth["revision"] == 4
+    assert all(
+        (audit_store.AUDIT_DIR / relative).read_bytes() == payload
+        for relative, payload in sealed_before.items()
+    )
+
+    for path in sealed_segments:
+        path.chmod(0o600)
+        path.unlink()
+    with pytest.raises(audit_store.AuditIntegrityError, match="old segment is not sealed"):
+        audit_store.list_audit_events("ws-audit")
+
+
+def test_r4_raw_pseudonym_shaped_ids_are_hmac_pseudonymized_again() -> None:
+    raw_workspace = "ws_" + "a" * 40
+    raw_resource = "res_" + "b" * 40
+
+    event = audit_store.record_audit_event(
+        _actor(),
+        "file.create",
+        {"workspace_id": raw_workspace, "resource_type": "file", "resource_id": raw_resource},
+        {},
+    )
+    response = audit_store.list_audit_events(raw_workspace)
+
+    assert event["workspace_id"] != raw_workspace
+    assert event["resource_id"] != raw_resource
+    assert event["workspace_id"] == audit_store._pseudonymize_workspace_id(raw_workspace)
+    assert event["resource_id"] == audit_store._pseudonymize_resource_id(raw_resource)
+    assert response["workspace_id"] == event["workspace_id"]
+
+
+def test_r4_production_contract_requires_sealed_container_without_protected_append() -> None:
+    service = {
+        "isVersioningEnabled": True,
+        "deleteRetentionPolicy": {"enabled": True, "days": 30},
+        "containerDeleteRetentionPolicy": {"enabled": True, "days": 30},
+    }
+    active_policy = {"state": "Locked", "allowProtectedAppendWrites": True}
+    active_container = {
+        "hasLegalHold": True,
+        "legalHold": {
+            "hasLegalHold": True,
+            "tags": [{"tag": "dataforgeaudit"}],
+            "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": True},
+        },
+    }
+    sealed_policy = {"state": "Locked", "allowProtectedAppendWrites": False}
+    sealed_container = {
+        "hasLegalHold": True,
+        "legalHold": {
+            "hasLegalHold": True,
+            "tags": [{"tag": "dataforgeaudit"}],
+            "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": False},
+        },
+    }
+
+    audit_store._validate_production_contract(
+        service, active_policy, active_container, "dataforgeaudit", sealed_policy, sealed_container
+    )
+    for broken_policy, broken_container in [
+        ({**sealed_policy, "allowProtectedAppendWrites": True}, sealed_container),
+        (
+            sealed_policy,
+            {
+                **sealed_container,
+                "legalHold": {
+                    **sealed_container["legalHold"],
+                    "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": True},
+                },
+            },
+        ),
+    ]:
+        with pytest.raises(audit_store.AuditPersistenceError, match="sealed|contract"):
+            audit_store._validate_production_contract(
+                service, active_policy, active_container, "dataforgeaudit", broken_policy, broken_container
+            )
+
+
+def test_r4_terraform_seals_segments_and_requires_irreversible_lock_confirmation() -> None:
+    storage = (audit_store.ROOT / "infra" / "modules" / "storage" / "main.tf").read_text(encoding="utf-8")
+    environment = (audit_store.ROOT / "infra" / "envs" / "dev" / "variables.tf").read_text(encoding="utf-8")
+    example = (audit_store.ROOT / "infra" / "envs" / "dev" / "terraform.tfvars.example").read_text(encoding="utf-8")
+    readme = (audit_store.ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert 'resource "azurerm_storage_container" "audit_sealed"' in storage
+    assert 'resource "azurerm_storage_container_immutability_policy" "audit_sealed"' in storage
+    assert "protected_append_writes_enabled       = false" in storage
+    assert 'resource "azapi_resource_action" "audit_sealed_legal_hold"' in storage
+    assert "allowProtectedAppendWritesAll = false" in storage
+    assert "audit_immutability_lock_confirmation" in environment
+    assert 'audit_immutability_lock_confirmation = "LOCK_DATAFORGE_AUDIT_WORM"' in example
+    assert "var.audit_immutability_locked" in storage
+    assert 'var.audit_immutability_lock_confirmation == "LOCK_DATAFORGE_AUDIT_WORM"' in storage
+    assert "precondition" in storage
+    assert "irreversible" in readme.lower()
 
 
 @pytest.mark.parametrize(

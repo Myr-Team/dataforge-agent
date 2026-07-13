@@ -35,8 +35,22 @@ variable "storage_account_name" {
 
 variable "audit_immutability_locked" {
   type        = bool
-  description = "Irreversibly lock the dedicated audit container WORM policy. Must be true for Container Apps to accept mutations."
-  default     = false
+  description = "Irreversibly lock both dedicated audit container WORM policies. Must remain true."
+  default     = true
+}
+
+variable "audit_immutability_lock_confirmation" {
+  type        = string
+  description = "Exact acknowledgement required before Terraform locks both audit WORM policies."
+  default     = ""
+
+  validation {
+    condition = (
+      var.audit_immutability_locked &&
+      var.audit_immutability_lock_confirmation == "LOCK_DATAFORGE_AUDIT_WORM"
+    )
+    error_message = "Production audit WORM policies are irreversible: keep audit_immutability_locked=true and set audit_immutability_lock_confirmation=LOCK_DATAFORGE_AUDIT_WORM."
+  }
 }
 
 variable "audit_legal_hold_tag" {

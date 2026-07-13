@@ -8,7 +8,7 @@ Interrupted remediation parent: `5799c3b` (`fix: harden immutable audit remediat
 
 ## Scope
 
-All nine Task5 findings, all six r2 Critical/Important findings, and all four r3 findings are remediated. The interrupted worker's changes were retained and repaired. No Easy Auth configuration was added or changed, and `output/` was left untouched.
+All nine Task5 findings, all six r2 Critical/Important findings, all four r3 findings, and all four r4 findings are remediated. The interrupted worker's changes were retained and repaired. No Easy Auth configuration was added or changed, and `output/` was left untouched.
 
 ## Original Nine Findings
 
@@ -106,6 +106,34 @@ All nine Task5 findings, all six r2 Critical/Important findings, and all four r3
 - `DF_AUDIT_HMAC_SCOPE_KEY_ID` selects a retained key dedicated to stable scope pseudonyms; production requires it and Terraform injects it independently from the active signing key ID.
 - JWT-like workspace IDs and connection/API-key-like resource IDs are accepted for authorization/query lookup but proven absent from persisted bytes, paths, and API output.
 
+## R4 Remediation
+
+### 1. Global per-workspace latest receipts
+
+- Every completed workspace mutation appends a signed receipt under `global/workspaces/<workspace pseudonym>/receipts/...`, separately addressable from both the workspace-local event/anchor streams and the interleaved global anchor stream.
+- The receipt chain commits the workspace revision/anchor hash, exact workspace-anchor byte coordinates, global sequence/hash, and exact global-stream byte coordinates. Mutation loads this workspace-specific global receipt before its local streams and fails before append if the local event/anchor prefix is empty or older.
+- Receipt validation resolves the signed global coordinate against the ETag-bound global stream and requires the canonical sealed copy whenever that coordinate belongs to an older segment.
+- Deterministic tests append A1, then B1, roll A back to empty or an older prefix, and prove A2 fails without changing A's global receipt or B's committed state.
+
+### 2. Canonical sealed rotated segments
+
+- `dataforge-audit` is the active protected-append container. Before opening the next deterministic segment, the exact full append blob is copied into `dataforge-audit-sealed` as a block blob using the source ETag and `IfNotModified`; the sealed metadata commits record count and a SHA-256 digest of the source ETag.
+- The sealed container has its own locked immutability policy and active indefinite legal hold, with protected append writes disabled in both policy and legal-hold history. Runtime ARM proof validates both exact container names and opposite protected-append capabilities under the same account/tag.
+- Canonical reads prefer the sealed block blob. Old active append blobs are retained as non-authoritative WORM source artifacts; replay/junk appended there is ignored. Governance and cross-segment recovery require every older segment to resolve to `sealed=True`, so a missing canonical sealed copy fails closed instead of falling back to active.
+- Local tests cover active-old replay, missing-sealed-copy failure, and unchanged canonical bytes. A direct Blob-backend test proves managed-identity bearer copy, exact source ETag binding, `IfNotModified`, block-blob metadata, and sealed-first reads.
+
+### 3. Raw pseudonym-shaped identifiers are re-HMACed
+
+- Raw API strings are always domain-separated HMAC inputs, including strings already shaped like `ws_<40 hex>` or `res_<40 hex>`.
+- Only private typed `_WorkspaceScopeId`/`_ResourceScopeId` values created inside the audit module may bypass another HMAC pass. Persisted workspace values are schema-validated and explicitly wrapped before reconstructing signed stream names.
+- Tests prove raw pseudonym-shaped values change before schema/storage/API and remain stable across the internal double-cleaning path.
+
+### 4. Irreversible Terraform lock gate
+
+- Both audit immutability resources default to locked and carry module-level preconditions requiring `audit_immutability_locked=true` plus the exact `LOCK_DATAFORGE_AUDIT_WORM` acknowledgement.
+- The production environment also has a cross-variable validation, so an unconfirmed plan fails before provider operations. `terraform.tfvars.example` contains the explicit acknowledgement next to the irreversible warning.
+- A native Terraform test with mocked Azure providers proves the unconfirmed plan is rejected and the exact confirmed plan succeeds. The README states that both policy locks are irreversible and that the legal hold remains indefinite until explicitly removed by an authorized operator.
+
 ## Preserved Contracts
 
 - Audit action/resource/result/reason/correlation schemas remain allowlisted and are revalidated on read.
@@ -171,6 +199,33 @@ python -m pytest -q
 646 passed, 1 warning in 78.93s (0:01:18)
 ```
 
+R4 red selection before implementation:
+
+```text
+6 failed, 66 deselected in 1.35s
+```
+
+Final r4 selection:
+
+```text
+python -m pytest tests/test_audit_store.py -q -k "r4_"
+7 passed, 66 deselected in 1.68s
+```
+
+Final Task5 focused suites after r4:
+
+```text
+python -m pytest tests/test_audit_store.py tests/test_actor_audit_usage.py tests/test_entra_member_invites.py -q
+147 passed in 17.32s
+```
+
+Final full repository suite after r4:
+
+```text
+python -m pytest -q
+653 passed, 1 warning in 92.61s (0:01:32)
+```
+
 The warning is the existing `ExperimentalWarning` from `backend/maf_team_runtime.py` in `tests/test_maf_evaluation_contract.py`.
 
 ## Mechanical Verification
@@ -188,6 +243,9 @@ exit 0
 terraform validate -no-color
 Success! The configuration is valid.
 
+terraform test -no-color
+2 passed, 0 failed.
+
 terraform init -backend=false -input=false
 Azure/azapi v2.10.0 installed; initialization successful.
 
@@ -204,9 +262,12 @@ Required production settings are:
 - `DF_AUDIT_STORAGE_SUBSCRIPTION_ID`
 - `DF_AUDIT_STORAGE_RESOURCE_GROUP`
 - `DF_AUDIT_CONTAINER`
+- `DF_AUDIT_SEALED_CONTAINER`
 - `DF_AUDIT_HMAC_ACTIVE_KEY_ID`
 - `DF_AUDIT_HMAC_SCOPE_KEY_ID`
 - `DF_AUDIT_HMAC_KEYS` from the versionless Key Vault secret reference
 - `DF_AUDIT_LEGAL_HOLD_TAG`
+- Terraform `audit_immutability_locked=true`
+- Terraform `audit_immutability_lock_confirmation="LOCK_DATAFORGE_AUDIT_WORM"`
 
-Production audit writes reject `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_KEY`, and `DF_STORAGE_KEY`. Retain every historical signing key referenced by persisted records and the configured scope key. The active legal hold tag must remain present; the 60-second cache TTL is the documented maximum delay before runtime detects a policy/tag change.
+Production audit writes reject `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_KEY`, and `DF_STORAGE_KEY`. Retain every historical signing key referenced by persisted records and the configured scope key. The active legal hold tag must remain present on both exact audit containers; the 60-second cache TTL is the documented maximum delay before runtime detects a policy/tag change.

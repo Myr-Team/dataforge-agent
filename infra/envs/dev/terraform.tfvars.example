@@ -6,6 +6,7 @@ subscription_id = "00000000-0000-0000-0000-000000000000"
 # Globally-unique names you control:
 storage_account_name = "yourstorageacct"   # 3-24 lowercase alphanumerics
 audit_immutability_locked = true            # irreversible; required before production mutations
+audit_immutability_lock_confirmation = "LOCK_DATAFORGE_AUDIT_WORM"
 audit_legal_hold_tag = "dataforgeaudit"     # indefinite hold; required before production mutations
 audit_hmac_active_key_id = "v1"
 audit_hmac_scope_key_id = "v1"              # retain this key across active signing-key rotation

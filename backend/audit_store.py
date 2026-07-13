@@ -41,7 +41,7 @@ MAX_SEGMENT_INDEX = 99_999_999
 PRODUCTION_CONTRACT_CACHE_TTL_SECONDS = 60.0
 LOCAL_LOCK_TIMEOUT_SECONDS = 5.0
 _LOCK_SLEEP_SECONDS = 0.01
-_PRODUCTION_CONTRACT_CACHE: dict[tuple[str, str, str, str], float] = {}
+_PRODUCTION_CONTRACT_CACHE: dict[tuple[str, str, str, str, str], float] = {}
 
 ALLOWED_ACTIONS = frozenset(
     {
@@ -81,6 +81,14 @@ _STORAGE_RESOURCE_ID = re.compile(
 )
 
 
+class _WorkspaceScopeId(str):
+    pass
+
+
+class _ResourceScopeId(str):
+    pass
+
+
 class AuditPersistenceError(RuntimeError):
     pass
 
@@ -101,6 +109,7 @@ class _StreamSnapshot:
     length: int
     etag: str | None
     record_count: int
+    sealed: bool = False
 
 
 class AuditEvent(BaseModel):
@@ -196,11 +205,12 @@ class _AppendBackend(Protocol):
     def read_range(self, name: str, offset: int, length: int, snapshot: _StreamSnapshot) -> bytes: ...
     def list_names(self, prefix: str, limit: int | None = None) -> list[str]: ...
     def append(self, name: str, payload: bytes, snapshot: _StreamSnapshot) -> None: ...
+    def seal(self, name: str, snapshot: _StreamSnapshot) -> _StreamSnapshot: ...
 
 
 class _LocalAppendBackend:
     def read_snapshot(self, name: str) -> _StreamSnapshot:
-        path = _local_stream_path(name)
+        path, sealed = _local_read_path(name)
         if not path.exists():
             return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=None, record_count=0)
         try:
@@ -219,10 +229,11 @@ class _LocalAppendBackend:
             int(after.st_size),
             _local_etag(after),
             _count_local_records(path),
+            sealed=sealed,
         )
 
     def read_full(self, name: str) -> bytes:
-        path = _local_stream_path(name)
+        path, _sealed = _local_read_path(name)
         if not path.exists():
             return b""
         try:
@@ -231,7 +242,7 @@ class _LocalAppendBackend:
             raise AuditPersistenceError("local audit read failed") from exc
 
     def read_range(self, name: str, offset: int, length: int, snapshot: _StreamSnapshot) -> bytes:
-        path = _local_stream_path(name)
+        path = _local_sealed_stream_path(name) if snapshot.sealed else _local_active_stream_path(name)
         if offset < 0 or length < 0 or offset + length > snapshot.length:
             raise AuditPersistenceError("local audit range is invalid")
         try:
@@ -251,16 +262,19 @@ class _LocalAppendBackend:
         return data
 
     def list_names(self, prefix: str, limit: int | None = None) -> list[str]:
-        base = _local_stream_path(prefix)
-        if not base.exists():
-            return []
-        root = AUDIT_DIR.resolve()
-        names = sorted(path.resolve().relative_to(root).as_posix() for path in base.rglob("*.jsonl") if path.is_file())
-        return names[:limit] if limit is not None else names
+        names: set[str] = set()
+        for root in (_local_sealed_root(), _local_active_root()):
+            base = _local_scoped_path(root, prefix)
+            if base.exists():
+                names.update(path.resolve().relative_to(root).as_posix() for path in base.rglob("*.jsonl") if path.is_file())
+        ordered = sorted(names)
+        return ordered[:limit] if limit is not None else ordered
 
     def append(self, name: str, payload: bytes, snapshot: _StreamSnapshot) -> None:
         _validate_append_request(name, payload, snapshot)
-        path = _local_stream_path(name)
+        if snapshot.sealed or _local_sealed_stream_path(name).exists():
+            raise AuditIntegrityError("sealed audit segment cannot be appended")
+        path = _local_active_stream_path(name)
         path.parent.mkdir(parents=True, exist_ok=True)
         if snapshot.etag is not None and path.exists():
             current = path.stat()
@@ -292,6 +306,39 @@ class _LocalAppendBackend:
         except OSError as exc:
             raise AuditPersistenceError("local audit append failed") from exc
 
+    def seal(self, name: str, snapshot: _StreamSnapshot) -> _StreamSnapshot:
+        if snapshot.name != name or snapshot.record_count != MAX_RECORDS_PER_SEGMENT:
+            raise AuditPersistenceError("only a full audit segment can be sealed")
+        source = _local_active_stream_path(name)
+        destination = _local_sealed_stream_path(name)
+        if destination.exists():
+            return _validate_sealed_snapshot(self.read_snapshot(name), snapshot)
+        try:
+            before = source.stat()
+            if before.st_size != snapshot.length or _local_etag(before) != snapshot.etag:
+                raise _AppendConflict("active audit segment changed before sealing")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o400)
+            try:
+                with source.open("rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        view = memoryview(chunk)
+                        while view:
+                            view = view[os.write(descriptor, view) :]
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            after = source.stat()
+            if _local_etag(after) != snapshot.etag:
+                raise _AppendConflict("active audit segment changed during sealing")
+        except FileExistsError:
+            pass
+        except _AppendConflict:
+            raise
+        except OSError as exc:
+            raise AuditPersistenceError("local audit segment sealing failed") from exc
+        return _validate_sealed_snapshot(self.read_snapshot(name), snapshot)
+
 
 class _BlobAppendBackend:
     def __init__(self, *, account_name: str | None = None, managed_identity_only: bool = False) -> None:
@@ -300,26 +347,40 @@ class _BlobAppendBackend:
             account = str(account_name or "").strip()
             if not account:
                 raise AuditPersistenceError("durable audit storage account is not configured")
+            credential: Any = DefaultAzureCredential()
             service = BlobServiceClient(
                 account_url=f"https://{account}.blob.core.windows.net",
-                credential=DefaultAzureCredential(),
+                credential=credential,
             )
         elif connection_string:
             service = BlobServiceClient.from_connection_string(connection_string)
+            credential = service.credential
         else:
             account = str(account_name or _storage_account_name()).strip()
             if not account:
                 raise AuditPersistenceError("durable audit storage account is not configured")
             credential = os.environ.get("AZURE_STORAGE_KEY") or os.environ.get("DF_STORAGE_KEY") or DefaultAzureCredential()
             service = BlobServiceClient(account_url=f"https://{account}.blob.core.windows.net", credential=credential)
+        self.credential = credential
         self.container = service.get_container_client(_audit_container_name())
+        self.sealed_container = service.get_container_client(_audit_sealed_container_name())
         if not _is_production():
-            try:
-                self.container.create_container()
-            except ResourceExistsError:
-                pass
+            for container in (self.container, self.sealed_container):
+                try:
+                    container.create_container()
+                except ResourceExistsError:
+                    pass
 
     def read_snapshot(self, name: str) -> _StreamSnapshot:
+        sealed_client = self.sealed_container.get_blob_client(name)
+        try:
+            properties = sealed_client.get_blob_properties()
+        except ResourceNotFoundError:
+            sealed_client = None
+        except Exception as exc:
+            raise AuditPersistenceError("sealed audit properties read failed") from exc
+        if sealed_client is not None:
+            return self._snapshot_from_properties(name, sealed_client, properties, sealed=True)
         client = self.container.get_blob_client(name)
         try:
             properties = client.get_blob_properties()
@@ -327,13 +388,26 @@ class _BlobAppendBackend:
             return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=None, record_count=0)
         except Exception as exc:
             raise AuditPersistenceError("durable audit properties read failed") from exc
+        return self._snapshot_from_properties(name, client, properties, sealed=False)
+
+    def _snapshot_from_properties(self, name: str, client: Any, properties: Any, *, sealed: bool) -> _StreamSnapshot:
         length = int(properties.size or 0)
         etag = str(properties.etag or "")
         if not etag:
             raise AuditPersistenceError("durable audit stream ETag is missing")
         blob_type = str(properties.blob_type or "").lower()
-        if "append" not in blob_type:
-            raise AuditIntegrityError("durable audit stream is not an append blob")
+        if sealed:
+            if "block" not in blob_type or "append" in blob_type:
+                raise AuditIntegrityError("sealed audit stream is not a block blob")
+            metadata = properties.metadata if isinstance(properties.metadata, Mapping) else {}
+            try:
+                record_count = int(metadata.get("df_record_count") or 0)
+            except (TypeError, ValueError) as exc:
+                raise AuditIntegrityError("sealed audit record count metadata is invalid") from exc
+        else:
+            if "append" not in blob_type:
+                raise AuditIntegrityError("active audit stream is not an append blob")
+            record_count = properties.append_blob_committed_block_count
         offset = max(0, length - STREAM_TAIL_BYTES)
         try:
             data = bytes(
@@ -350,25 +424,19 @@ class _BlobAppendBackend:
             raise AuditPersistenceError("durable audit tail read failed") from exc
         except Exception as exc:
             raise AuditPersistenceError("durable audit tail read failed") from exc
-        record_count = properties.append_blob_committed_block_count
         if not isinstance(record_count, int) or record_count < 0:
             raise AuditPersistenceError("durable audit block count is missing")
-        return _snapshot_from_tail(name, data, length, etag, record_count)
+        return _snapshot_from_tail(name, data, length, etag, record_count, sealed=sealed)
 
     def read_full(self, name: str) -> bytes:
-        client = self.container.get_blob_client(name)
-        try:
-            properties = client.get_blob_properties()
-            etag = str(properties.etag or "")
-            if not etag:
-                raise AuditPersistenceError("durable audit stream ETag is missing")
-            if "append" not in str(properties.blob_type or "").lower():
-                raise AuditIntegrityError("durable audit stream is not an append blob")
-            return bytes(
-                client.download_blob(etag=etag, match_condition=MatchConditions.IfNotModified).readall()
-            )
-        except ResourceNotFoundError:
+        snapshot = self.read_snapshot(name)
+        if snapshot.etag is None:
             return b""
+        client = (self.sealed_container if snapshot.sealed else self.container).get_blob_client(name)
+        try:
+            return bytes(
+                client.download_blob(etag=snapshot.etag, match_condition=MatchConditions.IfNotModified).readall()
+            )
         except HttpResponseError as exc:
             if exc.status_code in {409, 412}:
                 raise _AppendConflict("durable stream changed during full read") from exc
@@ -381,7 +449,7 @@ class _BlobAppendBackend:
     def read_range(self, name: str, offset: int, length: int, snapshot: _StreamSnapshot) -> bytes:
         if offset < 0 or length < 0 or offset + length > snapshot.length or snapshot.etag is None:
             raise AuditPersistenceError("durable audit range is invalid")
-        client = self.container.get_blob_client(name)
+        client = (self.sealed_container if snapshot.sealed else self.container).get_blob_client(name)
         try:
             return bytes(
                 client.download_blob(
@@ -400,19 +468,36 @@ class _BlobAppendBackend:
 
     def list_names(self, prefix: str, limit: int | None = None) -> list[str]:
         try:
-            listing = self.container.list_blobs(name_starts_with=prefix)
-            if limit is None:
-                return [str(item.name) for item in listing]
-            names: list[str] = []
-            for page in listing.by_page(results_per_page=limit):
-                names.extend(str(item.name) for item in page)
-                break
-            return names[:limit]
+            names = set(self._list_container_names(self.sealed_container, prefix, limit))
+            names.update(self._list_container_names(self.container, prefix, limit))
+            ordered = sorted(names)
+            return ordered[:limit] if limit is not None else ordered
         except Exception as exc:
             raise AuditPersistenceError("durable audit segment listing failed") from exc
 
+    @staticmethod
+    def _list_container_names(container: Any, prefix: str, limit: int | None) -> list[str]:
+        listing = container.list_blobs(name_starts_with=prefix)
+        if limit is None:
+            return [str(item.name) for item in listing]
+        names: list[str] = []
+        for page in listing.by_page(results_per_page=limit):
+            names.extend(str(item.name) for item in page)
+            break
+        return names[:limit]
+
     def append(self, name: str, payload: bytes, snapshot: _StreamSnapshot) -> None:
         _validate_append_request(name, payload, snapshot)
+        if snapshot.sealed:
+            raise AuditIntegrityError("sealed audit segment cannot be appended")
+        try:
+            self.sealed_container.get_blob_client(name).get_blob_properties()
+        except ResourceNotFoundError:
+            pass
+        except Exception as exc:
+            raise AuditPersistenceError("sealed audit properties read failed") from exc
+        else:
+            raise AuditIntegrityError("sealed audit segment cannot be appended")
         client = self.container.get_blob_client(name)
         etag = snapshot.etag
         if etag is None:
@@ -444,6 +529,73 @@ class _BlobAppendBackend:
             raise AuditPersistenceError("durable audit append failed") from exc
         except Exception as exc:
             raise AuditPersistenceError("durable audit append failed") from exc
+
+    def seal(self, name: str, snapshot: _StreamSnapshot) -> _StreamSnapshot:
+        if snapshot.name != name or snapshot.record_count != MAX_RECORDS_PER_SEGMENT:
+            raise AuditPersistenceError("only a full audit segment can be sealed")
+        if snapshot.sealed:
+            return snapshot
+        source = self.container.get_blob_client(name)
+        destination = self.sealed_container.get_blob_client(name)
+        source_etag_hash = hashlib.sha256(str(snapshot.etag or "").encode("ascii")).hexdigest()
+        metadata = {
+            "df_record_count": str(snapshot.record_count),
+            "df_source_etag_sha256": source_etag_hash,
+        }
+        try:
+            properties = source.get_blob_properties()
+            if (
+                int(properties.size or 0) != snapshot.length
+                or str(properties.etag or "") != snapshot.etag
+                or "append" not in str(properties.blob_type or "").lower()
+            ):
+                raise _AppendConflict("active audit segment changed before sealing")
+            if hasattr(self.credential, "get_token"):
+                token = self.credential.get_token("https://storage.azure.com/.default").token
+                destination.upload_blob_from_url(
+                    source.url,
+                    overwrite=False,
+                    metadata=metadata,
+                    source_authorization=f"Bearer {token}",
+                    source_etag=snapshot.etag,
+                    source_match_condition=MatchConditions.IfNotModified,
+                    include_source_blob_properties=True,
+                )
+            else:
+                payload = source.download_blob(
+                    etag=snapshot.etag,
+                    match_condition=MatchConditions.IfNotModified,
+                ).readall()
+                destination.upload_blob(
+                    payload,
+                    overwrite=False,
+                    metadata=metadata,
+                    blob_type="BlockBlob",
+                    content_settings=ContentSettings(content_type="application/x-ndjson; charset=utf-8"),
+                )
+        except ResourceExistsError:
+            pass
+        except HttpResponseError as exc:
+            if exc.status_code in {409, 412}:
+                try:
+                    destination.get_blob_properties()
+                except ResourceNotFoundError:
+                    raise _AppendConflict("active audit segment changed during sealing") from exc
+            else:
+                raise AuditPersistenceError("durable audit segment sealing failed") from exc
+        except _AppendConflict:
+            raise
+        except Exception as exc:
+            raise AuditPersistenceError("durable audit segment sealing failed") from exc
+        sealed = self.read_snapshot(name)
+        try:
+            sealed_properties = destination.get_blob_properties()
+            sealed_metadata = sealed_properties.metadata if isinstance(sealed_properties.metadata, Mapping) else {}
+        except Exception as exc:
+            raise AuditPersistenceError("sealed audit verification failed") from exc
+        if sealed_metadata.get("df_source_etag_sha256") != source_etag_hash:
+            raise AuditIntegrityError("sealed audit source identity does not match")
+        return _validate_sealed_snapshot(sealed, snapshot)
 
 
 @dataclass(frozen=True)
@@ -1014,12 +1166,25 @@ def _segment_for_append(
 ) -> _SegmentHead:
     if current.snapshot.record_count < MAX_RECORDS_PER_SEGMENT:
         return current
+    _validate_sealed_snapshot(backend.seal(current.name, current.snapshot), current.snapshot)
     index = current.index + 1
     name = name_factory(workspace_id, index) if workspace_id is not None else name_factory(index)
     snapshot = backend.read_snapshot(name)
     if snapshot.length or snapshot.record_count or snapshot.head is not None:
         raise _AppendConflict("audit segment rotated concurrently")
     return _SegmentHead(index, name, snapshot, None)
+
+
+def _validate_sealed_snapshot(sealed: _StreamSnapshot, source: _StreamSnapshot) -> _StreamSnapshot:
+    if (
+        not sealed.sealed
+        or sealed.name != source.name
+        or sealed.length != source.length
+        or sealed.record_count != source.record_count
+        or sealed.head != source.head
+    ):
+        raise AuditIntegrityError("sealed audit segment does not match its active source")
+    return sealed
 
 
 def _head_ordinal(head: Mapping[str, Any]) -> int:
@@ -1144,7 +1309,12 @@ def _verify_receipt_global_coordinate(
     if global_head.head is None or int(global_head.head["global_sequence"]) < int(receipt["global_sequence"]):
         raise AuditIntegrityError("global audit prefix rollback detected")
     coordinate = _global_coordinate_from_receipt(receipt)
-    value = _record_ending_at(backend, coordinate, "global audit receipt")
+    value = _record_ending_at(
+        backend,
+        coordinate,
+        "global audit receipt",
+        require_sealed=coordinate.segment_index < global_head.index,
+    )
     global_anchor = _validated_global_anchor(value)
     if (
         int(global_anchor["global_sequence"]) != int(receipt["global_sequence"])
@@ -1195,7 +1365,11 @@ def _require_one_record_after(
     ):
         raise AuditIntegrityError(f"{label} segment rotation is invalid")
     previous_snapshot = backend.read_snapshot(previous.stream_name)
-    if previous_snapshot.length != previous.stream_length or previous_snapshot.record_count != previous.segment_record_count:
+    if (
+        not previous_snapshot.sealed
+        or previous_snapshot.length != previous.stream_length
+        or previous_snapshot.record_count != previous.segment_record_count
+    ):
         raise AuditIntegrityError(f"{label} previous segment physical proof does not match")
     _require_exact_range_records(backend, current, 0, 1, label)
 
@@ -1221,10 +1395,13 @@ def _record_ending_at(
     backend: _AppendBackend,
     coordinate: _PhysicalCoordinate,
     label: str,
+    *,
+    require_sealed: bool = False,
 ) -> dict[str, Any]:
     snapshot = backend.read_snapshot(coordinate.stream_name)
     if (
-        snapshot.length < coordinate.stream_length
+        (require_sealed and not snapshot.sealed)
+        or snapshot.length < coordinate.stream_length
         or snapshot.record_count < coordinate.segment_record_count
         or coordinate.stream_length < 1
     ):
@@ -1276,6 +1453,9 @@ def _read_segment_records(
         raise AuditIntegrityError(f"{label} segment gap or delete detected")
     records: list[tuple[dict[str, Any], _PhysicalCoordinate]] = []
     for position, (index, name) in enumerate(indexed):
+        snapshot = backend.read_snapshot(name)
+        if position < len(indexed) - 1 and not snapshot.sealed:
+            raise AuditIntegrityError(f"{label} old segment is not sealed")
         data = backend.read_full(name)
         parsed = _parse_lines(data, label)
         if not parsed or len(parsed) > MAX_RECORDS_PER_SEGMENT:
@@ -1581,6 +1761,7 @@ def _validate_anchor_policy(model: AuditAnchor, anchor: Mapping[str, Any]) -> No
     workspace_id = str(anchor.get("workspace_id") or "")
     if not _WORKSPACE_SCOPE.fullmatch(workspace_id):
         raise ValueError("anchor workspace_id is not pseudonymous")
+    workspace_scope = _stored_workspace_scope_id(workspace_id)
     if int(anchor.get("anchor_revision") or 0) < 1 or int(anchor.get("workspace_revision") or 0) < 1:
         raise ValueError("anchor revision is invalid")
     if not _KEY_ID.fullmatch(str(anchor.get("key_id") or "")):
@@ -1593,7 +1774,7 @@ def _validate_anchor_policy(model: AuditAnchor, anchor: Mapping[str, Any]) -> No
     _validate_physical_fields(
         anchor,
         "event",
-        _event_stream_name(workspace_id, int(anchor.get("event_segment_index") or 0)),
+        _event_stream_name(workspace_scope, int(anchor.get("event_segment_index") or 0)),
     )
 
 
@@ -1614,7 +1795,7 @@ def _validated_receipt(value: Mapping[str, Any], workspace_id: str) -> dict[str,
     _validate_physical_fields(
         receipt,
         "workspace_anchor",
-        _anchor_stream_name(workspace_id, int(receipt["workspace_anchor_segment_index"])),
+        _anchor_stream_name(_stored_workspace_scope_id(workspace_id), int(receipt["workspace_anchor_segment_index"])),
     )
     _validate_physical_fields(
         receipt,
@@ -1646,15 +1827,16 @@ def _validated_global_anchor(value: Mapping[str, Any]) -> dict[str, Any]:
         "global anchor",
         ("workspace_event_hash", "workspace_anchor_hash", "previous_hash", "global_hash"),
     )
+    workspace_scope = _stored_workspace_scope_id(workspace_id)
     _validate_physical_fields(
         anchor,
         "workspace_anchor",
-        _anchor_stream_name(workspace_id, int(anchor["workspace_anchor_segment_index"])),
+        _anchor_stream_name(workspace_scope, int(anchor["workspace_anchor_segment_index"])),
     )
     _validate_physical_fields(
         anchor,
         "event",
-        _event_stream_name(workspace_id, int(anchor["event_segment_index"])),
+        _event_stream_name(workspace_scope, int(anchor["event_segment_index"])),
     )
     expected_global_name = _global_stream_name(int(anchor["global_segment_index"]))
     if anchor["global_stream_name"] != expected_global_name:
@@ -1730,8 +1912,9 @@ def _verify_production_storage_contract(write_account_name: str | None = None) -
     if not expected_resource_group or match.group("resource_group").lower() != expected_resource_group.lower():
         raise AuditPersistenceError("production audit storage resource group proof does not match expected resource group")
     container_name = _audit_container_name()
+    sealed_container_name = _audit_sealed_container_name()
     legal_hold_tag = _audit_legal_hold_tag()
-    cache_key = (resource_id.lower(), write_account, container_name, legal_hold_tag)
+    cache_key = (resource_id.lower(), write_account, container_name, sealed_container_name, legal_hold_tag)
     now = time.monotonic()
     expires_at = _PRODUCTION_CONTRACT_CACHE.get(cache_key)
     if expires_at is not None and now < expires_at:
@@ -1745,7 +1928,20 @@ def _verify_production_storage_contract(write_account_name: str | None = None) -
     container = _management_get_json(
         f"{resource_id}/blobServices/default/containers/{container_name}?{api}"
     ).get("properties")
-    _validate_production_contract(service, policy, container, legal_hold_tag)
+    sealed_policy = _management_get_json(
+        f"{resource_id}/blobServices/default/containers/{sealed_container_name}/immutabilityPolicies/default?{api}"
+    ).get("properties")
+    sealed_container = _management_get_json(
+        f"{resource_id}/blobServices/default/containers/{sealed_container_name}?{api}"
+    ).get("properties")
+    _validate_production_contract(
+        service,
+        policy,
+        container,
+        legal_hold_tag,
+        sealed_policy,
+        sealed_container,
+    )
     _PRODUCTION_CONTRACT_CACHE[cache_key] = now + PRODUCTION_CONTRACT_CACHE_TTL_SECONDS
     return resource_id
 
@@ -1771,17 +1967,41 @@ def _validate_production_contract(
     policy: Mapping[str, Any] | None,
     container: Mapping[str, Any] | None = None,
     legal_hold_tag: str | None = None,
+    sealed_policy: Mapping[str, Any] | None = None,
+    sealed_container: Mapping[str, Any] | None = None,
 ) -> None:
     service = service if isinstance(service, Mapping) else {}
-    policy = policy if isinstance(policy, Mapping) else {}
-    container = container if isinstance(container, Mapping) else {}
     versioning = service.get("isVersioningEnabled", service.get("is_versioning_enabled")) is True
     blob_delete = service.get("deleteRetentionPolicy", service.get("delete_retention_policy"))
     container_delete = service.get("containerDeleteRetentionPolicy", service.get("container_delete_retention_policy"))
     blob_delete_ok = isinstance(blob_delete, Mapping) and blob_delete.get("enabled") is True and int(blob_delete.get("days") or 0) > 0
     container_delete_ok = isinstance(container_delete, Mapping) and container_delete.get("enabled") is True and int(container_delete.get("days") or 0) > 0
+    expected_tag = str(legal_hold_tag or "").strip()
+    active_ok = _validate_container_contract(policy, container, expected_tag, protected_append=True)
+    sealed_ok = _validate_container_contract(
+        sealed_policy,
+        sealed_container,
+        expected_tag,
+        protected_append=False,
+    )
+    if not all((versioning, blob_delete_ok, container_delete_ok, active_ok)):
+        raise AuditPersistenceError("production active audit storage contract is not satisfied")
+    if not sealed_ok:
+        raise AuditPersistenceError("production sealed audit storage contract is not satisfied")
+
+
+def _validate_container_contract(
+    policy: Mapping[str, Any] | None,
+    container: Mapping[str, Any] | None,
+    expected_tag: str,
+    *,
+    protected_append: bool,
+) -> bool:
+    policy = policy if isinstance(policy, Mapping) else {}
+    container = container if isinstance(container, Mapping) else {}
     locked = str(policy.get("state") or policy.get("policy_mode") or "").lower() == "locked"
-    append_ok = policy.get("allowProtectedAppendWrites", policy.get("allow_protected_append_writes")) is True
+    append_value = policy.get("allowProtectedAppendWrites", policy.get("allow_protected_append_writes"))
+    append_ok = append_value is protected_append
     legal_hold = container.get("legalHold", container.get("legal_hold"))
     legal_hold = legal_hold if isinstance(legal_hold, Mapping) else {}
     hold_active = container.get("hasLegalHold", container.get("has_legal_hold")) is True and legal_hold.get(
@@ -1794,13 +2014,16 @@ def _validate_production_contract(
     } if isinstance(tags, list) else set()
     history = legal_hold.get("protectedAppendWritesHistory", legal_hold.get("protected_append_writes_history"))
     history = history if isinstance(history, Mapping) else {}
-    legal_append_ok = history.get(
+    legal_append_value = history.get(
         "allowProtectedAppendWritesAll", history.get("allow_protected_append_writes_all")
-    ) is True
-    expected_tag = str(legal_hold_tag or "").strip()
-    legal_hold_ok = bool(expected_tag) and hold_active and expected_tag in active_tags and legal_append_ok
-    if not all((versioning, blob_delete_ok, container_delete_ok, locked, append_ok, legal_hold_ok)):
-        raise AuditPersistenceError("production audit storage contract is not satisfied")
+    )
+    legal_hold_ok = (
+        bool(expected_tag)
+        and hold_active
+        and expected_tag in active_tags
+        and legal_append_value is protected_append
+    )
+    return locked and append_ok and legal_hold_ok
 
 
 def _is_production() -> bool:
@@ -1822,6 +2045,15 @@ def _audit_container_name() -> str:
     value = str(os.environ.get("DF_AUDIT_CONTAINER") or AUDIT_CONTAINER).strip().lower()
     if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?", value):
         raise AuditPersistenceError("audit container name is invalid")
+    return value
+
+
+def _audit_sealed_container_name() -> str:
+    value = str(os.environ.get("DF_AUDIT_SEALED_CONTAINER") or f"{AUDIT_CONTAINER}-sealed").strip().lower()
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?", value):
+        raise AuditPersistenceError("sealed audit container name is invalid")
+    if value == _audit_container_name():
+        raise AuditPersistenceError("active and sealed audit containers must be different")
     return value
 
 
@@ -1860,18 +2092,44 @@ def _local_lock():
             pass
 
 
-def _local_stream_path(name: str) -> Path:
+def _local_active_root() -> Path:
+    return (AUDIT_DIR / "active").resolve()
+
+
+def _local_sealed_root() -> Path:
+    return (AUDIT_DIR / "sealed").resolve()
+
+
+def _local_scoped_path(root: Path, name: str) -> Path:
     raw = str(name or "")
     if raw.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", raw):
         raise ValueError("audit stream path must be relative")
     normalized = raw.replace("\\", "/").strip("/")
     if not normalized or any(part in {"", ".", ".."} for part in normalized.split("/")):
         raise ValueError("audit stream path is invalid")
-    root = AUDIT_DIR.resolve()
     path = (root / normalized).resolve()
     if root not in path.parents:
         raise ValueError("audit stream path escapes audit directory")
     return path
+
+
+def _local_active_stream_path(name: str) -> Path:
+    return _local_scoped_path(_local_active_root(), name)
+
+
+def _local_sealed_stream_path(name: str) -> Path:
+    return _local_scoped_path(_local_sealed_root(), name)
+
+
+def _local_read_path(name: str) -> tuple[Path, bool]:
+    sealed = _local_sealed_stream_path(name)
+    if sealed.exists():
+        return sealed, True
+    return _local_active_stream_path(name), False
+
+
+def _local_stream_path(name: str) -> Path:
+    return _local_active_stream_path(name)
 
 
 def _event_prefix(workspace_id: str) -> str:
@@ -1883,7 +2141,7 @@ def _anchor_prefix(workspace_id: str) -> str:
 
 
 def _receipt_prefix(workspace_id: str) -> str:
-    return f"workspaces/{_workspace_scope_id(workspace_id)}/global-receipts/"
+    return f"global/workspaces/{_workspace_scope_id(workspace_id)}/receipts/"
 
 
 def _global_prefix() -> str:
@@ -1947,6 +2205,8 @@ def _snapshot_from_tail(
     length: int,
     etag: str | None,
     record_count: int,
+    *,
+    sealed: bool = False,
 ) -> _StreamSnapshot:
     if length < 0 or len(data) != min(length, STREAM_TAIL_BYTES):
         raise AuditIntegrityError("audit stream snapshot length is invalid")
@@ -1955,7 +2215,7 @@ def _snapshot_from_tail(
     if length == 0:
         if data or record_count:
             raise AuditIntegrityError("empty audit stream snapshot is invalid")
-        return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=etag, record_count=0)
+        return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=etag, record_count=0, sealed=sealed)
     if etag is None or not data.endswith(b"\n"):
         raise AuditIntegrityError("audit stream snapshot is truncated")
     complete = data
@@ -1982,6 +2242,7 @@ def _snapshot_from_tail(
         length=length,
         etag=etag,
         record_count=record_count,
+        sealed=sealed,
     )
 
 
@@ -2040,21 +2301,36 @@ def _workspace_id(value: Any) -> str:
     return clean
 
 
-def _workspace_scope_id(value: Any) -> str:
+def _pseudonymize_workspace_id(value: Any) -> _WorkspaceScopeId:
+    if isinstance(value, _WorkspaceScopeId):
+        return value
     clean = str(value or "").strip()
-    if _WORKSPACE_SCOPE.fullmatch(clean):
-        return clean
     raw = _external_identifier(clean, "workspace_id")
     if raw in {".", ".."} or "/" in raw or "\\" in raw or re.match(r"^[A-Za-z]:", raw):
         raise ValueError("workspace_id is invalid")
-    return _pseudonym("ws", "workspace", raw)
+    return _WorkspaceScopeId(_pseudonym("ws", "workspace", raw))
 
 
-def _resource_scope_id(value: Any) -> str:
+def _pseudonymize_resource_id(value: Any) -> _ResourceScopeId:
+    if isinstance(value, _ResourceScopeId):
+        return value
     clean = str(value or "").strip()
-    if _RESOURCE_SCOPE.fullmatch(clean):
-        return clean
-    return _pseudonym("res", "resource", _external_identifier(clean, "resource_id"))
+    return _ResourceScopeId(_pseudonym("res", "resource", _external_identifier(clean, "resource_id")))
+
+
+def _workspace_scope_id(value: Any) -> _WorkspaceScopeId:
+    return _pseudonymize_workspace_id(value)
+
+
+def _resource_scope_id(value: Any) -> _ResourceScopeId:
+    return _pseudonymize_resource_id(value)
+
+
+def _stored_workspace_scope_id(value: Any) -> _WorkspaceScopeId:
+    clean = str(value or "")
+    if not _WORKSPACE_SCOPE.fullmatch(clean):
+        raise AuditIntegrityError("stored workspace scope is invalid")
+    return _WorkspaceScopeId(clean)
 
 
 def _external_identifier(value: str, field: str) -> str:
