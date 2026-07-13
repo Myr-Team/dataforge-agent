@@ -99,6 +99,20 @@ git diff --check                 # exit 0
 
 The warning remains the unrelated `ExperimentalWarning` from `backend/maf_team_runtime.py:1060`.
 
+## Current Contract (r4)
+
+This section supersedes earlier historical descriptions. The authoritative role for an invited member is the validated journal role. Activation uses the journal bootstrap role only; `workspace_members` is a display mirror and never overrides it. Identity aliases compare explicit normalized `(actor_id, tenant_id)` keys. Journal replay validates state, activation, and role-change order before authorization; invalid entries fail closed. Historical Graph tenant wording is superseded: Graph `invitedUser.id` binds to the trusted inviter/resource tenant, with app-only resource tenant derived from configured Graph/Azure tenant and required to match.
+
+Final r4 verification:
+
+```text
+65 passed in 5.15s
+537 passed, 1 warning in 48.72s
+python -m compileall -q ...      # exit 0
+imports ok
+git diff --check                 # exit 0
+```
+
 ## Second Review Remediation
 
 ### Documented Graph identity binding

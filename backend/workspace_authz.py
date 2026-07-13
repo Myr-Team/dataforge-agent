@@ -184,15 +184,13 @@ def _activate_accepted_invitation(
     bootstrap_role = _normalize_role(accepted.get("role"))
     if not invitation_id or bootstrap_role is None:
         return None
+    role = bootstrap_role
     members: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc).isoformat()
     activated = False
     for item in meta.get("workspace_members") or []:
         member = dict(item) if isinstance(item, Mapping) else {}
         if str(member.get("invitation_id") or "") == invitation_id:
-            role = _normalize_role(member.get("role"))
-            if role is None:
-                return None
             member.update(
                 {
                     "status": "active",
@@ -205,7 +203,6 @@ def _activate_accepted_invitation(
             activated = True
         members.append(member)
     if not activated:
-        role = bootstrap_role
         members.append(
             {
                 "email": accepted.get("email") or "",
