@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import builtins
+
+import pytest
+
 from eval import run_p2_a_acceptance
 from eval.run_p2_a_acceptance import build_acceptance_report, component_reports
 
@@ -84,13 +88,75 @@ def test_observed_zero_metrics_remain_measured() -> None:
         "production_claim_allowed": True,
         "passed": True,
         "failed_reasons": [],
-        "inputs": [{"build_id": "build-1", "run_id": "run-1"}],
+        "inputs": [{"source": "runtime", "build_id": "build-1", "run_id": "run-1"}],
         "metrics": {"latency_ms": 0, "tokens": 0},
     }
 
     report = build_acceptance_report(reports)
 
     assert report["gates"]["tasks"]["metrics"] == {"latency_ms": 0, "tokens": 0}
+
+
+@pytest.mark.parametrize(
+    ("sample_count", "inputs", "reason"),
+    [
+        (0, [{"source": "runtime", "run_id": "run-1"}], "observed_samples_required"),
+        (1, [], "observed_lineage_required"),
+        (1, [{"source": "runtime"}], "observed_lineage_required"),
+        (1, [{"run_id": "run-1"}], "observed_lineage_required"),
+    ],
+)
+def test_observed_evidence_requires_samples_and_stable_lineage(
+    sample_count: int, inputs: list[dict], reason: str
+) -> None:
+    reports = _component_reports()
+    reports["tasks"] = {
+        "evidence_kind": "observed",
+        "sample_count": sample_count,
+        "production_claim_allowed": True,
+        "passed": True,
+        "failed_reasons": [],
+        "inputs": inputs,
+    }
+
+    report = build_acceptance_report(reports)
+
+    gate = report["gates"]["tasks"]
+    assert gate["passed"] is False
+    assert gate["production_claim_allowed"] is False
+    assert reason in gate["failed_reasons"]
+
+
+def test_valid_observed_evidence_needs_a_component_production_request() -> None:
+    reports = _component_reports()
+    reports["tasks"] = {
+        "evidence_kind": "observed",
+        "sample_count": 1,
+        "production_claim_allowed": False,
+        "passed": True,
+        "failed_reasons": [],
+        "inputs": [{"source": "runtime", "observed_id": "observation-1"}],
+    }
+
+    report = build_acceptance_report(reports)
+
+    assert report["gates"]["tasks"]["passed"] is True
+    assert report["gates"]["tasks"]["production_claim_allowed"] is False
+
+
+def test_explicit_unknown_metric_is_not_collapsed_to_unmeasured() -> None:
+    reports = _component_reports()
+    reports["maf_quality"]["metrics"] = {
+        "latency_ms": {"value": 12.5, "status": "measured"},
+        "tokens": {"value": None, "status": "unknown"},
+    }
+
+    report = build_acceptance_report(reports)
+
+    assert report["gates"]["maf_quality"]["metrics"] == {
+        "latency_ms": "unmeasured",
+        "tokens": "unknown",
+    }
 
 
 def test_acceptance_preserves_failed_reasons_and_input_lineage() -> None:
@@ -134,3 +200,21 @@ def test_component_report_exception_becomes_a_failed_gate(monkeypatch) -> None:
     assert report["gates"]["maf_quality"]["failed_reasons"] == [
         "component_execution_failed"
     ]
+
+
+def test_baseline_import_failure_becomes_a_stable_failed_gate(monkeypatch) -> None:
+    original_import = builtins.__import__
+
+    def fail_baseline_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "eval.run_p2_baseline":
+            raise ImportError("private import detail")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fail_baseline_import)
+
+    report = build_acceptance_report(component_reports())
+
+    baseline = report["gates"]["baseline"]
+    assert baseline["passed"] is False
+    assert baseline["failed_reasons"] == ["component_execution_failed"]
+    assert "private import detail" not in repr(baseline)

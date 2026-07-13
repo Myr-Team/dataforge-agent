@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 REQUIRED_GATES = ("market_relevance", "maf_quality", "tasks", "connectors")
 EVIDENCE_KINDS = frozenset({"fixture", "observed"})
+OBSERVED_LINEAGE_IDS = frozenset({"observed_id", "build_id", "run_id", "timestamp"})
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -29,17 +30,39 @@ def _metric_value(value: Any) -> int | float | None:
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
-def _performance_metrics(component: Mapping[str, Any], *, production_allowed: bool) -> dict[str, Any]:
+def _normalized_metric(value: Any, *, production_allowed: bool) -> int | float | str:
+    if isinstance(value, Mapping) and value.get("status") == "unknown":
+        return "unknown"
     if not production_allowed:
-        return {"latency_ms": "unmeasured", "tokens": "unmeasured"}
+        return "unmeasured"
+    numeric = _metric_value(value)
+    return numeric if numeric is not None else "unmeasured"
+
+
+def _performance_metrics(component: Mapping[str, Any], *, production_allowed: bool) -> dict[str, Any]:
     metrics = component.get("metrics")
     metrics = metrics if isinstance(metrics, Mapping) else {}
-    latency_ms = _metric_value(metrics.get("latency_ms"))
-    tokens = _metric_value(metrics.get("tokens"))
     return {
-        "latency_ms": latency_ms if latency_ms is not None else "unmeasured",
-        "tokens": tokens if tokens is not None else "unmeasured",
+        "latency_ms": _normalized_metric(
+            metrics.get("latency_ms"), production_allowed=production_allowed
+        ),
+        "tokens": _normalized_metric(metrics.get("tokens"), production_allowed=production_allowed),
     }
+
+
+def _valid_observed_lineage(lineage: list[Any]) -> bool:
+    return bool(lineage) and all(
+        isinstance(item, Mapping)
+        and isinstance(item.get("source"), str)
+        and bool(item["source"].strip())
+        and any(
+            isinstance(item.get(key), (str, int, float))
+            and not isinstance(item.get(key), bool)
+            and bool(str(item[key]).strip())
+            for key in OBSERVED_LINEAGE_IDS
+        )
+        for item in lineage
+    )
 
 
 def _gate(name: str, component: Mapping[str, Any]) -> dict[str, Any]:
@@ -50,12 +73,21 @@ def _gate(name: str, component: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(sample_count, int) or isinstance(sample_count, bool) or sample_count < 0:
         raise ValueError(f"{name} report must declare a non-negative sample_count")
 
-    production_allowed = bool(component.get("production_claim_allowed")) and evidence_kind == "observed"
     passed = bool(component.get("passed"))
     failed_reasons = [str(reason) for reason in _as_list(component.get("failed_reasons")) if str(reason)]
+    lineage = _as_list(component.get("inputs")) or _as_list(component.get("lineage"))
+    production_requested = bool(component.get("production_claim_allowed"))
+    observed_valid = evidence_kind == "observed" and sample_count > 0 and _valid_observed_lineage(lineage)
+    if evidence_kind == "observed":
+        if sample_count == 0:
+            failed_reasons.append("observed_samples_required")
+        if not _valid_observed_lineage(lineage):
+            failed_reasons.append("observed_lineage_required")
+        if not observed_valid:
+            passed = False
     if not passed and not failed_reasons:
         failed_reasons = ["gate_failed"]
-    lineage = _as_list(component.get("inputs")) or _as_list(component.get("lineage"))
+    production_allowed = production_requested and observed_valid
 
     return {
         "passed": passed,
@@ -177,6 +209,18 @@ def _maf_report() -> dict[str, Any]:
     }
 
 
+def _baseline_report() -> dict[str, Any]:
+    from eval.run_p2_baseline import build_report, reference_cases
+
+    baseline = build_report(reference_cases(), observed_runs=[])
+    baseline["passed"] = baseline.get("evidence_kind") == "fixture" and all(
+        value is None for value in baseline.get("metrics", {}).values()
+    )
+    baseline["failed_reasons"] = [] if baseline["passed"] else ["baseline_fixture_contract_failed"]
+    baseline["inputs"] = [{"source": "eval/p2_reference_cases.json"}]
+    return baseline
+
+
 def _task_report() -> dict[str, Any]:
     import backend.task_store as task_store
 
@@ -248,19 +292,8 @@ def _connector_report() -> dict[str, Any]:
 
 def component_reports() -> dict[str, dict[str, Any]]:
     """Run existing component report producers and local lifecycle checks."""
-    from eval.run_p2_baseline import build_report, reference_cases
-
-    def baseline_report() -> dict[str, Any]:
-        baseline = build_report(reference_cases(), observed_runs=[])
-        baseline["passed"] = baseline.get("evidence_kind") == "fixture" and all(
-            value is None for value in baseline.get("metrics", {}).values()
-        )
-        baseline["failed_reasons"] = [] if baseline["passed"] else ["baseline_fixture_contract_failed"]
-        baseline["inputs"] = [{"source": "eval/p2_reference_cases.json"}]
-        return baseline
-
     return {
-        "baseline": _run_component("eval/run_p2_baseline.py", baseline_report),
+        "baseline": _run_component("eval/run_p2_baseline.py", _baseline_report),
         "market_relevance": _run_component("backend.market_relevance", _market_report),
         "maf_quality": _run_component("eval/run_maf_runtime_eval.py", _maf_report),
         "tasks": _run_component("backend.task_store", _task_report),
