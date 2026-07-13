@@ -318,6 +318,36 @@ def list_blob_json_strict(prefix: str) -> list[dict[str, Any]]:
     return items
 
 
+def list_blob_json_named_strict(prefix: str) -> list[tuple[str, dict[str, Any]]]:
+    """Strict JSON listing that preserves each Blob name for identity validation."""
+    if not blob_configured():
+        return []
+    items: list[tuple[str, dict[str, Any]]] = []
+    try:
+        container = _container_client()
+        for entry in container.list_blobs(name_starts_with=str(prefix or "")):
+            name = str(getattr(entry, "name", "") or "")
+            if not name.endswith(".json"):
+                continue
+            try:
+                raw = container.get_blob_client(name).download_blob().readall().decode("utf-8")
+                value = json.loads(raw)
+            except ResourceNotFoundError:
+                continue
+            except Exception as exc:
+                raise BlobJsonReadError("blob JSON read failed") from exc
+            if not isinstance(value, dict):
+                raise BlobJsonReadError("blob JSON payload is invalid")
+            items.append((name, value))
+    except ResourceNotFoundError:
+        return []
+    except BlobJsonReadError:
+        raise
+    except Exception as exc:
+        raise BlobJsonReadError("blob JSON list failed") from exc
+    return items
+
+
 def claim_blob_json(
     blob_name: str,
     *,
@@ -374,6 +404,23 @@ def compare_and_swap_blob_json(
             content_settings=ContentSettings(content_type="application/json; charset=utf-8"),
         )
         return updated
+    except (ResourceModifiedError, ResourceNotFoundError):
+        return None
+
+
+def delete_blob_json_if_revision(blob_name: str, *, expected_revision: int) -> bool | None:
+    """Delete only the exact Blob revision observed by the lifecycle caller."""
+    if not blob_configured():
+        return None
+    try:
+        container = _container_client()
+        blob = container.get_blob_client(blob_name)
+        properties = blob.get_blob_properties()
+        current = json.loads(blob.download_blob().readall().decode("utf-8"))
+        if not isinstance(current, dict) or int(current.get("revision") or 0) != int(expected_revision):
+            return None
+        blob.delete_blob(etag=properties.etag, match_condition=MatchConditions.IfNotModified)
+        return True
     except (ResourceModifiedError, ResourceNotFoundError):
         return None
 

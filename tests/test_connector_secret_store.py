@@ -26,8 +26,34 @@ def test_key_vault_configuration_does_not_fall_back_when_client_initialization_f
     monkeypatch.setenv("DF_KEY_VAULT_URL", "https://example.vault.azure.net")
     monkeypatch.setattr(secret_store, "KeyVaultSecretStore", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("identity unavailable")))
 
-    with pytest.raises(RuntimeError, match="identity unavailable"):
+    with pytest.raises(secret_store.SecretStoreOperationError) as raised:
         secret_store.secret_store_from_environment()
+    assert raised.value.code == "connector_key_vault_unavailable"
+
+
+def test_key_vault_operation_error_has_only_stable_code_and_no_exception_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    import backend.connector_secret_store as secret_store
+
+    class Credential:
+        pass
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def set_secret(self, *_args):
+            raise RuntimeError("password=never-expose;sig=never-expose")
+
+    monkeypatch.setattr(secret_store, "DefaultAzureCredential", Credential)
+    monkeypatch.setattr(secret_store, "SecretClient", Client)
+    store = secret_store.KeyVaultSecretStore("https://example.vault.azure.net")
+
+    with pytest.raises(secret_store.SecretStoreOperationError) as raised:
+        store.put("ws-1", "sql-1", {"password": "never-expose"})
+
+    assert raised.value.code == "connector_secret_put_failed"
+    assert "never-expose" not in str(raised.value)
+    assert raised.value.__cause__ is None
 
 
 def test_key_vault_store_uses_opaque_reference_and_default_credential(monkeypatch: pytest.MonkeyPatch) -> None:

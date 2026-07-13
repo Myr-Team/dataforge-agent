@@ -11,9 +11,11 @@ from typing import Mapping, Protocol
 from urllib.parse import urlparse
 
 try:
+    from azure.core.exceptions import ResourceNotFoundError
     from azure.identity import DefaultAzureCredential
     from azure.keyvault.secrets import SecretClient
 except ImportError:  # Raised explicitly when Key Vault is configured below.
+    ResourceNotFoundError = ()  # type: ignore[assignment]
     DefaultAzureCredential = None  # type: ignore[assignment]
     SecretClient = None  # type: ignore[assignment]
 
@@ -37,6 +39,15 @@ class SecretStoreConfigurationError(RuntimeError):
 
 class SecretReferenceError(ValueError):
     pass
+
+
+class SecretStoreOperationError(RuntimeError):
+    code = "connector_secret_store_unavailable"
+
+    def __init__(self, code: str | None = None) -> None:
+        if code:
+            self.code = code
+        super().__init__(self.code)
 
 
 @dataclass
@@ -119,11 +130,19 @@ class KeyVaultSecretStore:
     def __init__(self, vault_url: str) -> None:
         if not DefaultAzureCredential or not SecretClient:
             raise SecretStoreConfigurationError("DF_KEY_VAULT_URL is configured but azure-keyvault-secrets is unavailable")
-        self._client = SecretClient(vault_url=validate_key_vault_url(vault_url), credential=DefaultAzureCredential())
+        try:
+            self._client = SecretClient(vault_url=validate_key_vault_url(vault_url), credential=DefaultAzureCredential())
+        except SecretStoreConfigurationError:
+            raise
+        except Exception:
+            raise SecretStoreOperationError("connector_key_vault_unavailable") from None
 
     def put(self, workspace_id: str, connector_id: str, secret: Mapping[str, str]) -> str:
         name = _vault_secret_name(workspace_id, connector_id)
-        self._client.set_secret(name, _secret_json(secret).decode("utf-8"))
+        try:
+            self._client.set_secret(name, _secret_json(secret).decode("utf-8"))
+        except Exception:
+            raise SecretStoreOperationError("connector_secret_put_failed") from None
         return self.reference_for(workspace_id, connector_id)
 
     def reference_for(self, workspace_id: str, connector_id: str) -> str:
@@ -131,15 +150,27 @@ class KeyVaultSecretStore:
 
     def get(self, workspace_id: str, connector_id: str, reference: str) -> dict[str, str]:
         self._validate_reference(workspace_id, connector_id, reference)
-        secret = self._client.get_secret(_reference_name(reference))
-        return _decode_secret(str(secret.value).encode("utf-8"))
+        try:
+            secret = self._client.get_secret(_reference_name(reference))
+            return _decode_secret(str(secret.value).encode("utf-8"))
+        except ResourceNotFoundError:
+            raise SecretExpiredError("connector_secret_missing") from None
+        except SecretExpiredError:
+            raise
+        except Exception:
+            raise SecretStoreOperationError("connector_secret_get_failed") from None
 
     def delete(self, workspace_id: str, connector_id: str, reference: str) -> None:
         self._validate_reference(workspace_id, connector_id, reference)
-        poller = self._client.begin_delete_secret(_reference_name(reference))
-        wait = getattr(poller, "wait", None)
-        if callable(wait):
-            wait()
+        try:
+            poller = self._client.begin_delete_secret(_reference_name(reference))
+            wait = getattr(poller, "wait", None)
+            if callable(wait):
+                wait()
+        except ResourceNotFoundError:
+            return
+        except Exception:
+            raise SecretStoreOperationError("connector_secret_delete_failed") from None
 
     def _validate_reference(self, workspace_id: str, connector_id: str, reference: str) -> None:
         if str(reference or "") != self.reference_for(workspace_id, connector_id):
@@ -149,7 +180,12 @@ class KeyVaultSecretStore:
 def secret_store_from_environment() -> SecretStore:
     vault_url = str(os.environ.get("DF_KEY_VAULT_URL") or "").strip()
     if vault_url:
-        return KeyVaultSecretStore(validate_key_vault_url(vault_url))
+        try:
+            return KeyVaultSecretStore(validate_key_vault_url(vault_url))
+        except (SecretStoreConfigurationError, SecretStoreOperationError):
+            raise
+        except Exception:
+            raise SecretStoreOperationError("connector_key_vault_unavailable") from None
     return SessionSecretStore()
 
 
@@ -197,6 +233,7 @@ __all__ = [
     "KeyVaultSecretStore",
     "SecretExpiredError",
     "SecretReferenceError",
+    "SecretStoreOperationError",
     "SecretStore",
     "SecretStoreConfigurationError",
     "SessionSecretStore",

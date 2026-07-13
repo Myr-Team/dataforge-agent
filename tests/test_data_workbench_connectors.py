@@ -97,8 +97,20 @@ def test_sync_creates_safe_durable_task_and_connector_lineage(tmp_path, monkeypa
     assert response.json()["task"]["task_type"] == "connector.sql.sync"
     assert lineage["lineage"]["connector_id"] == created["connector_id"]
     assert lineage["lineage"]["table"] == "dbo.sales"
-    assert lineage["lineage"]["source_rows"] == 1
+    assert lineage["lineage"]["row_count"] == 1
     assert "cursor" not in lineage["lineage"]
+
+
+def test_connector_lifecycle_errors_expose_only_stable_codes(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_durable_connectors(tmp_path, monkeypatch)
+    monkeypatch.setattr(data_workbench, "_blob_containers", lambda _payload: (_ for _ in ()).throw(RuntimeError("sig=never-expose;password=never-expose")))
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post("/api/workspaces/ws-safe/connectors/blob/connect", json={"account": "storageacct", "sas": "sig=never-expose"})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {"category": "connector", "code": "blob_connect_failed"}
+    assert "never-expose" not in response.text
 
 
 @pytest.mark.parametrize("field", ["cursor", "watermark"])

@@ -22,8 +22,8 @@ from ingest.adapters.upload_to_records import upload_to_records
 
 try:
     from .blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
-    from .connector_secret_store import SecretExpiredError, secret_store_from_environment
-    from .connector_store import ConnectorDeleteError, ConnectorStore
+    from .connector_secret_store import SecretExpiredError, SecretStoreOperationError, secret_store_from_environment
+    from .connector_store import ConnectorConflictError, ConnectorDeleteError, ConnectorStore, ConnectorStoreError
     from .identity import actor_for_history, actor_from_request, actor_from_ui_context, merge_actor_into_ui_context
     from .orchestrator import orchestrate_chat
     from .schemas import ChatRequest
@@ -43,8 +43,8 @@ try:
     )
 except ImportError:
     from blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
-    from connector_secret_store import SecretExpiredError, secret_store_from_environment
-    from connector_store import ConnectorDeleteError, ConnectorStore
+    from connector_secret_store import SecretExpiredError, SecretStoreOperationError, secret_store_from_environment
+    from connector_store import ConnectorConflictError, ConnectorDeleteError, ConnectorStore, ConnectorStoreError
     from identity import actor_for_history, actor_from_request, actor_from_ui_context, merge_actor_into_ui_context
     from orchestrator import orchestrate_chat
     from schemas import ChatRequest
@@ -774,9 +774,9 @@ def connect_blob(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
     record = _CONNECTOR_STORE.create(workspace_id, "blob", _connector_metadata("blob", payload), payload, _SECRET_STORE)
     try:
         containers = _blob_containers(payload)
-    except Exception as exc:
+    except Exception:
         _delete_after_connect_failure(workspace_id, record["connector_id"])
-        raise HTTPException(status_code=400, detail=_safe_connector_error(exc)) from exc
+        raise HTTPException(status_code=400, detail={"category": "connector", "code": "blob_connect_failed"}) from None
     return {**_public_connector(record), "containers": containers}
 
 
@@ -835,12 +835,17 @@ def list_connectors(workspace_id: str) -> dict[str, Any]:
 
 def reconnect_connector(workspace_id: str, connector_id: str) -> dict[str, Any]:
     record = _CONNECTOR_STORE.get(workspace_id, connector_id)
-    record, payload = _CONNECTOR_STORE.reconnect(workspace_id, connector_id, _SECRET_STORE)
+    try:
+        record, payload = _CONNECTOR_STORE.reconnect(workspace_id, connector_id, _SECRET_STORE)
+    except SecretExpiredError:
+        if record.get("persistence") == "session_only":
+            return {**_public_connector({**record, "status": "expired", "error": "secret_expired"}), "requires_credentials": True}
+        raise
     try:
         extra = {"tables": _sql_tables(payload)} if record["kind"] == "sql" else {"containers": _blob_containers(payload)}
-    except Exception as exc:
+    except Exception:
         _CONNECTOR_STORE.update(workspace_id, connector_id, status="error", error="reconnect_failed")
-        raise ValueError("Connector reconnect failed") from exc
+        raise ConnectorStoreError("connector_reconnect_failed") from None
     return {**_public_connector(record), **extra}
 
 
@@ -861,11 +866,13 @@ def sync_connector(
         raise ConnectorInputError("client_cursor_not_allowed")
     record = _CONNECTOR_STORE.get(workspace_id, connector_id)
     kind = str(record["kind"])
+    if record.get("status") != "connected":
+        raise ConnectorInputError("connector_not_available")
     task = create_task({"workspace_id": workspace_id, "task_type": task_type or f"connector.{kind}.sync", "action": "connector.manage"}, actor)
     if claim_task(task["task_id"], "connector-sync-worker") is None:
         raise TaskPersistenceError("Connector sync task could not be claimed")
-    _CONNECTOR_STORE.update(workspace_id, connector_id, status="syncing", error=None)
     try:
+        record = _CONNECTOR_STORE.transition(workspace_id, connector_id, expected_status="connected", status="syncing", error=None)
         payload = _connector_payload(workspace_id, connector_id, kind, allow_syncing=True)
         if kind == "sql":
             table = str(body.get("table") or "")
@@ -893,10 +900,34 @@ def sync_connector(
         if not job_id:
             raise TaskPersistenceError("Connector sync did not create a durable ingest job")
         update_task(task["task_id"], result={"ingest_job_id": job_id})
-        task = _sync_ingest_task(task["task_id"], job_id, run_workspace_ingest_job(workspace_id, job_id))
+        task = _sync_ingest_task(task["task_id"], job_id, run_workspace_ingest_job(workspace_id, job_id), finalize=False)
+        if task.get("status") in {"failed", "partial"}:
+            _CONNECTOR_STORE.transition(workspace_id, connector_id, expected_status="syncing", status="error", error="sync_ingest_incomplete")
+            return {
+                "workspace_id": workspace_id,
+                "connector_id": connector_id,
+                "connection_id": connector_id,
+                "imported": False,
+                "syncing": False,
+                "source": {key: value for key, value in lineage.items() if key != "connector_id"},
+                "upload": result,
+                "task": task,
+            }
+        if task.get("status") != "running":
+            return {
+                "workspace_id": workspace_id,
+                "connector_id": connector_id,
+                "connection_id": connector_id,
+                "imported": False,
+                "syncing": True,
+                "source": {key: value for key, value in lineage.items() if key != "connector_id"},
+                "upload": result,
+                "task": task,
+            }
         _record_connector_lineage(workspace_id, result, lineage=lineage)
         _record_import_history(workspace_id, result, actor, f"Synced {kind} connector source")
-        _CONNECTOR_STORE.update(workspace_id, connector_id, status="connected", error=None)
+        record = _CONNECTOR_STORE.transition(workspace_id, connector_id, expected_status="syncing", status="connected", error=None)
+        task = update_task(task["task_id"], status="completed", result={"ingest_job_id": job_id})
         return {
         "workspace_id": workspace_id,
         "connector_id": connector_id,
@@ -907,9 +938,16 @@ def sync_connector(
         "upload": result,
             "task": task,
         }
-    except Exception:
-        update_task(task["task_id"], status="failed", error={"category": "connector", "code": "sync_failed"})
-        _CONNECTOR_STORE.update(workspace_id, connector_id, status="error", error="sync_failed")
+    except Exception as exc:
+        try:
+            update_task(task["task_id"], status="failed", error={"category": "connector", "code": "sync_failed"})
+        except Exception:
+            pass
+        if not isinstance(exc, ConnectorConflictError):
+            try:
+                _CONNECTOR_STORE.transition(workspace_id, connector_id, expected_status="syncing", status="error", error="sync_failed")
+            except (FileNotFoundError, ConnectorStoreError):
+                pass
         raise
 
 
@@ -923,7 +961,7 @@ def _connector_payload(workspace_id: str, connector_id: str, kind: str, *, allow
         return _SECRET_STORE.get(workspace_id, connector_id, record["secret_ref"])
     except SecretExpiredError:
         if record.get("persistence") != "session_only":
-            _CONNECTOR_STORE.update(workspace_id, connector_id, status="expired", error="secret_expired")
+            _CONNECTOR_STORE.transition(workspace_id, connector_id, expected_status="connected", status="expired", error="secret_expired")
         raise
 
 
@@ -942,7 +980,7 @@ def _connector_lineage(record: dict[str, Any], **source: Any) -> dict[str, Any]:
                 raise ValueError(f"Invalid connector lineage {key}")
             lineage[key] = value
     if isinstance(source.get("source_rows"), int):
-        lineage["source_rows"] = max(0, min(10**12, int(source["source_rows"])))
+        lineage["row_count"] = max(0, min(10**12, int(source["source_rows"])))
     if isinstance(source.get("source_bytes"), int):
         lineage["source_bytes"] = max(0, min(10**12, int(source["source_bytes"])))
     columns = [str(item) for item in source.get("source_columns") or [] if re.fullmatch(r"[A-Za-z0-9_ -]{1,120}", str(item))]
@@ -1004,18 +1042,29 @@ def clear_connector_sessions() -> None:
 async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
     try:
         return await run_in_threadpool(func, *args, **kwargs)
+    except HTTPException:
+        raise
     except TaskPersistenceError as exc:
         raise HTTPException(status_code=503, detail="Durable task storage is unavailable") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail={"code": "connector_not_found"}) from exc
+    except SecretExpiredError:
+        raise HTTPException(status_code=409, detail={"category": "connector", "code": "connector_secret_expired", "requires_credentials": True}) from None
+    except ConnectorConflictError:
+        raise HTTPException(status_code=409, detail={"category": "connector", "code": "connector_conflict"}) from None
+    except ConnectorDeleteError as exc:
+        raise HTTPException(status_code=409, detail={"category": "connector", "code": exc.code}) from None
+    except (ConnectorStoreError, SecretStoreOperationError) as exc:
+        raise HTTPException(status_code=503, detail={"category": "connector", "code": exc.code}) from None
     except ConnectorInputError as exc:
         raise HTTPException(status_code=422, detail={"code": str(exc)}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"code": "invalid_connector_request"}) from exc
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ConnectorDeleteError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PermissionError:
+        raise HTTPException(status_code=403, detail={"code": "workspace_permission_denied"}) from None
+    except Exception as exc:
+        print(f"workbench connector operation failed category=connector exception_type={type(exc).__name__}", flush=True)
+        raise HTTPException(status_code=503, detail={"category": "connector", "code": "connector_operation_failed"}) from None
 
 
 def _require(request: Request, workspace_id: str, action: str) -> str:
@@ -2217,14 +2266,14 @@ def _find_active_ingest_task(workspace_id: str, job_id: str) -> dict[str, Any] |
     return None
 
 
-def _sync_ingest_task(task_id: str, job_id: str, ingest_status: Any) -> dict[str, Any]:
+def _sync_ingest_task(task_id: str, job_id: str, ingest_status: Any, *, finalize: bool = True) -> dict[str, Any]:
     status = ingest_status if isinstance(ingest_status, dict) else {}
     state = str(status.get("state") or "ready")
     changes: dict[str, Any] = {"result": {"ingest_job_id": job_id}}
     if isinstance(status.get("pct"), int):
         changes["progress"] = max(0, min(100, int(status["pct"])))
     if state in {"ready", "completed"}:
-        changes["status"] = "completed"
+        changes["status"] = "completed" if finalize else "running"
     elif state == "partial":
         changes.update({"status": "partial", "error": {"category": "ingest", "code": "partial"}})
     elif state == "failed":
@@ -2428,10 +2477,8 @@ def _raise_sql_connector_error(exc: BaseException, *, status_code: int = 400) ->
     else:
         message = "数据库连接失败，请检查连接配置后重试。"
         hint = "请确认服务器、数据库、账号权限和网络访问策略均正确。"
-    raise HTTPException(
-        status_code=status_code,
-        detail={"message": message, "hint": hint, "error_type": "sql_connection_error"},
-    ) from exc
+    del message, hint
+    raise HTTPException(status_code=status_code, detail={"category": "connector", "code": "sql_connection_failed"}) from None
 
 
 def _safe_connector_error(exc: BaseException) -> str:

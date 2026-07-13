@@ -53,7 +53,7 @@
 ## Self-check
 
 - SQL keeps allowlisted table lookup and quoted identifiers; Blob keeps account/container/blob validation and size limits. Both paths remain read-only.
-- Sync creates a durable ingest task, imports a new workspace file rather than overwriting the source, and records connector/table/blob plus cursor/watermark lineage.
+- Sync creates a durable ingest task, imports a new workspace file rather than overwriting the source, and records connector/table/blob plus server-derived observation metadata only; it never records client cursor/watermark input.
 - Disconnect keeps record and secret; delete removes both, while partial delete failures remain explicit and recoverable.
 - UI shows durable/session-only/expired/disconnected/syncing/error state and offers reconnect, sync, disconnect, and delete without refilling credentials.
 
@@ -88,3 +88,52 @@
 - Key Vault and ConnectorStore now share `expected_secret_reference()` rather than independent string formats; integration coverage uses the real KeyVaultSecretStore with a fake Azure SecretClient.
 - `DF_KEY_VAULT_URL` accepts only an https host without path, user info, query, or fragment. Health emits only the canonical scheme and host.
 - The full test suite still contains one pre-existing experimental workflow warning; it is not treated as a connector health success signal.
+
+## Backend Closure: CAS, Recovery, And Terminal Ordering
+
+### RED / GREEN
+
+- RED reproduced an overwrite race where two local ConnectorStore instances both wrote revision 2, remote connector updates accepted overwrite writes, a `secret_deleted` record attempted a second secret delete, and a claimed sync task could remain running if the `syncing` transition failed.
+- GREEN adds real revision CAS for configured Blob storage: the helper reads the Blob ETag and record revision, uploads/deletes with `IfNotModified`, and returns the stable `connector_conflict` code on conflict. Local records use per-record cross-process `.lock` sidecars and UUID temporary names; separate spawned processes now serialize revisions 2 then 3.
+- GREEN retains the named Blob path on strict list. Every listed payload must match `connectors/<workspace>/<connector>.json`; a renamed or cross-identity record fails closed.
+- GREEN drives deletion through `deleting -> secret_deleted -> record_deleted`. Secret-missing/soft-deleted outcomes are idempotent success; a record-delete failure keeps `secret_deleted` for retry and cannot cause a second secret delete. Missing records are idempotent success.
+- GREEN encloses every action after durable task claim in one failure boundary. A failed `syncing` write makes the task terminal `failed`; ingest is intentionally not marked `completed` until the forced-new-version upload, server-derived lineage/history, and connector `connected` transition all succeed. Earlier failure leaves a terminal `failed`/`partial` task and truthful connector error state.
+
+### Secret Isolation And Stable Errors
+
+- Key Vault `put/get/delete` and construction now translate operational failures to stable connector codes with `raise ... from None`; raw endpoint, exception message, password, SAS/signature, URI, bearer, and username values do not enter connector APIs or logs.
+- Session-only reconnect with no local secret produces only an ephemeral `{status: "expired", requires_credentials: true}` projection. The durable record remains unchanged for another instance.
+- Blob/SQL/Key Vault lifecycle APIs use `{category: "connector", code: "..."}` responses. Regression coverage injects `sig` and password text and confirms it is absent from the HTTP response.
+
+### Corrected API Sample
+
+`cursor` and `watermark` are not client inputs or persisted lineage. Sync rejects either field with 422. The only observed metadata is server-derived and typed:
+
+```json
+{
+  "connector_id": "sql_7f2a...",
+  "syncing": false,
+  "source": {
+    "kind": "sql",
+    "table": "dbo.sales",
+    "observed_at": "2026-07-13T00:00:00+00:00",
+    "row_count": 100,
+    "column_hash": "2d711642b726b04401627ca9fbac32f5"
+  },
+  "task": {"task_type": "connector.sql.sync", "result": {"ingest_job_id": "job_..."}}
+}
+```
+
+Warning: `row_count` is the server-observed import preview count; it is not a client-provided cursor or watermark and does not establish a source-system checkpoint.
+
+### Verification
+
+- Focused connector/data/task/security/roles regression: `104 passed`.
+- Full Python suite: `393 passed, 1 warning` (existing experimental workflow warning).
+- Import smoke: `python -m backend.import_smoke` passed.
+- Diff check: `git diff --check` passed.
+
+### Concerns
+
+- A Key Vault soft-deleted secret is treated as already removed during connector deletion. Recovering a connector after deletion still requires a new connect flow and credentials.
+- Blob CAS retries are intentionally bounded; a continuously contended record returns `connector_conflict` rather than overwriting a newer lifecycle state.
