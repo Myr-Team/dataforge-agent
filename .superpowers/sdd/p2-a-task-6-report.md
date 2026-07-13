@@ -202,3 +202,25 @@ Warning: `row_count` is the server-observed import preview count; it is not a cl
 ### Concerns
 
 - Finalization recovery deliberately refuses a task whose durable ownership evidence is incomplete or mismatched. It leaves a stable connector error rather than publishing an unverified connection state.
+
+## Fifth Review Closure: Task Identity and File Epochs
+
+### RED / GREEN
+
+- RED: connector sync tasks persisted only an ingest job id, so a same-workspace, same-kind task could be mistaken for another connector's finalization task.
+- GREEN: `connector_id` is now an allowlisted task result field and is written when the sync task is created and on every connector sync task transition. Recovery requires task result connector identity and matching persisted connector lineage on the ingest job.
+- GREEN: same-workspace, same-kind cross-connector recovery is rejected as `sync_task_mismatch`.
+- GREEN: file reload captures its workspace id and request sequence internally. It commits groups and storage only when that exact request remains current; callers cannot opt out of this guard.
+- GREEN: create, save, mapping-save, delete, content load, side-panel load, and workspace initial-file selection reject late workspace responses before writing file UI state, opening files, or showing an action toast.
+- GREEN: recovery converts task read/update persistence failures to `ConnectorTaskUnavailableError` without chaining exception text, producing the stable connector API code.
+
+### Verification
+
+- Focused connector/data/task regression: `55 passed`.
+- Full Python suite: `404 passed, 1 warning`.
+- Node behavior suites: `29 passed`.
+- Production build, import smoke, and `git diff --check`: passed.
+
+### Concerns
+
+- A finalization task now requires both task-result identity and persisted lineage identity. Older records that lack either proof fail closed as a connector task mismatch rather than being auto-finalized.

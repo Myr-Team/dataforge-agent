@@ -5,6 +5,7 @@ import {
   connectorActionState,
   commitGuardedConnectorAction,
   createConnectorActionController,
+  createWorkspaceFileController,
   connectorRecordsForWorkspaceResponse,
   connectorViewModel,
   createConnectorListController,
@@ -116,4 +117,30 @@ test("finalizing connectors remain syncing-like and do not expose reconnect as a
   const model = connectorViewModel([{ connector_id: "sql-final", kind: "sql", status: "finalizing" }], "sql-final");
   assert.equal(model.cards[0].pending, "finalizing");
   assert.equal(connectorActionState(model, "sql-final").pending, "finalizing");
+});
+
+test("late create save and delete file actions cannot commit after a workspace switch", () => {
+  for (const action of ["create", "save", "delete"]) {
+    let workspaceId = "ws-a";
+    const controller = createWorkspaceFileController({ currentWorkspaceId: () => workspaceId });
+    const guard = controller.beginAction(action);
+    workspaceId = "ws-b";
+    assert.equal(guard.isCurrent(), false, action);
+  }
+});
+
+test("workspace file reload applies only the latest current workspace response", async () => {
+  let workspaceId = "ws-a";
+  const controller = createWorkspaceFileController({ currentWorkspaceId: () => workspaceId });
+  let resolveA;
+  const applied = [];
+  const pendingA = controller.reload("ws-a",
+    (id) => id === "ws-a" ? new Promise((resolve) => { resolveA = resolve; }) : Promise.resolve({ groups: [{ id: "b" }] }),
+    (data, id) => applied.push({ id, data }),
+  );
+  workspaceId = "ws-b";
+  await controller.reload("ws-b", () => Promise.resolve({ groups: [{ id: "b" }] }), (data, id) => applied.push({ id, data }));
+  resolveA({ groups: [{ id: "a" }] });
+  await pendingA;
+  assert.deepEqual(applied, [{ id: "ws-b", data: { groups: [{ id: "b" }] } }]);
 });

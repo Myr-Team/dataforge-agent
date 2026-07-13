@@ -33,7 +33,7 @@ _TASK_FIELDS = {
     "progress", "revision", "retry_of", "retryable", "cancel_requested", "cancel_requested_at", "created_at", "updated_at", "started_at", "completed_at",
 }
 _PUBLIC_ACTOR_FIELDS = {"name", "email", "actor_id", "tenant_id", "source"}
-_RESULT_IDS = {"task_id", "job_id", "artifact_job_id", "ingest_job_id", "file_id", "artifact_id", "run_id", "conversation_id", "version_id"}
+_RESULT_IDS = {"task_id", "job_id", "artifact_job_id", "ingest_job_id", "connector_id", "file_id", "artifact_id", "run_id", "conversation_id", "version_id"}
 _RESULT_URLS = {"url", "artifact_url"}
 _SENSITIVE = re.compile(r"(?:password|secret|token|authorization|connection[_-]?string|access[_-]?key|credential|accountkey|sharedaccesssignature|sig=|bearer\s+)", re.I)
 _SAFE_TEXT = re.compile(r"^[A-Za-z0-9_.:/-]{1,300}$")

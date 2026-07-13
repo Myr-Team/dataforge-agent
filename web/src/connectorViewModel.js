@@ -84,6 +84,31 @@ export function commitGuardedConnectorAction(guard, commit) {
   return true;
 }
 
+export function createWorkspaceFileController({ currentWorkspaceId }) {
+  let requestSequence = 0;
+  let actionSequence = 0;
+  return {
+    beginAction() {
+      const workspaceId = currentWorkspaceId();
+      const epoch = ++actionSequence;
+      return {
+        workspaceId,
+        isCurrent() {
+          return currentWorkspaceId() === workspaceId && actionSequence === epoch;
+        },
+      };
+    },
+    async reload(workspaceId, load, apply) {
+      const requestedWorkspaceId = workspaceId || currentWorkspaceId();
+      const sequence = ++requestSequence;
+      const data = await load(requestedWorkspaceId);
+      if (currentWorkspaceId() !== requestedWorkspaceId || requestSequence !== sequence) return data;
+      apply(data, requestedWorkspaceId);
+      return data;
+    },
+  };
+}
+
 export function replaceConnectorRecord(records, record) {
   const safe = publicConnectorRecord(record);
   if (!safe) return Array.isArray(records) ? records : [];

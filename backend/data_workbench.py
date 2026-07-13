@@ -878,7 +878,7 @@ def sync_connector(
     if record.get("status") != "connected":
         raise ConnectorInputError("connector_not_available")
     try:
-        task = create_task({"workspace_id": workspace_id, "task_type": task_type or f"connector.{kind}.sync", "action": "connector.manage"}, actor)
+        task = create_task({"workspace_id": workspace_id, "task_type": task_type or f"connector.{kind}.sync", "action": "connector.manage", "result": {"connector_id": connector_id}}, actor)
     except TaskPersistenceError:
         raise ConnectorTaskUnavailableError() from None
     try:
@@ -911,8 +911,8 @@ def sync_connector(
         job_id = str(result.get("ingest_job_id") or "")
         if not job_id:
             raise TaskPersistenceError("Connector sync did not create a durable ingest job")
-        update_task(task["task_id"], result={"ingest_job_id": job_id})
-        task = _sync_ingest_task(task["task_id"], job_id, run_workspace_ingest_job(workspace_id, job_id), finalize=False)
+        update_task(task["task_id"], result={"ingest_job_id": job_id, "connector_id": connector_id})
+        task = _sync_ingest_task(task["task_id"], job_id, run_workspace_ingest_job(workspace_id, job_id), finalize=False, connector_id=connector_id)
         if task.get("status") in {"failed", "partial"}:
             _CONNECTOR_STORE.transition(workspace_id, connector_id, expected_status="syncing", status="error", error="sync_ingest_incomplete")
             return {
@@ -948,7 +948,7 @@ def sync_connector(
             sync_token=sync_token,
             error=None,
         )
-        task = _complete_connector_sync_task(task["task_id"], job_id)
+        task = _complete_connector_sync_task(task["task_id"], job_id, connector_id)
         _CONNECTOR_STORE.transition(
             workspace_id,
             connector_id,
@@ -990,9 +990,9 @@ def sync_connector(
         raise
 
 
-def _complete_connector_sync_task(task_id: str, job_id: str) -> dict[str, Any]:
+def _complete_connector_sync_task(task_id: str, job_id: str, connector_id: str) -> dict[str, Any]:
     try:
-        task = update_task(task_id, status="completed", result={"ingest_job_id": job_id})
+        task = update_task(task_id, status="completed", result={"ingest_job_id": job_id, "connector_id": connector_id})
     except TaskPersistenceError:
         raise ConnectorTaskUnavailableError() from None
     if task.get("status") != "completed":
@@ -1028,22 +1028,27 @@ def _recover_connector_finalization(workspace_id: str, record: dict[str, Any]) -
         _mark_connector_sync_error(workspace_id, str(record["connector_id"]), "sync_task_missing")
         return _CONNECTOR_STORE.get(workspace_id, str(record["connector_id"]))
     except TaskPersistenceError:
-        raise
-    job_id = str((task.get("result") or {}).get("ingest_job_id") or "")
+        raise ConnectorTaskUnavailableError() from None
+    task_result = task.get("result") or {}
+    job_id = str(task_result.get("ingest_job_id") or "")
     expected_types = {f"connector.{record['kind']}.sync", f"connector.{record['kind']}.import"}
     if (
         task.get("workspace_id") != workspace_id
         or task.get("action") != "connector.manage"
         or task.get("task_type") not in expected_types
         or not job_id
-        or not _connector_ingest_job_belongs_to_workspace(workspace_id, job_id)
+        or task_result.get("connector_id") != record["connector_id"]
+        or not _connector_ingest_job_belongs_to_workspace(workspace_id, job_id, str(record["connector_id"]))
     ):
         _mark_connector_sync_error(workspace_id, str(record["connector_id"]), "sync_task_mismatch")
         return _CONNECTOR_STORE.get(workspace_id, str(record["connector_id"]))
     status = str(task.get("status") or "")
     if status == "running":
         # Files, lineage and history were committed before finalizing, so this is safe to resume.
-        task = update_task(task_id, status="completed", result={"ingest_job_id": job_id})
+        try:
+            task = update_task(task_id, status="completed", result={"ingest_job_id": job_id, "connector_id": str(record["connector_id"])})
+        except TaskPersistenceError:
+            raise ConnectorTaskUnavailableError() from None
         status = str(task.get("status") or "")
         if status != "completed":
             return record
@@ -1066,16 +1071,16 @@ def _recover_connector_finalization(workspace_id: str, record: dict[str, Any]) -
     return record
 
 
-def _connector_ingest_job_belongs_to_workspace(workspace_id: str, ingest_job_id: str) -> bool:
+def _connector_ingest_job_belongs_to_workspace(workspace_id: str, ingest_job_id: str, connector_id: str) -> bool:
     try:
         meta, _profile = _workspace_state(workspace_id)
     except FileNotFoundError:
         return False
-    for item in meta.get("ingest_jobs") or []:
-        if isinstance(item, dict) and str(item.get("ingest_job_id") or item.get("job_id") or "") == ingest_job_id:
-            return True
     return any(
-        isinstance(item, dict) and str(item.get("ingest_job_id") or "") == ingest_job_id
+        isinstance(item, dict)
+        and str(item.get("ingest_job_id") or "") == ingest_job_id
+        and isinstance(item.get("connector_lineage"), dict)
+        and str(item["connector_lineage"].get("connector_id") or "") == connector_id
         for item in meta.get("documents") or []
     )
 
@@ -2408,10 +2413,13 @@ def _find_active_ingest_task(workspace_id: str, job_id: str) -> dict[str, Any] |
     return None
 
 
-def _sync_ingest_task(task_id: str, job_id: str, ingest_status: Any, *, finalize: bool = True) -> dict[str, Any]:
+def _sync_ingest_task(task_id: str, job_id: str, ingest_status: Any, *, finalize: bool = True, connector_id: str | None = None) -> dict[str, Any]:
     status = ingest_status if isinstance(ingest_status, dict) else {}
     state = str(status.get("state") or "ready")
-    changes: dict[str, Any] = {"result": {"ingest_job_id": job_id}}
+    result: dict[str, Any] = {"ingest_job_id": job_id}
+    if connector_id:
+        result["connector_id"] = str(connector_id)
+    changes: dict[str, Any] = {"result": result}
     if isinstance(status.get("pct"), int):
         changes["progress"] = max(0, min(100, int(status["pct"])))
     if state in {"ready", "completed"}:

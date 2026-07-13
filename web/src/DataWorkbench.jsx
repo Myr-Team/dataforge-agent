@@ -60,6 +60,7 @@ import {
   connectorViewModel,
   commitGuardedConnectorAction,
   createConnectorActionController,
+  createWorkspaceFileController,
   isCurrentConnectorListResponse,
 } from "./connectorViewModel.js";
 
@@ -192,10 +193,16 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   const connectorListSequence = useRef(0);
   const currentConnectorWorkspace = useRef("");
   const connectorActionController = useRef(null);
+  const currentFileWorkspace = useRef("");
+  const workspaceFileController = useRef(null);
   const externalStorageKey = workspaceId ? `df-dataworkbench-external:${workspaceId}` : "";
   currentConnectorWorkspace.current = workspaceId;
+  currentFileWorkspace.current = workspaceId;
   if (!connectorActionController.current) {
     connectorActionController.current = createConnectorActionController({ currentWorkspaceId: () => currentConnectorWorkspace.current });
+  }
+  if (!workspaceFileController.current) {
+    workspaceFileController.current = createWorkspaceFileController({ currentWorkspaceId: () => currentFileWorkspace.current });
   }
 
   const connectorModel = useMemo(
@@ -236,6 +243,8 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   const beginConnectorAction = useCallback((action, connectorId = "", kind = "") => (
     connectorActionController.current.begin({ workspaceId, action, connectorId, kind })
   ), [workspaceId]);
+
+  const beginFileAction = useCallback(() => workspaceFileController.current.beginAction(), []);
 
   const reloadConnectorRecords = useCallback(async (guard = null) => {
     const requestSequence = ++connectorListSequence.current;
@@ -466,30 +475,41 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     clearConnectorState,
   ]);
 
-  const reloadFiles = useCallback(async ({ guard = null, commit = true } = {}) => {
-    if (!workspaceId) return;
+  const reloadFiles = useCallback(async () => {
+    const requestWorkspaceId = workspaceId;
+    if (!requestWorkspaceId) return;
     setFilesLoading(true);
     try {
-      const data = await dwListFiles(workspaceId);
-      if (commit && (!guard || guard.isCurrent())) {
-        setGroups(data.groups || []);
-        setStorage(data.storage || null);
-      }
-      return data;
+      return await workspaceFileController.current.reload(
+        requestWorkspaceId,
+        (targetWorkspaceId) => dwListFiles(targetWorkspaceId),
+        (data) => {
+          setGroups(data.groups || []);
+          setStorage(data.storage || null);
+        },
+      );
     } catch (e) {
-      if (guard && !guard.isCurrent()) return undefined;
-      showToast(`加载文件库失败：${e.message}`);
+      if (currentFileWorkspace.current === requestWorkspaceId) showToast(`加载文件库失败：${e.message}`);
+      return undefined;
     } finally {
-      if (!guard || guard.isCurrent()) setFilesLoading(false);
+      if (currentFileWorkspace.current === requestWorkspaceId) setFilesLoading(false);
     }
   }, [workspaceId, showToast]);
 
   // 初次/切工作区：拉文件库，默认打开第一个文件
   useEffect(() => {
     let cancelled = false;
+    setActive(null);
+    setOpenTabs([]);
+    setContent(null);
+    setRows([]);
+    setTableColumns([]);
+    setQuality(null);
+    setMapping(null);
+    setHistory([]);
     (async () => {
       const data = await reloadFiles();
-      if (cancelled || !data) return;
+      if (cancelled || currentFileWorkspace.current !== workspaceId || !data) return;
       const first = (data.groups || []).flatMap((g) => g.files || [])[0];
       if (first && !active) openFile(first);
     })();
@@ -503,6 +523,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   const isExternal = Boolean(active?.external);
 
   const loadContent = useCallback(async (file, off = 0) => {
+    const requestWorkspaceId = workspaceId;
     setContentLoading(true);
     setEdits({});
     setTableOps({});
@@ -511,6 +532,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     setDirty(false);
     try {
       const data = await dwFileContent(workspaceId, file.id, { limit: PAGE, offset: off });
+      if (currentFileWorkspace.current !== requestWorkspaceId) return;
       setContent(data);
       setOffset(off);
       if (data.kind === "markdown" || data.kind === "json") {
@@ -528,13 +550,14 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
         });
       }
     } catch (e) {
-      showToast(`加载内容失败：${e.message}`);
+      if (currentFileWorkspace.current === requestWorkspaceId) showToast(`加载内容失败：${e.message}`);
     } finally {
-      setContentLoading(false);
+      if (currentFileWorkspace.current === requestWorkspaceId) setContentLoading(false);
     }
   }, [workspaceId, showToast]);
 
   const loadExternalContent = useCallback(async (file, off = 0) => {
+    const requestWorkspaceId = workspaceId;
     const source = file?.source || {};
     setContentLoading(true);
     setEdits({});
@@ -550,6 +573,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
       const data = file.externalKind === "blob"
         ? await dwBlobPreview(workspaceId, source.connection_id, source.container, source.blob, { limit: PAGE, offset: off })
         : await dwSqlPreview(workspaceId, source.connection_id, source.table, PAGE);
+      if (currentFileWorkspace.current !== requestWorkspaceId) return;
       setContent(data);
       setOffset(file.externalKind === "blob" ? off : 0);
       if (data.kind === "markdown" || data.kind === "json") {
@@ -567,21 +591,23 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
         });
       }
     } catch (e) {
+      if (currentFileWorkspace.current !== requestWorkspaceId) return;
       if (isConnectorSessionError(e)) {
         clearConnectorState(file.externalKind, "外部连接会话已失效，请重新连接。");
         return;
       }
       showToast(`外部数据预览失败：${e.message}`);
     } finally {
-      setContentLoading(false);
+      if (currentFileWorkspace.current === requestWorkspaceId) setContentLoading(false);
     }
   }, [workspaceId, showToast, clearConnectorState]);
 
   const loadSidePanels = useCallback(async (file) => {
+    const requestWorkspaceId = workspaceId;
     setQuality(null); setMapping(null); setHistory([]); setMapDraft({});
-    dwFileQuality(workspaceId, file.id).then(setQuality).catch(() => {});
-    dwFieldMapping(workspaceId, file.id).then(setMapping).catch(() => {});
-    dwFileHistory(workspaceId, file.id).then((h) => setHistory(Array.isArray(h) ? h : [])).catch(() => {});
+    dwFileQuality(workspaceId, file.id).then((value) => { if (currentFileWorkspace.current === requestWorkspaceId) setQuality(value); }).catch(() => {});
+    dwFieldMapping(workspaceId, file.id).then((value) => { if (currentFileWorkspace.current === requestWorkspaceId) setMapping(value); }).catch(() => {});
+    dwFileHistory(workspaceId, file.id).then((h) => { if (currentFileWorkspace.current === requestWorkspaceId) setHistory(Array.isArray(h) ? h : []); }).catch(() => {});
   }, [workspaceId]);
 
   const openFile = useCallback((file) => {
@@ -624,6 +650,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
 
   const save = async () => {
     if (!active || !dirty || saving) return;
+    const guard = beginFileAction();
     setSaving(true);
     try {
       if (isMd) {
@@ -635,16 +662,16 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
         const payload = { edits: editList, ...tableOps };
         if (editList.length || Object.keys(tableOps).length) await dwSaveCells(workspaceId, active.id, payload);
       }
+      if (!guard.isCurrent()) return;
       setDirty(false); setEdits({}); setTableOps({}); setContextMenu(null);
       showToast("已保存");
-      await loadContent(active, offset); // 重新载入校验持久化
-      loadSidePanels(active);
-      reloadFiles();
+      await reloadFiles();
+      if (!guard.isCurrent()) return;
       notifyWorkspaceDataChanged();
     } catch (e) {
-      showToast(`保存失败：${e.message}`);
+      if (guard.isCurrent()) showToast(`保存失败：${e.message}`);
     } finally {
-      setSaving(false);
+      if (guard.isCurrent()) setSaving(false);
     }
   };
 
@@ -662,34 +689,39 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
       showToast("请输入文件名");
       return;
     }
+    const guard = beginFileAction();
     try {
       const name = createModal.name.trim();
       const body = createModal.kind === "md"
         ? { name, type: "md", text: createModal.text || `# ${name}\n\n` }
         : { name, kind: "table", columns: createModal.columns.split(",").map((x) => x.trim()).filter(Boolean), rows: [["", ""]] };
       const res = await dwCreateFile(workspaceId, body);
+      if (!guard.isCurrent()) return;
       showToast("已创建并入库");
       setCreateModal(null);
       const data = await reloadFiles();
+      if (!guard.isCurrent()) return;
       const created = (data?.groups || []).flatMap((g) => g.files || []).find((f) => f.id === res.file?.id) || res.file;
       if (created?.id) openFile(created);
       notifyWorkspaceDataChanged();
     } catch (e) {
-      showToast(`新建失败：${e.message}`);
+      if (guard.isCurrent()) showToast(`新建失败：${e.message}`);
     }
   };
 
   const saveMapping = async () => {
     if (!active || !mapping) return;
+    const guard = beginFileAction();
     const m = {};
     for (const [src, target] of Object.entries(mapDraft)) if (target && target.trim()) m[src] = target.trim();
     try {
       const res = await dwSaveFieldMapping(workspaceId, active.id, m);
+      if (!guard.isCurrent()) return;
       setMapping(res); setMapDraft({});
       showToast("字段映射已保存");
       dwFileQuality(workspaceId, active.id).then(setQuality).catch(() => {});
     } catch (e) {
-      showToast(`保存映射失败：${e.message}`);
+      if (guard.isCurrent()) showToast(`保存映射失败：${e.message}`);
     }
   };
 
@@ -826,16 +858,19 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
 
   const deleteActiveFile = async () => {
     if (!active) return;
+    const guard = beginFileAction();
     try {
       await dwDeleteFile(workspaceId, active.id);
+      if (!guard.isCurrent()) return;
       showToast("文件已删除");
       setOpenTabs((tabs) => tabs.filter((t) => t.id !== active.id));
       setActive(null);
       setContent(null);
       await reloadFiles();
+      if (!guard.isCurrent()) return;
       notifyWorkspaceDataChanged();
     } catch (e) {
-      showToast(`删除失败：${e.message}`);
+      if (guard.isCurrent()) showToast(`删除失败：${e.message}`);
     }
   };
 
