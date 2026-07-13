@@ -290,6 +290,35 @@ def claim_blob_json(
     except (ResourceModifiedError, ResourceNotFoundError):
         return None
     except Exception:
+        raise
+
+
+def compare_and_swap_blob_json(
+    blob_name: str,
+    *,
+    expected_revision: int,
+    changes: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not blob_configured():
+        return None
+    try:
+        container = _container_client()
+        blob = container.get_blob_client(blob_name)
+        properties = blob.get_blob_properties()
+        raw = blob.download_blob().readall().decode("utf-8")
+        current = json.loads(raw)
+        if not isinstance(current, dict) or int(current.get("revision") or 0) != int(expected_revision):
+            return None
+        updated = {**current, **changes}
+        blob.upload_blob(
+            json.dumps(updated, ensure_ascii=False).encode("utf-8"),
+            overwrite=True,
+            etag=properties.etag,
+            match_condition=MatchConditions.IfNotModified,
+            content_settings=ContentSettings(content_type="application/json; charset=utf-8"),
+        )
+        return updated
+    except (ResourceModifiedError, ResourceNotFoundError):
         return None
 
 

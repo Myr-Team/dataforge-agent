@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 try:
     from .artifact_jobs import create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
-    from .task_store import claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
+    from .task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
     from .control_plane import build_workspace_dashboard, router as control_plane_router
@@ -72,7 +72,7 @@ try:
     from .tools.render_pdf import render_pdf_report
 except ImportError:
     from artifact_jobs import create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
-    from task_store import claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
+    from task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
     from control_plane import build_workspace_dashboard, router as control_plane_router
@@ -207,6 +207,8 @@ async def upload_workspace(
         raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Task persistence is unavailable") from exc
     return UploadResponse.model_validate(result)
 
 
@@ -761,18 +763,15 @@ def _ensure_upload_ingest_task(result: Mapping[str, Any], actor: Mapping[str, An
     existing = str(result.get("_dataforge_task_id") or "")
     if existing:
         return existing
-    try:
-        task = create_task(
-            {
-                "workspace_id": str(result.get("workspace_id") or ""),
-                "task_type": "workspace.ingest",
-                "action": "file.create",
-                "result": {"ingest_job_id": str(result.get("ingest_job_id") or result.get("job_id") or "")},
-            },
-            actor,
-        )
-    except Exception:
-        return None
+    task = create_task(
+        {
+            "workspace_id": str(result.get("workspace_id") or ""),
+            "task_type": "workspace.ingest",
+            "action": "file.create",
+            "result": {"ingest_job_id": str(result.get("ingest_job_id") or result.get("job_id") or "")},
+        },
+        actor,
+    )
     if isinstance(result, dict):
         result["_dataforge_task_id"] = task["task_id"]
     return str(task["task_id"])
@@ -802,7 +801,7 @@ async def _run_upload_ingest_background(workspace_id: str, job_id: str, task_id:
                 )
             # The per-file worker persists failures when possible; this guard keeps
             # an unhandled background exception from terminating the event loop.
-            print(f"upload ingest job failed workspace={workspace_id} job={job_id}: {type(exc).__name__}: {exc}", flush=True)
+            print(f"upload ingest job failed workspace={workspace_id} job={job_id}: {type(exc).__name__}", flush=True)
         else:
             if task_id:
                 await run_in_threadpool(

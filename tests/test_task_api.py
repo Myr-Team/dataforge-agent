@@ -64,3 +64,18 @@ def test_task_list_and_retry_use_workspace_scoped_actions(tmp_path, monkeypatch:
     assert retried.json()["retry_of"] == task["task_id"]
     assert retried.json()["attempt"] == 2
     assert denied.status_code == 403
+
+
+def test_workspace_task_list_rejects_member_of_a_different_workspace(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _task()
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setattr(
+        workspace_authz,
+        "workspace_role",
+        lambda workspace_id, actor: "owner" if workspace_id == "ws-other" and actor.get("email") == "owner@contoso.com" else None,
+    )
+
+    response = TestClient(app).get("/api/workspaces/ws-private/tasks", headers=_headers("owner@contoso.com"))
+
+    assert response.status_code == 403

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import shutil
+import threading
 
 import pytest
 
@@ -86,3 +87,103 @@ def test_cancel_does_not_rewrite_completed_task(tmp_path, monkeypatch: pytest.Mo
 
     assert cancelled["status"] == "completed"
     assert cancelled["result"] == {"artifact_job_id": "artifact_job_123"}
+
+
+def test_blob_write_failure_does_not_report_or_leave_a_local_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(task_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(task_store, "upload_blob_json", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("blob unavailable")))
+
+    with pytest.raises(RuntimeError, match="durable"):
+        task_store.create_task(_payload(), _actor())
+
+    assert not task_store.TASK_DIR.exists()
+
+
+def test_blob_update_failure_preserves_remote_task_after_local_loss(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    remote: dict[str, dict] = {}
+    monkeypatch.setattr(task_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
+    monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    task = task_store.create_task(_payload(), _actor())
+    monkeypatch.setattr(task_store, "claim_blob_json", lambda name, **kwargs: remote.__setitem__(name, {**remote[name], **kwargs["changes"]}) or remote[name])
+    task_store.claim_task(task["task_id"], "worker")
+    monkeypatch.setattr(task_store, "compare_and_swap_blob_json", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("blob unavailable")), raising=False)
+
+    with pytest.raises(RuntimeError, match="durable"):
+        task_store.update_task(task["task_id"], status="failed", error={"category": "worker", "code": "down"})
+    shutil.rmtree(task_store.TASK_DIR)
+
+    assert task_store.get_task(task["task_id"])["status"] == "running"
+
+
+def test_task_payload_allowlist_never_persists_or_returns_sensitive_values(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    secret = "AccountKey=super-secret;Password=hunter2"
+    task = task_store.create_task(
+        _payload(
+            result={
+                "artifact_job_id": "artifact_job_123",
+                "artifact_url": "/api/artifacts/a.pdf",
+                "message": secret,
+                "debug": {"token": "bearer-secret"},
+                "url": "https://example.invalid/a?sig=secret-sas",
+            },
+            input={"connection_string": secret},
+        ),
+        {**_actor(), "debug": secret},
+    )
+    task_store.claim_task(task["task_id"], "worker")
+    updated = task_store.update_task(task["task_id"], status="failed", error={"category": "connector", "code": "failed", "message": secret, "input": secret})
+    serialized = (task_store.TASK_DIR / f"{task['task_id']}.json").read_text(encoding="utf-8")
+
+    assert updated["result"] == {"artifact_job_id": "artifact_job_123", "artifact_url": "/api/artifacts/a.pdf"}
+    assert updated["error"] == {"category": "connector", "code": "failed"}
+    assert secret not in serialized
+    assert "bearer-secret" not in str(updated)
+    assert "secret-sas" not in str(updated)
+
+
+def test_blob_cas_reloads_completed_instead_of_overwriting_it_with_cancel(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    remote: dict[str, dict] = {}
+    monkeypatch.setattr(task_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
+    monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    task = task_store.create_task(_payload(), _actor())
+
+    def compare_and_swap(name, *, expected_revision, changes):
+        current = remote[name]
+        remote[name] = {**current, "status": "completed", "revision": expected_revision + 1}
+        return None
+
+    monkeypatch.setattr(task_store, "compare_and_swap_blob_json", compare_and_swap, raising=False)
+    cancelled = task_store.request_cancel(task["task_id"])
+
+    assert cancelled["status"] == "completed"
+
+
+def test_blob_conditional_claim_allows_only_one_worker(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    remote: dict[str, dict] = {}
+    lock = threading.Lock()
+    monkeypatch.setattr(task_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
+    monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    task = task_store.create_task(_payload(), _actor())
+
+    def conditional_claim(name, *, expected_status, changes):
+        with lock:
+            current = remote[name]
+            if current.get("status") != expected_status:
+                return None
+            remote[name] = {**current, **changes}
+            return dict(remote[name])
+
+    monkeypatch.setattr(task_store, "claim_blob_json", conditional_claim)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(lambda _: task_store.claim_task(task["task_id"], "blob-worker"), range(2)))
+
+    assert sum(item is not None for item in claims) == 1
+    assert remote[next(iter(remote))]["status"] == "running"

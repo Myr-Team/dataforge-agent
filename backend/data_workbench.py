@@ -24,11 +24,11 @@ from ingest.adapters.upload_to_records import upload_to_records
 
 try:
     from .blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
-    from .identity import actor_for_history, actor_from_request, merge_actor_into_ui_context
+    from .identity import actor_for_history, actor_from_request, actor_from_ui_context, merge_actor_into_ui_context
     from .orchestrator import orchestrate_chat
     from .schemas import ChatRequest
     from .workspace_authz import require_workspace_permission
-    from .task_store import claim_task, create_task, update_task
+    from .task_store import claim_task, create_task, list_tasks, update_task
     from .workspace_store import (
         WORKSPACES,
         _CONTEXT_CACHE,
@@ -43,11 +43,11 @@ try:
     )
 except ImportError:
     from blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
-    from identity import actor_for_history, actor_from_request, merge_actor_into_ui_context
+    from identity import actor_for_history, actor_from_request, actor_from_ui_context, merge_actor_into_ui_context
     from orchestrator import orchestrate_chat
     from schemas import ChatRequest
     from workspace_authz import require_workspace_permission
-    from task_store import claim_task, create_task, update_task
+    from task_store import claim_task, create_task, list_tasks, update_task
     from workspace_store import (
         WORKSPACES,
         _CONTEXT_CACHE,
@@ -550,6 +550,7 @@ async def analyze_selected_files(workspace_id: str, body: dict[str, Any], backgr
     detail = get_workspace_detail(workspace_id)
     selected_documents = [_find_document(workspace_id, file_id, detail=detail) for file_id in file_ids]
     warnings: list[str] = []
+    actor = actor_from_ui_context(body.get("ui_context") if isinstance(body.get("ui_context"), dict) else {}, fallback=False)
     for document in selected_documents:
         if _api_status(document) == "indexed":
             continue
@@ -558,7 +559,7 @@ async def analyze_selected_files(workspace_id: str, body: dict[str, Any], backgr
             warnings.append(f"{document.get('name') or _file_id(document)} 尚未完成索引，但文件内容可直接引用。")
             continue
         try:
-            run_workspace_ingest_job(workspace_id, job_id)
+            _run_ingest_task(workspace_id, job_id, actor=actor, task_type="analysis.ingest", action="analysis.run")
             warnings.append(f"{document.get('name') or _file_id(document)} 已触发补索引。")
         except Exception as exc:
             warnings.append(f"{document.get('name') or _file_id(document)} 补索引未完成：{type(exc).__name__}")
@@ -737,7 +738,7 @@ def import_sql_table(workspace_id: str, body: dict[str, Any], actor: dict[str, A
         requested_workspace_id=workspace_id,
         asset_role="reference",
     )
-    _run_ingest_if_present(result, actor=actor, task_type="connector.sql.import")
+    _run_ingest_if_present(result, actor=actor, task_type="connector.sql.import", action="connector.manage")
     _record_import_history(workspace_id, result, actor, f"Imported SQL table {table}")
     return {"workspace_id": workspace_id, "connection_id": connection_id, "imported": True, "source": {"kind": "sql", "table": table}, "upload": result}
 
@@ -818,7 +819,7 @@ def import_blob_item(workspace_id: str, body: dict[str, Any], actor: dict[str, A
         requested_workspace_id=workspace_id,
         asset_role="reference",
     )
-    _run_ingest_if_present(result, actor=actor, task_type="connector.blob.import")
+    _run_ingest_if_present(result, actor=actor, task_type="connector.blob.import", action="connector.manage")
     _record_import_history(workspace_id, result, actor, f"Imported Blob {blob}")
     return {"workspace_id": workspace_id, "connection_id": connection_id, "imported": True, "source": {"kind": "blob", "container": container, "blob": blob}, "upload": result}
 
@@ -1987,28 +1988,67 @@ def _run_ingest_if_present(
     *,
     actor: dict[str, Any] | None = None,
     task_type: str = "workspace.ingest",
+    action: str = "file.create",
 ) -> None:
     job_id = result.get("ingest_job_id")
     workspace_id = result.get("workspace_id")
     if job_id and workspace_id:
+        _run_ingest_task(str(workspace_id), str(job_id), actor=actor, task_type=task_type, action=action)
+
+
+def _run_ingest_task(
+    workspace_id: str,
+    job_id: str,
+    *,
+    actor: dict[str, Any] | None,
+    task_type: str,
+    action: str,
+) -> dict[str, Any]:
+    task = _find_active_ingest_task(workspace_id, job_id)
+    if task is None:
         task = create_task(
             {
-                "workspace_id": str(workspace_id),
+                "workspace_id": workspace_id,
                 "task_type": task_type,
-                "action": "file.create",
-                "result": {"ingest_job_id": str(job_id)},
+                "action": action,
+                "result": {"ingest_job_id": job_id},
             },
             actor,
         )
-        claimed = claim_task(task["task_id"], "ingest-worker")
-        if claimed is None:
-            return
-        try:
-            run_workspace_ingest_job(str(workspace_id), str(job_id))
-        except Exception as exc:
-            update_task(task["task_id"], status="failed", error={"message": "ingest worker failed", "error_type": type(exc).__name__})
-            raise
-        update_task(task["task_id"], status="completed", result={"ingest_job_id": str(job_id)}, completed_at=_utc_now())
+    claimed = claim_task(task["task_id"], "ingest-worker")
+    if claimed is None:
+        return task
+    try:
+        ingest_status = run_workspace_ingest_job(workspace_id, job_id)
+    except Exception:
+        update_task(task["task_id"], status="failed", error={"category": "ingest", "code": "worker_failed"})
+        raise
+    return _sync_ingest_task(task["task_id"], job_id, ingest_status)
+
+
+def _find_active_ingest_task(workspace_id: str, job_id: str) -> dict[str, Any] | None:
+    for task in list_tasks(workspace_id):
+        result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        if result.get("ingest_job_id") == job_id and task.get("status") in {"queued", "running", "cancel_requested"}:
+            return task
+    return None
+
+
+def _sync_ingest_task(task_id: str, job_id: str, ingest_status: Any) -> dict[str, Any]:
+    status = ingest_status if isinstance(ingest_status, dict) else {}
+    state = str(status.get("state") or "ready")
+    changes: dict[str, Any] = {"result": {"ingest_job_id": job_id}}
+    if isinstance(status.get("pct"), int):
+        changes["progress"] = max(0, min(100, int(status["pct"])))
+    if state in {"ready", "completed"}:
+        changes["status"] = "completed"
+    elif state == "partial":
+        changes.update({"status": "partial", "error": {"category": "ingest", "code": "partial"}})
+    elif state == "failed":
+        changes.update({"status": "failed", "error": {"category": "ingest", "code": "failed"}})
+    else:
+        changes["status"] = "running"
+    return update_task(task_id, **changes)
 
 
 def _safe_filename(value: str) -> str:

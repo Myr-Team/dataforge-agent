@@ -84,22 +84,17 @@ def create_artifact_job(
             "created_at": now,
             "updated_at": now,
         }
-        persisted = _persist_job(job)
-        try:
-            task = create_task(
-                {
-                    "workspace_id": workspace_id,
-                    "task_type": "artifact.generate",
-                    "action": "artifact.generate",
-                    "result": {"artifact_job_id": persisted["job_id"]},
-                },
-                actor,
-            )
-            persisted["task_id"] = task["task_id"]
-            persisted = _persist_job(persisted)
-        except Exception:
-            pass
-        return persisted
+        task = create_task(
+            {
+                "workspace_id": workspace_id,
+                "task_type": "artifact.generate",
+                "action": "artifact.generate",
+                "result": {"artifact_job_id": job["job_id"]},
+            },
+            actor,
+        )
+        job["task_id"] = task["task_id"]
+        return _persist_job(job)
 
 
 def get_artifact_job(job_id: str) -> dict[str, Any]:
