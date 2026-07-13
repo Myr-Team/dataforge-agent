@@ -472,6 +472,18 @@ export async function updateMemberRole(workspaceId, email, role) {
 export async function dwConnectorCapabilities(workspaceId) {
   return loadConnectorCapabilities(workspaceId);
 }
+export async function dwListConnectors(workspaceId) {
+  return request(`${wsPath(workspaceId)}/connectors`);
+}
+export async function dwReconnectConnector(workspaceId, connectorId) {
+  return request(`${wsPath(workspaceId)}/connectors/${encodeURIComponent(connectorId)}/reconnect`, { method: "POST" });
+}
+export async function dwSyncConnector(workspaceId, connectorId, payload) {
+  return request(`${wsPath(workspaceId)}/connectors/${encodeURIComponent(connectorId)}/sync`, { method: "POST", body: JSON.stringify(payload) });
+}
+export async function dwDeleteConnector(workspaceId, connectorId) {
+  return request(`${wsPath(workspaceId)}/connectors/${encodeURIComponent(connectorId)}`, { method: "DELETE" });
+}
 export async function dwBlobConnect(workspaceId, payload) {
   return connectWorkspaceBlob(workspaceId, payload);
 }

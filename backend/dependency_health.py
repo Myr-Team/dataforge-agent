@@ -71,6 +71,7 @@ def _probe_all() -> dict[str, dict[str, Any]]:
         "speech": _probe_speech,
         "blob": _probe_blob,
         "content_safety": _probe_content_safety,
+        "key_vault": _probe_key_vault,
     }
     results: dict[str, dict[str, Any]] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(probes), thread_name_prefix="dataforge-health") as pool:
@@ -273,6 +274,21 @@ def _probe_content_safety() -> dict[str, Any]:
         return {"ok": False, "state": "down", "error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
+def _probe_key_vault() -> dict[str, Any]:
+    vault_url = str(os.environ.get("DF_KEY_VAULT_URL") or "").strip()
+    if not vault_url:
+        return {"ok": True, "state": "unconfigured", "persistence": "session_only"}
+    try:
+        from azure.keyvault.secrets import SecretClient
+
+        credential = DefaultAzureCredential()
+        credential.get_token("https://vault.azure.net/.default")
+        SecretClient(vault_url=vault_url.rstrip("/"), credential=credential)
+        return {"ok": True, "state": "configured", "persistence": "key_vault", "endpoint": _redact_endpoint(vault_url)}
+    except Exception as exc:
+        return {"ok": False, "state": "down", "persistence": "key_vault", "error": type(exc).__name__}
+
+
 def _probe_search() -> dict[str, Any]:
     endpoint = search_endpoint()
     index = search_index_name()
@@ -396,6 +412,7 @@ def _env_fingerprint() -> str:
         "DF_STORAGE_KEY",
         "DF_STORAGE_ACCOUNT",
         "DF_WORKSPACE_CONTAINER",
+        "DF_KEY_VAULT_URL",
         "MCP_MARKET_URL",
         "AZURE_CLIENT_ID",
         "AZURE_CLIENT_SECRET",

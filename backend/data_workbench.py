@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import base64
 import csv
 import hashlib
 import io
 import json
 import os
 import re
-import time
 import uuid
 from collections import Counter
 from contextlib import closing
@@ -24,6 +22,8 @@ from ingest.adapters.upload_to_records import upload_to_records
 
 try:
     from .blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
+    from .connector_secret_store import SecretExpiredError, secret_store_from_environment
+    from .connector_store import ConnectorDeleteError, ConnectorStore
     from .identity import actor_for_history, actor_from_request, actor_from_ui_context, merge_actor_into_ui_context
     from .orchestrator import orchestrate_chat
     from .schemas import ChatRequest
@@ -43,6 +43,8 @@ try:
     )
 except ImportError:
     from blob_store import delete_blob_name, download_blob_content, upload_workspace_blob
+    from connector_secret_store import SecretExpiredError, secret_store_from_environment
+    from connector_store import ConnectorDeleteError, ConnectorStore
     from identity import actor_for_history, actor_from_request, actor_from_ui_context, merge_actor_into_ui_context
     from orchestrator import orchestrate_chat
     from schemas import ChatRequest
@@ -70,8 +72,10 @@ MAX_TABLE_SAVE_BYTES = int(os.environ.get("DF_WORKBENCH_TABLE_SAVE_BYTES", str(4
 MAX_CELL_EDITS = int(os.environ.get("DF_WORKBENCH_MAX_CELL_EDITS", "500"))
 MAX_CELL_CHARS = int(os.environ.get("DF_WORKBENCH_MAX_CELL_CHARS", "5000"))
 MAX_CONNECTOR_IMPORT_BYTES = int(os.environ.get("DF_CONNECTOR_IMPORT_MAX_BYTES", str(25 * 1024 * 1024)))
-CONNECTOR_TTL_SECONDS = int(os.environ.get("DF_CONNECTOR_SESSION_TTL_SECONDS", "3600"))
 STORAGE_TOTAL_BYTES = int(os.environ.get("DF_WORKSPACE_STORAGE_TOTAL_BYTES", str(5 * 1024 * 1024 * 1024)))
+
+_CONNECTOR_STORE = ConnectorStore()
+_SECRET_STORE = secret_store_from_environment()
 
 TABLE_TYPES = {"csv", "xlsx", "xlsm", "excel"}
 MARKDOWN_TYPES = {"md", "markdown", "txt", "text"}
@@ -183,6 +187,30 @@ async def sql_connect(workspace_id: str, request: Request) -> dict[str, Any]:
     _require(request, workspace_id, "connector.manage")
     body = await _json_body(request)
     return await _call(connect_sql, workspace_id, body)
+
+
+@router.get("/connectors")
+async def connectors_list(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "workspace.read")
+    return await _call(list_connectors, workspace_id)
+
+
+@router.post("/connectors/{connector_id}/reconnect")
+async def connectors_reconnect(workspace_id: str, connector_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "connector.manage")
+    return await _call(reconnect_connector, workspace_id, connector_id)
+
+
+@router.post("/connectors/{connector_id}/sync", status_code=202)
+async def connectors_sync(workspace_id: str, connector_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "connector.manage")
+    return await _call(sync_connector, workspace_id, connector_id, await _json_body(request), actor_from_request(request))
+
+
+@router.delete("/connectors/{connector_id}")
+async def connectors_delete(workspace_id: str, connector_id: str, request: Request) -> dict[str, Any]:
+    _require(request, workspace_id, "connector.manage")
+    return await _call(delete_connector, workspace_id, connector_id)
 
 
 @router.get("/connectors/sql/status")
@@ -672,27 +700,28 @@ def _parse_sse_chunk(chunk: Any) -> list[dict[str, Any]]:
 
 def connect_sql(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
     payload = _clean_sql_payload(body)
-    connection_id = _CONNECTORS.put("sql", workspace_id, payload)
+    record = _CONNECTOR_STORE.create(workspace_id, "sql", _connector_metadata("sql", payload), payload, _SECRET_STORE)
     try:
         tables = _sql_tables(payload)
     except RuntimeError as exc:
-        _CONNECTORS.delete(connection_id)
+        _delete_after_connect_failure(workspace_id, record["connector_id"])
         _raise_sql_connector_error(exc, status_code=503)
     except Exception as exc:
-        _CONNECTORS.delete(connection_id)
+        _delete_after_connect_failure(workspace_id, record["connector_id"])
         _raise_sql_connector_error(exc)
-    return {
-        "workspace_id": workspace_id,
-        "connection_id": connection_id,
-        "status": "connected",
-        "expires_at": _CONNECTORS.expires_at(connection_id),
-        "tables": tables,
-        "credential_echo": None,
-    }
+    return {**_public_connector(record), "tables": tables}
 
 
 def connector_status(workspace_id: str, kind: str, connection_id: str) -> dict[str, Any]:
-    return _CONNECTORS.status(connection_id, kind, workspace_id)
+    record = _CONNECTOR_STORE.get(workspace_id, connection_id)
+    if record["kind"] != kind:
+        raise FileNotFoundError("Connector record not found")
+    if record.get("persistence") == "session_only":
+        try:
+            _SECRET_STORE.get(record["secret_ref"])
+        except SecretExpiredError:
+            record = _CONNECTOR_STORE.update(workspace_id, connection_id, status="expired", error="secret_expired")
+    return _public_connector(record)
 
 
 def disconnect_connector(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -702,12 +731,14 @@ def disconnect_connector(workspace_id: str, body: dict[str, Any]) -> dict[str, A
         raise ValueError("kind must be sql or blob")
     if not connection_id:
         raise ValueError("connection_id is required")
-    deleted = _CONNECTORS.delete(connection_id, kind=kind, workspace_id=workspace_id)
-    return {"workspace_id": workspace_id, "kind": kind, "connection_id": connection_id, "disconnected": deleted}
+    record = _CONNECTOR_STORE.get(workspace_id, connection_id)
+    if record["kind"] != kind:
+        raise FileNotFoundError("Connector record not found")
+    return {**_public_connector(_CONNECTOR_STORE.disconnect(workspace_id, connection_id)), "disconnected": True}
 
 
 def list_sql_tables(workspace_id: str, connection_id: str) -> dict[str, Any]:
-    payload = _CONNECTORS.get(connection_id, "sql", workspace_id)
+    payload = _connector_payload(workspace_id, connection_id, "sql")
     try:
         tables = _sql_tables(payload)
     except RuntimeError as exc:
@@ -718,7 +749,7 @@ def list_sql_tables(workspace_id: str, connection_id: str) -> dict[str, Any]:
 
 
 def preview_sql_table(workspace_id: str, connection_id: str, table: str, limit: int = 100) -> dict[str, Any]:
-    payload = _CONNECTORS.get(connection_id, "sql", workspace_id)
+    payload = _connector_payload(workspace_id, connection_id, "sql")
     try:
         return _sql_preview(payload, table, limit)
     except ValueError:
@@ -731,48 +762,27 @@ def preview_sql_table(workspace_id: str, connection_id: str, table: str, limit: 
 
 
 def import_sql_table(workspace_id: str, body: dict[str, Any], actor: dict[str, Any] | None = None) -> dict[str, Any]:
-    connection_id = str(body.get("connection_id") or "")
-    table = str(body.get("table") or "")
-    limit = _clamp_int(body.get("limit"), 1, 10000, 1000)
-    preview = preview_sql_table(workspace_id, connection_id, table, limit)
-    csv_bytes = _table_to_csv_bytes([col["name"] for col in preview["columns"]], preview["rows"])
-    name = str(body.get("name") or f"SQL {table}").strip()[:120] or f"SQL {table}"
-    result = create_workspace_upload_job(
-        files=[{"filename": f"{_safe_filename(name)}.csv", "content": csv_bytes, "content_type": "text/csv"}],
-        name=None,
-        requested_workspace_id=workspace_id,
-        asset_role="reference",
-    )
-    _run_ingest_if_present(result, actor=actor, task_type="connector.sql.import", action="connector.manage")
-    _record_import_history(workspace_id, result, actor, f"Imported SQL table {table}")
-    return {"workspace_id": workspace_id, "connection_id": connection_id, "imported": True, "source": {"kind": "sql", "table": table}, "upload": result}
+    return sync_connector(workspace_id, str(body.get("connection_id") or ""), body, actor, task_type="connector.sql.import")
 
 
 def connect_blob(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
     payload = _clean_blob_payload(body)
-    connection_id = _CONNECTORS.put("blob", workspace_id, payload)
+    record = _CONNECTOR_STORE.create(workspace_id, "blob", _connector_metadata("blob", payload), payload, _SECRET_STORE)
     try:
         containers = _blob_containers(payload)
     except Exception as exc:
-        _CONNECTORS.delete(connection_id)
+        _delete_after_connect_failure(workspace_id, record["connector_id"])
         raise HTTPException(status_code=400, detail=_safe_connector_error(exc)) from exc
-    return {
-        "workspace_id": workspace_id,
-        "connection_id": connection_id,
-        "status": "connected",
-        "expires_at": _CONNECTORS.expires_at(connection_id),
-        "containers": containers,
-        "credential_echo": None,
-    }
+    return {**_public_connector(record), "containers": containers}
 
 
 def list_blob_containers(workspace_id: str, connection_id: str) -> dict[str, Any]:
-    payload = _CONNECTORS.get(connection_id, "blob", workspace_id)
+    payload = _connector_payload(workspace_id, connection_id, "blob")
     return {"workspace_id": workspace_id, "connection_id": connection_id, "containers": _blob_containers(payload)}
 
 
 def list_blob_items(workspace_id: str, connection_id: str, container: str, prefix: str = "", limit: int = 100) -> dict[str, Any]:
-    payload = _CONNECTORS.get(connection_id, "blob", workspace_id)
+    payload = _connector_payload(workspace_id, connection_id, "blob")
     client = _blob_service(payload).get_container_client(container)
     blobs = []
     for item in client.list_blobs(name_starts_with=prefix or ""):
@@ -790,7 +800,7 @@ def list_blob_items(workspace_id: str, connection_id: str, container: str, prefi
 
 
 def preview_blob_item(workspace_id: str, connection_id: str, container: str, blob: str, limit: int = 100, offset: int = 0) -> dict[str, Any]:
-    payload = _CONNECTORS.get(connection_id, "blob", workspace_id)
+    payload = _connector_payload(workspace_id, connection_id, "blob")
     blob_client = _blob_service(payload).get_blob_client(container=container, blob=blob)
     props = blob_client.get_blob_properties()
     size = int(getattr(props, "size", 0) or 0)
@@ -804,29 +814,176 @@ def preview_blob_item(workspace_id: str, connection_id: str, container: str, blo
 
 
 def import_blob_item(workspace_id: str, body: dict[str, Any], actor: dict[str, Any] | None = None) -> dict[str, Any]:
-    connection_id = str(body.get("connection_id") or "")
-    container = str(body.get("container") or "")
-    blob = str(body.get("blob") or "")
-    if not connection_id or not container or not blob:
-        raise ValueError("connection_id, container and blob are required")
-    payload = _CONNECTORS.get(connection_id, "blob", workspace_id)
-    blob_client = _blob_service(payload).get_blob_client(container=container, blob=blob)
-    props = blob_client.get_blob_properties()
-    size = int(getattr(props, "size", 0) or 0)
-    if size > MAX_CONNECTOR_IMPORT_BYTES:
-        raise ValueError("Blob is too large to import through the demo connector")
-    content = blob_client.download_blob().readall()
-    filename = Path(blob).name or "blob-import"
-    content_type = getattr(props.content_settings, "content_type", None) or "application/octet-stream"
-    result = create_workspace_upload_job(
-        files=[{"filename": filename, "content": content, "content_type": content_type}],
-        name=None,
-        requested_workspace_id=workspace_id,
-        asset_role="reference",
+    return sync_connector(workspace_id, str(body.get("connection_id") or ""), body, actor, task_type="connector.blob.import")
+
+
+def list_connectors(workspace_id: str) -> dict[str, Any]:
+    connectors: list[dict[str, Any]] = []
+    for record in _CONNECTOR_STORE.list(workspace_id):
+        if record.get("persistence") == "session_only" and record.get("status") == "connected":
+            try:
+                _SECRET_STORE.get(record["secret_ref"])
+            except SecretExpiredError:
+                record = _CONNECTOR_STORE.update(workspace_id, record["connector_id"], status="expired", error="secret_expired")
+        connectors.append(_public_connector(record))
+    return {"workspace_id": workspace_id, "connectors": connectors}
+
+
+def reconnect_connector(workspace_id: str, connector_id: str) -> dict[str, Any]:
+    record = _CONNECTOR_STORE.get(workspace_id, connector_id)
+    record, payload = _CONNECTOR_STORE.reconnect(workspace_id, connector_id, _SECRET_STORE)
+    try:
+        extra = {"tables": _sql_tables(payload)} if record["kind"] == "sql" else {"containers": _blob_containers(payload)}
+    except Exception as exc:
+        _CONNECTOR_STORE.update(workspace_id, connector_id, status="error", error="reconnect_failed")
+        raise ValueError("Connector reconnect failed") from exc
+    return {**_public_connector(record), **extra}
+
+
+def delete_connector(workspace_id: str, connector_id: str) -> dict[str, Any]:
+    _CONNECTOR_STORE.delete(workspace_id, connector_id, _SECRET_STORE)
+    return {"workspace_id": workspace_id, "connector_id": connector_id, "deleted": True}
+
+
+def sync_connector(
+    workspace_id: str,
+    connector_id: str,
+    body: dict[str, Any],
+    actor: dict[str, Any] | None = None,
+    *,
+    task_type: str | None = None,
+) -> dict[str, Any]:
+    record = _CONNECTOR_STORE.get(workspace_id, connector_id)
+    kind = str(record["kind"])
+    payload = _connector_payload(workspace_id, connector_id, kind)
+    if kind == "sql":
+        table = str(body.get("table") or "")
+        limit = _clamp_int(body.get("limit"), 1, 10000, 1000)
+        preview = preview_sql_table(workspace_id, connector_id, table, limit)
+        content = _table_to_csv_bytes([col["name"] for col in preview["columns"]], preview["rows"])
+        name = str(body.get("name") or f"SQL {table}").strip()[:120] or f"SQL {table}"
+        file = {"filename": f"{_safe_filename(name)}.csv", "content": content, "content_type": "text/csv"}
+        lineage = _connector_lineage(record, table=table, cursor=body.get("cursor"), watermark=body.get("watermark"))
+    else:
+        container = str(body.get("container") or "")
+        blob = str(body.get("blob") or "")
+        if not container or not blob:
+            raise ValueError("container and blob are required")
+        blob_client = _blob_service(payload).get_blob_client(container=container, blob=blob)
+        props = blob_client.get_blob_properties()
+        size = int(getattr(props, "size", 0) or 0)
+        if size > MAX_CONNECTOR_IMPORT_BYTES:
+            raise ValueError("Blob is too large to sync through the connector")
+        file = {
+            "filename": Path(blob).name or "blob-sync",
+            "content": blob_client.download_blob().readall(),
+            "content_type": getattr(props.content_settings, "content_type", None) or "application/octet-stream",
+        }
+        lineage = _connector_lineage(record, container=container, blob=blob, cursor=body.get("cursor"), watermark=body.get("watermark"))
+
+    result = create_workspace_upload_job(files=[file], name=None, requested_workspace_id=workspace_id, asset_role="reference", actor=actor)
+    job_id = str(result.get("ingest_job_id") or "")
+    if not job_id:
+        raise TaskPersistenceError("Connector sync did not create a durable ingest job")
+    task = _run_ingest_task(
+        workspace_id,
+        job_id,
+        actor=actor,
+        task_type=task_type or f"connector.{kind}.sync",
+        action="connector.manage",
     )
-    _run_ingest_if_present(result, actor=actor, task_type="connector.blob.import", action="connector.manage")
-    _record_import_history(workspace_id, result, actor, f"Imported Blob {blob}")
-    return {"workspace_id": workspace_id, "connection_id": connection_id, "imported": True, "source": {"kind": "blob", "container": container, "blob": blob}, "upload": result}
+    _record_connector_lineage(workspace_id, result, lineage=lineage)
+    _record_import_history(workspace_id, result, actor, f"Synced {kind} connector source")
+    return {
+        "workspace_id": workspace_id,
+        "connector_id": connector_id,
+        "connection_id": connector_id,
+        "imported": True,
+        "syncing": task.get("status") in {"queued", "running", "cancel_requested"},
+        "source": {key: value for key, value in lineage.items() if key != "connector_id"},
+        "upload": result,
+        "task": task,
+    }
+
+
+def _connector_payload(workspace_id: str, connector_id: str, kind: str) -> dict[str, str]:
+    record = _CONNECTOR_STORE.get(workspace_id, connector_id)
+    if record["kind"] != kind:
+        raise FileNotFoundError("Connector record not found")
+    if record.get("status") == "disconnected":
+        raise ValueError("Connector is disconnected; reconnect before use")
+    try:
+        return _SECRET_STORE.get(record["secret_ref"])
+    except SecretExpiredError:
+        _CONNECTOR_STORE.update(workspace_id, connector_id, status="expired", error="secret_expired")
+        raise
+
+
+def _connector_metadata(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if kind == "sql":
+        return {"server": payload.get("server"), "database": payload.get("database"), "access": "read_only"}
+    return {"account": payload.get("account"), "access": "read_only"}
+
+
+def _connector_lineage(record: dict[str, Any], **source: Any) -> dict[str, str]:
+    lineage = {"connector_id": str(record["connector_id"]), "kind": str(record["kind"]), "version_id": f"connector-{uuid.uuid4().hex[:16]}"}
+    for key in ("table", "container", "blob", "cursor", "watermark"):
+        value = str(source.get(key) or "").strip()
+        if value:
+            if len(value) > 240 or re.search(r"password|connection.?string|sas|token", value, re.IGNORECASE):
+                raise ValueError(f"Invalid connector lineage {key}")
+            lineage[key] = value
+    return lineage
+
+
+def _record_connector_lineage(workspace_id: str, result: dict[str, Any], *, lineage: dict[str, str]) -> None:
+    created_sources = {
+        str(item.get("source_file") or "")
+        for item in result.get("documents") or []
+        if isinstance(item, dict) and item.get("ingest_job_id") == result.get("ingest_job_id")
+    }
+    if not created_sources:
+        return
+    meta, profile = _workspace_state(workspace_id)
+    for document in meta.get("documents") or []:
+        if isinstance(document, dict) and str(document.get("source_file") or "") in created_sources:
+            document["connector_lineage"] = dict(lineage)
+    _persist_workspace_state(workspace_id, WORKSPACES / workspace_id, meta, profile, include_raw_payloads=True)
+
+
+def _public_connector(record: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        "workspace_id": record["workspace_id"],
+        "connector_id": record["connector_id"],
+        "connection_id": record["connector_id"],
+        "kind": record["kind"],
+        "status": record["status"],
+        "persistence": record["persistence"],
+        "metadata": record.get("metadata") or {},
+        "created_at": record.get("created_at"),
+        "updated_at": record.get("updated_at"),
+    }
+    if record.get("persistence") == "session_only":
+        expires_at = getattr(_SECRET_STORE, "expires_at", lambda _ref: None)(record["secret_ref"])
+        result["expires_at"] = expires_at
+    if record.get("delete_pending"):
+        result["delete_pending"] = True
+    if record.get("error"):
+        result["error"] = record["error"]
+    return result
+
+
+def _delete_after_connect_failure(workspace_id: str, connector_id: str) -> None:
+    try:
+        _CONNECTOR_STORE.delete(workspace_id, connector_id, _SECRET_STORE)
+    except ConnectorDeleteError:
+        _CONNECTOR_STORE.update(workspace_id, connector_id, status="error", delete_pending=True, error="connect_cleanup_failed")
+
+
+def clear_connector_sessions() -> None:
+    clear = getattr(_SECRET_STORE, "clear", None)
+    if callable(clear):
+        clear()
 
 
 async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
@@ -840,6 +997,8 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ConnectorDeleteError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _require(request: Request, workspace_id: str, action: str) -> str:
@@ -2236,92 +2395,6 @@ def _type_from_name(name: str, content_type: str | None = None) -> str:
     return "unknown"
 
 
-class _ConnectorVault:
-    def __init__(self) -> None:
-        self._store: dict[str, dict[str, Any]] = {}
-        self._fernet = self._build_fernet()
-
-    def put(self, kind: str, workspace_id: str, payload: dict[str, Any]) -> str:
-        self._purge()
-        connection_id = f"{kind}_{uuid.uuid4().hex[:16]}"
-        expires_at = time.time() + CONNECTOR_TTL_SECONDS
-        self._store[connection_id] = {
-            "kind": kind,
-            "workspace_id": workspace_id,
-            "expires_at": expires_at,
-            "payload": self._encrypt(payload),
-        }
-        return connection_id
-
-    def get(self, connection_id: str, kind: str, workspace_id: str) -> dict[str, Any]:
-        self._purge()
-        item = self._store.get(str(connection_id or ""))
-        if not item or item.get("kind") != kind or item.get("workspace_id") != workspace_id:
-            raise ValueError("Connector session not found or expired")
-        return self._decrypt(bytes(item["payload"]))
-
-    def delete(self, connection_id: str, *, kind: str | None = None, workspace_id: str | None = None) -> bool:
-        self._purge()
-        key = str(connection_id or "")
-        item = self._store.get(key)
-        if not item:
-            return False
-        if kind and item.get("kind") != kind:
-            return False
-        if workspace_id and item.get("workspace_id") != workspace_id:
-            return False
-        self._store.pop(key, None)
-        return True
-
-    def status(self, connection_id: str, kind: str, workspace_id: str) -> dict[str, Any]:
-        self._purge()
-        key = str(connection_id or "")
-        item = self._store.get(key)
-        if not item or item.get("kind") != kind or item.get("workspace_id") != workspace_id:
-            raise ValueError("Connector session not found or expired")
-        return {
-            "workspace_id": workspace_id,
-            "kind": kind,
-            "connection_id": key,
-            "status": "connected",
-            "expires_at": self.expires_at(key),
-        }
-
-    def expires_at(self, connection_id: str) -> str | None:
-        item = self._store.get(connection_id)
-        return _iso(datetime.fromtimestamp(float(item["expires_at"]), tz=timezone.utc)) if item else None
-
-    def _purge(self) -> None:
-        now = time.time()
-        for key in [key for key, value in self._store.items() if float(value.get("expires_at") or 0) <= now]:
-            self._store.pop(key, None)
-
-    def _build_fernet(self) -> Any:
-        try:
-            from cryptography.fernet import Fernet
-        except ImportError as exc:
-            raise RuntimeError("cryptography is required for connector credential encryption") from exc
-        key = os.environ.get("DF_CONNECTOR_CREDENTIAL_KEY")
-        if key:
-            raw = key.encode("utf-8")
-            if len(raw) != 44:
-                raw = base64.urlsafe_b64encode(hashlib.sha256(raw).digest())
-            return Fernet(raw)
-        return Fernet(Fernet.generate_key())
-
-    def _encrypt(self, payload: dict[str, Any]) -> bytes:
-        return self._fernet.encrypt(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-
-    def _decrypt(self, payload: bytes) -> dict[str, Any]:
-        data = json.loads(self._fernet.decrypt(payload).decode("utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("Invalid connector payload")
-        return data
-
-
-_CONNECTORS = _ConnectorVault()
-
-
 def _raise_sql_connector_error(exc: BaseException, *, status_code: int = 400) -> None:
     safe = _safe_connector_error(exc)
     print(f"sql connector failed: {safe}", flush=True)
@@ -2346,7 +2419,8 @@ def _raise_sql_connector_error(exc: BaseException, *, status_code: int = 400) ->
 
 def _safe_connector_error(exc: BaseException) -> str:
     text = f"{type(exc).__name__}: {exc}"
-    text = re.sub(r"(?i)(password|pwd|sig|accountkey|sharedaccesssignature)=([^;\\s]+)", r"\1=***", text)
+    text = re.sub(r"(?i)(password|pwd|sig|accountkey|sharedaccesssignature|uid|user(?:name|id)?)=([^;\\s]+)", r"\1=***", text)
+    text = re.sub(r"(?i)(?:login failed for user|user)\s+['\"][^'\"]+['\"]", "user '***'", text)
     return text[:500]
 
 

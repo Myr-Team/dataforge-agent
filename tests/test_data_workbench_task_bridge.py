@@ -8,6 +8,7 @@ import backend.app as app_module
 import backend.artifact_jobs as artifact_jobs
 import backend.data_workbench as data_workbench
 import backend.task_store as task_store
+from backend.connector_store import ConnectorStore
 from backend.task_store import TaskPersistenceError
 from fastapi.testclient import TestClient
 from backend.app import app
@@ -19,6 +20,18 @@ def _configure_tasks(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(task_store, "download_blob_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(task_store, "list_blob_json", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(task_store, "upload_blob_json", lambda *_args, **_kwargs: {})
+
+
+def _connector_record(tmp_path, monkeypatch: pytest.MonkeyPatch, workspace_id: str) -> dict:
+    store = ConnectorStore(tmp_path / "connectors")
+    monkeypatch.setattr(data_workbench, "_CONNECTOR_STORE", store)
+    return store.create(
+        workspace_id,
+        "sql",
+        {"server": "sql.example", "database": "sales"},
+        {"username": "reader", "password": "very-secret"},
+        data_workbench._SECRET_STORE,
+    )
 
 
 def test_artifact_job_keeps_legacy_id_and_links_completed_generic_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,9 +62,10 @@ def test_ingest_failure_preserves_upload_result_and_records_safe_task(tmp_path, 
     monkeypatch.setattr(data_workbench, "create_workspace_upload_job", lambda **_kwargs: dict(upload))
     monkeypatch.setattr(data_workbench, "run_workspace_ingest_job", lambda *_args: (_ for _ in ()).throw(RuntimeError("connector failed")))
     monkeypatch.setattr(data_workbench, "_record_import_history", lambda *_args: None)
+    connector = _connector_record(tmp_path, monkeypatch, "ws-bridge")
 
     with pytest.raises(RuntimeError, match="connector failed"):
-        data_workbench.import_sql_table("ws-bridge", {"connection_id": "connection-secret", "table": "sales"}, actor={"email": "owner@contoso.com"})
+        data_workbench.import_sql_table("ws-bridge", {"connection_id": connector["connector_id"], "table": "sales"}, actor={"email": "owner@contoso.com"})
     tasks = task_store.list_tasks("ws-bridge")
 
     assert upload["documents"] == [{"name": "import.csv"}]
@@ -205,8 +219,9 @@ def test_connector_import_task_requires_connector_manage_action(tmp_path, monkey
     monkeypatch.setattr(data_workbench, "create_workspace_upload_job", lambda **_kwargs: dict(upload))
     monkeypatch.setattr(data_workbench, "run_workspace_ingest_job", lambda *_args: {"state": "ready"})
     monkeypatch.setattr(data_workbench, "_record_import_history", lambda *_args: None)
+    connector = _connector_record(tmp_path, monkeypatch, "ws-bridge")
 
-    data_workbench.import_sql_table("ws-bridge", {"connection_id": "connection-1", "table": "sales"}, actor={"email": "owner@contoso.com"})
+    data_workbench.import_sql_table("ws-bridge", {"connection_id": connector["connector_id"], "table": "sales"}, actor={"email": "owner@contoso.com"})
 
     assert task_store.list_tasks("ws-bridge")[0]["action"] == "connector.manage"
 
