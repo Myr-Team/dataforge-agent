@@ -30,23 +30,23 @@ def _metric_value(value: Any) -> int | float | None:
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
-def _normalized_metric(value: Any, *, production_allowed: bool) -> int | float | str:
+def _normalized_metric(value: Any, *, observed_valid: bool) -> int | float | str:
+    if not observed_valid:
+        return "unmeasured"
     if isinstance(value, Mapping) and value.get("status") == "unknown":
         return "unknown"
-    if not production_allowed:
-        return "unmeasured"
     numeric = _metric_value(value)
     return numeric if numeric is not None else "unmeasured"
 
 
-def _performance_metrics(component: Mapping[str, Any], *, production_allowed: bool) -> dict[str, Any]:
+def _performance_metrics(component: Mapping[str, Any], *, observed_valid: bool) -> dict[str, Any]:
     metrics = component.get("metrics")
     metrics = metrics if isinstance(metrics, Mapping) else {}
     return {
         "latency_ms": _normalized_metric(
-            metrics.get("latency_ms"), production_allowed=production_allowed
+            metrics.get("latency_ms"), observed_valid=observed_valid
         ),
-        "tokens": _normalized_metric(metrics.get("tokens"), production_allowed=production_allowed),
+        "tokens": _normalized_metric(metrics.get("tokens"), observed_valid=observed_valid),
     }
 
 
@@ -94,7 +94,7 @@ def _gate(name: str, component: Mapping[str, Any]) -> dict[str, Any]:
         "evidence_kind": evidence_kind,
         "sample_count": sample_count,
         "production_claim_allowed": production_allowed,
-        "metrics": _performance_metrics(component, production_allowed=production_allowed),
+        "metrics": _performance_metrics(component, observed_valid=observed_valid),
         "failed_reasons": failed_reasons,
         "inputs_lineage": lineage,
     }

@@ -144,7 +144,7 @@ def test_valid_observed_evidence_needs_a_component_production_request() -> None:
     assert report["gates"]["tasks"]["production_claim_allowed"] is False
 
 
-def test_explicit_unknown_metric_is_not_collapsed_to_unmeasured() -> None:
+def test_fixture_unknown_metric_is_normalized_to_unmeasured() -> None:
     reports = _component_reports()
     reports["maf_quality"]["metrics"] = {
         "latency_ms": {"value": 12.5, "status": "measured"},
@@ -155,7 +155,7 @@ def test_explicit_unknown_metric_is_not_collapsed_to_unmeasured() -> None:
 
     assert report["gates"]["maf_quality"]["metrics"] == {
         "latency_ms": "unmeasured",
-        "tokens": "unknown",
+        "tokens": "unmeasured",
     }
 
 
@@ -186,6 +186,8 @@ def test_component_reports_run_existing_component_checks() -> None:
         "connectors",
     }
     assert all(report["passed"] for report in reports.values())
+    acceptance = build_acceptance_report(reports)
+    assert acceptance["gates"]["maf_quality"]["metrics"]["tokens"] == "unmeasured"
 
 
 def test_component_report_exception_becomes_a_failed_gate(monkeypatch) -> None:
