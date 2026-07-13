@@ -160,6 +160,7 @@ async def workspace_trace_status(
     run_id: str | None = Query(None, max_length=160),
     correlation_id: str | None = Query(None, max_length=64),
 ) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "workspace.read")
     if run_id:
         try:
             run = await _call(get_run, run_id)
@@ -167,7 +168,6 @@ async def workspace_trace_status(
             raise HTTPException(status_code=404, detail="run not found") from exc
         if str(run.get("workspace_id") or "") != workspace_id:
             raise HTTPException(status_code=404, detail="run not found")
-    _require_workspace_action(workspace_id, request, "workspace.read")
     status = await _call(get_trace_delivery_status, workspace_id, run_id, correlation_id)
     return status.model_dump()
 

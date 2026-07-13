@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import importlib.util
+import os
 
 import pytest
 
@@ -16,17 +17,57 @@ def test_azure_monitor_delivery_adapter_is_declared() -> None:
     assert importlib.util.find_spec("backend.azure_monitor_client") is not None
 
 
+_RESOURCE_ID = "/subscriptions/33333333-3333-3333-3333-333333333333/resourceGroups/rg/providers/microsoft.insights/components/dataforge"
+_APPLICATION_ID = "22222222-2222-2222-2222-222222222222"
+
+
 def _build_status(**kwargs):
     build = getattr(monitor, "build_trace_status", None)
     assert callable(build)
     return build(**kwargs)
 
 
+def _expectation(workspace_id: str = "workspace-private", run_id: str = "run-private", correlation_id: str = "b" * 32):
+    expectation = getattr(monitor, "TraceDeliveryExpectation", None)
+    assert callable(expectation)
+    return expectation(
+        workspace_hash=monitor.hash_trace_identifier(workspace_id),
+        run_hash=monitor.hash_trace_identifier(run_id),
+        correlation_hash=monitor.hash_trace_identifier(correlation_id),
+        resource_id=_RESOURCE_ID,
+        application_id=_APPLICATION_ID,
+        correlation_id=correlation_id,
+    )
+
+
+def _proof(
+    workspace_id: str = "workspace-private",
+    run_id: str = "run-private",
+    correlation_id: str = "b" * 32,
+    *,
+    resource_id: str = _RESOURCE_ID,
+    application_id: str = _APPLICATION_ID,
+):
+    proof = getattr(monitor, "RemoteTraceProof", None)
+    assert callable(proof)
+    return proof(
+        observed_at=datetime(2026, 7, 13, tzinfo=timezone.utc),
+        trace_id=correlation_id,
+        workspace_hash=monitor.hash_trace_identifier(workspace_id),
+        run_hash=monitor.hash_trace_identifier(run_id),
+        correlation_hash=monitor.hash_trace_identifier(correlation_id),
+        resource_id=resource_id,
+        application_id=application_id,
+        source_table="requests",
+    )
+
+
 def test_configured_exporter_without_observed_trace_is_partial() -> None:
     status = _build_status(
         configured=True,
         local_emit_at=datetime(2026, 7, 13, tzinfo=timezone.utc),
-        remote_trace=None,
+        remote_proof=None,
+        expected=_expectation(correlation_id="a" * 32),
         correlation_id="a" * 32,
         exporter_state="unknown",
     )
@@ -36,13 +77,13 @@ def test_configured_exporter_without_observed_trace_is_partial() -> None:
     assert status.exporter_state == "unknown"
 
 
-def test_remote_trace_proves_connected_without_exposing_actor_or_raw_result() -> None:
+def test_only_validated_matching_span_proof_connects_without_exposing_actor_or_raw_result() -> None:
     actor_email = "person@example.com"
-    remote_result = {"raw": f"token=private {actor_email}", "observed_at": datetime(2026, 7, 13, tzinfo=timezone.utc)}
     status = _build_status(
         configured=True,
         local_emit_at=datetime(2026, 7, 13, tzinfo=timezone.utc),
-        remote_trace=remote_result,
+        remote_proof=_proof(correlation_id="b" * 32),
+        expected=_expectation(correlation_id="b" * 32),
         correlation_id="b" * 32,
         exporter_state="succeeded",
     )
@@ -50,16 +91,52 @@ def test_remote_trace_proves_connected_without_exposing_actor_or_raw_result() ->
     assert status.state == "connected"
     payload = status.model_dump_json()
     assert actor_email not in payload
-    assert "private" not in payload
-    assert "raw" not in payload
+    assert "workspace-private" not in payload
+
+
+def test_untyped_or_mismatched_remote_proof_cannot_connect() -> None:
+    expected = _expectation()
+    with pytest.raises(TypeError, match="RemoteTraceProof"):
+        _build_status(
+            configured=True,
+            local_emit_at=datetime(2026, 7, 13, tzinfo=timezone.utc),
+            remote_proof={"observed_at": datetime(2026, 7, 13, tzinfo=timezone.utc)},
+            expected=expected,
+            correlation_id="b" * 32,
+        )
+    mismatched = _build_status(
+        configured=True,
+        local_emit_at=datetime(2026, 7, 13, tzinfo=timezone.utc),
+        remote_proof=_proof(workspace_id="other-workspace"),
+        expected=expected,
+        correlation_id="b" * 32,
+    )
+
+    assert mismatched.state == "partial"
+
+
+def test_remote_proof_binds_correlation_hash_to_its_trace_id() -> None:
+    proof = getattr(monitor, "RemoteTraceProof")
+    with pytest.raises(ValueError, match="correlation hash"):
+        proof(
+            observed_at=datetime(2026, 7, 13, tzinfo=timezone.utc),
+            trace_id="b" * 32,
+            workspace_hash=monitor.hash_trace_identifier("workspace-private"),
+            run_hash=monitor.hash_trace_identifier("run-private"),
+            correlation_hash=monitor.hash_trace_identifier("a" * 32),
+            resource_id=_RESOURCE_ID,
+            application_id=_APPLICATION_ID,
+            source_table="requests",
+        )
 
 
 def test_not_configured_and_unavailable_are_distinct_from_partial() -> None:
-    not_configured = _build_status(configured=False, local_emit_at=None, remote_trace=None, correlation_id=None, exporter_state="unknown")
+    not_configured = _build_status(configured=False, local_emit_at=None, remote_proof=None, expected=None, correlation_id=None, exporter_state="unknown")
     unavailable = _build_status(
         configured=True,
         local_emit_at=datetime(2026, 7, 13, tzinfo=timezone.utc),
-        remote_trace=None,
+        remote_proof=None,
+        expected=_expectation(correlation_id="c" * 32),
         correlation_id="c" * 32,
         exporter_state="unknown",
         query_error_type="ClientAuthenticationError",
@@ -75,7 +152,7 @@ class _Column:
 
 
 class _QueryResult:
-    def __init__(self, row: list[object]) -> None:
+    def __init__(self, row: list[object], *, source_table: str = "requests") -> None:
         self.tables = [
             type(
                 "Table",
@@ -86,6 +163,7 @@ class _QueryResult:
                         _Column("operation_Id"),
                         _Column("appId"),
                         _Column("_ResourceId"),
+                        _Column("source_table"),
                         _Column("run_hash"),
                         _Column("correlation_hash"),
                     ],
@@ -107,13 +185,19 @@ class _LogsClient:
         return self.result
 
 
+class _PartialResult:
+    def __init__(self, partial_error: object, partial_data: object) -> None:
+        self.partial_error = partial_error
+        self.partial_data = partial_data
+
+
 def _monitor_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "InstrumentationKey=not-a-secret")
     monkeypatch.setenv("DF_AZURE_MONITOR_LOGS_WORKSPACE_ID", "11111111-1111-1111-1111-111111111111")
     monkeypatch.setenv("DF_APP_INSIGHTS_APPLICATION_ID", "22222222-2222-2222-2222-222222222222")
     monkeypatch.setenv(
         "DF_APP_INSIGHTS_RESOURCE_ID",
-        "/subscriptions/33333333-3333-3333-3333-333333333333/resourceGroups/rg/providers/microsoft.insights/components/dataforge",
+        _RESOURCE_ID,
     )
 
 
@@ -130,18 +214,20 @@ def test_query_is_bounded_and_matches_only_hashed_workspace_run_and_correlation(
             [
                 "2026-07-13T00:00:00Z",
                 correlation_id,
-                "22222222-2222-2222-2222-222222222222",
-                "/subscriptions/33333333-3333-3333-3333-333333333333/resourceGroups/rg/providers/microsoft.insights/components/dataforge",
+                _APPLICATION_ID,
+                _RESOURCE_ID,
+                "requests",
                 run_hash,
                 correlation_hash,
             ]
         )
     )
 
-    remote = monitor.query_trace_delivery(workspace_id, run_id, correlation_id, client=client)
+    remote = monitor.query_trace_delivery(workspace_id, run_id, correlation_id, client_factory=lambda: client)
 
     assert remote is not None
-    assert remote["correlation_id"] == correlation_id
+    assert remote.trace_id == correlation_id
+    assert remote.source_table == "requests"
     args = client.calls[0]
     query = args[1]
     assert isinstance(query, str)
@@ -151,9 +237,53 @@ def test_query_is_bounded_and_matches_only_hashed_workspace_run_and_correlation(
     assert workspace_hash in query
     assert run_hash in query
     assert correlation_hash in query
+    assert query.startswith("union isfuzzy=true withsource=source_table requests, dependencies")
+    assert "traces" not in query
+    assert "customDimensions" in query
     assert "take 1" in query
     assert args[2]["timespan"].total_seconds() <= 15 * 60
     assert args[2]["server_timeout"] <= 10
+
+
+def test_partial_logs_query_is_unavailable_and_never_uses_partial_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    _monitor_env(monkeypatch)
+    partial_data = _QueryResult(
+        [
+            "2026-07-13T00:00:00Z",
+            "a" * 32,
+            _APPLICATION_ID,
+            _RESOURCE_ID,
+            "requests",
+            monitor.hash_trace_identifier("run-a"),
+            monitor.hash_trace_identifier("a" * 32),
+        ]
+    )
+    client = _LogsClient(_PartialResult({"status": 429, "code": "ThrottledError", "message": "token=private"}, partial_data))
+
+    with pytest.raises(monitor.TraceDeliveryQueryError) as error:
+        monitor.query_trace_delivery("ws-a", "run-a", "a" * 32, client_factory=lambda: client)
+
+    assert error.value.error_type == "LogsQueryPartialResult"
+    assert error.value.error_status == 429
+
+
+def test_partial_logs_query_without_status_is_still_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _monitor_env(monkeypatch)
+    client = _LogsClient(_PartialResult({"message": "untrusted partial payload"}, _QueryResult([])))
+
+    with pytest.raises(monitor.TraceDeliveryQueryError) as error:
+        monitor.query_trace_delivery("ws-a", "run-a", "a" * 32, client_factory=lambda: client)
+
+    assert error.value.error_type == "LogsQueryPartialResult"
+    assert error.value.error_status is None
+
+
+def test_query_client_is_injected_for_tests_without_default_credential_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    _monitor_env(monkeypatch)
+    client = _LogsClient(type("Empty", (), {"tables": []})())
+
+    assert monitor.query_trace_delivery("ws-a", "run-a", "a" * 32, client_factory=lambda: client) is None
+    assert "DefaultAzureCredential" not in open(monitor.__file__, encoding="utf-8").read()
 
 
 def test_success_confirmation_cache_is_scoped_and_does_not_cache_partial(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,9 +293,9 @@ def test_success_confirmation_cache_is_scoped_and_does_not_cache_partial(monkeyp
     reset()
     calls: list[tuple[str, str, str]] = []
 
-    def confirmed(workspace_id: str, run_id: str, correlation_id: str, **_kwargs: object) -> dict[str, object]:
+    def confirmed(workspace_id: str, run_id: str, correlation_id: str, **_kwargs: object):
         calls.append((workspace_id, run_id, correlation_id))
-        return {"observed_at": datetime(2026, 7, 13, tzinfo=timezone.utc)}
+        return _proof(workspace_id, run_id, correlation_id, resource_id=os.environ["DF_APP_INSIGHTS_RESOURCE_ID"], application_id=os.environ["DF_APP_INSIGHTS_APPLICATION_ID"])
 
     monkeypatch.setattr(monitor, "query_trace_delivery", confirmed)
     first = monitor.get_trace_delivery_status("ws-a", "run-a", "e" * 32)
@@ -174,6 +304,11 @@ def test_success_confirmation_cache_is_scoped_and_does_not_cache_partial(monkeyp
 
     assert first.state == second.state == other_workspace.state == "connected"
     assert calls == [("ws-a", "run-a", "e" * 32), ("ws-b", "run-a", "e" * 32)]
+
+    monkeypatch.setenv("DF_APP_INSIGHTS_APPLICATION_ID", "44444444-4444-4444-4444-444444444444")
+    changed_application = monitor.get_trace_delivery_status("ws-a", "run-a", "e" * 32)
+    assert changed_application.state == "connected"
+    assert calls[-1] == ("ws-a", "run-a", "e" * 32)
 
     reset()
     partial_calls: list[tuple[str, str, str]] = []
@@ -193,7 +328,7 @@ def test_query_exception_is_reported_by_type_without_secret_or_actor_log(monkeyp
     client = _LogsClient(RuntimeError("token=private actor@example.com object-id-123"))
 
     with pytest.raises(monitor.TraceDeliveryQueryError) as error:
-        monitor.query_trace_delivery("ws-a", "run-a", "a" * 32, client=client)
+        monitor.query_trace_delivery("ws-a", "run-a", "a" * 32, client_factory=lambda: client)
 
     assert error.value.error_type == "RuntimeError"
     assert "private" not in str(error.value)
@@ -214,21 +349,22 @@ def test_transaction_link_requires_verified_resource_application_and_correlation
     assert build_link(resource_id, "22222222-2222-2222-2222-222222222222", "a" * 31 + "/") is None
 
 
-def test_trace_status_endpoint_requires_workspace_read_and_verifies_run_ownership(monkeypatch: pytest.MonkeyPatch) -> None:
-    requested_actions: list[tuple[str, str]] = []
+def test_trace_status_endpoint_authorizes_before_run_lookup_and_verifies_run_ownership(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
     monkeypatch.setattr(
         control_plane,
         "require_workspace_permission",
-        lambda workspace_id, _actor, action: requested_actions.append((workspace_id, action)) or "viewer",
+        lambda _workspace_id, _actor, action: events.append(action) or "viewer",
     )
-    monkeypatch.setattr(control_plane, "get_run", lambda _run_id: {"workspace_id": "ws-a"})
+    monkeypatch.setattr(control_plane, "get_run", lambda _run_id: events.append("get_run") or {"workspace_id": "ws-a"})
     monkeypatch.setattr(
         control_plane,
         "get_trace_delivery_status",
         lambda workspace_id, run_id, correlation_id=None: _build_status(
             configured=False,
             local_emit_at=None,
-            remote_trace=None,
+            remote_proof=None,
+            expected=None,
             correlation_id=correlation_id,
             exporter_state="unknown",
         ),
@@ -237,9 +373,15 @@ def test_trace_status_endpoint_requires_workspace_read_and_verifies_run_ownershi
     payload = asyncio.run(control_plane.workspace_trace_status("ws-a", None, run_id="run-a", correlation_id="a" * 32))
 
     assert payload["state"] == "not_configured"
-    assert requested_actions == [("ws-a", "workspace.read")]
+    assert events == ["workspace.read", "get_run"]
 
     monkeypatch.setattr(control_plane, "get_run", lambda _run_id: {"workspace_id": "ws-other"})
     with pytest.raises(HTTPException) as error:
         asyncio.run(control_plane.workspace_trace_status("ws-a", None, run_id="run-a"))
     assert error.value.status_code == 404
+
+    monkeypatch.setattr(control_plane, "require_workspace_permission", lambda *_args: (_ for _ in ()).throw(PermissionError("workspace.read")))
+    monkeypatch.setattr(control_plane, "get_run", lambda _run_id: pytest.fail("run lookup must not run before authorization"))
+    with pytest.raises(HTTPException) as forbidden:
+        asyncio.run(control_plane.workspace_trace_status("ws-a", None, run_id="run-a"))
+    assert forbidden.value.status_code == 403

@@ -7,10 +7,10 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import quote
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -24,7 +24,7 @@ _QUERY_WINDOW = timedelta(minutes=15)
 _QUERY_TIMEOUT_SECONDS = 10
 _CACHE_TTL_SECONDS = 30.0
 _CACHE_LOCK = threading.RLock()
-_CONFIRMED_CACHE: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+_CONFIRMED_CACHE: dict[tuple[str, str, str, str, str], tuple[float, "RemoteTraceProof"]] = {}
 
 
 class TraceDeliveryStatus(BaseModel):
@@ -36,18 +36,111 @@ class TraceDeliveryStatus(BaseModel):
     transaction_url: str | None = None
     exporter_state: Literal["unknown", "succeeded", "failed"] = "unknown"
     error_type: str | None = None
+    error_status: int | None = None
 
 
 class TraceDeliveryQueryError(RuntimeError):
-    def __init__(self, error_type: str) -> None:
+    def __init__(self, error_type: str, error_status: int | None = None) -> None:
         self.error_type = _safe_error_type(error_type)
-        super().__init__(f"Azure Monitor delivery query unavailable: {self.error_type}")
+        self.error_status = _safe_status(error_status)
+        suffix = f" ({self.error_status})" if self.error_status is not None else ""
+        super().__init__(f"Azure Monitor delivery query unavailable: {self.error_type}{suffix}")
 
 
 class _MonitorConfig(BaseModel):
     logs_workspace_id: str
     application_id: str
     resource_id: str
+
+
+class TraceDeliveryExpectation(BaseModel):
+    workspace_hash: str
+    run_hash: str
+    correlation_hash: str
+    resource_id: str
+    application_id: str
+    correlation_id: str
+
+    @field_validator("workspace_hash", "run_hash", "correlation_hash")
+    @classmethod
+    def _validate_hash(cls, value: str) -> str:
+        if not _HASH.fullmatch(value):
+            raise ValueError("trace hash must be sha256")
+        return value
+
+    @field_validator("resource_id")
+    @classmethod
+    def _validate_resource(cls, value: str) -> str:
+        if not _RESOURCE_ID.fullmatch(value):
+            raise ValueError("resource id is invalid")
+        return value
+
+    @field_validator("application_id")
+    @classmethod
+    def _validate_application(cls, value: str) -> str:
+        if not _UUID.fullmatch(value):
+            raise ValueError("application id is invalid")
+        return value.lower()
+
+    @field_validator("correlation_id")
+    @classmethod
+    def _validate_correlation(cls, value: str) -> str:
+        correlation = _safe_correlation_id(value)
+        if not correlation:
+            raise ValueError("correlation id is invalid")
+        return correlation
+
+    @model_validator(mode="after")
+    def _bind_correlation_hash(self) -> "TraceDeliveryExpectation":
+        if self.correlation_hash != hash_trace_identifier(self.correlation_id):
+            raise ValueError("correlation hash does not match correlation id")
+        return self
+
+
+class RemoteTraceProof(BaseModel):
+    observed_at: datetime
+    trace_id: str
+    workspace_hash: str
+    run_hash: str
+    correlation_hash: str
+    resource_id: str
+    application_id: str
+    source_table: Literal["requests", "dependencies"]
+
+    @field_validator("trace_id")
+    @classmethod
+    def _validate_trace_id(cls, value: str) -> str:
+        trace_id = _safe_correlation_id(value)
+        if not trace_id:
+            raise ValueError("trace id is invalid")
+        return trace_id
+
+    @field_validator("workspace_hash", "run_hash", "correlation_hash")
+    @classmethod
+    def _validate_hash(cls, value: str) -> str:
+        if not _HASH.fullmatch(value):
+            raise ValueError("trace hash must be sha256")
+        return value
+
+    @field_validator("resource_id")
+    @classmethod
+    def _validate_resource(cls, value: str) -> str:
+        if not _RESOURCE_ID.fullmatch(value):
+            raise ValueError("resource id is invalid")
+        return value
+
+    @field_validator("application_id")
+    @classmethod
+    def _validate_application(cls, value: str) -> str:
+        if not _UUID.fullmatch(value):
+            raise ValueError("application id is invalid")
+        return value.lower()
+
+    @model_validator(mode="after")
+    def _bind_correlation_hash(self) -> "RemoteTraceProof":
+        if self.correlation_hash != hash_trace_identifier(self.trace_id):
+            raise ValueError("correlation hash does not match trace id")
+        return self
 
 
 def hash_trace_identifier(value: str) -> str:
@@ -63,13 +156,19 @@ def build_trace_status(
     *,
     configured: bool,
     local_emit_at: datetime | None,
-    remote_trace: dict[str, Any] | None,
+    remote_proof: RemoteTraceProof | None,
+    expected: TraceDeliveryExpectation | None,
     correlation_id: str | None,
     exporter_state: Literal["unknown", "succeeded", "failed"] = "unknown",
     local_exporter_callback_at: datetime | None = None,
     query_error_type: str | None = None,
+    query_error_status: int | None = None,
     transaction_url: str | None = None,
 ) -> TraceDeliveryStatus:
+    if remote_proof is not None and not isinstance(remote_proof, RemoteTraceProof):
+        raise TypeError("remote_proof must be a RemoteTraceProof")
+    if expected is not None and not isinstance(expected, TraceDeliveryExpectation):
+        raise TypeError("expected must be a TraceDeliveryExpectation")
     safe_correlation = _safe_correlation_id(correlation_id)
     if not configured:
         return TraceDeliveryStatus(
@@ -87,15 +186,15 @@ def build_trace_status(
             correlation_id=safe_correlation,
             exporter_state=exporter_state,
             error_type=_safe_error_type(query_error_type),
+            error_status=_safe_status(query_error_status),
         )
-    if remote_trace:
-        observed_at = _as_datetime(remote_trace.get("observed_at"))
-        if observed_at:
+    if isinstance(remote_proof, RemoteTraceProof) and expected and _proof_matches(remote_proof, expected):
+        if remote_proof.observed_at:
             return TraceDeliveryStatus(
                 state="connected",
                 local_emit_at=local_emit_at,
                 local_exporter_callback_at=local_exporter_callback_at,
-                last_export_confirmed_at=observed_at,
+                last_export_confirmed_at=remote_proof.observed_at,
                 correlation_id=safe_correlation,
                 transaction_url=transaction_url,
                 exporter_state=exporter_state,
@@ -128,7 +227,8 @@ def get_trace_delivery_status(
             configured=False,
             local_emit_at=local_emit_at,
             local_exporter_callback_at=callback_at,
-            remote_trace=None,
+            remote_proof=None,
+            expected=None,
             correlation_id=correlation,
             exporter_state=exporter_state,  # type: ignore[arg-type]
         )
@@ -137,37 +237,48 @@ def get_trace_delivery_status(
             configured=True,
             local_emit_at=local_emit_at,
             local_exporter_callback_at=callback_at,
-            remote_trace=None,
+            remote_proof=None,
+            expected=None,
             correlation_id=correlation,
             exporter_state=exporter_state,  # type: ignore[arg-type]
         )
 
-    cache_key = (hash_trace_identifier(workspace_id), hash_trace_identifier(run_id), hash_trace_identifier(correlation))
-    remote = _cached_confirmation(cache_key)
+    expected = _trace_expectation(workspace_id, run_id, correlation, config)
+    cache_key = (
+        expected.workspace_hash,
+        expected.run_hash,
+        expected.correlation_hash,
+        expected.resource_id.lower(),
+        expected.application_id,
+    )
+    remote = _cached_confirmation(cache_key, expected)
     try:
         if remote is None:
             remote = query_trace_delivery(workspace_id, run_id, correlation)
-            if remote is not None:
-                _cache_confirmation(cache_key, remote)
+            if remote is not None and _proof_matches(remote, expected):
+                _cache_confirmation(cache_key, remote, expected)
     except TraceDeliveryQueryError as exc:
         return build_trace_status(
             configured=True,
             local_emit_at=local_emit_at,
             local_exporter_callback_at=callback_at,
-            remote_trace=None,
+            remote_proof=None,
+            expected=expected,
             correlation_id=correlation,
             exporter_state=exporter_state,  # type: ignore[arg-type]
             query_error_type=exc.error_type,
+            query_error_status=exc.error_status,
         )
 
     transaction_url = None
-    if remote:
+    if remote and _proof_matches(remote, expected):
         transaction_url = build_transaction_link(config.resource_id, config.application_id, correlation)
     return build_trace_status(
         configured=True,
         local_emit_at=local_emit_at,
         local_exporter_callback_at=callback_at,
-        remote_trace=remote,
+        remote_proof=remote,
+        expected=expected,
         correlation_id=correlation,
         exporter_state=exporter_state,  # type: ignore[arg-type]
         transaction_url=transaction_url,
@@ -179,8 +290,8 @@ def query_trace_delivery(
     run_id: str,
     correlation_id: str,
     *,
-    client: Any | None = None,
-) -> dict[str, Any] | None:
+    client_factory: Callable[[], Any] | None = None,
+) -> RemoteTraceProof | None:
     """Prove one matching trace is queryable from the configured Log workspace."""
     config = _monitor_config()
     correlation = _safe_correlation_id(correlation_id)
@@ -192,11 +303,7 @@ def query_trace_delivery(
     correlation_hash = hash_trace_identifier(correlation)
     query = _delivery_query(workspace_hash, run_hash, correlation_hash)
     try:
-        if client is None:
-            from azure.identity import DefaultAzureCredential
-            from azure.monitor.query import LogsQueryClient
-
-            client = LogsQueryClient(DefaultAzureCredential())
+        client = client_factory() if client_factory else _managed_identity_logs_client()
         result = client.query_workspace(
             config.logs_workspace_id,
             query,
@@ -206,27 +313,26 @@ def query_trace_delivery(
     except Exception as exc:
         raise TraceDeliveryQueryError(type(exc).__name__) from None
 
+    if _is_partial_result(result):
+        raise TraceDeliveryQueryError("LogsQueryPartialResult", _partial_result_status(result))
+
     row = _first_row(result)
     if not row:
         return None
-    if str(row.get("appId") or "").lower() != config.application_id.lower():
+    try:
+        proof = RemoteTraceProof(
+            observed_at=row.get("timestamp"),
+            trace_id=str(row.get("operation_Id") or ""),
+            workspace_hash=workspace_hash,
+            run_hash=str(row.get("run_hash") or ""),
+            correlation_hash=str(row.get("correlation_hash") or ""),
+            application_id=str(row.get("appId") or ""),
+            resource_id=str(row.get("_ResourceId") or ""),
+            source_table=str(row.get("source_table") or "").lower(),
+        )
+    except Exception:
         return None
-    if str(row.get("_ResourceId") or "").lower() != config.resource_id.lower():
-        return None
-    if str(row.get("run_hash") or "") != run_hash or str(row.get("correlation_hash") or "") != correlation_hash:
-        return None
-    observed_correlation = _safe_correlation_id(row.get("operation_Id"))
-    if observed_correlation != correlation:
-        return None
-    observed_at = _as_datetime(row.get("timestamp"))
-    if not observed_at:
-        return None
-    return {
-        "observed_at": observed_at,
-        "correlation_id": observed_correlation,
-        "application_id": config.application_id,
-        "resource_id": config.resource_id,
-    }
+    return proof if _proof_matches(proof, _trace_expectation(workspace_id, run_id, correlation, config)) else None
 
 
 def build_transaction_link(resource_id: str, application_id: str, correlation_id: str) -> str | None:
@@ -261,11 +367,11 @@ def _delivery_query(workspace_hash: str, run_hash: str, correlation_hash: str) -
             raise ValueError("trace hash must be sha256")
     return "\n".join(
         (
-            "traces",
+            "union isfuzzy=true withsource=source_table requests, dependencies",
             f'| where tostring(customDimensions["dataforge.workspace.hash"]) == "{workspace_hash}"',
             f'| where tostring(customDimensions["dataforge.run.hash"]) == "{run_hash}"',
             f'| where tostring(customDimensions["dataforge.correlation.hash"]) == "{correlation_hash}"',
-            "| project timestamp, operation_Id, appId, _ResourceId,",
+            "| project timestamp, operation_Id, appId, _ResourceId, source_table,",
             '    run_hash=tostring(customDimensions["dataforge.run.hash"]),',
             '    correlation_hash=tostring(customDimensions["dataforge.correlation.hash"])',
             "| take 1",
@@ -289,25 +395,69 @@ def _first_row(result: Any) -> dict[str, Any] | None:
     return dict(zip(names, row, strict=True))
 
 
-def _cached_confirmation(key: tuple[str, str, str]) -> dict[str, Any] | None:
+def _cached_confirmation(key: tuple[str, str, str, str, str], expected: TraceDeliveryExpectation) -> RemoteTraceProof | None:
     now = time.monotonic()
     with _CACHE_LOCK:
         cached = _CONFIRMED_CACHE.get(key)
         if not cached:
             return None
-        expires_at, value = cached
-        if expires_at <= now:
+        expires_at, proof = cached
+        if expires_at <= now or not _proof_matches(proof, expected):
             _CONFIRMED_CACHE.pop(key, None)
             return None
-        return dict(value)
+        return proof
 
 
-def _cache_confirmation(key: tuple[str, str, str], remote: dict[str, Any]) -> None:
+def _cache_confirmation(key: tuple[str, str, str, str, str], proof: RemoteTraceProof, expected: TraceDeliveryExpectation) -> None:
     # Only a parsed remote confirmation reaches this function; misses and failures never cache.
-    if not _as_datetime(remote.get("observed_at")):
+    if not _proof_matches(proof, expected):
         return
     with _CACHE_LOCK:
-        _CONFIRMED_CACHE[key] = (time.monotonic() + _CACHE_TTL_SECONDS, dict(remote))
+        _CONFIRMED_CACHE[key] = (time.monotonic() + _CACHE_TTL_SECONDS, proof)
+
+
+def _managed_identity_logs_client() -> Any:
+    from azure.identity import ManagedIdentityCredential
+    from azure.monitor.query import LogsQueryClient
+
+    client_id = str(os.environ.get("AZURE_CLIENT_ID") or "").strip()
+    credential = ManagedIdentityCredential(client_id=client_id) if client_id else ManagedIdentityCredential()
+    return LogsQueryClient(credential)
+
+
+def _partial_result_status(result: Any) -> int | None:
+    partial_error = getattr(result, "partial_error", None)
+    if partial_error is None:
+        return None
+    if isinstance(partial_error, dict):
+        return _safe_status(partial_error.get("status") or partial_error.get("status_code"))
+    return _safe_status(getattr(partial_error, "status", None) or getattr(partial_error, "status_code", None))
+
+
+def _is_partial_result(result: Any) -> bool:
+    return type(result).__name__ == "LogsQueryPartialResult" or getattr(result, "partial_error", None) is not None
+
+
+def _trace_expectation(workspace_id: str, run_id: str, correlation_id: str, config: _MonitorConfig) -> TraceDeliveryExpectation:
+    return TraceDeliveryExpectation(
+        workspace_hash=hash_trace_identifier(workspace_id),
+        run_hash=hash_trace_identifier(run_id),
+        correlation_hash=hash_trace_identifier(correlation_id),
+        resource_id=config.resource_id,
+        application_id=config.application_id,
+        correlation_id=correlation_id,
+    )
+
+
+def _proof_matches(proof: RemoteTraceProof, expected: TraceDeliveryExpectation) -> bool:
+    return (
+        proof.workspace_hash == expected.workspace_hash
+        and proof.run_hash == expected.run_hash
+        and proof.correlation_hash == expected.correlation_hash
+        and proof.resource_id.lower() == expected.resource_id.lower()
+        and proof.application_id == expected.application_id
+        and proof.trace_id == expected.correlation_id
+    )
 
 
 def _local_delivery_record(workspace_id: str, run_id: str | None) -> dict[str, Any] | None:
@@ -327,6 +477,16 @@ def _safe_correlation_id(value: Any) -> str | None:
 def _safe_error_type(value: Any) -> str:
     text = re.sub(r"[^A-Za-z0-9_.-]", "", str(value or ""))[:80]
     return text or "AzureMonitorQueryError"
+
+
+def _safe_status(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        status = int(value)
+    except (TypeError, ValueError):
+        return None
+    return status if 100 <= status <= 599 else None
 
 
 def _as_datetime(value: Any) -> datetime | None:

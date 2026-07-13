@@ -34,3 +34,31 @@
 - Compile: `python -m compileall -q backend` -> passed.
 - Import smoke: `python -m backend.import_smoke` -> passed.
 - Diff check: `git diff --check` -> passed; Git emitted a CRLF normalization notice for `backend/observability.py`, with no whitespace errors.
+
+## Review Remediation
+
+### RED / GREEN
+
+- RED 4: 10 review regression tests failed because delivery proof accepted arbitrary dictionaries, queried only `traces`, used an implicit credential chain, did not identify partial Logs results, omitted resource/application cache scope, and looked up a run before workspace authorization.
+- GREEN 4: `RemoteTraceProof` and `TraceDeliveryExpectation` now require canonical resource/application IDs, SHA-256 workspace/run/correlation hashes, a 32-hex trace ID, and `requests` or `dependencies` as the source span table. Only a matching typed proof can produce `connected`; an arbitrary dictionary raises `TypeError`.
+- RED 5: a `partial_error` without a numeric status did not raise an unavailable delivery condition.
+- GREEN 5: any `LogsQueryPartialResult` or result with `partial_error` returns `unavailable`; `partial_data` is never read. The response exposes only `LogsQueryPartialResult` and an optional bounded numeric status.
+- RED 6: the strict untyped-proof rejection test failed because a dictionary was silently downgraded.
+- GREEN 6: the builder explicitly rejects an untyped remote proof while a validated-but-mismatched proof remains `partial`.
+- RED 7: a typed proof could carry a correlation hash unrelated to its trace ID.
+- GREEN 7: Pydantic model validation now rejects a proof or expectation unless its correlation hash equals the SHA-256 hash of its canonical trace/correlation ID.
+
+### Reviewed Controls
+
+- The bounded KQL query is `union isfuzzy=true withsource=source_table requests, dependencies`; it reads hashed attributes from `customDimensions`, projects `source_table`, and accepts proof only from those two span tables after `operation_Id` equals the expected trace ID.
+- Production creates the Logs client with `ManagedIdentityCredential`, using `AZURE_CLIENT_ID` only for a user-assigned identity. Tests inject `client_factory`; no implicit credential chain is used.
+- The 30-second success cache key includes workspace/run/correlation hashes plus canonical resource ID and application ID. Every cache hit is rechecked against its expectation before it is used.
+- The trace-status route enforces `workspace.read` before any run lookup, then verifies workspace ownership before querying.
+
+### Review Verification
+
+- Focused: `python -m pytest tests/test_azure_monitor_status.py tests/test_tracing_telemetry.py tests/test_governance_roi_summary.py -q` -> 28 passed.
+- Full: `python -m pytest -q` -> 433 passed, 1 pre-existing experimental workflow warning.
+- Compile: `python -m compileall -q backend` -> passed.
+- Import smoke: `python -m backend.import_smoke` -> passed.
+- Diff check: `git diff --check` -> passed.
