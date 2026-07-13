@@ -14,6 +14,8 @@ from .schemas import Evidence
 
 MAX_EVIDENCE_ITEMS = 12
 MAX_EVIDENCE_QUOTE_CHARS = 320
+MAX_BUNDLE_GAPS = 20
+MAX_CAPABILITY_PACK_IDS = 16
 
 
 class BundleLimits(BaseModel):
@@ -27,8 +29,8 @@ class EvidenceBundle(BaseModel):
     fingerprint: str
     evidence: list[Evidence]
     profile_facts: list[str]
-    gaps: list[str]
-    capability_pack_ids: list[str]
+    gaps: list[str] = Field(max_length=MAX_BUNDLE_GAPS)
+    capability_pack_ids: list[str] = Field(max_length=MAX_CAPABILITY_PACK_IDS)
 
     def persisted_metadata(self) -> dict[str, Any]:
         """Return the run-record projection without raw evidence or profile text."""
@@ -85,7 +87,8 @@ def _bounded_evidence(value: Any, limits: BundleLimits) -> Evidence | None:
 
 def _profile_facts(profile: Mapping[str, Any], limits: BundleLimits) -> list[str]:
     facts: list[str] = []
-    for key, value in profile.items():
+    for key in sorted(profile):
+        value = profile[key]
         if key in {"asset_evidence", "gaps_observed"} or value is None:
             continue
         if isinstance(value, (str, int, float, bool)) and not isinstance(value, bytes):
@@ -108,7 +111,7 @@ def _capability_pack_ids(packs: Sequence[Any] | None) -> list[str]:
         text = str(candidate or "").strip()
         if text and text not in ids:
             ids.append(text[:120])
-    return ids
+    return sorted(ids)[:MAX_CAPABILITY_PACK_IDS]
 
 
 def build_evidence_bundle(
@@ -126,24 +129,23 @@ def build_evidence_bundle(
     corpus_data = _as_mapping(corpus)
     route_data = _as_mapping(route)
     profile = _as_mapping(corpus_data.get("profile"))
-    evidence: list[Evidence] = []
+    candidates: list[Evidence] = []
     seen_refs: set[str] = set()
 
-    def append(candidate: Any) -> None:
+    def collect(candidate: Any) -> None:
         item = _bounded_evidence(candidate, bounded_limits)
-        if item is None or item.ref in seen_refs or len(evidence) >= bounded_limits.max_items:
+        if item is None:
             return
-        seen_refs.add(item.ref)
-        evidence.append(item)
+        candidates.append(item)
 
     for item in profile.get("asset_evidence") or ():
-        append(item)
+        collect(item)
     for hit in corpus_data.get("hits") or ():
         hit_data = _as_mapping(hit)
         ref = _evidence_ref(hit_data)
         if not ref:
             continue
-        append(
+        collect(
             {
                 "source_type": "corpus",
                 "ref": ref,
@@ -151,11 +153,19 @@ def build_evidence_bundle(
             }
         )
 
-    gaps = [
-        str(item)[:240]
-        for item in profile.get("gaps_observed") or ()
-        if str(item).strip()
-    ]
+    evidence: list[Evidence] = []
+    for item in sorted(candidates, key=lambda evidence: (evidence.ref, evidence.source_type, evidence.quote or "")):
+        if item.ref in seen_refs or len(evidence) >= bounded_limits.max_items:
+            continue
+        seen_refs.add(item.ref)
+        evidence.append(item)
+    gaps = sorted(
+        {
+            str(item).strip()[:240]
+            for item in profile.get("gaps_observed") or ()
+            if str(item).strip()
+        }
+    )[:MAX_BUNDLE_GAPS]
     payload = {
         "workspace_id": _workspace_id(corpus_data, route_data),
         "evidence": [item.model_dump(mode="json", exclude_none=True) for item in evidence],
@@ -170,15 +180,38 @@ def build_evidence_bundle(
 
 
 def bundle_for_agent(bundle: EvidenceBundle, agent_id: str) -> dict[str, Any]:
-    """Return the shared bounded view without agent-specific raw-corpus expansion."""
-    if not str(agent_id or "").strip():
-        raise ValueError("agent_id is required for an evidence bundle view")
-    return bundle.model_dump(mode="json", exclude_none=True)
+    """Return the minimum bounded evidence view required by an agent role."""
+    policies: dict[str, tuple[frozenset[str], bool, bool]] = {
+        "df-coordinator": (frozenset({"corpus", "computed"}), False, False),
+        "df-corpus-analyst": (frozenset({"corpus", "computed"}), True, True),
+        "df-market-researcher": (frozenset({"corpus", "computed"}), False, True),
+        "df-feasibility-analyst": (frozenset({"corpus", "market", "computed"}), True, False),
+        "df-auditor": (frozenset({"corpus", "market", "computed"}), True, False),
+        "df-producer": (frozenset({"computed"}), False, False),
+    }
+    policy = policies.get(str(agent_id or "").strip())
+    if policy is None:
+        raise ValueError("unsupported agent_id for an evidence bundle view")
+    evidence_types, include_profile, include_packs = policy
+    return {
+        "workspace_id": bundle.workspace_id,
+        "fingerprint": bundle.fingerprint,
+        "evidence": [
+            item.model_dump(mode="json", exclude_none=True)
+            for item in bundle.evidence
+            if item.source_type in evidence_types
+        ],
+        "profile_facts": list(bundle.profile_facts) if include_profile else [],
+        "gaps": list(bundle.gaps),
+        "capability_pack_ids": list(bundle.capability_pack_ids) if include_packs else [],
+    }
 
 
 __all__ = [
     "BundleLimits",
     "EvidenceBundle",
+    "MAX_BUNDLE_GAPS",
+    "MAX_CAPABILITY_PACK_IDS",
     "MAX_EVIDENCE_ITEMS",
     "MAX_EVIDENCE_QUOTE_CHARS",
     "build_evidence_bundle",

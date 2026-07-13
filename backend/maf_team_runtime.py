@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import Mapping
@@ -75,6 +76,21 @@ RuntimeEventName = Literal[
 
 MAX_MAF_AGENT_CALLS = 8
 MAX_MARKET_SOURCES = 6
+
+
+def _configured_limit(
+    configured: int | None,
+    *,
+    environment_name: str,
+    hard_limit: int,
+) -> int:
+    value = configured
+    if value is None:
+        try:
+            value = int(os.environ.get(environment_name, str(hard_limit)))
+        except (TypeError, ValueError):
+            value = hard_limit
+    return min(hard_limit, max(0, int(value)))
 
 ALL_AGENT_IDS: tuple[AgentId, ...] = (
     "df-coordinator",
@@ -323,6 +339,7 @@ class MafBranchResult(BaseModel):
 
 class RuntimeExecutionBudget(BaseModel):
     max_agent_calls: int = Field(ge=0)
+    max_market_sources: int = Field(ge=0)
     agent_calls: int = Field(ge=0)
     max_revision_rounds: int = Field(ge=0, le=MAX_MAF_REVISIONS)
     workflow_duration_ms: float = Field(ge=0)
@@ -337,6 +354,7 @@ class RuntimeExecutionBudget(BaseModel):
 def _unknown_execution_budget() -> RuntimeExecutionBudget:
     return RuntimeExecutionBudget(
         max_agent_calls=0,
+        max_market_sources=0,
         agent_calls=0,
         max_revision_rounds=0,
         workflow_duration_ms=0,
@@ -968,17 +986,29 @@ class MafTeamRuntime:
         self,
         registry: MafAgentRegistry,
         *,
-        max_revisions: int = MAX_MAF_REVISIONS,
-        max_agent_calls: int = MAX_MAF_AGENT_CALLS,
-        max_market_sources: int = MAX_MARKET_SOURCES,
+        max_revisions: int | None = None,
+        max_agent_calls: int | None = None,
+        max_market_sources: int | None = None,
         bundle_limits: BundleLimits | None = None,
         feasibility_validator: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         audit_validator: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self._registry = registry
-        self._max_revisions = min(MAX_MAF_REVISIONS, max(0, max_revisions))
-        self._max_agent_calls = max(0, max_agent_calls)
-        self._max_market_sources = max(1, max_market_sources)
+        self._max_revisions = _configured_limit(
+            max_revisions,
+            environment_name="DF_MAF_MAX_REVISIONS",
+            hard_limit=MAX_MAF_REVISIONS,
+        )
+        self._max_agent_calls = _configured_limit(
+            max_agent_calls,
+            environment_name="DF_MAF_MAX_AGENT_CALLS",
+            hard_limit=MAX_MAF_AGENT_CALLS,
+        )
+        self._max_market_sources = _configured_limit(
+            max_market_sources,
+            environment_name="DF_MAF_MAX_MARKET_SOURCES",
+            hard_limit=MAX_MARKET_SOURCES,
+        )
         self._bundle_limits = bundle_limits or BundleLimits(
             max_items=MAX_EVIDENCE_ITEMS,
             max_quote_chars=MAX_EVIDENCE_QUOTE_CHARS,
@@ -1099,6 +1129,7 @@ class MafTeamRuntime:
 
         execution_budget = RuntimeExecutionBudget(
             max_agent_calls=self._max_agent_calls,
+            max_market_sources=self._max_market_sources,
             agent_calls=state.agent_calls,
             max_revision_rounds=plan.max_revisions,
             workflow_duration_ms=(time.perf_counter_ns() - state.started_ns) / 1_000_000,
@@ -1260,7 +1291,10 @@ class MafTeamRuntime:
         return output, None
 
     @staticmethod
-    def _participant_payload(request: MafTeamRequest) -> dict[str, Any]:
+    def _participant_payload(
+        request: MafTeamRequest,
+        agent_id: AgentId = "df-coordinator",
+    ) -> dict[str, Any]:
         payload = dict(request.payload)
         history = payload.get("conversation_history")
         if isinstance(history, list):
@@ -1281,7 +1315,7 @@ class MafTeamRuntime:
                 {"workspace_id": request.payload.get("workspace_id"), "intent": request.intent},
                 [],
             )
-        return {**payload, "evidence_bundle": bundle_for_agent(bundle, "df-coordinator")}
+        return {**payload, "evidence_bundle": bundle_for_agent(bundle, agent_id)}
 
     @staticmethod
     def _feasibility_payload(
@@ -1338,7 +1372,7 @@ class MafTeamRuntime:
     ) -> tuple[dict[str, Any], list[str], bool, list[MafBranchResult], float, int]:
         output, error = await self._invoke(
             "df-coordinator",
-            self._participant_payload(request),
+            self._participant_payload(request, "df-coordinator"),
             state,
         )
         if error:
@@ -1421,7 +1455,7 @@ class MafTeamRuntime:
                     branch_id=branch_id,
                     agent_id=agent_id,
                     required=required,
-                    payload=self._participant_payload(request),
+                    payload=self._participant_payload(request, agent_id),
                     observations=observations,
                     state=state,
                     validator=(
@@ -1722,7 +1756,7 @@ class MafTeamRuntime:
     ) -> tuple[dict[str, Any], list[str], bool, list[MafBranchResult], float, int]:
         coordinator, coordinator_error = await self._invoke(
             "df-coordinator",
-            self._participant_payload(request),
+            self._participant_payload(request, "df-coordinator"),
             state,
         )
         if coordinator_error:
@@ -1743,7 +1777,7 @@ class MafTeamRuntime:
             reason_codes=(_intent_reason_code(request.intent),),
         )
         specialist_payload = {
-            **self._participant_payload(request),
+            **self._participant_payload(request, target),
             "coordinator": coordinator,
         }
         validator = None

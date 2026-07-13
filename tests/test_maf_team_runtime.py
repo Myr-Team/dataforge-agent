@@ -20,6 +20,8 @@ from backend.maf_contracts import CollaborationPattern
 from backend.maf_team_runtime import (
     AuthoritativeCorpus,
     FeasibilityRubric,
+    MAX_MAF_AGENT_CALLS,
+    MAX_MARKET_SOURCES,
     MafRuntimeEvent,
     MafTeamRequest,
     MafTeamRuntime,
@@ -445,6 +447,24 @@ async def test_runtime_summary_exposes_observed_execution_budget(fake_registry: 
     assert budget.input_tokens == 30
     assert budget.output_tokens == 12
     assert budget.total_tokens == 42
+
+
+@pytest.mark.asyncio
+async def test_runtime_configured_limits_cannot_exceed_hard_caps(fake_registry: FakeRegistry, monkeypatch) -> None:
+    monkeypatch.setenv("DF_MAF_MAX_AGENT_CALLS", str(MAX_MAF_AGENT_CALLS + 10))
+    monkeypatch.setenv("DF_MAF_MAX_MARKET_SOURCES", str(MAX_MARKET_SOURCES + 10))
+    monkeypatch.setenv("DF_MAF_MAX_REVISIONS", "99")
+
+    result = await MafTeamRuntime(
+        fake_registry,
+        max_agent_calls=MAX_MAF_AGENT_CALLS + 10,
+        max_market_sources=MAX_MARKET_SOURCES + 10,
+        max_revisions=99,
+    ).run(concurrent_request())
+
+    assert result.summary.execution_budget.max_agent_calls == MAX_MAF_AGENT_CALLS
+    assert result.summary.execution_budget.max_market_sources == MAX_MARKET_SOURCES
+    assert result.summary.execution_budget.max_revision_rounds == 2
 
 
 @pytest.mark.asyncio

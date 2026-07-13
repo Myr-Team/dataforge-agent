@@ -1,7 +1,18 @@
 from __future__ import annotations
 
-from backend.evidence_bundle import BundleLimits, build_evidence_bundle, bundle_for_agent
+import pytest
+from pydantic import ValidationError
+
+from backend.evidence_bundle import (
+    MAX_BUNDLE_GAPS,
+    MAX_CAPABILITY_PACK_IDS,
+    BundleLimits,
+    EvidenceBundle,
+    build_evidence_bundle,
+    bundle_for_agent,
+)
 from backend.maf_team_runtime import AuthoritativeCorpus
+from backend.schemas import Evidence
 
 
 def corpus_with_duplicates() -> AuthoritativeCorpus:
@@ -75,3 +86,95 @@ def test_agent_view_is_bounded_and_persisted_metadata_excludes_quotes() -> None:
         "capability_pack_ids": ["market-lookup"],
     }
     assert "quote" not in repr(metadata)
+
+
+def test_bundle_caps_gaps_and_capability_pack_ids() -> None:
+    corpus = AuthoritativeCorpus.model_validate(
+        {
+            "profile": {
+                "gaps_observed": [f"gap-{index}" for index in range(MAX_BUNDLE_GAPS + 8)],
+            }
+        }
+    )
+    packs = [{"id": f"pack-{index}"} for index in range(MAX_CAPABILITY_PACK_IDS + 8)]
+
+    bundle = build_evidence_bundle(corpus, route(), packs)
+
+    assert len(bundle.gaps) == MAX_BUNDLE_GAPS
+    assert len(bundle.capability_pack_ids) == MAX_CAPABILITY_PACK_IDS
+    assert len(bundle.persisted_metadata()["capability_pack_ids"]) == MAX_CAPABILITY_PACK_IDS
+    with pytest.raises(ValidationError):
+        EvidenceBundle(
+            workspace_id="workspace-1",
+            fingerprint="f" * 64,
+            evidence=[],
+            profile_facts=[],
+            gaps=[f"gap-{index}" for index in range(MAX_BUNDLE_GAPS + 1)],
+            capability_pack_ids=[],
+        )
+
+
+def test_bundle_for_agent_applies_role_allowlists() -> None:
+    bundle = EvidenceBundle(
+        workspace_id="workspace-1",
+        fingerprint="f" * 64,
+        evidence=[
+            Evidence(source_type="corpus", ref="corpus:1", quote="internal evidence"),
+            Evidence(source_type="market", ref="market:1", quote="external evidence"),
+            Evidence(source_type="computed", ref="computed:1", quote="derived evidence"),
+        ],
+        profile_facts=["profile: confidential operating fact"],
+        gaps=["gap: verify coverage"],
+        capability_pack_ids=["corpus-search", "market-lookup"],
+    )
+
+    corpus_view = bundle_for_agent(bundle, "df-corpus-analyst")
+    market_view = bundle_for_agent(bundle, "df-market-researcher")
+    producer_view = bundle_for_agent(bundle, "df-producer")
+
+    assert {item["source_type"] for item in corpus_view["evidence"]} == {"corpus", "computed"}
+    assert corpus_view["profile_facts"] == ["profile: confidential operating fact"]
+    assert market_view["profile_facts"] == []
+    assert {item["source_type"] for item in market_view["evidence"]} == {"corpus", "computed"}
+    assert producer_view["evidence"] == [
+        {"source_type": "computed", "ref": "computed:1", "quote": "derived evidence"}
+    ]
+    assert producer_view["profile_facts"] == []
+    assert producer_view["capability_pack_ids"] == []
+    with pytest.raises(ValueError, match="unsupported agent_id"):
+        bundle_for_agent(bundle, "df-unknown")
+
+
+def test_bundle_fingerprint_is_stable_for_equivalent_input_ordering() -> None:
+    first = AuthoritativeCorpus.model_validate(
+        {
+            "hits": [
+                {"id": "workspace:b", "content": "second"},
+                {"id": "workspace:a", "content": "first"},
+            ],
+            "profile": {
+                "summary": "summary",
+                "owner": "owner",
+                "gaps_observed": ["gap-b", "gap-a"],
+            },
+        }
+    )
+    second = AuthoritativeCorpus.model_validate(
+        {
+            "hits": [
+                {"id": "workspace:a", "content": "first"},
+                {"id": "workspace:b", "content": "second"},
+            ],
+            "profile": {
+                "gaps_observed": ["gap-a", "gap-b"],
+                "owner": "owner",
+                "summary": "summary",
+            },
+        }
+    )
+
+    first_bundle = build_evidence_bundle(first, route(), [{"id": "pack-b"}, {"id": "pack-a"}])
+    second_bundle = build_evidence_bundle(second, route(), [{"id": "pack-a"}, {"id": "pack-b"}])
+
+    assert first_bundle.fingerprint == second_bundle.fingerprint
+    assert first_bundle.model_dump() == second_bundle.model_dump()
