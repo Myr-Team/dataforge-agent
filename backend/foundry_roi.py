@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+from dataclasses import dataclass
 from hashlib import sha256
 from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, Protocol
@@ -22,13 +23,13 @@ except ImportError:
 
 
 _ATTESTATION_PUBLIC_KEY_ENV = "DF_FOUNDRY_ROI_ATTESTATION_PUBLIC_KEY"
-_ATTESTATION_CONTEXT = "dataforge.foundry_roi.discovery_attestation.v1"
+_ATTESTATION_CONTEXT = "dataforge.foundry_roi.discovery_attestation.v2"
 
 
 class FoundryRoiTarget(BaseModel):
     """Canonical configuration required by a provider instance; never returned to clients."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
     project_endpoint: str
     agent_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     target_fingerprint: str = Field(default="", pattern=r"^[a-f0-9]{64}$")
@@ -59,7 +60,7 @@ class FoundryRoiTarget(BaseModel):
 
     @model_validator(mode="after")
     def derived_fingerprint(self) -> "FoundryRoiTarget":
-        self.target_fingerprint = sha256(f"{self.project_endpoint}\n{self.agent_id}".encode("utf-8")).hexdigest()
+        object.__setattr__(self, "target_fingerprint", sha256(f"{self.project_endpoint}\n{self.agent_id}".encode("utf-8")).hexdigest())
         return self
 
 
@@ -101,7 +102,7 @@ class VerifiedDiscoveryAttestation(BaseModel):
 
 class FoundryRoiStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    state: Literal["connected", "configured_unverified", "not_configured", "unavailable"]
+    state: Literal["connected", "discovery_verified", "configured_unverified", "not_configured", "unavailable"]
     configured: bool = False
     source: Literal["foundry_roi_provider", "foundry_roi_verifier"] = "foundry_roi_provider"
     observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -117,7 +118,7 @@ class FoundryRoiStatus(BaseModel):
 
     @model_validator(mode="after")
     def consistent_state(self) -> "FoundryRoiStatus":
-        self.configured = self.state in {"connected", "configured_unverified"}
+        self.configured = self.state in {"connected", "discovery_verified", "configured_unverified"}
         return self
 
 
@@ -178,6 +179,7 @@ class SignedFoundryRoiAttestation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     attestation: VerifiedDiscoveryAttestation
     key_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    snapshot_digest: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     signature: str = Field(min_length=86, max_length=88)
 
     @field_validator("signature")
@@ -206,6 +208,15 @@ class FoundryRoiReadResult(BaseModel):
         return self
 
 
+@dataclass(frozen=True)
+class _FoundryRoiAdapterConfig:
+    """Request-start configuration passed by value through untrusted provider and verifier interactions."""
+
+    target: FoundryRoiTarget
+    pinned_key_id: str | None
+    pinned_public_key: Ed25519PublicKey | None
+
+
 class FoundryRoiProvider(Protocol):
     """An injected provider must be configured for one validated Foundry target."""
 
@@ -217,7 +228,12 @@ class FoundryRoiProvider(Protocol):
 class FoundryRoiDiscoveryVerifier(Protocol):
     """External attestation source. Its envelope is untrusted until the adapter verifies its Ed25519 signature."""
 
-    def verify(self, target: FoundryRoiTarget, proof: DiscoveryProof) -> SignedFoundryRoiAttestation: ...
+    def verify(
+        self,
+        target: FoundryRoiTarget,
+        proof: DiscoveryProof,
+        candidate_snapshot: ProviderRoiSnapshot | None,
+    ) -> SignedFoundryRoiAttestation: ...
 
 
 def discover_foundry_roi(
@@ -226,45 +242,83 @@ def discover_foundry_roi(
 ) -> FoundryRoiStatus:
     """Discover an injected provider without treating environment flags as proof."""
 
-    target = _target_from_environment()
-    if target is None:
+    config = _capture_adapter_config()
+    if config is None:
         return _status("not_configured", "Canonical Foundry project endpoint and agent ID are not configured")
-    return _discover_target(target, provider, verifier)[0]
+    status, proof = _provider_discovery(config, provider)
+    if proof is None:
+        return status
+    return _verify_external_attestation(config, proof, None, verifier)[0]
 
 
-def _discover_target(
-    target: FoundryRoiTarget,
+def _provider_discovery(
+    config: _FoundryRoiAdapterConfig,
     provider: FoundryRoiProvider | None,
-    verifier: FoundryRoiDiscoveryVerifier | None,
-) -> tuple[FoundryRoiStatus, VerifiedDiscoveryAttestation | None]:
+) -> tuple[FoundryRoiStatus, DiscoveryProof | None]:
     if provider is None:
         return _status("not_configured", "No Foundry ROI provider is installed"), None
     try:
-        proof = DiscoveryProof.model_validate(provider.discover(target))
+        proof = DiscoveryProof.model_validate(provider.discover(_untrusted_target_copy(config)))
     except Exception:
         return _status("unavailable", "Foundry ROI provider discovery failed"), None
-    if proof.target_fingerprint != target.target_fingerprint:
+    if proof.target_fingerprint != config.target.target_fingerprint:
         return _status("unavailable", "Foundry ROI provider discovery target does not match configuration"), None
     if proof.state == "unavailable":
         return _status("unavailable", "Foundry ROI provider is unavailable", provider_version=proof.surface_version, observed_at=proof.observed_at), None
     if proof.state == "not_configured":
         return _status("not_configured", "Foundry ROI surface is not configured", provider_version=proof.surface_version, observed_at=proof.observed_at), None
-    pinned_public_key = _pinned_attestation_public_key()
-    if verifier is None or pinned_public_key is None:
+    return _status("configured_unverified", "Provider discovery is awaiting external ROI snapshot attestation", provider_version=proof.surface_version, observed_at=proof.observed_at), proof
+
+
+def _verify_external_attestation(
+    config: _FoundryRoiAdapterConfig,
+    proof: DiscoveryProof,
+    snapshot: ProviderRoiSnapshot | None,
+    verifier: FoundryRoiDiscoveryVerifier | None,
+) -> tuple[FoundryRoiStatus, VerifiedDiscoveryAttestation | None]:
+    if verifier is None or config.pinned_public_key is None or config.pinned_key_id is None:
         return _status("configured_unverified", "Provider proof awaits an externally signed Foundry ROI attestation and pinned public key", provider_version=proof.surface_version, observed_at=proof.observed_at), None
     try:
-        signed_attestation = SignedFoundryRoiAttestation.model_validate(verifier.verify(target, proof))
+        signed_attestation = SignedFoundryRoiAttestation.model_validate(verifier.verify(_untrusted_target_copy(config), proof, snapshot))
     except Exception:
         return _status("unavailable", "Independent Foundry ROI verification failed", provider_version=proof.surface_version), None
-    if not _valid_attestation_signature(signed_attestation, pinned_public_key):
+    if not _valid_attestation_signature(signed_attestation, config):
         return _status("unavailable", "Independent Foundry ROI attestation signature is not trusted", provider_version=proof.surface_version), None
     attestation = signed_attestation.attestation
-    if not _attestation_matches(target, proof, attestation):
+    if not _attestation_matches(config.target, proof, attestation):
         return _status("unavailable", "Independent Foundry ROI attestation does not match provider discovery", provider_version=proof.surface_version), None
+    if snapshot is None:
+        if signed_attestation.snapshot_digest is not None:
+            return _status("unavailable", "Discovery attestation unexpectedly claims an ROI snapshot", provider_version=proof.surface_version), None
+        return (
+            _status(
+                "discovery_verified",
+                "External verifier confirmed discovery only; provider ROI values are not snapshot-attested",
+                provider_version=proof.surface_version,
+                observed_at=attestation.observed_at,
+                source="foundry_roi_verifier",
+            ),
+            attestation,
+        )
+    if snapshot.provider_version != attestation.surface_version:
+        return _status("unavailable", "Foundry ROI provider snapshot does not match independent attestation", provider_version=proof.surface_version), None
+    if signed_attestation.snapshot_digest is None:
+        return (
+            _status(
+                "discovery_verified",
+                "External verifier confirmed discovery only; provider ROI values are not snapshot-attested",
+                provider_version=proof.surface_version,
+                observed_at=attestation.observed_at,
+                source="foundry_roi_verifier",
+            ),
+            attestation,
+        )
+    if signed_attestation.snapshot_digest != _snapshot_digest(snapshot):
+        return _status("unavailable", "Independent Foundry ROI attestation does not bind the provider snapshot", provider_version=proof.surface_version), None
     return (
         _status(
             "connected",
-            "Independent verifier confirmed the configured target agent and ROI surface",
+            "Independent verifier confirmed the configured target, ROI surface, and provider snapshot",
             provider_version=proof.surface_version,
             observed_at=attestation.observed_at,
             source="foundry_roi_verifier",
@@ -281,31 +335,33 @@ def read_foundry_roi(
     """Read one sanitized provider snapshot, or expose a truthful unavailable state."""
 
     normalized_window = parse_time_window(window.get("from"), window.get("to"))
-    target = _target_from_environment()
-    if target is None:
+    config = _capture_adapter_config()
+    if config is None:
         status = _status("not_configured", "Canonical Foundry project endpoint and agent ID are not configured")
         return FoundryRoiReadResult(status=status)
-    status, attestation = _discover_target(target, provider, verifier)
-    if status.state != "connected" or provider is None:
+    discovery_status, proof = _provider_discovery(config, provider)
+    if proof is None or provider is None:
+        return FoundryRoiReadResult(status=discovery_status)
+    if verifier is None or config.pinned_public_key is None:
+        status, _ = _verify_external_attestation(config, proof, None, verifier)
         return FoundryRoiReadResult(status=status)
     try:
-        snapshot = ProviderRoiSnapshot.model_validate(provider.read(target, normalized_window))
+        snapshot = ProviderRoiSnapshot.model_validate(provider.read(_untrusted_target_copy(config), normalized_window))
     except (ValidationError, ValueError, TypeError):
-        unavailable = _status("unavailable", "Foundry ROI provider returned an invalid snapshot", provider_version=status.provider_version)
+        unavailable = _status("unavailable", "Foundry ROI provider returned an invalid snapshot", provider_version=proof.surface_version)
         return FoundryRoiReadResult(status=unavailable)
     except Exception:
-        unavailable = _status("unavailable", "Foundry ROI provider read failed", provider_version=status.provider_version)
+        unavailable = _status("unavailable", "Foundry ROI provider read failed", provider_version=proof.surface_version)
         return FoundryRoiReadResult(status=unavailable)
-    if snapshot.target_fingerprint != target.target_fingerprint:
-        unavailable = _status("unavailable", "Foundry ROI provider snapshot target does not match configuration", provider_version=status.provider_version)
+    if snapshot.target_fingerprint != config.target.target_fingerprint:
+        unavailable = _status("unavailable", "Foundry ROI provider snapshot target does not match configuration", provider_version=proof.surface_version)
         return FoundryRoiReadResult(status=unavailable)
     if snapshot.window != normalized_window:
-        unavailable = _status("unavailable", "Foundry ROI provider snapshot window does not match request", provider_version=status.provider_version)
+        unavailable = _status("unavailable", "Foundry ROI provider snapshot window does not match request", provider_version=proof.surface_version)
         return FoundryRoiReadResult(status=unavailable)
-    assert attestation is not None
-    if snapshot.provider_version != attestation.surface_version:
-        unavailable = _status("unavailable", "Foundry ROI provider snapshot does not match independent attestation", provider_version=status.provider_version)
-        return FoundryRoiReadResult(status=unavailable)
+    status, attestation = _verify_external_attestation(config, proof, snapshot, verifier)
+    if status.state != "connected" or attestation is None:
+        return FoundryRoiReadResult(status=status)
     return FoundryRoiReadResult(status=status, provider_snapshot=snapshot, attestation=attestation)
 
 
@@ -402,6 +458,25 @@ def _with_foundry_status(result: dict[str, Any], status: FoundryRoiStatus) -> di
     return result
 
 
+def _capture_adapter_config() -> _FoundryRoiAdapterConfig | None:
+    """Read all environment-backed inputs before any provider or verifier code runs."""
+
+    target = _target_from_environment()
+    if target is None:
+        return None
+    pinned_key = _pinned_attestation_public_key_from_environment()
+    if pinned_key is None:
+        return _FoundryRoiAdapterConfig(target=target, pinned_key_id=None, pinned_public_key=None)
+    key_id, public_key = pinned_key
+    return _FoundryRoiAdapterConfig(target=target, pinned_key_id=key_id, pinned_public_key=public_key)
+
+
+def _untrusted_target_copy(config: _FoundryRoiAdapterConfig) -> FoundryRoiTarget:
+    """Keep the request-start target immutable even if injected code bypasses model immutability."""
+
+    return config.target.model_copy(deep=True)
+
+
 def _target_from_environment() -> FoundryRoiTarget | None:
     endpoint = str(os.environ.get("FOUNDRY_PROJECT_ENDPOINT") or "").strip()
     agent_id = str(os.environ.get("FOUNDRY_AGENT_ID") or "").strip()
@@ -414,7 +489,7 @@ def _target_from_environment() -> FoundryRoiTarget | None:
 
 
 def _status(
-    state: Literal["connected", "configured_unverified", "not_configured", "unavailable"],
+    state: Literal["connected", "discovery_verified", "configured_unverified", "not_configured", "unavailable"],
     reason: str,
     *,
     provider_version: str | None = None,
@@ -446,7 +521,7 @@ def _attestation_matches(
     )
 
 
-def _pinned_attestation_public_key() -> tuple[str, Ed25519PublicKey] | None:
+def _pinned_attestation_public_key_from_environment() -> tuple[str, Ed25519PublicKey] | None:
     raw = str(os.environ.get(_ATTESTATION_PUBLIC_KEY_ENV) or "").strip()
     if not raw:
         return None
@@ -458,26 +533,32 @@ def _pinned_attestation_public_key() -> tuple[str, Ed25519PublicKey] | None:
     return sha256(encoded_key).hexdigest(), public_key
 
 
-def _attestation_payload(attestation: VerifiedDiscoveryAttestation, key_id: str) -> bytes:
+def _attestation_payload(attestation: VerifiedDiscoveryAttestation, key_id: str, snapshot_digest: str | None) -> bytes:
     return _canonical_json(
         {
             "context": _ATTESTATION_CONTEXT,
             "attestation": attestation.model_dump(mode="json"),
             "key_id": key_id,
+            "snapshot_digest": snapshot_digest,
         }
     )
 
 
-def _valid_attestation_signature(signed: SignedFoundryRoiAttestation, pinned_key: tuple[str, Ed25519PublicKey]) -> bool:
-    pinned_key_id, public_key = pinned_key
-    if signed.key_id != pinned_key_id:
+def _valid_attestation_signature(signed: SignedFoundryRoiAttestation, config: _FoundryRoiAdapterConfig) -> bool:
+    if config.pinned_public_key is None or config.pinned_key_id is None or signed.key_id != config.pinned_key_id:
         return False
     try:
         signature = base64.b64decode(signed.signature.encode("ascii"), validate=True)
-        public_key.verify(signature, _attestation_payload(signed.attestation, signed.key_id))
+        config.pinned_public_key.verify(signature, _attestation_payload(signed.attestation, signed.key_id, signed.snapshot_digest))
     except (UnicodeEncodeError, binascii.Error, InvalidSignature, ValueError):
         return False
     return True
+
+
+def _snapshot_digest(snapshot: ProviderRoiSnapshot) -> str:
+    """Hash every canonical, sanitized provider field that can affect ROI display or reconciliation."""
+
+    return sha256(_canonical_json(snapshot.model_dump(mode="json"))).hexdigest()
 
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:

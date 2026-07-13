@@ -26,7 +26,7 @@ from backend.foundry_roi import (
 WINDOW = {"from": "2026-07-01T00:00:00+00:00", "to": "2026-07-02T00:00:00+00:00"}
 TARGET_ENDPOINT = "https://project.services.ai.azure.com/api/projects/demo"
 TARGET_AGENT_ID = "agent-demo"
-ATTESTATION_CONTEXT = "dataforge.foundry_roi.discovery_attestation.v1"
+ATTESTATION_CONTEXT = "dataforge.foundry_roi.discovery_attestation.v2"
 
 
 def target() -> FoundryRoiTarget:
@@ -95,10 +95,12 @@ def configure_trusted_public_key(monkeypatch, signing_key: Ed25519PrivateKey) ->
 
 
 class FakeVerifier:
-    def __init__(self, signing_key: Ed25519PrivateKey) -> None:
+    def __init__(self, signing_key: Ed25519PrivateKey, *, bind_snapshot: bool = True, tamper_snapshot=None) -> None:
         self.signing_key = signing_key
+        self.bind_snapshot = bind_snapshot
+        self.tamper_snapshot = tamper_snapshot
 
-    def verify(self, configured_target, provider_proof):
+    def verify(self, configured_target, provider_proof, candidate_snapshot):
         attestation = VerifiedDiscoveryAttestation(
             target_fingerprint=configured_target.target_fingerprint,
             surface_id=provider_proof.surface_id,
@@ -106,6 +108,7 @@ class FakeVerifier:
             observed_at=provider_proof.observed_at,
             observed_source="fake_discovery_verifier",
         )
+        snapshot_digest = canonical_snapshot_digest(candidate_snapshot) if candidate_snapshot is not None and self.bind_snapshot else None
         raw_public_key = self.signing_key.public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw,
@@ -116,16 +119,32 @@ class FakeVerifier:
                 "context": ATTESTATION_CONTEXT,
                 "attestation": attestation.model_dump(mode="json"),
                 "key_id": key_id,
+                "snapshot_digest": snapshot_digest,
             },
             ensure_ascii=True,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("ascii")
-        return {
+        envelope = {
             "attestation": attestation,
             "key_id": key_id,
+            "snapshot_digest": snapshot_digest,
             "signature": base64.b64encode(self.signing_key.sign(payload)).decode("ascii"),
         }
+        if self.tamper_snapshot is not None and candidate_snapshot is not None:
+            self.tamper_snapshot(candidate_snapshot)
+        return envelope
+
+
+def canonical_snapshot_digest(snapshot: ProviderRoiSnapshot) -> str:
+    return sha256(
+        json.dumps(
+            snapshot.model_dump(mode="json"),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()
 
 
 def reconcile_with_provider(monkeypatch, local: dict, snapshot: ProviderRoiSnapshot):
@@ -184,6 +203,109 @@ def test_provider_must_discover_exact_target_before_connected(monkeypatch) -> No
     assert "agent-demo" not in str(result)
 
 
+def test_request_captures_public_key_and_target_before_provider_can_mutate_environment(monkeypatch) -> None:
+    original_signing_key = Ed25519PrivateKey.generate()
+    replacement_signing_key = Ed25519PrivateKey.generate()
+
+    class Provider:
+        def discover(self, configured_target):
+            configure_trusted_public_key(monkeypatch, replacement_signing_key)
+            monkeypatch.setenv("FOUNDRY_AGENT_ID", "attacker-agent")
+            return proof(configured_target)
+
+        def read(self, configured_target, window):
+            assert configured_target.agent_id == TARGET_AGENT_ID
+            return provider_snapshot(target_fingerprint=configured_target.target_fingerprint, window=window)
+
+    configure_target(monkeypatch)
+    configure_trusted_public_key(monkeypatch, original_signing_key)
+
+    result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(original_signing_key))
+
+    assert result.status.state == "connected"
+    assert result.provider_snapshot is not None
+
+
+def test_provider_cannot_mutate_request_target_used_by_later_calls(monkeypatch) -> None:
+    signing_key = Ed25519PrivateKey.generate()
+
+    class Provider:
+        def discover(self, configured_target):
+            object.__setattr__(configured_target, "agent_id", "attacker-agent")
+            return proof(configured_target)
+
+        def read(self, configured_target, window):
+            assert configured_target.agent_id == TARGET_AGENT_ID
+            return provider_snapshot(target_fingerprint=configured_target.target_fingerprint, window=window)
+
+    configure_target(monkeypatch)
+    configure_trusted_public_key(monkeypatch, signing_key)
+
+    result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(signing_key))
+
+    assert result.status.state == "connected"
+    assert result.provider_snapshot is not None
+
+
+def test_discovery_only_signature_never_connects_or_reconciles_provider_values(monkeypatch) -> None:
+    class Provider:
+        def discover(self, configured_target):
+            return proof(configured_target)
+
+        def read(self, configured_target, window):
+            return provider_snapshot(target_fingerprint=configured_target.target_fingerprint, window=window)
+
+    configure_target(monkeypatch)
+    signing_key = Ed25519PrivateKey.generate()
+    configure_trusted_public_key(monkeypatch, signing_key)
+
+    discovery = discover_foundry_roi(provider=Provider(), verifier=FakeVerifier(signing_key, bind_snapshot=False))
+    read = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(signing_key, bind_snapshot=False))
+    reconciliation = reconcile_foundry_roi(local_snapshot(), provider=Provider(), verifier=FakeVerifier(signing_key, bind_snapshot=False))
+
+    assert discovery.state == "discovery_verified"
+    assert read.status.state == "discovery_verified"
+    assert read.provider_snapshot is None
+    assert reconciliation["foundry_status"]["state"] == "discovery_verified"
+    assert reconciliation["provider"] is None
+    assert reconciliation["difference"] is None
+
+
+@pytest.mark.parametrize(
+    ("name", "tamper_snapshot"),
+    [
+        ("amount", lambda snapshot: object.__setattr__(snapshot.business_value, "amount", 91.0)),
+        ("lineage", lambda snapshot: snapshot.mapped_run_ids.append("run-3")),
+        ("window", lambda snapshot: snapshot.window.update({"to": "2026-07-02T00:00:01+00:00"})),
+        ("snapshot_after_sign", lambda snapshot: object.__setattr__(snapshot, "status", "verified")),
+    ],
+)
+def test_snapshot_tampering_after_signature_never_connects_or_reconciles(monkeypatch, name, tamper_snapshot) -> None:
+    class Provider:
+        def discover(self, configured_target):
+            return proof(configured_target)
+
+        def read(self, configured_target, window):
+            return provider_snapshot(target_fingerprint=configured_target.target_fingerprint, window=window)
+
+    configure_target(monkeypatch)
+    signing_key = Ed25519PrivateKey.generate()
+    configure_trusted_public_key(monkeypatch, signing_key)
+
+    read = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(signing_key, tamper_snapshot=tamper_snapshot))
+    reconciliation = reconcile_foundry_roi(
+        local_snapshot(),
+        provider=Provider(),
+        verifier=FakeVerifier(signing_key, tamper_snapshot=tamper_snapshot),
+    )
+
+    assert name
+    assert read.status.state == "unavailable"
+    assert read.provider_snapshot is None
+    assert reconciliation["provider"] is None
+    assert reconciliation["difference"] is None
+
+
 def test_provider_as_verifier_with_only_public_key_cannot_connect(monkeypatch) -> None:
     class Provider:
         def __init__(self, public_key: bytes) -> None:
@@ -192,7 +314,7 @@ def test_provider_as_verifier_with_only_public_key_cannot_connect(monkeypatch) -
         def discover(self, configured_target):
             return proof(configured_target)
 
-        def verify(self, configured_target, provider_proof):
+        def verify(self, configured_target, provider_proof, candidate_snapshot):
             attestation = VerifiedDiscoveryAttestation(
                 target_fingerprint=configured_target.target_fingerprint,
                 surface_id=provider_proof.surface_id,
@@ -203,11 +325,12 @@ def test_provider_as_verifier_with_only_public_key_cannot_connect(monkeypatch) -
             return {
                 "attestation": attestation,
                 "key_id": sha256(self.public_key).hexdigest(),
+                "snapshot_digest": canonical_snapshot_digest(candidate_snapshot),
                 "signature": base64.b64encode(b"0" * 64).decode("ascii"),
             }
 
-        def read(self, configured_target, window):  # pragma: no cover - self-attestation must prevent read
-            raise AssertionError("unexpected read")
+        def read(self, configured_target, window):
+            return provider_snapshot(target_fingerprint=configured_target.target_fingerprint, window=window)
 
     configure_target(monkeypatch)
     trusted_signing_key = Ed25519PrivateKey.generate()
@@ -230,8 +353,8 @@ def test_colluding_verifier_without_pinned_private_key_cannot_connect(monkeypatc
         def discover(self, configured_target):
             return proof(configured_target)
 
-        def read(self, configured_target, window):  # pragma: no cover - invalid verifier must prevent read
-            raise AssertionError("unexpected read")
+        def read(self, configured_target, window):
+            return provider_snapshot(target_fingerprint=configured_target.target_fingerprint, window=window)
 
     configure_target(monkeypatch)
     trusted_signing_key = Ed25519PrivateKey.generate()

@@ -14,7 +14,7 @@ As of 2026-07-13, this task did not identify a stable public Azure AI Foundry RE
 | `DF_FOUNDRY_ROI_ENABLED=1` alone | `not_configured` | `false` | A feature flag is not evidence of a Foundry ROI surface. |
 | Canonical target set but no provider injected | `not_configured` | `false` | No network request is sent. |
 | Provider discovery or read fails | `unavailable` | `false` | Local ROI remains available; failure details are sanitized. |
-| Provider discovers the target agent and ROI surface, external attestation has a valid signature for the pinned public key, then returns a valid snapshot | `connected` | `true` | Provider snapshot is exposed separately with source, observed time, and provider version. |
+| Provider discovers the target agent and ROI surface, external attestation has a valid pinned-key signature bound to the returned snapshot, then returns a valid snapshot | `connected` | `true` | Provider snapshot is exposed separately with source, observed time, and provider version. |
 
 ## Reconciliation Rules
 
@@ -86,3 +86,29 @@ Output: `499 passed, 1 warning in 46.69s` (the existing experimental workflow wa
 Executed: `python -m compileall backend tests`; `python -c "from backend.foundry_roi import SignedFoundryRoiAttestation, discover_foundry_roi, reconcile_foundry_roi; import backend.control_plane; import backend.dependency_health; print(discover_foundry_roi().state)"`; and `git diff --check`.
 
 Output: all commands exited `0`; the import check printed `not_configured` with no configured Foundry target/provider.
+
+## Third Critical Remediation: Request-Captured Config And Snapshot-Bound Attestation (2026-07-14)
+
+This section supersedes the discovery-only connection behavior described by the prior asymmetric-attestation remediation. A valid discovery signature alone is no longer evidence that any provider ROI value is authentic.
+
+- Each public discovery/read/reconciliation request first constructs a frozen internal adapter config containing the canonical target and parsed pinned Ed25519 public key. Environment-backed endpoint, agent ID, and public key inputs are read only during that construction, before any provider or verifier call. Later verification receives the captured public key, never an environment lookup. Provider and verifier calls receive isolated copies of the frozen target, so mutation of a passed object cannot alter the request config.
+- The external verifier now receives the candidate sanitized `ProviderRoiSnapshot` after provider discovery and read. The versioned Ed25519 envelope signs both discovery evidence and `snapshot_digest`, a SHA-256 hash of canonical JSON for the complete snapshot: source, target fingerprint, normalized window, observation time, provider version, provider status, amount/currency/unit, and exact mapped run/outcome lineage.
+- `connected` and reconciliation are emitted only when the pinned-key signature is valid, discovery fields match, the snapshot version matches, and the signed digest exactly equals the candidate snapshot digest. Any signed-then-mutated amount, lineage, window, or other material snapshot field is `unavailable`; no provider snapshot or difference is emitted.
+- A valid envelope with no snapshot digest is `discovery_verified`, not `connected`. It exposes no provider ROI values and produces no difference. Dependency health already treats only `connected` as `ok`, while retaining the explicit discovery-only state for truthful diagnosis.
+- The adapter still does not claim that arbitrary Python running in-process is sandboxed. The boundary is the captured deployment configuration plus the external Ed25519 private key; the closed public `reconcile_foundry_roi` flow remains the only reconciliation entry point.
+
+### Third Critical Remediation Test Evidence
+
+Executed: `python -m pytest tests/test_foundry_roi.py tests/test_roi_service.py tests/test_governance_roi_summary.py -q`
+
+Output: `58 passed in 4.43s`
+
+Coverage: request-start public-key/target capture despite malicious environment mutation; target-copy isolation; normal snapshot-bound Ed25519 attestation; discovery-only health/read/reconciliation state; and signature-after-sign tampering of amount, lineage, window, and another snapshot field. Existing target, sanitization, exact lineage, incomplete-lineage, local-authority, and closed-public-API tests remain included.
+
+Executed: `python -m pytest -q`
+
+Output: `506 passed, 1 warning in 46.98s` (the existing experimental workflow warning in `backend/maf_team_runtime.py`).
+
+Executed: `python -m compileall backend tests`; `python -c "from backend.foundry_roi import SignedFoundryRoiAttestation, discover_foundry_roi, reconcile_foundry_roi; import backend.control_plane; import backend.dependency_health; print(discover_foundry_roi().state)"`; and `git diff --check`.
+
+Output: all commands exited `0`; the import check printed `not_configured`.
