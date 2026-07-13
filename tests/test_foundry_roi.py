@@ -10,6 +10,7 @@ from backend.foundry_roi import (
     FoundryRoiStatus,
     FoundryRoiTarget,
     ProviderRoiSnapshot,
+    VerifiedDiscoveryAttestation,
     discover_foundry_roi,
     read_foundry_roi,
     reconcile_roi,
@@ -33,6 +34,9 @@ def local_snapshot(amount: float = 100.0, *, status: str = "verified") -> dict:
         "status": status,
         "business_value": {"total": amount, "currency": "USD", "by_currency": {"USD": amount}, "status": "measured"},
         "observed_run_ids": ["run-1", "run-2"],
+        "lineage_complete": True,
+        "truncated": False,
+        "invalid_run_ids": [],
         "outcome_event_ids": ["outcome-1", "outcome-2"],
         "verified_outcome_event_ids": ["outcome-1", "outcome-2"],
     }
@@ -60,19 +64,44 @@ def provider_snapshot(
 ) -> ProviderRoiSnapshot:
     return ProviderRoiSnapshot(
         target_fingerprint=target_fingerprint or target().target_fingerprint,
-        window=window or WINDOW,
+        window=window if window is not None else WINDOW,
         observed_at="2026-07-02T01:05:00+00:00",
         provider_version="2026-07-preview",
         status=status,
         business_value={"amount": amount, "currency": "USD", "unit": "currency"},
-        mapped_run_ids=run_ids or ["run-1", "run-2"],
-        mapped_outcome_event_ids=outcome_ids or ["outcome-1", "outcome-2"],
+        mapped_run_ids=run_ids if run_ids is not None else ["run-1", "run-2"],
+        mapped_outcome_event_ids=outcome_ids if outcome_ids is not None else ["outcome-1", "outcome-2"],
     )
 
 
 def configure_target(monkeypatch) -> None:
     monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", TARGET_ENDPOINT)
     monkeypatch.setenv("FOUNDRY_AGENT_ID", TARGET_AGENT_ID)
+
+
+class FakeVerifier:
+    def verify(self, configured_target, provider_proof):
+        return VerifiedDiscoveryAttestation(
+            target_fingerprint=configured_target.target_fingerprint,
+            surface_id=provider_proof.surface_id,
+            surface_version=provider_proof.surface_version,
+            observed_at=provider_proof.observed_at,
+            observed_source="fake_discovery_verifier",
+        )
+
+
+def verified_read(monkeypatch, snapshot: ProviderRoiSnapshot, *, request_window: dict[str, str] | None = None):
+    class Provider:
+        def discover(self, configured_target):
+            return proof(configured_target)
+
+        def read(self, configured_target, window):
+            return snapshot
+
+    configure_target(monkeypatch)
+    result = read_foundry_roi(request_window if request_window is not None else WINDOW, provider=Provider(), verifier=FakeVerifier())
+    assert result.verified_read is not None
+    return result.verified_read
 
 
 def test_environment_flag_alone_does_not_mean_configured(monkeypatch) -> None:
@@ -106,12 +135,29 @@ def test_provider_must_discover_exact_target_before_connected(monkeypatch) -> No
 
     configure_target(monkeypatch)
 
-    result = read_foundry_roi(WINDOW, provider=Provider())
+    result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier())
 
-    assert result["status"]["state"] == "connected"
-    assert result["snapshot"]["target_fingerprint"] == target().target_fingerprint
+    assert result.status.state == "connected"
+    assert result.verified_read is not None
+    assert result.verified_read.snapshot.target_fingerprint == target().target_fingerprint
     assert "project.services" not in str(result)
     assert "agent-demo" not in str(result)
+
+
+def test_provider_proof_alone_is_configured_unverified_never_connected(monkeypatch) -> None:
+    class Provider:
+        def discover(self, configured_target):
+            return proof(configured_target)
+
+        def read(self, configured_target, window):  # pragma: no cover - read must not happen
+            raise AssertionError("unexpected read")
+
+    configure_target(monkeypatch)
+
+    result = read_foundry_roi(WINDOW, provider=Provider())
+
+    assert result.status.state == "configured_unverified"
+    assert result.verified_read is None
 
 
 def test_lie_about_another_discovery_target_is_unavailable(monkeypatch) -> None:
@@ -124,10 +170,10 @@ def test_lie_about_another_discovery_target_is_unavailable(monkeypatch) -> None:
 
     configure_target(monkeypatch)
 
-    result = read_foundry_roi(WINDOW, provider=LyingProvider())
+    result = read_foundry_roi(WINDOW, provider=LyingProvider(), verifier=FakeVerifier())
 
-    assert result["status"]["state"] == "unavailable"
-    assert result["snapshot"] is None
+    assert result.status.state == "unavailable"
+    assert result.verified_read is None
 
 
 def test_snapshot_for_another_target_is_unavailable(monkeypatch) -> None:
@@ -140,10 +186,10 @@ def test_snapshot_for_another_target_is_unavailable(monkeypatch) -> None:
 
     configure_target(monkeypatch)
 
-    result = read_foundry_roi(WINDOW, provider=LyingProvider())
+    result = read_foundry_roi(WINDOW, provider=LyingProvider(), verifier=FakeVerifier())
 
-    assert result["status"]["state"] == "unavailable"
-    assert result["snapshot"] is None
+    assert result.status.state == "unavailable"
+    assert result.verified_read is None
 
 
 def test_discovery_proof_requires_surface_and_utc_timestamp() -> None:
@@ -190,20 +236,16 @@ def test_provider_failure_is_unavailable_and_local_reconciliation_is_unchanged(m
 
     configure_target(monkeypatch)
 
-    provider = read_foundry_roi(WINDOW, provider=FailingProvider())
-    reconciled = reconcile_roi(local=local_snapshot(), provider=provider)
+    provider = read_foundry_roi(WINDOW, provider=FailingProvider(), verifier=FakeVerifier())
 
-    assert provider["status"]["state"] == "unavailable"
+    assert provider.status.state == "unavailable"
     assert "secret" not in str(provider)
-    assert reconciled["local"]["business_value"]["total"] == 100.0
-    assert reconciled["provider"] is None
-    assert reconciled["difference"] is None
-    assert reconciled["reconciliation"]["reconciled"] is False
+    assert provider.verified_read is None
 
 
-def test_provider_values_are_reconciled_only_for_exact_run_and_outcome_sets() -> None:
+def test_provider_values_are_reconciled_only_for_exact_run_and_outcome_sets(monkeypatch) -> None:
     local = local_snapshot(100.0, status="verified")
-    exact = reconcile_roi(local=local, provider=provider_snapshot(90.0))
+    exact = reconcile_roi(local=local, provider=verified_read(monkeypatch, provider_snapshot(90.0)))
 
     assert exact["local"]["business_value"]["total"] == 100.0
     assert exact["local"]["status"] == "verified"
@@ -218,24 +260,30 @@ def test_provider_values_are_reconciled_only_for_exact_run_and_outcome_sets() ->
         (provider_snapshot(outcome_ids=["outcome-1"]), "outcome lineage"),
         (provider_snapshot(outcome_ids=["outcome-1", "outcome-2", "outcome-3"]), "outcome lineage"),
     ):
-        result = reconcile_roi(local=local, provider=snapshot)
+        result = reconcile_roi(local=local, provider=verified_read(monkeypatch, snapshot))
         assert result["difference"] is None
         assert result["reconciliation"]["reconciled"] is False
         assert reason in result["reconciliation"]["reason"]
 
 
-def test_nonconnected_status_discards_even_a_valid_snapshot() -> None:
-    result = reconcile_roi(
-        local=local_snapshot(),
-        provider={
-            "status": FoundryRoiStatus(state="not_configured", reason="not configured").model_dump(mode="json"),
-            "snapshot": provider_snapshot().model_dump(mode="json"),
-        },
-    )
+def test_nonconnected_discovery_discards_even_a_valid_snapshot(monkeypatch) -> None:
+    class Provider:
+        def discover(self, configured_target):
+            return proof(configured_target, state="not_configured")
 
-    assert result["provider"] is None
-    assert result["difference"] is None
-    assert result["reconciliation"]["reconciled"] is False
+        def read(self, configured_target, window):  # pragma: no cover - read must not happen
+            raise AssertionError("unexpected read")
+
+    configure_target(monkeypatch)
+    result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier())
+
+    assert result.status.state == "not_configured"
+    assert result.verified_read is None
+
+
+def test_public_reconcile_rejects_raw_snapshot_bypass() -> None:
+    with pytest.raises(TypeError):
+        reconcile_roi(local_snapshot(), provider_snapshot())
 
 
 @pytest.mark.parametrize("amount", [math.nan, -1.0])
@@ -244,12 +292,39 @@ def test_provider_rejects_non_finite_or_negative_amounts(amount: float) -> None:
         provider_snapshot(amount)
 
 
-def test_reconciliation_accepts_utc_equivalent_window_but_rejects_different_window() -> None:
+def test_provider_helper_preserves_explicit_empty_lineage_lists() -> None:
+    with pytest.raises(ValidationError):
+        provider_snapshot(run_ids=[])
+    with pytest.raises(ValidationError):
+        provider_snapshot(outcome_ids=[])
+
+
+def test_reconciliation_accepts_utc_equivalent_window_but_rejects_different_window(monkeypatch) -> None:
     equivalent = provider_snapshot(window={"from": "2026-07-01T00:00:00Z", "to": "2026-07-02T00:00:00Z"})
     different = provider_snapshot(window={"from": "2026-07-01T00:00:00Z", "to": "2026-07-02T00:00:01Z"})
 
-    assert reconcile_roi(local_snapshot(), equivalent)["reconciliation"]["reconciled"] is True
-    result = reconcile_roi(local_snapshot(), different)
+    assert reconcile_roi(local_snapshot(), verified_read(monkeypatch, equivalent))["reconciliation"]["reconciled"] is True
+    result = reconcile_roi(local_snapshot(), verified_read(monkeypatch, different, request_window=different.window))
     assert result["difference"] is None
     assert result["reconciliation"]["reconciled"] is False
     assert "window" in result["reconciliation"]["reason"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda local: local.update({"truncated": True, "lineage_complete": False}),
+        lambda local: local.update({"invalid_run_ids": ["sha256:invalid"], "lineage_complete": False}),
+        lambda local: local.update({"observed_run_ids": [], "lineage_complete": False}),
+        lambda local: local.update({"outcome_event_ids": [], "lineage_complete": False}),
+    ],
+)
+def test_incomplete_or_empty_local_lineage_never_reconciles(monkeypatch, mutate) -> None:
+    local = local_snapshot()
+    mutate(local)
+
+    result = reconcile_roi(local, verified_read(monkeypatch, provider_snapshot()))
+
+    assert result["difference"] is None
+    assert result["reconciliation"]["reconciled"] is False
+    assert result["reconciliation"]["reason"] == "local_lineage_incomplete"

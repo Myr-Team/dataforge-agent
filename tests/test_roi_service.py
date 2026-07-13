@@ -103,6 +103,17 @@ def test_snapshot_keeps_safe_observed_source_run_lineage() -> None:
     snapshot = build_roi_snapshot("ws-roi", _window(), runs=[_run(), unsafe], outcomes=[], prices=PRICES)
 
     assert snapshot["observed_run_ids"] == ["run-1"]
+    assert snapshot["invalid_run_ids"]
+    assert "unsafe/run" not in snapshot["invalid_run_ids"]
+    assert snapshot["lineage_complete"] is False
+
+
+def test_snapshot_marks_truncated_source_run_lineage_incomplete() -> None:
+    runs = [{**_run(), "run_id": f"run-{index}"} for index in range(301)]
+    snapshot = build_roi_snapshot("ws-roi", _window(), runs=runs, outcomes=[], prices=PRICES)
+
+    assert snapshot["truncated"] is True
+    assert snapshot["lineage_complete"] is False
 
 
 def test_missing_model_price_is_partial_and_never_zero_cost() -> None:

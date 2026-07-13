@@ -31,3 +31,10 @@ Only `FOUNDRY_PROJECT_ENDPOINT` and `FOUNDRY_AGENT_ID` are accepted as configura
 - `FoundryRoiProvider.read(target, window)` returns a snapshot with the same fingerprint. A mismatched snapshot is discarded as `unavailable`.
 - Local ROI now records safe `observed_run_ids` from actual windowed source runs. Reconciliation requires non-empty business value plus exact, non-empty equality of provider mapped run IDs and outcome IDs with local lineage. Intersection, omission, and extra IDs all produce `difference: null` and `reconciled: false`.
 - A non-`connected` provider status unconditionally discards any attached snapshot before reconciliation.
+
+## Second Review Remediation (2026-07-13)
+
+- Provider discovery is now only a claim. `connected` requires a separate `FoundryRoiDiscoveryVerifier` to return a matching `VerifiedDiscoveryAttestation` for the target fingerprint, surface ID/version, UTC observation time, and observation source. With the production default verifier unset, a provider proof is `configured_unverified`, never `connected`.
+- `read_foundry_roi` returns `FoundryRoiReadResult`; only an adapter-issued `VerifiedProviderRead` can reach public `reconcile_roi`. Raw provider snapshots, mappings, and self-constructed wrappers are rejected with `TypeError`.
+- `RoiSnapshot` records `lineage_complete`, `truncated`, and `invalid_run_ids`. Invalid local run IDs are represented only by stable SHA-256 digests, never raw unsafe values. A read window beyond the record limit or any invalid run ID makes local lineage incomplete.
+- Reconciliation returns `difference: null` and `local_lineage_incomplete` for truncated, invalid, incomplete, or empty local run/outcome lineage.

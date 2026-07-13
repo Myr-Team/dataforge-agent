@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, Protocol
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
 
 try:
     from .roi_service import parse_time_window
@@ -73,11 +73,29 @@ class DiscoveryProof(BaseModel):
         return value.astimezone(timezone.utc)
 
 
+class VerifiedDiscoveryAttestation(BaseModel):
+    """Independent verifier evidence; provider proof alone can never establish connection."""
+
+    model_config = ConfigDict(extra="forbid")
+    target_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    surface_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+    surface_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
+    observed_at: datetime
+    observed_source: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+
+    @field_validator("observed_at")
+    @classmethod
+    def utc_observed_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timestamp must include UTC offset")
+        return value.astimezone(timezone.utc)
+
+
 class FoundryRoiStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    state: Literal["connected", "not_configured", "unavailable"]
+    state: Literal["connected", "configured_unverified", "not_configured", "unavailable"]
     configured: bool = False
-    source: Literal["foundry_roi_provider"] = "foundry_roi_provider"
+    source: Literal["foundry_roi_provider", "foundry_roi_verifier"] = "foundry_roi_provider"
     observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     provider_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]{1,120}$")
     reason: str = Field(min_length=1, max_length=240)
@@ -91,7 +109,7 @@ class FoundryRoiStatus(BaseModel):
 
     @model_validator(mode="after")
     def consistent_state(self) -> "FoundryRoiStatus":
-        self.configured = self.state == "connected"
+        self.configured = self.state in {"connected", "configured_unverified"}
         return self
 
 
@@ -146,6 +164,44 @@ class ProviderRoiSnapshot(BaseModel):
         return identifiers
 
 
+class VerifiedProviderRead(BaseModel):
+    """A connected provider read bound to an independent discovery attestation."""
+
+    model_config = ConfigDict(extra="forbid")
+    target_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    attestation: VerifiedDiscoveryAttestation
+    snapshot: ProviderRoiSnapshot
+    _issued_by_adapter: bool = PrivateAttr(default=False)
+
+    @model_validator(mode="after")
+    def matching_target_and_version(self) -> "VerifiedProviderRead":
+        if not (
+            compare_digest(self.target_fingerprint, self.attestation.target_fingerprint)
+            and compare_digest(self.target_fingerprint, self.snapshot.target_fingerprint)
+            and self.attestation.surface_version == self.snapshot.provider_version
+        ):
+            raise ValueError("verified provider read must match attested target and surface version")
+        return self
+
+    @classmethod
+    def _issue(cls, *, target: FoundryRoiTarget, attestation: VerifiedDiscoveryAttestation, snapshot: ProviderRoiSnapshot) -> "VerifiedProviderRead":
+        result = cls(target_fingerprint=target.target_fingerprint, attestation=attestation, snapshot=snapshot)
+        result._issued_by_adapter = True
+        return result
+
+
+class FoundryRoiReadResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: FoundryRoiStatus
+    verified_read: VerifiedProviderRead | None = None
+
+    @model_validator(mode="after")
+    def connected_requires_attested_read(self) -> "FoundryRoiReadResult":
+        if (self.status.state == "connected") != (self.verified_read is not None):
+            raise ValueError("only connected reads may contain a verified provider read")
+        return self
+
+
 class FoundryRoiProvider(Protocol):
     """An injected provider must be configured for one validated Foundry target."""
 
@@ -154,84 +210,133 @@ class FoundryRoiProvider(Protocol):
     def read(self, target: FoundryRoiTarget, window: Mapping[str, str]) -> ProviderRoiSnapshot: ...
 
 
-def discover_foundry_roi(provider: FoundryRoiProvider | None = None) -> FoundryRoiStatus:
+class FoundryRoiDiscoveryVerifier(Protocol):
+    """Independent attestation boundary. Production has no default verifier until an official API exists."""
+
+    def verify(self, target: FoundryRoiTarget, proof: DiscoveryProof) -> VerifiedDiscoveryAttestation: ...
+
+
+def discover_foundry_roi(
+    provider: FoundryRoiProvider | None = None,
+    verifier: FoundryRoiDiscoveryVerifier | None = None,
+) -> FoundryRoiStatus:
     """Discover an injected provider without treating environment flags as proof."""
 
     target = _target_from_environment()
     if target is None:
         return _status("not_configured", "Canonical Foundry project endpoint and agent ID are not configured")
-    return _discover_target(target, provider)
+    return _discover_target(target, provider, verifier)[0]
 
 
-def _discover_target(target: FoundryRoiTarget, provider: FoundryRoiProvider | None) -> FoundryRoiStatus:
+def _discover_target(
+    target: FoundryRoiTarget,
+    provider: FoundryRoiProvider | None,
+    verifier: FoundryRoiDiscoveryVerifier | None,
+) -> tuple[FoundryRoiStatus, VerifiedDiscoveryAttestation | None]:
     if provider is None:
-        return _status("not_configured", "No Foundry ROI provider is installed")
+        return _status("not_configured", "No Foundry ROI provider is installed"), None
     try:
         proof = DiscoveryProof.model_validate(provider.discover(target))
     except Exception:
-        return _status("unavailable", "Foundry ROI provider discovery failed")
+        return _status("unavailable", "Foundry ROI provider discovery failed"), None
     if not compare_digest(proof.target_fingerprint, target.target_fingerprint):
-        return _status("unavailable", "Foundry ROI provider discovery target does not match configuration")
-    if proof.state == "connected":
-        return _status(
-            "connected",
-            "Provider discovered the configured target agent and ROI surface",
-            provider_version=proof.surface_version,
-            observed_at=proof.observed_at,
-        )
+        return _status("unavailable", "Foundry ROI provider discovery target does not match configuration"), None
     if proof.state == "unavailable":
-        return _status("unavailable", "Foundry ROI provider is unavailable", provider_version=proof.surface_version, observed_at=proof.observed_at)
-    return _status("not_configured", "Foundry ROI surface is not configured", provider_version=proof.surface_version, observed_at=proof.observed_at)
+        return _status("unavailable", "Foundry ROI provider is unavailable", provider_version=proof.surface_version, observed_at=proof.observed_at), None
+    if proof.state == "not_configured":
+        return _status("not_configured", "Foundry ROI surface is not configured", provider_version=proof.surface_version, observed_at=proof.observed_at), None
+    if verifier is None:
+        return _status("configured_unverified", "Provider proof awaits independent Foundry ROI verification", provider_version=proof.surface_version, observed_at=proof.observed_at), None
+    try:
+        attestation = VerifiedDiscoveryAttestation.model_validate(verifier.verify(target, proof))
+    except Exception:
+        return _status("unavailable", "Independent Foundry ROI verification failed", provider_version=proof.surface_version), None
+    if not _attestation_matches(target, proof, attestation):
+        return _status("unavailable", "Independent Foundry ROI attestation does not match provider discovery", provider_version=proof.surface_version), None
+    return (
+        _status(
+            "connected",
+            "Independent verifier confirmed the configured target agent and ROI surface",
+            provider_version=proof.surface_version,
+            observed_at=attestation.observed_at,
+            source="foundry_roi_verifier",
+        ),
+        attestation,
+    )
 
 
-def read_foundry_roi(window: Mapping[str, Any], provider: FoundryRoiProvider | None = None) -> dict[str, Any]:
+def read_foundry_roi(
+    window: Mapping[str, Any],
+    provider: FoundryRoiProvider | None = None,
+    verifier: FoundryRoiDiscoveryVerifier | None = None,
+) -> FoundryRoiReadResult:
     """Read one sanitized provider snapshot, or expose a truthful unavailable state."""
 
     normalized_window = parse_time_window(window.get("from"), window.get("to"))
     target = _target_from_environment()
     if target is None:
         status = _status("not_configured", "Canonical Foundry project endpoint and agent ID are not configured")
-        return {"status": status.model_dump(mode="json"), "snapshot": None}
-    status = _discover_target(target, provider)
+        return FoundryRoiReadResult(status=status)
+    status, attestation = _discover_target(target, provider, verifier)
     if status.state != "connected" or provider is None:
-        return {"status": status.model_dump(mode="json"), "snapshot": None}
+        return FoundryRoiReadResult(status=status)
     try:
         snapshot = ProviderRoiSnapshot.model_validate(provider.read(target, normalized_window))
     except (ValidationError, ValueError, TypeError):
         unavailable = _status("unavailable", "Foundry ROI provider returned an invalid snapshot", provider_version=status.provider_version)
-        return {"status": unavailable.model_dump(mode="json"), "snapshot": None}
+        return FoundryRoiReadResult(status=unavailable)
     except Exception:
         unavailable = _status("unavailable", "Foundry ROI provider read failed", provider_version=status.provider_version)
-        return {"status": unavailable.model_dump(mode="json"), "snapshot": None}
+        return FoundryRoiReadResult(status=unavailable)
     if not compare_digest(snapshot.target_fingerprint, target.target_fingerprint):
         unavailable = _status("unavailable", "Foundry ROI provider snapshot target does not match configuration", provider_version=status.provider_version)
-        return {"status": unavailable.model_dump(mode="json"), "snapshot": None}
+        return FoundryRoiReadResult(status=unavailable)
     if snapshot.window != normalized_window:
         unavailable = _status("unavailable", "Foundry ROI provider snapshot window does not match request", provider_version=status.provider_version)
-        return {"status": unavailable.model_dump(mode="json"), "snapshot": None}
-    connected = _status("connected", status.reason, provider_version=snapshot.provider_version)
-    return {"status": connected.model_dump(mode="json"), "snapshot": snapshot.model_dump(mode="json")}
+        return FoundryRoiReadResult(status=unavailable)
+    assert attestation is not None
+    try:
+        verified_read = VerifiedProviderRead._issue(target=target, attestation=attestation, snapshot=snapshot)
+    except ValidationError:
+        unavailable = _status("unavailable", "Foundry ROI provider snapshot does not match independent attestation", provider_version=status.provider_version)
+        return FoundryRoiReadResult(status=unavailable)
+    return FoundryRoiReadResult(status=status, verified_read=verified_read)
 
 
-def reconcile_roi(local: Mapping[str, Any], provider: ProviderRoiSnapshot | Mapping[str, Any] | None) -> dict[str, Any]:
-    """Keep local ROI authoritative and compare a provider value only when evidence aligns."""
+def reconcile_roi(local: Mapping[str, Any], provider: VerifiedProviderRead) -> dict[str, Any]:
+    """Public reconciliation boundary: only adapter-issued, independently attested reads are accepted."""
+
+    if not isinstance(provider, VerifiedProviderRead) or not provider._issued_by_adapter:
+        raise TypeError("reconcile_roi requires a VerifiedProviderRead issued by read_foundry_roi")
+    return _reconcile_snapshot(local, provider.snapshot, provider.attestation)
+
+
+def reconcile_foundry_read(local: Mapping[str, Any], provider: FoundryRoiReadResult) -> dict[str, Any]:
+    if not isinstance(provider, FoundryRoiReadResult):
+        raise TypeError("reconcile_foundry_read requires FoundryRoiReadResult")
+    if provider.verified_read is None:
+        return _unreconciled(local, provider.status)
+    return reconcile_roi(local, provider.verified_read)
+
+
+def _reconcile_snapshot(
+    local: Mapping[str, Any],
+    snapshot: ProviderRoiSnapshot,
+    attestation: VerifiedDiscoveryAttestation,
+) -> dict[str, Any]:
+    """Private snapshot comparison reached only through an adapter-issued wrapper."""
 
     local_copy = _json_copy(local)
-    snapshot, provider_status = _provider_snapshot(provider)
     metadata: dict[str, Any] = {
         "status": "not_reconciled",
         "reconciled": False,
         "reason": "Foundry ROI provider is not connected",
         "local_generated_at": local_copy.get("generated_at"),
-        "provider_observed_at": snapshot.observed_at.isoformat() if snapshot else None,
-        "provider_source": snapshot.source if snapshot else "foundry_roi_provider",
-        "provider_version": snapshot.provider_version if snapshot else None,
+        "provider_observed_at": snapshot.observed_at.isoformat(),
+        "provider_source": attestation.observed_source,
+        "provider_version": snapshot.provider_version,
+        "provider_attested_at": attestation.observed_at.isoformat(),
     }
-    if provider_status is not None and provider_status.state != "connected":
-        metadata["reason"] = provider_status.reason
-    if snapshot is None:
-        return {"local": local_copy, "provider": None, "difference": None, "reconciliation": metadata}
-
     local_value, local_reason = _local_business_value(local_copy)
     if local_reason:
         metadata["reason"] = local_reason
@@ -265,6 +370,25 @@ def reconcile_roi(local: Mapping[str, Any], provider: ProviderRoiSnapshot | Mapp
     return {"local": local_copy, "provider": snapshot.model_dump(mode="json"), "difference": None, "reconciliation": metadata}
 
 
+def _unreconciled(local: Mapping[str, Any], status: FoundryRoiStatus) -> dict[str, Any]:
+    local_copy = _json_copy(local)
+    return {
+        "local": local_copy,
+        "provider": None,
+        "difference": None,
+        "reconciliation": {
+            "status": "not_reconciled",
+            "reconciled": False,
+            "reason": status.reason,
+            "local_generated_at": local_copy.get("generated_at"),
+            "provider_observed_at": None,
+            "provider_source": status.source,
+            "provider_version": status.provider_version,
+            "provider_attested_at": None,
+        },
+    }
+
+
 def _target_from_environment() -> FoundryRoiTarget | None:
     endpoint = str(os.environ.get("FOUNDRY_PROJECT_ENDPOINT") or "").strip()
     agent_id = str(os.environ.get("FOUNDRY_AGENT_ID") or "").strip()
@@ -277,11 +401,12 @@ def _target_from_environment() -> FoundryRoiTarget | None:
 
 
 def _status(
-    state: Literal["connected", "not_configured", "unavailable"],
+    state: Literal["connected", "configured_unverified", "not_configured", "unavailable"],
     reason: str,
     *,
     provider_version: str | None = None,
     observed_at: datetime | None = None,
+    source: Literal["foundry_roi_provider", "foundry_roi_verifier"] = "foundry_roi_provider",
 ) -> FoundryRoiStatus:
     return FoundryRoiStatus(
         state=state,
@@ -289,32 +414,28 @@ def _status(
         reason=reason,
         provider_version=provider_version,
         observed_at=observed_at or datetime.now(timezone.utc),
+        source=source,
     )
 
 
-def _provider_snapshot(provider: ProviderRoiSnapshot | Mapping[str, Any] | None) -> tuple[ProviderRoiSnapshot | None, FoundryRoiStatus | None]:
-    if provider is None:
-        return None, None
-    if isinstance(provider, Mapping) and "status" in provider and "snapshot" in provider:
-        try:
-            status = FoundryRoiStatus.model_validate(provider["status"])
-        except ValidationError:
-            status = _status("unavailable", "Foundry ROI provider returned an invalid status")
-        if status.state != "connected":
-            return None, status
-        raw_snapshot = provider.get("snapshot")
-    else:
-        status, raw_snapshot = None, provider
-    if raw_snapshot is None:
-        return None, status
-    try:
-        payload = raw_snapshot.model_dump(mode="json") if isinstance(raw_snapshot, ProviderRoiSnapshot) else raw_snapshot
-        return ProviderRoiSnapshot.model_validate(payload), status
-    except ValidationError:
-        return None, _status("unavailable", "Foundry ROI provider returned invalid lineage or snapshot data")
+def _attestation_matches(
+    target: FoundryRoiTarget,
+    proof: DiscoveryProof,
+    attestation: VerifiedDiscoveryAttestation,
+) -> bool:
+    return bool(
+        compare_digest(attestation.target_fingerprint, target.target_fingerprint)
+        and compare_digest(attestation.target_fingerprint, proof.target_fingerprint)
+        and attestation.surface_id == proof.surface_id
+        and attestation.surface_version == proof.surface_version
+        and attestation.observed_at == proof.observed_at
+        and attestation.observed_source
+    )
 
 
 def _local_business_value(local: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    if local.get("lineage_complete") is not True or bool(local.get("truncated")) or bool(local.get("invalid_run_ids")):
+        return None, "local_lineage_incomplete"
     try:
         window = parse_time_window(local.get("window", {}).get("from"), local.get("window", {}).get("to"))
     except (AttributeError, TypeError, ValueError):
@@ -331,10 +452,10 @@ def _local_business_value(local: Mapping[str, Any]) -> tuple[dict[str, Any] | No
         return None, "local ROI business value is invalid"
     run_ids = _safe_lineage_set(local.get("observed_run_ids"))
     if not run_ids:
-        return None, "local ROI has no observed run lineage"
+        return None, "local_lineage_incomplete"
     outcome_ids = _safe_lineage_set(local.get("outcome_event_ids"))
     if not outcome_ids:
-        return None, "local ROI has no outcome lineage"
+        return None, "local_lineage_incomplete"
     return {
         "window": window,
         "amount": amount,
@@ -362,11 +483,16 @@ def _json_copy(value: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "DiscoveryProof",
+    "FoundryRoiDiscoveryVerifier",
     "FoundryRoiProvider",
+    "FoundryRoiReadResult",
     "FoundryRoiStatus",
     "FoundryRoiTarget",
     "ProviderRoiSnapshot",
+    "VerifiedDiscoveryAttestation",
+    "VerifiedProviderRead",
     "discover_foundry_roi",
     "read_foundry_roi",
+    "reconcile_foundry_read",
     "reconcile_roi",
 ]
