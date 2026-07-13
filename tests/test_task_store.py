@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
+import os
 import shutil
 import threading
+import time
+from pathlib import Path
 
 import pytest
 
 import backend.task_store as task_store
+
+
+def _claim_from_separate_process(task_dir: str, task_id: str, start, results) -> None:
+    import backend.task_store as child_store
+
+    child_store.TASK_DIR = Path(task_dir)
+    child_store.blob_configured = lambda: False
+    start.wait(10)
+    results.put(child_store.claim_task(task_id, "process-worker") is not None)
 
 
 def _payload(**overrides: object) -> dict[str, object]:
@@ -60,6 +73,37 @@ def test_only_one_worker_claims_task(tmp_path, monkeypatch: pytest.MonkeyPatch) 
     assert task_store.get_task(task["task_id"])["status"] == "running"
 
 
+def test_only_one_separate_process_claims_a_local_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    task = task_store.create_task(_payload(), _actor())
+    context = multiprocessing.get_context("spawn")
+    start = context.Event()
+    results = context.Queue()
+    workers = [context.Process(target=_claim_from_separate_process, args=(str(task_store.TASK_DIR), task["task_id"], start, results)) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    start.set()
+    for worker in workers:
+        worker.join(20)
+
+    assert all(worker.exitcode == 0 for worker in workers)
+    assert [results.get(timeout=5) for _ in workers].count(True) == 1
+    assert task_store.get_task(task["task_id"])["status"] == "running"
+
+
+def test_stale_local_claim_lock_is_recovered_but_terminal_task_is_not_claimed(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    task = task_store.create_task(_payload(), _actor())
+    lock_path = task_store._claim_lock_path(task["task_id"])
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("crashed", encoding="utf-8")
+    os.utime(lock_path, (time.time() - 3600, time.time() - 3600))
+
+    assert task_store.claim_task(task["task_id"], "recovery-worker") is not None
+    task_store.update_task(task["task_id"], status="completed")
+    assert task_store.claim_task(task["task_id"], "late-worker") is None
+
+
 def test_progress_is_monotonic_and_retry_creates_new_attempt(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     task = task_store.create_task(_payload(), _actor())
@@ -87,6 +131,16 @@ def test_cancel_does_not_rewrite_completed_task(tmp_path, monkeypatch: pytest.Mo
 
     assert cancelled["status"] == "completed"
     assert cancelled["result"] == {"artifact_job_id": "artifact_job_123"}
+
+
+def test_queued_task_can_be_marked_failed_for_persistence_compensation(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    task = task_store.create_task(_payload(), _actor())
+
+    compensated = task_store.update_task(task["task_id"], status="failed", error={"category": "artifact_job", "code": "persistence_failed"})
+
+    assert compensated["status"] == "failed"
+    assert compensated["error"] == {"category": "artifact_job", "code": "persistence_failed"}
 
 
 def test_blob_write_failure_does_not_report_or_leave_a_local_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

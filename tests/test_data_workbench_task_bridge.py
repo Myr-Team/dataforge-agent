@@ -8,6 +8,9 @@ import backend.app as app_module
 import backend.artifact_jobs as artifact_jobs
 import backend.data_workbench as data_workbench
 import backend.task_store as task_store
+from backend.task_store import TaskPersistenceError
+from fastapi.testclient import TestClient
+from backend.app import app
 
 
 def _configure_tasks(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,3 +118,32 @@ def test_artifact_job_is_not_exposed_when_generic_task_is_not_durable(tmp_path, 
         artifact_jobs.create_artifact_job({"workspace_id": "ws-bridge", "conversation_id": "run-1", "kinds": ["pdf"]}, actor={"email": "owner@contoso.com"})
 
     assert not artifact_jobs.ARTIFACT_JOB_DIR.exists()
+
+
+def test_workbench_task_persistence_failure_returns_503_for_file_create(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(data_workbench, "create_workspace_file", lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskPersistenceError("durable unavailable")))
+
+    response = TestClient(app, raise_server_exceptions=False).post("/api/workspaces/ws-bridge/files", json={"name": "new.csv"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Durable task storage is unavailable"
+
+
+def test_workbench_task_persistence_failure_returns_503_for_connector_ingest(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(data_workbench, "import_sql_table", lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskPersistenceError("durable unavailable")))
+
+    response = TestClient(app, raise_server_exceptions=False).post("/api/workspaces/ws-bridge/connectors/sql/import", json={"connection_id": "connector", "table": "sales"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Durable task storage is unavailable"
+
+
+def test_workbench_task_persistence_failure_returns_503_for_selected_file_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fail_analysis(*_args, **_kwargs):
+        raise TaskPersistenceError("durable unavailable")
+
+    monkeypatch.setattr(data_workbench, "analyze_selected_files", fail_analysis)
+    response = TestClient(app, raise_server_exceptions=False).post("/api/workspaces/ws-bridge/files/analyze", json={"file_ids": ["file-1"]})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Durable task storage is unavailable"

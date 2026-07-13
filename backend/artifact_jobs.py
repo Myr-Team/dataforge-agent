@@ -34,6 +34,10 @@ _KINDS = {"pdf", "concept_image", "audio", "pilot_plan", "action_plan", "roadmap
 _RESULT_KIND = {"audio": "audio_summary"}
 
 
+class ArtifactJobPersistenceError(RuntimeError):
+    pass
+
+
 def create_artifact_job(
     payload: Mapping[str, Any],
     *,
@@ -94,7 +98,11 @@ def create_artifact_job(
             actor,
         )
         job["task_id"] = task["task_id"]
-        return _persist_job(job)
+        try:
+            return _persist_job(job)
+        except ArtifactJobPersistenceError:
+            _compensate_task(str(task["task_id"]))
+            raise
 
 
 def get_artifact_job(job_id: str) -> dict[str, Any]:
@@ -307,19 +315,21 @@ def _persist_job(job: dict[str, Any]) -> dict[str, Any]:
     persistence = dict(job.get("persistence") or {}) if isinstance(job.get("persistence"), Mapping) else {}
     persistence.update({"blob": "synced", "updated_at": _now()})
     job["persistence"] = persistence
+    if blob_configured():
+        try:
+            upload_blob_json(_job_blob(str(job.get("job_id") or "")), job)
+        except Exception as exc:
+            raise ArtifactJobPersistenceError("durable artifact job persistence failed") from exc
     _persist_local_job(job)
-    try:
-        upload_blob_json(_job_blob(str(job.get("job_id") or "")), job)
-    except Exception as exc:
-        job["persistence"] = {
-            **persistence,
-            "blob": "failed",
-            "error_type": type(exc).__name__,
-            "updated_at": _now(),
-        }
-        _persist_local_job(job)
     _persist_registry(job)
     return dict(job)
+
+
+def _compensate_task(task_id: str) -> None:
+    try:
+        update_task(task_id, status="failed", error={"category": "artifact_job", "code": "persistence_failed"})
+    except Exception:
+        pass
 
 
 def _persist_local_job(job: Mapping[str, Any]) -> None:

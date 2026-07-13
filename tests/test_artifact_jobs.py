@@ -195,7 +195,7 @@ def test_non_member_cannot_read_artifact_job_or_workspace_list(tmp_path: Path, m
     assert listed.status_code == 403
 
 
-def test_initial_blob_persist_failure_uses_local_claim_instead_of_staying_queued(tmp_path: Path, monkeypatch) -> None:
+def test_blob_persist_failure_is_visible_and_compensates_generic_task(tmp_path: Path, monkeypatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     monkeypatch.setattr(artifact_jobs, "blob_configured", lambda: True, raising=False)
     monkeypatch.setattr(
@@ -203,21 +203,19 @@ def test_initial_blob_persist_failure_uses_local_claim_instead_of_staying_queued
         "upload_blob_json",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("blob unavailable")),
     )
-    monkeypatch.setattr(artifact_jobs, "claim_blob_json", lambda *_args, **_kwargs: None, raising=False)
-    monkeypatch.setattr(
-        artifact_jobs,
-        "_produce",
-        lambda _payload: {
-            "artifact_urls": {"pdf": "/api/artifacts/project-v1.pdf"},
-            "pdf": {"artifact_url": "/api/artifacts/project-v1.pdf"},
-        },
-    )
-    job = artifact_jobs.create_artifact_job(_request(kinds=["pdf"]), actor={}, idempotency_key="blob-down")
+    compensated: list[tuple[str, dict]] = []
+    monkeypatch.setattr(artifact_jobs, "create_task", lambda *_args, **_kwargs: {"task_id": "task_artifact"})
+    monkeypatch.setattr(artifact_jobs, "update_task", lambda task_id, **changes: compensated.append((task_id, changes)) or {})
 
-    result = artifact_jobs.run_artifact_job(job["job_id"])
+    try:
+        artifact_jobs.create_artifact_job(_request(kinds=["pdf"]), actor={}, idempotency_key="blob-down")
+    except RuntimeError as exc:
+        assert "durable artifact job" in str(exc)
+    else:
+        raise AssertionError("Blob persistence failure was reported as a local job")
 
-    assert job["persistence"]["blob"] == "failed"
-    assert result["status"] == "completed"
+    assert compensated == [("task_artifact", {"status": "failed", "error": {"category": "artifact_job", "code": "persistence_failed"}})]
+    assert not artifact_jobs.ARTIFACT_JOB_DIR.exists()
 
 
 def test_artifact_job_api_creates_and_exposes_persisted_status(tmp_path: Path, monkeypatch) -> None:

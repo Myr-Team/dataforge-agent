@@ -28,7 +28,7 @@ try:
     from .orchestrator import orchestrate_chat
     from .schemas import ChatRequest
     from .workspace_authz import require_workspace_permission
-    from .task_store import claim_task, create_task, list_tasks, update_task
+    from .task_store import TaskPersistenceError, claim_task, create_task, list_tasks, update_task
     from .workspace_store import (
         WORKSPACES,
         _CONTEXT_CACHE,
@@ -47,7 +47,7 @@ except ImportError:
     from orchestrator import orchestrate_chat
     from schemas import ChatRequest
     from workspace_authz import require_workspace_permission
-    from task_store import claim_task, create_task, list_tasks, update_task
+    from task_store import TaskPersistenceError, claim_task, create_task, list_tasks, update_task
     from workspace_store import (
         WORKSPACES,
         _CONTEXT_CACHE,
@@ -153,7 +153,10 @@ async def workspace_files_analyze(workspace_id: str, request: Request, backgroun
     _require(request, workspace_id, "analysis.run")
     body = await _json_body(request)
     body["ui_context"] = merge_actor_into_ui_context(body.get("ui_context") if isinstance(body.get("ui_context"), dict) else {}, actor_from_request(request))
-    return await analyze_selected_files(workspace_id, body, background_tasks)
+    try:
+        return await analyze_selected_files(workspace_id, body, background_tasks)
+    except TaskPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Durable task storage is unavailable") from exc
 
 
 @router.get("/connectors/capabilities")
@@ -827,6 +830,8 @@ def import_blob_item(workspace_id: str, body: dict[str, Any], actor: dict[str, A
 async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
     try:
         return await run_in_threadpool(func, *args, **kwargs)
+    except TaskPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Durable task storage is unavailable") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
