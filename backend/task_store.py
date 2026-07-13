@@ -30,10 +30,10 @@ _TERMINAL = {"partial", "completed", "failed", "cancelled"}
 _STATUSES = {"preparing", "queued", "running", "cancel_requested", *_TERMINAL}
 _TASK_FIELDS = {
     "task_id", "workspace_id", "task_type", "action", "status", "attempt", "actor", "result", "error",
-    "progress", "revision", "retry_of", "created_at", "updated_at", "started_at", "completed_at",
+    "progress", "revision", "retry_of", "retryable", "created_at", "updated_at", "started_at", "completed_at",
 }
 _PUBLIC_ACTOR_FIELDS = {"name", "email", "actor_id", "tenant_id", "source"}
-_RESULT_IDS = {"task_id", "job_id", "artifact_job_id", "ingest_job_id", "file_id", "artifact_id", "run_id", "conversation_id"}
+_RESULT_IDS = {"task_id", "job_id", "artifact_job_id", "ingest_job_id", "file_id", "artifact_id", "run_id", "conversation_id", "version_id"}
 _RESULT_URLS = {"url", "artifact_url"}
 _SENSITIVE = re.compile(r"(?:password|secret|token|authorization|connection[_-]?string|access[_-]?key|credential|accountkey|sharedaccesssignature|sig=|bearer\s+)", re.I)
 _SAFE_TEXT = re.compile(r"^[A-Za-z0-9_.:/-]{1,300}$")
@@ -55,6 +55,7 @@ def create_task(payload: Mapping[str, Any], actor: Mapping[str, Any] | None) -> 
         "attempt": max(1, int(source.get("attempt") or 1)),
         "actor": _public_actor(actor),
         "result": _safe_result(source.get("result")),
+        "retryable": bool(source.get("retryable", False)),
         "revision": 1,
         "created_at": now,
         "updated_at": now,
@@ -160,7 +161,10 @@ def update_task(task_id: str, **changes: Any) -> dict[str, Any]:
 
 
 def request_cancel(task_id: str) -> dict[str, Any]:
-    return update_task(task_id, status="cancel_requested")
+    task = get_task(task_id)
+    if task.get("status") in _TERMINAL:
+        return task
+    return update_task(task_id, status="cancelled")
 
 
 def retry_task(task_id: str, actor: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -171,6 +175,7 @@ def retry_task(task_id: str, actor: Mapping[str, Any] | None) -> dict[str, Any]:
         {
             "workspace_id": task.get("workspace_id"), "task_type": task.get("task_type"), "action": task.get("action"),
             "retry_of": task.get("task_id"), "attempt": int(task.get("attempt") or 1) + 1,
+            "retryable": bool(task.get("retryable", False)),
         },
         actor,
     )
@@ -406,6 +411,8 @@ def _apply_changes(task: dict[str, Any], changes: Mapping[str, Any]) -> dict[str
         error = _safe_error(changes["error"])
         if error:
             updated["error"] = error
+    if "retryable" in changes:
+        updated["retryable"] = bool(changes["retryable"])
     for key in ("started_at", "completed_at"):
         if changes.get(key):
             updated[key] = str(changes[key])[:80]
@@ -437,6 +444,7 @@ def _clean_task(value: Mapping[str, Any]) -> dict[str, Any]:
     task["revision"] = max(1, int(task.get("revision") or 1))
     task["actor"] = _public_actor(task.get("actor") if isinstance(task.get("actor"), Mapping) else {})
     task["result"] = _safe_result(task.get("result"))
+    task["retryable"] = bool(task.get("retryable", False))
     if isinstance(task.get("error"), Mapping):
         error = _safe_error(task["error"])
         if error:

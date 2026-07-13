@@ -2499,6 +2499,7 @@ svg { flex-shrink: 0; }
 .task-center-row.success .task-center-status { color: var(--mint); }
 .task-center-row.warning .task-center-status { color: var(--amber); }
 .task-center-row.error .task-center-status { color: var(--red); }
+.task-center-row.cancelled .task-center-status { color: var(--muted); }
 .task-center-copy { min-width: 0; }
 .task-center-copy strong, .task-center-copy span, .task-center-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-center-copy strong { font-size: 13px; }

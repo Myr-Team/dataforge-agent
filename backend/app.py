@@ -22,8 +22,8 @@ from pathlib import Path
 from starlette.concurrency import run_in_threadpool
 
 try:
-    from .artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, run_artifact_job
-    from .task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
+    from .artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, retry_artifact_task, run_artifact_job
+    from .task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
     from .control_plane import build_workspace_dashboard, router as control_plane_router
@@ -71,8 +71,8 @@ try:
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
 except ImportError:
-    from artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, run_artifact_job
-    from task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
+    from artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, retry_artifact_task, run_artifact_job
+    from task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
     from control_plane import build_workspace_dashboard, router as control_plane_router
@@ -530,17 +530,21 @@ async def task_cancel(task_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/tasks/{task_id}/retry", status_code=202)
-async def task_retry(task_id: str, request: Request) -> dict[str, Any]:
+async def task_retry(task_id: str, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     try:
         task = await run_in_threadpool(get_task, task_id)
         _require_workspace_action(str(task.get("workspace_id") or ""), request, str(task.get("action") or "workspace.read"))
-        return await run_in_threadpool(retry_task, task_id, actor_from_request(request))
+        if task.get("task_type") != "artifact.generate" or not task.get("retryable"):
+            raise HTTPException(status_code=409, detail="Task retry is not supported")
+        job = await run_in_threadpool(retry_artifact_task, task_id, actor_from_request(request))
+        background_tasks.add_task(run_artifact_job, str(job["job_id"]))
+        return await run_in_threadpool(get_task, str(job["task_id"]))
     except TaskPersistenceError as exc:
         raise HTTPException(status_code=503, detail="Task persistence is unavailable") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail="Task retry is not supported") from exc
 
 
 @app.post("/api/playbook")
@@ -621,6 +625,9 @@ async def _sse_keepalive(agen, interval: float = 10.0):
         try:
             async for item in agen:
                 await queue.put(("item", item))
+        except asyncio.CancelledError:
+            await queue.put(("cancelled", None))
+            raise
         except Exception as exc:
             await queue.put(("error", exc))
         finally:
@@ -639,6 +646,8 @@ async def _sse_keepalive(agen, interval: float = 10.0):
                 continue
             if kind == "error":
                 raise payload
+            if kind == "cancelled":
+                raise asyncio.CancelledError()
             if kind == "done":
                 return
     finally:
@@ -647,18 +656,62 @@ async def _sse_keepalive(agen, interval: float = 10.0):
         await asyncio.gather(producer, return_exceptions=True)
 
 
+async def _task_backed_chat_stream(req: ChatRequest, task_id: str):
+    """Preserve the existing SSE frames while reflecting their terminal outcome in task_store."""
+    terminal = False
+    result: dict[str, str] = {}
+    try:
+        async for raw_frame in _sse_keepalive(orchestrate_chat(req)):
+            for event, data in _parse_sse_frame(raw_frame):
+                if event == "ready" and isinstance(data, dict) and data.get("conversation_id"):
+                    result["run_id"] = str(data["conversation_id"])
+                elif event == "final" and isinstance(data, dict):
+                    artifact = data.get("artifact") if isinstance(data.get("artifact"), dict) else {}
+                    result["run_id"] = str(data.get("conversation_id") or artifact.get("conversation_id") or result.get("run_id") or "")
+                    version_id = artifact.get("version_id") or artifact.get("version_run_id")
+                    if version_id:
+                        result["version_id"] = str(version_id)
+                    update_task(task_id, status="completed", result={key: value for key, value in result.items() if value})
+                    terminal = True
+                elif event == "error":
+                    update_task(task_id, status="failed", error={"category": "analysis", "code": "stream_error"}, result=result)
+                    terminal = True
+            yield raw_frame
+        if not terminal:
+            update_task(task_id, status="failed", error={"category": "analysis", "code": "stream_incomplete"}, result=result)
+    except asyncio.CancelledError:
+        update_task(task_id, status="cancelled", result=result)
+        raise
+    except Exception:
+        update_task(task_id, status="failed", error={"category": "analysis", "code": "stream_failed"}, result=result)
+        raise
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     actor = actor_from_request(request)
     _require_workspace_action(req.workspace_id, request, "analysis.run")
     req = req.model_copy(update={"ui_context": merge_actor_into_ui_context(req.ui_context, actor)})
+    is_iteration = bool(req.ui_context.get("iteration_inputs")) if isinstance(req.ui_context, dict) else False
+    task = create_task(
+        {
+            "workspace_id": req.workspace_id,
+            "task_type": "analysis.iterate" if is_iteration else "analysis.run",
+            "action": "analysis.run",
+        },
+        actor,
+    )
+    claimed = claim_task(str(task["task_id"]), "chat-stream")
+    if claimed is None:
+        raise HTTPException(status_code=503, detail="Unable to start durable analysis task")
     return StreamingResponse(
-        _sse_keepalive(orchestrate_chat(req)),
+        _task_backed_chat_stream(req, str(task["task_id"])),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "X-DataForge-Task-Id": str(task["task_id"]),
         },
     )
 

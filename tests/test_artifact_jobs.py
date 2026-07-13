@@ -365,6 +365,50 @@ def test_artifact_job_api_returns_503_when_generic_task_create_is_unavailable(tm
     assert response.json()["detail"] == "Durable artifact job storage is unavailable"
 
 
+def test_retryable_artifact_task_creates_and_schedules_a_new_linked_job(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _configure_task_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(artifact_jobs, "_producer_payload", lambda _job: _request(kinds=["pdf"]))
+    calls: list[str] = []
+
+    def fail_once(_payload):
+        if not calls:
+            calls.append("failed")
+            raise RuntimeError("renderer unavailable")
+        calls.append("completed")
+        return {"artifact_urls": {"pdf": "/api/artifacts/retry.pdf"}, "pdf": {"artifact_url": "/api/artifacts/retry.pdf"}}
+
+    monkeypatch.setattr(artifact_jobs, "_produce", fail_once)
+    client = TestClient(app, raise_server_exceptions=False)
+    created = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]))
+
+    assert created.status_code == 202
+    failed_task = task_store.get_task(created.json()["task_id"])
+    assert failed_task["status"] == "failed"
+    assert failed_task["retryable"] is True
+
+    retried = client.post(f"/api/tasks/{failed_task['task_id']}/retry")
+
+    assert retried.status_code == 202
+    retry_task = retried.json()
+    assert retry_task["retry_of"] == failed_task["task_id"]
+    retry_job = artifact_jobs.get_artifact_job(retry_task["result"]["artifact_job_id"])
+    assert retry_job["source_run_id"] == created.json()["source_run_id"]
+    assert retry_job["requested_kinds"] == ["pdf"]
+    assert calls == ["failed", "completed"]
+
+
+def test_retry_rejects_non_dispatchable_task(tmp_path: Path, monkeypatch) -> None:
+    _configure_task_store(tmp_path, monkeypatch)
+    task = task_store.create_task({"workspace_id": "ws-artifacts", "task_type": "connector.sql.import", "action": "connector.manage"}, actor={})
+    task_store.update_task(task["task_id"], status="failed", error={"code": "credential_required"})
+
+    response = TestClient(app, raise_server_exceptions=False).post(f"/api/tasks/{task['task_id']}/retry")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Task retry is not supported"
+
+
 def test_artifact_api_recovers_durable_job_after_activation_failure_and_schedules_once(tmp_path: Path, monkeypatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     _configure_task_store(tmp_path, monkeypatch)

@@ -47,7 +47,7 @@ def test_non_member_cannot_read_task_after_workspace_is_resolved(tmp_path, monke
     assert response.status_code == 403
 
 
-def test_task_list_and_retry_use_workspace_scoped_actions(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_task_list_and_unsupported_retry_use_workspace_scoped_actions(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     task = _task()
     task_store.claim_task(task["task_id"], "worker")
@@ -64,9 +64,8 @@ def test_task_list_and_retry_use_workspace_scoped_actions(tmp_path, monkeypatch:
 
     assert listed.status_code == 200
     assert listed.json()["tasks"][0]["task_id"] == task["task_id"]
-    assert retried.status_code == 202
-    assert retried.json()["retry_of"] == task["task_id"]
-    assert retried.json()["attempt"] == 2
+    assert retried.status_code == 409
+    assert retried.json()["detail"] == "Task retry is not supported"
     assert denied.status_code == 403
 
 

@@ -388,8 +388,8 @@ export async function loadArtifactJobs(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/artifact-jobs`);
 }
 
-export async function loadWorkspaceTasks(workspaceId) {
-  const data = await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/tasks`);
+export async function loadWorkspaceTasks(workspaceId, options = {}) {
+  const data = await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/tasks`, options);
   return data.tasks || [];
 }
 
@@ -530,6 +530,8 @@ export async function streamChat(payload, onEvent, signal) {
         throw new Error(message);
       }
       if (!response.body) throw new Error("SSE stream is unavailable in this browser.");
+      const taskId = response.headers.get("X-DataForge-Task-Id");
+      if (taskId) onEvent({ event: "task_meta", data: { task_id: taskId } });
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();

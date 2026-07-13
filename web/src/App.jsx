@@ -17,7 +17,7 @@ import {
   streamChat,
   uploadWorkspace,
 } from "./api.js";
-import { TaskCenter, taskViewModel } from "./TaskCenter.jsx";
+import { TaskCenter, isCurrentWorkspaceTaskResponse, taskViewModel, terminalTaskNotifications } from "./TaskCenter.jsx";
 import {
   extractArtifacts,
   MobileNav,
@@ -32,7 +32,6 @@ import { PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
 
 const DEFAULT_WORKSPACE = "demo-corpus";
 const ARTIFACT_JOB_TERMINAL = new Set(["partial", "completed", "failed", "cancelled"]);
-const TASK_TERMINAL = new Set(["partial", "completed", "failed", "cancelled"]);
 const DISMISSED_TASK_NOTIFICATIONS_KEY = "df-dismissed-task-notification-ids";
 
 const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -126,9 +125,6 @@ export function App() {
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
   const [taskNotifications, setTaskNotifications] = useState([]);
   const [taskActions, setTaskActions] = useState({});
-  // Legacy page callbacks are intentionally inert; task state is loaded from the server.
-  const pushTask = useCallback(() => {}, []);
-  const updateTask = useCallback(() => {}, []);
   // 恢复会话时，若消息没带 citations，从对应 run 的 artifact 证据池补上，保证 [n] 悬停索引可用
   const withRunCitations = useCallback(async (convId, msgs) => {
     const needs = msgs.some((m) => m.role === "assistant" && (!m.citations || !m.citations.length) && /\[\d+\]/.test(String(m.text || "")));
@@ -146,10 +142,17 @@ export function App() {
   const taskSnapshotRef = useRef(new Map());
   const taskHydratedRef = useRef(false);
   const dismissedTaskNotificationsRef = useRef(new Set());
+  const workspaceIdRef = useRef(workspaceId);
+  const taskRequestRef = useRef(0);
+  const taskAbortRef = useRef(null);
 
   useEffect(() => {
     activeViewRef.current = activeView;
   }, [activeView]);
+
+  useEffect(() => {
+    workspaceIdRef.current = workspaceId;
+  }, [workspaceId]);
 
   const currentPlaybook = useMemo(
     () => PLAYBOOKS.find((item) => item.id === selectedPlaybook) || PLAYBOOKS[0],
@@ -185,16 +188,22 @@ export function App() {
   }, [workspaceId]);
 
   const refreshTasks = useCallback(async (id = workspaceId) => {
-    const fetched = await loadWorkspaceTasks(id);
+    const sequence = ++taskRequestRef.current;
+    taskAbortRef.current?.abort();
+    const controller = new AbortController();
+    taskAbortRef.current = controller;
+    const fetched = await loadWorkspaceTasks(id, { signal: controller.signal });
+    if (!isCurrentWorkspaceTaskResponse({
+      requestSequence: sequence,
+      currentSequence: taskRequestRef.current,
+      requestWorkspaceId: id,
+      currentWorkspaceId: workspaceIdRef.current,
+      aborted: controller.signal.aborted,
+    })) return;
     const next = Array.isArray(fetched) ? fetched : [];
     const previous = taskSnapshotRef.current;
     const dismissed = dismissedTaskNotificationsRef.current;
-    const terminalUpdates = next.filter((task) => {
-      const model = taskViewModel(task);
-      if (!TASK_TERMINAL.has(model.status) || !model.notificationId) return false;
-      const previousUpdate = previous.get(model.taskId);
-      return taskHydratedRef.current && previousUpdate !== model.notificationId && !dismissed.has(model.notificationId);
-    });
+    const terminalUpdates = terminalTaskNotifications(next, previous, taskHydratedRef.current, dismissed);
     taskSnapshotRef.current = new Map(next.map((task) => {
       const model = taskViewModel(task);
       return [model.taskId, model.notificationId];
@@ -218,11 +227,15 @@ export function App() {
   const performTaskAction = useCallback(async (task, action) => {
     const taskId = task?.task_id;
     if (!taskId) return;
+    const actionWorkspaceId = String(task.workspace_id || workspaceId);
+    if (actionWorkspaceId !== workspaceIdRef.current) return;
     setTaskActions((current) => ({ ...current, [taskId]: { pending: true, error: "" } }));
     try {
       await action(taskId);
+      if (actionWorkspaceId !== workspaceIdRef.current) return;
       await refreshTasks(workspaceId);
     } catch (error) {
+      if (actionWorkspaceId !== workspaceIdRef.current) return;
       setTaskActions((current) => ({ ...current, [taskId]: { pending: false, error: error instanceof Error ? error.message : String(error) } }));
       return;
     }
@@ -230,6 +243,7 @@ export function App() {
   }, [refreshTasks, workspaceId]);
 
   const openTaskResult = useCallback((task) => {
+    if (task?.workspace_id !== workspaceIdRef.current) return;
     const destination = taskViewModel(task).destination;
     if (destination) setActiveView(destination);
     if (destination) setTaskDrawerOpen(false);
@@ -270,8 +284,12 @@ export function App() {
   }, [workspaceId, refreshDashboard]);
 
   useEffect(() => {
+    taskAbortRef.current?.abort();
     taskHydratedRef.current = false;
     taskSnapshotRef.current = new Map();
+    setTasks([]);
+    setTaskNotifications([]);
+    setTaskActions({});
     try {
       const stored = JSON.parse(window.localStorage.getItem(DISMISSED_TASK_NOTIFICATIONS_KEY) || "[]");
       dismissedTaskNotificationsRef.current = new Set(Array.isArray(stored) ? stored.filter((value) => typeof value === "string") : []);
@@ -295,54 +313,32 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [tasks, workspaceId, refreshTasks]);
 
-  useEffect(() => { /*
+  useEffect(() => {
     let cancelled = false;
-    loadArtifactJobs(workspaceId)
-      .then(async (data) => {
+    const recoverArtifactJobs = async () => {
+      try {
+        const data = await loadArtifactJobs(workspaceId);
         const active = (data?.jobs || []).filter((job) => ["queued", "running"].includes(job.status));
-        if (!active.length || cancelled) return;
+        if (!active.length || cancelled || workspaceId !== workspaceIdRef.current) return;
         setProducing(true);
-        active.forEach((job) => {
-          pushTask({ id: job.job_id, label: "生成产物", detail: "后台任务已恢复…", status: "running" });
-        });
-        try {
-          const completedJobs = (await Promise.all(active.map(async (activeJob) => {
-            const completed = await waitForArtifactJob(
-              activeJob.job_id,
-              (job) => {
-                if (!cancelled) updateTask(activeJob.job_id, { detail: job.status === "running" ? "后台生成中…" : `任务状态：${job.status}` });
-              },
-              { shouldCancel: () => cancelled },
-            );
-            if (!completed || cancelled) return null;
-            updateTask(activeJob.job_id, {
-              status: completed.status === "failed" ? "error" : "done",
-              detail: completed.status === "partial" ? "部分生成完成" : completed.status === "completed" ? "已生成" : "生成失败",
-            });
-            return completed;
-          }))).filter(Boolean);
-          if (cancelled) return;
-          setArtifactRefreshKey((value) => value + 1);
-          const failed = completedJobs.filter((job) => job.status === "failed").length;
-          const partial = completedJobs.filter((job) => job.status === "partial").length;
-          setNotice({
-            type: failed === completedJobs.length ? "error" : "done",
-            message: failed
-              ? `${completedJobs.length - failed} 个产物任务已完成，${failed} 个失败，可重新生成。`
-              : partial
-                ? "产物任务已部分完成，可在产物中心查看并重试失败项。"
-                : "后台产物任务已完成。",
-            actionLabel: failed === completedJobs.length ? undefined : "查看产物",
-            action: failed === completedJobs.length ? undefined : () => setActiveView("artifacts"),
-          });
-          refreshDashboard(workspaceId);
-        } finally {
-          if (!cancelled) setProducing(false);
-        }
-      })
-      .catch(() => {});
+        await Promise.all(active.map((job) => waitForArtifactJob(
+          job.job_id,
+          () => refreshTasks(workspaceId).catch(() => {}),
+          { shouldCancel: () => cancelled || workspaceId !== workspaceIdRef.current },
+        )));
+        if (cancelled || workspaceId !== workspaceIdRef.current) return;
+        setArtifactRefreshKey((value) => value + 1);
+        refreshDashboard(workspaceId);
+        refreshTasks(workspaceId).catch(() => {});
+      } catch (error) {
+        if (isTransientFetchError(error)) return;
+      } finally {
+        if (!cancelled && workspaceId === workspaceIdRef.current) setProducing(false);
+      }
+    };
+    recoverArtifactJobs();
     return () => { cancelled = true; };
-  */ }, [workspaceId]);
+  }, [workspaceId, refreshDashboard, refreshTasks]);
 
   // 异步摄取轮询：上传后/选中仍在解析的工作区时，每 ~3.5s 刷新看板，
   // 让数据集状态「解析中→已就绪」与数据画像/TOP5 自动填充；封顶 ~2 分钟，避免个别卡住的文件无限轮询。
@@ -594,8 +590,6 @@ export function App() {
     setInput("");
     setRunning(true);
     // 任务通知：自动分析记一条"可行性分析"任务（进行中→完成/失败）
-    const taskId = opts.stayOnDashboard ? `analysis-${Date.now()}` : null;
-    if (taskId) pushTask({ id: taskId, label: "可行性分析", detail: "分析进行中…", status: "running" });
     // 自动分析（stayOnDashboard）留在工作区看板里就地跑，只有手动会话/绘画才跳到会话视图
     if (!opts.stayOnDashboard) {
       setActiveView("conversations");
@@ -634,6 +628,10 @@ export function App() {
 
     try {
       await streamChat(payload, (event) => {
+        if (event.event === "task_meta" && event.data?.task_id) {
+          refreshTasks(workspaceId).catch(() => {});
+          return;
+        }
         if (event.event === "ready" && event.data?.conversation_id) {
           setActiveConversationId(event.data.conversation_id);
           try { window.localStorage.setItem(`df-conv:${workspaceId}`, event.data.conversation_id); } catch { /* ignore */ }
@@ -673,7 +671,6 @@ export function App() {
             setFinalArtifact(artifact);
             try { window.localStorage.setItem(`df-analysis:${workspaceId}`, JSON.stringify(artifact)); } catch { /* ignore */ }
           }
-          if (taskId) updateTask(taskId, { status: "done", detail: isAnalysis ? `结论：${VERDICT_LABELS[fe.verdict] || "已完成"}` : "已完成" });
           // 不在分析阶段自动填充产物：产物生成器停在待命，由客户拍板后点「生成产物」才生成（见 produce()）。
           // 对话里 agent 识别到「想要产物」时，后端给 produce_offer → 在消息下挂一个确认生成按钮
           const produceOffer = artifact.produce_offer || event.data?.produce_offer || null;
@@ -722,6 +719,7 @@ export function App() {
         throw new Error("连接已断开，未收到最终结果。请重试。");
       }
       refreshDashboard(workspaceId);
+      refreshTasks(workspaceId).catch(() => {});
     } catch (error) {
       if (terminalEvent) {
         refreshDashboard(workspaceId);
@@ -730,7 +728,6 @@ export function App() {
       if (error?.name === "AbortError" || controller.signal.aborted) {
         // 用户主动点了「停止生成」——不当作错误
         setMessages((items) => [...items, { role: "assistant", text: "已停止本次生成。", time: new Date().toISOString() }]);
-        if (taskId) updateTask(taskId, { status: "done", detail: "已停止" });
       } else {
         const messageText = error instanceof Error ? error.message : String(error);
         setTrace((items) => [...items, { event: "error", data: { message: messageText } }]);
@@ -746,11 +743,9 @@ export function App() {
             },
           ]);
           setNotice({ type: "done", message: "连接中断，已保留已生成内容，可重试/继续。" });
-          if (taskId) updateTask(taskId, { status: "done", detail: "已保留部分内容" });
         } else {
           setMessages((items) => [...items, { role: "assistant", text: `运行失败：${messageText}`, time: new Date().toISOString() }]);
           setNotice({ type: "error", message: `运行失败：${messageText}` });
-          if (taskId) updateTask(taskId, { status: "error", detail: "分析失败" });
         }
       }
     } finally {
@@ -880,6 +875,10 @@ export function App() {
           ui_context: { workspace_name: dashboard?.workspace?.name || workspaceId, requested_output: "report", mode: "auto_analysis" },
         },
         (event) => {
+          if (event.event === "task_meta" && event.data?.task_id) {
+            refreshTasks(workspaceId).catch(() => {});
+            return;
+          }
           if (event.event === "ready" && event.data?.conversation_id) setActiveConversationId(event.data.conversation_id);
           if (event.event === "final") captured = event.data?.artifact || null;
           if (event.event === "error") streamErrorMessage = event.data?.message || "分析失败。";
@@ -907,8 +906,6 @@ export function App() {
       try { if (window.localStorage.getItem("df-pref-audio") === "1") kinds.push("audio"); } catch { /* ignore */ }
     }
     if (!kinds.length) kinds = ["pdf", "concept_image"];
-    const prodTaskId = `produce-${Date.now()}`;
-    pushTask({ id: prodTaskId, label: "生成产物", detail: `${kinds.map((k) => KIND_LABEL[k]).join(" / ")} · 进行中…`, status: "running" });
     setProducing(true);
     setInspectorTab("output");
     try {
@@ -939,12 +936,9 @@ export function App() {
         narrative: base.narrative,
         text: base.answer?.text || base.answer?.markdown,
         kinds,
-      }, prodTaskId);
-      await refreshTasks(workspaceId);
-      updateTask(prodTaskId, { detail: `${kinds.map((k) => KIND_LABEL[k]).join(" / ")} · 后台生成中…`, backendJobId: job.job_id });
-      const completedJob = await waitForArtifactJob(job.job_id, (current) => {
-        updateTask(prodTaskId, { detail: current.status === "running" ? "后台生成中…" : `任务状态：${current.status}` });
       });
+      await refreshTasks(workspaceId);
+      const completedJob = await waitForArtifactJob(job.job_id, () => refreshTasks(workspaceId).catch(() => {}));
       const result = artifactJobResult(completedJob);
       if (completedJob.status === "failed" && !Object.keys(result.artifact_urls || {}).length) {
         const firstError = Object.values(completedJob.errors || {})[0];
@@ -992,13 +986,11 @@ export function App() {
           },
         });
       }
-      updateTask(prodTaskId, { status: "done", detail: warningText ? "部分生成完成" : `${kinds.map((k) => KIND_LABEL[k]).join(" / ")} · 已生成` });
       refreshDashboard(workspaceId);
       refreshTasks(workspaceId).catch(() => {});
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNotice({ type: "error", message: `生成产物失败：${message}` });
-      updateTask(prodTaskId, { status: "error", detail: "生成失败" });
       refreshTasks(workspaceId).catch(() => {});
     } finally {
       setProducing(false);

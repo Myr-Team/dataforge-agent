@@ -95,6 +95,8 @@ def create_artifact_job(
                 "action": "artifact.generate",
                 "result": {"artifact_job_id": job["job_id"]},
                 "initial_status": "preparing",
+                "retry_of": request.get("retry_of"),
+                "attempt": request.get("attempt") or 1,
             },
             actor,
         )
@@ -227,6 +229,26 @@ def run_artifact_job(job_id: str) -> dict[str, Any]:
     return _sync_linked_task(completed)
 
 
+def retry_artifact_task(task_id: str, actor: Mapping[str, Any] | None) -> dict[str, Any]:
+    task = get_task(task_id)
+    if task.get("task_type") != "artifact.generate" or not task.get("retryable"):
+        raise ValueError("Task retry is not supported")
+    if task.get("status") not in {"failed", "partial", "cancelled"}:
+        raise ValueError("Task retry is not supported")
+    result = task.get("result") if isinstance(task.get("result"), Mapping) else {}
+    source_job = get_artifact_job(str(result.get("artifact_job_id") or ""))
+    return create_artifact_job(
+        {
+            "workspace_id": task.get("workspace_id"),
+            "conversation_id": source_job.get("source_run_id"),
+            "kinds": list(source_job.get("requested_kinds") or []),
+            "retry_of": task.get("task_id"),
+            "attempt": int(task.get("attempt") or 1) + 1,
+        },
+        actor=actor,
+    )
+
+
 def _claim_linked_task(job: Mapping[str, Any]) -> dict[str, Any] | None:
     task_id = str(job.get("task_id") or "")
     return claim_task(task_id, "artifact-worker") if task_id else None
@@ -237,7 +259,7 @@ def _linked_task_cancel_requested(job: Mapping[str, Any]) -> bool:
     if not task_id:
         return False
     try:
-        return get_task(task_id).get("status") == "cancel_requested"
+        return get_task(task_id).get("status") in {"cancel_requested", "cancelled"}
     except FileNotFoundError:
         return False
 
@@ -251,6 +273,7 @@ def _sync_linked_task(job: Mapping[str, Any]) -> dict[str, Any]:
         "status": status if status in {"partial", "completed", "failed", "cancelled"} else "failed",
         "result": {"artifact_job_id": job.get("job_id")},
         "completed_at": job.get("completed_at") or _now(),
+        "retryable": bool(job.get("retryable", False)),
     }
     if status in {"failed", "partial"}:
         changes["error"] = {"message": "artifact job did not complete", "status": status}
@@ -538,6 +561,7 @@ __all__ = [
     "create_artifact_job",
     "get_artifact_job",
     "list_artifact_jobs",
+    "retry_artifact_task",
     "recover_prepared_artifact_tasks",
     "run_artifact_job",
 ]

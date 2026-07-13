@@ -73,6 +73,58 @@ def test_upload_background_ingest_completes_linked_generic_task(tmp_path, monkey
     assert task_store.get_task(task["task_id"])["status"] == "completed"
 
 
+@pytest.mark.parametrize(("ui_context", "task_type"), [({}, "analysis.run"), ({"iteration_inputs": [{"metric": "conversion"}]}, "analysis.iterate")])
+def test_chat_stream_creates_a_durable_analysis_task_and_exposes_its_id(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    ui_context: dict,
+    task_type: str,
+) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+
+    async def stream(_request):
+        yield 'event: ready\ndata: {"conversation_id":"run-chat-1"}\n\n'
+        yield 'event: final\ndata: {"conversation_id":"run-chat-1","artifact":{"version_id":"version-2"}}\n\n'
+
+    monkeypatch.setattr(app_module, "orchestrate_chat", stream)
+    response = TestClient(app).post(
+        "/api/chat",
+        json={"workspace_id": "ws-bridge", "message": "Run analysis", "ui_context": ui_context},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-dataforge-task-id"]
+    assert "event: final" in response.text
+    task = task_store.get_task(response.headers["x-dataforge-task-id"])
+    assert task["task_type"] == task_type
+    assert task["action"] == "analysis.run"
+    assert task["status"] == "completed"
+    assert task["result"] == {"run_id": "run-chat-1", "version_id": "version-2"}
+
+
+def test_cancelled_chat_stream_leaves_the_durable_task_cancelled(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+    task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "analysis.run", "action": "analysis.run"}, actor={})
+    task_store.claim_task(task["task_id"], "chat-stream")
+
+    async def cancelled_stream(_request):
+        raise asyncio.CancelledError()
+        yield ""  # pragma: no cover
+
+    monkeypatch.setattr(app_module, "orchestrate_chat", cancelled_stream)
+
+    async def consume() -> None:
+        async for _ in app_module._task_backed_chat_stream(
+            app_module.ChatRequest(workspace_id="ws-bridge", message="Run analysis"),
+            task["task_id"],
+        ):
+            pass
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(consume())
+    assert task_store.get_task(task["task_id"])["status"] == "cancelled"
+
+
 def test_connector_import_task_requires_connector_manage_action(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_tasks(tmp_path, monkeypatch)
     upload = {"workspace_id": "ws-bridge", "ingest_job_id": "ingest-connector", "documents": []}

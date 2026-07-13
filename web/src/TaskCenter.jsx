@@ -12,6 +12,21 @@ import {
 
 const TERMINAL_STATUSES = new Set(["partial", "completed", "failed", "cancelled"]);
 
+export function isCurrentWorkspaceTaskResponse({ requestSequence, currentSequence, requestWorkspaceId, currentWorkspaceId, aborted }) {
+  return !aborted && requestSequence === currentSequence && requestWorkspaceId === currentWorkspaceId;
+}
+
+export function terminalTaskNotifications(tasks, previousSnapshot, hydrated, dismissed) {
+  if (!hydrated) return [];
+  return tasks.filter((task) => {
+    const model = taskViewModel(task);
+    return TERMINAL_STATUSES.has(model.status)
+      && Boolean(model.notificationId)
+      && previousSnapshot.get(model.taskId) !== model.notificationId
+      && !dismissed.has(model.notificationId);
+  });
+}
+
 export function taskViewModel(task = {}) {
   const status = String(task.status || "queued").toLowerCase();
   const result = task.result && typeof task.result === "object" ? task.result : {};
@@ -27,7 +42,7 @@ export function taskViewModel(task = {}) {
         : "";
   const isTerminal = ["partial", "completed", "failed", "cancelled"].includes(status);
   const hasError = status === "failed" || Boolean(task.error) || (Array.isArray(task.errors) && task.errors.length);
-  const severity = status === "partial" ? "warning" : hasError ? "error" : status === "completed" ? "success" : "progress";
+  const severity = status === "partial" ? "warning" : hasError ? "error" : status === "completed" ? "success" : status === "cancelled" ? "cancelled" : "progress";
 
   return {
     taskId,
@@ -36,7 +51,7 @@ export function taskViewModel(task = {}) {
     isTerminal,
     severity,
     canCancel: status === "queued" || status === "running",
-    canRetry: ["failed", "partial", "cancelled"].includes(status) && task.retryable !== false,
+    canRetry: ["failed", "partial", "cancelled"].includes(status) && task.retryable === true,
     canOpenResult: hasResult,
     destination,
     notificationId: taskId && updatedAt ? `${taskId}:${status}:${updatedAt}` : "",
@@ -55,14 +70,50 @@ export function TaskCenter({
   onDismissNotification,
 }) {
   const closeButtonRef = useRef(null);
+  const drawerRef = useRef(null);
+  const layerRef = useRef(null);
+  const returnFocusRef = useRef(null);
   const orderedTasks = useMemo(
     () => [...tasks].sort((left, right) => String(right.updated_at || right.created_at || "").localeCompare(String(left.updated_at || left.created_at || ""))),
     [tasks],
   );
 
   useEffect(() => {
-    if (open) closeButtonRef.current?.focus();
-  }, [open]);
+    if (!open) return undefined;
+    returnFocusRef.current = document.activeElement;
+    closeButtonRef.current?.focus();
+    const shell = layerRef.current?.closest(".app-shell");
+    const background = shell ? [...shell.children].filter((node) => node !== layerRef.current) : [];
+    const backgroundState = background.map((node) => ({ node, inert: node.inert, ariaHidden: node.getAttribute("aria-hidden") }));
+    background.forEach((node) => {
+      node.inert = true;
+      node.setAttribute("aria-hidden", "true");
+    });
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...(drawerRef.current?.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])];
+      if (!focusable.length) return;
+      const index = focusable.indexOf(document.activeElement);
+      const next = event.shiftKey ? (index <= 0 ? focusable.length - 1 : index - 1) : (index === focusable.length - 1 ? 0 : index + 1);
+      event.preventDefault();
+      focusable[next].focus();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      backgroundState.forEach(({ node, inert, ariaHidden }) => {
+        node.inert = inert;
+        if (ariaHidden === null) node.removeAttribute("aria-hidden");
+        else node.setAttribute("aria-hidden", ariaHidden);
+      });
+      returnFocusRef.current?.focus?.();
+    };
+  }, [open, onClose]);
 
   if (!open && !notifications.length) return null;
 
@@ -85,6 +136,7 @@ export function TaskCenter({
   }[task.task_type] || task.action || task.task_type || "Background task");
   const iconFor = (model) => {
     if (model.status === "running" || model.status === "queued") return <Loader2 size={16} className="spin" />;
+    if (model.status === "cancelled") return <X size={16} />;
     if (model.severity === "error" || model.severity === "warning") return <AlertTriangle size={16} />;
     return <CheckCircle2 size={16} />;
   };
@@ -110,8 +162,8 @@ export function TaskCenter({
         </div>
       ) : null}
       {open ? (
-        <div className="task-center-layer" role="presentation" onMouseDown={onClose}>
-          <aside className="task-center-drawer" role="dialog" aria-modal="true" aria-label="Task center" onMouseDown={(event) => event.stopPropagation()}>
+        <div ref={layerRef} className="task-center-layer" role="presentation" onMouseDown={onClose}>
+          <aside ref={drawerRef} className="task-center-drawer" role="dialog" aria-modal="true" aria-label="Task center" onMouseDown={(event) => event.stopPropagation()}>
             <header className="task-center-head">
               <div><span>Operations</span><h2>Task center</h2></div>
               <button ref={closeButtonRef} type="button" className="task-icon-button" title="Close task center" aria-label="Close task center" onClick={onClose}><X size={18} /></button>
