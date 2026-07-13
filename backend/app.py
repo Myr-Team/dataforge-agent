@@ -22,7 +22,7 @@ from pathlib import Path
 from starlette.concurrency import run_in_threadpool
 
 try:
-    from .artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
+    from .artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, run_artifact_job
     from .task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
@@ -71,7 +71,7 @@ try:
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
 except ImportError:
-    from artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
+    from artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, run_artifact_job
     from task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
@@ -454,6 +454,7 @@ async def artifact_job_create(
     try:
         actor = actor_from_request(request)
         require_workspace_permission(req.workspace_id, actor, "artifact.generate")
+        recovered_jobs = await run_in_threadpool(recover_prepared_artifact_tasks, req.workspace_id)
         job = await run_in_threadpool(
             create_artifact_job,
             req.model_dump(),
@@ -464,9 +465,15 @@ async def artifact_job_create(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ArtifactJobPersistenceError as exc:
+    except (ArtifactJobPersistenceError, TaskPersistenceError) as exc:
         raise HTTPException(status_code=503, detail="Durable artifact job storage is unavailable") from exc
-    if job.get("status") not in {"partial", "completed", "failed", "cancelled", "running"}:
+    scheduled_job_ids: set[str] = set()
+    for recovered in recovered_jobs:
+        recovered_job_id = str(recovered.get("job_id") or "")
+        if recovered_job_id and recovered.get("status") not in {"partial", "completed", "failed", "cancelled", "running"}:
+            background_tasks.add_task(run_artifact_job, recovered_job_id)
+            scheduled_job_ids.add(recovered_job_id)
+    if job.get("status") not in {"partial", "completed", "failed", "cancelled", "running"} and job["job_id"] not in scheduled_job_ids:
         background_tasks.add_task(run_artifact_job, job["job_id"])
     return job
 

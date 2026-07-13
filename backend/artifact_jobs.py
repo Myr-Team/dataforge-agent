@@ -14,12 +14,12 @@ try:
     from .blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
     from .identity import public_actor
     from .run_store import get_run, list_runs
-    from .task_store import claim_task, create_task, get_task, list_tasks, update_task
+    from .task_store import activate_prepared_task, claim_task, create_task, get_task, list_tasks, update_task
 except ImportError:
     from blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
     from identity import public_actor
     from run_store import get_run, list_runs
-    from task_store import claim_task, create_task, get_task, list_tasks, update_task
+    from task_store import activate_prepared_task, claim_task, create_task, get_task, list_tasks, update_task
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,7 +57,6 @@ def create_artifact_job(
         raise ValueError("source run does not belong to the requested workspace")
     key_hash = _idempotency_hash(idempotency_key) if idempotency_key else None
     with _LOCK:
-        recover_prepared_artifact_tasks(workspace_id)
         if key_hash:
             existing = next(
                 (
@@ -106,9 +105,11 @@ def create_artifact_job(
             _compensate_task(str(task["task_id"]))
             raise
         try:
-            update_task(str(task["task_id"]), status="queued")
+            activated = activate_prepared_task(str(task["task_id"]))
         except Exception as exc:
             raise ArtifactJobPersistenceError("durable artifact task activation failed") from exc
+        if activated is None:
+            raise ArtifactJobPersistenceError("durable artifact task activation failed")
         return persisted
 
 
@@ -347,8 +348,8 @@ def _compensate_task(task_id: str) -> bool:
     return True
 
 
-def recover_prepared_artifact_tasks(workspace_id: str | None = None) -> list[str]:
-    recovered: list[str] = []
+def recover_prepared_artifact_tasks(workspace_id: str | None = None) -> list[dict[str, Any]]:
+    recovered: list[dict[str, Any]] = []
     for task in list_tasks(workspace_id):
         if task.get("task_type") != "artifact.generate" or task.get("status") != "preparing":
             continue
@@ -361,15 +362,13 @@ def recover_prepared_artifact_tasks(workspace_id: str | None = None) -> list[str
             job = None
         try:
             if job is None:
-                if _compensate_task(task_id):
-                    recovered.append(task_id)
+                _compensate_task(task_id)
             else:
                 target = str(job.get("status") or "queued")
                 if target in _TERMINAL:
                     _sync_linked_task(job)
-                else:
-                    update_task(task_id, status="queued")
-                recovered.append(task_id)
+                elif activate_prepared_task(task_id) is not None:
+                    recovered.append(dict(job))
         except Exception:
             continue
     return recovered

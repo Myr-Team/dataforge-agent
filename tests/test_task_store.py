@@ -329,3 +329,25 @@ def test_blob_conditional_claim_allows_only_one_worker(tmp_path, monkeypatch: py
 
     assert sum(item is not None for item in claims) == 1
     assert remote[next(iter(remote))]["status"] == "running"
+
+
+def test_activate_prepared_task_uses_blob_revision_cas(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    remote: dict[str, dict] = {}
+    monkeypatch.setattr(task_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
+    monkeypatch.setattr(task_store, "download_blob_json", lambda name: remote.get(name))
+    task = task_store.create_task(_payload(initial_status="preparing"), _actor())
+
+    def compare_and_swap(name, *, expected_revision, changes):
+        assert expected_revision == 1
+        assert changes["status"] == "queued"
+        remote[name] = {**remote[name], **changes}
+        return dict(remote[name])
+
+    monkeypatch.setattr(task_store, "compare_and_swap_blob_json", compare_and_swap)
+    activated = task_store.activate_prepared_task(task["task_id"])
+
+    assert activated is not None
+    assert activated["status"] == "queued"
+    assert task_store.activate_prepared_task(task["task_id"]) is None

@@ -171,5 +171,5 @@ def test_artifact_blob_and_compensation_failure_leaves_prepared_task_for_recover
     monkeypatch.setattr(artifact_jobs, "update_task", original_update)
     recovered = artifact_jobs.recover_prepared_artifact_tasks("ws-bridge")
 
-    assert recovered == [task["task_id"]]
+    assert recovered == []
     assert task_store.get_task(task["task_id"])["status"] == "failed"

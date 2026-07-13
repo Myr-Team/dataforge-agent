@@ -111,6 +111,30 @@ def claim_task(task_id: str, worker: str) -> dict[str, Any] | None:
         return cleaned
 
 
+def activate_prepared_task(task_id: str) -> dict[str, Any] | None:
+    normalized = _required_text(task_id, "task_id", 100)
+    if not blob_configured():
+        return _update_local_task(normalized, {"status": "queued"}, expected_status="preparing")
+    with _LOCK:
+        task = get_task(normalized)
+        if task.get("status") != "preparing":
+            return None
+        updated = _apply_changes(task, {"status": "queued"})
+        try:
+            committed = compare_and_swap_blob_json(
+                _task_blob(normalized),
+                expected_revision=int(task.get("revision") or 0),
+                changes=updated,
+            )
+        except Exception as exc:
+            raise TaskPersistenceError("durable task activation failed") from exc
+        if committed is None:
+            return None
+        cleaned = _clean_task(committed)
+        _persist_local_task(cleaned)
+        return cleaned
+
+
 def update_task(task_id: str, **changes: Any) -> dict[str, Any]:
     normalized = _required_text(task_id, "task_id", 100)
     if not blob_configured():
@@ -192,7 +216,12 @@ def _claim_local_task(task_id: str) -> dict[str, Any] | None:
     return None
 
 
-def _update_local_task(task_id: str, changes: Mapping[str, Any]) -> dict[str, Any]:
+def _update_local_task(
+    task_id: str,
+    changes: Mapping[str, Any],
+    *,
+    expected_status: str | None = None,
+) -> dict[str, Any] | None:
     lock_path = _claim_lock_path(task_id)
     deadline = time.monotonic() + LOCAL_TASK_LOCK_TIMEOUT_SECONDS
     while True:
@@ -200,6 +229,8 @@ def _update_local_task(task_id: str, changes: Mapping[str, Any]) -> dict[str, An
         if token is not None:
             try:
                 task = get_task(task_id)
+                if expected_status is not None and task.get("status") != expected_status:
+                    return None
                 updated = _apply_changes(task, changes)
                 return task if updated is task else _persist_local_task(updated)
             finally:

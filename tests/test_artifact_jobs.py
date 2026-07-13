@@ -5,12 +5,16 @@ import json
 from pathlib import Path
 from urllib.parse import quote
 
+import pytest
+
 import backend.artifact_jobs as artifact_jobs
 import backend.app as app_module
+import backend.task_store as task_store
 import backend.tools.render_pdf as render_pdf
 import backend.workspace_authz as workspace_authz
 from backend.app import app
 from backend.artifact_jobs import ArtifactJobPersistenceError
+from backend.task_store import TaskPersistenceError
 from fastapi.testclient import TestClient
 
 
@@ -29,6 +33,14 @@ def _configure_store(tmp_path: Path, monkeypatch) -> None:
             "artifact": {"feasibility": {"verdict": "conditional"}},
         },
     )
+
+
+def _configure_task_store(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(task_store, "TASK_DIR", tmp_path / "tasks")
+    monkeypatch.setattr(task_store, "blob_configured", lambda: False)
+    monkeypatch.setattr(task_store, "download_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(task_store, "list_blob_json", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(task_store, "upload_blob_json", lambda *_args, **_kwargs: {})
 
 
 def _request(**overrides) -> dict:
@@ -265,6 +277,82 @@ def test_artifact_job_api_returns_503_for_durable_persistence_failure(monkeypatc
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Durable artifact job storage is unavailable"
+
+
+def test_artifact_job_api_returns_503_when_generic_task_create_is_unavailable(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _configure_task_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        artifact_jobs,
+        "create_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskPersistenceError("task store unavailable")),
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post("/api/artifact-jobs", json=_request())
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Durable artifact job storage is unavailable"
+
+
+def test_artifact_api_recovers_durable_job_after_activation_failure_and_schedules_once(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _configure_task_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(artifact_jobs, "_producer_payload", lambda _job: _request(kinds=["pdf"]))
+    monkeypatch.setattr(
+        artifact_jobs,
+        "_produce",
+        lambda _payload: {"artifact_urls": {"pdf": "/api/artifacts/recovered.pdf"}, "pdf": {"artifact_url": "/api/artifacts/recovered.pdf"}},
+    )
+    original_activate = getattr(artifact_jobs, "activate_prepared_task", None)
+    monkeypatch.setattr(artifact_jobs, "activate_prepared_task", lambda _task_id: None, raising=False)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    first = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={"Idempotency-Key": "recover-activation"})
+
+    assert first.status_code == 503
+    prepared = task_store.list_tasks("ws-artifacts")[0]
+    job_id = str(prepared["result"]["artifact_job_id"])
+    assert artifact_jobs.get_artifact_job(job_id)["status"] == "queued"
+    assert prepared["status"] == "preparing"
+
+    assert original_activate is not None
+    monkeypatch.setattr(artifact_jobs, "activate_prepared_task", original_activate)
+    calls: list[str] = []
+    original_run = artifact_jobs.run_artifact_job
+
+    def run_recovered(job_id: str):
+        calls.append(job_id)
+        return original_run(job_id)
+
+    monkeypatch.setattr(app_module, "run_artifact_job", run_recovered)
+    second = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={"Idempotency-Key": "recover-activation"})
+
+    assert second.status_code == 202
+    assert second.json()["job_id"] == job_id
+    assert calls == [job_id]
+    assert artifact_jobs.get_artifact_job(job_id)["status"] == "completed"
+    assert task_store.get_task(prepared["task_id"])["status"] == "completed"
+    assert artifact_jobs.recover_prepared_artifact_tasks("ws-artifacts") == []
+
+
+def test_concurrent_prepared_recovery_returns_a_job_only_once(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _configure_task_store(tmp_path, monkeypatch)
+    original_activate = artifact_jobs.activate_prepared_task
+    monkeypatch.setattr(artifact_jobs, "activate_prepared_task", lambda _task_id: None)
+
+    with pytest.raises(ArtifactJobPersistenceError):
+        artifact_jobs.create_artifact_job(_request(kinds=["pdf"]), actor={}, idempotency_key="recover-once")
+
+    prepared = task_store.list_tasks("ws-artifacts")[0]
+    job_id = str(prepared["result"]["artifact_job_id"])
+    monkeypatch.setattr(artifact_jobs, "activate_prepared_task", original_activate)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        recovered = list(pool.map(lambda _: artifact_jobs.recover_prepared_artifact_tasks("ws-artifacts"), range(2)))
+
+    recovered_ids = [item["job_id"] for batch in recovered for item in batch]
+    assert recovered_ids == [job_id]
+    assert task_store.get_task(prepared["task_id"])["status"] == "queued"
 
 
 def test_pdf_filename_contains_explicit_plan_version(tmp_path: Path, monkeypatch) -> None:
