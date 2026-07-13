@@ -671,9 +671,12 @@ class _SnapshotRaceBackend:
             return f'"sealed-{len(self.sealed_streams[name]):x}"'
         return f'"v{self.versions.get(name, 0)}"' if name in self.streams else None
 
-    def read_full(self, name: str) -> bytes:
+    def read_full(self, name: str, snapshot) -> bytes:
         self.full_reads += 1
-        return self.sealed_streams.get(name, self.streams.get(name, b""))
+        data = self.sealed_streams.get(name, self.streams.get(name, b""))
+        if len(data) != snapshot.length or self._etag(name, sealed=snapshot.sealed) != snapshot.etag:
+            raise audit_store._AppendConflict("deterministic stream changed during full read")
+        return data
 
     def read_range(self, name: str, offset: int, length: int, snapshot) -> bytes:
         self.range_reads += 1
@@ -1169,6 +1172,41 @@ def test_seal_rejects_creator_or_cross_replica_destination_with_different_earlie
         backend.seal(name, source)
     assert active.download_calls == [(0, len(source_data))]
     assert malicious.download_calls[-1] == (0, len(malicious_data))
+
+
+def test_governance_full_read_rejects_reordered_earlier_json_in_sealed_segment(monkeypatch) -> None:
+    monkeypatch.setattr(audit_store, "MAX_RECORDS_PER_SEGMENT", 120)
+    for revision in range(1, 122):
+        audit_store.record_audit_event(_actor(), "file.edit", _resource(f"file-{revision}"), {})
+
+    assert audit_store.list_audit_events("ws-audit")["revision"] == 121
+    first_segment = _workspace_event_files()[0]
+    assert "sealed" in first_segment.relative_to(audit_store.AUDIT_DIR).parts
+    original = first_segment.read_bytes()
+    lines = original.splitlines(keepends=True)
+    first_event = json.loads(lines[0])
+    reordered_event = {key: first_event[key] for key in reversed(tuple(first_event))}
+    reordered_line = json.dumps(
+        reordered_event,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    tampered = b"".join([reordered_line, *lines[1:]])
+
+    assert reordered_line != lines[0]
+    assert len(reordered_line) == len(lines[0])
+    assert json.loads(reordered_line) == first_event
+    assert first_event["event_hash"] == audit_store._hash_event(first_event)
+    assert len(tampered) == len(original)
+    assert tampered.count(b"\n") == original.count(b"\n")
+    assert len(original) > audit_store.STREAM_TAIL_BYTES
+    assert tampered[-audit_store.STREAM_TAIL_BYTES :] == original[-audit_store.STREAM_TAIL_BYTES :]
+
+    first_segment.chmod(0o600)
+    first_segment.write_bytes(tampered)
+
+    with pytest.raises(audit_store.AuditIntegrityError, match="content digest"):
+        audit_store.list_audit_events("ws-audit")
 
 
 def test_r3_segment_rotation_is_deterministic_and_old_segments_are_not_reopened(monkeypatch) -> None:

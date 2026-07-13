@@ -202,7 +202,7 @@ class WorkspaceGlobalReceipt(BaseModel):
 
 class _AppendBackend(Protocol):
     def read_snapshot(self, name: str) -> _StreamSnapshot: ...
-    def read_full(self, name: str) -> bytes: ...
+    def read_full(self, name: str, snapshot: _StreamSnapshot) -> bytes: ...
     def read_range(self, name: str, offset: int, length: int, snapshot: _StreamSnapshot) -> bytes: ...
     def list_names(self, prefix: str, limit: int | None = None) -> list[str]: ...
     def append(self, name: str, payload: bytes, snapshot: _StreamSnapshot) -> None: ...
@@ -240,14 +240,17 @@ class _LocalAppendBackend:
             content_sha256=content_sha256,
         )
 
-    def read_full(self, name: str) -> bytes:
-        path, _sealed = _local_read_path(name)
-        if not path.exists():
+    def read_full(self, name: str, snapshot: _StreamSnapshot) -> bytes:
+        if snapshot.name != name:
+            raise AuditPersistenceError("local audit full-read snapshot is invalid")
+        if snapshot.etag is None:
             return b""
-        try:
-            return path.read_bytes()
-        except OSError as exc:
-            raise AuditPersistenceError("local audit read failed") from exc
+        path = _local_sealed_stream_path(name) if snapshot.sealed else _local_active_stream_path(name)
+        if snapshot.sealed:
+            data = _read_local_segment_bytes(path, snapshot, "sealed audit historical segment")
+            _validate_sealed_content_digest(snapshot, data, "sealed audit historical segment")
+            return data
+        return _read_local_segment_bytes(path, snapshot, "active audit segment full read")
 
     def read_range(self, name: str, offset: int, length: int, snapshot: _StreamSnapshot) -> bytes:
         path = _local_sealed_stream_path(name) if snapshot.sealed else _local_active_stream_path(name)
@@ -466,11 +469,16 @@ class _BlobAppendBackend:
             content_sha256=content_sha256,
         )
 
-    def read_full(self, name: str) -> bytes:
-        snapshot = self.read_snapshot(name)
+    def read_full(self, name: str, snapshot: _StreamSnapshot) -> bytes:
+        if snapshot.name != name:
+            raise AuditPersistenceError("durable audit full-read snapshot is invalid")
         if snapshot.etag is None:
             return b""
         client = (self.sealed_container if snapshot.sealed else self.container).get_blob_client(name)
+        if snapshot.sealed:
+            data = _download_blob_segment(client, snapshot, "sealed audit historical segment")
+            _validate_sealed_content_digest(snapshot, data, "sealed audit historical segment")
+            return data
         try:
             return bytes(
                 client.download_blob(etag=snapshot.etag, match_condition=MatchConditions.IfNotModified).readall()
@@ -1278,6 +1286,17 @@ def _validate_exact_segment_bytes(data: bytes, snapshot: _StreamSnapshot, label:
         raise AuditIntegrityError(f"{label} bytes do not match the validated snapshot")
 
 
+def _validate_sealed_content_digest(snapshot: _StreamSnapshot, data: bytes, label: str) -> None:
+    expected = str(snapshot.content_sha256 or "")
+    actual = hashlib.sha256(data).hexdigest()
+    if (
+        not snapshot.sealed
+        or not re.fullmatch(r"[0-9a-f]{64}", expected)
+        or not hmac.compare_digest(actual, expected)
+    ):
+        raise AuditIntegrityError(f"{label} content digest does not match signed seal")
+
+
 def _seal_envelope(
     name: str,
     length: int,
@@ -1664,7 +1683,7 @@ def _read_segment_records(
         snapshot = backend.read_snapshot(name)
         if position < len(indexed) - 1 and not snapshot.sealed:
             raise AuditIntegrityError(f"{label} old segment is not sealed")
-        data = backend.read_full(name)
+        data = backend.read_full(name, snapshot)
         parsed = _parse_lines(data, label)
         if not parsed or len(parsed) > MAX_RECORDS_PER_SEGMENT:
             raise AuditIntegrityError(f"{label} segment record count is invalid")

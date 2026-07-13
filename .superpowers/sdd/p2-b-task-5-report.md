@@ -8,7 +8,7 @@ Interrupted remediation parent: `5799c3b` (`fix: harden immutable audit remediat
 
 ## Scope
 
-All nine Task5 findings, all six r2 Critical/Important findings, all four r3 findings, all four r4 findings, and the final sealed-copy Important finding are remediated. The interrupted worker's changes were retained and repaired. No Easy Auth configuration was added or changed, and `output/` was left untouched.
+All nine Task5 findings, all six r2 Critical/Important findings, all four r3 findings, all four r4 findings, the sealed-copy Important finding, and the final sealed-historical-read Important finding are remediated. The interrupted worker's changes were retained and repaired. No Easy Auth configuration was added or changed, and `output/` was left untouched.
 
 ## Original Nine Findings
 
@@ -143,6 +143,14 @@ All nine Task5 findings, all six r2 Critical/Important findings, all four r3 fin
 - Full source/destination hashing occurs only when a full segment rotates or an interrupted seal is completed. Ordinary mutation gates continue using Blob properties plus bounded tails and do not hash historical segments.
 - The adversarial test uses 200 individually valid HMAC events, swaps early complete JSON records outside the 64 KiB tail, keeps identical length/count/final head, and supplies a valid signed seal envelope for the genuine source digest. Both creator and cross-replica-precreated destination cases fail only after the independent destination hash detects different earlier bytes.
 
+## Final Sealed Historical-Read Integrity Remediation
+
+- Both local and Azure `read_full` paths now recognize canonical sealed historical segments from their validated sealed snapshot and perform an exact bounded full read before returning any bytes to a parser. Azure binds the download to the snapshot ETag with `IfNotModified`; local mode checks the exact stat-derived ETag before and after the read.
+- The complete downloaded bytes must match the snapshot's exact length, record count, and 64 KiB tail, then SHA-256 must equal the `content_sha256` from the HMAC-signed seal envelope. A missing, malformed, or unequal digest raises `AuditIntegrityError` before JSON parsing or semantic replay.
+- Every explicit governance integrity scan uses `_read_segment_records`, which routes each canonical segment through `read_full`; therefore every sealed event, workspace-anchor, global-anchor, and per-workspace receipt segment receives this byte-level verification.
+- Active/current full reads remain free of sealed-content hashing. Normal mutation still uses properties plus bounded tail/range reads and does not call `read_full`, so historical full hashing remains outside the hot mutation path.
+- The regression first creates and successfully reads a complete 121-revision governed ledger. It then reorders only the first sealed event's JSON keys while preserving exact byte length, semantic values, event HMAC/hash chain, line count, final head, and the entire 64 KiB tail. Governance previously accepted the rewrite; it now fails specifically on the signed content digest.
+
 ## Preserved Contracts
 
 - Audit action/resource/result/reason/correlation schemas remain allowlisted and are revalidated on read.
@@ -261,6 +269,34 @@ Final full repository suite after sealed-copy remediation:
 ```text
 python -m pytest -q
 656 passed, 1 warning in 92.43s (0:01:32)
+```
+
+Final sealed historical-read red regression:
+
+```text
+python -m pytest -q tests/test_audit_store.py -k "governance_full_read_rejects_reordered_earlier_json"
+1 failed, 76 deselected in 16.61s
+```
+
+Final sealed historical-read and hot-path focused selection:
+
+```text
+python -m pytest -q tests/test_audit_store.py -k "governance_full_read_rejects_reordered_earlier_json or seal_rejects_creator_or_cross_replica or full_segment_hashing_runs_only_when_a_segment_rotates or mutation_uses_bounded_tail_snapshots_not_full_history or r3_mutation_call_count_is_constant"
+6 passed, 71 deselected in 17.88s
+```
+
+Final Task5 focused suites after sealed historical-read remediation:
+
+```text
+python -m pytest -q tests/test_audit_store.py tests/test_actor_audit_usage.py tests/test_entra_member_invites.py
+151 passed in 34.00s
+```
+
+Final full repository suite after sealed historical-read remediation:
+
+```text
+python -m pytest -q
+657 passed, 1 warning in 110.35s (0:01:50)
 ```
 
 The warning is the existing `ExperimentalWarning` from `backend/maf_team_runtime.py` in `tests/test_maf_evaluation_contract.py`.
