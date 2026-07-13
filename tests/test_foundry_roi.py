@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import math
 
 import pytest
@@ -9,7 +10,9 @@ from backend.foundry_roi import (
     DiscoveryProof,
     FoundryRoiStatus,
     FoundryRoiTarget,
+    HmacFoundryRoiAttestationSigner,
     ProviderRoiSnapshot,
+    VerifiedProviderRead,
     VerifiedDiscoveryAttestation,
     discover_foundry_roi,
     read_foundry_roi,
@@ -20,6 +23,7 @@ from backend.foundry_roi import (
 WINDOW = {"from": "2026-07-01T00:00:00+00:00", "to": "2026-07-02T00:00:00+00:00"}
 TARGET_ENDPOINT = "https://project.services.ai.azure.com/api/projects/demo"
 TARGET_AGENT_ID = "agent-demo"
+TRUST_KEY = b"task3-trusted-attestation-channel-key"
 
 
 def target() -> FoundryRoiTarget:
@@ -79,15 +83,23 @@ def configure_target(monkeypatch) -> None:
     monkeypatch.setenv("FOUNDRY_AGENT_ID", TARGET_AGENT_ID)
 
 
+def configure_trusted_channel(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FOUNDRY_ROI_TRUST_HMAC_KEY", base64.b64encode(TRUST_KEY).decode("ascii"))
+
+
 class FakeVerifier:
+    def __init__(self, key: bytes = TRUST_KEY) -> None:
+        self.signer = HmacFoundryRoiAttestationSigner(key)
+
     def verify(self, configured_target, provider_proof):
-        return VerifiedDiscoveryAttestation(
+        attestation = VerifiedDiscoveryAttestation(
             target_fingerprint=configured_target.target_fingerprint,
             surface_id=provider_proof.surface_id,
             surface_version=provider_proof.surface_version,
             observed_at=provider_proof.observed_at,
             observed_source="fake_discovery_verifier",
         )
+        return self.signer.sign(attestation)
 
 
 def verified_read(monkeypatch, snapshot: ProviderRoiSnapshot, *, request_window: dict[str, str] | None = None):
@@ -99,6 +111,7 @@ def verified_read(monkeypatch, snapshot: ProviderRoiSnapshot, *, request_window:
             return snapshot
 
     configure_target(monkeypatch)
+    configure_trusted_channel(monkeypatch)
     result = read_foundry_roi(request_window if request_window is not None else WINDOW, provider=Provider(), verifier=FakeVerifier())
     assert result.verified_read is not None
     return result.verified_read
@@ -134,6 +147,7 @@ def test_provider_must_discover_exact_target_before_connected(monkeypatch) -> No
             return provider_snapshot(target_fingerprint=configured_target.target_fingerprint, window=window)
 
     configure_target(monkeypatch)
+    configure_trusted_channel(monkeypatch)
 
     result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier())
 
@@ -142,6 +156,54 @@ def test_provider_must_discover_exact_target_before_connected(monkeypatch) -> No
     assert result.verified_read.snapshot.target_fingerprint == target().target_fingerprint
     assert "project.services" not in str(result)
     assert "agent-demo" not in str(result)
+
+
+def test_provider_as_verifier_cannot_self_attest_even_with_trusted_key(monkeypatch) -> None:
+    class Provider:
+        def __init__(self) -> None:
+            self.signer = HmacFoundryRoiAttestationSigner(TRUST_KEY)
+
+        def discover(self, configured_target):
+            return proof(configured_target)
+
+        def verify(self, configured_target, provider_proof):
+            attestation = VerifiedDiscoveryAttestation(
+                target_fingerprint=configured_target.target_fingerprint,
+                surface_id=provider_proof.surface_id,
+                surface_version=provider_proof.surface_version,
+                observed_at=provider_proof.observed_at,
+                observed_source="provider_self_attestation",
+            )
+            return self.signer.sign(attestation)
+
+        def read(self, configured_target, window):  # pragma: no cover - self-attestation must prevent read
+            raise AssertionError("unexpected read")
+
+    configure_target(monkeypatch)
+    configure_trusted_channel(monkeypatch)
+    provider = Provider()
+
+    result = read_foundry_roi(WINDOW, provider=provider, verifier=provider)
+
+    assert result.status.state != "connected"
+    assert result.verified_read is None
+
+
+def test_colluding_verifier_with_untrusted_key_cannot_connect(monkeypatch) -> None:
+    class Provider:
+        def discover(self, configured_target):
+            return proof(configured_target)
+
+        def read(self, configured_target, window):  # pragma: no cover - invalid verifier must prevent read
+            raise AssertionError("unexpected read")
+
+    configure_target(monkeypatch)
+    configure_trusted_channel(monkeypatch)
+
+    result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(b"colluding-but-untrusted-attestation-key"))
+
+    assert result.status.state != "connected"
+    assert result.verified_read is None
 
 
 def test_provider_proof_alone_is_configured_unverified_never_connected(monkeypatch) -> None:
@@ -185,6 +247,7 @@ def test_snapshot_for_another_target_is_unavailable(monkeypatch) -> None:
             return provider_snapshot(target_fingerprint="0" * 64, window=window)
 
     configure_target(monkeypatch)
+    configure_trusted_channel(monkeypatch)
 
     result = read_foundry_roi(WINDOW, provider=LyingProvider(), verifier=FakeVerifier())
 
@@ -284,6 +347,30 @@ def test_nonconnected_discovery_discards_even_a_valid_snapshot(monkeypatch) -> N
 def test_public_reconcile_rejects_raw_snapshot_bypass() -> None:
     with pytest.raises(TypeError):
         reconcile_roi(local_snapshot(), provider_snapshot())
+
+
+def test_public_reconcile_rejects_self_constructed_or_toggled_wrapper(monkeypatch) -> None:
+    issued = verified_read(monkeypatch, provider_snapshot())
+    forged = VerifiedProviderRead(
+        target_fingerprint=issued.target_fingerprint,
+        attestation=issued.attestation,
+        snapshot=issued.snapshot,
+    )
+    object.__setattr__(forged, "_issued_by_adapter", True)
+
+    with pytest.raises(TypeError):
+        reconcile_roi(local_snapshot(), forged)
+
+
+def test_verified_wrapper_is_immutable_and_detects_snapshot_replacement(monkeypatch) -> None:
+    issued = verified_read(monkeypatch, provider_snapshot())
+
+    with pytest.raises(ValidationError):
+        issued.snapshot = provider_snapshot(amount=999.0)
+    object.__setattr__(issued, "snapshot", provider_snapshot(amount=999.0))
+
+    with pytest.raises(TypeError):
+        reconcile_roi(local_snapshot(), issued)
 
 
 @pytest.mark.parametrize("amount", [math.nan, -1.0])
