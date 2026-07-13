@@ -199,6 +199,7 @@ class RoiSnapshot(BaseModel):
     cost: CostSummary
     time_value: TimeValueSummary
     business_value: BusinessValueSummary | None
+    observed_run_ids: list[str]
     outcome_event_ids: list[str]
     verified_outcome_event_ids: list[str]
     unverified_outcome_event_ids: list[str]
@@ -283,7 +284,7 @@ def build_roi_snapshot(workspace_id: str, window: Mapping[str, Any], *, runs: It
     if evidence:
         status = "verified" if not unverified else "measured"
     business_value, business_assumptions = _business_value(evidence)
-    model = RoiSnapshot(workspace_id=str(workspace_id), window=normalized_window, generated_at=datetime.now(timezone.utc), status=status, usage=usage, cost=cost, time_value=TimeValueSummary(hours=None, cash_value=None, status="not_monetized"), business_value=business_value, outcome_event_ids=[str(item["event_id"]) for item in evidence if item.get("event_id")], verified_outcome_event_ids=[str(item["event_id"]) for item in verified if item.get("event_id")], unverified_outcome_event_ids=unverified, assumptions=[*assumptions, Assumption(kind="time_value", source="not_configured", formula="saved time is not cash", status="not_monetized"), *business_assumptions], truncated=truncated or was_truncated)
+    model = RoiSnapshot(workspace_id=str(workspace_id), window=normalized_window, generated_at=datetime.now(timezone.utc), status=status, usage=usage, cost=cost, time_value=TimeValueSummary(hours=None, cash_value=None, status="not_monetized"), business_value=business_value, observed_run_ids=_safe_run_ids(run_items), outcome_event_ids=[str(item["event_id"]) for item in evidence if item.get("event_id")], verified_outcome_event_ids=[str(item["event_id"]) for item in verified if item.get("event_id")], unverified_outcome_event_ids=unverified, assumptions=[*assumptions, Assumption(kind="time_value", source="not_configured", formula="saved time is not cash", status="not_monetized"), *business_assumptions], truncated=truncated or was_truncated)
     return model.model_dump(mode="json")
 
 
@@ -394,6 +395,11 @@ def _usage_cost(runs: list[Mapping[str, Any]], catalog: PriceCatalog) -> tuple[U
     status = "unknown" if not observed else "partial" if unpriced or len(by_currency) != 1 else "complete"
     total = _money(next(iter(by_currency.values()))) if status == "complete" else None
     return UsageSummary(runs=len(runs), input_tokens=inputs if observed else None, output_tokens=outputs if observed else None, total_tokens=totals if observed else None, models=sorted({model for run in runs for _, model, _ in _run_usage(run)}), duplicate_usage_event_ids=duplicates), CostSummary(total=total, status=status, currency=next(iter(by_currency)) if status == "complete" else None, by_currency={key: _money(value) for key, value in by_currency.items()} if status != "unknown" else {}, unpriced_models=sorted(unpriced)), _dedupe(assumptions)
+
+
+def _safe_run_ids(runs: Iterable[Mapping[str, Any]]) -> list[str]:
+    identifiers = {str(run.get("run_id") or "").strip() for run in runs}
+    return sorted(item for item in identifiers if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", item))
 
 
 def _run_usage(run: Mapping[str, Any]) -> list[tuple[int, str, dict[str, int] | None]]:

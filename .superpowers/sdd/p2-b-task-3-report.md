@@ -20,6 +20,14 @@ Only `FOUNDRY_PROJECT_ENDPOINT` and `FOUNDRY_AGENT_ID` are accepted as configura
 
 - Local ROI stays authoritative and is never overwritten by provider values.
 - Provider amounts must be finite, non-negative, and carry mapped run and outcome identifiers.
-- A difference is emitted only when windows, currency, unit, and outcome lineage align. Otherwise `difference` is `null` with a reason.
+- A difference is emitted only when windows, currency, unit, and the complete run/outcome lineage sets exactly match. Otherwise `difference` is `null` with a reason.
 - Provider `estimated`, `measured`, and `verified` status is retained separately. It never promotes the local ROI status.
 - Dependency health exposes `foundry_roi` separately from the existing Foundry model probe, so unavailable native ROI cannot be mistaken for a healthy connection.
+
+## Review Remediation (2026-07-13)
+
+- `FoundryRoiTarget` now accepts only `https://<account>.services.ai.azure.com/api/projects/<project|_project>` with no port, user info, query, fragment, or extra path. Its SHA-256 target fingerprint binds the canonical endpoint and strict agent ID.
+- `FoundryRoiProvider.discover(target)` must return a `DiscoveryProof` containing the same target fingerprint, a surface ID/version, UTC observation time, and state. A mismatched proof is `unavailable`; no read is attempted.
+- `FoundryRoiProvider.read(target, window)` returns a snapshot with the same fingerprint. A mismatched snapshot is discarded as `unavailable`.
+- Local ROI now records safe `observed_run_ids` from actual windowed source runs. Reconciliation requires non-empty business value plus exact, non-empty equality of provider mapped run IDs and outcome IDs with local lineage. Intersection, omission, and extra IDs all produce `difference: null` and `reconciled: false`.
+- A non-`connected` provider status unconditionally discards any attached snapshot before reconciliation.

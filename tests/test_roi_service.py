@@ -98,6 +98,13 @@ def test_usage_without_outcome_is_estimated_and_never_cash_value() -> None:
     assert snapshot["time_value"]["cash_value"] is None
 
 
+def test_snapshot_keeps_safe_observed_source_run_lineage() -> None:
+    unsafe = {**_run(), "run_id": "unsafe/run"}
+    snapshot = build_roi_snapshot("ws-roi", _window(), runs=[_run(), unsafe], outcomes=[], prices=PRICES)
+
+    assert snapshot["observed_run_ids"] == ["run-1"]
+
+
 def test_missing_model_price_is_partial_and_never_zero_cost() -> None:
     snapshot = build_roi_snapshot("ws-roi", _window(), runs=[_run(model="unknown-model")], outcomes=[], prices=PRICES)
 
