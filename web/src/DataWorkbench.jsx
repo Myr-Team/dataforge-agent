@@ -45,17 +45,22 @@ import {
   dwBlobContainers,
   dwBlobItems,
   dwBlobPreview,
-  dwBlobImport,
   dwSqlConnect,
   dwSqlStatus,
   dwSqlTables,
   dwSqlPreview,
-  dwSqlImport,
   dwDisconnectConnector,
   dwListConnectors,
   dwReconnectConnector,
   dwDeleteConnector,
+  dwSyncConnector,
 } from "./api.js";
+import {
+  connectorRecordsForWorkspaceResponse,
+  connectorViewModel,
+  isCurrentConnectorListResponse,
+  replaceConnectorRecord,
+} from "./connectorViewModel.js";
 
 const TABS = [
   { id: "table", label: "内容编辑" },
@@ -174,14 +179,45 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   const [createModal, setCreateModal] = useState(null);
   const [connectorModal, setConnectorModal] = useState(null);
   const [plannedConnector, setPlannedConnector] = useState(null);
-  const [connectorBusy, setConnectorBusy] = useState(false);
-  const [connectorResult, setConnectorResult] = useState(null);
   const [connectorRecords, setConnectorRecords] = useState([]);
+  const [selectedConnectorId, setSelectedConnectorId] = useState("");
+  const [connectorRuntime, setConnectorRuntime] = useState({});
+  const [connectorOperations, setConnectorOperations] = useState({});
   const [externalGroups, setExternalGroups] = useState([]);
   const [importingExternal, setImportingExternal] = useState(false);
   const [externalRestoredKey, setExternalRestoredKey] = useState("");
   const toastT = useRef(null);
+  const connectorListSequence = useRef(0);
+  const currentConnectorWorkspace = useRef("");
   const externalStorageKey = workspaceId ? `df-dataworkbench-external:${workspaceId}` : "";
+
+  const connectorModel = useMemo(
+    () => connectorViewModel(connectorRecords, selectedConnectorId, connectorOperations),
+    [connectorRecords, selectedConnectorId, connectorOperations],
+  );
+  const connectorResult = useMemo(() => {
+    const record = connectorModel.selected;
+    return record ? { ...record, ...(connectorRuntime[record.connector_id] || {}) } : null;
+  }, [connectorModel.selected, connectorRuntime]);
+  const connectorByKind = useMemo(() => Object.fromEntries(
+    Object.entries(connectorModel.selectedByKind).map(([kind, record]) => [
+      kind,
+      record ? { ...record, ...(connectorRuntime[record.connector_id] || {}) } : null,
+    ]),
+  ), [connectorModel.selectedByKind, connectorRuntime]);
+  const connectorBusy = Boolean(connectorResult?.connector_id && connectorOperations[connectorResult.connector_id]?.pending);
+  const setConnectorBusy = useCallback((busy) => {
+    if (connectorResult?.connector_id) setConnectorOperations((items) => ({
+      ...items,
+      [connectorResult.connector_id]: { ...(items[connectorResult.connector_id] || {}), pending: busy ? "working" : "" },
+    }));
+  }, [connectorResult?.connector_id]);
+  const setConnectorResult = useCallback((next) => {
+    const value = typeof next === "function" ? next(connectorResult) : next;
+    if (!value?.connector_id) return;
+    setConnectorRecords((items) => replaceConnectorRecord(items, value));
+    setSelectedConnectorId(value.connector_id);
+  }, [connectorResult]);
 
   const showToast = useCallback((msg) => {
     setToast(msg);
@@ -191,7 +227,18 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
 
   const upsertConnectorRecord = useCallback((record) => {
     if (!record?.connector_id) return;
-    setConnectorRecords((items) => [record, ...items.filter((item) => item.connector_id !== record.connector_id)]);
+    setConnectorRecords((items) => replaceConnectorRecord(items, record));
+    setSelectedConnectorId((current) => current || record.connector_id);
+  }, []);
+
+  const setConnectorOperation = useCallback((connectorId, patch) => {
+    if (!connectorId) return;
+    setConnectorOperations((items) => ({ ...items, [connectorId]: { ...(items[connectorId] || {}), ...patch } }));
+  }, []);
+
+  const setConnectorRuntimeFor = useCallback((connectorId, patch) => {
+    if (!connectorId) return;
+    setConnectorRuntime((items) => ({ ...items, [connectorId]: { ...(items[connectorId] || {}), ...patch } }));
   }, []);
 
   const notifyWorkspaceDataChanged = useCallback(() => {
@@ -249,39 +296,49 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     if (message) showToast(message);
   }, [active, externalStorageKey, showToast]);
 
-  const disconnectConnector = useCallback(async (kind = connectorResult?.kind, connectionId = connectorResult?.connection_id) => {
-    const normalizedKind = kind ? String(kind).toLowerCase() : "";
+  const disconnectConnector = useCallback(async (targetOrKind = connectorResult, legacyConnectionId = "") => {
+    const target = typeof targetOrKind === "object"
+      ? targetOrKind
+      : connectorRecords.find((item) => item.kind === targetOrKind && (!legacyConnectionId || item.connection_id === legacyConnectionId));
+    const normalizedKind = String(target?.kind || "").toLowerCase();
+    const connectionId = target?.connection_id;
     if (!normalizedKind) {
       clearConnectorState(null, "外部连接已断开。");
       return;
     }
+    setSelectedConnectorId(target?.connector_id || "");
+    if (target?.connector_id) setConnectorOperation(target.connector_id, { pending: "disconnect", error: "" });
     try {
       const disconnected = connectionId ? await dwDisconnectConnector(workspaceId, { kind: normalizedKind, connection_id: connectionId }) : null;
-      setExternalGroups((items) => items.filter((group) => group.externalKind !== normalizedKind));
+      setExternalGroups((items) => items.filter((group) => group.connectorId !== target?.connector_id));
       setConnectorResult(disconnected || ((current) => current ? { ...current, status: "disconnected" } : null));
       if (disconnected) upsertConnectorRecord(disconnected);
       setConnectorModal(null);
       showToast("外部连接已断开，连接记录和服务端凭证仍可用于重连。");
-    } catch {
-      clearConnectorState(normalizedKind, "外部连接状态不可用，请重新连接。");
-      return;
+    } catch (e) {
+      if (target?.connector_id) setConnectorOperation(target.connector_id, { error: "disconnect_failed" });
+      showToast(`断开失败：${e.message}`);
+    } finally {
+      if (target?.connector_id) setConnectorOperation(target.connector_id, { pending: "" });
     }
   }, [clearConnectorState, connectorResult, showToast, upsertConnectorRecord, workspaceId]);
 
   const deleteConnector = useCallback(async (target = connectorResult) => {
     if (!target?.connector_id) return;
-    setConnectorBusy(true);
+    setSelectedConnectorId(target.connector_id);
+    setConnectorOperation(target.connector_id, { pending: "delete", error: "" });
     try {
       await dwDeleteConnector(workspaceId, target.connector_id);
       setConnectorRecords((items) => items.filter((item) => item.connector_id !== target.connector_id));
       clearConnectorState(target.kind, "连接记录与服务端凭证已删除。");
     } catch (e) {
-      setConnectorResult((current) => current ? { ...current, status: "error" } : current);
+      upsertConnectorRecord({ ...target, status: "error" });
+      setConnectorOperation(target.connector_id, { error: "delete_failed" });
       showToast(`删除未完成，可重试：${e.message}`);
     } finally {
-      setConnectorBusy(false);
+      setConnectorOperation(target.connector_id, { pending: "" });
     }
-  }, [clearConnectorState, connectorResult, showToast, workspaceId]);
+  }, [clearConnectorState, connectorResult, setConnectorOperation, showToast, workspaceId]);
 
   useEffect(() => {
     if (!contextMenu) return undefined;
@@ -302,69 +359,48 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   }, [contextMenu]);
 
   useEffect(() => {
-    if (!externalStorageKey) {
-      setExternalGroups([]);
-      setConnectorResult(null);
-      setExternalRestoredKey("");
-      return;
-    }
-    try {
-      const saved = JSON.parse(window.sessionStorage.getItem(externalStorageKey) || "{}");
-      const restoredConnector = saved.connectorResult || null;
-      if (!restoredConnector?.kind || !restoredConnector?.connection_id || isPast(restoredConnector.expires_at)) {
-        setExternalGroups([]);
-        setConnectorResult(null);
-        if (restoredConnector?.connection_id) showToast("外部连接会话已过期，请重新连接。");
-      } else {
-        setExternalGroups(Array.isArray(saved.externalGroups) ? saved.externalGroups : []);
-        setConnectorResult(restoredConnector);
-      }
-    } catch {
-      setExternalGroups([]);
-      setConnectorResult(null);
-    }
+    // Connector records are durable server state; never restore them from sessionStorage.
+    setExternalGroups([]);
     setExternalRestoredKey(externalStorageKey);
-  }, [externalStorageKey, showToast]);
+    return undefined;
+  }, [externalStorageKey]);
 
   useEffect(() => {
-    if (!workspaceId) return;
-    let cancelled = false;
+    const requestSequence = ++connectorListSequence.current;
+    currentConnectorWorkspace.current = workspaceId;
+    setConnectorRecords([]);
+    setSelectedConnectorId("");
+    setConnectorRuntime({});
+    setConnectorOperations({});
+    setExternalGroups([]);
+    if (!workspaceId) return undefined;
     dwListConnectors(workspaceId)
       .then((data) => {
-        if (cancelled || connectorResult) return;
-        setConnectorRecords(data.connectors || []);
-        const first = (data.connectors || []).find((item) => item.status !== "disconnected") || (data.connectors || [])[0];
-        if (first) setConnectorResult(first);
+        if (!isCurrentConnectorListResponse({ requestSequence, currentSequence: connectorListSequence.current, requestWorkspaceId: workspaceId, currentWorkspaceId: currentConnectorWorkspace.current })) return;
+        const records = connectorRecordsForWorkspaceResponse(data, workspaceId);
+        setConnectorRecords(records);
+        const first = records.find((item) => item.status !== "disconnected") || records[0];
+        setSelectedConnectorId(first?.connector_id || "");
       })
       .catch(() => undefined);
-    return () => { cancelled = true; };
+    return () => undefined;
   }, [workspaceId]);
 
   useEffect(() => {
     if (!externalStorageKey || externalRestoredKey !== externalStorageKey) return;
     try {
-      if (!externalGroups.length && !connectorResult) {
+      if (!externalGroups.length) {
         window.sessionStorage.removeItem(externalStorageKey);
         return;
       }
       window.sessionStorage.setItem(
         externalStorageKey,
-        JSON.stringify({
-          externalGroups,
-          connectorResult: connectorResult ? {
-            kind: connectorResult.kind,
-            connection_id: connectorResult.connection_id,
-            status: connectorResult.status,
-            database: connectorResult.database,
-            expires_at: connectorResult.expires_at,
-            connected_at: connectorResult.connected_at,
-          } : null,
-        }),
+        JSON.stringify({ externalGroups }),
       );
     } catch {
       // Session-only convenience; never block the workbench on storage quota.
     }
-  }, [externalGroups, connectorResult, externalStorageKey, externalRestoredKey]);
+  }, [externalGroups, externalStorageKey, externalRestoredKey]);
 
   useEffect(() => {
     if (!workspaceId || !connectorResult?.kind || !connectorResult?.connection_id) return undefined;
@@ -805,7 +841,8 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     ]);
   }, []);
 
-  const buildBlobExternalGroups = useCallback(async (connectionId, containers) => {
+  const buildBlobExternalGroups = useCallback(async (connector, containers) => {
+    const connectionId = connector?.connection_id;
     const visibleContainers = (containers || []).slice(0, 12);
     return Promise.all(visibleContainers.map(async (container) => {
       const name = container.name || container;
@@ -815,6 +852,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
           label: `Blob · ${name}`,
           external: true,
           externalKind: "blob",
+          connectorId: connector?.connector_id,
           files: (data.blobs || []).map((item) => ({
             id: `external:blob:${connectionId}:${name}:${item.name}`,
             name: item.name,
@@ -825,6 +863,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
             external: true,
             externalKind: "blob",
             source: {
+              connector_id: connector?.connector_id,
               connection_id: connectionId,
               container: name,
               blob: item.name,
@@ -837,21 +876,23 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     }));
   }, [workspaceId]);
 
-  const buildSqlExternalGroup = useCallback((connectionId, tables, database) => ({
+  const buildSqlExternalGroup = useCallback((connector, tables, database) => ({
+    connectorId: connector?.connector_id,
     label: `SQL · ${database || "database"}`,
     external: true,
     externalKind: "sql",
     files: (tables || []).map((table) => {
       const id = table.id || `${table.schema}.${table.name}`;
       return {
-        id: `external:sql:${connectionId}:${id}`,
+        id: `external:sql:${connector?.connection_id}:${id}`,
         name: id,
         type: "sql",
         status: "external",
         external: true,
         externalKind: "sql",
         source: {
-          connection_id: connectionId,
+          connector_id: connector?.connector_id,
+          connection_id: connector?.connection_id,
           table: id,
           database,
         },
@@ -861,24 +902,62 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
 
   const reconnectConnector = useCallback(async (target = connectorResult) => {
     if (!target?.connector_id) return;
-    setConnectorBusy(true);
+    setSelectedConnectorId(target.connector_id);
+    if (target.status === "expired") {
+      setConnectorModal(target.kind);
+      return;
+    }
+    setConnectorOperation(target.connector_id, { pending: "reconnect", error: "" });
     try {
       const reconnected = await dwReconnectConnector(workspaceId, target.connector_id);
-      setConnectorResult(reconnected);
       upsertConnectorRecord(reconnected);
+      setConnectorRuntimeFor(reconnected.connector_id, reconnected.kind === "blob"
+        ? { containers: reconnected.containers || [], blobs: [] }
+        : { tables: reconnected.tables || [] });
       if (reconnected.kind === "blob") {
-        setExternalGroups(await buildBlobExternalGroups(reconnected.connection_id, reconnected.containers || []));
+        setExternalGroups(await buildBlobExternalGroups(reconnected, reconnected.containers || []));
       } else {
-        setExternalGroups([buildSqlExternalGroup(reconnected.connection_id, reconnected.tables || [], reconnected.metadata?.database)]);
+        setExternalGroups([buildSqlExternalGroup(reconnected, reconnected.tables || [], reconnected.metadata?.database)]);
       }
       showToast("已从服务端安全凭证重新连接。");
     } catch (e) {
-      setConnectorResult((current) => current ? { ...current, status: "error" } : current);
+      upsertConnectorRecord({ ...target, status: "error" });
+      setConnectorOperation(target.connector_id, { error: "reconnect_failed" });
       showToast(`重连失败：${e.message}`);
     } finally {
-      setConnectorBusy(false);
+      setConnectorOperation(target.connector_id, { pending: "" });
     }
-  }, [buildBlobExternalGroups, buildSqlExternalGroup, connectorResult, showToast, upsertConnectorRecord, workspaceId]);
+  }, [buildBlobExternalGroups, buildSqlExternalGroup, connectorResult, setConnectorOperation, setConnectorRuntimeFor, showToast, upsertConnectorRecord, workspaceId]);
+
+  const openConnectorSync = useCallback(async (target) => {
+    if (!target?.connector_id) return;
+    setSelectedConnectorId(target.connector_id);
+    if (target.status === "expired") {
+      setConnectorModal(target.kind);
+      return;
+    }
+    if (target.status !== "connected") {
+      reconnectConnector(target);
+      return;
+    }
+    setConnectorOperation(target.connector_id, { pending: "sources", error: "" });
+    try {
+      if (target.kind === "blob") {
+        const data = await dwBlobContainers(workspaceId, target.connection_id);
+        setConnectorRuntimeFor(target.connector_id, { containers: data.containers || [], blobs: [] });
+      } else {
+        const data = await dwSqlTables(workspaceId, target.connection_id);
+        setConnectorRuntimeFor(target.connector_id, { tables: data.tables || [] });
+      }
+      setConnectorModal(target.kind);
+    } catch (e) {
+      upsertConnectorRecord({ ...target, status: isConnectorSessionError(e) ? "expired" : "error" });
+      setConnectorOperation(target.connector_id, { error: "source_list_failed" });
+      showToast(`加载同步源失败：${e.message}`);
+    } finally {
+      setConnectorOperation(target.connector_id, { pending: "" });
+    }
+  }, [reconnectConnector, setConnectorOperation, setConnectorRuntimeFor, showToast, upsertConnectorRecord, workspaceId]);
 
   const findImportedFile = (data, res, source) => {
     const files = (data?.groups || []).flatMap((group) => group.files || []);
@@ -892,37 +971,33 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
 
   const importExternalSource = async (source = active) => {
     if (!source?.external || importingExternal) return;
+    const target = connectorRecords.find((item) => item.connector_id === source.source?.connector_id) || connectorResult;
+    if (!target?.connector_id) return;
     setImportingExternal(true);
-    setConnectorResult((current) => current ? { ...current, status: "syncing" } : current);
+    setSelectedConnectorId(target.connector_id);
+    setConnectorOperation(target.connector_id, { pending: "sync", error: "" });
+    upsertConnectorRecord({ ...target, status: "syncing" });
     try {
-      let res;
-      if (source.externalKind === "blob") {
-        res = await dwBlobImport(workspaceId, {
-          connection_id: source.source.connection_id,
-          container: source.source.container,
-          blob: source.source.blob,
-        });
-      } else {
-        res = await dwSqlImport(workspaceId, {
-          connection_id: source.source.connection_id,
-          table: source.source.table,
-        });
-      }
+      const res = await dwSyncConnector(workspaceId, target.connector_id, source.externalKind === "blob"
+        ? { container: source.source.container, blob: source.source.blob }
+        : { table: source.source.table });
       showToast("已导入文件库");
       const data = await reloadFiles();
       const imported = findImportedFile(data, res, source);
       if (imported) openFile(imported);
-      setConnectorResult((current) => current ? { ...current, status: "connected" } : current);
+      upsertConnectorRecord({ ...target, status: res?.syncing ? "syncing" : "connected" });
       notifyWorkspaceDataChanged();
     } catch (e) {
       if (isConnectorSessionError(e)) {
         clearConnectorState(source.externalKind, "外部连接会话已失效，请重新连接。");
         return;
       }
-      setConnectorResult((current) => current ? { ...current, status: "error" } : current);
+      upsertConnectorRecord({ ...target, status: "error" });
+      setConnectorOperation(target.connector_id, { error: "sync_failed" });
       showToast(`导入失败：${e.message}`);
     } finally {
       setImportingExternal(false);
+      setConnectorOperation(target.connector_id, { pending: "" });
     }
   };
 
@@ -940,15 +1015,11 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
           sas: value("sas"),
         });
         const containers = connected.containers?.length ? connected.containers : (await dwBlobContainers(workspaceId, connected.connection_id)).containers;
-        const nextGroups = await buildBlobExternalGroups(connected.connection_id, containers || []);
+        const nextGroups = await buildBlobExternalGroups(connected, containers || []);
         upsertExternalGroups("blob", nextGroups);
-        setConnectorResult({
-          ...connected,
-          connected_at: new Date().toISOString(),
-          containers: containers || [],
-          groups: nextGroups,
-        });
         upsertConnectorRecord(connected);
+        setConnectorRuntimeFor(connected.connector_id, { containers: containers || [], groups: nextGroups });
+        setSelectedConnectorId(connected.connector_id);
         setConnectorModal(null);
         const firstExternal = nextGroups.flatMap((group) => group.files || [])[0];
         if (firstExternal) openFile(firstExternal);
@@ -962,16 +1033,11 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
           connection_string: value("connection_string"),
         });
         const tables = connected.tables?.length ? connected.tables : (await dwSqlTables(workspaceId, connected.connection_id)).tables;
-        const nextGroup = buildSqlExternalGroup(connected.connection_id, tables || [], value("database"));
+        const nextGroup = buildSqlExternalGroup(connected, tables || [], value("database"));
         upsertExternalGroups("sql", [nextGroup]);
-        setConnectorResult({
-          ...connected,
-          connected_at: new Date().toISOString(),
-          database: connected.metadata?.database || value("database"),
-          tables: tables || [],
-          groups: [nextGroup],
-        });
         upsertConnectorRecord(connected);
+        setConnectorRuntimeFor(connected.connector_id, { database: connected.metadata?.database || value("database"), tables: tables || [], groups: [nextGroup] });
+        setSelectedConnectorId(connected.connector_id);
         setConnectorModal(null);
         const firstExternal = (nextGroup.files || [])[0];
         if (firstExternal) openFile(firstExternal);
@@ -985,31 +1051,30 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   };
 
   const importConnectorItem = async (item) => {
-    if (!connectorResult) return;
-    setConnectorBusy(true);
-    setConnectorResult((current) => current ? { ...current, status: "syncing" } : current);
+    const target = connectorResult;
+    if (!target?.connector_id) return;
+    setConnectorOperation(target.connector_id, { pending: "sync", error: "" });
+    upsertConnectorRecord({ ...target, status: "syncing" });
     try {
-      let res;
-      if (connectorResult.kind === "blob") {
-        res = await dwBlobImport(workspaceId, { connection_id: connectorResult.connection_id, container: item.container, blob: item.name });
-      } else {
-        res = await dwSqlImport(workspaceId, { connection_id: connectorResult.connection_id, table: item.id || `${item.schema}.${item.name}` });
-      }
+      const res = await dwSyncConnector(workspaceId, target.connector_id, target.kind === "blob"
+        ? { container: item.container, blob: item.name }
+        : { table: item.id || `${item.schema}.${item.name}` });
       showToast("已导入文件库");
       const data = await reloadFiles();
       const imported = (data?.groups || []).flatMap((g) => g.files || []).find((f) => f.id === res?.upload?.documents?.[0]?.id);
       if (imported) openFile(imported);
-      setConnectorResult((current) => current ? { ...current, status: "connected" } : current);
+      upsertConnectorRecord({ ...target, status: res?.syncing ? "syncing" : "connected" });
       notifyWorkspaceDataChanged();
     } catch (e) {
       if (isConnectorSessionError(e)) {
         clearConnectorState(connectorResult.kind, "外部连接会话已失效，请重新连接。");
         return;
       }
-      setConnectorResult((current) => current ? { ...current, status: "error" } : current);
+      upsertConnectorRecord({ ...target, status: "error" });
+      setConnectorOperation(target.connector_id, { error: "sync_failed" });
       showToast(`导入失败：${e.message}`);
     } finally {
-      setConnectorBusy(false);
+      setConnectorOperation(target.connector_id, { pending: "" });
     }
   };
 
@@ -1295,7 +1360,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
           {CONNECTORS.map((c) => {
             const Icon = c.icon;
             const planned = c.state === "planned";
-            const connector = connectorResult?.kind === c.id ? connectorResult : null;
+            const connector = connectorByKind[c.id] || null;
             const connected = connector?.status === "connected";
             return (
               <div className="dw-conn-card" key={c.id}>
@@ -1316,9 +1381,9 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
                       if (c.id === "upload") {
                         onUpload && onUpload(workspaceId);
                       } else if (connector && !connected) {
-                        reconnectConnector();
+                        reconnectConnector(connector);
                       } else if (connector && active?.external && active?.externalKind === c.id) {
-                        importExternalSource(active);
+                        openConnectorSync(connector);
                       } else if (connector) {
                         showToast("选择一个外部表或 Blob 后即可同步新版本。");
                       } else {
@@ -1328,24 +1393,27 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
                     {planned ? "查看计划" : c.id === "upload" ? "上传文件" : connector && !connected ? "重连" : connected ? "同步" : "接入"}
                   </button>
                   {connector ? (
-                    <button type="button" className="dw-conn-btn danger" disabled={connectorBusy} onClick={() => disconnectConnector(c.id, connectorResult.connection_id)}>
+                    <button type="button" className="dw-conn-btn danger" disabled={Boolean(connectorOperations[connector.connector_id]?.pending)} onClick={() => disconnectConnector(connector)}>
                       断开
                     </button>
                   ) : null}
-                  {connector ? <button type="button" className="dw-conn-btn danger" disabled={connectorBusy} onClick={deleteConnector}>删除</button> : null}
+                  {connector ? <button type="button" className="dw-conn-btn danger" disabled={Boolean(connectorOperations[connector.connector_id]?.pending)} onClick={() => deleteConnector(connector)}>删除</button> : null}
                 </div>
               </div>
             );
           })}
         </div>
         {connectorRecords.length ? <div className="dw-conn-grid">
-          {connectorRecords.map((record) => <div className="dw-conn-card" key={record.connector_id}>
+          {connectorModel.cards.map(({ connector: record, pending, error }) => <div className={`dw-conn-card${selectedConnectorId === record.connector_id ? " selected" : ""}`} key={record.connector_id} onClick={() => setSelectedConnectorId(record.connector_id)}>
             <div className="dw-conn-name">{record.kind === "sql" ? "SQL Database" : "Azure Blob Storage"}</div>
             <div className="dw-conn-status">{connectorStateLabel(record)}</div>
+            {pending ? <div className="dw-conn-exp">处理中：{pending}</div> : null}
+            {error ? <div className="dw-conn-exp">操作失败：{error}</div> : null}
             <div className="dw-conn-actions">
-              <button type="button" className="dw-conn-btn primary" onClick={() => reconnectConnector(record)} disabled={connectorBusy}>重连</button>
-              <button type="button" className="dw-conn-btn danger" onClick={() => disconnectConnector(record.kind, record.connection_id)} disabled={connectorBusy}>断开</button>
-              <button type="button" className="dw-conn-btn danger" onClick={() => deleteConnector(record)} disabled={connectorBusy}>删除</button>
+              <button type="button" className="dw-conn-btn primary" onClick={(event) => { event.stopPropagation(); openConnectorSync(record); }} disabled={Boolean(pending)}>同步</button>
+              <button type="button" className="dw-conn-btn primary" onClick={(event) => { event.stopPropagation(); reconnectConnector(record); }} disabled={Boolean(pending)}>重连</button>
+              <button type="button" className="dw-conn-btn danger" onClick={(event) => { event.stopPropagation(); disconnectConnector(record); }} disabled={Boolean(pending)}>断开</button>
+              <button type="button" className="dw-conn-btn danger" onClick={(event) => { event.stopPropagation(); deleteConnector(record); }} disabled={Boolean(pending)}>删除</button>
             </div>
           </div>)}
         </div> : null}
@@ -1371,7 +1439,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
             setConnectorBusy(true);
             try {
               const data = await dwBlobItems(workspaceId, connectorResult.connection_id, container.name || container);
-              setConnectorResult((prev) => ({ ...prev, blobs: (data.blobs || []).map((item) => ({ ...item, container: container.name || container })) }));
+              setConnectorRuntimeFor(connectorResult.connector_id, { blobs: (data.blobs || []).map((item) => ({ ...item, container: container.name || container })) });
             } catch (e) {
               if (isConnectorSessionError(e)) {
                 clearConnectorState("blob", "外部连接会话已失效，请重新连接。");

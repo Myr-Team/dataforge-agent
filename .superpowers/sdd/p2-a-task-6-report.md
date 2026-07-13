@@ -137,3 +137,23 @@ Warning: `row_count` is the server-observed import preview count; it is not a cl
 
 - A Key Vault soft-deleted secret is treated as already removed during connector deletion. Recovering a connector after deletion still requires a new connect flow and credentials.
 - Blob CAS retries are intentionally bounded; a continuously contended record returns `connector_conflict` rather than overwriting a newer lifecycle state.
+
+## Frontend Closure: Server Connector Truth
+
+### RED / GREEN
+
+- RED: no connector view-model existed. The new Node test initially failed with `ERR_MODULE_NOT_FOUND`; it now exercises the real view-model module rather than searching component source strings.
+- GREEN: workspace refresh clears connector records immediately, stamps the request sequence and workspace id, and rejects a slow `ws-a` response after `ws-b` becomes current.
+- GREEN: `connectorRecords` is the authoritative durable list. `connectorResult` is now a derived selected view merged only with ephemeral per-record source listings; sessionStorage restoration has no connector id and cannot create or replace a durable record.
+
+### Interaction Safety
+
+- Each server record has independent `pending` and `error` state keyed by `connector_id`, and the cards expose select, reconnect, sync, disconnect, and delete actions for both SQL and Blob records.
+- The SQL/Blob type cards now select from the matching durable server records. Sync opens the existing table/container/blob selection flow for that record, marks it syncing immediately, and calls the durable connector sync endpoint.
+- Reconnecting an expired session selects the record and opens an empty credential form. No password, connection string, SAS, token, or username value is held in the view-model or passed back into form fields.
+
+### Frontend Verification
+
+- Node behavior tests: `24 passed` across `connectorViewModel`, governance, MAF view-model, and task center suites.
+- Production build: `npm run build` passed.
+- Diff check: `git diff --check` passed.
