@@ -1,0 +1,56 @@
+[
+  {
+    "id": "site-channel-selection",
+    "shape": "site_channel_selection",
+    "goal": "Select the strongest launch site and channel from available demand, access, and channel evidence.",
+    "schema_roles": ["candidate_site", "channel", "demand_signal", "access_constraint"],
+    "evidence_strength": "mixed",
+    "expected_required_agents": ["df-corpus-analyst", "df-feasibility-analyst", "df-auditor"],
+    "known_unrelated_source_topics": ["fitness equipment", "language tutoring"]
+  },
+  {
+    "id": "growth-retention",
+    "shape": "growth_retention",
+    "goal": "Prioritize a growth and retention intervention using activation, cohort, and support evidence.",
+    "schema_roles": ["customer_segment", "activation_event", "retention_cohort", "support_signal"],
+    "evidence_strength": "strong",
+    "expected_required_agents": ["df-corpus-analyst", "df-feasibility-analyst", "df-auditor"],
+    "known_unrelated_source_topics": ["industrial adhesives", "marathon training"]
+  },
+  {
+    "id": "pricing-productization",
+    "shape": "pricing_productization",
+    "goal": "Compare product packaging and pricing options against value, cost, and willingness-to-pay evidence.",
+    "schema_roles": ["product_tier", "price_point", "value_driver", "cost_driver"],
+    "evidence_strength": "mixed",
+    "expected_required_agents": ["df-corpus-analyst", "df-market-researcher", "df-feasibility-analyst", "df-auditor"],
+    "known_unrelated_source_topics": ["pet grooming", "warehouse robotics"]
+  },
+  {
+    "id": "operations",
+    "shape": "operations",
+    "goal": "Identify an operations improvement that reduces delay or rework without overclaiming root cause.",
+    "schema_roles": ["process_step", "service_level", "delay_reason", "rework_cost"],
+    "evidence_strength": "strong",
+    "expected_required_agents": ["df-corpus-analyst", "df-feasibility-analyst", "df-auditor"],
+    "known_unrelated_source_topics": ["concert ticketing", "home decor"]
+  },
+  {
+    "id": "campaign-service",
+    "shape": "campaign_service",
+    "goal": "Choose a campaign or service experiment using audience response and delivery-capacity evidence.",
+    "schema_roles": ["audience", "campaign", "service_offer", "conversion_signal", "delivery_capacity"],
+    "evidence_strength": "limited",
+    "expected_required_agents": ["df-corpus-analyst", "df-market-researcher", "df-feasibility-analyst", "df-auditor"],
+    "known_unrelated_source_topics": ["cryptocurrency trading", "dental implants"]
+  },
+  {
+    "id": "risk-data-readiness",
+    "shape": "risk_data_readiness",
+    "goal": "Assess whether a proposed workflow is ready for a bounded pilot given data coverage and control gaps.",
+    "schema_roles": ["data_source", "coverage_gap", "risk_control", "readiness_check"],
+    "evidence_strength": "weak",
+    "expected_required_agents": ["df-corpus-analyst", "df-feasibility-analyst", "df-auditor"],
+    "known_unrelated_source_topics": ["celebrity news", "luxury travel"]
+  }
+]
