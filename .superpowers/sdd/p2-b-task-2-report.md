@@ -41,3 +41,17 @@
 - Full: `python -m pytest -q`
 - Compile/import: `python -m compileall backend -q` and direct imports of `backend.roi_service`, `backend.control_plane`, and `backend.app`.
 - Diff review: inspected the staged task paths and confirmed no unrelated `output/` files are included.
+
+## Review Remediation
+
+- Chargeback now fails closed: only records with persisted `trusted_identity=true` are eligible. The endpoint requires proxy-verified Easy Auth, an `actor_id`, and an active owner/admin workspace membership even when compatibility RBAC is enabled.
+- Price configuration is a strict Pydantic `PriceCatalog`; required metadata, finite non-negative rates, UTC half-open intervals, and no same-model overlap are enforced. Recalculation assumptions include the effective price fields.
+- Costs are grouped by currency. Mixed currency makes aggregate `total` null with `partial` status; no USD fallback exists. Total-only usage is partial, and invalid numeric values are rejected.
+- Chargeback groups include actor, currency, model, task kind, and window. Usage-event IDs are deduplicated; message/task records contribute only activity.
+- Outcome sources are checked at write and read against same-workspace run/file/artifact references. Verification embeds a separate trusted verification event, and a snapshot is `verified` only when every business-value outcome is independently verified; otherwise it is `measured` with unverified IDs.
+- Departed identities use workspace-scoped HMAC pseudonyms derived from a configured secret. Window filtering occurs before the 300-record bound and responses expose `truncated` when the bound is hit.
+
+## Remediation Tests
+
+- `tests/test_roi_security.py` covers strict price validation, non-finite rates, overlapping windows, total-only token usage, mixed verified/unverified outcomes, untrusted actor exclusion, currency breakdown, HMAC workspace isolation, duplicate usage IDs, and forged-source exclusion.
+- `tests/test_actor_audit_usage.py` covers trusted Easy Auth identity requirements and persisted run trust metadata.

@@ -113,6 +113,11 @@ def public_actor(actor: dict[str, Any] | None) -> dict[str, Any]:
     return {key: clean[key] for key in allowed if clean.get(key) not in (None, "", [], {})}
 
 
+def is_trusted_identity(actor: Mapping[str, Any] | None) -> bool:
+    clean = _sanitize_actor(dict(actor or {}), fallback=False)
+    return str(clean.get("source") or "") == "easy_auth" and bool(str(clean.get("actor_id") or "").strip())
+
+
 def actor_for_history(actor: dict[str, Any] | None) -> dict[str, Any]:
     clean = _sanitize_actor(actor or {}, fallback=True)
     return {

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from urllib.parse import quote
+import base64
+import json
 
 import pytest
 
@@ -15,6 +17,7 @@ def _configure_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(outcome_store, "OUTCOME_DIR", tmp_path / "outcomes")
     monkeypatch.setattr(outcome_store, "download_blob_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(outcome_store, "upload_blob_json", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(outcome_store, "_source_reference_exists", lambda *_args, **_kwargs: True)
 
 
 def _actor(name: str = "Owner") -> dict[str, str]:
@@ -22,7 +25,14 @@ def _actor(name: str = "Owner") -> dict[str, str]:
         "name": name,
         "email": f"{name.lower()}@contoso.com",
         "actor_id": f"oid-{name.lower()}",
+        "source": "easy_auth",
     }
+
+
+def _easy_headers(name: str) -> dict[str, str]:
+    payload = {"claims": [{"typ": "name", "val": name}, {"typ": "preferred_username", "val": f"{name.lower()}@contoso.com"}, {"typ": "oid", "val": f"oid-{name.lower()}"}]}
+    principal = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return {"x-ms-client-principal": principal, "x-dataforge-proxy-secret": "test-proxy-secret"}
 
 
 def _observed_payload() -> dict[str, object]:
@@ -46,6 +56,14 @@ def test_observed_outcome_requires_source_lineage(tmp_path: Path, monkeypatch: p
 
     with pytest.raises(ValueError, match="source lineage"):
         outcome_store.record_outcome_event("ws-roi", payload, _actor())
+
+
+def test_observed_outcome_rejects_forged_cross_workspace_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(outcome_store, "_source_reference_exists", lambda *_args, **_kwargs: False)
+
+    with pytest.raises(ValueError, match="real same-workspace"):
+        outcome_store.record_outcome_event("ws-roi", _observed_payload(), _actor())
 
 
 def test_client_cannot_create_verified_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,9 +181,10 @@ def test_outcome_api_persists_lists_and_verifies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_store(tmp_path, monkeypatch)
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     client = TestClient(app)
-    owner_headers = {"x-dataforge-actor": quote('{"name":"Owner","email":"owner@contoso.com","actor_id":"owner-oid"}')}
-    reviewer_headers = {"x-dataforge-actor": quote('{"name":"Reviewer","email":"reviewer@contoso.com","actor_id":"reviewer-oid"}')}
+    owner_headers = _easy_headers("Owner")
+    reviewer_headers = _easy_headers("Reviewer")
 
     created = client.post("/api/workspaces/ws-roi/outcomes", json=_observed_payload(), headers=owner_headers)
     assert created.status_code == 200

@@ -38,6 +38,7 @@ def _run(actor_id: str = "actor-owner", model: str = "gpt-5") -> dict[str, objec
         "started_at": "2026-07-10T12:00:00Z",
         "completed_at": "2026-07-10T12:01:00Z",
         "actor": {"actor_id": actor_id, "email": "spoofed@example.com", "name": "Spoofed"},
+        "trusted_identity": True,
         "models": [
             {
                 "model": model,
@@ -54,14 +55,17 @@ def _outcome(*, verified: bool = False) -> dict[str, object]:
             "status": "verified",
             "verification_event_id": "verification-1",
             "reviewer": {"actor_id": "actor-reviewer"},
+            "trusted_identity": True,
         }
     return {
         "event_id": "outcome-1",
+        "workspace_id": "ws-roi",
         "provenance": "observed",
         "observed_value": 12,
         "observed_at": "2026-07-10T13:00:00Z",
         "source": {"run_id": "run-1"},
         "actor": {"actor_id": "actor-owner"},
+        "trusted_identity": True,
         "verification": verification,
         "business_value": {
             "value": 250,
@@ -99,9 +103,9 @@ def test_verified_state_requires_source_linked_outcome_and_independent_reviewer_
         "reviewer": {"actor_id": "actor-owner"},
     }
 
-    assert build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[missing_event], prices=PRICES)["status"] == "measured"
-    assert build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[same_reviewer], prices=PRICES)["status"] == "measured"
-    assert build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[_outcome(verified=True)], prices=PRICES)["status"] == "verified"
+    assert build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[missing_event], prices=PRICES, source_validator=lambda *_: True)["status"] == "measured"
+    assert build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[same_reviewer], prices=PRICES, source_validator=lambda *_: True)["status"] == "measured"
+    assert build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[_outcome(verified=True)], prices=PRICES, source_validator=lambda *_: True)["status"] == "verified"
 
 
 def test_snapshot_excludes_other_workspace_outcomes_and_lists_evidence_assumptions() -> None:
@@ -119,10 +123,11 @@ def test_chargeback_uses_actor_id_and_current_membership_not_telemetry_profile()
         "ws-roi",
         _window(),
         runs=[_run()],
-        messages=[{"workspace_id": "ws-roi", "updated_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "actor-departed", "email": "leak@example.com"}}],
+        messages=[{"workspace_id": "ws-roi", "updated_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "actor-departed", "email": "leak@example.com"}, "trusted_identity": True}],
         tasks=[{"workspace_id": "ws-other", "created_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "actor-other"}}],
         memberships=[{"actor_id": "actor-owner", "email": "owner@example.com", "name": "Owner", "status": "active"}],
         prices=PRICES,
+        pseudonym_salt="test-salt",
     )
 
     owner = next(row for row in result["members"] if row["member"]["actor_id"] == "actor-owner")
@@ -140,13 +145,14 @@ def test_message_only_chargeback_never_turns_missing_model_cost_into_zero() -> N
         "ws-roi",
         _window(),
         runs=[],
-        messages=[{"workspace_id": "ws-roi", "updated_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "actor-owner"}}],
+        messages=[{"workspace_id": "ws-roi", "updated_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "actor-owner"}, "trusted_identity": True}],
         tasks=[],
         memberships=[{"actor_id": "actor-owner", "email": "owner@example.com", "name": "Owner", "status": "active"}],
         prices=PRICES,
+        pseudonym_salt="test-salt",
     )
 
-    assert result["members"][0]["cost"] == {"total": None, "status": "unknown", "currency": None}
+    assert result["groups"][0]["cost"] == {"total": None, "status": "unknown", "currency": None}
 
 
 def test_time_window_requires_utc_bounds_and_rejects_expensive_range() -> None:

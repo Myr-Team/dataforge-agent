@@ -4,6 +4,7 @@ import json
 import math
 import re
 import threading
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -11,10 +12,14 @@ from uuid import uuid4
 
 try:
     from .blob_store import download_blob_json, upload_blob_json
-    from .identity import public_actor
+    from .identity import is_trusted_identity, public_actor
+    from .run_store import get_run
+    from .workspace_store import get_workspace_detail
 except ImportError:
     from blob_store import download_blob_json, upload_blob_json
-    from identity import public_actor
+    from identity import is_trusted_identity, public_actor
+    from run_store import get_run
+    from workspace_store import get_workspace_detail
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +56,8 @@ def record_outcome_event(
     source = _normalize_source(data.get("source"))
     if provenance == "observed" and not source:
         raise ValueError("observed outcomes require source lineage")
+    if provenance == "observed" and not source_is_valid(normalized_workspace, source):
+        raise ValueError("observed outcomes require a real same-workspace source")
 
     baseline = _optional_number(data.get("baseline_value"), "baseline_value")
     target = _optional_number(data.get("target_value"), "target_value")
@@ -78,6 +85,7 @@ def record_outcome_event(
         "provenance": provenance,
         "source": source,
         "actor": public_actor(dict(actor or {})),
+        "trusted_identity": is_trusted_identity(actor),
         "verification": {"status": "unverified"},
         "business_value": business_value,
         "created_at": now,
@@ -102,8 +110,8 @@ def verify_outcome_event(
     normalized_event_id = _required_text(event_id, "event_id", 80)
     clean_reviewer = public_actor(dict(reviewer or {}))
     reviewer_id = _optional_text(clean_reviewer.get("actor_id"), 240)
-    if not reviewer_id:
-        raise ValueError("reviewer actor_id is required")
+    if not reviewer_id or not is_trusted_identity(reviewer):
+        raise ValueError("reviewer must have a trusted actor_id")
 
     with _LOCK:
         events = list_outcome_events(normalized_workspace)
@@ -117,15 +125,27 @@ def verify_outcome_event(
             if not _normalize_source(item.get("source")) or item.get("observed_value") is None:
                 raise ValueError("only source-linked observed outcomes can be verified")
             actor = item.get("actor") if isinstance(item.get("actor"), Mapping) else {}
+            if not item.get("trusted_identity"):
+                raise ValueError("outcome actor must be trusted")
             if reviewer_id == _optional_text(actor.get("actor_id"), 240):
                 raise ValueError("verification requires an independent reviewer")
             if str((item.get("verification") or {}).get("status") or "").lower() == "verified":
                 raise ValueError("outcome is already verified")
+            verification_event_id = f"verification_{uuid4().hex[:16]}"
             item["verification"] = {
                 "status": "verified",
-                "verification_event_id": f"verification_{uuid4().hex[:16]}",
+                "verification_event_id": verification_event_id,
                 "verified_at": now,
                 "reviewer": clean_reviewer,
+                "trusted_identity": True,
+                "event": {
+                    "event_id": verification_event_id,
+                    "workspace_id": normalized_workspace,
+                    "kind": "outcome_verification",
+                    "actor": clean_reviewer,
+                    "trusted_identity": True,
+                    "created_at": now,
+                },
                 **({"note": _optional_text(note, 500)} if _optional_text(note, 500) else {}),
             }
             item["updated_at"] = now
@@ -185,6 +205,42 @@ def _normalize_source(value: Any) -> dict[str, str]:
         if text:
             source[key] = text
     return source
+
+
+def source_is_valid(workspace_id: str, source: Mapping[str, Any]) -> bool:
+    source = _normalize_source(source)
+    anchors = [key for key in ("run_id", "file_id", "artifact_id") if source.get(key)]
+    if not anchors:
+        return False
+    for key in anchors:
+        if not _source_reference_exists(workspace_id, key, str(source[key])):
+            return False
+    return True
+
+
+def _source_reference_exists(workspace_id: str, kind: str, reference: str) -> bool:
+    if kind == "run_id":
+        try:
+            return str(get_run(reference).get("workspace_id") or "") == workspace_id
+        except (FileNotFoundError, ValueError):
+            return False
+    if kind == "file_id":
+        try:
+            detail = get_workspace_detail(workspace_id)
+        except (FileNotFoundError, ValueError):
+            return False
+        for item in detail.get("documents") or []:
+            if not isinstance(item, Mapping):
+                continue
+            source_file = str(item.get("source_file") or item.get("name") or "")
+            file_id = hashlib.sha256(source_file.encode("utf-8")).hexdigest()[:16]
+            if reference in {file_id, source_file, str(item.get("name") or "")}:
+                return True
+        return False
+    if kind == "artifact_id":
+        safe = Path(str(reference)).name
+        return bool(safe and any((ROOT / "generated-outputs").glob(f"**/{safe}")))
+    return False
 
 
 def _local_path(workspace_id: str) -> Path:

@@ -10,10 +10,10 @@ from typing import Any
 
 try:
     from .blob_store import delete_blob_name, download_blob_json, upload_blob_json
-    from .identity import public_actor
+    from .identity import is_trusted_identity, public_actor
 except ImportError:
     from blob_store import delete_blob_name, download_blob_json, upload_blob_json
-    from identity import public_actor
+    from identity import is_trusted_identity, public_actor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +43,7 @@ def start_run(run_id: str, workspace_id: str, message: str, actor: dict[str, Any
         }
         if clean_actor:
             _ACTIVE[run_id]["actor"] = clean_actor
+        _ACTIVE[run_id]["trusted_identity"] = is_trusted_identity(clean_actor)
 
 
 def record_event(run_id: str | None, event: str, data: Any) -> None:

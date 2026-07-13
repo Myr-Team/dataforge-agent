@@ -14,10 +14,10 @@ from uuid import uuid4
 
 try:
     from .blob_store import BlobJsonReadError, blob_configured, claim_blob_json, compare_and_swap_blob_json, download_blob_json, download_blob_json_strict, list_blob_json, list_blob_json_strict, upload_blob_json
-    from .identity import public_actor
+    from .identity import is_trusted_identity, public_actor
 except ImportError:
     from blob_store import BlobJsonReadError, blob_configured, claim_blob_json, compare_and_swap_blob_json, download_blob_json, download_blob_json_strict, list_blob_json, list_blob_json_strict, upload_blob_json
-    from identity import public_actor
+    from identity import is_trusted_identity, public_actor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,7 +29,7 @@ _LOCK = threading.RLock()
 _TERMINAL = {"partial", "completed", "failed", "cancelled"}
 _STATUSES = {"preparing", "queued", "running", "cancel_requested", *_TERMINAL}
 _TASK_FIELDS = {
-    "task_id", "workspace_id", "task_type", "action", "status", "attempt", "actor", "result", "error",
+    "task_id", "workspace_id", "task_type", "action", "status", "attempt", "actor", "trusted_identity", "result", "error",
     "progress", "revision", "retry_of", "retryable", "cancel_requested", "cancel_requested_at", "created_at", "updated_at", "started_at", "completed_at",
 }
 _PUBLIC_ACTOR_FIELDS = {"name", "email", "actor_id", "tenant_id", "source"}
@@ -54,6 +54,7 @@ def create_task(payload: Mapping[str, Any], actor: Mapping[str, Any] | None) -> 
         "status": "preparing" if source.get("initial_status") == "preparing" else "queued",
         "attempt": max(1, int(source.get("attempt") or 1)),
         "actor": _public_actor(actor),
+        "trusted_identity": is_trusted_identity(actor),
         "result": _safe_result(source.get("result")),
         "retryable": bool(source.get("retryable", False)),
         "revision": 1,

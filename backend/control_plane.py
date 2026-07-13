@@ -25,10 +25,10 @@ try:
     from .dependency_health import health_dependencies, health_dependency_details
     from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
-    from .identity import actor_from_request, default_actor, member_from_actor, public_actor
+    from .identity import actor_from_request, default_actor, is_trusted_identity, member_from_actor, public_actor
     from .observability import observability_snapshot
-    from .outcome_store import list_outcome_events, record_outcome_event, verify_outcome_event
-    from .roi_service import build_roi_snapshot, member_chargeback
+    from .outcome_store import list_outcome_events, record_outcome_event, source_is_valid, verify_outcome_event
+    from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
@@ -43,10 +43,10 @@ except ImportError:
     from dependency_health import health_dependencies, health_dependency_details
     from graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
-    from identity import actor_from_request, default_actor, member_from_actor, public_actor
+    from identity import actor_from_request, default_actor, is_trusted_identity, member_from_actor, public_actor
     from observability import observability_snapshot
-    from outcome_store import list_outcome_events, record_outcome_event, verify_outcome_event
-    from roi_service import build_roi_snapshot, member_chargeback
+    from outcome_store import list_outcome_events, record_outcome_event, source_is_valid, verify_outcome_event
+    from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
@@ -173,8 +173,12 @@ async def workspace_chargeback(
     from_value: str = Query(alias="from", max_length=64),
     to_value: str = Query(alias="to", max_length=64),
 ) -> dict[str, Any]:
-    role = _require_workspace_action(workspace_id, request, "chargeback.read")
-    if role not in {"owner", "admin", "compatibility"}:
+    _require_workspace_action(workspace_id, request, "chargeback.read")
+    actor = actor_from_request(request, fallback=False)
+    if not is_trusted_identity(actor):
+        raise HTTPException(status_code=403, detail="trusted Easy Auth identity is required for chargeback")
+    member = next((item for item in _current_workspace_members_for_chargeback(workspace_id) if str(item.get("actor_id") or "") == str(actor.get("actor_id") or "")), None)
+    if not member or str(member.get("role") or "").lower() not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="workspace permission denied for chargeback.read")
     return await _call(workspace_member_chargeback, workspace_id, from_value, to_value)
 
@@ -1113,52 +1117,61 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
 
 
 def workspace_roi_snapshot(workspace_id: str, from_value: str, to_value: str) -> dict[str, Any]:
+    window = parse_time_window(from_value, to_value)
+    runs, truncated = _workspace_run_details_for_roi(workspace_id, window)
     return build_roi_snapshot(
         workspace_id,
-        {"from": from_value, "to": to_value},
-        runs=_workspace_run_details_for_roi(workspace_id),
+        window,
+        runs=runs,
         outcomes=list_outcome_events(workspace_id),
+        source_validator=source_is_valid,
+        truncated=truncated,
     )
 
 
 def workspace_member_chargeback(workspace_id: str, from_value: str, to_value: str) -> dict[str, Any]:
+    window = parse_time_window(from_value, to_value)
+    runs, runs_truncated = _workspace_run_details_for_roi(workspace_id, window)
+    messages, messages_truncated = _workspace_messages_for_chargeback(workspace_id, window)
+    tasks = [item for item in list_tasks(workspace_id) if record_in_window(item, window, "task")]
+    tasks_truncated = len(tasks) > 300
     return member_chargeback(
         workspace_id,
-        {"from": from_value, "to": to_value},
-        runs=_workspace_run_details_for_roi(workspace_id),
-        messages=_workspace_messages_for_chargeback(workspace_id),
-        tasks=list_tasks(workspace_id)[:300],
+        window,
+        runs=runs,
+        messages=messages[:300],
+        tasks=tasks[:300],
         memberships=_current_workspace_members_for_chargeback(workspace_id),
+        truncated=runs_truncated or messages_truncated or tasks_truncated,
     )
 
 
-def _workspace_run_details_for_roi(workspace_id: str) -> list[dict[str, Any]]:
+def _workspace_run_details_for_roi(workspace_id: str, window: dict[str, str]) -> tuple[list[dict[str, Any]], bool]:
     rows: list[dict[str, Any]] = []
-    for summary in list_runs(workspace_id)[:300]:
+    candidates = [item for item in list_runs(workspace_id) if str(item.get("workspace_id") or "") == workspace_id and record_in_window(item, window, "run")]
+    for summary in candidates[:300]:
         if str(summary.get("workspace_id") or "") != workspace_id:
             continue
         run_id = str(summary.get("run_id") or "").strip()
         detail = _safe_value(lambda run_id=run_id: get_run(run_id), summary) if run_id else summary
         if isinstance(detail, dict) and str(detail.get("workspace_id") or "") == workspace_id:
             rows.append(detail)
-    return rows
+    return rows, len(candidates) > 300
 
 
-def _workspace_messages_for_chargeback(workspace_id: str) -> list[dict[str, Any]]:
+def _workspace_messages_for_chargeback(workspace_id: str, window: dict[str, str]) -> tuple[list[dict[str, Any]], bool]:
     messages: list[dict[str, Any]] = []
-    for summary in list_conversations(workspace_id)[:100]:
+    for summary in list_conversations(workspace_id):
         if str(summary.get("workspace_id") or "") != workspace_id:
             continue
         conversation_id = str(summary.get("conversation_id") or "").strip()
         detail = _safe_value(lambda conversation_id=conversation_id: get_conversation(conversation_id), summary)
         if not isinstance(detail, dict) or str(detail.get("workspace_id") or "") != workspace_id:
             continue
-        for item in (detail.get("messages") or [])[:300 - len(messages)]:
-            if isinstance(item, dict):
+        for item in detail.get("messages") or []:
+            if isinstance(item, dict) and record_in_window(item, window, "message"):
                 messages.append({"workspace_id": workspace_id, **item})
-        if len(messages) >= 300:
-            break
-    return messages
+    return messages[:300], len(messages) > 300
 
 
 def _current_workspace_members_for_chargeback(workspace_id: str) -> list[dict[str, Any]]:

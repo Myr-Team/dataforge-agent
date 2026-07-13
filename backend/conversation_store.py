@@ -11,10 +11,10 @@ from typing import Any
 
 try:
     from .blob_store import download_blob_json, upload_blob_json
-    from .identity import public_actor
+    from .identity import is_trusted_identity, public_actor
 except ImportError:
     from blob_store import download_blob_json, upload_blob_json
-    from identity import public_actor
+    from identity import is_trusted_identity, public_actor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +76,7 @@ def append_message(
         message: dict[str, Any] = {"role": role, "text": str(text or ""), "time": now}
         if clean_actor:
             message["actor"] = clean_actor
+            message["trusted_identity"] = is_trusted_identity(clean_actor)
             conversation["actors"] = _merge_actor(conversation.get("actors"), clean_actor)
         if verdict:
             message["verdict"] = verdict

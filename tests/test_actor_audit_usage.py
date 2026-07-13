@@ -5,7 +5,7 @@ from urllib.parse import quote
 import backend.conversation_store as conversation_store
 import backend.control_plane as control_plane
 import backend.run_store as run_store
-from backend.identity import actor_from_headers, actor_from_ui_context
+from backend.identity import actor_from_headers, actor_from_ui_context, is_trusted_identity
 from fastapi.testclient import TestClient
 from backend.app import app
 
@@ -49,6 +49,13 @@ def test_actor_from_client_actor_header_when_backend_not_behind_easy_auth() -> N
     assert actor["email"] == "guest.reviewer@contoso.com"
     assert actor["name"] == "Guest Reviewer"
     assert actor["source"] == "client_actor"
+    assert is_trusted_identity(actor) is False
+
+
+def test_trusted_identity_requires_proxy_verified_easy_auth_and_actor_id() -> None:
+    assert is_trusted_identity({"source": "easy_auth", "actor_id": "oid-1"}) is True
+    assert is_trusted_identity({"source": "easy_auth"}) is False
+    assert is_trusted_identity({"source": "workspace_default", "actor_id": "oid-1"}) is False
 
 
 def test_actor_from_ui_context_never_trusts_placeholder_demo_user() -> None:
@@ -74,6 +81,7 @@ def test_run_store_persists_actor_and_token_summary(tmp_path, monkeypatch) -> No
     run_store.complete_run("run-actor", final={"text": "done"}, artifact={})
 
     detail = run_store.get_run("run-actor")
+    assert detail["trusted_identity"] is False
     assert detail["actor"]["email"] == "reviewer@example.com"
     assert detail["tokens"] == {"total": 15, "prompt": 10, "completion": 5}
 
@@ -288,6 +296,7 @@ def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(
         "run_id": "run-roi-api",
         "workspace_id": "ws-roi-api",
         "actor": {"actor_id": "owner-oid", "email": "spoofed@example.com"},
+        "trusted_identity": True,
         "completed_at": "2026-07-10T12:00:00Z",
         "models": [{"model": "gpt-5", "usage": {"input_tokens": 100, "output_tokens": 50}}],
     }
@@ -299,13 +308,15 @@ def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(
     monkeypatch.setattr(
         control_plane,
         "_current_workspace_members_for_chargeback",
-        lambda workspace_id: [{"actor_id": "owner-oid", "email": "owner@example.com", "name": "Owner", "status": "active"}],
+        lambda workspace_id: [{"actor_id": "owner-oid", "email": "owner@example.com", "name": "Owner", "role": "owner", "status": "active"}],
         raising=False,
     )
     monkeypatch.setenv(
         "DF_ROI_PRICE_CONFIG_JSON",
         '[{"version":"test","model":"gpt-5","currency":"USD","unit":"per_1m_tokens","input_per_1m":2,"output_per_1m":8,"effective_from":"2026-07-01T00:00:00Z","effective_to":null,"source":"test"}]',
     )
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setenv("DF_ROI_PSEUDONYM_SALT", "test-salt")
     client = TestClient(app)
     query = "?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"
 
@@ -323,7 +334,10 @@ def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(
     assert denied.status_code == 403
 
     monkeypatch.setattr(control_plane, "_require_workspace_action", lambda *_args: "owner")
-    allowed = client.get(f"/api/workspaces/ws-roi-api/governance/chargeback{query}")
+    allowed = client.get(
+        f"/api/workspaces/ws-roi-api/governance/chargeback{query}",
+        headers={"x-ms-client-principal": _principal([{"typ": "oid", "val": "owner-oid"}, {"typ": "preferred_username", "val": "owner@example.com"}]), "x-dataforge-proxy-secret": "test-proxy-secret"},
+    )
     assert allowed.status_code == 200
     assert allowed.json()["members"][0]["member"]["email"] == "owner@example.com"
     assert "spoofed@example.com" not in allowed.text
