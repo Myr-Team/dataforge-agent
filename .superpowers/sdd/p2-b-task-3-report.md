@@ -113,6 +113,34 @@ Executed: `python -m compileall backend tests`; `python -c "from backend.foundry
 
 Output: all commands exited `0`; the import check printed `not_configured`.
 
+## Final Critical Remediation: Primitive-Subclass Canonicalization Boundary (2026-07-14)
+
+This section closes the remaining primitive-subclass bypass in the provider snapshot capture path. A Pydantic `model_validate(existing_model)` call can retain a provider-supplied model instance and its subclassed scalar values, so it is no longer used as the canonicalization source.
+
+- Immediately after `provider.read`, the adapter serializes the response once with stdlib canonical JSON settings, parses those bytes with `json.loads`, and accepts only the resulting exact builtin object/list/string/integer values (plus adapter-created `Decimal` for JSON fractional amounts). It then validates the parsed mapping strictly: exact field sets, scalar types, timestamp/window, amount, currency/unit, target fingerprint, status, and lineage format.
+- The adapter builds its frozen slots snapshot only from those parsed builtin values and tuples. Digest, Ed25519 snapshot binding, target/window comparison, public output, and reconciliation all derive from the same adapter-owned canonical payload and bytes. No Pydantic/provider object, nested container, or primitive subclass participates after this boundary.
+- Pydantic model subclasses and `str` subclasses that lie through `__eq__`/`__ne__` cannot cause an unsigned target match or a reconciliation outside the signed JSON content. Invalid signed target/unit values are unavailable; valid but differing signed currency or lineage values remain visible as their exact signed values and produce no local difference.
+
+### Primitive-Subclass Remediation Test Evidence
+
+Executed: `python -m pytest tests/test_foundry_roi.py -q -k canonical_snapshot_boundary`
+
+Output: `5 passed in 0.45s` after the implementation. The preceding RED run produced `5 failed`, demonstrating the prior bypass: a wrong target remained `connected`, and spoofed currency, unit, mapped run IDs, and mapped outcome IDs could produce a difference.
+
+Coverage: a `ProviderRoiSnapshot` subclass carrying post-construction `str` subclasses that override `__eq__`/`__ne__`; target fingerprint, currency, unit, mapped run ID, and mapped outcome ID mutations; lineage hash aliasing to exercise set comparison; and verification that no difference is produced outside the signed canonical JSON payload.
+
+Executed: `python -m pytest tests/test_foundry_roi.py tests/test_roi_service.py tests/test_governance_roi_summary.py -q`
+
+Output: `63 passed in 4.81s`.
+
+Executed: `python -m pytest -q`
+
+Output: `511 passed, 1 warning in 47.05s` (the existing experimental workflow warning in `backend/maf_team_runtime.py`).
+
+Executed: `python -m compileall backend tests`; `python -c "from backend.foundry_roi import SignedFoundryRoiAttestation, discover_foundry_roi, reconcile_foundry_roi; import backend.control_plane; import backend.dependency_health; print(discover_foundry_roi().state)"`; and `git diff --check`.
+
+Output: all commands exited `0`; the import check printed `not_configured`.
+
 ## Final Critical Remediation: Canonical Snapshot Capture Before Attestation (2026-07-14)
 
 This section closes the remaining provider-object TOCTOU risk in the third remediation. A frozen Pydantic model alone was insufficient because nested containers and retained object references could still be changed after signing.

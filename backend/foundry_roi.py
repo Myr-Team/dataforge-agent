@@ -7,7 +7,7 @@ import math
 import os
 import re
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from hashlib import sha256
 from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, Protocol
@@ -524,45 +524,162 @@ def _untrusted_target_copy(config: _FoundryRoiAdapterConfig) -> FoundryRoiTarget
 
 
 def _canonicalize_provider_snapshot(value: Any) -> _CanonicalProviderSnapshot:
-    """Detach provider data into primitive immutable values before verifier code can run."""
+    """Serialize once, then detach provider data into exact built-ins before verifier code can run."""
 
-    snapshot = ProviderRoiSnapshot.model_validate(value)
+    serialized = _provider_response_json_bytes(value)
     try:
-        amount = Decimal(str(snapshot.business_value.amount))
-    except (InvalidOperation, ValueError) as exc:
-        raise ValueError("provider amount is invalid") from exc
-    observed_at = snapshot.observed_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    window_from = str(snapshot.window["from"])
-    window_to = str(snapshot.window["to"])
+        parsed = json.loads(
+            serialized.decode("utf-8"),
+            parse_float=Decimal,
+            parse_int=int,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("provider snapshot must be valid JSON") from exc
+    if type(parsed) is not dict:
+        raise ValueError("provider snapshot must be a JSON object")
+
+    _require_exact_keys(
+        parsed,
+        {
+            "source",
+            "target_fingerprint",
+            "window",
+            "observed_at",
+            "provider_version",
+            "status",
+            "business_value",
+            "mapped_run_ids",
+            "mapped_outcome_event_ids",
+        },
+        "provider snapshot",
+    )
+    source = _required_string(parsed, "source", "provider snapshot")
+    target_fingerprint = _required_string(parsed, "target_fingerprint", "provider snapshot")
+    provider_version = _required_string(parsed, "provider_version", "provider snapshot")
+    status = _required_string(parsed, "status", "provider snapshot")
+    observed_at = _canonical_utc_timestamp(_required_string(parsed, "observed_at", "provider snapshot"))
+    if source != "foundry_roi_provider":
+        raise ValueError("provider snapshot source is invalid")
+    if not re.fullmatch(r"[a-f0-9]{64}", target_fingerprint):
+        raise ValueError("provider target fingerprint is invalid")
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", provider_version):
+        raise ValueError("provider version is invalid")
+    if status not in {"estimated", "measured", "verified"}:
+        raise ValueError("provider snapshot status is invalid")
+
+    window = parsed["window"]
+    if type(window) is not dict:
+        raise ValueError("provider snapshot window is invalid")
+    _require_exact_keys(window, {"from", "to"}, "provider snapshot window")
+    normalized_window = parse_time_window(
+        _required_string(window, "from", "provider snapshot window"),
+        _required_string(window, "to", "provider snapshot window"),
+    )
+    window_from = normalized_window["from"]
+    window_to = normalized_window["to"]
+
+    business_value = parsed["business_value"]
+    if type(business_value) is not dict:
+        raise ValueError("provider business value is invalid")
+    _require_exact_keys(business_value, {"amount", "currency", "unit"}, "provider business value")
+    raw_amount = business_value["amount"]
+    if type(raw_amount) not in {int, Decimal}:
+        raise ValueError("provider amount is invalid")
+    amount = Decimal(raw_amount)
+    if not amount.is_finite() or amount < 0:
+        raise ValueError("provider amount is invalid")
+    currency = _required_string(business_value, "currency", "provider business value")
+    unit = _required_string(business_value, "unit", "provider business value")
+    if not re.fullmatch(r"[A-Z]{3}", currency):
+        raise ValueError("provider currency is invalid")
+    if unit != "currency":
+        raise ValueError("provider unit is invalid")
+
+    mapped_run_ids = _canonical_lineage_ids(parsed["mapped_run_ids"], "mapped run")
+    mapped_outcome_event_ids = _canonical_lineage_ids(parsed["mapped_outcome_event_ids"], "mapped outcome")
     payload = _canonical_snapshot_payload(
-        source=snapshot.source,
-        target_fingerprint=snapshot.target_fingerprint,
+        source=source,
+        target_fingerprint=target_fingerprint,
         window_from=window_from,
         window_to=window_to,
         observed_at=observed_at,
-        provider_version=snapshot.provider_version,
-        status=snapshot.status,
+        provider_version=provider_version,
+        status=status,
         amount=amount,
-        currency=snapshot.business_value.currency,
-        unit=snapshot.business_value.unit,
-        mapped_run_ids=tuple(snapshot.mapped_run_ids),
-        mapped_outcome_event_ids=tuple(snapshot.mapped_outcome_event_ids),
+        currency=currency,
+        unit=unit,
+        mapped_run_ids=mapped_run_ids,
+        mapped_outcome_event_ids=mapped_outcome_event_ids,
     )
     return _CanonicalProviderSnapshot(
-        source=snapshot.source,
-        target_fingerprint=snapshot.target_fingerprint,
+        source=source,
+        target_fingerprint=target_fingerprint,
         window_from=window_from,
         window_to=window_to,
         observed_at=observed_at,
-        provider_version=snapshot.provider_version,
-        status=snapshot.status,
+        provider_version=provider_version,
+        status=status,
         amount=amount,
-        currency=snapshot.business_value.currency,
-        unit=snapshot.business_value.unit,
-        mapped_run_ids=tuple(snapshot.mapped_run_ids),
-        mapped_outcome_event_ids=tuple(snapshot.mapped_outcome_event_ids),
+        currency=currency,
+        unit=unit,
+        mapped_run_ids=mapped_run_ids,
+        mapped_outcome_event_ids=mapped_outcome_event_ids,
         canonical_bytes=_canonical_json(payload),
     )
+
+
+def _provider_response_json_bytes(value: Any) -> bytes:
+    """Use the stdlib encoder as the sole provider-object boundary before parsing exact built-ins."""
+
+    if isinstance(value, BaseModel):
+        value = BaseModel.model_dump(value, mode="json")
+    if not isinstance(value, Mapping):
+        raise ValueError("provider snapshot must be an object")
+    try:
+        return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("ascii")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("provider snapshot cannot be serialized as JSON") from exc
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"provider snapshot contains invalid JSON constant: {value}")
+
+
+def _require_exact_keys(value: dict[str, Any], expected: set[str], label: str) -> None:
+    if set(value) != expected:
+        raise ValueError(f"{label} has unexpected fields")
+
+
+def _required_string(value: dict[str, Any], key: str, label: str) -> str:
+    result = value.get(key)
+    if type(result) is not str:
+        raise ValueError(f"{label} {key} must be a string")
+    return result
+
+
+def _canonical_utc_timestamp(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("provider timestamp is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("provider timestamp must include UTC offset")
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _canonical_lineage_ids(value: Any, label: str) -> tuple[str, ...]:
+    if type(value) is not list:
+        raise ValueError(f"provider {label} lineage is invalid")
+    identifiers: list[str] = []
+    for item in value:
+        if type(item) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", item):
+            raise ValueError(f"provider {label} lineage is invalid")
+        identifiers.append(item)
+    canonical = tuple(sorted(set(identifiers)))
+    if not canonical:
+        raise ValueError(f"provider {label} lineage is required")
+    return canonical
 
 
 def _canonical_snapshot_window(snapshot: _CanonicalProviderSnapshot) -> dict[str, str]:

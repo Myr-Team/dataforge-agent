@@ -324,6 +324,100 @@ def test_retained_provider_snapshot_mutation_after_signature_uses_captured_canon
     assert reconciliation["difference"] == {"amount": -10.0, "currency": "USD", "unit": "currency"}
 
 
+class _EqualitySpoofingString(str):
+    """Simulates provider-controlled scalar subclasses that lie during Python comparisons."""
+
+    _hash_aliases = {
+        "attacker-run": "run-2",
+        "attacker-outcome": "outcome-2",
+    }
+
+    def __eq__(self, other):  # type: ignore[override]
+        return True
+
+    def __ne__(self, other):  # type: ignore[override]
+        return False
+
+    def __hash__(self):
+        return hash(self._hash_aliases.get(str.__str__(self), str.__str__(self)))
+
+
+@pytest.mark.parametrize(
+    ("name", "mutate", "expected_state", "expected_snapshot_value"),
+    [
+        (
+            "target_fingerprint",
+            lambda snapshot: object.__setattr__(snapshot, "target_fingerprint", _EqualitySpoofingString("0" * 64)),
+            "unavailable",
+            None,
+        ),
+        (
+            "currency",
+            lambda snapshot: object.__setattr__(snapshot.business_value, "currency", _EqualitySpoofingString("EUR")),
+            "connected",
+            "EUR",
+        ),
+        (
+            "unit",
+            lambda snapshot: object.__setattr__(snapshot.business_value, "unit", _EqualitySpoofingString("attacker-unit")),
+            "unavailable",
+            None,
+        ),
+        (
+            "mapped_run_ids",
+            lambda snapshot: snapshot.mapped_run_ids.__setitem__(1, _EqualitySpoofingString("attacker-run")),
+            "connected",
+            ["attacker-run", "run-1"],
+        ),
+        (
+            "mapped_outcome_event_ids",
+            lambda snapshot: snapshot.mapped_outcome_event_ids.__setitem__(1, _EqualitySpoofingString("attacker-outcome")),
+            "connected",
+            ["attacker-outcome", "outcome-1"],
+        ),
+    ],
+)
+def test_provider_model_and_primitive_subclasses_cannot_bypass_canonical_snapshot_boundary(
+    monkeypatch, name, mutate, expected_state, expected_snapshot_value
+) -> None:
+    class SubclassedProviderSnapshot(ProviderRoiSnapshot):
+        pass
+
+    class Provider:
+        def __init__(self) -> None:
+            self.snapshot = SubclassedProviderSnapshot.model_validate(provider_snapshot().model_dump())
+            mutate(self.snapshot)
+
+        def discover(self, configured_target):
+            return proof(configured_target)
+
+        def read(self, configured_target, window):
+            return self.snapshot
+
+    configure_target(monkeypatch)
+    signing_key = Ed25519PrivateKey.generate()
+    configure_trusted_public_key(monkeypatch, signing_key)
+
+    read = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(signing_key))
+    reconciliation = reconcile_foundry_roi(local_snapshot(), provider=Provider(), verifier=FakeVerifier(signing_key))
+
+    assert name
+    assert read.status.state == expected_state
+    assert reconciliation["foundry_status"]["state"] == expected_state
+    assert reconciliation["difference"] is None
+    if expected_snapshot_value is None:
+        assert read.provider_snapshot is None
+        assert reconciliation["provider"] is None
+    elif name == "currency":
+        assert read.provider_snapshot is not None
+        assert read.provider_snapshot["business_value"]["currency"] == expected_snapshot_value
+        assert reconciliation["provider"]["business_value"]["currency"] == expected_snapshot_value
+    else:
+        assert read.provider_snapshot is not None
+        assert read.provider_snapshot[name] == expected_snapshot_value
+        assert reconciliation["provider"][name] == expected_snapshot_value
+
+
 def test_provider_as_verifier_with_only_public_key_cannot_connect(monkeypatch) -> None:
     class Provider:
         def __init__(self, public_key: bytes) -> None:
