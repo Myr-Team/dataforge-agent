@@ -124,6 +124,19 @@ def test_deterministic_eval_measures_metrics_and_preserves_unknown_tokens() -> N
     assert "not production answer quality" in report["disclaimer"]
 
 
+def test_deterministic_eval_reports_budget_and_execution_distributions() -> None:
+    report = asyncio.run(run_deterministic_evaluation(CASES))
+
+    execution = report["execution"]
+    assert execution["wall_time_ms"]["p50"]["status"] == "measured"
+    assert execution["wall_time_ms"]["p95"]["status"] == "measured"
+    assert set(execution["per_pattern_completion"]) == EXPECTED_PATTERNS
+    assert execution["agent_selection"]["selected_accuracy"]["status"] == "measured"
+    assert execution["agent_selection"]["skipped_accuracy"]["status"] == "measured"
+    assert execution["budget_terminations"]["measurement_scope"] == "deterministic_harness"
+    assert execution["budget_terminations"]["production_quality_claim"] is False
+
+
 def test_forced_runtime_failure_falls_back_exactly_once() -> None:
     report = asyncio.run(run_deterministic_evaluation(CASES))
     forced = next(

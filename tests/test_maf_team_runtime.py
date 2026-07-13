@@ -437,7 +437,7 @@ async def test_runtime_summary_exposes_observed_execution_budget(fake_registry: 
 
     assert fake_registry.calls == ["df-coordinator"]
     budget = result.summary.execution_budget
-    assert budget.max_agent_calls == 1
+    assert budget.max_agent_calls == 8
     assert budget.agent_calls == 1
     assert budget.max_revision_rounds == 0
     assert budget.workflow_duration_ms >= 0
@@ -445,6 +445,67 @@ async def test_runtime_summary_exposes_observed_execution_budget(fake_registry: 
     assert budget.input_tokens == 30
     assert budget.output_tokens == 12
     assert budget.total_tokens == 42
+
+
+@pytest.mark.asyncio
+async def test_revision_receives_only_disputed_dimensions(fake_registry: FakeRegistry) -> None:
+    fake_registry.outputs["df-feasibility-analyst"].clear()
+    fake_registry.outputs["df-feasibility-analyst"].extend(
+        [{"verdict": "supported"}, {"verdict": "supported"}]
+    )
+    fake_registry.outputs["df-auditor"].clear()
+    fake_registry.outputs["df-auditor"].extend(
+        [
+            {
+                "verdict": "revise",
+                "issues": [{"dimension": "market_signal", "reason": "weak"}],
+            },
+            {"verdict": "pass", "issues": []},
+        ]
+    )
+
+    await MafTeamRuntime(fake_registry).run(review_request())
+
+    revision_payload = fake_registry.inputs["df-feasibility-analyst"][-1]
+    assert revision_payload["revision_scope"] == ["market_signal"]
+    assert revision_payload["audit_feedback"]["issues"] == [
+        {"dimension": "market_signal", "reason": "weak"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_call_budget_fails_required_agent_closed(fake_registry: FakeRegistry) -> None:
+    result = await MafTeamRuntime(fake_registry, max_agent_calls=0).run(review_request())
+
+    assert result.artifact["verdict"] == "insufficient_evidence"
+    assert "budget_exhausted" in result.summary.execution_budget.termination_reasons
+    assert "agent_calls_exhausted" in result.summary.execution_budget.termination_reasons
+    assert any(event.event == "maf_budget_exhausted" for event in result.events)
+
+
+@pytest.mark.asyncio
+async def test_contract_correction_retry_consumes_agent_call_budget(fake_registry: FakeRegistry) -> None:
+    def invalid_contract(_output: dict[str, Any]) -> dict[str, Any]:
+        raise ValueError("force a correction retry")
+
+    result = await MafTeamRuntime(
+        fake_registry,
+        max_agent_calls=1,
+        feasibility_validator=invalid_contract,
+    ).run(review_request())
+
+    assert fake_registry.calls == ["df-feasibility-analyst"]
+    assert result.artifact["verdict"] == "insufficient_evidence"
+    assert "agent_calls_exhausted" in result.summary.execution_budget.termination_reasons
+
+
+@pytest.mark.asyncio
+async def test_market_call_budget_degrades_optional_branch(fake_registry: FakeRegistry) -> None:
+    result = await MafTeamRuntime(fake_registry, max_agent_calls=1).run(concurrent_request())
+
+    assert result.degraded is True
+    assert "external_signal_unavailable" in result.gaps
+    assert "budget_exhausted" in result.summary.execution_budget.termination_reasons
 
 
 def test_participant_payload_bounds_repeated_history_and_corpus_context():
@@ -481,8 +542,9 @@ def test_participant_payload_bounds_repeated_history_and_corpus_context():
     assert [item["content"].split("-", 2)[:2] for item in payload["conversation_history"]] == [
         ["message", str(index)] for index in range(6, 12)
     ]
-    assert len(payload["authoritative_corpus"]["hits"]) == 6
-    assert all(len(item["content"]) <= 1800 for item in payload["authoritative_corpus"]["hits"])
+    assert len(payload["evidence_bundle"]["evidence"]) == 10
+    assert all(len(item.get("quote") or "") <= 320 for item in payload["evidence_bundle"]["evidence"])
+    assert "authoritative_corpus" not in payload
 
 
 @pytest.mark.asyncio
@@ -1615,7 +1677,8 @@ async def test_review_loop_stops_at_two_revisions(fake_registry: FakeRegistry):
     assert result.summary.rounds == 2
     assert fake_registry.calls.count("df-feasibility-analyst") == 3
     assert fake_registry.calls.count("df-auditor") == 3
-    assert result.events[-1].event == "maf_review"
+    assert result.events[-1].event == "maf_budget_exhausted"
+    assert "revision_rounds_exhausted" in result.summary.execution_budget.termination_reasons
 
 
 @pytest.mark.asyncio

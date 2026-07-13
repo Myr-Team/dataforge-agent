@@ -34,6 +34,14 @@ from .maf_contracts import (
     MafRunSummary,
     MafRuntimeMode,
 )
+from .evidence_bundle import (
+    BundleLimits,
+    EvidenceBundle,
+    MAX_EVIDENCE_ITEMS,
+    MAX_EVIDENCE_QUOTE_CHARS,
+    build_evidence_bundle,
+    bundle_for_agent,
+)
 from .market_relevance import (
     assess_market_comparison,
     market_relevance_trace,
@@ -62,7 +70,11 @@ RuntimeEventName = Literal[
     "maf_branch_joined",
     "maf_handoff",
     "maf_review",
+    "maf_budget_exhausted",
 ]
+
+MAX_MAF_AGENT_CALLS = 8
+MAX_MARKET_SOURCES = 6
 
 ALL_AGENT_IDS: tuple[AgentId, ...] = (
     "df-coordinator",
@@ -80,6 +92,10 @@ class TransientAgentError(RuntimeError):
 
 class ContractValidationError(ValueError):
     """An agent exhausted the single bounded output-contract correction."""
+
+
+class ExecutionBudgetExceeded(RuntimeError):
+    """A bounded runtime budget prevented an additional participant action."""
 
 
 class MafAuditVerdict(str, Enum):
@@ -210,6 +226,7 @@ class MafTeamRequest(BaseModel):
     evidence_catalog: list[Evidence] = Field(default_factory=list)
     rubric: FeasibilityRubric | None = None
     rubric_version: str | None = None
+    evidence_bundle: EvidenceBundle | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -251,7 +268,7 @@ class RuntimeCollaborationPlan(CollaborationPlan):
 class MafRuntimeEvent(BaseModel):
     sequence: int = Field(ge=1)
     event: RuntimeEventName
-    status: Literal["running", "completed", "failed", "revision_requested"]
+    status: Literal["running", "completed", "failed", "revision_requested", "budget_exhausted"]
     agent_id: AgentId | None = None
     branch_id: str | None = None
     source_agent_id: AgentId | None = None
@@ -263,7 +280,7 @@ class MafRuntimeEvent(BaseModel):
     skipped_agents: tuple[str, ...] = ()
     max_revisions: int | None = Field(default=None, ge=0, le=MAX_MAF_REVISIONS)
     verdict: MafAuditVerdict | None = None
-    error_category: Literal["transient", "content_policy", "contract_validation", "permanent"] | None = None
+    error_category: Literal["transient", "content_policy", "contract_validation", "permanent", "budget_exhausted"] | None = None
     response_id: str | None = Field(default=None, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
@@ -313,6 +330,8 @@ class RuntimeExecutionBudget(BaseModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
+    budget_exhausted: bool = False
+    termination_reasons: tuple[str, ...] = ()
 
 
 def _unknown_execution_budget() -> RuntimeExecutionBudget:
@@ -331,6 +350,7 @@ class RuntimeMafRunSummary(MafRunSummary):
     selected_agents: tuple[str, ...] = ()
     skipped_agents: tuple[str, ...] = ()
     execution_budget: RuntimeExecutionBudget = Field(default_factory=_unknown_execution_budget)
+    evidence_bundle: dict[str, Any] = Field(default_factory=dict)
 
 
 class MafTeamRunResult(BaseModel):
@@ -468,6 +488,9 @@ class _RunState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     event_sink: Callable[[MafRuntimeEvent], Any] | None = None
     started_ns: int = field(default_factory=time.perf_counter_ns)
+    max_agent_calls: int = MAX_MAF_AGENT_CALLS
+    agent_calls: int = 0
+    termination_reasons: list[str] = field(default_factory=list)
 
     async def emit(self, event: RuntimeEventName, status: str, **kwargs: Any) -> MafRuntimeEvent:
         async with self.lock:
@@ -483,6 +506,33 @@ class _RunState:
                 if inspect.isawaitable(pending):
                     await pending
             return item
+
+    async def reserve_agent_call(self, agent_id: AgentId, branch_id: str | None) -> bool:
+        async with self.lock:
+            if self.agent_calls < self.max_agent_calls:
+                self.agent_calls += 1
+                return True
+        await self.record_budget_exhaustion("agent_calls_exhausted", agent_id, branch_id)
+        return False
+
+    async def record_budget_exhaustion(
+        self,
+        reason: str,
+        agent_id: AgentId | None = None,
+        branch_id: str | None = None,
+    ) -> None:
+        async with self.lock:
+            if "budget_exhausted" not in self.termination_reasons:
+                self.termination_reasons.append("budget_exhausted")
+            if reason not in self.termination_reasons:
+                self.termination_reasons.append(reason)
+        await self.emit(
+            "maf_budget_exhausted",
+            "budget_exhausted",
+            agent_id=agent_id,
+            branch_id=branch_id,
+            reason_codes=("budget_exhausted", reason),
+        )
 
 
 @dataclass(frozen=True)
@@ -900,6 +950,17 @@ def _force_insufficient_evidence(value: Any) -> Any:
     return value
 
 
+def _disputed_dimensions(audit: Mapping[str, Any]) -> list[str]:
+    dimensions: list[str] = []
+    for issue in audit.get("issues") or []:
+        if not isinstance(issue, Mapping):
+            continue
+        dimension = str(issue.get("dimension") or "").strip()
+        if dimension and dimension not in dimensions:
+            dimensions.append(dimension)
+    return dimensions
+
+
 class MafTeamRuntime:
     """Run a selected team using agents from an authorization-bound registry."""
 
@@ -908,11 +969,20 @@ class MafTeamRuntime:
         registry: MafAgentRegistry,
         *,
         max_revisions: int = MAX_MAF_REVISIONS,
+        max_agent_calls: int = MAX_MAF_AGENT_CALLS,
+        max_market_sources: int = MAX_MARKET_SOURCES,
+        bundle_limits: BundleLimits | None = None,
         feasibility_validator: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         audit_validator: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self._registry = registry
         self._max_revisions = min(MAX_MAF_REVISIONS, max(0, max_revisions))
+        self._max_agent_calls = max(0, max_agent_calls)
+        self._max_market_sources = max(1, max_market_sources)
+        self._bundle_limits = bundle_limits or BundleLimits(
+            max_items=MAX_EVIDENCE_ITEMS,
+            max_quote_chars=MAX_EVIDENCE_QUOTE_CHARS,
+        )
         self._feasibility_validator = feasibility_validator
         self._audit_validator = audit_validator or self._validate_audit_verdict
         self.last_workflow: FunctionalWorkflow | None = None
@@ -948,7 +1018,14 @@ class MafTeamRuntime:
         )
         if plan.max_revisions:
             plan = plan.model_copy(update={"max_revisions": min(plan.max_revisions, self._max_revisions)})
-        state = _RunState(event_sink=event_sink)
+        bundle = build_evidence_bundle(
+            normalized.authoritative_corpus,
+            {"workspace_id": normalized.payload.get("workspace_id"), "intent": normalized.intent},
+            normalized.payload.get("capability_packs") if isinstance(normalized.payload.get("capability_packs"), list) else [],
+            self._bundle_limits,
+        )
+        normalized = normalized.model_copy(update={"evidence_bundle": bundle})
+        state = _RunState(event_sink=event_sink, max_agent_calls=self._max_agent_calls)
 
         @workflow(name=f"dataforge-{plan.pattern.value}")
         async def team_workflow(_: dict[str, Any]) -> MafTeamRunResult:
@@ -1021,14 +1098,16 @@ class MafTeamRuntime:
             return sum(int(getattr(event, field_name) or 0) for event in completed_events)
 
         execution_budget = RuntimeExecutionBudget(
-            max_agent_calls=len(selected) + (2 * plan.max_revisions),
-            agent_calls=sum(1 for event in state.events if event.event == "maf_agent_started"),
+            max_agent_calls=self._max_agent_calls,
+            agent_calls=state.agent_calls,
             max_revision_rounds=plan.max_revisions,
             workflow_duration_ms=(time.perf_counter_ns() - state.started_ns) / 1_000_000,
             participant_duration_ms=sum(float(event.duration_ms or 0) for event in completed_events),
             input_tokens=observed_token_total("input_tokens"),
             output_tokens=observed_token_total("output_tokens"),
             total_tokens=observed_token_total("total_tokens"),
+            budget_exhausted=bool(state.termination_reasons),
+            termination_reasons=tuple(state.termination_reasons),
         )
         summary = RuntimeMafRunSummary(
             run_id=str(uuid4()),
@@ -1042,6 +1121,7 @@ class MafTeamRuntime:
             selected_agents=selected,
             skipped_agents=skipped,
             execution_budget=execution_budget,
+            evidence_bundle=request.evidence_bundle.persisted_metadata() if request.evidence_bundle else {},
             metadata={"gaps": gaps, "degraded": degraded},
         )
         return MafTeamRunResult(
@@ -1066,6 +1146,8 @@ class MafTeamRuntime:
         validator: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         contract_name: str | None = None,
     ) -> tuple[dict[str, Any], Exception | None]:
+        if not await state.reserve_agent_call(agent_id, branch_id):
+            return {}, ExecutionBudgetExceeded("agent_calls_exhausted")
         started_ns = time.perf_counter_ns()
         await state.emit(
             "maf_agent_started",
@@ -1077,6 +1159,25 @@ class MafTeamRuntime:
         contract_retries = 0
         current_payload = dict(payload)
         while True:
+            if contract_retries and not await state.reserve_agent_call(agent_id, branch_id):
+                error = ExecutionBudgetExceeded("agent_calls_exhausted")
+                completed_ns = time.perf_counter_ns()
+                telemetry = _aggregate_agent_telemetry(
+                    attempts,
+                    contract_retries=contract_retries,
+                )
+                await state.emit(
+                    "maf_agent_completed",
+                    "failed",
+                    agent_id=agent_id,
+                    branch_id=branch_id,
+                    duration_ms=(completed_ns - started_ns) / 1_000_000,
+                    error_category="budget_exhausted",
+                    started_ns=started_ns,
+                    completed_ns=completed_ns,
+                    **telemetry,
+                )
+                return {}, error
             try:
                 response = await self._registry.agent(agent_id).run(
                     json.dumps(current_payload, ensure_ascii=False, default=str)
@@ -1173,36 +1274,14 @@ class MafTeamRuntime:
                     bounded_history.append({"role": role, "content": content})
             payload["conversation_history"] = bounded_history
 
-        corpus = request.authoritative_corpus.model_dump(mode="json", exclude_none=True)
-        bounded_hits: list[dict[str, Any]] = []
-        for item in (corpus.get("hits") or [])[:6]:
-            hit = dict(item)
-            hit["content"] = str(hit.get("content") or "")[:1800]
-            bounded_hits.append(hit)
-        corpus["hits"] = bounded_hits
-        corpus["opportunities"] = list(corpus.get("opportunities") or [])[:6]
-        profile = corpus.get("profile")
-        if isinstance(profile, dict):
-            bounded_profile = dict(profile)
-            asset_evidence = []
-            for item in (profile.get("asset_evidence") or [])[:12]:
-                if not isinstance(item, Mapping):
-                    continue
-                evidence = dict(item)
-                if "quote" in evidence:
-                    evidence["quote"] = str(evidence.get("quote") or "")[:600]
-                asset_evidence.append(evidence)
-            bounded_profile["asset_evidence"] = asset_evidence
-            corpus["profile"] = bounded_profile
-
-        return {
-            **payload,
-            "authoritative_corpus": corpus,
-            "evidence_catalog": [
-                item.model_dump(mode="json", exclude_none=True)
-                for item in request.evidence_catalog[:24]
-            ],
-        }
+        bundle = request.evidence_bundle
+        if bundle is None:
+            bundle = build_evidence_bundle(
+                request.authoritative_corpus,
+                {"workspace_id": request.payload.get("workspace_id"), "intent": request.intent},
+                [],
+            )
+        return {**payload, "evidence_bundle": bundle_for_agent(bundle, "df-coordinator")}
 
     @staticmethod
     def _feasibility_payload(
@@ -1211,23 +1290,47 @@ class MafTeamRuntime:
         *,
         audit_feedback: Mapping[str, Any] | None = None,
         revision: int = 0,
+        revision_scope: list[str] | None = None,
     ) -> dict[str, Any]:
-        corpus = request.authoritative_corpus
+        bundle = request.evidence_bundle
+        if bundle is None:
+            bundle = build_evidence_bundle(
+                request.authoritative_corpus,
+                {"workspace_id": request.payload.get("workspace_id"), "intent": request.intent},
+                [],
+            )
         payload = {
             "workspace_id": request.payload.get("workspace_id"),
             "user_request": request.payload.get("query"),
-            "candidate_opportunities": corpus.opportunities,
-            "evidence_catalog": [item.model_dump(mode="json", exclude_none=True) for item in request.evidence_catalog],
+            "candidate_opportunities": request.authoritative_corpus.opportunities[:6],
+            "evidence_bundle": bundle_for_agent(bundle, "df-feasibility-analyst"),
             "rubric": request.rubric.model_dump(mode="json") if request.rubric is not None else None,
             "rubric_version": request.rubric_version,
             "market": artifact.get("market") or {},
             "revision_round": revision,
         }
         if audit_feedback is not None:
-            payload["audit_feedback"] = dict(audit_feedback)
+            feedback = dict(audit_feedback)
+            if revision_scope is not None:
+                feedback["issues"] = [
+                    dict(issue)
+                    for issue in feedback.get("issues") or []
+                    if isinstance(issue, Mapping) and str(issue.get("dimension") or "") in revision_scope
+                ]
+            payload["audit_feedback"] = feedback
+        if revision_scope is not None:
+            payload["revision_scope"] = list(revision_scope)
         previous = artifact.get("feasibility")
         if isinstance(previous, Mapping):
-            payload["previous_feasibility"] = dict(previous)
+            previous_feasibility = dict(previous)
+            if revision_scope is not None and isinstance(previous_feasibility.get("dimensions"), list):
+                previous_feasibility["dimensions"] = [
+                    dict(dimension)
+                    for dimension in previous_feasibility["dimensions"]
+                    if isinstance(dimension, Mapping)
+                    and str(dimension.get("name") or "") in revision_scope
+                ]
+            payload["previous_feasibility"] = previous_feasibility
         return payload
 
     async def _run_direct(
@@ -1238,7 +1341,16 @@ class MafTeamRuntime:
             self._participant_payload(request),
             state,
         )
-        return output, (["coordinator_unavailable"] if error else []), error is not None, [], 0, 0
+        if error:
+            return (
+                {"verdict": "insufficient_evidence", "strong_verdict_allowed": False},
+                ["coordinator_unavailable"],
+                True,
+                [],
+                0,
+                0,
+            )
+        return output, [], False, [], 0, 0
 
     async def _run_branch(
         self,
@@ -1311,6 +1423,7 @@ class MafTeamRuntime:
                     required=required,
                     payload=self._participant_payload(request),
                     observations=observations,
+                    state=state,
                     validator=(
                         self._validate_market_comparison
                         if agent_id == "df-market-researcher"
@@ -1341,6 +1454,18 @@ class MafTeamRuntime:
         by_id = {branch.branch_id: branch for branch in branch_results}
         corpus = by_id["workspace"]
         market = by_id["external"]
+        if (
+            market.status == "completed"
+            and len(list(market.output.get("competitors") or [])) > self._max_market_sources
+        ):
+            await state.record_budget_exhaustion(
+                "market_sources_exhausted",
+                "df-market-researcher",
+                "external",
+            )
+            market = market.model_copy(
+                update={"status": "failed", "output": {}, "error_category": "budget_exhausted"}
+            )
         branches = [corpus, market]
         overlap_ns = max(
             0,
@@ -1432,9 +1557,22 @@ class MafTeamRuntime:
         required: bool,
         payload: Mapping[str, Any],
         observations: asyncio.Queue[_BranchObservation],
+        state: _RunState,
         validator: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         terminal_observed = False
+        if not await state.reserve_agent_call(agent_id, branch_id):
+            await observations.put(
+                _BranchObservation(
+                    "failed",
+                    branch_id,
+                    agent_id,
+                    required,
+                    time.perf_counter_ns(),
+                    error_category="budget_exhausted",
+                )
+            )
+            return
         run_stream = workflow_instance.run(
             json.dumps(payload, ensure_ascii=False, default=str), stream=True
         )
@@ -1587,6 +1725,15 @@ class MafTeamRuntime:
             self._participant_payload(request),
             state,
         )
+        if coordinator_error:
+            return (
+                {"verdict": "insufficient_evidence", "strong_verdict_allowed": False},
+                ["coordinator_unavailable"],
+                True,
+                [],
+                0,
+                0,
+            )
         target = _specialist_for_intent(request.intent)
         await state.emit(
             "maf_handoff",
@@ -1678,7 +1825,15 @@ class MafTeamRuntime:
                 "user_request": request.payload.get("query"),
                 "revision_round": revision,
                 "feasibility": dict(artifact.get("feasibility") or {}),
-                "evidence_catalog": [item.model_dump(mode="json", exclude_none=True) for item in request.evidence_catalog],
+                "evidence_bundle": bundle_for_agent(
+                    request.evidence_bundle
+                    or build_evidence_bundle(
+                        request.authoritative_corpus,
+                        {"workspace_id": request.payload.get("workspace_id"), "intent": request.intent},
+                        [],
+                    ),
+                    "df-auditor",
+                ),
                 "market": artifact.get("market") or {},
             },
             state,
@@ -1727,6 +1882,8 @@ class MafTeamRuntime:
                     "verdict": verdict.value if verdict is not None else MafAuditVerdict.INSUFFICIENT_EVIDENCE.value,
                 }, gaps, revisions
             if revisions >= max_revisions:
+                await state.record_budget_exhaustion("revision_rounds_exhausted", "df-feasibility-analyst")
+                gaps.append("revision_budget_exhausted")
                 return _force_insufficient_evidence(last_valid_artifact) | {"verdict": "insufficient_evidence"}, gaps, revisions
 
             await state.emit(
@@ -1737,6 +1894,7 @@ class MafTeamRuntime:
                 reason_codes=(f"revision:{revisions}",),
             )
             revisions += 1
+            revision_scope = _disputed_dimensions(audit)
             analysis, analyst_error = await self._invoke(
                 "df-feasibility-analyst",
                 self._feasibility_payload(
@@ -1744,6 +1902,7 @@ class MafTeamRuntime:
                     last_valid_artifact,
                     audit_feedback=audit,
                     revision=revisions,
+                    revision_scope=revision_scope,
                 ),
                 state,
                 validator=self._feasibility_validator,
@@ -1785,6 +1944,9 @@ class MafTeamRuntime:
 
 __all__ = [
     "ContractValidationError",
+    "ExecutionBudgetExceeded",
+    "MAX_MAF_AGENT_CALLS",
+    "MAX_MARKET_SOURCES",
     "AuthoritativeCorpus",
     "AuthoritativeCorpusHit",
     "FeasibilityRubric",

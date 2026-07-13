@@ -934,6 +934,41 @@ def test_maf_artifact_merge_whitelists_runtime_owned_fields() -> None:
     }
 
 
+def test_maf_run_record_keeps_only_bounded_bundle_metadata() -> None:
+    result = _team_result()
+    result.summary.evidence_bundle = {
+        "fingerprint": "a" * 64,
+        "evidence_count": 2,
+        "profile_fact_count": 1,
+        "gap_count": 0,
+        "capability_pack_ids": ["market-lookup"],
+        "evidence": [{"ref": "must-not-persist", "quote": "raw evidence"}],
+    }
+    artifact: dict[str, Any] = {}
+
+    orchestrator._merge_maf_artifact(artifact, result)
+    summary = _maf_summary(
+        {
+            "artifact": artifact,
+            "steps": [
+                {"event": event.event, "data": event.model_dump(mode="json", exclude_none=True)}
+                for event in result.events
+            ],
+        }
+    )
+
+    assert artifact["maf"]["evidence_bundle"] == {
+        "fingerprint": "a" * 64,
+        "evidence_count": 2,
+        "profile_fact_count": 1,
+        "gap_count": 0,
+        "capability_pack_ids": ["market-lookup"],
+    }
+    assert summary is not None
+    assert summary["evidence_bundle"] == artifact["maf"]["evidence_bundle"]
+    assert "quote" not in repr(summary["evidence_bundle"])
+
+
 def test_maf_summary_is_derived_from_typed_runtime_events() -> None:
     run = {
         "steps": [

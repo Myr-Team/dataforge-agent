@@ -11,7 +11,7 @@ import threading
 import time
 import urllib.request
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -5776,7 +5776,21 @@ def _merge_maf_artifact(artifact: dict[str, Any], result: MafTeamRunResult) -> N
     market = runtime_artifact.get("market")
     if isinstance(market, dict):
         artifact["market"] = public_market_comparison(market)
-    artifact["maf"] = result.summary.model_dump(mode="json", exclude_none=True)
+    maf_summary = result.summary.model_dump(mode="json", exclude_none=True)
+    bundle_metadata = maf_summary.get("evidence_bundle")
+    if isinstance(bundle_metadata, Mapping):
+        maf_summary["evidence_bundle"] = {
+            key: bundle_metadata.get(key)
+            for key in (
+                "fingerprint",
+                "evidence_count",
+                "profile_fact_count",
+                "gap_count",
+                "capability_pack_ids",
+            )
+            if key in bundle_metadata
+        }
+    artifact["maf"] = maf_summary
     artifact["maf"]["gaps"] = list(result.gaps)
     artifact["maf"]["degraded"] = result.degraded
 

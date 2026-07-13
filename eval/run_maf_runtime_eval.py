@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import sys
 import time
 from collections import defaultdict, deque
@@ -23,6 +24,7 @@ from agent_framework import (  # noqa: E402
     ResponseStream,
 )
 from backend.maf_team_runtime import (  # noqa: E402
+    ALL_AGENT_IDS,
     MafTeamRequest,
     MafTeamRuntime,
     TransientAgentError,
@@ -326,7 +328,7 @@ async def _legacy_case(case: Mapping[str, Any]) -> dict[str, Any]:
 
 async def _maf_case(
     case: Mapping[str, Any],
-) -> tuple[dict[str, Any], list[str], bool, int | None]:
+) -> dict[str, Any]:
     if case.get("force_runtime_failure"):
         raise ForcedRuntimeFailure("forced deterministic runtime failure")
     registry = _DeterministicRegistry(case)
@@ -336,7 +338,95 @@ async def _maf_case(
     tokens = result.summary.metadata.get("tokens")
     measured_tokens = int(tokens) if isinstance(tokens, int) and not isinstance(tokens, bool) else None
     completed = result.summary.status in {"completed", "degraded"}
-    return dict(artifact), registry.calls, completed, measured_tokens
+    return {
+        "artifact": dict(artifact),
+        "calls": registry.calls,
+        "completed": completed,
+        "tokens": measured_tokens,
+        "execution_budget": result.summary.execution_budget.model_dump(mode="json"),
+        "cache_observations": [
+            {"cache_hit": event.cache_hit, "total_tokens": event.total_tokens}
+            for event in result.events
+            if event.event == "maf_agent_completed" and event.cache_hit is not None
+        ],
+    }
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, math.ceil((percentile / 100) * len(ordered)) - 1)
+    return ordered[index]
+
+
+def _distribution_metric(values: list[float], unit: str) -> dict[str, dict[str, Any]]:
+    if not values:
+        return {"p50": _unknown_metric(unit), "p95": _unknown_metric(unit)}
+    return {
+        "p50": _measured(_percentile(values, 50) or 0, unit, len(values)),
+        "p95": _measured(_percentile(values, 95) or 0, unit, len(values)),
+    }
+
+
+def _execution_observations(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    wall_times = [float(row["latency_ms"]) for row in rows]
+    tokens = [float(row["tokens"]) for row in rows if row.get("tokens") is not None]
+    cache_tokens = 0
+    observed_cache_tokens = 0
+    termination_reasons: dict[str, int] = {}
+    per_pattern: dict[str, list[bool]] = defaultdict(list)
+    selected_correct = 0
+    skipped_correct = 0
+    selection_sample = 0
+    for row in rows:
+        per_pattern[str(row["actual_pattern"])].append(bool(row["task_completed"]))
+        if not row.get("fallback"):
+            selection_sample += 1
+            invoked = set(row.get("invoked_agents") or [])
+            selected = set(row.get("selected_agents") or [])
+            skipped = set(ALL_AGENT_IDS) - selected
+            selected_correct += int(selected <= invoked)
+            skipped_correct += int(not (skipped & invoked))
+        for reason in row.get("budget_termination_reasons") or []:
+            termination_reasons[str(reason)] = termination_reasons.get(str(reason), 0) + 1
+        for observation in row.get("cache_observations") or []:
+            token_count = observation.get("total_tokens")
+            if not isinstance(token_count, int):
+                continue
+            observed_cache_tokens += token_count
+            if observation.get("cache_hit") is True:
+                cache_tokens += token_count
+
+    per_pattern_completion = {
+        pattern: _measured(sum(values) / len(values), "ratio", len(values))
+        for pattern, values in sorted(per_pattern.items())
+    }
+    cache_ratio = (
+        _measured(cache_tokens / observed_cache_tokens, "ratio", len(rows))
+        if observed_cache_tokens
+        else _unknown_metric("ratio")
+    )
+    return {
+        "wall_time_ms": _distribution_metric(wall_times, "milliseconds"),
+        "tokens": _distribution_metric(tokens, "tokens"),
+        "cache_token_ratio": cache_ratio,
+        "per_pattern_completion": per_pattern_completion,
+        "agent_selection": {
+            "selected_accuracy": _measured(
+                selected_correct / selection_sample, "ratio", selection_sample
+            ) if selection_sample else _unknown_metric("ratio"),
+            "skipped_accuracy": _measured(
+                skipped_correct / selection_sample, "ratio", selection_sample
+            ) if selection_sample else _unknown_metric("ratio"),
+        },
+        "budget_terminations": {
+            "count": sum(termination_reasons.values()),
+            "reasons": termination_reasons,
+            "measurement_scope": MEASUREMENT_SCOPE,
+            "production_quality_claim": False,
+        },
+    }
 
 
 async def run_deterministic_evaluation(cases_path: Path | str) -> dict[str, Any]:
@@ -378,7 +468,13 @@ async def run_deterministic_evaluation(cases_path: Path | str) -> dict[str, Any]
         measured_tokens: int | None = None
         started = time.perf_counter_ns()
         try:
-            maf_result, calls, task_completed, measured_tokens = await _maf_case(case)
+            maf_observation = await _maf_case(case)
+            maf_result = maf_observation["artifact"]
+            calls = maf_observation["calls"]
+            task_completed = bool(maf_observation["completed"])
+            measured_tokens = maf_observation["tokens"]
+            execution_budget = maf_observation["execution_budget"]
+            cache_observations = maf_observation["cache_observations"]
             fallback = False
         except ForcedRuntimeFailure:
             runtime_error_category = "forced_runtime_failure"
@@ -387,6 +483,8 @@ async def run_deterministic_evaluation(cases_path: Path | str) -> dict[str, Any]
             task_completed = bool(maf_result.get("completed"))
             measured_tokens = maf_result.get("tokens")
             fallback = True
+            execution_budget = {}
+            cache_observations = []
         maf_latency = (time.perf_counter_ns() - started) / 1_000_000
         evidence = _evidence_observation(maf_result, available)
         maf_rows.append(
@@ -403,6 +501,8 @@ async def run_deterministic_evaluation(cases_path: Path | str) -> dict[str, Any]
                 "fallback": fallback,
                 "fallback_attempts": fallback_attempts,
                 "runtime_error_category": runtime_error_category,
+                "budget_termination_reasons": list(execution_budget.get("termination_reasons") or []),
+                "cache_observations": cache_observations,
                 "evidence": evidence,
             }
         )
@@ -410,6 +510,7 @@ async def run_deterministic_evaluation(cases_path: Path | str) -> dict[str, Any]
     report = empty_report_schema()
     report["mode"] = "deterministic"
     report["metrics"] = _aggregate_metrics(maf_rows, selection_applicable=True)
+    report["execution"] = _execution_observations(maf_rows)
     report["runtimes"] = {
         "legacy": {
             "metrics": _aggregate_metrics(legacy_rows, selection_applicable=False),

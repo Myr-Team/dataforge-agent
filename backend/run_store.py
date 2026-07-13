@@ -670,6 +670,10 @@ def _maf_summary(run: dict[str, Any]) -> dict[str, Any] | None:
     workflow_starts: list[int] = []
     workflow_completions: list[int] = []
     token_usage: dict[str, int] = {}
+    persisted_maf: dict[str, Any] = {}
+    artifact = run.get("artifact") or (run.get("final") or {}).get("artifact") or {}
+    if isinstance(artifact, dict) and isinstance(artifact.get("maf"), dict):
+        persisted_maf = artifact["maf"]
     for step in run.get("steps") or []:
         event = step.get("event")
         data = step.get("data") if isinstance(step.get("data"), dict) else {}
@@ -727,6 +731,8 @@ def _maf_summary(run: dict[str, Any]) -> dict[str, Any] | None:
             "duration_ms": workflow_duration_ms,
             "agent_work_ms": int(round(agent_work_ms)) if has_agent_work else None,
             "tokens": token_usage or None,
+            "execution_budget": persisted_maf.get("execution_budget") if isinstance(persisted_maf.get("execution_budget"), dict) else None,
+            "evidence_bundle": persisted_maf.get("evidence_bundle") if isinstance(persisted_maf.get("evidence_bundle"), dict) else None,
         }
     if graph is None:
         return None
