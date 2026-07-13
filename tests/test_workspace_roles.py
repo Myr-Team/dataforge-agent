@@ -77,6 +77,21 @@ def test_stored_member_role_resolves_by_actor_id_or_email(monkeypatch: pytest.Mo
     assert workspace_authz.workspace_role("ws-roles", {"email": "unknown@contoso.com"}) is None
 
 
+def test_workspace_owner_row_without_role_is_owner_but_trusted_editor_is_not_chargeback_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": {"actor_id": "OWNER-OID", "tenant_id": "Tenant-A"},
+            "workspace_members": [{"actor_id": "editor-oid", "tenant_id": "tenant-a", "role": "editor", "status": "active"}],
+        },
+    )
+
+    assert workspace_authz.workspace_role("ws-roles", {"actor_id": "owner-oid", "tenant_id": "tenant-a", "source": "easy_auth"}) == "owner"
+    assert workspace_authz.workspace_role("ws-roles", {"actor_id": "EDITOR-OID", "tenant_id": "TENANT-A", "source": "easy_auth"}) == "editor"
+    assert not workspace_authz.authorize("editor", "chargeback.read")
+
+
 def test_permission_gate_is_disabled_until_explicitly_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
 

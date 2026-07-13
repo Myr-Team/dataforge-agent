@@ -25,9 +25,9 @@ try:
     from .dependency_health import health_dependencies, health_dependency_details
     from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
-    from .identity import actor_from_request, default_actor, is_trusted_identity, member_from_actor, public_actor
+    from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_identity, member_from_actor, public_actor
     from .observability import observability_snapshot
-    from .outcome_store import list_outcome_events, record_outcome_event, source_is_valid, verify_outcome_event
+    from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
@@ -43,9 +43,9 @@ except ImportError:
     from dependency_health import health_dependencies, health_dependency_details
     from graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
-    from identity import actor_from_request, default_actor, is_trusted_identity, member_from_actor, public_actor
+    from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_identity, member_from_actor, public_actor
     from observability import observability_snapshot
-    from outcome_store import list_outcome_events, record_outcome_event, source_is_valid, verify_outcome_event
+    from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
@@ -177,8 +177,8 @@ async def workspace_chargeback(
     actor = actor_from_request(request, fallback=False)
     if not is_trusted_identity(actor):
         raise HTTPException(status_code=403, detail="trusted Easy Auth identity is required for chargeback")
-    member = next((item for item in _current_workspace_members_for_chargeback(workspace_id) if str(item.get("actor_id") or "") == str(actor.get("actor_id") or "")), None)
-    if not member or str(member.get("role") or "").lower() not in {"owner", "admin"}:
+    role = workspace_role(workspace_id, actor)
+    if role not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="workspace permission denied for chargeback.read")
     return await _call(workspace_member_chargeback, workspace_id, from_value, to_value)
 
@@ -1125,6 +1125,7 @@ def workspace_roi_snapshot(workspace_id: str, from_value: str, to_value: str) ->
         runs=runs,
         outcomes=list_outcome_events(workspace_id),
         source_validator=source_is_valid,
+        verification_events=list_verification_events(workspace_id),
         truncated=truncated,
     )
 
@@ -1182,7 +1183,7 @@ def _current_workspace_members_for_chargeback(workspace_id: str) -> list[dict[st
     current: list[dict[str, Any]] = []
     owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), dict) else {}
     if owner and str(owner.get("actor_id") or "").strip():
-        current.append({**owner, "status": "active"})
+        current.append({**owner, "role": "owner", "status": "active"})
     for member in _stored_workspace_members(meta):
         if str(member.get("status") or "").lower() == "active" and str(member.get("actor_id") or "").strip():
             current.append(member)

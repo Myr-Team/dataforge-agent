@@ -55,3 +55,20 @@
 
 - `tests/test_roi_security.py` covers strict price validation, non-finite rates, overlapping windows, total-only token usage, mixed verified/unverified outcomes, untrusted actor exclusion, currency breakdown, HMAC workspace isolation, duplicate usage IDs, and forged-source exclusion.
 - `tests/test_actor_audit_usage.py` covers trusted Easy Auth identity requirements and persisted run trust metadata.
+
+## Second Review Remediation
+
+- Any unpriced or unknown-currency run usage now makes its group, owning member, and workspace aggregate `cost.total: null` with `cost.status: partial`. Priced currency breakdown remains visible for audit, but is never promoted to a misleading total.
+- Snapshot verification reads persisted `verification_events`, not embedded outcome data. A verification event must have its own exact ID, matching workspace and `outcome_verification` kind, a trusted Easy Auth reviewer, a matching canonical reviewer identity, and a reviewer distinct from the outcome actor after lower-case tenant/actor normalization.
+- `verified` now requires every in-window source-linked observed outcome, including outcomes with no `business_value`, to have that valid independent event. All missing or invalid evidence IDs appear in `unverified_outcome_event_ids`.
+- Source checks use exact same-workspace lookups: run ID through `get_run`, canonical document hash for file ID, and artifact job/registry ID through `get_artifact_job`. Filename and path wildcard matching are not accepted.
+- Chargeback authorization now directly resolves the canonical current workspace role after requiring trusted Easy Auth. A `workspace_owner` row remains owner even without a `role` field; editors are denied. Member attribution uses tenant-scoped canonical identity keys.
+- `BusinessValueSummary`, `TimeValueSummary`, `ChargebackGroup`, `ChargebackMember`, and cost structures are Pydantic contracts. Business values, costs, rates, tokens, and currency breakdowns reject negative, NaN, or infinite input; currencies require `^[A-Z]{3}$`.
+- Message and task activity are deduplicated by workspace, kind, and stable message/task ID. Responses expose `duplicate_event_ids` and `duplicate_event_count`; run usage event de-duplication remains separate.
+
+## Second Review Verification
+
+- Focused: `python -m pytest -q tests/test_roi_security.py tests/test_roi_service.py tests/test_outcome_roi.py tests/test_workspace_roles.py tests/test_actor_audit_usage.py` -> `78 passed`.
+- Full: `python -m pytest -q` -> `458 passed, 1 existing ExperimentalWarning`.
+- Compile/import: `python -m compileall -q backend`; direct imports of `backend.roi_service`, `backend.outcome_store`, and `backend.control_plane`.
+- Diff: `git diff --check` completed with no whitespace errors. Unrelated untracked `output/` remains excluded.

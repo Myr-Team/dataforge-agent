@@ -12,12 +12,14 @@ from uuid import uuid4
 
 try:
     from .blob_store import download_blob_json, upload_blob_json
-    from .identity import is_trusted_identity, public_actor
+    from .artifact_jobs import get_artifact_job
+    from .identity import canonical_actor_identity, is_trusted_identity, public_actor
     from .run_store import get_run
     from .workspace_store import get_workspace_detail
 except ImportError:
     from blob_store import download_blob_json, upload_blob_json
-    from identity import is_trusted_identity, public_actor
+    from artifact_jobs import get_artifact_job
+    from identity import canonical_actor_identity, is_trusted_identity, public_actor
     from run_store import get_run
     from workspace_store import get_workspace_detail
 
@@ -95,7 +97,7 @@ def record_outcome_event(
     with _LOCK:
         events = list_outcome_events(normalized_workspace)
         events.append(event)
-        _persist(normalized_workspace, events)
+        _persist(normalized_workspace, events, list_verification_events(normalized_workspace))
     return event
 
 
@@ -109,12 +111,13 @@ def verify_outcome_event(
     normalized_workspace = _required_text(workspace_id, "workspace_id", 160)
     normalized_event_id = _required_text(event_id, "event_id", 80)
     clean_reviewer = public_actor(dict(reviewer or {}))
-    reviewer_id = _optional_text(clean_reviewer.get("actor_id"), 240)
-    if not reviewer_id or not is_trusted_identity(reviewer):
+    reviewer_identity = canonical_actor_identity(reviewer)
+    if not reviewer_identity or not is_trusted_identity(reviewer):
         raise ValueError("reviewer must have a trusted actor_id")
 
     with _LOCK:
         events = list_outcome_events(normalized_workspace)
+        verification_events = list_verification_events(normalized_workspace)
         matched: dict[str, Any] | None = None
         now = _now()
         for item in events:
@@ -127,50 +130,63 @@ def verify_outcome_event(
             actor = item.get("actor") if isinstance(item.get("actor"), Mapping) else {}
             if not item.get("trusted_identity"):
                 raise ValueError("outcome actor must be trusted")
-            if reviewer_id == _optional_text(actor.get("actor_id"), 240):
+            if reviewer_identity == canonical_actor_identity(actor):
                 raise ValueError("verification requires an independent reviewer")
             if str((item.get("verification") or {}).get("status") or "").lower() == "verified":
                 raise ValueError("outcome is already verified")
             verification_event_id = f"verification_{uuid4().hex[:16]}"
+            verification_event = {
+                "event_id": verification_event_id,
+                "workspace_id": normalized_workspace,
+                "kind": "outcome_verification",
+                "outcome_event_id": normalized_event_id,
+                "actor": clean_reviewer,
+                "trusted_identity": True,
+                "created_at": now,
+                **({"note": _optional_text(note, 500)} if _optional_text(note, 500) else {}),
+            }
             item["verification"] = {
                 "status": "verified",
                 "verification_event_id": verification_event_id,
                 "verified_at": now,
                 "reviewer": clean_reviewer,
                 "trusted_identity": True,
-                "event": {
-                    "event_id": verification_event_id,
-                    "workspace_id": normalized_workspace,
-                    "kind": "outcome_verification",
-                    "actor": clean_reviewer,
-                    "trusted_identity": True,
-                    "created_at": now,
-                },
+                "event": verification_event,
                 **({"note": _optional_text(note, 500)} if _optional_text(note, 500) else {}),
             }
             item["updated_at"] = now
+            verification_events.append(verification_event)
             matched = item
             break
         if matched is None:
             raise FileNotFoundError(normalized_event_id)
-        _persist(normalized_workspace, events)
+        _persist(normalized_workspace, events, verification_events)
         return matched
 
 
 def list_outcome_events(workspace_id: str) -> list[dict[str, Any]]:
     normalized_workspace = _required_text(workspace_id, "workspace_id", 160)
+    return _state_items(normalized_workspace, "events")
+
+
+def list_verification_events(workspace_id: str) -> list[dict[str, Any]]:
+    normalized_workspace = _required_text(workspace_id, "workspace_id", 160)
+    return _state_items(normalized_workspace, "verification_events")
+
+
+def _state_items(workspace_id: str, key: str) -> list[dict[str, Any]]:
     by_id: dict[str, dict[str, Any]] = {}
-    path = _local_path(normalized_workspace)
+    path = _local_path(workspace_id)
     if path.exists():
         try:
             local = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             local = {}
-        for item in local.get("events") or []:
+        for item in local.get(key) or []:
             if isinstance(item, dict) and item.get("event_id"):
                 by_id[str(item["event_id"])] = item
-    remote = download_blob_json(_blob_name(normalized_workspace)) or {}
-    for item in remote.get("events") or []:
+    remote = download_blob_json(_blob_name(workspace_id)) or {}
+    for item in remote.get(key) or []:
         if isinstance(item, dict) and item.get("event_id"):
             current = by_id.get(str(item["event_id"]))
             if current is None or str(item.get("updated_at") or "") > str(current.get("updated_at") or ""):
@@ -178,12 +194,13 @@ def list_outcome_events(workspace_id: str) -> list[dict[str, Any]]:
     return sorted(by_id.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
-def _persist(workspace_id: str, events: list[dict[str, Any]]) -> None:
+def _persist(workspace_id: str, events: list[dict[str, Any]], verification_events: list[dict[str, Any]]) -> None:
     value = {
-        "version": 1,
+        "version": 2,
         "workspace_id": workspace_id,
         "updated_at": _now(),
         "events": sorted(events, key=lambda item: str(item.get("created_at") or ""), reverse=True),
+        "verification_events": sorted(verification_events, key=lambda item: str(item.get("created_at") or ""), reverse=True),
     }
     path = _local_path(workspace_id)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,12 +251,15 @@ def _source_reference_exists(workspace_id: str, kind: str, reference: str) -> bo
                 continue
             source_file = str(item.get("source_file") or item.get("name") or "")
             file_id = hashlib.sha256(source_file.encode("utf-8")).hexdigest()[:16]
-            if reference in {file_id, source_file, str(item.get("name") or "")}:
+            if reference == file_id:
                 return True
         return False
     if kind == "artifact_id":
-        safe = Path(str(reference)).name
-        return bool(safe and any((ROOT / "generated-outputs").glob(f"**/{safe}")))
+        try:
+            job = get_artifact_job(reference)
+        except (FileNotFoundError, ValueError):
+            return False
+        return str(job.get("job_id") or "") == reference and str(job.get("workspace_id") or "") == workspace_id
     return False
 
 
@@ -304,15 +324,15 @@ def _normalize_business_value(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         raise ValueError("business_value must be an object")
     amount = _optional_number(value.get("value"), "business_value.value")
-    currency = _optional_text(value.get("currency"), 12)
+    currency = _optional_text(value.get("currency"), 3)
     source = _optional_text(value.get("source"), 240)
     formula = _optional_text(value.get("formula"), 500)
     status = _optional_text(value.get("status"), 32)
-    if amount is None or not currency or not source or not formula or not status:
+    if amount is None or amount < 0 or not currency or not re.fullmatch(r"[A-Z]{3}", currency) or not source or not formula or not status:
         raise ValueError("business_value requires value, currency, source, formula, and status")
     return {
         "value": amount,
-        "currency": currency.upper(),
+        "currency": currency,
         "source": source,
         "formula": formula,
         "status": status,
@@ -323,4 +343,4 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-__all__ = ["list_outcome_events", "record_outcome_event", "verify_outcome_event"]
+__all__ = ["list_outcome_events", "list_verification_events", "record_outcome_event", "source_is_valid", "verify_outcome_event"]

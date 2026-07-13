@@ -118,6 +118,15 @@ def is_trusted_identity(actor: Mapping[str, Any] | None) -> bool:
     return str(clean.get("source") or "") == "easy_auth" and bool(str(clean.get("actor_id") or "").strip())
 
 
+def canonical_actor_identity(actor: Mapping[str, Any] | None) -> tuple[str, str] | None:
+    """Return the tenant-scoped stable identity used for authorization and review checks."""
+    clean = _sanitize_actor(dict(actor or {}), fallback=False)
+    actor_id = str(clean.get("actor_id") or "").strip().lower()
+    if not actor_id:
+        return None
+    return (str(clean.get("tenant_id") or "").strip().lower(), actor_id)
+
+
 def actor_for_history(actor: dict[str, Any] | None) -> dict[str, Any]:
     clean = _sanitize_actor(actor or {}, fallback=True)
     return {

@@ -334,6 +334,7 @@ def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(
     assert denied.status_code == 403
 
     monkeypatch.setattr(control_plane, "_require_workspace_action", lambda *_args: "owner")
+    monkeypatch.setattr(control_plane, "workspace_role", lambda _workspace_id, actor: "owner" if str(actor.get("actor_id") or "").lower() == "owner-oid" else "editor")
     allowed = client.get(
         f"/api/workspaces/ws-roi-api/governance/chargeback{query}",
         headers={"x-ms-client-principal": _principal([{"typ": "oid", "val": "owner-oid"}, {"typ": "preferred_username", "val": "owner@example.com"}]), "x-dataforge-proxy-secret": "test-proxy-secret"},

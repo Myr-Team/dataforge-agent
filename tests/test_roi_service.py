@@ -54,7 +54,7 @@ def _outcome(*, verified: bool = False) -> dict[str, object]:
         verification = {
             "status": "verified",
             "verification_event_id": "verification-1",
-            "reviewer": {"actor_id": "actor-reviewer"},
+            "reviewer": {"actor_id": "actor-reviewer", "tenant_id": "tenant-a"},
             "trusted_identity": True,
         }
     return {
@@ -74,6 +74,17 @@ def _outcome(*, verified: bool = False) -> dict[str, object]:
             "formula": "attributed_incremental_margin",
             "status": "measured",
         },
+    }
+
+
+def _verification(*, reviewer: str = "actor-reviewer", tenant_id: str = "tenant-a") -> dict[str, object]:
+    return {
+        "event_id": "verification-1",
+        "workspace_id": "ws-roi",
+        "kind": "outcome_verification",
+        "outcome_event_id": "outcome-1",
+        "actor": {"actor_id": reviewer, "tenant_id": tenant_id, "source": "easy_auth"},
+        "trusted_identity": True,
     }
 
 
@@ -105,7 +116,15 @@ def test_verified_state_requires_source_linked_outcome_and_independent_reviewer_
 
     assert build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[missing_event], prices=PRICES, source_validator=lambda *_: True)["status"] == "measured"
     assert build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[same_reviewer], prices=PRICES, source_validator=lambda *_: True)["status"] == "measured"
-    assert build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[_outcome(verified=True)], prices=PRICES, source_validator=lambda *_: True)["status"] == "verified"
+    assert build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[_outcome(verified=True)], prices=PRICES, source_validator=lambda *_: True, verification_events=[_verification()])["status"] == "verified"
+
+
+def test_case_insensitive_actor_identity_cannot_bypass_independent_review() -> None:
+    outcome = _outcome(verified=True)
+    outcome["actor"] = {"actor_id": "OWNER", "tenant_id": "Tenant-A"}
+    snapshot = build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[outcome], prices=PRICES, source_validator=lambda *_: True, verification_events=[_verification(reviewer="owner", tenant_id="tenant-a")])
+
+    assert snapshot["status"] == "measured"
 
 
 def test_snapshot_excludes_other_workspace_outcomes_and_lists_evidence_assumptions() -> None:
@@ -152,7 +171,9 @@ def test_message_only_chargeback_never_turns_missing_model_cost_into_zero() -> N
         pseudonym_salt="test-salt",
     )
 
-    assert result["groups"][0]["cost"] == {"total": None, "status": "unknown", "currency": None}
+    assert result["groups"][0]["cost"]["total"] is None
+    assert result["groups"][0]["cost"]["status"] == "unknown"
+    assert result["groups"][0]["cost"]["currency"] is None
 
 
 def test_time_window_requires_utc_bounds_and_rejects_expensive_range() -> None:

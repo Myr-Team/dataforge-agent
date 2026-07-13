@@ -17,7 +17,7 @@ def _configure_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(outcome_store, "OUTCOME_DIR", tmp_path / "outcomes")
     monkeypatch.setattr(outcome_store, "download_blob_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(outcome_store, "upload_blob_json", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(outcome_store, "_source_reference_exists", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(outcome_store, "source_is_valid", lambda *_args, **_kwargs: True)
 
 
 def _actor(name: str = "Owner") -> dict[str, str]:
@@ -60,7 +60,7 @@ def test_observed_outcome_requires_source_lineage(tmp_path: Path, monkeypatch: p
 
 def test_observed_outcome_rejects_forged_cross_workspace_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_store(tmp_path, monkeypatch)
-    monkeypatch.setattr(outcome_store, "_source_reference_exists", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(outcome_store, "source_is_valid", lambda *_args, **_kwargs: False)
 
     with pytest.raises(ValueError, match="real same-workspace"):
         outcome_store.record_outcome_event("ws-roi", _observed_payload(), _actor())
@@ -96,6 +96,9 @@ def test_outcome_verification_is_a_separate_reviewer_action(
     assert verified["verification"]["verification_event_id"].startswith("verification_")
     assert verified["verification"]["reviewer"]["actor_id"] == "oid-reviewer"
     assert outcome_store.list_outcome_events("ws-roi")[0]["event_id"] == event["event_id"]
+    verification_event = outcome_store.list_verification_events("ws-roi")[0]
+    assert verification_event["outcome_event_id"] == event["event_id"]
+    assert verification_event["kind"] == "outcome_verification"
 
 
 def test_roi_states_follow_outcome_evidence() -> None:
@@ -150,6 +153,31 @@ def test_outcome_verification_requires_independent_actor_id(
         outcome_store.verify_outcome_event("ws-roi", event["event_id"], _actor())
 
 
+def test_outcome_verification_compares_canonical_tenant_and_actor_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    event = outcome_store.record_outcome_event("ws-roi", _observed_payload(), {**_actor(), "actor_id": "OID-Owner", "tenant_id": "Tenant-A"})
+
+    with pytest.raises(ValueError, match="independent"):
+        outcome_store.verify_outcome_event("ws-roi", event["event_id"], {**_actor("Reviewer"), "actor_id": "oid-owner", "tenant_id": "tenant-a"})
+
+
+def test_source_reference_requires_exact_workspace_bound_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(outcome_store, "get_run", lambda run_id: {"workspace_id": "ws-roi"} if run_id == "run-exact" else (_ for _ in ()).throw(FileNotFoundError(run_id)))
+    monkeypatch.setattr(outcome_store, "get_workspace_detail", lambda _ws: {"documents": [{"source_file": "feedback.csv"}]})
+    monkeypatch.setattr(outcome_store, "get_artifact_job", lambda job_id: {"workspace_id": "ws-roi", "job_id": job_id} if job_id == "artifact_job_exact" else (_ for _ in ()).throw(FileNotFoundError(job_id)))
+
+    assert outcome_store._source_reference_exists("ws-roi", "run_id", "run-exact")
+    assert not outcome_store._source_reference_exists("ws-roi", "run_id", "run-exact.json")
+    assert not outcome_store._source_reference_exists("ws-roi", "file_id", "feedback.csv")
+    assert outcome_store._source_reference_exists("ws-roi", "file_id", outcome_store.hashlib.sha256(b"feedback.csv").hexdigest()[:16])
+    assert outcome_store._source_reference_exists("ws-roi", "artifact_id", "artifact_job_exact")
+    assert not outcome_store._source_reference_exists("ws-roi", "artifact_id", "artifact_job_exact.json")
+
+
 def test_business_value_requires_source_formula_and_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     payload = _observed_payload()
@@ -157,6 +185,15 @@ def test_business_value_requires_source_formula_and_status(tmp_path: Path, monke
 
     with pytest.raises(ValueError, match="business_value"):
         outcome_store.record_outcome_event("ws-roi", payload, _actor())
+
+
+def test_business_value_rejects_negative_nonfinite_and_noncanonical_currency_before_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    for value, currency in ((-1, "USD"), (float("inf"), "USD"), (1, "usd")):
+        payload = _observed_payload()
+        payload["business_value"] = {"value": value, "currency": currency, "source": "ledger", "formula": "margin", "status": "measured"}
+        with pytest.raises(ValueError, match="business_value"):
+            outcome_store.record_outcome_event("ws-roi", payload, _actor())
 
 
 def test_synthetic_outcome_does_not_promote_roi_state() -> None:
