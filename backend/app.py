@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 try:
     from .artifact_jobs import create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
+    from .task_store import claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
     from .control_plane import build_workspace_dashboard, router as control_plane_router
@@ -71,6 +72,7 @@ try:
     from .tools.render_pdf import render_pdf_report
 except ImportError:
     from artifact_jobs import create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
+    from task_store import claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
     from control_plane import build_workspace_dashboard, router as control_plane_router
@@ -190,6 +192,7 @@ async def upload_workspace(
             }
         )
     try:
+        actor = actor_from_request(request)
         result = await run_in_threadpool(
             create_workspace_upload_job,
             files=files,
@@ -197,9 +200,9 @@ async def upload_workspace(
             description=description,
             requested_workspace_id=workspace_id,
             asset_role=asset_role,
-            actor=actor_from_request(request),
+            actor=actor,
         )
-        _schedule_upload_ingest(result)
+        _schedule_upload_ingest(result, actor=actor)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}") from exc
     except ValueError as exc:
@@ -481,6 +484,45 @@ async def workspace_artifact_jobs(workspace_id: str, request: Request) -> dict[s
     return {"workspace_id": workspace_id, "jobs": jobs, "count": len(jobs)}
 
 
+@app.get("/api/workspaces/{workspace_id}/tasks")
+async def workspace_tasks(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_workspace_action(workspace_id, request, "workspace.read")
+    tasks = await run_in_threadpool(list_tasks, workspace_id)
+    return {"workspace_id": workspace_id, "tasks": tasks, "count": len(tasks)}
+
+
+@app.get("/api/tasks/{task_id}")
+async def task_detail(task_id: str, request: Request) -> dict[str, Any]:
+    try:
+        task = await run_in_threadpool(get_task, task_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}") from exc
+    _require_workspace_action(str(task.get("workspace_id") or ""), request, "workspace.read")
+    return task
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def task_cancel(task_id: str, request: Request) -> dict[str, Any]:
+    try:
+        task = await run_in_threadpool(get_task, task_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}") from exc
+    _require_workspace_action(str(task.get("workspace_id") or ""), request, str(task.get("action") or "workspace.read"))
+    return await run_in_threadpool(request_cancel, task_id)
+
+
+@app.post("/api/tasks/{task_id}/retry", status_code=202)
+async def task_retry(task_id: str, request: Request) -> dict[str, Any]:
+    try:
+        task = await run_in_threadpool(get_task, task_id)
+        _require_workspace_action(str(task.get("workspace_id") or ""), request, str(task.get("action") or "workspace.read"))
+        return await run_in_threadpool(retry_task, task_id, actor_from_request(request))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/playbook")
 async def playbook(req: PlaybookRequest, request: Request) -> dict[str, Any]:
     _require_workspace_action(req.workspace_id, request, "analysis.run")
@@ -685,11 +727,17 @@ async def _recover_stale_upload_ingest(workspace_id: str) -> None:
         _schedule_upload_ingest(job, delay_seconds=0.0)
 
 
-def _schedule_upload_ingest(result: dict[str, Any], *, delay_seconds: float | None = None) -> None:
+def _schedule_upload_ingest(
+    result: dict[str, Any],
+    *,
+    actor: Mapping[str, Any] | None = None,
+    delay_seconds: float | None = None,
+) -> None:
     job_id = result.get("ingest_job_id") or result.get("job_id")
     workspace_id = result.get("workspace_id")
     if not job_id or not workspace_id:
         return
+    task_id = _ensure_upload_ingest_task(result, actor)
     key = f"{workspace_id}:{job_id}"
     if key in _INGEST_KEYS:
         return
@@ -698,7 +746,7 @@ def _schedule_upload_ingest(result: dict[str, Any], *, delay_seconds: float | No
     delay = _INGEST_START_DELAY_SECONDS if delay_seconds is None else max(0.0, float(delay_seconds))
 
     def _start() -> None:
-        task = asyncio.create_task(_run_upload_ingest_background(str(workspace_id), str(job_id)))
+        task = asyncio.create_task(_run_upload_ingest_background(str(workspace_id), str(job_id), task_id))
         _INGEST_TASKS.add(task)
         def _done(done_task: asyncio.Task[Any]) -> None:
             _INGEST_TASKS.discard(done_task)
@@ -709,11 +757,57 @@ def _schedule_upload_ingest(result: dict[str, Any], *, delay_seconds: float | No
     loop.call_later(delay, _start)
 
 
-async def _run_upload_ingest_background(workspace_id: str, job_id: str) -> None:
+def _ensure_upload_ingest_task(result: Mapping[str, Any], actor: Mapping[str, Any] | None) -> str | None:
+    existing = str(result.get("_dataforge_task_id") or "")
+    if existing:
+        return existing
+    try:
+        task = create_task(
+            {
+                "workspace_id": str(result.get("workspace_id") or ""),
+                "task_type": "workspace.ingest",
+                "action": "file.create",
+                "result": {"ingest_job_id": str(result.get("ingest_job_id") or result.get("job_id") or "")},
+            },
+            actor,
+        )
+    except Exception:
+        return None
+    if isinstance(result, dict):
+        result["_dataforge_task_id"] = task["task_id"]
+    return str(task["task_id"])
+
+
+async def _run_upload_ingest_background(workspace_id: str, job_id: str, task_id: str | None = None) -> None:
     async with _INGEST_SEMAPHORE:
+        if task_id:
+            claimed = await run_in_threadpool(claim_task, task_id, "upload-ingest-worker")
+            if claimed is None:
+                try:
+                    task = await run_in_threadpool(get_task, task_id)
+                    if task.get("status") == "cancel_requested":
+                        await run_in_threadpool(update_task, task_id, status="cancelled")
+                except (FileNotFoundError, ValueError):
+                    pass
+                return
         try:
             await run_in_threadpool(run_workspace_ingest_job, workspace_id, job_id)
         except Exception as exc:
+            if task_id:
+                await run_in_threadpool(
+                    update_task,
+                    task_id,
+                    status="failed",
+                    error={"message": "upload ingest worker failed", "error_type": type(exc).__name__},
+                )
             # The per-file worker persists failures when possible; this guard keeps
             # an unhandled background exception from terminating the event loop.
             print(f"upload ingest job failed workspace={workspace_id} job={job_id}: {type(exc).__name__}: {exc}", flush=True)
+        else:
+            if task_id:
+                await run_in_threadpool(
+                    update_task,
+                    task_id,
+                    status="completed",
+                    result={"ingest_job_id": job_id},
+                )

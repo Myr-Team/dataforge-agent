@@ -14,10 +14,12 @@ try:
     from .blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
     from .identity import public_actor
     from .run_store import get_run, list_runs
+    from .task_store import claim_task, create_task, get_task, update_task
 except ImportError:
     from blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
     from identity import public_actor
     from run_store import get_run, list_runs
+    from task_store import claim_task, create_task, get_task, update_task
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,7 +84,22 @@ def create_artifact_job(
             "created_at": now,
             "updated_at": now,
         }
-        return _persist_job(job)
+        persisted = _persist_job(job)
+        try:
+            task = create_task(
+                {
+                    "workspace_id": workspace_id,
+                    "task_type": "artifact.generate",
+                    "action": "artifact.generate",
+                    "result": {"artifact_job_id": persisted["job_id"]},
+                },
+                actor,
+            )
+            persisted["task_id"] = task["task_id"]
+            persisted = _persist_job(persisted)
+        except Exception:
+            pass
+        return persisted
 
 
 def get_artifact_job(job_id: str) -> dict[str, Any]:
@@ -135,16 +152,21 @@ def run_artifact_job(job_id: str) -> dict[str, Any]:
     job = _claim_job(job_id)
     if job is None:
         return get_artifact_job(job_id)
+    task = _claim_linked_task(job)
+    if task is None and _linked_task_cancel_requested(job):
+        cancelled = _update_job(job_id, status="cancelled", completed_at=_now(), retryable=False)
+        return _sync_linked_task(cancelled)
     try:
         result = _produce(_producer_payload(job))
     except Exception as exc:
-        return _update_job(
+        failed = _update_job(
             job_id,
             status="failed",
             completed_at=_now(),
             retryable=True,
             errors={"job": {"message": "产物生成任务失败，可重试。", "error_type": type(exc).__name__}},
         )
+        return _sync_linked_task(failed)
 
     warnings = [item for item in (result.get("warnings") or []) if isinstance(item, dict)]
     warning_by_kind = {str(item.get("kind") or ""): item for item in warnings if item.get("kind")}
@@ -164,7 +186,7 @@ def run_artifact_job(job_id: str) -> dict[str, Any]:
             "error": str((warning or {}).get("error") or value.get("error") or "no artifact url")[:500],
         }
     status = "completed" if artifacts and not errors else "partial" if artifacts else "failed"
-    return _update_job(
+    completed = _update_job(
         job_id,
         status=status,
         artifacts=artifacts,
@@ -178,6 +200,41 @@ def run_artifact_job(job_id: str) -> dict[str, Any]:
         retryable=status in {"partial", "failed"},
         completed_at=_now(),
     )
+    return _sync_linked_task(completed)
+
+
+def _claim_linked_task(job: Mapping[str, Any]) -> dict[str, Any] | None:
+    task_id = str(job.get("task_id") or "")
+    return claim_task(task_id, "artifact-worker") if task_id else None
+
+
+def _linked_task_cancel_requested(job: Mapping[str, Any]) -> bool:
+    task_id = str(job.get("task_id") or "")
+    if not task_id:
+        return False
+    try:
+        return get_task(task_id).get("status") == "cancel_requested"
+    except FileNotFoundError:
+        return False
+
+
+def _sync_linked_task(job: Mapping[str, Any]) -> dict[str, Any]:
+    task_id = str(job.get("task_id") or "")
+    if not task_id:
+        return dict(job)
+    status = str(job.get("status") or "failed")
+    changes: dict[str, Any] = {
+        "status": status if status in {"partial", "completed", "failed", "cancelled"} else "failed",
+        "result": {"artifact_job_id": job.get("job_id")},
+        "completed_at": job.get("completed_at") or _now(),
+    }
+    if status in {"failed", "partial"}:
+        changes["error"] = {"message": "artifact job did not complete", "status": status}
+    try:
+        update_task(task_id, **changes)
+    except (FileNotFoundError, ValueError):
+        pass
+    return dict(job)
 
 
 def _producer_payload(job: Mapping[str, Any]) -> dict[str, Any]:

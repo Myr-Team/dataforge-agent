@@ -28,6 +28,7 @@ try:
     from .orchestrator import orchestrate_chat
     from .schemas import ChatRequest
     from .workspace_authz import require_workspace_permission
+    from .task_store import claim_task, create_task, update_task
     from .workspace_store import (
         WORKSPACES,
         _CONTEXT_CACHE,
@@ -46,6 +47,7 @@ except ImportError:
     from orchestrator import orchestrate_chat
     from schemas import ChatRequest
     from workspace_authz import require_workspace_permission
+    from task_store import claim_task, create_task, update_task
     from workspace_store import (
         WORKSPACES,
         _CONTEXT_CACHE,
@@ -311,7 +313,7 @@ def create_workspace_file(workspace_id: str, body: dict[str, Any], actor: dict[s
         for item in result.get("documents") or []
         if isinstance(item, dict) and item.get("ingest_job_id") == result.get("ingest_job_id")
     }
-    _run_ingest_if_present(result)
+    _run_ingest_if_present(result, actor=actor)
     created = None
     files = list_workspace_files(workspace_id)
     for group in files.get("groups") or []:
@@ -735,7 +737,7 @@ def import_sql_table(workspace_id: str, body: dict[str, Any], actor: dict[str, A
         requested_workspace_id=workspace_id,
         asset_role="reference",
     )
-    _run_ingest_if_present(result)
+    _run_ingest_if_present(result, actor=actor, task_type="connector.sql.import")
     _record_import_history(workspace_id, result, actor, f"Imported SQL table {table}")
     return {"workspace_id": workspace_id, "connection_id": connection_id, "imported": True, "source": {"kind": "sql", "table": table}, "upload": result}
 
@@ -816,7 +818,7 @@ def import_blob_item(workspace_id: str, body: dict[str, Any], actor: dict[str, A
         requested_workspace_id=workspace_id,
         asset_role="reference",
     )
-    _run_ingest_if_present(result)
+    _run_ingest_if_present(result, actor=actor, task_type="connector.blob.import")
     _record_import_history(workspace_id, result, actor, f"Imported Blob {blob}")
     return {"workspace_id": workspace_id, "connection_id": connection_id, "imported": True, "source": {"kind": "blob", "container": container, "blob": blob}, "upload": result}
 
@@ -1980,11 +1982,33 @@ def _table_to_csv_bytes(headers: list[str], rows: list[list[Any]]) -> bytes:
     return out.getvalue().encode("utf-8")
 
 
-def _run_ingest_if_present(result: dict[str, Any]) -> None:
+def _run_ingest_if_present(
+    result: dict[str, Any],
+    *,
+    actor: dict[str, Any] | None = None,
+    task_type: str = "workspace.ingest",
+) -> None:
     job_id = result.get("ingest_job_id")
     workspace_id = result.get("workspace_id")
     if job_id and workspace_id:
-        run_workspace_ingest_job(str(workspace_id), str(job_id))
+        task = create_task(
+            {
+                "workspace_id": str(workspace_id),
+                "task_type": task_type,
+                "action": "file.create",
+                "result": {"ingest_job_id": str(job_id)},
+            },
+            actor,
+        )
+        claimed = claim_task(task["task_id"], "ingest-worker")
+        if claimed is None:
+            return
+        try:
+            run_workspace_ingest_job(str(workspace_id), str(job_id))
+        except Exception as exc:
+            update_task(task["task_id"], status="failed", error={"message": "ingest worker failed", "error_type": type(exc).__name__})
+            raise
+        update_task(task["task_id"], status="completed", result={"ingest_job_id": str(job_id)}, completed_at=_utc_now())
 
 
 def _safe_filename(value: str) -> str:
