@@ -396,6 +396,62 @@ def test_noop_and_malformed_durable_journal_fail_closed_without_cas_write(monkey
         invitation_store.create_pending_invitation(meta, "ws-graph", email="bad@contoso.com", role="viewer", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
 
 
+@pytest.mark.parametrize("first_state", ["accepted", "failed", "revoked"])
+def test_journal_replay_rejects_a_non_pending_first_state(first_state):
+    events = [{"event_type": "state", "invitation_id": "invite-1", "state": first_state, "email": "user@contoso.com", "role": "viewer", "accepted_identity": {"actor_id": "oid", "tenant_id": "tenant"}}]
+
+    with pytest.raises(invitation_store.InvitationPersistenceError, match="sequence"):
+        invitation_store._latest_events({"workspace_invitation_events": events})
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"event_type": "state", "invitation_id": "invite-1", "state": "accepted", "email": "user@contoso.com", "role": "viewer", "accepted_identity": {"actor_id": "", "tenant_id": "tenant"}},
+        {"event_type": "activation", "invitation_id": "invite-1", "email": "user@contoso.com", "role": "viewer", "accepted_identity": {"actor_id": "other", "tenant_id": "tenant"}},
+        {"event_type": "role_change", "invitation_id": "invite-1", "email": "user@contoso.com", "role": "owner"},
+        {"event_type": "role_change", "email": "user@contoso.com", "role": "viewer"},
+    ],
+)
+def test_journal_replay_rejects_missing_or_mismatched_identity_and_malformed_role_change(event):
+    events = [
+        {"event_type": "state", "invitation_id": "invite-1", "state": "pending", "email": "user@contoso.com", "role": "viewer"},
+    ]
+    if event["event_type"] == "activation":
+        events.append({"event_type": "state", "invitation_id": "invite-1", "state": "accepted", "email": "user@contoso.com", "role": "viewer", "accepted_identity": {"actor_id": "oid", "tenant_id": "tenant"}})
+    events.append(event)
+
+    with pytest.raises(invitation_store.InvitationPersistenceError):
+        invitation_store._latest_events({"workspace_invitation_events": events})
+
+
+def test_pending_retry_uses_effective_role_and_rejects_an_obsolete_role_request():
+    meta = {}
+    pending = invitation_store.create_pending_invitation(meta, "ws", email="user@contoso.com", role="editor", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
+    assert invitation_store.update_invited_member_role(meta, "ws", email="user@contoso.com", role="viewer") is True
+
+    retry = invitation_store.create_pending_invitation(meta, "ws", email="user@contoso.com", role="viewer", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
+
+    assert retry["invitation_id"] == pending["invitation_id"]
+    assert retry["role"] == "viewer"
+    with pytest.raises(invitation_store.InvitationTransitionError, match="effective role"):
+        invitation_store.create_pending_invitation(meta, "ws", email="user@contoso.com", role="editor", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
+    assert len({event["invitation_id"] for event in meta["workspace_invitation_events"] if event.get("event_type") == "state"}) == 1
+
+
+def test_alias_revocation_canonicalizes_oid_and_tenant_independent_of_mapping_order():
+    meta = {}
+    first = invitation_store.create_pending_invitation(meta, "ws", email="first@contoso.com", role="viewer", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
+    second = invitation_store.create_pending_invitation(meta, "ws", email="alias@contoso.com", role="viewer", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
+    invitation_store.transition_invitation(meta, first["invitation_id"], "accepted", identity={"tenant_id": "tenant", "actor_id": "oid", "source": "easy_auth"})
+    invitation_store.transition_invitation(meta, second["invitation_id"], "accepted", identity={"actor_id": "oid", "tenant_id": "tenant", "source": "easy_auth"})
+
+    invitation_store.revoke_effective_invitations(meta, "ws", email="first@contoso.com")
+
+    assert invitation_store.effective_invitation_state(meta, first["invitation_id"]) == "revoked"
+    assert invitation_store.effective_invitation_state(meta, second["invitation_id"]) == "revoked"
+
+
 def test_app_only_resource_tenant_must_match_trusted_inviter_and_never_persists_token(monkeypatch):
     monkeypatch.setenv("GRAPH_TENANT_ID", "tenant-a")
     monkeypatch.setattr(graph_client, "_app_only_token", lambda: "secret-token")

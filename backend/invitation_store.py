@@ -64,8 +64,11 @@ def create_pending_invitation(
         latest = _latest_events(value)
         if not reissue:
             for event in latest.values():
-                if event.get("state") == "pending" and event.get("email") == clean_email and event.get("role") == clean_role:
-                    return dict(event)
+                if event.get("state") == "pending" and event.get("email") == clean_email:
+                    effective_role = _effective_role(value, str(event["invitation_id"]), event.get("role"))
+                    if effective_role != clean_role:
+                        raise InvitationTransitionError("pending invitation has a different effective role")
+                    return {**event, "role": effective_role}
         if reissue:
             _revoke_effective(value, clean_email)
         invitation_id = uuid.uuid4().hex
@@ -141,7 +144,7 @@ def current_invited_member_role(meta: Mapping[str, Any], workspace_id: str, acto
         return None
     roles = {str(event.get("invitation_id") or ""): str(event.get("role") or "") for event in value.get("workspace_invitation_events") or [] if isinstance(event, Mapping) and event.get("event_type") == "role_change"}
     for invitation_id, event in latest.items():
-        if event.get("state") == "accepted" and event.get("accepted_identity") == identity and invitation_id in consumed:
+        if event.get("state") == "accepted" and _identity_key(event.get("accepted_identity")) == _identity_key(identity) and invitation_id in consumed:
             return _role(roles.get(invitation_id) or event.get("role"))
     return None
 
@@ -168,7 +171,7 @@ def accepted_invitation_for_actor(
     value = _read(workspace_id, meta)
     consumed = _consumed_ids(value)
     for event in _latest_events(value).values():
-        if event.get("state") == "accepted" and event.get("accepted_identity") == identity and event.get("invitation_id") not in consumed:
+        if event.get("state") == "accepted" and _identity_key(event.get("accepted_identity")) == _identity_key(identity) and event.get("invitation_id") not in consumed:
             return dict(event)
     return None
 
@@ -186,7 +189,7 @@ def consume_accepted_invitation(
         consumed = _consumed_ids(value)
         for event in _latest_events(value).values():
             invitation_id = str(event.get("invitation_id") or "")
-            if event.get("state") != "accepted" or event.get("accepted_identity") != identity or invitation_id in consumed:
+            if event.get("state") != "accepted" or _identity_key(event.get("accepted_identity")) != _identity_key(identity) or invitation_id in consumed:
                 continue
             role = _effective_role(value, invitation_id, event.get("role"))
             _events(value).append(
@@ -226,7 +229,7 @@ def _transition(
     if target_state == "accepted" and not identity:
         raise InvitationTransitionError("accepted invitation requires trusted oid and tenant id")
     if latest["state"] == target_state:
-        if target_state != "accepted" or latest.get("accepted_identity") == identity:
+        if target_state != "accepted" or _identity_key(latest.get("accepted_identity")) == _identity_key(identity):
             return dict(latest)
         raise InvitationTransitionError("accepted invitation identity cannot change")
     if target_state not in _LEGAL_TRANSITIONS.get(str(latest["state"]), set()):
@@ -298,7 +301,7 @@ def _read(workspace_id: str, meta: Mapping[str, Any]) -> dict[str, Any]:
 def _validate_events(events: Any) -> None:
     if not isinstance(events, list):
         raise InvitationPersistenceError("invitation event journal schema is invalid")
-    latest: dict[str, str] = {}
+    latest: dict[str, dict[str, Any]] = {}
     activated: set[str] = set()
     for event in events:
         if not isinstance(event, Mapping):
@@ -308,27 +311,49 @@ def _validate_events(events: Any) -> None:
             raise InvitationPersistenceError("invitation event journal schema is invalid")
         if not _clean(event.get("invitation_id")):
             raise InvitationPersistenceError("invitation event journal schema is invalid")
+        invitation_id = _clean(event.get("invitation_id"))
         if kind == "state":
-            if _clean(event.get("state")).lower() not in INVITATION_STATES:
+            state = _clean(event.get("state")).lower()
+            if state not in INVITATION_STATES:
                 raise InvitationPersistenceError("invitation event journal schema is invalid")
             try:
-                _email(event.get("email")); _role(event.get("role"))
+                _email(event.get("email"))
+                _role(event.get("role"))
             except InvitationTransitionError as exc:
                 raise InvitationPersistenceError("invitation event journal schema is invalid") from exc
-            invitation_id, state = _clean(event.get("invitation_id")), _clean(event.get("state")).lower()
             previous = latest.get(invitation_id)
-            if previous and state not in _LEGAL_TRANSITIONS.get(previous, set()):
+            if previous is None:
+                if state != "pending":
+                    raise InvitationPersistenceError("invitation event journal sequence is invalid")
+            elif state not in _LEGAL_TRANSITIONS.get(str(previous["state"]), set()):
                 raise InvitationPersistenceError("invitation event journal sequence is invalid")
-            if state == "accepted" and not _identity_key(event.get("accepted_identity")):
+            if state == "accepted" and not _has_identity(event.get("accepted_identity")):
                 raise InvitationPersistenceError("invitation event journal schema is invalid")
-            latest[invitation_id] = state
+            latest[invitation_id] = dict(event)
         elif kind == "activation":
-            identity = _identity_key(event.get("accepted_identity"))
-            if not identity or _role(event.get("role")) not in INVITATION_ROLES or event.get("invitation_id") in activated or latest.get(str(event.get("invitation_id"))) != "accepted":
+            try:
+                _email(event.get("email"))
+                _role(event.get("role"))
+            except InvitationTransitionError as exc:
+                raise InvitationPersistenceError("invitation event journal schema is invalid") from exc
+            accepted = latest.get(invitation_id)
+            if (
+                invitation_id in activated
+                or accepted is None
+                or accepted.get("state") != "accepted"
+                or not _has_identity(event.get("accepted_identity"))
+                or _identity_key(event.get("accepted_identity")) != _identity_key(accepted.get("accepted_identity"))
+            ):
                 raise InvitationPersistenceError("invitation event journal sequence is invalid")
-            activated.add(str(event.get("invitation_id")))
+            activated.add(invitation_id)
         else:
-            if _role(event.get("role")) not in INVITATION_ROLES or latest.get(str(event.get("invitation_id"))) not in {"pending", "accepted"}:
+            try:
+                _email(event.get("email"))
+                _role(event.get("role"))
+            except InvitationTransitionError as exc:
+                raise InvitationPersistenceError("invitation event journal schema is invalid") from exc
+            current = latest.get(invitation_id)
+            if current is None or current.get("state") not in {"pending", "accepted"}:
                 raise InvitationPersistenceError("invitation event journal sequence is invalid")
 
 
@@ -419,6 +444,11 @@ def _identity_fields(identity: Mapping[str, Any] | None) -> dict[str, str]:
 def _identity_key(identity: Mapping[str, Any] | None) -> tuple[str, str]:
     fields = _identity_fields(identity)
     return (fields.get("actor_id", ""), fields.get("tenant_id", ""))
+
+
+def _has_identity(identity: Mapping[str, Any] | None) -> bool:
+    actor_id, tenant_id = _identity_key(identity)
+    return bool(actor_id and tenant_id)
 
 
 def _provider(provider: Mapping[str, Any] | None) -> dict[str, Any]:

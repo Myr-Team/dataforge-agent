@@ -404,6 +404,20 @@ def test_journal_role_is_authoritative_over_stale_metadata_and_interleaved_remov
     assert workspace_authz.workspace_role("ws-roles", actor) is None
 
 
+@pytest.mark.parametrize("metadata_role", ["admin", "owner"])
+def test_activation_uses_viewer_role_from_journal_not_stale_metadata(monkeypatch: pytest.MonkeyPatch, metadata_role: str) -> None:
+    actor = {"actor_id": "oid", "tenant_id": "tenant", "source": "easy_auth"}
+    meta = {"workspace_members": []}
+    pending = invitation_store.create_pending_invitation(meta, "ws", email="user@contoso.com", role="admin", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
+    assert invitation_store.update_invited_member_role(meta, "ws", email="user@contoso.com", role="viewer") is True
+    invitation_store.transition_invitation(meta, pending["invitation_id"], "accepted", identity=actor)
+    meta["workspace_members"] = [{"email": "user@contoso.com", "role": metadata_role, "status": "pending", "invitation_id": pending["invitation_id"]}]
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: meta)
+    monkeypatch.setattr(workspace_authz, "_save_workspace_meta", lambda *_args: None)
+
+    assert workspace_authz.workspace_role("ws", actor) == "viewer"
+
+
 def test_role_changes_before_and_after_accept_are_journal_authoritative(monkeypatch: pytest.MonkeyPatch) -> None:
     actor = {"actor_id": "oid", "tenant_id": "tenant", "source": "easy_auth"}
     for before_accept in (True, False):
