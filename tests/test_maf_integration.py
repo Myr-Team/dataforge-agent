@@ -220,6 +220,103 @@ def _patch_common(monkeypatch: pytest.MonkeyPatch, decision: RoutingDecision) ->
     monkeypatch.setattr(orchestrator, "_run_corpus_analyst", lambda *_args, **_kwargs: _authoritative_corpus())
 
 
+async def _legacy_answer_frames(_req, _decision, _artifact, conversation_id, state):
+    state["text"] = "legacy answer"
+    yield orchestrator._frame("answer_delta", {"delta": state["text"]}, conversation_id)
+
+
+def _legacy_market_decision() -> RoutingDecision:
+    return _decision(
+        experts=["df-corpus-analyst", "df-feasibility-analyst", "df-market-researcher"],
+        output_mode="report",
+    )
+
+
+def _legacy_feasibility(*, empty_evidence: bool) -> dict[str, Any]:
+    return {
+        "opportunity_id": "retail-location-intelligence",
+        "dimensions": [],
+        "verdict": "conditional",
+        "overall_confidence": "speculative",
+        "gap_list": [],
+        "_llm": {"mode": "empty_evidence_deterministic" if empty_evidence else "test"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_legacy_empty_evidence_market_skip_emits_unavailable_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decision = _legacy_market_decision()
+    _patch_common(monkeypatch, decision)
+    monkeypatch.setattr(orchestrator, "runtime_mode", lambda: MafRuntimeMode.OFF)
+    monkeypatch.setattr(orchestrator, "_run_feasibility_analyst", lambda *_args: _legacy_feasibility(empty_evidence=True))
+    monkeypatch.setattr(orchestrator, "_stream_answer_frames", _legacy_answer_frames)
+
+    frames = [
+        frame
+        async for frame in orchestrator._orchestrate_chat_impl(
+            ChatRequest(workspace_id="workspace-1", message="evaluate")
+        )
+    ]
+
+    final = _event_payload(next(frame for frame in frames if frame.startswith("event: final\n")))
+    assert final["artifact"]["market"]["market_evidence_status"] == "unavailable"
+    assert "external_market_evidence_unavailable" in final["artifact"]["feasibility"]["gap_list"]
+    market = final["artifact"]["market"]
+    assert "mode" not in market
+    assert set(market["tool_provenance"]["market_lookup"]).isdisjoint(
+        {"input_summary", "fallback", "require_approval", "risk"}
+    )
+    market_frame = _event_payload(
+        next(
+            frame
+            for frame in frames
+            if frame.startswith("event: tool_result\n")
+            and _event_payload(frame).get("agent") == "df-market-researcher"
+        )
+    )
+    assert set(market_frame["provenance"]).isdisjoint(
+        {"input_summary", "fallback", "require_approval", "risk"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_market_provider_failure_emits_unavailable_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decision = _legacy_market_decision()
+    _patch_common(monkeypatch, decision)
+    monkeypatch.setattr(orchestrator, "runtime_mode", lambda: MafRuntimeMode.OFF)
+    monkeypatch.setattr(orchestrator, "_run_feasibility_analyst", lambda *_args: _legacy_feasibility(empty_evidence=False))
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_market_researcher",
+        lambda _artifact: (_ for _ in ()).throw(
+            RuntimeError("market provider unavailable https://private.example/raw verification.sources=[https://private.example/source]")
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "_stream_answer_frames", _legacy_answer_frames)
+
+    frames = [
+        frame
+        async for frame in orchestrator._orchestrate_chat_impl(
+            ChatRequest(workspace_id="workspace-1", message="evaluate")
+        )
+    ]
+
+    final = _event_payload(next(frame for frame in frames if frame.startswith("event: final\n")))
+    assert final["artifact"]["market"]["market_evidence_status"] == "unavailable"
+    assert "external_market_evidence_unavailable" in final["artifact"]["feasibility"]["gap_list"]
+    public_surface = "\n".join(frames) + repr(final["artifact"])
+    assert "https://private.example" not in public_surface
+    assert "verification.sources" not in public_surface
+    market = final["artifact"]["market"]
+    assert "mode" not in market
+    for provenance in market["tool_provenance"].values():
+        assert set(provenance).isdisjoint({"input_summary", "fallback", "require_approval", "risk"})
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "selected"),

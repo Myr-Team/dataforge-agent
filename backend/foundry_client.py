@@ -13,6 +13,11 @@ from azure.identity import DefaultAzureCredential
 from openai import AzureOpenAI
 from openai.types.responses.response_input_param import FunctionCallOutput
 
+try:
+    from .schemas import MarketQueryPlan
+except ImportError:
+    from schemas import MarketQueryPlan
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = ROOT / "agents" / "prompts"
@@ -1111,16 +1116,26 @@ def run_agent(
 def run_market_mcp_research(payload: dict[str, Any]) -> dict[str, Any]:
     client = _project_client()
     openai_client = client.get_openai_client()
+    evidence_digest = " ".join(
+        str(item.get("quote") or item.get("ref") or "")
+        for item in payload.get("evidence_catalog") or []
+        if isinstance(item, dict)
+    )
+    query_plan = MarketQueryPlan.from_context(
+        str(payload.get("opportunity_id") or payload.get("category") or "current opportunity"),
+        evidence_digest,
+    )
     compact_payload = {
         "category": payload.get("category"),
         "keywords": payload.get("keywords") or [],
         "limit": payload.get("limit") or 5,
         "opportunity_id": payload.get("opportunity_id"),
+        "query_plan": query_plan.model_dump(mode="json"),
         "research_goal": "Call the MCP market_lookup tool and use its returned competitors as the source of truth.",
         "response_requirements": [
             "Use the MCP tool market_lookup before answering.",
             "Do not invent competitors.",
-            "Return compact JSON with competitors and positioning_note.",
+            "Return compact JSON with competitors, source title/snippet/query lineage, and positioning_note.",
             "All MCP results are external market context and must remain market_inferred.",
         ],
     }
@@ -1134,6 +1149,8 @@ def run_market_mcp_research(payload: dict[str, Any]) -> dict[str, Any]:
     competitors, sources = _market_results_from_mcp_trace(tool_calls)
     if not competitors:
         raise RuntimeError("df-market-researcher did not return competitors from MCP market_lookup")
+    for competitor in competitors:
+        competitor.setdefault("retrieval_query", query_plan.retrieval_query)
     return {
         "competitors": competitors,
         "sources": sources,

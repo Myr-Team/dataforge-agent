@@ -1,11 +1,74 @@
 from __future__ import annotations
 
+import re
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 Confidence = Literal["data_confirmed", "market_inferred", "speculative"]
+MarketQueryPurpose = Literal["direct_competitor", "pricing", "demand", "regulation", "adjacent_pattern"]
+
+
+_MARKET_LANGUAGE_STOPWORDS = {
+    "about",
+    "and",
+    "are",
+    "from",
+    "into",
+    "our",
+    "that",
+    "the",
+    "their",
+    "this",
+    "using",
+    "with",
+    "for",
+    "of",
+    "to",
+}
+
+
+def _market_context_terms(value: str) -> list[str]:
+    terms: list[str] = []
+    for token in re.findall(r"[^\W_]+", str(value or "").lower(), flags=re.UNICODE):
+        if re.fullmatch(r"[\u3400-\u9fff]+", token):
+            for size in (2, 3):
+                terms.extend(token[index : index + size] for index in range(max(0, len(token) - size + 1)))
+        elif len(token) >= 3 and token not in _MARKET_LANGUAGE_STOPWORDS and not token.isdigit():
+            terms.append(token)
+    return list(dict.fromkeys(terms))
+
+
+class MarketQueryPlan(BaseModel):
+    query_purpose: MarketQueryPurpose = "direct_competitor"
+    opportunity_terms: list[str] = Field(min_length=1)
+    evidence_terms: list[str] = Field(default_factory=list)
+    retrieval_query: str = Field(min_length=1)
+
+    @classmethod
+    def from_context(cls, opportunity: str, evidence_digest: str) -> "MarketQueryPlan":
+        opportunity_terms = _market_context_terms(opportunity)
+        evidence_terms = [term for term in _market_context_terms(evidence_digest) if term not in opportunity_terms]
+        combined = list(dict.fromkeys([*opportunity_terms, *evidence_terms]))
+        if not combined:
+            combined = ["current", "opportunity"]
+        return cls(
+            opportunity_terms=opportunity_terms or combined,
+            evidence_terms=evidence_terms,
+            retrieval_query=" ".join([*combined[:8], "competitors", "alternatives"]),
+        )
+
+
+class MarketSourceAssessment(BaseModel):
+    verdict: Literal["accepted", "adjacent", "rejected"]
+    query_purpose: MarketQueryPurpose
+    opportunity_terms: list[str]
+    matched_terms: list[str]
+    deterministic_score: float = Field(ge=0, le=1)
+    reasons: list[str] = Field(min_length=1)
+    assessed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class Evidence(BaseModel):
@@ -84,6 +147,10 @@ class MarketCompetitor(BaseModel):
     name: str = Field(min_length=1)
     positioning: str = Field(min_length=1)
     url: str = Field(min_length=1)
+    title: str | None = None
+    snippet: str | None = None
+    retrieval_query: str | None = None
+    relevance: MarketSourceAssessment | None = None
 
     @field_validator("name", "positioning", "url", mode="before")
     @classmethod
@@ -109,6 +176,32 @@ class MarketComparison(BaseModel):
         if not text:
             raise ValueError("market comparison fields must be nonblank")
         return text
+
+
+class GatedMarketComparison(BaseModel):
+    """Post-provider relevance contract; raw provider validation remains strict."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    opportunity_id: str = Field(min_length=1)
+    competitors: list[MarketCompetitor] = Field(default_factory=list)
+    positioning_note: str = Field(min_length=1)
+    market_evidence_status: Literal["available", "unavailable"] = "available"
+    adjacent_sources: list[dict[str, Any]] = Field(default_factory=list)
+    rejected_sources: list[dict[str, Any]] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    llm_metadata: dict[str, Any] = Field(default_factory=dict, alias="_llm")
+
+    @model_validator(mode="after")
+    def _status_matches_accepted_evidence(self) -> "GatedMarketComparison":
+        if self.competitors and self.market_evidence_status != "available":
+            raise ValueError("accepted competitors require available market evidence")
+        if not self.competitors:
+            if self.market_evidence_status != "unavailable":
+                raise ValueError("zero accepted competitors require unavailable market evidence")
+            if not (self.adjacent_sources or self.rejected_sources or self.gaps):
+                raise ValueError("unavailable market evidence requires rejected, adjacent, or gap metadata")
+        return self
 
 
 class ProjectProposal(BaseModel):

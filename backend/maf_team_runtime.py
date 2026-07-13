@@ -34,6 +34,12 @@ from .maf_contracts import (
     MafRunSummary,
     MafRuntimeMode,
 )
+from .market_relevance import (
+    assess_market_comparison,
+    market_relevance_trace,
+    public_market_comparison,
+    unavailable_market_comparison,
+)
 from .schemas import Evidence, MarketComparison
 
 
@@ -336,6 +342,26 @@ class MafTeamRunResult(BaseModel):
     degraded: bool = False
     branch_overlap_ms: float = Field(default=0, ge=0)
     completed_agents: set[str] = Field(default_factory=set)
+    market_relevance_trace: dict[str, Any] = Field(default_factory=dict)
+
+
+def _market_gate_context(request: MafTeamRequest) -> tuple[str, str]:
+    opportunity_parts = [str(request.payload.get("query") or "")]
+    for item in request.authoritative_corpus.opportunities[:8]:
+        if isinstance(item, Mapping):
+            opportunity_parts.extend(
+                str(item.get(key) or "")
+                for key in ("id", "title", "description")
+                if item.get(key)
+            )
+    evidence_parts = [str(hit.content or "") for hit in request.authoritative_corpus.hits[:24]]
+    evidence_parts.extend(str(item.quote or "") for item in request.evidence_catalog[:24])
+    return "\n".join(opportunity_parts), "\n".join(evidence_parts)
+
+
+def _unavailable_market_for_request(request: MafTeamRequest) -> dict[str, Any]:
+    opportunity, _ = _market_gate_context(request)
+    return unavailable_market_comparison(opportunity)
 
 
 def _agent_records(agent_ids: tuple[str, ...]) -> list[MafAgentRecord]:
@@ -971,6 +997,8 @@ class MafTeamRuntime:
         else:
             artifact, gaps, degraded, branches, overlap, rounds = await self._run_review(request, state)
 
+        relevance_trace = dict(artifact.pop("_market_relevance_trace", {}))
+
         selected = plan.selected_agents
         records = [
             MafAgentRecord(
@@ -1025,6 +1053,7 @@ class MafTeamRuntime:
             degraded=degraded,
             branch_overlap_ms=overlap,
             completed_agents=state.completed_agents,
+            market_relevance_trace=relevance_trace,
         )
 
     async def _invoke(
@@ -1328,8 +1357,18 @@ class MafTeamRuntime:
             "hits": [item.model_dump(mode="json", exclude_none=True) for item in request.authoritative_corpus.hits],
             "strong_verdict_allowed": corpus.status == "completed" and _valid_required_corpus(request),
         }
-        if market.status == "completed":
-            artifact["market"] = market.output
+        if market.status == "failed":
+            unavailable_market = _unavailable_market_for_request(request)
+            artifact["market"] = public_market_comparison(unavailable_market)
+            artifact["_market_relevance_trace"] = market_relevance_trace(unavailable_market)
+            gaps.append("external_market_evidence_unavailable")
+        elif market.status == "completed":
+            opportunity, evidence_digest = _market_gate_context(request)
+            gated_market = assess_market_comparison(opportunity, evidence_digest, market.output)
+            artifact["market"] = public_market_comparison(gated_market)
+            artifact["_market_relevance_trace"] = market_relevance_trace(gated_market)
+            if gated_market["market_evidence_status"] == "unavailable":
+                gaps.append("external_market_evidence_unavailable")
         if not artifact["strong_verdict_allowed"]:
             return (
                 _force_insufficient_evidence(artifact)
@@ -1569,6 +1608,9 @@ class MafTeamRuntime:
         elif target == "df-auditor":
             validator = self._audit_validator
             contract_name = "AuditVerdict"
+        elif target == "df-market-researcher":
+            validator = self._validate_market_comparison
+            contract_name = "MarketComparison"
         specialist, specialist_error = await self._invoke(
             target,
             specialist_payload,
@@ -1589,7 +1631,19 @@ class MafTeamRuntime:
             gaps.append("coordinator_unavailable")
         if specialist_error:
             gaps.append("specialist_unavailable")
-        if target == "df-feasibility-analyst" and not specialist_error:
+        if target == "df-market-researcher":
+            if specialist_error:
+                gated_market = _unavailable_market_for_request(request)
+            else:
+                opportunity, evidence_digest = _market_gate_context(request)
+                gated_market = assess_market_comparison(opportunity, evidence_digest, specialist)
+            artifact = {
+                "market": public_market_comparison(gated_market),
+                "_market_relevance_trace": market_relevance_trace(gated_market),
+            }
+            if gated_market["market_evidence_status"] == "unavailable":
+                gaps.append("external_market_evidence_unavailable")
+        elif target == "df-feasibility-analyst" and not specialist_error:
             artifact = {
                 "feasibility": specialist,
                 "_blind_feasibility": copy.deepcopy(specialist),

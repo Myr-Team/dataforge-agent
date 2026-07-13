@@ -152,6 +152,8 @@ def fake_registry() -> FakeRegistry:
                     "name": "Retention Cloud",
                     "positioning": "Automated retention workflows",
                     "url": "https://example.com/retention-cloud",
+                    "title": "Retention improvement analytics platform",
+                    "snippet": "Analyze observed retention improvement with workflow analytics.",
                 }
             ],
             "positioning_note": "Differentiate with workspace-confirmed evidence.",
@@ -1023,10 +1025,94 @@ async def test_market_agent_output_uses_market_comparison_contract_and_reaches_f
     result = await MafTeamRuntime(fake_registry).run(concurrent_request())
 
     market = MarketComparison.model_validate(result.artifact["market"])
-    assert market.competitors[0].name == "Retention Cloud"
-    assert market.positioning_note == "Differentiate with workspace-confirmed evidence."
+    assert market.competitors[0].name == "Retention improvement analytics platform"
+    assert market.positioning_note == "Accepted external market evidence is available for this opportunity."
     assert result.artifact["market"]["_llm"] == {"mode": "foundry_market_agent"}
     assert fake_registry.inputs["df-feasibility-analyst"][0]["market"] == result.artifact["market"]
+
+
+@pytest.mark.asyncio
+async def test_market_gate_rejects_unrelated_sources_before_feasibility_and_retains_trace(
+    fake_registry: FakeRegistry,
+):
+    fake_registry.outputs["df-market-researcher"].clear()
+    fake_registry.outputs["df-market-researcher"].append(
+        {
+            "opportunity_id": "retail-location-intelligence",
+            "competitors": [
+                {
+                    "name": "Strava",
+                    "positioning": "athlete route and workout analytics",
+                    "url": "https://strava.com",
+                    "title": "Strava | Run, Bike, Hike",
+                    "snippet": "Track workouts and athlete routes.",
+                },
+                {
+                    "name": "TrainingPeaks",
+                    "positioning": "training plans for endurance athletes",
+                    "url": "https://trainingpeaks.com",
+                    "title": "TrainingPeaks",
+                    "snippet": "Plan and analyze athlete workouts.",
+                },
+                {
+                    "name": "Garmin Connect",
+                    "positioning": "fitness activity and wearable insights",
+                    "url": "https://connect.garmin.com",
+                    "title": "Garmin Connect",
+                    "snippet": "Track health and fitness activities.",
+                },
+                {
+                    "name": "Nix Biosensors",
+                    "positioning": "hydration biosensors for athletes",
+                    "url": "https://nixbiosensors.com",
+                    "title": "Nix Hydration Biosensor",
+                    "snippet": "Personal hydration data for athletes.",
+                },
+            ],
+            "positioning_note": "Generated comparison must not bypass the gate.",
+        }
+    )
+    request_data = concurrent_request().model_dump(mode="json")
+    request_data.update(
+        {
+            "payload": {
+                "workspace_id": "workspace-1",
+                "query": "evaluate retail location intelligence using footfall and dwell time",
+            },
+            "authoritative_corpus": {
+                "hits": [
+                    {
+                        "id": "site-evidence-row-1",
+                        "source_file": "sites.csv",
+                        "chunk_id": "row-1",
+                        "content": "Site candidates include rent, transit, footfall, and dwell time.",
+                    }
+                ]
+            },
+            "evidence_catalog": [
+                {
+                    "source_type": "corpus",
+                    "ref": "sites.csv#row-1",
+                    "quote": "Site candidates include rent, transit, footfall, and dwell time.",
+                }
+            ],
+        }
+    )
+    request = MafTeamRequest.model_validate(request_data)
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    market_input = fake_registry.inputs["df-feasibility-analyst"][0]["market"]
+    assert market_input["competitors"] == []
+    assert market_input["market_evidence_status"] == "unavailable"
+    assert "rejected_sources" not in market_input
+    assert "external_market_evidence_unavailable" in result.gaps
+    assert [item["name"] for item in result.market_relevance_trace["rejected_sources"]] == [
+        "Strava",
+        "TrainingPeaks",
+        "Garmin Connect",
+        "Nix Biosensors",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1044,7 +1130,19 @@ async def test_signals_only_market_output_is_rejected_as_contract_invalid(
     assert market_branch.status == "failed"
     assert market_branch.error_category == "contract_validation"
     assert "external_signal_unavailable" in result.gaps
-    assert "market" not in result.artifact
+    assert "external_market_evidence_unavailable" in result.gaps
+    assert result.artifact["market"] == {
+        "opportunity_id": "evaluate",
+        "competitors": [],
+        "positioning_note": "No relevant external market evidence was accepted for this opportunity.",
+        "market_evidence_status": "unavailable",
+        "gaps": ["external_market_evidence_unavailable"],
+        "_llm": {},
+        "errors": {},
+        "tool_provenance": {},
+        "external_findings": [],
+        "sources": [],
+    }
 
 
 @pytest.mark.asyncio
@@ -1086,7 +1184,10 @@ async def test_invalid_market_comparison_degrades_optional_branch(
     assert market_branch.status == "failed"
     assert market_branch.error_category == "contract_validation"
     assert "external_signal_unavailable" in result.gaps
-    assert "market" not in result.artifact
+    assert "external_market_evidence_unavailable" in result.gaps
+    assert result.artifact["market"]["competitors"] == []
+    assert result.artifact["market"]["market_evidence_status"] == "unavailable"
+    assert result.market_relevance_trace["market_evidence_status"] == "unavailable"
 
 
 @pytest.mark.asyncio
@@ -1199,6 +1300,9 @@ async def test_optional_market_failure_degrades_without_losing_corpus(fake_regis
     assert result.degraded is True
     assert result.artifact["hits"]
     assert "external_signal_unavailable" in result.gaps
+    assert "external_market_evidence_unavailable" in result.gaps
+    assert result.artifact["market"]["market_evidence_status"] == "unavailable"
+    assert result.market_relevance_trace["market_evidence_status"] == "unavailable"
     assert result.artifact["strong_verdict_allowed"] is True
 
 
@@ -1213,6 +1317,8 @@ async def test_immediate_market_failure_does_not_cancel_slow_corpus(fake_registr
     assert result.artifact["hits"] == authoritative_context()["authoritative_corpus"]["hits"]
     assert result.degraded is True
     assert "external_signal_unavailable" in result.gaps
+    assert "external_market_evidence_unavailable" in result.gaps
+    assert result.artifact["market"]["market_evidence_status"] == "unavailable"
     assert result.branch_overlap_ms > 0
     assert fake_registry.calls.count("df-corpus-analyst") == 1
     assert fake_registry.calls.count("df-market-researcher") == 1
@@ -1232,6 +1338,103 @@ async def test_immediate_market_failure_does_not_cancel_slow_corpus(fake_registr
         and event.status == "completed"
     )
     assert market_failed < corpus_completed
+
+
+@pytest.mark.asyncio
+async def test_market_specialist_handoff_validates_gates_and_traces_unrelated_source(
+    fake_registry: FakeRegistry,
+):
+    fake_registry.outputs["df-market-researcher"].clear()
+    fake_registry.outputs["df-market-researcher"].append(
+        {
+            "opportunity_id": "retail-location-intelligence",
+            "competitors": [
+                {
+                    "name": "Strava",
+                    "positioning": "athlete route and workout analytics",
+                    "url": "https://strava.com",
+                    "title": "Strava | Run, Bike, Hike",
+                    "snippet": "Track workouts and athlete routes.",
+                    "retrieval_query": "retail location intelligence footfall dwell time competitors",
+                }
+            ],
+            "positioning_note": "Generated comparison must not bypass the gate.",
+        }
+    )
+    request = MafTeamRequest(
+        intent="market_research",
+        output_mode="report",
+        needs_workspace=False,
+        needs_external=False,
+        high_impact=False,
+        payload={"workspace_id": "workspace-1", "query": "retail location intelligence using footfall and dwell time"},
+        **authoritative_context(),
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    assert fake_registry.calls == ["df-coordinator", "df-market-researcher"]
+    assert result.artifact["market"]["competitors"] == []
+    assert result.artifact["market"]["market_evidence_status"] == "unavailable"
+    assert "external_market_evidence_unavailable" in result.gaps
+    assert [item["name"] for item in result.market_relevance_trace["rejected_sources"]] == ["Strava"]
+
+
+@pytest.mark.asyncio
+async def test_market_specialist_handoff_rejects_forged_model_fields_without_source_evidence(
+    fake_registry: FakeRegistry,
+):
+    fake_registry.outputs["df-market-researcher"].clear()
+    fake_registry.outputs["df-market-researcher"].append(
+        {
+            "opportunity_id": "retail-location-intelligence",
+            "competitors": [
+                {
+                    "name": "Retail Location Intelligence Footfall Platform",
+                    "positioning": "Direct competitor for site selection and dwell-time analytics.",
+                    "url": "https://example.invalid",
+                }
+            ],
+            "positioning_note": "Generated comparison must not bypass the gate.",
+        }
+    )
+    request = MafTeamRequest(
+        intent="market_research",
+        output_mode="report",
+        needs_workspace=False,
+        needs_external=False,
+        high_impact=False,
+        payload={"workspace_id": "workspace-1", "query": "retail location intelligence using footfall and dwell time"},
+        **authoritative_context(),
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    assert result.artifact["market"]["competitors"] == []
+    assert result.artifact["market"]["market_evidence_status"] == "unavailable"
+    assert result.market_relevance_trace["rejected_sources"][0]["name"] == "Retail Location Intelligence Footfall Platform"
+@pytest.mark.asyncio
+async def test_market_specialist_handoff_invalid_output_emits_unavailable_contract(
+    fake_registry: FakeRegistry,
+):
+    fake_registry.outputs["df-market-researcher"].clear()
+    fake_registry.outputs["df-market-researcher"].append({"competitors": []})
+    request = MafTeamRequest(
+        intent="market_research",
+        output_mode="report",
+        needs_workspace=False,
+        needs_external=False,
+        high_impact=False,
+        payload={"workspace_id": "workspace-1", "query": "retail location intelligence"},
+        **authoritative_context(),
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+
+    assert "specialist_unavailable" in result.gaps
+    assert "external_market_evidence_unavailable" in result.gaps
+    assert result.artifact["market"]["market_evidence_status"] == "unavailable"
+    assert result.market_relevance_trace["market_evidence_status"] == "unavailable"
 
 
 @pytest.mark.asyncio

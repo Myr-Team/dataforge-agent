@@ -68,6 +68,12 @@ try:
         stream_grounded_chat_answer,
     )
     from .identity import actor_from_ui_context, public_actor
+    from .market_relevance import (
+        assess_market_comparison,
+        market_relevance_trace,
+        public_market_comparison,
+        unavailable_market_comparison,
+    )
     from .pm_skills import playbook_suggestion
     from .rag import search
     from .router import deterministic_route
@@ -133,6 +139,12 @@ except ImportError:
         stream_grounded_chat_answer,
     )
     from identity import actor_from_ui_context, public_actor
+    from market_relevance import (
+        assess_market_comparison,
+        market_relevance_trace,
+        public_market_comparison,
+        unavailable_market_comparison,
+    )
     from pm_skills import playbook_suggestion
     from rag import search
     from router import deterministic_route
@@ -2111,8 +2123,29 @@ def _run_market_researcher(artifact: dict[str, Any]) -> dict[str, Any]:
         "tool_provenance": tool_provenance,
     }
     result["_llm"]["mcp"] = mcp_llm
-    _MARKET_CACHE[cache_key] = (now + _MARKET_CACHE_SECONDS, json.loads(json.dumps(result, ensure_ascii=False)))
-    return result
+    MarketComparison.model_validate(result)
+    opportunity_context = "\n".join(
+        str(value)
+        for value in (
+            opportunity,
+            corpus_opportunity.get("title"),
+            corpus_opportunity.get("description"),
+        )
+        if value
+    )
+    evidence_digest = "\n".join(
+        str(hit.get("content") or "")
+        for hit in (artifact.get("corpus", {}).get("hits") or [])[:24]
+        if isinstance(hit, dict) and hit.get("content")
+    )
+    gated = assess_market_comparison(opportunity_context, evidence_digest, result)
+    public_result = public_market_comparison(gated)
+    public_result["_market_relevance_trace"] = market_relevance_trace(gated)
+    _MARKET_CACHE[cache_key] = (
+        now + _MARKET_CACHE_SECONDS,
+        json.loads(json.dumps(public_result, ensure_ascii=False)),
+    )
+    return public_result
 
 
 def _market_inferred_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -5742,10 +5775,7 @@ def _merge_maf_artifact(artifact: dict[str, Any], result: MafTeamRunResult) -> N
             artifact[key] = copy.deepcopy(value)
     market = runtime_artifact.get("market")
     if isinstance(market, dict):
-        artifact["market"] = MarketComparison.model_validate(market).model_dump(
-            mode="json",
-            by_alias=True,
-        )
+        artifact["market"] = public_market_comparison(market)
     artifact["maf"] = result.summary.model_dump(mode="json", exclude_none=True)
     artifact["maf"]["gaps"] = list(result.gaps)
     artifact["maf"]["degraded"] = result.degraded
@@ -5759,6 +5789,8 @@ async def _emit_full_maf_result(
     actor: dict[str, Any],
     result: MafTeamRunResult,
 ) -> AsyncIterator[str]:
+    if result.market_relevance_trace:
+        record_event(conversation_id, "market_relevance_gate", result.market_relevance_trace)
     _merge_maf_artifact(artifact, result)
     required_corpus_failed = "workspace_evidence_unavailable" in result.gaps
     if required_corpus_failed:
@@ -6192,18 +6224,22 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
         feasibility = artifact.get("feasibility", {})
         category = str(feasibility.get("opportunity_id") or "workspace product").replace("-", " ")
         if feasibility.get("_llm", {}).get("mode") == "empty_evidence_deterministic":
-            artifact["market"] = {
-                "competitors": [],
-                "positioning_note": "Market lookup skipped because no workspace evidence matched the request.",
-                "mode": "skipped_empty_evidence",
-                "tool_provenance": {
-                    "market_lookup": _tool_provenance(
-                        "market_lookup",
-                        category,
-                        fallback="Skipped because no workspace evidence matched the request.",
-                    )
-                },
+            unavailable_market = unavailable_market_comparison(
+                str(feasibility.get("opportunity_id") or "current-opportunity"),
+                "Market lookup skipped because no workspace evidence matched the request.",
+            )
+            unavailable_market["tool_provenance"] = {
+                "market_lookup": _tool_provenance(
+                    "market_lookup",
+                    category,
+                    fallback="Skipped because no workspace evidence matched the request.",
+                )
             }
+            artifact["market"] = public_market_comparison(unavailable_market)
+            gap_list = artifact.setdefault("feasibility", {}).setdefault("gap_list", [])
+            if "external_market_evidence_unavailable" not in gap_list:
+                gap_list.append("external_market_evidence_unavailable")
+            record_event(conv_id, "market_relevance_gate", market_relevance_trace(unavailable_market))
             yield _frame(
                 "tool_result",
                 {
@@ -6253,7 +6289,15 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
                     "research_market",
                 ):
                     yield frame
-                artifact["market"] = await market_task
+                market_result = await market_task
+                relevance_trace = dict(market_result.pop("_market_relevance_trace", {}))
+                if relevance_trace:
+                    record_event(conv_id, "market_relevance_gate", relevance_trace)
+                artifact["market"] = market_result
+                if market_result.get("market_evidence_status") == "unavailable":
+                    gap_list = artifact.setdefault("feasibility", {}).setdefault("gap_list", [])
+                    if "external_market_evidence_unavailable" not in gap_list:
+                        gap_list.append("external_market_evidence_unavailable")
                 market_provenance = artifact["market"].get("tool_provenance", {})
                 yield _frame(
                     "tool_result",
@@ -6280,25 +6324,43 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
                     conv_id,
                 )
             except Exception as exc:
-                artifact["market"] = {
-                    "competitors": [],
-                    "positioning_note": "Market lookup unavailable.",
-                    "error": str(exc),
-                    "tool_provenance": {
-                        "market_lookup": _tool_provenance("market_lookup", category, error=str(exc), fallback="Market lookup failed gracefully."),
-                        "foundry_native_web_search": _tool_provenance(
-                            "foundry_native_web_search",
-                            category,
-                            source_type="foundry_web",
-                            confidence="market_inferred",
-                            error=str(exc),
-                            fallback="Foundry web search failed gracefully.",
-                        ),
-                    },
+                error_category = _maf_error_category(exc)
+                unavailable_market = unavailable_market_comparison(
+                    str(feasibility.get("opportunity_id") or "current-opportunity"),
+                    "Market lookup unavailable.",
+                )
+                market_lookup_provenance = _tool_provenance(
+                    "market_lookup",
+                    category,
+                    fallback="Market lookup unavailable.",
+                )
+                market_lookup_provenance["error_category"] = error_category
+                web_search_provenance = _tool_provenance(
+                    "foundry_native_web_search",
+                    category,
+                    source_type="foundry_web",
+                    confidence="market_inferred",
+                    fallback="Foundry web search unavailable.",
+                )
+                web_search_provenance["error_category"] = error_category
+                unavailable_market["tool_provenance"] = {
+                    "market_lookup": market_lookup_provenance,
+                    "foundry_native_web_search": web_search_provenance,
                 }
+                artifact["market"] = public_market_comparison(unavailable_market)
+                gap_list = artifact.setdefault("feasibility", {}).setdefault("gap_list", [])
+                if "external_market_evidence_unavailable" not in gap_list:
+                    gap_list.append("external_market_evidence_unavailable")
+                record_event(conv_id, "market_relevance_gate", market_relevance_trace(unavailable_market))
                 yield _frame(
                     "tool_result",
-                    {"agent": "df-market-researcher", "name": "market_lookup", "count": 0, "error": str(exc), "provenance": artifact["market"]["tool_provenance"]["market_lookup"]},
+                    {
+                        "agent": "df-market-researcher",
+                        "name": "market_lookup",
+                        "count": 0,
+                        "error_category": error_category,
+                        "provenance": artifact["market"]["tool_provenance"]["market_lookup"],
+                    },
                     conv_id,
                 )
                 yield _frame(
@@ -6307,7 +6369,7 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
                         "agent": "df-market-researcher",
                         "name": "foundry_native_web_search",
                         "count": 0,
-                        "error": str(exc),
+                        "error_category": error_category,
                         "provenance": artifact["market"]["tool_provenance"]["foundry_native_web_search"],
                     },
                     conv_id,
