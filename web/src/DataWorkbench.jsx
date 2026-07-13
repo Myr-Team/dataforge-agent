@@ -59,6 +59,7 @@ import {
   connectorRecordsForWorkspaceResponse,
   connectorViewModel,
   commitGuardedConnectorAction,
+  commitGuardedFileAction,
   createConnectorActionController,
   createWorkspaceFileController,
   isCurrentConnectorListResponse,
@@ -719,7 +720,9 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
       if (!guard.isCurrent()) return;
       setMapping(res); setMapDraft({});
       showToast("字段映射已保存");
-      dwFileQuality(workspaceId, active.id).then(setQuality).catch(() => {});
+      dwFileQuality(workspaceId, active.id)
+        .then((quality) => { commitGuardedFileAction(guard, () => setQuality(quality)); })
+        .catch(() => {});
     } catch (e) {
       if (guard.isCurrent()) showToast(`保存映射失败：${e.message}`);
     }

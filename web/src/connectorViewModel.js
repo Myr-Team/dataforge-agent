@@ -84,6 +84,12 @@ export function commitGuardedConnectorAction(guard, commit) {
   return true;
 }
 
+export function commitGuardedFileAction(guard, commit) {
+  if (!guard?.isCurrent?.()) return false;
+  commit();
+  return true;
+}
+
 export function createWorkspaceFileController({ currentWorkspaceId }) {
   let requestSequence = 0;
   let actionSequence = 0;

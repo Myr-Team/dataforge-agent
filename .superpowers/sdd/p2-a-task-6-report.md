@@ -224,3 +224,16 @@ Warning: `row_count` is the server-observed import preview count; it is not a cl
 ### Concerns
 
 - A finalization task now requires both task-result identity and persisted lineage identity. Older records that lack either proof fail closed as a connector task mismatch rather than being auto-finalized.
+
+## Sixth Review Closure: Guarded Mapping Quality Refresh
+
+### RED / GREEN
+
+- RED: mapping save launched a second `dwFileQuality` request whose `then(setQuality)` could commit after the originating workspace changed.
+- GREEN: the quality result now commits only through the same file action guard used by mapping save. A stale result is ignored before any `setQuality` write.
+
+### Verification
+
+- Focused connector/data/task regression: `43 passed`.
+- Node behavior suites: `30 passed`, including the delayed mapping-quality workspace-switch case.
+- Production build and `git diff --check`: passed.

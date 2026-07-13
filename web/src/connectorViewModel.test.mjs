@@ -6,6 +6,7 @@ import {
   commitGuardedConnectorAction,
   createConnectorActionController,
   createWorkspaceFileController,
+  commitGuardedFileAction,
   connectorRecordsForWorkspaceResponse,
   connectorViewModel,
   createConnectorListController,
@@ -143,4 +144,19 @@ test("workspace file reload applies only the latest current workspace response",
   resolveA({ groups: [{ id: "a" }] });
   await pendingA;
   assert.deepEqual(applied, [{ id: "ws-b", data: { groups: [{ id: "b" }] } }]);
+});
+
+test("late mapping quality response cannot write after switching workspaces", async () => {
+  let workspaceId = "ws-a";
+  const controller = createWorkspaceFileController({ currentWorkspaceId: () => workspaceId });
+  const guard = controller.beginAction();
+  let resolveQuality;
+  const quality = new Promise((resolve) => { resolveQuality = resolve; });
+  workspaceId = "ws-b";
+  resolveQuality({ score: 99 });
+  const result = await quality;
+  let committed = null;
+
+  assert.equal(commitGuardedFileAction(guard, () => { committed = result; }), false);
+  assert.equal(committed, null);
 });
