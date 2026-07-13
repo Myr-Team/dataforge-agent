@@ -177,6 +177,53 @@ def test_running_artifact_cancel_discards_producer_output_at_the_next_boundary(t
     assert task_store.get_task(job["task_id"])["status"] == "cancelled"
 
 
+def test_producer_exception_after_cancel_commits_cancelled_without_error(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _configure_task_store(tmp_path, monkeypatch)
+    job = artifact_jobs.create_artifact_job(_request(kinds=["pdf"]), actor={})
+    monkeypatch.setattr(artifact_jobs, "_producer_payload", lambda _job: _request(kinds=["pdf"]))
+
+    def produce(_payload):
+        task_store.request_cancel(job["task_id"])
+        raise RuntimeError("producer failed after cancellation")
+
+    monkeypatch.setattr(artifact_jobs, "_produce", produce)
+
+    result = artifact_jobs.run_artifact_job(job["job_id"])
+
+    assert result["status"] == "cancelled"
+    assert result["artifacts"] == {}
+    assert result["errors"] == {}
+    assert task_store.get_task(job["task_id"])["status"] == "cancelled"
+
+
+def test_cancel_winning_final_task_commit_clears_artifact_job_output(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _configure_task_store(tmp_path, monkeypatch)
+    job = artifact_jobs.create_artifact_job(_request(kinds=["pdf"]), actor={})
+    monkeypatch.setattr(artifact_jobs, "_producer_payload", lambda _job: _request(kinds=["pdf"]))
+    monkeypatch.setattr(
+        artifact_jobs,
+        "_produce",
+        lambda _payload: {"artifact_urls": {"pdf": "/api/artifacts/late.pdf"}, "pdf": {"artifact_url": "/api/artifacts/late.pdf"}},
+    )
+    original_update_task = artifact_jobs.update_task
+
+    def cancel_before_terminal_task_update(task_id: str, **changes):
+        if changes.get("status") == "completed":
+            task_store.request_cancel(task_id)
+        return original_update_task(task_id, **changes)
+
+    monkeypatch.setattr(artifact_jobs, "update_task", cancel_before_terminal_task_update)
+
+    result = artifact_jobs.run_artifact_job(job["job_id"])
+
+    assert result["status"] == "cancelled"
+    assert result["artifacts"] == {}
+    assert result["errors"] == {}
+    assert task_store.get_task(job["task_id"])["status"] == "cancelled"
+
+
 def test_terminal_job_is_not_reused_by_idempotency_key(tmp_path: Path, monkeypatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     first = artifact_jobs.create_artifact_job(_request(), actor={}, idempotency_key="repeat")

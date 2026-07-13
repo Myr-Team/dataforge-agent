@@ -666,6 +666,7 @@ async def _task_backed_chat_stream(req: ChatRequest, task_id: str):
                 update_task(task_id, status="cancelled", result=result)
                 terminal = True
                 break
+            suppress_frame = False
             for event, data in _parse_sse_frame(raw_frame):
                 if event == "ready" and isinstance(data, dict) and data.get("conversation_id"):
                     result["run_id"] = str(data["conversation_id"])
@@ -675,16 +676,31 @@ async def _task_backed_chat_stream(req: ChatRequest, task_id: str):
                     version_id = artifact.get("version_id") or artifact.get("version_run_id")
                     if version_id:
                         result["version_id"] = str(version_id)
-                    update_task(task_id, status="completed", result={key: value for key, value in result.items() if value})
+                    outcome = update_task(task_id, status="completed", result={key: value for key, value in result.items() if value})
                     terminal = True
+                    if outcome.get("status") == "cancelled":
+                        suppress_frame = True
+                        break
                 elif event == "error":
-                    update_task(task_id, status="failed", error={"category": "analysis", "code": "stream_error"}, result=result)
+                    outcome = update_task(task_id, status="failed", error={"category": "analysis", "code": "stream_error"}, result=result)
                     terminal = True
+                    if outcome.get("status") == "cancelled":
+                        suppress_frame = True
+                        break
+            if suppress_frame:
+                break
+            if cancel_requested(task_id):
+                update_task(task_id, status="cancelled", result=result)
+                terminal = True
+                break
             yield raw_frame
+            if terminal:
+                break
         if cancel_requested(task_id):
             update_task(task_id, status="cancelled", result=result)
         elif not terminal:
-            update_task(task_id, status="failed", error={"category": "analysis", "code": "stream_incomplete"}, result=result)
+            outcome = update_task(task_id, status="failed", error={"category": "analysis", "code": "stream_incomplete"}, result=result)
+            terminal = outcome.get("status") in {"failed", "cancelled"}
     except asyncio.CancelledError:
         update_task(task_id, status="cancelled", result=result)
         raise

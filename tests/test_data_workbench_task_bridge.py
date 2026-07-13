@@ -157,6 +157,47 @@ def test_running_chat_cancel_discards_later_final_frame_and_result(tmp_path, mon
     assert final["result"] == {"run_id": "run-cancel"}
 
 
+@pytest.mark.parametrize(
+    ("event", "payload", "terminal_status"),
+    [
+        ("final", '{"conversation_id":"run-late","artifact":{"version_id":"version-late"}}', "completed"),
+        ("error", '{"message":"late failure"}', "failed"),
+    ],
+)
+def test_chat_cancel_between_initial_check_and_terminal_yield_hides_late_frame(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    event: str,
+    payload: str,
+    terminal_status: str,
+) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+    task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "analysis.run", "action": "analysis.run"}, actor={})
+    task_store.claim_task(task["task_id"], "chat-stream")
+
+    async def stream(_request):
+        yield f"event: {event}\ndata: {payload}\n\n"
+
+    monkeypatch.setattr(app_module, "orchestrate_chat", stream)
+    original_update_task = app_module.update_task
+
+    def cancel_before_terminal_task_update(task_id: str, **changes):
+        if task_id == task["task_id"] and changes.get("status") == terminal_status:
+            task_store.request_cancel(task_id)
+        return original_update_task(task_id, **changes)
+
+    monkeypatch.setattr(app_module, "update_task", cancel_before_terminal_task_update)
+
+    async def consume() -> list[str]:
+        return [frame async for frame in app_module._task_backed_chat_stream(
+            app_module.ChatRequest(workspace_id="ws-bridge", message="Run analysis"),
+            task["task_id"],
+        )]
+
+    assert asyncio.run(consume()) == []
+    assert task_store.get_task(task["task_id"])["status"] == "cancelled"
+
+
 def test_connector_import_task_requires_connector_manage_action(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_tasks(tmp_path, monkeypatch)
     upload = {"workspace_id": "ws-bridge", "ingest_job_id": "ingest-connector", "documents": []}

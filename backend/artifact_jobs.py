@@ -172,8 +172,7 @@ def run_artifact_job(job_id: str) -> dict[str, Any]:
         task = _claim_linked_task(candidate)
         if task is None:
             if _linked_task_cancel_requested(candidate):
-                cancelled = _update_job(job_id, status="cancelled", completed_at=_now(), retryable=False)
-                return _sync_linked_task(cancelled)
+                return _cancel_job(job_id)
             return get_artifact_job(job_id)
         job = _claim_job(job_id, linked_task_claimed=True)
         if job is None:
@@ -187,14 +186,14 @@ def run_artifact_job(job_id: str) -> dict[str, Any]:
     try:
         result = _produce(_producer_payload(job))
     except Exception as exc:
-        failed = _update_job(
+        if _linked_task_cancel_requested(job):
+            return _cancel_job(job_id)
+        return _commit_terminal_job(
             job_id,
             status="failed",
-            completed_at=_now(),
             retryable=True,
             errors={"job": {"message": "产物生成任务失败，可重试。", "error_type": type(exc).__name__}},
         )
-        return _sync_linked_task(failed)
     if _linked_task_cancel_requested(job):
         return _cancel_job(job_id)
 
@@ -216,7 +215,7 @@ def run_artifact_job(job_id: str) -> dict[str, Any]:
             "error": str((warning or {}).get("error") or value.get("error") or "no artifact url")[:500],
         }
     status = "completed" if artifacts and not errors else "partial" if artifacts else "failed"
-    completed = _update_job(
+    return _commit_terminal_job(
         job_id,
         status=status,
         artifacts=artifacts,
@@ -228,9 +227,7 @@ def run_artifact_job(job_id: str) -> dict[str, Any]:
             if result.get(key) is not None
         },
         retryable=status in {"partial", "failed"},
-        completed_at=_now(),
     )
-    return _sync_linked_task(completed)
 
 
 def retry_artifact_task(task_id: str, actor: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -269,35 +266,89 @@ def _linked_task_cancel_requested(job: Mapping[str, Any]) -> bool:
 
 
 def _cancel_job(job_id: str) -> dict[str, Any]:
-    cancelled = _update_job(
+    return _commit_terminal_job(job_id, status="cancelled", retryable=False)
+
+
+def _commit_terminal_job(
+    job_id: str,
+    *,
+    status: str,
+    artifacts: Mapping[str, Any] | None = None,
+    errors: Mapping[str, Any] | None = None,
+    warnings: list[dict[str, Any]] | None = None,
+    result_meta: Mapping[str, Any] | None = None,
+    retryable: bool,
+) -> dict[str, Any]:
+    """Use the task transition as the terminal-output linearization point."""
+    job = get_artifact_job(job_id)
+    task = _commit_linked_task_terminal(job, status=status, retryable=retryable)
+    resolved_status = str(task.get("status") or status) if task else status
+    if resolved_status == "cancelled":
+        return _update_job(
+            job_id,
+            status="cancelled",
+            artifacts={},
+            errors={},
+            warnings=[],
+            result_meta={},
+            retryable=False,
+            completed_at=task.get("completed_at") if task else _now(),
+        )
+    if task and resolved_status != status:
+        return _update_job(
+            job_id,
+            status=resolved_status,
+            artifacts={},
+            errors={},
+            warnings=[],
+            result_meta={},
+            retryable=bool(task.get("retryable", False)),
+            completed_at=task.get("completed_at") or _now(),
+        )
+    return _update_job(
         job_id,
-        status="cancelled",
-        artifacts={},
-        errors={},
-        warnings=[],
-        retryable=False,
-        completed_at=_now(),
+        status=status,
+        artifacts=dict(artifacts or {}),
+        errors=dict(errors or {}),
+        warnings=list(warnings or []),
+        result_meta=dict(result_meta or {}),
+        retryable=retryable,
+        completed_at=(task or {}).get("completed_at") or _now(),
     )
-    return _sync_linked_task(cancelled)
 
 
-def _sync_linked_task(job: Mapping[str, Any]) -> dict[str, Any]:
+def _commit_linked_task_terminal(job: Mapping[str, Any], *, status: str, retryable: bool) -> dict[str, Any] | None:
     task_id = str(job.get("task_id") or "")
     if not task_id:
-        return dict(job)
-    status = str(job.get("status") or "failed")
+        return None
     changes: dict[str, Any] = {
-        "status": status if status in {"partial", "completed", "failed", "cancelled"} else "failed",
+        "status": status,
         "result": {"artifact_job_id": job.get("job_id")},
-        "completed_at": job.get("completed_at") or _now(),
-        "retryable": bool(job.get("retryable", False)),
+        "completed_at": _now(),
+        "retryable": retryable,
     }
     if status in {"failed", "partial"}:
         changes["error"] = {"message": "artifact job did not complete", "status": status}
+    return update_task(task_id, **changes)
+
+
+def _sync_linked_task(job: Mapping[str, Any]) -> dict[str, Any]:
+    status = str(job.get("status") or "failed")
     try:
-        update_task(task_id, **changes)
+        task = _commit_linked_task_terminal(job, status=status, retryable=bool(job.get("retryable", False)))
     except (FileNotFoundError, ValueError):
-        pass
+        return dict(job)
+    if task and task.get("status") == "cancelled" and status != "cancelled":
+        return _update_job(
+            str(job["job_id"]),
+            status="cancelled",
+            artifacts={},
+            errors={},
+            warnings=[],
+            result_meta={},
+            retryable=False,
+            completed_at=task.get("completed_at") or _now(),
+        )
     return dict(job)
 
 

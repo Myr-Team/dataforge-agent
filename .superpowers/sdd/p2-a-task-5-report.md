@@ -114,3 +114,45 @@
 ### Concerns
 
 - A single external producer call cannot be forcibly interrupted by this process; the worker remains running until that call returns, then discards its output and stops subsequent processing.
+
+## Third Review Fix Iteration
+
+### RED / GREEN
+
+- RED: a producer exception after a running-task cancel persisted an artifact-job error; a cancel racing the artifact final commit could leave the task cancelled but the job completed with output; and a cancellation winning the task update immediately before a final or error SSE yield still leaked that terminal frame.
+- GREEN: the linked task terminal `update_task` return value is now the artifact final-output linearization point. A returned `cancelled` state writes a cancelled job with empty artifacts, errors, warnings, and result metadata; completed, partial, and failed job data is persisted only after the matching task outcome wins.
+- GREEN: the stream updates the task before handling final, error, and incomplete terminal states. It suppresses a terminal frame when the task update resolves to cancelled, rechecks persisted cancellation immediately before every yield, and stops later frames.
+
+### Changes
+
+- Artifact producer exceptions check the linked task cancellation flag before recording any error. Cancellation at that boundary produces a cancelled job/task pair and does not retain the producer error.
+- Artifact terminal completion, partial completion, failure, and cancellation route through one commit helper. That helper first commits the safe linked task terminal state, then persists the matching job result or clears uncommitted job outputs when cancellation won.
+- Recovery synchronization also clears a previously terminal artifact job if its linked task resolves to cancelled.
+- Analysis and iteration SSE terminal final/error handling examines the returned durable task state before forwarding the raw frame. The incomplete terminal update also records its resolved state.
+- Added deterministic regression coverage for producer-exception cancellation, cancellation immediately before final task commit, and cancellation between the stream's initial check and final/error terminal yield.
+
+### Verification
+
+- RED focused regressions: 4 failed before implementation, covering both artifact boundaries and final/error SSE races.
+- GREEN focused regressions: 4 passing.
+- Focused artifact and analysis/data-workbench bridge suites: 43 passing.
+- Full backend suite: 360 passing, 1 existing experimental-workflow warning.
+- Task-center node tests: 9 passing.
+- Production build: `npm run build --prefix web` passed.
+- `git diff --check` passed before final staging.
+
+### Self-check
+
+- Cancellation can win the final artifact task transition without leaving result URLs or producer errors on the job.
+- The task store remains the durable source of truth for terminal race resolution; the artifact job follows its returned terminal outcome.
+- Late final and error SSE frames are not sent after cancellation wins the durable task update. Stream cancellation is checked both at frame entry and directly before yielding.
+- No frontend state or task-center behavior was changed in this repair; existing workspace isolation, polling, and drawer behavior remain covered by the node suite.
+
+### Browser Acceptance Preparation
+
+- Main-controller retest can start a streamed analysis or iteration, request cancellation while it is running, and verify no late success/error surface appears after the cancellation state.
+- For an artifact task, request cancellation while the producer is active and verify the task center eventually shows cancelled with no result destination or artifact output retained.
+
+### Concerns
+
+- A currently executing third-party producer call cannot be preempted in-process. The worker waits for that call to return, then reads the durable cancellation signal and discards its output before any terminal artifact job result is committed.
