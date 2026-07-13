@@ -17,7 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 try:
     from .artifact_jobs import list_artifact_jobs
-    from .task_store import list_tasks
+    from .task_store import TaskPersistenceError, list_tasks
     from .blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
     from .conversation_store import get_conversation, list_conversations
     from .data_workbench import list_workspace_files
@@ -33,7 +33,7 @@ try:
     from .workspace_authz import rbac_enabled, require_workspace_permission, workspace_role
 except ImportError:
     from artifact_jobs import list_artifact_jobs
-    from task_store import list_tasks
+    from task_store import TaskPersistenceError, list_tasks
     from blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
     from conversation_store import get_conversation, list_conversations
     from data_workbench import list_workspace_files
@@ -272,6 +272,8 @@ async def system_status_endpoint() -> dict[str, Any]:
 async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
     try:
         return await run_in_threadpool(func, *args, **kwargs)
+    except TaskPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Task persistence is unavailable") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
