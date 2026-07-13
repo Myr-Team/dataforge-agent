@@ -176,6 +176,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   const [plannedConnector, setPlannedConnector] = useState(null);
   const [connectorBusy, setConnectorBusy] = useState(false);
   const [connectorResult, setConnectorResult] = useState(null);
+  const [connectorRecords, setConnectorRecords] = useState([]);
   const [externalGroups, setExternalGroups] = useState([]);
   const [importingExternal, setImportingExternal] = useState(false);
   const [externalRestoredKey, setExternalRestoredKey] = useState("");
@@ -186,6 +187,11 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     setToast(msg);
     window.clearTimeout(toastT.current);
     toastT.current = window.setTimeout(() => setToast(""), 2600);
+  }, []);
+
+  const upsertConnectorRecord = useCallback((record) => {
+    if (!record?.connector_id) return;
+    setConnectorRecords((items) => [record, ...items.filter((item) => item.connector_id !== record.connector_id)]);
   }, []);
 
   const notifyWorkspaceDataChanged = useCallback(() => {
@@ -253,20 +259,22 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
       const disconnected = connectionId ? await dwDisconnectConnector(workspaceId, { kind: normalizedKind, connection_id: connectionId }) : null;
       setExternalGroups((items) => items.filter((group) => group.externalKind !== normalizedKind));
       setConnectorResult(disconnected || ((current) => current ? { ...current, status: "disconnected" } : null));
+      if (disconnected) upsertConnectorRecord(disconnected);
       setConnectorModal(null);
       showToast("外部连接已断开，连接记录和服务端凭证仍可用于重连。");
     } catch {
       clearConnectorState(normalizedKind, "外部连接状态不可用，请重新连接。");
       return;
     }
-  }, [clearConnectorState, connectorResult, showToast, workspaceId]);
+  }, [clearConnectorState, connectorResult, showToast, upsertConnectorRecord, workspaceId]);
 
-  const deleteConnector = useCallback(async () => {
-    if (!connectorResult?.connector_id) return;
+  const deleteConnector = useCallback(async (target = connectorResult) => {
+    if (!target?.connector_id) return;
     setConnectorBusy(true);
     try {
-      await dwDeleteConnector(workspaceId, connectorResult.connector_id);
-      clearConnectorState(connectorResult.kind, "连接记录与服务端凭证已删除。");
+      await dwDeleteConnector(workspaceId, target.connector_id);
+      setConnectorRecords((items) => items.filter((item) => item.connector_id !== target.connector_id));
+      clearConnectorState(target.kind, "连接记录与服务端凭证已删除。");
     } catch (e) {
       setConnectorResult((current) => current ? { ...current, status: "error" } : current);
       showToast(`删除未完成，可重试：${e.message}`);
@@ -324,6 +332,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     dwListConnectors(workspaceId)
       .then((data) => {
         if (cancelled || connectorResult) return;
+        setConnectorRecords(data.connectors || []);
         const first = (data.connectors || []).find((item) => item.status !== "disconnected") || (data.connectors || [])[0];
         if (first) setConnectorResult(first);
       })
@@ -850,12 +859,13 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     }),
   }), []);
 
-  const reconnectConnector = useCallback(async () => {
-    if (!connectorResult?.connector_id) return;
+  const reconnectConnector = useCallback(async (target = connectorResult) => {
+    if (!target?.connector_id) return;
     setConnectorBusy(true);
     try {
-      const reconnected = await dwReconnectConnector(workspaceId, connectorResult.connector_id);
+      const reconnected = await dwReconnectConnector(workspaceId, target.connector_id);
       setConnectorResult(reconnected);
+      upsertConnectorRecord(reconnected);
       if (reconnected.kind === "blob") {
         setExternalGroups(await buildBlobExternalGroups(reconnected.connection_id, reconnected.containers || []));
       } else {
@@ -868,7 +878,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     } finally {
       setConnectorBusy(false);
     }
-  }, [buildBlobExternalGroups, buildSqlExternalGroup, connectorResult, showToast, workspaceId]);
+  }, [buildBlobExternalGroups, buildSqlExternalGroup, connectorResult, showToast, upsertConnectorRecord, workspaceId]);
 
   const findImportedFile = (data, res, source) => {
     const files = (data?.groups || []).flatMap((group) => group.files || []);
@@ -938,6 +948,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
           containers: containers || [],
           groups: nextGroups,
         });
+        upsertConnectorRecord(connected);
         setConnectorModal(null);
         const firstExternal = nextGroups.flatMap((group) => group.files || [])[0];
         if (firstExternal) openFile(firstExternal);
@@ -960,6 +971,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
           tables: tables || [],
           groups: [nextGroup],
         });
+        upsertConnectorRecord(connected);
         setConnectorModal(null);
         const firstExternal = (nextGroup.files || [])[0];
         if (firstExternal) openFile(firstExternal);
@@ -1326,6 +1338,17 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
             );
           })}
         </div>
+        {connectorRecords.length ? <div className="dw-conn-grid">
+          {connectorRecords.map((record) => <div className="dw-conn-card" key={record.connector_id}>
+            <div className="dw-conn-name">{record.kind === "sql" ? "SQL Database" : "Azure Blob Storage"}</div>
+            <div className="dw-conn-status">{connectorStateLabel(record)}</div>
+            <div className="dw-conn-actions">
+              <button type="button" className="dw-conn-btn primary" onClick={() => reconnectConnector(record)} disabled={connectorBusy}>重连</button>
+              <button type="button" className="dw-conn-btn danger" onClick={() => disconnectConnector(record.kind, record.connection_id)} disabled={connectorBusy}>断开</button>
+              <button type="button" className="dw-conn-btn danger" onClick={() => deleteConnector(record)} disabled={connectorBusy}>删除</button>
+            </div>
+          </div>)}
+        </div> : null}
       </section>
       {createModal ? (
         <CreateFileModal

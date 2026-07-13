@@ -10,10 +10,10 @@ from typing import Any, Mapping
 
 try:
     from .blob_store import blob_configured, delete_blob_name, download_blob_json_strict, list_blob_json_strict, upload_blob_json
-    from .connector_secret_store import SecretExpiredError, SecretStore
+    from .connector_secret_store import SecretExpiredError, SecretStore, expected_secret_reference
 except ImportError:
     from blob_store import blob_configured, delete_blob_name, download_blob_json_strict, list_blob_json_strict, upload_blob_json
-    from connector_secret_store import SecretExpiredError, SecretStore
+    from connector_secret_store import SecretExpiredError, SecretStore, expected_secret_reference
 
 
 _SENSITIVE = re.compile(r"password|passwd|pwd|connection.?string|sas|token|secret|credential|username|user.?id", re.IGNORECASE)
@@ -53,12 +53,13 @@ class ConnectorStore:
             "metadata": _safe_metadata(metadata),
             "created_at": _now(),
             "updated_at": _now(),
+            "revision": 1,
         }
         try:
             self._write(record)
         except Exception:
             try:
-                secret_store.delete(reference)
+                secret_store.delete(workspace, connector_id, reference)
             except Exception:
                 pass
             raise
@@ -72,7 +73,7 @@ class ConnectorStore:
                 raise FileNotFoundError("Connector record not found")
             if not isinstance(remote, dict):
                 raise RuntimeError("Connector record is invalid")
-            record = _safe_record(remote)
+            record = _safe_record(remote, expected_workspace_id=workspace_id, expected_connector_id=connector_id)
             self._write_local(record)
             return record
         if not path.exists():
@@ -83,11 +84,11 @@ class ConnectorStore:
             raise RuntimeError("Connector record is unavailable") from exc
         if not isinstance(raw, dict):
             raise RuntimeError("Connector record is invalid")
-        return _safe_record(raw)
+        return _safe_record(raw, expected_workspace_id=workspace_id, expected_connector_id=connector_id)
 
     def list(self, workspace_id: str) -> list[dict[str, Any]]:
         if blob_configured():
-            records = [_safe_record(item) for item in list_blob_json_strict(self._blob_prefix(workspace_id)) if isinstance(item, dict)]
+            records = [_safe_record(item, expected_workspace_id=workspace_id) for item in list_blob_json_strict(self._blob_prefix(workspace_id)) if isinstance(item, dict)]
             for record in records:
                 self._write_local(record)
             return sorted(records, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
@@ -104,7 +105,10 @@ class ConnectorStore:
 
     def update(self, workspace_id: str, connector_id: str, **changes: Any) -> dict[str, Any]:
         record = self.get(workspace_id, connector_id)
-        for key in ("status", "delete_pending"):
+        expected_revision = changes.pop("expected_revision", None)
+        if expected_revision is not None and int(record.get("revision") or 0) != int(expected_revision):
+            raise RuntimeError("connector_revision_conflict")
+        for key in ("status", "delete_pending", "delete_phase"):
             if key in changes:
                 record[key] = changes[key]
         if "metadata" in changes:
@@ -116,13 +120,14 @@ class ConnectorStore:
             else:
                 record.pop("error", None)
         record["updated_at"] = _now()
+        record["revision"] = int(record.get("revision") or 0) + 1
         self._write(record)
         return record
 
     def reconnect(self, workspace_id: str, connector_id: str, secret_store: SecretStore) -> tuple[dict[str, Any], dict[str, str]]:
         record = self.get(workspace_id, connector_id)
         try:
-            payload = secret_store.get(str(record["secret_ref"]))
+            payload = secret_store.get(workspace_id, connector_id, str(record["secret_ref"]))
         except SecretExpiredError:
             self.update(workspace_id, connector_id, status="expired", error="secret_expired")
             raise
@@ -133,12 +138,13 @@ class ConnectorStore:
         return self.update(workspace_id, connector_id, status="disconnected", error=None)
 
     def delete(self, workspace_id: str, connector_id: str, secret_store: SecretStore) -> None:
-        record = self.update(workspace_id, connector_id, status="deleting", delete_pending=True, error=None)
+        record = self.update(workspace_id, connector_id, status="deleting", delete_pending=True, delete_phase="deleting", error=None)
         try:
-            secret_store.delete(str(record["secret_ref"]))
+            secret_store.delete(workspace_id, connector_id, str(record["secret_ref"]))
         except Exception as exc:
             self.update(workspace_id, connector_id, status="error", delete_pending=True, error="secret_delete_failed")
             raise ConnectorDeleteError("Connector secret delete failed; record retained for retry") from exc
+        record = self.update(workspace_id, connector_id, status="deleting", delete_pending=True, delete_phase="secret_deleted", error=None)
         try:
             if blob_configured() and not delete_blob_name(self._blob_name(workspace_id, connector_id)):
                 raise OSError("durable connector record delete failed")
@@ -171,9 +177,13 @@ class ConnectorStore:
         return f"{self._blob_prefix(workspace_id)}{_safe_component(connector_id)}.json"
 
 
-def _safe_record(value: Mapping[str, Any]) -> dict[str, Any]:
+def _safe_record(value: Mapping[str, Any], *, expected_workspace_id: str | None = None, expected_connector_id: str | None = None) -> dict[str, Any]:
     workspace = _identifier(value.get("workspace_id"), "workspace_id")
     connector_id = _identifier(value.get("connector_id"), "connector_id")
+    if expected_workspace_id and workspace != _identifier(expected_workspace_id, "workspace_id"):
+        raise ValueError("Connector record identity does not match its storage path")
+    if expected_connector_id and connector_id != _identifier(expected_connector_id, "connector_id"):
+        raise ValueError("Connector record identity does not match its storage path")
     kind = _kind(value.get("kind"))
     record = {
         "connector_id": connector_id,
@@ -185,11 +195,16 @@ def _safe_record(value: Mapping[str, Any]) -> dict[str, Any]:
         "metadata": _safe_metadata(value.get("metadata") if isinstance(value.get("metadata"), Mapping) else {}),
         "created_at": str(value.get("created_at") or _now())[:80],
         "updated_at": str(value.get("updated_at") or _now())[:80],
+        "revision": max(1, int(value.get("revision") or 1)),
     }
     if value.get("delete_pending"):
         record["delete_pending"] = True
+    if value.get("delete_phase") in {"deleting", "secret_deleted", "record_deleted"}:
+        record["delete_phase"] = str(value["delete_phase"])
     if value.get("error"):
         record["error"] = re.sub(r"[^a-z0-9_.-]", "_", str(value["error"]).lower())[:80]
+    if record["secret_ref"] != expected_secret_reference(record["persistence"], workspace, connector_id):
+        raise ValueError("Connector record secret reference does not match its trusted identity")
     return record
 
 

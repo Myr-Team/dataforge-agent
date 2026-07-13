@@ -13,14 +13,23 @@ class FakeSecretStore:
         self.deleted: list[str] = []
 
     def put(self, workspace_id: str, connector_id: str, secret: dict[str, str]) -> str:
-        reference = f"kv:{connector_id}"
+        from backend.connector_secret_store import expected_secret_reference
+
+        reference = expected_secret_reference(self.persistence, workspace_id, connector_id)
         self.values[reference] = dict(secret)
         return reference
 
-    def get(self, reference: str) -> dict[str, str]:
+    def reference_for(self, workspace_id: str, connector_id: str) -> str:
+        from backend.connector_secret_store import expected_secret_reference
+
+        return expected_secret_reference(self.persistence, workspace_id, connector_id)
+
+    def get(self, workspace_id: str, connector_id: str, reference: str) -> dict[str, str]:
+        assert reference == self.reference_for(workspace_id, connector_id)
         return dict(self.values[reference])
 
-    def delete(self, reference: str) -> None:
+    def delete(self, workspace_id: str, connector_id: str, reference: str) -> None:
+        assert reference == self.reference_for(workspace_id, connector_id)
         self.deleted.append(reference)
         self.values.pop(reference)
 
@@ -88,7 +97,7 @@ def test_delete_keeps_record_for_recovery_when_secret_delete_fails(tmp_path) -> 
     from backend.connector_store import ConnectorStore, ConnectorDeleteError
 
     class FailingSecretStore(FakeSecretStore):
-        def delete(self, reference: str) -> None:
+        def delete(self, workspace_id: str, connector_id: str, reference: str) -> None:
             raise RuntimeError("vault unavailable")
 
     secrets = FailingSecretStore()
@@ -102,3 +111,18 @@ def test_delete_keeps_record_for_recovery_when_secret_delete_fails(tmp_path) -> 
     assert record["status"] == "error"
     assert record["delete_pending"] is True
     assert "very-secret" not in json.dumps(record)
+
+
+def test_store_fails_closed_when_record_identity_or_reference_is_forged(tmp_path) -> None:
+    from backend.connector_store import ConnectorStore
+
+    secrets = FakeSecretStore()
+    store = ConnectorStore(tmp_path / "connectors")
+    connector = store.create("ws-1", "sql", {"server": "sql.example"}, {"password": "very-secret"}, secrets)
+    path = tmp_path / "connectors" / "ws-1" / f"{connector['connector_id']}.json"
+    forged = json.loads(path.read_text(encoding="utf-8"))
+    forged["workspace_id"] = "ws-other"
+    path.write_text(json.dumps(forged), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="identity"):
+        store.get("ws-1", connector["connector_id"])

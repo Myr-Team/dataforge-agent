@@ -61,3 +61,24 @@
 
 - Deployments using `DF_KEY_VAULT_URL` require the managed identity to have Key Vault secret get/set/delete permissions. Missing permission intentionally fails the connector operation rather than falling back to session-only storage.
 - Session-only connectors are intentionally non-recoverable after a process restart or TTL expiry; the UI exposes this as expired.
+
+## Security Review Follow-up
+
+### RED / GREEN
+
+- RED reproduced client supplied `cursor`/`watermark` reflection attempts containing bearer, signature, password, and URI payloads; deterministic reference and record-identity tests also failed before the follow-up.
+- GREEN rejects either client field with HTTP 422 before connector/source access. Lineage now contains only server-derived observed time, typed row/byte counts, and a hash of validated discovered column names.
+- GREEN binds Key Vault and session references deterministically to trusted workspace and connector identities; load, get, and delete fail closed for forged or cross-workspace references.
+
+### Lifecycle and safety updates
+
+- Sync creates and claims its durable task before setting `syncing` and before secret/source access. It records the ingest job id before work starts, ends task and connector state consistently, and requests a forced new workspace file version.
+- Session-only secrets missing in another instance are projected as expired for that response without mutating the durable record.
+- Connector records now carry revisions and delete phases (`deleting`, `secret_deleted`); failures remain explicit and retryable.
+- Connector API errors use stable codes instead of free-form exception messages. SQL logging records category and exception type only.
+- Key Vault health reports `configured_unverified` after token/client construction and only real connector operations establish usable access.
+
+### Follow-up verification
+
+- Focused security and lifecycle suite: `38 passed`.
+- Full Python suite: `380 passed, 1 warning`.

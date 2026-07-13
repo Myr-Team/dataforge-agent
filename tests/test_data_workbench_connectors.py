@@ -16,14 +16,23 @@ class FakeSecretStore:
         self.values: dict[str, dict[str, str]] = {}
 
     def put(self, workspace_id: str, connector_id: str, secret: dict[str, str]) -> str:
-        ref = f"kv:{connector_id}"
+        from backend.connector_secret_store import expected_secret_reference
+
+        ref = expected_secret_reference(self.persistence, workspace_id, connector_id)
         self.values[ref] = dict(secret)
         return ref
 
-    def get(self, reference: str) -> dict[str, str]:
+    def reference_for(self, workspace_id: str, connector_id: str) -> str:
+        from backend.connector_secret_store import expected_secret_reference
+
+        return expected_secret_reference(self.persistence, workspace_id, connector_id)
+
+    def get(self, workspace_id: str, connector_id: str, reference: str) -> dict[str, str]:
+        assert reference == self.reference_for(workspace_id, connector_id)
         return dict(self.values[reference])
 
-    def delete(self, reference: str) -> None:
+    def delete(self, workspace_id: str, connector_id: str, reference: str) -> None:
+        assert reference == self.reference_for(workspace_id, connector_id)
         self.values.pop(reference)
 
 
@@ -79,7 +88,7 @@ def test_sync_creates_safe_durable_task_and_connector_lineage(tmp_path, monkeypa
 
     response = client.post(
         f"/api/workspaces/ws-safe/connectors/{created['connector_id']}/sync",
-        json={"table": "dbo.sales", "cursor": "2026-07-13T00:00:00Z", "watermark": "id:1"},
+        json={"table": "dbo.sales"},
     )
 
     assert response.status_code == 202
@@ -88,4 +97,22 @@ def test_sync_creates_safe_durable_task_and_connector_lineage(tmp_path, monkeypa
     assert response.json()["task"]["task_type"] == "connector.sql.sync"
     assert lineage["lineage"]["connector_id"] == created["connector_id"]
     assert lineage["lineage"]["table"] == "dbo.sales"
-    assert lineage["lineage"]["cursor"] == "2026-07-13T00:00:00Z"
+    assert lineage["lineage"]["source_rows"] == 1
+    assert "cursor" not in lineage["lineage"]
+
+
+@pytest.mark.parametrize("field", ["cursor", "watermark"])
+@pytest.mark.parametrize("value", ["Bearer eyJhbGci", "sig=abc", "Password=very-secret", "https://reader:very-secret@example"])
+def test_sync_rejects_client_controlled_cursor_and_watermark(tmp_path, monkeypatch: pytest.MonkeyPatch, field: str, value: str) -> None:
+    _configure_durable_connectors(tmp_path, monkeypatch)
+    monkeypatch.setattr(data_workbench, "_sql_tables", lambda _payload: [{"schema": "dbo", "name": "sales", "id": "dbo.sales"}])
+    client = TestClient(app)
+    connector = client.post(
+        "/api/workspaces/ws-safe/connectors/sql/connect",
+        json={"server": "sql.example", "database": "sales", "username": "reader", "password": "very-secret"},
+    ).json()
+
+    response = client.post(f"/api/workspaces/ws-safe/connectors/{connector['connector_id']}/sync", json={"table": "dbo.sales", field: value})
+
+    assert response.status_code == 422
+    assert value not in response.text

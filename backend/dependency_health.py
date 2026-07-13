@@ -12,6 +12,10 @@ from collections import deque
 from typing import Any
 
 from azure.identity import DefaultAzureCredential
+try:
+    from azure.keyvault.secrets import SecretClient as KeyVaultSecretClient
+except ImportError:
+    KeyVaultSecretClient = None  # type: ignore[assignment]
 
 try:
     from .blob_store import probe_blob_container
@@ -279,14 +283,14 @@ def _probe_key_vault() -> dict[str, Any]:
     if not vault_url:
         return {"ok": True, "state": "unconfigured", "persistence": "session_only"}
     try:
-        from azure.keyvault.secrets import SecretClient
-
+        if KeyVaultSecretClient is None:
+            raise RuntimeError("azure-keyvault-secrets is unavailable")
         credential = DefaultAzureCredential()
         credential.get_token("https://vault.azure.net/.default")
-        SecretClient(vault_url=vault_url.rstrip("/"), credential=credential)
-        return {"ok": True, "state": "configured", "persistence": "key_vault", "endpoint": _redact_endpoint(vault_url)}
+        KeyVaultSecretClient(vault_url=vault_url.rstrip("/"), credential=credential)
+        return {"ok": False, "state": "configured_unverified", "persistence": "key_vault", "endpoint": _redact_endpoint(vault_url)}
     except Exception as exc:
-        return {"ok": False, "state": "down", "persistence": "key_vault", "error": type(exc).__name__}
+        return {"ok": False, "state": "degraded", "persistence": "key_vault", "error_type": type(exc).__name__}
 
 
 def _probe_search() -> dict[str, Any]:

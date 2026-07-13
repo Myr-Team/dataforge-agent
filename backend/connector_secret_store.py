@@ -21,8 +21,9 @@ class SecretStore(Protocol):
     persistence: str
 
     def put(self, workspace_id: str, connector_id: str, secret: Mapping[str, str]) -> str: ...
-    def get(self, reference: str) -> dict[str, str]: ...
-    def delete(self, reference: str) -> None: ...
+    def reference_for(self, workspace_id: str, connector_id: str) -> str: ...
+    def get(self, workspace_id: str, connector_id: str, reference: str) -> dict[str, str]: ...
+    def delete(self, workspace_id: str, connector_id: str, reference: str) -> None: ...
 
 
 class SecretExpiredError(ValueError):
@@ -30,6 +31,10 @@ class SecretExpiredError(ValueError):
 
 
 class SecretStoreConfigurationError(RuntimeError):
+    pass
+
+
+class SecretReferenceError(ValueError):
     pass
 
 
@@ -52,22 +57,31 @@ class SessionSecretStore:
 
     def put(self, workspace_id: str, connector_id: str, secret: Mapping[str, str]) -> str:
         self._purge()
-        reference = f"session:{uuid.uuid4().hex}"
+        reference = self.reference_for(workspace_id, connector_id)
         self._values[reference] = _SessionSecret(
             expires_at=self._clock() + self._ttl_seconds,
             ciphertext=self._fernet.encrypt(_secret_json(secret)),
         )
         return reference
 
-    def get(self, reference: str) -> dict[str, str]:
+    def reference_for(self, workspace_id: str, connector_id: str) -> str:
+        return _reference_for("session", workspace_id, connector_id)
+
+    def get(self, workspace_id: str, connector_id: str, reference: str) -> dict[str, str]:
+        self._validate_reference(workspace_id, connector_id, reference)
         self._purge()
         item = self._values.get(str(reference or ""))
         if item is None:
             raise SecretExpiredError("Connector session not found or expired")
         return _decode_secret(self._fernet.decrypt(item.ciphertext))
 
-    def delete(self, reference: str) -> None:
+    def delete(self, workspace_id: str, connector_id: str, reference: str) -> None:
+        self._validate_reference(workspace_id, connector_id, reference)
         self._values.pop(str(reference or ""), None)
+
+    def _validate_reference(self, workspace_id: str, connector_id: str, reference: str) -> None:
+        if str(reference or "") != self.reference_for(workspace_id, connector_id):
+            raise SecretReferenceError("Connector secret reference does not match its trusted context")
 
     def clear(self) -> None:
         self._values.clear()
@@ -109,17 +123,26 @@ class KeyVaultSecretStore:
     def put(self, workspace_id: str, connector_id: str, secret: Mapping[str, str]) -> str:
         name = _vault_secret_name(workspace_id, connector_id)
         self._client.set_secret(name, _secret_json(secret).decode("utf-8"))
-        return f"kv:{name}"
+        return self.reference_for(workspace_id, connector_id)
 
-    def get(self, reference: str) -> dict[str, str]:
+    def reference_for(self, workspace_id: str, connector_id: str) -> str:
+        return f"kv:{_vault_secret_name(workspace_id, connector_id)}"
+
+    def get(self, workspace_id: str, connector_id: str, reference: str) -> dict[str, str]:
+        self._validate_reference(workspace_id, connector_id, reference)
         secret = self._client.get_secret(_reference_name(reference))
         return _decode_secret(str(secret.value).encode("utf-8"))
 
-    def delete(self, reference: str) -> None:
+    def delete(self, workspace_id: str, connector_id: str, reference: str) -> None:
+        self._validate_reference(workspace_id, connector_id, reference)
         poller = self._client.begin_delete_secret(_reference_name(reference))
         wait = getattr(poller, "wait", None)
         if callable(wait):
             wait()
+
+    def _validate_reference(self, workspace_id: str, connector_id: str, reference: str) -> None:
+        if str(reference or "") != self.reference_for(workspace_id, connector_id):
+            raise SecretReferenceError("Connector secret reference does not match its trusted context")
 
 
 def secret_store_from_environment() -> SecretStore:
@@ -132,6 +155,15 @@ def secret_store_from_environment() -> SecretStore:
 def _vault_secret_name(workspace_id: str, connector_id: str) -> str:
     material = f"{workspace_id}:{connector_id}".encode("utf-8")
     return f"df-connector-{hashlib.sha256(material).hexdigest()[:40]}"
+
+
+def _reference_for(prefix: str, workspace_id: str, connector_id: str) -> str:
+    material = f"{workspace_id}:{connector_id}".encode("utf-8")
+    return f"{prefix}:{hashlib.sha256(material).hexdigest()[:48]}"
+
+
+def expected_secret_reference(persistence: str, workspace_id: str, connector_id: str) -> str:
+    return _reference_for("kv" if persistence == "key_vault" else "session", workspace_id, connector_id)
 
 
 def _reference_name(reference: str) -> str:
@@ -156,8 +188,10 @@ def _decode_secret(raw: bytes) -> dict[str, str]:
 __all__ = [
     "KeyVaultSecretStore",
     "SecretExpiredError",
+    "SecretReferenceError",
     "SecretStore",
     "SecretStoreConfigurationError",
     "SessionSecretStore",
+    "expected_secret_reference",
     "secret_store_from_environment",
 ]

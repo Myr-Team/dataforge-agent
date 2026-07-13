@@ -13,11 +13,11 @@ def test_session_secret_store_reports_expiry_and_never_returns_credential_in_ref
     assert reference.startswith("session:")
     assert "not-for-records" not in reference
     assert store.persistence == "session_only"
-    assert store.get(reference)["password"] == "not-for-records"
+    assert store.get("ws-secret", "sql-1", reference)["password"] == "not-for-records"
 
     now[0] += 31
     with pytest.raises(SecretExpiredError):
-        store.get(reference)
+        store.get("ws-secret", "sql-1", reference)
 
 
 def test_key_vault_configuration_does_not_fall_back_when_client_initialization_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -63,5 +63,18 @@ def test_key_vault_store_uses_opaque_reference_and_default_credential(monkeypatc
     assert reference.startswith("kv:")
     assert "not-for-records" not in reference
     assert isinstance(calls["credential"], Credential)
-    assert store.get(reference) == {"password": "not-for-records"}
-    store.delete(reference)
+    assert store.get("ws-secret", "sql-1", reference) == {"password": "not-for-records"}
+    store.delete("ws-secret", "sql-1", reference)
+
+
+def test_session_secret_reference_is_deterministically_bound_to_workspace_and_connector() -> None:
+    from backend.connector_secret_store import SecretReferenceError, SessionSecretStore
+
+    store = SessionSecretStore()
+    reference = store.put("ws-a", "sql-a", {"password": "not-for-records"})
+
+    assert reference == store.reference_for("ws-a", "sql-a")
+    with pytest.raises(SecretReferenceError):
+        store.get("ws-b", "sql-a", reference)
+    with pytest.raises(SecretReferenceError):
+        store.delete("ws-a", "sql-b", reference)

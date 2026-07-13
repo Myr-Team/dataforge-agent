@@ -77,6 +77,10 @@ STORAGE_TOTAL_BYTES = int(os.environ.get("DF_WORKSPACE_STORAGE_TOTAL_BYTES", str
 _CONNECTOR_STORE = ConnectorStore()
 _SECRET_STORE = secret_store_from_environment()
 
+
+class ConnectorInputError(ValueError):
+    pass
+
 TABLE_TYPES = {"csv", "xlsx", "xlsm", "excel"}
 MARKDOWN_TYPES = {"md", "markdown", "txt", "text"}
 JSON_TYPES = {"json"}
@@ -718,9 +722,9 @@ def connector_status(workspace_id: str, kind: str, connection_id: str) -> dict[s
         raise FileNotFoundError("Connector record not found")
     if record.get("persistence") == "session_only":
         try:
-            _SECRET_STORE.get(record["secret_ref"])
+            _SECRET_STORE.get(workspace_id, connection_id, record["secret_ref"])
         except SecretExpiredError:
-            record = _CONNECTOR_STORE.update(workspace_id, connection_id, status="expired", error="secret_expired")
+            record = {**record, "status": "expired", "error": "secret_expired"}
     return _public_connector(record)
 
 
@@ -748,8 +752,8 @@ def list_sql_tables(workspace_id: str, connection_id: str) -> dict[str, Any]:
     return {"workspace_id": workspace_id, "connection_id": connection_id, "tables": tables}
 
 
-def preview_sql_table(workspace_id: str, connection_id: str, table: str, limit: int = 100) -> dict[str, Any]:
-    payload = _connector_payload(workspace_id, connection_id, "sql")
+def preview_sql_table(workspace_id: str, connection_id: str, table: str, limit: int = 100, *, allow_syncing: bool = False) -> dict[str, Any]:
+    payload = _connector_payload(workspace_id, connection_id, "sql", allow_syncing=allow_syncing)
     try:
         return _sql_preview(payload, table, limit)
     except ValueError:
@@ -822,9 +826,9 @@ def list_connectors(workspace_id: str) -> dict[str, Any]:
     for record in _CONNECTOR_STORE.list(workspace_id):
         if record.get("persistence") == "session_only" and record.get("status") == "connected":
             try:
-                _SECRET_STORE.get(record["secret_ref"])
+                _SECRET_STORE.get(workspace_id, record["connector_id"], record["secret_ref"])
             except SecretExpiredError:
-                record = _CONNECTOR_STORE.update(workspace_id, record["connector_id"], status="expired", error="secret_expired")
+                record = {**record, "status": "expired", "error": "secret_expired"}
         connectors.append(_public_connector(record))
     return {"workspace_id": workspace_id, "connectors": connectors}
 
@@ -853,48 +857,47 @@ def sync_connector(
     *,
     task_type: str | None = None,
 ) -> dict[str, Any]:
+    if "cursor" in body or "watermark" in body:
+        raise ConnectorInputError("client_cursor_not_allowed")
     record = _CONNECTOR_STORE.get(workspace_id, connector_id)
     kind = str(record["kind"])
-    payload = _connector_payload(workspace_id, connector_id, kind)
-    if kind == "sql":
-        table = str(body.get("table") or "")
-        limit = _clamp_int(body.get("limit"), 1, 10000, 1000)
-        preview = preview_sql_table(workspace_id, connector_id, table, limit)
-        content = _table_to_csv_bytes([col["name"] for col in preview["columns"]], preview["rows"])
-        name = str(body.get("name") or f"SQL {table}").strip()[:120] or f"SQL {table}"
-        file = {"filename": f"{_safe_filename(name)}.csv", "content": content, "content_type": "text/csv"}
-        lineage = _connector_lineage(record, table=table, cursor=body.get("cursor"), watermark=body.get("watermark"))
-    else:
-        container = str(body.get("container") or "")
-        blob = str(body.get("blob") or "")
-        if not container or not blob:
-            raise ValueError("container and blob are required")
-        blob_client = _blob_service(payload).get_blob_client(container=container, blob=blob)
-        props = blob_client.get_blob_properties()
-        size = int(getattr(props, "size", 0) or 0)
-        if size > MAX_CONNECTOR_IMPORT_BYTES:
-            raise ValueError("Blob is too large to sync through the connector")
-        file = {
-            "filename": Path(blob).name or "blob-sync",
-            "content": blob_client.download_blob().readall(),
-            "content_type": getattr(props.content_settings, "content_type", None) or "application/octet-stream",
-        }
-        lineage = _connector_lineage(record, container=container, blob=blob, cursor=body.get("cursor"), watermark=body.get("watermark"))
+    task = create_task({"workspace_id": workspace_id, "task_type": task_type or f"connector.{kind}.sync", "action": "connector.manage"}, actor)
+    if claim_task(task["task_id"], "connector-sync-worker") is None:
+        raise TaskPersistenceError("Connector sync task could not be claimed")
+    _CONNECTOR_STORE.update(workspace_id, connector_id, status="syncing", error=None)
+    try:
+        payload = _connector_payload(workspace_id, connector_id, kind, allow_syncing=True)
+        if kind == "sql":
+            table = str(body.get("table") or "")
+            limit = _clamp_int(body.get("limit"), 1, 10000, 1000)
+            preview = preview_sql_table(workspace_id, connector_id, table, limit, allow_syncing=True)
+            content = _table_to_csv_bytes([col["name"] for col in preview["columns"]], preview["rows"])
+            name = str(body.get("name") or f"SQL {table}").strip()[:120] or f"SQL {table}"
+            file = {"filename": f"{_safe_filename(name)}.csv", "content": content, "content_type": "text/csv"}
+            lineage = _connector_lineage(record, table=table, source_rows=len(preview.get("rows") or []), source_columns=[col.get("name") for col in preview.get("columns") or []])
+        else:
+            container = str(body.get("container") or "")
+            blob = str(body.get("blob") or "")
+            if not container or not blob:
+                raise ValueError("container and blob are required")
+            blob_client = _blob_service(payload).get_blob_client(container=container, blob=blob)
+            props = blob_client.get_blob_properties()
+            size = int(getattr(props, "size", 0) or 0)
+            if size > MAX_CONNECTOR_IMPORT_BYTES:
+                raise ValueError("Blob is too large to sync through the connector")
+            file = {"filename": Path(blob).name or "blob-sync", "content": blob_client.download_blob().readall(), "content_type": getattr(props.content_settings, "content_type", None) or "application/octet-stream"}
+            lineage = _connector_lineage(record, container=container, blob=blob, source_bytes=size)
 
-    result = create_workspace_upload_job(files=[file], name=None, requested_workspace_id=workspace_id, asset_role="reference", actor=actor)
-    job_id = str(result.get("ingest_job_id") or "")
-    if not job_id:
-        raise TaskPersistenceError("Connector sync did not create a durable ingest job")
-    task = _run_ingest_task(
-        workspace_id,
-        job_id,
-        actor=actor,
-        task_type=task_type or f"connector.{kind}.sync",
-        action="connector.manage",
-    )
-    _record_connector_lineage(workspace_id, result, lineage=lineage)
-    _record_import_history(workspace_id, result, actor, f"Synced {kind} connector source")
-    return {
+        result = create_workspace_upload_job(files=[file], name=None, requested_workspace_id=workspace_id, asset_role="reference", actor=actor, force_new_version=True)
+        job_id = str(result.get("ingest_job_id") or "")
+        if not job_id:
+            raise TaskPersistenceError("Connector sync did not create a durable ingest job")
+        update_task(task["task_id"], result={"ingest_job_id": job_id})
+        task = _sync_ingest_task(task["task_id"], job_id, run_workspace_ingest_job(workspace_id, job_id))
+        _record_connector_lineage(workspace_id, result, lineage=lineage)
+        _record_import_history(workspace_id, result, actor, f"Synced {kind} connector source")
+        _CONNECTOR_STORE.update(workspace_id, connector_id, status="connected", error=None)
+        return {
         "workspace_id": workspace_id,
         "connector_id": connector_id,
         "connection_id": connector_id,
@@ -902,20 +905,25 @@ def sync_connector(
         "syncing": task.get("status") in {"queued", "running", "cancel_requested"},
         "source": {key: value for key, value in lineage.items() if key != "connector_id"},
         "upload": result,
-        "task": task,
-    }
+            "task": task,
+        }
+    except Exception:
+        update_task(task["task_id"], status="failed", error={"category": "connector", "code": "sync_failed"})
+        _CONNECTOR_STORE.update(workspace_id, connector_id, status="error", error="sync_failed")
+        raise
 
 
-def _connector_payload(workspace_id: str, connector_id: str, kind: str) -> dict[str, str]:
+def _connector_payload(workspace_id: str, connector_id: str, kind: str, *, allow_syncing: bool = False) -> dict[str, str]:
     record = _CONNECTOR_STORE.get(workspace_id, connector_id)
     if record["kind"] != kind:
         raise FileNotFoundError("Connector record not found")
-    if record.get("status") == "disconnected":
-        raise ValueError("Connector is disconnected; reconnect before use")
+    if record.get("status") != "connected" and not (allow_syncing and record.get("status") == "syncing"):
+        raise ValueError("Connector is not available for this operation")
     try:
-        return _SECRET_STORE.get(record["secret_ref"])
+        return _SECRET_STORE.get(workspace_id, connector_id, record["secret_ref"])
     except SecretExpiredError:
-        _CONNECTOR_STORE.update(workspace_id, connector_id, status="expired", error="secret_expired")
+        if record.get("persistence") != "session_only":
+            _CONNECTOR_STORE.update(workspace_id, connector_id, status="expired", error="secret_expired")
         raise
 
 
@@ -925,14 +933,21 @@ def _connector_metadata(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {"account": payload.get("account"), "access": "read_only"}
 
 
-def _connector_lineage(record: dict[str, Any], **source: Any) -> dict[str, str]:
-    lineage = {"connector_id": str(record["connector_id"]), "kind": str(record["kind"]), "version_id": f"connector-{uuid.uuid4().hex[:16]}"}
-    for key in ("table", "container", "blob", "cursor", "watermark"):
+def _connector_lineage(record: dict[str, Any], **source: Any) -> dict[str, Any]:
+    lineage: dict[str, Any] = {"connector_id": str(record["connector_id"]), "kind": str(record["kind"]), "version_id": f"connector-{uuid.uuid4().hex[:16]}", "observed_at": _utc_now()}
+    for key in ("table", "container", "blob"):
         value = str(source.get(key) or "").strip()
         if value:
-            if len(value) > 240 or re.search(r"password|connection.?string|sas|token", value, re.IGNORECASE):
+            if len(value) > 240 or re.search(r"password|connection.?string|sas|token|bearer|sig=|://", value, re.IGNORECASE):
                 raise ValueError(f"Invalid connector lineage {key}")
             lineage[key] = value
+    if isinstance(source.get("source_rows"), int):
+        lineage["source_rows"] = max(0, min(10**12, int(source["source_rows"])))
+    if isinstance(source.get("source_bytes"), int):
+        lineage["source_bytes"] = max(0, min(10**12, int(source["source_bytes"])))
+    columns = [str(item) for item in source.get("source_columns") or [] if re.fullmatch(r"[A-Za-z0-9_ -]{1,120}", str(item))]
+    if columns:
+        lineage["column_hash"] = hashlib.sha256("\n".join(columns).encode("utf-8")).hexdigest()[:32]
     return lineage
 
 
@@ -992,9 +1007,11 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
     except TaskPersistenceError as exc:
         raise HTTPException(status_code=503, detail="Durable task storage is unavailable") from exc
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail={"code": "connector_not_found"}) from exc
+    except ConnectorInputError as exc:
+        raise HTTPException(status_code=422, detail={"code": str(exc)}) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail={"code": "invalid_connector_request"}) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ConnectorDeleteError as exc:
@@ -2396,9 +2413,9 @@ def _type_from_name(name: str, content_type: str | None = None) -> str:
 
 
 def _raise_sql_connector_error(exc: BaseException, *, status_code: int = 400) -> None:
-    safe = _safe_connector_error(exc)
-    print(f"sql connector failed: {safe}", flush=True)
-    lowered = safe.lower()
+    exception_type = type(exc).__name__
+    print(f"sql connector failed category=connector exception_type={exception_type}", flush=True)
+    lowered = str(exc).lower()
     if "driver is not installed" in lowered or "pymssql" in lowered and "pyodbc" in lowered:
         message = "数据库连接组件不可用，请联系管理员检查后端镜像里的 SQL 驱动。"
         hint = "需要安装 pymssql 或 pyodbc，并确认容器能加载对应驱动。"

@@ -58,7 +58,7 @@ def test_artifact_job_keeps_legacy_id_and_links_completed_generic_task(tmp_path,
 def test_ingest_failure_preserves_upload_result_and_records_safe_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_tasks(tmp_path, monkeypatch)
     upload = {"workspace_id": "ws-bridge", "ingest_job_id": "ingest-1", "documents": [{"name": "import.csv"}], "indexed_count": 0}
-    monkeypatch.setattr(data_workbench, "preview_sql_table", lambda *_args: {"columns": [{"name": "id"}], "rows": [[1]]})
+    monkeypatch.setattr(data_workbench, "preview_sql_table", lambda *_args, **_kwargs: {"columns": [{"name": "id"}], "rows": [[1]]})
     monkeypatch.setattr(data_workbench, "create_workspace_upload_job", lambda **_kwargs: dict(upload))
     monkeypatch.setattr(data_workbench, "run_workspace_ingest_job", lambda *_args: (_ for _ in ()).throw(RuntimeError("connector failed")))
     monkeypatch.setattr(data_workbench, "_record_import_history", lambda *_args: None)
@@ -215,7 +215,7 @@ def test_chat_cancel_between_initial_check_and_terminal_yield_hides_late_frame(
 def test_connector_import_task_requires_connector_manage_action(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_tasks(tmp_path, monkeypatch)
     upload = {"workspace_id": "ws-bridge", "ingest_job_id": "ingest-connector", "documents": []}
-    monkeypatch.setattr(data_workbench, "preview_sql_table", lambda *_args: {"columns": [{"name": "id"}], "rows": [[1]]})
+    monkeypatch.setattr(data_workbench, "preview_sql_table", lambda *_args, **_kwargs: {"columns": [{"name": "id"}], "rows": [[1]]})
     monkeypatch.setattr(data_workbench, "create_workspace_upload_job", lambda **_kwargs: dict(upload))
     monkeypatch.setattr(data_workbench, "run_workspace_ingest_job", lambda *_args: {"state": "ready"})
     monkeypatch.setattr(data_workbench, "_record_import_history", lambda *_args: None)

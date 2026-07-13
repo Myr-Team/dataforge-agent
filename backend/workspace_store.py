@@ -144,6 +144,7 @@ def create_workspace_upload_job(
     requested_workspace_id: str | None = None,
     asset_role: str | None = None,
     actor: dict[str, Any] | None = None,
+    force_new_version: bool = False,
 ) -> dict[str, Any]:
     clean_files = [item for item in files if item.get("content")]
     if not clean_files:
@@ -201,11 +202,11 @@ def create_workspace_upload_job(
         content = bytes(item.get("content") or b"")
         content_hash = hashlib.sha256(content).hexdigest()
         existing_doc = _find_existing_document(documents, content_hash)
-        if existing_doc and existing_doc.get("status") != STATUS_FAILED:
+        if existing_doc and existing_doc.get("status") != STATUS_FAILED and not force_new_version:
             skipped_sources.append(str(existing_doc.get("source_file") or existing_doc.get("name") or ""))
             continue
 
-        if existing_doc:
+        if existing_doc and not force_new_version:
             safe_name = Path(str(existing_doc.get("source_file") or existing_doc.get("name") or "")).name
             source_file = str(existing_doc.get("source_file") or f"raw_docs/{safe_name}")
             document = existing_doc
