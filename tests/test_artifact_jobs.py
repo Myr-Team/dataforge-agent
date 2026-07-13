@@ -155,6 +155,28 @@ def test_partial_generation_keeps_completed_artifacts(tmp_path: Path, monkeypatc
     assert result["errors"]["concept_image"]["message"] == "概念图生成失败，建议书已生成。"
 
 
+def test_running_artifact_cancel_discards_producer_output_at_the_next_boundary(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    _configure_task_store(tmp_path, monkeypatch)
+    job = artifact_jobs.create_artifact_job(_request(kinds=["pdf", "concept_image"]), actor={})
+    monkeypatch.setattr(artifact_jobs, "_producer_payload", lambda _job: _request(kinds=["pdf", "concept_image"]))
+
+    def produce(_payload):
+        task_store.request_cancel(job["task_id"])
+        return {
+            "artifact_urls": {"pdf": "/api/artifacts/cancelled.pdf", "concept_image": "/api/artifacts/cancelled.png"},
+            "pdf": {"artifact_url": "/api/artifacts/cancelled.pdf"},
+            "concept_image": {"artifact_url": "/api/artifacts/cancelled.png"},
+        }
+
+    monkeypatch.setattr(artifact_jobs, "_produce", produce)
+    result = artifact_jobs.run_artifact_job(job["job_id"])
+
+    assert result["status"] == "cancelled"
+    assert result["artifacts"] == {}
+    assert task_store.get_task(job["task_id"])["status"] == "cancelled"
+
+
 def test_terminal_job_is_not_reused_by_idempotency_key(tmp_path: Path, monkeypatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     first = artifact_jobs.create_artifact_job(_request(), actor={}, idempotency_key="repeat")

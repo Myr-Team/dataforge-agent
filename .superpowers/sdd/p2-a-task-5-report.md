@@ -81,3 +81,36 @@
 ### Concerns
 
 - Browser evidence is intentionally left for the main controller's requested retest; this iteration supplies the deterministic tests and acceptance checklist above.
+
+## Second Review Fix Iteration
+
+### RED / GREEN
+
+- RED: cancelling a running task wrote terminal `cancelled` immediately; artifact and stream workers could still accept later success output; the drawer effect restarted on every new `onClose` callback; and a superseded task refresh could be reported as an action failure.
+- GREEN: queued tasks still cancel immediately, while running tasks persist `cancel_requested` and a server timestamp without changing their `running` status. Worker boundaries confirm cancellation before writing terminal `cancelled` and discard returned artifact/stream results.
+
+### Changes
+
+- Added durable `cancel_requested` and `cancel_requested_at` task fields. A success/partial/failure update after the flag is set is coerced to `cancelled` without persisting the later result.
+- Artifact jobs check cancellation before producer work and immediately after any uninterruptible producer call; cancelled jobs clear uncommitted output and do not enter result processing.
+- The chat/iteration SSE wrapper checks persisted cancellation between frames, stops forwarding subsequent frames, and records only the safe run link already observed before cancellation.
+- The task-center presents a running cancellation as `Stopping`, hides its cancel action, and continues normal running-task polling.
+- Task actions clear pending state after a successful POST, then refresh independently. `AbortError` from a superseded refresh is silent; real POST errors remain visible.
+- Extracted an executable focus controller used by the drawer. It holds the latest close callback by ref, installs listeners once per open state, traps Tab, handles Escape, restores trigger focus, and restores inert background state on close.
+
+### Verification
+
+- Focused cancellation/action/drawer tests: backend 3 passing; task-center node tests 9 passing.
+- Focused backend task, artifact, stream bridge, API, and UI-contract suites: 70 passing.
+- Full suite, all web node tests, production build, and diff check are rerun before this iteration commit.
+
+### Self-check
+
+- Running task cancellation is not represented as terminal until its worker observes the persisted flag.
+- Queued cancellation remains immediately terminal.
+- Cancelled tasks cannot be overwritten by late success and no cancelled artifact output is committed after the producer boundary.
+- Drawer focus does not reset during stream-driven rerenders because its effect depends only on `open`.
+
+### Concerns
+
+- A single external producer call cannot be forcibly interrupted by this process; the worker remains running until that call returns, then discards its output and stops subsequent processing.

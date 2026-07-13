@@ -125,6 +125,38 @@ def test_cancelled_chat_stream_leaves_the_durable_task_cancelled(tmp_path, monke
     assert task_store.get_task(task["task_id"])["status"] == "cancelled"
 
 
+def test_running_chat_cancel_discards_later_final_frame_and_result(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+    task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "analysis.run", "action": "analysis.run"}, actor={})
+    task_store.claim_task(task["task_id"], "chat-stream")
+
+    allow_cancel = asyncio.Event()
+
+    async def stream(_request):
+        yield 'event: ready\ndata: {"conversation_id":"run-cancel"}\n\n'
+        await allow_cancel.wait()
+        task_store.request_cancel(task["task_id"])
+        yield 'event: final\ndata: {"conversation_id":"run-cancel","artifact":{"version_id":"version-cancel"}}\n\n'
+
+    monkeypatch.setattr(app_module, "orchestrate_chat", stream)
+
+    async def consume() -> list[str]:
+        stream_iter = app_module._task_backed_chat_stream(
+            app_module.ChatRequest(workspace_id="ws-bridge", message="Run analysis"),
+            task["task_id"],
+        )
+        first = await anext(stream_iter)
+        allow_cancel.set()
+        return [first, *[frame async for frame in stream_iter]]
+
+    frames = asyncio.run(consume())
+    assert len(frames) == 1
+    assert "event: final" not in "".join(frames)
+    final = task_store.get_task(task["task_id"])
+    assert final["status"] == "cancelled"
+    assert final["result"] == {"run_id": "run-cancel"}
+
+
 def test_connector_import_task_requires_connector_manage_action(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_tasks(tmp_path, monkeypatch)
     upload = {"workspace_id": "ws-bridge", "ingest_job_id": "ingest-connector", "documents": []}

@@ -34,6 +34,30 @@ const DEFAULT_WORKSPACE = "demo-corpus";
 const ARTIFACT_JOB_TERMINAL = new Set(["partial", "completed", "failed", "cancelled"]);
 const DISMISSED_TASK_NOTIFICATIONS_KEY = "df-dismissed-task-notification-ids";
 
+export async function performServerTaskAction({ task, workspaceId, currentWorkspaceId, postAction, refreshTasks, setActionState }) {
+  const taskId = task?.task_id;
+  const actionWorkspaceId = String(task?.workspace_id || workspaceId);
+  if (!taskId || actionWorkspaceId !== currentWorkspaceId()) return;
+  setActionState({ pending: true, error: "" });
+  try {
+    await postAction(taskId);
+  } catch (error) {
+    if (actionWorkspaceId === currentWorkspaceId()) {
+      setActionState({ pending: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+  if (actionWorkspaceId !== currentWorkspaceId()) return;
+  setActionState({ pending: false, error: "" });
+  try {
+    await refreshTasks(workspaceId);
+  } catch (error) {
+    if (error?.name !== "AbortError" && actionWorkspaceId === currentWorkspaceId()) {
+      setActionState({ pending: false, error: `Task list refresh failed: ${error instanceof Error ? error.message : String(error)}` });
+    }
+  }
+}
+
 const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 async function waitForArtifactJob(
@@ -224,22 +248,19 @@ export function App() {
     }
   }, []);
 
-  const performTaskAction = useCallback(async (task, action) => {
+  const performTaskAction = useCallback((task, action) => {
     const taskId = task?.task_id;
-    if (!taskId) return;
-    const actionWorkspaceId = String(task.workspace_id || workspaceId);
-    if (actionWorkspaceId !== workspaceIdRef.current) return;
-    setTaskActions((current) => ({ ...current, [taskId]: { pending: true, error: "" } }));
-    try {
-      await action(taskId);
-      if (actionWorkspaceId !== workspaceIdRef.current) return;
-      await refreshTasks(workspaceId);
-    } catch (error) {
-      if (actionWorkspaceId !== workspaceIdRef.current) return;
-      setTaskActions((current) => ({ ...current, [taskId]: { pending: false, error: error instanceof Error ? error.message : String(error) } }));
-      return;
-    }
-    setTaskActions((current) => ({ ...current, [taskId]: { pending: false, error: "" } }));
+    return performServerTaskAction({
+      task,
+      workspaceId,
+      currentWorkspaceId: () => workspaceIdRef.current,
+      postAction: action,
+      refreshTasks,
+      setActionState: (value) => {
+        if (!taskId) return;
+        setTaskActions((current) => ({ ...current, [taskId]: value }));
+      },
+    });
   }, [refreshTasks, workspaceId]);
 
   const openTaskResult = useCallback((task) => {
@@ -248,6 +269,8 @@ export function App() {
     if (destination) setActiveView(destination);
     if (destination) setTaskDrawerOpen(false);
   }, []);
+
+  const closeTaskCenter = useCallback(() => setTaskDrawerOpen(false), []);
 
   const clearReveal = () => {
     if (revealTimerRef.current) window.clearInterval(revealTimerRef.current);
@@ -1086,7 +1109,7 @@ export function App() {
         tasks={tasks}
         notifications={taskNotifications}
         actions={taskActions}
-        onClose={() => setTaskDrawerOpen(false)}
+        onClose={closeTaskCenter}
         onCancel={(task) => performTaskAction(task, cancelTask)}
         onRetry={(task) => performTaskAction(task, retryTask)}
         onOpenResult={openTaskResult}

@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 try:
     from .artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, retry_artifact_task, run_artifact_job
-    from .task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
+    from .task_store import TaskPersistenceError, cancel_requested, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
     from .control_plane import build_workspace_dashboard, router as control_plane_router
@@ -72,7 +72,7 @@ try:
     from .tools.render_pdf import render_pdf_report
 except ImportError:
     from artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, retry_artifact_task, run_artifact_job
-    from task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
+    from task_store import TaskPersistenceError, cancel_requested, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
     from control_plane import build_workspace_dashboard, router as control_plane_router
@@ -662,6 +662,10 @@ async def _task_backed_chat_stream(req: ChatRequest, task_id: str):
     result: dict[str, str] = {}
     try:
         async for raw_frame in _sse_keepalive(orchestrate_chat(req)):
+            if cancel_requested(task_id):
+                update_task(task_id, status="cancelled", result=result)
+                terminal = True
+                break
             for event, data in _parse_sse_frame(raw_frame):
                 if event == "ready" and isinstance(data, dict) and data.get("conversation_id"):
                     result["run_id"] = str(data["conversation_id"])
@@ -677,7 +681,9 @@ async def _task_backed_chat_stream(req: ChatRequest, task_id: str):
                     update_task(task_id, status="failed", error={"category": "analysis", "code": "stream_error"}, result=result)
                     terminal = True
             yield raw_frame
-        if not terminal:
+        if cancel_requested(task_id):
+            update_task(task_id, status="cancelled", result=result)
+        elif not terminal:
             update_task(task_id, status="failed", error={"category": "analysis", "code": "stream_incomplete"}, result=result)
     except asyncio.CancelledError:
         update_task(task_id, status="cancelled", result=result)
@@ -855,7 +861,7 @@ async def _run_upload_ingest_background(workspace_id: str, job_id: str, task_id:
             if claimed is None:
                 try:
                     task = await run_in_threadpool(get_task, task_id)
-                    if task.get("status") == "cancel_requested":
+                    if task.get("cancel_requested") or task.get("status") == "cancel_requested":
                         await run_in_threadpool(update_task, task_id, status="cancelled")
                 except (FileNotFoundError, ValueError):
                     pass

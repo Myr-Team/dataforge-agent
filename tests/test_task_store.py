@@ -244,14 +244,17 @@ def test_cancel_does_not_rewrite_completed_task(tmp_path, monkeypatch: pytest.Mo
     assert cancelled["result"] == {"artifact_job_id": "artifact_job_123"}
 
 
-def test_cancelled_queued_and_running_tasks_are_immediately_terminal(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_queued_cancellation_is_terminal_but_running_cancellation_waits_for_worker_boundary(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     queued = task_store.create_task(_payload(), _actor())
     running = task_store.create_task(_payload(), _actor())
     task_store.claim_task(running["task_id"], "worker")
 
     assert task_store.request_cancel(queued["task_id"])["status"] == "cancelled"
-    assert task_store.request_cancel(running["task_id"])["status"] == "cancelled"
+    stopping = task_store.request_cancel(running["task_id"])
+    assert stopping["status"] == "running"
+    assert stopping["cancel_requested"] is True
+    assert stopping["cancel_requested_at"]
     assert task_store.update_task(running["task_id"], status="completed")["status"] == "cancelled"
 
 

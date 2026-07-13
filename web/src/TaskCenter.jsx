@@ -29,6 +29,7 @@ export function terminalTaskNotifications(tasks, previousSnapshot, hydrated, dis
 
 export function taskViewModel(task = {}) {
   const status = String(task.status || "queued").toLowerCase();
+  const isCancelling = status === "running" && Boolean(task.cancel_requested || task.cancel_requested_at);
   const result = task.result && typeof task.result === "object" ? task.result : {};
   const taskId = String(task.task_id || task.id || "");
   const updatedAt = String(task.updated_at || task.completed_at || task.created_at || "");
@@ -50,11 +51,53 @@ export function taskViewModel(task = {}) {
     result,
     isTerminal,
     severity,
-    canCancel: status === "queued" || status === "running",
+    canCancel: status === "queued" || (status === "running" && !isCancelling),
+    isCancelling,
+    statusLabel: isCancelling ? "正在停止" : "",
     canRetry: ["failed", "partial", "cancelled"].includes(status) && task.retryable === true,
     canOpenResult: hasResult,
     destination,
     notificationId: taskId && updatedAt ? `${taskId}:${status}:${updatedAt}` : "",
+  };
+}
+
+export function createTaskCenterFocusController({ documentRef, getDrawer, getCloseButton, getBackground, onCloseRef }) {
+  let returnFocus = null;
+  let backgroundState = [];
+  const onKeyDown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCloseRef.current?.();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...(getDrawer()?.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])];
+    if (!focusable.length) return;
+    const index = focusable.indexOf(documentRef.activeElement);
+    const next = event.shiftKey ? (index <= 0 ? focusable.length - 1 : index - 1) : (index === focusable.length - 1 ? 0 : index + 1);
+    event.preventDefault();
+    focusable[next].focus();
+  };
+  return {
+    open() {
+      returnFocus = documentRef.activeElement;
+      getCloseButton()?.focus();
+      backgroundState = getBackground().map((node) => ({ node, inert: node.inert, ariaHidden: node.getAttribute("aria-hidden") }));
+      backgroundState.forEach(({ node }) => {
+        node.inert = true;
+        node.setAttribute("aria-hidden", "true");
+      });
+      documentRef.addEventListener("keydown", onKeyDown);
+      return () => {
+        documentRef.removeEventListener("keydown", onKeyDown);
+        backgroundState.forEach(({ node, inert, ariaHidden }) => {
+          node.inert = inert;
+          if (ariaHidden === null) node.removeAttribute("aria-hidden");
+          else node.setAttribute("aria-hidden", ariaHidden);
+        });
+        returnFocus?.focus?.();
+      };
+    },
   };
 }
 
@@ -72,7 +115,8 @@ export function TaskCenter({
   const closeButtonRef = useRef(null);
   const drawerRef = useRef(null);
   const layerRef = useRef(null);
-  const returnFocusRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const orderedTasks = useMemo(
     () => [...tasks].sort((left, right) => String(right.updated_at || right.created_at || "").localeCompare(String(left.updated_at || left.created_at || ""))),
     [tasks],
@@ -80,40 +124,18 @@ export function TaskCenter({
 
   useEffect(() => {
     if (!open) return undefined;
-    returnFocusRef.current = document.activeElement;
-    closeButtonRef.current?.focus();
-    const shell = layerRef.current?.closest(".app-shell");
-    const background = shell ? [...shell.children].filter((node) => node !== layerRef.current) : [];
-    const backgroundState = background.map((node) => ({ node, inert: node.inert, ariaHidden: node.getAttribute("aria-hidden") }));
-    background.forEach((node) => {
-      node.inert = true;
-      node.setAttribute("aria-hidden", "true");
+    const controller = createTaskCenterFocusController({
+      documentRef: document,
+      getDrawer: () => drawerRef.current,
+      getCloseButton: () => closeButtonRef.current,
+      getBackground: () => {
+        const shell = layerRef.current?.closest(".app-shell");
+        return shell ? [...shell.children].filter((node) => node !== layerRef.current) : [];
+      },
+      onCloseRef,
     });
-    const onKeyDown = (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = [...(drawerRef.current?.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])];
-      if (!focusable.length) return;
-      const index = focusable.indexOf(document.activeElement);
-      const next = event.shiftKey ? (index <= 0 ? focusable.length - 1 : index - 1) : (index === focusable.length - 1 ? 0 : index + 1);
-      event.preventDefault();
-      focusable[next].focus();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      backgroundState.forEach(({ node, inert, ariaHidden }) => {
-        node.inert = inert;
-        if (ariaHidden === null) node.removeAttribute("aria-hidden");
-        else node.setAttribute("aria-hidden", ariaHidden);
-      });
-      returnFocusRef.current?.focus?.();
-    };
-  }, [open, onClose]);
+    return controller.open();
+  }, [open]);
 
   if (!open && !notifications.length) return null;
 
@@ -177,7 +199,7 @@ export function TaskCenter({
                     <span className="task-center-status">{iconFor(model)}</span>
                     <div className="task-center-copy">
                       <strong>{titleFor(task)}</strong>
-                      <span>{statusLabel(model.status)}{typeof task.progress === "number" ? ` · ${task.progress}%` : ""}</span>
+                      <span>{model.statusLabel || statusLabel(model.status)}{typeof task.progress === "number" ? ` · ${task.progress}%` : ""}</span>
                       {task.error?.message ? <small>{task.error.message}</small> : null}
                       {action.error ? <small className="task-action-error">{action.error}</small> : null}
                     </div>

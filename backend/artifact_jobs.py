@@ -14,12 +14,12 @@ try:
     from .blob_store import BlobJsonReadError, blob_configured, claim_blob_json, download_blob_json, download_blob_json_strict, list_blob_json, upload_blob_json
     from .identity import public_actor
     from .run_store import get_run, list_runs
-    from .task_store import TaskPersistenceError, activate_prepared_task, claim_task, create_task, get_task, list_tasks, update_task
+    from .task_store import TaskPersistenceError, activate_prepared_task, cancel_requested, claim_task, create_task, get_task, list_tasks, update_task
 except ImportError:
     from blob_store import BlobJsonReadError, blob_configured, claim_blob_json, download_blob_json, download_blob_json_strict, list_blob_json, upload_blob_json
     from identity import public_actor
     from run_store import get_run, list_runs
-    from task_store import TaskPersistenceError, activate_prepared_task, claim_task, create_task, get_task, list_tasks, update_task
+    from task_store import TaskPersistenceError, activate_prepared_task, cancel_requested, claim_task, create_task, get_task, list_tasks, update_task
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -182,6 +182,8 @@ def run_artifact_job(job_id: str) -> dict[str, Any]:
         job = _claim_job(job_id)
         if job is None:
             return get_artifact_job(job_id)
+    if _linked_task_cancel_requested(job):
+        return _cancel_job(job_id)
     try:
         result = _produce(_producer_payload(job))
     except Exception as exc:
@@ -193,6 +195,8 @@ def run_artifact_job(job_id: str) -> dict[str, Any]:
             errors={"job": {"message": "产物生成任务失败，可重试。", "error_type": type(exc).__name__}},
         )
         return _sync_linked_task(failed)
+    if _linked_task_cancel_requested(job):
+        return _cancel_job(job_id)
 
     warnings = [item for item in (result.get("warnings") or []) if isinstance(item, dict)]
     warning_by_kind = {str(item.get("kind") or ""): item for item in warnings if item.get("kind")}
@@ -259,9 +263,22 @@ def _linked_task_cancel_requested(job: Mapping[str, Any]) -> bool:
     if not task_id:
         return False
     try:
-        return get_task(task_id).get("status") in {"cancel_requested", "cancelled"}
+        return cancel_requested(task_id)
     except FileNotFoundError:
         return False
+
+
+def _cancel_job(job_id: str) -> dict[str, Any]:
+    cancelled = _update_job(
+        job_id,
+        status="cancelled",
+        artifacts={},
+        errors={},
+        warnings=[],
+        retryable=False,
+        completed_at=_now(),
+    )
+    return _sync_linked_task(cancelled)
 
 
 def _sync_linked_task(job: Mapping[str, Any]) -> dict[str, Any]:

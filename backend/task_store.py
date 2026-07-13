@@ -30,7 +30,7 @@ _TERMINAL = {"partial", "completed", "failed", "cancelled"}
 _STATUSES = {"preparing", "queued", "running", "cancel_requested", *_TERMINAL}
 _TASK_FIELDS = {
     "task_id", "workspace_id", "task_type", "action", "status", "attempt", "actor", "result", "error",
-    "progress", "revision", "retry_of", "retryable", "created_at", "updated_at", "started_at", "completed_at",
+    "progress", "revision", "retry_of", "retryable", "cancel_requested", "cancel_requested_at", "created_at", "updated_at", "started_at", "completed_at",
 }
 _PUBLIC_ACTOR_FIELDS = {"name", "email", "actor_id", "tenant_id", "source"}
 _RESULT_IDS = {"task_id", "job_id", "artifact_job_id", "ingest_job_id", "file_id", "artifact_id", "run_id", "conversation_id", "version_id"}
@@ -164,7 +164,16 @@ def request_cancel(task_id: str) -> dict[str, Any]:
     task = get_task(task_id)
     if task.get("status") in _TERMINAL:
         return task
-    return update_task(task_id, status="cancelled")
+    if task.get("status") in {"preparing", "queued"}:
+        return update_task(task_id, status="cancelled")
+    if task.get("status") == "running":
+        return update_task(task_id, status="running", cancel_requested=True, cancel_requested_at=_now())
+    return task
+
+
+def cancel_requested(task_id: str) -> bool:
+    task = get_task(task_id)
+    return bool(task.get("cancel_requested")) or task.get("status") in {"cancel_requested", "cancelled"}
 
 
 def retry_task(task_id: str, actor: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -396,6 +405,9 @@ def _apply_changes(task: dict[str, Any], changes: Mapping[str, Any]) -> dict[str
     current_status = str(task.get("status") or "")
     if current_status in _TERMINAL:
         return task
+    discard_result = bool(task.get("cancel_requested")) and requested_status in {"completed", "partial", "failed"}
+    if discard_result:
+        requested_status = "cancelled"
     if requested_status not in _STATUSES or not _transition_allowed(current_status, requested_status):
         raise ValueError("invalid task status transition")
     updated = dict(task)
@@ -405,14 +417,18 @@ def _apply_changes(task: dict[str, Any], changes: Mapping[str, Any]) -> dict[str
         if progress < 0 or progress > 100 or progress < int(task.get("progress") or 0):
             raise ValueError("progress must be monotonic within an attempt")
         updated["progress"] = progress
-    if isinstance(changes.get("result"), Mapping):
+    if not discard_result and isinstance(changes.get("result"), Mapping):
         updated["result"] = _safe_result(changes["result"])
-    if isinstance(changes.get("error"), Mapping):
+    if not discard_result and isinstance(changes.get("error"), Mapping):
         error = _safe_error(changes["error"])
         if error:
             updated["error"] = error
     if "retryable" in changes:
         updated["retryable"] = bool(changes["retryable"])
+    if "cancel_requested" in changes:
+        updated["cancel_requested"] = bool(changes["cancel_requested"])
+    if changes.get("cancel_requested_at"):
+        updated["cancel_requested_at"] = str(changes["cancel_requested_at"])[:80]
     for key in ("started_at", "completed_at"):
         if changes.get(key):
             updated[key] = str(changes[key])[:80]
@@ -445,6 +461,12 @@ def _clean_task(value: Mapping[str, Any]) -> dict[str, Any]:
     task["actor"] = _public_actor(task.get("actor") if isinstance(task.get("actor"), Mapping) else {})
     task["result"] = _safe_result(task.get("result"))
     task["retryable"] = bool(task.get("retryable", False))
+    if task.get("cancel_requested"):
+        task["cancel_requested"] = True
+    else:
+        task.pop("cancel_requested", None)
+    if task.get("cancel_requested_at"):
+        task["cancel_requested_at"] = str(task["cancel_requested_at"])[:80]
     if isinstance(task.get("error"), Mapping):
         error = _safe_error(task["error"])
         if error:
@@ -567,4 +589,4 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-__all__ = ["TaskPersistenceError", "claim_task", "create_task", "get_task", "list_tasks", "request_cancel", "retry_task", "update_task"]
+__all__ = ["TaskPersistenceError", "cancel_requested", "claim_task", "create_task", "get_task", "list_tasks", "request_cancel", "retry_task", "update_task"]
