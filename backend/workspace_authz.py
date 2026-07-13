@@ -9,10 +9,12 @@ from typing import Any, Mapping
 try:
     from .blob_store import upload_blob_json
     from .identity import canonical_actor_identity, default_actor, is_trusted_tenant_identity, public_actor
+    from .invitation_store import accepted_invitation_for_actor
     from .workspace_store import WORKSPACES, _load_workspace_bundle
 except ImportError:
     from blob_store import upload_blob_json
     from identity import canonical_actor_identity, default_actor, is_trusted_tenant_identity, public_actor
+    from invitation_store import accepted_invitation_for_actor
     from workspace_store import WORKSPACES, _load_workspace_bundle
 
 
@@ -82,16 +84,13 @@ def workspace_role(workspace_id: str, actor: Mapping[str, Any] | None) -> str | 
     stored_owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), Mapping) else {}
     if _same_actor(actor_email, actor_id, actor_tenant, stored_owner):
         return "owner"
+    activated_role = _activate_accepted_invitation(workspace_id, meta, clean_actor)
+    if activated_role:
+        return activated_role
     for item in meta.get("workspace_members") or []:
         if not isinstance(item, Mapping) or not _same_actor(actor_email, actor_id, actor_tenant, item):
             continue
         status = str(item.get("status") or "").strip().lower()
-        if status == "pending" and str(clean_actor.get("source") or "") == "easy_auth":
-            role = _normalize_role(item.get("role"))
-            if role is None:
-                return None
-            _activate_pending_member(workspace_id, meta, item, clean_actor)
-            return role
         if status != "active":
             return None
         return _normalize_role(item.get("role"))
@@ -150,30 +149,53 @@ def _same_actor(actor_email: str, actor_id: str, actor_tenant: str, member: Mapp
     return bool(actor_email and member_email and actor_email == member_email)
 
 
-def _activate_pending_member(
+def _activate_accepted_invitation(
     workspace_id: str,
     meta: dict[str, Any],
-    matched: Mapping[str, Any],
     actor: Mapping[str, Any],
-) -> None:
+) -> str | None:
+    accepted = accepted_invitation_for_actor(meta, actor)
+    if not accepted:
+        return None
+    invitation_id = str(accepted.get("invitation_id") or "")
+    role = _normalize_role(accepted.get("role"))
+    if not invitation_id or role is None:
+        return None
     members: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc).isoformat()
+    activated = False
     for item in meta.get("workspace_members") or []:
         member = dict(item) if isinstance(item, Mapping) else {}
-        if item is matched:
+        if str(member.get("invitation_id") or "") == invitation_id:
             member.update(
                 {
                     "status": "active",
-                    "actor_id": actor.get("actor_id") or member.get("actor_id"),
-                    "tenant_id": actor.get("tenant_id") or member.get("tenant_id"),
+                    "actor_id": actor.get("actor_id"),
+                    "tenant_id": actor.get("tenant_id"),
                     "accepted_at": now,
                     "updated_at": now,
                 }
             )
+            activated = True
         members.append(member)
+    if not activated:
+        members.append(
+            {
+                "email": accepted.get("email") or "",
+                "role": role,
+                "status": "active",
+                "actor_id": actor.get("actor_id"),
+                "tenant_id": actor.get("tenant_id"),
+                "invitation_id": invitation_id,
+                "source": "workspace_invite",
+                "accepted_at": now,
+                "updated_at": now,
+            }
+        )
     updated = dict(meta)
     updated["workspace_members"] = members
     _save_workspace_meta(workspace_id, updated)
+    return role
 
 
 def _save_workspace_meta(workspace_id: str, meta: Mapping[str, Any]) -> None:

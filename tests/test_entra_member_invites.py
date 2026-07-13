@@ -1,8 +1,11 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
 import backend.control_plane as control_plane
 import backend.graph_client as graph_client
+import backend.invitation_store as invitation_store
+import pytest
 
 
 class RequestStub:
@@ -71,6 +74,78 @@ def test_entra_user_search_normalizes_graph_users(monkeypatch):
     ]
 
 
+def test_directory_search_permission_denied_is_specific_but_exact_email_invite_still_works(monkeypatch):
+    monkeypatch.setattr(graph_client, "graph_token_from_request", lambda request=None: "token")
+
+    def search_denied(method, path, token, *, params=None, json_payload=None, headers=None):
+        if method == "GET":
+            raise graph_client.GraphClientError("graph_permission_denied", "missing permissions", status=403)
+        return {"id": "provider-invite-1", "invitedUser": {"id": "provider-user-1"}}
+
+    monkeypatch.setattr(graph_client, "graph_request", search_denied)
+
+    result = graph_client.search_entra_users("reviewer", RequestStub())
+    invite = graph_client.send_graph_invitation("reviewer@contoso.com", "https://example.test", RequestStub())
+
+    assert result["connected"] is False
+    assert result["error"]["code"] == "graph_directory_search_permission_denied"
+    assert "User.ReadBasic.All" in result["error"]["message"]
+    assert invite == {
+        "status": "sent",
+        "source": "microsoft_graph",
+        "invitation_id": "provider-invite-1",
+        "invited_user_id": "provider-user-1",
+        "email": "reviewer@contoso.com",
+    }
+
+
+def test_invitation_events_are_append_only_idempotent_and_reject_illegal_transitions():
+    meta = {}
+    pending = invitation_store.create_pending_invitation(
+        meta,
+        "ws-graph",
+        email="reviewer@contoso.com",
+        role="editor",
+        invited_by={"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+    accepted = invitation_store.transition_invitation(
+        meta,
+        pending["invitation_id"],
+        "accepted",
+        identity={"actor_id": "reviewer-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+    retried = invitation_store.transition_invitation(
+        meta,
+        pending["invitation_id"],
+        "accepted",
+        identity={"actor_id": "reviewer-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+
+    assert accepted == retried
+    assert [event["state"] for event in meta["workspace_invitation_events"]] == ["pending", "accepted"]
+    with pytest.raises(invitation_store.InvitationTransitionError, match="cannot transition"):
+        invitation_store.transition_invitation(meta, pending["invitation_id"], "expired")
+
+
+def test_concurrent_pending_invitation_retries_append_one_event():
+    meta = {}
+
+    def create():
+        return invitation_store.create_pending_invitation(
+            meta,
+            "ws-graph",
+            email="reviewer@contoso.com",
+            role="viewer",
+            invited_by={"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        records = list(pool.map(lambda _index: create(), range(8)))
+
+    assert {record["invitation_id"] for record in records} == {records[0]["invitation_id"]}
+    assert len(meta["workspace_invitation_events"]) == 1
+
+
 def test_entra_invite_falls_back_to_workspace_member_when_graph_unavailable(tmp_path, monkeypatch):
     workspace_path = _workspace(tmp_path, monkeypatch)
     monkeypatch.setattr(graph_client, "graph_token_from_request", lambda request=None: "")
@@ -95,6 +170,34 @@ def test_entra_invite_falls_back_to_workspace_member_when_graph_unavailable(tmp_
     assert result["graph_invite"]["error"]["code"] == "graph_token_missing"
     saved = json.loads(workspace_path.read_text(encoding="utf-8"))
     assert saved["workspace_members"][0]["email"] == "reviewer@contoso.com"
+    assert [event["state"] for event in saved["workspace_invitation_events"]] == ["pending", "failed"]
+    assert "error" not in saved["workspace_invitation_events"][-1]
+
+
+def test_entra_invite_without_member_fallback_still_records_sanitized_failure(tmp_path, monkeypatch):
+    workspace_path = _workspace(tmp_path, monkeypatch)
+    monkeypatch.setattr(graph_client, "graph_token_from_request", lambda request=None: "")
+
+    result = control_plane.invite_entra_workspace_member(
+        "ws-graph",
+        {
+            "email": "reviewer@contoso.com",
+            "role": "editor",
+            "send_email": True,
+            "fallback_to_workspace_member": False,
+        },
+        RequestStub(),
+    )
+
+    saved = json.loads(workspace_path.read_text(encoding="utf-8"))
+    assert result["graph_invite"]["status"] == "unavailable"
+    assert [event["state"] for event in saved["workspace_invitation_events"]] == ["pending", "failed"]
+    assert saved.get("workspace_members", []) == []
+    assert saved["workspace_invitation_events"][-1]["provider"] == {
+        "source": "microsoft_graph",
+        "status": "unavailable",
+        "error_code": "graph_token_missing",
+    }
 
 
 def test_update_workspace_member_role_persists_role_change(tmp_path, monkeypatch):

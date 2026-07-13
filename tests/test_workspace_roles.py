@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 import pytest
 
+import backend.invitation_store as invitation_store
 import backend.workspace_authz as workspace_authz
 from backend.app import app
 from fastapi.testclient import TestClient
@@ -137,6 +138,30 @@ def test_enabled_permission_gate_rejects_viewer_mutation(monkeypatch: pytest.Mon
         )
 
 
+def test_member_management_requires_owner_or_admin_when_rbac_is_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-1"},
+            "workspace_members": [{"actor_id": "editor-oid", "tenant_id": "tenant-1", "role": "editor", "status": "active"}],
+        },
+    )
+
+    assert workspace_authz.require_workspace_permission(
+        "ws-roles",
+        {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+        "member.manage",
+    ) == "owner"
+    with pytest.raises(PermissionError, match="member.manage"):
+        workspace_authz.require_workspace_permission(
+            "ws-roles",
+            {"actor_id": "editor-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+            "member.manage",
+        )
+
+
 def test_viewer_mutation_endpoint_returns_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
     monkeypatch.setenv("DF_WORKSPACE_OWNER_EMAIL", "owner@contoso.com")
@@ -249,7 +274,7 @@ def test_pending_editor_cannot_mutate_workspace(monkeypatch: pytest.MonkeyPatch)
         )
 
 
-def test_easy_auth_login_activates_matching_pending_invitation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pending_invitation_does_not_grant_access_even_when_email_matches(monkeypatch: pytest.MonkeyPatch) -> None:
     saved: list[dict] = []
     meta = {
         "workspace_members": [
@@ -274,9 +299,46 @@ def test_easy_auth_login_activates_matching_pending_invitation(monkeypatch: pyte
         },
     )
 
-    assert role == "editor"
-    assert saved[0]["workspace_members"][0]["status"] == "active"
-    assert saved[0]["workspace_members"][0]["actor_id"] == "oid-invited"
+    assert role is None
+    assert saved == []
+
+
+def test_accepted_invitation_activates_only_the_matching_trusted_oid_and_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    saved: list[dict] = []
+    meta = {"workspace_members": []}
+    pending = invitation_store.create_pending_invitation(
+        meta,
+        "ws-roles",
+        email="invited@contoso.com",
+        role="editor",
+        invited_by={"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+    invitation_store.transition_invitation(
+        meta,
+        pending["invitation_id"],
+        "accepted",
+        identity={"actor_id": "oid-invited", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+    meta["workspace_members"].append(
+        {"email": "invited@contoso.com", "role": "editor", "status": "pending", "invitation_id": pending["invitation_id"]}
+    )
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: meta)
+    monkeypatch.setattr(workspace_authz, "_save_workspace_meta", lambda _workspace_id, value: saved.append(value), raising=False)
+
+    assert workspace_authz.workspace_role(
+        "ws-roles",
+        {"email": "invited@contoso.com", "actor_id": "wrong-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    ) is None
+    assert workspace_authz.workspace_role(
+        "ws-roles",
+        {"email": "invited@contoso.com", "actor_id": "oid-invited", "tenant_id": "wrong-tenant", "source": "easy_auth"},
+    ) is None
+    assert workspace_authz.workspace_role(
+        "ws-roles",
+        {"email": "invited@contoso.com", "actor_id": "oid-invited", "tenant_id": "tenant-1", "source": "easy_auth"},
+    ) == "editor"
+    assert saved[-1]["workspace_members"][0]["status"] == "active"
+    assert saved[-1]["workspace_members"][0]["actor_id"] == "oid-invited"
 
 
 def test_new_workspace_upload_passes_authenticated_owner_to_store(monkeypatch: pytest.MonkeyPatch) -> None:

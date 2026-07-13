@@ -63,6 +63,12 @@ def search_entra_users(query: str, request: Any | None = None, *, limit: int = 8
     try:
         payload = graph_request("GET", "/users", token, params=params)
     except GraphClientError as exc:
+        if exc.code == "graph_permission_denied":
+            return _unavailable(
+                "graph_directory_search_permission_denied",
+                "Microsoft Graph directory search requires User.ReadBasic.All or Directory.Read.All with admin consent. Exact-email invitations can still be sent when User.Invite.All is available.",
+                status=exc.status,
+            )
         return _unavailable(exc.code, exc.message, status=exc.status, detail=exc.detail)
     return {
         "connected": True,
