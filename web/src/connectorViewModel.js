@@ -78,6 +78,12 @@ export function createConnectorActionController({ currentWorkspaceId }) {
   };
 }
 
+export function commitGuardedConnectorAction(guard, commit) {
+  if (!guard?.isCurrent?.()) return false;
+  commit();
+  return true;
+}
+
 export function replaceConnectorRecord(records, record) {
   const safe = publicConnectorRecord(record);
   if (!safe) return Array.isArray(records) ? records : [];
@@ -105,7 +111,7 @@ export function connectorViewModel(records, selectedConnectorId, operations = {}
     selectedByKind,
     cards: items.map((connector) => ({
       connector,
-      pending: String(operations?.[connector.connector_id]?.pending || ""),
+      pending: String(operations?.[connector.connector_id]?.pending || (connector.status === "finalizing" ? "finalizing" : "")),
       error: String(operations?.[connector.connector_id]?.error || ""),
     })),
   };

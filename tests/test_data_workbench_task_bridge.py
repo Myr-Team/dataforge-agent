@@ -146,12 +146,13 @@ def test_connector_sync_finalizes_task_before_returning_connector_to_connected(t
 def test_finalizing_connector_recovers_connected_only_after_completed_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_tasks(tmp_path, monkeypatch)
     connector = _connector_record(tmp_path, monkeypatch, "ws-bridge")
-    task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "connector.sql.sync", "action": "connector.manage"}, actor={})
+    task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "connector.sql.sync", "action": "connector.manage", "result": {"ingest_job_id": "ingest-1"}}, actor={})
     task_store.claim_task(task["task_id"], "worker")
     task_store.update_task(task["task_id"], status="completed")
     data_workbench._CONNECTOR_STORE.update(
         "ws-bridge", connector["connector_id"], status="finalizing", pending_task_id=task["task_id"], sync_token="a" * 32,
     )
+    monkeypatch.setattr(data_workbench, "_connector_ingest_job_belongs_to_workspace", lambda *_args: True)
 
     listed = data_workbench.list_connectors("ws-bridge")
     recovered = next(item for item in listed["connectors"] if item["connector_id"] == connector["connector_id"])
@@ -164,15 +165,57 @@ def test_finalizing_connector_recovers_connected_only_after_completed_task(tmp_p
 def test_finalizing_connector_does_not_claim_connected_when_task_is_not_completed(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_tasks(tmp_path, monkeypatch)
     connector = _connector_record(tmp_path, monkeypatch, "ws-bridge")
-    task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "connector.sql.sync", "action": "connector.manage"}, actor={})
-    task_store.claim_task(task["task_id"], "worker")
+    task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "connector.sql.sync", "action": "connector.manage", "result": {"ingest_job_id": "ingest-1"}}, actor={})
     data_workbench._CONNECTOR_STORE.update(
         "ws-bridge", connector["connector_id"], status="finalizing", pending_task_id=task["task_id"], sync_token="b" * 32,
     )
+    monkeypatch.setattr(data_workbench, "_connector_ingest_job_belongs_to_workspace", lambda *_args: True)
 
     listed = data_workbench.list_connectors("ws-bridge")
 
     assert listed["connectors"][0]["status"] == "finalizing"
+
+
+def test_finalizing_running_connector_recovers_task_then_connected(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+    connector = _connector_record(tmp_path, monkeypatch, "ws-bridge")
+    task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "connector.sql.import", "action": "connector.manage", "result": {"ingest_job_id": "ingest-1"}}, actor={})
+    task_store.claim_task(task["task_id"], "worker")
+    data_workbench._CONNECTOR_STORE.update(
+        "ws-bridge", connector["connector_id"], status="finalizing", pending_task_id=task["task_id"], sync_token="c" * 32,
+    )
+    monkeypatch.setattr(data_workbench, "_connector_ingest_job_belongs_to_workspace", lambda *_args: True)
+
+    recovered = data_workbench.list_connectors("ws-bridge")["connectors"][0]
+
+    assert recovered["status"] == "connected"
+    assert task_store.get_task(task["task_id"])["status"] == "completed"
+
+
+@pytest.mark.parametrize(("task_patch", "code"), [
+    ("missing", "sync_task_missing"),
+    ("mismatch", "sync_task_mismatch"),
+])
+def test_bad_pending_finalizing_task_isolated_to_its_connector(tmp_path, monkeypatch: pytest.MonkeyPatch, task_patch: str, code: str) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+    bad = _connector_record(tmp_path, monkeypatch, "ws-bridge")
+    good = _connector_record(tmp_path, monkeypatch, "ws-bridge")
+    task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "connector.sql.import", "action": "connector.manage", "result": {"ingest_job_id": "ingest-1"}}, actor={})
+    task_store.claim_task(task["task_id"], "worker")
+    data_workbench._CONNECTOR_STORE.update("ws-bridge", bad["connector_id"], status="finalizing", pending_task_id=("task_missing" if task_patch == "missing" else task["task_id"]), sync_token="d" * 32)
+    monkeypatch.setattr(data_workbench, "_connector_ingest_job_belongs_to_workspace", lambda *_args: task_patch != "mismatch")
+
+    listed = data_workbench.list_connectors("ws-bridge")["connectors"]
+    by_id = {item["connector_id"]: item for item in listed}
+
+    assert by_id[bad["connector_id"]]["status"] == "error"
+    assert by_id[bad["connector_id"]]["error"] == code
+    assert by_id[good["connector_id"]]["status"] == "connected"
+
+    status = data_workbench.connector_status("ws-bridge", "sql", bad["connector_id"])
+    reconnect = data_workbench.reconnect_connector("ws-bridge", bad["connector_id"])
+    assert status["error"] == code
+    assert reconnect["error"] == code
 
 
 def test_sync_task_completion_conflict_is_stable_and_never_leaves_connected(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

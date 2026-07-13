@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   connectorActionState,
+  commitGuardedConnectorAction,
   createConnectorActionController,
   connectorRecordsForWorkspaceResponse,
   connectorViewModel,
@@ -94,4 +95,25 @@ test("action guards reject a late workspace response and superseded same-record 
   const createBlob = controller.begin({ workspaceId, action: "connect", kind: "blob" });
   assert.equal(createSql.isCurrent(), true);
   assert.equal(createBlob.isCurrent(), true);
+});
+
+test("guarded import commits cannot write workspace B after a slow workspace A response", async () => {
+  let workspaceId = "ws-a";
+  const controller = createConnectorActionController({ currentWorkspaceId: () => workspaceId });
+  const guard = controller.begin({ workspaceId, action: "sync", connectorId: "sql-a" });
+  const groups = [];
+  let resolve;
+  const slowLoad = new Promise((done) => { resolve = done; });
+  workspaceId = "ws-b";
+  resolve([{ id: "a-file" }]);
+  const response = await slowLoad;
+
+  assert.equal(commitGuardedConnectorAction(guard, () => groups.push(...response)), false);
+  assert.deepEqual(groups, []);
+});
+
+test("finalizing connectors remain syncing-like and do not expose reconnect as an idle action", () => {
+  const model = connectorViewModel([{ connector_id: "sql-final", kind: "sql", status: "finalizing" }], "sql-final");
+  assert.equal(model.cards[0].pending, "finalizing");
+  assert.equal(connectorActionState(model, "sql-final").pending, "finalizing");
 });

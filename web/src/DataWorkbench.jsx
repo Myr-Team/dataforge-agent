@@ -58,6 +58,7 @@ import {
 import {
   connectorRecordsForWorkspaceResponse,
   connectorViewModel,
+  commitGuardedConnectorAction,
   createConnectorActionController,
   isCurrentConnectorListResponse,
 } from "./connectorViewModel.js";
@@ -123,6 +124,7 @@ function isConnectorSessionError(error) {
 
 function connectorStateLabel(connector) {
   const state = String(connector?.status || "disconnected");
+  if (state === "finalizing") return "正在完成同步";
   if (state === "connected") return connector?.persistence === "key_vault" ? "已连接 · 持久化" : "已连接 · 仅本次会话";
   if (state === "syncing") return "同步中";
   if (state === "expired") return "会话已过期";
@@ -464,18 +466,21 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     clearConnectorState,
   ]);
 
-  const reloadFiles = useCallback(async () => {
+  const reloadFiles = useCallback(async ({ guard = null, commit = true } = {}) => {
     if (!workspaceId) return;
     setFilesLoading(true);
     try {
       const data = await dwListFiles(workspaceId);
-      setGroups(data.groups || []);
-      setStorage(data.storage || null);
+      if (commit && (!guard || guard.isCurrent())) {
+        setGroups(data.groups || []);
+        setStorage(data.storage || null);
+      }
       return data;
     } catch (e) {
+      if (guard && !guard.isCurrent()) return undefined;
       showToast(`加载文件库失败：${e.message}`);
     } finally {
-      setFilesLoading(false);
+      if (!guard || guard.isCurrent()) setFilesLoading(false);
     }
   }, [workspaceId, showToast]);
 
@@ -933,6 +938,10 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
   const reconnectConnector = useCallback(async (target = connectorResult) => {
     if (!target?.connector_id) return;
     setSelectedConnectorId(target.connector_id);
+    if (target.status === "finalizing") {
+      reloadConnectorRecords().catch(() => undefined);
+      return;
+    }
     if (target.status === "expired") {
       setConnectorModal(target.kind);
       return;
@@ -962,7 +971,7 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     } finally {
       if (guard.isCurrent()) setConnectorOperation(target.connector_id, { pending: "" });
     }
-  }, [beginConnectorAction, buildBlobExternalGroups, buildSqlExternalGroup, connectorResult, setConnectorOperation, setConnectorRuntimeFor, showToast, upsertConnectorRecord, workspaceId]);
+  }, [beginConnectorAction, buildBlobExternalGroups, buildSqlExternalGroup, connectorResult, reloadConnectorRecords, setConnectorOperation, setConnectorRuntimeFor, showToast, upsertConnectorRecord, workspaceId]);
 
   const openConnectorSync = useCallback(async (target) => {
     if (!target?.connector_id) return;
@@ -1024,8 +1033,12 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
         : { table: source.source.table });
       if (!guard.isCurrent()) return;
       showToast("已导入文件库");
-      const data = await reloadFiles();
+      const data = await reloadFiles({ guard, commit: false });
       if (!guard.isCurrent()) return;
+      commitGuardedConnectorAction(guard, () => {
+        setGroups(data?.groups || []);
+        setStorage(data?.storage || null);
+      });
       const imported = findImportedFile(data, res, source);
       if (imported) openFile(imported);
       upsertConnectorRecord({ ...target, status: res?.syncing ? "syncing" : "connected" });
@@ -1097,28 +1110,40 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
         showToast("SQL 已连接，凭证仅保存在服务端会话");
       }
     } catch (e) {
+      if (!guard.isCurrent()) return;
       showToast(`连接失败：${e.message}`);
     } finally {
-      setConnectorBusy(false);
+      if (guard.isCurrent()) {
+        setConnectorBusy(false);
+        reloadConnectorRecords(guard).catch(() => undefined);
+      }
     }
   };
 
   const importConnectorItem = async (item) => {
     const target = connectorResult;
     if (!target?.connector_id) return;
+    const guard = beginConnectorAction("sync", target.connector_id, target.kind);
     setConnectorOperation(target.connector_id, { pending: "sync", error: "" });
     upsertConnectorRecord({ ...target, status: "syncing" });
     try {
       const res = await dwSyncConnector(workspaceId, target.connector_id, target.kind === "blob"
         ? { container: item.container, blob: item.name }
         : { table: item.id || `${item.schema}.${item.name}` });
+      if (!guard.isCurrent()) return;
       showToast("已导入文件库");
-      const data = await reloadFiles();
+      const data = await reloadFiles({ guard, commit: false });
+      if (!guard.isCurrent()) return;
+      commitGuardedConnectorAction(guard, () => {
+        setGroups(data?.groups || []);
+        setStorage(data?.storage || null);
+      });
       const imported = (data?.groups || []).flatMap((g) => g.files || []).find((f) => f.id === res?.upload?.documents?.[0]?.id);
       if (imported) openFile(imported);
       upsertConnectorRecord({ ...target, status: res?.syncing ? "syncing" : "connected" });
       notifyWorkspaceDataChanged();
     } catch (e) {
+      if (!guard.isCurrent()) return;
       if (isConnectorSessionError(e)) {
         clearConnectorState(connectorResult.kind, "外部连接会话已失效，请重新连接。");
         return;
@@ -1127,7 +1152,10 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
       setConnectorOperation(target.connector_id, { error: "sync_failed" });
       showToast(`导入失败：${e.message}`);
     } finally {
-      setConnectorOperation(target.connector_id, { pending: "" });
+      if (guard.isCurrent()) {
+        setConnectorOperation(target.connector_id, { pending: "" });
+        reloadConnectorRecords(guard).catch(() => undefined);
+      }
     }
   };
 

@@ -180,3 +180,25 @@ Warning: `row_count` is the server-observed import preview count; it is not a cl
 ### Concerns
 
 - A process interruption while the task is still running deliberately exposes `finalizing` rather than guessing that the connector is connected; normal task completion is recovered on the next list, status, or reconnect access.
+
+## Fourth Review Closure: Recoverable Finalization
+
+### RED / GREEN
+
+- RED: finalizing recovery accepted any completed task and could not complete a validated running task after a process crash.
+- GREEN: recovery validates the pending task workspace, `connector.manage` action, connector-kind task type, and `ingest_job_id` workspace ownership before completing a running task and CAS-finalizing the connector to connected.
+- GREEN: a missing pending task becomes only that connector's `sync_task_missing` error. Task or ingest identity mismatch becomes `sync_task_mismatch`; list continues to return unrelated records, while real `TaskPersistenceError` remains a 503 path.
+- GREEN: both connector-item and external-source imports use action epochs; guarded file reloads fetch data without committing groups or storage until the current workspace guard succeeds.
+- GREEN: create-connect catch/finally honor the same guard, so a late workspace A request cannot toast or clear workspace B's kind-scoped busy state.
+- GREEN: `finalizing` is rendered as `正在完成同步`, is syncing-like in the view model, and reconnect refreshes rather than reconnecting it.
+
+### Verification
+
+- Focused connector/data/task regression: `53 passed`.
+- Full Python suite: `402 passed, 1 warning`.
+- Node behavior suites: `27 passed`.
+- Production build, import smoke, and `git diff --check`: passed.
+
+### Concerns
+
+- Finalization recovery deliberately refuses a task whose durable ownership evidence is incomplete or mismatched. It leaves a stable connector error rather than publishing an unverified connection state.

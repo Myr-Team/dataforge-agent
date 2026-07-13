@@ -842,6 +842,8 @@ def reconnect_connector(workspace_id: str, connector_id: str) -> dict[str, Any]:
     record = _recover_connector_finalization(workspace_id, _CONNECTOR_STORE.get(workspace_id, connector_id))
     if record.get("status") == "finalizing":
         raise ConnectorConflictError()
+    if record.get("error") in {"sync_task_missing", "sync_task_mismatch"}:
+        return _public_connector(record)
     try:
         record, payload = _CONNECTOR_STORE.reconnect(workspace_id, connector_id, _SECRET_STORE)
     except SecretExpiredError:
@@ -1018,14 +1020,33 @@ def _recover_connector_finalization(workspace_id: str, record: dict[str, Any]) -
         return record
     task_id = str(record.get("pending_task_id") or "")
     if not task_id:
-        _mark_connector_sync_error(workspace_id, str(record["connector_id"]), "connector_task_unavailable")
+        _mark_connector_sync_error(workspace_id, str(record["connector_id"]), "sync_task_missing")
         return _CONNECTOR_STORE.get(workspace_id, str(record["connector_id"]))
     try:
         task = get_task(task_id)
+    except FileNotFoundError:
+        _mark_connector_sync_error(workspace_id, str(record["connector_id"]), "sync_task_missing")
+        return _CONNECTOR_STORE.get(workspace_id, str(record["connector_id"]))
     except TaskPersistenceError:
-        # Storage is unavailable: finalizing is the only truthful public state.
-        return record
+        raise
+    job_id = str((task.get("result") or {}).get("ingest_job_id") or "")
+    expected_types = {f"connector.{record['kind']}.sync", f"connector.{record['kind']}.import"}
+    if (
+        task.get("workspace_id") != workspace_id
+        or task.get("action") != "connector.manage"
+        or task.get("task_type") not in expected_types
+        or not job_id
+        or not _connector_ingest_job_belongs_to_workspace(workspace_id, job_id)
+    ):
+        _mark_connector_sync_error(workspace_id, str(record["connector_id"]), "sync_task_mismatch")
+        return _CONNECTOR_STORE.get(workspace_id, str(record["connector_id"]))
     status = str(task.get("status") or "")
+    if status == "running":
+        # Files, lineage and history were committed before finalizing, so this is safe to resume.
+        task = update_task(task_id, status="completed", result={"ingest_job_id": job_id})
+        status = str(task.get("status") or "")
+        if status != "completed":
+            return record
     if status == "completed":
         try:
             return _CONNECTOR_STORE.transition(
@@ -1043,6 +1064,20 @@ def _recover_connector_finalization(workspace_id: str, record: dict[str, Any]) -
         _mark_connector_sync_error(workspace_id, str(record["connector_id"]), "sync_task_incomplete")
         return _CONNECTOR_STORE.get(workspace_id, str(record["connector_id"]))
     return record
+
+
+def _connector_ingest_job_belongs_to_workspace(workspace_id: str, ingest_job_id: str) -> bool:
+    try:
+        meta, _profile = _workspace_state(workspace_id)
+    except FileNotFoundError:
+        return False
+    for item in meta.get("ingest_jobs") or []:
+        if isinstance(item, dict) and str(item.get("ingest_job_id") or item.get("job_id") or "") == ingest_job_id:
+            return True
+    return any(
+        isinstance(item, dict) and str(item.get("ingest_job_id") or "") == ingest_job_id
+        for item in meta.get("documents") or []
+    )
 
 
 def _connector_payload(workspace_id: str, connector_id: str, kind: str, *, allow_syncing: bool = False) -> dict[str, str]:
