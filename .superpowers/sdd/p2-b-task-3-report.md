@@ -112,3 +112,28 @@ Output: `506 passed, 1 warning in 46.98s` (the existing experimental workflow wa
 Executed: `python -m compileall backend tests`; `python -c "from backend.foundry_roi import SignedFoundryRoiAttestation, discover_foundry_roi, reconcile_foundry_roi; import backend.control_plane; import backend.dependency_health; print(discover_foundry_roi().state)"`; and `git diff --check`.
 
 Output: all commands exited `0`; the import check printed `not_configured`.
+
+## Final Critical Remediation: Canonical Snapshot Capture Before Attestation (2026-07-14)
+
+This section closes the remaining provider-object TOCTOU risk in the third remediation. A frozen Pydantic model alone was insufficient because nested containers and retained object references could still be changed after signing.
+
+- Immediately after `provider.read` returns, the adapter validates once and copies every material provider value into a private frozen slots snapshot: primitive strings, `Decimal` amount, tuples for lineage, and immutable canonical JSON bytes. It holds no provider object, Pydantic model, mutable dict, list, or nested business-value reference.
+- The external verifier receives only those canonical bytes, never the internal snapshot or the provider/Pydantic object. The signed snapshot digest is SHA-256 over exactly these bytes. After the untrusted verifier returns, the adapter rechecks that the internal primitive fields reconstruct the same canonical bytes before accepting the signature.
+- Public read output is decoded from the captured canonical bytes. Internal reconciliation is invoked directly from the same private immutable snapshot and derives provider output from those bytes; it does not call `model_dump` or reread provider-owned data after capture.
+- A retained, subclassed provider snapshot that mutates nested amount, window, mapped lineage, or status after verifier signing cannot change the result: the adapter returns/reconciles the benign captured values. The pre-existing mismatched-digest path remains fail-closed.
+
+### Final Critical Remediation Test Evidence
+
+Executed: `python -m pytest tests/test_foundry_roi.py tests/test_roi_service.py tests/test_governance_roi_summary.py -q`
+
+Output: `58 passed in 4.59s`
+
+Coverage: verifier receives bytes only; retained subclassed provider snapshot mutation after signature for nested amount/window/lineage and status; output and reconciliation remain based on captured benign canonical data; plus all previous target, trust, signed-digest, discovery-only, lineage, sanitization, authorization, and closed-API controls.
+
+Executed: `python -m pytest -q`
+
+Output: `506 passed, 1 warning in 47.31s` (the existing experimental workflow warning in `backend/maf_team_runtime.py`).
+
+Executed: `python -m compileall backend tests`; `python -c "from backend.foundry_roi import SignedFoundryRoiAttestation, discover_foundry_roi, reconcile_foundry_roi; import backend.control_plane; import backend.dependency_health; print(discover_foundry_roi().state)"`; and `git diff --check`.
+
+Output: all commands exited `0`; the import check printed `not_configured`.

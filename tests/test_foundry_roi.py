@@ -95,12 +95,13 @@ def configure_trusted_public_key(monkeypatch, signing_key: Ed25519PrivateKey) ->
 
 
 class FakeVerifier:
-    def __init__(self, signing_key: Ed25519PrivateKey, *, bind_snapshot: bool = True, tamper_snapshot=None) -> None:
+    def __init__(self, signing_key: Ed25519PrivateKey, *, bind_snapshot: bool = True, signed_snapshot_digest: str | None = None) -> None:
         self.signing_key = signing_key
         self.bind_snapshot = bind_snapshot
-        self.tamper_snapshot = tamper_snapshot
+        self.signed_snapshot_digest = signed_snapshot_digest
 
-    def verify(self, configured_target, provider_proof, candidate_snapshot):
+    def verify(self, configured_target, provider_proof, canonical_snapshot_bytes):
+        assert canonical_snapshot_bytes is None or isinstance(canonical_snapshot_bytes, bytes)
         attestation = VerifiedDiscoveryAttestation(
             target_fingerprint=configured_target.target_fingerprint,
             surface_id=provider_proof.surface_id,
@@ -108,7 +109,13 @@ class FakeVerifier:
             observed_at=provider_proof.observed_at,
             observed_source="fake_discovery_verifier",
         )
-        snapshot_digest = canonical_snapshot_digest(candidate_snapshot) if candidate_snapshot is not None and self.bind_snapshot else None
+        snapshot_digest = (
+            self.signed_snapshot_digest
+            if self.signed_snapshot_digest is not None
+            else sha256(canonical_snapshot_bytes).hexdigest()
+            if canonical_snapshot_bytes is not None and self.bind_snapshot
+            else None
+        )
         raw_public_key = self.signing_key.public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw,
@@ -131,20 +138,7 @@ class FakeVerifier:
             "snapshot_digest": snapshot_digest,
             "signature": base64.b64encode(self.signing_key.sign(payload)).decode("ascii"),
         }
-        if self.tamper_snapshot is not None and candidate_snapshot is not None:
-            self.tamper_snapshot(candidate_snapshot)
         return envelope
-
-
-def canonical_snapshot_digest(snapshot: ProviderRoiSnapshot) -> str:
-    return sha256(
-        json.dumps(
-            snapshot.model_dump(mode="json"),
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("ascii")
-    ).hexdigest()
 
 
 def reconcile_with_provider(monkeypatch, local: dict, snapshot: ProviderRoiSnapshot):
@@ -198,7 +192,7 @@ def test_provider_must_discover_exact_target_before_connected(monkeypatch) -> No
 
     assert result.status.state == "connected"
     assert result.provider_snapshot is not None
-    assert result.provider_snapshot.target_fingerprint == target().target_fingerprint
+    assert result.provider_snapshot["target_fingerprint"] == target().target_fingerprint
     assert "project.services" not in str(result)
     assert "agent-demo" not in str(result)
 
@@ -272,7 +266,7 @@ def test_discovery_only_signature_never_connects_or_reconciles_provider_values(m
 
 
 @pytest.mark.parametrize(
-    ("name", "tamper_snapshot"),
+    ("name", "mutate_retained_snapshot"),
     [
         ("amount", lambda snapshot: object.__setattr__(snapshot.business_value, "amount", 91.0)),
         ("lineage", lambda snapshot: snapshot.mapped_run_ids.append("run-3")),
@@ -280,30 +274,54 @@ def test_discovery_only_signature_never_connects_or_reconciles_provider_values(m
         ("snapshot_after_sign", lambda snapshot: object.__setattr__(snapshot, "status", "verified")),
     ],
 )
-def test_snapshot_tampering_after_signature_never_connects_or_reconciles(monkeypatch, name, tamper_snapshot) -> None:
+def test_retained_provider_snapshot_mutation_after_signature_uses_captured_canonical_values(monkeypatch, name, mutate_retained_snapshot) -> None:
+    class RetainedProviderSnapshot(ProviderRoiSnapshot):
+        pass
+
     class Provider:
+        def __init__(self) -> None:
+            self.snapshot = RetainedProviderSnapshot.model_validate(provider_snapshot().model_dump())
+
         def discover(self, configured_target):
             return proof(configured_target)
 
         def read(self, configured_target, window):
-            return provider_snapshot(target_fingerprint=configured_target.target_fingerprint, window=window)
+            return self.snapshot
+
+    class MutatingVerifier(FakeVerifier):
+        def __init__(self, signing_key, provider) -> None:
+            super().__init__(signing_key)
+            self.provider = provider
+
+        def verify(self, configured_target, provider_proof, canonical_snapshot_bytes):
+            envelope = super().verify(configured_target, provider_proof, canonical_snapshot_bytes)
+            mutate_retained_snapshot(self.provider.snapshot)
+            return envelope
 
     configure_target(monkeypatch)
     signing_key = Ed25519PrivateKey.generate()
     configure_trusted_public_key(monkeypatch, signing_key)
+    provider = Provider()
 
-    read = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(signing_key, tamper_snapshot=tamper_snapshot))
+    read = read_foundry_roi(WINDOW, provider=provider, verifier=MutatingVerifier(signing_key, provider))
+    provider = Provider()
     reconciliation = reconcile_foundry_roi(
         local_snapshot(),
-        provider=Provider(),
-        verifier=FakeVerifier(signing_key, tamper_snapshot=tamper_snapshot),
+        provider=provider,
+        verifier=MutatingVerifier(signing_key, provider),
     )
 
     assert name
-    assert read.status.state == "unavailable"
-    assert read.provider_snapshot is None
-    assert reconciliation["provider"] is None
-    assert reconciliation["difference"] is None
+    assert read.status.state == "connected"
+    assert read.provider_snapshot is not None
+    assert read.provider_snapshot["business_value"]["amount"] == 90.0
+    assert read.provider_snapshot["window"] == WINDOW
+    assert read.provider_snapshot["mapped_run_ids"] == ["run-1", "run-2"]
+    assert reconciliation["foundry_status"]["state"] == "connected"
+    assert reconciliation["provider"]["business_value"]["amount"] == 90.0
+    assert reconciliation["provider"]["window"] == WINDOW
+    assert reconciliation["provider"]["mapped_run_ids"] == ["run-1", "run-2"]
+    assert reconciliation["difference"] == {"amount": -10.0, "currency": "USD", "unit": "currency"}
 
 
 def test_provider_as_verifier_with_only_public_key_cannot_connect(monkeypatch) -> None:
@@ -314,7 +332,7 @@ def test_provider_as_verifier_with_only_public_key_cannot_connect(monkeypatch) -
         def discover(self, configured_target):
             return proof(configured_target)
 
-        def verify(self, configured_target, provider_proof, candidate_snapshot):
+        def verify(self, configured_target, provider_proof, canonical_snapshot_bytes):
             attestation = VerifiedDiscoveryAttestation(
                 target_fingerprint=configured_target.target_fingerprint,
                 surface_id=provider_proof.surface_id,
@@ -325,7 +343,7 @@ def test_provider_as_verifier_with_only_public_key_cannot_connect(monkeypatch) -
             return {
                 "attestation": attestation,
                 "key_id": sha256(self.public_key).hexdigest(),
-                "snapshot_digest": canonical_snapshot_digest(candidate_snapshot),
+                "snapshot_digest": sha256(canonical_snapshot_bytes).hexdigest(),
                 "signature": base64.b64encode(b"0" * 64).decode("ascii"),
             }
 

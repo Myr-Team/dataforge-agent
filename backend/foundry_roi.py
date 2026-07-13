@@ -7,6 +7,7 @@ import math
 import os
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, Protocol
@@ -197,7 +198,7 @@ class SignedFoundryRoiAttestation(BaseModel):
 class FoundryRoiReadResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: FoundryRoiStatus
-    provider_snapshot: ProviderRoiSnapshot | None = None
+    provider_snapshot: dict[str, Any] | None = None
     attestation: VerifiedDiscoveryAttestation | None = None
 
     @model_validator(mode="after")
@@ -217,6 +218,32 @@ class _FoundryRoiAdapterConfig:
     pinned_public_key: Ed25519PublicKey | None
 
 
+@dataclass(frozen=True, slots=True)
+class _CanonicalProviderSnapshot:
+    """Adapter-owned snapshot captured before verifier code; it retains no provider/Pydantic mutable values."""
+
+    source: str
+    target_fingerprint: str
+    window_from: str
+    window_to: str
+    observed_at: str
+    provider_version: str
+    status: str
+    amount: Decimal
+    currency: str
+    unit: str
+    mapped_run_ids: tuple[str, ...]
+    mapped_outcome_event_ids: tuple[str, ...]
+    canonical_bytes: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _InternalFoundryRoiRead:
+    status: FoundryRoiStatus
+    snapshot: _CanonicalProviderSnapshot | None = None
+    attestation: VerifiedDiscoveryAttestation | None = None
+
+
 class FoundryRoiProvider(Protocol):
     """An injected provider must be configured for one validated Foundry target."""
 
@@ -232,7 +259,7 @@ class FoundryRoiDiscoveryVerifier(Protocol):
         self,
         target: FoundryRoiTarget,
         proof: DiscoveryProof,
-        candidate_snapshot: ProviderRoiSnapshot | None,
+        canonical_snapshot_bytes: bytes | None,
     ) -> SignedFoundryRoiAttestation: ...
 
 
@@ -273,13 +300,15 @@ def _provider_discovery(
 def _verify_external_attestation(
     config: _FoundryRoiAdapterConfig,
     proof: DiscoveryProof,
-    snapshot: ProviderRoiSnapshot | None,
+    snapshot: _CanonicalProviderSnapshot | None,
     verifier: FoundryRoiDiscoveryVerifier | None,
 ) -> tuple[FoundryRoiStatus, VerifiedDiscoveryAttestation | None]:
     if verifier is None or config.pinned_public_key is None or config.pinned_key_id is None:
         return _status("configured_unverified", "Provider proof awaits an externally signed Foundry ROI attestation and pinned public key", provider_version=proof.surface_version, observed_at=proof.observed_at), None
     try:
-        signed_attestation = SignedFoundryRoiAttestation.model_validate(verifier.verify(_untrusted_target_copy(config), proof, snapshot))
+        signed_attestation = SignedFoundryRoiAttestation.model_validate(
+            verifier.verify(_untrusted_target_copy(config), proof, snapshot.canonical_bytes if snapshot is not None else None)
+        )
     except Exception:
         return _status("unavailable", "Independent Foundry ROI verification failed", provider_version=proof.surface_version), None
     if not _valid_attestation_signature(signed_attestation, config):
@@ -313,6 +342,8 @@ def _verify_external_attestation(
             ),
             attestation,
         )
+    if not _canonical_snapshot_is_intact(snapshot):
+        return _status("unavailable", "Foundry ROI provider snapshot changed after canonical capture", provider_version=proof.surface_version), None
     if signed_attestation.snapshot_digest != _snapshot_digest(snapshot):
         return _status("unavailable", "Independent Foundry ROI attestation does not bind the provider snapshot", provider_version=proof.surface_version), None
     return (
@@ -334,35 +365,50 @@ def read_foundry_roi(
 ) -> FoundryRoiReadResult:
     """Read one sanitized provider snapshot, or expose a truthful unavailable state."""
 
+    internal = _read_canonical_foundry_roi(window, provider=provider, verifier=verifier)
+    return FoundryRoiReadResult(
+        status=internal.status,
+        provider_snapshot=_canonical_snapshot_dict(internal.snapshot) if internal.snapshot is not None else None,
+        attestation=internal.attestation,
+    )
+
+
+def _read_canonical_foundry_roi(
+    window: Mapping[str, Any],
+    provider: FoundryRoiProvider | None,
+    verifier: FoundryRoiDiscoveryVerifier | None,
+) -> _InternalFoundryRoiRead:
+    """Capture a provider snapshot once, then retain only adapter-owned immutable canonical data."""
+
     normalized_window = parse_time_window(window.get("from"), window.get("to"))
     config = _capture_adapter_config()
     if config is None:
         status = _status("not_configured", "Canonical Foundry project endpoint and agent ID are not configured")
-        return FoundryRoiReadResult(status=status)
+        return _InternalFoundryRoiRead(status=status)
     discovery_status, proof = _provider_discovery(config, provider)
     if proof is None or provider is None:
-        return FoundryRoiReadResult(status=discovery_status)
+        return _InternalFoundryRoiRead(status=discovery_status)
     if verifier is None or config.pinned_public_key is None:
         status, _ = _verify_external_attestation(config, proof, None, verifier)
-        return FoundryRoiReadResult(status=status)
+        return _InternalFoundryRoiRead(status=status)
     try:
-        snapshot = ProviderRoiSnapshot.model_validate(provider.read(_untrusted_target_copy(config), normalized_window))
+        snapshot = _canonicalize_provider_snapshot(provider.read(_untrusted_target_copy(config), normalized_window))
     except (ValidationError, ValueError, TypeError):
         unavailable = _status("unavailable", "Foundry ROI provider returned an invalid snapshot", provider_version=proof.surface_version)
-        return FoundryRoiReadResult(status=unavailable)
+        return _InternalFoundryRoiRead(status=unavailable)
     except Exception:
         unavailable = _status("unavailable", "Foundry ROI provider read failed", provider_version=proof.surface_version)
-        return FoundryRoiReadResult(status=unavailable)
+        return _InternalFoundryRoiRead(status=unavailable)
     if snapshot.target_fingerprint != config.target.target_fingerprint:
         unavailable = _status("unavailable", "Foundry ROI provider snapshot target does not match configuration", provider_version=proof.surface_version)
-        return FoundryRoiReadResult(status=unavailable)
-    if snapshot.window != normalized_window:
+        return _InternalFoundryRoiRead(status=unavailable)
+    if _canonical_snapshot_window(snapshot) != normalized_window:
         unavailable = _status("unavailable", "Foundry ROI provider snapshot window does not match request", provider_version=proof.surface_version)
-        return FoundryRoiReadResult(status=unavailable)
+        return _InternalFoundryRoiRead(status=unavailable)
     status, attestation = _verify_external_attestation(config, proof, snapshot, verifier)
     if status.state != "connected" or attestation is None:
-        return FoundryRoiReadResult(status=status)
-    return FoundryRoiReadResult(status=status, provider_snapshot=snapshot, attestation=attestation)
+        return _InternalFoundryRoiRead(status=status)
+    return _InternalFoundryRoiRead(status=status, snapshot=snapshot, attestation=attestation)
 
 
 def reconcile_foundry_roi(
@@ -377,15 +423,15 @@ def reconcile_foundry_roi(
     except (AttributeError, TypeError, ValueError):
         status = _status("unavailable", "Local ROI window is unavailable")
         return _with_foundry_status(_unreconciled(local, status), status)
-    read = read_foundry_roi(window, provider=provider, verifier=verifier)
-    if read.provider_snapshot is None or read.attestation is None:
+    read = _read_canonical_foundry_roi(window, provider=provider, verifier=verifier)
+    if read.snapshot is None or read.attestation is None:
         return _with_foundry_status(_unreconciled(local, read.status), read.status)
-    return _with_foundry_status(_reconcile_snapshot(local, read.provider_snapshot, read.attestation), read.status)
+    return _with_foundry_status(_reconcile_snapshot(local, read.snapshot, read.attestation), read.status)
 
 
 def _reconcile_snapshot(
     local: Mapping[str, Any],
-    snapshot: ProviderRoiSnapshot,
+    snapshot: _CanonicalProviderSnapshot,
     attestation: VerifiedDiscoveryAttestation,
 ) -> dict[str, Any]:
     """Private pure comparison called only by reconcile_foundry_roi after its full read flow succeeds."""
@@ -396,7 +442,7 @@ def _reconcile_snapshot(
         "reconciled": False,
         "reason": "Foundry ROI provider is not connected",
         "local_generated_at": local_copy.get("generated_at"),
-        "provider_observed_at": snapshot.observed_at.isoformat(),
+        "provider_observed_at": snapshot.observed_at,
         "provider_source": attestation.observed_source,
         "provider_version": snapshot.provider_version,
         "provider_attested_at": attestation.observed_at.isoformat(),
@@ -404,13 +450,13 @@ def _reconcile_snapshot(
     local_value, local_reason = _local_business_value(local_copy)
     if local_reason:
         metadata["reason"] = local_reason
-        return {"local": local_copy, "provider": snapshot.model_dump(mode="json"), "difference": None, "reconciliation": metadata}
+        return {"local": local_copy, "provider": _canonical_snapshot_dict(snapshot), "difference": None, "reconciliation": metadata}
     assert local_value is not None
-    if snapshot.window != local_value["window"]:
+    if _canonical_snapshot_window(snapshot) != local_value["window"]:
         metadata["reason"] = "window does not match local ROI"
-    elif snapshot.business_value.currency != local_value["currency"]:
+    elif snapshot.currency != local_value["currency"]:
         metadata["reason"] = "currency does not match local ROI"
-    elif snapshot.business_value.unit != local_value["unit"]:
+    elif snapshot.unit != local_value["unit"]:
         metadata["reason"] = "unit does not match local ROI"
     elif set(snapshot.mapped_run_ids) != local_value["run_ids"]:
         metadata["reason"] = "mapped run lineage does not exactly match local ROI"
@@ -421,17 +467,17 @@ def _reconcile_snapshot(
         metadata["reconciled"] = True
         metadata["reason"] = "mapped run and outcome lineage exactly match window, currency, and unit"
         difference = {
-            "amount": round(snapshot.business_value.amount - local_value["amount"], 6),
+            "amount": round(float(snapshot.amount - Decimal(str(local_value["amount"]))), 6),
             "currency": local_value["currency"],
             "unit": local_value["unit"],
         }
         return {
             "local": local_copy,
-            "provider": snapshot.model_dump(mode="json"),
+            "provider": _canonical_snapshot_dict(snapshot),
             "difference": difference,
             "reconciliation": metadata,
         }
-    return {"local": local_copy, "provider": snapshot.model_dump(mode="json"), "difference": None, "reconciliation": metadata}
+    return {"local": local_copy, "provider": _canonical_snapshot_dict(snapshot), "difference": None, "reconciliation": metadata}
 
 
 def _unreconciled(local: Mapping[str, Any], status: FoundryRoiStatus) -> dict[str, Any]:
@@ -475,6 +521,105 @@ def _untrusted_target_copy(config: _FoundryRoiAdapterConfig) -> FoundryRoiTarget
     """Keep the request-start target immutable even if injected code bypasses model immutability."""
 
     return config.target.model_copy(deep=True)
+
+
+def _canonicalize_provider_snapshot(value: Any) -> _CanonicalProviderSnapshot:
+    """Detach provider data into primitive immutable values before verifier code can run."""
+
+    snapshot = ProviderRoiSnapshot.model_validate(value)
+    try:
+        amount = Decimal(str(snapshot.business_value.amount))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("provider amount is invalid") from exc
+    observed_at = snapshot.observed_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    window_from = str(snapshot.window["from"])
+    window_to = str(snapshot.window["to"])
+    payload = _canonical_snapshot_payload(
+        source=snapshot.source,
+        target_fingerprint=snapshot.target_fingerprint,
+        window_from=window_from,
+        window_to=window_to,
+        observed_at=observed_at,
+        provider_version=snapshot.provider_version,
+        status=snapshot.status,
+        amount=amount,
+        currency=snapshot.business_value.currency,
+        unit=snapshot.business_value.unit,
+        mapped_run_ids=tuple(snapshot.mapped_run_ids),
+        mapped_outcome_event_ids=tuple(snapshot.mapped_outcome_event_ids),
+    )
+    return _CanonicalProviderSnapshot(
+        source=snapshot.source,
+        target_fingerprint=snapshot.target_fingerprint,
+        window_from=window_from,
+        window_to=window_to,
+        observed_at=observed_at,
+        provider_version=snapshot.provider_version,
+        status=snapshot.status,
+        amount=amount,
+        currency=snapshot.business_value.currency,
+        unit=snapshot.business_value.unit,
+        mapped_run_ids=tuple(snapshot.mapped_run_ids),
+        mapped_outcome_event_ids=tuple(snapshot.mapped_outcome_event_ids),
+        canonical_bytes=_canonical_json(payload),
+    )
+
+
+def _canonical_snapshot_window(snapshot: _CanonicalProviderSnapshot) -> dict[str, str]:
+    return {"from": snapshot.window_from, "to": snapshot.window_to}
+
+
+def _canonical_snapshot_dict(snapshot: _CanonicalProviderSnapshot) -> dict[str, Any]:
+    output = json.loads(snapshot.canonical_bytes.decode("ascii"))
+    output["business_value"]["amount"] = float(Decimal(output["business_value"]["amount"]))
+    return output
+
+
+def _canonical_snapshot_payload(
+    *,
+    source: str,
+    target_fingerprint: str,
+    window_from: str,
+    window_to: str,
+    observed_at: str,
+    provider_version: str,
+    status: str,
+    amount: Decimal,
+    currency: str,
+    unit: str,
+    mapped_run_ids: tuple[str, ...],
+    mapped_outcome_event_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    return {
+        "source": source,
+        "target_fingerprint": target_fingerprint,
+        "window": {"from": window_from, "to": window_to},
+        "observed_at": observed_at,
+        "provider_version": provider_version,
+        "status": status,
+        "business_value": {"amount": format(amount, "f"), "currency": currency, "unit": unit},
+        "mapped_run_ids": list(mapped_run_ids),
+        "mapped_outcome_event_ids": list(mapped_outcome_event_ids),
+    }
+
+
+def _canonical_snapshot_is_intact(snapshot: _CanonicalProviderSnapshot) -> bool:
+    return snapshot.canonical_bytes == _canonical_json(
+        _canonical_snapshot_payload(
+            source=snapshot.source,
+            target_fingerprint=snapshot.target_fingerprint,
+            window_from=snapshot.window_from,
+            window_to=snapshot.window_to,
+            observed_at=snapshot.observed_at,
+            provider_version=snapshot.provider_version,
+            status=snapshot.status,
+            amount=snapshot.amount,
+            currency=snapshot.currency,
+            unit=snapshot.unit,
+            mapped_run_ids=snapshot.mapped_run_ids,
+            mapped_outcome_event_ids=snapshot.mapped_outcome_event_ids,
+        )
+    )
 
 
 def _target_from_environment() -> FoundryRoiTarget | None:
@@ -555,10 +700,10 @@ def _valid_attestation_signature(signed: SignedFoundryRoiAttestation, config: _F
     return True
 
 
-def _snapshot_digest(snapshot: ProviderRoiSnapshot) -> str:
-    """Hash every canonical, sanitized provider field that can affect ROI display or reconciliation."""
+def _snapshot_digest(snapshot: _CanonicalProviderSnapshot) -> str:
+    """Hash exactly the immutable bytes that every later provider output and reconciliation derives from."""
 
-    return sha256(_canonical_json(snapshot.model_dump(mode="json"))).hexdigest()
+    return sha256(snapshot.canonical_bytes).hexdigest()
 
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:
