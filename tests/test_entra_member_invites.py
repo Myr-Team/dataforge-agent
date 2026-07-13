@@ -562,6 +562,56 @@ def test_entra_invite_without_member_fallback_still_records_sanitized_failure(tm
     }
 
 
+@pytest.mark.parametrize("fallback", [False, True])
+def test_graph_failure_audits_truthful_terminal_event_after_durable_transition(tmp_path, monkeypatch, fallback):
+    _workspace(tmp_path, monkeypatch)
+    secret = "Bearer graph-secret-body AccountKey=never-persist"
+    order: list[str] = []
+    captured: list[tuple[tuple, dict]] = []
+    original_save = control_plane._save_workspace_meta
+
+    def graph_failure(*_args, **_kwargs):
+        raise control_plane.GraphClientError("graph_provider_failed", secret, status=503)
+
+    def save_then_mark(*args, **kwargs):
+        result = original_save(*args, **kwargs)
+        order.append("durable-save")
+        return result
+
+    def audit(*args, **kwargs):
+        captured.append((args, kwargs))
+        order.append(f"audit:{args[1]}")
+        return {"event_id": "event-audit"}
+
+    monkeypatch.setattr(control_plane, "send_graph_invitation", graph_failure)
+    monkeypatch.setattr(control_plane, "_save_workspace_meta", save_then_mark)
+    monkeypatch.setattr(control_plane, "record_audit_event", audit)
+
+    result = control_plane.invite_entra_workspace_member(
+        "ws-graph",
+        {
+            "email": "reviewer@contoso.com",
+            "role": "editor",
+            "send_email": True,
+            "fallback_to_workspace_member": fallback,
+        },
+        RequestStub(),
+    )
+
+    invitation_id = result["invitation"]["invitation_id"]
+    fail_args, fail_kwargs = next((args, kwargs) for args, kwargs in captured if args[1] == "invitation.fail")
+    assert order.index("durable-save") < order.index("audit:invitation.fail")
+    assert fail_args[2] == {
+        "workspace_id": "ws-graph",
+        "resource_type": "invitation",
+        "resource_id": invitation_id,
+    }
+    assert fail_kwargs["result"] == "failed"
+    assert fail_kwargs["reason_code"] == "invitation_failed"
+    assert fail_kwargs["correlation"] == {"invitation_id": invitation_id}
+    assert secret not in repr((fail_args, fail_kwargs))
+
+
 def test_update_workspace_member_role_persists_role_change(tmp_path, monkeypatch):
     workspace_path = _workspace(tmp_path, monkeypatch)
     workspace_path.write_text(

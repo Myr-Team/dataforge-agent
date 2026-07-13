@@ -726,3 +726,31 @@ def test_artifact_mutation_endpoints_audit_authorized_workspace_before_running(
         "resource_type": "artifact",
         "resource_id": resource_id,
     }
+
+
+@pytest.mark.parametrize(
+    ("header", "secret"),
+    [
+        ("x-request-id", "eyJhbGciOiJIUzI1NiJ9.client-secret.signature"),
+        ("idempotency-key", "sk-live-client-api-key"),
+        ("x-correlation-id", "Server=tcp:db;AccountKey=connection-secret"),
+    ],
+)
+def test_client_correlation_headers_never_appear_in_audit_bytes_or_api(monkeypatch, header, secret) -> None:
+    app_module = importlib.import_module("backend.app")
+    monkeypatch.setattr(app_module, "is_trusted_tenant_identity", lambda _actor: True)
+    monkeypatch.setattr(app_module, "require_workspace_permission", lambda *_args: "editor")
+    monkeypatch.setattr(app_module, "generate_image", lambda *_args, **_kwargs: {"mode": "test"})
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/generate-image",
+        json={"workspace_id": "ws-artifacts", "prompt": "concept"},
+        headers={header: secret},
+    )
+
+    assert response.status_code == 200, response.text
+    persisted = b"".join(path.read_bytes() for path in audit_store.AUDIT_DIR.rglob("*.jsonl"))
+    api = json.dumps(audit_store.list_audit_events("ws-artifacts"), sort_keys=True)
+    assert secret.encode("utf-8") not in persisted
+    assert secret not in api

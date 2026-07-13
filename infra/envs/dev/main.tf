@@ -43,6 +43,7 @@ module "acr" {
 
 module "container_apps" {
   source                           = "../../modules/container_app"
+  subscription_id                  = var.subscription_id
   resource_group_name              = module.resource_group.name
   location                         = module.resource_group.location
   container_env_name               = var.container_env_name

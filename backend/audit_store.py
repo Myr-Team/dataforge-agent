@@ -10,11 +10,13 @@ import secrets
 import time
 import urllib.request
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal, Mapping, Protocol
 from uuid import uuid4
 
+from azure.core import MatchConditions
 from azure.core.exceptions import HttpResponseError, ResourceExistsError, ResourceNotFoundError
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings
@@ -32,9 +34,12 @@ AUDIT_CONTAINER = "dataforge-audit"
 GENESIS_HASH = "0" * 64
 MAX_PAGE_SIZE = 100
 MAX_APPEND_RETRIES = 12
-STREAM_SEGMENT_EVENTS = 10_000
+STREAM_TAIL_BYTES = 64 * 1024
+MAX_STREAM_RECORD_BYTES = 16 * 1024
+PRODUCTION_CONTRACT_CACHE_TTL_SECONDS = 60.0
 LOCAL_LOCK_TIMEOUT_SECONDS = 5.0
 _LOCK_SLEEP_SECONDS = 0.01
+_PRODUCTION_CONTRACT_CACHE: dict[tuple[str, str, str], float] = {}
 
 ALLOWED_ACTIONS = frozenset(
     {
@@ -65,6 +70,11 @@ ALLOWED_CORRELATION_FIELDS = frozenset(
 _WORKSPACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$")
 _KEY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_STORAGE_RESOURCE_ID = re.compile(
+    r"^/subscriptions/(?P<subscription>[^/]+)/resourceGroups/(?P<resource_group>[^/]+)/providers/"
+    r"Microsoft\.Storage/storageAccounts/(?P<account>[^/]+)$",
+    re.IGNORECASE,
+)
 
 
 class AuditPersistenceError(RuntimeError):
@@ -77,6 +87,15 @@ class AuditIntegrityError(AuditPersistenceError):
 
 class _AppendConflict(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class _StreamSnapshot:
+    name: str
+    data: bytes
+    head: dict[str, Any] | None
+    length: int
+    etag: str | None
 
 
 class AuditEvent(BaseModel):
@@ -112,13 +131,29 @@ class AuditAnchor(BaseModel):
 
 
 class _AppendBackend(Protocol):
-    def read(self, name: str) -> bytes: ...
-    def list_names(self, prefix: str) -> list[str]: ...
-    def append(self, name: str, payload: bytes, expected_size: int) -> None: ...
+    def read_snapshot(self, name: str) -> _StreamSnapshot: ...
+    def read_full(self, name: str) -> bytes: ...
+    def append(self, name: str, payload: bytes, snapshot: _StreamSnapshot) -> None: ...
 
 
 class _LocalAppendBackend:
-    def read(self, name: str) -> bytes:
+    def read_snapshot(self, name: str) -> _StreamSnapshot:
+        path = _local_stream_path(name)
+        if not path.exists():
+            return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=None)
+        try:
+            before = path.stat()
+            with path.open("rb") as stream:
+                stream.seek(max(0, before.st_size - STREAM_TAIL_BYTES))
+                data = stream.read(STREAM_TAIL_BYTES)
+            after = path.stat()
+        except OSError as exc:
+            raise AuditPersistenceError("local audit read failed") from exc
+        if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
+            raise _AppendConflict("local stream changed during snapshot read")
+        return _snapshot_from_tail(name, data, int(after.st_size), _local_etag(after))
+
+    def read_full(self, name: str) -> bytes:
         path = _local_stream_path(name)
         if not path.exists():
             return b""
@@ -127,23 +162,25 @@ class _LocalAppendBackend:
         except OSError as exc:
             raise AuditPersistenceError("local audit read failed") from exc
 
-    def list_names(self, prefix: str) -> list[str]:
-        base = _local_stream_path(prefix)
-        if not base.exists():
-            return []
-        root = AUDIT_DIR.resolve()
-        return sorted(path.resolve().relative_to(root).as_posix() for path in base.rglob("*.jsonl") if path.is_file())
-
-    def append(self, name: str, payload: bytes, expected_size: int) -> None:
+    def append(self, name: str, payload: bytes, snapshot: _StreamSnapshot) -> None:
+        _validate_append_request(name, payload, snapshot)
         path = _local_stream_path(name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        current_size = path.stat().st_size if path.exists() else 0
-        if current_size != expected_size:
-            raise _AppendConflict("local append position changed")
+        if snapshot.etag is not None and path.exists():
+            current = path.stat()
+            if current.st_size != snapshot.length or _local_etag(current) != snapshot.etag:
+                raise _AppendConflict("local append snapshot changed")
+        elif snapshot.etag is not None or snapshot.length != 0:
+            raise _AppendConflict("local append stream disappeared")
         try:
-            descriptor = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+            flags = os.O_APPEND | os.O_WRONLY
+            flags |= os.O_CREAT | os.O_EXCL if snapshot.etag is None else 0
+            descriptor = os.open(path, flags, 0o600)
             try:
-                if os.fstat(descriptor).st_size != expected_size:
+                opened = os.fstat(descriptor)
+                if opened.st_size != snapshot.length or (
+                    snapshot.etag is not None and _local_etag(opened) != snapshot.etag
+                ):
                     raise _AppendConflict("local append position changed")
                 view = memoryview(payload)
                 while view:
@@ -151,6 +188,8 @@ class _LocalAppendBackend:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+        except FileExistsError as exc:
+            raise _AppendConflict("local append stream was created concurrently") from exc
         except _AppendConflict:
             raise
         except OSError as exc:
@@ -158,12 +197,20 @@ class _LocalAppendBackend:
 
 
 class _BlobAppendBackend:
-    def __init__(self) -> None:
+    def __init__(self, *, account_name: str | None = None, managed_identity_only: bool = False) -> None:
         connection_string = str(os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or "").strip()
-        if connection_string:
+        if managed_identity_only:
+            account = str(account_name or "").strip()
+            if not account:
+                raise AuditPersistenceError("durable audit storage account is not configured")
+            service = BlobServiceClient(
+                account_url=f"https://{account}.blob.core.windows.net",
+                credential=DefaultAzureCredential(),
+            )
+        elif connection_string:
             service = BlobServiceClient.from_connection_string(connection_string)
         else:
-            account = _storage_account_name()
+            account = str(account_name or _storage_account_name()).strip()
             if not account:
                 raise AuditPersistenceError("durable audit storage account is not configured")
             credential = os.environ.get("AZURE_STORAGE_KEY") or os.environ.get("DF_STORAGE_KEY") or DefaultAzureCredential()
@@ -175,35 +222,89 @@ class _BlobAppendBackend:
             except ResourceExistsError:
                 pass
 
-    def read(self, name: str) -> bytes:
+    def read_snapshot(self, name: str) -> _StreamSnapshot:
+        client = self.container.get_blob_client(name)
         try:
-            return bytes(self.container.get_blob_client(name).download_blob().readall())
+            properties = client.get_blob_properties()
+        except ResourceNotFoundError:
+            return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=None)
+        except Exception as exc:
+            raise AuditPersistenceError("durable audit properties read failed") from exc
+        length = int(properties.size or 0)
+        etag = str(properties.etag or "")
+        if not etag:
+            raise AuditPersistenceError("durable audit stream ETag is missing")
+        blob_type = str(properties.blob_type or "").lower()
+        if "append" not in blob_type:
+            raise AuditIntegrityError("durable audit stream is not an append blob")
+        offset = max(0, length - STREAM_TAIL_BYTES)
+        try:
+            data = bytes(
+                client.download_blob(
+                    offset=offset,
+                    length=length - offset,
+                    etag=etag,
+                    match_condition=MatchConditions.IfNotModified,
+                ).readall()
+            ) if length else b""
+        except HttpResponseError as exc:
+            if exc.status_code in {409, 412}:
+                raise _AppendConflict("durable stream changed during snapshot read") from exc
+            raise AuditPersistenceError("durable audit tail read failed") from exc
+        except Exception as exc:
+            raise AuditPersistenceError("durable audit tail read failed") from exc
+        return _snapshot_from_tail(name, data, length, etag)
+
+    def read_full(self, name: str) -> bytes:
+        client = self.container.get_blob_client(name)
+        try:
+            properties = client.get_blob_properties()
+            etag = str(properties.etag or "")
+            if not etag:
+                raise AuditPersistenceError("durable audit stream ETag is missing")
+            if "append" not in str(properties.blob_type or "").lower():
+                raise AuditIntegrityError("durable audit stream is not an append blob")
+            return bytes(
+                client.download_blob(etag=etag, match_condition=MatchConditions.IfNotModified).readall()
+            )
         except ResourceNotFoundError:
             return b""
+        except HttpResponseError as exc:
+            if exc.status_code in {409, 412}:
+                raise _AppendConflict("durable stream changed during full read") from exc
+            raise AuditPersistenceError("durable audit read failed") from exc
         except Exception as exc:
+            if isinstance(exc, AuditPersistenceError):
+                raise
             raise AuditPersistenceError("durable audit read failed") from exc
 
-    def list_names(self, prefix: str) -> list[str]:
-        try:
-            return sorted(str(item.name) for item in self.container.list_blobs(name_starts_with=prefix))
-        except Exception as exc:
-            raise AuditPersistenceError("durable audit listing failed") from exc
-
-    def append(self, name: str, payload: bytes, expected_size: int) -> None:
+    def append(self, name: str, payload: bytes, snapshot: _StreamSnapshot) -> None:
+        _validate_append_request(name, payload, snapshot)
         client = self.container.get_blob_client(name)
-        if expected_size == 0:
+        etag = snapshot.etag
+        if etag is None:
             try:
-                client.create_append_blob(
+                created = client.create_append_blob(
                     if_none_match="*",
                     content_settings=ContentSettings(content_type="application/x-ndjson; charset=utf-8"),
                 )
             except ResourceExistsError:
-                pass
+                raise _AppendConflict("durable append stream was created concurrently")
             except HttpResponseError as exc:
-                if exc.status_code not in {409, 412}:
-                    raise AuditPersistenceError("durable audit stream creation failed") from exc
+                if exc.status_code in {409, 412}:
+                    raise _AppendConflict("durable append stream was created concurrently") from exc
+                raise AuditPersistenceError("durable audit stream creation failed") from exc
+            etag = str(created.get("etag") or created.get("ETag") or "")
+            if not etag:
+                raise AuditPersistenceError("created durable audit stream ETag is missing")
         try:
-            client.append_block(payload, length=len(payload), appendpos_condition=expected_size)
+            client.append_block(
+                payload,
+                length=len(payload),
+                appendpos_condition=snapshot.length,
+                etag=etag,
+                match_condition=MatchConditions.IfNotModified,
+            )
         except HttpResponseError as exc:
             if exc.status_code in {409, 412}:
                 raise _AppendConflict("durable append position changed") from exc
@@ -232,8 +333,8 @@ def record_audit_event(
         merged_metadata["reason_code"] = reason_code
     if correlation is not None:
         merged_metadata["correlation"] = correlation
-    clean_metadata = _clean_metadata(merged_metadata)
     key_id, key = _active_key()
+    clean_metadata = _clean_metadata(merged_metadata, key)
     actor_hash = _actor_hash(actor, key)
     event_id = f"event_{uuid4().hex}"
     at = _now()
@@ -279,72 +380,84 @@ def _append_event(
     at: str,
 ) -> dict[str, Any]:
     workspace_id = resource["workspace_id"]
-    for attempt in range(MAX_APPEND_RETRIES):
-        events = _read_events(backend, workspace_id)
-        anchors = _read_anchors(backend)
+    event_name = _event_stream_name(workspace_id)
+    anchor_name = _anchor_stream_name(workspace_id)
+    for _attempt in range(MAX_APPEND_RETRIES):
         try:
-            _require_anchor_match(workspace_id, events, anchors)
-        except AuditIntegrityError:
-            if _can_recover_unanchored_head(workspace_id, events, anchors):
-                _anchor_current_head(backend, workspace_id, str(events[-1]["event_id"]))
-                continue
-            raise
-        existing = _event_by_id(events, event_id)
-        if existing is not None:
-            return existing
+            event_snapshot, anchor_snapshot, event_head, anchor_head, state = _load_head_state(
+                backend, workspace_id, event_name, anchor_name
+            )
+        except _AppendConflict:
+            time.sleep(_LOCK_SLEEP_SECONDS)
+            continue
+        if state == "recoverable":
+            _anchor_current_head(backend, workspace_id, event_head)
+            continue
         event = _build_event(
             {"actor_hash": actor_hash},
             action,
             resource,
             metadata,
-            revision=len(events) + 1,
-            previous_hash=events[-1]["event_hash"] if events else GENESIS_HASH,
+            revision=int(event_head["revision"]) + 1 if event_head else 1,
+            previous_hash=str(event_head["event_hash"]) if event_head else GENESIS_HASH,
             event_id=event_id,
             at=at,
             key_id=key_id,
+            _metadata_clean=True,
         )
-        stream_name = _event_stream_name(workspace_id, _segment_for_revision(int(event["revision"])))
-        current = backend.read(stream_name)
         try:
-            backend.append(stream_name, _line(event), len(current))
+            backend.append(event_name, _line(event), event_snapshot)
         except _AppendConflict:
             time.sleep(_LOCK_SLEEP_SECONDS)
             continue
-        _anchor_current_head(backend, workspace_id, event_id)
-        committed = _read_anchored_events(backend, workspace_id)
-        persisted = _event_by_id(committed, event_id)
-        if persisted is None:
-            raise AuditIntegrityError("durable audit append was not retained")
-        return persisted
+        _anchor_current_head(backend, workspace_id, event)
+        return event
     raise AuditPersistenceError("durable audit append conflict")
 
 
-def _anchor_current_head(backend: _AppendBackend, workspace_id: str, event_id: str) -> None:
+def _anchor_current_head(
+    backend: _AppendBackend,
+    workspace_id: str,
+    target_event: Mapping[str, Any] | None,
+) -> None:
+    event_name = _event_stream_name(workspace_id)
+    anchor_name = _anchor_stream_name(workspace_id)
+    target_revision = int((target_event or {}).get("revision") or 0)
+    target_hash = str((target_event or {}).get("event_hash") or "")
     for _attempt in range(MAX_APPEND_RETRIES):
-        events = _read_events(backend, workspace_id)
-        if not events or _event_by_id(events, event_id) is None:
+        try:
+            event_snapshot, anchor_snapshot, event_head, anchor_head, state = _load_head_state(
+                backend, workspace_id, event_name, anchor_name
+            )
+        except _AppendConflict:
+            time.sleep(_LOCK_SLEEP_SECONDS)
+            continue
+        if event_head is None:
             raise AuditIntegrityError("audit event disappeared before anchoring")
-        anchors = _read_anchors(backend)
-        latest = _latest_workspace_anchor(anchors, workspace_id)
-        if latest and int(latest["workspace_revision"]) >= len(events):
-            _require_anchor_match(workspace_id, events, anchors)
+        if state == "anchored":
+            anchored_revision = int(anchor_head["workspace_revision"])
+            if target_revision and anchored_revision < target_revision:
+                raise AuditIntegrityError("audit target event was not anchored")
+            if target_revision == anchored_revision and target_hash and not hmac.compare_digest(
+                target_hash, str(anchor_head["workspace_event_hash"])
+            ):
+                raise AuditIntegrityError("audit target event hash was not anchored")
             return
-        if latest and not _can_recover_unanchored_head(workspace_id, events, anchors):
-            raise AuditIntegrityError("audit ledger has more than one unanchored revision")
-        anchor_revision = len(anchors) + 1
+        if state != "recoverable":
+            raise AuditIntegrityError("audit ledger cannot be anchored")
+        if target_revision and int(event_head["revision"]) < target_revision:
+            raise AuditIntegrityError("audit target event disappeared before anchoring")
         key_id, _key = _active_key()
         anchor = _build_anchor(
-            anchor_revision=anchor_revision,
+            anchor_revision=int(anchor_head["anchor_revision"]) + 1 if anchor_head else 1,
             workspace_id=workspace_id,
-            workspace_revision=len(events),
-            workspace_event_hash=str(events[-1]["event_hash"]),
-            previous_hash=anchors[-1]["anchor_hash"] if anchors else GENESIS_HASH,
+            workspace_revision=int(event_head["revision"]),
+            workspace_event_hash=str(event_head["event_hash"]),
+            previous_hash=str(anchor_head["anchor_hash"]) if anchor_head else GENESIS_HASH,
             key_id=key_id,
         )
-        name = _anchor_stream_name(_segment_for_revision(anchor_revision))
-        current = backend.read(name)
         try:
-            backend.append(name, _line(anchor), len(current))
+            backend.append(anchor_name, _line(anchor), anchor_snapshot)
             return
         except _AppendConflict:
             time.sleep(_LOCK_SLEEP_SECONDS)
@@ -353,18 +466,13 @@ def _anchor_current_head(backend: _AppendBackend, workspace_id: str, event_id: s
 
 def _read_anchored_events(backend: _AppendBackend, workspace_id: str) -> list[dict[str, Any]]:
     events = _read_events(backend, workspace_id)
-    anchors = _read_anchors(backend)
+    anchors = _read_anchors(backend, workspace_id)
     _require_anchor_match(workspace_id, events, anchors)
     return events
 
 
 def _read_events(backend: _AppendBackend, workspace_id: str) -> list[dict[str, Any]]:
-    names = backend.list_names(_event_stream_prefix(workspace_id))
-    raw = []
-    for name in names:
-        if not re.fullmatch(re.escape(_event_stream_prefix(workspace_id)) + r"[0-9]{8}\.jsonl", name):
-            raise AuditIntegrityError("audit event stream name is invalid")
-        raw.extend(_parse_lines(backend.read(name), "audit event stream"))
+    raw = _parse_lines(backend.read_full(_event_stream_name(workspace_id)), "audit event stream")
     events: list[dict[str, Any]] = []
     previous_hash = GENESIS_HASH
     seen: set[str] = set()
@@ -387,21 +495,23 @@ def _read_events(backend: _AppendBackend, workspace_id: str) -> list[dict[str, A
     return events
 
 
-def _read_anchors(backend: _AppendBackend) -> list[dict[str, Any]]:
-    raw = []
-    for name in backend.list_names("anchors/"):
-        if not re.fullmatch(r"anchors/[0-9]{8}\.jsonl", name):
-            raise AuditIntegrityError("audit anchor stream name is invalid")
-        raw.extend(_parse_lines(backend.read(name), "audit anchor stream"))
+def _read_anchors(backend: _AppendBackend, workspace_id: str) -> list[dict[str, Any]]:
+    raw = _parse_lines(backend.read_full(_anchor_stream_name(workspace_id)), "audit anchor stream")
     anchors: list[dict[str, Any]] = []
     previous_hash = GENESIS_HASH
     for revision, value in enumerate(raw, start=1):
         try:
             model = AuditAnchor.model_validate(value)
             anchor = model.model_dump(mode="json")
+            _validate_anchor_policy(model, anchor)
         except Exception as exc:
             raise AuditIntegrityError("audit anchor schema is invalid") from exc
-        if anchor["anchor_revision"] != revision or anchor["previous_hash"] != previous_hash:
+        if (
+            anchor["workspace_id"] != workspace_id
+            or anchor["anchor_revision"] != revision
+            or anchor["workspace_revision"] != revision
+            or anchor["previous_hash"] != previous_hash
+        ):
             raise AuditIntegrityError("audit anchor chain is invalid")
         _workspace_id(anchor["workspace_id"])
         if not hmac.compare_digest(anchor["anchor_hash"], _hash_anchor(anchor)):
@@ -412,7 +522,7 @@ def _read_anchors(backend: _AppendBackend) -> list[dict[str, Any]]:
 
 
 def _require_anchor_match(workspace_id: str, events: list[dict[str, Any]], anchors: list[dict[str, Any]]) -> None:
-    latest = _latest_workspace_anchor(anchors, workspace_id)
+    latest = anchors[-1] if anchors else None
     if not events and latest is None:
         return
     if not events and latest is not None:
@@ -426,25 +536,110 @@ def _require_anchor_match(workspace_id: str, events: list[dict[str, Any]], ancho
         raise AuditIntegrityError("audit ledger rollback hash mismatch")
 
 
-def _latest_workspace_anchor(anchors: list[dict[str, Any]], workspace_id: str) -> dict[str, Any] | None:
-    return next((anchor for anchor in reversed(anchors) if anchor["workspace_id"] == workspace_id), None)
+def _head_state(
+    event_snapshot: _StreamSnapshot,
+    event_head: Mapping[str, Any] | None,
+    anchor_head: Mapping[str, Any] | None,
+) -> Literal["empty", "anchored", "recoverable"]:
+    if event_head is None and anchor_head is None:
+        return "empty"
+    if event_head is None:
+        raise AuditIntegrityError("audit ledger is missing after being anchored")
+    event_revision = int(event_head["revision"])
+    if anchor_head is None:
+        if (
+            event_revision == 1
+            and event_head["previous_hash"] == GENESIS_HASH
+            and event_snapshot.length == len(event_snapshot.data)
+            and event_snapshot.data.count(b"\n") == 1
+        ):
+            return "recoverable"
+        raise AuditIntegrityError("audit anchor is missing for an existing ledger")
+    anchored_revision = int(anchor_head["workspace_revision"])
+    anchored_hash = str(anchor_head["workspace_event_hash"])
+    if event_revision == anchored_revision and hmac.compare_digest(str(event_head["event_hash"]), anchored_hash):
+        return "anchored"
+    if (
+        event_revision == anchored_revision + 1
+        and hmac.compare_digest(str(event_head["previous_hash"]), anchored_hash)
+    ):
+        return "recoverable"
+    if event_revision < anchored_revision:
+        raise AuditIntegrityError("audit ledger rollback or delete detected")
+    raise AuditIntegrityError("audit ledger has more than one unanchored revision or a hash mismatch")
 
 
-def _can_recover_unanchored_head(
+def _load_head_state(
+    backend: _AppendBackend,
     workspace_id: str,
-    events: list[dict[str, Any]],
-    anchors: list[dict[str, Any]],
-) -> bool:
-    latest = _latest_workspace_anchor(anchors, workspace_id)
-    if latest is None:
-        return False
-    anchored_revision = int(latest["workspace_revision"])
-    if anchored_revision < 1 or len(events) != anchored_revision + 1:
-        return False
-    return hmac.compare_digest(
-        str(latest["workspace_event_hash"]),
-        str(events[anchored_revision - 1]["event_hash"]),
-    )
+    event_name: str,
+    anchor_name: str,
+) -> tuple[
+    _StreamSnapshot,
+    _StreamSnapshot,
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    Literal["empty", "anchored", "recoverable"],
+]:
+    # Anchors are written after events, so this order avoids pairing an old event with a new anchor.
+    anchor_snapshot = backend.read_snapshot(anchor_name)
+    event_snapshot = backend.read_snapshot(event_name)
+    event_head = _validated_event_head(event_snapshot, workspace_id)
+    anchor_head = _validated_anchor_head(anchor_snapshot, workspace_id)
+    try:
+        state = _head_state(event_snapshot, event_head, anchor_head)
+    except AuditIntegrityError:
+        confirmed_anchor = backend.read_snapshot(anchor_name)
+        confirmed_event = backend.read_snapshot(event_name)
+        if _snapshot_token(confirmed_anchor) != _snapshot_token(anchor_snapshot) or _snapshot_token(
+            confirmed_event
+        ) != _snapshot_token(event_snapshot):
+            raise _AppendConflict("audit head pair changed during validation")
+        raise
+    return event_snapshot, anchor_snapshot, event_head, anchor_head, state
+
+
+def _snapshot_token(snapshot: _StreamSnapshot) -> tuple[int, str | None]:
+    return snapshot.length, snapshot.etag
+
+
+def _validated_event_head(snapshot: _StreamSnapshot, workspace_id: str) -> dict[str, Any] | None:
+    if snapshot.head is None:
+        if snapshot.length:
+            raise AuditIntegrityError("audit event stream head is missing")
+        return None
+    try:
+        model = AuditEvent.model_validate(snapshot.head)
+        event = model.model_dump(mode="json")
+        _validate_event_policy(model, event)
+    except Exception as exc:
+        raise AuditIntegrityError("audit event head is invalid") from exc
+    if event["workspace_id"] != workspace_id or int(event["revision"]) < 1:
+        raise AuditIntegrityError("audit event head identity is invalid")
+    if not hmac.compare_digest(str(event["event_hash"]), _hash_event(event)):
+        raise AuditIntegrityError("audit event head hash is invalid")
+    return event
+
+
+def _validated_anchor_head(snapshot: _StreamSnapshot, workspace_id: str) -> dict[str, Any] | None:
+    if snapshot.head is None:
+        if snapshot.length:
+            raise AuditIntegrityError("audit anchor stream head is missing")
+        return None
+    try:
+        model = AuditAnchor.model_validate(snapshot.head)
+        anchor = model.model_dump(mode="json")
+        _validate_anchor_policy(model, anchor)
+    except Exception as exc:
+        raise AuditIntegrityError("audit anchor head schema is invalid") from exc
+    if (
+        anchor["workspace_id"] != workspace_id
+        or int(anchor["anchor_revision"]) < 1
+        or int(anchor["anchor_revision"]) != int(anchor["workspace_revision"])
+        or not hmac.compare_digest(str(anchor["anchor_hash"]), _hash_anchor(anchor))
+    ):
+        raise AuditIntegrityError("audit anchor head is invalid")
+    return anchor
 
 
 def _build_event(
@@ -458,12 +653,14 @@ def _build_event(
     event_id: str | None = None,
     at: str | None = None,
     key_id: str | None = None,
+    _metadata_clean: bool = False,
 ) -> dict[str, Any]:
     clean_resource = _clean_resource(resource)
-    clean_metadata = _clean_metadata(metadata)
     active_key_id, active_key = _active_key()
     selected_key_id = key_id or active_key_id
-    actor_hash = str((actor or {}).get("actor_hash") or "") or _actor_hash(actor, active_key)
+    selected_key = _key_for(selected_key_id)
+    clean_metadata = dict(metadata or {}) if _metadata_clean else _clean_metadata(metadata, selected_key)
+    actor_hash = str((actor or {}).get("actor_hash") or "") or _actor_hash(actor, selected_key)
     payload: dict[str, Any] = {
         "event_id": event_id or f"event_{uuid4().hex}",
         "workspace_id": clean_resource["workspace_id"],
@@ -502,17 +699,21 @@ def _clean_resource(resource: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
-def _clean_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+def _clean_metadata(metadata: Mapping[str, Any] | None, key: bytes) -> dict[str, Any]:
     source = metadata if isinstance(metadata, Mapping) else {}
     result = _allowlisted(source.get("result") or "allowed", ALLOWED_RESULTS, "result")
     reason_value = source.get("reason_code")
     reason_code = None if reason_value in {None, ""} else _allowlisted(reason_value, ALLOWED_REASON_CODES, "reason_code")
     correlation_source = source.get("correlation") if isinstance(source.get("correlation"), Mapping) else {}
     correlation: dict[str, str] = {}
-    for key in ALLOWED_CORRELATION_FIELDS:
-        value = correlation_source.get(key)
+    for field in ALLOWED_CORRELATION_FIELDS:
+        value = correlation_source.get(field)
         if value not in {None, ""}:
-            correlation[key] = _safe_id(value, f"correlation.{key}")
+            raw = str(value).strip()
+            if not raw or len(raw.encode("utf-8")) > 8192:
+                raise ValueError(f"correlation.{field} is invalid")
+            digest = hmac.new(key, f"{field}:{raw}".encode("utf-8"), hashlib.sha256).hexdigest()[:40]
+            correlation[field] = f"corr_{digest}"
     return {"result": result, "reason_code": reason_code, "correlation": correlation}
 
 
@@ -630,18 +831,37 @@ def _validate_event_policy(model: AuditEvent, event: Mapping[str, Any]) -> None:
     correlation = event.get("correlation")
     if not isinstance(correlation, Mapping) or not set(correlation).issubset(ALLOWED_CORRELATION_FIELDS):
         raise ValueError("correlation is invalid")
-    for key, value in correlation.items():
-        _safe_id(value, f"correlation.{key}")
+    for value in correlation.values():
+        if not re.fullmatch(r"corr_[0-9a-f]{40}", str(value)):
+            raise ValueError("correlation is invalid")
+
+
+def _validate_anchor_policy(model: AuditAnchor, anchor: Mapping[str, Any]) -> None:
+    _workspace_id(anchor.get("workspace_id"))
+    if int(anchor.get("anchor_revision") or 0) < 1 or int(anchor.get("workspace_revision") or 0) < 1:
+        raise ValueError("anchor revision is invalid")
+    if not _KEY_ID.fullmatch(str(anchor.get("key_id") or "")):
+        raise ValueError("anchor key_id is invalid")
+    for field in ("workspace_event_hash", "previous_hash", "anchor_hash"):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(anchor.get(field) or "")):
+            raise ValueError(f"anchor {field} is invalid")
+    if model.at.tzinfo is None or model.at.utcoffset() != timedelta(0):
+        raise ValueError("anchor at must be UTC")
 
 
 def _backend() -> _AppendBackend:
     if _is_production():
         if _local_mode_enabled():
             raise AuditPersistenceError("local audit mode is prohibited in production")
-        if not blob_configured():
+        if str(os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or "").strip():
+            raise AuditPersistenceError("storage connection string is prohibited for production audit writes")
+        if str(os.environ.get("AZURE_STORAGE_KEY") or os.environ.get("DF_STORAGE_KEY") or "").strip():
+            raise AuditPersistenceError("production audit writes require managed identity")
+        account_name = _storage_account_name()
+        if not account_name:
             raise AuditPersistenceError("durable Blob audit storage is required in production")
-        _verify_production_storage_contract()
-        return _BlobAppendBackend()
+        _verify_production_storage_contract(account_name)
+        return _BlobAppendBackend(account_name=account_name, managed_identity_only=True)
     if blob_configured():
         return _BlobAppendBackend()
     if _local_mode_enabled():
@@ -649,16 +869,37 @@ def _backend() -> _AppendBackend:
     raise AuditPersistenceError("local audit mode must be enabled explicitly")
 
 
-def _verify_production_storage_contract() -> None:
+def _verify_production_storage_contract(write_account_name: str | None = None) -> str:
     resource_id = str(os.environ.get("DF_AUDIT_STORAGE_ACCOUNT_RESOURCE_ID") or "").strip().rstrip("/")
-    if not resource_id.startswith("/subscriptions/"):
+    match = _STORAGE_RESOURCE_ID.fullmatch(resource_id)
+    if match is None:
         raise AuditPersistenceError("production audit storage contract resource id is missing")
+    write_account = str(write_account_name or _storage_account_name()).strip().lower()
+    expected_subscription = str(os.environ.get("DF_AUDIT_STORAGE_SUBSCRIPTION_ID") or "").strip()
+    expected_resource_group = str(os.environ.get("DF_AUDIT_STORAGE_RESOURCE_GROUP") or "").strip()
+    if not re.fullmatch(r"[a-z0-9]{3,24}", write_account):
+        raise AuditPersistenceError("production audit write account is invalid")
+    if match.group("account").lower() != write_account:
+        raise AuditPersistenceError("production audit storage account proof does not match write account")
+    if not expected_subscription or match.group("subscription").lower() != expected_subscription.lower():
+        raise AuditPersistenceError("production audit storage subscription proof does not match expected subscription")
+    if not expected_resource_group or match.group("resource_group").lower() != expected_resource_group.lower():
+        raise AuditPersistenceError("production audit storage resource group proof does not match expected resource group")
+    container_name = _audit_container_name()
+    cache_key = (resource_id.lower(), write_account, container_name)
+    now = time.monotonic()
+    expires_at = _PRODUCTION_CONTRACT_CACHE.get(cache_key)
+    if expires_at is not None and now < expires_at:
+        return resource_id
+    _PRODUCTION_CONTRACT_CACHE.pop(cache_key, None)
     api = "api-version=2025-06-01"
     service = _management_get_json(f"{resource_id}/blobServices/default?{api}").get("properties")
     policy = _management_get_json(
-        f"{resource_id}/blobServices/default/containers/{_audit_container_name()}/immutabilityPolicies/default?{api}"
+        f"{resource_id}/blobServices/default/containers/{container_name}/immutabilityPolicies/default?{api}"
     ).get("properties")
     _validate_production_contract(service, policy)
+    _PRODUCTION_CONTRACT_CACHE[cache_key] = now + PRODUCTION_CONTRACT_CACHE_TTL_SECONDS
+    return resource_id
 
 
 def _management_get_json(resource_path: str) -> dict[str, Any]:
@@ -755,20 +996,53 @@ def _local_stream_path(name: str) -> Path:
     return path
 
 
-def _event_stream_prefix(workspace_id: str) -> str:
-    return f"workspaces/{_workspace_id(workspace_id)}/events/"
+def _event_stream_name(workspace_id: str, _segment: int | None = None) -> str:
+    return f"workspaces/{_workspace_id(workspace_id)}/events.jsonl"
 
 
-def _event_stream_name(workspace_id: str, segment: int) -> str:
-    return f"{_event_stream_prefix(workspace_id)}{int(segment):08d}.jsonl"
+def _anchor_stream_name(workspace_id: str) -> str:
+    return f"workspaces/{_workspace_id(workspace_id)}/anchors.jsonl"
 
 
-def _anchor_stream_name(segment: int) -> str:
-    return f"anchors/{int(segment):08d}.jsonl"
+def _local_etag(stat_result: os.stat_result) -> str:
+    return f'"{int(stat_result.st_mtime_ns):x}-{int(stat_result.st_size):x}"'
 
 
-def _segment_for_revision(revision: int) -> int:
-    return ((int(revision) - 1) // STREAM_SEGMENT_EVENTS) + 1
+def _snapshot_from_tail(name: str, data: bytes, length: int, etag: str | None) -> _StreamSnapshot:
+    if length < 0 or len(data) != min(length, STREAM_TAIL_BYTES):
+        raise AuditIntegrityError("audit stream snapshot length is invalid")
+    if length == 0:
+        if data:
+            raise AuditIntegrityError("empty audit stream snapshot is invalid")
+        return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=etag)
+    if etag is None or not data.endswith(b"\n"):
+        raise AuditIntegrityError("audit stream snapshot is truncated")
+    complete = data
+    if length > len(data):
+        boundary = data.find(b"\n")
+        if boundary < 0:
+            raise AuditIntegrityError("audit stream record exceeds the bounded tail")
+        complete = data[boundary + 1 :]
+    lines = complete.splitlines()
+    if not lines or len(lines[-1]) + 1 > MAX_STREAM_RECORD_BYTES:
+        raise AuditIntegrityError("audit stream head exceeds the record limit")
+    try:
+        head = json.loads(lines[-1].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AuditIntegrityError("audit stream head is invalid") from exc
+    if not isinstance(head, dict):
+        raise AuditIntegrityError("audit stream head is invalid")
+    return _StreamSnapshot(name=name, data=data, head=head, length=length, etag=etag)
+
+
+def _validate_append_request(name: str, payload: bytes, snapshot: _StreamSnapshot) -> None:
+    if snapshot.name != name or snapshot.length < 0:
+        raise AuditPersistenceError("audit append snapshot does not match stream")
+    if not payload.endswith(b"\n") or len(payload) > MAX_STREAM_RECORD_BYTES:
+        raise AuditPersistenceError("audit append record exceeds the bounded record contract")
+    parsed = _parse_lines(payload, "audit append record")
+    if len(parsed) != 1:
+        raise AuditPersistenceError("audit append must contain exactly one record")
 
 
 def _parse_lines(payload: bytes, label: str) -> list[dict[str, Any]]:
@@ -778,6 +1052,8 @@ def _parse_lines(payload: bytes, label: str) -> list[dict[str, Any]]:
         raise AuditIntegrityError(f"{label} is truncated")
     values = []
     for line in payload.splitlines():
+        if len(line) + 1 > MAX_STREAM_RECORD_BYTES:
+            raise AuditIntegrityError(f"{label} record exceeds the bounded record contract")
         try:
             value = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

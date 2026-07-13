@@ -1098,6 +1098,7 @@ def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], reque
             }
             if not fallback:
                 invitation = _record_failed_entra_invitation(workspace_id, email, role, request, graph_invite)
+                _audit_invitation_failure(request, workspace_id, str(invitation["invitation_id"]))
                 return {
                     "workspace_id": workspace_id,
                     "members": workspace_member_roles(workspace_id, request).get("members") or [],
@@ -1125,6 +1126,7 @@ def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], reque
                 workspace_id=workspace_id,
             )
             _save_workspace_meta(workspace_id, meta)
+        _audit_invitation_failure(request, workspace_id, invitation_id)
     elif invitation_id and graph_invite.get("status") == "sent":
         with workspace_invitation_lock(workspace_id):
             meta = _load_workspace_meta(workspace_id)
@@ -1166,6 +1168,24 @@ def _record_failed_entra_invitation(
         )
         _save_workspace_meta(workspace_id, meta)
         return failed
+
+
+def _audit_invitation_failure(request: Request | None, workspace_id: str, invitation_id: str) -> None:
+    try:
+        record_audit_event(
+            actor_from_request(request),
+            "invitation.fail",
+            {
+                "workspace_id": workspace_id,
+                "resource_type": "invitation",
+                "resource_id": _safe_audit_id(invitation_id, "pending"),
+            },
+            result="failed",
+            reason_code="invitation_failed",
+            correlation={"invitation_id": invitation_id},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Audit persistence is required") from exc
 
 
 def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:

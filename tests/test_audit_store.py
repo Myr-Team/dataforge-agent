@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 import secrets
 
 import pytest
@@ -61,7 +62,35 @@ def test_audit_event_redacts_content_credentials_and_email() -> None:
     assert "connection_string" not in text
     assert "file_content" not in text
     assert event["actor_hash"].startswith("actor_")
-    assert event["correlation"] == {"request_id": "req-123", "run_id": "run-456"}
+    assert set(event["correlation"]) == {"request_id", "run_id"}
+    assert all(re.fullmatch(r"corr_[0-9a-f]{40}", value) for value in event["correlation"].values())
+    assert "req-123" not in text
+    assert "run-456" not in text
+
+
+def test_correlation_values_are_never_persisted_or_returned_raw() -> None:
+    secrets_by_field = {
+        "request_id": "eyJhbGciOiJIUzI1NiJ9.api-key-secret.signature",
+        "run_id": "Server=tcp:db;Password=super-secret",
+        "task_id": "sk-live-client-controlled-token",
+    }
+
+    audit_store.record_audit_event(
+        _actor(),
+        "file.edit",
+        _resource(),
+        {"correlation": secrets_by_field},
+    )
+
+    persisted = b"".join(path.read_bytes() for path in audit_store.AUDIT_DIR.rglob("*.jsonl"))
+    response = json.dumps(audit_store.list_audit_events("ws-audit"), sort_keys=True)
+    for secret in secrets_by_field.values():
+        assert secret.encode("utf-8") not in persisted
+        assert secret not in response
+    assert all(
+        re.fullmatch(r"corr_[0-9a-f]{40}", value)
+        for value in audit_store.list_audit_events("ws-audit")["events"][0]["correlation"].values()
+    )
 
 
 def test_local_store_creates_and_reuses_private_hmac_key(monkeypatch) -> None:
@@ -201,18 +230,28 @@ def test_remediation_valid_unanchored_event_is_recovered_after_interrupted_write
     class InterruptedBackend:
         def __init__(self) -> None:
             self.streams: dict[str, bytes] = {}
+            self.versions: dict[str, int] = {}
 
-        def read(self, name: str) -> bytes:
+        def read_snapshot(self, name: str):
+            data = self.streams.get(name, b"")
+            return audit_store._StreamSnapshot(
+                name=name,
+                data=data[-audit_store.STREAM_TAIL_BYTES :],
+                head=json.loads(data.splitlines()[-1]) if data else None,
+                length=len(data),
+                etag=str(self.versions.get(name)) if name in self.streams else None,
+            )
+
+        def read_full(self, name: str) -> bytes:
             return self.streams.get(name, b"")
 
-        def list_names(self, prefix: str) -> list[str]:
-            return sorted(name for name in self.streams if name.startswith(prefix))
-
-        def append(self, name: str, payload: bytes, expected_size: int) -> None:
+        def append(self, name: str, payload: bytes, snapshot) -> None:
             current = self.streams.get(name, b"")
-            if len(current) != expected_size:
+            current_etag = str(self.versions.get(name)) if name in self.streams else None
+            if len(current) != snapshot.length or current_etag != snapshot.etag:
                 raise audit_store._AppendConflict()
             self.streams[name] = current + payload
+            self.versions[name] = self.versions.get(name, 0) + 1
 
     remote = InterruptedBackend()
     first = audit_store._build_event(
@@ -242,7 +281,9 @@ def test_remediation_valid_unanchored_event_is_recovered_after_interrupted_write
     remote.streams[audit_store._event_stream_name("ws-audit", 1)] = (
         audit_store._line(first) + audit_store._line(interrupted)
     )
-    remote.streams[audit_store._anchor_stream_name(1)] = audit_store._line(anchor)
+    remote.streams[audit_store._anchor_stream_name("ws-audit")] = audit_store._line(anchor)
+    remote.versions[audit_store._event_stream_name("ws-audit")] = 1
+    remote.versions[audit_store._anchor_stream_name("ws-audit")] = 1
     monkeypatch.setattr(audit_store, "_backend", lambda: remote)
 
     third = audit_store.record_audit_event(_actor(), "file.delete", _resource(), {})
@@ -250,6 +291,65 @@ def test_remediation_valid_unanchored_event_is_recovered_after_interrupted_write
     assert third["revision"] == 3
     listed = audit_store.list_audit_events("ws-audit")["events"]
     assert [event["revision"] for event in listed] == [3, 2, 1]
+
+
+def test_first_event_is_recovered_when_anchor_append_was_interrupted(monkeypatch) -> None:
+    original_append = audit_store._LocalAppendBackend.append
+    interrupted = {"value": False}
+
+    def fail_first_anchor(self, name, payload, expected):
+        if "anchor" in name and not interrupted["value"]:
+            interrupted["value"] = True
+            raise audit_store.AuditPersistenceError("simulated interruption")
+        return original_append(self, name, payload, expected)
+
+    monkeypatch.setattr(audit_store._LocalAppendBackend, "append", fail_first_anchor)
+
+    with pytest.raises(audit_store.AuditPersistenceError, match="interruption"):
+        audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
+
+    second = audit_store.record_audit_event(_actor(), "file.edit", _resource(), {})
+
+    assert second["revision"] == 2
+    assert [event["revision"] for event in audit_store.list_audit_events("ws-audit")["events"]] == [2, 1]
+
+
+def test_first_event_for_another_workspace_is_recovered_after_anchor_interruption(monkeypatch) -> None:
+    audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
+    original_append = audit_store._LocalAppendBackend.append
+    interrupted = {"value": False}
+
+    def fail_next_workspace_anchor(self, name, payload, expected):
+        if "anchor" in name and "ws-other" in name and not interrupted["value"]:
+            interrupted["value"] = True
+            raise audit_store.AuditPersistenceError("simulated interruption")
+        return original_append(self, name, payload, expected)
+
+    monkeypatch.setattr(audit_store._LocalAppendBackend, "append", fail_next_workspace_anchor)
+    other = {"workspace_id": "ws-other", "resource_type": "file", "resource_id": "file-2"}
+
+    with pytest.raises(audit_store.AuditPersistenceError, match="interruption"):
+        audit_store.record_audit_event(_actor(), "file.create", other, {})
+
+    recovered = audit_store.record_audit_event(_actor(), "file.edit", other, {})
+    assert recovered["revision"] == 2
+
+
+def test_multiple_genesis_records_without_an_anchor_fail_closed(monkeypatch) -> None:
+    remote = _SnapshotRaceBackend()
+    name = audit_store._event_stream_name("ws-audit")
+    first = audit_store._build_event(
+        _actor(), "file.create", _resource("file-1"), {}, revision=1, previous_hash=audit_store.GENESIS_HASH
+    )
+    forged_second_genesis = audit_store._build_event(
+        _actor(), "file.create", _resource("file-2"), {}, revision=1, previous_hash=audit_store.GENESIS_HASH
+    )
+    remote._commit(name, audit_store._line(first))
+    remote._commit(name, audit_store._line(forged_second_genesis))
+    monkeypatch.setattr(audit_store, "_backend", lambda: remote)
+
+    with pytest.raises(audit_store.AuditIntegrityError, match="anchor is missing"):
+        audit_store.record_audit_event(_actor(), "file.edit", _resource(), {})
 
 
 @pytest.mark.parametrize("name", ["/outside.jsonl", "\\outside.jsonl", "C:\\outside.jsonl", "\\\\server\\share\\x.jsonl"])
@@ -278,6 +378,137 @@ def test_remediation_production_contract_requires_all_blob_controls(monkeypatch)
             audit_store._validate_production_contract(broken_service, broken_policy)
 
 
+def _production_storage_env(monkeypatch, *, account: str = "writeaccount") -> str:
+    resource_id = (
+        "/subscriptions/sub-expected/resourceGroups/rg-expected/providers/"
+        f"Microsoft.Storage/storageAccounts/{account}"
+    )
+    monkeypatch.setenv("DF_ENVIRONMENT", "production")
+    monkeypatch.delenv("DF_AUDIT_LOCAL_MODE", raising=False)
+    monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
+    monkeypatch.delenv("AZURE_STORAGE_KEY", raising=False)
+    monkeypatch.delenv("DF_STORAGE_KEY", raising=False)
+    monkeypatch.setenv("STORAGE_ACCOUNT_NAME", account)
+    monkeypatch.setenv("DF_AUDIT_STORAGE_ACCOUNT_RESOURCE_ID", resource_id)
+    monkeypatch.setenv("DF_AUDIT_STORAGE_SUBSCRIPTION_ID", "sub-expected")
+    monkeypatch.setenv("DF_AUDIT_STORAGE_RESOURCE_GROUP", "rg-expected")
+    return resource_id
+
+
+@pytest.mark.parametrize(
+    ("resource_id", "message"),
+    [
+        (
+            "/subscriptions/sub-expected/resourceGroups/rg-expected/providers/Microsoft.Storage/storageAccounts/verified-a",
+            "account",
+        ),
+        (
+            "/subscriptions/sub-other/resourceGroups/rg-expected/providers/Microsoft.Storage/storageAccounts/writeaccount",
+            "subscription",
+        ),
+        (
+            "/subscriptions/sub-expected/resourceGroups/rg-other/providers/Microsoft.Storage/storageAccounts/writeaccount",
+            "resource group",
+        ),
+    ],
+)
+def test_production_worm_proof_is_bound_to_write_account_subscription_and_rg(monkeypatch, resource_id, message) -> None:
+    _production_storage_env(monkeypatch)
+    monkeypatch.setenv("DF_AUDIT_STORAGE_ACCOUNT_RESOURCE_ID", resource_id)
+
+    with pytest.raises(audit_store.AuditPersistenceError, match=message):
+        audit_store._verify_production_storage_contract("writeaccount")
+
+
+def test_verified_account_a_cannot_authorize_writes_to_account_b(monkeypatch) -> None:
+    _production_storage_env(monkeypatch, account="writeaccountb")
+    monkeypatch.setenv(
+        "DF_AUDIT_STORAGE_ACCOUNT_RESOURCE_ID",
+        "/subscriptions/sub-expected/resourceGroups/rg-expected/providers/"
+        "Microsoft.Storage/storageAccounts/verifiedaccounta",
+    )
+    constructed: list[dict] = []
+    monkeypatch.setattr(audit_store, "_BlobAppendBackend", lambda **kwargs: constructed.append(kwargs))
+
+    with pytest.raises(audit_store.AuditPersistenceError, match="account proof"):
+        audit_store._backend()
+
+    assert constructed == []
+
+
+def test_production_backend_writes_to_the_exact_arm_verified_account_with_managed_identity(monkeypatch) -> None:
+    resource_id = _production_storage_env(monkeypatch)
+    verified: list[str] = []
+    constructed: list[dict] = []
+    sentinel = object()
+
+    def verify(account_name):
+        verified.append(account_name)
+        return resource_id
+
+    def backend(**kwargs):
+        constructed.append(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(audit_store, "_verify_production_storage_contract", verify)
+    monkeypatch.setattr(audit_store, "_BlobAppendBackend", backend)
+
+    assert audit_store._backend() is sentinel
+    assert verified == ["writeaccount"]
+    assert constructed == [{"account_name": "writeaccount", "managed_identity_only": True}]
+
+
+def test_production_rejects_connection_strings_and_storage_keys(monkeypatch) -> None:
+    _production_storage_env(monkeypatch)
+    monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", "UseDevelopmentStorage=true")
+
+    with pytest.raises(audit_store.AuditPersistenceError, match="connection string"):
+        audit_store._backend()
+
+    monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING")
+    monkeypatch.setenv("AZURE_STORAGE_KEY", "not-allowed")
+    with pytest.raises(audit_store.AuditPersistenceError, match="managed identity"):
+        audit_store._backend()
+
+
+def test_production_contract_cache_is_bounded_and_rechecks_after_expiry(monkeypatch) -> None:
+    resource_id = _production_storage_env(monkeypatch)
+    clock = {"now": 100.0}
+    calls: list[str] = []
+    broken = {"value": False}
+
+    def management_get(path: str):
+        calls.append(path)
+        if "immutabilityPolicies" in path:
+            return {
+                "properties": {
+                    "state": "Unlocked" if broken["value"] else "Locked",
+                    "allowProtectedAppendWrites": True,
+                }
+            }
+        return {
+            "properties": {
+                "isVersioningEnabled": True,
+                "deleteRetentionPolicy": {"enabled": True, "days": 30},
+                "containerDeleteRetentionPolicy": {"enabled": True, "days": 30},
+            }
+        }
+
+    audit_store._PRODUCTION_CONTRACT_CACHE.clear()
+    monkeypatch.setattr(audit_store.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(audit_store, "_management_get_json", management_get)
+
+    assert audit_store._verify_production_storage_contract("writeaccount") == resource_id
+    assert audit_store._verify_production_storage_contract("writeaccount") == resource_id
+    assert len(calls) == 2
+
+    broken["value"] = True
+    clock["now"] += audit_store.PRODUCTION_CONTRACT_CACHE_TTL_SECONDS + 0.01
+    with pytest.raises(audit_store.AuditPersistenceError, match="contract"):
+        audit_store._verify_production_storage_contract("writeaccount")
+    assert len(calls) == 4
+
+
 def test_remediation_production_never_falls_back_to_local(monkeypatch) -> None:
     monkeypatch.setenv("DF_ENVIRONMENT", "production")
     monkeypatch.setenv("DF_AUDIT_LOCAL_MODE", "1")
@@ -289,6 +520,7 @@ def test_remediation_production_never_falls_back_to_local(monkeypatch) -> None:
 
 def test_remediation_infra_preauthorizes_versionless_key_vault_reference() -> None:
     module = (audit_store.ROOT / "infra" / "modules" / "container_app" / "main.tf").read_text(encoding="utf-8")
+    environment = (audit_store.ROOT / "infra" / "envs" / "dev" / "main.tf").read_text(encoding="utf-8")
     variables = (audit_store.ROOT / "infra" / "envs" / "dev" / "variables.tf").read_text(encoding="utf-8")
 
     assert 'resource "azurerm_user_assigned_identity" "audit_secrets"' in module
@@ -299,6 +531,9 @@ def test_remediation_infra_preauthorizes_versionless_key_vault_reference() -> No
     assert "audit_hmac_keyring_secret_uri" in variables
     assert "validation" in variables
     assert "/secrets/[^/]+$" in variables
+    assert 'name  = "DF_AUDIT_STORAGE_SUBSCRIPTION_ID"' in module
+    assert 'name  = "DF_AUDIT_STORAGE_RESOURCE_GROUP"' in module
+    assert "subscription_id                  = var.subscription_id" in environment
 
 
 def test_remediation_production_requires_configured_durable_blob(monkeypatch) -> None:
@@ -382,17 +617,25 @@ def test_blob_cas_retries_replica_conflict_without_losing_events(monkeypatch) ->
     class ReplicaBackend:
         def __init__(self) -> None:
             self.streams: dict[str, bytes] = {}
+            self.versions: dict[str, int] = {}
             self.event_calls: list[int] = []
 
-        def read(self, name: str) -> bytes:
+        def read_snapshot(self, name: str):
+            data = self.streams.get(name, b"")
+            return audit_store._StreamSnapshot(
+                name=name,
+                data=data[-audit_store.STREAM_TAIL_BYTES :],
+                head=json.loads(data.splitlines()[-1]) if data else None,
+                length=len(data),
+                etag=str(self.versions.get(name)) if name in self.streams else None,
+            )
+
+        def read_full(self, name: str) -> bytes:
             return self.streams.get(name, b"")
 
-        def list_names(self, prefix: str) -> list[str]:
-            return sorted(name for name in self.streams if name.startswith(prefix))
-
-        def append(self, name: str, payload: bytes, expected_size: int) -> None:
-            if "/events/" in name:
-                self.event_calls.append(expected_size)
+        def append(self, name: str, payload: bytes, snapshot) -> None:
+            if "/events." in name:
+                self.event_calls.append(snapshot.length)
                 if len(self.event_calls) == 1:
                     competing = audit_store._build_event(
                         _actor(),
@@ -403,6 +646,7 @@ def test_blob_cas_retries_replica_conflict_without_losing_events(monkeypatch) ->
                         previous_hash=audit_store.GENESIS_HASH,
                     )
                     self.streams[name] = audit_store._line(competing)
+                    self.versions[name] = 1
                     anchor = audit_store._build_anchor(
                         anchor_revision=1,
                         workspace_id="ws-audit",
@@ -411,12 +655,16 @@ def test_blob_cas_retries_replica_conflict_without_losing_events(monkeypatch) ->
                         previous_hash=audit_store.GENESIS_HASH,
                         key_id=competing["key_id"],
                     )
-                    self.streams[audit_store._anchor_stream_name(1)] = audit_store._line(anchor)
+                    anchor_name = audit_store._anchor_stream_name("ws-audit")
+                    self.streams[anchor_name] = audit_store._line(anchor)
+                    self.versions[anchor_name] = 1
                     raise audit_store._AppendConflict()
             current = self.streams.get(name, b"")
-            if len(current) != expected_size:
+            current_etag = str(self.versions.get(name)) if name in self.streams else None
+            if len(current) != snapshot.length or current_etag != snapshot.etag:
                 raise audit_store._AppendConflict()
             self.streams[name] = current + payload
+            self.versions[name] = self.versions.get(name, 0) + 1
 
     remote = ReplicaBackend()
     monkeypatch.setattr(audit_store, "_backend", lambda: remote)
@@ -434,6 +682,183 @@ def test_blob_cas_retries_replica_conflict_without_losing_events(monkeypatch) ->
     persisted = audit_store.list_audit_events("ws-audit")["events"]
     assert event["previous_hash"] == persisted[1]["event_hash"]
     assert len(persisted) == 2
+
+
+class _SnapshotRaceBackend:
+    def __init__(self, *, event_race: bool = False, anchor_race: bool = False, head_pair_race: bool = False) -> None:
+        self.streams: dict[str, bytes] = {}
+        self.versions: dict[str, int] = {}
+        self.event_race = event_race
+        self.anchor_race = anchor_race
+        self.head_pair_race = head_pair_race
+        self.anchor_was_read = False
+        self.event_attempt_revisions: list[int] = []
+        self.snapshot_reads = 0
+        self.full_reads = 0
+        self.legacy_reads = 0
+
+    def _etag(self, name: str) -> str | None:
+        return f'"v{self.versions.get(name, 0)}"' if name in self.streams else None
+
+    def read_snapshot(self, name: str):
+        self.snapshot_reads += 1
+        if self.head_pair_race and "/anchors" in name:
+            self.anchor_was_read = True
+        elif self.head_pair_race and self.anchor_was_read and "/events" in name:
+            self.head_pair_race = False
+            event_head = json.loads(self.streams[name].splitlines()[-1])
+            anchor_name = audit_store._anchor_stream_name("ws-audit")
+            anchor_head = json.loads(self.streams[anchor_name].splitlines()[-1])
+            second = audit_store._build_event(
+                _actor(), "file.edit", _resource("file-race-2"), {},
+                revision=2, previous_hash=event_head["event_hash"],
+            )
+            second_anchor = audit_store._build_anchor(
+                anchor_revision=2,
+                workspace_id="ws-audit",
+                workspace_revision=2,
+                workspace_event_hash=second["event_hash"],
+                previous_hash=anchor_head["anchor_hash"],
+                key_id=second["key_id"],
+            )
+            third = audit_store._build_event(
+                _actor(), "file.edit", _resource("file-race-3"), {},
+                revision=3, previous_hash=second["event_hash"],
+            )
+            self._commit(name, audit_store._line(second))
+            self._commit(anchor_name, audit_store._line(second_anchor))
+            self._commit(name, audit_store._line(third))
+        data = self.streams.get(name, b"")
+        tail = data[-audit_store.STREAM_TAIL_BYTES :]
+        head = json.loads(data.splitlines()[-1]) if data else None
+        return audit_store._StreamSnapshot(name=name, data=tail, head=head, length=len(data), etag=self._etag(name))
+
+    def read_full(self, name: str) -> bytes:
+        self.full_reads += 1
+        return self.streams.get(name, b"")
+
+    def read(self, name: str) -> bytes:
+        self.legacy_reads += 1
+        return self.streams.get(name, b"")
+
+    def list_names(self, prefix: str) -> list[str]:
+        self.legacy_reads += 1
+        return sorted(name for name in self.streams if name.startswith(prefix))
+
+    def _commit(self, name: str, payload: bytes) -> None:
+        self.streams[name] = self.streams.get(name, b"") + payload
+        self.versions[name] = self.versions.get(name, 0) + 1
+
+    def append(self, name: str, payload: bytes, snapshot) -> None:
+        if isinstance(snapshot, int):
+            raise AssertionError("append position was not bound to the validated stream snapshot")
+        value = json.loads(payload)
+        if "/events" in name:
+            self.event_attempt_revisions.append(int(value["revision"]))
+            if self.event_race:
+                self.event_race = False
+                competitor = audit_store._build_event(
+                    _actor(),
+                    "message.create",
+                    {"workspace_id": "ws-audit", "resource_type": "message", "resource_id": "message-other"},
+                    {},
+                    revision=1,
+                    previous_hash=audit_store.GENESIS_HASH,
+                )
+                self._commit(name, audit_store._line(competitor))
+                competitor_anchor = audit_store._build_anchor(
+                    anchor_revision=1,
+                    workspace_id="ws-audit",
+                    workspace_revision=1,
+                    workspace_event_hash=competitor["event_hash"],
+                    previous_hash=audit_store.GENESIS_HASH,
+                    key_id=competitor["key_id"],
+                )
+                self._commit(audit_store._anchor_stream_name("ws-audit"), audit_store._line(competitor_anchor))
+        elif "/anchors" in name and self.anchor_race:
+            self.anchor_race = False
+            self._commit(name, payload)
+        if len(self.streams.get(name, b"")) != snapshot.length or self._etag(name) != snapshot.etag:
+            raise audit_store._AppendConflict("deterministic interleaving")
+        self._commit(name, payload)
+
+
+def test_event_append_reloads_revalidates_and_rebuilds_after_snapshot_interleaving(monkeypatch) -> None:
+    remote = _SnapshotRaceBackend(event_race=True)
+    monkeypatch.setattr(audit_store, "_backend", lambda: remote)
+
+    event = audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
+
+    assert remote.event_attempt_revisions == [1, 2]
+    assert event["revision"] == 2
+    assert audit_store.list_audit_events("ws-audit")["revision"] == 2
+
+
+def test_anchor_append_is_bound_to_validated_snapshot_during_interleaving(monkeypatch) -> None:
+    remote = _SnapshotRaceBackend(anchor_race=True)
+    monkeypatch.setattr(audit_store, "_backend", lambda: remote)
+
+    event = audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
+
+    assert event["revision"] == 1
+    assert audit_store.list_audit_events("ws-audit")["revision"] == 1
+
+
+def test_inconsistent_cross_stream_head_pair_is_reconfirmed_and_retried(monkeypatch) -> None:
+    remote = _SnapshotRaceBackend()
+    first = audit_store._build_event(
+        _actor(), "file.create", _resource("file-race-1"), {}, revision=1, previous_hash=audit_store.GENESIS_HASH
+    )
+    first_anchor = audit_store._build_anchor(
+        anchor_revision=1,
+        workspace_id="ws-audit",
+        workspace_revision=1,
+        workspace_event_hash=first["event_hash"],
+        previous_hash=audit_store.GENESIS_HASH,
+        key_id=first["key_id"],
+    )
+    remote._commit(audit_store._event_stream_name("ws-audit"), audit_store._line(first))
+    remote._commit(audit_store._anchor_stream_name("ws-audit"), audit_store._line(first_anchor))
+    remote.head_pair_race = True
+    monkeypatch.setattr(audit_store, "_backend", lambda: remote)
+
+    event = audit_store.record_audit_event(_actor(), "file.delete", _resource("file-race-3"), {})
+
+    assert event["revision"] == 4
+    assert audit_store.list_audit_events("ws-audit")["revision"] == 4
+
+
+def test_mutation_uses_bounded_tail_snapshots_not_full_history(monkeypatch) -> None:
+    remote = _SnapshotRaceBackend()
+    previous_event_hash = audit_store.GENESIS_HASH
+    previous_anchor_hash = audit_store.GENESIS_HASH
+    event_name = "workspaces/ws-audit/events.jsonl"
+    anchor_name = "workspaces/ws-audit/anchors.jsonl"
+    for revision in range(1, 301):
+        event = audit_store._build_event(
+            _actor(), "file.edit", _resource(f"file-{revision}"), {},
+            revision=revision, previous_hash=previous_event_hash,
+        )
+        anchor = audit_store._build_anchor(
+            anchor_revision=revision,
+            workspace_id="ws-audit",
+            workspace_revision=revision,
+            workspace_event_hash=event["event_hash"],
+            previous_hash=previous_anchor_hash,
+            key_id=event["key_id"],
+        )
+        remote._commit(event_name, audit_store._line(event))
+        remote._commit(anchor_name, audit_store._line(anchor))
+        previous_event_hash = event["event_hash"]
+        previous_anchor_hash = anchor["anchor_hash"]
+    monkeypatch.setattr(audit_store, "_backend", lambda: remote)
+
+    appended = audit_store.record_audit_event(_actor(), "file.delete", _resource("file-300"), {})
+
+    assert appended["revision"] == 301
+    assert remote.full_reads == 0
+    assert remote.legacy_reads == 0
+    assert remote.snapshot_reads <= 8
 
 
 @pytest.mark.parametrize(

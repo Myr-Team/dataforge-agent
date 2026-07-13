@@ -1,4 +1,5 @@
 variable "resource_group_name" { type = string }
+variable "subscription_id" { type = string }
 variable "location" { type = string }
 variable "container_env_name" { type = string }
 variable "log_analytics_workspace_id" { type = string }
@@ -169,6 +170,14 @@ resource "azurerm_container_app" "backend" {
       env {
         name  = "DF_AUDIT_STORAGE_ACCOUNT_RESOURCE_ID"
         value = var.storage_account_resource_id
+      }
+      env {
+        name  = "DF_AUDIT_STORAGE_SUBSCRIPTION_ID"
+        value = var.subscription_id
+      }
+      env {
+        name  = "DF_AUDIT_STORAGE_RESOURCE_GROUP"
+        value = var.resource_group_name
       }
       env {
         name  = "DF_AUDIT_HMAC_ACTIVE_KEY_ID"

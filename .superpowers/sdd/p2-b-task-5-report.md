@@ -4,84 +4,114 @@ Status: `DONE`
 
 Base committed task: `3738721` (`feat: persist immutable workspace audit events`)
 
-## Remediation Summary
+Interrupted remediation parent: `5799c3b` (`fix: harden immutable audit remediation`)
 
-All nine review findings were remediated without reverting the interrupted worker's changes, changing Easy Auth configuration, or touching `output/`.
+## Scope
 
-| Finding | Remediation | Binding coverage |
-| --- | --- | --- |
-| 1. Protected monotonic production anchor and rollback/delete detection | Replaced mutable ledger snapshots with segmented append streams plus a global signed monotonic anchor stream. Production verifies Blob versioning, blob/container soft delete, a locked time-based immutability policy, and protected append writes through ARM before every audit access. Missing/truncated streams, anchor gaps, event rollback, hash mismatch, and event deletion fail closed. A writer may recover exactly one valid HMAC-chained event beyond an existing anchor after interruption; missing anchors and larger gaps remain integrity failures. | Local delete/rollback, WORM contract matrix, chain tamper, unanchored-head recovery, CAS conflict, and policy-invalid replay tests. |
-| 2. No production local fallback; `STORAGE_ACCOUNT_NAME` | Local audit persistence now requires `DF_AUDIT_LOCAL_MODE=1` and is prohibited when production/Container Apps is detected. Production requires configured Blob storage. Blob, workspace, dependency-health, and audit account discovery accept `STORAGE_ACCOUNT_NAME` while retaining `DF_STORAGE_ACCOUNT` as an alias. | Production local-mode rejection, missing durable Blob rejection, and deployed account-name discovery tests. |
-| 3. Reserved workspace ID before audit with zero orphan mutation | New uploads generate a collision-resistant workspace ID without creating directories, registry entries, blobs, or upload jobs. The reserved ID is audited before `create_workspace_upload_job`; the store consumes the same ID without append lookup. Existing-workspace uploads remain authorized and audited before mutation. | Audit-outage test proves the workspace root is not created; reserved-ID pass-through and existing-upload fail-closed tests. |
-| 4. Strong key ring, key ID, rotation, and Key Vault contract | Audit events and anchors persist `key_id`; the active key comes from a JSON key ring of base64 values that must decode to at least 32 bytes. Historical keys verify old records during rotation. Production/Blob mode rejects missing or malformed rings. Terraform accepts only a versionless Key Vault secret URI, creates a user-assigned identity, grants `Key Vault Secrets User` on the supplied vault resource ID before app creation, and injects the ring through a Container Apps secret reference. No key value enters Terraform variables or source. | Rotation with retained old key, short-key rejection, missing production ring, key ID validation, and static infra contract test; `terraform validate` also passes. |
-| 5. Client-controlled dedup masking repeated mutations | Audit event IDs are server-generated UUIDs for each call. Reusing request/task/correlation IDs records another mutation attempt. A single server-side CAS retry keeps its in-memory event ID only to avoid duplicating that same append attempt. | Reused request ID test asserts distinct IDs and three revisions. |
-| 6. Truthful task terminal audit after CAS | Terminal requests emit a non-terminal `task.transition` attempt before persistence. `task.complete`, `task.cancel`, or `task.fail` is selected from the state actually returned by successful Blob CAS (or local persistence), not from the requested candidate. CAS conflicts and persistence failures emit transition failures without a false terminal event. | Successful terminal lifecycle, CAS conflict, CAS exception, and committed-state mismatch tests, including explicit red/green proof. |
-| 7. Workspace authz and audit for PDF/image/narration | All three endpoints require `workspace_id`, a trusted tenant identity, workspace `artifact.generate` permission, and a required audit write before invoking PDF, image, or narration generation. Unauthenticated, denied, and audit-unavailable requests cannot run the tool. | Parameterized 422/401/403/503 tests plus authorized success tests asserting the exact workspace/action/resource audit event. |
-| 8. Truthful experiment promotion hook | The future promotion hook requires an explicit `attempt`, `succeeded`, or `failed` phase. It records `promotion_attempt`, `experiment_promoted`, or `promotion_failed` with matching result and rejects unknown phases. | Phase mapping, safe correlation, and invalid-phase tests. |
-| 9. Local path traversal rejection | Workspace IDs now use a strict path-free grammar before authorization/audit lookup and workspace creation. Reserved/requested workspace IDs reject separators and traversal. Audit local stream paths reject absolute, drive-qualified, UNC, empty, dot, and escaping paths before filesystem access. | Workspace ID traversal matrix, workspace-store pre-mutation rejection, and absolute local stream path tests. |
+All nine Task5 findings and all six r2 Critical/Important findings are remediated. The interrupted worker's changes were retained and repaired. No Easy Auth configuration was added or changed, and `output/` was left untouched.
+
+## Original Nine Findings
+
+| Finding | Final behavior |
+| --- | --- |
+| 1. Protected monotonic/immutable production anchor | Each workspace has append-only `events.jsonl` and signed append-only `anchors.jsonl` streams. Production verifies versioning, blob/container soft delete, locked immutability, and protected append writes. Signed heads and full governance scans detect missing, truncated, rolled-back, deleted, or hash-mismatched state. |
+| 2. No production local fallback and account-name support | Production prohibits local mode and requires `STORAGE_ACCOUNT_NAME` or `DF_STORAGE_ACCOUNT`. It also prohibits connection strings, emulators, and account keys for audit writes. |
+| 3. Pre-audit reserved workspace ID | New-workspace upload reserves a collision-resistant ID without mutation, audits it, and only then creates upload/workspace state. Audit failure leaves no directory, registry, blob, or job orphan. |
+| 4. Strong key ring and Key Vault contract | Events and anchors carry `key_id`; base64 keys must decode to at least 32 bytes; retained old keys validate history after rotation. Terraform uses a versionless Key Vault secret, pre-authorized user-assigned identity, and `Key Vault Secrets User`. |
+| 5. No client-controlled event dedup | Every mutation call gets a server-generated event UUID. Reused request/task/correlation values cannot suppress repeated mutation attempts. |
+| 6. Truthful task terminal audit | The pre-CAS event is only `task.transition`. A terminal event is selected from the state returned by successful durable CAS. Conflicts, failures, and committed-state mismatch cannot create a false terminal event. |
+| 7. Artifact endpoint authz and audit | PDF, image, and narration endpoints require a workspace ID, trusted workspace authorization, and required `artifact.generate` audit before tool execution. |
+| 8. Truthful experiment hook | Promotion audit requires explicit `attempt`, `succeeded`, or `failed` phase and maps each to the matching result/reason. |
+| 9. Local path traversal rejection | Workspace and local audit stream paths reject separators, traversal, absolute/drive/UNC paths, dot segments, and escapes before filesystem mutation. |
+
+## R2 Remediation
+
+### 1. Snapshot-bound event and anchor CAS
+
+- `_StreamSnapshot` carries the bounded tail, validated head, exact byte length, and exact ETag from one stream read.
+- Event revision/hash construction uses that snapshot head, and append uses that same snapshot's length and ETag. There is no second position read.
+- Anchor construction and append use the same contract.
+- Blob append sends both `appendpos_condition` and `IfNotModified` ETag. Local append validates its snapshot before and after opening the descriptor.
+- Conflicts reload, revalidate, rebuild, and retry. Head pairs are read in write order (anchor then event); an inconsistent pair is reconfirmed and retried only if either exact snapshot changed.
+- Deterministic tests interleave competing event writes, anchor writes, and cross-stream head advancement.
+
+### 2. WORM proof bound to the write account
+
+- Production accepts only the managed-identity URL for the selected `STORAGE_ACCOUNT_NAME`/`DF_STORAGE_ACCOUNT`.
+- `DF_AUDIT_STORAGE_ACCOUNT_RESOURCE_ID` is parsed as a Storage Account ARM ID.
+- Its account, subscription, and resource group must match the actual write account plus `DF_AUDIT_STORAGE_SUBSCRIPTION_ID` and `DF_AUDIT_STORAGE_RESOURCE_GROUP` before any Blob client is constructed.
+- Terraform injects both expected subscription and resource group values.
+- Tests prove that policy verification for account A cannot authorize client construction for account B and that the verified account is passed to a managed-identity-only backend.
+
+### 3. Interrupted genesis recovery
+
+- No-anchor recovery is allowed only for one valid signed revision-1 event with the genesis previous hash and exactly one physical record.
+- This works for the first-ever workspace and the first event of another workspace.
+- One valid event beyond an existing matching anchor is also recoverable.
+- Multiple records, larger gaps, rollback, deletion, or hash mismatch fail closed.
+- Fault tests interrupt the first anchor append and prove the next mutation anchors the durable event before advancing.
+
+### 4. Correlation privacy
+
+- Every allowlisted correlation value is HMAC-pseudonymized as `corr_<40 hex>` before schema persistence, including internal IDs and accepted request/idempotency/correlation headers.
+- Arbitrary metadata remains discarded; actor identity remains HMAC-pseudonymized.
+- JWT-like, API-key-like, and connection-string-like inputs are absent from local bytes and governance API responses.
+- Correlation values are never used as event IDs or deduplication keys.
+
+### 5. Truthful Graph invitation failure
+
+- Graph failure first creates/transitions and durably saves the sanitized invitation journal state as `failed`.
+- Only after that save succeeds, `invitation.fail` is appended with `result=failed`, `reason_code=invitation_failed`, and invitation correlation.
+- Both fallback and no-fallback paths use the same ordering.
+- Provider bodies/messages/tokens are not passed to the audit record; persisted provider state retains only source, status, and error code.
+
+### 6. O(1) mutation gate and bounded ARM cache
+
+- Mutation reads Blob properties and at most a 64 KiB tail for each workspace event/anchor stream; records are capped at 16 KiB.
+- The normal mutation gate performs no listing and no full-history download. A 300-event test asserts zero full/legacy reads and at most eight snapshot calls.
+- Explicit governance reads still perform full event/anchor chain validation.
+- Verified production immutability capability is cached for 60 seconds, keyed by exact ARM resource ID, write account, and container.
+- Expiry forces ARM revalidation; a changed/unavailable policy fails closed and is not recached. The TTL is the maximum interval during which a policy change can remain masked.
 
 ## Preserved Contracts
 
-- Audit persistence remains privacy-minimized: raw actor identity is HMAC-pseudonymized; prompts, file content, credentials, provider bodies, and arbitrary metadata are not schema fields.
-- Event action/resource/result/reason/correlation values remain strictly allowlisted and fully revalidated on read.
-- Blob append positions and task updates retain conditional compare-and-swap behavior.
-- Workspace authorization remains fail closed; denial audit failure never grants access.
-- The governance endpoint remains owner/admin-only with bounded opaque-cursor pagination and truthful read-only permissions.
-- No `update_audit_event` or `delete_audit_event` interface exists.
-- No Easy Auth or authentication deployment configuration changed.
+- Audit action/resource/result/reason/correlation schemas remain allowlisted and are revalidated on read.
+- Actor identity, content, prompts, credentials, provider bodies, and arbitrary metadata are not persisted.
+- Authorization and required mutation audit remain fail closed.
+- Governance pagination remains bounded, opaque-cursor, owner/admin-only, and read-only.
+- No audit update/delete interface exists.
+- No Easy Auth deployment configuration changed.
 - `output/` remains untracked and untouched.
 
 ## Test Evidence
 
-### Interrupted-state assessment
+Initial interrupted-state focused run:
 
 ```text
-python -m pytest tests/test_audit_store.py tests/test_actor_audit_usage.py tests/test_task_store.py -q
-76 passed in 16.56s
+105 passed in 10.62s
 ```
 
-This showed that the stalled worker's tests passed but did not cover committed-state mismatch, pre-authorized Key Vault identity, interrupted anchoring recovery, successful artifact audit, invalid experiment phases, or absolute local paths.
-
-### Strengthened red/green evidence
-
-The first strengthened run produced `4 failed, 3 passed in 5.05s`: valid unanchored recovery, the Key Vault identity contract, and invalid experiment phase failed for the intended missing behavior; the task case exposed an invalid queued-to-completed test setup and was corrected to queued-to-failed before binding the behavior.
-
-The corrected task regression was then explicitly proven against the pre-fix terminal selection:
+Strengthened r2 red selection before implementation:
 
 ```text
-1 failed in 0.27s
-assert ['task.transition', 'task.fail'] == ['task.transition']
-
-1 passed in 0.09s
+15 failed, 1 passed, 105 deselected in 6.36s
 ```
 
-The strengthened remediation selection passed:
+Final focused audit/endpoint/invitation suites:
 
 ```text
-11 passed in 4.04s
+python -m pytest tests/test_audit_store.py tests/test_actor_audit_usage.py tests/test_entra_member_invites.py -q
+125 passed in 8.05s
 ```
 
-### Focused remediation suites
-
-```text
-python -m pytest tests/test_audit_store.py tests/test_actor_audit_usage.py tests/test_task_store.py -q
-86 passed in 17.60s
-```
-
-The broader audit/task/artifact/workspace/Blob/connector/outcome/experiment sweep passed:
-
-```text
-227 passed in 55.88s
-```
-
-### Full repository
+Final full repository suite:
 
 ```text
 python -m pytest -q
-611 passed, 1 warning in 73.92s (0:01:13)
+631 passed, 1 warning in 68.78s (0:01:08)
 ```
 
-The warning is the existing `ExperimentalWarning` from `backend/maf_team_runtime.py` exercised by `tests/test_maf_evaluation_contract.py`.
+The warning is the existing `ExperimentalWarning` from `backend/maf_team_runtime.py` in `tests/test_maf_evaluation_contract.py`.
 
 ## Mechanical Verification
 
@@ -92,7 +122,7 @@ exit 0
 import check
 imports=ok routes=ok append_only_api=ok
 
-terraform fmt -check -recursive ../..
+terraform fmt -check -recursive infra
 exit 0
 
 terraform validate -no-color
@@ -102,15 +132,16 @@ git diff --check
 exit 0
 ```
 
-The import check verifies the governance, PDF, image, and narration routes and confirms that audit update/delete symbols do not exist.
+## Production Configuration
 
-## Deployment Contract
+Required production settings are:
 
-Before applying production infrastructure, provide:
+- `STORAGE_ACCOUNT_NAME` or `DF_STORAGE_ACCOUNT`
+- `DF_AUDIT_STORAGE_ACCOUNT_RESOURCE_ID`
+- `DF_AUDIT_STORAGE_SUBSCRIPTION_ID`
+- `DF_AUDIT_STORAGE_RESOURCE_GROUP`
+- `DF_AUDIT_CONTAINER`
+- `DF_AUDIT_HMAC_ACTIVE_KEY_ID`
+- `DF_AUDIT_HMAC_KEYS` from the versionless Key Vault secret reference
 
-- `audit_immutability_locked=true` after reviewing the irreversible retention lock.
-- `audit_hmac_active_key_id` matching an entry in the Key Vault JSON key ring.
-- `audit_key_vault_id` for an RBAC-enabled vault.
-- A versionless `audit_hmac_keyring_secret_uri` whose secret value is the JSON key ring.
-
-Retain old ring entries while old events reference them. Container Apps uses the versionless reference for secret rotation; the backend rejects a ring that omits a key needed by persisted history.
+Production audit writes reject `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_KEY`, and `DF_STORAGE_KEY`. Retain every historical key-ring entry still referenced by persisted events or anchors.
