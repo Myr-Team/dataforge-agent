@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 try:
     from .artifact_jobs import list_artifact_jobs
+    from .azure_monitor_client import get_trace_delivery_status
     from .task_store import TaskPersistenceError, list_tasks
     from .blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
     from .conversation_store import get_conversation, list_conversations
@@ -33,6 +34,7 @@ try:
     from .workspace_authz import rbac_enabled, require_workspace_permission, workspace_role
 except ImportError:
     from artifact_jobs import list_artifact_jobs
+    from azure_monitor_client import get_trace_delivery_status
     from task_store import TaskPersistenceError, list_tasks
     from blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
     from conversation_store import get_conversation, list_conversations
@@ -149,6 +151,25 @@ async def workspace_audit(workspace_id: str, request: Request) -> dict[str, Any]
 async def workspace_governance(workspace_id: str, request: Request) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "workspace.read")
     return await _call(workspace_governance_summary, workspace_id, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/governance/trace-status")
+async def workspace_trace_status(
+    workspace_id: str,
+    request: Request,
+    run_id: str | None = Query(None, max_length=160),
+    correlation_id: str | None = Query(None, max_length=64),
+) -> dict[str, Any]:
+    if run_id:
+        try:
+            run = await _call(get_run, run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
+        if str(run.get("workspace_id") or "") != workspace_id:
+            raise HTTPException(status_code=404, detail="run not found")
+    _require_workspace_action(workspace_id, request, "workspace.read")
+    status = await _call(get_trace_delivery_status, workspace_id, run_id, correlation_id)
+    return status.model_dump()
 
 
 @router.get("/api/workspaces/{workspace_id}/outcomes")
@@ -1091,7 +1112,7 @@ def _foundry_monitoring_status() -> dict[str, Any]:
     tracing = snapshot.get("tracing") if isinstance(snapshot.get("tracing"), dict) else {}
     app_insights = bool(tracing.get("app_insights"))
     otel_sdk = bool(tracing.get("otel_sdk"))
-    status = "connected" if app_insights and otel_sdk else "partial" if app_insights or otel_sdk else "not_configured"
+    status = "partial" if app_insights or otel_sdk else "not_configured"
     registered = str(os.environ.get("DF_FOUNDRY_AGENT_REGISTERED") or "0").strip().lower() in {"1", "true", "yes", "on"}
     return {
         "status": status,
@@ -1102,8 +1123,8 @@ def _foundry_monitoring_status() -> dict[str, Any]:
         "foundry_agent_registered": registered,
         "native_roi_status": "configured" if registered and str(os.environ.get("DF_FOUNDRY_ROI_ENABLED") or "0") == "1" else "not_configured",
         "note": (
-            "Runtime spans are exported with gen_ai semantic attributes. Business outcomes remain sourced from the DataForge outcome ledger."
-            if status == "connected"
+            "Exporter configuration is present, but remote trace delivery still requires a matching Azure Monitor query."
+            if status == "partial"
             else "Connect Application Insights and the OpenTelemetry exporter before claiming Foundry-compatible monitoring."
         ),
     }

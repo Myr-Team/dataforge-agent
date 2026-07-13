@@ -249,7 +249,8 @@ def test_governance_reports_foundry_compatible_observability_truthfully(monkeypa
     result = control_plane.workspace_governance_summary("ws-observability", RequestStub())
 
     monitoring = result["foundry_monitoring"]
-    assert monitoring["status"] == "connected"
+    assert monitoring["status"] == "partial"
+    assert "remote trace delivery" in monitoring["note"]
     assert monitoring["gen_ai_semantic_conventions"] is True
     assert monitoring["source"] == "application_insights"
     assert result["roi"]["native_foundry_roi"]["status"] == "not_configured"

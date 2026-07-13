@@ -35,6 +35,7 @@ def _tracing_status() -> dict[str, Any]:
         "app_insights": enabled,
         "otel_sdk": sdk,
         "exporter": "azure-monitor-opentelemetry" if enabled else None,
+        "delivery_confirmation": "remote_query_required",
         "service_name": os.environ.get("OTEL_SERVICE_NAME", "dataforge-backend"),
         "logger_name": "dataforge.trace",
     }

@@ -5,8 +5,10 @@ import json
 import logging
 import os
 import re
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -22,6 +24,68 @@ if not LOGGER.handlers:
 
 _CURRENT_AGENT_SPAN: ContextVar[Any | None] = ContextVar("dataforge_agent_span", default=None)
 _SAFE_TELEMETRY_NAME = re.compile(r"^[A-Za-z0-9_.:-]+$")
+_TRACE_CORRELATION = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+_DELIVERY_LOCK = threading.RLock()
+_DELIVERY_RECORDS: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def _delivery_key(workspace_id: str, run_id: str | None) -> tuple[str, str]:
+    return (
+        hashlib.sha256(str(workspace_id or "").strip().encode("utf-8")).hexdigest(),
+        hashlib.sha256(str(run_id or "").strip().encode("utf-8")).hexdigest(),
+    )
+
+
+def _trace_identifier_hash(value: str) -> str:
+    return hashlib.sha256(str(value or "").strip().encode("utf-8")).hexdigest()
+
+
+def _span_correlation_id(span: Any) -> str | None:
+    try:
+        trace_id = int(span.get_span_context().trace_id)
+        value = f"{trace_id:032x}"
+        return value if _TRACE_CORRELATION.fullmatch(value) else None
+    except Exception:
+        return None
+
+
+def record_local_span_emit(workspace_id: str, run_id: str | None, correlation_id: str | None = None) -> None:
+    """Record local span emission; Azure SDK exporter callbacks remain unknown by default."""
+    correlation = str(correlation_id or "").strip().lower()
+    if not _TRACE_CORRELATION.fullmatch(correlation):
+        correlation = None
+    with _DELIVERY_LOCK:
+        previous = _DELIVERY_RECORDS.get(_delivery_key(workspace_id, run_id), {})
+        _DELIVERY_RECORDS[_delivery_key(workspace_id, run_id)] = {
+            "local_emit_at": datetime.now(timezone.utc),
+            "correlation_id": correlation,
+            "exporter_state": previous.get("exporter_state") if previous.get("exporter_state") in {"succeeded", "failed"} else "unknown",
+            "exporter_callback_at": previous.get("exporter_callback_at"),
+        }
+
+
+def record_exporter_callback(workspace_id: str, run_id: str | None, succeeded: bool) -> None:
+    """Accept an exporter callback when an SDK integration explicitly provides one."""
+    with _DELIVERY_LOCK:
+        key = _delivery_key(workspace_id, run_id)
+        previous = dict(_DELIVERY_RECORDS.get(key) or {})
+        _DELIVERY_RECORDS[key] = {
+            "local_emit_at": previous.get("local_emit_at"),
+            "correlation_id": previous.get("correlation_id"),
+            "exporter_state": "succeeded" if succeeded else "failed",
+            "exporter_callback_at": datetime.now(timezone.utc),
+        }
+
+
+def trace_delivery_record(workspace_id: str, run_id: str | None) -> dict[str, Any] | None:
+    with _DELIVERY_LOCK:
+        value = _DELIVERY_RECORDS.get(_delivery_key(workspace_id, run_id))
+        return dict(value) if value else None
+
+
+def clear_trace_delivery_records() -> None:
+    with _DELIVERY_LOCK:
+        _DELIVERY_RECORDS.clear()
 
 
 def _actor_fingerprint(actor: Any) -> str | None:
@@ -168,8 +232,13 @@ def agent_trace(
         span.set_attribute("gen_ai.agent.id", "dataforge")
         span.set_attribute("gen_ai.agent.name", "DataForge")
         span.set_attribute("dataforge.workspace.id", workspace_id)
+        span.set_attribute("dataforge.workspace.hash", _trace_identifier_hash(workspace_id))
         if conversation_id:
             span.set_attribute("gen_ai.conversation.id", conversation_id)
+            span.set_attribute("dataforge.run.hash", _trace_identifier_hash(conversation_id))
+        correlation_id = _span_correlation_id(span)
+        if correlation_id:
+            span.set_attribute("dataforge.correlation.hash", _trace_identifier_hash(correlation_id))
         actor_id = _actor_fingerprint(actor)
         if actor_id:
             span.set_attribute("enduser.id", actor_id)
@@ -190,6 +259,7 @@ def agent_trace(
             except Exception:
                 pass
         finally:
+            record_local_span_emit(workspace_id, conversation_id, _span_correlation_id(span))
             _CURRENT_AGENT_SPAN.reset(token)
 
 
@@ -222,6 +292,7 @@ def start_maf_agent_span(
     span.set_attribute("gen_ai.agent.name", agent_name)
     span.set_attribute("dataforge.maf.collaboration_mode", collaboration_mode)
     span.set_attribute("dataforge.workspace.id", workspace_id)
+    span.set_attribute("dataforge.workspace.hash", _trace_identifier_hash(workspace_id))
     span.set_attribute("dataforge.maf.status", "running")
     if branch_id:
         span.set_attribute("dataforge.maf.branch_id", branch_id)
@@ -229,6 +300,10 @@ def start_maf_agent_span(
         span.set_attribute("gen_ai.conversation.id", conversation_id)
     if run_id:
         span.set_attribute("dataforge.run.id", run_id)
+        span.set_attribute("dataforge.run.hash", _trace_identifier_hash(run_id))
+    correlation_id = _span_correlation_id(span)
+    if correlation_id:
+        span.set_attribute("dataforge.correlation.hash", _trace_identifier_hash(correlation_id))
     if handoff_source:
         span.set_attribute("dataforge.maf.handoff.source", handoff_source)
     if handoff_target:
@@ -333,6 +408,7 @@ def maf_agent_trace(
         span.set_attribute("gen_ai.agent.name", agent_name)
         span.set_attribute("dataforge.maf.collaboration_mode", collaboration_mode)
         span.set_attribute("dataforge.workspace.id", workspace_id)
+        span.set_attribute("dataforge.workspace.hash", _trace_identifier_hash(workspace_id))
         if retry_count is not None:
             span.set_attribute("dataforge.maf.retry_count", max(0, min(100, int(retry_count))))
         safe_status = status if status in {"completed", "failed"} else "unknown"
@@ -346,6 +422,10 @@ def maf_agent_trace(
             span.set_attribute("gen_ai.conversation.id", conversation_id)
         if run_id:
             span.set_attribute("dataforge.run.id", run_id)
+            span.set_attribute("dataforge.run.hash", _trace_identifier_hash(run_id))
+        correlation_id = _span_correlation_id(span)
+        if correlation_id:
+            span.set_attribute("dataforge.correlation.hash", _trace_identifier_hash(correlation_id))
         if handoff_source:
             span.set_attribute("dataforge.maf.handoff.source", handoff_source)
         if handoff_target:

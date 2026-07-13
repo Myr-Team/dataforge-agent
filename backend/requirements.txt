@@ -11,6 +11,7 @@ pypdf==5.1.0
 python-multipart==0.0.20
 azure-storage-blob==12.24.0
 azure-monitor-opentelemetry==1.8.8
+azure-monitor-query==1.4.0
 reportlab==4.5.1
 weasyprint==69.0
 pydyf==0.12.1

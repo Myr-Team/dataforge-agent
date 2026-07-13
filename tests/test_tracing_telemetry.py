@@ -239,3 +239,43 @@ def test_live_maf_participant_spans_overlap_and_close_in_completion_order() -> N
     assert corpus.ended is True
     assert corpus.attributes["gen_ai.usage.total_tokens"] == 14
     assert "person@example.com" not in repr(corpus.attributes)
+
+
+def test_agent_trace_records_local_emit_but_leaves_exporter_callback_unknown() -> None:
+    tracer = _FakeTracer()
+    clear = getattr(tracing, "clear_trace_delivery_records", None)
+    lookup = getattr(tracing, "trace_delivery_record", None)
+    assert callable(clear)
+    assert callable(lookup)
+    clear()
+
+    with tracing.agent_trace(
+        workspace_id="workspace-delivery",
+        conversation_id="run-delivery",
+        actor={"email": "person@example.com"},
+        tracer=tracer,
+    ):
+        pass
+
+    record = lookup("workspace-delivery", "run-delivery")
+    assert record is not None
+    assert record["local_emit_at"] is not None
+    assert record["exporter_state"] == "unknown"
+    assert "person@example.com" not in repr(record)
+
+
+def test_agent_trace_emits_hashed_delivery_correlation_keys() -> None:
+    tracer = _FakeTracer()
+
+    with tracing.agent_trace(
+        workspace_id="workspace-delivery",
+        conversation_id="run-delivery",
+        actor=None,
+        tracer=tracer,
+    ):
+        pass
+
+    assert tracer.span.attributes["dataforge.workspace.hash"] == tracing._trace_identifier_hash("workspace-delivery")
+    assert tracer.span.attributes["dataforge.run.hash"] == tracing._trace_identifier_hash("run-delivery")
+    assert "workspace-delivery" not in tracer.span.attributes["dataforge.workspace.hash"]
+    assert "run-delivery" not in tracer.span.attributes["dataforge.run.hash"]
