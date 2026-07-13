@@ -404,6 +404,21 @@ def test_journal_role_is_authoritative_over_stale_metadata_and_interleaved_remov
     assert workspace_authz.workspace_role("ws-roles", actor) is None
 
 
+def test_role_changes_before_and_after_accept_are_journal_authoritative(monkeypatch: pytest.MonkeyPatch) -> None:
+    actor = {"actor_id": "oid", "tenant_id": "tenant", "source": "easy_auth"}
+    for before_accept in (True, False):
+        meta = {}
+        pending = invitation_store.create_pending_invitation(meta, "ws", email="user@contoso.com", role="admin", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
+        if before_accept:
+            assert invitation_store.update_invited_member_role(meta, "ws", email="user@contoso.com", role="viewer") is True
+        invitation_store.transition_invitation(meta, pending["invitation_id"], "accepted", identity=actor)
+        if not before_accept:
+            assert invitation_store.update_invited_member_role(meta, "ws", email="user@contoso.com", role="viewer") is True
+        monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id, value=meta: value)
+        monkeypatch.setattr(workspace_authz, "_save_workspace_meta", lambda *_args: None)
+        assert workspace_authz.workspace_role("ws", actor) == "viewer"
+
+
 def test_new_workspace_upload_passes_authenticated_owner_to_store(monkeypatch: pytest.MonkeyPatch) -> None:
     app_module = importlib.import_module("backend.app")
     captured: dict = {}

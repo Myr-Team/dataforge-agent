@@ -396,6 +396,18 @@ def test_noop_and_malformed_durable_journal_fail_closed_without_cas_write(monkey
         invitation_store.create_pending_invitation(meta, "ws-graph", email="bad@contoso.com", role="viewer", invited_by={"actor_id": "owner", "tenant_id": "tenant", "source": "easy_auth"})
 
 
+def test_app_only_resource_tenant_must_match_trusted_inviter_and_never_persists_token(monkeypatch):
+    monkeypatch.setenv("GRAPH_TENANT_ID", "tenant-a")
+    monkeypatch.setattr(graph_client, "_app_only_token", lambda: "secret-token")
+    source = graph_client.graph_token_context(None)
+    assert source == {"source": "app_only", "resource_tenant_id": "tenant-a"}
+    meta = {}
+    pending = invitation_store.create_pending_invitation(meta, "ws", email="user@contoso.com", role="viewer", invited_by={"actor_id": "owner", "tenant_id": "tenant-a", "source": "easy_auth"})
+    accepted = invitation_store.accept_provider_invitation(meta, "ws", pending["invitation_id"], {"source": "microsoft_graph", "invited_user_id": "oid-user", "resource_tenant_id": "tenant-a"}, inviter={"actor_id": "owner", "tenant_id": "tenant-a", "source": "easy_auth"})
+    assert accepted and "token" not in str(accepted)
+    assert invitation_store.accept_provider_invitation(meta, "ws", pending["invitation_id"], {"source": "microsoft_graph", "invited_user_id": "oid-user", "resource_tenant_id": "tenant-b"}, inviter={"actor_id": "owner", "tenant_id": "tenant-a", "source": "easy_auth"}) is None
+
+
 def test_entra_invite_falls_back_to_workspace_member_when_graph_unavailable(tmp_path, monkeypatch):
     workspace_path = _workspace(tmp_path, monkeypatch)
     monkeypatch.setattr(graph_client, "graph_token_from_request", lambda request=None: "")

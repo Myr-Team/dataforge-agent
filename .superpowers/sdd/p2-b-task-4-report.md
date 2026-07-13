@@ -79,6 +79,26 @@ imports ok
 git diff --check                 # exit 0
 ```
 
+## Third Review Remediation
+
+- Role changes now journal against pending and accepted invitations. Replay derives the latest valid role, so downgrade-before-accept and accept-before-downgrade both activate as `viewer`; metadata roles are not used for bootstrap authorization.
+- Graph binding now records only sanitized token provenance and resource tenant context. App-only context derives its resource tenant from configured Graph/Azure tenant, and acceptance requires it to match the trusted inviter tenant. Delegated flows bind to the trusted inviter tenant without decoding or persisting JWT fields or tokens.
+- Journal role replay uses the canonical actor/tenant identity and validates allowed invited roles. Activation consumes the journal-derived role rather than the workspace metadata member row.
+- No token is persisted in invitation state. Resource-tenant mismatch or absent app-only resource tenant leaves the invitation unaccepted.
+
+Third-remediation TDD evidence:
+
+```text
+2 failed, 63 passed in 5.85s
+65 passed in 5.96s
+537 passed, 1 warning in 48.64s
+python -m compileall -q ...      # exit 0
+imports ok
+git diff --check                 # exit 0
+```
+
+The warning remains the unrelated `ExperimentalWarning` from `backend/maf_team_runtime.py:1060`.
+
 ## Second Review Remediation
 
 ### Documented Graph identity binding

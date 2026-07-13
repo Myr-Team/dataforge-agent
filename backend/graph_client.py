@@ -45,6 +45,16 @@ def graph_token_from_request(request: Any | None = None) -> str:
     return _app_only_token()
 
 
+def graph_token_context(request: Any | None = None) -> dict[str, str]:
+    headers = getattr(request, "headers", None)
+    if any(_header(headers, key) for key in TOKEN_HEADER_CANDIDATES):
+        return {"source": "delegated"}
+    if _app_only_token():
+        tenant = str(os.environ.get("GRAPH_TENANT_ID") or os.environ.get("AZURE_TENANT_ID") or "").strip()
+        return {"source": "app_only", "resource_tenant_id": tenant} if tenant else {"source": "app_only"}
+    return {"source": "unavailable"}
+
+
 def search_entra_users(query: str, request: Any | None = None, *, limit: int = 8) -> dict[str, Any]:
     token = graph_token_from_request(request)
     if not token:
@@ -111,6 +121,11 @@ def send_graph_invitation(
         "invited_user_id": invited_user.get("id") or "",
         "email": email,
     }
+    context = graph_token_context(request)
+    if context.get("source") in {"delegated", "app_only"}:
+        result["token_source"] = context["source"]
+    if context.get("resource_tenant_id"):
+        result["resource_tenant_id"] = context["resource_tenant_id"]
     return result
 
 

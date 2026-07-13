@@ -123,7 +123,7 @@ def update_invited_member_role(meta: dict[str, Any], workspace_id: str, *, email
     def mutate(value: dict[str, Any]) -> bool:
         changed = False
         for event in _latest_events(value).values():
-            if event.get("email") == clean_email and event.get("state") == "accepted":
+            if event.get("email") == clean_email and event.get("state") in {"pending", "accepted"}:
                 _events(value).append({"event_id": uuid.uuid4().hex, "event_type": "role_change", "invitation_id": event["invitation_id"], "email": clean_email, "role": clean_role, "accepted_identity": event.get("accepted_identity"), "occurred_at": _now()})
                 changed = True
         return changed
@@ -188,6 +188,7 @@ def consume_accepted_invitation(
             invitation_id = str(event.get("invitation_id") or "")
             if event.get("state") != "accepted" or event.get("accepted_identity") != identity or invitation_id in consumed:
                 continue
+            role = _effective_role(value, invitation_id, event.get("role"))
             _events(value).append(
                 {
                     "event_id": uuid.uuid4().hex,
@@ -197,10 +198,10 @@ def consume_accepted_invitation(
                     "occurred_at": _now(),
                     "accepted_identity": identity,
                     "email": event.get("email"),
-                    "role": event.get("role"),
+                    "role": role,
                 }
             )
-            return dict(event)
+            return {**event, "role": role}
         return None
 
     return _mutate(workspace_id, meta, mutate)
@@ -234,7 +235,7 @@ def _transition(
         invitation_id,
         target_state,
         str(latest.get("email") or ""),
-        _role(latest.get("role")),
+        _effective_role(meta, invitation_id, latest.get("role")),
         latest.get("invited_by"),
         accepted_identity=identity,
         provider=provider or latest.get("provider"),
@@ -383,6 +384,11 @@ def _provider_identity(provider: Mapping[str, Any] | None, inviter: Mapping[str,
     trusted_inviter = _trusted_identity(inviter)
     if clean.get("source") != "microsoft_graph" or not clean.get("invited_user_id") or not trusted_inviter:
         return {}
+    resource_tenant = str(clean.get("resource_tenant_id") or "").lower()
+    if clean.get("token_source") == "app_only" and not resource_tenant:
+        return {}
+    if resource_tenant and resource_tenant != trusted_inviter["tenant_id"]:
+        return {}
     return {"actor_id": str(clean["invited_user_id"]).lower(), "tenant_id": str(trusted_inviter["tenant_id"]).lower()}
 
 
@@ -395,7 +401,7 @@ def _identity_fields(identity: Mapping[str, Any] | None) -> dict[str, str]:
 
 def _provider(provider: Mapping[str, Any] | None) -> dict[str, Any]:
     source = dict(provider or {}) if isinstance(provider, Mapping) else {}
-    allowed = ("source", "invitation_id", "invited_user_id", "status", "error_code", "status_code")
+    allowed = ("source", "invitation_id", "invited_user_id", "resource_tenant_id", "token_source", "status", "error_code", "status_code")
     clean: dict[str, Any] = {}
     for key in allowed:
         value = source.get(key)
@@ -418,6 +424,14 @@ def _role(value: Any) -> str:
     if role not in INVITATION_ROLES:
         raise InvitationTransitionError("invitation role must be admin, editor, or viewer")
     return role
+
+
+def _effective_role(meta: Mapping[str, Any], invitation_id: str, fallback: Any) -> str:
+    role = fallback
+    for event in meta.get("workspace_invitation_events") or []:
+        if isinstance(event, Mapping) and event.get("event_type") == "role_change" and str(event.get("invitation_id") or "") == invitation_id:
+            role = event.get("role")
+    return _role(role)
 
 
 def _email(value: Any) -> str:
