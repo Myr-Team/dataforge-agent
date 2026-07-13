@@ -36,10 +36,12 @@ MAX_PAGE_SIZE = 100
 MAX_APPEND_RETRIES = 12
 STREAM_TAIL_BYTES = 64 * 1024
 MAX_STREAM_RECORD_BYTES = 16 * 1024
+MAX_RECORDS_PER_SEGMENT = 10_000
+MAX_SEGMENT_INDEX = 99_999_999
 PRODUCTION_CONTRACT_CACHE_TTL_SECONDS = 60.0
 LOCAL_LOCK_TIMEOUT_SECONDS = 5.0
 _LOCK_SLEEP_SECONDS = 0.01
-_PRODUCTION_CONTRACT_CACHE: dict[tuple[str, str, str], float] = {}
+_PRODUCTION_CONTRACT_CACHE: dict[tuple[str, str, str, str], float] = {}
 
 ALLOWED_ACTIONS = frozenset(
     {
@@ -70,6 +72,8 @@ ALLOWED_CORRELATION_FIELDS = frozenset(
 _WORKSPACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$")
 _KEY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_WORKSPACE_SCOPE = re.compile(r"^ws_[0-9a-f]{40}$")
+_RESOURCE_SCOPE = re.compile(r"^res_[0-9a-f]{40}$")
 _STORAGE_RESOURCE_ID = re.compile(
     r"^/subscriptions/(?P<subscription>[^/]+)/resourceGroups/(?P<resource_group>[^/]+)/providers/"
     r"Microsoft\.Storage/storageAccounts/(?P<account>[^/]+)$",
@@ -96,6 +100,7 @@ class _StreamSnapshot:
     head: dict[str, Any] | None
     length: int
     etag: str | None
+    record_count: int
 
 
 class AuditEvent(BaseModel):
@@ -124,15 +129,72 @@ class AuditAnchor(BaseModel):
     workspace_id: str
     workspace_revision: int
     workspace_event_hash: str
+    event_segment_index: int
+    event_stream_name: str
+    event_stream_length: int
+    event_segment_record_count: int
     at: datetime
     previous_hash: str
     key_id: str
     anchor_hash: str
 
 
+class GlobalAuditAnchor(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    global_sequence: int
+    workspace_id: str
+    workspace_revision: int
+    workspace_event_hash: str
+    workspace_anchor_hash: str
+    workspace_anchor_segment_index: int
+    workspace_anchor_stream_name: str
+    workspace_anchor_stream_length: int
+    workspace_anchor_segment_record_count: int
+    event_segment_index: int
+    event_stream_name: str
+    event_stream_length: int
+    event_segment_record_count: int
+    global_segment_index: int
+    global_stream_name: str
+    previous_global_segment_index: int
+    previous_global_stream_name: str
+    previous_global_stream_length: int
+    previous_global_segment_record_count: int
+    at: datetime
+    previous_hash: str
+    key_id: str
+    global_hash: str
+
+
+class WorkspaceGlobalReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    receipt_revision: int
+    workspace_id: str
+    workspace_revision: int
+    workspace_anchor_hash: str
+    workspace_anchor_segment_index: int
+    workspace_anchor_stream_name: str
+    workspace_anchor_stream_length: int
+    workspace_anchor_segment_record_count: int
+    global_sequence: int
+    global_hash: str
+    global_segment_index: int
+    global_stream_name: str
+    global_stream_length: int
+    global_segment_record_count: int
+    at: datetime
+    previous_hash: str
+    key_id: str
+    receipt_hash: str
+
+
 class _AppendBackend(Protocol):
     def read_snapshot(self, name: str) -> _StreamSnapshot: ...
     def read_full(self, name: str) -> bytes: ...
+    def read_range(self, name: str, offset: int, length: int, snapshot: _StreamSnapshot) -> bytes: ...
+    def list_names(self, prefix: str, limit: int | None = None) -> list[str]: ...
     def append(self, name: str, payload: bytes, snapshot: _StreamSnapshot) -> None: ...
 
 
@@ -140,7 +202,7 @@ class _LocalAppendBackend:
     def read_snapshot(self, name: str) -> _StreamSnapshot:
         path = _local_stream_path(name)
         if not path.exists():
-            return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=None)
+            return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=None, record_count=0)
         try:
             before = path.stat()
             with path.open("rb") as stream:
@@ -151,7 +213,13 @@ class _LocalAppendBackend:
             raise AuditPersistenceError("local audit read failed") from exc
         if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
             raise _AppendConflict("local stream changed during snapshot read")
-        return _snapshot_from_tail(name, data, int(after.st_size), _local_etag(after))
+        return _snapshot_from_tail(
+            name,
+            data,
+            int(after.st_size),
+            _local_etag(after),
+            _count_local_records(path),
+        )
 
     def read_full(self, name: str) -> bytes:
         path = _local_stream_path(name)
@@ -161,6 +229,34 @@ class _LocalAppendBackend:
             return path.read_bytes()
         except OSError as exc:
             raise AuditPersistenceError("local audit read failed") from exc
+
+    def read_range(self, name: str, offset: int, length: int, snapshot: _StreamSnapshot) -> bytes:
+        path = _local_stream_path(name)
+        if offset < 0 or length < 0 or offset + length > snapshot.length:
+            raise AuditPersistenceError("local audit range is invalid")
+        try:
+            before = path.stat()
+            if before.st_size != snapshot.length or _local_etag(before) != snapshot.etag:
+                raise _AppendConflict("local stream changed before range read")
+            with path.open("rb") as stream:
+                stream.seek(offset)
+                data = stream.read(length)
+            after = path.stat()
+        except _AppendConflict:
+            raise
+        except OSError as exc:
+            raise AuditPersistenceError("local audit range read failed") from exc
+        if len(data) != length or _local_etag(after) != snapshot.etag:
+            raise _AppendConflict("local stream changed during range read")
+        return data
+
+    def list_names(self, prefix: str, limit: int | None = None) -> list[str]:
+        base = _local_stream_path(prefix)
+        if not base.exists():
+            return []
+        root = AUDIT_DIR.resolve()
+        names = sorted(path.resolve().relative_to(root).as_posix() for path in base.rglob("*.jsonl") if path.is_file())
+        return names[:limit] if limit is not None else names
 
     def append(self, name: str, payload: bytes, snapshot: _StreamSnapshot) -> None:
         _validate_append_request(name, payload, snapshot)
@@ -174,6 +270,7 @@ class _LocalAppendBackend:
             raise _AppendConflict("local append stream disappeared")
         try:
             flags = os.O_APPEND | os.O_WRONLY
+            flags |= getattr(os, "O_BINARY", 0)
             flags |= os.O_CREAT | os.O_EXCL if snapshot.etag is None else 0
             descriptor = os.open(path, flags, 0o600)
             try:
@@ -227,7 +324,7 @@ class _BlobAppendBackend:
         try:
             properties = client.get_blob_properties()
         except ResourceNotFoundError:
-            return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=None)
+            return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=None, record_count=0)
         except Exception as exc:
             raise AuditPersistenceError("durable audit properties read failed") from exc
         length = int(properties.size or 0)
@@ -253,7 +350,10 @@ class _BlobAppendBackend:
             raise AuditPersistenceError("durable audit tail read failed") from exc
         except Exception as exc:
             raise AuditPersistenceError("durable audit tail read failed") from exc
-        return _snapshot_from_tail(name, data, length, etag)
+        record_count = properties.append_blob_committed_block_count
+        if not isinstance(record_count, int) or record_count < 0:
+            raise AuditPersistenceError("durable audit block count is missing")
+        return _snapshot_from_tail(name, data, length, etag, record_count)
 
     def read_full(self, name: str) -> bytes:
         client = self.container.get_blob_client(name)
@@ -277,6 +377,39 @@ class _BlobAppendBackend:
             if isinstance(exc, AuditPersistenceError):
                 raise
             raise AuditPersistenceError("durable audit read failed") from exc
+
+    def read_range(self, name: str, offset: int, length: int, snapshot: _StreamSnapshot) -> bytes:
+        if offset < 0 or length < 0 or offset + length > snapshot.length or snapshot.etag is None:
+            raise AuditPersistenceError("durable audit range is invalid")
+        client = self.container.get_blob_client(name)
+        try:
+            return bytes(
+                client.download_blob(
+                    offset=offset,
+                    length=length,
+                    etag=snapshot.etag,
+                    match_condition=MatchConditions.IfNotModified,
+                ).readall()
+            )
+        except HttpResponseError as exc:
+            if exc.status_code in {409, 412}:
+                raise _AppendConflict("durable stream changed during range read") from exc
+            raise AuditPersistenceError("durable audit range read failed") from exc
+        except Exception as exc:
+            raise AuditPersistenceError("durable audit range read failed") from exc
+
+    def list_names(self, prefix: str, limit: int | None = None) -> list[str]:
+        try:
+            listing = self.container.list_blobs(name_starts_with=prefix)
+            if limit is None:
+                return [str(item.name) for item in listing]
+            names: list[str] = []
+            for page in listing.by_page(results_per_page=limit):
+                names.extend(str(item.name) for item in page)
+                break
+            return names[:limit]
+        except Exception as exc:
+            raise AuditPersistenceError("durable audit segment listing failed") from exc
 
     def append(self, name: str, payload: bytes, snapshot: _StreamSnapshot) -> None:
         _validate_append_request(name, payload, snapshot)
@@ -313,6 +446,32 @@ class _BlobAppendBackend:
             raise AuditPersistenceError("durable audit append failed") from exc
 
 
+@dataclass(frozen=True)
+class _SegmentHead:
+    index: int
+    name: str
+    snapshot: _StreamSnapshot
+    head: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class _PhysicalCoordinate:
+    segment_index: int
+    stream_name: str
+    stream_length: int
+    segment_record_count: int
+
+
+@dataclass(frozen=True)
+class _WorkspaceHeadState:
+    workspace_id: str
+    event: _SegmentHead
+    anchor: _SegmentHead
+    receipt: _SegmentHead
+    global_anchor: _SegmentHead
+    status: Literal["complete", "event_gap", "anchor_gap"]
+
+
 def record_audit_event(
     actor: Mapping[str, Any] | None,
     action: str,
@@ -345,7 +504,7 @@ def record_audit_event(
 
 
 def list_audit_events(workspace_id: str, *, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
-    workspace = _workspace_id(workspace_id)
+    workspace = _workspace_scope_id(workspace_id)
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > MAX_PAGE_SIZE:
         raise ValueError(f"limit must be between 1 and {MAX_PAGE_SIZE}")
     backend = _backend()
@@ -380,103 +539,239 @@ def _append_event(
     at: str,
 ) -> dict[str, Any]:
     workspace_id = resource["workspace_id"]
-    event_name = _event_stream_name(workspace_id)
-    anchor_name = _anchor_stream_name(workspace_id)
+    target_event: dict[str, Any] | None = None
     for _attempt in range(MAX_APPEND_RETRIES):
         try:
-            event_snapshot, anchor_snapshot, event_head, anchor_head, state = _load_head_state(
-                backend, workspace_id, event_name, anchor_name
-            )
+            state = _load_workspace_head_state(backend, workspace_id)
         except _AppendConflict:
             time.sleep(_LOCK_SLEEP_SECONDS)
             continue
-        if state == "recoverable":
-            _anchor_current_head(backend, workspace_id, event_head)
+        if state.status != "complete":
+            try:
+                _recover_workspace_head(backend, state)
+            except _AppendConflict:
+                time.sleep(_LOCK_SLEEP_SECONDS)
+                continue
             continue
+        event_head = state.event.head
+        if event_head is not None and event_head.get("event_id") == event_id:
+            return event_head
+        if target_event is not None:
+            persisted = _event_by_id(_read_anchored_events(backend, workspace_id), event_id)
+            if persisted is not None:
+                return persisted
+            raise AuditIntegrityError("appended audit event disappeared before global anchoring")
+        event_segment = _segment_for_append(backend, state.event, _event_stream_name, workspace_id)
         event = _build_event(
-            {"actor_hash": actor_hash},
-            action,
-            resource,
-            metadata,
+            {"actor_hash": actor_hash}, action, resource, metadata,
             revision=int(event_head["revision"]) + 1 if event_head else 1,
             previous_hash=str(event_head["event_hash"]) if event_head else GENESIS_HASH,
-            event_id=event_id,
-            at=at,
-            key_id=key_id,
-            _metadata_clean=True,
+            event_id=event_id, at=at, key_id=key_id, _metadata_clean=True,
         )
+        event_line = _line(event)
         try:
-            backend.append(event_name, _line(event), event_snapshot)
+            backend.append(event_segment.name, event_line, event_segment.snapshot)
         except _AppendConflict:
             time.sleep(_LOCK_SLEEP_SECONDS)
             continue
-        _anchor_current_head(backend, workspace_id, event)
-        return event
+        target_event = event
+        event_coordinate = _post_coordinate(event_segment, event_line)
+        try:
+            anchor, anchor_coordinate = _append_workspace_anchor(
+                backend, state.anchor, workspace_id, event, event_coordinate
+            )
+            global_anchor, global_coordinate = _append_new_global_anchor(
+                backend, anchor, anchor_coordinate, event_coordinate
+            )
+            _append_workspace_receipt(
+                backend, state.receipt, workspace_id, anchor, anchor_coordinate, global_anchor, global_coordinate
+            )
+            return event
+        except _AppendConflict:
+            time.sleep(_LOCK_SLEEP_SECONDS)
+            continue
     raise AuditPersistenceError("durable audit append conflict")
 
 
-def _anchor_current_head(
-    backend: _AppendBackend,
-    workspace_id: str,
-    target_event: Mapping[str, Any] | None,
-) -> None:
-    event_name = _event_stream_name(workspace_id)
-    anchor_name = _anchor_stream_name(workspace_id)
-    target_revision = int((target_event or {}).get("revision") or 0)
-    target_hash = str((target_event or {}).get("event_hash") or "")
-    for _attempt in range(MAX_APPEND_RETRIES):
-        try:
-            event_snapshot, anchor_snapshot, event_head, anchor_head, state = _load_head_state(
-                backend, workspace_id, event_name, anchor_name
-            )
-        except _AppendConflict:
-            time.sleep(_LOCK_SLEEP_SECONDS)
-            continue
-        if event_head is None:
-            raise AuditIntegrityError("audit event disappeared before anchoring")
-        if state == "anchored":
-            anchored_revision = int(anchor_head["workspace_revision"])
-            if target_revision and anchored_revision < target_revision:
-                raise AuditIntegrityError("audit target event was not anchored")
-            if target_revision == anchored_revision and target_hash and not hmac.compare_digest(
-                target_hash, str(anchor_head["workspace_event_hash"])
-            ):
-                raise AuditIntegrityError("audit target event hash was not anchored")
-            return
-        if state != "recoverable":
-            raise AuditIntegrityError("audit ledger cannot be anchored")
-        if target_revision and int(event_head["revision"]) < target_revision:
-            raise AuditIntegrityError("audit target event disappeared before anchoring")
-        key_id, _key = _active_key()
-        anchor = _build_anchor(
-            anchor_revision=int(anchor_head["anchor_revision"]) + 1 if anchor_head else 1,
-            workspace_id=workspace_id,
-            workspace_revision=int(event_head["revision"]),
-            workspace_event_hash=str(event_head["event_hash"]),
-            previous_hash=str(anchor_head["anchor_hash"]) if anchor_head else GENESIS_HASH,
-            key_id=key_id,
+def _recover_workspace_head(backend: _AppendBackend, state: _WorkspaceHeadState) -> None:
+    if state.status == "event_gap":
+        if state.event.head is None:
+            raise AuditIntegrityError("audit recovery event is missing")
+        event_coordinate = _coordinate(state.event)
+        _append_workspace_anchor(
+            backend, state.anchor, state.workspace_id, state.event.head, event_coordinate
         )
-        try:
-            backend.append(anchor_name, _line(anchor), anchor_snapshot)
-            return
-        except _AppendConflict:
-            time.sleep(_LOCK_SLEEP_SECONDS)
-    raise AuditPersistenceError("durable audit anchor conflict")
+        return
+    if state.status != "anchor_gap" or state.anchor.head is None:
+        raise AuditIntegrityError("audit recovery state is invalid")
+    anchor = state.anchor.head
+    anchor_coordinate = _coordinate(state.anchor)
+    global_match = _find_global_anchor(backend, str(anchor["anchor_hash"]))
+    if global_match is None:
+        event_coordinate = _coordinate_from_anchor(anchor)
+        global_anchor, global_coordinate = _append_new_global_anchor(
+            backend, anchor, anchor_coordinate, event_coordinate
+        )
+    else:
+        global_anchor, global_coordinate = global_match
+    _append_workspace_receipt(
+        backend,
+        state.receipt,
+        state.workspace_id,
+        anchor,
+        anchor_coordinate,
+        global_anchor,
+        global_coordinate,
+    )
+
+
+def _append_workspace_anchor(
+    backend: _AppendBackend,
+    current: _SegmentHead,
+    workspace_id: str,
+    event: Mapping[str, Any],
+    event_coordinate: _PhysicalCoordinate,
+) -> tuple[dict[str, Any], _PhysicalCoordinate]:
+    target_revision = int(event["revision"])
+    if current.head is not None and int(current.head["workspace_revision"]) >= target_revision:
+        if (
+            int(current.head["workspace_revision"]) == target_revision
+            and hmac.compare_digest(str(current.head["workspace_event_hash"]), str(event["event_hash"]))
+        ):
+            return current.head, _coordinate(current)
+        raise AuditIntegrityError("workspace anchor advanced past target event")
+    expected_revision = int(current.head["anchor_revision"]) + 1 if current.head else 1
+    if target_revision != expected_revision:
+        raise AuditIntegrityError("workspace anchor recovery has more than one gap")
+    target = _segment_for_append(backend, current, _anchor_stream_name, workspace_id)
+    key_id, _key = _active_key()
+    anchor = _build_anchor(
+        anchor_revision=target_revision,
+        workspace_id=workspace_id,
+        workspace_revision=target_revision,
+        workspace_event_hash=str(event["event_hash"]),
+        event_segment_index=event_coordinate.segment_index,
+        event_stream_name=event_coordinate.stream_name,
+        event_stream_length=event_coordinate.stream_length,
+        event_segment_record_count=event_coordinate.segment_record_count,
+        previous_hash=str(current.head["anchor_hash"]) if current.head else GENESIS_HASH,
+        key_id=key_id,
+    )
+    payload = _line(anchor)
+    backend.append(target.name, payload, target.snapshot)
+    return anchor, _post_coordinate(target, payload)
+
+
+def _append_new_global_anchor(
+    backend: _AppendBackend,
+    anchor: Mapping[str, Any],
+    anchor_coordinate: _PhysicalCoordinate,
+    event_coordinate: _PhysicalCoordinate,
+) -> tuple[dict[str, Any], _PhysicalCoordinate]:
+    current = _load_global_head(backend)
+    target = _segment_for_append(backend, current, _global_stream_name, None)
+    sequence = int(current.head["global_sequence"]) + 1 if current.head else 1
+    previous_coordinate = _coordinate(current) if current.head else _empty_coordinate()
+    key_id, _key = _active_key()
+    global_anchor = _build_global_anchor(
+        global_sequence=sequence,
+        workspace_id=str(anchor["workspace_id"]),
+        workspace_revision=int(anchor["workspace_revision"]),
+        workspace_event_hash=str(anchor["workspace_event_hash"]),
+        workspace_anchor_hash=str(anchor["anchor_hash"]),
+        workspace_anchor_segment_index=anchor_coordinate.segment_index,
+        workspace_anchor_stream_name=anchor_coordinate.stream_name,
+        workspace_anchor_stream_length=anchor_coordinate.stream_length,
+        workspace_anchor_segment_record_count=anchor_coordinate.segment_record_count,
+        event_segment_index=event_coordinate.segment_index,
+        event_stream_name=event_coordinate.stream_name,
+        event_stream_length=event_coordinate.stream_length,
+        event_segment_record_count=event_coordinate.segment_record_count,
+        global_segment_index=target.index,
+        global_stream_name=target.name,
+        previous_global_segment_index=previous_coordinate.segment_index,
+        previous_global_stream_name=previous_coordinate.stream_name,
+        previous_global_stream_length=previous_coordinate.stream_length,
+        previous_global_segment_record_count=previous_coordinate.segment_record_count,
+        previous_hash=str(current.head["global_hash"]) if current.head else GENESIS_HASH,
+        key_id=key_id,
+    )
+    payload = _line(global_anchor)
+    backend.append(target.name, payload, target.snapshot)
+    return global_anchor, _post_coordinate(target, payload)
+
+
+def _append_workspace_receipt(
+    backend: _AppendBackend,
+    current: _SegmentHead,
+    workspace_id: str,
+    anchor: Mapping[str, Any],
+    anchor_coordinate: _PhysicalCoordinate,
+    global_anchor: Mapping[str, Any],
+    global_coordinate: _PhysicalCoordinate,
+) -> tuple[dict[str, Any], _PhysicalCoordinate]:
+    target_revision = int(anchor["workspace_revision"])
+    if current.head is not None and int(current.head["workspace_revision"]) >= target_revision:
+        if (
+            int(current.head["workspace_revision"]) == target_revision
+            and hmac.compare_digest(str(current.head["workspace_anchor_hash"]), str(anchor["anchor_hash"]))
+            and hmac.compare_digest(str(current.head["global_hash"]), str(global_anchor["global_hash"]))
+        ):
+            return current.head, _coordinate(current)
+        raise AuditIntegrityError("workspace global receipt advanced past target anchor")
+    expected_revision = int(current.head["receipt_revision"]) + 1 if current.head else 1
+    if target_revision != expected_revision:
+        raise AuditIntegrityError("workspace global receipt recovery has more than one gap")
+    target = _segment_for_append(backend, current, _receipt_stream_name, workspace_id)
+    key_id, _key = _active_key()
+    receipt = _build_receipt(
+        receipt_revision=target_revision,
+        workspace_id=workspace_id,
+        workspace_revision=target_revision,
+        workspace_anchor_hash=str(anchor["anchor_hash"]),
+        workspace_anchor_segment_index=anchor_coordinate.segment_index,
+        workspace_anchor_stream_name=anchor_coordinate.stream_name,
+        workspace_anchor_stream_length=anchor_coordinate.stream_length,
+        workspace_anchor_segment_record_count=anchor_coordinate.segment_record_count,
+        global_sequence=int(global_anchor["global_sequence"]),
+        global_hash=str(global_anchor["global_hash"]),
+        global_segment_index=global_coordinate.segment_index,
+        global_stream_name=global_coordinate.stream_name,
+        global_stream_length=global_coordinate.stream_length,
+        global_segment_record_count=global_coordinate.segment_record_count,
+        previous_hash=str(current.head["receipt_hash"]) if current.head else GENESIS_HASH,
+        key_id=key_id,
+    )
+    payload = _line(receipt)
+    backend.append(target.name, payload, target.snapshot)
+    return receipt, _post_coordinate(target, payload)
 
 
 def _read_anchored_events(backend: _AppendBackend, workspace_id: str) -> list[dict[str, Any]]:
-    events = _read_events(backend, workspace_id)
-    anchors = _read_anchors(backend, workspace_id)
-    _require_anchor_match(workspace_id, events, anchors)
+    events, event_coordinates = _read_events_with_coordinates(backend, workspace_id)
+    anchors, anchor_coordinates = _read_anchors_with_coordinates(backend, workspace_id)
+    receipts, _receipt_coordinates = _read_receipts_with_coordinates(backend, workspace_id)
+    global_anchors, global_coordinates = _read_global_anchors_with_coordinates(backend)
+    _require_anchor_match(
+        workspace_id, events, event_coordinates, anchors, anchor_coordinates,
+        receipts, global_anchors, global_coordinates,
+    )
     return events
 
 
 def _read_events(backend: _AppendBackend, workspace_id: str) -> list[dict[str, Any]]:
-    raw = _parse_lines(backend.read_full(_event_stream_name(workspace_id)), "audit event stream")
+    return _read_events_with_coordinates(backend, workspace_id)[0]
+
+
+def _read_events_with_coordinates(
+    backend: _AppendBackend, workspace_id: str
+) -> tuple[list[dict[str, Any]], list[_PhysicalCoordinate]]:
+    raw = _read_segment_records(backend, _event_prefix(workspace_id), "audit event stream")
     events: list[dict[str, Any]] = []
+    coordinates: list[_PhysicalCoordinate] = []
     previous_hash = GENESIS_HASH
     seen: set[str] = set()
-    for revision, value in enumerate(raw, start=1):
+    for revision, (value, coordinate) in enumerate(raw, start=1):
         try:
             model = AuditEvent.model_validate(value)
             event = model.model_dump(mode="json")
@@ -492,14 +787,22 @@ def _read_events(backend: _AppendBackend, workspace_id: str) -> list[dict[str, A
         seen.add(event["event_id"])
         previous_hash = event["event_hash"]
         events.append(event)
-    return events
+        coordinates.append(coordinate)
+    return events, coordinates
 
 
 def _read_anchors(backend: _AppendBackend, workspace_id: str) -> list[dict[str, Any]]:
-    raw = _parse_lines(backend.read_full(_anchor_stream_name(workspace_id)), "audit anchor stream")
+    return _read_anchors_with_coordinates(backend, workspace_id)[0]
+
+
+def _read_anchors_with_coordinates(
+    backend: _AppendBackend, workspace_id: str
+) -> tuple[list[dict[str, Any]], list[_PhysicalCoordinate]]:
+    raw = _read_segment_records(backend, _anchor_prefix(workspace_id), "audit anchor stream")
     anchors: list[dict[str, Any]] = []
+    coordinates: list[_PhysicalCoordinate] = []
     previous_hash = GENESIS_HASH
-    for revision, value in enumerate(raw, start=1):
+    for revision, (value, coordinate) in enumerate(raw, start=1):
         try:
             model = AuditAnchor.model_validate(value)
             anchor = model.model_dump(mode="json")
@@ -513,94 +816,478 @@ def _read_anchors(backend: _AppendBackend, workspace_id: str) -> list[dict[str, 
             or anchor["previous_hash"] != previous_hash
         ):
             raise AuditIntegrityError("audit anchor chain is invalid")
-        _workspace_id(anchor["workspace_id"])
         if not hmac.compare_digest(anchor["anchor_hash"], _hash_anchor(anchor)):
             raise AuditIntegrityError("audit anchor hash is invalid")
         previous_hash = anchor["anchor_hash"]
         anchors.append(anchor)
-    return anchors
+        coordinates.append(coordinate)
+    return anchors, coordinates
 
 
-def _require_anchor_match(workspace_id: str, events: list[dict[str, Any]], anchors: list[dict[str, Any]]) -> None:
-    latest = anchors[-1] if anchors else None
-    if not events and latest is None:
-        return
-    if not events and latest is not None:
-        raise AuditIntegrityError("audit ledger is missing after being anchored")
-    if latest is None:
-        raise AuditIntegrityError("audit anchor is missing for an existing ledger")
-    anchored_revision = int(latest["workspace_revision"])
-    if anchored_revision != len(events):
-        raise AuditIntegrityError("audit ledger rollback or unanchored revision detected")
-    if not hmac.compare_digest(str(latest["workspace_event_hash"]), str(events[-1]["event_hash"])):
-        raise AuditIntegrityError("audit ledger rollback hash mismatch")
-
-
-def _head_state(
-    event_snapshot: _StreamSnapshot,
-    event_head: Mapping[str, Any] | None,
-    anchor_head: Mapping[str, Any] | None,
-) -> Literal["empty", "anchored", "recoverable"]:
-    if event_head is None and anchor_head is None:
-        return "empty"
-    if event_head is None:
-        raise AuditIntegrityError("audit ledger is missing after being anchored")
-    event_revision = int(event_head["revision"])
-    if anchor_head is None:
+def _read_receipts_with_coordinates(
+    backend: _AppendBackend, workspace_id: str
+) -> tuple[list[dict[str, Any]], list[_PhysicalCoordinate]]:
+    raw = _read_segment_records(backend, _receipt_prefix(workspace_id), "workspace global receipt stream")
+    receipts: list[dict[str, Any]] = []
+    coordinates: list[_PhysicalCoordinate] = []
+    previous_hash = GENESIS_HASH
+    for revision, (value, coordinate) in enumerate(raw, start=1):
+        receipt = _validated_receipt(value, workspace_id)
         if (
-            event_revision == 1
-            and event_head["previous_hash"] == GENESIS_HASH
-            and event_snapshot.length == len(event_snapshot.data)
-            and event_snapshot.data.count(b"\n") == 1
+            int(receipt["receipt_revision"]) != revision
+            or int(receipt["workspace_revision"]) != revision
+            or receipt["previous_hash"] != previous_hash
         ):
-            return "recoverable"
-        raise AuditIntegrityError("audit anchor is missing for an existing ledger")
-    anchored_revision = int(anchor_head["workspace_revision"])
-    anchored_hash = str(anchor_head["workspace_event_hash"])
-    if event_revision == anchored_revision and hmac.compare_digest(str(event_head["event_hash"]), anchored_hash):
-        return "anchored"
-    if (
-        event_revision == anchored_revision + 1
-        and hmac.compare_digest(str(event_head["previous_hash"]), anchored_hash)
-    ):
-        return "recoverable"
-    if event_revision < anchored_revision:
-        raise AuditIntegrityError("audit ledger rollback or delete detected")
-    raise AuditIntegrityError("audit ledger has more than one unanchored revision or a hash mismatch")
+            raise AuditIntegrityError("workspace global receipt chain is invalid")
+        previous_hash = str(receipt["receipt_hash"])
+        receipts.append(receipt)
+        coordinates.append(coordinate)
+    return receipts, coordinates
 
 
-def _load_head_state(
+def _read_global_anchors_with_coordinates(
     backend: _AppendBackend,
+) -> tuple[list[dict[str, Any]], list[_PhysicalCoordinate]]:
+    raw = _read_segment_records(backend, _global_prefix(), "global audit anchor stream")
+    anchors: list[dict[str, Any]] = []
+    coordinates: list[_PhysicalCoordinate] = []
+    previous_hash = GENESIS_HASH
+    previous_coordinate = _empty_coordinate()
+    for sequence, (value, coordinate) in enumerate(raw, start=1):
+        anchor = _validated_global_anchor(value)
+        if int(anchor["global_sequence"]) != sequence or anchor["previous_hash"] != previous_hash:
+            raise AuditIntegrityError("global audit anchor chain is invalid")
+        if not _global_previous_coordinate_matches(anchor, previous_coordinate):
+            raise AuditIntegrityError("global audit physical chain is invalid")
+        if int(anchor["global_segment_index"]) != coordinate.segment_index or anchor["global_stream_name"] != coordinate.stream_name:
+            raise AuditIntegrityError("global audit segment identity is invalid")
+        previous_hash = str(anchor["global_hash"])
+        previous_coordinate = coordinate
+        anchors.append(anchor)
+        coordinates.append(coordinate)
+    return anchors, coordinates
+
+
+def _require_anchor_match(
     workspace_id: str,
-    event_name: str,
-    anchor_name: str,
-) -> tuple[
-    _StreamSnapshot,
-    _StreamSnapshot,
-    dict[str, Any] | None,
-    dict[str, Any] | None,
-    Literal["empty", "anchored", "recoverable"],
-]:
-    # Anchors are written after events, so this order avoids pairing an old event with a new anchor.
-    anchor_snapshot = backend.read_snapshot(anchor_name)
-    event_snapshot = backend.read_snapshot(event_name)
-    event_head = _validated_event_head(event_snapshot, workspace_id)
-    anchor_head = _validated_anchor_head(anchor_snapshot, workspace_id)
+    events: list[dict[str, Any]],
+    event_coordinates: list[_PhysicalCoordinate],
+    anchors: list[dict[str, Any]],
+    anchor_coordinates: list[_PhysicalCoordinate],
+    receipts: list[dict[str, Any]],
+    global_anchors: list[dict[str, Any]],
+    global_coordinates: list[_PhysicalCoordinate],
+) -> None:
+    if not events and not anchors and not receipts:
+        if any(item["workspace_id"] == workspace_id for item in global_anchors):
+            raise AuditIntegrityError("global audit history proves a deleted workspace prefix")
+        return
+    if not events:
+        raise AuditIntegrityError("audit ledger is missing after being anchored")
+    if len(events) != len(anchors) or len(anchors) != len(receipts):
+        raise AuditIntegrityError("global audit history proves a workspace prefix rollback")
+    global_by_anchor: dict[str, list[tuple[dict[str, Any], _PhysicalCoordinate]]] = {}
+    for item, coordinate in zip(global_anchors, global_coordinates):
+        if item["workspace_id"] == workspace_id:
+            global_by_anchor.setdefault(str(item["workspace_anchor_hash"]), []).append((item, coordinate))
+    if len(global_by_anchor) != len(anchors):
+        raise AuditIntegrityError("global audit history proves a workspace rollback or duplicate prefix")
+    for event, event_coordinate, anchor, anchor_coordinate, receipt in zip(
+        events, event_coordinates, anchors, anchor_coordinates, receipts
+    ):
+        if (
+            not hmac.compare_digest(str(anchor["workspace_event_hash"]), str(event["event_hash"]))
+            or _coordinate_from_anchor(anchor) != event_coordinate
+            or not hmac.compare_digest(str(receipt["workspace_anchor_hash"]), str(anchor["anchor_hash"]))
+            or _anchor_coordinate_from_receipt(receipt) != anchor_coordinate
+        ):
+            raise AuditIntegrityError("audit physical anchor chain is invalid")
+        matches = global_by_anchor.get(str(anchor["anchor_hash"]), [])
+        if len(matches) != 1:
+            raise AuditIntegrityError("global audit history is missing or duplicates a workspace anchor")
+        global_anchor, global_coordinate = matches[0]
+        if (
+            int(receipt["global_sequence"]) != int(global_anchor["global_sequence"])
+            or not hmac.compare_digest(str(receipt["global_hash"]), str(global_anchor["global_hash"]))
+            or _global_coordinate_from_receipt(receipt) != global_coordinate
+            or _workspace_anchor_coordinate_from_global(global_anchor) != anchor_coordinate
+        ):
+            raise AuditIntegrityError("global audit receipt physical proof is invalid")
+
+
+def _load_workspace_head_state(backend: _AppendBackend, workspace_id: str) -> _WorkspaceHeadState:
     try:
-        state = _head_state(event_snapshot, event_head, anchor_head)
-    except AuditIntegrityError:
-        confirmed_anchor = backend.read_snapshot(anchor_name)
-        confirmed_event = backend.read_snapshot(event_name)
-        if _snapshot_token(confirmed_anchor) != _snapshot_token(anchor_snapshot) or _snapshot_token(
-            confirmed_event
-        ) != _snapshot_token(event_snapshot):
-            raise _AppendConflict("audit head pair changed during validation")
-        raise
-    return event_snapshot, anchor_snapshot, event_head, anchor_head, state
+        return _load_workspace_head_state_once(backend, workspace_id)
+    except AuditIntegrityError as original:
+        try:
+            _load_workspace_head_state_once(backend, workspace_id)
+        except AuditIntegrityError:
+            raise original
+        raise _AppendConflict("audit head streams changed during cross-stream validation") from original
 
 
-def _snapshot_token(snapshot: _StreamSnapshot) -> tuple[int, str | None]:
-    return snapshot.length, snapshot.etag
+def _load_workspace_head_state_once(backend: _AppendBackend, workspace_id: str) -> _WorkspaceHeadState:
+    receipt = _load_latest_segment(
+        backend, _receipt_prefix(workspace_id), _receipt_stream_name, workspace_id,
+        lambda snapshot: _validated_receipt_head(snapshot, workspace_id), "workspace receipt",
+    )
+    anchor = _load_latest_segment(
+        backend, _anchor_prefix(workspace_id), _anchor_stream_name, workspace_id,
+        lambda snapshot: _validated_anchor_head(snapshot, workspace_id), "workspace anchor",
+    )
+    event = _load_latest_segment(
+        backend, _event_prefix(workspace_id), _event_stream_name, workspace_id,
+        lambda snapshot: _validated_event_head(snapshot, workspace_id), "workspace event",
+    )
+    global_anchor = _load_global_head(backend)
+    event_revision = int(event.head["revision"]) if event.head else 0
+    anchor_revision = int(anchor.head["workspace_revision"]) if anchor.head else 0
+    receipt_revision = int(receipt.head["workspace_revision"]) if receipt.head else 0
+    if (
+        global_anchor.head is not None
+        and global_anchor.head["workspace_id"] == workspace_id
+        and int(global_anchor.head["workspace_revision"]) > receipt_revision
+    ):
+        raise AuditIntegrityError("global audit head proves a later workspace prefix")
+    if anchor_revision > event_revision or receipt_revision > anchor_revision:
+        raise AuditIntegrityError("audit workspace prefix rollback or delete detected")
+    if event_revision == anchor_revision == receipt_revision:
+        status: Literal["complete", "event_gap", "anchor_gap"] = "complete"
+    elif event_revision == anchor_revision + 1 and anchor_revision == receipt_revision:
+        status = "event_gap"
+    elif event_revision == anchor_revision and anchor_revision == receipt_revision + 1:
+        status = "anchor_gap"
+    else:
+        raise AuditIntegrityError("audit ledger has more than one uncommitted physical record")
+    _validate_workspace_physical_state(backend, event, anchor, receipt, global_anchor, status)
+    return _WorkspaceHeadState(workspace_id, event, anchor, receipt, global_anchor, status)
+
+
+def _load_global_head(backend: _AppendBackend) -> _SegmentHead:
+    current = _load_latest_segment(
+        backend, _global_prefix(), _global_stream_name, None,
+        _validated_global_anchor_head, "global anchor",
+    )
+    if current.head is not None:
+        _validate_global_head_physical_chain(backend, current)
+    return current
+
+
+def _load_latest_segment(
+    backend: _AppendBackend,
+    prefix: str,
+    name_factory: Any,
+    workspace_id: str | None,
+    validator: Any,
+    label: str,
+) -> _SegmentHead:
+    names = backend.list_names(prefix, limit=1)
+    indexed: list[tuple[int, str]] = []
+    for name in names:
+        index = _segment_index(prefix, name)
+        if index is None:
+            raise AuditIntegrityError(f"{label} segment name is invalid")
+        indexed.append((index, name))
+    if indexed:
+        index, name = indexed[0]
+    else:
+        index = 1
+        name = name_factory(workspace_id, index) if workspace_id is not None else name_factory(index)
+    snapshot = backend.read_snapshot(name)
+    head = validator(snapshot)
+    if head is None:
+        if indexed:
+            raise AuditIntegrityError(f"{label} segment is unexpectedly empty")
+        return _SegmentHead(index, name, snapshot, None)
+    ordinal = _head_ordinal(head)
+    expected_index, expected_count = _ordinal_coordinate(ordinal)
+    if index != expected_index or snapshot.record_count != expected_count:
+        raise AuditIntegrityError(f"{label} physical record count or segment identity is invalid")
+    return _SegmentHead(index, name, snapshot, head)
+
+
+def _segment_for_append(
+    backend: _AppendBackend,
+    current: _SegmentHead,
+    name_factory: Any,
+    workspace_id: str | None,
+) -> _SegmentHead:
+    if current.snapshot.record_count < MAX_RECORDS_PER_SEGMENT:
+        return current
+    index = current.index + 1
+    name = name_factory(workspace_id, index) if workspace_id is not None else name_factory(index)
+    snapshot = backend.read_snapshot(name)
+    if snapshot.length or snapshot.record_count or snapshot.head is not None:
+        raise _AppendConflict("audit segment rotated concurrently")
+    return _SegmentHead(index, name, snapshot, None)
+
+
+def _head_ordinal(head: Mapping[str, Any]) -> int:
+    for field in ("revision", "anchor_revision", "receipt_revision", "global_sequence"):
+        if field in head:
+            return int(head[field])
+    raise AuditIntegrityError("audit stream head ordinal is missing")
+
+
+def _ordinal_coordinate(ordinal: int) -> tuple[int, int]:
+    if ordinal < 1:
+        raise AuditIntegrityError("audit stream ordinal is invalid")
+    return ((ordinal - 1) // MAX_RECORDS_PER_SEGMENT) + 1, ((ordinal - 1) % MAX_RECORDS_PER_SEGMENT) + 1
+
+
+def _post_coordinate(segment: _SegmentHead, payload: bytes) -> _PhysicalCoordinate:
+    return _PhysicalCoordinate(
+        segment.index, segment.name,
+        segment.snapshot.length + len(payload), segment.snapshot.record_count + 1,
+    )
+
+
+def _coordinate(segment: _SegmentHead) -> _PhysicalCoordinate:
+    return _PhysicalCoordinate(
+        segment.index, segment.name, segment.snapshot.length, segment.snapshot.record_count
+    )
+
+
+def _empty_coordinate() -> _PhysicalCoordinate:
+    return _PhysicalCoordinate(0, "", 0, 0)
+
+
+def _coordinate_from_anchor(anchor: Mapping[str, Any]) -> _PhysicalCoordinate:
+    return _PhysicalCoordinate(
+        int(anchor["event_segment_index"]), str(anchor["event_stream_name"]),
+        int(anchor["event_stream_length"]), int(anchor["event_segment_record_count"]),
+    )
+
+
+def _anchor_coordinate_from_receipt(receipt: Mapping[str, Any]) -> _PhysicalCoordinate:
+    return _PhysicalCoordinate(
+        int(receipt["workspace_anchor_segment_index"]), str(receipt["workspace_anchor_stream_name"]),
+        int(receipt["workspace_anchor_stream_length"]), int(receipt["workspace_anchor_segment_record_count"]),
+    )
+
+
+def _workspace_anchor_coordinate_from_global(anchor: Mapping[str, Any]) -> _PhysicalCoordinate:
+    return _PhysicalCoordinate(
+        int(anchor["workspace_anchor_segment_index"]), str(anchor["workspace_anchor_stream_name"]),
+        int(anchor["workspace_anchor_stream_length"]), int(anchor["workspace_anchor_segment_record_count"]),
+    )
+
+
+def _global_coordinate_from_receipt(receipt: Mapping[str, Any]) -> _PhysicalCoordinate:
+    return _PhysicalCoordinate(
+        int(receipt["global_segment_index"]), str(receipt["global_stream_name"]),
+        int(receipt["global_stream_length"]), int(receipt["global_segment_record_count"]),
+    )
+
+
+def _global_previous_coordinate_matches(anchor: Mapping[str, Any], coordinate: _PhysicalCoordinate) -> bool:
+    return (
+        int(anchor["previous_global_segment_index"]) == coordinate.segment_index
+        and str(anchor["previous_global_stream_name"]) == coordinate.stream_name
+        and int(anchor["previous_global_stream_length"]) == coordinate.stream_length
+        and int(anchor["previous_global_segment_record_count"]) == coordinate.segment_record_count
+    )
+
+
+def _validate_workspace_physical_state(
+    backend: _AppendBackend,
+    event: _SegmentHead,
+    anchor: _SegmentHead,
+    receipt: _SegmentHead,
+    global_anchor: _SegmentHead,
+    status: str,
+) -> None:
+    if status == "complete":
+        if event.head is None:
+            if anchor.head is not None or receipt.head is not None:
+                raise AuditIntegrityError("audit empty physical state is invalid")
+            return
+        if anchor.head is None or receipt.head is None:
+            raise AuditIntegrityError("audit committed physical proof is missing")
+        if _coordinate_from_anchor(anchor.head) != _coordinate(event):
+            raise AuditIntegrityError("workspace anchor event physical coordinates do not match")
+        if _anchor_coordinate_from_receipt(receipt.head) != _coordinate(anchor):
+            raise AuditIntegrityError("workspace receipt anchor physical coordinates do not match")
+        _verify_receipt_global_coordinate(backend, receipt.head, global_anchor)
+        return
+    if status == "event_gap":
+        if event.head is None:
+            raise AuditIntegrityError("audit one-gap event is missing")
+        if anchor.head is None:
+            if int(event.head["revision"]) != 1 or event.snapshot.record_count != 1 or event.index != 1:
+                raise AuditIntegrityError("audit anchor is missing for more than one physical record")
+            _require_exact_range_records(backend, event, 0, 1, "genesis audit recovery")
+        else:
+            if not hmac.compare_digest(str(event.head["previous_hash"]), str(anchor.head["workspace_event_hash"])):
+                raise AuditIntegrityError("audit one-gap event hash does not follow anchor")
+            _require_one_record_after(backend, _coordinate_from_anchor(anchor.head), event, "audit event recovery")
+        return
+    if anchor.head is None:
+        raise AuditIntegrityError("audit one-gap anchor is missing")
+    if receipt.head is None:
+        if int(anchor.head["anchor_revision"]) != 1 or anchor.snapshot.record_count != 1 or anchor.index != 1:
+            raise AuditIntegrityError("workspace receipt is missing for more than one anchor record")
+        _require_exact_range_records(backend, anchor, 0, 1, "genesis anchor recovery")
+    else:
+        if not hmac.compare_digest(str(anchor.head["previous_hash"]), str(receipt.head["workspace_anchor_hash"])):
+            raise AuditIntegrityError("audit one-gap anchor hash does not follow receipt")
+        _require_one_record_after(
+            backend, _anchor_coordinate_from_receipt(receipt.head), anchor, "workspace anchor recovery"
+        )
+
+
+def _verify_receipt_global_coordinate(
+    backend: _AppendBackend,
+    receipt: Mapping[str, Any],
+    global_head: _SegmentHead,
+) -> None:
+    if global_head.head is None or int(global_head.head["global_sequence"]) < int(receipt["global_sequence"]):
+        raise AuditIntegrityError("global audit prefix rollback detected")
+    coordinate = _global_coordinate_from_receipt(receipt)
+    value = _record_ending_at(backend, coordinate, "global audit receipt")
+    global_anchor = _validated_global_anchor(value)
+    if (
+        int(global_anchor["global_sequence"]) != int(receipt["global_sequence"])
+        or not hmac.compare_digest(str(global_anchor["global_hash"]), str(receipt["global_hash"]))
+        or not hmac.compare_digest(str(global_anchor["workspace_anchor_hash"]), str(receipt["workspace_anchor_hash"]))
+    ):
+        raise AuditIntegrityError("global audit receipt physical proof does not match")
+
+
+def _validate_global_head_physical_chain(backend: _AppendBackend, current: _SegmentHead) -> None:
+    head = current.head
+    if head is None:
+        return
+    sequence = int(head["global_sequence"])
+    previous = _PhysicalCoordinate(
+        int(head["previous_global_segment_index"]), str(head["previous_global_stream_name"]),
+        int(head["previous_global_stream_length"]), int(head["previous_global_segment_record_count"]),
+    )
+    if sequence == 1:
+        if previous != _empty_coordinate() or head["previous_hash"] != GENESIS_HASH:
+            raise AuditIntegrityError("global audit genesis physical coordinates are invalid")
+        _require_exact_range_records(backend, current, 0, 1, "global audit genesis")
+        return
+    expected_index, expected_count = _ordinal_coordinate(sequence - 1)
+    if previous.segment_index != expected_index or previous.segment_record_count != expected_count:
+        raise AuditIntegrityError("global audit previous physical coordinate is invalid")
+    _require_one_record_after(backend, previous, current, "global audit physical tail")
+
+
+def _require_one_record_after(
+    backend: _AppendBackend,
+    previous: _PhysicalCoordinate,
+    current: _SegmentHead,
+    label: str,
+) -> None:
+    if current.name == previous.stream_name and current.index == previous.segment_index:
+        if (
+            current.snapshot.record_count != previous.segment_record_count + 1
+            or current.snapshot.length <= previous.stream_length
+        ):
+            raise AuditIntegrityError(f"{label} does not contain exactly one physical record")
+        _require_exact_range_records(backend, current, previous.stream_length, 1, label)
+        return
+    if (
+        current.index != previous.segment_index + 1
+        or previous.segment_record_count != MAX_RECORDS_PER_SEGMENT
+        or current.snapshot.record_count != 1
+    ):
+        raise AuditIntegrityError(f"{label} segment rotation is invalid")
+    previous_snapshot = backend.read_snapshot(previous.stream_name)
+    if previous_snapshot.length != previous.stream_length or previous_snapshot.record_count != previous.segment_record_count:
+        raise AuditIntegrityError(f"{label} previous segment physical proof does not match")
+    _require_exact_range_records(backend, current, 0, 1, label)
+
+
+def _require_exact_range_records(
+    backend: _AppendBackend,
+    current: _SegmentHead,
+    offset: int,
+    count: int,
+    label: str,
+) -> None:
+    if offset < 0 or offset > current.snapshot.length:
+        raise AuditIntegrityError(f"{label} committed byte offset is invalid")
+    data = backend.read_range(current.name, offset, current.snapshot.length - offset, current.snapshot)
+    records = _parse_lines(data, label)
+    if len(records) != count:
+        raise AuditIntegrityError(f"{label} must contain exactly one physical record")
+    if records[-1] != current.snapshot.head:
+        raise AuditIntegrityError(f"{label} physical head does not match")
+
+
+def _record_ending_at(
+    backend: _AppendBackend,
+    coordinate: _PhysicalCoordinate,
+    label: str,
+) -> dict[str, Any]:
+    snapshot = backend.read_snapshot(coordinate.stream_name)
+    if (
+        snapshot.length < coordinate.stream_length
+        or snapshot.record_count < coordinate.segment_record_count
+        or coordinate.stream_length < 1
+    ):
+        raise AuditIntegrityError(f"{label} committed physical coordinate is missing")
+    if snapshot.record_count == coordinate.segment_record_count and snapshot.length != coordinate.stream_length:
+        raise AuditIntegrityError(f"{label} committed physical length does not match")
+    offset = max(0, coordinate.stream_length - MAX_STREAM_RECORD_BYTES)
+    data = backend.read_range(coordinate.stream_name, offset, coordinate.stream_length - offset, snapshot)
+    if not data.endswith(b"\n"):
+        raise AuditIntegrityError(f"{label} committed record is truncated")
+    lines = data.splitlines()
+    if not lines:
+        raise AuditIntegrityError(f"{label} committed record is missing")
+    try:
+        value = json.loads(lines[-1].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AuditIntegrityError(f"{label} committed record is invalid") from exc
+    if not isinstance(value, dict):
+        raise AuditIntegrityError(f"{label} committed record is invalid")
+    return value
+
+
+def _find_global_anchor(
+    backend: _AppendBackend, workspace_anchor_hash: str
+) -> tuple[dict[str, Any], _PhysicalCoordinate] | None:
+    anchors, coordinates = _read_global_anchors_with_coordinates(backend)
+    matches = [
+        (anchor, coordinate)
+        for anchor, coordinate in zip(anchors, coordinates)
+        if hmac.compare_digest(str(anchor["workspace_anchor_hash"]), workspace_anchor_hash)
+    ]
+    if len(matches) > 1:
+        raise AuditIntegrityError("global audit history duplicates a workspace anchor")
+    return matches[0] if matches else None
+
+
+def _read_segment_records(
+    backend: _AppendBackend, prefix: str, label: str
+) -> list[tuple[dict[str, Any], _PhysicalCoordinate]]:
+    names = backend.list_names(prefix)
+    indexed: list[tuple[int, str]] = []
+    for name in names:
+        index = _segment_index(prefix, name)
+        if index is None:
+            raise AuditIntegrityError(f"{label} segment name is invalid")
+        indexed.append((index, name))
+    indexed.sort()
+    if indexed and [item[0] for item in indexed] != list(range(1, indexed[-1][0] + 1)):
+        raise AuditIntegrityError(f"{label} segment gap or delete detected")
+    records: list[tuple[dict[str, Any], _PhysicalCoordinate]] = []
+    for position, (index, name) in enumerate(indexed):
+        data = backend.read_full(name)
+        parsed = _parse_lines(data, label)
+        if not parsed or len(parsed) > MAX_RECORDS_PER_SEGMENT:
+            raise AuditIntegrityError(f"{label} segment record count is invalid")
+        if position < len(indexed) - 1 and len(parsed) != MAX_RECORDS_PER_SEGMENT:
+            raise AuditIntegrityError(f"{label} old segment is not physically full")
+        offset = 0
+        lines = data.splitlines(keepends=True)
+        for value, line in zip(parsed, lines):
+            offset += len(line)
+            records.append((value, _PhysicalCoordinate(index, name, offset, len(records) % MAX_RECORDS_PER_SEGMENT + 1)))
+    return records
 
 
 def _validated_event_head(snapshot: _StreamSnapshot, workspace_id: str) -> dict[str, Any] | None:
@@ -640,6 +1327,22 @@ def _validated_anchor_head(snapshot: _StreamSnapshot, workspace_id: str) -> dict
     ):
         raise AuditIntegrityError("audit anchor head is invalid")
     return anchor
+
+
+def _validated_receipt_head(snapshot: _StreamSnapshot, workspace_id: str) -> dict[str, Any] | None:
+    if snapshot.head is None:
+        if snapshot.length:
+            raise AuditIntegrityError("workspace global receipt head is missing")
+        return None
+    return _validated_receipt(snapshot.head, workspace_id)
+
+
+def _validated_global_anchor_head(snapshot: _StreamSnapshot) -> dict[str, Any] | None:
+    if snapshot.head is None:
+        if snapshot.length:
+            raise AuditIntegrityError("global audit anchor head is missing")
+        return None
+    return _validated_global_anchor(snapshot.head)
 
 
 def _build_event(
@@ -689,13 +1392,27 @@ def _build_anchor(**values: Any) -> dict[str, Any]:
     return AuditAnchor.model_validate(normalized).model_dump(mode="json")
 
 
+def _build_global_anchor(**values: Any) -> dict[str, Any]:
+    payload = {**values, "at": _now(), "global_hash": ""}
+    normalized = GlobalAuditAnchor.model_validate(payload).model_dump(mode="json")
+    normalized["global_hash"] = _hash_global_anchor(normalized)
+    return GlobalAuditAnchor.model_validate(normalized).model_dump(mode="json")
+
+
+def _build_receipt(**values: Any) -> dict[str, Any]:
+    payload = {**values, "at": _now(), "receipt_hash": ""}
+    normalized = WorkspaceGlobalReceipt.model_validate(payload).model_dump(mode="json")
+    normalized["receipt_hash"] = _hash_receipt(normalized)
+    return WorkspaceGlobalReceipt.model_validate(normalized).model_dump(mode="json")
+
+
 def _clean_resource(resource: Mapping[str, Any]) -> dict[str, str]:
     if not isinstance(resource, Mapping):
         raise ValueError("resource must be an object")
     return {
-        "workspace_id": _workspace_id(resource.get("workspace_id")),
+        "workspace_id": _workspace_scope_id(resource.get("workspace_id")),
         "resource_type": _allowlisted(resource.get("resource_type"), ALLOWED_RESOURCE_TYPES, "resource_type"),
-        "resource_id": _safe_id(resource.get("resource_id"), "resource_id"),
+        "resource_id": _resource_scope_id(resource.get("resource_id")),
     }
 
 
@@ -798,6 +1515,18 @@ def _key_for(key_id: str) -> bytes:
         raise AuditIntegrityError("audit event key id is not retained") from exc
 
 
+def _scope_key() -> bytes:
+    active_id, keys = _key_ring()
+    scope_key_id = str(os.environ.get("DF_AUDIT_HMAC_SCOPE_KEY_ID") or "").strip()
+    if not scope_key_id:
+        if _is_production() or blob_configured():
+            raise AuditPersistenceError("DF_AUDIT_HMAC_SCOPE_KEY_ID is required")
+        scope_key_id = active_id
+    if not _KEY_ID.fullmatch(scope_key_id) or scope_key_id not in keys:
+        raise AuditPersistenceError("audit HMAC scope key id is not retained in the key ring")
+    return keys[scope_key_id]
+
+
 def _hash_event(event: Mapping[str, Any]) -> str:
     payload = {key: value for key, value in event.items() if key != "event_hash"}
     return hmac.new(_key_for(str(event.get("key_id") or "")), _canonical_json(payload), hashlib.sha256).hexdigest()
@@ -808,9 +1537,21 @@ def _hash_anchor(anchor: Mapping[str, Any]) -> str:
     return hmac.new(_key_for(str(anchor.get("key_id") or "")), _canonical_json(payload), hashlib.sha256).hexdigest()
 
 
+def _hash_global_anchor(anchor: Mapping[str, Any]) -> str:
+    payload = {key: value for key, value in anchor.items() if key != "global_hash"}
+    return hmac.new(_key_for(str(anchor.get("key_id") or "")), _canonical_json(payload), hashlib.sha256).hexdigest()
+
+
+def _hash_receipt(receipt: Mapping[str, Any]) -> str:
+    payload = {key: value for key, value in receipt.items() if key != "receipt_hash"}
+    return hmac.new(_key_for(str(receipt.get("key_id") or "")), _canonical_json(payload), hashlib.sha256).hexdigest()
+
+
 def _validate_event_policy(model: AuditEvent, event: Mapping[str, Any]) -> None:
-    _workspace_id(event.get("workspace_id"))
-    _safe_id(event.get("resource_id"), "resource_id")
+    if not _WORKSPACE_SCOPE.fullmatch(str(event.get("workspace_id") or "")):
+        raise ValueError("workspace_id is not pseudonymous")
+    if not _RESOURCE_SCOPE.fullmatch(str(event.get("resource_id") or "")):
+        raise ValueError("resource_id is not pseudonymous")
     _allowlisted(event.get("action"), ALLOWED_ACTIONS, "action")
     _allowlisted(event.get("resource_type"), ALLOWED_RESOURCE_TYPES, "resource_type")
     _allowlisted(event.get("result"), ALLOWED_RESULTS, "result")
@@ -837,7 +1578,9 @@ def _validate_event_policy(model: AuditEvent, event: Mapping[str, Any]) -> None:
 
 
 def _validate_anchor_policy(model: AuditAnchor, anchor: Mapping[str, Any]) -> None:
-    _workspace_id(anchor.get("workspace_id"))
+    workspace_id = str(anchor.get("workspace_id") or "")
+    if not _WORKSPACE_SCOPE.fullmatch(workspace_id):
+        raise ValueError("anchor workspace_id is not pseudonymous")
     if int(anchor.get("anchor_revision") or 0) < 1 or int(anchor.get("workspace_revision") or 0) < 1:
         raise ValueError("anchor revision is invalid")
     if not _KEY_ID.fullmatch(str(anchor.get("key_id") or "")):
@@ -847,6 +1590,107 @@ def _validate_anchor_policy(model: AuditAnchor, anchor: Mapping[str, Any]) -> No
             raise ValueError(f"anchor {field} is invalid")
     if model.at.tzinfo is None or model.at.utcoffset() != timedelta(0):
         raise ValueError("anchor at must be UTC")
+    _validate_physical_fields(
+        anchor,
+        "event",
+        _event_stream_name(workspace_id, int(anchor.get("event_segment_index") or 0)),
+    )
+
+
+def _validated_receipt(value: Mapping[str, Any], workspace_id: str) -> dict[str, Any]:
+    try:
+        model = WorkspaceGlobalReceipt.model_validate(value)
+        receipt = model.model_dump(mode="json")
+    except Exception as exc:
+        raise AuditIntegrityError("workspace global receipt schema is invalid") from exc
+    if (
+        receipt["workspace_id"] != workspace_id
+        or int(receipt["receipt_revision"]) < 1
+        or int(receipt["receipt_revision"]) != int(receipt["workspace_revision"])
+        or not hmac.compare_digest(str(receipt["receipt_hash"]), _hash_receipt(receipt))
+    ):
+        raise AuditIntegrityError("workspace global receipt is invalid")
+    _validate_signed_common(model.at, receipt, "receipt", ("workspace_anchor_hash", "global_hash", "previous_hash", "receipt_hash"))
+    _validate_physical_fields(
+        receipt,
+        "workspace_anchor",
+        _anchor_stream_name(workspace_id, int(receipt["workspace_anchor_segment_index"])),
+    )
+    _validate_physical_fields(
+        receipt,
+        "global",
+        _global_stream_name(int(receipt["global_segment_index"])),
+    )
+    if int(receipt["global_sequence"]) < 1:
+        raise AuditIntegrityError("workspace global receipt sequence is invalid")
+    return receipt
+
+
+def _validated_global_anchor(value: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        model = GlobalAuditAnchor.model_validate(value)
+        anchor = model.model_dump(mode="json")
+    except Exception as exc:
+        raise AuditIntegrityError("global audit anchor schema is invalid") from exc
+    workspace_id = str(anchor["workspace_id"])
+    if (
+        not _WORKSPACE_SCOPE.fullmatch(workspace_id)
+        or int(anchor["global_sequence"]) < 1
+        or int(anchor["workspace_revision"]) < 1
+        or not hmac.compare_digest(str(anchor["global_hash"]), _hash_global_anchor(anchor))
+    ):
+        raise AuditIntegrityError("global audit anchor is invalid")
+    _validate_signed_common(
+        model.at,
+        anchor,
+        "global anchor",
+        ("workspace_event_hash", "workspace_anchor_hash", "previous_hash", "global_hash"),
+    )
+    _validate_physical_fields(
+        anchor,
+        "workspace_anchor",
+        _anchor_stream_name(workspace_id, int(anchor["workspace_anchor_segment_index"])),
+    )
+    _validate_physical_fields(
+        anchor,
+        "event",
+        _event_stream_name(workspace_id, int(anchor["event_segment_index"])),
+    )
+    expected_global_name = _global_stream_name(int(anchor["global_segment_index"]))
+    if anchor["global_stream_name"] != expected_global_name:
+        raise AuditIntegrityError("global audit stream identity is invalid")
+    previous_index = int(anchor["previous_global_segment_index"])
+    previous_name = str(anchor["previous_global_stream_name"])
+    if previous_index == 0:
+        if previous_name or int(anchor["previous_global_stream_length"]) or int(anchor["previous_global_segment_record_count"]):
+            raise AuditIntegrityError("global audit genesis coordinates are invalid")
+    else:
+        _validate_physical_fields(anchor, "previous_global", _global_stream_name(previous_index))
+    return anchor
+
+
+def _validate_signed_common(
+    at: datetime,
+    value: Mapping[str, Any],
+    label: str,
+    hash_fields: tuple[str, ...],
+) -> None:
+    if not _KEY_ID.fullmatch(str(value.get("key_id") or "")):
+        raise AuditIntegrityError(f"{label} key id is invalid")
+    for field in hash_fields:
+        if not re.fullmatch(r"[0-9a-f]{64}", str(value.get(field) or "")):
+            raise AuditIntegrityError(f"{label} {field} is invalid")
+    if at.tzinfo is None or at.utcoffset() != timedelta(0):
+        raise AuditIntegrityError(f"{label} timestamp must be UTC")
+
+
+def _validate_physical_fields(value: Mapping[str, Any], prefix: str, expected_name: str) -> None:
+    index = int(value.get(f"{prefix}_segment_index") or 0)
+    name = str(value.get(f"{prefix}_stream_name") or "")
+    length = int(value.get(f"{prefix}_stream_length") or 0)
+    count = int(value.get(f"{prefix}_segment_record_count") or 0)
+    if index < 1 or name != expected_name or length < 1 or count < 1 or count > MAX_RECORDS_PER_SEGMENT:
+        raise AuditIntegrityError(f"{prefix} physical coordinates are invalid")
 
 
 def _backend() -> _AppendBackend:
@@ -886,7 +1730,8 @@ def _verify_production_storage_contract(write_account_name: str | None = None) -
     if not expected_resource_group or match.group("resource_group").lower() != expected_resource_group.lower():
         raise AuditPersistenceError("production audit storage resource group proof does not match expected resource group")
     container_name = _audit_container_name()
-    cache_key = (resource_id.lower(), write_account, container_name)
+    legal_hold_tag = _audit_legal_hold_tag()
+    cache_key = (resource_id.lower(), write_account, container_name, legal_hold_tag)
     now = time.monotonic()
     expires_at = _PRODUCTION_CONTRACT_CACHE.get(cache_key)
     if expires_at is not None and now < expires_at:
@@ -897,7 +1742,10 @@ def _verify_production_storage_contract(write_account_name: str | None = None) -
     policy = _management_get_json(
         f"{resource_id}/blobServices/default/containers/{container_name}/immutabilityPolicies/default?{api}"
     ).get("properties")
-    _validate_production_contract(service, policy)
+    container = _management_get_json(
+        f"{resource_id}/blobServices/default/containers/{container_name}?{api}"
+    ).get("properties")
+    _validate_production_contract(service, policy, container, legal_hold_tag)
     _PRODUCTION_CONTRACT_CACHE[cache_key] = now + PRODUCTION_CONTRACT_CACHE_TTL_SECONDS
     return resource_id
 
@@ -918,9 +1766,15 @@ def _management_get_json(resource_path: str) -> dict[str, Any]:
     return value
 
 
-def _validate_production_contract(service: Mapping[str, Any] | None, policy: Mapping[str, Any] | None) -> None:
+def _validate_production_contract(
+    service: Mapping[str, Any] | None,
+    policy: Mapping[str, Any] | None,
+    container: Mapping[str, Any] | None = None,
+    legal_hold_tag: str | None = None,
+) -> None:
     service = service if isinstance(service, Mapping) else {}
     policy = policy if isinstance(policy, Mapping) else {}
+    container = container if isinstance(container, Mapping) else {}
     versioning = service.get("isVersioningEnabled", service.get("is_versioning_enabled")) is True
     blob_delete = service.get("deleteRetentionPolicy", service.get("delete_retention_policy"))
     container_delete = service.get("containerDeleteRetentionPolicy", service.get("container_delete_retention_policy"))
@@ -928,7 +1782,24 @@ def _validate_production_contract(service: Mapping[str, Any] | None, policy: Map
     container_delete_ok = isinstance(container_delete, Mapping) and container_delete.get("enabled") is True and int(container_delete.get("days") or 0) > 0
     locked = str(policy.get("state") or policy.get("policy_mode") or "").lower() == "locked"
     append_ok = policy.get("allowProtectedAppendWrites", policy.get("allow_protected_append_writes")) is True
-    if not all((versioning, blob_delete_ok, container_delete_ok, locked, append_ok)):
+    legal_hold = container.get("legalHold", container.get("legal_hold"))
+    legal_hold = legal_hold if isinstance(legal_hold, Mapping) else {}
+    hold_active = container.get("hasLegalHold", container.get("has_legal_hold")) is True and legal_hold.get(
+        "hasLegalHold", legal_hold.get("has_legal_hold")
+    ) is True
+    tags = legal_hold.get("tags")
+    active_tags = {
+        str(item.get("tag") or "")
+        for item in tags if isinstance(item, Mapping)
+    } if isinstance(tags, list) else set()
+    history = legal_hold.get("protectedAppendWritesHistory", legal_hold.get("protected_append_writes_history"))
+    history = history if isinstance(history, Mapping) else {}
+    legal_append_ok = history.get(
+        "allowProtectedAppendWritesAll", history.get("allow_protected_append_writes_all")
+    ) is True
+    expected_tag = str(legal_hold_tag or "").strip()
+    legal_hold_ok = bool(expected_tag) and hold_active and expected_tag in active_tags and legal_append_ok
+    if not all((versioning, blob_delete_ok, container_delete_ok, locked, append_ok, legal_hold_ok)):
         raise AuditPersistenceError("production audit storage contract is not satisfied")
 
 
@@ -951,6 +1822,13 @@ def _audit_container_name() -> str:
     value = str(os.environ.get("DF_AUDIT_CONTAINER") or AUDIT_CONTAINER).strip().lower()
     if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?", value):
         raise AuditPersistenceError("audit container name is invalid")
+    return value
+
+
+def _audit_legal_hold_tag() -> str:
+    value = str(os.environ.get("DF_AUDIT_LEGAL_HOLD_TAG") or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9]{3,23}", value):
+        raise AuditPersistenceError("production audit legal hold tag is missing or invalid")
     return value
 
 
@@ -996,25 +1874,88 @@ def _local_stream_path(name: str) -> Path:
     return path
 
 
-def _event_stream_name(workspace_id: str, _segment: int | None = None) -> str:
-    return f"workspaces/{_workspace_id(workspace_id)}/events.jsonl"
+def _event_prefix(workspace_id: str) -> str:
+    return f"workspaces/{_workspace_scope_id(workspace_id)}/events/"
 
 
-def _anchor_stream_name(workspace_id: str) -> str:
-    return f"workspaces/{_workspace_id(workspace_id)}/anchors.jsonl"
+def _anchor_prefix(workspace_id: str) -> str:
+    return f"workspaces/{_workspace_scope_id(workspace_id)}/anchors/"
+
+
+def _receipt_prefix(workspace_id: str) -> str:
+    return f"workspaces/{_workspace_scope_id(workspace_id)}/global-receipts/"
+
+
+def _global_prefix() -> str:
+    return "global/anchors/"
+
+
+def _event_stream_name(workspace_id: str, segment: int | None = None) -> str:
+    return _segmented_name(_event_prefix(workspace_id), int(segment or 1))
+
+
+def _anchor_stream_name(workspace_id: str, segment: int | None = None) -> str:
+    return _segmented_name(_anchor_prefix(workspace_id), int(segment or 1))
+
+
+def _receipt_stream_name(workspace_id: str, segment: int | None = None) -> str:
+    return _segmented_name(_receipt_prefix(workspace_id), int(segment or 1))
+
+
+def _global_stream_name(segment: int | None = None) -> str:
+    return _segmented_name(_global_prefix(), int(segment or 1))
+
+
+def _segmented_name(prefix: str, index: int) -> str:
+    if index < 1 or index > MAX_SEGMENT_INDEX:
+        raise AuditPersistenceError("audit segment index is outside the supported range")
+    reverse_index = MAX_SEGMENT_INDEX - index
+    return f"{prefix}{reverse_index:08d}/{index:08d}.jsonl"
+
+
+def _segment_index(prefix: str, name: str) -> int | None:
+    match = re.fullmatch(
+        rf"{re.escape(prefix)}(?P<reverse>[0-9]{{8}})/(?P<index>[0-9]{{8}})\.jsonl",
+        name,
+    )
+    if match is None:
+        return None
+    index = int(match.group("index"))
+    if index < 1 or index > MAX_SEGMENT_INDEX or int(match.group("reverse")) != MAX_SEGMENT_INDEX - index:
+        return None
+    return index
 
 
 def _local_etag(stat_result: os.stat_result) -> str:
     return f'"{int(stat_result.st_mtime_ns):x}-{int(stat_result.st_size):x}"'
 
 
-def _snapshot_from_tail(name: str, data: bytes, length: int, etag: str | None) -> _StreamSnapshot:
+def _count_local_records(path: Path) -> int:
+    count = 0
+    try:
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                count += chunk.count(b"\n")
+    except OSError as exc:
+        raise AuditPersistenceError("local audit record count failed") from exc
+    return count
+
+
+def _snapshot_from_tail(
+    name: str,
+    data: bytes,
+    length: int,
+    etag: str | None,
+    record_count: int,
+) -> _StreamSnapshot:
     if length < 0 or len(data) != min(length, STREAM_TAIL_BYTES):
         raise AuditIntegrityError("audit stream snapshot length is invalid")
+    if not isinstance(record_count, int) or isinstance(record_count, bool) or record_count < 0:
+        raise AuditIntegrityError("audit stream record count is invalid")
     if length == 0:
-        if data:
+        if data or record_count:
             raise AuditIntegrityError("empty audit stream snapshot is invalid")
-        return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=etag)
+        return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=etag, record_count=0)
     if etag is None or not data.endswith(b"\n"):
         raise AuditIntegrityError("audit stream snapshot is truncated")
     complete = data
@@ -1032,11 +1973,20 @@ def _snapshot_from_tail(name: str, data: bytes, length: int, etag: str | None) -
         raise AuditIntegrityError("audit stream head is invalid") from exc
     if not isinstance(head, dict):
         raise AuditIntegrityError("audit stream head is invalid")
-    return _StreamSnapshot(name=name, data=data, head=head, length=length, etag=etag)
+    if record_count < 1:
+        raise AuditIntegrityError("non-empty audit stream record count is invalid")
+    return _StreamSnapshot(
+        name=name,
+        data=data,
+        head=head,
+        length=length,
+        etag=etag,
+        record_count=record_count,
+    )
 
 
 def _validate_append_request(name: str, payload: bytes, snapshot: _StreamSnapshot) -> None:
-    if snapshot.name != name or snapshot.length < 0:
+    if snapshot.name != name or snapshot.length < 0 or snapshot.record_count >= MAX_RECORDS_PER_SEGMENT:
         raise AuditPersistenceError("audit append snapshot does not match stream")
     if not payload.endswith(b"\n") or len(payload) > MAX_STREAM_RECORD_BYTES:
         raise AuditPersistenceError("audit append record exceeds the bounded record contract")
@@ -1088,6 +2038,34 @@ def _workspace_id(value: Any) -> str:
     if not _WORKSPACE_ID.fullmatch(clean):
         raise ValueError("workspace_id is invalid")
     return clean
+
+
+def _workspace_scope_id(value: Any) -> str:
+    clean = str(value or "").strip()
+    if _WORKSPACE_SCOPE.fullmatch(clean):
+        return clean
+    raw = _external_identifier(clean, "workspace_id")
+    if raw in {".", ".."} or "/" in raw or "\\" in raw or re.match(r"^[A-Za-z]:", raw):
+        raise ValueError("workspace_id is invalid")
+    return _pseudonym("ws", "workspace", raw)
+
+
+def _resource_scope_id(value: Any) -> str:
+    clean = str(value or "").strip()
+    if _RESOURCE_SCOPE.fullmatch(clean):
+        return clean
+    return _pseudonym("res", "resource", _external_identifier(clean, "resource_id"))
+
+
+def _external_identifier(value: str, field: str) -> str:
+    if not value or len(value.encode("utf-8")) > 8192 or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError(f"{field} is invalid")
+    return value
+
+
+def _pseudonym(prefix: str, domain: str, value: str) -> str:
+    digest = hmac.new(_scope_key(), f"{domain}:{value}".encode("utf-8"), hashlib.sha256).hexdigest()[:40]
+    return f"{prefix}_{digest}"
 
 
 def _safe_id(value: Any, field: str) -> str:

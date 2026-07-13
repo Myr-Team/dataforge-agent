@@ -39,6 +39,17 @@ variable "audit_immutability_locked" {
   default     = false
 }
 
+variable "audit_legal_hold_tag" {
+  type        = string
+  description = "Active indefinite legal hold tag required on the audit container."
+  default     = "dataforgeaudit"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]{3,23}$", var.audit_legal_hold_tag))
+    error_message = "audit_legal_hold_tag must be 3-23 lowercase alphanumeric characters."
+  }
+}
+
 variable "audit_hmac_active_key_id" {
   type        = string
   description = "Non-secret ID of the active audit HMAC key. Must match a key in the Key Vault JSON key ring."
@@ -47,6 +58,17 @@ variable "audit_hmac_active_key_id" {
   validation {
     condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$", var.audit_hmac_active_key_id))
     error_message = "audit_hmac_active_key_id must be a valid retained key-ring identifier."
+  }
+}
+
+variable "audit_hmac_scope_key_id" {
+  type        = string
+  description = "Retained audit HMAC key used only for stable workspace and resource pseudonyms."
+  default     = "v1"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$", var.audit_hmac_scope_key_id))
+    error_message = "audit_hmac_scope_key_id must be a valid retained key-ring identifier."
   }
 }
 

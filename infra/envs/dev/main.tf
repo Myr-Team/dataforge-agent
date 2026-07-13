@@ -18,6 +18,7 @@ module "storage" {
   location                  = module.resource_group.location
   storage_account_name      = var.storage_account_name
   audit_immutability_locked = var.audit_immutability_locked
+  audit_legal_hold_tag      = var.audit_legal_hold_tag
 }
 
 module "search" {
@@ -63,6 +64,8 @@ module "container_apps" {
   storage_account_resource_id      = module.storage.storage_account_id
   audit_container_name             = module.storage.audit_container_name
   audit_hmac_active_key_id         = var.audit_hmac_active_key_id
+  audit_hmac_scope_key_id          = var.audit_hmac_scope_key_id
+  audit_legal_hold_tag             = var.audit_legal_hold_tag
   audit_key_vault_id               = var.audit_key_vault_id
   audit_hmac_keyring_secret_uri    = var.audit_hmac_keyring_secret_uri
   speech_endpoint                  = module.speech.speech_endpoint

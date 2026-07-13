@@ -1,3 +1,11 @@
+terraform {
+  required_providers {
+    azapi = {
+      source = "Azure/azapi"
+    }
+  }
+}
+
 variable "resource_group_name" { type = string }
 variable "location" { type = string }
 variable "storage_account_name" { type = string }
@@ -5,6 +13,16 @@ variable "audit_immutability_locked" {
   type        = bool
   description = "Locks the audit WORM policy. Irreversible; production must set true."
   default     = false
+}
+variable "audit_legal_hold_tag" {
+  type        = string
+  description = "Active indefinite legal hold tag required on the audit container."
+  default     = "dataforgeaudit"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]{3,23}$", var.audit_legal_hold_tag))
+    error_message = "audit_legal_hold_tag must be 3-23 lowercase alphanumeric characters."
+  }
 }
 
 resource "azurerm_storage_account" "this" {
@@ -52,6 +70,20 @@ resource "azurerm_storage_container_immutability_policy" "audit" {
   immutability_period_in_days           = 365
   protected_append_writes_enabled       = true
   locked                                = var.audit_immutability_locked
+}
+
+resource "azapi_resource_action" "audit_legal_hold" {
+  type        = "Microsoft.Storage/storageAccounts/blobServices/containers@2025-06-01"
+  resource_id = "${azurerm_storage_account.this.id}/blobServices/default/containers/${azurerm_storage_container.audit.name}"
+  action      = "setLegalHold"
+  method      = "POST"
+
+  body = {
+    allowProtectedAppendWritesAll = true
+    tags                          = [var.audit_legal_hold_tag]
+  }
+
+  depends_on = [azurerm_storage_container_immutability_policy.audit]
 }
 
 output "storage_account_id" {

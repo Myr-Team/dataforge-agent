@@ -34,6 +34,20 @@ variable "audit_hmac_active_key_id" {
     error_message = "audit_hmac_active_key_id must be a valid retained key-ring identifier."
   }
 }
+variable "audit_hmac_scope_key_id" {
+  type = string
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$", var.audit_hmac_scope_key_id))
+    error_message = "audit_hmac_scope_key_id must be a valid retained key-ring identifier."
+  }
+}
+variable "audit_legal_hold_tag" {
+  type = string
+  validation {
+    condition     = can(regex("^[a-z0-9]{3,23}$", var.audit_legal_hold_tag))
+    error_message = "audit_legal_hold_tag must be 3-23 lowercase alphanumeric characters."
+  }
+}
 variable "audit_key_vault_id" {
   type = string
   validation {
@@ -182,6 +196,14 @@ resource "azurerm_container_app" "backend" {
       env {
         name  = "DF_AUDIT_HMAC_ACTIVE_KEY_ID"
         value = var.audit_hmac_active_key_id
+      }
+      env {
+        name  = "DF_AUDIT_HMAC_SCOPE_KEY_ID"
+        value = var.audit_hmac_scope_key_id
+      }
+      env {
+        name  = "DF_AUDIT_LEGAL_HOLD_TAG"
+        value = var.audit_legal_hold_tag
       }
       env {
         name        = "DF_AUDIT_HMAC_KEYS"
