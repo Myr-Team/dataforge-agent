@@ -6,9 +6,11 @@ from pathlib import Path
 from urllib.parse import quote
 
 import backend.artifact_jobs as artifact_jobs
+import backend.app as app_module
 import backend.tools.render_pdf as render_pdf
 import backend.workspace_authz as workspace_authz
 from backend.app import app
+from backend.artifact_jobs import ArtifactJobPersistenceError
 from fastapi.testclient import TestClient
 
 
@@ -250,6 +252,19 @@ def test_artifact_job_api_creates_and_exposes_persisted_status(tmp_path: Path, m
     listed = client.get("/api/workspaces/ws-artifacts/artifact-jobs")
     assert listed.status_code == 200
     assert listed.json()["jobs"][0]["job_id"] == job_id
+
+
+def test_artifact_job_api_returns_503_for_durable_persistence_failure(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app_module,
+        "create_artifact_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ArtifactJobPersistenceError("blob unavailable")),
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post("/api/artifact-jobs", json=_request())
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Durable artifact job storage is unavailable"
 
 
 def test_pdf_filename_contains_explicit_plan_version(tmp_path: Path, monkeypatch) -> None:

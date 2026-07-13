@@ -22,7 +22,7 @@ from pathlib import Path
 from starlette.concurrency import run_in_threadpool
 
 try:
-    from .artifact_jobs import create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
+    from .artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
     from .task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
@@ -71,7 +71,7 @@ try:
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
 except ImportError:
-    from artifact_jobs import create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
+    from artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, run_artifact_job
     from task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, request_cancel, retry_task, update_task
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
@@ -464,6 +464,8 @@ async def artifact_job_create(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ArtifactJobPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Durable artifact job storage is unavailable") from exc
     if job.get("status") not in {"partial", "completed", "failed", "cancelled", "running"}:
         background_tasks.add_task(run_artifact_job, job["job_id"])
     return job

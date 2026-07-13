@@ -139,11 +139,37 @@ def test_workbench_task_persistence_failure_returns_503_for_connector_ingest(mon
 
 
 def test_workbench_task_persistence_failure_returns_503_for_selected_file_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fail_analysis(*_args, **_kwargs):
-        raise TaskPersistenceError("durable unavailable")
+    document = {"id": "file-1", "name": "pending.csv", "source_file": "pending.csv", "status": "processing", "ingest_job_id": "ingest-analysis", "bytes": 3}
+    monkeypatch.setattr(data_workbench, "get_workspace_detail", lambda _workspace_id: {"documents": [dict(document)]})
+    monkeypatch.setattr(data_workbench, "_find_document", lambda *_args, **_kwargs: dict(document))
+    monkeypatch.setattr(data_workbench, "list_tasks", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(data_workbench, "create_task", lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskPersistenceError("durable unavailable")))
 
-    monkeypatch.setattr(data_workbench, "analyze_selected_files", fail_analysis)
     response = TestClient(app, raise_server_exceptions=False).post("/api/workspaces/ws-bridge/files/analyze", json={"file_ids": ["file-1"]})
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Durable task storage is unavailable"
+
+
+def test_artifact_blob_and_compensation_failure_leaves_prepared_task_for_recovery(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+    monkeypatch.setattr(artifact_jobs, "ARTIFACT_JOB_DIR", tmp_path / "artifact-jobs")
+    monkeypatch.setattr(artifact_jobs, "blob_configured", lambda: True)
+    monkeypatch.setattr(artifact_jobs, "upload_blob_json", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("blob unavailable")))
+    monkeypatch.setattr(artifact_jobs, "get_run", lambda run_id: {"workspace_id": "ws-bridge", "run_id": run_id, "artifact": {"feasibility": {}}})
+    original_update = artifact_jobs.update_task
+    monkeypatch.setattr(artifact_jobs, "update_task", lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskPersistenceError("compensation unavailable")))
+
+    with pytest.raises(RuntimeError, match="durable artifact job"):
+        artifact_jobs.create_artifact_job({"workspace_id": "ws-bridge", "conversation_id": "run-1", "kinds": ["pdf"]}, actor={})
+
+    task = task_store.list_tasks("ws-bridge")[0]
+    assert task["status"] == "preparing"
+    assert artifact_jobs._claim_linked_task({"task_id": task["task_id"]}) is None
+
+    monkeypatch.setattr(artifact_jobs, "blob_configured", lambda: False)
+    monkeypatch.setattr(artifact_jobs, "update_task", original_update)
+    recovered = artifact_jobs.recover_prepared_artifact_tasks("ws-bridge")
+
+    assert recovered == [task["task_id"]]
+    assert task_store.get_task(task["task_id"])["status"] == "failed"

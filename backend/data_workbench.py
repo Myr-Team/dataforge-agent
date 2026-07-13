@@ -564,6 +564,8 @@ async def analyze_selected_files(workspace_id: str, body: dict[str, Any], backgr
         try:
             _run_ingest_task(workspace_id, job_id, actor=actor, task_type="analysis.ingest", action="analysis.run")
             warnings.append(f"{document.get('name') or _file_id(document)} 已触发补索引。")
+        except TaskPersistenceError:
+            raise
         except Exception as exc:
             warnings.append(f"{document.get('name') or _file_id(document)} 补索引未完成：{type(exc).__name__}")
     detail = get_workspace_detail(workspace_id)

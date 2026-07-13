@@ -14,12 +14,12 @@ try:
     from .blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
     from .identity import public_actor
     from .run_store import get_run, list_runs
-    from .task_store import claim_task, create_task, get_task, update_task
+    from .task_store import claim_task, create_task, get_task, list_tasks, update_task
 except ImportError:
     from blob_store import blob_configured, claim_blob_json, download_blob_json, list_blob_json, upload_blob_json
     from identity import public_actor
     from run_store import get_run, list_runs
-    from task_store import claim_task, create_task, get_task, update_task
+    from task_store import claim_task, create_task, get_task, list_tasks, update_task
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +57,7 @@ def create_artifact_job(
         raise ValueError("source run does not belong to the requested workspace")
     key_hash = _idempotency_hash(idempotency_key) if idempotency_key else None
     with _LOCK:
+        recover_prepared_artifact_tasks(workspace_id)
         if key_hash:
             existing = next(
                 (
@@ -94,15 +95,21 @@ def create_artifact_job(
                 "task_type": "artifact.generate",
                 "action": "artifact.generate",
                 "result": {"artifact_job_id": job["job_id"]},
+                "initial_status": "preparing",
             },
             actor,
         )
         job["task_id"] = task["task_id"]
         try:
-            return _persist_job(job)
+            persisted = _persist_job(job)
         except ArtifactJobPersistenceError:
             _compensate_task(str(task["task_id"]))
             raise
+        try:
+            update_task(str(task["task_id"]), status="queued")
+        except Exception as exc:
+            raise ArtifactJobPersistenceError("durable artifact task activation failed") from exc
+        return persisted
 
 
 def get_artifact_job(job_id: str) -> dict[str, Any]:
@@ -289,6 +296,13 @@ def _claim_job(job_id: str) -> dict[str, Any] | None:
         job = get_artifact_job(job_id)
         if str(job.get("status") or "") != "queued":
             return None
+        task_id = str(job.get("task_id") or "")
+        if task_id:
+            try:
+                if get_task(task_id).get("status") != "queued":
+                    return None
+            except FileNotFoundError:
+                return None
         changes = {
             "status": "running",
             "started_at": _now(),
@@ -325,11 +339,40 @@ def _persist_job(job: dict[str, Any]) -> dict[str, Any]:
     return dict(job)
 
 
-def _compensate_task(task_id: str) -> None:
+def _compensate_task(task_id: str) -> bool:
     try:
         update_task(task_id, status="failed", error={"category": "artifact_job", "code": "persistence_failed"})
     except Exception:
-        pass
+        return False
+    return True
+
+
+def recover_prepared_artifact_tasks(workspace_id: str | None = None) -> list[str]:
+    recovered: list[str] = []
+    for task in list_tasks(workspace_id):
+        if task.get("task_type") != "artifact.generate" or task.get("status") != "preparing":
+            continue
+        task_id = str(task.get("task_id") or "")
+        result = task.get("result") if isinstance(task.get("result"), Mapping) else {}
+        job_id = str(result.get("artifact_job_id") or "")
+        try:
+            job = get_artifact_job(job_id) if job_id else None
+        except FileNotFoundError:
+            job = None
+        try:
+            if job is None:
+                if _compensate_task(task_id):
+                    recovered.append(task_id)
+            else:
+                target = str(job.get("status") or "queued")
+                if target in _TERMINAL:
+                    _sync_linked_task(job)
+                else:
+                    update_task(task_id, status="queued")
+                recovered.append(task_id)
+        except Exception:
+            continue
+    return recovered
 
 
 def _persist_local_job(job: Mapping[str, Any]) -> None:
@@ -474,8 +517,10 @@ def _now() -> str:
 
 
 __all__ = [
+    "ArtifactJobPersistenceError",
     "create_artifact_job",
     "get_artifact_job",
     "list_artifact_jobs",
+    "recover_prepared_artifact_tasks",
     "run_artifact_job",
 ]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -23,9 +24,10 @@ ROOT = Path(__file__).resolve().parents[1]
 TASK_DIR = ROOT / "generated-outputs" / "tasks"
 TASK_BLOB_PREFIX = "tasks"
 LOCAL_CLAIM_STALE_SECONDS = 300
+LOCAL_TASK_LOCK_TIMEOUT_SECONDS = 5.0
 _LOCK = threading.RLock()
 _TERMINAL = {"partial", "completed", "failed", "cancelled"}
-_STATUSES = {"queued", "running", "cancel_requested", *_TERMINAL}
+_STATUSES = {"preparing", "queued", "running", "cancel_requested", *_TERMINAL}
 _TASK_FIELDS = {
     "task_id", "workspace_id", "task_type", "action", "status", "attempt", "actor", "result", "error",
     "progress", "revision", "retry_of", "created_at", "updated_at", "started_at", "completed_at",
@@ -49,7 +51,7 @@ def create_task(payload: Mapping[str, Any], actor: Mapping[str, Any] | None) -> 
         "workspace_id": _required_text(source.get("workspace_id"), "workspace_id", 160),
         "task_type": _required_text(source.get("task_type") or source.get("operation"), "task_type", 120),
         "action": _required_text(source.get("action") or "workspace.read", "action", 120),
-        "status": "queued",
+        "status": "preparing" if source.get("initial_status") == "preparing" else "queued",
         "attempt": max(1, int(source.get("attempt") or 1)),
         "actor": _public_actor(actor),
         "result": _safe_result(source.get("result")),
@@ -111,26 +113,26 @@ def claim_task(task_id: str, worker: str) -> dict[str, Any] | None:
 
 def update_task(task_id: str, **changes: Any) -> dict[str, Any]:
     normalized = _required_text(task_id, "task_id", 100)
+    if not blob_configured():
+        return _update_local_task(normalized, changes)
     with _LOCK:
         task = get_task(normalized)
         updated = _apply_changes(task, changes)
         if updated is task:
             return task
-        if blob_configured():
-            try:
-                committed = compare_and_swap_blob_json(
-                    _task_blob(normalized),
-                    expected_revision=int(task.get("revision") or 0),
-                    changes=updated,
-                )
-            except Exception as exc:
-                raise TaskPersistenceError("durable task update failed") from exc
-            if committed is None:
-                return get_task(normalized)
-            cleaned = _clean_task(committed)
-            _persist_local_task(cleaned)
-            return cleaned
-        return _persist_local_task(updated)
+        try:
+            committed = compare_and_swap_blob_json(
+                _task_blob(normalized),
+                expected_revision=int(task.get("revision") or 0),
+                changes=updated,
+            )
+        except Exception as exc:
+            raise TaskPersistenceError("durable task update failed") from exc
+        if committed is None:
+            return get_task(normalized)
+        cleaned = _clean_task(committed)
+        _persist_local_task(cleaned)
+        return cleaned
 
 
 def request_cancel(task_id: str) -> dict[str, Any]:
@@ -172,27 +174,68 @@ def _persist_local_task(task: Mapping[str, Any]) -> dict[str, Any]:
 
 def _claim_local_task(task_id: str) -> dict[str, Any] | None:
     lock_path = _claim_lock_path(task_id)
-    for _ in range(2):
-        token = uuid4().hex
-        try:
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            descriptor = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
+    for _ in range(3):
+        token = _try_acquire_local_task_lock(lock_path)
+        if token is None:
             task = get_task(task_id)
             if task.get("status") != "queued" or not _recover_stale_claim_lock(lock_path, task):
                 return None
             continue
         try:
-            os.write(descriptor, token.encode("ascii"))
             task = get_task(task_id)
             if task.get("status") != "queued":
                 return None
             task.update({"status": "running", "started_at": _now(), "updated_at": _now(), "revision": int(task.get("revision") or 0) + 1})
             return _persist_local_task(task)
         finally:
-            os.close(descriptor)
             _release_claim_lock(lock_path, token)
     return None
+
+
+def _update_local_task(task_id: str, changes: Mapping[str, Any]) -> dict[str, Any]:
+    lock_path = _claim_lock_path(task_id)
+    deadline = time.monotonic() + LOCAL_TASK_LOCK_TIMEOUT_SECONDS
+    while True:
+        token = _try_acquire_local_task_lock(lock_path)
+        if token is not None:
+            try:
+                task = get_task(task_id)
+                updated = _apply_changes(task, changes)
+                return task if updated is task else _persist_local_task(updated)
+            finally:
+                _release_claim_lock(lock_path, token)
+        _recover_stale_claim_lock(lock_path, {})
+        if time.monotonic() >= deadline:
+            raise TaskPersistenceError("local task transition lock is unavailable")
+        time.sleep(0.01)
+
+
+def _try_acquire_local_task_lock(lock_path: Path) -> str | None:
+    reclaim_path = _reclaim_lock_path(lock_path)
+    if reclaim_path.exists():
+        return None
+    token = uuid4().hex
+    payload = {"token": token, "pid": os.getpid(), "created_at": _now()}
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+    try:
+        os.write(descriptor, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        os.fsync(descriptor)
+    except OSError:
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(descriptor)
+    if reclaim_path.exists():
+        _release_claim_lock(lock_path, token)
+        return None
+    return token
 
 
 def _recover_stale_claim_lock(lock_path: Path, task: Mapping[str, Any]) -> bool:
@@ -200,30 +243,113 @@ def _recover_stale_claim_lock(lock_path: Path, task: Mapping[str, Any]) -> bool:
         stat = lock_path.stat()
     except FileNotFoundError:
         return True
-    if time.time() - stat.st_mtime < LOCAL_CLAIM_STALE_SECONDS or task.get("status") != "queued":
+    if time.time() - stat.st_mtime < LOCAL_CLAIM_STALE_SECONDS:
         return False
-    snapshot = (stat.st_mtime_ns, stat.st_size)
-    try:
-        current = lock_path.stat()
-    except FileNotFoundError:
-        return True
-    if (current.st_mtime_ns, current.st_size) != snapshot:
+    owner = _read_lock_owner(lock_path)
+    if owner is None or _pid_is_live(owner.get("pid")) is not False:
         return False
-    stale_path = lock_path.with_name(f"{lock_path.name}.stale-{uuid4().hex}")
+    reclaim_path = _reclaim_lock_path(lock_path)
+    reclaim_token = _try_acquire_reclaim_lock(reclaim_path)
+    if reclaim_token is None:
+        return False
     try:
-        os.replace(lock_path, stale_path)
-    except FileNotFoundError:
+        try:
+            current = lock_path.stat()
+        except FileNotFoundError:
+            return True
+        current_owner = _read_lock_owner(lock_path)
+        if (
+            current.st_mtime_ns != stat.st_mtime_ns
+            or current_owner != owner
+            or _pid_is_live(owner.get("pid")) is not False
+        ):
+            return False
+        stale_path = lock_path.with_name(f"{lock_path.name}.stale-{uuid4().hex}")
+        try:
+            os.replace(lock_path, stale_path)
+        except FileNotFoundError:
+            return True
+        try:
+            stale_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return True
+    finally:
+        _release_claim_lock(reclaim_path, reclaim_token)
+
+
+def _read_lock_owner(lock_path: Path) -> dict[str, Any] | None:
     try:
-        stale_path.unlink(missing_ok=True)
-    except OSError:
-        pass
+        value = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, Mapping) or not isinstance(value.get("token"), str):
+        return None
+    try:
+        pid = int(value.get("pid"))
+    except (TypeError, ValueError):
+        return None
+    return {"token": value["token"], "pid": pid}
+
+
+def _pid_is_live(pid: Any) -> bool | None:
+    try:
+        process_id = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if process_id <= 0:
+        return None
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x1000, False, process_id)
+        if not handle:
+            error = ctypes.get_last_error()
+            return False if error in {87, 1168} else True if error == 5 else None
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return None
+            return exit_code.value == 259
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        return False if exc.errno == errno.ESRCH else None
     return True
+
+
+def _try_acquire_reclaim_lock(reclaim_path: Path) -> str | None:
+    token = uuid4().hex
+    try:
+        descriptor = os.open(str(reclaim_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+    try:
+        os.write(descriptor, json.dumps({"token": token, "pid": os.getpid()}).encode("utf-8"))
+        os.fsync(descriptor)
+        return token
+    finally:
+        os.close(descriptor)
 
 
 def _release_claim_lock(lock_path: Path, token: str) -> None:
     try:
-        if lock_path.read_text(encoding="ascii") == token:
+        owner = _read_lock_owner(lock_path)
+        if owner and owner.get("token") == token:
             lock_path.unlink(missing_ok=True)
     except OSError:
         pass
@@ -261,6 +387,7 @@ def _apply_changes(task: dict[str, Any], changes: Mapping[str, Any]) -> dict[str
 
 def _transition_allowed(current: str, target: str) -> bool:
     allowed = {
+        "preparing": {"preparing", "queued", "cancel_requested", "cancelled", "failed"},
         "queued": {"queued", "running", "cancel_requested", "cancelled", "failed"},
         "running": {"running", "cancel_requested", "partial", "completed", "failed", "cancelled"},
         "cancel_requested": {"cancel_requested", "cancelled", "partial", "completed", "failed"},
@@ -351,6 +478,10 @@ def _task_path(task_id: str) -> Path:
 
 def _claim_lock_path(task_id: str) -> Path:
     return TASK_DIR / f"{_safe_key(task_id)}.claim"
+
+
+def _reclaim_lock_path(lock_path: Path) -> Path:
+    return lock_path.with_name(f"{lock_path.name}.reclaim")
 
 
 def _task_blob(task_id: str) -> str:

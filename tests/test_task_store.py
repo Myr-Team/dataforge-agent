@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 import multiprocessing
 import os
 import shutil
@@ -20,6 +21,48 @@ def _claim_from_separate_process(task_dir: str, task_id: str, start, results) ->
     child_store.blob_configured = lambda: False
     start.wait(10)
     results.put(child_store.claim_task(task_id, "process-worker") is not None)
+
+
+def _race_local_terminal_transitions(
+    task_dir: str,
+    task_id: str,
+    target_status: str,
+    completed_computed,
+    release_completed,
+    completed_persisted,
+    cancel_computed,
+    results,
+) -> None:
+    import backend.task_store as child_store
+
+    child_store.TASK_DIR = Path(task_dir)
+    child_store.blob_configured = lambda: False
+    original_apply = child_store._apply_changes
+    original_persist = child_store._persist_local_task
+
+    def coordinated_apply(task, changes):
+        updated = original_apply(task, changes)
+        if target_status == "completed":
+            completed_computed.set()
+            release_completed.wait(10)
+        else:
+            cancel_computed.set()
+        return updated
+
+    def coordinated_persist(task):
+        if target_status != "completed":
+            completed_persisted.wait(10)
+        value = original_persist(task)
+        if target_status == "completed":
+            completed_persisted.set()
+        return value
+
+    child_store._apply_changes = coordinated_apply
+    child_store._persist_local_task = coordinated_persist
+    try:
+        results.put(child_store.update_task(task_id, status=target_status)["status"])
+    except Exception as exc:
+        results.put(f"error:{type(exc).__name__}")
 
 
 def _payload(**overrides: object) -> dict[str, object]:
@@ -91,17 +134,62 @@ def test_only_one_separate_process_claims_a_local_task(tmp_path, monkeypatch: py
     assert task_store.get_task(task["task_id"])["status"] == "running"
 
 
-def test_stale_local_claim_lock_is_recovered_but_terminal_task_is_not_claimed(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stale_dead_owner_claim_lock_is_recovered_but_terminal_task_is_not_claimed(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     task = task_store.create_task(_payload(), _actor())
     lock_path = task_store._claim_lock_path(task["task_id"])
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.write_text("crashed", encoding="utf-8")
+    lock_path.write_text(json.dumps({"token": "crashed", "pid": 99999999}), encoding="utf-8")
     os.utime(lock_path, (time.time() - 3600, time.time() - 3600))
 
     assert task_store.claim_task(task["task_id"], "recovery-worker") is not None
     task_store.update_task(task["task_id"], status="completed")
     assert task_store.claim_task(task["task_id"], "late-worker") is None
+
+
+def test_stale_live_or_unknown_claim_lock_is_not_recovered_by_age(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(task_store, "LOCAL_CLAIM_STALE_SECONDS", 1)
+    for owner in ({"token": "live", "pid": os.getpid()}, {"token": "unknown", "pid": "not-a-pid"}):
+        task = task_store.create_task(_payload(), _actor())
+        lock_path = task_store._claim_lock_path(task["task_id"])
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps(owner), encoding="utf-8")
+        os.utime(lock_path, (time.time() - 3600, time.time() - 3600))
+
+        assert task_store.claim_task(task["task_id"], "second-worker") is None
+        assert task_store.get_task(task["task_id"])["status"] == "queued"
+
+
+def test_separate_process_completion_then_cancel_cannot_rewrite_completed_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    task = task_store.create_task(_payload(), _actor())
+    task_store.claim_task(task["task_id"], "worker")
+    context = multiprocessing.get_context("spawn")
+    completed_computed = context.Event()
+    release_completed = context.Event()
+    completed_persisted = context.Event()
+    cancel_computed = context.Event()
+    results = context.Queue()
+    completed = context.Process(
+        target=_race_local_terminal_transitions,
+        args=(str(task_store.TASK_DIR), task["task_id"], "completed", completed_computed, release_completed, completed_persisted, cancel_computed, results),
+    )
+    cancelled = context.Process(
+        target=_race_local_terminal_transitions,
+        args=(str(task_store.TASK_DIR), task["task_id"], "cancel_requested", completed_computed, release_completed, completed_persisted, cancel_computed, results),
+    )
+    completed.start()
+    assert completed_computed.wait(10)
+    cancelled.start()
+    cancel_computed.wait(1)
+    release_completed.set()
+    completed.join(20)
+    cancelled.join(20)
+
+    assert completed.exitcode == 0
+    assert cancelled.exitcode == 0
+    assert task_store.get_task(task["task_id"])["status"] == "completed"
 
 
 def test_progress_is_monotonic_and_retry_creates_new_attempt(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
