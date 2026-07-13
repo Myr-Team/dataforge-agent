@@ -4,7 +4,7 @@
 
 As of 2026-07-13, this task did not identify a stable public Azure AI Foundry REST endpoint for reading native ROI. The adapter therefore does not construct or request an inferred URL. It exposes only an injected `FoundryRoiProvider` protocol and a null default path.
 
-Only `FOUNDRY_PROJECT_ENDPOINT` and `FOUNDRY_AGENT_ID` are accepted as configuration inputs. They must form a canonical Foundry project endpoint and agent ID, but they are never returned in API data. No token, provider exception body, or raw provider response is stored or exposed.
+`FOUNDRY_PROJECT_ENDPOINT` and `FOUNDRY_AGENT_ID` are the only Foundry target configuration inputs. They must form a canonical Foundry project endpoint and agent ID, but they are never returned in API data. The later external-attestation remediation additionally permits only the non-secret pinned public verification key `DF_FOUNDRY_ROI_ATTESTATION_PUBLIC_KEY`; no signing or private key is configured by the application. No token, provider exception body, or raw provider response is stored or exposed.
 
 ## State Samples
 
@@ -14,7 +14,7 @@ Only `FOUNDRY_PROJECT_ENDPOINT` and `FOUNDRY_AGENT_ID` are accepted as configura
 | `DF_FOUNDRY_ROI_ENABLED=1` alone | `not_configured` | `false` | A feature flag is not evidence of a Foundry ROI surface. |
 | Canonical target set but no provider injected | `not_configured` | `false` | No network request is sent. |
 | Provider discovery or read fails | `unavailable` | `false` | Local ROI remains available; failure details are sanitized. |
-| Provider discovers the target agent and ROI surface, then returns a valid snapshot | `connected` | `true` | Provider snapshot is exposed separately with source, observed time, and provider version. |
+| Provider discovers the target agent and ROI surface, external attestation has a valid signature for the pinned public key, then returns a valid snapshot | `connected` | `true` | Provider snapshot is exposed separately with source, observed time, and provider version. |
 
 ## Reconciliation Rules
 
@@ -60,3 +60,29 @@ Output: `501 passed, 1 warning in 46.86s` (the remaining warning is the existing
 Executed: `python -m compileall backend tests` and `python -c "from backend.foundry_roi import HmacFoundryRoiAttestationSigner, SignedFoundryRoiAttestation, VerifiedProviderRead, discover_foundry_roi; import backend.control_plane; import backend.dependency_health; print(discover_foundry_roi().state)"`
 
 Output: both commands exited `0`; the import check printed `not_configured` with no pinned trust material.
+
+## Second Critical Remediation: External Asymmetric Attestation (2026-07-14)
+
+This section supersedes the 2026-07-13 HMAC/capability design above. That earlier design is retained only as review history: a same-process HMAC secret and an adapter-private capability do not create a trust boundary against code executing in that process.
+
+- The adapter now accepts a canonical `SignedFoundryRoiAttestation` envelope containing the attestation, SHA-256 public-key ID, and base64 Ed25519 signature. It verifies the signature over a versioned canonical JSON payload using only the deployment-pinned `DF_FOUNDRY_ROI_ATTESTATION_PUBLIC_KEY` public key. No signing or private key is present in application configuration, module state, or the adapter public API.
+- An injected provider or attestation source is not trusted by identity, protocol conformance, echoed fields, or process placement. It can establish `connected` only by returning an envelope signed by the private key corresponding to the independently pinned public key. A wrong-signing/colluding source remains `unavailable`; a provider proof with no external envelope or pinned public key remains `configured_unverified`; no provider remains `not_configured`.
+- Python code in the same process is not treated as sandboxed. The authentication boundary is the external holder of the Ed25519 private signing key plus deployment integrity for the pinned public key. The public surface does not expose a signing helper or private/capability material.
+- `VerifiedProviderRead`, `_issued_by_adapter`, integrity tags, `reconcile_roi`, and `reconcile_foundry_read` have been removed. The only public reconciliation entry point is `reconcile_foundry_roi(local, provider, verifier)`, which validates the local window, performs target discovery and signature verification, reads and validates the provider snapshot, then invokes private reconciliation in one adapter-owned call. Public read results cannot be submitted to any reconciliation API.
+- `backend/control_plane.py` now invokes the single orchestration entry point. `backend/dependency_health.py` remains discovery-only and therefore never receives a read or reconciliation object. `cryptography==43.0.3` is explicitly pinned in `backend/requirements.txt` for Ed25519 verification.
+
+### Second Critical Remediation Test Evidence
+
+Executed: `python -m pytest tests/test_foundry_roi.py tests/test_roi_service.py tests/test_governance_roi_summary.py -q`
+
+Output: `51 passed in 4.66s`
+
+Coverage: ephemeral Ed25519 keypairs; valid separately signed attestation; provider-as-verifier signed by a non-pinned key; colluding verifier signed by a non-pinned key; proof without a signed attestation; target/window/snapshot binding; removed wrapper/two-step public API; and retained local lineage, exact-set, sanitization, and authorization guards.
+
+Executed: `python -m pytest -q`
+
+Output: `499 passed, 1 warning in 46.69s` (the existing experimental workflow warning in `backend/maf_team_runtime.py`).
+
+Executed: `python -m compileall backend tests`; `python -c "from backend.foundry_roi import SignedFoundryRoiAttestation, discover_foundry_roi, reconcile_foundry_roi; import backend.control_plane; import backend.dependency_health; print(discover_foundry_roi().state)"`; and `git diff --check`.
+
+Output: all commands exited `0`; the import check printed `not_configured` with no configured Foundry target/provider.

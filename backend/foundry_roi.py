@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import base64
 import binascii
-import hmac
 import json
 import math
 import os
 import re
-import secrets
 from hashlib import sha256
 from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, Protocol
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 try:
     from .roi_service import parse_time_window
@@ -21,8 +21,8 @@ except ImportError:
     from roi_service import parse_time_window
 
 
-_READ_CAPABILITY_KEY = secrets.token_bytes(32)
-_TRUST_HMAC_KEY_ENV = "DF_FOUNDRY_ROI_TRUST_HMAC_KEY"
+_ATTESTATION_PUBLIC_KEY_ENV = "DF_FOUNDRY_ROI_ATTESTATION_PUBLIC_KEY"
+_ATTESTATION_CONTEXT = "dataforge.foundry_roi.discovery_attestation.v1"
 
 
 class FoundryRoiTarget(BaseModel):
@@ -173,65 +173,36 @@ class ProviderRoiSnapshot(BaseModel):
 
 
 class SignedFoundryRoiAttestation(BaseModel):
-    """An attestation signed by a channel whose verification key is pinned by the adapter."""
+    """Canonical external attestation envelope verified against the pinned Ed25519 public key."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     attestation: VerifiedDiscoveryAttestation
-    trust_key_id: str = Field(pattern=r"^[a-f0-9]{64}$")
-    signature: str = Field(pattern=r"^[a-f0-9]{64}$")
+    key_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    signature: str = Field(min_length=86, max_length=88)
 
-
-class HmacFoundryRoiAttestationSigner:
-    """Concrete signing channel for externally trusted verifier integrations and integration tests."""
-
-    def __init__(self, key: bytes) -> None:
-        if not isinstance(key, bytes) or len(key) < 32:
-            raise ValueError("attestation signing key must contain at least 32 bytes")
-        self._key = key
-        self.trust_key_id = sha256(key).hexdigest()
-
-    def sign(self, attestation: VerifiedDiscoveryAttestation) -> SignedFoundryRoiAttestation:
-        signature = hmac.new(self._key, _attestation_payload(attestation, self.trust_key_id), sha256).hexdigest()
-        return SignedFoundryRoiAttestation(attestation=attestation, trust_key_id=self.trust_key_id, signature=signature)
-
-
-class VerifiedProviderRead(BaseModel):
-    """A connected provider read bound to an independent discovery attestation."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    target_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
-    attestation: VerifiedDiscoveryAttestation
-    snapshot: ProviderRoiSnapshot
-    _issued_by_adapter: bool = PrivateAttr(default=False)
-    _integrity_tag: str = PrivateAttr(default="")
-
-    @model_validator(mode="after")
-    def matching_target_and_version(self) -> "VerifiedProviderRead":
-        if not (
-            hmac.compare_digest(self.target_fingerprint, self.attestation.target_fingerprint)
-            and hmac.compare_digest(self.target_fingerprint, self.snapshot.target_fingerprint)
-            and self.attestation.surface_version == self.snapshot.provider_version
-        ):
-            raise ValueError("verified provider read must match attested target and surface version")
-        return self
-
+    @field_validator("signature")
     @classmethod
-    def _issue(cls, *, target: FoundryRoiTarget, attestation: VerifiedDiscoveryAttestation, snapshot: ProviderRoiSnapshot) -> "VerifiedProviderRead":
-        result = cls(target_fingerprint=target.target_fingerprint, attestation=attestation, snapshot=snapshot)
-        object.__setattr__(result, "_issued_by_adapter", True)
-        object.__setattr__(result, "_integrity_tag", _read_integrity_tag(result))
-        return result
+    def valid_ed25519_signature(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(value.encode("ascii"), validate=True)
+        except (UnicodeEncodeError, binascii.Error) as exc:
+            raise ValueError("signature must be base64 encoded") from exc
+        if len(decoded) != 64:
+            raise ValueError("signature must be an Ed25519 signature")
+        return value
 
 
 class FoundryRoiReadResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: FoundryRoiStatus
-    verified_read: VerifiedProviderRead | None = None
+    provider_snapshot: ProviderRoiSnapshot | None = None
+    attestation: VerifiedDiscoveryAttestation | None = None
 
     @model_validator(mode="after")
     def connected_requires_attested_read(self) -> "FoundryRoiReadResult":
-        if (self.status.state == "connected") != (self.verified_read is not None):
-            raise ValueError("only connected reads may contain a verified provider read")
+        has_read = self.provider_snapshot is not None and self.attestation is not None
+        if (self.status.state == "connected") != has_read:
+            raise ValueError("only connected reads may contain an independently attested provider snapshot")
         return self
 
 
@@ -244,7 +215,7 @@ class FoundryRoiProvider(Protocol):
 
 
 class FoundryRoiDiscoveryVerifier(Protocol):
-    """Independent attestation boundary. Production has no default verifier until an official API exists."""
+    """External attestation source. Its envelope is untrusted until the adapter verifies its Ed25519 signature."""
 
     def verify(self, target: FoundryRoiTarget, proof: DiscoveryProof) -> SignedFoundryRoiAttestation: ...
 
@@ -272,22 +243,20 @@ def _discover_target(
         proof = DiscoveryProof.model_validate(provider.discover(target))
     except Exception:
         return _status("unavailable", "Foundry ROI provider discovery failed"), None
-    if not hmac.compare_digest(proof.target_fingerprint, target.target_fingerprint):
+    if proof.target_fingerprint != target.target_fingerprint:
         return _status("unavailable", "Foundry ROI provider discovery target does not match configuration"), None
     if proof.state == "unavailable":
         return _status("unavailable", "Foundry ROI provider is unavailable", provider_version=proof.surface_version, observed_at=proof.observed_at), None
     if proof.state == "not_configured":
         return _status("not_configured", "Foundry ROI surface is not configured", provider_version=proof.surface_version, observed_at=proof.observed_at), None
-    trusted_channel = _trusted_attestation_channel()
-    if verifier is None or trusted_channel is None:
-        return _status("configured_unverified", "Provider proof awaits a trusted independent Foundry ROI attestation channel", provider_version=proof.surface_version, observed_at=proof.observed_at), None
-    if verifier is provider:
-        return _status("configured_unverified", "Provider cannot serve as its own Foundry ROI attestation verifier", provider_version=proof.surface_version, observed_at=proof.observed_at), None
+    pinned_public_key = _pinned_attestation_public_key()
+    if verifier is None or pinned_public_key is None:
+        return _status("configured_unverified", "Provider proof awaits an externally signed Foundry ROI attestation and pinned public key", provider_version=proof.surface_version, observed_at=proof.observed_at), None
     try:
         signed_attestation = SignedFoundryRoiAttestation.model_validate(verifier.verify(target, proof))
     except Exception:
         return _status("unavailable", "Independent Foundry ROI verification failed", provider_version=proof.surface_version), None
-    if not _valid_attestation_signature(signed_attestation, trusted_channel):
+    if not _valid_attestation_signature(signed_attestation, pinned_public_key):
         return _status("unavailable", "Independent Foundry ROI attestation signature is not trusted", provider_version=proof.surface_version), None
     attestation = signed_attestation.attestation
     if not _attestation_matches(target, proof, attestation):
@@ -327,40 +296,35 @@ def read_foundry_roi(
     except Exception:
         unavailable = _status("unavailable", "Foundry ROI provider read failed", provider_version=status.provider_version)
         return FoundryRoiReadResult(status=unavailable)
-    if not hmac.compare_digest(snapshot.target_fingerprint, target.target_fingerprint):
+    if snapshot.target_fingerprint != target.target_fingerprint:
         unavailable = _status("unavailable", "Foundry ROI provider snapshot target does not match configuration", provider_version=status.provider_version)
         return FoundryRoiReadResult(status=unavailable)
     if snapshot.window != normalized_window:
         unavailable = _status("unavailable", "Foundry ROI provider snapshot window does not match request", provider_version=status.provider_version)
         return FoundryRoiReadResult(status=unavailable)
     assert attestation is not None
-    try:
-        verified_read = VerifiedProviderRead._issue(target=target, attestation=attestation, snapshot=snapshot)
-    except ValidationError:
+    if snapshot.provider_version != attestation.surface_version:
         unavailable = _status("unavailable", "Foundry ROI provider snapshot does not match independent attestation", provider_version=status.provider_version)
         return FoundryRoiReadResult(status=unavailable)
-    return FoundryRoiReadResult(status=status, verified_read=verified_read)
+    return FoundryRoiReadResult(status=status, provider_snapshot=snapshot, attestation=attestation)
 
 
-def reconcile_roi(local: Mapping[str, Any], provider: VerifiedProviderRead) -> dict[str, Any]:
-    """Public reconciliation boundary: only adapter-issued, independently attested reads are accepted."""
+def reconcile_foundry_roi(
+    local: Mapping[str, Any],
+    provider: FoundryRoiProvider | None = None,
+    verifier: FoundryRoiDiscoveryVerifier | None = None,
+) -> dict[str, Any]:
+    """Adapter-owned orchestration: validate the local window, verify discovery, read, then reconcile in one call."""
 
-    if (
-        not isinstance(provider, VerifiedProviderRead)
-        or not provider._issued_by_adapter
-        or not provider._integrity_tag
-        or not hmac.compare_digest(provider._integrity_tag, _read_integrity_tag(provider))
-    ):
-        raise TypeError("reconcile_roi requires a VerifiedProviderRead issued by read_foundry_roi")
-    return _reconcile_snapshot(local, provider.snapshot, provider.attestation)
-
-
-def reconcile_foundry_read(local: Mapping[str, Any], provider: FoundryRoiReadResult) -> dict[str, Any]:
-    if not isinstance(provider, FoundryRoiReadResult):
-        raise TypeError("reconcile_foundry_read requires FoundryRoiReadResult")
-    if provider.verified_read is None:
-        return _unreconciled(local, provider.status)
-    return reconcile_roi(local, provider.verified_read)
+    try:
+        window = parse_time_window(local.get("window", {}).get("from"), local.get("window", {}).get("to"))
+    except (AttributeError, TypeError, ValueError):
+        status = _status("unavailable", "Local ROI window is unavailable")
+        return _with_foundry_status(_unreconciled(local, status), status)
+    read = read_foundry_roi(window, provider=provider, verifier=verifier)
+    if read.provider_snapshot is None or read.attestation is None:
+        return _with_foundry_status(_unreconciled(local, read.status), read.status)
+    return _with_foundry_status(_reconcile_snapshot(local, read.provider_snapshot, read.attestation), read.status)
 
 
 def _reconcile_snapshot(
@@ -368,7 +332,7 @@ def _reconcile_snapshot(
     snapshot: ProviderRoiSnapshot,
     attestation: VerifiedDiscoveryAttestation,
 ) -> dict[str, Any]:
-    """Private snapshot comparison reached only through an adapter-issued wrapper."""
+    """Private pure comparison called only by reconcile_foundry_roi after its full read flow succeeds."""
 
     local_copy = _json_copy(local)
     metadata: dict[str, Any] = {
@@ -433,6 +397,11 @@ def _unreconciled(local: Mapping[str, Any], status: FoundryRoiStatus) -> dict[st
     }
 
 
+def _with_foundry_status(result: dict[str, Any], status: FoundryRoiStatus) -> dict[str, Any]:
+    result["foundry_status"] = status.model_dump(mode="json")
+    return result
+
+
 def _target_from_environment() -> FoundryRoiTarget | None:
     endpoint = str(os.environ.get("FOUNDRY_PROJECT_ENDPOINT") or "").strip()
     agent_id = str(os.environ.get("FOUNDRY_AGENT_ID") or "").strip()
@@ -468,8 +437,8 @@ def _attestation_matches(
     attestation: VerifiedDiscoveryAttestation,
 ) -> bool:
     return bool(
-        hmac.compare_digest(attestation.target_fingerprint, target.target_fingerprint)
-        and hmac.compare_digest(attestation.target_fingerprint, proof.target_fingerprint)
+        attestation.target_fingerprint == target.target_fingerprint
+        and attestation.target_fingerprint == proof.target_fingerprint
         and attestation.surface_id == proof.surface_id
         and attestation.surface_version == proof.surface_version
         and attestation.observed_at == proof.observed_at
@@ -477,36 +446,38 @@ def _attestation_matches(
     )
 
 
-def _trusted_attestation_channel() -> tuple[str, bytes] | None:
-    raw = str(os.environ.get(_TRUST_HMAC_KEY_ENV) or "").strip()
+def _pinned_attestation_public_key() -> tuple[str, Ed25519PublicKey] | None:
+    raw = str(os.environ.get(_ATTESTATION_PUBLIC_KEY_ENV) or "").strip()
     if not raw:
         return None
     try:
-        key = base64.b64decode(raw.encode("ascii"), validate=True)
-    except (UnicodeEncodeError, binascii.Error):
+        encoded_key = base64.b64decode(raw.encode("ascii"), validate=True)
+        public_key = Ed25519PublicKey.from_public_bytes(encoded_key)
+    except (UnicodeEncodeError, binascii.Error, TypeError, ValueError):
         return None
-    if len(key) < 32:
-        return None
-    return sha256(key).hexdigest(), key
+    return sha256(encoded_key).hexdigest(), public_key
 
 
-def _attestation_payload(attestation: VerifiedDiscoveryAttestation, trust_key_id: str) -> bytes:
-    return _canonical_json({"attestation": attestation.model_dump(mode="json"), "trust_key_id": trust_key_id})
+def _attestation_payload(attestation: VerifiedDiscoveryAttestation, key_id: str) -> bytes:
+    return _canonical_json(
+        {
+            "context": _ATTESTATION_CONTEXT,
+            "attestation": attestation.model_dump(mode="json"),
+            "key_id": key_id,
+        }
+    )
 
 
-def _valid_attestation_signature(signed: SignedFoundryRoiAttestation, trusted_channel: tuple[str, bytes]) -> bool:
-    trusted_key_id, trusted_key = trusted_channel
-    expected = hmac.new(trusted_key, _attestation_payload(signed.attestation, signed.trust_key_id), sha256).hexdigest()
-    return hmac.compare_digest(signed.trust_key_id, trusted_key_id) and hmac.compare_digest(signed.signature, expected)
-
-
-def _read_integrity_tag(provider: VerifiedProviderRead) -> str:
-    payload = {
-        "target_fingerprint": provider.target_fingerprint,
-        "attestation": provider.attestation.model_dump(mode="json"),
-        "snapshot": provider.snapshot.model_dump(mode="json"),
-    }
-    return hmac.new(_READ_CAPABILITY_KEY, _canonical_json(payload), sha256).hexdigest()
+def _valid_attestation_signature(signed: SignedFoundryRoiAttestation, pinned_key: tuple[str, Ed25519PublicKey]) -> bool:
+    pinned_key_id, public_key = pinned_key
+    if signed.key_id != pinned_key_id:
+        return False
+    try:
+        signature = base64.b64decode(signed.signature.encode("ascii"), validate=True)
+        public_key.verify(signature, _attestation_payload(signed.attestation, signed.key_id))
+    except (UnicodeEncodeError, binascii.Error, InvalidSignature, ValueError):
+        return False
+    return True
 
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:
@@ -568,13 +539,10 @@ __all__ = [
     "FoundryRoiReadResult",
     "FoundryRoiStatus",
     "FoundryRoiTarget",
-    "HmacFoundryRoiAttestationSigner",
     "ProviderRoiSnapshot",
     "SignedFoundryRoiAttestation",
     "VerifiedDiscoveryAttestation",
-    "VerifiedProviderRead",
     "discover_foundry_roi",
     "read_foundry_roi",
-    "reconcile_foundry_read",
-    "reconcile_roi",
+    "reconcile_foundry_roi",
 ]

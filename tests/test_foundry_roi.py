@@ -1,29 +1,32 @@
 from __future__ import annotations
 
 import base64
+import json
 import math
+from hashlib import sha256
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import ValidationError
 
+import backend.foundry_roi as foundry_roi
 from backend.foundry_roi import (
     DiscoveryProof,
     FoundryRoiStatus,
     FoundryRoiTarget,
-    HmacFoundryRoiAttestationSigner,
     ProviderRoiSnapshot,
-    VerifiedProviderRead,
     VerifiedDiscoveryAttestation,
     discover_foundry_roi,
     read_foundry_roi,
-    reconcile_roi,
+    reconcile_foundry_roi,
 )
 
 
 WINDOW = {"from": "2026-07-01T00:00:00+00:00", "to": "2026-07-02T00:00:00+00:00"}
 TARGET_ENDPOINT = "https://project.services.ai.azure.com/api/projects/demo"
 TARGET_AGENT_ID = "agent-demo"
-TRUST_KEY = b"task3-trusted-attestation-channel-key"
+ATTESTATION_CONTEXT = "dataforge.foundry_roi.discovery_attestation.v1"
 
 
 def target() -> FoundryRoiTarget:
@@ -83,13 +86,17 @@ def configure_target(monkeypatch) -> None:
     monkeypatch.setenv("FOUNDRY_AGENT_ID", TARGET_AGENT_ID)
 
 
-def configure_trusted_channel(monkeypatch) -> None:
-    monkeypatch.setenv("DF_FOUNDRY_ROI_TRUST_HMAC_KEY", base64.b64encode(TRUST_KEY).decode("ascii"))
+def configure_trusted_public_key(monkeypatch, signing_key: Ed25519PrivateKey) -> None:
+    raw_public_key = signing_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    monkeypatch.setenv("DF_FOUNDRY_ROI_ATTESTATION_PUBLIC_KEY", base64.b64encode(raw_public_key).decode("ascii"))
 
 
 class FakeVerifier:
-    def __init__(self, key: bytes = TRUST_KEY) -> None:
-        self.signer = HmacFoundryRoiAttestationSigner(key)
+    def __init__(self, signing_key: Ed25519PrivateKey) -> None:
+        self.signing_key = signing_key
 
     def verify(self, configured_target, provider_proof):
         attestation = VerifiedDiscoveryAttestation(
@@ -99,10 +106,29 @@ class FakeVerifier:
             observed_at=provider_proof.observed_at,
             observed_source="fake_discovery_verifier",
         )
-        return self.signer.sign(attestation)
+        raw_public_key = self.signing_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        key_id = sha256(raw_public_key).hexdigest()
+        payload = json.dumps(
+            {
+                "context": ATTESTATION_CONTEXT,
+                "attestation": attestation.model_dump(mode="json"),
+                "key_id": key_id,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        return {
+            "attestation": attestation,
+            "key_id": key_id,
+            "signature": base64.b64encode(self.signing_key.sign(payload)).decode("ascii"),
+        }
 
 
-def verified_read(monkeypatch, snapshot: ProviderRoiSnapshot, *, request_window: dict[str, str] | None = None):
+def reconcile_with_provider(monkeypatch, local: dict, snapshot: ProviderRoiSnapshot):
     class Provider:
         def discover(self, configured_target):
             return proof(configured_target)
@@ -111,10 +137,9 @@ def verified_read(monkeypatch, snapshot: ProviderRoiSnapshot, *, request_window:
             return snapshot
 
     configure_target(monkeypatch)
-    configure_trusted_channel(monkeypatch)
-    result = read_foundry_roi(request_window if request_window is not None else WINDOW, provider=Provider(), verifier=FakeVerifier())
-    assert result.verified_read is not None
-    return result.verified_read
+    signing_key = Ed25519PrivateKey.generate()
+    configure_trusted_public_key(monkeypatch, signing_key)
+    return reconcile_foundry_roi(local=local, provider=Provider(), verifier=FakeVerifier(signing_key))
 
 
 def test_environment_flag_alone_does_not_mean_configured(monkeypatch) -> None:
@@ -147,21 +172,22 @@ def test_provider_must_discover_exact_target_before_connected(monkeypatch) -> No
             return provider_snapshot(target_fingerprint=configured_target.target_fingerprint, window=window)
 
     configure_target(monkeypatch)
-    configure_trusted_channel(monkeypatch)
+    signing_key = Ed25519PrivateKey.generate()
+    configure_trusted_public_key(monkeypatch, signing_key)
 
-    result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier())
+    result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(signing_key))
 
     assert result.status.state == "connected"
-    assert result.verified_read is not None
-    assert result.verified_read.snapshot.target_fingerprint == target().target_fingerprint
+    assert result.provider_snapshot is not None
+    assert result.provider_snapshot.target_fingerprint == target().target_fingerprint
     assert "project.services" not in str(result)
     assert "agent-demo" not in str(result)
 
 
-def test_provider_as_verifier_cannot_self_attest_even_with_trusted_key(monkeypatch) -> None:
+def test_provider_as_verifier_with_only_public_key_cannot_connect(monkeypatch) -> None:
     class Provider:
-        def __init__(self) -> None:
-            self.signer = HmacFoundryRoiAttestationSigner(TRUST_KEY)
+        def __init__(self, public_key: bytes) -> None:
+            self.public_key = public_key
 
         def discover(self, configured_target):
             return proof(configured_target)
@@ -172,24 +198,34 @@ def test_provider_as_verifier_cannot_self_attest_even_with_trusted_key(monkeypat
                 surface_id=provider_proof.surface_id,
                 surface_version=provider_proof.surface_version,
                 observed_at=provider_proof.observed_at,
-                observed_source="provider_self_attestation",
+                observed_source="provider_public_key_only",
             )
-            return self.signer.sign(attestation)
+            return {
+                "attestation": attestation,
+                "key_id": sha256(self.public_key).hexdigest(),
+                "signature": base64.b64encode(b"0" * 64).decode("ascii"),
+            }
 
         def read(self, configured_target, window):  # pragma: no cover - self-attestation must prevent read
             raise AssertionError("unexpected read")
 
     configure_target(monkeypatch)
-    configure_trusted_channel(monkeypatch)
-    provider = Provider()
+    trusted_signing_key = Ed25519PrivateKey.generate()
+    configure_trusted_public_key(monkeypatch, trusted_signing_key)
+    provider = Provider(
+        trusted_signing_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
 
     result = read_foundry_roi(WINDOW, provider=provider, verifier=provider)
 
-    assert result.status.state != "connected"
-    assert result.verified_read is None
+    assert result.status.state == "unavailable"
+    assert result.provider_snapshot is None
 
 
-def test_colluding_verifier_with_untrusted_key_cannot_connect(monkeypatch) -> None:
+def test_colluding_verifier_without_pinned_private_key_cannot_connect(monkeypatch) -> None:
     class Provider:
         def discover(self, configured_target):
             return proof(configured_target)
@@ -198,12 +234,13 @@ def test_colluding_verifier_with_untrusted_key_cannot_connect(monkeypatch) -> No
             raise AssertionError("unexpected read")
 
     configure_target(monkeypatch)
-    configure_trusted_channel(monkeypatch)
+    trusted_signing_key = Ed25519PrivateKey.generate()
+    configure_trusted_public_key(monkeypatch, trusted_signing_key)
 
-    result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(b"colluding-but-untrusted-attestation-key"))
+    result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(Ed25519PrivateKey.generate()))
 
     assert result.status.state != "connected"
-    assert result.verified_read is None
+    assert result.provider_snapshot is None
 
 
 def test_provider_proof_alone_is_configured_unverified_never_connected(monkeypatch) -> None:
@@ -219,7 +256,7 @@ def test_provider_proof_alone_is_configured_unverified_never_connected(monkeypat
     result = read_foundry_roi(WINDOW, provider=Provider())
 
     assert result.status.state == "configured_unverified"
-    assert result.verified_read is None
+    assert result.provider_snapshot is None
 
 
 def test_lie_about_another_discovery_target_is_unavailable(monkeypatch) -> None:
@@ -232,10 +269,10 @@ def test_lie_about_another_discovery_target_is_unavailable(monkeypatch) -> None:
 
     configure_target(monkeypatch)
 
-    result = read_foundry_roi(WINDOW, provider=LyingProvider(), verifier=FakeVerifier())
+    result = read_foundry_roi(WINDOW, provider=LyingProvider(), verifier=FakeVerifier(Ed25519PrivateKey.generate()))
 
     assert result.status.state == "unavailable"
-    assert result.verified_read is None
+    assert result.provider_snapshot is None
 
 
 def test_snapshot_for_another_target_is_unavailable(monkeypatch) -> None:
@@ -247,12 +284,13 @@ def test_snapshot_for_another_target_is_unavailable(monkeypatch) -> None:
             return provider_snapshot(target_fingerprint="0" * 64, window=window)
 
     configure_target(monkeypatch)
-    configure_trusted_channel(monkeypatch)
+    signing_key = Ed25519PrivateKey.generate()
+    configure_trusted_public_key(monkeypatch, signing_key)
 
-    result = read_foundry_roi(WINDOW, provider=LyingProvider(), verifier=FakeVerifier())
+    result = read_foundry_roi(WINDOW, provider=LyingProvider(), verifier=FakeVerifier(signing_key))
 
     assert result.status.state == "unavailable"
-    assert result.verified_read is None
+    assert result.provider_snapshot is None
 
 
 def test_discovery_proof_requires_surface_and_utc_timestamp() -> None:
@@ -299,16 +337,16 @@ def test_provider_failure_is_unavailable_and_local_reconciliation_is_unchanged(m
 
     configure_target(monkeypatch)
 
-    provider = read_foundry_roi(WINDOW, provider=FailingProvider(), verifier=FakeVerifier())
+    provider = read_foundry_roi(WINDOW, provider=FailingProvider(), verifier=FakeVerifier(Ed25519PrivateKey.generate()))
 
     assert provider.status.state == "unavailable"
     assert "secret" not in str(provider)
-    assert provider.verified_read is None
+    assert provider.provider_snapshot is None
 
 
 def test_provider_values_are_reconciled_only_for_exact_run_and_outcome_sets(monkeypatch) -> None:
     local = local_snapshot(100.0, status="verified")
-    exact = reconcile_roi(local=local, provider=verified_read(monkeypatch, provider_snapshot(90.0)))
+    exact = reconcile_with_provider(monkeypatch, local, provider_snapshot(90.0))
 
     assert exact["local"]["business_value"]["total"] == 100.0
     assert exact["local"]["status"] == "verified"
@@ -323,7 +361,7 @@ def test_provider_values_are_reconciled_only_for_exact_run_and_outcome_sets(monk
         (provider_snapshot(outcome_ids=["outcome-1"]), "outcome lineage"),
         (provider_snapshot(outcome_ids=["outcome-1", "outcome-2", "outcome-3"]), "outcome lineage"),
     ):
-        result = reconcile_roi(local=local, provider=verified_read(monkeypatch, snapshot))
+        result = reconcile_with_provider(monkeypatch, local, snapshot)
         assert result["difference"] is None
         assert result["reconciliation"]["reconciled"] is False
         assert reason in result["reconciliation"]["reason"]
@@ -338,39 +376,19 @@ def test_nonconnected_discovery_discards_even_a_valid_snapshot(monkeypatch) -> N
             raise AssertionError("unexpected read")
 
     configure_target(monkeypatch)
-    result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier())
+    result = read_foundry_roi(WINDOW, provider=Provider(), verifier=FakeVerifier(Ed25519PrivateKey.generate()))
 
     assert result.status.state == "not_configured"
-    assert result.verified_read is None
+    assert result.provider_snapshot is None
 
 
-def test_public_reconcile_rejects_raw_snapshot_bypass() -> None:
-    with pytest.raises(TypeError):
-        reconcile_roi(local_snapshot(), provider_snapshot())
-
-
-def test_public_reconcile_rejects_self_constructed_or_toggled_wrapper(monkeypatch) -> None:
-    issued = verified_read(monkeypatch, provider_snapshot())
-    forged = VerifiedProviderRead(
-        target_fingerprint=issued.target_fingerprint,
-        attestation=issued.attestation,
-        snapshot=issued.snapshot,
-    )
-    object.__setattr__(forged, "_issued_by_adapter", True)
-
-    with pytest.raises(TypeError):
-        reconcile_roi(local_snapshot(), forged)
-
-
-def test_verified_wrapper_is_immutable_and_detects_snapshot_replacement(monkeypatch) -> None:
-    issued = verified_read(monkeypatch, provider_snapshot())
-
-    with pytest.raises(ValidationError):
-        issued.snapshot = provider_snapshot(amount=999.0)
-    object.__setattr__(issued, "snapshot", provider_snapshot(amount=999.0))
-
-    with pytest.raises(TypeError):
-        reconcile_roi(local_snapshot(), issued)
+def test_public_api_exposes_no_verified_read_or_two_step_reconciliation_bypass() -> None:
+    assert not hasattr(foundry_roi, "VerifiedProviderRead")
+    assert not hasattr(foundry_roi, "reconcile_roi")
+    assert not hasattr(foundry_roi, "reconcile_foundry_read")
+    assert "VerifiedProviderRead" not in foundry_roi.__all__
+    assert "reconcile_roi" not in foundry_roi.__all__
+    assert "reconcile_foundry_read" not in foundry_roi.__all__
 
 
 @pytest.mark.parametrize("amount", [math.nan, -1.0])
@@ -390,11 +408,11 @@ def test_reconciliation_accepts_utc_equivalent_window_but_rejects_different_wind
     equivalent = provider_snapshot(window={"from": "2026-07-01T00:00:00Z", "to": "2026-07-02T00:00:00Z"})
     different = provider_snapshot(window={"from": "2026-07-01T00:00:00Z", "to": "2026-07-02T00:00:01Z"})
 
-    assert reconcile_roi(local_snapshot(), verified_read(monkeypatch, equivalent))["reconciliation"]["reconciled"] is True
-    result = reconcile_roi(local_snapshot(), verified_read(monkeypatch, different, request_window=different.window))
+    assert reconcile_with_provider(monkeypatch, local_snapshot(), equivalent)["reconciliation"]["reconciled"] is True
+    result = reconcile_with_provider(monkeypatch, local_snapshot(), different)
     assert result["difference"] is None
     assert result["reconciliation"]["reconciled"] is False
-    assert "window" in result["reconciliation"]["reason"]
+    assert "window" in result["reconciliation"]["reason"].lower()
 
 
 @pytest.mark.parametrize(
@@ -410,7 +428,7 @@ def test_incomplete_or_empty_local_lineage_never_reconciles(monkeypatch, mutate)
     local = local_snapshot()
     mutate(local)
 
-    result = reconcile_roi(local, verified_read(monkeypatch, provider_snapshot()))
+    result = reconcile_with_provider(monkeypatch, local, provider_snapshot())
 
     assert result["difference"] is None
     assert result["reconciliation"]["reconciled"] is False

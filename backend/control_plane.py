@@ -25,7 +25,7 @@ try:
     from .dependency_health import health_dependencies, health_dependency_details
     from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
-    from .foundry_roi import discover_foundry_roi, read_foundry_roi, reconcile_foundry_read
+    from .foundry_roi import discover_foundry_roi, reconcile_foundry_roi
     from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
@@ -44,7 +44,7 @@ except ImportError:
     from dependency_health import health_dependencies, health_dependency_details
     from graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
-    from foundry_roi import discover_foundry_roi, read_foundry_roi, reconcile_foundry_read
+    from foundry_roi import discover_foundry_roi, reconcile_foundry_roi
     from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
@@ -1134,10 +1134,9 @@ def workspace_roi_snapshot(workspace_id: str, from_value: str, to_value: str) ->
         verification_events=list_verification_events(workspace_id),
         truncated=truncated,
     )
-    provider = read_foundry_roi(local["window"])
-    reconciliation = reconcile_foundry_read(local=local, provider=provider)
+    reconciliation = reconcile_foundry_roi(local=local)
     local["foundry_roi"] = {
-        "status": provider.status.model_dump(mode="json"),
+        "status": reconciliation["foundry_status"],
         "provider_snapshot": reconciliation["provider"],
         "difference": reconciliation["difference"],
         "reconciliation": reconciliation["reconciliation"],
