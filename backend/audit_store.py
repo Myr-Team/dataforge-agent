@@ -110,6 +110,7 @@ class _StreamSnapshot:
     etag: str | None
     record_count: int
     sealed: bool = False
+    content_sha256: str | None = None
 
 
 class AuditEvent(BaseModel):
@@ -211,6 +212,10 @@ class _AppendBackend(Protocol):
 class _LocalAppendBackend:
     def read_snapshot(self, name: str) -> _StreamSnapshot:
         path, sealed = _local_read_path(name)
+        return self._read_path_snapshot(name, path, sealed=sealed)
+
+    @staticmethod
+    def _read_path_snapshot(name: str, path: Path, *, sealed: bool) -> _StreamSnapshot:
         if not path.exists():
             return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=None, record_count=0)
         try:
@@ -223,13 +228,16 @@ class _LocalAppendBackend:
             raise AuditPersistenceError("local audit read failed") from exc
         if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
             raise _AppendConflict("local stream changed during snapshot read")
+        record_count = _count_local_records(path)
+        content_sha256 = _read_local_seal_metadata(name, int(after.st_size), record_count) if sealed else None
         return _snapshot_from_tail(
             name,
             data,
             int(after.st_size),
             _local_etag(after),
-            _count_local_records(path),
+            record_count,
             sealed=sealed,
+            content_sha256=content_sha256,
         )
 
     def read_full(self, name: str) -> bytes:
@@ -311,33 +319,50 @@ class _LocalAppendBackend:
             raise AuditPersistenceError("only a full audit segment can be sealed")
         source = _local_active_stream_path(name)
         destination = _local_sealed_stream_path(name)
-        if destination.exists():
-            return _validate_sealed_snapshot(self.read_snapshot(name), snapshot)
+        if snapshot.sealed:
+            destination_data = _read_local_segment_bytes(destination, snapshot, "sealed audit segment")
+            if not hmac.compare_digest(hashlib.sha256(destination_data).hexdigest(), str(snapshot.content_sha256)):
+                raise AuditIntegrityError("sealed audit content digest does not match signed seal")
+            return snapshot
+        source_snapshot = self._read_path_snapshot(name, source, sealed=False)
+        if (
+            source_snapshot.length != snapshot.length
+            or source_snapshot.record_count != snapshot.record_count
+            or source_snapshot.head != snapshot.head
+        ):
+            raise _AppendConflict("active audit segment changed before sealing")
+        source_data = _read_local_segment_bytes(source, source_snapshot, "active audit segment")
+        source_digest = hashlib.sha256(source_data).hexdigest()
         try:
-            before = source.stat()
-            if before.st_size != snapshot.length or _local_etag(before) != snapshot.etag:
-                raise _AppendConflict("active audit segment changed before sealing")
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o400)
-            try:
-                with source.open("rb") as stream:
-                    while chunk := stream.read(1024 * 1024):
-                        view = memoryview(chunk)
-                        while view:
-                            view = view[os.write(descriptor, view) :]
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            after = source.stat()
-            if _local_etag(after) != snapshot.etag:
-                raise _AppendConflict("active audit segment changed during sealing")
+            if not destination.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                descriptor = os.open(
+                    destination,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+                    0o400,
+                )
+                try:
+                    view = memoryview(source_data)
+                    while view:
+                        view = view[os.write(descriptor, view) :]
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
         except FileExistsError:
             pass
-        except _AppendConflict:
-            raise
         except OSError as exc:
             raise AuditPersistenceError("local audit segment sealing failed") from exc
-        return _validate_sealed_snapshot(self.read_snapshot(name), snapshot)
+        destination_data = _read_local_segment_bytes(
+            destination,
+            self._read_path_snapshot(name, destination, sealed=False),
+            "sealed audit segment",
+        )
+        if not hmac.compare_digest(hashlib.sha256(destination_data).hexdigest(), source_digest):
+            raise AuditIntegrityError("sealed audit content digest does not match source")
+        metadata = _build_seal_metadata(name, source_snapshot, source_digest)
+        _write_or_validate_local_seal_metadata(name, metadata, source_snapshot, source_digest)
+        sealed = self.read_snapshot(name)
+        return _validate_sealed_snapshot(sealed, source_snapshot, expected_content_sha256=source_digest)
 
 
 class _BlobAppendBackend:
@@ -381,6 +406,9 @@ class _BlobAppendBackend:
             raise AuditPersistenceError("sealed audit properties read failed") from exc
         if sealed_client is not None:
             return self._snapshot_from_properties(name, sealed_client, properties, sealed=True)
+        return self._read_active_snapshot(name)
+
+    def _read_active_snapshot(self, name: str) -> _StreamSnapshot:
         client = self.container.get_blob_client(name)
         try:
             properties = client.get_blob_properties()
@@ -404,10 +432,12 @@ class _BlobAppendBackend:
                 record_count = int(metadata.get("df_record_count") or 0)
             except (TypeError, ValueError) as exc:
                 raise AuditIntegrityError("sealed audit record count metadata is invalid") from exc
+            content_sha256 = _validated_seal_metadata(name, length, record_count, metadata)
         else:
             if "append" not in blob_type:
                 raise AuditIntegrityError("active audit stream is not an append blob")
             record_count = properties.append_blob_committed_block_count
+            content_sha256 = None
         offset = max(0, length - STREAM_TAIL_BYTES)
         try:
             data = bytes(
@@ -426,7 +456,15 @@ class _BlobAppendBackend:
             raise AuditPersistenceError("durable audit tail read failed") from exc
         if not isinstance(record_count, int) or record_count < 0:
             raise AuditPersistenceError("durable audit block count is missing")
-        return _snapshot_from_tail(name, data, length, etag, record_count, sealed=sealed)
+        return _snapshot_from_tail(
+            name,
+            data,
+            length,
+            etag,
+            record_count,
+            sealed=sealed,
+            content_sha256=content_sha256,
+        )
 
     def read_full(self, name: str) -> bytes:
         snapshot = self.read_snapshot(name)
@@ -533,23 +571,26 @@ class _BlobAppendBackend:
     def seal(self, name: str, snapshot: _StreamSnapshot) -> _StreamSnapshot:
         if snapshot.name != name or snapshot.record_count != MAX_RECORDS_PER_SEGMENT:
             raise AuditPersistenceError("only a full audit segment can be sealed")
-        if snapshot.sealed:
-            return snapshot
         source = self.container.get_blob_client(name)
         destination = self.sealed_container.get_blob_client(name)
-        source_etag_hash = hashlib.sha256(str(snapshot.etag or "").encode("ascii")).hexdigest()
-        metadata = {
-            "df_record_count": str(snapshot.record_count),
-            "df_source_etag_sha256": source_etag_hash,
-        }
+        if snapshot.sealed:
+            destination_data = _download_blob_segment(destination, snapshot, "sealed audit segment")
+            if not hmac.compare_digest(hashlib.sha256(destination_data).hexdigest(), str(snapshot.content_sha256)):
+                raise AuditIntegrityError("sealed audit content digest does not match signed seal")
+            return snapshot
+        source_snapshot = snapshot
         try:
             properties = source.get_blob_properties()
             if (
-                int(properties.size or 0) != snapshot.length
-                or str(properties.etag or "") != snapshot.etag
+                int(properties.size or 0) != source_snapshot.length
+                or str(properties.etag or "") != source_snapshot.etag
                 or "append" not in str(properties.blob_type or "").lower()
+                or properties.append_blob_committed_block_count != source_snapshot.record_count
             ):
                 raise _AppendConflict("active audit segment changed before sealing")
+            source_data = _download_blob_segment(source, source_snapshot, "active audit segment")
+            source_digest = hashlib.sha256(source_data).hexdigest()
+            metadata = _build_seal_metadata(name, source_snapshot, source_digest)
             if hasattr(self.credential, "get_token"):
                 token = self.credential.get_token("https://storage.azure.com/.default").token
                 destination.upload_blob_from_url(
@@ -557,17 +598,13 @@ class _BlobAppendBackend:
                     overwrite=False,
                     metadata=metadata,
                     source_authorization=f"Bearer {token}",
-                    source_etag=snapshot.etag,
+                    source_etag=source_snapshot.etag,
                     source_match_condition=MatchConditions.IfNotModified,
                     include_source_blob_properties=True,
                 )
             else:
-                payload = source.download_blob(
-                    etag=snapshot.etag,
-                    match_condition=MatchConditions.IfNotModified,
-                ).readall()
                 destination.upload_blob(
-                    payload,
+                    source_data,
                     overwrite=False,
                     metadata=metadata,
                     blob_type="BlockBlob",
@@ -588,14 +625,25 @@ class _BlobAppendBackend:
         except Exception as exc:
             raise AuditPersistenceError("durable audit segment sealing failed") from exc
         sealed = self.read_snapshot(name)
+        _validate_sealed_snapshot(sealed, source_snapshot, expected_content_sha256=source_digest)
         try:
             sealed_properties = destination.get_blob_properties()
             sealed_metadata = sealed_properties.metadata if isinstance(sealed_properties.metadata, Mapping) else {}
         except Exception as exc:
-            raise AuditPersistenceError("sealed audit verification failed") from exc
-        if sealed_metadata.get("df_source_etag_sha256") != source_etag_hash:
-            raise AuditIntegrityError("sealed audit source identity does not match")
-        return _validate_sealed_snapshot(sealed, snapshot)
+            raise AuditPersistenceError("sealed audit metadata verification failed") from exc
+        _validated_seal_metadata(
+            name,
+            source_snapshot.length,
+            source_snapshot.record_count,
+            sealed_metadata,
+            expected_source_etag_sha256=hashlib.sha256(str(source_snapshot.etag).encode("ascii")).hexdigest(),
+            expected_content_sha256=source_digest,
+        )
+        destination_data = _download_blob_segment(destination, sealed, "sealed audit segment")
+        destination_digest = hashlib.sha256(destination_data).hexdigest()
+        if not hmac.compare_digest(destination_digest, source_digest):
+            raise AuditIntegrityError("sealed audit content digest does not match source")
+        return sealed
 
 
 @dataclass(frozen=True)
@@ -1175,13 +1223,173 @@ def _segment_for_append(
     return _SegmentHead(index, name, snapshot, None)
 
 
-def _validate_sealed_snapshot(sealed: _StreamSnapshot, source: _StreamSnapshot) -> _StreamSnapshot:
+def _segment_byte_limit() -> int:
+    return MAX_RECORDS_PER_SEGMENT * MAX_STREAM_RECORD_BYTES
+
+
+def _download_blob_segment(client: Any, snapshot: _StreamSnapshot, label: str) -> bytes:
+    if snapshot.etag is None or snapshot.length < 1 or snapshot.length > _segment_byte_limit():
+        raise AuditIntegrityError(f"{label} length is outside the bounded seal contract")
+    try:
+        data = bytes(
+            client.download_blob(
+                offset=0,
+                length=snapshot.length,
+                etag=snapshot.etag,
+                match_condition=MatchConditions.IfNotModified,
+            ).readall()
+        )
+    except HttpResponseError as exc:
+        if exc.status_code in {409, 412}:
+            raise _AppendConflict(f"{label} changed during content hashing") from exc
+        raise AuditPersistenceError(f"{label} content hashing failed") from exc
+    except Exception as exc:
+        raise AuditPersistenceError(f"{label} content hashing failed") from exc
+    _validate_exact_segment_bytes(data, snapshot, label)
+    return data
+
+
+def _read_local_segment_bytes(path: Path, snapshot: _StreamSnapshot, label: str) -> bytes:
+    if snapshot.etag is None or snapshot.length < 1 or snapshot.length > _segment_byte_limit():
+        raise AuditIntegrityError(f"{label} length is outside the bounded seal contract")
+    try:
+        before = path.stat()
+        if before.st_size != snapshot.length or _local_etag(before) != snapshot.etag:
+            raise _AppendConflict(f"{label} changed before content hashing")
+        data = path.read_bytes()
+        after = path.stat()
+    except _AppendConflict:
+        raise
+    except OSError as exc:
+        raise AuditPersistenceError(f"{label} content hashing failed") from exc
+    if _local_etag(after) != snapshot.etag:
+        raise _AppendConflict(f"{label} changed during content hashing")
+    _validate_exact_segment_bytes(data, snapshot, label)
+    return data
+
+
+def _validate_exact_segment_bytes(data: bytes, snapshot: _StreamSnapshot, label: str) -> None:
+    tail_length = min(snapshot.length, STREAM_TAIL_BYTES)
+    if (
+        len(data) != snapshot.length
+        or data.count(b"\n") != snapshot.record_count
+        or data[-tail_length:] != snapshot.data
+    ):
+        raise AuditIntegrityError(f"{label} bytes do not match the validated snapshot")
+
+
+def _seal_envelope(
+    name: str,
+    length: int,
+    record_count: int,
+    source_etag_sha256: str,
+    content_sha256: str,
+    key_id: str,
+) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "stream_name": name,
+        "stream_length": length,
+        "record_count": record_count,
+        "source_etag_sha256": source_etag_sha256,
+        "content_sha256": content_sha256,
+        "key_id": key_id,
+    }
+
+
+def _build_seal_metadata(name: str, source: _StreamSnapshot, content_sha256: str) -> dict[str, str]:
+    if source.etag is None or not re.fullmatch(r"[0-9a-f]{64}", content_sha256):
+        raise AuditIntegrityError("audit segment seal source identity is invalid")
+    source_etag_sha256 = hashlib.sha256(source.etag.encode("ascii")).hexdigest()
+    key_id, key = _active_key()
+    envelope = _seal_envelope(
+        name,
+        source.length,
+        source.record_count,
+        source_etag_sha256,
+        content_sha256,
+        key_id,
+    )
+    signature = hmac.new(key, _canonical_json(envelope), hashlib.sha256).hexdigest()
+    return {
+        "df_seal_version": "1",
+        "df_stream_length": str(source.length),
+        "df_record_count": str(source.record_count),
+        "df_source_etag_sha256": source_etag_sha256,
+        "df_content_sha256": content_sha256,
+        "df_seal_key_id": key_id,
+        "df_seal_hmac": signature,
+    }
+
+
+def _validated_seal_metadata(
+    name: str,
+    length: int,
+    record_count: int,
+    metadata: Mapping[str, Any] | None,
+    *,
+    expected_source_etag_sha256: str | None = None,
+    expected_content_sha256: str | None = None,
+) -> str:
+    value = metadata if isinstance(metadata, Mapping) else {}
+    try:
+        metadata_length = int(value.get("df_stream_length") or 0)
+        metadata_count = int(value.get("df_record_count") or 0)
+    except (TypeError, ValueError) as exc:
+        raise AuditIntegrityError("sealed audit content digest metadata is invalid") from exc
+    source_etag_sha256 = str(value.get("df_source_etag_sha256") or "")
+    content_sha256 = str(value.get("df_content_sha256") or "")
+    key_id = str(value.get("df_seal_key_id") or "")
+    signature = str(value.get("df_seal_hmac") or "")
+    if (
+        str(value.get("df_seal_version") or "") != "1"
+        or metadata_length != length
+        or metadata_count != record_count
+        or not re.fullmatch(r"[0-9a-f]{64}", source_etag_sha256)
+        or not re.fullmatch(r"[0-9a-f]{64}", content_sha256)
+        or not _KEY_ID.fullmatch(key_id)
+        or not re.fullmatch(r"[0-9a-f]{64}", signature)
+        or (
+            expected_source_etag_sha256 is not None
+            and not hmac.compare_digest(source_etag_sha256, expected_source_etag_sha256)
+        )
+        or (
+            expected_content_sha256 is not None
+            and not hmac.compare_digest(content_sha256, expected_content_sha256)
+        )
+    ):
+        raise AuditIntegrityError("sealed audit content digest metadata is invalid")
+    envelope = _seal_envelope(
+        name,
+        length,
+        record_count,
+        source_etag_sha256,
+        content_sha256,
+        key_id,
+    )
+    expected_signature = hmac.new(_key_for(key_id), _canonical_json(envelope), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        raise AuditIntegrityError("sealed audit seal signature is invalid")
+    return content_sha256
+
+
+def _validate_sealed_snapshot(
+    sealed: _StreamSnapshot,
+    source: _StreamSnapshot,
+    *,
+    expected_content_sha256: str | None = None,
+) -> _StreamSnapshot:
     if (
         not sealed.sealed
         or sealed.name != source.name
         or sealed.length != source.length
         or sealed.record_count != source.record_count
         or sealed.head != source.head
+        or not re.fullmatch(r"[0-9a-f]{64}", str(sealed.content_sha256 or ""))
+        or (
+            expected_content_sha256 is not None
+            and not hmac.compare_digest(str(sealed.content_sha256), expected_content_sha256)
+        )
     ):
         raise AuditIntegrityError("sealed audit segment does not match its active source")
     return sealed
@@ -2121,6 +2329,60 @@ def _local_sealed_stream_path(name: str) -> Path:
     return _local_scoped_path(_local_sealed_root(), name)
 
 
+def _local_seal_metadata_path(name: str) -> Path:
+    stream = _local_sealed_stream_path(name)
+    return stream.with_name(f"{stream.name}.seal.json")
+
+
+def _read_local_seal_metadata(name: str, length: int, record_count: int) -> str:
+    path = _local_seal_metadata_path(name)
+    try:
+        metadata = json.loads(path.read_text(encoding="ascii"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AuditIntegrityError("sealed audit content digest metadata is missing or invalid") from exc
+    return _validated_seal_metadata(name, length, record_count, metadata)
+
+
+def _write_or_validate_local_seal_metadata(
+    name: str,
+    metadata: Mapping[str, str],
+    source: _StreamSnapshot,
+    content_sha256: str,
+) -> None:
+    path = _local_seal_metadata_path(name)
+    payload = _canonical_json(metadata) + b"\n"
+    try:
+        descriptor = os.open(
+            path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+            0o400,
+        )
+        try:
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(descriptor, view) :]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise AuditPersistenceError("local audit seal metadata write failed") from exc
+    try:
+        persisted = json.loads(path.read_text(encoding="ascii"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AuditIntegrityError("sealed audit content digest metadata is missing or invalid") from exc
+    source_etag_sha256 = hashlib.sha256(str(source.etag or "").encode("ascii")).hexdigest()
+    _validated_seal_metadata(
+        name,
+        source.length,
+        source.record_count,
+        persisted,
+        expected_source_etag_sha256=source_etag_sha256,
+        expected_content_sha256=content_sha256,
+    )
+
+
 def _local_read_path(name: str) -> tuple[Path, bool]:
     sealed = _local_sealed_stream_path(name)
     if sealed.exists():
@@ -2207,6 +2469,7 @@ def _snapshot_from_tail(
     record_count: int,
     *,
     sealed: bool = False,
+    content_sha256: str | None = None,
 ) -> _StreamSnapshot:
     if length < 0 or len(data) != min(length, STREAM_TAIL_BYTES):
         raise AuditIntegrityError("audit stream snapshot length is invalid")
@@ -2215,7 +2478,16 @@ def _snapshot_from_tail(
     if length == 0:
         if data or record_count:
             raise AuditIntegrityError("empty audit stream snapshot is invalid")
-        return _StreamSnapshot(name=name, data=b"", head=None, length=0, etag=etag, record_count=0, sealed=sealed)
+        return _StreamSnapshot(
+            name=name,
+            data=b"",
+            head=None,
+            length=0,
+            etag=etag,
+            record_count=0,
+            sealed=sealed,
+            content_sha256=content_sha256,
+        )
     if etag is None or not data.endswith(b"\n"):
         raise AuditIntegrityError("audit stream snapshot is truncated")
     complete = data
@@ -2243,6 +2515,7 @@ def _snapshot_from_tail(
         etag=etag,
         record_count=record_count,
         sealed=sealed,
+        content_sha256=content_sha256,
     )
 
 

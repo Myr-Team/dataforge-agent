@@ -8,7 +8,7 @@ Interrupted remediation parent: `5799c3b` (`fix: harden immutable audit remediat
 
 ## Scope
 
-All nine Task5 findings, all six r2 Critical/Important findings, all four r3 findings, and all four r4 findings are remediated. The interrupted worker's changes were retained and repaired. No Easy Auth configuration was added or changed, and `output/` was left untouched.
+All nine Task5 findings, all six r2 Critical/Important findings, all four r3 findings, all four r4 findings, and the final sealed-copy Important finding are remediated. The interrupted worker's changes were retained and repaired. No Easy Auth configuration was added or changed, and `output/` was left untouched.
 
 ## Original Nine Findings
 
@@ -134,6 +134,15 @@ All nine Task5 findings, all six r2 Critical/Important findings, all four r3 fin
 - The production environment also has a cross-variable validation, so an unconfirmed plan fails before provider operations. `terraform.tfvars.example` contains the explicit acknowledgement next to the irreversible warning.
 - A native Terraform test with mocked Azure providers proves the unconfirmed plan is rejected and the exact confirmed plan succeeds. The README states that both policy locks are irreversible and that the legal hold remains indefinite until explicitly removed by an authorized operator.
 
+## Final Sealed-Copy Integrity Remediation
+
+- Sealing now reads the complete active append segment with the exact validated ETag and `IfNotModified`, bounded by `MAX_RECORDS_PER_SEGMENT * MAX_STREAM_RECORD_BYTES` (10,000 records times 16 KiB). The read must reproduce the snapshot's exact byte length, newline/record count, and bounded tail before its SHA-256 is accepted.
+- The content digest is stored in an HMAC-signed seal envelope with the canonical stream name, exact stream length, exact record count, source-ETag SHA-256, seal key ID, and schema version. Azure stores that envelope as immutable sealed-blob metadata; local mode stores the same envelope in a read-only seal sidecar. Retained signing keys validate seals after rotation.
+- After `upload_blob_from_url` or fallback upload, the backend independently performs an ETag-bound complete read of the sealed block blob and requires its SHA-256 to equal the source digest. This identical verifier runs when this replica creates the destination and when `ResourceExistsError`/409/412 proves another replica won.
+- A pre-existing canonical sealed snapshot is re-hashed against its signed content digest without consulting abandoned active bytes, preserving the r4 rule that later junk on a non-authoritative active source cannot affect state.
+- Full source/destination hashing occurs only when a full segment rotates or an interrupted seal is completed. Ordinary mutation gates continue using Blob properties plus bounded tails and do not hash historical segments.
+- The adversarial test uses 200 individually valid HMAC events, swaps early complete JSON records outside the 64 KiB tail, keeps identical length/count/final head, and supplies a valid signed seal envelope for the genuine source digest. Both creator and cross-replica-precreated destination cases fail only after the independent destination hash detects different earlier bytes.
+
 ## Preserved Contracts
 
 - Audit action/resource/result/reason/correlation schemas remain allowlisted and are revalidated on read.
@@ -224,6 +233,34 @@ Final full repository suite after r4:
 ```text
 python -m pytest -q
 653 passed, 1 warning in 92.61s (0:01:32)
+```
+
+Final sealed-copy red regression:
+
+```text
+python -m pytest tests/test_audit_store.py -q -k "cross_replica_destination"
+1 failed, 73 deselected in 0.48s
+```
+
+Final creator/cross-replica adversarial selection:
+
+```text
+python -m pytest tests/test_audit_store.py -q -k "creator_or_cross_replica"
+2 passed, 74 deselected in 0.23s
+```
+
+Final Task5 focused suites after sealed-copy remediation:
+
+```text
+python -m pytest tests/test_audit_store.py tests/test_actor_audit_usage.py tests/test_entra_member_invites.py -q
+150 passed in 17.96s
+```
+
+Final full repository suite after sealed-copy remediation:
+
+```text
+python -m pytest -q
+656 passed, 1 warning in 92.43s (0:01:32)
 ```
 
 The warning is the existing `ExperimentalWarning` from `backend/maf_team_runtime.py` in `tests/test_maf_evaluation_contract.py`.

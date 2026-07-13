@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import re
 import secrets
@@ -656,7 +657,13 @@ class _SnapshotRaceBackend:
         data = self.sealed_streams.get(name, self.streams.get(name, b""))
         tail = data[-audit_store.STREAM_TAIL_BYTES :]
         return audit_store._snapshot_from_tail(
-            name, tail, len(data), self._etag(name, sealed=sealed), data.count(b"\n"), sealed=sealed
+            name,
+            tail,
+            len(data),
+            self._etag(name, sealed=sealed),
+            data.count(b"\n"),
+            sealed=sealed,
+            content_sha256=hashlib.sha256(data).hexdigest() if sealed else None,
         )
 
     def _etag(self, name: str, *, sealed: bool = False) -> str | None:
@@ -1045,6 +1052,125 @@ def test_r4_blob_seal_is_etag_bound_and_sealed_copy_is_canonical(monkeypatch) ->
     assert canonical.head == {"revision": 2}
 
 
+@pytest.mark.parametrize("precreated", [False, True])
+def test_seal_rejects_creator_or_cross_replica_destination_with_different_earlier_valid_records(
+    monkeypatch, precreated: bool
+) -> None:
+    monkeypatch.setattr(audit_store, "MAX_RECORDS_PER_SEGMENT", 200)
+    name = "events/99999998/00000001.jsonl"
+    events: list[dict] = []
+    previous_hash = audit_store.GENESIS_HASH
+    for revision in range(1, 201):
+        event = audit_store._build_event(
+            _actor(),
+            "file.edit",
+            _resource(f"file-{revision}"),
+            {},
+            revision=revision,
+            previous_hash=previous_hash,
+            event_id=f"event_{revision:032x}",
+            at="2026-07-14T00:00:00Z",
+        )
+        assert event["event_hash"] == audit_store._hash_event(event)
+        events.append(event)
+        previous_hash = event["event_hash"]
+    source_data = b"".join(audit_store._line(event) for event in events)
+    malicious_data = b"".join(
+        audit_store._line(event) for event in [events[1], events[0], *events[2:]]
+    )
+    assert len(source_data) > audit_store.STREAM_TAIL_BYTES
+    assert len(malicious_data) == len(source_data)
+    assert malicious_data[-audit_store.STREAM_TAIL_BYTES :] == source_data[-audit_store.STREAM_TAIL_BYTES :]
+    assert malicious_data != source_data
+
+    source_etag = '"active-v1"'
+    source = audit_store._snapshot_from_tail(
+        name,
+        source_data[-audit_store.STREAM_TAIL_BYTES :],
+        len(source_data),
+        source_etag,
+        200,
+    )
+    source_digest = hashlib.sha256(source_data).hexdigest()
+    forged_metadata = audit_store._build_seal_metadata(name, source, source_digest)
+    assert audit_store._validated_seal_metadata(
+        name, len(source_data), 200, forged_metadata
+    ) == source_digest
+
+    class Downloader:
+        def __init__(self, data: bytes) -> None:
+            self.data = data
+
+        def readall(self) -> bytes:
+            return self.data
+
+    class Blob:
+        def __init__(self, *, data: bytes, blob_type: str, etag: str, metadata=None, precreated=False) -> None:
+            self.data = data
+            self.blob_type = blob_type
+            self.etag = etag
+            self.metadata = metadata or {}
+            self.precreated = precreated
+            self.download_calls: list[tuple[int, int | None]] = []
+            self.url = f"https://writeaccount.blob.core.windows.net/container/{name}"
+
+        def get_blob_properties(self):
+            return type(
+                "Properties",
+                (),
+                {
+                    "size": len(self.data),
+                    "etag": self.etag,
+                    "blob_type": self.blob_type,
+                    "metadata": self.metadata,
+                    "append_blob_committed_block_count": self.data.count(b"\n"),
+                },
+            )()
+
+        def download_blob(self, *, offset=0, length=None, **kwargs):
+            self.download_calls.append((offset, length))
+            end = None if length is None else offset + length
+            return Downloader(self.data[offset:end])
+
+        def upload_blob_from_url(self, source_url: str, **kwargs) -> None:
+            if self.precreated:
+                raise audit_store.ResourceExistsError("another replica sealed first")
+            self.data = malicious_data
+            self.blob_type = "BlockBlob"
+            self.etag = '"sealed-this-replica"'
+            self.metadata = kwargs["metadata"]
+
+    class Container:
+        def __init__(self, blob: Blob) -> None:
+            self.blob = blob
+
+        def get_blob_client(self, requested_name: str) -> Blob:
+            assert requested_name == name
+            return self.blob
+
+    class Credential:
+        def get_token(self, scope: str):
+            return type("Token", (), {"token": "managed-identity-token"})()
+
+    active = Blob(data=source_data, blob_type="AppendBlob", etag=source_etag)
+    malicious = Blob(
+        data=malicious_data if precreated else b"",
+        blob_type="BlockBlob",
+        etag='"sealed-other-replica"' if precreated else '"missing"',
+        metadata=forged_metadata if precreated else {},
+        precreated=precreated,
+    )
+    backend = audit_store._BlobAppendBackend.__new__(audit_store._BlobAppendBackend)
+    backend.container = Container(active)
+    backend.sealed_container = Container(malicious)
+    backend.credential = Credential()
+
+    with pytest.raises(audit_store.AuditIntegrityError, match="content digest does not match source"):
+        backend.seal(name, source)
+    assert active.download_calls == [(0, len(source_data))]
+    assert malicious.download_calls[-1] == (0, len(malicious_data))
+
+
 def test_r3_segment_rotation_is_deterministic_and_old_segments_are_not_reopened(monkeypatch) -> None:
     monkeypatch.setattr(audit_store, "MAX_RECORDS_PER_SEGMENT", 2)
     audit_store.record_audit_event(_actor(), "file.create", _resource("file-1"), {})
@@ -1103,6 +1229,28 @@ def test_r3_mutation_call_count_is_constant_across_many_segments(monkeypatch) ->
     assert remote.list_reads <= 6
     assert remote.snapshot_reads <= 16
     assert remote.range_reads <= 3
+
+
+def test_full_segment_hashing_runs_only_when_a_segment_rotates(monkeypatch) -> None:
+    monkeypatch.setattr(audit_store, "MAX_RECORDS_PER_SEGMENT", 3)
+    original = audit_store._read_local_segment_bytes
+    hashed: list[str] = []
+
+    def tracked(path, snapshot, label):
+        hashed.append(label)
+        return original(path, snapshot, label)
+
+    monkeypatch.setattr(audit_store, "_read_local_segment_bytes", tracked)
+    for revision in range(1, 4):
+        audit_store.record_audit_event(_actor(), "file.edit", _resource(f"file-{revision}"), {})
+    assert hashed == []
+
+    audit_store.record_audit_event(_actor(), "file.edit", _resource("file-4"), {})
+    rotation_hashes = len(hashed)
+    assert rotation_hashes > 0
+
+    audit_store.record_audit_event(_actor(), "file.edit", _resource("file-5"), {})
+    assert len(hashed) == rotation_hashes
 
 
 def test_r3_raw_workspace_and_resource_ids_are_hmac_pseudonyms_everywhere() -> None:
