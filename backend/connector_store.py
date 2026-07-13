@@ -270,9 +270,12 @@ class ConnectorStore:
 
     def _changed_record(self, record: Mapping[str, Any], changes: Mapping[str, Any]) -> dict[str, Any]:
         updated = dict(record)
-        for key in ("status", "delete_pending", "delete_phase"):
+        for key in ("status", "delete_pending", "delete_phase", "pending_task_id", "sync_token"):
             if key in changes:
-                updated[key] = changes[key]
+                if changes[key] is None:
+                    updated.pop(key, None)
+                else:
+                    updated[key] = changes[key]
         if "metadata" in changes:
             updated["metadata"] = _safe_metadata(changes["metadata"])
         if "error" in changes:
@@ -363,6 +366,15 @@ def _safe_record(value: Mapping[str, Any], *, expected_workspace_id: str | None 
         record["delete_phase"] = str(value["delete_phase"])
     if value.get("error"):
         record["error"] = re.sub(r"[^a-z0-9_.-]", "_", str(value["error"]).lower())[:80]
+    if value.get("pending_task_id"):
+        record["pending_task_id"] = _identifier(value["pending_task_id"], "pending_task_id")
+    if value.get("sync_token"):
+        token = str(value["sync_token"])
+        if not re.fullmatch(r"[a-f0-9]{32}", token):
+            raise ValueError("Invalid connector sync token")
+        record["sync_token"] = token
+    if record["status"] == "finalizing" and ("pending_task_id" not in record or "sync_token" not in record):
+        raise ValueError("Finalizing connector record is incomplete")
     if record["secret_ref"] != expected_secret_reference(record["persistence"], workspace, connector_id):
         raise ValueError("Connector record secret reference does not match its trusted identity")
     return record

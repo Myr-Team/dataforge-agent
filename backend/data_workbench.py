@@ -28,7 +28,7 @@ try:
     from .orchestrator import orchestrate_chat
     from .schemas import ChatRequest
     from .workspace_authz import require_workspace_permission
-    from .task_store import TaskPersistenceError, claim_task, create_task, list_tasks, update_task
+    from .task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, update_task
     from .workspace_store import (
         WORKSPACES,
         _CONTEXT_CACHE,
@@ -49,7 +49,7 @@ except ImportError:
     from orchestrator import orchestrate_chat
     from schemas import ChatRequest
     from workspace_authz import require_workspace_permission
-    from task_store import TaskPersistenceError, claim_task, create_task, list_tasks, update_task
+    from task_store import TaskPersistenceError, claim_task, create_task, get_task, list_tasks, update_task
     from workspace_store import (
         WORKSPACES,
         _CONTEXT_CACHE,
@@ -80,6 +80,10 @@ _SECRET_STORE = secret_store_from_environment()
 
 class ConnectorInputError(ValueError):
     pass
+
+
+class ConnectorTaskUnavailableError(RuntimeError):
+    code = "connector_task_unavailable"
 
 TABLE_TYPES = {"csv", "xlsx", "xlsm", "excel"}
 MARKDOWN_TYPES = {"md", "markdown", "txt", "text"}
@@ -717,7 +721,7 @@ def connect_sql(workspace_id: str, body: dict[str, Any]) -> dict[str, Any]:
 
 
 def connector_status(workspace_id: str, kind: str, connection_id: str) -> dict[str, Any]:
-    record = _CONNECTOR_STORE.get(workspace_id, connection_id)
+    record = _recover_connector_finalization(workspace_id, _CONNECTOR_STORE.get(workspace_id, connection_id))
     if record["kind"] != kind:
         raise FileNotFoundError("Connector record not found")
     if record.get("persistence") == "session_only":
@@ -824,6 +828,7 @@ def import_blob_item(workspace_id: str, body: dict[str, Any], actor: dict[str, A
 def list_connectors(workspace_id: str) -> dict[str, Any]:
     connectors: list[dict[str, Any]] = []
     for record in _CONNECTOR_STORE.list(workspace_id):
+        record = _recover_connector_finalization(workspace_id, record)
         if record.get("persistence") == "session_only" and record.get("status") == "connected":
             try:
                 _SECRET_STORE.get(workspace_id, record["connector_id"], record["secret_ref"])
@@ -834,7 +839,9 @@ def list_connectors(workspace_id: str) -> dict[str, Any]:
 
 
 def reconnect_connector(workspace_id: str, connector_id: str) -> dict[str, Any]:
-    record = _CONNECTOR_STORE.get(workspace_id, connector_id)
+    record = _recover_connector_finalization(workspace_id, _CONNECTOR_STORE.get(workspace_id, connector_id))
+    if record.get("status") == "finalizing":
+        raise ConnectorConflictError()
     try:
         record, payload = _CONNECTOR_STORE.reconnect(workspace_id, connector_id, _SECRET_STORE)
     except SecretExpiredError:
@@ -868,10 +875,13 @@ def sync_connector(
     kind = str(record["kind"])
     if record.get("status") != "connected":
         raise ConnectorInputError("connector_not_available")
-    task = create_task({"workspace_id": workspace_id, "task_type": task_type or f"connector.{kind}.sync", "action": "connector.manage"}, actor)
-    if claim_task(task["task_id"], "connector-sync-worker") is None:
-        raise TaskPersistenceError("Connector sync task could not be claimed")
     try:
+        task = create_task({"workspace_id": workspace_id, "task_type": task_type or f"connector.{kind}.sync", "action": "connector.manage"}, actor)
+    except TaskPersistenceError:
+        raise ConnectorTaskUnavailableError() from None
+    try:
+        if claim_task(task["task_id"], "connector-sync-worker") is None:
+            raise ConnectorTaskUnavailableError()
         record = _CONNECTOR_STORE.transition(workspace_id, connector_id, expected_status="connected", status="syncing", error=None)
         payload = _connector_payload(workspace_id, connector_id, kind, allow_syncing=True)
         if kind == "sql":
@@ -926,8 +936,26 @@ def sync_connector(
             }
         _record_connector_lineage(workspace_id, result, lineage=lineage)
         _record_import_history(workspace_id, result, actor, f"Synced {kind} connector source")
-        record = _CONNECTOR_STORE.transition(workspace_id, connector_id, expected_status="syncing", status="connected", error=None)
-        task = update_task(task["task_id"], status="completed", result={"ingest_job_id": job_id})
+        sync_token = uuid.uuid4().hex
+        _CONNECTOR_STORE.transition(
+            workspace_id,
+            connector_id,
+            expected_status="syncing",
+            status="finalizing",
+            pending_task_id=task["task_id"],
+            sync_token=sync_token,
+            error=None,
+        )
+        task = _complete_connector_sync_task(task["task_id"], job_id)
+        _CONNECTOR_STORE.transition(
+            workspace_id,
+            connector_id,
+            expected_status="finalizing",
+            status="connected",
+            pending_task_id=None,
+            sync_token=None,
+            error=None,
+        )
         return {
         "workspace_id": workspace_id,
         "connector_id": connector_id,
@@ -939,16 +967,82 @@ def sync_connector(
             "task": task,
         }
     except Exception as exc:
+        failure_code = "connector_task_unavailable" if isinstance(exc, (TaskPersistenceError, ConnectorTaskUnavailableError)) else "sync_failed"
         try:
-            update_task(task["task_id"], status="failed", error={"category": "connector", "code": "sync_failed"})
+            update_task(task["task_id"], status="failed", error={"category": "connector", "code": failure_code})
         except Exception:
             pass
+        if isinstance(exc, SecretExpiredError):
+            # A session-only record is process-local. Its durable state must remain unchanged.
+            if record.get("persistence") != "session_only":
+                _mark_connector_sync_error(workspace_id, connector_id, "connector_secret_expired")
+            raise
         if not isinstance(exc, ConnectorConflictError):
-            try:
-                _CONNECTOR_STORE.transition(workspace_id, connector_id, expected_status="syncing", status="error", error="sync_failed")
-            except (FileNotFoundError, ConnectorStoreError):
-                pass
+            _mark_connector_sync_error(
+                workspace_id,
+                connector_id,
+                failure_code,
+            )
+        if isinstance(exc, TaskPersistenceError):
+            raise ConnectorTaskUnavailableError() from None
         raise
+
+
+def _complete_connector_sync_task(task_id: str, job_id: str) -> dict[str, Any]:
+    try:
+        task = update_task(task_id, status="completed", result={"ingest_job_id": job_id})
+    except TaskPersistenceError:
+        raise ConnectorTaskUnavailableError() from None
+    if task.get("status") != "completed":
+        raise ConnectorTaskUnavailableError()
+    return task
+
+
+def _mark_connector_sync_error(workspace_id: str, connector_id: str, code: str) -> None:
+    try:
+        _CONNECTOR_STORE.transition(
+            workspace_id,
+            connector_id,
+            expected_status=("syncing", "finalizing"),
+            status="error",
+            pending_task_id=None,
+            sync_token=None,
+            error=code,
+        )
+    except (FileNotFoundError, ConnectorStoreError):
+        pass
+
+
+def _recover_connector_finalization(workspace_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    if record.get("status") != "finalizing":
+        return record
+    task_id = str(record.get("pending_task_id") or "")
+    if not task_id:
+        _mark_connector_sync_error(workspace_id, str(record["connector_id"]), "connector_task_unavailable")
+        return _CONNECTOR_STORE.get(workspace_id, str(record["connector_id"]))
+    try:
+        task = get_task(task_id)
+    except TaskPersistenceError:
+        # Storage is unavailable: finalizing is the only truthful public state.
+        return record
+    status = str(task.get("status") or "")
+    if status == "completed":
+        try:
+            return _CONNECTOR_STORE.transition(
+                workspace_id,
+                str(record["connector_id"]),
+                expected_status="finalizing",
+                status="connected",
+                pending_task_id=None,
+                sync_token=None,
+                error=None,
+            )
+        except ConnectorConflictError:
+            return _CONNECTOR_STORE.get(workspace_id, str(record["connector_id"]))
+    if status in {"failed", "partial", "cancelled"}:
+        _mark_connector_sync_error(workspace_id, str(record["connector_id"]), "sync_task_incomplete")
+        return _CONNECTOR_STORE.get(workspace_id, str(record["connector_id"]))
+    return record
 
 
 def _connector_payload(workspace_id: str, connector_id: str, kind: str, *, allow_syncing: bool = False) -> dict[str, str]:
@@ -961,7 +1055,18 @@ def _connector_payload(workspace_id: str, connector_id: str, kind: str, *, allow
         return _SECRET_STORE.get(workspace_id, connector_id, record["secret_ref"])
     except SecretExpiredError:
         if record.get("persistence") != "session_only":
-            _CONNECTOR_STORE.transition(workspace_id, connector_id, expected_status="connected", status="expired", error="secret_expired")
+            try:
+                _CONNECTOR_STORE.transition(
+                    workspace_id,
+                    connector_id,
+                    expected_status=("connected", "syncing", "finalizing"),
+                    status="error",
+                    pending_task_id=None,
+                    sync_token=None,
+                    error="connector_secret_expired",
+                )
+            except ConnectorConflictError:
+                pass
         raise
 
 
@@ -1044,6 +1149,8 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
         return await run_in_threadpool(func, *args, **kwargs)
     except HTTPException:
         raise
+    except ConnectorTaskUnavailableError:
+        raise HTTPException(status_code=503, detail={"category": "connector", "code": "connector_task_unavailable"}) from None
     except TaskPersistenceError as exc:
         raise HTTPException(status_code=503, detail="Durable task storage is unavailable") from exc
     except FileNotFoundError as exc:

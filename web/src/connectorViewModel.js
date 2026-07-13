@@ -57,6 +57,27 @@ export function createConnectorListController({ load, apply }) {
   };
 }
 
+export function createConnectorActionController({ currentWorkspaceId }) {
+  const epochs = new Map();
+  return {
+    begin({ workspaceId, action, connectorId = "", kind = "" }) {
+      const key = `${workspaceId}:${action}:${connectorId || `kind:${kind}`}`;
+      const epoch = (epochs.get(key) || 0) + 1;
+      epochs.set(key, epoch);
+      return {
+        workspaceId,
+        action,
+        connectorId,
+        kind,
+        epoch,
+        isCurrent() {
+          return currentWorkspaceId() === workspaceId && epochs.get(key) === epoch;
+        },
+      };
+    },
+  };
+}
+
 export function replaceConnectorRecord(records, record) {
   const safe = publicConnectorRecord(record);
   if (!safe) return Array.isArray(records) ? records : [];

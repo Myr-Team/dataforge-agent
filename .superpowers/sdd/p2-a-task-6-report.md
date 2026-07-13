@@ -157,3 +157,26 @@ Warning: `row_count` is the server-observed import preview count; it is not a cl
 - Node behavior tests: `24 passed` across `connectorViewModel`, governance, MAF view-model, and task center suites.
 - Production build: `npm run build` passed.
 - Diff check: `git diff --check` passed.
+
+## Third Review Closure: Finalizing and Action Races
+
+### RED / GREEN
+
+- RED: a completed ingest could expose `connected` before its durable task was committed, and a task CAS conflict could leave the two records inconsistent.
+- GREEN: sync now writes `finalizing` with an internal pending task id and sync token only after file version, lineage, and history complete. It verifies that the task update returned `completed` before a CAS transition to `connected`.
+- GREEN: list, status, and reconnect recover `finalizing`: a completed task is finalized to connected; running work remains finalizing; failed, partial, or cancelled work becomes a truthful connector error.
+- GREEN: a Key Vault secret missing during syncing marks a durable record `error` with `connector_secret_expired`; session-only expiry remains only an ephemeral projection.
+- GREEN: all durable sync task failures use `{ "category": "connector", "code": "connector_task_unavailable" }` at the API boundary.
+- GREEN: connector records are refreshed only from the guarded server list. Client action state is isolated in the per-connector action map, and action epochs reject late workspace or superseded action responses.
+
+### Additional Verification
+
+- Focused connector/data/task regression: `50 passed`.
+- Full Python suite: `399 passed, 1 warning`.
+- Import smoke: `python -m backend.import_smoke` passed.
+- Node behavior suites: `25 passed`.
+- Production build and `git diff --check`: passed.
+
+### Concerns
+
+- A process interruption while the task is still running deliberately exposes `finalizing` rather than guessing that the connector is connected; normal task completion is recovered on the next list, status, or reconnect access.

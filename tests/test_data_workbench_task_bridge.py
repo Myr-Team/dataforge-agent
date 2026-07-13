@@ -112,6 +112,139 @@ def test_connector_sync_completes_task_only_after_lineage_and_connector_state(tm
     assert record["status"] == "error"
 
 
+def test_connector_sync_finalizes_task_before_returning_connector_to_connected(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+    connector = _connector_record(tmp_path, monkeypatch, "ws-bridge")
+    events: list[tuple[str, str]] = []
+    original_transition = data_workbench._CONNECTOR_STORE.transition
+    original_update = data_workbench.update_task
+
+    monkeypatch.setattr(data_workbench, "preview_sql_table", lambda *_args, **_kwargs: {"columns": [{"name": "id"}], "rows": [[1]]})
+    monkeypatch.setattr(data_workbench, "create_workspace_upload_job", lambda **_kwargs: {"workspace_id": "ws-bridge", "ingest_job_id": "ingest-1", "documents": [{"source_file": "raw_docs/new.csv", "ingest_job_id": "ingest-1"}]})
+    monkeypatch.setattr(data_workbench, "run_workspace_ingest_job", lambda *_args: {"state": "ready"})
+    monkeypatch.setattr(data_workbench, "_record_connector_lineage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(data_workbench, "_record_import_history", lambda *_args, **_kwargs: None)
+
+    def observe_transition(*args, **changes):
+        events.append(("connector", str(changes.get("status") or "")))
+        return original_transition(*args, **changes)
+
+    def observe_task(task_id, **changes):
+        if changes.get("status") == "completed":
+            events.append(("task", "completed"))
+        return original_update(task_id, **changes)
+
+    monkeypatch.setattr(data_workbench._CONNECTOR_STORE, "transition", observe_transition)
+    monkeypatch.setattr(data_workbench, "update_task", observe_task)
+
+    result = data_workbench.import_sql_table("ws-bridge", {"connection_id": connector["connector_id"], "table": "sales"})
+
+    assert result["task"]["status"] == "completed"
+    assert events.index(("connector", "finalizing")) < events.index(("task", "completed")) < events.index(("connector", "connected"))
+
+
+def test_finalizing_connector_recovers_connected_only_after_completed_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+    connector = _connector_record(tmp_path, monkeypatch, "ws-bridge")
+    task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "connector.sql.sync", "action": "connector.manage"}, actor={})
+    task_store.claim_task(task["task_id"], "worker")
+    task_store.update_task(task["task_id"], status="completed")
+    data_workbench._CONNECTOR_STORE.update(
+        "ws-bridge", connector["connector_id"], status="finalizing", pending_task_id=task["task_id"], sync_token="a" * 32,
+    )
+
+    listed = data_workbench.list_connectors("ws-bridge")
+    recovered = next(item for item in listed["connectors"] if item["connector_id"] == connector["connector_id"])
+
+    assert recovered["status"] == "connected"
+    assert "pending_task_id" not in recovered
+    assert data_workbench._CONNECTOR_STORE.get("ws-bridge", connector["connector_id"])["status"] == "connected"
+
+
+def test_finalizing_connector_does_not_claim_connected_when_task_is_not_completed(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+    connector = _connector_record(tmp_path, monkeypatch, "ws-bridge")
+    task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "connector.sql.sync", "action": "connector.manage"}, actor={})
+    task_store.claim_task(task["task_id"], "worker")
+    data_workbench._CONNECTOR_STORE.update(
+        "ws-bridge", connector["connector_id"], status="finalizing", pending_task_id=task["task_id"], sync_token="b" * 32,
+    )
+
+    listed = data_workbench.list_connectors("ws-bridge")
+
+    assert listed["connectors"][0]["status"] == "finalizing"
+
+
+def test_sync_task_completion_conflict_is_stable_and_never_leaves_connected(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+    connector = _connector_record(tmp_path, monkeypatch, "ws-bridge")
+    original_update = data_workbench.update_task
+    monkeypatch.setattr(data_workbench, "preview_sql_table", lambda *_args, **_kwargs: {"columns": [{"name": "id"}], "rows": [[1]]})
+    monkeypatch.setattr(data_workbench, "create_workspace_upload_job", lambda **_kwargs: {"workspace_id": "ws-bridge", "ingest_job_id": "ingest-1", "documents": [{"source_file": "raw_docs/new.csv", "ingest_job_id": "ingest-1"}]})
+    monkeypatch.setattr(data_workbench, "run_workspace_ingest_job", lambda *_args: {"state": "ready"})
+    monkeypatch.setattr(data_workbench, "_record_connector_lineage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(data_workbench, "_record_import_history", lambda *_args, **_kwargs: None)
+
+    def conflict_completion(task_id, **changes):
+        if changes.get("status") == "completed":
+            return task_store.get_task(task_id)
+        return original_update(task_id, **changes)
+
+    monkeypatch.setattr(data_workbench, "update_task", conflict_completion)
+
+    with pytest.raises(data_workbench.ConnectorTaskUnavailableError):
+        data_workbench.import_sql_table("ws-bridge", {"connection_id": connector["connector_id"], "table": "sales"})
+
+    record = data_workbench._CONNECTOR_STORE.get("ws-bridge", connector["connector_id"])
+    assert record["status"] == "error"
+    assert record["error"] == "connector_task_unavailable"
+
+
+def test_missing_key_vault_secret_while_syncing_marks_durable_record_error(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.connector_secret_store import SecretExpiredError
+    from backend.connector_secret_store import expected_secret_reference
+
+    class MissingVault:
+        persistence = "key_vault"
+
+        def put(self, workspace_id, connector_id, _secret):
+            return expected_secret_reference(self.persistence, workspace_id, connector_id)
+
+        def get(self, *_args):
+            raise SecretExpiredError("connector_secret_missing")
+
+        def delete(self, *_args):
+            return None
+
+    store = ConnectorStore(tmp_path / "connectors")
+    connector = store.create("ws-bridge", "sql", {"server": "sql.example"}, {"password": "secret"}, MissingVault())
+    store.update("ws-bridge", connector["connector_id"], status="syncing")
+    monkeypatch.setattr(data_workbench, "_CONNECTOR_STORE", store)
+    monkeypatch.setattr(data_workbench, "_SECRET_STORE", MissingVault())
+
+    with pytest.raises(SecretExpiredError):
+        data_workbench._connector_payload("ws-bridge", connector["connector_id"], "sql", allow_syncing=True)
+
+    record = store.get("ws-bridge", connector["connector_id"])
+    assert record["status"] == "error"
+    assert record["error"] == "connector_secret_expired"
+
+
+def test_connector_sync_task_persistence_error_has_a_stable_api_shape() -> None:
+    from fastapi import HTTPException
+
+    def invoke() -> None:
+        raise data_workbench.ConnectorTaskUnavailableError()
+
+    async def call() -> None:
+        with pytest.raises(HTTPException) as raised:
+            await data_workbench._call(invoke)
+        assert raised.value.status_code == 503
+        assert raised.value.detail == {"category": "connector", "code": "connector_task_unavailable"}
+
+    asyncio.run(call())
+
+
 def test_session_reconnect_missing_on_this_instance_is_only_an_ephemeral_expired_projection(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from backend.connector_secret_store import SessionSecretStore
 

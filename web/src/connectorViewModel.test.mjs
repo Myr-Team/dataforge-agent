@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   connectorActionState,
+  createConnectorActionController,
   connectorRecordsForWorkspaceResponse,
   connectorViewModel,
   createConnectorListController,
@@ -75,4 +76,22 @@ test("rejects a slow workspace A list after switching to workspace B", async () 
     { workspaceId: "ws-b", records: [] },
     { workspaceId: "ws-b", records: [{ connector_id: "sql-b", kind: "sql" }] },
   ]);
+});
+
+test("action guards reject a late workspace response and superseded same-record action", () => {
+  let workspaceId = "ws-a";
+  const controller = createConnectorActionController({ currentWorkspaceId: () => workspaceId });
+  const slowA = controller.begin({ workspaceId, action: "sync", connectorId: "sql-a" });
+  workspaceId = "ws-b";
+  assert.equal(slowA.isCurrent(), false);
+
+  const first = controller.begin({ workspaceId, action: "sources", connectorId: "blob-b" });
+  const second = controller.begin({ workspaceId, action: "sources", connectorId: "blob-b" });
+  assert.equal(first.isCurrent(), false);
+  assert.equal(second.isCurrent(), true);
+
+  const createSql = controller.begin({ workspaceId, action: "connect", kind: "sql" });
+  const createBlob = controller.begin({ workspaceId, action: "connect", kind: "blob" });
+  assert.equal(createSql.isCurrent(), true);
+  assert.equal(createBlob.isCurrent(), true);
 });
