@@ -78,3 +78,66 @@ python -m compileall -q ...      # exit 0
 imports ok
 git diff --check                 # exit 0
 ```
+
+## Review Remediation
+
+This follow-up addresses every Critical and Important Task 4 review finding without changing Easy Auth configuration.
+
+### Production identity binding
+
+- `backend.graph_client.send_graph_invitation` exposes only sanitized provider identifiers and, when Graph returns it, the invited user's tenant ID.
+- `backend.control_plane.invite_entra_workspace_member` records `accepted` only through `accept_provider_invitation` when the server-side Graph response contains `source=microsoft_graph`, a concrete `invited_user_id`, and a concrete tenant ID. Graph responses without either identity component remain `pending`.
+- Provider-bound acceptance is still not authorization: workspace access requires a later trusted Easy Auth login whose OID and tenant exactly match the stored accepted identity.
+- The direct trusted transition path continues to require `source=easy_auth`, OID, and tenant. There is no email-only or invitation-ID-only acceptance endpoint.
+
+### Durable append-only journal
+
+- Invitation events now use `workspaces/{workspace_id}/invitation-events.json` as the shared durable journal when Blob storage is configured.
+- Every mutation reads the journal revision, applies a pure append-only mutation, and uses Blob ETag/revision CAS. Conflicts reload and retry up to five times; unresolved conflicts raise `InvitationPersistenceError` and fail closed.
+- Blob CAS now conditionally creates a missing journal at revision zero. Local metadata remains a development-mode mirror only when Blob storage is not configured.
+- Control-plane invitation creation, provider acceptance, failure transitions, revocation, and authorization activation all use the same journal API.
+
+### Single-use bootstrap and current membership authority
+
+- Activation appends an `event_type=activation` consumption marker atomically to the durable journal before persisting the member's active OID/tenant binding.
+- A consumed accepted event cannot activate again. On later requests, persisted active membership is resolved first and its current role is authoritative.
+- A role downgrade (for example, `admin` to `viewer`) therefore persists and cannot be overwritten by the old accepted invitation. Revoked/removed memberships cannot be recreated by old events.
+
+### Reissue, removal, roles, and production RBAC
+
+- Explicit reissue (`reinvite=true` on the member invite request, or `reissue=True` at the store boundary) revokes every effective pending or accepted invitation for the email before assigning a new invitation ID.
+- Member removal revokes every effective invitation for that identity before removing the member. Revocation persistence errors are propagated; removal does not report success or delete the member on failure.
+- The invitation store independently allows only `admin`, `editor`, and `viewer`; `owner` and invalid roles are rejected. Activation revalidates the membership role.
+- With `DF_WORKSPACE_RBAC_ENFORCED=1`, owner and member resolution requires trusted Easy Auth source, OID, tenant ID, and tenant-scoped identity match. Email fallback is retained only when RBAC is disabled for deliberate local compatibility. Trusted default-owner matching can use `DF_WORKSPACE_OWNER_OID` and `DF_WORKSPACE_OWNER_TENANT_ID`.
+
+### Follow-up TDD evidence
+
+The new remediation tests were written first. The initial red run recorded these expected gaps:
+
+```text
+9 failed, 50 passed in 6.18s
+```
+
+The failures covered store role validation, provider identity acceptance, CAS retry support, reissue/revocation, strict production RBAC, and one-time activation.
+
+Final focused verification:
+
+```text
+60 passed in 5.22s
+```
+
+Final full verification:
+
+```text
+532 passed, 1 warning in 48.47s
+```
+
+The warning remains the unrelated `ExperimentalWarning` from `backend/maf_team_runtime.py:1060`.
+
+Final compile/import/diff verification:
+
+```text
+python -m compileall -q ...      # exit 0
+imports ok
+git diff --check                 # exit 0
+```

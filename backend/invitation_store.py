@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import copy
 import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping, TypeVar
 
 try:
+    from .blob_store import blob_configured, compare_and_swap_blob_json, download_blob_json
     from .identity import is_trusted_tenant_identity, public_actor
 except ImportError:
+    from blob_store import blob_configured, compare_and_swap_blob_json, download_blob_json
     from identity import is_trusted_tenant_identity, public_actor
 
 
 INVITATION_STATES = ("pending", "accepted", "expired", "failed", "revoked")
+INVITATION_ROLES = ("admin", "editor", "viewer")
 _LEGAL_TRANSITIONS = {
     "pending": {"accepted", "expired", "failed", "revoked"},
     "accepted": {"revoked"},
@@ -22,9 +26,15 @@ _LEGAL_TRANSITIONS = {
 }
 _LOCK = threading.RLock()
 _WORKSPACE_LOCKS: dict[str, threading.RLock] = {}
+_MAX_CAS_RETRIES = 5
+T = TypeVar("T")
 
 
 class InvitationTransitionError(ValueError):
+    pass
+
+
+class InvitationPersistenceError(RuntimeError):
     pass
 
 
@@ -45,29 +55,25 @@ def create_pending_invitation(
     role: str,
     invited_by: Mapping[str, Any] | None,
     provider: Mapping[str, Any] | None = None,
+    reissue: bool = False,
 ) -> dict[str, Any]:
-    """Append one pending event, reusing an equivalent pending invitation on retries."""
-    clean_email = _clean(email).lower()
-    clean_role = _clean(role).lower()
-    if not clean_email or "@" not in clean_email:
-        raise InvitationTransitionError("invitation email is required")
-    if not clean_role:
-        raise InvitationTransitionError("invitation role is required")
-    with workspace_invitation_lock(workspace_id):
-        for invitation_id, event in _latest_events(meta).items():
-            if event["state"] == "pending" and event.get("email") == clean_email and event.get("role") == clean_role:
-                return dict(event)
+    clean_email = _email(email)
+    clean_role = _role(role)
+
+    def mutate(value: dict[str, Any]) -> dict[str, Any]:
+        latest = _latest_events(value)
+        if not reissue:
+            for event in latest.values():
+                if event.get("state") == "pending" and event.get("email") == clean_email and event.get("role") == clean_role:
+                    return dict(event)
+        if reissue:
+            _revoke_effective(value, clean_email)
         invitation_id = uuid.uuid4().hex
-        event = _event(
-            invitation_id,
-            "pending",
-            email=clean_email,
-            role=clean_role,
-            invited_by=invited_by,
-            provider=provider,
-        )
-        _events(meta).append(event)
+        event = _state_event(invitation_id, "pending", clean_email, clean_role, invited_by, provider=provider)
+        _events(value).append(event)
         return dict(event)
+
+    return _mutate(workspace_id, meta, mutate)
 
 
 def transition_invitation(
@@ -77,47 +83,164 @@ def transition_invitation(
     *,
     identity: Mapping[str, Any] | None = None,
     provider: Mapping[str, Any] | None = None,
+    workspace_id: str = "",
 ) -> dict[str, Any]:
-    """Append a legal state change and treat an identical retry as idempotent."""
-    target_state = _clean(state).lower()
-    if target_state not in INVITATION_STATES or target_state == "pending":
-        raise InvitationTransitionError("invalid invitation state")
+    target_state = _state(state)
     invitation_key = _clean(invitation_id)
-    with _LOCK:
-        latest = _latest_events(meta).get(invitation_key)
-        if latest is None:
-            raise InvitationTransitionError("invitation not found")
-        clean_identity = _trusted_identity(identity) if target_state == "accepted" else {}
-        if target_state == "accepted" and not clean_identity:
-            raise InvitationTransitionError("accepted invitation requires trusted oid and tenant id")
-        if latest["state"] == target_state:
-            if target_state != "accepted" or latest.get("accepted_identity") == clean_identity:
-                return dict(latest)
-            raise InvitationTransitionError("accepted invitation identity cannot change")
-        if target_state not in _LEGAL_TRANSITIONS.get(str(latest["state"]), set()):
-            raise InvitationTransitionError(f"cannot transition invitation from {latest['state']} to {target_state}")
-        event = _event(
-            invitation_key,
-            target_state,
-            email=str(latest.get("email") or ""),
-            role=str(latest.get("role") or ""),
-            invited_by=latest.get("invited_by"),
-            accepted_identity=clean_identity,
-            provider=provider or latest.get("provider"),
-        )
-        _events(meta).append(event)
-        return dict(event)
+
+    def mutate(value: dict[str, Any]) -> dict[str, Any]:
+        return _transition(value, invitation_key, target_state, identity=_trusted_identity(identity), provider=provider)
+
+    return _mutate(workspace_id, meta, mutate)
 
 
-def accepted_invitation_for_actor(meta: Mapping[str, Any], actor: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """Return a currently accepted invitation only for its exact trusted identity."""
+def accept_provider_invitation(
+    meta: dict[str, Any],
+    workspace_id: str,
+    invitation_id: str,
+    provider: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    clean_provider = _provider(provider)
+    identity = _provider_identity(provider)
+    if not identity:
+        return None
+
+    def mutate(value: dict[str, Any]) -> dict[str, Any]:
+        return _transition(value, _clean(invitation_id), "accepted", identity=identity, provider=clean_provider)
+
+    return _mutate(workspace_id, meta, mutate)
+
+
+def revoke_effective_invitations(
+    meta: dict[str, Any],
+    workspace_id: str,
+    *,
+    email: str,
+) -> list[dict[str, Any]]:
+    clean_email = _email(email)
+    return _mutate(workspace_id, meta, lambda value: _revoke_effective(value, clean_email))
+
+
+def accepted_invitation_for_actor(
+    meta: Mapping[str, Any],
+    actor: Mapping[str, Any] | None,
+    *,
+    workspace_id: str = "",
+) -> dict[str, Any] | None:
     identity = _trusted_identity(actor)
     if not identity:
         return None
-    for event in _latest_events(meta).values():
-        if event.get("state") == "accepted" and event.get("accepted_identity") == identity:
+    value = _read(workspace_id, meta)
+    consumed = _consumed_ids(value)
+    for event in _latest_events(value).values():
+        if event.get("state") == "accepted" and event.get("accepted_identity") == identity and event.get("invitation_id") not in consumed:
             return dict(event)
     return None
+
+
+def consume_accepted_invitation(
+    meta: dict[str, Any],
+    workspace_id: str,
+    actor: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    identity = _trusted_identity(actor)
+    if not identity:
+        return None
+
+    def mutate(value: dict[str, Any]) -> dict[str, Any] | None:
+        consumed = _consumed_ids(value)
+        for event in _latest_events(value).values():
+            invitation_id = str(event.get("invitation_id") or "")
+            if event.get("state") != "accepted" or event.get("accepted_identity") != identity or invitation_id in consumed:
+                continue
+            _events(value).append(
+                {
+                    "event_id": uuid.uuid4().hex,
+                    "event_type": "activation",
+                    "invitation_id": invitation_id,
+                    "state": "accepted",
+                    "occurred_at": _now(),
+                    "accepted_identity": identity,
+                }
+            )
+            return dict(event)
+        return None
+
+    return _mutate(workspace_id, meta, mutate)
+
+
+def effective_invitation_state(meta: Mapping[str, Any], invitation_id: str) -> str | None:
+    event = _latest_events(meta).get(_clean(invitation_id))
+    return str(event.get("state")) if event else None
+
+
+def _transition(
+    meta: dict[str, Any],
+    invitation_id: str,
+    target_state: str,
+    *,
+    identity: Mapping[str, Any] | None,
+    provider: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    latest = _latest_events(meta).get(invitation_id)
+    if latest is None:
+        raise InvitationTransitionError("invitation not found")
+    if target_state == "accepted" and not identity:
+        raise InvitationTransitionError("accepted invitation requires trusted oid and tenant id")
+    if latest["state"] == target_state:
+        if target_state != "accepted" or latest.get("accepted_identity") == identity:
+            return dict(latest)
+        raise InvitationTransitionError("accepted invitation identity cannot change")
+    if target_state not in _LEGAL_TRANSITIONS.get(str(latest["state"]), set()):
+        raise InvitationTransitionError(f"cannot transition invitation from {latest['state']} to {target_state}")
+    event = _state_event(
+        invitation_id,
+        target_state,
+        str(latest.get("email") or ""),
+        _role(latest.get("role")),
+        latest.get("invited_by"),
+        accepted_identity=identity,
+        provider=provider or latest.get("provider"),
+    )
+    _events(meta).append(event)
+    return dict(event)
+
+
+def _revoke_effective(meta: dict[str, Any], email: str) -> list[dict[str, Any]]:
+    revoked: list[dict[str, Any]] = []
+    for invitation_id, event in list(_latest_events(meta).items()):
+        if event.get("email") != email or event.get("state") not in {"pending", "accepted"}:
+            continue
+        revoked.append(_transition(meta, invitation_id, "revoked", identity=None, provider=event.get("provider")))
+    return revoked
+
+
+def _mutate(workspace_id: str, meta: dict[str, Any], mutation: Callable[[dict[str, Any]], T]) -> T:
+    key = workspace_id or "local"
+    with workspace_invitation_lock(key):
+        if not blob_configured():
+            return mutation(meta)
+        for _attempt in range(_MAX_CAS_RETRIES):
+            snapshot = download_blob_json(_blob_name(workspace_id))
+            revision = int(snapshot.get("revision") or 0) if isinstance(snapshot, dict) else 0
+            events = snapshot.get("events") if isinstance(snapshot, dict) else meta.get("workspace_invitation_events")
+            draft = {"workspace_invitation_events": copy.deepcopy(events if isinstance(events, list) else [])}
+            result = mutation(draft)
+            changes = {"revision": revision + 1, "events": draft["workspace_invitation_events"]}
+            committed = compare_and_swap_blob_json(_blob_name(workspace_id), expected_revision=revision, changes=changes)
+            if committed is not None:
+                meta["workspace_invitation_events"] = copy.deepcopy(draft["workspace_invitation_events"])
+                return result
+        raise InvitationPersistenceError("invitation event persistence conflict")
+
+
+def _read(workspace_id: str, meta: Mapping[str, Any]) -> dict[str, Any]:
+    if not blob_configured():
+        return {"workspace_invitation_events": copy.deepcopy(meta.get("workspace_invitation_events") or [])}
+    snapshot = download_blob_json(_blob_name(workspace_id))
+    if not isinstance(snapshot, dict):
+        raise InvitationPersistenceError("invitation event journal is unavailable")
+    return {"workspace_invitation_events": copy.deepcopy(snapshot.get("events") or [])}
 
 
 def _events(meta: dict[str, Any]) -> list[dict[str, Any]]:
@@ -129,12 +252,9 @@ def _events(meta: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _latest_events(meta: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    events = meta.get("workspace_invitation_events") if isinstance(meta, Mapping) else []
     latest: dict[str, dict[str, Any]] = {}
-    if not isinstance(events, list):
-        return latest
-    for raw in events:
-        if not isinstance(raw, Mapping):
+    for raw in meta.get("workspace_invitation_events") or []:
+        if not isinstance(raw, Mapping) or str(raw.get("event_type") or "state") != "state":
             continue
         invitation_id = _clean(raw.get("invitation_id"))
         state = _clean(raw.get("state")).lower()
@@ -143,28 +263,36 @@ def _latest_events(meta: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     return latest
 
 
-def _event(
+def _consumed_ids(meta: Mapping[str, Any]) -> set[str]:
+    return {
+        _clean(event.get("invitation_id"))
+        for event in meta.get("workspace_invitation_events") or []
+        if isinstance(event, Mapping) and str(event.get("event_type") or "") == "activation"
+    }
+
+
+def _state_event(
     invitation_id: str,
     state: str,
-    *,
     email: str,
     role: str,
     invited_by: Mapping[str, Any] | None,
+    *,
     accepted_identity: Mapping[str, Any] | None = None,
     provider: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     event = {
         "event_id": uuid.uuid4().hex,
+        "event_type": "state",
         "invitation_id": invitation_id,
         "state": state,
-        "occurred_at": datetime.now(timezone.utc).isoformat(),
-        "email": _clean(email).lower(),
-        "role": _clean(role).lower(),
+        "occurred_at": _now(),
+        "email": _email(email),
+        "role": _role(role),
         "invited_by": public_actor(dict(invited_by or {})),
     }
-    identity = _identity_fields(accepted_identity)
-    if identity:
-        event["accepted_identity"] = identity
+    if accepted_identity:
+        event["accepted_identity"] = dict(accepted_identity)
     clean_provider = _provider(provider)
     if clean_provider:
         event["provider"] = clean_provider
@@ -175,10 +303,14 @@ def _trusted_identity(actor: Mapping[str, Any] | None) -> dict[str, str]:
     if not is_trusted_tenant_identity(actor):
         return {}
     clean = public_actor(dict(actor or {}))
-    return {
-        "actor_id": _clean(clean.get("actor_id")).lower(),
-        "tenant_id": _clean(clean.get("tenant_id")).lower(),
-    }
+    return _identity_fields(clean)
+
+
+def _provider_identity(provider: Mapping[str, Any] | None) -> dict[str, str]:
+    clean = _provider(provider)
+    if clean.get("source") != "microsoft_graph" or not clean.get("invited_user_id") or not clean.get("tenant_id"):
+        return {}
+    return {"actor_id": str(clean["invited_user_id"]).lower(), "tenant_id": str(clean["tenant_id"]).lower()}
 
 
 def _identity_fields(identity: Mapping[str, Any] | None) -> dict[str, str]:
@@ -190,7 +322,7 @@ def _identity_fields(identity: Mapping[str, Any] | None) -> dict[str, str]:
 
 def _provider(provider: Mapping[str, Any] | None) -> dict[str, Any]:
     source = dict(provider or {}) if isinstance(provider, Mapping) else {}
-    allowed = ("source", "invitation_id", "invited_user_id", "status", "error_code", "status_code")
+    allowed = ("source", "invitation_id", "invited_user_id", "tenant_id", "status", "error_code", "status_code")
     clean: dict[str, Any] = {}
     for key in allowed:
         value = source.get(key)
@@ -201,15 +333,50 @@ def _provider(provider: Mapping[str, Any] | None) -> dict[str, Any]:
     return clean
 
 
+def _state(value: Any) -> str:
+    state = _clean(value).lower()
+    if state not in INVITATION_STATES or state == "pending":
+        raise InvitationTransitionError("invalid invitation state")
+    return state
+
+
+def _role(value: Any) -> str:
+    role = _clean(value).lower()
+    if role not in INVITATION_ROLES:
+        raise InvitationTransitionError("invitation role must be admin, editor, or viewer")
+    return role
+
+
+def _email(value: Any) -> str:
+    email = _clean(value).lower()
+    if not email or "@" not in email:
+        raise InvitationTransitionError("invitation email is required")
+    return email
+
+
+def _blob_name(workspace_id: str) -> str:
+    return f"workspaces/{_clean(workspace_id)}/invitation-events.json"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _clean(value: Any) -> str:
     return str(value or "").strip()[:256]
 
 
 __all__ = [
+    "INVITATION_ROLES",
     "INVITATION_STATES",
+    "InvitationPersistenceError",
     "InvitationTransitionError",
+    "accept_provider_invitation",
     "accepted_invitation_for_actor",
+    "consume_accepted_invitation",
     "create_pending_invitation",
+    "effective_invitation_state",
+    "revoke_effective_invitations",
     "transition_invitation",
     "workspace_invitation_lock",
 ]

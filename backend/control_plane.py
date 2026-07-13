@@ -27,7 +27,7 @@ try:
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
     from .foundry_roi import discover_foundry_roi, reconcile_foundry_roi
     from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
-    from .invitation_store import create_pending_invitation, transition_invitation, workspace_invitation_lock
+    from .invitation_store import accept_provider_invitation, create_pending_invitation, revoke_effective_invitations, transition_invitation, workspace_invitation_lock
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
@@ -47,7 +47,7 @@ except ImportError:
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
     from foundry_roi import discover_foundry_roi, reconcile_foundry_roi
     from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
-    from invitation_store import create_pending_invitation, transition_invitation, workspace_invitation_lock
+    from invitation_store import accept_provider_invitation, create_pending_invitation, revoke_effective_invitations, transition_invitation, workspace_invitation_lock
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
@@ -918,6 +918,7 @@ def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Re
             role=role,
             invited_by=invited_by,
             provider=provider,
+            reissue=bool((body or {}).get("reinvite")),
         )
         updated = False
         for member in members:
@@ -996,7 +997,7 @@ def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], reque
                 }
     result = invite_workspace_member(
         workspace_id,
-        {"email": email, "name": name, "role": role, "_invitation_provider": graph_invite},
+        {"email": email, "name": name, "role": role, "_invitation_provider": graph_invite, "reinvite": bool(payload.get("reinvite"))},
         request,
     )
     invitation_id = str((result.get("invitation") or {}).get("invitation_id") or "")
@@ -1012,8 +1013,16 @@ def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], reque
                     "status": graph_invite.get("status"),
                     "error_code": (graph_invite.get("error") or {}).get("code"),
                 },
+                workspace_id=workspace_id,
             )
             _save_workspace_meta(workspace_id, meta)
+    elif invitation_id and graph_invite.get("status") == "sent":
+        with workspace_invitation_lock(workspace_id):
+            meta = _load_workspace_meta(workspace_id)
+            accepted = accept_provider_invitation(meta, workspace_id, invitation_id, graph_invite)
+            if accepted is not None:
+                result["invitation"] = accepted
+                _save_workspace_meta(workspace_id, meta)
     result["graph_invite"] = graph_invite
     return result
 
@@ -1044,6 +1053,7 @@ def _record_failed_entra_invitation(
                 "status": graph_invite.get("status"),
                 "error_code": (graph_invite.get("error") or {}).get("code"),
             },
+            workspace_id=workspace_id,
         )
         _save_workspace_meta(workspace_id, meta)
         return failed
@@ -1090,12 +1100,7 @@ def remove_workspace_member(workspace_id: str, email: str, request: Request | No
     with workspace_invitation_lock(workspace_id):
         meta = _load_workspace_meta(workspace_id)
         members = _stored_workspace_members(meta)
-        for member in members:
-            if str(member.get("email") or "").lower() == target and str(member.get("invitation_id") or ""):
-                try:
-                    transition_invitation(meta, str(member["invitation_id"]), "revoked")
-                except ValueError:
-                    pass
+        revoke_effective_invitations(meta, workspace_id, email=target)
         meta["workspace_members"] = [item for item in members if str(item.get("email") or "").lower() != target]
         _save_workspace_meta(workspace_id, meta)
     result = workspace_member_roles(workspace_id, request)

@@ -390,9 +390,23 @@ def compare_and_swap_blob_json(
     try:
         container = _container_client()
         blob = container.get_blob_client(blob_name)
-        properties = blob.get_blob_properties()
-        raw = blob.download_blob().readall().decode("utf-8")
-        current = json.loads(raw)
+        try:
+            properties = blob.get_blob_properties()
+            raw = blob.download_blob().readall().decode("utf-8")
+            current = json.loads(raw)
+        except ResourceNotFoundError:
+            if int(expected_revision) != 0:
+                return None
+            updated = {"revision": 1, **changes}
+            try:
+                blob.upload_blob(
+                    json.dumps(updated, ensure_ascii=False).encode("utf-8"),
+                    overwrite=False,
+                    content_settings=ContentSettings(content_type="application/json; charset=utf-8"),
+                )
+                return updated
+            except ResourceExistsError:
+                return None
         if not isinstance(current, dict) or int(current.get("revision") or 0) != int(expected_revision):
             return None
         updated = {**current, **changes}

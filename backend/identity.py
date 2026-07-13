@@ -99,8 +99,8 @@ def default_actor() -> dict[str, Any]:
     return {
         "name": os.environ.get("DF_WORKSPACE_OWNER_NAME") or DEFAULT_OWNER_NAME,
         "email": os.environ.get("DF_WORKSPACE_OWNER_EMAIL") or os.environ.get("USER_EMAIL") or DEFAULT_OWNER_EMAIL,
-        "actor_id": "",
-        "tenant_id": "",
+        "actor_id": os.environ.get("DF_WORKSPACE_OWNER_OID") or "",
+        "tenant_id": os.environ.get("DF_WORKSPACE_OWNER_TENANT_ID") or "",
         "roles": [],
         "groups": [],
         "source": "workspace_default",

@@ -1,4 +1,5 @@
 import json
+import copy
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
@@ -144,6 +145,222 @@ def test_concurrent_pending_invitation_retries_append_one_event():
 
     assert {record["invitation_id"] for record in records} == {records[0]["invitation_id"]}
     assert len(meta["workspace_invitation_events"]) == 1
+
+
+@pytest.mark.parametrize("role", ["owner", "operator", ""])
+def test_invitation_store_rejects_owner_and_invalid_roles(role):
+    with pytest.raises(invitation_store.InvitationTransitionError, match="role"):
+        invitation_store.create_pending_invitation(
+            {},
+            "ws-graph",
+            email="reviewer@contoso.com",
+            role=role,
+            invited_by={"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+        )
+
+
+def test_provider_identity_acceptance_requires_graph_oid_and_tenant():
+    meta = {}
+    pending = invitation_store.create_pending_invitation(
+        meta,
+        "ws-graph",
+        email="reviewer@contoso.com",
+        role="viewer",
+        invited_by={"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+
+    assert invitation_store.accept_provider_invitation(
+        meta,
+        "ws-graph",
+        pending["invitation_id"],
+        {"source": "microsoft_graph", "status": "sent", "invited_user_id": "oid-reviewer"},
+    ) is None
+    accepted = invitation_store.accept_provider_invitation(
+        meta,
+        "ws-graph",
+        pending["invitation_id"],
+        {
+            "source": "microsoft_graph",
+            "status": "sent",
+            "invitation_id": "graph-invite-1",
+            "invited_user_id": "oid-reviewer",
+            "tenant_id": "tenant-1",
+        },
+    )
+
+    assert accepted["state"] == "accepted"
+    assert accepted["accepted_identity"] == {"actor_id": "oid-reviewer", "tenant_id": "tenant-1"}
+
+
+def test_durable_event_append_retries_after_stale_cas_and_preserves_remote_events(monkeypatch):
+    meta = {}
+    remote = {
+        "revision": 1,
+        "events": [
+            {
+                "event_id": "existing-event",
+                "invitation_id": "existing-invitation",
+                "state": "pending",
+                "event_type": "state",
+                "email": "other@contoso.com",
+                "role": "viewer",
+            }
+        ],
+    }
+    reads = [None, remote]
+    cas_calls = []
+
+    monkeypatch.setattr(invitation_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(invitation_store, "download_blob_json", lambda _name: copy.deepcopy(reads.pop(0)))
+
+    def cas(_name, *, expected_revision, changes):
+        cas_calls.append(expected_revision)
+        if len(cas_calls) == 1:
+            return None
+        return copy.deepcopy(changes)
+
+    monkeypatch.setattr(invitation_store, "compare_and_swap_blob_json", cas)
+
+    created = invitation_store.create_pending_invitation(
+        meta,
+        "ws-graph",
+        email="reviewer@contoso.com",
+        role="viewer",
+        invited_by={"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+
+    assert cas_calls == [0, 1]
+    assert {event["invitation_id"] for event in meta["workspace_invitation_events"]} == {
+        "existing-invitation",
+        created["invitation_id"],
+    }
+
+
+def test_reinvite_revokes_every_effective_prior_invitation_before_creating_new_one():
+    meta = {}
+    first = invitation_store.create_pending_invitation(
+        meta,
+        "ws-graph",
+        email="reviewer@contoso.com",
+        role="editor",
+        invited_by={"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+    invitation_store.transition_invitation(
+        meta,
+        first["invitation_id"],
+        "accepted",
+        identity={"actor_id": "reviewer-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+
+    second = invitation_store.create_pending_invitation(
+        meta,
+        "ws-graph",
+        email="reviewer@contoso.com",
+        role="viewer",
+        invited_by={"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+        reissue=True,
+    )
+
+    assert second["invitation_id"] != first["invitation_id"]
+    assert invitation_store.effective_invitation_state(meta, first["invitation_id"]) == "revoked"
+    assert invitation_store.effective_invitation_state(meta, second["invitation_id"]) == "pending"
+
+
+def test_removal_fails_closed_when_effective_invitation_revocation_cannot_persist(tmp_path, monkeypatch):
+    workspace_path = _workspace(tmp_path, monkeypatch)
+    workspace_path.write_text(
+        json.dumps(
+            {
+                "workspace_id": "ws-graph",
+                "workspace_members": [{"email": "reviewer@contoso.com", "role": "editor", "status": "pending", "invitation_id": "invite-1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_plane, "revoke_effective_invitations", lambda *args, **kwargs: (_ for _ in ()).throw(invitation_store.InvitationPersistenceError("conflict")))
+
+    with pytest.raises(invitation_store.InvitationPersistenceError, match="conflict"):
+        control_plane.remove_workspace_member("ws-graph", "reviewer@contoso.com", RequestStub())
+
+    assert json.loads(workspace_path.read_text(encoding="utf-8"))["workspace_members"][0]["email"] == "reviewer@contoso.com"
+
+
+def test_remove_after_reinvite_revokes_the_new_and_prior_effective_invitations(tmp_path, monkeypatch):
+    workspace_path = _workspace(tmp_path, monkeypatch)
+    meta = {}
+    first = invitation_store.create_pending_invitation(
+        meta,
+        "ws-graph",
+        email="reviewer@contoso.com",
+        role="editor",
+        invited_by={"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+    second = invitation_store.create_pending_invitation(
+        meta,
+        "ws-graph",
+        email="reviewer@contoso.com",
+        role="viewer",
+        invited_by={"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+        reissue=True,
+    )
+    workspace_path.write_text(
+        json.dumps(
+            {
+                "workspace_id": "ws-graph",
+                "workspace_members": [{"email": "reviewer@contoso.com", "role": "viewer", "status": "pending", "invitation_id": second["invitation_id"]}],
+                "workspace_invitation_events": meta["workspace_invitation_events"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    control_plane.remove_workspace_member("ws-graph", "reviewer@contoso.com", RequestStub())
+
+    saved = json.loads(workspace_path.read_text(encoding="utf-8"))
+    assert saved["workspace_members"] == []
+    assert invitation_store.effective_invitation_state(saved, first["invitation_id"]) == "revoked"
+    assert invitation_store.effective_invitation_state(saved, second["invitation_id"]) == "revoked"
+
+
+def test_graph_invite_with_provider_oid_and_tenant_records_accepted_bootstrap(tmp_path, monkeypatch):
+    workspace_path = _workspace(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        control_plane,
+        "send_graph_invitation",
+        lambda *args, **kwargs: {
+            "status": "sent",
+            "source": "microsoft_graph",
+            "invitation_id": "graph-1",
+            "invited_user_id": "oid-reviewer",
+            "tenant_id": "tenant-1",
+        },
+    )
+
+    result = control_plane.invite_entra_workspace_member(
+        "ws-graph",
+        {"email": "reviewer@contoso.com", "role": "editor", "send_email": True},
+        RequestStub(),
+    )
+
+    assert result["invitation"]["state"] == "accepted"
+    assert [event["state"] for event in json.loads(workspace_path.read_text(encoding="utf-8"))["workspace_invitation_events"]] == ["pending", "accepted"]
+
+
+def test_graph_invite_without_trusted_provider_tenant_remains_pending(tmp_path, monkeypatch):
+    _workspace(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        control_plane,
+        "send_graph_invitation",
+        lambda *args, **kwargs: {"status": "sent", "source": "microsoft_graph", "invitation_id": "graph-1", "invited_user_id": "oid-reviewer"},
+    )
+
+    result = control_plane.invite_entra_workspace_member(
+        "ws-graph",
+        {"email": "reviewer@contoso.com", "role": "editor", "send_email": True},
+        RequestStub(),
+    )
+
+    assert result["invitation"]["state"] == "pending"
 
 
 def test_entra_invite_falls_back_to_workspace_member_when_graph_unavailable(tmp_path, monkeypatch):

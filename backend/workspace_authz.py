@@ -9,12 +9,12 @@ from typing import Any, Mapping
 try:
     from .blob_store import upload_blob_json
     from .identity import canonical_actor_identity, default_actor, is_trusted_tenant_identity, public_actor
-    from .invitation_store import accepted_invitation_for_actor
+    from .invitation_store import consume_accepted_invitation
     from .workspace_store import WORKSPACES, _load_workspace_bundle
 except ImportError:
     from blob_store import upload_blob_json
     from identity import canonical_actor_identity, default_actor, is_trusted_tenant_identity, public_actor
-    from invitation_store import accepted_invitation_for_actor
+    from invitation_store import consume_accepted_invitation
     from workspace_store import WORKSPACES, _load_workspace_bundle
 
 
@@ -71,29 +71,37 @@ def authorize(role: str | None, action: str) -> bool:
 
 def workspace_role(workspace_id: str, actor: Mapping[str, Any] | None) -> str | None:
     clean_actor = public_actor(dict(actor or {}))
-    if rbac_enabled() and str(clean_actor.get("source") or "") != "easy_auth":
+    strict = rbac_enabled()
+    if strict and not is_trusted_tenant_identity(clean_actor):
         return None
     actor_email = str(clean_actor.get("email") or "").strip().lower()
     actor_id = str(clean_actor.get("actor_id") or "").strip().lower()
     actor_tenant = str(clean_actor.get("tenant_id") or "").strip().lower()
     owner = public_actor(default_actor())
-    if actor_email and actor_email == str(owner.get("email") or "").strip().lower():
+    if not strict and actor_email and actor_email == str(owner.get("email") or "").strip().lower():
         return "owner"
 
     meta = _load_workspace_meta(workspace_id)
     stored_owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), Mapping) else {}
-    if _same_actor(actor_email, actor_id, actor_tenant, stored_owner):
+    actor_identity = canonical_actor_identity(clean_actor)
+    if strict:
+        if actor_identity and (canonical_actor_identity(stored_owner) == actor_identity or canonical_actor_identity(owner) == actor_identity):
+            return "owner"
+    elif _same_actor(actor_email, actor_id, actor_tenant, stored_owner):
         return "owner"
-    activated_role = _activate_accepted_invitation(workspace_id, meta, clean_actor)
-    if activated_role:
-        return activated_role
     for item in meta.get("workspace_members") or []:
-        if not isinstance(item, Mapping) or not _same_actor(actor_email, actor_id, actor_tenant, item):
+        if not isinstance(item, Mapping):
+            continue
+        matches = canonical_actor_identity(item) == actor_identity if strict else _same_actor(actor_email, actor_id, actor_tenant, item)
+        if not matches:
             continue
         status = str(item.get("status") or "").strip().lower()
         if status != "active":
-            return None
+            continue
         return _normalize_role(item.get("role"))
+    activated_role = _activate_accepted_invitation(workspace_id, meta, clean_actor)
+    if activated_role:
+        return activated_role
     return None
 
 
@@ -154,12 +162,14 @@ def _activate_accepted_invitation(
     meta: dict[str, Any],
     actor: Mapping[str, Any],
 ) -> str | None:
-    accepted = accepted_invitation_for_actor(meta, actor)
+    if not is_trusted_tenant_identity(actor):
+        return None
+    accepted = consume_accepted_invitation(meta, workspace_id, actor)
     if not accepted:
         return None
     invitation_id = str(accepted.get("invitation_id") or "")
-    role = _normalize_role(accepted.get("role"))
-    if not invitation_id or role is None:
+    bootstrap_role = _normalize_role(accepted.get("role"))
+    if not invitation_id or bootstrap_role is None:
         return None
     members: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc).isoformat()
@@ -167,6 +177,9 @@ def _activate_accepted_invitation(
     for item in meta.get("workspace_members") or []:
         member = dict(item) if isinstance(item, Mapping) else {}
         if str(member.get("invitation_id") or "") == invitation_id:
+            role = _normalize_role(member.get("role"))
+            if role is None:
+                return None
             member.update(
                 {
                     "status": "active",
@@ -179,6 +192,7 @@ def _activate_accepted_invitation(
             activated = True
         members.append(member)
     if not activated:
+        role = bootstrap_role
         members.append(
             {
                 "email": accepted.get("email") or "",

@@ -104,13 +104,17 @@ def send_graph_invitation(
             body["invitedUserDisplayName"] = display_name
     payload = graph_request("POST", "/invitations", token, json_payload=body)
     invited_user = payload.get("invitedUser") if isinstance(payload.get("invitedUser"), dict) else {}
-    return {
+    result = {
         "status": "sent",
         "source": "microsoft_graph",
         "invitation_id": payload.get("id") or "",
         "invited_user_id": invited_user.get("id") or "",
         "email": email,
     }
+    tenant_id = str(invited_user.get("tenantId") or invited_user.get("tenant_id") or "").strip()
+    if tenant_id:
+        result["tenant_id"] = tenant_id
+    return result
 
 
 def graph_request(

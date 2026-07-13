@@ -52,6 +52,21 @@ def test_default_workspace_owner_resolves_without_stored_member(monkeypatch: pyt
     assert role == "owner"
 
 
+def test_rbac_enabled_rejects_default_owner_and_member_email_without_oid_and_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_EMAIL", "owner@contoso.com")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_members": [{"email": "editor@contoso.com", "role": "editor", "status": "active"}],
+        },
+    )
+
+    assert workspace_authz.workspace_role("ws-roles", {"email": "owner@contoso.com", "source": "easy_auth"}) is None
+    assert workspace_authz.workspace_role("ws-roles", {"email": "editor@contoso.com", "source": "easy_auth"}) is None
+
+
 def test_stored_member_role_resolves_by_actor_id_or_email(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         workspace_authz,
@@ -341,6 +356,41 @@ def test_accepted_invitation_activates_only_the_matching_trusted_oid_and_tenant(
     assert saved[-1]["workspace_members"][0]["actor_id"] == "oid-invited"
 
 
+def test_accepted_bootstrap_is_consumed_once_and_cannot_overwrite_a_later_role_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    meta = {"workspace_members": []}
+    pending = invitation_store.create_pending_invitation(
+        meta,
+        "ws-roles",
+        email="invited@contoso.com",
+        role="admin",
+        invited_by={"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+    invitation_store.transition_invitation(
+        meta,
+        pending["invitation_id"],
+        "accepted",
+        identity={"actor_id": "oid-invited", "tenant_id": "tenant-1", "source": "easy_auth"},
+    )
+    meta["workspace_members"].append(
+        {"email": "invited@contoso.com", "role": "admin", "status": "pending", "invitation_id": pending["invitation_id"]}
+    )
+    saves = []
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: meta)
+    monkeypatch.setattr(workspace_authz, "_save_workspace_meta", lambda _workspace_id, value: saves.append(value), raising=False)
+    actor = {"actor_id": "oid-invited", "tenant_id": "tenant-1", "source": "easy_auth"}
+
+    assert workspace_authz.workspace_role("ws-roles", actor) == "admin"
+    activated = saves[-1]
+    activated["workspace_members"][0]["role"] = "viewer"
+    meta.update(activated)
+
+    assert workspace_authz.workspace_role("ws-roles", actor) == "viewer"
+    assert len([event for event in meta["workspace_invitation_events"] if event.get("event_type") == "activation"]) == 1
+    invitation_store.revoke_effective_invitations(meta, "ws-roles", email="invited@contoso.com")
+    meta["workspace_members"] = []
+    assert workspace_authz.workspace_role("ws-roles", actor) is None
+
+
 def test_new_workspace_upload_passes_authenticated_owner_to_store(monkeypatch: pytest.MonkeyPatch) -> None:
     app_module = importlib.import_module("backend.app")
     captured: dict = {}
@@ -390,6 +440,8 @@ def test_forged_client_owner_header_is_rejected_when_rbac_is_enforced(monkeypatc
 def test_trusted_web_proxy_easy_auth_principal_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
     monkeypatch.setenv("DF_WORKSPACE_OWNER_EMAIL", "owner@contoso.com")
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_OID", "oid-owner")
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_TENANT_ID", "tenant-1")
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
     headers = _trusted_easy_auth_headers("owner@contoso.com", actor_id="oid-owner")
 
