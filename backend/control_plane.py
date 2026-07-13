@@ -20,37 +20,37 @@ try:
     from .azure_monitor_client import get_trace_delivery_status
     from .task_store import TaskPersistenceError, list_tasks
     from .blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
-    from .conversation_store import get_conversation, list_conversations
+    from .conversation_store import get_conversation, list_conversations, stable_message_id
     from .data_workbench import list_workspace_files
     from .dependency_health import health_dependencies, health_dependency_details
     from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
-    from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_identity, member_from_actor, public_actor
+    from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
-    from .workspace_authz import rbac_enabled, require_workspace_permission, workspace_role
+    from .workspace_authz import active_workspace_role, rbac_enabled, require_workspace_permission, workspace_role
 except ImportError:
     from artifact_jobs import list_artifact_jobs
     from azure_monitor_client import get_trace_delivery_status
     from task_store import TaskPersistenceError, list_tasks
     from blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
-    from conversation_store import get_conversation, list_conversations
+    from conversation_store import get_conversation, list_conversations, stable_message_id
     from data_workbench import list_workspace_files
     from dependency_health import health_dependencies, health_dependency_details
     from graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
-    from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_identity, member_from_actor, public_actor
+    from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
-    from workspace_authz import rbac_enabled, require_workspace_permission, workspace_role
+    from workspace_authz import active_workspace_role, rbac_enabled, require_workspace_permission, workspace_role
 
 
 router = APIRouter(tags=["control-plane"])
@@ -162,7 +162,7 @@ async def workspace_roi(
     from_value: str = Query(alias="from", max_length=64),
     to_value: str = Query(alias="to", max_length=64),
 ) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "workspace.read")
+    _require_governance_role(workspace_id, request, {"owner", "admin", "editor", "viewer"}, "workspace.read")
     return await _call(workspace_roi_snapshot, workspace_id, from_value, to_value)
 
 
@@ -173,13 +173,7 @@ async def workspace_chargeback(
     from_value: str = Query(alias="from", max_length=64),
     to_value: str = Query(alias="to", max_length=64),
 ) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "chargeback.read")
-    actor = actor_from_request(request, fallback=False)
-    if not is_trusted_identity(actor):
-        raise HTTPException(status_code=403, detail="trusted Easy Auth identity is required for chargeback")
-    role = workspace_role(workspace_id, actor)
-    if role not in {"owner", "admin"}:
-        raise HTTPException(status_code=403, detail="workspace permission denied for chargeback.read")
+    _require_governance_role(workspace_id, request, {"owner", "admin"}, "chargeback.read")
     return await _call(workspace_member_chargeback, workspace_id, from_value, to_value)
 
 
@@ -338,6 +332,16 @@ def _require_workspace_action(workspace_id: str, request: Request | None, action
         return require_workspace_permission(workspace_id, actor_from_request(request), action)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _require_governance_role(workspace_id: str, request: Request | None, allowed_roles: set[str], action: str) -> str:
+    actor = actor_from_request(request, fallback=False)
+    if not is_trusted_tenant_identity(actor):
+        raise HTTPException(status_code=403, detail=f"trusted Easy Auth tenant identity is required for {action}")
+    role = active_workspace_role(workspace_id, actor)
+    if role not in allowed_roles:
+        raise HTTPException(status_code=403, detail=f"workspace permission denied for {action}")
+    return role
 
 
 def build_workspace_dashboard(workspace_id: str) -> dict[str, Any]:
@@ -1169,9 +1173,10 @@ def _workspace_messages_for_chargeback(workspace_id: str, window: dict[str, str]
         detail = _safe_value(lambda conversation_id=conversation_id: get_conversation(conversation_id), summary)
         if not isinstance(detail, dict) or str(detail.get("workspace_id") or "") != workspace_id:
             continue
-        for item in detail.get("messages") or []:
+        for index, item in enumerate(detail.get("messages") or []):
             if isinstance(item, dict) and record_in_window(item, window, "message"):
-                messages.append({"workspace_id": workspace_id, **item})
+                message_id = str(item.get("message_id") or "").strip() or stable_message_id(workspace_id, conversation_id, index, item)
+                messages.append({"workspace_id": workspace_id, **item, "message_id": message_id})
     return messages[:300], len(messages) > 300
 
 

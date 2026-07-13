@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from pydantic import ValidationError
 
 from backend.roi_service import (
+    CostSummary,
     RoiWindowError,
     build_roi_snapshot,
     member_chargeback,
@@ -37,7 +39,7 @@ def _run(actor_id: str = "actor-owner", model: str = "gpt-5") -> dict[str, objec
         "workspace_id": "ws-roi",
         "started_at": "2026-07-10T12:00:00Z",
         "completed_at": "2026-07-10T12:01:00Z",
-        "actor": {"actor_id": actor_id, "email": "spoofed@example.com", "name": "Spoofed"},
+        "actor": {"actor_id": actor_id, "tenant_id": "tenant-a", "email": "spoofed@example.com", "name": "Spoofed", "source": "easy_auth"},
         "trusted_identity": True,
         "models": [
             {
@@ -64,7 +66,7 @@ def _outcome(*, verified: bool = False) -> dict[str, object]:
         "observed_value": 12,
         "observed_at": "2026-07-10T13:00:00Z",
         "source": {"run_id": "run-1"},
-        "actor": {"actor_id": "actor-owner"},
+        "actor": {"actor_id": "actor-owner", "tenant_id": "tenant-a", "source": "easy_auth"},
         "trusted_identity": True,
         "verification": verification,
         "business_value": {
@@ -127,6 +129,33 @@ def test_case_insensitive_actor_identity_cannot_bypass_independent_review() -> N
     assert snapshot["status"] == "measured"
 
 
+def test_verified_state_rejects_outcome_or_reviewer_without_tenant() -> None:
+    outcome = _outcome(verified=True)
+    outcome["actor"] = {"actor_id": "actor-owner", "source": "easy_auth"}
+    missing_outcome_tenant = build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[outcome], prices=PRICES, source_validator=lambda *_: True, verification_events=[_verification()])
+    missing_reviewer_tenant = _outcome(verified=True)
+    missing_reviewer_tenant["verification"]["reviewer"] = {"actor_id": "actor-reviewer", "source": "easy_auth"}
+    snapshot = build_roi_snapshot("ws-roi", _window(), runs=[_run()], outcomes=[missing_reviewer_tenant], prices=PRICES, source_validator=lambda *_: True, verification_events=[_verification()])
+
+    assert missing_outcome_tenant["status"] == "measured"
+    assert snapshot["status"] == "measured"
+
+
+def test_cost_summary_enforces_complete_partial_and_unknown_contracts() -> None:
+    complete = CostSummary(total=1.25, status="complete", currency="USD", by_currency={"USD": 1.25})
+    partial = CostSummary(total=None, status="partial", currency=None, by_currency={"USD": 1.25})
+    unknown = CostSummary(total=None, status="unknown", currency=None, by_currency={})
+
+    assert complete.total == 1.25 and partial.by_currency == {"USD": 1.25} and unknown.by_currency == {}
+    for payload in (
+        {"total": None, "status": "complete", "currency": "USD", "by_currency": {}},
+        {"total": 1.25, "status": "partial", "currency": "USD", "by_currency": {"USD": 1.25}},
+        {"total": None, "status": "unknown", "currency": None, "by_currency": {"USD": 1.25}},
+    ):
+        with pytest.raises(ValidationError):
+            CostSummary.model_validate(payload)
+
+
 def test_snapshot_excludes_other_workspace_outcomes_and_lists_evidence_assumptions() -> None:
     foreign = _outcome(verified=True)
     foreign["workspace_id"] = "ws-other"
@@ -142,9 +171,9 @@ def test_chargeback_uses_actor_id_and_current_membership_not_telemetry_profile()
         "ws-roi",
         _window(),
         runs=[_run()],
-        messages=[{"workspace_id": "ws-roi", "updated_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "actor-departed", "email": "leak@example.com"}, "trusted_identity": True}],
+        messages=[{"workspace_id": "ws-roi", "updated_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "actor-departed", "tenant_id": "tenant-a", "email": "leak@example.com", "source": "easy_auth"}, "trusted_identity": True, "message_id": "message-departed"}],
         tasks=[{"workspace_id": "ws-other", "created_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "actor-other"}}],
-        memberships=[{"actor_id": "actor-owner", "email": "owner@example.com", "name": "Owner", "status": "active"}],
+        memberships=[{"actor_id": "actor-owner", "tenant_id": "tenant-a", "email": "owner@example.com", "name": "Owner", "status": "active"}],
         prices=PRICES,
         pseudonym_salt="test-salt",
     )
@@ -164,9 +193,9 @@ def test_message_only_chargeback_never_turns_missing_model_cost_into_zero() -> N
         "ws-roi",
         _window(),
         runs=[],
-        messages=[{"workspace_id": "ws-roi", "updated_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "actor-owner"}, "trusted_identity": True}],
+        messages=[{"workspace_id": "ws-roi", "updated_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "actor-owner", "tenant_id": "tenant-a", "source": "easy_auth"}, "trusted_identity": True, "message_id": "message-owner"}],
         tasks=[],
-        memberships=[{"actor_id": "actor-owner", "email": "owner@example.com", "name": "Owner", "status": "active"}],
+        memberships=[{"actor_id": "actor-owner", "tenant_id": "tenant-a", "email": "owner@example.com", "name": "Owner", "status": "active"}],
         prices=PRICES,
         pseudonym_salt="test-salt",
     )

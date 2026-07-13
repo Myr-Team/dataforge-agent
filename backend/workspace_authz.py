@@ -8,11 +8,11 @@ from typing import Any, Mapping
 
 try:
     from .blob_store import upload_blob_json
-    from .identity import default_actor, public_actor
+    from .identity import canonical_actor_identity, default_actor, is_trusted_tenant_identity, public_actor
     from .workspace_store import WORKSPACES, _load_workspace_bundle
 except ImportError:
     from blob_store import upload_blob_json
-    from identity import default_actor, public_actor
+    from identity import canonical_actor_identity, default_actor, is_trusted_tenant_identity, public_actor
     from workspace_store import WORKSPACES, _load_workspace_bundle
 
 
@@ -93,6 +93,26 @@ def workspace_role(workspace_id: str, actor: Mapping[str, Any] | None) -> str | 
             _activate_pending_member(workspace_id, meta, item, clean_actor)
             return role
         if status != "active":
+            return None
+        return _normalize_role(item.get("role"))
+    return None
+
+
+def active_workspace_role(workspace_id: str, actor: Mapping[str, Any] | None) -> str | None:
+    """Resolve only a current persisted membership for fail-closed governance reads."""
+    if not is_trusted_tenant_identity(actor):
+        return None
+    actor_identity = canonical_actor_identity(actor)
+    if actor_identity is None:
+        return None
+    meta = _load_workspace_meta(workspace_id)
+    owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), Mapping) else {}
+    if canonical_actor_identity(owner) == actor_identity:
+        return "owner"
+    for item in meta.get("workspace_members") or []:
+        if not isinstance(item, Mapping) or canonical_actor_identity(item) != actor_identity:
+            continue
+        if str(item.get("status") or "").strip().lower() != "active":
             return None
         return _normalize_role(item.get("role"))
     return None

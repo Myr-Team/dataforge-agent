@@ -8,13 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 try:
     from .blob_store import download_blob_json, upload_blob_json
-    from .identity import is_trusted_identity, public_actor
+    from .identity import is_trusted_tenant_identity, public_actor
 except ImportError:
     from blob_store import download_blob_json, upload_blob_json
-    from identity import is_trusted_identity, public_actor
+    from identity import is_trusted_tenant_identity, public_actor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,11 +74,12 @@ def append_message(
         conversation["workspace_id"] = conversation.get("workspace_id") or workspace_id
         conversation["updated_at"] = now
         messages = list(conversation.get("messages") or [])
-        message: dict[str, Any] = {"role": role, "text": str(text or ""), "time": now}
-        if clean_actor:
+        message: dict[str, Any] = {"message_id": f"message_{uuid4().hex[:20]}", "role": role, "text": str(text or ""), "time": now}
+        if actor is not None:
             message["actor"] = clean_actor
-            message["trusted_identity"] = is_trusted_identity(clean_actor)
-            conversation["actors"] = _merge_actor(conversation.get("actors"), clean_actor)
+            message["trusted_identity"] = is_trusted_tenant_identity(clean_actor)
+            if clean_actor:
+                conversation["actors"] = _merge_actor(conversation.get("actors"), clean_actor)
         if verdict:
             message["verdict"] = verdict
             conversation["last_verdict"] = verdict
@@ -103,6 +105,21 @@ def conversation_context(conversation_id: str | None, *, limit: int = 6) -> list
         return []
     messages = [item for item in data.get("messages") or [] if isinstance(item, dict)]
     return messages[-limit:]
+
+
+def stable_message_id(workspace_id: str, conversation_id: str, index: int, message: dict[str, Any]) -> str:
+    """Derive a replay-stable ID for historical messages that predate message_id."""
+    immutable = {
+        "workspace_id": str(workspace_id),
+        "conversation_id": str(conversation_id),
+        "index": int(index),
+        "role": str(message.get("role") or ""),
+        "text": str(message.get("text") or ""),
+        "time": str(message.get("time") or message.get("created_at") or message.get("updated_at") or ""),
+        "verdict": str(message.get("verdict") or ""),
+    }
+    encoded = json.dumps(immutable, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return f"legacy_message_{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
 def _persist_conversation(conversation: dict[str, Any]) -> dict[str, Any]:

@@ -5,7 +5,7 @@ from urllib.parse import quote
 import backend.conversation_store as conversation_store
 import backend.control_plane as control_plane
 import backend.run_store as run_store
-from backend.identity import actor_from_headers, actor_from_ui_context, is_trusted_identity
+from backend.identity import actor_from_headers, actor_from_ui_context, is_trusted_identity, is_trusted_tenant_identity
 from fastapi.testclient import TestClient
 from backend.app import app
 
@@ -56,6 +56,28 @@ def test_trusted_identity_requires_proxy_verified_easy_auth_and_actor_id() -> No
     assert is_trusted_identity({"source": "easy_auth", "actor_id": "oid-1"}) is True
     assert is_trusted_identity({"source": "easy_auth"}) is False
     assert is_trusted_identity({"source": "workspace_default", "actor_id": "oid-1"}) is False
+    assert is_trusted_tenant_identity({"source": "easy_auth", "actor_id": "oid-1", "tenant_id": "tenant-1"}) is True
+    assert is_trusted_tenant_identity({"source": "easy_auth", "actor_id": "oid-1"}) is False
+
+
+def test_roi_endpoint_fails_closed_before_reading_for_compatibility_or_nonmember(monkeypatch) -> None:
+    monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    reads: list[str] = []
+    monkeypatch.setattr(control_plane, "workspace_roi_snapshot", lambda workspace_id, *_args: reads.append(workspace_id) or {"workspace_id": workspace_id})
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda _workspace_id, actor: "viewer" if actor.get("actor_id") == "viewer-oid" else None)
+    client = TestClient(app)
+    query = "?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"
+
+    for headers in ({}, {"x-ms-client-principal": _principal([{"typ": "oid", "val": "viewer-oid"}]), "x-dataforge-proxy-secret": "test-proxy-secret"}):
+        assert client.get(f"/api/workspaces/ws-locked/governance/roi{query}", headers=headers).status_code == 403
+    allowed = client.get(
+        f"/api/workspaces/ws-locked/governance/roi{query}",
+        headers={"x-ms-client-principal": _principal([{"typ": "oid", "val": "viewer-oid"}, {"typ": "tid", "val": "tenant-1"}]), "x-dataforge-proxy-secret": "test-proxy-secret"},
+    )
+
+    assert allowed.status_code == 200
+    assert reads == ["ws-locked"]
 
 
 def test_actor_from_ui_context_never_trusts_placeholder_demo_user() -> None:
@@ -195,7 +217,7 @@ def test_conversation_store_persists_actor_on_user_message(tmp_path, monkeypatch
     monkeypatch.setattr(conversation_store, "upload_blob_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(conversation_store, "download_blob_json", lambda *args, **kwargs: {})
 
-    actor = {"name": "Analyst", "email": "analyst@example.com", "actor_id": "oid-analyst"}
+    actor = {"name": "Analyst", "email": "analyst@example.com", "actor_id": "oid-analyst", "tenant_id": "tenant-1", "source": "easy_auth"}
     conversation_store.append_message(
         "conv-actor",
         workspace_id="ws-actor",
@@ -207,7 +229,32 @@ def test_conversation_store_persists_actor_on_user_message(tmp_path, monkeypatch
 
     detail = conversation_store.get_conversation("conv-actor")
     assert detail["messages"][0]["actor"]["email"] == "analyst@example.com"
+    assert detail["messages"][0]["message_id"].startswith("message_")
+    assert detail["messages"][0]["trusted_identity"] is True
+    assert detail["messages"][0]["actor"]["tenant_id"] == "tenant-1"
     assert detail["actors"][0]["email"] == "analyst@example.com"
+
+
+def test_historical_conversation_message_id_is_workspace_scoped_and_untrusted_actor_is_not_attributed(monkeypatch) -> None:
+    historical = {
+        "conversation_id": "conv-history",
+        "workspace_id": "ws-history",
+        "messages": [
+            {"role": "user", "text": "stable", "time": "2026-07-10T12:00:00Z", "actor": {"actor_id": "oid-user", "tenant_id": "tenant-1", "source": "easy_auth"}, "trusted_identity": True},
+            {"role": "user", "text": "untrusted", "time": "2026-07-10T12:01:00Z", "actor": {"actor_id": "oid-spoof", "tenant_id": "tenant-1", "source": "client_actor"}, "trusted_identity": True},
+        ],
+    }
+    monkeypatch.setattr(control_plane, "list_conversations", lambda _workspace_id: [{"conversation_id": "conv-history", "workspace_id": "ws-history"}])
+    monkeypatch.setattr(control_plane, "get_conversation", lambda _conversation_id: historical)
+    window = {"from": "2026-07-10T00:00:00Z", "to": "2026-07-11T00:00:00Z"}
+    first, _ = control_plane._workspace_messages_for_chargeback("ws-history", window)
+    second, _ = control_plane._workspace_messages_for_chargeback("ws-history", window)
+
+    assert first[0]["message_id"] == second[0]["message_id"]
+    assert first[0]["message_id"].startswith("legacy_message_")
+    from backend.roi_service import member_chargeback
+    result = member_chargeback("ws-history", window, runs=[], messages=first, tasks=[], memberships=[{"actor_id": "oid-user", "tenant_id": "tenant-1", "status": "active"}], prices=[], pseudonym_salt="salt")
+    assert sum(group["activity_count"] for group in result["groups"]) == 1
 
 
 def test_workspace_members_include_actor_usage(monkeypatch) -> None:
@@ -295,7 +342,7 @@ def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(
     run = {
         "run_id": "run-roi-api",
         "workspace_id": "ws-roi-api",
-        "actor": {"actor_id": "owner-oid", "email": "spoofed@example.com"},
+        "actor": {"actor_id": "owner-oid", "tenant_id": "tenant-1", "email": "spoofed@example.com", "source": "easy_auth"},
         "trusted_identity": True,
         "completed_at": "2026-07-10T12:00:00Z",
         "models": [{"model": "gpt-5", "usage": {"input_tokens": 100, "output_tokens": 50}}],
@@ -308,7 +355,7 @@ def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(
     monkeypatch.setattr(
         control_plane,
         "_current_workspace_members_for_chargeback",
-        lambda workspace_id: [{"actor_id": "owner-oid", "email": "owner@example.com", "name": "Owner", "role": "owner", "status": "active"}],
+        lambda workspace_id: [{"actor_id": "owner-oid", "tenant_id": "tenant-1", "email": "owner@example.com", "name": "Owner", "role": "owner", "status": "active"}],
         raising=False,
     )
     monkeypatch.setenv(
@@ -317,27 +364,27 @@ def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(
     )
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     monkeypatch.setenv("DF_ROI_PSEUDONYM_SALT", "test-salt")
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda _workspace_id, actor: "owner" if actor.get("actor_id") == "owner-oid" else "editor")
     client = TestClient(app)
     query = "?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"
+    owner_headers = {"x-ms-client-principal": _principal([{"typ": "oid", "val": "owner-oid"}, {"typ": "tid", "val": "tenant-1"}, {"typ": "preferred_username", "val": "owner@example.com"}]), "x-dataforge-proxy-secret": "test-proxy-secret"}
+    editor_headers = {"x-ms-client-principal": _principal([{"typ": "oid", "val": "editor-oid"}, {"typ": "tid", "val": "tenant-1"}]), "x-dataforge-proxy-secret": "test-proxy-secret"}
 
-    roi = client.get(f"/api/workspaces/ws-roi-api/governance/roi{query}")
+    roi = client.get(f"/api/workspaces/ws-roi-api/governance/roi{query}", headers=owner_headers)
     assert roi.status_code == 200, roi.text
     assert roi.json()["business_value"] is None
     assert roi.json()["cost"]["total"] == 0.0006
     assert "spoofed@example.com" not in roi.text
 
-    invalid_window = client.get("/api/workspaces/ws-roi-api/governance/roi?from=2026-07-10&to=2026-07-11T00:00:00Z")
+    invalid_window = client.get("/api/workspaces/ws-roi-api/governance/roi?from=2026-07-10&to=2026-07-11T00:00:00Z", headers=owner_headers)
     assert invalid_window.status_code == 400
 
-    monkeypatch.setattr(control_plane, "_require_workspace_action", lambda *_args: "editor")
-    denied = client.get(f"/api/workspaces/ws-roi-api/governance/chargeback{query}")
+    denied = client.get(f"/api/workspaces/ws-roi-api/governance/chargeback{query}", headers=editor_headers)
     assert denied.status_code == 403
 
-    monkeypatch.setattr(control_plane, "_require_workspace_action", lambda *_args: "owner")
-    monkeypatch.setattr(control_plane, "workspace_role", lambda _workspace_id, actor: "owner" if str(actor.get("actor_id") or "").lower() == "owner-oid" else "editor")
     allowed = client.get(
         f"/api/workspaces/ws-roi-api/governance/chargeback{query}",
-        headers={"x-ms-client-principal": _principal([{"typ": "oid", "val": "owner-oid"}, {"typ": "preferred_username", "val": "owner@example.com"}]), "x-dataforge-proxy-secret": "test-proxy-secret"},
+        headers=owner_headers,
     )
     assert allowed.status_code == 200
     assert allowed.json()["members"][0]["member"]["email"] == "owner@example.com"

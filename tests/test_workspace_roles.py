@@ -92,6 +92,25 @@ def test_workspace_owner_row_without_role_is_owner_but_trusted_editor_is_not_cha
     assert not workspace_authz.authorize("editor", "chargeback.read")
 
 
+def test_active_workspace_role_requires_trusted_tenant_and_current_membership(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-a"},
+            "workspace_members": [
+                {"actor_id": "viewer-oid", "tenant_id": "tenant-a", "role": "viewer", "status": "active"},
+                {"actor_id": "former-oid", "tenant_id": "tenant-a", "role": "admin", "status": "removed"},
+            ],
+        },
+    )
+
+    assert workspace_authz.active_workspace_role("ws-roles", {"actor_id": "OWNER-OID", "tenant_id": "TENANT-A", "source": "easy_auth"}) == "owner"
+    assert workspace_authz.active_workspace_role("ws-roles", {"actor_id": "viewer-oid", "tenant_id": "tenant-a", "source": "easy_auth"}) == "viewer"
+    assert workspace_authz.active_workspace_role("ws-roles", {"actor_id": "viewer-oid", "source": "easy_auth"}) is None
+    assert workspace_authz.active_workspace_role("ws-roles", {"actor_id": "former-oid", "tenant_id": "tenant-a", "source": "easy_auth"}) is None
+
+
 def test_permission_gate_is_disabled_until_explicitly_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
 

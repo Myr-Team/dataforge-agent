@@ -13,9 +13,9 @@ from typing import Any, Callable, Iterable, Literal, Mapping
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 try:
-    from .identity import canonical_actor_identity
+    from .identity import canonical_actor_identity, is_trusted_tenant_identity
 except ImportError:
-    from identity import canonical_actor_identity
+    from identity import canonical_actor_identity, is_trusted_tenant_identity
 
 
 MAX_WINDOW_DAYS = 31
@@ -113,6 +113,18 @@ class CostSummary(BaseModel):
             if not re.fullmatch(r"[A-Z]{3}", currency) or not math.isfinite(amount) or amount < 0:
                 raise ValueError("currency amounts must be finite non-negative ISO-4217 values")
         return value
+
+    @model_validator(mode="after")
+    def consistent_status(self) -> "CostSummary":
+        if self.status == "complete":
+            if self.total is None or self.currency is None or self.by_currency != {self.currency: self.total}:
+                raise ValueError("complete cost requires matching total, currency, and by_currency")
+        elif self.status == "partial":
+            if self.total is not None or self.currency is not None:
+                raise ValueError("partial cost must not expose a single total or currency")
+        elif self.total is not None or self.currency is not None or self.by_currency:
+            raise ValueError("unknown cost must not expose priced amounts")
+        return self
 
 
 class UsageSummary(BaseModel):
@@ -330,9 +342,12 @@ def member_chargeback(workspace_id: str, window: Mapping[str, Any], *, runs: Ite
             row["cost"] = {"total": None, "status": "partial" if row["model"] else "unknown", "currency": None, "by_currency": {}}
             any_partial = any_partial or bool(row["model"])
         elif row["cost"]["status"] == "partial":
-            row["cost"]["total"] = None; any_partial = True
+            row["cost"] = {"total": None, "status": "partial", "currency": None, "by_currency": {}}
+            any_partial = True
         else:
-            row["cost"]["total"] = _money(row["cost"]["total"]); totals[row["cost"]["currency"]] = totals.get(row["cost"]["currency"], 0) + row["cost"]["total"]
+            row["cost"]["total"] = _money(row["cost"]["total"])
+            row["cost"]["by_currency"] = {row["cost"]["currency"]: row["cost"]["total"]}
+            totals[row["cost"]["currency"]] = totals.get(row["cost"]["currency"], 0) + row["cost"]["total"]
         group_rows.append(row)
     total = _money(next(iter(totals.values()))) if len(totals) == 1 and not any_partial else None
     summary: dict[str, dict[str, Any]] = {}
@@ -352,9 +367,11 @@ def member_chargeback(workspace_id: str, window: Mapping[str, Any], *, runs: Ite
         partial = item.pop("partial")
         has_priced = item.pop("has_priced")
         total_cost = _money(next(iter(by_currency.values()))) if len(by_currency) == 1 and not partial else None
-        item["cost"] = CostSummary(total=total_cost, status="complete" if total_cost is not None else "partial" if partial or has_priced else "unknown", currency=next(iter(by_currency)) if len(by_currency) == 1 else None, by_currency=by_currency)
+        status = "complete" if total_cost is not None else "partial" if partial or has_priced else "unknown"
+        item["cost"] = CostSummary(total=total_cost, status=status, currency=next(iter(by_currency)) if status == "complete" else None, by_currency=by_currency if status != "unknown" else {})
         members_out.append(item)
-    return ChargebackSnapshot(workspace_id=str(workspace_id), window=normalized_window, groups=sorted(group_rows, key=lambda item: str(item["member"]["actor_id"])), members=members_out, totals=CostSummary(total=total, status="complete" if total is not None else "partial" if totals or any_partial else "unknown", currency=next(iter(totals)) if len(totals) == 1 else None, by_currency={key: _money(value) for key, value in totals.items()}), duplicate_event_ids=duplicate_event_ids, duplicate_event_count=len(duplicate_event_ids), truncated=truncation).model_dump(mode="json")
+    total_status = "complete" if total is not None else "partial" if totals or any_partial else "unknown"
+    return ChargebackSnapshot(workspace_id=str(workspace_id), window=normalized_window, groups=sorted(group_rows, key=lambda item: str(item["member"]["actor_id"])), members=members_out, totals=CostSummary(total=total, status=total_status, currency=next(iter(totals)) if total_status == "complete" else None, by_currency={key: _money(value) for key, value in totals.items()} if total_status != "unknown" else {}), duplicate_event_ids=duplicate_event_ids, duplicate_event_count=len(duplicate_event_ids), truncated=truncation).model_dump(mode="json")
 
 
 def _catalog(prices: Iterable[Mapping[str, Any]] | None) -> PriceCatalog:
@@ -376,7 +393,7 @@ def _usage_cost(runs: list[Mapping[str, Any]], catalog: PriceCatalog) -> tuple[U
             assumptions.append(Assumption(kind="model_price", source=price.source, formula="input_tokens/1_000_000*input_per_1m + output_tokens/1_000_000*output_per_1m", status="configured", model=price.model, version=price.version, currency=price.currency, unit=price.unit, effective_from=price.effective_from, effective_to=price.effective_to, input_per_1m=price.input_per_1m, output_per_1m=price.output_per_1m))
     status = "unknown" if not observed else "partial" if unpriced or len(by_currency) != 1 else "complete"
     total = _money(next(iter(by_currency.values()))) if status == "complete" else None
-    return UsageSummary(runs=len(runs), input_tokens=inputs if observed else None, output_tokens=outputs if observed else None, total_tokens=totals if observed else None, models=sorted({model for run in runs for _, model, _ in _run_usage(run)}), duplicate_usage_event_ids=duplicates), CostSummary(total=total, status=status, currency=next(iter(by_currency)) if len(by_currency) == 1 else None, by_currency={key: _money(value) for key, value in by_currency.items()}, unpriced_models=sorted(unpriced)), _dedupe(assumptions)
+    return UsageSummary(runs=len(runs), input_tokens=inputs if observed else None, output_tokens=outputs if observed else None, total_tokens=totals if observed else None, models=sorted({model for run in runs for _, model, _ in _run_usage(run)}), duplicate_usage_event_ids=duplicates), CostSummary(total=total, status=status, currency=next(iter(by_currency)) if status == "complete" else None, by_currency={key: _money(value) for key, value in by_currency.items()} if status != "unknown" else {}, unpriced_models=sorted(unpriced)), _dedupe(assumptions)
 
 
 def _run_usage(run: Mapping[str, Any]) -> list[tuple[int, str, dict[str, int] | None]]:
@@ -413,7 +430,8 @@ def _verified(workspace_id: str, item: Mapping[str, Any], verification_by_id: Ma
     verification_id = str(verification.get("verification_event_id") or "").strip()
     event = verification_by_id.get(verification_id) if verification_id else None
     reviewer = verification.get("reviewer") if isinstance(verification.get("reviewer"), Mapping) else {}
-    if not event or not item.get("trusted_identity") or verification.get("status") != "verified":
+    outcome_actor = item.get("actor") if isinstance(item.get("actor"), Mapping) else {}
+    if not event or not item.get("trusted_identity") or not is_trusted_tenant_identity(outcome_actor) or verification.get("status") != "verified":
         return False
     event_actor = event.get("actor") if isinstance(event.get("actor"), Mapping) else {}
     return bool(
@@ -421,9 +439,10 @@ def _verified(workspace_id: str, item: Mapping[str, Any], verification_by_id: Ma
         and event.get("kind") == "outcome_verification"
         and event.get("outcome_event_id") == item.get("event_id")
         and event.get("trusted_identity")
+        and is_trusted_tenant_identity(event_actor)
         and canonical_actor_identity(event_actor)
         and canonical_actor_identity(event_actor) == canonical_actor_identity(reviewer)
-        and canonical_actor_identity(event_actor) != canonical_actor_identity(item.get("actor") if isinstance(item.get("actor"), Mapping) else {})
+        and canonical_actor_identity(event_actor) != canonical_actor_identity(outcome_actor)
     )
 
 
@@ -448,7 +467,7 @@ def _filtered(workspace: str, records: Iterable[Mapping[str, Any]], window: Mapp
 def _trusted_actor(record: Mapping[str, Any]) -> str | None:
     actor = record.get("actor") if isinstance(record.get("actor"), Mapping) else {}
     identity = canonical_actor_identity(actor)
-    return f"{identity[0]}:{identity[1]}" if record.get("trusted_identity") and identity else None
+    return f"{identity[0]}:{identity[1]}" if record.get("trusted_identity") and is_trusted_tenant_identity(actor) and identity else None
 
 
 def _memberships(items: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:

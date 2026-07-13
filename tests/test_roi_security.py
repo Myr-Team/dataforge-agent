@@ -20,7 +20,7 @@ PRICE_EUR = {**PRICE_USD, "version": "v2", "currency": "EUR", "model": "gpt-4", 
 def _run(*, run_id: str = "run-1", actor_id: str = "owner", trusted: bool = True, model: str = "gpt-5", currency_usage: dict | None = None) -> dict:
     return {
         "run_id": run_id, "workspace_id": "ws", "completed_at": "2026-07-10T12:00:00Z",
-        "actor": {"actor_id": actor_id, "email": "telemetry-leak@example.com"}, "trusted_identity": trusted,
+        "actor": {"actor_id": actor_id, "tenant_id": "tenant-a", "email": "telemetry-leak@example.com", "source": "easy_auth"}, "trusted_identity": trusted,
         "models": [{"model": model, "usage": currency_usage or {"input_tokens": 100, "output_tokens": 50}, "usage_event_id": f"usage-{run_id}"}],
     }
 
@@ -29,7 +29,7 @@ def _outcome(event_id: str, *, verified: bool, business_value: bool = True) -> d
     return {
         "event_id": event_id, "workspace_id": "ws", "provenance": "observed", "observed_value": 1,
         "observed_at": "2026-07-10T13:00:00Z", "source": {"run_id": "run-1"},
-        "actor": {"actor_id": "owner"}, "trusted_identity": True,
+        "actor": {"actor_id": "owner", "tenant_id": "tenant-a", "source": "easy_auth"}, "trusted_identity": True,
         "verification": ({"status": "verified", "verification_event_id": f"verify-{event_id}", "reviewer": {"actor_id": "reviewer", "tenant_id": "tenant-a"}, "trusted_identity": True} if verified else {"status": "unverified"}),
         "business_value": ({"value": 10, "currency": "USD", "source": "ledger", "formula": "margin", "status": "measured"} if business_value else None),
     }
@@ -90,9 +90,9 @@ def test_chargeback_excludes_untrusted_events_and_uses_workspace_scoped_hmac_and
     result = member_chargeback(
         "ws", WINDOW,
         runs=[_run(run_id="trusted"), _run(run_id="untrusted", actor_id="spoofed", trusted=False), _run(run_id="eur", model="gpt-4")],
-        messages=[{"workspace_id": "ws", "time": "2026-07-10T12:00:00Z", "actor": {"actor_id": "owner"}, "trusted_identity": True, "message_id": "m1"}],
-        tasks=[{"workspace_id": "ws", "created_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "owner"}, "trusted_identity": True, "task_id": "t1", "task_type": "analysis"}],
-        memberships=[{"actor_id": "owner", "email": "owner@example.com", "name": "Owner", "role": "owner", "status": "active"}],
+        messages=[{"workspace_id": "ws", "time": "2026-07-10T12:00:00Z", "actor": {"actor_id": "owner", "tenant_id": "tenant-a", "source": "easy_auth"}, "trusted_identity": True, "message_id": "m1"}],
+        tasks=[{"workspace_id": "ws", "created_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "owner", "tenant_id": "tenant-a", "source": "easy_auth"}, "trusted_identity": True, "task_id": "t1", "task_type": "analysis"}],
+        memberships=[{"actor_id": "owner", "tenant_id": "tenant-a", "email": "owner@example.com", "name": "Owner", "role": "owner", "status": "active"}],
         prices=[PRICE_USD, PRICE_EUR], pseudonym_salt="salt",
     )
 
@@ -108,7 +108,7 @@ def test_chargeback_excludes_untrusted_events_and_uses_workspace_scoped_hmac_and
 def test_unpriced_usage_propagates_partial_to_member_and_workspace_totals() -> None:
     result = member_chargeback(
         "ws", WINDOW, runs=[_run(run_id="priced"), _run(run_id="unpriced", model="unknown")], messages=[], tasks=[],
-        memberships=[{"actor_id": "owner", "email": "owner@example.com", "name": "Owner", "status": "active"}],
+        memberships=[{"actor_id": "owner", "tenant_id": "tenant-a", "email": "owner@example.com", "name": "Owner", "status": "active"}],
         prices=[PRICE_USD], pseudonym_salt="salt",
     )
 
@@ -118,9 +118,9 @@ def test_unpriced_usage_propagates_partial_to_member_and_workspace_totals() -> N
 
 
 def test_message_and_task_deduplication_reports_stable_duplicate_ids() -> None:
-    message = {"workspace_id": "ws", "time": "2026-07-10T12:00:00Z", "actor": {"actor_id": "owner"}, "trusted_identity": True, "message_id": "m1"}
-    task = {"workspace_id": "ws", "created_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "owner"}, "trusted_identity": True, "task_id": "t1", "task_type": "analysis"}
-    result = member_chargeback("ws", WINDOW, runs=[], messages=[message, message], tasks=[task, task], memberships=[{"actor_id": "owner", "status": "active"}], prices=[PRICE_USD], pseudonym_salt="salt")
+    message = {"workspace_id": "ws", "time": "2026-07-10T12:00:00Z", "actor": {"actor_id": "owner", "tenant_id": "tenant-a", "source": "easy_auth"}, "trusted_identity": True, "message_id": "m1"}
+    task = {"workspace_id": "ws", "created_at": "2026-07-10T12:00:00Z", "actor": {"actor_id": "owner", "tenant_id": "tenant-a", "source": "easy_auth"}, "trusted_identity": True, "task_id": "t1", "task_type": "analysis"}
+    result = member_chargeback("ws", WINDOW, runs=[], messages=[message, message], tasks=[task, task], memberships=[{"actor_id": "owner", "tenant_id": "tenant-a", "status": "active"}], prices=[PRICE_USD], pseudonym_salt="salt")
 
     assert sum(row["activity_count"] for row in result["groups"]) == 2
     assert result["duplicate_event_count"] == 2

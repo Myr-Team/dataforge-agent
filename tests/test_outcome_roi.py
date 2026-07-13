@@ -25,12 +25,13 @@ def _actor(name: str = "Owner") -> dict[str, str]:
         "name": name,
         "email": f"{name.lower()}@contoso.com",
         "actor_id": f"oid-{name.lower()}",
+        "tenant_id": "tenant-a",
         "source": "easy_auth",
     }
 
 
 def _easy_headers(name: str) -> dict[str, str]:
-    payload = {"claims": [{"typ": "name", "val": name}, {"typ": "preferred_username", "val": f"{name.lower()}@contoso.com"}, {"typ": "oid", "val": f"oid-{name.lower()}"}]}
+    payload = {"claims": [{"typ": "name", "val": name}, {"typ": "preferred_username", "val": f"{name.lower()}@contoso.com"}, {"typ": "oid", "val": f"oid-{name.lower()}"}, {"typ": "tid", "val": "tenant-a"}]}
     principal = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     return {"x-ms-client-principal": principal, "x-dataforge-proxy-secret": "test-proxy-secret"}
 
@@ -162,6 +163,20 @@ def test_outcome_verification_compares_canonical_tenant_and_actor_id(
 
     with pytest.raises(ValueError, match="independent"):
         outcome_store.verify_outcome_event("ws-roi", event["event_id"], {**_actor("Reviewer"), "actor_id": "oid-owner", "tenant_id": "tenant-a"})
+
+
+def test_outcome_verification_rejects_missing_tenant_on_outcome_or_reviewer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    no_tenant_outcome = outcome_store.record_outcome_event("ws-roi", _observed_payload(), {**_actor(), "tenant_id": ""})
+    with pytest.raises(ValueError, match="trusted"):
+        outcome_store.verify_outcome_event("ws-roi", no_tenant_outcome["event_id"], _actor("Reviewer"))
+
+    tenant_outcome = outcome_store.record_outcome_event("ws-roi", _observed_payload(), _actor("Second"))
+    with pytest.raises(ValueError, match="reviewer"):
+        outcome_store.verify_outcome_event("ws-roi", tenant_outcome["event_id"], {**_actor("Reviewer"), "tenant_id": ""})
 
 
 def test_source_reference_requires_exact_workspace_bound_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

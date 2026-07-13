@@ -13,13 +13,13 @@ from uuid import uuid4
 try:
     from .blob_store import download_blob_json, upload_blob_json
     from .artifact_jobs import get_artifact_job
-    from .identity import canonical_actor_identity, is_trusted_identity, public_actor
+    from .identity import canonical_actor_identity, is_trusted_tenant_identity, public_actor
     from .run_store import get_run
     from .workspace_store import get_workspace_detail
 except ImportError:
     from blob_store import download_blob_json, upload_blob_json
     from artifact_jobs import get_artifact_job
-    from identity import canonical_actor_identity, is_trusted_identity, public_actor
+    from identity import canonical_actor_identity, is_trusted_tenant_identity, public_actor
     from run_store import get_run
     from workspace_store import get_workspace_detail
 
@@ -87,7 +87,7 @@ def record_outcome_event(
         "provenance": provenance,
         "source": source,
         "actor": public_actor(dict(actor or {})),
-        "trusted_identity": is_trusted_identity(actor),
+        "trusted_identity": is_trusted_tenant_identity(actor),
         "verification": {"status": "unverified"},
         "business_value": business_value,
         "created_at": now,
@@ -112,8 +112,8 @@ def verify_outcome_event(
     normalized_event_id = _required_text(event_id, "event_id", 80)
     clean_reviewer = public_actor(dict(reviewer or {}))
     reviewer_identity = canonical_actor_identity(reviewer)
-    if not reviewer_identity or not is_trusted_identity(reviewer):
-        raise ValueError("reviewer must have a trusted actor_id")
+    if not reviewer_identity or not is_trusted_tenant_identity(reviewer):
+        raise ValueError("reviewer must have a trusted tenant actor_id")
 
     with _LOCK:
         events = list_outcome_events(normalized_workspace)
@@ -128,9 +128,10 @@ def verify_outcome_event(
             if not _normalize_source(item.get("source")) or item.get("observed_value") is None:
                 raise ValueError("only source-linked observed outcomes can be verified")
             actor = item.get("actor") if isinstance(item.get("actor"), Mapping) else {}
-            if not item.get("trusted_identity"):
-                raise ValueError("outcome actor must be trusted")
-            if reviewer_identity == canonical_actor_identity(actor):
+            outcome_identity = canonical_actor_identity(actor)
+            if not item.get("trusted_identity") or not outcome_identity:
+                raise ValueError("outcome actor must have a trusted tenant identity")
+            if reviewer_identity == outcome_identity:
                 raise ValueError("verification requires an independent reviewer")
             if str((item.get("verification") or {}).get("status") or "").lower() == "verified":
                 raise ValueError("outcome is already verified")
