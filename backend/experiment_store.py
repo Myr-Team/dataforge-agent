@@ -42,6 +42,7 @@ _SOURCE_KEYS = (
     "table_name",
 )
 _TRACEABLE_SOURCE_TYPES = {"corpus", "computed", "workspace_computed"}
+_EVIDENCE_STRUCTURED_FIELDS = ("value", "unit", "status", "direction", "polarity")
 
 
 def build_experiment_ledger(
@@ -90,6 +91,17 @@ def build_experiment_ledger(
         supports_strengthening = bool(evidence_delta["added"] or evidence_delta["strengthened"] or metric_delta["added"])
         if previous and not supports_strengthening:
             decision = _guard_decision_strengthening(previous.get("decision") or {}, decision)
+        authoritative_change = bool(
+            evidence_delta["added"]
+            or evidence_delta["removed"]
+            or evidence_delta["contradicted"]
+            or evidence_delta["strengthened"]
+            or metric_delta["added"]
+        )
+        if previous and not authoritative_change and (
+            metric_delta["non_authoritative"] or unverifiable_evidence
+        ):
+            decision = _retain_previous_decision(previous.get("decision") or {}, decision)
 
         ordinal = len(versions) + 1
         version = {
@@ -226,50 +238,81 @@ def _evidence_snapshot(
     for item in artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or []:
         if isinstance(item, Mapping):
             candidates.append(item)
-    untrusted_refs = {
-        _evidence_ref(item)
-        for item in candidates
-        if _evidence_source_type(item) not in _TRACEABLE_SOURCE_TYPES
+    normalized_candidates = [_normalized_evidence(item) for item in candidates]
+    normalized_candidates = [
+        item
+        for item in normalized_candidates
+        if not _has_more_specific_evidence_identity(item, normalized_candidates)
+    ]
+    untrusted_keys = {
+        _evidence_key(item)
+        for item in normalized_candidates
+        if item.get("source_type") not in _TRACEABLE_SOURCE_TYPES or not item.get("source")
     }
-    by_ref: dict[str, dict[str, Any]] = {}
+    by_identity: dict[str, dict[str, Any]] = {}
     unverifiable: dict[str, dict[str, Any]] = {}
-    for item in candidates:
-        ref = _evidence_ref(item)
-        source_type = _evidence_source_type(item)
+    for normalized in normalized_candidates:
+        ref = str(normalized.get("ref") or "")
+        source_type = str(normalized.get("source_type") or "unknown")
         if not ref:
             continue
-        if ref in untrusted_refs or source_type not in _TRACEABLE_SOURCE_TYPES:
-            unverifiable[ref] = {
-                "ref": ref,
-                "source_type": source_type or "unknown",
-                **({"quote": _normalized_text(item.get("quote") or item.get("snippet"))[:600]} if _normalized_text(item.get("quote") or item.get("snippet")) else {}),
-                "reason": "source_not_traceable",
+        identity = _evidence_key(normalized)
+        if identity in untrusted_keys or source_type not in _TRACEABLE_SOURCE_TYPES or not normalized.get("source"):
+            unverifiable[identity] = {
+                **normalized,
+                "reason": "Evidence source is not traceable to a stable source identity.",
             }
             continue
-        source = _evidence_source(item, ref)
-        normalized = {
-            "ref": ref,
-            "source_type": source_type,
-            "source": source,
-            "quote": _normalized_text(item.get("quote") or item.get("snippet"))[:600] or None,
-            "confidence": item.get("confidence"),
-        }
-        current = by_ref.get(ref)
-        current_source = current.get("source") if isinstance(current, Mapping) else {}
+        current = by_identity.get(identity)
         if (
             current is None
-            or len(source) > len(current_source or {})
-            or (
-                len(source) == len(current_source or {})
-                and _CONFIDENCE_RANK.get(str(normalized.get("confidence") or ""), 0)
-                > _CONFIDENCE_RANK.get(str(current.get("confidence") or ""), 0)
-            )
+            or _CONFIDENCE_RANK.get(str(normalized.get("confidence") or ""), 0)
+            > _CONFIDENCE_RANK.get(str(current.get("confidence") or ""), 0)
         ):
-            by_ref[ref] = {key: value for key, value in normalized.items() if value is not None}
+            by_identity[identity] = normalized
     return (
-        sorted(by_ref.values(), key=_evidence_key),
-        sorted(unverifiable.values(), key=lambda item: str(item.get("ref") or "")),
+        sorted(by_identity.values(), key=_evidence_key),
+        sorted(unverifiable.values(), key=_evidence_key),
     )
+
+
+def _normalized_evidence(item: Mapping[str, Any]) -> dict[str, Any]:
+    ref = _evidence_ref(item)
+    normalized: dict[str, Any] = {
+        "ref": ref,
+        "source_type": _evidence_source_type(item),
+        "source": _evidence_source(item, ref),
+    }
+    quote = _normalized_text(item.get("quote") or item.get("snippet"))[:600]
+    confidence = _normalized_text(item.get("confidence"))[:40]
+    if quote:
+        normalized["quote"] = quote
+    if confidence:
+        normalized["confidence"] = confidence
+    for field in _EVIDENCE_STRUCTURED_FIELDS:
+        value = item.get(field)
+        if value in (None, ""):
+            continue
+        normalized[field] = _normalized_text(value) if isinstance(value, str) else value
+    return normalized
+
+
+def _has_more_specific_evidence_identity(
+    candidate: Mapping[str, Any],
+    candidates: list[dict[str, Any]],
+) -> bool:
+    source = _source(candidate.get("source"))
+    if not source:
+        return False
+    for other in candidates:
+        if other is candidate or other.get("ref") != candidate.get("ref"):
+            continue
+        other_source = _source(other.get("source"))
+        if len(other_source) <= len(source):
+            continue
+        if all(other_source.get(key) == value for key, value in source.items()):
+            return True
+    return False
 
 
 def _evidence_ref(item: Mapping[str, Any]) -> str:
@@ -313,11 +356,12 @@ def _metrics(raw: Any) -> list[dict[str, Any]]:
             continue
         kind = str(item.get("kind") or item.get("provenance") or "assumption").strip().lower()
         source = _source(item.get("source"))
+        verification = _verification(item.get("verification"))
         provenance = (
             "synthetic"
             if kind == "synthetic" or item.get("provenance") == "synthetic"
             else "observed"
-            if kind == "observed" and source
+            if kind == "observed" and source and _verification_passed(verification)
             else "reported_unverified"
             if kind == "observed"
             else "target"
@@ -332,6 +376,7 @@ def _metrics(raw: Any) -> list[dict[str, Any]]:
                 "kind": kind,
                 "provenance": provenance,
                 "source": source or None,
+                "verification": verification or None,
             }
         )
     return [{key: value for key, value in item.items() if value is not None} for item in metrics]
@@ -363,14 +408,31 @@ def _outcome_metrics(outcomes: list[dict[str, Any]], *, existing: list[dict[str,
     keys = {_metric_key(item) for item in existing}
     result: list[dict[str, Any]] = []
     for item in outcomes:
+        kind = str(item.get("provenance") or "assumption").strip().lower()
+        if kind not in {"observed", "synthetic", "target", "assumption"}:
+            kind = "assumption"
+        source = _source(item.get("source"))
+        verification = _verification(item.get("verification"))
+        provenance = (
+            "observed"
+            if kind == "observed" and source and _verification_passed(verification)
+            else "reported_unverified"
+            if kind == "observed"
+            else kind
+        )
+        value = item.get("observed_value")
+        if kind == "target" and item.get("target_value") is not None:
+            value = item.get("target_value")
+        elif kind == "assumption" and item.get("baseline_value") is not None:
+            value = item.get("baseline_value")
         metric = {
             "metric_name": _normalized_text(item.get("metric_name"))[:120],
-            "value": item.get("observed_value"),
+            "value": value,
             "unit": _normalized_text(item.get("unit"))[:40] or None,
-            "kind": "observed",
-            "provenance": "observed",
-            "source": _source(item.get("source")),
-            "verification": item.get("verification"),
+            "kind": kind,
+            "provenance": provenance,
+            "source": source,
+            "verification": verification,
             "observed_at": item.get("observed_at"),
         }
         key = _metric_key(metric)
@@ -379,6 +441,42 @@ def _outcome_metrics(outcomes: list[dict[str, Any]], *, existing: list[dict[str,
         result.append({field: value for field, value in metric.items() if value is not None})
         keys.add(key)
     return result
+
+
+def _verification(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    status = _normalized_text(value.get("status")).lower()[:32]
+    result: dict[str, Any] = {"status": status} if status else {}
+    for key in ("verification_event_id", "verified_at"):
+        text = _normalized_text(value.get(key))[:120]
+        if text:
+            result[key] = text
+    if value.get("trusted_identity") is True:
+        result["trusted_identity"] = True
+    reviewer = value.get("reviewer") if isinstance(value.get("reviewer"), Mapping) else {}
+    reviewer_label = _normalized_text(reviewer.get("subject_label"))[:120]
+    if reviewer_label:
+        result["reviewer"] = {"subject_label": reviewer_label}
+    event = value.get("event") if isinstance(value.get("event"), Mapping) else {}
+    if event:
+        safe_event = {
+            key: event.get(key)
+            for key in ("event_id", "workspace_id", "kind", "outcome_event_id", "created_at")
+            if event.get(key) not in (None, "")
+        }
+        actor = event.get("actor") if isinstance(event.get("actor"), Mapping) else {}
+        actor_label = _normalized_text(actor.get("subject_label"))[:120]
+        if actor_label:
+            safe_event["actor"] = {"subject_label": actor_label}
+        if safe_event:
+            result["event"] = safe_event
+    return result
+
+
+def _verification_passed(value: Any) -> bool:
+    verification = _verification(value)
+    return verification.get("status") in {"verified", "passed"}
 
 
 def _source(value: Any) -> dict[str, str]:
@@ -400,7 +498,6 @@ def _dimension_decisions(feasibility: Mapping[str, Any]) -> list[dict[str, Any]]
             "name": _normalized_text(item.get("name")),
             **({"score": item.get("score")} if item.get("score") is not None else {}),
             **({"confidence": _normalized_text(item.get("confidence"))} if _normalized_text(item.get("confidence")) else {}),
-            **({"rationale": _normalized_text(item.get("rationale"))} if _normalized_text(item.get("rationale")) else {}),
         }
         dimensions.append(normalized)
     return sorted(dimensions, key=lambda item: str(item.get("name") or ""))
@@ -442,45 +539,86 @@ def _evidence_delta(
     before = {_evidence_key(item): item for item in previous if item.get("ref")}
     after = {_evidence_key(item): item for item in current if item.get("ref")}
     common = sorted(set(before) & set(after))
-    added = [after[key] for key in sorted(set(after) - set(before))]
-    removed = [before[key] for key in sorted(set(before) - set(after))]
-    contradicted = [
-        {
-            "ref": after[key].get("ref"),
-            "source": after[key].get("source") or {},
-            "before": before[key].get("quote"),
-            "after": after[key].get("quote"),
-        }
-        for key in common
-        if _normalized_text(before[key].get("quote")) != _normalized_text(after[key].get("quote"))
+    added = [
+        {**after[key], "reason": f"Added stable evidence identity: {_evidence_identity_label(after[key])}."}
+        for key in sorted(set(after) - set(before))
     ]
-    strengthened = [
-        {
-            "ref": after[key].get("ref"),
-            "source": after[key].get("source") or {},
-            "before": before[key].get("confidence"),
-            "after": after[key].get("confidence"),
-        }
-        for key in common
-        if _CONFIDENCE_RANK.get(str(after[key].get("confidence") or ""), 0)
-        > _CONFIDENCE_RANK.get(str(before[key].get("confidence") or ""), 0)
+    removed = [
+        {**before[key], "reason": f"Removed stable evidence identity: {_evidence_identity_label(before[key])}."}
+        for key in sorted(set(before) - set(after))
     ]
-    changed_keys = {
-        key
-        for key in common
-        if _normalized_text(before[key].get("quote")) != _normalized_text(after[key].get("quote"))
-        or _CONFIDENCE_RANK.get(str(after[key].get("confidence") or ""), 0)
-        > _CONFIDENCE_RANK.get(str(before[key].get("confidence") or ""), 0)
-    }
-    unchanged = [after[key] for key in common if key not in changed_keys]
+    contradicted: list[dict[str, Any]] = []
+    strengthened: list[dict[str, Any]] = []
+    unchanged: list[dict[str, Any]] = []
+    for key in common:
+        prior = before[key]
+        latest = after[key]
+        structured_changes = [
+            field
+            for field in _EVIDENCE_STRUCTURED_FIELDS
+            if prior.get(field) != latest.get(field)
+        ]
+        prior_confidence = str(prior.get("confidence") or "")
+        latest_confidence = str(latest.get("confidence") or "")
+        prior_rank = _CONFIDENCE_RANK.get(prior_confidence, 0)
+        latest_rank = _CONFIDENCE_RANK.get(latest_confidence, 0)
+        if structured_changes or latest_rank < prior_rank:
+            reason_parts = []
+            if structured_changes:
+                reason_parts.append(f"structured fields changed: {', '.join(structured_changes)}")
+            if latest_rank < prior_rank:
+                reason_parts.append(f"confidence decreased from {prior_confidence or 'unknown'} to {latest_confidence or 'unknown'}")
+            contradicted.append(
+                {
+                    "ref": latest.get("ref"),
+                    "source": latest.get("source") or {},
+                    "before": {field: prior.get(field) for field in structured_changes} | {"confidence": prior.get("confidence")},
+                    "after": {field: latest.get(field) for field in structured_changes} | {"confidence": latest.get("confidence")},
+                    "reason": f"Evidence changed adversely: {'; '.join(reason_parts)}.",
+                }
+            )
+            continue
+        if latest_rank > prior_rank:
+            strengthened.append(
+                {
+                    "ref": latest.get("ref"),
+                    "source": latest.get("source") or {},
+                    "before": prior.get("confidence"),
+                    "after": latest.get("confidence"),
+                    "reason": f"Evidence confidence increased from {prior_confidence or 'unknown'} to {latest_confidence or 'unknown'}.",
+                }
+            )
+            continue
+        unchanged.append(
+            {
+                **latest,
+                "reason": f"Stable evidence identity and structured fields are unchanged: {_evidence_identity_label(latest)}.",
+            }
+        )
+    unverifiable_items = []
+    for item in unverifiable or []:
+        reason = _normalized_text(item.get("reason"))
+        unverifiable_items.append(
+            {
+                **item,
+                "reason": reason or "Evidence cannot be verified against a stable source identity.",
+            }
+        )
     return {
         "added": added,
         "removed": removed,
         "contradicted": contradicted,
         "strengthened": strengthened,
         "unchanged": unchanged,
-        "unverifiable": list(unverifiable or []),
+        "unverifiable": unverifiable_items,
     }
+
+
+def _evidence_identity_label(item: Mapping[str, Any]) -> str:
+    source = _source(item.get("source"))
+    parts = [f"ref={str(item.get('ref') or '')}"]
+    parts.extend(f"{key}={source[key]}" for key in _SOURCE_KEYS if source.get(key))
+    return ", ".join(parts)
 
 
 def _metric_key(item: Mapping[str, Any]) -> str:
@@ -502,14 +640,32 @@ def _metric_key(item: Mapping[str, Any]) -> str:
 def _metric_delta(previous: list[dict[str, Any]], current: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     before = {_metric_key(item): item for item in previous if item.get("metric_name")}
     after = {_metric_key(item): item for item in current if item.get("metric_name")}
+    new_keys = sorted(set(after) - set(before))
     return {
         "added": [
             after[key]
-            for key in sorted(set(after) - set(before))
+            for key in new_keys
             if after[key].get("provenance") == "observed" and after[key].get("source")
+        ],
+        "non_authoritative": [
+            after[key]
+            for key in new_keys
+            if after[key].get("provenance") != "observed" or not after[key].get("source")
         ],
         "unchanged": [after[key] for key in sorted(set(after) & set(before))],
     }
+
+
+def _retain_previous_decision(previous: Mapping[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    retained = dict(current)
+    for field in ("opportunity_id", "verdict", "confidence", "dimensions"):
+        retained[field] = previous.get(field)
+    retained["verdict_guard"] = {
+        "before": current.get("model_verdict") or current.get("verdict"),
+        "after": previous.get("verdict"),
+        "reason": "non_authoritative_feedback",
+    }
+    return retained
 
 
 def _guard_decision_strengthening(previous: Mapping[str, Any], current: dict[str, Any]) -> dict[str, Any]:
@@ -531,21 +687,32 @@ def _guard_decision_strengthening(previous: Mapping[str, Any], current: dict[str
         if isinstance(item, Mapping)
     }
     dimensions: list[dict[str, Any]] = []
+    unverifiable_dimensions: list[dict[str, str]] = []
     for item in current.get("dimensions") or []:
         dimension = dict(item)
         before = previous_dimensions.get(str(dimension.get("name") or ""))
-        if before:
-            try:
-                if float(dimension.get("score")) > float(before.get("score")):
-                    dimension["score"] = before.get("score")
-                    changed = True
-            except (TypeError, ValueError):
-                pass
-            if _CONFIDENCE_RANK.get(str(dimension.get("confidence") or ""), 0) > _CONFIDENCE_RANK.get(str(before.get("confidence") or ""), 0):
-                dimension["confidence"] = before.get("confidence")
+        if before is None:
+            unverifiable_dimensions.append(
+                {
+                    "name": str(dimension.get("name") or ""),
+                    "reason": "New dimension has no new traceable evidence.",
+                }
+            )
+            changed = True
+            continue
+        try:
+            if float(dimension.get("score")) > float(before.get("score")):
+                dimension["score"] = before.get("score")
                 changed = True
+        except (TypeError, ValueError):
+            pass
+        if _CONFIDENCE_RANK.get(str(dimension.get("confidence") or ""), 0) > _CONFIDENCE_RANK.get(str(before.get("confidence") or ""), 0):
+            dimension["confidence"] = before.get("confidence")
+            changed = True
         dimensions.append(dimension)
     guarded["dimensions"] = dimensions
+    if unverifiable_dimensions:
+        guarded["unverifiable_dimensions"] = unverifiable_dimensions
     if changed:
         guarded["verdict_guard"] = {
             "before": model_verdict or None,
@@ -561,7 +728,7 @@ def _decision_delta(previous: Mapping[str, Any] | None, current: Mapping[str, An
     before = previous.get("decision") if isinstance(previous.get("decision"), Mapping) else {}
     after = current.get("decision") if isinstance(current.get("decision"), Mapping) else {}
     changes: list[dict[str, Any]] = []
-    for field in ("opportunity_id", "verdict", "confidence", "dimensions", "gaps"):
+    for field in ("verdict", "confidence", "dimensions"):
         if before.get(field) != after.get(field):
             changes.append({"field": field, "before": before.get(field), "after": after.get(field)})
     delta = current.get("evidence_delta") if isinstance(current.get("evidence_delta"), Mapping) else _evidence_delta(previous.get("evidence") or [], current.get("evidence") or [])

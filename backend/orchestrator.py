@@ -1300,6 +1300,10 @@ def _iteration_inputs(req: ChatRequest) -> list[dict[str, Any]]:
         }
         if source:
             metric["source"] = source
+        verification_value = m.get("verification") if isinstance(m.get("verification"), dict) else {}
+        verification_status = str(verification_value.get("status") or "").strip().lower()[:32]
+        if verification_status:
+            metric["verification"] = {"status": verification_status}
         out.append(metric)
     return out
 

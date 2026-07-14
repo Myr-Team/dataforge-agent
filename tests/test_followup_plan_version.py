@@ -1,6 +1,8 @@
 import asyncio
 
+import backend.experiment_store as experiment_store
 import backend.orchestrator as orchestrator
+import backend.run_store as run_store
 
 
 def test_iteration_inputs_preserve_source_lineage_and_synthetic_kind() -> None:
@@ -21,6 +23,7 @@ def test_iteration_inputs_preserve_source_lineage_and_synthetic_kind() -> None:
                             "connector_id": "upload",
                             "ignored": "not-public-lineage",
                         },
+                        "verification": {"status": "verified", "note": "not persisted here"},
                     },
                     {
                         "label": "simulated_conversion_rate",
@@ -39,6 +42,7 @@ def test_iteration_inputs_preserve_source_lineage_and_synthetic_kind() -> None:
         "file_version": "2",
         "connector_id": "upload",
     }
+    assert metrics[0]["verification"] == {"status": "verified"}
     assert metrics[1]["kind"] == "synthetic"
 
 
@@ -117,3 +121,69 @@ def test_persist_chat_completion_records_plan_draft_version(monkeypatch):
     assert recorded_versions[0]["source_run_id"] == "conv-plan"
     assert recorded_versions[0]["experiment_version_id"] == "version:conv-plan"
     assert recorded_versions[0]["text"].startswith("## 一句话方案")
+
+
+def test_real_followup_preserves_analysis_run_and_attaches_plan(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    monkeypatch.setattr(orchestrator, "_persist_assistant_message", lambda *args, **kwargs: None)
+    run_store._ACTIVE.clear()
+    artifact = {
+        "workspace_id": "ws-real-plan",
+        "conversation_id": "conv-real-plan",
+        "feasibility": {
+            "opportunity_id": "workspace opportunity",
+            "verdict": "conditional",
+            "overall_confidence": "data_confirmed",
+            "dimensions": [
+                {
+                    "name": "asset_data",
+                    "score": 3,
+                    "confidence": "data_confirmed",
+                    "evidence": [
+                        {
+                            "source_type": "corpus",
+                            "ref": "evidence.csv#row-1",
+                            "file_id": "evidence.csv",
+                            "file_version": "1",
+                        }
+                    ],
+                }
+            ],
+            "gap_list": [],
+        },
+        "answer": {"text": "Analysis", "citations": []},
+    }
+    run_store.start_run("conv-real-plan", "ws-real-plan", "Analyze")
+    run_store.complete_run("conv-real-plan", status="completed", final={"artifact": artifact}, artifact=artifact)
+
+    followup_artifact = {
+        **artifact,
+        "followup": {"answer_type": "plan", "route_hint": "plan_draft"},
+        "output_contract": {"answer_style": "structured_plan"},
+        "answer": {"text": "Pilot plan", "citations": []},
+    }
+    run_store.start_run("conv-real-plan", "ws-real-plan", "Draft a plan")
+    asyncio.run(
+        orchestrator._persist_chat_completion(
+            "conv-real-plan",
+            "ws-real-plan",
+            "Pilot plan",
+            "followup_edit",
+            "followup_edit",
+            {"text": "Pilot plan", "artifact": followup_artifact},
+            followup_artifact,
+        )
+    )
+
+    source = run_store.get_run("conv-real-plan")
+    summaries = run_store.list_runs("ws-real-plan")
+    details = [run_store.get_run(item["run_id"]) for item in summaries]
+    ledger = experiment_store.build_experiment_ledger("ws-real-plan", details, outcomes=[])
+
+    assert source["status"] == "completed"
+    assert source.get("version_kind") is None
+    assert len(ledger["versions"]) == 1
+    assert ledger["versions"][0]["version_id"] == "version:conv-real-plan"
+    assert len(ledger["versions"][0]["attachments"]["plans"]) == 1

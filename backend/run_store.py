@@ -105,6 +105,20 @@ def complete_run(
         run = _ACTIVE.pop(run_id, None)
     if not run:
         return None
+    if str(status or "").strip().lower() in {"followup", "followup_edit"}:
+        try:
+            source_analysis = get_run(run_id)
+        except (FileNotFoundError, ValueError):
+            source_analysis = {}
+        if _is_completed_analysis(source_analysis):
+            completed_at = _utc_now()
+            suffix = hashlib.sha1(
+                f"{run_id}:{completed_at}:{run.get('message') or ''}".encode("utf-8")
+            ).hexdigest()[:8]
+            run["run_id"] = f"{_safe_name(run_id)}-followup-{suffix}"
+            run["conversation_id"] = run_id
+            run["source_run_id"] = run_id
+            run["experiment_version_id"] = f"version:{run_id}"
     scope = _capability_scope(run)
     if final is not None:
         run["final"] = _sanitize_final(final, scope)
@@ -121,6 +135,16 @@ def complete_run(
     run["summary"] = _run_summary_text(run)
     run["registry_summary"] = _run_summary(run)
     return _persist_run(run)
+
+
+def _is_completed_analysis(run: Any) -> bool:
+    if not isinstance(run, dict) or str(run.get("version_kind") or ""):
+        return False
+    if not str(run.get("status") or "").strip().lower().startswith("completed"):
+        return False
+    artifact = run.get("artifact") or (run.get("final") or {}).get("artifact") or {}
+    feasibility = artifact.get("feasibility") if isinstance(artifact, dict) else {}
+    return isinstance(feasibility, dict) and bool(feasibility.get("verdict") or feasibility.get("dimensions"))
 
 
 def list_runs(workspace_id: str | None = None) -> list[dict[str, Any]]:
@@ -235,6 +259,8 @@ def record_artifact_version(
     experiment_version_id = str(experiment_version_id or expected_experiment_version_id).strip()
     if experiment_version_id != expected_experiment_version_id:
         return None
+    if not _canonical_experiment_version_exists(workspace_id, experiment_version_id):
+        return None
     feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
     if not (feasibility.get("verdict") or feasibility.get("dimensions")):
         return None
@@ -321,6 +347,8 @@ def record_plan_version(
     experiment_version_id = str(experiment_version_id or expected_experiment_version_id).strip()
     if experiment_version_id != expected_experiment_version_id:
         return None
+    if not _canonical_experiment_version_exists(workspace_id, experiment_version_id):
+        return None
     feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
     if not (feasibility.get("verdict") or feasibility.get("dimensions")):
         return None
@@ -393,6 +421,39 @@ def record_plan_version(
     run["summary"] = _run_summary_text(run)
     run["registry_summary"] = _run_summary(run)
     return _persist_run(run)
+
+
+def _canonical_experiment_version_exists(workspace_id: str, experiment_version_id: str) -> bool:
+    try:
+        from .experiment_store import build_experiment_ledger
+        from .outcome_store import list_outcome_events
+    except ImportError:
+        from experiment_store import build_experiment_ledger
+        from outcome_store import list_outcome_events
+
+    runs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for summary in list_runs(workspace_id)[:300]:
+        run_id = str(summary.get("run_id") or "").strip()
+        if not run_id or run_id in seen:
+            continue
+        seen.add(run_id)
+        try:
+            detail = get_run(run_id)
+        except (FileNotFoundError, ValueError):
+            continue
+        if isinstance(detail, dict):
+            runs.append(detail)
+    try:
+        outcomes = list_outcome_events(workspace_id)
+    except (OSError, ValueError):
+        outcomes = []
+    ledger = build_experiment_ledger(workspace_id, runs, outcomes=outcomes)
+    return any(
+        str(item.get("version_id") or "") == experiment_version_id
+        for item in ledger.get("versions") or []
+        if isinstance(item, dict)
+    )
 
 
 PLAN_FLAGSHIP_BLOB = "registry/plan-flagship.json"

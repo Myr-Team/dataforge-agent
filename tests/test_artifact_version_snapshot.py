@@ -76,3 +76,58 @@ def test_produce_records_artifact_version_snapshot(tmp_path, monkeypatch) -> Non
     )
     assert [item["version_id"] for item in ledger["versions"]] == ["version:run-v1"]
     assert ledger["versions"][0]["attachments"]["artifacts"][0]["run_id"] == version["run_id"]
+
+
+def test_attachment_requires_existing_non_deduplicated_canonical_version(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+    artifact = {
+        "workspace_id": "ws-attach",
+        "feasibility": {
+            "opportunity_id": "workspace opportunity",
+            "verdict": "conditional",
+            "overall_confidence": "data_confirmed",
+            "dimensions": [
+                {
+                    "name": "asset_data",
+                    "score": 3,
+                    "confidence": "data_confirmed",
+                    "evidence": [
+                        {
+                            "source_type": "corpus",
+                            "ref": "evidence.csv#row-1",
+                            "file_id": "evidence.csv",
+                            "file_version": "1",
+                        }
+                    ],
+                }
+            ],
+        },
+    }
+
+    unknown = run_store.record_artifact_version(
+        workspace_id="ws-attach",
+        source_run_id="missing-run",
+        experiment_version_id="version:missing-run",
+        artifact=artifact,
+        proposal={"artifact_urls": {"pdf": "/api/artifacts/missing.pdf"}},
+        kinds=["pdf"],
+    )
+
+    for run_id in ("run-v1", "run-v2"):
+        run_store.start_run(run_id, "ws-attach", "Analyze")
+        run_store.complete_run(run_id, status="completed", final={"artifact": artifact}, artifact=artifact)
+    deduplicated = run_store.record_artifact_version(
+        workspace_id="ws-attach",
+        source_run_id="run-v2",
+        experiment_version_id="version:run-v2",
+        artifact=artifact,
+        proposal={"artifact_urls": {"pdf": "/api/artifacts/deduplicated.pdf"}},
+        kinds=["pdf"],
+    )
+
+    assert unknown is None
+    assert deduplicated is None
+    assert all(item.get("version_kind") != "artifact_generation" for item in run_store.list_runs("ws-attach"))

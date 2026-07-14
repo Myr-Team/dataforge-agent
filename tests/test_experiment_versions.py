@@ -4,6 +4,7 @@ import json
 
 import backend.experiment_store as experiment_store
 import backend.control_plane as control_plane
+import pytest
 from backend.app import app
 from fastapi.testclient import TestClient
 
@@ -106,6 +107,7 @@ def test_new_observed_evidence_creates_evidence_and_decision_delta() -> None:
                 "unit": "percent",
                 "kind": "observed",
                 "source": {"file_id": "feedback-v2.csv", "run_id": "run-v2"},
+                "verification": {"status": "verified"},
             }
         ],
     )
@@ -171,6 +173,169 @@ def test_observed_outcome_promotes_only_after_completed_reanalysis() -> None:
     assert promoted["metrics"][0]["source"] == outcome["source"]
     assert promoted["evidence_changed"] is True
     assert promoted["decision_delta"]["reasons"] == ["Added 1 source-linked observed metric"]
+
+
+@pytest.mark.parametrize(
+    ("provenance", "verification", "expected_metric_provenance"),
+    [
+        ("observed", {"status": "unverified"}, "reported_unverified"),
+        ("synthetic", {"status": "verified"}, "synthetic"),
+        ("target", {"status": "verified"}, "target"),
+        ("assumption", {"status": "verified"}, "assumption"),
+    ],
+)
+def test_non_verified_observed_or_non_observed_outcome_cannot_promote(
+    provenance: str,
+    verification: dict,
+    expected_metric_provenance: str,
+) -> None:
+    first = _analysis_run("run-v1", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1")
+    second = _analysis_run("run-v2", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1")
+    outcome = {
+        "event_id": f"outcome-{provenance}",
+        "metric_name": "pilot_conversion_rate",
+        "unit": "percent",
+        "observed_value": 9.5,
+        "observed_at": "2026-07-12T01:30:00Z",
+        "created_at": "2026-07-12T01:30:00Z",
+        "provenance": provenance,
+        "source": {"run_id": "run-v1", "file_id": "feedback.csv", "file_version": "2"},
+        "verification": verification,
+    }
+
+    metrics = experiment_store._outcome_metrics([outcome], existing=[])
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[outcome])
+
+    assert metrics[0]["provenance"] == expected_metric_provenance
+    assert metrics[0]["verification"] == verification
+    assert len(ledger["versions"]) == 1
+
+
+def test_non_authoritative_feedback_cannot_create_downgraded_canonical_version() -> None:
+    first = _analysis_run("run-v1", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1")
+    second = _analysis_run(
+        "run-v2",
+        verdict="not_yet_feasible",
+        score=2,
+        evidence_ref="evidence.csv#row-1",
+        iteration_inputs=[
+            {
+                "label": "simulated_conversion_rate",
+                "value": 1.0,
+                "kind": "synthetic",
+            }
+        ],
+    )
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    assert len(ledger["versions"]) == 1
+    assert ledger["versions"][0]["decision"]["verdict"] == "conditional"
+
+
+def test_wording_only_changes_do_not_promote_or_contradict_stable_evidence() -> None:
+    first = _analysis_run("run-v1", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1")
+    second = _analysis_run("run-v2", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1")
+    for run, version, quote, rationale, gap in (
+        (first, "1", "Measured 120 rows.", "Evidence supports the score.", "Validate pricing."),
+        (second, "1", "The dataset contains one hundred twenty rows.", "Same result, rewritten.", "Reworded pricing validation."),
+    ):
+        dimension = run["artifact"]["feasibility"]["dimensions"][0]
+        dimension["rationale"] = rationale
+        dimension["evidence"][0].update({"file_id": "evidence.csv", "file_version": version, "quote": quote})
+        run["artifact"]["feasibility"]["gap_list"] = [gap]
+        run["final"]["artifact"] = run["artifact"]
+    second["artifact"]["feasibility"]["opportunity_id"] = "Reworded workspace opportunity"
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+    direct_delta = experiment_store._evidence_delta(
+        experiment_store._evidence_set(first["artifact"], first["artifact"]["feasibility"]),
+        experiment_store._evidence_set(second["artifact"], second["artifact"]["feasibility"]),
+    )
+
+    assert len(ledger["versions"]) == 1
+    assert direct_delta["contradicted"] == []
+    assert [item["ref"] for item in direct_delta["unchanged"]] == ["evidence.csv#row-1"]
+
+
+def test_stable_evidence_dedupes_by_full_source_identity_not_ref() -> None:
+    run = _analysis_run("run-v1", verdict="conditional", score=3, evidence_ref="feedback.csv#row-8")
+    dimension = run["artifact"]["feasibility"]["dimensions"][0]
+    dimension["evidence"] = [
+        {
+            "source_type": "corpus",
+            "ref": "feedback.csv#row-8",
+            "file_id": "feedback.csv",
+            "file_version": version,
+            "connector_id": "upload",
+            "connector_version": "1",
+            "confidence": "data_confirmed",
+        }
+        for version in ("1", "2")
+    ]
+    run["final"]["artifact"] = run["artifact"]
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [run], outcomes=[])
+
+    assert [item["source"]["file_version"] for item in ledger["versions"][0]["evidence"]] == ["1", "2"]
+
+
+def test_synthetic_only_new_dimension_cannot_promote() -> None:
+    first = _analysis_run("run-v1", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1")
+    second = _analysis_run("run-v2", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1")
+    second["artifact"]["feasibility"]["dimensions"].append(
+        {
+            "name": "synthetic_growth",
+            "score": 5,
+            "confidence": "data_confirmed",
+            "rationale": "Simulation narrative",
+            "evidence": [{"source_type": "synthetic", "ref": "simulation#growth", "quote": "Projected growth"}],
+        }
+    )
+    second["final"]["artifact"] = second["artifact"]
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    assert len(ledger["versions"]) == 1
+    assert [item["name"] for item in ledger["versions"][0]["decision"]["dimensions"]] == ["asset_data"]
+
+
+def test_every_evidence_delta_item_has_structured_reason_and_quote_is_not_authority() -> None:
+    def evidence(ref: str, version: str, confidence: str, **fields) -> dict:
+        return {
+            "ref": ref,
+            "source_type": "corpus",
+            "source": {"file_id": f"{ref}.csv", "file_version": version, "connector_id": "upload"},
+            "confidence": confidence,
+            **fields,
+        }
+
+    previous = [
+        evidence("removed", "1", "data_confirmed"),
+        evidence("contradicted", "1", "data_confirmed", value=10, unit="percent"),
+        evidence("strengthened", "1", "market_inferred"),
+        evidence("unchanged", "1", "data_confirmed", quote="Old wording"),
+        evidence("lowered", "1", "data_confirmed"),
+    ]
+    current = [
+        evidence("added", "1", "data_confirmed"),
+        evidence("contradicted", "1", "data_confirmed", value=20, unit="percent"),
+        evidence("strengthened", "1", "data_confirmed"),
+        evidence("unchanged", "1", "data_confirmed", quote="Rewritten wording"),
+        evidence("lowered", "1", "market_inferred"),
+    ]
+    delta = experiment_store._evidence_delta(
+        previous,
+        current,
+        unverifiable=[{"ref": "simulation", "reason": "Source is synthetic and not traceable."}],
+    )
+
+    assert {item["ref"] for item in delta["contradicted"]} == {"contradicted", "lowered"}
+    assert {item["ref"] for item in delta["unchanged"]} == {"unchanged"}
+    assert {item["ref"] for item in delta["strengthened"]} == {"strengthened"}
+    for category in ("added", "removed", "contradicted", "strengthened", "unchanged", "unverifiable"):
+        assert delta[category]
+        assert all(isinstance(item.get("reason"), str) and item["reason"].strip() for item in delta[category])
 
 
 def test_unverified_or_synthetic_feedback_cannot_promote_effective_verdict() -> None:
@@ -341,6 +506,7 @@ def test_experiment_api_returns_canonical_versions(monkeypatch) -> None:
                     "unit": "percent",
                     "kind": "observed",
                     "source": {"file_id": "feedback-v2.csv", "run_id": "run-v2"},
+                    "verification": {"status": "verified"},
                 }
             ],
         ),
