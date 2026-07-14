@@ -362,3 +362,40 @@ GREEN commands and results:
 ### R8 Deliberate Limitation
 
 - Blob Storage still cannot atomically commit the global registry, run blob, and workspace lineage blob in one storage transaction. The protocol therefore uses a pending workspace reservation and exact envelope/hash validation. A process failure between phases may leave the workspace pending and unavailable until an explicit server-side recovery operation; it cannot promote, rebase, or attach from that partial state.
+
+## R9 Final Durability Completion
+
+### Transaction Model
+
+1. Durable reads now return explicit `present`, `missing`, or `error` states. Only a confirmed missing record can establish workspace genesis; transient storage failures, malformed JSON, and enumeration errors fail closed without candidate overwrite, promotion, or attachment.
+2. Workspace lineage schema v2 retains bounded durable histories for analyses, canonical versions, and attachments, including stable canonical ordinals. Fresh instances hydrate the complete retained ledger from this index even after global registry truncation. If history exceeds the retained bound or a referenced blob cannot be proven, the ledger reports unavailable instead of renumbering or synthesizing success.
+3. Pending reservations have bounded CAS-safe recovery. Recovery confirms only when workspace reservation, global registry envelope, trusted final run blob, content hash, and canonical target all agree exactly. Otherwise a stale reservation is recorded as failed and released for a later safe reservation; read uncertainty remains unavailable.
+4. Same-workspace purge first acquires a durable `purging` lifecycle state, then strictly enumerates and deletes run blobs, removes global registry rows through the revision-preserving CAS writer, and finally commits `purged` with explicit no-history proof. Reservations and finalization cannot proceed while purging. Any read, deletion, registry, or final CAS failure leaves the workspace fail-closed in `purging`.
+
+### R9 TDD Evidence
+
+Initial focused RED command:
+
+`python -m pytest -q tests/test_artifact_version_snapshot.py::test_transient_durable_reads_never_create_genesis_or_overwrite_confirmed_run tests/test_artifact_version_snapshot.py::test_truncated_global_registry_hydrates_all_canonical_versions_and_attachments tests/test_artifact_version_snapshot.py::test_stale_pending_without_registry_commit_recovers_and_allows_next_analysis tests/test_artifact_version_snapshot.py::test_stale_pending_with_exact_final_blob_is_confirmed_before_next_reservation tests/test_artifact_version_snapshot.py::test_same_workspace_purge_owns_lifecycle_before_deletion_and_blocks_analysis tests/test_artifact_version_snapshot.py::test_purge_registry_retry_failure_leaves_purging_and_blocks_resurrection`
+
+Initial RED result: `6 failed in 5.37s`. Failures demonstrated permissive read handling, loss of canonical ordinals/history after global truncation, indefinitely blocking pending reservations, analysis finalization during purge, and false `purged` success after a failed registry update.
+
+GREEN commands and results:
+
+- R9 focused regressions: `6 passed in 2.81s`.
+- Focused Task3 suite: `79 passed in 9.58s`.
+- Relevant persistence, control-plane, run-store, outcome, audit, and workspace-role suite: `201 passed in 33.32s`.
+- Final combined suite after strict purge enumeration: `281 passed in 39.51s`.
+- Same-workspace purge concurrency regressions repeated five times: `10 passed` across five independent pytest runs.
+
+### R9 Changed Files
+
+- `backend/experiment_store.py`
+- `backend/run_store.py`
+- `tests/test_artifact_version_snapshot.py`
+- `.superpowers/sdd/p2-c-task-3-report.md`
+
+### R9 Remaining Risks
+
+- Blob Storage has no multi-blob atomic transaction. Recovery is demand-driven by a later reservation or purge and uses a five-minute stale threshold; during that interval the workspace remains unavailable rather than exposing partial lineage.
+- Workspace lineage retains at most 512 analysis/canonical records and 1,024 attachment records. Stable ordinals are preserved, but exceeding a bound marks history incomplete and the public ledger unavailable instead of returning an incorrect partial ledger.

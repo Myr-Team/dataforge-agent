@@ -155,7 +155,8 @@ def build_experiment_ledger(
         ):
             decision = _retain_previous_decision(previous.get("decision") or {}, decision)
 
-        ordinal = len(versions) + 1
+        persisted_ordinal = int(run.get("_canonical_ordinal") or 0)
+        ordinal = persisted_ordinal if persisted_ordinal > 0 else len(versions) + 1
         version = {
             "version_id": f"version:{run_id}",
             "label": f"V{ordinal}",
