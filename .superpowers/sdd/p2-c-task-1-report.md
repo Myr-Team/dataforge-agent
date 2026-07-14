@@ -27,9 +27,14 @@
 - Temporal coverage now requires `available: true` and either a positive numeric `periods`/`count` or an explicit, ordered evidence range with ISO-parseable or finite numeric `start` and `end` values. Raw names, strings that are not time values, booleans, false flags, zero, and malformed structures cannot contribute.
 - Schema input is filtered to the explicit `schema_roles`, `metric_families`, `entity_relationships`, and `temporal_coverage` contract. Semantic values must be direct strings from the data-driven pack vocabulary; nested objects and raw column/dataset fields are ignored.
 
+## Review R2 follow-up
+
+- Time ranges reject mixed aware/naive ISO datetimes, invalid endpoints, incomparable values, and reversed ranges without raising; any invalid range makes temporal evidence unavailable.
+- `periods` and `count` are treated as aliases. Each must be the same finite positive integer when both are supplied; conflicts and fractional or malformed values make temporal evidence unavailable.
+
 ## Verification
 
-- `python -m pytest tests/test_capability_packs.py -q` -> 24 passed after review follow-up.
+- `python -m pytest tests/test_capability_packs.py -q` -> 26 passed after R2 follow-up.
 - `python -m pytest tests/test_agent_generalization_contract.py tests/test_evidence_bundle.py -q` -> 6 passed.
 - `python -m compileall -q backend tests` -> passed.
 - `python -m json.tool backend/data/capability_packs.json` -> passed.

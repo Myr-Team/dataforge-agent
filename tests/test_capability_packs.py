@@ -152,6 +152,7 @@ def test_malformed_quality_degrades_to_data_readiness_without_raising(
         {"available": True, "periods": 0},
         {"available": True, "evidence": [{"start": "raw-file-name", "end": "other-file-name"}]},
         {"available": True, "evidence": [{"start": True, "end": 2}]},
+        {"available": True, "evidence": [{"start": "2026-01-01T00:00:00", "end": "2026-03-31T00:00:00Z"}]},
     ],
 )
 def test_malformed_temporal_coverage_degrades_to_data_readiness_without_raising(
@@ -159,6 +160,16 @@ def test_malformed_temporal_coverage_degrades_to_data_readiness_without_raising(
 ) -> None:
     profile = _site_profile()
     profile["temporal_coverage"] = invalid_temporal_coverage
+
+    selections = select_capability_packs("choose channels", profile, quality())
+
+    assert [selection.pack_id for selection in selections] == ["risk_data_readiness"]
+    assert "time coverage" in selections[0].missing_evidence
+
+
+def test_conflicting_period_aliases_degrade_to_data_readiness() -> None:
+    profile = _site_profile()
+    profile["temporal_coverage"] = {"available": True, "periods": 2, "count": 8}
 
     selections = select_capability_packs("choose channels", profile, quality())
 

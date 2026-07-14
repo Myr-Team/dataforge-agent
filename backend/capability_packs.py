@@ -158,28 +158,39 @@ def _temporal_endpoint(value: Any) -> datetime | float | None:
 def _valid_temporal_evidence(value: Any) -> bool:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return False
+    has_valid_range = False
     for item in value:
         if not isinstance(item, Mapping):
-            continue
+            return False
         start = _temporal_endpoint(item.get("start"))
         end = _temporal_endpoint(item.get("end"))
-        if start is not None and end is not None and type(start) is type(end) and start < end:
-            return True
-    return False
+        if start is None or end is None or type(start) is not type(end):
+            return False
+        if isinstance(start, datetime) and ((start.tzinfo is None) != (end.tzinfo is None)):
+            return False
+        try:
+            if start >= end:
+                return False
+        except TypeError:
+            return False
+        has_valid_range = True
+    return has_valid_range
 
 
-def _positive_period(value: Any) -> float | None:
+def _positive_period(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, Real):
         return None
     number = float(value)
-    return number if math.isfinite(number) and number > 0 else None
+    if not math.isfinite(number) or number <= 0 or not number.is_integer():
+        return None
+    return int(number)
 
 
 def _temporal_suitability(profile: Mapping[str, Any]) -> _TemporalSuitability:
     coverage = profile.get("temporal_coverage")
     if not isinstance(coverage, Mapping) or coverage.get("available") is not True:
         return _TemporalSuitability(score=0.0, valid=False)
-    period_values: list[float] = []
+    period_values: list[int] = []
     for key in ("periods", "count"):
         if key not in coverage:
             continue
@@ -188,7 +199,9 @@ def _temporal_suitability(profile: Mapping[str, Any]) -> _TemporalSuitability:
             return _TemporalSuitability(score=0.0, valid=False)
         period_values.append(period)
     if period_values:
-        return _TemporalSuitability(score=min(1.0, max(period_values) / 4), valid=True)
+        if len(set(period_values)) != 1:
+            return _TemporalSuitability(score=0.0, valid=False)
+        return _TemporalSuitability(score=min(1.0, period_values[0] / 4), valid=True)
     if _valid_temporal_evidence(coverage.get("evidence")):
         return _TemporalSuitability(score=0.35, valid=True)
     return _TemporalSuitability(score=0.0, valid=False)
