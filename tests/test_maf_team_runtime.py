@@ -301,6 +301,7 @@ async def test_pack_guidance_never_overrides_the_evidence_guard(fake_registry: F
             "query": "choose channels",
             "capability_packs": capability_selections(),
             "capability_selection_context": capability_selection_context(),
+            "capability_selection_scope": {"workspace_id": "workspace-1", "scope_id": "maf-weak"},
         },
         authoritative_corpus={},
         evidence_catalog=[],
@@ -311,6 +312,7 @@ async def test_pack_guidance_never_overrides_the_evidence_guard(fake_registry: F
                 **concurrent_request().payload,
                 "capability_packs": capability_selections(),
                 "capability_selection_context": capability_selection_context(),
+                "capability_selection_scope": {"workspace_id": "workspace-1", "scope_id": "maf-strong"},
             }
         }
     )
@@ -332,6 +334,7 @@ async def test_pack_guidance_never_overrides_the_evidence_guard(fake_registry: F
     assert "capability_packs" not in feasibility_input
     assert "capability_pack_provenance" not in feasibility_input
     assert "capability_selection_context" not in feasibility_input
+    assert "capability_selection_scope" not in feasibility_input
     assert feasibility_input["evidence_bundle"]["capability_guidance"][0]["questions"]
 
 
@@ -352,6 +355,7 @@ async def test_maf_rebuilds_valid_pack_selection_without_untrusted_metadata(fake
                 **concurrent_request().payload,
                 "capability_packs": [untrusted],
                 "capability_selection_context": capability_selection_context(),
+                "capability_selection_scope": {"workspace_id": "workspace-1", "scope_id": "maf-untrusted"},
             }
         }
     )
@@ -376,6 +380,7 @@ async def test_maf_excludes_registered_pack_not_selected_by_the_internal_context
                 **concurrent_request().payload,
                 "capability_packs": [selected, {"pack_id": "growth_retention"}],
                 "capability_selection_context": capability_selection_context(),
+                "capability_selection_scope": {"workspace_id": "workspace-1", "scope_id": "maf-registered"},
             }
         }
     )

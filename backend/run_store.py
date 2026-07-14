@@ -57,12 +57,13 @@ def start_run(run_id: str, workspace_id: str, message: str, actor: dict[str, Any
 def record_event(run_id: str | None, event: str, data: Any) -> None:
     if not run_id:
         return
-    plain = _sanitize_event_data(event, _plain(data))
+    raw_data = _plain(data)
     now = _utc_now()
     with _LOCK:
         run = _ACTIVE.get(run_id)
         if not run:
             return
+        plain = _sanitize_event_data(event, raw_data, _capability_scope(run))
         run["updated_at"] = now
         if event == "answer_delta":
             delta = str((plain or {}).get("delta") or "") if isinstance(plain, dict) else ""
@@ -74,7 +75,7 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
             if delta:
                 summary["last_delta"] = delta[-80:]
             return
-        step = _compact_step(event, plain, now)
+        step = _compact_step(event, plain, now, _capability_scope(run))
         run.setdefault("steps", []).append(step)
         if event == "model_response" and isinstance(plain, dict):
             run.setdefault("models", []).append(
@@ -90,7 +91,7 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
         if event == "audit" and isinstance(plain, dict):
             run["audit"] = plain
         if event == "final" and isinstance(plain, dict):
-            run["final"] = _sanitize_final(plain)
+            run["final"] = _sanitize_final(plain, _capability_scope(run))
 
 
 def complete_run(
@@ -104,10 +105,11 @@ def complete_run(
         run = _ACTIVE.pop(run_id, None)
     if not run:
         return None
+    scope = _capability_scope(run)
     if final is not None:
-        run["final"] = _sanitize_final(final)
+        run["final"] = _sanitize_final(final, scope)
     if artifact is not None:
-        run["artifact"] = _sanitize_artifact(artifact)
+        run["artifact"] = _sanitize_artifact(artifact, scope)
     run["status"] = status
     run["completed_at"] = _utc_now()
     run["updated_at"] = run["completed_at"]
@@ -161,7 +163,7 @@ def update_run_proposal(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]
         artifact = dict(artifact) if isinstance(artifact, dict) else {}
         previous = artifact.get("proposal") if isinstance(artifact.get("proposal"), dict) else {}
         previous = dict(previous or {})
-        incoming = sanitize_capability_metadata(_plain(proposal))
+        incoming = sanitize_capability_metadata(_plain(proposal), _capability_scope(run))
         incoming = incoming if isinstance(incoming, dict) else {}
 
         merged_urls = {}
@@ -242,7 +244,10 @@ def record_artifact_version(
     source_safe = _safe_name(source_run_id)
     suffix = hashlib.sha1(f"{source_run_id}:{now}:{json.dumps(kinds or [], ensure_ascii=False, default=str)}".encode("utf-8")).hexdigest()[:8]
     version_run_id = f"{source_safe}-artifact-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{suffix}"
-    merged_artifact = _sanitize_artifact(artifact)
+    merged_artifact = _sanitize_artifact(
+        artifact,
+        {"workspace_id": workspace_id, "scope_id": source_run_id},
+    )
     merged_proposal = _plain(proposal if isinstance(proposal, dict) else {})
     if merged_proposal:
         merged_artifact["proposal"] = merged_proposal
@@ -316,7 +321,10 @@ def record_plan_version(
     source_safe = _safe_name(source_run_id)
     suffix = hashlib.sha1(f"{source_run_id}:{now}:plan_draft".encode("utf-8")).hexdigest()[:8]
     version_run_id = f"{source_safe}-plan-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{suffix}"
-    merged_artifact = _sanitize_artifact(artifact)
+    merged_artifact = _sanitize_artifact(
+        artifact,
+        {"workspace_id": workspace_id, "scope_id": source_run_id},
+    )
     plan_text = str(text or "").strip() or str((artifact.get("answer") or {}).get("text") or "").strip()
     merged_artifact["plan_draft"] = {
         "text": plan_text,
@@ -467,7 +475,10 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
     proposal = artifact.get("proposal") if isinstance(artifact, dict) and isinstance(artifact.get("proposal"), dict) else {}
     artifact_urls = proposal.get("artifact_urls") if isinstance(proposal.get("artifact_urls"), dict) else {}
     iteration_inputs = artifact.get("iteration_inputs") if isinstance(artifact, dict) and isinstance(artifact.get("iteration_inputs"), list) else []
-    capability_packs, capability_pack_provenance = _capability_pack_contract(artifact)
+    capability_packs, capability_pack_provenance = _capability_pack_contract(
+        artifact,
+        _capability_scope(run),
+    )
     computed_duration = _duration_ms(
         run.get("started_at"),
         run.get("completed_at") or run.get("updated_at"),
@@ -521,9 +532,10 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
     normalized = _sanitize_run_capability_metadata(run)
     if not isinstance(normalized, dict):
         return {}
-    normalized["artifact"] = _sanitize_artifact(normalized.get("artifact"))
+    scope = _capability_scope(normalized)
+    normalized["artifact"] = _sanitize_artifact(normalized.get("artifact"), scope)
     if isinstance(normalized.get("final"), dict):
-        normalized["final"] = _sanitize_final(normalized["final"])
+        normalized["final"] = _sanitize_final(normalized["final"], scope)
     if isinstance(normalized.get("summary"), dict):
         normalized["registry_summary"] = normalized.get("summary")
         normalized["summary"] = normalized.get("summary_text") or _run_summary_text(normalized)
@@ -534,7 +546,8 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
     normalized["tokens"] = _token_usage(normalized)
     normalized["maf"] = _maf_summary(normalized)
     capability_packs, capability_pack_provenance = _capability_pack_contract(
-        normalized.get("artifact") or (normalized.get("final") or {}).get("artifact") or {}
+        normalized.get("artifact") or (normalized.get("final") or {}).get("artifact") or {},
+        scope,
     )
     normalized["capability_packs"] = capability_packs
     normalized["capability_pack_ids"] = [str(item["pack_id"]) for item in capability_packs]
@@ -546,16 +559,31 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _capability_pack_contract(artifact: Any) -> tuple[list[dict[str, Any]], dict[str, str]]:
+def _capability_scope(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    workspace_id = str(value.get("workspace_id") or "").strip()
+    scope_id = str(value.get("conversation_id") or value.get("run_id") or "").strip()
+    if not workspace_id or not scope_id:
+        return {}
+    return {"workspace_id": workspace_id, "scope_id": scope_id}
+
+
+def _capability_pack_contract(
+    artifact: Any,
+    expected_scope: dict[str, str] | None,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     if not isinstance(artifact, dict) or not isinstance(artifact.get("capability_packs"), list):
         return [], {}
     return sanitize_capability_pack_contract(
-        artifact["capability_packs"], artifact.get("capability_pack_provenance")
+        artifact["capability_packs"],
+        artifact.get("capability_pack_provenance"),
+        expected_scope,
     )
 
 
-def _capability_packs(artifact: Any) -> list[dict[str, Any]]:
-    return _capability_pack_contract(artifact)[0]
+def _capability_packs(artifact: Any, expected_scope: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    return _capability_pack_contract(artifact, expected_scope)[0]
 
 
 def _copy_capability_pack_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -601,12 +629,15 @@ def _hydrate_maf_evidence_bundle(
     metadata["capability_pack_provenance"] = dict(provenance)
 
 
-def _hydrate_artifact_capability_metadata(value: Any) -> dict[str, Any]:
+def _hydrate_artifact_capability_metadata(
+    value: Any,
+    expected_scope: dict[str, str] | None,
+) -> dict[str, Any]:
     """Use only the artifact's selected contract to repair nested MAF metadata."""
     artifact = _plain(value)
     if not isinstance(artifact, dict):
         return {}
-    selected_packs, provenance = _capability_pack_contract(artifact)
+    selected_packs, provenance = _capability_pack_contract(artifact, expected_scope)
     _clear_capability_metadata(artifact)
     if selected_packs:
         artifact["capability_packs"] = _copy_capability_pack_records(selected_packs)
@@ -620,21 +651,22 @@ def _sanitize_run_capability_metadata(value: Any) -> Any:
     run = _plain(value)
     if not isinstance(run, dict):
         return sanitize_capability_metadata(run)
+    scope = _capability_scope(run)
 
     artifact = run.get("artifact")
     if isinstance(artifact, dict):
-        run["artifact"] = _hydrate_artifact_capability_metadata(artifact)
+        run["artifact"] = _hydrate_artifact_capability_metadata(artifact, scope)
 
     final = run.get("final")
     if isinstance(final, dict) and isinstance(final.get("artifact"), dict):
         hydrated_final = dict(final)
-        hydrated_final["artifact"] = _hydrate_artifact_capability_metadata(final["artifact"])
+        hydrated_final["artifact"] = _hydrate_artifact_capability_metadata(final["artifact"], scope)
         run["final"] = hydrated_final
 
     if isinstance(run.get("registry_summary"), dict):
         _clear_capability_metadata(run["registry_summary"])
 
-    selected_summary_packs, summary_provenance = _capability_pack_contract(run)
+    selected_summary_packs, summary_provenance = _capability_pack_contract(run, scope)
     if isinstance(run.get("maf"), dict):
         _clear_capability_metadata(run["maf"])
     if selected_summary_packs:
@@ -642,31 +674,39 @@ def _sanitize_run_capability_metadata(value: Any) -> Any:
         run["capability_pack_provenance"] = dict(summary_provenance)
         _hydrate_maf_evidence_bundle(run, selected_summary_packs, summary_provenance)
 
-    return sanitize_capability_metadata(run)
+    return sanitize_capability_metadata(run, scope)
 
 
-def _sanitize_artifact(value: Any) -> dict[str, Any]:
-    artifact = sanitize_capability_metadata(_hydrate_artifact_capability_metadata(value))
+def _sanitize_artifact(value: Any, expected_scope: dict[str, str] | None = None) -> dict[str, Any]:
+    artifact = sanitize_capability_metadata(
+        _hydrate_artifact_capability_metadata(value, expected_scope),
+        expected_scope,
+    )
     if not isinstance(artifact, dict):
         return {}
     return artifact
 
 
-def _sanitize_final(value: Any) -> dict[str, Any]:
-    final = sanitize_capability_metadata(_plain(value))
+def _sanitize_final(value: Any, expected_scope: dict[str, str] | None = None) -> dict[str, Any]:
+    final = sanitize_capability_metadata(_plain(value), expected_scope)
     if not isinstance(final, dict):
         return {}
     if "artifact" in final:
-        final["artifact"] = _sanitize_artifact(final.get("artifact"))
+        final["artifact"] = _sanitize_artifact(final.get("artifact"), expected_scope)
     return final
 
 
-def _sanitize_event_data(event: str, data: Any) -> Any:
+def _sanitize_event_data(
+    event: str,
+    data: Any,
+    expected_scope: dict[str, str] | None = None,
+) -> Any:
     if event != "capability_pack_selection" or not isinstance(data, dict):
         return data
     packs, provenance = sanitize_capability_pack_contract(
         data.get("capability_packs") if isinstance(data.get("capability_packs"), list) else [],
         data.get("capability_pack_provenance"),
+        expected_scope,
     )
     sanitized = {
         "source": "normalized_goal_schema_profile_quality",
@@ -935,11 +975,16 @@ def _local_run_summaries() -> list[dict[str, Any]]:
     return items
 
 
-def _compact_step(event: str, data: Any, timestamp: str) -> dict[str, Any]:
+def _compact_step(
+    event: str,
+    data: Any,
+    timestamp: str,
+    expected_scope: dict[str, str] | None = None,
+) -> dict[str, Any]:
     return {
         "time": timestamp,
         "event": event,
-        "data": _truncate(sanitize_capability_metadata(_plain(data)), depth=0),
+        "data": _truncate(sanitize_capability_metadata(_plain(data), expected_scope), depth=0),
     }
 
 

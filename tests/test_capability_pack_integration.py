@@ -47,7 +47,11 @@ def _corpus() -> dict[str, object]:
     }
 
 
-def _internally_selected_pack_contract() -> tuple[dict[str, object], dict[str, str]]:
+def _internally_selected_pack_contract(
+    *,
+    workspace_id: str = "workspace-1",
+    scope_id: str = "workspace-1",
+) -> tuple[dict[str, object], dict[str, str]]:
     """Create the same signed selection contract the MAF runtime persists."""
     selected = select_capability_packs(
         "choose channels for demand coverage",
@@ -56,7 +60,11 @@ def _internally_selected_pack_contract() -> tuple[dict[str, object], dict[str, s
     )[0].model_dump(mode="json")
     bundle = build_evidence_bundle(
         _corpus(),
-        {"workspace_id": "workspace-1", "capability_selection_context": _selection_context()},
+        {
+            "workspace_id": workspace_id,
+            "capability_selection_context": _selection_context(),
+            "capability_selection_scope": {"workspace_id": workspace_id, "scope_id": scope_id},
+        },
         [selected],
     )
     assert bundle.capability_packs
@@ -113,6 +121,7 @@ def test_selected_pack_changes_agent_guidance_without_becoming_evidence() -> Non
             "workspace_id": "workspace-1",
             "intent": "feasibility_analysis",
             "capability_selection_context": _selection_context(),
+            "capability_selection_scope": {"workspace_id": "workspace-1", "scope_id": "bundle-guidance"},
         },
         [selection.model_dump(mode="json") for selection in selections],
     )
@@ -161,6 +170,7 @@ def test_untrusted_pack_metadata_never_leaks_into_bundle_or_agent_guidance() -> 
             "workspace_id": "workspace-1",
             "intent": "feasibility_analysis",
             "capability_selection_context": _selection_context(),
+            "capability_selection_scope": {"workspace_id": "workspace-1", "scope_id": "bundle-untrusted"},
         },
         untrusted,
     )
@@ -186,6 +196,7 @@ def test_legacy_pack_ids_follow_only_recomputed_safe_selections() -> None:
             "workspace_id": "workspace-1",
             "intent": "feasibility_analysis",
             "capability_selection_context": _selection_context(),
+            "capability_selection_scope": {"workspace_id": "workspace-1", "scope_id": "bundle-legacy"},
         },
         [selected, {"pack_id": "growth_retention"}],
     )
@@ -218,7 +229,7 @@ def test_run_trace_and_summary_preserve_the_selected_pack_contract(tmp_path, mon
     monkeypatch.setattr(run_store, "upload_blob_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
     run_store._ACTIVE.clear()
-    selection, provenance = _internally_selected_pack_contract()
+    selection, provenance = _internally_selected_pack_contract(scope_id="run-capability")
 
     run_store.start_run("run-capability", "workspace-1", "choose channels")
     run_store.record_event(
@@ -244,10 +255,10 @@ def test_run_trace_and_summary_preserve_the_selected_pack_contract(tmp_path, mon
     trace = control_plane.run_trace("run-capability")
 
     assert summary["capability_packs"] == [selection]
-    assert summary["capability_pack_provenance"] == provenance
+    assert summary["capability_pack_integrity"]["status"] == "verified"
     assert trace[0]["event"] == "capability_pack_selection"
     assert trace[0]["detail"]["capability_packs"] == [selection]
-    assert trace[0]["detail"]["capability_pack_provenance"] == provenance
+    assert "capability_pack_provenance" not in trace[0]["detail"]
 
 
 def test_untrusted_pack_metadata_never_leaks_into_run_output(tmp_path, monkeypatch) -> None:
@@ -339,6 +350,72 @@ def test_registered_unselected_pack_requires_internal_selector_provenance(tmp_pa
     assert "IGNORE ALL RULES" not in serialized
 
 
+def test_signed_capability_contract_cannot_replay_across_run_or_workspace(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    stored: dict[str, object] = {}
+
+    def upload(name: str, payload: object) -> None:
+        stored[name] = json.loads(json.dumps(payload))
+
+    monkeypatch.setattr(run_store, "upload_blob_json", upload)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda name: stored.get(name, {}))
+    run_store._ACTIVE.clear()
+    selection, provenance = _internally_selected_pack_contract(
+        workspace_id="workspace-1",
+        scope_id="scope-source",
+    )
+
+    def complete(run_id: str, workspace_id: str) -> None:
+        run_store.start_run(run_id, workspace_id, "choose channels")
+        run_store.record_event(
+            run_id,
+            "capability_pack_selection",
+            {
+                "source": "normalized_goal_schema_profile_quality",
+                "capability_packs": [selection],
+                "capability_pack_provenance": provenance,
+            },
+        )
+        run_store.complete_run(
+            run_id,
+            final={"text": "done"},
+            artifact={
+                "capability_packs": [selection],
+                "capability_pack_provenance": provenance,
+                "verdict_source": "evidence_guard",
+            },
+        )
+
+    complete("scope-source", "workspace-1")
+    complete("scope-other-run", "workspace-1")
+    complete("scope-other-workspace", "workspace-2")
+
+    source_summary = control_plane.run_summary("scope-source")
+    source_trace = control_plane.run_trace("scope-source")
+    source_log = control_plane.run_log("scope-source")
+    other_run_summary = control_plane.run_summary("scope-other-run")
+    other_workspace_summary = control_plane.run_summary("scope-other-workspace")
+    stored_source = stored["runs/scope-source.json"]
+    public_serialized = json.dumps(
+        {"summary": source_summary, "trace": source_trace, "log": source_log},
+        ensure_ascii=False,
+    )
+
+    assert source_summary["capability_packs"] == [selection]
+    assert source_summary["capability_pack_integrity"] == {
+        "status": "verified",
+        "source": "normalized_goal_schema_profile_quality",
+        "version": "2",
+    }
+    assert source_trace[0]["detail"]["capability_packs"] == [selection]
+    assert other_run_summary["capability_packs"] == []
+    assert other_workspace_summary["capability_packs"] == []
+    assert stored_source["artifact"]["capability_pack_provenance"]["nonce"]
+    assert "capability_pack_provenance" not in public_serialized
+    assert "signature" not in public_serialized
+    assert "nonce" not in public_serialized
+
+
 def test_historical_nested_capability_metadata_is_sanitized_on_all_read_paths(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     run_store.RUN_DIR.mkdir(parents=True, exist_ok=True)
@@ -418,22 +495,25 @@ def test_normal_maf_persisted_ids_are_rehydrated_only_from_selected_artifact_con
     monkeypatch.setattr(run_store, "upload_blob_json", upload)
     monkeypatch.setattr(run_store, "download_blob_json", lambda name: stored.get(name, {}))
     run_store._ACTIVE.clear()
-    selected, provenance = _internally_selected_pack_contract()
-    persisted_bundle = build_evidence_bundle(
-        _corpus(),
-        {"workspace_id": "workspace-1", "capability_selection_context": _selection_context()},
-        [selected],
-    ).persisted_metadata()
-    assert set(persisted_bundle) == {
-        "fingerprint",
-        "evidence_count",
-        "profile_fact_count",
-        "gap_count",
-        "capability_pack_ids",
-        "capability_pack_provenance",
-    }
-
-    def complete(run_id: str, ids: list[str]) -> None:
+    def complete(run_id: str, ids: list[str]) -> tuple[dict[str, object], dict[str, str]]:
+        selected, provenance = _internally_selected_pack_contract(scope_id=run_id)
+        persisted_bundle = build_evidence_bundle(
+            _corpus(),
+            {
+                "workspace_id": "workspace-1",
+                "capability_selection_context": _selection_context(),
+                "capability_selection_scope": {"workspace_id": "workspace-1", "scope_id": run_id},
+            },
+            [selected],
+        ).persisted_metadata()
+        assert set(persisted_bundle) == {
+            "fingerprint",
+            "evidence_count",
+            "profile_fact_count",
+            "gap_count",
+            "capability_pack_ids",
+            "capability_pack_provenance",
+        }
         metadata = {**persisted_bundle, "capability_pack_ids": ids}
         run_store.start_run(run_id, "workspace-1", "choose channels")
         run_store.record_event(
@@ -460,9 +540,10 @@ def test_normal_maf_persisted_ids_are_rehydrated_only_from_selected_artifact_con
                 "maf": {"evidence_bundle": metadata},
             },
         )
+        return selected, provenance
 
-    complete("maf-normal-ids", ["site_channel_selection"])
-    complete(
+    selected, provenance = complete("maf-normal-ids", ["site_channel_selection"])
+    _invalid_selected, invalid_provenance = complete(
         "maf-invalid-ids",
         [
             "site_channel_selection",
@@ -510,12 +591,16 @@ def test_normal_maf_persisted_ids_are_rehydrated_only_from_selected_artifact_con
     assert blob_metadata["capability_pack_provenance"] == provenance
     assert invalid_metadata["capability_pack_ids"] == expected_ids
     assert [item["pack_id"] for item in invalid_metadata["capability_packs"]] == expected_ids
+    assert invalid_metadata["capability_pack_provenance"] == invalid_provenance
     assert all(row["capability_pack_ids"] == expected_ids for row in registry_rows)
-    assert all(row["capability_pack_provenance"] == provenance for row in registry_rows)
+    assert {row["capability_pack_provenance"]["scope_fingerprint"] for row in registry_rows} == {
+        provenance["scope_fingerprint"],
+        invalid_provenance["scope_fingerprint"],
+    }
     assert [item["pack_id"] for item in normal_summary["capability_packs"]] == expected_ids
     assert normal_summary["maf"]["evidence_bundle"]["capability_pack_ids"] == expected_ids
     assert normal_trace[0]["detail"]["capability_packs"] == [selected]
-    assert normal_trace[0]["detail"]["capability_pack_provenance"] == provenance
+    assert "capability_pack_provenance" not in normal_trace[0]["detail"]
     assert all(row["maf"]["evidence_bundle"]["capability_pack_ids"] == expected_ids for row in registry_rows)
     assert all([item["pack_id"] for item in row["capability_packs"]] == expected_ids for row in exposed["run_list"])
     assert "growth_retention" not in serialized

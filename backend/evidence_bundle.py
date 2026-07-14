@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import math
+import secrets
 from collections.abc import Mapping, Sequence
 from numbers import Real
 from typing import Any
@@ -38,8 +39,10 @@ _AGENT_GUIDANCE_FIELDS: dict[str, tuple[str, ...]] = {
     "df-producer": ("artifact_sections",),
 }
 _SELECTION_CONTEXT_KEY = "capability_selection_context"
+_SELECTION_SCOPE_KEY = "capability_selection_scope"
 _CAPABILITY_PROVENANCE_SOURCE = "normalized_goal_schema_profile_quality"
-_CAPABILITY_PROVENANCE_VERSION = "1"
+_CAPABILITY_PROVENANCE_VERSION = "2"
+_MAX_SCOPE_ID_CHARS = 256
 _SAFE_REASON_PREFIXES = {
     "matched business-goal concepts: ": "goal_signals",
     "matched schema roles: ": "schema_roles",
@@ -205,12 +208,34 @@ def _valid_digest(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
+def _selection_scope(value: Any) -> dict[str, str]:
+    """Return the bounded server-owned workspace and durable conversation scope."""
+    source = _as_mapping(value)
+    workspace_id = str(source.get("workspace_id") or "").strip()
+    scope_id = str(source.get("scope_id") or "").strip()
+    if (
+        not workspace_id
+        or not scope_id
+        or len(workspace_id) > _MAX_SCOPE_ID_CHARS
+        or len(scope_id) > _MAX_SCOPE_ID_CHARS
+        or "\x00" in workspace_id
+        or "\x00" in scope_id
+    ):
+        return {}
+    return {"workspace_id": workspace_id, "scope_id": scope_id}
+
+
+def _scope_fingerprint(scope: Mapping[str, str]) -> str:
+    return hashlib.sha256(_canonical_json(scope)).hexdigest()
+
+
 def _capability_pack_provenance(
     route: Mapping[str, Any],
     records: Sequence[Mapping[str, Any]],
 ) -> dict[str, str]:
     """Sign an internally selected capability contract without persisting selector inputs."""
-    if not records or not _as_mapping(route.get(_SELECTION_CONTEXT_KEY)):
+    scope = _selection_scope(route.get(_SELECTION_SCOPE_KEY))
+    if not records or not _as_mapping(route.get(_SELECTION_CONTEXT_KEY)) or not scope:
         return {}
     canonical_records = sanitize_capability_pack_records(records)
     if not canonical_records:
@@ -224,28 +249,39 @@ def _capability_pack_provenance(
         key_id, key = _active_key()
     except Exception:
         return {}
+    nonce = secrets.token_hex(32)
     payload = {
         "source": _CAPABILITY_PROVENANCE_SOURCE,
         "version": _CAPABILITY_PROVENANCE_VERSION,
         "selection_fingerprint": selection_fingerprint,
         "records_fingerprint": records_fingerprint,
         "pack_ids": pack_ids,
+        "workspace_id": scope["workspace_id"],
+        "scope_id": scope["scope_id"],
+        "nonce": nonce,
     }
     return {
         "source": _CAPABILITY_PROVENANCE_SOURCE,
         "version": _CAPABILITY_PROVENANCE_VERSION,
         "selection_fingerprint": selection_fingerprint,
         "records_fingerprint": records_fingerprint,
+        "workspace_fingerprint": hashlib.sha256(scope["workspace_id"].encode("utf-8")).hexdigest(),
+        "scope_fingerprint": _scope_fingerprint(scope),
         "key_id": str(key_id),
+        "nonce": nonce,
         "signature": hmac.new(key, _canonical_json(payload), hashlib.sha256).hexdigest(),
     }
 
 
 def internally_selected_capability_pack_contract(
     selection_context: Mapping[str, Any],
+    selection_scope: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """Return only selector-produced records plus their server-verifiable provenance."""
-    route = {_SELECTION_CONTEXT_KEY: _as_mapping(selection_context)}
+    route = {
+        _SELECTION_CONTEXT_KEY: _as_mapping(selection_context),
+        _SELECTION_SCOPE_KEY: _selection_scope(selection_scope),
+    }
     records = list(_computed_capability_selections(route).values())
     provenance = _capability_pack_provenance(route, records)
     return (records, provenance) if records and provenance else ([], {})
@@ -380,16 +416,22 @@ def sanitize_capability_pack_records(packs: Sequence[Any] | None) -> list[dict[s
 def sanitize_capability_pack_contract(
     packs: Sequence[Any] | None,
     provenance: Any,
+    expected_scope: Mapping[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """Accept records only when an internal selector signature binds their exact projection."""
     records = sanitize_capability_pack_records(packs)
     source = _as_mapping(provenance)
+    scope = _selection_scope(expected_scope)
     key_id = source.get("key_id")
     signature = source.get("signature")
     selection_fingerprint = source.get("selection_fingerprint")
     records_fingerprint = source.get("records_fingerprint")
+    workspace_fingerprint = source.get("workspace_fingerprint")
+    scope_fingerprint = source.get("scope_fingerprint")
+    nonce = source.get("nonce")
     if (
         not records
+        or not scope
         or source.get("source") != _CAPABILITY_PROVENANCE_SOURCE
         or source.get("version") != _CAPABILITY_PROVENANCE_VERSION
         or not isinstance(key_id, str)
@@ -397,7 +439,15 @@ def sanitize_capability_pack_contract(
         or not _valid_digest(signature)
         or not _valid_digest(selection_fingerprint)
         or not _valid_digest(records_fingerprint)
+        or not _valid_digest(workspace_fingerprint)
+        or not _valid_digest(scope_fingerprint)
+        or not _valid_digest(nonce)
     ):
+        return [], {}
+    expected_workspace_fingerprint = hashlib.sha256(scope["workspace_id"].encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(workspace_fingerprint, expected_workspace_fingerprint):
+        return [], {}
+    if not hmac.compare_digest(scope_fingerprint, _scope_fingerprint(scope)):
         return [], {}
     pack_ids = [str(record["pack_id"]) for record in records]
     if not hmac.compare_digest(records_fingerprint, hashlib.sha256(_canonical_json(records)).hexdigest()):
@@ -408,6 +458,9 @@ def sanitize_capability_pack_contract(
         "selection_fingerprint": selection_fingerprint,
         "records_fingerprint": records_fingerprint,
         "pack_ids": pack_ids,
+        "workspace_id": scope["workspace_id"],
+        "scope_id": scope["scope_id"],
+        "nonce": nonce,
     }
     try:
         expected_signature = hmac.new(_key_for(key_id), _canonical_json(payload), hashlib.sha256).hexdigest()
@@ -420,7 +473,10 @@ def sanitize_capability_pack_contract(
         "version": _CAPABILITY_PROVENANCE_VERSION,
         "selection_fingerprint": selection_fingerprint,
         "records_fingerprint": records_fingerprint,
+        "workspace_fingerprint": workspace_fingerprint,
+        "scope_fingerprint": scope_fingerprint,
         "key_id": key_id,
+        "nonce": nonce,
         "signature": signature,
     }
 
@@ -434,11 +490,11 @@ def capability_pack_ids_from_records(packs: Sequence[Any] | None) -> list[str]:
     ]
 
 
-def sanitize_capability_metadata(value: Any) -> Any:
+def sanitize_capability_metadata(value: Any, expected_scope: Mapping[str, Any] | None = None) -> Any:
     """Recursively rebuild capability metadata before it reaches a run-facing contract."""
     if isinstance(value, Mapping):
         sanitized = {
-            str(key): sanitize_capability_metadata(item)
+            str(key): sanitize_capability_metadata(item, expected_scope)
             for key, item in value.items()
             if key != "capability_pack_provenance"
         }
@@ -447,6 +503,7 @@ def sanitize_capability_metadata(value: Any) -> Any:
             records, provenance = sanitize_capability_pack_contract(
                 raw_packs if isinstance(raw_packs, list) else [],
                 value.get("capability_pack_provenance"),
+                expected_scope,
             )
             sanitized["capability_packs"] = records
             sanitized["capability_pack_ids"] = [str(record["pack_id"]) for record in records]
@@ -454,7 +511,7 @@ def sanitize_capability_metadata(value: Any) -> Any:
                 sanitized["capability_pack_provenance"] = provenance
         return sanitized
     if isinstance(value, list):
-        return [sanitize_capability_metadata(item) for item in value]
+        return [sanitize_capability_metadata(item, expected_scope) for item in value]
     return value
 
 

@@ -5552,9 +5552,16 @@ def _capability_pack_selection_context(req: ChatRequest) -> dict[str, Any]:
     }
 
 
-def _selected_capability_packs(req: ChatRequest, artifact: dict[str, Any]) -> list[dict[str, Any]]:
+def _selected_capability_packs(
+    req: ChatRequest,
+    artifact: dict[str, Any],
+    conversation_id: str,
+) -> list[dict[str, Any]]:
     context = _capability_pack_selection_context(req)
-    contract, provenance = internally_selected_capability_pack_contract(context)
+    contract, provenance = internally_selected_capability_pack_contract(
+        context,
+        {"workspace_id": req.workspace_id, "scope_id": conversation_id},
+    )
     artifact["capability_packs"] = copy.deepcopy(contract)
     artifact["capability_pack_provenance"] = copy.deepcopy(provenance)
     return contract
@@ -5570,7 +5577,7 @@ def _maf_team_request(
     evidence_catalog: list[dict[str, Any]] | None = None,
 ) -> MafTeamRequest:
     experts = set(decision.experts)
-    capability_packs = _selected_capability_packs(req, artifact)
+    capability_packs = _selected_capability_packs(req, artifact, conversation_id)
     capability_selection_context = _capability_pack_selection_context(req)
     return MafTeamRequest(
         intent=decision.intent,
@@ -5589,6 +5596,10 @@ def _maf_team_request(
                 artifact.get("capability_pack_provenance") or {}
             ),
             "capability_selection_context": capability_selection_context,
+            "capability_selection_scope": {
+                "workspace_id": req.workspace_id,
+                "scope_id": conversation_id,
+            },
         },
         authoritative_corpus=authoritative_corpus or {},
         evidence_catalog=evidence_catalog or [],
@@ -6059,7 +6070,7 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
     artifact["routing"] = decision.model_dump()
     artifact["routing_meta"] = route_meta
     if "df-feasibility-analyst" in decision.experts:
-        capability_packs = _selected_capability_packs(working_req, artifact)
+        capability_packs = _selected_capability_packs(working_req, artifact, conv_id)
         record_event(
             conv_id,
             "capability_pack_selection",

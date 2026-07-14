@@ -1045,6 +1045,7 @@ class MafTeamRuntime:
                 "workspace_id": normalized.payload.get("workspace_id"),
                 "intent": normalized.intent,
                 "capability_selection_context": normalized.payload.get("capability_selection_context"),
+                "capability_selection_scope": normalized.payload.get("capability_selection_scope"),
             },
             normalized.payload.get("capability_packs") if isinstance(normalized.payload.get("capability_packs"), list) else [],
             self._bundle_limits,
@@ -1313,6 +1314,7 @@ class MafTeamRuntime:
         payload.pop("capability_packs", None)
         payload.pop("capability_pack_provenance", None)
         payload.pop("capability_selection_context", None)
+        payload.pop("capability_selection_scope", None)
         history = payload.get("conversation_history")
         if isinstance(history, list):
             bounded_history: list[dict[str, str]] = []

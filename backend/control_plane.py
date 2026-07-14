@@ -656,7 +656,9 @@ def run_summary(run_id: str) -> dict[str, Any]:
         "agent_count": len(_agents(run)),
         "tool_calls": _tool_counts(run),
         "tokens": _token_usage(run),
-        "maf": run.get("maf") if isinstance(run.get("maf"), dict) else None,
+        "maf": _without_capability_pack_provenance(run.get("maf"))
+        if isinstance(run.get("maf"), dict)
+        else None,
         "actor": public_actor(run.get("actor") if isinstance(run.get("actor"), dict) else {}),
         "audit": audit,
         "started_at": run.get("started_at"),
@@ -665,11 +667,7 @@ def run_summary(run_id: str) -> dict[str, Any]:
         "summary": run.get("summary") if isinstance(run.get("summary"), str) else _text_summary(run),
         "evidence": evidence,
         "capability_packs": run.get("capability_packs") if isinstance(run.get("capability_packs"), list) else [],
-        "capability_pack_provenance": (
-            run.get("capability_pack_provenance")
-            if isinstance(run.get("capability_pack_provenance"), dict)
-            else {}
-        ),
+        "capability_pack_integrity": _capability_pack_integrity(run),
     }
 
 
@@ -692,6 +690,30 @@ def run_log(run_id: str) -> dict[str, Any]:
         "trace": trace_from_run(run),
         "raw": _sanitize_detail(run, depth=0),
     }
+
+
+def _capability_pack_integrity(run: dict[str, Any]) -> dict[str, str]:
+    packs = run.get("capability_packs") if isinstance(run.get("capability_packs"), list) else []
+    provenance = run.get("capability_pack_provenance")
+    if packs and isinstance(provenance, dict):
+        return {
+            "status": "verified",
+            "source": "normalized_goal_schema_profile_quality",
+            "version": str(provenance.get("version") or ""),
+        }
+    return {"status": "unavailable"}
+
+
+def _without_capability_pack_provenance(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _without_capability_pack_provenance(item)
+            for key, item in value.items()
+            if str(key) != "capability_pack_provenance"
+        }
+    if isinstance(value, list):
+        return [_without_capability_pack_provenance(item) for item in value]
+    return value
 
 
 def trace_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2382,7 +2404,18 @@ def _future_result(future: Any, default: Any) -> Any:
 
 
 def _with_duration(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{**item, "duration_ms": item.get("duration_ms") or _duration_ms(item.get("started_at"), item.get("finished_at") or item.get("completed_at") or item.get("time"))} for item in runs]
+    summaries: list[dict[str, Any]] = []
+    for item in runs:
+        public = _without_capability_pack_provenance(item)
+        if not isinstance(public, dict):
+            continue
+        public["duration_ms"] = public.get("duration_ms") or _duration_ms(
+            public.get("started_at"),
+            public.get("finished_at") or public.get("completed_at") or public.get("time"),
+        )
+        public["capability_pack_integrity"] = _capability_pack_integrity(item)
+        summaries.append(public)
+    return summaries
 
 
 def _load_first_run(summaries: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -3001,6 +3034,8 @@ def _sanitize_detail(value: Any, *, depth: int) -> Any:
         result = {}
         for key, item in list(value.items())[:80]:
             key_text = str(key)
+            if key_text == "capability_pack_provenance":
+                continue
             if key_text.lower() in {"password", "secret", "connection_string", "sas", "accountkey", "sig"}:
                 result[key_text] = "[redacted]"
             else:
