@@ -34,7 +34,10 @@ try:
         sanitize_citations,
         sanitize_customer_text,
     )
-    from .evidence_bundle import internally_selected_capability_pack_contract
+    from .evidence_bundle import (
+        internally_selected_capability_pack_contract,
+        public_artifact_projection,
+    )
     from .feasibility_rubric import (
         GUARDRAIL_VERSION,
         apply_post_audit_guardrails,
@@ -107,7 +110,10 @@ except ImportError:
         sanitize_citations,
         sanitize_customer_text,
     )
-    from evidence_bundle import internally_selected_capability_pack_contract
+    from evidence_bundle import (
+        internally_selected_capability_pack_contract,
+        public_artifact_projection,
+    )
     from feasibility_rubric import (
         GUARDRAIL_VERSION,
         apply_post_audit_guardrails,
@@ -929,13 +935,24 @@ def _evidence_from_hit(hit: dict[str, Any]) -> Evidence:
 
 
 def _frame(event: str, data: Any, conversation_id: str | None = None) -> str:
+    client_data = _public_final_payload(data, conversation_id) if event == "final" else data
     if event != "answer_delta" or os.environ.get("DF_TRACE_DELTAS") == "1":
-        trace_event(event, data, conversation_id)
+        trace_event(event, client_data, conversation_id)
     try:
-        record_event(conversation_id, event, data)
+        record_event(conversation_id, event, client_data)
     except Exception:
         pass
-    return sse(event, data)
+    return sse(event, client_data)
+
+
+def _public_final_payload(data: Any, conversation_id: str | None) -> Any:
+    """Strip run-bound provenance before a final payload reaches any SSE client."""
+    if not isinstance(data, Mapping):
+        return data
+    artifact = data.get("artifact")
+    workspace_id = artifact.get("workspace_id") if isinstance(artifact, Mapping) else None
+    scope = {"workspace_id": workspace_id, "scope_id": conversation_id}
+    return public_artifact_projection(data, scope)
 
 
 def _agent_tool_events(agent: str, meta: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:

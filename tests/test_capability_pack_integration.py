@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 
+from fastapi.testclient import TestClient
+
 from backend.capability_packs import select_capability_packs
 from backend.evidence_bundle import build_evidence_bundle, bundle_for_agent
+from backend.app import app
 import backend.control_plane as control_plane
+import backend.orchestrator as orchestrator
 import backend.run_store as run_store
 
 
@@ -106,6 +110,24 @@ def _pack_metadata_pairs(value: object) -> list[tuple[list[str], list[str]]]:
         for item in value:
             pairs.extend(_pack_metadata_pairs(item))
     return pairs
+
+
+def _contains_sensitive_provenance_field(value: object) -> bool:
+    forbidden = {
+        "capability_pack_provenance",
+        "signature",
+        "nonce",
+        "scope_fingerprint",
+        "workspace_fingerprint",
+    }
+    if isinstance(value, dict):
+        return any(
+            str(key) in forbidden or _contains_sensitive_provenance_field(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_sensitive_provenance_field(item) for item in value)
+    return False
 
 
 def test_selected_pack_changes_agent_guidance_without_becoming_evidence() -> None:
@@ -414,6 +436,47 @@ def test_signed_capability_contract_cannot_replay_across_run_or_workspace(tmp_pa
     assert "capability_pack_provenance" not in public_serialized
     assert "signature" not in public_serialized
     assert "nonce" not in public_serialized
+
+
+def test_public_latest_analysis_and_final_sse_project_capability_provenance(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
+    run_store._ACTIVE.clear()
+    selection, provenance = _internally_selected_pack_contract(
+        workspace_id="workspace-1",
+        scope_id="scope-public",
+    )
+    artifact = {
+        "workspace_id": "workspace-1",
+        "capability_packs": [selection],
+        "capability_pack_provenance": provenance,
+        "feasibility": {
+            "verdict": "conditional",
+            "dimensions": [{"name": "asset_data", "score": 2}],
+        },
+    }
+    run_store.start_run("scope-public", "workspace-1", "choose channels")
+    run_store.complete_run("scope-public", final={"text": "done"}, artifact=artifact)
+
+    monkeypatch.setattr(control_plane, "_require_workspace_action", lambda *_args, **_kwargs: "editor")
+    response = TestClient(app).get("/api/workspaces/workspace-1/latest-analysis")
+    frame = orchestrator._frame(
+        "final",
+        {"text": "done", "artifact": artifact},
+        "scope-public",
+    )
+    sse_payload = json.loads(frame.split("data: ", 1)[1].strip())
+
+    assert response.status_code == 200
+    latest = response.json()
+    assert latest["artifact"]["capability_packs"] == [selection]
+    assert latest["artifact"]["capability_pack_integrity"]["status"] == "verified"
+    assert latest["trace"][-1]["data"]["artifact"]["capability_packs"] == [selection]
+    assert sse_payload["artifact"]["capability_packs"] == [selection]
+    assert sse_payload["artifact"]["capability_pack_integrity"]["status"] == "verified"
+    assert not _contains_sensitive_provenance_field(latest)
+    assert not _contains_sensitive_provenance_field(sse_payload)
 
 
 def test_historical_nested_capability_metadata_is_sanitized_on_all_read_paths(tmp_path, monkeypatch) -> None:

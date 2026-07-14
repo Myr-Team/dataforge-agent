@@ -515,6 +515,53 @@ def sanitize_capability_metadata(value: Any, expected_scope: Mapping[str, Any] |
     return value
 
 
+_PUBLIC_PROVENANCE_FIELDS = frozenset(
+    {
+        "capability_pack_provenance",
+        "signature",
+        "nonce",
+        "scope_fingerprint",
+        "workspace_fingerprint",
+        "selection_fingerprint",
+        "records_fingerprint",
+        "key_id",
+    }
+)
+
+
+def public_artifact_projection(value: Any, expected_scope: Mapping[str, Any] | None = None) -> Any:
+    """Project artifacts for API and SSE clients without reusable provenance material."""
+    if isinstance(value, Mapping):
+        raw_packs = value.get("capability_packs")
+        has_capability_metadata = "capability_packs" in value or "capability_pack_ids" in value
+        records, provenance = sanitize_capability_pack_contract(
+            raw_packs if isinstance(raw_packs, list) else [],
+            value.get("capability_pack_provenance"),
+            expected_scope,
+        )
+        projected = {
+            str(key): public_artifact_projection(item, expected_scope)
+            for key, item in value.items()
+            if str(key) not in _PUBLIC_PROVENANCE_FIELDS
+        }
+        if has_capability_metadata:
+            projected["capability_packs"] = records
+            projected["capability_pack_ids"] = [str(record["pack_id"]) for record in records]
+            projected["capability_pack_integrity"] = (
+                {
+                    "status": "verified",
+                    "source": _CAPABILITY_PROVENANCE_SOURCE,
+                    "version": _CAPABILITY_PROVENANCE_VERSION,
+                }
+                if provenance
+                else {"status": "unavailable"}
+            )
+        return projected
+    if isinstance(value, list):
+        return [public_artifact_projection(item, expected_scope) for item in value]
+    return value
+
+
 def _capability_pack_ids(packs: Sequence[Any] | None) -> list[str]:
     """Preserve the bounded legacy ID projection from registered IDs only."""
     return _requested_capability_pack_ids(packs)
@@ -655,6 +702,7 @@ __all__ = [
     "bundle_for_agent",
     "capability_pack_ids_from_records",
     "internally_selected_capability_pack_contract",
+    "public_artifact_projection",
     "sanitize_capability_metadata",
     "sanitize_capability_pack_contract",
     "sanitize_capability_pack_records",

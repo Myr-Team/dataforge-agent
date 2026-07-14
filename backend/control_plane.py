@@ -26,6 +26,7 @@ try:
     from .conversation_store import get_conversation, list_conversations, stable_message_id
     from .data_workbench import list_workspace_files
     from .dependency_health import health_dependencies, health_dependency_details
+    from .evidence_bundle import public_artifact_projection
     from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
     from .foundry_roi import discover_foundry_roi, reconcile_foundry_roi
@@ -47,6 +48,7 @@ except ImportError:
     from conversation_store import get_conversation, list_conversations, stable_message_id
     from data_workbench import list_workspace_files
     from dependency_health import health_dependencies, health_dependency_details
+    from evidence_bundle import public_artifact_projection
     from graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
     from foundry_roi import discover_foundry_roi, reconcile_foundry_roi
@@ -592,7 +594,8 @@ def workspace_latest_analysis(workspace_id: str) -> dict[str, Any]:
         checked += 1
         if _is_lightweight_followup_run(run):
             continue
-        artifact = _strip_market_dump_from_artifact(_artifact(run))
+        raw_artifact = _strip_market_dump_from_artifact(_artifact(run))
+        artifact = _public_artifact_for_run(raw_artifact, run, workspace_id)
         if not _has_full_analysis_artifact(artifact):
             continue
         feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
@@ -605,7 +608,7 @@ def workspace_latest_analysis(workspace_id: str) -> dict[str, Any]:
             "source_run_id": trace_run.get("run_id") if trace_run is not run else run.get("source_run_id"),
             "artifact": artifact,
             "feasibility": feasibility,
-            "trace": _flow_trace_from_run(trace_run, artifact),
+            "trace": _flow_trace_from_run(trace_run, artifact, artifact_is_public=True),
             "run_trace": trace_from_run(trace_run),
             "pipeline": pipeline_from_run(trace_run),
             "summary": _safe_value(lambda: run_summary(str(trace_run.get("run_id") or run_id)), {}),
@@ -2506,7 +2509,26 @@ def _analysis_trace_run(run: dict[str, Any]) -> dict[str, Any]:
     return source if _has_full_analysis_artifact(_artifact(source)) else run
 
 
-def _flow_trace_from_run(run: dict[str, Any], artifact_override: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def _public_artifact_for_run(
+    artifact: dict[str, Any],
+    run: dict[str, Any],
+    workspace_id: str | None = None,
+) -> dict[str, Any]:
+    """Create the single safe artifact representation for client-facing responses."""
+    scope = {
+        "workspace_id": str(run.get("workspace_id") or workspace_id or "").strip(),
+        "scope_id": str(run.get("conversation_id") or run.get("run_id") or "").strip(),
+    }
+    projected = public_artifact_projection(artifact, scope)
+    return projected if isinstance(projected, dict) else {}
+
+
+def _flow_trace_from_run(
+    run: dict[str, Any],
+    artifact_override: dict[str, Any] | None = None,
+    *,
+    artifact_is_public: bool = False,
+) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for step in run.get("steps") or []:
         if not isinstance(step, dict):
@@ -2516,7 +2538,8 @@ def _flow_trace_from_run(run: dict[str, Any], artifact_override: dict[str, Any] 
             continue
         data = step.get("data") if isinstance(step.get("data"), dict) else {}
         events.append({"event": event, "data": _sanitize_detail(data, depth=0), "time": step.get("time")})
-    artifact = artifact_override if isinstance(artifact_override, dict) else _artifact(run)
+    raw_artifact = artifact_override if isinstance(artifact_override, dict) else _artifact(run)
+    artifact = raw_artifact if artifact_is_public else _public_artifact_for_run(raw_artifact, run)
     if not _has_web_search_event(events):
         market_event = _web_search_event_from_artifact(artifact, run)
         if market_event:
