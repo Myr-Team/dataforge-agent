@@ -82,7 +82,17 @@ try:
     from .pm_skills import playbook_suggestion
     from .rag import search
     from .router import deterministic_route
-    from .run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
+    from .run_store import (
+        complete_run,
+        get_run,
+        list_runs,
+        record_artifact_version,
+        record_event,
+        record_plan_version,
+        resolve_canonical_experiment_source_run_id,
+        start_run,
+        update_run_proposal,
+    )
     from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, GuardedFeasibilityReport, MarketComparison, RoutingDecision
     from .tracing import agent_trace, finish_maf_agent_span, start_maf_agent_span, trace_event
     from .maf_agents import create_agent_registry
@@ -158,7 +168,17 @@ except ImportError:
     from pm_skills import playbook_suggestion
     from rag import search
     from router import deterministic_route
-    from run_store import complete_run, get_run, list_runs, record_artifact_version, record_event, record_plan_version, start_run, update_run_proposal
+    from run_store import (
+        complete_run,
+        get_run,
+        list_runs,
+        record_artifact_version,
+        record_event,
+        record_plan_version,
+        resolve_canonical_experiment_source_run_id,
+        start_run,
+        update_run_proposal,
+    )
     from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, GuardedFeasibilityReport, MarketComparison, RoutingDecision
     from tracing import agent_trace, finish_maf_agent_span, start_maf_agent_span, trace_event
     from maf_agents import create_agent_registry
@@ -5528,18 +5548,22 @@ async def _persist_chat_completion(
 
 def _plan_source_run_id(workspace_id: str, conversation_id: str, artifact: Mapping[str, Any]) -> str:
     explicit = str(artifact.get("source_analysis_run_id") or "").strip()
-    if explicit:
-        return explicit
+    if not explicit:
+        try:
+            last_analysis = _last_analysis_for_workspace(workspace_id)
+        except Exception:
+            last_analysis = {}
+        explicit = str(
+            last_analysis.get("run_id")
+            or last_analysis.get("conversation_id")
+            or ""
+        ).strip()
+    source_run_id = explicit or conversation_id
     try:
-        last_analysis = _last_analysis_for_workspace(workspace_id)
+        canonical_run_id = resolve_canonical_experiment_source_run_id(workspace_id, source_run_id)
     except Exception:
-        last_analysis = {}
-    source_run_id = str(
-        last_analysis.get("run_id")
-        or last_analysis.get("conversation_id")
-        or ""
-    ).strip()
-    return source_run_id or conversation_id
+        canonical_run_id = None
+    return canonical_run_id or source_run_id
 
 
 def _plan_attachment_artifact(source_run_id: str, artifact: Mapping[str, Any]) -> dict[str, Any]:

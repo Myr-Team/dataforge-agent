@@ -267,3 +267,78 @@ def test_new_conversation_followup_attaches_plan_to_workspace_last_analysis(tmp_
     assert followup.get("version_kind") is None
     assert [item["version_id"] for item in ledger["versions"]] == [f"version:{source_run_id}"]
     assert ledger["versions"][0]["attachments"]["plans"][0]["text"] == "Pilot plan"
+
+
+def test_new_conversation_plan_resolves_latest_duplicate_analysis_alias(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    monkeypatch.setattr(orchestrator, "_persist_assistant_message", lambda *args, **kwargs: None)
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-duplicate-analysis-plan"
+    canonical_run_id = "analysis-canonical"
+    duplicate_run_id = "analysis-latest-duplicate"
+    followup_run_id = "new-plan-conversation"
+    analysis_artifact = {
+        "workspace_id": workspace_id,
+        "feasibility": {
+            "opportunity_id": "workspace opportunity",
+            "verdict": "conditional",
+            "overall_confidence": "data_confirmed",
+            "dimensions": [
+                {
+                    "name": "asset_data",
+                    "score": 3,
+                    "confidence": "data_confirmed",
+                    "evidence": [
+                        {
+                            "source_type": "corpus",
+                            "ref": "evidence.csv#row-1",
+                            "file_id": "evidence.csv",
+                            "file_version": "1",
+                        }
+                    ],
+                }
+            ],
+        },
+        "answer": {"text": "Analysis", "citations": []},
+    }
+    for run_id in (canonical_run_id, duplicate_run_id):
+        artifact = {**analysis_artifact, "conversation_id": run_id}
+        run_store.start_run(run_id, workspace_id, "Analyze")
+        run_store.complete_run(
+            run_id,
+            status="completed",
+            final={"artifact": artifact},
+            artifact=artifact,
+        )
+    assert orchestrator._last_analysis_for_workspace(workspace_id)["run_id"] == duplicate_run_id
+
+    run_store.start_run(followup_run_id, workspace_id, "Draft a plan")
+    followup_artifact = {
+        "workspace_id": workspace_id,
+        "conversation_id": followup_run_id,
+        "followup": {"answer_type": "plan", "route_hint": "plan_draft"},
+        "output_contract": {"answer_style": "structured_plan"},
+        "answer": {"text": "Pilot plan from duplicate", "citations": []},
+    }
+    asyncio.run(
+        orchestrator._persist_chat_completion(
+            followup_run_id,
+            workspace_id,
+            "Pilot plan from duplicate",
+            "followup_edit",
+            "followup_edit",
+            {"text": "Pilot plan from duplicate", "artifact": followup_artifact},
+            followup_artifact,
+        )
+    )
+
+    details = [run_store.get_run(item["run_id"]) for item in run_store.list_runs(workspace_id)]
+    ledger = experiment_store.build_experiment_ledger(workspace_id, details, outcomes=[])
+    plan_runs = [item for item in details if item.get("version_kind") == "plan_draft"]
+    assert [item["version_id"] for item in ledger["versions"]] == [f"version:{canonical_run_id}"]
+    assert len(plan_runs) == 1
+    assert plan_runs[0]["source_run_id"] == canonical_run_id
+    assert plan_runs[0]["experiment_version_id"] == f"version:{canonical_run_id}"
+    assert ledger["versions"][0]["attachments"]["plans"][0]["text"] == "Pilot plan from duplicate"

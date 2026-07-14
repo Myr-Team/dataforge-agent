@@ -141,3 +141,41 @@ GREEN commands and results:
 ### R3 Deliberate Limitation
 
 - Dimension authority is fail-closed: an authoritative metric does not strengthen a dimension unless evidence with that dimension's stable identity is also attached to the completed analysis decision.
+
+## R4 Review Remediation
+
+### Behavior
+
+- New-conversation plan follow-ups resolve a latest-analysis duplicate through the experiment ledger to its exact canonical source run before invoking the strict attachment writer.
+- Dimension comparison uses normalized case/whitespace identity while retaining the decision's display spelling. Equal-rank verdict aliases such as `not_feasible`/`not_yet_feasible` and `feasible`/`recommended` compare semantically.
+- Evidence snapshots canonicalize `pass`/`passed`/`verified` to one favorable state and normalize direction aliases such as `higher`/`higher_is_better`. Equivalent spellings are unchanged; actual favorable/adverse transitions still classify deterministically.
+- Decision-only promotions include a deterministic reason on every changed normalized field, and those reasons are included in the summary.
+- The unused previous-dimension evidence state and parameter were removed; dimension transition authority continues to derive from current dimension evidence intersecting added/strengthened evidence identities.
+
+### R4 TDD Evidence
+
+RED command:
+
+`python -m pytest -q tests/test_experiment_versions.py tests/test_followup_plan_version.py tests/test_artifact_version_snapshot.py`
+
+RED result: `7 failed, 35 passed in 5.94s`. Failures covered duplicate-analysis alias attachment, dimension/verdict aliases, equivalent evidence spellings, opposing status transitions, and missing decision-only reasons.
+
+GREEN commands and results:
+
+- Focused Task3 suite: `42 passed in 6.60s`.
+- Task3 plus follow-up, outcome, run-store, and control-plane integration suite: `81 passed in 7.49s`.
+- `python -m py_compile backend/experiment_store.py backend/outcome_store.py backend/run_store.py backend/orchestrator.py`: exit 0.
+- `git diff --check`: exit 0.
+
+### R4 Changed Files
+
+- `backend/experiment_store.py`
+- `backend/run_store.py`
+- `backend/orchestrator.py`
+- `tests/test_experiment_versions.py`
+- `tests/test_followup_plan_version.py`
+- `.superpowers/sdd/p2-c-task-3-report.md`
+
+### R4 Remaining Risk
+
+- Canonical alias resolution uses the same bounded 300-run workspace scan as attachment validation. A source outside that retained window fails closed and is not attached.

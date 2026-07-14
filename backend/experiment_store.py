@@ -65,7 +65,6 @@ def build_experiment_ledger(
     snapshots = [item for item in ordered if str(item.get("version_kind") or "") in {"plan_draft", "artifact_generation"}]
     outcome_items = [item for item in (outcomes or []) if isinstance(item, dict)]
     versions: list[dict[str, Any]] = []
-    version_dimension_evidence: list[dict[str, set[str]]] = []
     version_aliases: dict[str, str] = {}
 
     for run in analysis_runs:
@@ -98,7 +97,6 @@ def build_experiment_ledger(
         supports_strengthening = bool(evidence_delta["added"] or evidence_delta["strengthened"] or metric_delta["added"])
         if previous:
             authoritative_dimensions = _authoritative_dimension_changes(
-                version_dimension_evidence[-1],
                 dimension_evidence,
                 evidence_delta,
             )
@@ -150,7 +148,6 @@ def build_experiment_ledger(
         should_promote = previous is None or version["evidence_changed"] or bool(version["decision_delta"]["changes"])
         if should_promote:
             versions.append(version)
-            version_dimension_evidence.append(dimension_evidence)
             version_aliases[run_id] = run_id
         else:
             version_aliases[run_id] = str(previous.get("run_id") or "")
@@ -166,6 +163,34 @@ def build_experiment_ledger(
         "latest_version_id": versions[-1]["version_id"] if versions else None,
         "source": "run_store_plus_outcome_ledger",
     }
+
+
+def resolve_canonical_experiment_run_id(
+    workspace_id: str,
+    runs: list[dict[str, Any]],
+    source_run_id: str,
+    *,
+    outcomes: list[dict[str, Any]] | None = None,
+) -> str | None:
+    requested = str(source_run_id or "").strip()
+    if not requested:
+        return None
+    ordered = sorted(
+        [item for item in runs if isinstance(item, dict) and _is_analysis_version(item)],
+        key=lambda item: str(item.get("completed_at") or item.get("updated_at") or item.get("started_at") or ""),
+    )
+    prefix: list[dict[str, Any]] = []
+    for run in ordered:
+        prefix.append(run)
+        run_id = str(run.get("run_id") or run.get("conversation_id") or "").strip()
+        if run_id != requested:
+            continue
+        ledger = build_experiment_ledger(workspace_id, prefix, outcomes=outcomes)
+        versions = [item for item in ledger.get("versions") or [] if isinstance(item, Mapping)]
+        if not versions:
+            return None
+        return str(versions[-1].get("run_id") or "").strip() or None
+    return None
 
 
 def sync_experiment_ledger(
@@ -302,16 +327,23 @@ def _normalized_evidence(item: Mapping[str, Any]) -> dict[str, Any]:
         "source": _evidence_source(item, ref),
     }
     quote = _normalized_text(item.get("quote") or item.get("snippet"))[:600]
-    confidence = _normalized_text(item.get("confidence"))[:40]
+    confidence = _normalized_token(item.get("confidence"))[:40]
     if quote:
         normalized["quote"] = quote
     if confidence:
         normalized["confidence"] = confidence
-    for field in _EVIDENCE_STRUCTURED_FIELDS:
+    for field in ("value", "unit"):
         value = item.get(field)
         if value in (None, ""):
             continue
-        normalized[field] = _normalized_text(value) if isinstance(value, str) else value
+        normalized[field] = _normalized_number(value) if field == "value" else _normalized_text(value)
+    status = _evidence_status(item.get("status"))
+    if status:
+        normalized["status"] = status
+    raw_direction = item.get("direction") or item.get("polarity")
+    direction = _evidence_orientation(_normalized_token(raw_direction)) or _normalized_token(raw_direction)
+    if direction:
+        normalized["direction"] = direction
     return normalized
 
 
@@ -549,7 +581,6 @@ def _dimension_evidence_keys(feasibility: Mapping[str, Any]) -> dict[str, set[st
 
 
 def _authoritative_dimension_changes(
-    previous: Mapping[str, set[str]],
     current: Mapping[str, set[str]],
     delta: Mapping[str, list[dict[str, Any]]],
 ) -> set[str]:
@@ -695,9 +726,9 @@ def _evidence_semantic_change(
     prior: Mapping[str, Any],
     latest: Mapping[str, Any],
 ) -> tuple[str, str] | None:
-    prior_status = _normalized_token(prior.get("status"))
-    latest_status = _normalized_token(latest.get("status"))
-    status_rank = {"failed": 0, "fail": 0, "passed": 1, "pass": 1, "verified": 1}
+    prior_status = _evidence_status(prior.get("status"))
+    latest_status = _evidence_status(latest.get("status"))
+    status_rank = {"failed": 0, "passed": 1}
     if prior_status != latest_status and prior_status in status_rank and latest_status in status_rank:
         favorable = status_rank[latest_status] > status_rank[prior_status]
         category = "strengthened" if favorable else "contradicted"
@@ -726,6 +757,15 @@ def _evidence_orientation(value: str) -> str | None:
     if value in {"lower", "lower_is_better", "decrease", "decreasing", "negative", "down"}:
         return "lower"
     return None
+
+
+def _evidence_status(value: Any) -> str:
+    token = _normalized_token(value)
+    if token in {"pass", "passed", "verified"}:
+        return "passed"
+    if token in {"fail", "failed"}:
+        return "failed"
+    return token
 
 
 def _evidence_identity_label(item: Mapping[str, Any]) -> str:
@@ -872,10 +912,23 @@ def _decision_delta(previous: Mapping[str, Any] | None, current: Mapping[str, An
     after = current.get("decision") if isinstance(current.get("decision"), Mapping) else {}
     changes: list[dict[str, Any]] = []
     for field in ("verdict", "confidence", "dimensions"):
-        if before.get(field) != after.get(field):
-            changes.append({"field": field, "before": before.get(field), "after": after.get(field)})
+        before_value = _normalized_decision_field(field, before.get(field))
+        after_value = _normalized_decision_field(field, after.get(field))
+        if before_value != after_value:
+            reason = (
+                f"Normalized decision field {field} changed from "
+                f"{_decision_value_label(before_value)} to {_decision_value_label(after_value)}."
+            )
+            changes.append(
+                {
+                    "field": field,
+                    "before": before_value,
+                    "after": after_value,
+                    "reason": reason,
+                }
+            )
     delta = current.get("evidence_delta") if isinstance(current.get("evidence_delta"), Mapping) else _evidence_delta(previous.get("evidence") or [], current.get("evidence") or [])
-    reasons: list[str] = []
+    reasons: list[str] = [str(item["reason"]) for item in changes]
     if delta.get("added"):
         reasons.append(f"Added {len(delta['added'])} source-linked evidence item(s)")
     if delta.get("removed"):
@@ -909,6 +962,43 @@ def _normalized_token(value: Any) -> str:
 
 def _dimension_identity(value: Any) -> str:
     return _normalized_token(value)
+
+
+def _verdict_identity(value: Any) -> str:
+    token = _normalized_token(value)
+    rank = _VERDICT_RANK.get(token)
+    if rank is None:
+        return token
+    return {
+        0: "insufficient_evidence",
+        1: "not_yet_feasible",
+        2: "conditional",
+        3: "feasible",
+    }[rank]
+
+
+def _normalized_decision_field(field: str, value: Any) -> Any:
+    if field == "verdict":
+        return _verdict_identity(value)
+    if field == "confidence":
+        return _normalized_token(value)
+    if field == "dimensions":
+        dimensions: list[dict[str, Any]] = []
+        for item in value or []:
+            if not isinstance(item, Mapping) or not _dimension_identity(item.get("name")):
+                continue
+            normalized = {"name": _dimension_identity(item.get("name"))}
+            if item.get("score") is not None:
+                normalized["score"] = _normalized_number(item.get("score"))
+            if _normalized_token(item.get("confidence")):
+                normalized["confidence"] = _normalized_token(item.get("confidence"))
+            dimensions.append(normalized)
+        return sorted(dimensions, key=lambda item: json.dumps(item, sort_keys=True, default=str))
+    return value
+
+
+def _decision_value_label(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _decimal_value(value: Any) -> Decimal | None:
@@ -953,5 +1043,6 @@ __all__ = [
     "build_experiment_ledger",
     "compare_experiment_versions",
     "load_experiment_ledger",
+    "resolve_canonical_experiment_run_id",
     "sync_experiment_ledger",
 ]

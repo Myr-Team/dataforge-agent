@@ -634,6 +634,120 @@ def test_semantically_equivalent_decision_normalization_does_not_promote() -> No
     assert ledger["versions"][0]["decision"]["dimensions"][0]["score"] == 3
 
 
+def test_dimension_name_case_and_whitespace_do_not_promote() -> None:
+    first = _analysis_run(
+        "run-v1",
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    first["artifact"]["feasibility"]["dimensions"][0]["name"] = "Asset_Data"
+    first["final"]["artifact"] = first["artifact"]
+    second = _analysis_run(
+        "run-v2",
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    second["artifact"]["feasibility"]["dimensions"][0]["name"] = "  asset_data  "
+    second["final"]["artifact"] = second["artifact"]
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    assert len(ledger["versions"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("first_verdict", "second_verdict"),
+    [
+        ("not_feasible", "not_yet_feasible"),
+        ("feasible", "recommended"),
+    ],
+)
+def test_equal_rank_verdict_aliases_do_not_promote(first_verdict: str, second_verdict: str) -> None:
+    first = _analysis_run(
+        "run-v1",
+        verdict=first_verdict,
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    second = _analysis_run(
+        "run-v2",
+        verdict=second_verdict,
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    assert len(ledger["versions"]) == 1
+
+
+def test_equivalent_evidence_status_and_direction_spellings_are_unchanged() -> None:
+    identity = {
+        "ref": "metric.csv#row-1",
+        "source_type": "computed",
+        "source": {"file_id": "metric.csv", "file_version": "1", "connector_id": "upload"},
+        "value": 10,
+    }
+    first = experiment_store._normalized_evidence(
+        {**identity, "status": "pass", "direction": "higher"}
+    )
+    second = experiment_store._normalized_evidence(
+        {**identity, "status": "verified", "direction": "higher_is_better"}
+    )
+
+    delta = experiment_store._evidence_delta([first], [second])
+
+    assert delta["contradicted"] == []
+    assert delta["strengthened"] == []
+    assert len(delta["unchanged"]) == 1
+
+
+def test_equivalent_evidence_aliases_still_detect_actual_opposing_transition() -> None:
+    identity = {
+        "ref": "metric.csv#row-1",
+        "source_type": "computed",
+        "source": {"file_id": "metric.csv", "file_version": "1", "connector_id": "upload"},
+        "value": 10,
+        "direction": "higher_is_better",
+    }
+    first = experiment_store._normalized_evidence({**identity, "status": "verified"})
+    second = experiment_store._normalized_evidence({**identity, "status": "failed"})
+
+    delta = experiment_store._evidence_delta([first], [second])
+
+    assert len(delta["contradicted"]) == 1
+    assert "passed to failed" in delta["contradicted"][0]["reason"]
+    assert delta["unchanged"] == []
+
+
+def test_decision_only_promotion_has_reason_for_each_normalized_field_change() -> None:
+    first = _analysis_run(
+        "run-v1",
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    second = _analysis_run(
+        "run-v2",
+        verdict="not_yet_feasible",
+        score=2,
+        evidence_ref="asset.csv#row-1",
+    )
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    assert len(ledger["versions"]) == 2
+    decision_delta = ledger["versions"][1]["decision_delta"]
+    assert {item["field"] for item in decision_delta["changes"]} == {"verdict", "dimensions"}
+    assert all(item.get("reason") for item in decision_delta["changes"])
+    assert all(item["reason"] in decision_delta["reasons"] for item in decision_delta["changes"])
+    assert "conditional" in next(item["reason"] for item in decision_delta["changes"] if item["field"] == "verdict")
+    assert "not_yet_feasible" in next(item["reason"] for item in decision_delta["changes"] if item["field"] == "verdict")
+    assert decision_delta["summary"] != "No comparable evidence or normalized decision change"
+
+
 @pytest.mark.parametrize(
     ("before", "after", "expected_category", "reason_fragment"),
     [

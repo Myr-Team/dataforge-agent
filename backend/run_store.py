@@ -456,6 +456,43 @@ def _canonical_experiment_version_exists(workspace_id: str, experiment_version_i
     )
 
 
+def resolve_canonical_experiment_source_run_id(workspace_id: str, source_run_id: str) -> str | None:
+    workspace_id = str(workspace_id or "").strip()
+    source_run_id = str(source_run_id or "").strip()
+    if not workspace_id or not source_run_id:
+        return None
+    try:
+        from .experiment_store import resolve_canonical_experiment_run_id
+        from .outcome_store import list_outcome_events
+    except ImportError:
+        from experiment_store import resolve_canonical_experiment_run_id
+        from outcome_store import list_outcome_events
+
+    runs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for summary in list_runs(workspace_id)[:300]:
+        run_id = str(summary.get("run_id") or "").strip()
+        if not run_id or run_id in seen:
+            continue
+        seen.add(run_id)
+        try:
+            detail = get_run(run_id)
+        except (FileNotFoundError, ValueError):
+            continue
+        if isinstance(detail, dict):
+            runs.append(detail)
+    try:
+        outcomes = list_outcome_events(workspace_id)
+    except (OSError, ValueError):
+        outcomes = []
+    return resolve_canonical_experiment_run_id(
+        workspace_id,
+        runs,
+        source_run_id,
+        outcomes=outcomes,
+    )
+
+
 PLAN_FLAGSHIP_BLOB = "registry/plan-flagship.json"
 
 
