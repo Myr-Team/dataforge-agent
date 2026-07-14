@@ -179,3 +179,56 @@ GREEN commands and results:
 ### R4 Remaining Risk
 
 - Canonical alias resolution uses the same bounded 300-run workspace scan as attachment validation. A source outside that retained window fails closed and is not attached.
+
+## R5 Review Remediation
+
+### Behavior
+
+- Completed analysis runs now persist a server-derived `canonical_experiment_run_id` and resolution status. Alias links are accepted only when they terminate at an existing same-workspace analysis that is self-linked and resolved.
+- Strict plan/artifact attachment validation and all producer paths use the same canonical resolver. Legacy fallback reads the complete available run view without a 300-run slice; truncated unproven history fails closed.
+- PDF/general artifact, roadmap, and validation-plan generation resolve requested duplicate runs to the canonical source before proposal update and snapshot persistence. Unresolved requests return bounded unavailable state and warnings without an experiment version ID.
+- Plan attachment is attempted before follow-up completion so success or bounded unavailable/failure state is persisted on the follow-up artifact instead of being silently dropped.
+- Evidence normalization preserves `direction` and `polarity` independently. Polarity transitions produce deterministic favorable/adverse reasons.
+- Status, polarity, direction, and directed value changes are evaluated together. Mixed favorable/adverse signals classify as conflict/adverse, cannot strengthen the decision, and do not authorize dimension score increases.
+- Analysis and registry ordering use timestamp plus stable `run_id` tie-breaking.
+
+### R5 TDD Evidence
+
+Initial RED command:
+
+`python -m pytest -q tests/test_experiment_versions.py tests/test_followup_plan_version.py tests/test_artifact_version_snapshot.py`
+
+Initial RED result: `8 failed, 42 passed in 7.88s`. Failures covered the truncated-history false canonical, duplicate PDF/roadmap/validation attachments, collapsed polarity, mixed-signal strengthening, unstable ties, and silent plan snapshot failure.
+
+Additional proof-chain RED command:
+
+`python -m pytest -q tests/test_artifact_version_snapshot.py::test_persisted_alias_fails_closed_when_target_is_not_self_resolved`
+
+Additional RED result: `1 failed in 2.97s` because a persisted alias link to an unproven legacy target was accepted.
+
+Truncated-ledger RED command:
+
+`python -m pytest -q tests/test_artifact_version_snapshot.py::test_strict_writer_never_accepts_duplicate_when_canonical_is_outside_300_run_view`
+
+Truncated-ledger RED result: `1 failed in 2.84s` because a durable alias without its canonical target in the view was still rendered as V1.
+
+GREEN commands and results:
+
+- Focused Task3 suite: `51 passed in 5.79s`.
+- Task3 plus follow-up, outcome, run-store, and control-plane integration suite: `90 passed in 6.41s`.
+- `python -m py_compile backend/experiment_store.py backend/outcome_store.py backend/run_store.py backend/orchestrator.py`: exit 0.
+- `git diff --check`: exit 0.
+
+### R5 Changed Files
+
+- `backend/experiment_store.py`
+- `backend/run_store.py`
+- `backend/orchestrator.py`
+- `tests/test_experiment_versions.py`
+- `tests/test_followup_plan_version.py`
+- `tests/test_artifact_version_snapshot.py`
+- `.superpowers/sdd/p2-c-task-3-report.md`
+
+### R5 Remaining Risk
+
+- Legacy analyses without durable self-resolved canonical metadata cannot be attached when the server registry indicates truncated history. This is intentionally fail-closed; a complete-history migration can backfill those links later.

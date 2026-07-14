@@ -2942,7 +2942,31 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
     }
     result = _run_producer(artifact, kinds)
     persistence_errors: list[str] = []
-    for candidate_run_id in _produce_persistence_candidates(workspace_id, run_id):
+    attempted_sources: set[str] = set()
+    for requested_run_id in _produce_persistence_candidates(workspace_id, run_id):
+        try:
+            candidate_run_id = resolve_canonical_experiment_source_run_id(workspace_id, requested_run_id)
+        except Exception:
+            candidate_run_id = None
+        if not candidate_run_id:
+            persistence_errors.append(f"{requested_run_id}: canonical_version_unavailable")
+            if requested_run_id == run_id:
+                result["experiment_attachment"] = {
+                    "status": "unavailable",
+                    "reason": "canonical_version_unavailable",
+                }
+                result.setdefault("warnings", []).append(
+                    {
+                        "kind": "version_snapshot",
+                        "message": "Artifact generated, but no canonical experiment version was available for attachment.",
+                        "error": "canonical_version_unavailable",
+                    }
+                )
+                break
+            continue
+        if candidate_run_id in attempted_sources:
+            continue
+        attempted_sources.add(candidate_run_id)
         try:
             updated_run = update_run_proposal(candidate_run_id, result)
             result["persisted_run_id"] = candidate_run_id
@@ -5531,17 +5555,39 @@ async def _persist_chat_completion(
             else conversation_id
         )
         await run_in_threadpool(_persist_assistant_message, conversation_id, workspace_id, text, verdict, citations)
-        await run_in_threadpool(complete_run, conversation_id, status=status, final=final_payload, artifact=artifact)
         if _is_plan_draft_artifact(artifact):
             plan_artifact = _plan_attachment_artifact(plan_source_run_id, artifact)
-            await run_in_threadpool(
-                record_plan_version,
-                workspace_id=workspace_id,
-                source_run_id=plan_source_run_id,
-                experiment_version_id=f"version:{plan_source_run_id}",
-                artifact=plan_artifact,
-                text=text,
-            )
+            try:
+                plan_version = await run_in_threadpool(
+                    record_plan_version,
+                    workspace_id=workspace_id,
+                    source_run_id=plan_source_run_id,
+                    experiment_version_id=f"version:{plan_source_run_id}",
+                    artifact=plan_artifact,
+                    text=text,
+                )
+            except Exception:
+                plan_version = None
+                attachment_reason = "version_snapshot_failed"
+            else:
+                attachment_reason = "canonical_version_unavailable"
+            if plan_version and plan_version.get("run_id"):
+                artifact["experiment_version_id"] = f"version:{plan_source_run_id}"
+                artifact["experiment_attachment"] = {"status": "attached"}
+            else:
+                artifact["experiment_attachment"] = {
+                    "status": "unavailable",
+                    "reason": attachment_reason,
+                }
+                artifact.setdefault("warnings", []).append(
+                    {
+                        "kind": "plan_version_snapshot",
+                        "message": "Plan generated, but no canonical experiment version was available for attachment.",
+                        "error": attachment_reason,
+                    }
+                )
+            final_payload["artifact"] = artifact
+        await run_in_threadpool(complete_run, conversation_id, status=status, final=final_payload, artifact=artifact)
     except Exception:
         return
 

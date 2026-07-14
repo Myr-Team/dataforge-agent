@@ -131,6 +131,7 @@ def complete_run(
     run["verdict"] = _verdict(run)
     run["confidence"] = _confidence(run)
     run["step_count"] = len(run.get("steps") or [])
+    _assign_canonical_experiment_link(run)
     run["title"] = _run_title(run)
     run["summary"] = _run_summary_text(run)
     run["registry_summary"] = _run_summary(run)
@@ -163,7 +164,14 @@ def list_runs(workspace_id: str | None = None) -> list[dict[str, Any]]:
     items = list(by_id.values())
     if workspace_id:
         items = [item for item in items if item.get("workspace_id") == workspace_id]
-    return sorted(items, key=lambda item: str(item.get("time") or item.get("completed_at") or ""), reverse=True)
+    return sorted(
+        items,
+        key=lambda item: (
+            str(item.get("time") or item.get("completed_at") or ""),
+            str(item.get("run_id") or ""),
+        ),
+        reverse=True,
+    )
 
 
 def get_run(run_id: str) -> dict[str, Any]:
@@ -424,36 +432,13 @@ def record_plan_version(
 
 
 def _canonical_experiment_version_exists(workspace_id: str, experiment_version_id: str) -> bool:
-    try:
-        from .experiment_store import build_experiment_ledger
-        from .outcome_store import list_outcome_events
-    except ImportError:
-        from experiment_store import build_experiment_ledger
-        from outcome_store import list_outcome_events
-
-    runs: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for summary in list_runs(workspace_id)[:300]:
-        run_id = str(summary.get("run_id") or "").strip()
-        if not run_id or run_id in seen:
-            continue
-        seen.add(run_id)
-        try:
-            detail = get_run(run_id)
-        except (FileNotFoundError, ValueError):
-            continue
-        if isinstance(detail, dict):
-            runs.append(detail)
-    try:
-        outcomes = list_outcome_events(workspace_id)
-    except (OSError, ValueError):
-        outcomes = []
-    ledger = build_experiment_ledger(workspace_id, runs, outcomes=outcomes)
-    return any(
-        str(item.get("version_id") or "") == experiment_version_id
-        for item in ledger.get("versions") or []
-        if isinstance(item, dict)
-    )
+    version_id = str(experiment_version_id or "").strip()
+    if not version_id.startswith("version:"):
+        return False
+    source_run_id = version_id.removeprefix("version:").strip()
+    if not source_run_id:
+        return False
+    return resolve_canonical_experiment_source_run_id(workspace_id, source_run_id) == source_run_id
 
 
 def resolve_canonical_experiment_source_run_id(workspace_id: str, source_run_id: str) -> str | None:
@@ -462,25 +447,112 @@ def resolve_canonical_experiment_source_run_id(workspace_id: str, source_run_id:
     if not workspace_id or not source_run_id:
         return None
     try:
-        from .experiment_store import resolve_canonical_experiment_run_id
-        from .outcome_store import list_outcome_events
-    except ImportError:
-        from experiment_store import resolve_canonical_experiment_run_id
-        from outcome_store import list_outcome_events
+        source = get_run(source_run_id)
+    except (FileNotFoundError, ValueError):
+        return None
+    if str(source.get("workspace_id") or "") != workspace_id:
+        return None
+    persisted = _persisted_canonical_target(workspace_id, source)
+    if persisted:
+        return persisted
+    if str(source.get("canonical_resolution_status") or "") == "unresolved":
+        return None
+    if _registry_history_is_truncated():
+        return None
+    runs = _workspace_run_details(workspace_id)
+    resolved = _resolve_canonical_from_runs(workspace_id, runs, source_run_id)
+    return resolved
 
+
+def _assign_canonical_experiment_link(run: dict[str, Any]) -> None:
+    if not _is_completed_analysis(run):
+        return
+    workspace_id = str(run.get("workspace_id") or "").strip()
+    run_id = str(run.get("run_id") or "").strip()
+    if not workspace_id or not run_id:
+        return
+    existing = [item for item in _workspace_run_details(workspace_id) if str(item.get("run_id") or "") != run_id]
+    analyses = [item for item in existing if _is_completed_analysis(item)]
+    basis: list[dict[str, Any]]
+    if analyses:
+        latest = max(
+            analyses,
+            key=lambda item: (
+                str(item.get("completed_at") or item.get("updated_at") or item.get("started_at") or ""),
+                str(item.get("run_id") or ""),
+            ),
+        )
+        canonical_id = _persisted_canonical_target(workspace_id, latest)
+        if canonical_id:
+            try:
+                canonical = get_run(canonical_id)
+            except (FileNotFoundError, ValueError):
+                canonical = {}
+            basis = [item for item in (canonical, latest, run) if isinstance(item, dict) and item]
+        elif _registry_history_is_truncated():
+            run["canonical_resolution_status"] = "unresolved"
+            run.pop("canonical_experiment_run_id", None)
+            return
+        else:
+            basis = [*existing, run]
+    elif _registry_history_is_truncated():
+        run["canonical_resolution_status"] = "unresolved"
+        run.pop("canonical_experiment_run_id", None)
+        return
+    else:
+        basis = [run]
+    resolved = _resolve_canonical_from_runs(workspace_id, basis, run_id)
+    if resolved:
+        run["canonical_experiment_run_id"] = resolved
+        run["canonical_resolution_status"] = "resolved"
+    else:
+        run["canonical_resolution_status"] = "unresolved"
+        run.pop("canonical_experiment_run_id", None)
+
+
+def _persisted_canonical_target(workspace_id: str, source: dict[str, Any]) -> str | None:
+    target_id = str(source.get("canonical_experiment_run_id") or "").strip()
+    if not target_id:
+        return None
+    try:
+        target = get_run(target_id)
+    except (FileNotFoundError, ValueError, KeyError):
+        return None
+    if str(target.get("workspace_id") or "") != workspace_id or not _is_completed_analysis(target):
+        return None
+    target_link = str(target.get("canonical_experiment_run_id") or "").strip()
+    target_status = str(target.get("canonical_resolution_status") or "").strip()
+    return target_id if target_status == "resolved" and target_link == target_id else None
+
+
+def _workspace_run_details(workspace_id: str) -> list[dict[str, Any]]:
     runs: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for summary in list_runs(workspace_id)[:300]:
+    for summary in list_runs(workspace_id):
         run_id = str(summary.get("run_id") or "").strip()
         if not run_id or run_id in seen:
             continue
         seen.add(run_id)
         try:
             detail = get_run(run_id)
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, ValueError, KeyError):
             continue
         if isinstance(detail, dict):
             runs.append(detail)
+    return runs
+
+
+def _resolve_canonical_from_runs(
+    workspace_id: str,
+    runs: list[dict[str, Any]],
+    source_run_id: str,
+) -> str | None:
+    try:
+        from .experiment_store import resolve_canonical_experiment_run_id
+        from .outcome_store import list_outcome_events
+    except ImportError:
+        from experiment_store import resolve_canonical_experiment_run_id
+        from outcome_store import list_outcome_events
     try:
         outcomes = list_outcome_events(workspace_id)
     except (OSError, ValueError):
@@ -491,6 +563,15 @@ def resolve_canonical_experiment_source_run_id(workspace_id: str, source_run_id:
         source_run_id,
         outcomes=outcomes,
     )
+
+
+def _registry_history_is_truncated() -> bool:
+    try:
+        registry = download_blob_json(RUN_REGISTRY_BLOB) or {}
+    except Exception:
+        return True
+    entries = [item for item in registry.get("runs") or [] if isinstance(item, dict)]
+    return registry.get("history_truncated") is True or len(entries) >= 300
 
 
 PLAN_FLAGSHIP_BLOB = "registry/plan-flagship.json"
@@ -574,8 +655,16 @@ def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
         entries = [item for item in registry.get("runs") or [] if isinstance(item, dict)]
         entries = [item for item in entries if item.get("run_id") != run.get("run_id")]
         entries.append(summary)
-        entries = sorted(entries, key=lambda item: str(item.get("time") or ""), reverse=True)[:300]
-        upload_blob_json(RUN_REGISTRY_BLOB, {"version": 1, "runs": entries})
+        entries = sorted(
+            entries,
+            key=lambda item: (str(item.get("time") or ""), str(item.get("run_id") or "")),
+            reverse=True,
+        )
+        history_truncated = registry.get("history_truncated") is True or len(entries) > 300
+        upload_blob_json(
+            RUN_REGISTRY_BLOB,
+            {"version": 1, "history_truncated": history_truncated, "runs": entries[:300]},
+        )
     except Exception as exc:
         run["persistence"] = {"mode": "local_only", "error": f"{type(exc).__name__}: {exc}"[:500]}
     path.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -627,6 +716,8 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "source_run_id": run.get("source_run_id"),
         "experiment_version_id": run.get("experiment_version_id"),
         "experiment_attachment": run.get("experiment_attachment") is True,
+        "canonical_experiment_run_id": run.get("canonical_experiment_run_id"),
+        "canonical_resolution_status": run.get("canonical_resolution_status"),
         "produced_kinds": run.get("produced_kinds") or [],
         "iteration_inputs": iteration_inputs[:12],
         "artifact_urls": {key: value for key, value in (artifact_urls or {}).items() if value},

@@ -59,7 +59,7 @@ def build_experiment_ledger(
         raise ValueError("workspace_id is required")
     ordered = sorted(
         [item for item in runs if isinstance(item, dict)],
-        key=lambda item: str(item.get("completed_at") or item.get("updated_at") or item.get("started_at") or ""),
+        key=_run_order_key,
     )
     analysis_runs = [item for item in ordered if _is_analysis_version(item)]
     snapshots = [item for item in ordered if str(item.get("version_kind") or "") in {"plan_draft", "artifact_generation"}]
@@ -69,6 +69,14 @@ def build_experiment_ledger(
 
     for run in analysis_runs:
         run_id = str(run.get("run_id") or run.get("conversation_id") or "").strip()
+        canonical_run_id = str(run.get("canonical_experiment_run_id") or "").strip()
+        resolution_status = str(run.get("canonical_resolution_status") or "").strip().lower()
+        if resolution_status == "unresolved" or (resolution_status == "resolved" and not canonical_run_id):
+            version_aliases[run_id] = ""
+            continue
+        if canonical_run_id and canonical_run_id != run_id:
+            version_aliases[run_id] = canonical_run_id
+            continue
         artifact = _artifact(run)
         feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
         evidence, unverifiable_evidence = _evidence_snapshot(artifact, feasibility)
@@ -177,7 +185,7 @@ def resolve_canonical_experiment_run_id(
         return None
     ordered = sorted(
         [item for item in runs if isinstance(item, dict) and _is_analysis_version(item)],
-        key=lambda item: str(item.get("completed_at") or item.get("updated_at") or item.get("started_at") or ""),
+        key=_run_order_key,
     )
     prefix: list[dict[str, Any]] = []
     for run in ordered:
@@ -340,10 +348,13 @@ def _normalized_evidence(item: Mapping[str, Any]) -> dict[str, Any]:
     status = _evidence_status(item.get("status"))
     if status:
         normalized["status"] = status
-    raw_direction = item.get("direction") or item.get("polarity")
+    raw_direction = item.get("direction")
     direction = _evidence_orientation(_normalized_token(raw_direction)) or _normalized_token(raw_direction)
     if direction:
         normalized["direction"] = direction
+    polarity = _evidence_polarity(item.get("polarity"))
+    if polarity:
+        normalized["polarity"] = polarity
     return normalized
 
 
@@ -726,28 +737,73 @@ def _evidence_semantic_change(
     prior: Mapping[str, Any],
     latest: Mapping[str, Any],
 ) -> tuple[str, str] | None:
+    signals: list[tuple[str, str]] = []
     prior_status = _evidence_status(prior.get("status"))
     latest_status = _evidence_status(latest.get("status"))
     status_rank = {"failed": 0, "passed": 1}
     if prior_status != latest_status and prior_status in status_rank and latest_status in status_rank:
         favorable = status_rank[latest_status] > status_rank[prior_status]
-        category = "strengthened" if favorable else "contradicted"
         adverb = "favorably" if favorable else "adversely"
-        return category, f"Evidence status changed {adverb} from {prior_status} to {latest_status}."
+        signals.append(
+            (
+                "favorable" if favorable else "adverse",
+                f"status changed {adverb} from {prior_status} to {latest_status}",
+            )
+        )
 
-    direction = _normalized_token(latest.get("direction") or latest.get("polarity") or prior.get("direction") or prior.get("polarity"))
+    prior_polarity = _evidence_polarity(prior.get("polarity"))
+    latest_polarity = _evidence_polarity(latest.get("polarity"))
+    polarity_rank = {"negative": 0, "positive": 1}
+    if (
+        prior_polarity != latest_polarity
+        and prior_polarity in polarity_rank
+        and latest_polarity in polarity_rank
+    ):
+        favorable = polarity_rank[latest_polarity] > polarity_rank[prior_polarity]
+        adverb = "favorably" if favorable else "adversely"
+        signals.append(
+            (
+                "favorable" if favorable else "adverse",
+                f"polarity changed {adverb} from {prior_polarity} to {latest_polarity}",
+            )
+        )
+
+    prior_direction = _evidence_orientation(_normalized_token(prior.get("direction")))
+    latest_direction = _evidence_orientation(_normalized_token(latest.get("direction")))
+    if prior_direction and latest_direction and prior_direction != latest_direction:
+        signals.append(
+            (
+                "adverse",
+                f"direction changed from {prior_direction}-is-better to {latest_direction}-is-better",
+            )
+        )
+
+    direction = _normalized_token(latest.get("direction") or prior.get("direction"))
     orientation = _evidence_orientation(direction)
     prior_value = _decimal_value(prior.get("value"))
     latest_value = _decimal_value(latest.get("value"))
     if orientation and prior_value is not None and latest_value is not None and prior_value != latest_value:
         favorable = latest_value > prior_value if orientation == "higher" else latest_value < prior_value
-        category = "strengthened" if favorable else "contradicted"
         effect = "favorably" if favorable else "adversely"
-        return (
-            category,
-            f"Evidence value changed {effect} from {prior.get('value')} to {latest.get('value')} "
-            f"with {orientation}-is-better direction.",
+        signals.append(
+            (
+                "favorable" if favorable else "adverse",
+                f"value changed {effect} from {prior.get('value')} to {latest.get('value')} "
+                f"with {orientation}-is-better direction",
+            )
         )
+
+    favorable_reasons = [reason for signal, reason in signals if signal == "favorable"]
+    adverse_reasons = [reason for signal, reason in signals if signal == "adverse"]
+    if favorable_reasons and adverse_reasons:
+        return (
+            "contradicted",
+            f"Evidence signals conflict: {'; '.join(favorable_reasons + adverse_reasons)}.",
+        )
+    if adverse_reasons:
+        return "contradicted", f"Evidence changed adversely: {'; '.join(adverse_reasons)}."
+    if favorable_reasons:
+        return "strengthened", f"Evidence strengthened: {'; '.join(favorable_reasons)}."
     return None
 
 
@@ -765,6 +821,15 @@ def _evidence_status(value: Any) -> str:
         return "passed"
     if token in {"fail", "failed"}:
         return "failed"
+    return token
+
+
+def _evidence_polarity(value: Any) -> str:
+    token = _normalized_token(value)
+    if token in {"positive", "favorable", "supporting", "supports"}:
+        return "positive"
+    if token in {"negative", "adverse", "contradicting", "contradicts"}:
+        return "negative"
     return token
 
 
@@ -954,6 +1019,12 @@ def _decision_delta(previous: Mapping[str, Any] | None, current: Mapping[str, An
 
 def _normalized_text(value: Any) -> str:
     return " ".join(str(value or "").split())
+
+
+def _run_order_key(item: Mapping[str, Any]) -> tuple[str, str]:
+    timestamp = str(item.get("completed_at") or item.get("updated_at") or item.get("started_at") or "")
+    run_id = str(item.get("run_id") or item.get("conversation_id") or "")
+    return timestamp, run_id
 
 
 def _normalized_token(value: Any) -> str:

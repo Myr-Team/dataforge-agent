@@ -342,3 +342,63 @@ def test_new_conversation_plan_resolves_latest_duplicate_analysis_alias(tmp_path
     assert plan_runs[0]["source_run_id"] == canonical_run_id
     assert plan_runs[0]["experiment_version_id"] == f"version:{canonical_run_id}"
     assert ledger["versions"][0]["attachments"]["plans"][0]["text"] == "Pilot plan from duplicate"
+
+
+def test_plan_attachment_failure_persists_bounded_warning_status(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    monkeypatch.setattr(orchestrator, "_persist_assistant_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(orchestrator, "record_plan_version", lambda **kwargs: None)
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-plan-warning"
+    source_run_id = "analysis-plan-warning"
+    followup_run_id = "followup-plan-warning"
+    analysis_artifact = {
+        "workspace_id": workspace_id,
+        "conversation_id": source_run_id,
+        "feasibility": {
+            "opportunity_id": "workspace opportunity",
+            "verdict": "conditional",
+            "dimensions": [{"name": "asset_data", "score": 3}],
+        },
+    }
+    run_store.start_run(source_run_id, workspace_id, "Analyze")
+    run_store.complete_run(
+        source_run_id,
+        status="completed",
+        final={"artifact": analysis_artifact},
+        artifact=analysis_artifact,
+    )
+    run_store.start_run(followup_run_id, workspace_id, "Draft a plan")
+    followup_artifact = {
+        "workspace_id": workspace_id,
+        "conversation_id": followup_run_id,
+        "followup": {"answer_type": "plan", "route_hint": "plan_draft"},
+        "output_contract": {"answer_style": "structured_plan"},
+        "answer": {"text": "Pilot plan", "citations": []},
+    }
+
+    asyncio.run(
+        orchestrator._persist_chat_completion(
+            followup_run_id,
+            workspace_id,
+            "Pilot plan",
+            "followup_edit",
+            "followup_edit",
+            {"text": "Pilot plan", "artifact": followup_artifact},
+            followup_artifact,
+        )
+    )
+
+    persisted = run_store.get_run(followup_run_id)
+    assert persisted["artifact"]["experiment_attachment"] == {
+        "status": "unavailable",
+        "reason": "canonical_version_unavailable",
+    }
+    warning = next(item for item in persisted["artifact"]["warnings"] if item["kind"] == "plan_version_snapshot")
+    assert warning == {
+        "kind": "plan_version_snapshot",
+        "message": "Plan generated, but no canonical experiment version was available for attachment.",
+        "error": "canonical_version_unavailable",
+    }

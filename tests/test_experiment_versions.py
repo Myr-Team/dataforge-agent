@@ -722,6 +722,81 @@ def test_equivalent_evidence_aliases_still_detect_actual_opposing_transition() -
     assert delta["unchanged"] == []
 
 
+def test_evidence_normalization_preserves_independent_polarity_delta() -> None:
+    identity = {
+        "ref": "metric.csv#row-1",
+        "source_type": "computed",
+        "source": {"file_id": "metric.csv", "file_version": "1", "connector_id": "upload"},
+        "value": 10,
+        "direction": "higher_is_better",
+        "status": "passed",
+    }
+    first = experiment_store._normalized_evidence({**identity, "polarity": "positive"})
+    second = experiment_store._normalized_evidence({**identity, "polarity": "negative"})
+
+    delta = experiment_store._evidence_delta([first], [second])
+
+    assert first["direction"] == second["direction"] == "higher"
+    assert first["polarity"] == "positive"
+    assert second["polarity"] == "negative"
+    assert len(delta["contradicted"]) == 1
+    assert "polarity changed adversely from positive to negative" in delta["contradicted"][0]["reason"]
+
+
+def test_mixed_favorable_status_and_adverse_value_fail_closed() -> None:
+    first = _analysis_run(
+        "run-v1",
+        verdict="conditional",
+        score=3,
+        evidence_ref="metric.csv#row-1",
+    )
+    second = _analysis_run(
+        "run-v2",
+        verdict="feasible",
+        score=4,
+        evidence_ref="metric.csv#row-1",
+    )
+    first_evidence = first["artifact"]["feasibility"]["dimensions"][0]["evidence"][0]
+    second_evidence = second["artifact"]["feasibility"]["dimensions"][0]["evidence"][0]
+    first_evidence.update({"status": "failed", "direction": "higher", "value": 10})
+    second_evidence.update({"status": "passed", "direction": "higher_is_better", "value": 8})
+    first["final"]["artifact"] = first["artifact"]
+    second["final"]["artifact"] = second["artifact"]
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    promoted = ledger["versions"][1]
+    assert promoted["evidence_delta"]["strengthened"] == []
+    assert len(promoted["evidence_delta"]["contradicted"]) == 1
+    assert "conflict" in promoted["evidence_delta"]["contradicted"][0]["reason"].lower()
+    assert promoted["decision"]["verdict"] == "conditional"
+    assert promoted["decision"]["dimensions"][0]["score"] == 3
+
+
+def test_analysis_order_uses_run_id_as_stable_timestamp_tiebreaker() -> None:
+    canonical = _analysis_run(
+        "analysis-a",
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    duplicate = _analysis_run(
+        "analysis-z",
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    canonical["completed_at"] = duplicate["completed_at"] = "2026-07-12T02:00:00Z"
+
+    ledger = experiment_store.build_experiment_ledger(
+        "ws-experiment",
+        [duplicate, canonical],
+        outcomes=[],
+    )
+
+    assert [item["run_id"] for item in ledger["versions"]] == ["analysis-a"]
+
+
 def test_decision_only_promotion_has_reason_for_each_normalized_field_change() -> None:
     first = _analysis_run(
         "run-v1",
