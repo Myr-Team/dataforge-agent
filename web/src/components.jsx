@@ -93,26 +93,8 @@ import {
 } from "./constants.js";
 
 const agentMap = new Map(AGENTS.map((agent) => [agent.id, agent]));
-const DEFAULT_OWNER_NAME = "傅子豪";
-const DEFAULT_OWNER_EMAIL = "fuzihao@gdjiuyun.onmicrosoft.com";
-
 function cleanUserValue(value) {
   return String(value || "").trim();
-}
-
-function normalizedCurrentUser(user = {}, { allowDefault = true } = {}) {
-  const rawName = cleanUserValue(user?.name);
-  const rawEmail = cleanUserValue(user?.email);
-  const isPlaceholderEmail = !rawEmail || /^(local\.demo@dataforge|owner@example\.com|fuzh084711@gmail\.com)$/i.test(rawEmail);
-  const email = isPlaceholderEmail ? (allowDefault ? DEFAULT_OWNER_EMAIL : "") : rawEmail;
-  let name = rawName && rawName !== "Demo User" ? rawName : "";
-  if (!name && email) name = email.split("@", 1)[0].replace(/[._-]+/g, " ");
-  if (email.toLowerCase() === DEFAULT_OWNER_EMAIL) name = DEFAULT_OWNER_NAME;
-  return {
-    name: name || (allowDefault ? DEFAULT_OWNER_NAME : ""),
-    email,
-    reliable: !isPlaceholderEmail,
-  };
 }
 
 function memberInitial(name, email) {
@@ -279,7 +261,6 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
   const workspaces = dashboard?.workspaces || [];
   const health = dashboard?.health || {};
   const deps = health.dependencies || {};
-  const account = normalizedCurrentUser(user);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -311,17 +292,17 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
         <div className="user-menu" ref={menuRef}>
           <button className="user-trigger" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen} title="账户">
             <div className="avatar" title="账户">
-              {memberInitial(account.name, "")}
+              账
             </div>
           </button>
           {menuOpen ? (
             <div className="account-menu" role="menu">
               <div className="account-card">
                 <div className="avatar large">
-                  {memberInitial(account.name, "")}
+                  账
                 </div>
                 <div>
-                  <strong>{account.name}</strong>
+                  <strong>当前账户</strong>
                   <span>已登录账户</span>
                 </div>
               </div>

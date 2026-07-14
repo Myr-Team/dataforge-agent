@@ -65,3 +65,68 @@ Implemented the governance frontend from base `1544f77` without modifying backen
 ## Concern
 
 The current Task 4 public members contract persists and returns active/pending members, while invite mutation responses can additionally return accepted/failed states. The frontend faithfully supports all five lifecycle labels when supplied, but historical expired/revoked/failed invitation journal entries are not reloadable through a dedicated read endpoint within Task 6's frontend-only ownership.
+
+## Reviewer Remediation (2026-07-14)
+
+This section supersedes the earlier frontend-only scope statement and the concern above. The follow-up adds the required backend read/action contracts and closes the reloadability and identity-display gaps without changing Easy Auth configuration or tracked `output/` content.
+
+### Remediation Matrix
+
+| Finding | Remediation and observed behavior |
+|---|---|
+| Durable invitation history | Added permission-gated `GET /api/workspaces/{workspace_id}/governance/invitations`. It replays the append-only local/Blob journal, returns one effective row per invitation attempt, survives reload, and preserves separate accepted/failed attempts for the same subject. |
+| Invitation state truth | Supports pending, accepted, failed, expired, revoked, and activated-then-revoked as removed. Lifecycle never grants or implies workspace access. |
+| Invitation redaction | Returns only `invite_<HMAC>` and `member_<HMAC>` references plus role/state/timestamp. Email, OID, tenant, invited actor, and provider body are excluded. Missing pseudonym salt fails closed. |
+| Explicit action permissions | Members, invitation history, chargeback, and audit contracts expose `permissions.actions` for `audit.read`, `chargeback.read`, `invitation.read`, and `member.manage`. The frontend treats missing or non-true fields as denied and displays the server reason. |
+| Foundry ROI shape | Parses the production `foundry_roi.status.state` object and preserves configured-unverified, connected, and provider evidence semantics independently from local ROI. |
+| Settings identity privacy | Public member rows now use `subject_label` and exclude email/OID/tenant. Role update and removal accept the safe member reference. The member table, directory results, and account menu do not render raw identity values; email appears only in the editable invitation input. |
+| Independent invitation state | Invitation history has its own loading/error/data/retry state. Member permission failure does not render a false empty invitation state, and retry reloads the members endpoint before the invitation endpoint. |
+| Stale audit requests | Cursor requests capture workspace and request generation. Responses from an old workspace/generation cannot update the current workspace. |
+| Cursor retry | A failed page keeps all loaded events and its failed cursor. Retry requests that same cursor and appends immutably after success. |
+| UTF-8 and responsive behavior | Chinese labels contain no literal `?`, replacement characters, or tested mojibake patterns. Desktop and 390px mobile fixtures have no page/governance horizontal overflow and retain keyboard focus. |
+
+### Follow-up File Changes
+
+- `backend/invitation_store.py`: durable invitation history replay, fail-closed HMAC pseudonyms, and stable safe member subject labels.
+- `backend/control_plane.py`: invitation-history GET, explicit governance action permissions, redacted member projections, and safe-reference member management.
+- `backend/workspace_authz.py`: explicit audit and invitation read capabilities for owner/admin policy.
+- `backend/roi_service.py`: server-generated chargeback subject labels.
+- `tests/test_entra_member_invites.py`: history states, same-subject terminal attempts, reload, redaction, and safe-reference management.
+- `tests/test_actor_audit_usage.py`: endpoint authz/redaction, explicit permissions, and safe settings member contract.
+- `tests/test_roi_service.py`: bounded subject-label coverage for active and departed chargeback rows.
+- `web/src/api.js`: exact invitation-history API client.
+- `web/src/governanceViewModel.js`: nested Foundry parsing, strict permission adapter, redacted invitation/chargeback/member projections.
+- `web/src/governanceRequestState.js`: workspace-generation guard and cursor failure/success reducers.
+- `web/src/components.jsx`: independent invitation state/retry, safe member controls, and stale/cursor guarded audit pagination.
+- `web/src/governanceApi.test.mjs`, `web/src/governanceViewModel.test.mjs`, `web/src/governanceRequestState.test.mjs`: API, production-shape, privacy, permission, and deterministic request-state coverage.
+- `web/src/styles.css`: compact accessible retry control styling.
+
+### Exact Follow-up Verification
+
+- `python -m pytest tests/test_entra_member_invites.py tests/test_actor_audit_usage.py tests/test_roi_service.py tests/test_foundry_roi.py tests/test_workspace_roles.py -q`: **184 passed in 15.37s**.
+- `node --test src/*.test.mjs` from `web`: **50 passed, 0 failed** in 428.98ms.
+- `npm run build` from `web`: **passed**, Vite transformed **1,756 modules** in 1.28s.
+- `git diff --check`: **passed**.
+- Playwright review acceptance: **24/24 passed** across desktop `1440x1000` and mobile `390x844`.
+- Browser assertions: **0 unexpected console errors, 0 page errors, 0 request failures**, no horizontal overflow, keyboard focus retained, no raw email/OID/tenant, and no literal `?`/mojibake labels.
+- The four expected browser console resource errors are the deliberately injected HTTP 503 responses for member-load and cursor-retry fixtures; each error produced the intended scoped retry UI and successful retry.
+- Machine-readable results: `output/playwright/p2-b-task6-review-acceptance.json`.
+
+### Follow-up Screenshot Evidence
+
+- Connected: `output/playwright/p2-b-task6-review-connected-desktop.png`, `output/playwright/p2-b-task6-review-connected-mobile.png`
+- Partial: `output/playwright/p2-b-task6-review-partial-desktop.png`, `output/playwright/p2-b-task6-review-partial-mobile.png`
+- Not configured: `output/playwright/p2-b-task6-review-not_configured-desktop.png`, `output/playwright/p2-b-task6-review-not_configured-mobile.png`
+- Measured: `output/playwright/p2-b-task6-review-measured-desktop.png`, `output/playwright/p2-b-task6-review-measured-mobile.png`
+- Verified: `output/playwright/p2-b-task6-review-verified-desktop.png`, `output/playwright/p2-b-task6-review-verified-mobile.png`
+- Nested Foundry status: `output/playwright/p2-b-task6-review-nested_foundry-desktop.png`, `output/playwright/p2-b-task6-review-nested_foundry-mobile.png`
+- Permission denied: `output/playwright/p2-b-task6-review-permission_denied-desktop.png`, `output/playwright/p2-b-task6-review-permission_denied-mobile.png`
+- Reloadable invitation/member privacy: `output/playwright/p2-b-task6-review-invitation_reload-desktop.png`, `output/playwright/p2-b-task6-review-invitation_reload-mobile.png`
+- Member load failure/retry: `output/playwright/p2-b-task6-review-member_retry-desktop.png`, `output/playwright/p2-b-task6-review-member_retry-mobile.png`
+- Audit pagination: `output/playwright/p2-b-task6-review-audit_pagination-desktop.png`, `output/playwright/p2-b-task6-review-audit_pagination-mobile.png`
+- Cursor failure/same-cursor retry: `output/playwright/p2-b-task6-review-cursor_retry-desktop.png`, `output/playwright/p2-b-task6-review-cursor_retry-mobile.png`
+- Stale workspace response: `output/playwright/p2-b-task6-review-stale_workspace-desktop.png`, `output/playwright/p2-b-task6-review-stale_workspace-mobile.png`
+
+### Remaining Risk
+
+Safe invitation/member labels depend on a stable server-only `DF_INVITATION_PSEUDONYM_SALT` or existing `DF_WEB_PROXY_SECRET`. The contract intentionally returns 503 instead of emitting guessable labels when neither is configured; rotating that salt changes displayed pseudonyms but does not alter journal history or authorization.
