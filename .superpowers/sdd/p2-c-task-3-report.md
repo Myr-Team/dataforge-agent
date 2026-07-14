@@ -435,3 +435,36 @@ GREEN commands and results:
 ### R10 Remaining Risk
 
 - Azure Blob Storage still has no atomic transaction spanning workspace lineage, the bounded global registry, and run Blobs. Revision guards detect lifecycle movement at each publication phase and all readers fail closed, but an external non-cooperating writer can still create storage debris; purge remains resumable and does not report success until strict absence is proven.
+
+## R11 Legacy Migration And Purge TOCTOU Completion
+
+### Behavior
+
+- Hydration now detects supplied trusted legacy analyses when the workspace-lineage record is absent. If the complete authoritative registry contains matching trusted history, the existing CAS bootstrap validates every registry envelope and remote run payload, persists stable analysis/canonical histories with ordinals, and only then hydrates the ledger from full authoritative Blob payloads. Truncated, inconsistent, missing, or failed migration removes supplied legacy payloads from ledger input and returns bounded unavailable lineage.
+- Purge retains the `purging` lifecycle revision acquired before enumeration. After deletion and registry CAS, it re-reads the exact lineage revision, exact registry revision with no workspace row, and performs a fresh strict run-Blob enumeration. Any mismatch prevents the final `purged` CAS.
+- Snapshot, generic, and confirmed-update writers use lineage guards before and after Blob publication. A writer that publishes after purge starts records `last_rejected_writer_run_id` through workspace-lineage CAS, cleans its Blob/local payload, and returns unavailable. That revision change invalidates the purge final proof even when the late registry row was already removed.
+
+### R11 TDD Evidence
+
+Initial focused RED command:
+
+`python -m pytest -q tests/test_artifact_version_snapshot.py::test_legacy_trusted_hydration_migrates_lineage_and_uses_full_remote_payload tests/test_artifact_version_snapshot.py::test_late_writer_after_purge_enumeration_prevents_purged_success`
+
+Initial RED result: `2 failed in 3.14s`. Failures demonstrated absent durable migration for a legacy trusted workspace and false `purged` success after a writer published behind the first purge enumeration.
+
+GREEN commands and results:
+
+- Focused R11 regressions: `2 passed in 2.54s`.
+- Focused Task3 suite: `86 passed in 9.46s`.
+- Combined Task3, strict Blob, persistence, control-plane, run-store, outcome, audit, and workspace-role suite: `288 passed in 38.94s`.
+- Late-writer purge regression repeated five times: `5 passed` across five independent pytest runs.
+
+### R11 Changed Files
+
+- `backend/run_store.py`
+- `tests/test_artifact_version_snapshot.py`
+- `.superpowers/sdd/p2-c-task-3-report.md`
+
+### R11 Remaining Risk
+
+- The protocol coordinates DataForge writers through workspace-lineage CAS and strict final storage checks; Blob Storage still does not provide a multi-Blob transaction. A non-cooperating external writer can create debris, but cannot create trusted lineage or attachments and will force later reads/purges to remain unavailable until cleanup succeeds.
