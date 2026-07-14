@@ -21,6 +21,7 @@ try:
     from . import cache_store
     from . import content_safety
     from .blob_store import upload_artifact
+    from .capability_packs import load_capability_packs, select_capability_packs
     from .chat_loop_primitives import sse
     from .conversation_store import append_message, conversation_context
     from .customer_text import (
@@ -92,6 +93,7 @@ except ImportError:
     import cache_store
     import content_safety
     from blob_store import upload_artifact
+    from capability_packs import load_capability_packs, select_capability_packs
     from chat_loop_primitives import sse
     from conversation_store import append_message, conversation_context
     from customer_text import (
@@ -5482,6 +5484,74 @@ _MAF_AGENT_NAMES = {
 }
 
 
+def _capability_pack_inputs(workspace_id: str) -> tuple[dict[str, Any], dict[str, float]]:
+    """Read only normalized field mappings and quality aggregates for pack selection."""
+    try:
+        from .data_workbench import file_quality, list_workspace_files
+    except ImportError:
+        from data_workbench import file_quality, list_workspace_files
+    definitions = load_capability_packs()
+    role_terms = {role for pack in definitions for role in pack.schema_roles}
+    metric_terms = {metric for pack in definitions for metric in pack.metric_families}
+    roles: set[str] = set()
+    metrics: set[str] = set()
+    completeness: list[float] = []
+    duplicate_rates: list[float] = []
+    try:
+        groups = list_workspace_files(workspace_id).get("groups") or []
+    except Exception:
+        groups = []
+    for group in groups:
+        if not isinstance(group, Mapping):
+            continue
+        for file in group.get("files") or []:
+            if not isinstance(file, Mapping) or not file.get("id"):
+                continue
+            try:
+                quality = file_quality(workspace_id, str(file["id"]))
+            except Exception:
+                continue
+            fields = ((quality.get("field_mapping") or {}).get("fields") or [])
+            for field in fields:
+                if not isinstance(field, Mapping):
+                    continue
+                target = str(field.get("standard_name") or field.get("target") or "").strip().casefold()
+                if target in role_terms:
+                    roles.add(target)
+                if target in metric_terms:
+                    metrics.add(target)
+            quality_values = quality.get("quality") if isinstance(quality.get("quality"), Mapping) else {}
+            missing_pct = quality_values.get("missing_pct")
+            duplicate_pct = quality_values.get("duplicate_pct")
+            if isinstance(missing_pct, (int, float)) and not isinstance(missing_pct, bool) and 0 <= missing_pct <= 100:
+                completeness.append(1 - float(missing_pct) / 100)
+            if isinstance(duplicate_pct, (int, float)) and not isinstance(duplicate_pct, bool) and 0 <= duplicate_pct <= 100:
+                duplicate_rates.append(float(duplicate_pct) / 100)
+    profile = {
+        "schema_roles": sorted(roles),
+        "metric_families": sorted(metrics),
+        "entity_relationships": [],
+        # A mapped time field alone does not establish valid temporal coverage.
+        "temporal_coverage": {"available": False, "periods": 0},
+    }
+    quality = {
+        "completeness": sum(completeness) / len(completeness) if completeness else 0.0,
+        "duplicate_rate": sum(duplicate_rates) / len(duplicate_rates) if duplicate_rates else 1.0,
+    }
+    return profile, quality
+
+
+def _selected_capability_packs(req: ChatRequest, artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    cached = artifact.get("capability_packs")
+    if isinstance(cached, list):
+        return [dict(item) for item in cached if isinstance(item, Mapping)][:3]
+    profile, quality = _capability_pack_inputs(req.workspace_id)
+    selections = select_capability_packs(_intent_message(req.message), profile, quality)
+    contract = [selection.model_dump(mode="json") for selection in selections]
+    artifact["capability_packs"] = copy.deepcopy(contract)
+    return contract
+
+
 def _maf_team_request(
     req: ChatRequest,
     decision: RoutingDecision,
@@ -5492,6 +5562,7 @@ def _maf_team_request(
     evidence_catalog: list[dict[str, Any]] | None = None,
 ) -> MafTeamRequest:
     experts = set(decision.experts)
+    capability_packs = _selected_capability_packs(req, artifact)
     return MafTeamRequest(
         intent=decision.intent,
         output_mode=decision.output_mode,
@@ -5504,6 +5575,7 @@ def _maf_team_request(
             "query": req.message,
             "routing": decision.model_dump(),
             "conversation_history": artifact.get("_conversation_history", []),
+            "capability_packs": capability_packs,
         },
         authoritative_corpus=authoritative_corpus or {},
         evidence_catalog=evidence_catalog or [],
@@ -5776,6 +5848,11 @@ def _merge_maf_artifact(artifact: dict[str, Any], result: MafTeamRunResult) -> N
     market = runtime_artifact.get("market")
     if isinstance(market, dict):
         artifact["market"] = public_market_comparison(market)
+    capability_packs = runtime_artifact.get("capability_packs")
+    if isinstance(capability_packs, list):
+        artifact["capability_packs"] = copy.deepcopy(capability_packs)
+    if runtime_artifact.get("verdict_source") == "evidence_guard":
+        artifact["verdict_source"] = "evidence_guard"
     maf_summary = result.summary.model_dump(mode="json", exclude_none=True)
     bundle_metadata = maf_summary.get("evidence_bundle")
     if isinstance(bundle_metadata, Mapping):
@@ -5787,6 +5864,7 @@ def _merge_maf_artifact(artifact: dict[str, Any], result: MafTeamRunResult) -> N
                 "profile_fact_count",
                 "gap_count",
                 "capability_pack_ids",
+                "capability_packs",
             )
             if key in bundle_metadata
         }
@@ -5963,6 +6041,16 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
         route_meta = {**route_meta, "producer_suppressed": "auto_analyze"}
     artifact["routing"] = decision.model_dump()
     artifact["routing_meta"] = route_meta
+    if "df-feasibility-analyst" in decision.experts:
+        capability_packs = _selected_capability_packs(working_req, artifact)
+        record_event(
+            conv_id,
+            "capability_pack_selection",
+            {
+                "source": "normalized_goal_schema_profile_quality",
+                "capability_packs": capability_packs,
+            },
+        )
     producer_requested = "df-producer" in decision.experts
     yield _frame(
         "route",

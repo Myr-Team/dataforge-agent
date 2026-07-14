@@ -1039,6 +1039,13 @@ class MafTeamRuntime:
         event_sink: Callable[[MafRuntimeEvent], Any] | None = None,
     ) -> MafTeamRunResult:
         normalized = request if isinstance(request, MafTeamRequest) else MafTeamRequest.model_validate(request)
+        bundle = build_evidence_bundle(
+            normalized.authoritative_corpus,
+            {"workspace_id": normalized.payload.get("workspace_id"), "intent": normalized.intent},
+            normalized.payload.get("capability_packs") if isinstance(normalized.payload.get("capability_packs"), list) else [],
+            self._bundle_limits,
+        )
+        normalized = normalized.model_copy(update={"evidence_bundle": bundle})
         plan = select_collaboration_plan(
             intent=normalized.intent,
             output_mode=normalized.output_mode,
@@ -1048,13 +1055,6 @@ class MafTeamRuntime:
         )
         if plan.max_revisions:
             plan = plan.model_copy(update={"max_revisions": min(plan.max_revisions, self._max_revisions)})
-        bundle = build_evidence_bundle(
-            normalized.authoritative_corpus,
-            {"workspace_id": normalized.payload.get("workspace_id"), "intent": normalized.intent},
-            normalized.payload.get("capability_packs") if isinstance(normalized.payload.get("capability_packs"), list) else [],
-            self._bundle_limits,
-        )
-        normalized = normalized.model_copy(update={"evidence_bundle": bundle})
         state = _RunState(event_sink=event_sink, max_agent_calls=self._max_agent_calls)
 
         @workflow(name=f"dataforge-{plan.pattern.value}")
@@ -1104,6 +1104,11 @@ class MafTeamRuntime:
         else:
             artifact, gaps, degraded, branches, overlap, rounds = await self._run_review(request, state)
 
+        artifact = dict(artifact)
+        artifact["capability_packs"] = list(request.evidence_bundle.capability_packs) if request.evidence_bundle else []
+        # Capability packs provide questions and validation methods only. The evidence
+        # guard remains the authority for every verdict, including degraded paths.
+        artifact["verdict_source"] = "evidence_guard"
         relevance_trace = dict(artifact.pop("_market_relevance_trace", {}))
 
         selected = plan.selected_agents
@@ -1296,6 +1301,9 @@ class MafTeamRuntime:
         agent_id: AgentId = "df-coordinator",
     ) -> dict[str, Any]:
         payload = dict(request.payload)
+        # Selection metadata is persisted on the run, but agents receive only the
+        # relevant registered guidance through their evidence-bundle view.
+        payload.pop("capability_packs", None)
         history = payload.get("conversation_history")
         if isinstance(history, list):
             bounded_history: list[dict[str, str]] = []

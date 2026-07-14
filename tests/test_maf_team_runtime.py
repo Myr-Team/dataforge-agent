@@ -16,6 +16,7 @@ from agent_framework import (
 )
 
 from backend import maf_team_runtime
+from backend.capability_packs import select_capability_packs
 from backend.maf_contracts import CollaborationPattern
 from backend.maf_team_runtime import (
     AuthoritativeCorpus,
@@ -260,6 +261,49 @@ def review_request() -> MafTeamRequest:
         payload={"workspace_id": "workspace-1", "query": "material decision"},
         **authoritative_context(),
     )
+
+
+def capability_selections() -> list[dict[str, Any]]:
+    profile = {
+        "schema_roles": ["location", "candidate", "demand", "time"],
+        "metric_families": ["footfall", "conversion", "cost"],
+        "temporal_coverage": {"available": True, "periods": 8},
+        "entity_relationships": ["location_to_demand"],
+    }
+    return [
+        item.model_dump(mode="json")
+        for item in select_capability_packs("choose channels for demand coverage", profile, {"completeness": 0.94, "duplicate_rate": 0.01})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pack_guidance_never_overrides_the_evidence_guard(fake_registry: FakeRegistry) -> None:
+    weak = MafTeamRequest(
+        intent="feasibility_analysis",
+        output_mode="report",
+        needs_workspace=True,
+        needs_external=False,
+        high_impact=True,
+        payload={"workspace_id": "workspace-1", "query": "choose channels", "capability_packs": capability_selections()},
+        authoritative_corpus={},
+        evidence_catalog=[],
+    )
+    strong = concurrent_request().model_copy(
+        update={"payload": {**concurrent_request().payload, "capability_packs": capability_selections()}}
+    )
+
+    low_result = await MafTeamRuntime(fake_registry).run(weak)
+    high_result = await MafTeamRuntime(fake_registry).run(strong)
+
+    assert low_result.artifact["capability_packs"][0]["pack_id"] == "site_channel_selection"
+    assert high_result.artifact["capability_packs"][0]["pack_id"] == "site_channel_selection"
+    assert low_result.artifact["verdict"] == "insufficient_evidence"
+    assert high_result.artifact["verdict"] != "insufficient_evidence"
+    assert low_result.artifact["verdict_source"] == "evidence_guard"
+    assert high_result.artifact["verdict_source"] == "evidence_guard"
+    feasibility_input = fake_registry.inputs["df-feasibility-analyst"][0]
+    assert "capability_packs" not in feasibility_input
+    assert feasibility_input["evidence_bundle"]["capability_guidance"][0]["questions"]
 
 
 def verdict_values(value: Any) -> list[str]:

@@ -9,13 +9,30 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .schemas import Evidence
+from .capability_packs import load_capability_packs
+from .schemas import CapabilitySelection, Evidence
 
 
 MAX_EVIDENCE_ITEMS = 12
 MAX_EVIDENCE_QUOTE_CHARS = 320
 MAX_BUNDLE_GAPS = 20
 MAX_CAPABILITY_PACK_IDS = 16
+MAX_CAPABILITY_PACKS = 3
+_CAPABILITY_SELECTION_FIELDS = (
+    "pack_id",
+    "confidence",
+    "reasons",
+    "matched_schema_roles",
+    "missing_evidence",
+)
+_AGENT_GUIDANCE_FIELDS: dict[str, tuple[str, ...]] = {
+    "df-coordinator": ("questions",),
+    "df-corpus-analyst": ("questions",),
+    "df-market-researcher": ("questions", "validation_methods"),
+    "df-feasibility-analyst": ("questions", "validation_methods"),
+    "df-auditor": ("validation_methods",),
+    "df-producer": ("artifact_sections",),
+}
 
 
 class BundleLimits(BaseModel):
@@ -31,6 +48,7 @@ class EvidenceBundle(BaseModel):
     profile_facts: list[str]
     gaps: list[str] = Field(max_length=MAX_BUNDLE_GAPS)
     capability_pack_ids: list[str] = Field(max_length=MAX_CAPABILITY_PACK_IDS)
+    capability_packs: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_CAPABILITY_PACKS)
 
     def persisted_metadata(self) -> dict[str, Any]:
         """Return the run-record projection without raw evidence or profile text."""
@@ -100,7 +118,32 @@ def _profile_facts(profile: Mapping[str, Any], limits: BundleLimits) -> list[str
     return facts
 
 
+def _capability_pack_contract(packs: Sequence[Any] | None) -> list[dict[str, Any]]:
+    """Resolve only registered packs and keep selection metadata separate from evidence."""
+    definitions = {pack.pack_id: pack for pack in load_capability_packs()}
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in packs or ():
+        try:
+            selection = CapabilitySelection.model_validate(_as_mapping(value))
+        except (TypeError, ValueError):
+            continue
+        if selection.pack_id in seen or selection.pack_id not in definitions:
+            continue
+        seen.add(selection.pack_id)
+        selected.append(
+            {
+                key: selection.model_dump(mode="json")[key]
+                for key in _CAPABILITY_SELECTION_FIELDS
+            }
+        )
+        if len(selected) >= MAX_CAPABILITY_PACKS:
+            break
+    return selected
+
+
 def _capability_pack_ids(packs: Sequence[Any] | None) -> list[str]:
+    """Preserve the bounded ID-only contract used by existing evidence bundles."""
     ids: list[str] = []
     for pack in packs or ():
         if isinstance(pack, str):
@@ -112,6 +155,26 @@ def _capability_pack_ids(packs: Sequence[Any] | None) -> list[str]:
         if text and text not in ids:
             ids.append(text[:120])
     return sorted(ids)[:MAX_CAPABILITY_PACK_IDS]
+
+
+def _capability_guidance(
+    contracts: Sequence[Mapping[str, Any]],
+    fields: Sequence[str],
+) -> list[dict[str, Any]]:
+    definitions = {pack.pack_id: pack for pack in load_capability_packs()}
+    guidance: list[dict[str, Any]] = []
+    for selection in contracts:
+        pack_id = str(selection.get("pack_id") or "")
+        definition = definitions.get(pack_id)
+        if definition is None:
+            continue
+        item = {"pack_id": pack_id}
+        for field in fields:
+            value = getattr(definition, field, ())
+            if isinstance(value, list):
+                item[field] = [str(entry)[:240] for entry in value[:24] if str(entry).strip()]
+        guidance.append(item)
+    return guidance
 
 
 def build_evidence_bundle(
@@ -166,12 +229,14 @@ def build_evidence_bundle(
             if str(item).strip()
         }
     )[:MAX_BUNDLE_GAPS]
+    capability_packs = _capability_pack_contract(packs)
     payload = {
         "workspace_id": _workspace_id(corpus_data, route_data),
         "evidence": [item.model_dump(mode="json", exclude_none=True) for item in evidence],
         "profile_facts": _profile_facts(profile, bounded_limits),
         "gaps": gaps,
         "capability_pack_ids": _capability_pack_ids(packs),
+        "capability_packs": capability_packs,
     }
     fingerprint = hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -192,7 +257,7 @@ def bundle_for_agent(bundle: EvidenceBundle, agent_id: str) -> dict[str, Any]:
     policy = policies.get(str(agent_id or "").strip())
     if policy is None:
         raise ValueError("unsupported agent_id for an evidence bundle view")
-    evidence_types, include_profile, include_packs = policy
+    evidence_types, include_profile, include_pack_ids = policy
     return {
         "workspace_id": bundle.workspace_id,
         "fingerprint": bundle.fingerprint,
@@ -203,7 +268,12 @@ def bundle_for_agent(bundle: EvidenceBundle, agent_id: str) -> dict[str, Any]:
         ],
         "profile_facts": list(bundle.profile_facts) if include_profile else [],
         "gaps": list(bundle.gaps),
-        "capability_pack_ids": list(bundle.capability_pack_ids) if include_packs else [],
+        "capability_pack_ids": list(bundle.capability_pack_ids) if include_pack_ids else [],
+        "capability_guidance": _capability_guidance(
+            bundle.capability_packs,
+            _AGENT_GUIDANCE_FIELDS[str(agent_id)],
+        ),
+        "capability_guidance_is_observed_evidence": False,
     }
 
 

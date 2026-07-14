@@ -483,6 +483,7 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "produced_kinds": run.get("produced_kinds") or [],
         "iteration_inputs": iteration_inputs[:12],
         "artifact_urls": {key: value for key, value in (artifact_urls or {}).items() if value},
+        "capability_packs": _capability_packs(artifact),
         "steps": steps,
         "step_count": len(run.get("steps") or []),
         "maf": _maf_summary(run),
@@ -504,8 +505,34 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
     normalized["actor"] = public_actor(normalized.get("actor") if isinstance(normalized.get("actor"), dict) else {})
     normalized["tokens"] = _token_usage(normalized)
     normalized["maf"] = _maf_summary(normalized)
+    normalized["capability_packs"] = _capability_packs(
+        normalized.get("artifact") or (normalized.get("final") or {}).get("artifact") or {}
+    )
     normalized.setdefault("registry_summary", _run_summary(normalized))
     return normalized
+
+
+def _capability_packs(artifact: Any) -> list[dict[str, Any]]:
+    if not isinstance(artifact, dict) or not isinstance(artifact.get("capability_packs"), list):
+        return []
+    values: list[dict[str, Any]] = []
+    for item in artifact["capability_packs"][:3]:
+        if not isinstance(item, dict):
+            continue
+        pack_id = _clean_phrase(item.get("pack_id"), 80)
+        confidence = item.get("confidence")
+        if not pack_id or not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+            continue
+        values.append(
+            {
+                "pack_id": pack_id,
+                "confidence": max(0.0, min(1.0, float(confidence))),
+                "reasons": [_clean_phrase(value, 240) for value in (item.get("reasons") or [])[:12] if _clean_phrase(value, 240)],
+                "matched_schema_roles": [_clean_phrase(value, 80) for value in (item.get("matched_schema_roles") or [])[:24] if _clean_phrase(value, 80)],
+                "missing_evidence": [_clean_phrase(value, 240) for value in (item.get("missing_evidence") or [])[:24] if _clean_phrase(value, 240)],
+            }
+        )
+    return values
 
 
 _VERDICT_LABELS = {

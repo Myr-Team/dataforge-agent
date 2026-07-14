@@ -664,6 +664,7 @@ def run_summary(run_id: str) -> dict[str, Any]:
         "title": run.get("title"),
         "summary": run.get("summary") if isinstance(run.get("summary"), str) else _text_summary(run),
         "evidence": evidence,
+        "capability_packs": run.get("capability_packs") if isinstance(run.get("capability_packs"), list) else [],
     }
 
 
@@ -825,6 +826,7 @@ def structured_result_from_run(run: dict[str, Any]) -> dict[str, Any]:
         "verdict": run.get("verdict") or feasibility.get("verdict"),
         "confidence": run.get("confidence") or feasibility.get("overall_confidence"),
         "audit": _audit_summary(run),
+        "capability_packs": run.get("capability_packs") if isinstance(run.get("capability_packs"), list) else [],
     }
 
 
