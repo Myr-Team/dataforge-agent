@@ -232,3 +232,45 @@ GREEN commands and results:
 ### R5 Remaining Risk
 
 - Legacy analyses without durable self-resolved canonical metadata cannot be attached when the server registry indicates truncated history. This is intentionally fail-closed; a complete-history migration can backfill those links later.
+
+## R6 Structural Lineage Refactor
+
+### Architecture
+
+- Analysis completion now keeps canonical decision, trusted lineage assignment, registry summary construction, and run persistence under the same re-entrant run-store lock. Concurrent local completions therefore observe one serialized registry/run state instead of deciding lineage outside the persistence boundary.
+- Blob-backed run registry writes use the existing revision/ETag compare-and-swap primitive with bounded retries. Failure to confirm the conditional update removes trusted canonical IDs and persists the analysis as unresolved/local-only, so an unconfirmed cross-process write cannot promote or accept attachments.
+- Every server-resolved analysis lineage uses one envelope: exact canonical run ID, exact `version:<canonical_run_id>`, `resolved` resolution status, and `trusted` lineage status. Alias validation requires a same-workspace completed analysis source and a self-resolved, trusted, non-snapshot target; missing, inconsistent, cross-workspace, cyclic, or fabricated links fail closed.
+- Ledger synchronization hydrates trusted canonical targets omitted from the control plane's recent-run window. Invalid or unavailable targets produce a bounded `lineage_resolution: unavailable` state and no attachment success. Artifact, roadmap, validation-plan, and plan follow-up paths continue to use the same strict resolver/writers.
+- Workspace latest-analysis selection excludes all snapshot `version_kind` values. Same- and new-conversation plan follow-ups persist the canonical analysis `source_run_id` and exact experiment version on both the follow-up and plan snapshot.
+- Evidence authorization is dimension-linked and fail-closed. Status, polarity, confidence, direction, and directed value changes are combined before classification; mixed signals are conflict/adverse. Newly added adverse evidence remains visible with a structured reason but cannot authorize dimension, verdict, score, or confidence strengthening.
+
+### R6 TDD Evidence
+
+Initial focused RED command:
+
+`python -m pytest -q tests/test_artifact_version_snapshot.py::test_concurrent_completions_assign_and_persist_lineage_under_one_lock tests/test_artifact_version_snapshot.py::test_persisted_alias_requires_trusted_exact_experiment_lineage tests/test_experiment_versions.py::test_untrusted_nonself_lineage_is_bounded_unavailable_not_a_ledger_alias tests/test_experiment_versions.py::test_control_plane_hydrates_trusted_canonical_target_and_attachment tests/test_experiment_versions.py::test_favorable_status_with_adverse_confidence_is_not_strengthening tests/test_experiment_versions.py::test_new_traceable_adverse_evidence_cannot_authorize_strengthening tests/test_followup_plan_version.py::test_new_conversation_plan_resolves_latest_duplicate_analysis_alias tests/test_followup_plan_version.py::test_workspace_latest_analysis_excludes_plan_and_artifact_snapshots`
+
+Initial RED result: `8 failed in 4.83s`. Failures demonstrated lock release before persistence, acceptance of inconsistent alias metadata, missing bounded lineage status/hydration, confidence conflicts treated as strengthening, adverse new evidence authorizing stronger decisions, missing canonical source fields on follow-ups, and snapshot selection as latest analysis.
+
+GREEN results:
+
+- Focused Task3 suite: `58 passed in 5.91s`.
+- Relevant run-store, outcome, control-plane persistence, audit, and workspace-role suite: `124 passed in 10.15s`.
+- Final combined focused and relevant suite: `182 passed in 13.22s`.
+- `python -m py_compile backend/experiment_store.py backend/outcome_store.py backend/run_store.py backend/orchestrator.py`: exit 0.
+- `git diff --check`: exit 0.
+
+### R6 Changed Files
+
+- `backend/experiment_store.py`
+- `backend/run_store.py`
+- `backend/orchestrator.py`
+- `tests/test_experiment_versions.py`
+- `tests/test_followup_plan_version.py`
+- `tests/test_artifact_version_snapshot.py`
+- `.superpowers/sdd/p2-c-task-3-report.md`
+
+### R6 Remaining Risks
+
+- Historical analyses without the trusted lineage envelope remain readable as legacy decisions, but they cannot be accepted as durable aliases when history is truncated. Backfill requires a server-side migration with complete source visibility.
+- The Blob store has conditional single-blob updates, not a multi-blob transaction. The implementation uses conditional registry confirmation and fails lineage closed on any unconfirmed persistence path rather than claiming atomic success.

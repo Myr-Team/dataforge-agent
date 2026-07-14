@@ -610,12 +610,16 @@ def _last_analysis_for_workspace(workspace_id: str, context: dict[str, Any] | No
     except Exception:
         return {}
     for summary in summaries[:100]:
+        if str(summary.get("version_kind") or "").strip():
+            continue
         run_id = str(summary.get("run_id") or "")
         if not run_id:
             continue
         try:
             run = get_run(run_id)
         except Exception:
+            continue
+        if str(run.get("version_kind") or "").strip():
             continue
         artifact = _produce_run_artifact(run)
         feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
@@ -5554,6 +5558,9 @@ async def _persist_chat_completion(
             if _is_plan_draft_artifact(artifact)
             else conversation_id
         )
+        if _is_plan_draft_artifact(artifact) and plan_source_run_id:
+            artifact["source_analysis_run_id"] = plan_source_run_id
+            final_payload["artifact"] = artifact
         await run_in_threadpool(_persist_assistant_message, conversation_id, workspace_id, text, verdict, citations)
         if _is_plan_draft_artifact(artifact):
             plan_artifact = _plan_attachment_artifact(plan_source_run_id, artifact)
@@ -5609,7 +5616,7 @@ def _plan_source_run_id(workspace_id: str, conversation_id: str, artifact: Mappi
         canonical_run_id = resolve_canonical_experiment_source_run_id(workspace_id, source_run_id)
     except Exception:
         canonical_run_id = None
-    return canonical_run_id or source_run_id
+    return canonical_run_id or ""
 
 
 def _plan_attachment_artifact(source_run_id: str, artifact: Mapping[str, Any]) -> dict[str, Any]:

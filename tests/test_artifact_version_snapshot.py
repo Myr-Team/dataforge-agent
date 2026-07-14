@@ -2,6 +2,7 @@ import backend.orchestrator as orchestrator
 import backend.experiment_store as experiment_store
 import backend.run_store as run_store
 import pytest
+from concurrent.futures import ThreadPoolExecutor
 
 
 def _analysis_artifact(workspace_id: str, conversation_id: str) -> dict:
@@ -30,6 +31,73 @@ def _analysis_artifact(workspace_id: str, conversation_id: str) -> dict:
         },
         "answer": {"text": "Analysis", "citations": []},
     }
+
+
+def test_concurrent_completions_assign_and_persist_lineage_under_one_lock(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-atomic-lineage"
+    run_ids = ["analysis-a", "analysis-b"]
+    for run_id in run_ids:
+        run_store.start_run(run_id, workspace_id, "Analyze")
+
+    persisted_while_locked: list[bool] = []
+    original_persist = run_store._persist_run
+
+    def persist_with_lock_observation(run: dict) -> dict:
+        persisted_while_locked.append(run_store._LOCK._is_owned())
+        return original_persist(run)
+
+    monkeypatch.setattr(run_store, "_persist_run", persist_with_lock_observation)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        completed = list(
+            executor.map(
+                lambda run_id: run_store.complete_run(
+                    run_id,
+                    status="completed",
+                    final={"artifact": _analysis_artifact(workspace_id, run_id)},
+                    artifact=_analysis_artifact(workspace_id, run_id),
+                ),
+                run_ids,
+            )
+        )
+
+    assert all(persisted_while_locked)
+    canonical_ids = {item["canonical_experiment_run_id"] for item in completed}
+    assert len(canonical_ids) == 1
+    canonical_id = canonical_ids.pop()
+    assert sum(item["run_id"] == canonical_id for item in completed) == 1
+    assert all(item["canonical_lineage_status"] == "trusted" for item in completed)
+    assert all(item["canonical_experiment_version_id"] == f"version:{canonical_id}" for item in completed)
+
+
+def test_persisted_alias_requires_trusted_exact_experiment_lineage(monkeypatch) -> None:
+    workspace_id = "ws-strict-lineage"
+    canonical_id = "analysis-canonical"
+    duplicate_id = "analysis-duplicate"
+    canonical = {
+        "run_id": canonical_id,
+        "workspace_id": workspace_id,
+        "status": "completed",
+        "canonical_experiment_run_id": canonical_id,
+        "canonical_experiment_version_id": f"version:{canonical_id}",
+        "canonical_resolution_status": "resolved",
+        "canonical_lineage_status": "trusted",
+        "artifact": _analysis_artifact(workspace_id, canonical_id),
+    }
+    duplicate = {
+        **canonical,
+        "run_id": duplicate_id,
+        "canonical_experiment_run_id": canonical_id,
+        "canonical_experiment_version_id": f"version:{duplicate_id}",
+    }
+    details = {canonical_id: canonical, duplicate_id: duplicate}
+    monkeypatch.setattr(run_store, "get_run", lambda run_id: details[run_id])
+
+    assert run_store.resolve_canonical_experiment_source_run_id(workspace_id, duplicate_id) is None
 
 
 def test_produce_records_artifact_version_snapshot(tmp_path, monkeypatch) -> None:
@@ -224,7 +292,9 @@ def test_strict_writer_never_accepts_duplicate_when_canonical_is_outside_300_run
         "status": "completed",
         "completed_at": "2026-01-01T00:00:00Z",
         "canonical_experiment_run_id": canonical_id,
+        "canonical_experiment_version_id": f"version:{canonical_id}",
         "canonical_resolution_status": "resolved",
+        "canonical_lineage_status": "trusted",
         "artifact": _analysis_artifact(workspace_id, canonical_id),
     }
     duplicate = {
@@ -233,6 +303,7 @@ def test_strict_writer_never_accepts_duplicate_when_canonical_is_outside_300_run
         "conversation_id": duplicate_id,
         "completed_at": "2026-07-01T00:00:00Z",
         "canonical_experiment_run_id": canonical_id,
+        "canonical_experiment_version_id": f"version:{canonical_id}",
         "artifact": _analysis_artifact(workspace_id, duplicate_id),
     }
     fillers = [

@@ -82,6 +82,11 @@ def test_persist_chat_completion_records_plan_draft_version(monkeypatch):
         lambda **kwargs: recorded_versions.append(kwargs),
         raising=False,
     )
+    monkeypatch.setattr(
+        orchestrator,
+        "resolve_canonical_experiment_source_run_id",
+        lambda workspace_id, source_run_id: source_run_id,
+    )
 
     artifact = {
         "workspace_id": "ws-plan",
@@ -184,6 +189,10 @@ def test_real_followup_preserves_analysis_run_and_attaches_plan(tmp_path, monkey
 
     assert source["status"] == "completed"
     assert source.get("version_kind") is None
+    followups = [item for item in details if item.get("status") == "followup_edit"]
+    assert len(followups) == 1
+    assert followups[0]["source_run_id"] == "conv-real-plan"
+    assert followups[0]["experiment_version_id"] == "version:conv-real-plan"
     assert len(ledger["versions"]) == 1
     assert ledger["versions"][0]["version_id"] == "version:conv-real-plan"
     assert len(ledger["versions"][0]["attachments"]["plans"]) == 1
@@ -265,6 +274,8 @@ def test_new_conversation_followup_attaches_plan_to_workspace_last_analysis(tmp_
     assert source["status"] == "completed"
     assert followup["status"] == "followup_edit"
     assert followup.get("version_kind") is None
+    assert followup["source_run_id"] == source_run_id
+    assert followup["experiment_version_id"] == f"version:{source_run_id}"
     assert [item["version_id"] for item in ledger["versions"]] == [f"version:{source_run_id}"]
     assert ledger["versions"][0]["attachments"]["plans"][0]["text"] == "Pilot plan"
 
@@ -342,6 +353,47 @@ def test_new_conversation_plan_resolves_latest_duplicate_analysis_alias(tmp_path
     assert plan_runs[0]["source_run_id"] == canonical_run_id
     assert plan_runs[0]["experiment_version_id"] == f"version:{canonical_run_id}"
     assert ledger["versions"][0]["attachments"]["plans"][0]["text"] == "Pilot plan from duplicate"
+    followup = run_store.get_run(followup_run_id)
+    assert followup["source_run_id"] == canonical_run_id
+    assert followup["experiment_version_id"] == f"version:{canonical_run_id}"
+
+
+def test_workspace_latest_analysis_excludes_plan_and_artifact_snapshots(monkeypatch) -> None:
+    workspace_id = "ws-analysis-selection"
+    analysis = {
+        "run_id": "analysis-real",
+        "workspace_id": workspace_id,
+        "status": "completed",
+        "artifact": {
+            "feasibility": {
+                "opportunity_id": "canonical analysis",
+                "verdict": "conditional",
+                "dimensions": [{"name": "asset_data", "score": 3}],
+            }
+        },
+    }
+    snapshot = {
+        **analysis,
+        "run_id": "snapshot-latest",
+        "version_kind": "artifact_generation",
+        "source_run_id": "analysis-real",
+        "experiment_version_id": "version:analysis-real",
+        "artifact": {
+            "feasibility": {
+                "opportunity_id": "snapshot copy",
+                "verdict": "feasible",
+                "dimensions": [{"name": "asset_data", "score": 5}],
+            }
+        },
+    }
+    details = {analysis["run_id"]: analysis, snapshot["run_id"]: snapshot}
+    monkeypatch.setattr(orchestrator, "list_runs", lambda requested_workspace=None: [snapshot, analysis])
+    monkeypatch.setattr(orchestrator, "get_run", lambda run_id: details[run_id])
+
+    selected = orchestrator._last_analysis_for_workspace(workspace_id, {})
+
+    assert selected["run_id"] == analysis["run_id"]
+    assert selected["opportunity_id"] == "canonical analysis"
 
 
 def test_plan_attachment_failure_persists_bounded_warning_status(tmp_path, monkeypatch) -> None:

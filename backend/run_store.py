@@ -9,14 +9,26 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .blob_store import delete_blob_name, download_blob_json, upload_blob_json
+    from .blob_store import (
+        blob_configured,
+        compare_and_swap_blob_json,
+        delete_blob_name,
+        download_blob_json,
+        upload_blob_json,
+    )
     from .evidence_bundle import (
         sanitize_capability_metadata,
         sanitize_capability_pack_contract,
     )
     from .identity import is_trusted_identity, public_actor
 except ImportError:
-    from blob_store import delete_blob_name, download_blob_json, upload_blob_json
+    from blob_store import (
+        blob_configured,
+        compare_and_swap_blob_json,
+        delete_blob_name,
+        download_blob_json,
+        upload_blob_json,
+    )
     from evidence_bundle import (
         sanitize_capability_metadata,
         sanitize_capability_pack_contract,
@@ -103,39 +115,51 @@ def complete_run(
 ) -> dict[str, Any] | None:
     with _LOCK:
         run = _ACTIVE.pop(run_id, None)
-    if not run:
-        return None
-    if str(status or "").strip().lower() in {"followup", "followup_edit"}:
-        try:
-            source_analysis = get_run(run_id)
-        except (FileNotFoundError, ValueError):
-            source_analysis = {}
-        if _is_completed_analysis(source_analysis):
-            completed_at = _utc_now()
-            suffix = hashlib.sha1(
-                f"{run_id}:{completed_at}:{run.get('message') or ''}".encode("utf-8")
-            ).hexdigest()[:8]
-            run["run_id"] = f"{_safe_name(run_id)}-followup-{suffix}"
-            run["conversation_id"] = run_id
-            run["source_run_id"] = run_id
-            run["experiment_version_id"] = f"version:{run_id}"
-    scope = _capability_scope(run)
-    if final is not None:
-        run["final"] = _sanitize_final(final, scope)
-    if artifact is not None:
-        run["artifact"] = _sanitize_artifact(artifact, scope)
-    run["status"] = status
-    run["completed_at"] = _utc_now()
-    run["updated_at"] = run["completed_at"]
-    run["duration_ms"] = _duration_ms(run.get("started_at"), run.get("completed_at"))
-    run["verdict"] = _verdict(run)
-    run["confidence"] = _confidence(run)
-    run["step_count"] = len(run.get("steps") or [])
-    _assign_canonical_experiment_link(run)
-    run["title"] = _run_title(run)
-    run["summary"] = _run_summary_text(run)
-    run["registry_summary"] = _run_summary(run)
-    return _persist_run(run)
+        if not run:
+            return None
+        scope = _capability_scope(run)
+        if final is not None:
+            run["final"] = _sanitize_final(final, scope)
+        if artifact is not None:
+            run["artifact"] = _sanitize_artifact(artifact, scope)
+        if str(status or "").strip().lower() in {"followup", "followup_edit"}:
+            requested_source_id = str(
+                (run.get("artifact") or {}).get("source_analysis_run_id")
+                if isinstance(run.get("artifact"), dict)
+                else ""
+            ).strip()
+            if not requested_source_id:
+                requested_source_id = run_id
+            canonical_source_id = resolve_canonical_experiment_source_run_id(
+                str(run.get("workspace_id") or ""),
+                requested_source_id,
+            )
+            try:
+                source_analysis = get_run(run_id)
+            except (FileNotFoundError, ValueError):
+                source_analysis = {}
+            if _is_completed_analysis(source_analysis):
+                completed_at = _utc_now()
+                suffix = hashlib.sha1(
+                    f"{run_id}:{completed_at}:{run.get('message') or ''}".encode("utf-8")
+                ).hexdigest()[:8]
+                run["run_id"] = f"{_safe_name(run_id)}-followup-{suffix}"
+                run["conversation_id"] = run_id
+            if canonical_source_id:
+                run["source_run_id"] = canonical_source_id
+                run["experiment_version_id"] = f"version:{canonical_source_id}"
+        run["status"] = status
+        run["completed_at"] = _utc_now()
+        run["updated_at"] = run["completed_at"]
+        run["duration_ms"] = _duration_ms(run.get("started_at"), run.get("completed_at"))
+        run["verdict"] = _verdict(run)
+        run["confidence"] = _confidence(run)
+        run["step_count"] = len(run.get("steps") or [])
+        _assign_canonical_experiment_link(run)
+        run["title"] = _run_title(run)
+        run["summary"] = _run_summary_text(run)
+        run["registry_summary"] = _run_summary(run)
+        return _persist_run(run)
 
 
 def _is_completed_analysis(run: Any) -> bool:
@@ -455,7 +479,7 @@ def resolve_canonical_experiment_source_run_id(workspace_id: str, source_run_id:
     persisted = _persisted_canonical_target(workspace_id, source)
     if persisted:
         return persisted
-    if str(source.get("canonical_resolution_status") or "") == "unresolved":
+    if _has_canonical_lineage_metadata(source):
         return None
     if _registry_history_is_truncated():
         return None
@@ -490,39 +514,166 @@ def _assign_canonical_experiment_link(run: dict[str, Any]) -> None:
                 canonical = {}
             basis = [item for item in (canonical, latest, run) if isinstance(item, dict) and item]
         elif _registry_history_is_truncated():
-            run["canonical_resolution_status"] = "unresolved"
-            run.pop("canonical_experiment_run_id", None)
+            _mark_canonical_lineage_unresolved(run)
             return
         else:
             basis = [*existing, run]
     elif _registry_history_is_truncated():
-        run["canonical_resolution_status"] = "unresolved"
-        run.pop("canonical_experiment_run_id", None)
+        _mark_canonical_lineage_unresolved(run)
         return
     else:
         basis = [run]
     resolved = _resolve_canonical_from_runs(workspace_id, basis, run_id)
     if resolved:
-        run["canonical_experiment_run_id"] = resolved
-        run["canonical_resolution_status"] = "resolved"
+        _mark_canonical_lineage_trusted(run, resolved)
     else:
-        run["canonical_resolution_status"] = "unresolved"
-        run.pop("canonical_experiment_run_id", None)
+        _mark_canonical_lineage_unresolved(run)
 
 
 def _persisted_canonical_target(workspace_id: str, source: dict[str, Any]) -> str | None:
-    target_id = str(source.get("canonical_experiment_run_id") or "").strip()
-    if not target_id:
+    if not _is_completed_analysis(source):
         return None
+    if str(source.get("workspace_id") or "") != workspace_id:
+        return None
+    target_id = str(source.get("canonical_experiment_run_id") or "").strip()
+    if not target_id or not _lineage_envelope_matches(source, target_id):
+        return None
+    if target_id == str(source.get("run_id") or "").strip():
+        return target_id
     try:
         target = get_run(target_id)
     except (FileNotFoundError, ValueError, KeyError):
         return None
-    if str(target.get("workspace_id") or "") != workspace_id or not _is_completed_analysis(target):
+    if (
+        str(target.get("workspace_id") or "") != workspace_id
+        or not _is_completed_analysis(target)
+        or str(target.get("run_id") or "").strip() != target_id
+    ):
         return None
-    target_link = str(target.get("canonical_experiment_run_id") or "").strip()
-    target_status = str(target.get("canonical_resolution_status") or "").strip()
-    return target_id if target_status == "resolved" and target_link == target_id else None
+    return target_id if _lineage_envelope_matches(target, target_id) else None
+
+
+def trusted_canonical_experiment_run_id(
+    workspace_id: str,
+    source: dict[str, Any],
+    runs_by_id: dict[str, dict[str, Any]] | None = None,
+) -> str | None:
+    """Validate a persisted lineage edge without recomputing or trusting caller fields."""
+    workspace_id = str(workspace_id or "").strip()
+    if not workspace_id or not isinstance(source, dict) or not _is_completed_analysis(source):
+        return None
+    if str(source.get("workspace_id") or "") != workspace_id:
+        return None
+    target_id = str(source.get("canonical_experiment_run_id") or "").strip()
+    source_id = str(source.get("run_id") or "").strip()
+    if not source_id or not target_id or not _lineage_envelope_matches(source, target_id):
+        return None
+    if target_id == source_id:
+        return source_id
+    target = (runs_by_id or {}).get(target_id)
+    if target is None:
+        try:
+            target = get_run(target_id)
+        except (FileNotFoundError, ValueError, KeyError):
+            return None
+    if (
+        not isinstance(target, dict)
+        or str(target.get("workspace_id") or "") != workspace_id
+        or str(target.get("run_id") or "").strip() != target_id
+        or not _is_completed_analysis(target)
+        or not _lineage_envelope_matches(target, target_id)
+    ):
+        return None
+    return target_id
+
+
+def hydrate_canonical_experiment_runs(
+    workspace_id: str,
+    runs: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Hydrate trusted canonical targets omitted from a bounded recent-run view."""
+    workspace_id = str(workspace_id or "").strip()
+    hydrated = [item for item in runs if isinstance(item, dict)]
+    by_id = {
+        str(item.get("run_id") or "").strip(): item
+        for item in hydrated
+        if str(item.get("run_id") or "").strip()
+    }
+    unresolved: set[str] = set()
+
+    for source in list(hydrated):
+        source_id = str(source.get("run_id") or "").strip()
+        if _is_completed_analysis(source) and _has_canonical_lineage_metadata(source):
+            target_id = str(source.get("canonical_experiment_run_id") or "").strip()
+            if target_id and target_id not in by_id and _lineage_envelope_matches(source, target_id):
+                try:
+                    target = get_run(target_id)
+                except (FileNotFoundError, ValueError, KeyError):
+                    target = None
+                if isinstance(target, dict):
+                    by_id[target_id] = target
+                    hydrated.append(target)
+            if trusted_canonical_experiment_run_id(workspace_id, source, by_id) is None:
+                unresolved.add(source_id)
+
+    for snapshot in list(hydrated):
+        if str(snapshot.get("version_kind") or "") not in {"plan_draft", "artifact_generation"}:
+            continue
+        snapshot_id = str(snapshot.get("run_id") or "").strip()
+        source_id = str(snapshot.get("source_run_id") or "").strip()
+        version_id = str(snapshot.get("experiment_version_id") or "").strip()
+        if not source_id or version_id != f"version:{source_id}" or snapshot.get("experiment_attachment") is not True:
+            unresolved.add(snapshot_id)
+            continue
+        if source_id not in by_id:
+            try:
+                target = get_run(source_id)
+            except (FileNotFoundError, ValueError, KeyError):
+                target = None
+            if isinstance(target, dict):
+                by_id[source_id] = target
+                hydrated.append(target)
+        target = by_id.get(source_id)
+        if not isinstance(target, dict) or trusted_canonical_experiment_run_id(workspace_id, target, by_id) != source_id:
+            unresolved.add(snapshot_id)
+
+    return hydrated, sorted(item for item in unresolved if item)[:20]
+
+
+def _has_canonical_lineage_metadata(run: dict[str, Any]) -> bool:
+    return any(
+        key in run
+        for key in (
+            "canonical_experiment_run_id",
+            "canonical_experiment_version_id",
+            "canonical_resolution_status",
+            "canonical_lineage_status",
+        )
+    )
+
+
+def _lineage_envelope_matches(run: dict[str, Any], target_id: str) -> bool:
+    return bool(
+        target_id
+        and str(run.get("canonical_experiment_run_id") or "").strip() == target_id
+        and str(run.get("canonical_experiment_version_id") or "").strip() == f"version:{target_id}"
+        and str(run.get("canonical_resolution_status") or "").strip().lower() == "resolved"
+        and str(run.get("canonical_lineage_status") or "").strip().lower() == "trusted"
+    )
+
+
+def _mark_canonical_lineage_trusted(run: dict[str, Any], canonical_run_id: str) -> None:
+    run["canonical_experiment_run_id"] = canonical_run_id
+    run["canonical_experiment_version_id"] = f"version:{canonical_run_id}"
+    run["canonical_resolution_status"] = "resolved"
+    run["canonical_lineage_status"] = "trusted"
+
+
+def _mark_canonical_lineage_unresolved(run: dict[str, Any]) -> None:
+    run.pop("canonical_experiment_run_id", None)
+    run.pop("canonical_experiment_version_id", None)
+    run["canonical_resolution_status"] = "unresolved"
+    run["canonical_lineage_status"] = "unresolved"
 
 
 def _workspace_run_details(workspace_id: str) -> list[dict[str, Any]]:
@@ -637,6 +788,11 @@ def purge_workspace_runs(workspace_id: str) -> dict[str, Any]:
 
 
 def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
+    with _LOCK:
+        return _persist_run_locked(run)
+
+
+def _persist_run_locked(run: dict[str, Any]) -> dict[str, Any]:
     sanitized = _sanitize_run_capability_metadata(run)
     if isinstance(sanitized, dict):
         run.clear()
@@ -651,9 +807,27 @@ def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
     try:
         run["persistence"] = {"mode": "local_and_blob", "blob_name": blob_name}
         upload_blob_json(blob_name, run)
+        _persist_registry_summary(summary)
+    except Exception as exc:
+        if _is_completed_analysis(run) and blob_configured():
+            _mark_canonical_lineage_unresolved(run)
+            summary = _run_summary(run)
+            run["registry_summary"] = summary
+            try:
+                upload_blob_json(blob_name, run)
+            except Exception:
+                pass
+        run["persistence"] = {"mode": "local_only", "error": f"{type(exc).__name__}: {exc}"[:500]}
+    path.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
+    return run
+
+
+def _persist_registry_summary(summary: dict[str, Any]) -> None:
+    attempts = 8 if blob_configured() else 1
+    for _attempt in range(attempts):
         registry = download_blob_json(RUN_REGISTRY_BLOB) or {}
         entries = [item for item in registry.get("runs") or [] if isinstance(item, dict)]
-        entries = [item for item in entries if item.get("run_id") != run.get("run_id")]
+        entries = [item for item in entries if item.get("run_id") != summary.get("run_id")]
         entries.append(summary)
         entries = sorted(
             entries,
@@ -661,14 +835,24 @@ def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
             reverse=True,
         )
         history_truncated = registry.get("history_truncated") is True or len(entries) > 300
-        upload_blob_json(
+        expected_revision = int(registry.get("revision") or 0)
+        value = {
+            "version": 1,
+            "revision": expected_revision + 1,
+            "history_truncated": history_truncated,
+            "runs": entries[:300],
+        }
+        if not blob_configured():
+            upload_blob_json(RUN_REGISTRY_BLOB, value)
+            return
+        updated = compare_and_swap_blob_json(
             RUN_REGISTRY_BLOB,
-            {"version": 1, "history_truncated": history_truncated, "runs": entries[:300]},
+            expected_revision=expected_revision,
+            changes=value,
         )
-    except Exception as exc:
-        run["persistence"] = {"mode": "local_only", "error": f"{type(exc).__name__}: {exc}"[:500]}
-    path.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
-    return run
+        if updated is not None:
+            return
+    raise RuntimeError("run registry conditional update could not be confirmed")
 
 
 def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
@@ -717,7 +901,9 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "experiment_version_id": run.get("experiment_version_id"),
         "experiment_attachment": run.get("experiment_attachment") is True,
         "canonical_experiment_run_id": run.get("canonical_experiment_run_id"),
+        "canonical_experiment_version_id": run.get("canonical_experiment_version_id"),
         "canonical_resolution_status": run.get("canonical_resolution_status"),
+        "canonical_lineage_status": run.get("canonical_lineage_status"),
         "produced_kinds": run.get("produced_kinds") or [],
         "iteration_inputs": iteration_inputs[:12],
         "artifact_urls": {key: value for key, value in (artifact_urls or {}).items() if value},

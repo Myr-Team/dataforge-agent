@@ -5,6 +5,7 @@ import json
 import backend.experiment_store as experiment_store
 import backend.control_plane as control_plane
 import backend.outcome_store as outcome_store
+import backend.run_store as run_store
 import pytest
 from backend.app import app
 from fastapi.testclient import TestClient
@@ -565,6 +566,9 @@ def test_mixed_authoritative_evidence_cannot_strengthen_unrelated_synthetic_dime
             ],
         }
     )
+    second["artifact"]["feasibility"]["dimensions"][0]["evidence"][0].update(
+        {"status": "passed", "polarity": "positive"}
+    )
     second["final"]["artifact"] = second["artifact"]
 
     ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
@@ -821,6 +825,161 @@ def test_decision_only_promotion_has_reason_for_each_normalized_field_change() -
     assert "conditional" in next(item["reason"] for item in decision_delta["changes"] if item["field"] == "verdict")
     assert "not_yet_feasible" in next(item["reason"] for item in decision_delta["changes"] if item["field"] == "verdict")
     assert decision_delta["summary"] != "No comparable evidence or normalized decision change"
+
+
+def test_untrusted_nonself_lineage_is_bounded_unavailable_not_a_ledger_alias() -> None:
+    canonical = _analysis_run(
+        "analysis-canonical",
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    canonical.update(
+        {
+            "canonical_experiment_run_id": "analysis-canonical",
+            "canonical_experiment_version_id": "version:analysis-canonical",
+            "canonical_resolution_status": "resolved",
+            "canonical_lineage_status": "trusted",
+        }
+    )
+    fabricated_alias = _analysis_run(
+        "analysis-fabricated-alias",
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    fabricated_alias.update(
+        {
+            "canonical_experiment_run_id": "analysis-canonical",
+            "canonical_experiment_version_id": "version:analysis-canonical",
+            "canonical_resolution_status": "resolved",
+        }
+    )
+
+    ledger = experiment_store.build_experiment_ledger(
+        "ws-experiment",
+        [canonical, fabricated_alias],
+        outcomes=[],
+    )
+
+    assert [item["run_id"] for item in ledger["versions"]] == ["analysis-canonical"]
+    assert ledger["lineage_resolution"] == {
+        "status": "unavailable",
+        "unresolved_run_ids": ["analysis-fabricated-alias"],
+    }
+
+
+def test_control_plane_hydrates_trusted_canonical_target_and_attachment(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(experiment_store, "EXPERIMENT_DIR", tmp_path / "experiments")
+    monkeypatch.setattr(
+        control_plane,
+        "require_sensitive_workspace_permission",
+        lambda *_args, **_kwargs: "viewer",
+    )
+    workspace_id = "ws-hydrated-lineage"
+    canonical_id = "analysis-outside-window"
+    alias_id = "analysis-recent-alias"
+    canonical = _analysis_run(
+        canonical_id,
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    canonical["workspace_id"] = workspace_id
+    canonical.update(
+        {
+            "canonical_experiment_run_id": canonical_id,
+            "canonical_experiment_version_id": f"version:{canonical_id}",
+            "canonical_resolution_status": "resolved",
+            "canonical_lineage_status": "trusted",
+        }
+    )
+    alias = _analysis_run(
+        alias_id,
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    alias["workspace_id"] = workspace_id
+    alias.update(
+        {
+            "canonical_experiment_run_id": canonical_id,
+            "canonical_experiment_version_id": f"version:{canonical_id}",
+            "canonical_resolution_status": "resolved",
+            "canonical_lineage_status": "trusted",
+        }
+    )
+    snapshot = {
+        "run_id": "artifact-recent",
+        "workspace_id": workspace_id,
+        "status": "completed",
+        "completed_at": "2026-07-12T04:00:00Z",
+        "version_kind": "artifact_generation",
+        "source_run_id": canonical_id,
+        "experiment_version_id": f"version:{canonical_id}",
+        "experiment_attachment": True,
+        "artifact": {"proposal": {"artifact_urls": {"pdf": "/api/artifacts/report.pdf"}}},
+    }
+    details = {canonical_id: canonical, alias_id: alias, snapshot["run_id"]: snapshot}
+    monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: [snapshot, alias])
+    monkeypatch.setattr(control_plane, "get_run", lambda run_id: details[run_id])
+    monkeypatch.setattr(run_store, "get_run", lambda run_id: details[run_id])
+    monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [])
+
+    response = TestClient(app).get(f"/api/workspaces/{workspace_id}/experiments")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["run_id"] for item in body["versions"]] == [canonical_id]
+    assert body["versions"][0]["attachments"]["artifacts"][0]["run_id"] == snapshot["run_id"]
+    assert body["lineage_resolution"]["status"] == "resolved"
+
+
+def test_favorable_status_with_adverse_confidence_is_not_strengthening() -> None:
+    first = _analysis_run("run-v1", verdict="conditional", score=3, evidence_ref="metric.csv#row-1")
+    second = _analysis_run("run-v2", verdict="feasible", score=4, evidence_ref="metric.csv#row-1")
+    before = first["artifact"]["feasibility"]["dimensions"][0]["evidence"][0]
+    after = second["artifact"]["feasibility"]["dimensions"][0]["evidence"][0]
+    before.update({"status": "failed", "confidence": "data_confirmed"})
+    after.update({"status": "passed", "confidence": "market_inferred"})
+    first["final"]["artifact"] = first["artifact"]
+    second["final"]["artifact"] = second["artifact"]
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    promoted = ledger["versions"][1]
+    assert promoted["evidence_delta"]["strengthened"] == []
+    assert "conflict" in promoted["evidence_delta"]["contradicted"][0]["reason"].lower()
+    assert promoted["decision"]["verdict"] == "conditional"
+    assert promoted["decision"]["dimensions"][0]["score"] == 3
+
+
+def test_new_traceable_adverse_evidence_cannot_authorize_strengthening() -> None:
+    first = _analysis_run("run-v1", verdict="conditional", score=3, evidence_ref="baseline.csv#row-1")
+    second = _analysis_run("run-v2", verdict="feasible", score=4, evidence_ref="baseline.csv#row-1")
+    dimension = second["artifact"]["feasibility"]["dimensions"][0]
+    dimension["evidence"].append(
+        {
+            "source_type": "corpus",
+            "ref": "pilot.csv#row-2",
+            "file_id": "pilot.csv",
+            "file_version": "2",
+            "connector_id": "upload",
+            "status": "failed",
+            "polarity": "negative",
+            "confidence": "data_confirmed",
+        }
+    )
+    second["final"]["artifact"] = second["artifact"]
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    promoted = ledger["versions"][1]
+    adverse = next(item for item in promoted["evidence_delta"]["added"] if item["ref"] == "pilot.csv#row-2")
+    assert adverse["change_class"] == "adverse"
+    assert "failed" in adverse["reason"] and "negative" in adverse["reason"]
+    assert promoted["decision"]["verdict"] == "conditional"
+    assert promoted["decision"]["dimensions"][0]["score"] == 3
 
 
 @pytest.mark.parametrize(

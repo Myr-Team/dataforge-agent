@@ -58,20 +58,37 @@ def build_experiment_ledger(
     if not normalized_workspace:
         raise ValueError("workspace_id is required")
     ordered = sorted(
-        [item for item in runs if isinstance(item, dict)],
+        [
+            item
+            for item in runs
+            if isinstance(item, dict) and str(item.get("workspace_id") or "") == normalized_workspace
+        ],
         key=_run_order_key,
     )
     analysis_runs = [item for item in ordered if _is_analysis_version(item)]
     snapshots = [item for item in ordered if str(item.get("version_kind") or "") in {"plan_draft", "artifact_generation"}]
+    runs_by_id = {
+        str(item.get("run_id") or item.get("conversation_id") or "").strip(): item
+        for item in ordered
+        if str(item.get("run_id") or item.get("conversation_id") or "").strip()
+    }
     outcome_items = [item for item in (outcomes or []) if isinstance(item, dict)]
     versions: list[dict[str, Any]] = []
     version_aliases: dict[str, str] = {}
+    unresolved_lineage: set[str] = set()
 
     for run in analysis_runs:
         run_id = str(run.get("run_id") or run.get("conversation_id") or "").strip()
         canonical_run_id = str(run.get("canonical_experiment_run_id") or "").strip()
-        resolution_status = str(run.get("canonical_resolution_status") or "").strip().lower()
-        if resolution_status == "unresolved" or (resolution_status == "resolved" and not canonical_run_id):
+        if _has_lineage_metadata(run):
+            trusted_target = _trusted_lineage_target(normalized_workspace, run, runs_by_id)
+            if trusted_target is None:
+                unresolved_lineage.add(run_id)
+                version_aliases[run_id] = ""
+                continue
+            canonical_run_id = trusted_target
+        if str(run.get("canonical_resolution_status") or "").strip().lower() == "unresolved":
+            unresolved_lineage.add(run_id)
             version_aliases[run_id] = ""
             continue
         if canonical_run_id and canonical_run_id != run_id:
@@ -102,12 +119,13 @@ def build_experiment_ledger(
             unverifiable=unverifiable_evidence,
         )
         metric_delta = _metric_delta(previous.get("metrics") if previous else [], metrics)
-        supports_strengthening = bool(evidence_delta["added"] or evidence_delta["strengthened"] or metric_delta["added"])
+        supports_strengthening = False
         if previous:
             authoritative_dimensions = _authoritative_dimension_changes(
                 dimension_evidence,
                 evidence_delta,
             )
+            supports_strengthening = bool(authoritative_dimensions)
             decision = _guard_decision_strengthening(
                 previous.get("decision") or {},
                 decision,
@@ -162,6 +180,10 @@ def build_experiment_ledger(
 
     _attach_snapshots(versions, snapshots, version_aliases)
 
+    lineage_resolution = {
+        "status": "unavailable" if unresolved_lineage else "resolved",
+        **({"unresolved_run_ids": sorted(unresolved_lineage)[:20]} if unresolved_lineage else {}),
+    }
     return {
         "version": 1,
         "workspace_id": normalized_workspace,
@@ -169,6 +191,7 @@ def build_experiment_ledger(
         "versions": versions,
         "count": len(versions),
         "latest_version_id": versions[-1]["version_id"] if versions else None,
+        "lineage_resolution": lineage_resolution,
         "source": "run_store_plus_outcome_ledger",
     }
 
@@ -207,7 +230,28 @@ def sync_experiment_ledger(
     *,
     outcomes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    ledger = build_experiment_ledger(workspace_id, runs, outcomes=outcomes)
+    hydrated_runs = runs
+    hydration_unresolved: list[str] = []
+    try:
+        from .run_store import hydrate_canonical_experiment_runs
+    except ImportError:
+        from run_store import hydrate_canonical_experiment_runs
+    try:
+        hydrated_runs, hydration_unresolved = hydrate_canonical_experiment_runs(workspace_id, runs)
+    except (OSError, ValueError):
+        hydration_unresolved = sorted(
+            str(item.get("run_id") or "")
+            for item in runs
+            if isinstance(item, dict) and item.get("canonical_experiment_run_id")
+        )[:20]
+    ledger = build_experiment_ledger(workspace_id, hydrated_runs, outcomes=outcomes)
+    if hydration_unresolved:
+        existing = set((ledger.get("lineage_resolution") or {}).get("unresolved_run_ids") or [])
+        existing.update(hydration_unresolved)
+        ledger["lineage_resolution"] = {
+            "status": "unavailable",
+            "unresolved_run_ids": sorted(existing)[:20],
+        }
     with _LOCK:
         path = _local_path(workspace_id)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -219,6 +263,30 @@ def sync_experiment_ledger(
         except Exception:
             pass
     return ledger
+
+
+def _has_lineage_metadata(run: Mapping[str, Any]) -> bool:
+    return any(
+        key in run
+        for key in (
+            "canonical_experiment_run_id",
+            "canonical_experiment_version_id",
+            "canonical_resolution_status",
+            "canonical_lineage_status",
+        )
+    )
+
+
+def _trusted_lineage_target(
+    workspace_id: str,
+    run: dict[str, Any],
+    runs_by_id: dict[str, dict[str, Any]],
+) -> str | None:
+    try:
+        from .run_store import trusted_canonical_experiment_run_id
+    except ImportError:
+        from run_store import trusted_canonical_experiment_run_id
+    return trusted_canonical_experiment_run_id(workspace_id, run, runs_by_id)
 
 
 def load_experiment_ledger(workspace_id: str) -> dict[str, Any]:
@@ -600,6 +668,10 @@ def _authoritative_dimension_changes(
         for category in ("added", "strengthened")
         for item in delta.get(category) or []
         if isinstance(item, Mapping)
+        and (
+            item.get("change_class") == "favorable"
+            or (category == "strengthened" and item.get("change_class") in (None, "favorable"))
+        )
     }
     return {
         name
@@ -644,10 +716,7 @@ def _evidence_delta(
     before = {_evidence_key(item): item for item in previous if item.get("ref")}
     after = {_evidence_key(item): item for item in current if item.get("ref")}
     common = sorted(set(before) & set(after))
-    added = [
-        {**after[key], "reason": f"Added stable evidence identity: {_evidence_identity_label(after[key])}."}
-        for key in sorted(set(after) - set(before))
-    ]
+    added = [_added_evidence_delta(after[key]) for key in sorted(set(after) - set(before))]
     removed = [
         {**before[key], "reason": f"Removed stable evidence identity: {_evidence_identity_label(before[key])}."}
         for key in sorted(set(before) - set(after))
@@ -678,6 +747,9 @@ def _evidence_delta(
                     "before": {field: prior.get(field) for field in structured_changes},
                     "after": {field: latest.get(field) for field in structured_changes},
                     "reason": reason,
+                    "change_class": "favorable" if category == "strengthened" else (
+                        "conflict" if "conflict" in reason.lower() else "adverse"
+                    ),
                 }
             )
             continue
@@ -768,6 +840,24 @@ def _evidence_semantic_change(
             )
         )
 
+    prior_confidence = _normalized_token(prior.get("confidence"))
+    latest_confidence = _normalized_token(latest.get("confidence"))
+    prior_confidence_rank = _CONFIDENCE_RANK.get(prior_confidence)
+    latest_confidence_rank = _CONFIDENCE_RANK.get(latest_confidence)
+    if (
+        prior_confidence != latest_confidence
+        and prior_confidence_rank is not None
+        and latest_confidence_rank is not None
+    ):
+        favorable = latest_confidence_rank > prior_confidence_rank
+        adverb = "favorably" if favorable else "adversely"
+        signals.append(
+            (
+                "favorable" if favorable else "adverse",
+                f"confidence changed {adverb} from {prior_confidence} to {latest_confidence}",
+            )
+        )
+
     prior_direction = _evidence_orientation(_normalized_token(prior.get("direction")))
     latest_direction = _evidence_orientation(_normalized_token(latest.get("direction")))
     if prior_direction and latest_direction and prior_direction != latest_direction:
@@ -805,6 +895,38 @@ def _evidence_semantic_change(
     if favorable_reasons:
         return "strengthened", f"Evidence strengthened: {'; '.join(favorable_reasons)}."
     return None
+
+
+def _added_evidence_delta(item: Mapping[str, Any]) -> dict[str, Any]:
+    favorable: list[str] = []
+    adverse: list[str] = []
+    status = _evidence_status(item.get("status"))
+    if status == "passed":
+        favorable.append("status is passed")
+    elif status == "failed":
+        adverse.append("status is failed")
+    polarity = _evidence_polarity(item.get("polarity"))
+    if polarity == "positive":
+        favorable.append("polarity is positive")
+    elif polarity == "negative":
+        adverse.append("polarity is negative")
+    if favorable and adverse:
+        change_class = "conflict"
+        signal_reason = f"signals conflict: {'; '.join(favorable + adverse)}"
+    elif adverse:
+        change_class = "adverse"
+        signal_reason = f"signals are adverse: {'; '.join(adverse)}"
+    elif favorable:
+        change_class = "favorable"
+        signal_reason = f"signals are wholly favorable: {'; '.join(favorable)}"
+    else:
+        change_class = "neutral"
+        signal_reason = "no structured favorable status or polarity is present"
+    return {
+        **item,
+        "change_class": change_class,
+        "reason": f"Added stable evidence identity: {_evidence_identity_label(item)}; {signal_reason}.",
+    }
 
 
 def _evidence_orientation(value: str) -> str | None:
