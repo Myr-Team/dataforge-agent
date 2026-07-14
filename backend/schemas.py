@@ -77,6 +77,30 @@ class Evidence(BaseModel):
     quote: str | None = None
 
 
+class CapabilityPack(BaseModel):
+    """Data-only guidance for a repeatable analysis capability."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pack_id: str = Field(pattern=r"^[a-z][a-z0-9_]{1,79}$")
+    label: str = Field(min_length=1, max_length=120)
+    goal_signals: list[str] = Field(min_length=1, max_length=24)
+    schema_roles: list[str] = Field(min_length=1, max_length=24)
+    metric_families: list[str] = Field(min_length=1, max_length=24)
+    evidence_requirements: list[str] = Field(min_length=1, max_length=24)
+    validation_methods: list[str] = Field(min_length=1, max_length=24)
+    artifact_sections: list[str] = Field(min_length=1, max_length=24)
+    questions: list[str] = Field(min_length=1, max_length=24)
+
+
+class CapabilitySelection(BaseModel):
+    pack_id: str = Field(pattern=r"^[a-z][a-z0-9_]{1,79}$")
+    confidence: float = Field(ge=0, le=1)
+    reasons: list[str] = Field(min_length=1, max_length=12)
+    matched_schema_roles: list[str] = Field(default_factory=list, max_length=24)
+    missing_evidence: list[str] = Field(default_factory=list, max_length=24)
+
+
 class RoutingDecision(BaseModel):
     workspace_id: str
     intent: str

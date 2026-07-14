@@ -1,0 +1,34 @@
+# P2-C Task 1: Capability Pack Registry
+
+## Scope
+
+- Added six generic, data-only capability packs in `backend/data/capability_packs.json`.
+- Added `CapabilityPack` and `CapabilitySelection` contracts in `backend/schemas.py`.
+- Added deterministic, name-independent selection in `backend/capability_packs.py`.
+- Added selection, anti-hardcoding, weak-evidence, relationship, rename-invariance, and Chinese-goal coverage in `tests/test_capability_packs.py`.
+
+## Selection contract
+
+- The selector reads only the provided business goal, semantic schema roles, metric families, entity relationships, time coverage, and quality summary.
+- It never reads workspace names, dataset names, file names, or arbitrary profile text.
+- It returns no more than three opportunity packs. Missing opportunity evidence returns only `risk_data_readiness` with explicit evidence gaps.
+- Pack data contains questions, evidence requirements, validation methods, and artifact sections only. It does not contain scores, conclusions, winners, named opportunities, or preferred industries.
+
+## Test-first evidence
+
+1. The initial `tests/test_capability_packs.py` run failed at collection because `backend.capability_packs` did not exist.
+2. The relationship-specific regression failed while relationship values were treated as opaque values, then passed after semantic token normalization was added.
+3. The Chinese-goal regression failed before Chinese token normalization and generic Chinese goal concepts were added, then passed.
+
+## Verification
+
+- `python -m pytest tests/test_capability_packs.py -q` -> 11 passed.
+- `python -m pytest tests/test_agent_generalization_contract.py tests/test_evidence_bundle.py -q` -> 6 passed.
+- `python -m compileall -q backend tests` -> passed.
+- `python -m json.tool backend/data/capability_packs.json` -> passed.
+- `git diff --check` -> passed.
+- `python -m pytest -q` after the final Chinese-goal normalization change -> 713 passed, 1 known MAF experimental warning.
+
+## Remaining integration work
+
+Task 1 exposes the registry and deterministic selector only. Task 2 must pass selected pack questions, validation methods, and artifact sections into routing, MAF context, run trace, and artifacts while keeping the evidence rubric authoritative.
