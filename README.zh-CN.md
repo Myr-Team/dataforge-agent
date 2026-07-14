@@ -108,6 +108,7 @@ DataForge 把这件事自动化了。
 - 稳定依赖版本固定为 `agent-framework-core==1.11.0`、`agent-framework-foundry==1.10.1` 和 `agent-framework-orchestrations==1.0.0`。
 - 无连接器评估命令为 `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`。报告明确声明 `measurement_scope='deterministic_harness'` 和 `production_quality_claim=false`。groundedness 与 unsupported-claim rate 只是 fixture/reference-propagation contract checks，not production answer quality（不是生产答案质量评价）。其他指标仅在确定性夹具观测存在时给值；没有用量遥测的 tokens 等缺失值保持 `null`/`unknown`。
 - 集成 P2-A 门禁命令为 `python eval/run_p2_a_acceptance.py --output generated-outputs/p2-a-acceptance.json`。机器可读报告包含 baseline、市场相关性、MAF、任务和连接器门禁的证据类别、样本数、是否允许生产声明、失败原因和输入谱系；fixture 检查中的延迟和 token 均保持 `unmeasured`。
+- P2-B Azure 治理门禁命令为 `python eval/run_p2_b_acceptance.py --output generated-outputs/p2-b-acceptance.json`。它覆盖追踪配置、追踪投递、本地 ROI 状态、Foundry ROI 状态、分摊谱系、邀请声明匹配、审计脱敏和授权边界。默认离线报告只验证本地契约：Azure Monitor 投递保持 `unmeasured`，Foundry 原生 ROI 保持 `not_configured`，`production_claim_allowed` 始终为 `false`。生产声明必须另行保留带来源的 Azure Monitor 追踪证明和已验证的 Foundry ROI 证据；确定性评估不会伪造其中任何一项。
 
 完整发布与演进设计见 [`docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md`](docs/superpowers/specs/2026-07-11-dataforge-release-and-evolution-design.md)。
 
