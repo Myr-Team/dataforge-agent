@@ -194,3 +194,30 @@ This pass closes the legacy-route authorization bypass and remaining API identit
 - `npm run build` from `web`: **passed**, Vite transformed **1,756 modules** in 1.39s.
 - `git diff --check`: **passed**.
 - Full pytest and R3 Playwright desktop/mobile fixtures were not run before this commit at the user's direction to submit the focused security fix immediately. Earlier browser evidence is not claimed as R3 validation.
+
+## R4 Outcome Privacy And Canonical Identity (2026-07-14)
+
+This pass closes the remaining outcome-response identity exposure and the no-email trusted-owner pseudonym mismatch. Easy Auth configuration and tracked `output/` content were not changed.
+
+| R4 finding | Implemented result |
+|---|---|
+| Outcome API identity exposure | GET, POST, and verify outcome routes now return explicit public projections. Outcome actor, verification reviewer, and nested verification-event actor contain only stable `member_<HMAC>` subject labels. Raw identity remains in the persistent store for verification and authorization logic but is never reused as the API response object. |
+| Recursive verification projection | Verification responses preserve bounded status, verification IDs, timestamps, and trusted-state evidence while recursively replacing reviewer/event actor objects and excluding persistent reviewer details. |
+| Shared canonical member key | Added one shared canonical identity-key function: normalized email when available, otherwise normalized `tenant_id + NUL + actor_id`. Invitation history, member projections, audit/outcome references, and chargeback labels all call the same server-only HMAC path. |
+| Chargeback membership matching | Trusted activity still matches current membership by tenant/OID even when telemetry email differs. After the match, the public label uses the persistent member identity, preventing telemetry profile values from changing attribution. |
+| No-email owner consistency | A persisted workspace creator without email now keeps tenant/OID identity through member projection instead of inheriting the deployment default email. The member and chargeback contracts return the same label while a different current admin is active. |
+
+### R4 Files Changed
+
+- `backend/control_plane.py`: safe outcome GET/create/verify projections, recursive verification projection, and no-fallback persisted owner handling.
+- `backend/invitation_store.py`: shared canonical member identity key and unified invitation/member label generation.
+- `backend/roi_service.py`: tenant/OID membership lookup separated from shared public-label projection.
+- `tests/test_outcome_roi.py`: whole-response GET/POST/verify leak assertions plus proof that persistent identity facts remain available internally.
+- `tests/test_actor_audit_usage.py`: no-email creator/current-admin-different member-versus-chargeback label regression.
+
+### R4 Verification Before Commit
+
+- `python -m pytest tests/test_outcome_roi.py tests/test_entra_member_invites.py tests/test_actor_audit_usage.py tests/test_roi_service.py tests/test_foundry_roi.py tests/test_workspace_roles.py tests/test_governance_roi_summary.py -q`: **208 passed in 10.64s**.
+- `node --test src/*.test.mjs` from `web`: **50 passed, 0 failed** in 313.75ms.
+- `npm run build` from `web`: **passed**, Vite transformed **1,756 modules** in 1.14s.
+- `git diff --check`: **passed**.

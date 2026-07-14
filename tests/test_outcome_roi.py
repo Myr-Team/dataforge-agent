@@ -234,6 +234,7 @@ def test_outcome_api_persists_lists_and_verifies(
 ) -> None:
     _configure_store(tmp_path, monkeypatch)
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "outcome-api-projection-salt")
     client = TestClient(app)
     owner_headers = _easy_headers("Owner")
     reviewer_headers = _easy_headers("Reviewer")
@@ -242,7 +243,7 @@ def test_outcome_api_persists_lists_and_verifies(
     assert created.status_code == 200
     event_id = created.json()["event"]["event_id"]
 
-    listed = client.get("/api/workspaces/ws-roi/outcomes")
+    listed = client.get("/api/workspaces/ws-roi/outcomes", headers=owner_headers)
     assert listed.status_code == 200
     assert listed.json()["count"] == 1
 
@@ -253,3 +254,26 @@ def test_outcome_api_persists_lists_and_verifies(
     )
     assert verified.status_code == 200
     assert verified.json()["event"]["verification"]["status"] == "verified"
+
+    relisted = client.get("/api/workspaces/ws-roi/outcomes", headers=owner_headers)
+    assert relisted.status_code == 200
+    expected_owner_label = control_plane.member_subject_label("ws-roi", _actor())
+    expected_reviewer_label = control_plane.member_subject_label("ws-roi", _actor("Reviewer"))
+    assert created.json()["event"]["actor"] == {"subject_label": expected_owner_label}
+    assert relisted.json()["events"][0]["actor"] == {"subject_label": expected_owner_label}
+    assert verified.json()["event"]["verification"]["reviewer"] == {"subject_label": expected_reviewer_label}
+    assert verified.json()["event"]["verification"]["event"]["actor"] == {"subject_label": expected_reviewer_label}
+
+    forbidden = (
+        "owner@contoso.com", "oid-owner", "Owner",
+        "reviewer@contoso.com", "oid-reviewer", "Reviewer", "tenant-a",
+    )
+    for response in (created, listed, verified, relisted):
+        serialized = json.dumps(response.json(), sort_keys=True)
+        for raw_identity in forbidden:
+            assert raw_identity not in serialized, (response.request.url.path, raw_identity, serialized)
+
+    persisted = outcome_store.list_outcome_events("ws-roi")[0]
+    assert persisted["actor"]["email"] == "owner@contoso.com"
+    assert persisted["verification"]["reviewer"]["actor_id"] == "oid-reviewer"
+    assert persisted["verification"]["event"]["actor"]["tenant_id"] == "tenant-a"

@@ -13,10 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 try:
     from .identity import canonical_actor_identity, is_trusted_tenant_identity
-    from .invitation_store import InvitationPersistenceError, member_pseudonym_salt, member_subject_label
+    from .invitation_store import InvitationPersistenceError, canonical_member_identity_key, member_pseudonym_salt, member_subject_label
 except ImportError:
     from identity import canonical_actor_identity, is_trusted_tenant_identity
-    from invitation_store import InvitationPersistenceError, member_pseudonym_salt, member_subject_label
+    from invitation_store import InvitationPersistenceError, canonical_member_identity_key, member_pseudonym_salt, member_subject_label
 
 
 MAX_WINDOW_DAYS = 31
@@ -486,7 +486,11 @@ def _filtered(workspace: str, records: Iterable[Mapping[str, Any]], window: Mapp
 def _trusted_actor(record: Mapping[str, Any]) -> str | None:
     actor = record.get("actor") if isinstance(record.get("actor"), Mapping) else {}
     identity = canonical_actor_identity(actor)
-    return f"{identity[0]}:{identity[1]}" if record.get("trusted_identity") and is_trusted_tenant_identity(actor) and identity else None
+    return (
+        canonical_member_identity_key({"tenant_id": identity[0], "actor_id": identity[1]})
+        if record.get("trusted_identity") and is_trusted_tenant_identity(actor) and identity
+        else None
+    )
 
 
 def _memberships(items: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -496,15 +500,15 @@ def _memberships(items: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]
             continue
         identity = canonical_actor_identity(item)
         if identity:
-            result[f"{identity[0]}:{identity[1]}"] = dict(item)
+            lookup_key = canonical_member_identity_key({"tenant_id": identity[0], "actor_id": identity[1]})
+            result[lookup_key] = dict(item)
     return result
 
 
 def _member_label(workspace: str, actor_key: str, members: Mapping[str, Mapping[str, Any]], salt: str) -> dict[str, Any]:
     item = members.get(actor_key)
-    identity_key = str(item.get("email") or actor_key).strip().lower() if item else actor_key
     return {
-        "subject_label": member_subject_label(workspace, identity_key, pseudonym_salt=salt),
+        "subject_label": member_subject_label(workspace, item or actor_key, pseudonym_salt=salt),
         "status": "active" if item else "unknown_or_departed",
     }
 

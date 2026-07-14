@@ -233,7 +233,8 @@ async def workspace_trace_status(
 async def workspace_outcomes(workspace_id: str, request: Request) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "outcome.read")
     events = await _call(list_outcome_events, workspace_id)
-    return {"workspace_id": workspace_id, "events": events, "count": len(events)}
+    public_events = await _call(_public_outcome_events, workspace_id, events)
+    return {"workspace_id": workspace_id, "events": public_events, "count": len(public_events)}
 
 
 @router.get("/api/workspaces/{workspace_id}/experiments")
@@ -263,7 +264,7 @@ async def workspace_outcome_create(workspace_id: str, body: dict[str, Any], requ
     except Exception:
         _audit_failed(request, workspace_id, "outcome.record", "outcome", "pending")
         raise
-    return {"workspace_id": workspace_id, "event": event}
+    return {"workspace_id": workspace_id, "event": await _call(_public_outcome_event, workspace_id, event)}
 
 
 @router.post("/api/workspaces/{workspace_id}/outcomes/{event_id}/verify")
@@ -286,7 +287,7 @@ async def workspace_outcome_verify(
     except Exception:
         _audit_failed(request, workspace_id, "outcome.verify", "outcome", event_id, correlation={"outcome_event_id": event_id})
         raise
-    return {"workspace_id": workspace_id, "event": event}
+    return {"workspace_id": workspace_id, "event": await _call(_public_outcome_event, workspace_id, event)}
 
 
 @router.get("/api/runs/{run_id}/summary")
@@ -991,7 +992,11 @@ def workspace_member_roles(workspace_id: str, request: Request | None = None) ->
     owner_actor = stored_owner if _actor_key(stored_owner) else current_actor if not rbac_enabled() else default_actor()
     if not stored_owner and workspace_role(workspace_id, current_actor) == "owner":
         owner_actor = {**default_actor(), **current_actor}
-    owner = member_from_actor(owner_actor, role="owner")
+    owner = (
+        {**public_actor(stored_owner), "role": "owner", "status": "active"}
+        if stored_owner
+        else member_from_actor(owner_actor, role="owner")
+    )
     owner["status"] = "active"
     owner["source"] = owner.get("source") or current_actor.get("source") or "workspace_default"
     members_by_key: dict[str, dict[str, Any]] = {_actor_key(owner) or "workspace_owner": owner}
@@ -1054,12 +1059,11 @@ def workspace_invitation_history(workspace_id: str) -> list[dict[str, Any]]:
 
 
 def _public_workspace_member(workspace_id: str, member: dict[str, Any]) -> dict[str, Any]:
-    identity_key = _actor_key(member)
     role = str(member.get("role") or "viewer").strip().lower()
     if role not in {*WORKSPACE_MEMBER_ROLES, "owner"}:
         role = "viewer"
     return {
-        "subject_label": member_subject_label(workspace_id, identity_key),
+        "subject_label": member_subject_label(workspace_id, member),
         "role": role,
         "status": str(member.get("status") or "active") if str(member.get("status") or "active") in WORKSPACE_MEMBER_STATUSES else "pending",
         "source": str(member.get("source") or "workspace_member"),
@@ -1078,11 +1082,11 @@ def _public_workspace_usage(workspace_id: str, usage: dict[str, Any], members_by
         actor = item.get("actor") if isinstance(item.get("actor"), dict) else {}
         actor_key = _actor_key(actor)
         member = members_by_key.get(actor_key) if actor_key else None
-        identity_key = _actor_key(member or actor)
-        if not identity_key:
+        identity = member or actor
+        if not _actor_key(identity):
             continue
         rows.append({
-            "subject_label": member_subject_label(workspace_id, identity_key),
+            "subject_label": member_subject_label(workspace_id, identity),
             "usage": item.get("usage") if isinstance(item.get("usage"), dict) else {},
             "last_seen_at": _clean_text(item.get("last_seen_at")),
             "last_run_id": _clean_text(item.get("last_run_id")),
@@ -1901,8 +1905,76 @@ def _public_actor_reference(
 ) -> dict[str, str]:
     actor_key = _actor_key(actor)
     member = members_by_key.get(actor_key) if actor_key else None
-    identity_key = _actor_key(member or actor) or "workspace_default"
-    return {"subject_label": member_subject_label(workspace_id, identity_key)}
+    identity = member or actor
+    if not _actor_key(identity):
+        identity = "workspace\0default"
+    return {"subject_label": member_subject_label(workspace_id, identity)}
+
+
+def _public_outcome_events(workspace_id: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_public_outcome_event(workspace_id, event) for event in events if isinstance(event, dict)]
+
+
+def _public_outcome_event(workspace_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    public = {
+        key: event.get(key)
+        for key in (
+            "event_id",
+            "workspace_id",
+            "metric_name",
+            "unit",
+            "baseline_value",
+            "target_value",
+            "observed_value",
+            "observed_at",
+            "attribution_window_days",
+            "provenance",
+            "source",
+            "trusted_identity",
+            "business_value",
+            "created_at",
+            "updated_at",
+        )
+        if event.get(key) is not None
+    }
+    actor = event.get("actor") if isinstance(event.get("actor"), dict) else {}
+    public["actor"] = _public_actor_reference(workspace_id, actor, {})
+    verification = event.get("verification") if isinstance(event.get("verification"), dict) else {}
+    public["verification"] = _public_outcome_verification(workspace_id, verification)
+    return public
+
+
+def _public_outcome_verification(workspace_id: str, verification: dict[str, Any]) -> dict[str, Any]:
+    public = {
+        key: verification.get(key)
+        for key in ("status", "verification_event_id", "verified_at", "trusted_identity")
+        if verification.get(key) is not None
+    }
+    reviewer = verification.get("reviewer") if isinstance(verification.get("reviewer"), dict) else None
+    if reviewer is not None:
+        public["reviewer"] = _public_actor_reference(workspace_id, reviewer, {})
+    nested = verification.get("event") if isinstance(verification.get("event"), dict) else None
+    if nested is not None:
+        public["event"] = _public_verification_event(workspace_id, nested)
+    return public
+
+
+def _public_verification_event(workspace_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    public = {
+        key: event.get(key)
+        for key in (
+            "event_id",
+            "workspace_id",
+            "kind",
+            "outcome_event_id",
+            "trusted_identity",
+            "created_at",
+        )
+        if event.get(key) is not None
+    }
+    actor = event.get("actor") if isinstance(event.get("actor"), dict) else {}
+    public["actor"] = _public_actor_reference(workspace_id, actor, {})
+    return public
 
 
 def _float_env(name: str, default: float) -> float:

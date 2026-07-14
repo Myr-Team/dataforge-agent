@@ -857,13 +857,12 @@ def test_all_legacy_and_new_governance_endpoints_serialize_without_raw_identity(
             assert raw_identity not in serialized, (path, raw_identity, serialized)
 
 
-def test_persisted_workspace_owner_has_one_label_when_current_admin_is_different(monkeypatch) -> None:
+def test_no_email_persisted_workspace_owner_has_one_label_when_current_admin_is_different(monkeypatch) -> None:
     monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "canonical-owner-salt")
     creator = {
         "name": "Workspace Creator",
-        "email": "creator@contoso.com",
         "actor_id": "creator-oid",
         "tenant_id": "tenant-1",
         "source": "easy_auth",
@@ -916,7 +915,7 @@ def test_persisted_workspace_owner_has_one_label_when_current_admin_is_different
         "2026-07-14T00:00:00Z",
         "2026-07-15T00:00:00Z",
     )
-    expected = control_plane.member_subject_label("ws-owner", creator["email"])
+    expected = control_plane.member_subject_label("ws-owner", creator)
     owner_label = next(member["subject_label"] for member in member_contract["members"] if member["role"] == "owner")
 
     assert owner_label == expected

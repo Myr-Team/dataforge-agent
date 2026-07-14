@@ -266,7 +266,11 @@ def list_invitation_history(
         history.append(
             {
                 "invitation_ref": _history_pseudonym("invite", workspace_id, invitation_id, salt),
-                "subject_label": _history_pseudonym("member", workspace_id, str(record["email"]), salt),
+                "subject_label": member_subject_label(
+                    workspace_id,
+                    {"email": str(record["email"])},
+                    pseudonym_salt=salt,
+                ),
                 "role": str(record["role"]),
                 "state": effective_state,
                 "invitation_state": invitation_state,
@@ -276,11 +280,34 @@ def list_invitation_history(
     return sorted(history, key=lambda item: (str(item.get("updated_at") or ""), str(item["invitation_ref"])), reverse=True)
 
 
-def member_subject_label(workspace_id: str, identity_key: str, *, pseudonym_salt: str | None = None) -> str:
-    identity = _clean(identity_key).lower()
-    if not identity:
-        raise InvitationPersistenceError("member identity is unavailable for safe projection")
-    return _history_pseudonym("member", workspace_id, identity, member_pseudonym_salt(pseudonym_salt))
+def canonical_member_identity_key(identity: Mapping[str, Any] | str) -> str:
+    if isinstance(identity, Mapping):
+        email = _clean(identity.get("email")).lower()
+        if email and "@" in email:
+            return email
+        actor_id = _clean(identity.get("actor_id") or identity.get("id") or identity.get("oid")).lower()
+        tenant_id = _clean(identity.get("tenant_id") or identity.get("tid")).lower()
+        if tenant_id and actor_id:
+            return f"{tenant_id}\0{actor_id}"
+    else:
+        value = _clean(identity).lower()
+        if value and "@" in value:
+            return value
+        if "\0" in value:
+            tenant_id, actor_id = value.split("\0", 1)
+            if tenant_id and actor_id:
+                return f"{tenant_id}\0{actor_id}"
+    raise InvitationPersistenceError("member identity is unavailable for safe projection")
+
+
+def member_subject_label(
+    workspace_id: str,
+    identity: Mapping[str, Any] | str,
+    *,
+    pseudonym_salt: str | None = None,
+) -> str:
+    identity_key = canonical_member_identity_key(identity)
+    return _history_pseudonym("member", workspace_id, identity_key, member_pseudonym_salt(pseudonym_salt))
 
 
 def member_pseudonym_salt(value: str | None = None) -> str:
@@ -628,6 +655,7 @@ __all__ = [
     "INVITATION_STATES",
     "InvitationPersistenceError",
     "InvitationTransitionError",
+    "canonical_member_identity_key",
     "accept_provider_invitation",
     "accepted_invitation_for_actor",
     "consume_accepted_invitation",
