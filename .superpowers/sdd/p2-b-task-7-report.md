@@ -25,6 +25,44 @@ evaluator is deterministic and offline. It validates local contract behavior,
 but records Azure Monitor delivery as `unmeasured` and Foundry native ROI as
 `not_configured`; therefore its top-level `production_claim_allowed` is false.
 
+## R2 evidence hardening
+
+The evaluator now executes `backend.azure_monitor_client.build_trace_status`
+for its trace-delivery fixture instead of treating an unknown remote result as
+a checked result. A missing remote proof and a parsed but mismatched proof are
+both explicitly recorded as `unmeasured`; neither is a delivery observation.
+
+Observed provider payloads are always untrusted in this offline evaluator.
+They may describe the required immutable binding, but no caller-supplied
+source, timestamp, ID, digest, or self-declared attestation can promote a
+gate. Azure Monitor evidence must be independently verified against the
+expected workspace/run/correlation/build/revision and observation time by an
+Azure Monitor query verifier. Foundry ROI requires the analogous Foundry
+provider verifier attestation. This local command has no provider trust root,
+so it records supplied payloads as `missing`, `invalid`, or `unverified` and
+keeps `production_claim_allowed` false.
+
+## R2 verification evidence
+
+```text
+python -m pytest tests/test_p2_b_acceptance_contract.py -q
+9 passed in 2.31s
+
+python eval/run_p2_b_acceptance.py --output generated-outputs/p2-b-acceptance-r2.json
+passed: true
+unmeasured_gates: [trace_delivery, foundry_roi_state]
+production_claim_allowed: false
+
+python -m pytest -q
+702 passed, 1 upstream ExperimentalWarning, in 99.60s
+
+python -m compileall -q backend tests eval
+passed
+
+cd web && npm run build
+passed (Vite 8.0.16)
+```
+
 ## Test-first evidence
 
 The focused test was added before the evaluator module existed. Its first run
@@ -116,10 +154,12 @@ The remaining warning is the upstream Microsoft Agent Framework
 
 ## Remaining production evidence
 
-- A matching Azure Monitor/Application Insights trace query must be retained
-  before trace delivery may be claimed.
-- Foundry native ROI remains unavailable until its external discovery and
-  verifier evidence is configured and observed.
+- A trusted Azure Monitor verifier must retain a query result bound to the
+  expected workspace/run/correlation/build/revision and observation time before
+  trace delivery may be claimed.
+- Foundry native ROI remains unavailable until an independently verified
+  Foundry provider attestation with the same immutable binding is configured
+  and observed.
 - The immutable audit storage release gate still requires explicit Azure
   provisioning and its irreversible WORM-lock confirmation; this task does
   not provision or modify cloud resources.

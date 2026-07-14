@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 
 import pytest
 
+from backend.azure_monitor_client import (
+    RemoteTraceProof,
+    TraceDeliveryExpectation,
+    hash_trace_identifier,
+)
 from eval import run_p2_b_acceptance
 from eval.run_p2_b_acceptance import (
     REQUIRED_GATES,
@@ -40,9 +46,101 @@ def test_acceptance_requires_all_governance_gates_and_preserves_unmeasured_state
     assert set(report["unmeasured_gates"]) == {"trace_delivery", "foundry_roi_state"}
 
 
-def test_observed_evidence_needs_stable_lineage_before_it_can_support_a_production_gate() -> None:
+def _trace_delivery_expectation(*, run_id: str = "run-p2-b-delivery") -> TraceDeliveryExpectation:
+    correlation_id = "b" * 32
+    return TraceDeliveryExpectation(
+        workspace_hash=hash_trace_identifier("p2-b-fixture"),
+        run_hash=hash_trace_identifier(run_id),
+        correlation_hash=hash_trace_identifier(correlation_id),
+        resource_id=(
+            "/subscriptions/00000000-0000-0000-0000-000000000000/"
+            "resourceGroups/rg-p2-b/providers/Microsoft.Insights/components/df-p2-b"
+        ),
+        application_id="00000000-0000-0000-0000-000000000001",
+        correlation_id=correlation_id,
+    )
+
+
+def _forged_provider_evidence(provider: str) -> dict:
+    verifier = "azure_monitor_query_verifier" if provider == "azure_monitor" else "foundry_roi_verifier"
+    return {
+        "provider": provider,
+        "immutable_binding": {
+            "expected_workspace_hash": "a" * 64,
+            "expected_run_id": "run-p2-b-forged",
+            "expected_correlation_hash": "b" * 64,
+            "expected_build_id": "build-forged",
+            "expected_revision": "revision-forged",
+            "observed_at": "2026-07-14T00:00:00Z",
+            "result_digest": "c" * 64,
+        },
+        "attestation": {
+            "provider": provider,
+            "verifier": verifier,
+            "attestation_id": "attestation-forged",
+            "verified_at": "2026-07-14T00:00:00Z",
+            "verified": True,
+        },
+    }
+
+
+def test_trace_delivery_without_remote_proof_is_explicitly_unmeasured_and_not_promotable() -> None:
+    component = run_p2_b_acceptance._trace_delivery_report()
     reports = _component_reports()
-    reports["trace_delivery"] = {
+    reports["trace_delivery"] = component
+
+    report = build_acceptance_report(reports)
+    gate = report["gates"]["trace_delivery"]
+
+    assert component["remote_evidence"]["state"] == "missing"
+    assert component["remote_evidence"]["verified_immutable_binding"] is False
+    assert gate["status"] == "unmeasured"
+    assert gate["production_claim_allowed"] is False
+    assert report["production_claim_allowed"] is False
+
+
+def test_invalid_remote_trace_proof_is_explicitly_unmeasured_and_not_promotable() -> None:
+    expected = _trace_delivery_expectation()
+    mismatched_proof = RemoteTraceProof(
+        observed_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+        trace_id=expected.correlation_id,
+        workspace_hash=expected.workspace_hash,
+        run_hash=hash_trace_identifier("another-run"),
+        correlation_hash=expected.correlation_hash,
+        resource_id=expected.resource_id,
+        application_id=expected.application_id,
+        source_table="requests",
+    )
+    component = run_p2_b_acceptance._trace_delivery_report(
+        remote_proof=mismatched_proof,
+        expected=expected,
+    )
+    reports = _component_reports()
+    reports["trace_delivery"] = component
+
+    report = build_acceptance_report(reports)
+    gate = report["gates"]["trace_delivery"]
+
+    assert component["remote_evidence"]["state"] == "invalid"
+    assert component["remote_evidence"]["verified_immutable_binding"] is False
+    assert gate["status"] == "unmeasured"
+    assert gate["production_claim_allowed"] is False
+
+
+@pytest.mark.parametrize(
+    ("gate_name", "provider", "expected_status"),
+    (
+        ("trace_delivery", "azure_monitor", "unmeasured"),
+        ("foundry_roi_state", "azure_ai_foundry", "not_configured"),
+    ),
+)
+def test_forged_provider_strings_cannot_promote_a_production_claim(
+    gate_name: str,
+    provider: str,
+    expected_status: str,
+) -> None:
+    reports = _component_reports()
+    reports[gate_name] = {
         "evidence_kind": "observed",
         "sample_count": 1,
         "local_contract_passed": True,
@@ -50,15 +148,21 @@ def test_observed_evidence_needs_stable_lineage_before_it_can_support_a_producti
         "status": "passed",
         "failed_reasons": [],
         "inputs": [{
-            "source": "azure_monitor",
+            "source": provider,
             "observed_id": "trace-proof-1",
             "timestamp": "2026-07-14T00:00:00Z",
         }],
+        "provider_evidence": _forged_provider_evidence(provider),
     }
 
     report = build_acceptance_report(reports)
+    gate = report["gates"][gate_name]
 
-    assert report["gates"]["trace_delivery"]["production_claim_allowed"] is True
+    assert gate["status"] == expected_status
+    assert gate["production_claim_allowed"] is False
+    assert gate["evidence_verification"]["state"] == "unverified"
+    assert "trusted_provider_verifier_required" in gate["failed_reasons"]
+    assert report["production_claim_allowed"] is False
 
 
 def test_observed_evidence_without_lineage_cannot_promote_a_production_claim() -> None:
@@ -77,8 +181,10 @@ def test_observed_evidence_without_lineage_cannot_promote_a_production_claim() -
 
     gate = report["gates"]["trace_delivery"]
     assert gate["local_contract_passed"] is False
+    assert gate["status"] == "unmeasured"
     assert gate["production_claim_allowed"] is False
-    assert "observed_lineage_required" in gate["failed_reasons"]
+    assert gate["evidence_verification"]["state"] == "missing"
+    assert "provider_evidence_missing" in gate["failed_reasons"]
 
 
 def test_component_reports_are_deterministic_and_do_not_claim_azure_delivery_or_native_roi() -> None:

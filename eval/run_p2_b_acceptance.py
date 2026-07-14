@@ -34,28 +34,124 @@ REQUIRED_GATES = (
 )
 EVIDENCE_KINDS = frozenset({"fixture", "observed"})
 GATE_STATES = frozenset({"passed", "failed", "unmeasured", "not_configured"})
-OBSERVED_LINEAGE_IDS = frozenset({"observed_id", "trace_id", "run_id", "attestation_id", "build_id"})
+LOCAL_EVALUATOR_PRODUCTION_PROMOTION = False
+REMOTE_PROVIDER_GATES = {
+    "trace_delivery": {
+        "provider": "azure_monitor",
+        "fallback_status": "unmeasured",
+        "binding_fields": (
+            "expected_workspace_hash",
+            "expected_run_id",
+            "expected_correlation_hash",
+            "expected_build_id",
+            "expected_revision",
+            "observed_at",
+            "result_digest",
+        ),
+        "attestation_fields": (
+            "provider",
+            "verifier",
+            "attestation_id",
+            "verified_at",
+        ),
+        "verifier": "azure_monitor_query_verifier",
+    },
+    "foundry_roi_state": {
+        "provider": "azure_ai_foundry",
+        "fallback_status": "not_configured",
+        "binding_fields": (
+            "expected_workspace_hash",
+            "expected_run_id",
+            "expected_correlation_hash",
+            "expected_build_id",
+            "expected_revision",
+            "observed_at",
+            "result_digest",
+        ),
+        "attestation_fields": (
+            "provider",
+            "verifier",
+            "attestation_id",
+            "verified_at",
+        ),
+        "verifier": "foundry_roi_verifier",
+    },
+}
 
 
 def _as_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
 
 
-def _has_observed_lineage(inputs: list[Any]) -> bool:
-    return bool(inputs) and all(
-        isinstance(item, Mapping)
-        and isinstance(item.get("source"), str)
-        and bool(str(item.get("source")).strip())
-        and isinstance(item.get("timestamp"), str)
-        and bool(str(item.get("timestamp")).strip())
-        and any(
-            isinstance(item.get(key), (str, int, float))
-            and not isinstance(item.get(key), bool)
-            and bool(str(item.get(key)).strip())
-            for key in OBSERVED_LINEAGE_IDS
+def _text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _provider_evidence_verification(name: str, component: Mapping[str, Any]) -> dict[str, Any]:
+    """Describe why caller-provided provider evidence cannot be trusted offline.
+
+    This evaluator has no Azure credential, signed verifier, or provider query
+    result.  It can describe the immutable binding required for a production
+    claim, but must never elevate caller-supplied strings into such a claim.
+    """
+    requirement = REMOTE_PROVIDER_GATES.get(name)
+    if requirement is None:
+        return {"state": "not_applicable", "verified_immutable_binding": False}
+
+    required = {
+        "provider": requirement["provider"],
+        "binding_fields": list(requirement["binding_fields"]),
+        "attestation_fields": list(requirement["attestation_fields"]),
+        "verifier": requirement["verifier"],
+    }
+    evidence = component.get("provider_evidence")
+    if not isinstance(evidence, Mapping):
+        return {
+            "state": "missing",
+            "verified_immutable_binding": False,
+            "required": required,
+            "reasons": ["provider_evidence_missing"],
+        }
+
+    binding = evidence.get("immutable_binding")
+    attestation = evidence.get("attestation")
+    invalid_fields: list[str] = []
+    if evidence.get("provider") != requirement["provider"]:
+        invalid_fields.append("provider")
+    if not isinstance(binding, Mapping):
+        invalid_fields.append("immutable_binding")
+    else:
+        invalid_fields.extend(
+            field for field in requirement["binding_fields"] if not _text(binding.get(field))
         )
-        for item in inputs
-    )
+    if not isinstance(attestation, Mapping):
+        invalid_fields.append("attestation")
+    else:
+        invalid_fields.extend(
+            field for field in requirement["attestation_fields"] if not _text(attestation.get(field))
+        )
+        if attestation.get("provider") != requirement["provider"]:
+            invalid_fields.append("attestation.provider")
+        if attestation.get("verifier") != requirement["verifier"]:
+            invalid_fields.append("attestation.verifier")
+    if invalid_fields:
+        return {
+            "state": "invalid",
+            "verified_immutable_binding": False,
+            "required": required,
+            "invalid_fields": sorted(set(invalid_fields)),
+            "reasons": ["provider_evidence_invalid"],
+        }
+
+    return {
+        "state": "unverified",
+        "verified_immutable_binding": False,
+        "required": required,
+        "reasons": [
+            "trusted_provider_verifier_required",
+            "offline_evaluator_cannot_verify_provider_evidence",
+        ],
+    }
 
 
 def _gate(name: str, component: Mapping[str, Any]) -> dict[str, Any]:
@@ -73,10 +169,15 @@ def _gate(name: str, component: Mapping[str, Any]) -> dict[str, Any]:
     requested = bool(component.get("production_claim_requested"))
     failed_reasons = [str(value) for value in _as_list(component.get("failed_reasons")) if str(value)]
     inputs = _as_list(component.get("inputs"))
-    observed_valid = evidence_kind == "observed" and sample_count > 0 and _has_observed_lineage(inputs)
-    if evidence_kind == "observed" and requested and not observed_valid:
-        local_contract_passed = False
-        failed_reasons.append("observed_lineage_required")
+    evidence_verification = _provider_evidence_verification(name, component)
+    if name in REMOTE_PROVIDER_GATES:
+        fallback_status = REMOTE_PROVIDER_GATES[name]["fallback_status"]
+        if status == "passed" or evidence_kind == "observed":
+            status = fallback_status
+        if requested:
+            local_contract_passed = False
+            failed_reasons.extend(evidence_verification.get("reasons", []))
+            failed_reasons.append("offline_evaluator_cannot_authorize_production_claim")
     if status == "failed":
         local_contract_passed = False
     if not local_contract_passed and not failed_reasons:
@@ -87,11 +188,10 @@ def _gate(name: str, component: Mapping[str, Any]) -> dict[str, Any]:
         "evidence_kind": evidence_kind,
         "sample_count": sample_count,
         "local_contract_passed": local_contract_passed,
-        "production_claim_allowed": bool(
-            requested and status == "passed" and observed_valid and local_contract_passed
-        ),
+        "production_claim_allowed": False,
         "failed_reasons": sorted(set(failed_reasons)),
         "inputs_lineage": inputs,
+        "evidence_verification": evidence_verification,
     }
 
 
@@ -117,9 +217,11 @@ def build_acceptance_report(component_reports: Mapping[str, Mapping[str, Any]]) 
         "passed": not failed_gates,
         "failed_gates": failed_gates,
         "unmeasured_gates": unmeasured_gates,
-        "production_claim_allowed": bool(gates) and all(
-            gate["production_claim_allowed"] for gate in gates.values()
-        ),
+        "production_claim_allowed": False,
+        "production_claim_policy": {
+            "local_evaluator_can_promote": LOCAL_EVALUATOR_PRODUCTION_PROMOTION,
+            "reason": "offline_evaluator_has_no_trusted_provider_verifier",
+        },
         "gates": gates,
     }
 
@@ -162,13 +264,56 @@ def _trace_configuration_report() -> dict[str, Any]:
     )
 
 
-def _trace_delivery_report() -> dict[str, Any]:
-    return _fixture_gate(
-        passed=True,
-        source="Azure Monitor remote trace query",
-        case="no_remote_observation_is_not_promoted",
-        status="unmeasured",
+def _trace_delivery_report(*, remote_proof: Any = None, expected: Any = None) -> dict[str, Any]:
+    """Exercise the local Azure Monitor proof matcher without claiming a query ran."""
+    from backend.azure_monitor_client import (
+        TraceDeliveryExpectation,
+        build_trace_status,
+        hash_trace_identifier,
     )
+
+    expectation = expected or TraceDeliveryExpectation(
+        workspace_hash=hash_trace_identifier("p2-b-fixture"),
+        run_hash=hash_trace_identifier("run-p2-b-delivery"),
+        correlation_hash=hash_trace_identifier("b" * 32),
+        resource_id=(
+            "/subscriptions/00000000-0000-0000-0000-000000000000/"
+            "resourceGroups/rg-p2-b/providers/Microsoft.Insights/components/df-p2-b"
+        ),
+        application_id="00000000-0000-0000-0000-000000000001",
+        correlation_id="b" * 32,
+    )
+    status = build_trace_status(
+        configured=True,
+        local_emit_at=None,
+        local_exporter_callback_at=None,
+        remote_proof=remote_proof,
+        expected=expectation,
+        correlation_id=expectation.correlation_id,
+    )
+    if remote_proof is None:
+        evidence_state = "missing"
+        expected_state = "partial"
+    elif status.state == "connected":
+        evidence_state = "synthetic_fixture"
+        expected_state = "connected"
+    else:
+        evidence_state = "invalid"
+        expected_state = "partial"
+    gate = _fixture_gate(
+        passed=status.state == expected_state,
+        source="backend.azure_monitor_client.build_trace_status",
+        case=f"remote_trace_proof_{evidence_state}_is_not_a_production_claim",
+        status="unmeasured",
+        failed_reason="trace_delivery_contract_failed",
+    )
+    gate["remote_evidence"] = {
+        "provider": "azure_monitor",
+        "state": evidence_state,
+        "verified_immutable_binding": False,
+        "reason": "offline_fixture_does_not_execute_or_attest_an_azure_monitor_query",
+    }
+    return gate
 
 
 def _local_roi_report() -> dict[str, Any]:
