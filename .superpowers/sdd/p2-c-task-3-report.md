@@ -323,3 +323,42 @@ GREEN results:
 ### R7 Deliberate Limitation
 
 - Azure Blob Storage does not provide a transaction spanning the registry blob and individual run blob. The registry is the commit record, and readers require exact registry/run envelope agreement. If registry CAS succeeds but trusted run publication fails, the candidate stays unavailable until a later repair/retry; the system never reports promotion or attachment from that partial state.
+
+## R8 Durable Workspace Lineage Extension
+
+### Transaction Model
+
+1. Each workspace has a durable CAS-updated lineage record with an explicit genesis proof, revision, stable/pending/purged status, analysis count, latest source envelope, and canonical target envelope. Globally truncated registry absence is never treated as proof of no history; a genuinely new workspace must persist `no_prior_analysis` explicitly.
+2. Analysis completion uploads only an unresolved candidate, then conditionally reserves the workspace lineage record. The reservation serializes cross-instance canonical selection. Every registry CAS retry re-reads current state and recomputes lineage from the exact previously confirmed source and target blobs.
+3. The global bounded registry is updated first, the exact trusted run blob is published second, and the workspace lineage record is finalized last. Readers accept the new run only after that final stable record matches the run envelope and content hash. A failed final upload leaves the reservation pending and all later promotion attempts fail closed.
+4. Existing confirmed run blobs are checked from authoritative storage before candidate publication. A stale local copy cannot overwrite or revoke a matching confirmed run; the update returns bounded unavailable state while preserving the confirmed envelope.
+5. Purge and generic registry writers use the same revision-preserving CAS retry path. Purge preserves global version, revision, and truncation metadata and marks the workspace lineage record purged without resetting concurrent commits.
+6. Snapshot commits bind a deterministic hash of the attachment payload, including plan/artifact content, URLs, metadata, source, and version identity. Public hydration requires exact lineage, registry envelope, commit ID, and payload hash; modified or unresolved snapshots are omitted and reported unavailable.
+
+### R8 TDD Evidence
+
+Initial focused RED command:
+
+`python -m pytest -q tests/test_artifact_version_snapshot.py::test_registry_winner_with_candidate_blob_blocks_later_promotion tests/test_artifact_version_snapshot.py::test_dormant_workspace_uses_durable_history_after_global_rows_evicted tests/test_artifact_version_snapshot.py::test_first_analysis_in_truncated_global_registry_has_durable_genesis_proof tests/test_artifact_version_snapshot.py::test_stale_local_candidate_cannot_overwrite_confirmed_remote_run tests/test_artifact_version_snapshot.py::test_concurrent_purge_and_other_workspace_completion_preserve_registry tests/test_experiment_versions.py::test_tampered_confirmed_snapshot_payload_is_hidden_from_public_ledger`
+
+Initial RED result: `6 failed in 9.39s`. Failures demonstrated registry trust over an unresolved candidate blob, dormant-workspace rebasing after global eviction, missing explicit genesis proof, stale local overwrite of a confirmed remote run, the non-CAS purge writer, and exposure of a payload-tampered snapshot.
+
+GREEN commands and results:
+
+- R8 focused regressions: `6 passed in 3.93s`.
+- Focused Task3 suite: `73 passed in 8.84s`.
+- Relevant run-store, outcome, control-plane persistence, audit, and workspace-role suite: `201 passed in 33.11s`.
+- Final combined Task3 and relevant integration suite: `274 passed in 38.71s`.
+- `python -m py_compile backend/experiment_store.py backend/outcome_store.py backend/run_store.py backend/orchestrator.py`: exit 0.
+- `git diff --check`: exit 0.
+
+### R8 Changed Files
+
+- `backend/run_store.py`
+- `tests/test_experiment_versions.py`
+- `tests/test_artifact_version_snapshot.py`
+- `.superpowers/sdd/p2-c-task-3-report.md`
+
+### R8 Deliberate Limitation
+
+- Blob Storage still cannot atomically commit the global registry, run blob, and workspace lineage blob in one storage transaction. The protocol therefore uses a pending workspace reservation and exact envelope/hash validation. A process failure between phases may leave the workspace pending and unavailable until an explicit server-side recovery operation; it cannot promote, rebase, or attach from that partial state.

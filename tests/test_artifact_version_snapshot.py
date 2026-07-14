@@ -65,7 +65,11 @@ def _shared_blob_store(*, synchronize_initial_cas: bool = False):
         return {"blob_name": name}
 
     def compare_and_swap(name: str, *, expected_revision: int, changes: dict):
-        if initial_barrier is not None and expected_revision == 0:
+        if (
+            initial_barrier is not None
+            and name.startswith(run_store.WORKSPACE_LINEAGE_BLOB_PREFIX)
+            and expected_revision == 0
+        ):
             initial_barrier.wait(timeout=5)
         with remote_lock:
             current = remote.get(name) or {}
@@ -178,6 +182,214 @@ def test_truncated_registry_alias_can_serialize_next_duplicate(tmp_path, monkeyp
     assert completed["canonical_lineage_status"] == "trusted"
     assert completed["canonical_experiment_run_id"] == canonical_id
     assert run_store.resolve_canonical_experiment_source_run_id(workspace_id, next_id) == canonical_id
+
+
+def test_registry_winner_with_candidate_blob_blocks_later_promotion(tmp_path, monkeypatch) -> None:
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(run_store, "download_blob_json", download)
+    monkeypatch.setattr(run_store, "compare_and_swap_blob_json", compare_and_swap)
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-candidate-final-blob"
+    failed_run_id = "analysis-final-upload-failed"
+    later_run_id = "analysis-later"
+
+    def fail_trusted_final(name: str, value: dict):
+        if value.get("run_id") == failed_run_id and value.get("canonical_lineage_status") == "trusted":
+            raise RuntimeError("final run upload failed")
+        return upload(name, value)
+
+    monkeypatch.setattr(run_store, "upload_blob_json", fail_trusted_final)
+    artifact = _analysis_artifact(workspace_id, failed_run_id)
+    run_store.start_run(failed_run_id, workspace_id, "Analyze")
+    failed = run_store.complete_run(
+        failed_run_id,
+        status="completed",
+        final={"artifact": artifact},
+        artifact=artifact,
+    )
+    monkeypatch.setattr(run_store, "upload_blob_json", upload)
+    later_artifact = _analysis_artifact(workspace_id, later_run_id)
+    run_store.start_run(later_run_id, workspace_id, "Analyze")
+    later = run_store.complete_run(
+        later_run_id,
+        status="completed",
+        final={"artifact": later_artifact},
+        artifact=later_artifact,
+    )
+
+    assert failed["canonical_lineage_status"] == "candidate"
+    assert later["canonical_lineage_status"] == "candidate"
+    assert "canonical_experiment_run_id" not in later
+    assert run_store.resolve_canonical_experiment_source_run_id(workspace_id, later_run_id) is None
+
+
+def test_dormant_workspace_uses_durable_history_after_global_rows_evicted(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-dormant-history"
+    canonical_id = "analysis-dormant-canonical"
+    next_id = "analysis-dormant-next"
+    artifact = _analysis_artifact(workspace_id, canonical_id)
+    run_store.start_run(canonical_id, workspace_id, "Analyze")
+    run_store.complete_run(canonical_id, status="completed", final={"artifact": artifact}, artifact=artifact)
+    registry = run_store.authoritative_run_registry()
+    registry["history_truncated"] = True
+    registry["runs"] = [item for item in registry["runs"] if item.get("workspace_id") != workspace_id]
+    run_store._write_local_registry(registry)
+
+    next_artifact = _analysis_artifact(workspace_id, next_id)
+    run_store.start_run(next_id, workspace_id, "Analyze")
+    completed = run_store.complete_run(
+        next_id,
+        status="completed",
+        final={"artifact": next_artifact},
+        artifact=next_artifact,
+    )
+
+    assert completed["canonical_lineage_status"] == "trusted"
+    assert completed["canonical_experiment_run_id"] == canonical_id
+
+
+def test_first_analysis_in_truncated_global_registry_has_durable_genesis_proof(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    run_store._ACTIVE.clear()
+    run_store._write_local_registry(
+        {"version": 2, "revision": 9, "history_truncated": True, "runs": []}
+    )
+    workspace_id = "ws-new-after-global-truncation"
+    run_store.initialize_workspace_lineage(workspace_id, no_prior_analysis=True)
+    run_id = "analysis-first"
+    artifact = _analysis_artifact(workspace_id, run_id)
+    run_store.start_run(run_id, workspace_id, "Analyze")
+
+    completed = run_store.complete_run(
+        run_id,
+        status="completed",
+        final={"artifact": artifact},
+        artifact=artifact,
+    )
+    state = run_store.workspace_lineage_state(workspace_id)
+
+    assert completed["canonical_lineage_status"] == "trusted"
+    assert state["genesis_proof"] == "no_prior_analysis"
+    assert state["analysis_count"] == 1
+    assert state["latest_run_id"] == run_id
+
+
+def test_stale_local_candidate_cannot_overwrite_confirmed_remote_run(tmp_path, monkeypatch) -> None:
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(run_store, "download_blob_json", download)
+    monkeypatch.setattr(run_store, "upload_blob_json", upload)
+    monkeypatch.setattr(run_store, "compare_and_swap_blob_json", compare_and_swap)
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-stale-local-protection"
+    run_id = "analysis-confirmed-remote"
+    artifact = _analysis_artifact(workspace_id, run_id)
+    run_store.start_run(run_id, workspace_id, "Analyze")
+    confirmed = run_store.complete_run(run_id, status="completed", final={"artifact": artifact}, artifact=artifact)
+    blob_name = f"{run_store.RUN_BLOB_PREFIX}/{run_store._safe_name(run_id)}.json"
+    confirmed_blob = copy.deepcopy(remote[blob_name])
+    stale = copy.deepcopy(confirmed)
+    for key in run_store._LINEAGE_ENVELOPE_KEYS:
+        stale.pop(key, None)
+    stale["canonical_resolution_status"] = "unresolved"
+    stale["canonical_lineage_status"] = "candidate"
+    local_path = tmp_path / "runs" / f"{run_store._safe_name(run_id)}.json"
+    local_path.write_text(json.dumps(stale), encoding="utf-8")
+
+    result = run_store.update_run_proposal(
+        run_id,
+        {"artifact_urls": {"pdf": "/api/artifacts/must-not-overwrite.pdf"}},
+    )
+
+    assert remote[blob_name] == confirmed_blob
+    assert result["canonical_lineage_commit_id"] == confirmed["canonical_lineage_commit_id"]
+    assert (result.get("persistence") or {}).get("update_status") == "unavailable"
+
+
+def test_concurrent_purge_and_other_workspace_completion_preserve_registry(tmp_path) -> None:
+    purge_store = _isolated_run_store("run_store_purge_instance")
+    completion_store = _isolated_run_store("run_store_completion_instance")
+    old_row = {
+        "run_id": "old-purge-run",
+        "workspace_id": "ws-purge",
+        "status": "completed",
+        "time": "2026-01-01T00:00:00Z",
+    }
+    remote = {
+        run_store.RUN_REGISTRY_BLOB: {
+            "version": 2,
+            "revision": 7,
+            "history_truncated": True,
+            "runs": [old_row],
+        }
+    }
+    remote_lock = threading.Lock()
+    purge_read = threading.Event()
+    completion_committed = threading.Event()
+
+    def download(name: str):
+        with remote_lock:
+            value = copy.deepcopy(remote.get(name))
+        if name == run_store.RUN_REGISTRY_BLOB and threading.current_thread().name == "purge-thread":
+            purge_read.set()
+        return value
+
+    def upload(name: str, value: dict):
+        if name == run_store.RUN_REGISTRY_BLOB and threading.current_thread().name == "purge-thread":
+            completion_committed.wait(timeout=5)
+        with remote_lock:
+            remote[name] = copy.deepcopy(value)
+        return {"blob_name": name}
+
+    def compare_and_swap(name: str, *, expected_revision: int, changes: dict):
+        if name == run_store.RUN_REGISTRY_BLOB and threading.current_thread().name == "purge-thread":
+            completion_committed.wait(timeout=5)
+        with remote_lock:
+            current = remote.get(name) or {}
+            if int(current.get("revision") or 0) != expected_revision:
+                return None
+            updated = {**current, **copy.deepcopy(changes)}
+            remote[name] = updated
+        if name == run_store.RUN_REGISTRY_BLOB and threading.current_thread().name != "purge-thread":
+            completion_committed.set()
+        return copy.deepcopy(updated)
+
+    for index, store in enumerate((purge_store, completion_store)):
+        store.RUN_DIR = tmp_path / f"instance-{index}"
+        store.blob_configured = lambda: True
+        store.download_blob_json = download
+        store.upload_blob_json = upload
+        store.compare_and_swap_blob_json = compare_and_swap
+        store.delete_blob_name = lambda *_args, **_kwargs: False
+    purge_store.list_runs = lambda workspace_id=None: [old_row]
+    completion_store.initialize_workspace_lineage("ws-complete", no_prior_analysis=True)
+
+    purge_thread = threading.Thread(
+        target=lambda: purge_store.purge_workspace_runs("ws-purge"),
+        name="purge-thread",
+    )
+    purge_thread.start()
+    assert purge_read.wait(timeout=5)
+    workspace_id = "ws-complete"
+    run_id = "analysis-concurrent-complete"
+    artifact = _analysis_artifact(workspace_id, run_id)
+    completion_store.start_run(run_id, workspace_id, "Analyze")
+    completion_store.complete_run(run_id, status="completed", final={"artifact": artifact}, artifact=artifact)
+    completion_committed.set()
+    purge_thread.join(timeout=5)
+
+    registry = remote[run_store.RUN_REGISTRY_BLOB]
+    assert registry["history_truncated"] is True
+    assert registry["revision"] > 7
+    assert any(item.get("run_id") == run_id for item in registry["runs"])
+    assert all(item.get("workspace_id") != "ws-purge" for item in registry["runs"])
 
 
 def test_failed_existing_analysis_update_preserves_confirmed_blob_and_envelope(tmp_path, monkeypatch) -> None:

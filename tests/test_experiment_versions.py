@@ -1012,6 +1012,55 @@ def test_malformed_snapshot_is_not_exposed_as_public_attachment(tmp_path, monkey
     assert response.json()["lineage_resolution"]["status"] == "unavailable"
 
 
+def test_tampered_confirmed_snapshot_payload_is_hidden_from_public_ledger(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(experiment_store, "EXPERIMENT_DIR", tmp_path / "experiments")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    monkeypatch.setattr(
+        control_plane,
+        "require_sensitive_workspace_permission",
+        lambda *_args, **_kwargs: "viewer",
+    )
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-tampered-snapshot"
+    source_run_id = "analysis-tamper-source"
+    artifact = _analysis_run(
+        source_run_id,
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )["artifact"]
+    artifact["workspace_id"] = workspace_id
+    run_store.start_run(source_run_id, workspace_id, "Analyze")
+    source = run_store.complete_run(source_run_id, status="completed", final={"artifact": artifact}, artifact=artifact)
+    snapshot = run_store.record_artifact_version(
+        workspace_id=workspace_id,
+        source_run_id=source_run_id,
+        experiment_version_id=f"version:{source_run_id}",
+        artifact=artifact,
+        proposal={"artifact_urls": {"pdf": "/api/artifacts/original.pdf"}},
+        kinds=["pdf"],
+    )
+    assert snapshot is not None
+    snapshot_path = tmp_path / "runs" / f"{run_store._safe_name(snapshot['run_id'])}.json"
+    tampered = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    tampered["artifact"]["proposal"]["artifact_urls"]["pdf"] = "/api/artifacts/tampered.pdf"
+    snapshot_path.write_text(json.dumps(tampered), encoding="utf-8")
+    details = {
+        source_run_id: source,
+        snapshot["run_id"]: run_store.get_run(snapshot["run_id"]),
+    }
+    monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: [details[snapshot["run_id"]], source])
+    monkeypatch.setattr(control_plane, "get_run", lambda run_id: details[run_id])
+    monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [])
+
+    response = TestClient(app).get(f"/api/workspaces/{workspace_id}/experiments")
+
+    assert response.status_code == 200
+    assert response.json()["versions"][0]["attachments"]["artifacts"] == []
+    assert response.json()["lineage_resolution"]["status"] == "unavailable"
+
+
 def test_undirected_value_and_unit_change_conflicts_with_higher_confidence() -> None:
     first = _analysis_run("run-v1", verdict="conditional", score=3, evidence_ref="metric.csv#row-1")
     second = _analysis_run("run-v2", verdict="feasible", score=4, evidence_ref="metric.csv#row-1")

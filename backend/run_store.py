@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[1]
 RUN_DIR = ROOT / "generated-outputs" / "runs"
 RUN_REGISTRY_BLOB = "registry/runs.json"
+WORKSPACE_LINEAGE_BLOB_PREFIX = "registry/workspace-lineage"
 RUN_BLOB_PREFIX = "runs"
 
 _ACTIVE: dict[str, dict[str, Any]] = {}
@@ -61,6 +63,7 @@ _ATTACHMENT_ENVELOPE_KEYS = (
     "experiment_attachment",
     "attachment_commit_status",
     "attachment_commit_id",
+    "attachment_payload_sha256",
 )
 
 
@@ -532,7 +535,21 @@ def trusted_canonical_experiment_run_id(
         return None
     registry = registry_state if isinstance(registry_state, dict) else authoritative_run_registry(workspace_id)
     source_summary = _registry_entry(registry, source_id)
-    if not _registry_envelope_matches_run(source_summary, source, _LINEAGE_ENVELOPE_KEYS):
+    lineage_state = workspace_lineage_state(workspace_id)
+    lineage_status = str(lineage_state.get("status") or "")
+    if lineage_status in {"stable", "pending"}:
+        source_confirmed = _lineage_record_matches(
+            lineage_state.get("latest_source_envelope"), source
+        ) or _lineage_record_matches(lineage_state.get("canonical_target_envelope"), source)
+        if lineage_status == "stable":
+            source_confirmed = source_confirmed or _registry_envelope_matches_run(
+                source_summary, source, _LINEAGE_ENVELOPE_KEYS
+            )
+    elif lineage_state:
+        source_confirmed = False
+    else:
+        source_confirmed = _registry_envelope_matches_run(source_summary, source, _LINEAGE_ENVELOPE_KEYS)
+    if not source_confirmed:
         return None
     if target_id == source_id:
         return source_id if (
@@ -558,7 +575,19 @@ def trusted_canonical_experiment_run_id(
     ):
         return None
     target_summary = _registry_entry(registry, target_id)
-    if target_summary and not _registry_envelope_matches_run(target_summary, target, _LINEAGE_ENVELOPE_KEYS):
+    if lineage_status in {"stable", "pending"}:
+        target_confirmed = _lineage_record_matches(
+            lineage_state.get("canonical_target_envelope"), target
+        )
+        if lineage_status == "stable":
+            target_confirmed = target_confirmed or _registry_envelope_matches_run(
+                target_summary, target, _LINEAGE_ENVELOPE_KEYS
+            )
+    elif lineage_state:
+        target_confirmed = False
+    else:
+        target_confirmed = _registry_envelope_matches_run(target_summary, target, _LINEAGE_ENVELOPE_KEYS)
+    if not target_confirmed:
         return None
     return target_id
 
@@ -578,6 +607,20 @@ def hydrate_canonical_experiment_runs(
     unresolved: set[str] = set()
     confirmed_snapshots: set[str] = set()
     registry = authoritative_run_registry(workspace_id)
+    lineage_state = workspace_lineage_state(workspace_id)
+
+    if str(lineage_state.get("status") or "") in {"stable", "pending"}:
+        for record_key in ("latest_source_envelope", "canonical_target_envelope"):
+            record = lineage_state.get(record_key)
+            run_id = str(record.get("run_id") or "") if isinstance(record, dict) else ""
+            if not run_id or run_id in by_id:
+                continue
+            target = _load_authoritative_run(run_id)
+            if isinstance(target, dict) and _lineage_record_matches(record, target):
+                by_id[run_id] = target
+                hydrated.append(target)
+            else:
+                unresolved.add(run_id)
 
     for source in list(hydrated):
         source_id = str(source.get("run_id") or "").strip()
@@ -744,6 +787,119 @@ def _write_local_registry(registry: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _workspace_lineage_blob(workspace_id: str) -> str:
+    return f"{WORKSPACE_LINEAGE_BLOB_PREFIX}/{_safe_name(workspace_id)}.json"
+
+
+def _workspace_lineage_path(workspace_id: str) -> Path:
+    return RUN_DIR / "_registry" / "workspace-lineage" / f"{_safe_name(workspace_id)}.json"
+
+
+def workspace_lineage_state(workspace_id: str) -> dict[str, Any]:
+    workspace_id = str(workspace_id or "").strip()
+    if not workspace_id:
+        return {}
+    try:
+        if blob_configured():
+            value = download_blob_json(_workspace_lineage_blob(workspace_id)) or {}
+        else:
+            path = _workspace_lineage_path(workspace_id)
+            value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(value, dict) or str(value.get("workspace_id") or "") != workspace_id:
+        return {}
+    return copy.deepcopy(value)
+
+
+def _write_local_workspace_lineage(state: dict[str, Any]) -> None:
+    path = _workspace_lineage_path(str(state.get("workspace_id") or ""))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _cas_workspace_lineage(
+    current: dict[str, Any],
+    changes: dict[str, Any],
+) -> dict[str, Any] | None:
+    expected_revision = int(current.get("revision") or 0)
+    value = {**current, **copy.deepcopy(changes), "revision": expected_revision + 1}
+    workspace_id = str(value.get("workspace_id") or "")
+    if not workspace_id:
+        return None
+    if not blob_configured():
+        latest = workspace_lineage_state(workspace_id)
+        if int(latest.get("revision") or 0) != expected_revision:
+            return None
+        _write_local_workspace_lineage(value)
+        return value
+    return compare_and_swap_blob_json(
+        _workspace_lineage_blob(workspace_id),
+        expected_revision=expected_revision,
+        changes=value,
+    )
+
+
+def initialize_workspace_lineage(
+    workspace_id: str,
+    *,
+    no_prior_analysis: bool = False,
+) -> dict[str, Any]:
+    """Persist an explicit first-analysis proof for a newly known workspace."""
+    workspace_id = str(workspace_id or "").strip()
+    if not workspace_id or not no_prior_analysis:
+        return {}
+    for _attempt in range(8 if blob_configured() else 1):
+        current = workspace_lineage_state(workspace_id)
+        if current:
+            return current
+        created = _cas_workspace_lineage(
+            {"workspace_id": workspace_id, "revision": 0},
+            {
+                "version": 1,
+                "workspace_id": workspace_id,
+                "status": "stable",
+                "genesis_proof": "no_prior_analysis",
+                "analysis_count": 0,
+                "latest_run_id": None,
+                "latest_canonical_run_id": None,
+            },
+        )
+        if created:
+            return created
+    return {}
+
+
+def _lineage_record(run: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "run_id": str(run.get("run_id") or ""),
+        **{key: run.get(key) for key in _LINEAGE_ENVELOPE_KEYS},
+    }
+
+
+def _lineage_record_matches(record: Any, run: dict[str, Any]) -> bool:
+    return bool(
+        isinstance(record, dict)
+        and str(record.get("run_id") or "") == str(run.get("run_id") or "")
+        and all(record.get(key) == run.get(key) for key in _LINEAGE_ENVELOPE_KEYS)
+    )
+
+
+def _load_authoritative_run(run_id: str) -> dict[str, Any] | None:
+    safe = _safe_name(run_id)
+    try:
+        if blob_configured():
+            value = download_blob_json(f"{RUN_BLOB_PREFIX}/{safe}.json")
+        else:
+            path = RUN_DIR / f"{safe}.json"
+            value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return _normalize_run_detail(value) if isinstance(value, dict) else None
+
+
 def _registry_entry(registry: dict[str, Any], run_id: str) -> dict[str, Any]:
     return next(
         (
@@ -772,10 +928,27 @@ def _attachment_commit_id(run: dict[str, Any], source: dict[str, Any]) -> str:
                 "source_run_id": str(run.get("source_run_id") or ""),
                 "experiment_version_id": str(run.get("experiment_version_id") or ""),
                 "source_commit_id": str(source.get("canonical_lineage_commit_id") or ""),
+                "payload_sha256": str(run.get("attachment_payload_sha256") or ""),
             },
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
+    ).hexdigest()
+
+
+def _attachment_payload_hash(run: dict[str, Any]) -> str:
+    artifact = run.get("artifact") if isinstance(run.get("artifact"), dict) else {}
+    payload = {
+        "workspace_id": str(run.get("workspace_id") or ""),
+        "run_id": str(run.get("run_id") or ""),
+        "source_run_id": str(run.get("source_run_id") or ""),
+        "experiment_version_id": str(run.get("experiment_version_id") or ""),
+        "version_kind": str(run.get("version_kind") or ""),
+        "produced_kinds": run.get("produced_kinds") if isinstance(run.get("produced_kinds"), list) else [],
+        "artifact": artifact,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
 
 
@@ -789,6 +962,7 @@ def _snapshot_registry_confirmed(
     return bool(
         snapshot.get("experiment_attachment") is True
         and str(snapshot.get("attachment_commit_status") or "") == "confirmed"
+        and str(snapshot.get("attachment_payload_sha256") or "") == _attachment_payload_hash(snapshot)
         and str(snapshot.get("attachment_commit_id") or "") == _attachment_commit_id(snapshot, source)
         and _registry_envelope_matches_run(summary, snapshot, _ATTACHMENT_ENVELOPE_KEYS)
     )
@@ -899,12 +1073,47 @@ def purge_workspace_runs(workspace_id: str) -> dict[str, Any]:
                 pass
         if delete_blob_name(f"{RUN_BLOB_PREFIX}/{safe}.json"):
             deleted_blob += 1
-    try:
-        registry = download_blob_json(RUN_REGISTRY_BLOB) or {}
-        entries = [item for item in registry.get("runs") or [] if isinstance(item, dict) and item.get("workspace_id") != workspace_id]
-        upload_blob_json(RUN_REGISTRY_BLOB, {"version": registry.get("version") or 1, "runs": entries})
-    except Exception:
-        pass
+    registry_updated = False
+    for _attempt in range(8 if blob_configured() else 1):
+        registry = authoritative_run_registry()
+        entries = [
+            item
+            for item in registry.get("runs") or []
+            if isinstance(item, dict) and item.get("workspace_id") != workspace_id
+        ]
+        expected_revision = int(registry.get("revision") or 0)
+        value = {
+            "version": int(registry.get("version") or 2),
+            "revision": expected_revision + 1,
+            "history_truncated": registry.get("history_truncated") is True,
+            "runs": entries,
+        }
+        if not blob_configured():
+            _write_local_registry(value)
+            registry_updated = True
+            break
+        if compare_and_swap_blob_json(
+            RUN_REGISTRY_BLOB,
+            expected_revision=expected_revision,
+            changes=value,
+        ):
+            registry_updated = True
+            break
+    for _attempt in range(8 if blob_configured() else 1):
+        lineage = workspace_lineage_state(workspace_id)
+        if not lineage:
+            break
+        if _cas_workspace_lineage(
+            lineage,
+            {
+                "status": "purged",
+                "purged_at": _utc_now(),
+                "pending_run_id": None,
+                "latest_source_envelope": None,
+                "canonical_target_envelope": None,
+            },
+        ):
+            break
     try:
         set_flagship_plan(workspace_id, None)
     except Exception:
@@ -914,7 +1123,151 @@ def purge_workspace_runs(workspace_id: str) -> dict[str, Any]:
         "run_ids": run_ids,
         "deleted_local_runs": deleted_local,
         "deleted_blob_runs": deleted_blob,
+        "registry_updated": registry_updated,
     }
+
+
+def _bootstrap_workspace_lineage(
+    workspace_id: str,
+    registry: dict[str, Any],
+) -> dict[str, Any]:
+    current = workspace_lineage_state(workspace_id)
+    if current:
+        return current
+    summaries = sorted(
+        [
+            item
+            for item in registry.get("runs") or []
+            if isinstance(item, dict)
+            and str(item.get("workspace_id") or "") == workspace_id
+            and str(item.get("canonical_lineage_status") or "") == "trusted"
+            and not str(item.get("version_kind") or "")
+        ],
+        key=lambda item: (int(item.get("canonical_lineage_sequence") or 0), str(item.get("run_id") or "")),
+        reverse=True,
+    )
+    if not summaries:
+        if registry.get("history_truncated") is True:
+            return {}
+        return initialize_workspace_lineage(workspace_id, no_prior_analysis=True)
+    latest_summary = summaries[0]
+    source_id = str(latest_summary.get("run_id") or "")
+    target_id = str(latest_summary.get("canonical_experiment_run_id") or "")
+    source = _load_authoritative_run(source_id)
+    target = _load_authoritative_run(target_id)
+    target_summary = _registry_entry(registry, target_id)
+    if (
+        not isinstance(source, dict)
+        or not isinstance(target, dict)
+        or not _registry_envelope_matches_run(latest_summary, source, _LINEAGE_ENVELOPE_KEYS)
+        or not _registry_envelope_matches_run(target_summary, target, _LINEAGE_ENVELOPE_KEYS)
+        or not _lineage_envelope_matches(source, target_id)
+        or not _lineage_envelope_matches(target, target_id)
+    ):
+        return {}
+    created = _cas_workspace_lineage(
+        {"workspace_id": workspace_id, "revision": 0},
+        {
+            "version": 1,
+            "workspace_id": workspace_id,
+            "status": "stable",
+            "genesis_proof": "registry_history_complete",
+            "analysis_count": max(int(item.get("canonical_lineage_sequence") or 0) for item in summaries),
+            "latest_run_id": source_id,
+            "latest_canonical_run_id": target_id,
+            "latest_source_envelope": _lineage_record(source),
+            "canonical_target_envelope": _lineage_record(target),
+        },
+    )
+    return created or workspace_lineage_state(workspace_id)
+
+
+def _reserve_workspace_lineage(
+    workspace_id: str,
+    registry: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any]:
+    attempts = 100 if blob_configured() else 1
+    for _attempt in range(attempts):
+        current = workspace_lineage_state(workspace_id) or _bootstrap_workspace_lineage(workspace_id, registry)
+        if not current:
+            return {}
+        if str(current.get("status") or "") != "stable":
+            if blob_configured():
+                time.sleep(0.005)
+                continue
+            return {}
+        reserved = _cas_workspace_lineage(
+            current,
+            {
+                "status": "pending",
+                "pending_run_id": run_id,
+                "pending_started_at": _utc_now(),
+            },
+        )
+        if reserved:
+            return reserved
+        if blob_configured():
+            time.sleep(0.005)
+    return {}
+
+
+def _finalize_workspace_lineage(
+    reserved: dict[str, Any],
+    proposed: dict[str, Any],
+    target: dict[str, Any] | None,
+) -> dict[str, Any]:
+    workspace_id = str(proposed.get("workspace_id") or "")
+    current = workspace_lineage_state(workspace_id)
+    if (
+        not isinstance(target, dict)
+        or int(current.get("revision") or 0) != int(reserved.get("revision") or 0)
+        or str(current.get("status") or "") != "pending"
+        or str(current.get("pending_run_id") or "") != str(proposed.get("run_id") or "")
+        or not _lineage_envelope_matches(proposed, str(proposed.get("canonical_experiment_run_id") or ""))
+        or not _lineage_envelope_matches(target, str(target.get("run_id") or ""))
+    ):
+        return {}
+    return _cas_workspace_lineage(
+        current,
+        {
+            "status": "stable",
+            "analysis_count": int(reserved.get("analysis_count") or 0) + 1,
+            "latest_run_id": str(proposed.get("run_id") or ""),
+            "latest_canonical_run_id": str(proposed.get("canonical_experiment_run_id") or ""),
+            "latest_source_envelope": _lineage_record(proposed),
+            "canonical_target_envelope": _lineage_record(target),
+            "pending_run_id": None,
+            "pending_started_at": None,
+        },
+    ) or {}
+
+
+def _confirmed_authoritative_run(
+    workspace_id: str,
+    run_id: str,
+    registry: dict[str, Any],
+) -> dict[str, Any] | None:
+    persisted = _load_authoritative_run(run_id)
+    if not isinstance(persisted, dict) or not _lineage_envelope_matches(
+        persisted, str(persisted.get("canonical_experiment_run_id") or "")
+    ):
+        return None
+    summary = _registry_entry(registry, run_id)
+    state = workspace_lineage_state(workspace_id)
+    state_status = str(state.get("status") or "")
+    if state_status in {"stable", "pending"}:
+        confirmed = _lineage_record_matches(state.get("latest_source_envelope"), persisted)
+        confirmed = confirmed or _lineage_record_matches(state.get("canonical_target_envelope"), persisted)
+        if state_status == "stable":
+            confirmed = confirmed or _registry_envelope_matches_run(
+                summary, persisted, _LINEAGE_ENVELOPE_KEYS
+            )
+    elif state:
+        confirmed = False
+    else:
+        confirmed = _registry_envelope_matches_run(summary, persisted, _LINEAGE_ENVELOPE_KEYS)
+    return persisted if confirmed else None
 
 
 def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
@@ -934,6 +1287,17 @@ def _persist_run_locked(run: dict[str, Any]) -> dict[str, Any]:
     blob_name = f"{RUN_BLOB_PREFIX}/{safe}.json"
     registry = authoritative_run_registry()
     if _is_completed_analysis(run):
+        protected = _confirmed_authoritative_run(str(run.get("workspace_id") or ""), str(run.get("run_id") or ""), registry)
+        if protected and not _registry_envelope_matches_run(
+            _run_summary(protected), run, _LINEAGE_ENVELOPE_KEYS
+        ):
+            protected["persistence"] = {
+                "mode": "confirmed_unchanged",
+                "confirmed": True,
+                "update_status": "unavailable",
+                "warning": "stale run state was not allowed to replace confirmed lineage",
+            }
+            return _replace_run(run, protected)
         if _registry_envelope_matches_run(
             _registry_entry(registry, str(run.get("run_id") or "")),
             run,
@@ -964,49 +1328,48 @@ def _commit_analysis_candidate(run: dict[str, Any], path: Path, blob_name: str) 
             _write_run_file(path, candidate)
             return _replace_run(run, candidate)
 
-    attempts = 8 if blob_configured() else 1
-    for _attempt in range(attempts):
-        registry = authoritative_run_registry()
-        proposed = _proposed_analysis_commit(candidate, registry)
-        if proposed is None:
-            break
-        summary = _run_summary(proposed)
-        committed = _commit_registry_summary(registry, summary)
-        if committed is None:
-            continue
-        proposed["registry_summary"] = summary
-        proposed["persistence"] = {
-            "mode": "local_and_blob" if blob_configured() else "local",
-            "confirmed": True,
-            "blob_name": blob_name if blob_configured() else None,
-            "registry_revision": int(committed.get("revision") or 0),
-        }
-        if blob_configured():
-            try:
-                upload_blob_json(blob_name, proposed)
-            except Exception as exc:
-                candidate["persistence"] = {
-                    "mode": "candidate",
-                    "confirmed": False,
-                    "error": f"{type(exc).__name__}: {exc}"[:500],
-                }
+    registry = authoritative_run_registry()
+    reserved = _reserve_workspace_lineage(str(candidate.get("workspace_id") or ""), registry, str(candidate.get("run_id") or ""))
+    if reserved:
+        for _attempt in range(8 if blob_configured() else 1):
+            registry = authoritative_run_registry()
+            proposed = _proposed_analysis_commit(candidate, registry, reserved)
+            if proposed is None:
+                break
+            summary = _run_summary(proposed)
+            committed = _commit_registry_summary(registry, summary)
+            if committed is None:
+                continue
+            proposed["registry_summary"] = summary
+            proposed["persistence"] = {
+                "mode": "local_and_blob" if blob_configured() else "local",
+                "confirmed": False,
+                "blob_name": blob_name if blob_configured() else None,
+                "registry_revision": int(committed.get("revision") or 0),
+            }
+            if blob_configured():
+                try:
+                    upload_blob_json(blob_name, proposed)
+                except Exception as exc:
+                    candidate["persistence"] = {
+                        "mode": "candidate",
+                        "confirmed": False,
+                        "error": f"{type(exc).__name__}: {exc}"[:500],
+                    }
+                    _write_run_file(path, candidate)
+                    return _replace_run(run, candidate)
+            target = proposed if str(proposed.get("canonical_experiment_run_id") or "") == str(proposed.get("run_id") or "") else _latest_confirmed_analysis(committed, str(candidate.get("workspace_id") or ""), reserved)
+            finalized = _finalize_workspace_lineage(reserved, proposed, target)
+            if not finalized:
+                candidate["persistence"]["error"] = "workspace lineage confirmation unavailable"
                 _write_run_file(path, candidate)
                 return _replace_run(run, candidate)
+            proposed["persistence"]["confirmed"] = True
             try:
                 _write_run_file(path, proposed)
             except Exception as exc:
                 proposed["persistence"]["local_cache_error"] = f"{type(exc).__name__}: {exc}"[:500]
-        else:
-            try:
-                _write_run_file(path, proposed)
-            except Exception as exc:
-                candidate["persistence"] = {
-                    "mode": "candidate",
-                    "confirmed": False,
-                    "error": f"{type(exc).__name__}: {exc}"[:500],
-                }
-                return _replace_run(run, candidate)
-        return _replace_run(run, proposed)
+            return _replace_run(run, proposed)
 
     candidate["persistence"] = {
         "mode": "candidate",
@@ -1017,15 +1380,17 @@ def _commit_analysis_candidate(run: dict[str, Any], path: Path, blob_name: str) 
     return _replace_run(run, candidate)
 
 
-def _proposed_analysis_commit(candidate: dict[str, Any], registry: dict[str, Any]) -> dict[str, Any] | None:
+def _proposed_analysis_commit(
+    candidate: dict[str, Any],
+    registry: dict[str, Any],
+    lineage_state: dict[str, Any],
+) -> dict[str, Any] | None:
     workspace_id = str(candidate.get("workspace_id") or "")
-    latest = _latest_confirmed_analysis(registry, workspace_id)
+    latest = _latest_confirmed_analysis(registry, workspace_id, lineage_state)
     basis: list[dict[str, Any]] = []
     if latest:
         basis.append(_strip_lineage_for_comparison(latest, sequence=1))
-    elif registry.get("history_truncated") is True and any(
-        str(item.get("workspace_id") or "") == workspace_id for item in registry.get("runs") or []
-    ):
+    elif int(lineage_state.get("analysis_count") or 0) > 0:
         return None
     trial = _strip_lineage_for_comparison(candidate, sequence=2)
     basis.append(trial)
@@ -1038,10 +1403,7 @@ def _proposed_analysis_commit(candidate: dict[str, Any], registry: dict[str, Any
     if not resolved:
         return None
     proposed = copy.deepcopy(candidate)
-    max_sequence = max(
-        (int(item.get("canonical_lineage_sequence") or 0) for item in registry.get("runs") or []),
-        default=0,
-    )
+    sequence = int(lineage_state.get("analysis_count") or 0) + 1
     target_commit_id = None
     target_content_sha256 = None
     if resolved != str(candidate.get("run_id") or ""):
@@ -1054,14 +1416,41 @@ def _proposed_analysis_commit(candidate: dict[str, Any], registry: dict[str, Any
     _mark_canonical_lineage_trusted(
         proposed,
         resolved,
-        sequence=max_sequence + 1,
+        sequence=sequence,
         target_commit_id=target_commit_id,
         target_content_sha256=target_content_sha256,
     )
     return proposed
 
 
-def _latest_confirmed_analysis(registry: dict[str, Any], workspace_id: str) -> dict[str, Any] | None:
+def _latest_confirmed_analysis(
+    registry: dict[str, Any],
+    workspace_id: str,
+    lineage_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    state = lineage_state if isinstance(lineage_state, dict) else workspace_lineage_state(workspace_id)
+    if state and str(state.get("status") or "") in {"stable", "pending"}:
+        if int(state.get("analysis_count") or 0) == 0:
+            return None
+        source_record = state.get("latest_source_envelope")
+        target_record = state.get("canonical_target_envelope")
+        source_id = str(source_record.get("run_id") or "") if isinstance(source_record, dict) else ""
+        target_id = str(target_record.get("run_id") or "") if isinstance(target_record, dict) else ""
+        source = _load_authoritative_run(source_id) if source_id else None
+        target = _load_authoritative_run(target_id) if target_id else None
+        if (
+            not isinstance(source, dict)
+            or not isinstance(target, dict)
+            or not _lineage_record_matches(source_record, source)
+            or not _lineage_record_matches(target_record, target)
+            or str(source.get("canonical_experiment_run_id") or "") != target_id
+            or str(source.get("canonical_target_commit_id") or "") != str(target.get("canonical_lineage_commit_id") or "")
+            or str(source.get("canonical_target_content_sha256") or "") != str(target.get("canonical_lineage_content_sha256") or "")
+            or not _lineage_envelope_matches(source, target_id)
+            or not _lineage_envelope_matches(target, target_id)
+        ):
+            return None
+        return target
     summaries = sorted(
         [
             item
@@ -1077,30 +1466,32 @@ def _latest_confirmed_analysis(registry: dict[str, Any], workspace_id: str) -> d
     if not summaries:
         return None
     latest_summary = summaries[0]
+    source_id = str(latest_summary.get("run_id") or "")
     target_id = str(latest_summary.get("canonical_experiment_run_id") or "")
     if not target_id:
         return None
-    try:
-        target = get_run(target_id)
-    except (FileNotFoundError, ValueError, KeyError):
+    source = _load_authoritative_run(source_id)
+    if (
+        not isinstance(source, dict)
+        or not _registry_envelope_matches_run(latest_summary, source, _LINEAGE_ENVELOPE_KEYS)
+        or not _lineage_envelope_matches(source, target_id)
+    ):
+        return None
+    target = _load_authoritative_run(target_id)
+    if not isinstance(target, dict):
         return None
     expected_target_hash = str(latest_summary.get("canonical_target_content_sha256") or "")
     if _analysis_content_hash(target) != expected_target_hash:
         return None
-    materialized = copy.deepcopy(target)
     target_summary = _registry_entry(registry, target_id)
-    if target_summary:
-        for key in _LINEAGE_ENVELOPE_KEYS:
-            if target_summary.get(key) is not None:
-                materialized[key] = target_summary.get(key)
-    elif not _lineage_envelope_matches(materialized, target_id):
+    if not _registry_envelope_matches_run(target_summary, target, _LINEAGE_ENVELOPE_KEYS):
         return None
-    if str(materialized.get("canonical_experiment_run_id") or "") != target_id:
+    if not _lineage_envelope_matches(target, target_id):
         return None
     expected_target_commit = str(latest_summary.get("canonical_target_commit_id") or "")
-    if expected_target_commit and expected_target_commit != str(materialized.get("canonical_lineage_commit_id") or ""):
+    if expected_target_commit and expected_target_commit != str(target.get("canonical_lineage_commit_id") or ""):
         return None
-    return materialized
+    return target
 
 
 def _strip_lineage_for_comparison(run: dict[str, Any], *, sequence: int) -> dict[str, Any]:
@@ -1161,6 +1552,7 @@ def _commit_snapshot_candidate(run: dict[str, Any], path: Path, blob_name: str) 
     candidate["experiment_attachment"] = False
     candidate["attachment_commit_status"] = "candidate"
     candidate.pop("attachment_commit_id", None)
+    candidate.pop("attachment_payload_sha256", None)
     candidate["persistence"] = {"mode": "candidate", "confirmed": False, "blob_name": blob_name}
     candidate["registry_summary"] = _run_summary(candidate)
     _write_run_file(path, candidate)
@@ -1184,6 +1576,7 @@ def _commit_snapshot_candidate(run: dict[str, Any], path: Path, blob_name: str) 
         proposed = copy.deepcopy(candidate)
         proposed["experiment_attachment"] = True
         proposed["attachment_commit_status"] = "confirmed"
+        proposed["attachment_payload_sha256"] = _attachment_payload_hash(proposed)
         proposed["attachment_commit_id"] = _attachment_commit_id(proposed, source)
         summary = _run_summary(proposed)
         committed = _commit_registry_summary(registry, summary)
@@ -1220,8 +1613,11 @@ def _commit_snapshot_candidate(run: dict[str, Any], path: Path, blob_name: str) 
 
 def _persist_generic_run(run: dict[str, Any], path: Path, blob_name: str) -> dict[str, Any]:
     summary = _run_summary(run)
-    registry = authoritative_run_registry()
-    committed = _commit_registry_summary(registry, summary)
+    committed = None
+    for _attempt in range(8 if blob_configured() else 1):
+        committed = _commit_registry_summary(authoritative_run_registry(), summary)
+        if committed is not None:
+            break
     try:
         if committed is None:
             raise RuntimeError("run registry conditional update could not be confirmed")
@@ -1330,6 +1726,7 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "canonical_lineage_sequence": run.get("canonical_lineage_sequence"),
         "attachment_commit_status": run.get("attachment_commit_status"),
         "attachment_commit_id": run.get("attachment_commit_id"),
+        "attachment_payload_sha256": run.get("attachment_payload_sha256"),
         "produced_kinds": run.get("produced_kinds") or [],
         "iteration_inputs": iteration_inputs[:12],
         "artifact_urls": {key: value for key, value in (artifact_urls or {}).items() if value},
