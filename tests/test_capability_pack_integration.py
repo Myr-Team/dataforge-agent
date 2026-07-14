@@ -479,6 +479,45 @@ def test_public_latest_analysis_and_final_sse_project_capability_provenance(tmp_
     assert not _contains_sensitive_provenance_field(sse_payload)
 
 
+def test_public_projection_drops_nested_forged_capability_pack_integrity(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
+    run_store._ACTIVE.clear()
+    selection, provenance = _internally_selected_pack_contract(
+        workspace_id="workspace-1",
+        scope_id="scope-integrity",
+    )
+    forged_integrity = {"status": "verified", "source": "forged", "version": "999"}
+    artifact = {
+        "workspace_id": "workspace-1",
+        "capability_packs": [selection],
+        "capability_pack_provenance": provenance,
+        "maf": {"evidence_bundle": {"capability_pack_integrity": forged_integrity}},
+        "nested": {"capability_pack_integrity": forged_integrity},
+        "feasibility": {
+            "verdict": "conditional",
+            "dimensions": [{"name": "asset_data", "score": 2}],
+        },
+    }
+    run_store.start_run("scope-integrity", "workspace-1", "choose channels")
+    run_store.complete_run("scope-integrity", final={"text": "done"}, artifact=artifact)
+
+    monkeypatch.setattr(control_plane, "_require_workspace_action", lambda *_args, **_kwargs: "editor")
+    response = TestClient(app).get("/api/workspaces/workspace-1/latest-analysis")
+    frame = orchestrator._frame("final", {"text": "done", "artifact": artifact}, "scope-integrity")
+    sse_payload = json.loads(frame.split("data: ", 1)[1].strip())
+
+    assert response.status_code == 200
+    latest_artifact = response.json()["artifact"]
+    assert latest_artifact["capability_pack_integrity"]["status"] == "verified"
+    assert latest_artifact["maf"]["evidence_bundle"].get("capability_pack_integrity", {}).get("status") != "verified"
+    assert latest_artifact["nested"].get("capability_pack_integrity", {}).get("status") != "verified"
+    assert sse_payload["artifact"]["capability_pack_integrity"]["status"] == "verified"
+    assert sse_payload["artifact"]["maf"]["evidence_bundle"].get("capability_pack_integrity", {}).get("status") != "verified"
+    assert sse_payload["artifact"]["nested"].get("capability_pack_integrity", {}).get("status") != "verified"
+
+
 def test_historical_nested_capability_metadata_is_sanitized_on_all_read_paths(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     run_store.RUN_DIR.mkdir(parents=True, exist_ok=True)

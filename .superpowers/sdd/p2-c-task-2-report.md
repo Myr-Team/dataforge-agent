@@ -101,3 +101,10 @@ The initial Task 2 contract validated caller-supplied `CapabilitySelection` obje
 - Every final SSE event now passes through the same projection in the real `_frame()` emitter. This covers normal MAF completion, MAF terminal fallback, legacy revision fallback, and normal legacy final paths without changing internal persistence or MAF participant inputs.
 - R7 regression uses an actual `TestClient(app).get("/api/workspaces/workspace-1/latest-analysis")` request and decodes the JSON emitted by the actual `_frame("final", ...)` SSE function. It verifies valid pack IDs and `verified` integrity remain available in the route artifact, synthetic trace final artifact, and SSE artifact while a recursive structural assertion confirms no provenance object, signature, nonce, or scope/workspace fingerprint is exposed.
 - R7 verification: `1 passed` for the direct route/SSE regression, then `81 passed, 1 warning` via `python -m pytest tests/test_capability_pack_integration.py tests/test_maf_team_runtime.py -q`. The warning is the existing MAF experimental-workflow notice.
+
+## R8 Integrity-State Forgery Repair
+
+- The public projection now removes every incoming `capability_pack_integrity` field recursively, including standalone nested historical metadata with no pack contract.
+- It recreates the bounded `verified` state only where the same map carries a valid signed, scope-bound selected-pack contract. Maps without a valid contract cannot surface a caller-supplied or historical integrity state.
+- Regression coverage sends a valid root selection plus forged standalone nested `verified` states through the actual `/api/workspaces/{workspace_id}/latest-analysis` route and actual `_frame("final", ...)` SSE encoder. The root selection remains verified; both nested forged values are absent or unavailable.
+- R8 verification: direct regression `1 passed`; focused capability-pack and MAF suite `82 passed, 1 warning` via `python -m pytest tests/test_capability_pack_integration.py tests/test_maf_team_runtime.py -q`. The warning is the existing MAF experimental-workflow notice.

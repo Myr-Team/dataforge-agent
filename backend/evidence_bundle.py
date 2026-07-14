@@ -525,6 +525,7 @@ _PUBLIC_PROVENANCE_FIELDS = frozenset(
         "selection_fingerprint",
         "records_fingerprint",
         "key_id",
+        "capability_pack_integrity",
     }
 )
 
