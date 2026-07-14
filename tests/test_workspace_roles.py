@@ -137,6 +137,137 @@ def test_permission_gate_is_disabled_until_explicitly_enabled(monkeypatch: pytes
     ) == "compatibility"
 
 
+def test_sensitive_permission_gate_is_fail_closed_when_general_rbac_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
+    monkeypatch.delenv("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS", raising=False)
+    monkeypatch.delenv("DF_ENVIRONMENT", raising=False)
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-1"},
+            "workspace_members": [
+                {"actor_id": "admin-oid", "tenant_id": "tenant-1", "role": "admin", "status": "active"},
+                {"actor_id": "viewer-oid", "tenant_id": "tenant-1", "role": "viewer", "status": "active"},
+            ],
+        },
+    )
+
+    for actor in (
+        {},
+        {"email": "untrusted@example.com", "source": "client_actor"},
+        {"actor_id": "outsider-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+    ):
+        with pytest.raises(PermissionError, match="member.manage"):
+            workspace_authz.require_sensitive_workspace_permission("ws-roles", actor, "member.manage")
+
+    assert workspace_authz.require_sensitive_workspace_permission(
+        "ws-roles",
+        {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+        "member.manage",
+    ) == "owner"
+    assert workspace_authz.require_sensitive_workspace_permission(
+        "ws-roles",
+        {"actor_id": "admin-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+        "audit.read",
+    ) == "admin"
+    assert workspace_authz.require_sensitive_workspace_permission(
+        "ws-roles",
+        {"actor_id": "viewer-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+        "run.read",
+    ) == "viewer"
+
+
+def test_sensitive_local_development_bypass_requires_two_explicit_environment_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    control_module = importlib.import_module("backend.control_plane")
+    monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
+    monkeypatch.setenv("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS", "1")
+    monkeypatch.setenv("DF_ENVIRONMENT", "production")
+    with pytest.raises(PermissionError):
+        workspace_authz.require_sensitive_workspace_permission("ws-local", {}, "outcome.read")
+
+    monkeypatch.setenv("DF_ENVIRONMENT", "development")
+    assert workspace_authz.require_sensitive_workspace_permission("ws-local", {}, "outcome.read") == "local_development"
+    assert all(control_module._workspace_action_permissions("ws-local", None)["actions"].values())
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/workspaces/ws-sensitive/settings"),
+        ("GET", "/api/workspaces/ws-sensitive/members"),
+        ("GET", "/api/workspaces/ws-sensitive/members/entra-users?query=user"),
+        ("POST", "/api/workspaces/ws-sensitive/members/invite"),
+        ("POST", "/api/workspaces/ws-sensitive/members/entra-invite"),
+        ("PATCH", "/api/workspaces/ws-sensitive/members/member_0123456789abcdef0123456789abcdef01234567"),
+        ("DELETE", "/api/workspaces/ws-sensitive/members/member_0123456789abcdef0123456789abcdef01234567"),
+        ("GET", "/api/workspaces/ws-sensitive/usage-summary"),
+        ("GET", "/api/workspaces/ws-sensitive/audit-events"),
+        ("GET", "/api/workspaces/ws-sensitive/governance/audit-events"),
+        ("GET", "/api/workspaces/ws-sensitive/governance/invitations"),
+        ("GET", "/api/workspaces/ws-sensitive/governance-summary"),
+        ("GET", "/api/workspaces/ws-sensitive/governance/roi?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"),
+        ("GET", "/api/workspaces/ws-sensitive/governance/chargeback?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"),
+        ("GET", "/api/workspaces/ws-sensitive/governance/trace-status"),
+        ("GET", "/api/workspaces/ws-sensitive/outcomes"),
+        ("POST", "/api/workspaces/ws-sensitive/outcomes"),
+        ("POST", "/api/workspaces/ws-sensitive/outcomes/outcome-1/verify"),
+        ("GET", "/api/workspaces/ws-sensitive/experiments"),
+        ("GET", "/api/workspaces/ws-sensitive/experiments/compare?from=version:one&to=version:two"),
+    ],
+)
+def test_sensitive_routes_deny_unauthenticated_and_nonmember_when_rbac_env_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    path: str,
+) -> None:
+    monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
+    monkeypatch.delenv("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS", raising=False)
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {"workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-1"}},
+    )
+    client = TestClient(app)
+
+    for headers in ({}, _trusted_easy_auth_headers("outsider@contoso.com", actor_id="outsider-oid")):
+        response = client.request(method, path, headers=headers, json={} if method in {"POST", "PATCH"} else None)
+        assert response.status_code == 403, (method, path, response.text)
+
+
+def test_sensitive_routes_allow_persisted_owner_and_admin_when_rbac_env_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    control_module = importlib.import_module("backend.control_plane")
+    monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
+    monkeypatch.delenv("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS", raising=False)
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-1"},
+            "workspace_members": [
+                {"actor_id": "admin-oid", "tenant_id": "tenant-1", "role": "admin", "status": "active"},
+            ],
+        },
+    )
+    monkeypatch.setattr(control_module, "workspace_member_roles", lambda workspace_id, _request=None: {"workspace_id": workspace_id, "members": []})
+    monkeypatch.setattr(control_module, "workspace_experiment_ledger", lambda workspace_id: {"workspace_id": workspace_id, "versions": [], "count": 0})
+    client = TestClient(app)
+
+    owner_response = client.get(
+        "/api/workspaces/ws-sensitive/members",
+        headers=_trusted_easy_auth_headers("owner@contoso.com", actor_id="owner-oid"),
+    )
+    admin_response = client.get(
+        "/api/workspaces/ws-sensitive/experiments",
+        headers=_trusted_easy_auth_headers("admin@contoso.com", actor_id="admin-oid"),
+    )
+
+    assert owner_response.status_code == 200
+    assert admin_response.status_code == 200
+
+
 def test_enabled_permission_gate_rejects_viewer_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
     monkeypatch.setattr(

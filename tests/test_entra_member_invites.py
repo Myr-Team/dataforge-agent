@@ -21,6 +21,8 @@ class RequestStub:
 
 def _workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("DF_INVITATION_PSEUDONYM_SALT", "test-member-projection-salt")
+    monkeypatch.setenv("DF_ENVIRONMENT", "test")
+    monkeypatch.setenv("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS", "1")
     workspace_root = tmp_path / "workspaces"
     workspace_dir = workspace_root / "ws-graph"
     workspace_dir.mkdir(parents=True)
@@ -93,18 +95,18 @@ def test_directory_endpoint_requires_member_manage_and_returns_only_safe_selecti
     actions = []
     monkeypatch.setattr(control_plane, "search_entra_users", lambda *_args, **_kwargs: reads.append(True) or {"connected": True, "source": "microsoft_graph", "users": [raw_user]})
 
-    def deny(_workspace_id, _actor, action):
+    def deny(_workspace_id, _actor, action, **_kwargs):
         actions.append(action)
         raise PermissionError(f"workspace permission denied for {action}")
 
-    monkeypatch.setattr(control_plane, "require_workspace_permission", deny)
+    monkeypatch.setattr(control_plane, "require_sensitive_workspace_permission", deny)
     client = TestClient(app)
     denied = client.get("/api/workspaces/ws-graph/members/entra-users?query=directory.private@example.com")
     assert denied.status_code == 403
     assert actions == ["member.manage"]
     assert reads == []
 
-    monkeypatch.setattr(control_plane, "require_workspace_permission", lambda _workspace_id, _actor, action: actions.append(action) or "owner")
+    monkeypatch.setattr(control_plane, "require_sensitive_workspace_permission", lambda _workspace_id, _actor, action, **_kwargs: actions.append(action) or "owner")
     allowed = client.get("/api/workspaces/ws-graph/members/entra-users?query=directory.private@example.com")
     assert allowed.status_code == 200, allowed.text
     assert actions[-1] == "member.manage"
@@ -200,7 +202,7 @@ def test_directory_selection_workspace_mismatch_does_not_consume_reference(monke
     actor["actor_id"] = "owner-oid"
     monkeypatch.setattr(
         control_plane,
-        "require_workspace_permission",
+        "require_sensitive_workspace_permission",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("workspace permission denied for member.manage")),
     )
     with pytest.raises(control_plane.HTTPException) as denied:
@@ -481,7 +483,7 @@ def test_graph_invite_with_provider_oid_and_tenant_records_accepted_bootstrap(tm
             "tenant_id": "tenant-1",
         },
     )
-    monkeypatch.setattr(control_plane, "actor_from_request", lambda _request: {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"})
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda _request, **_kwargs: {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"})
 
     result = control_plane.invite_entra_workspace_member(
         "ws-graph",
@@ -514,7 +516,7 @@ def test_graph_id_only_binds_to_trusted_inviter_tenant_and_rejects_missing_tenan
     workspace_path = _workspace(tmp_path, monkeypatch)
     monkeypatch.setattr(control_plane, "send_graph_invitation", lambda *args, **kwargs: {"status": "sent", "source": "microsoft_graph", "invitation_id": "graph-1", "invited_user_id": "oid-reviewer"})
     trusted = RequestStub()
-    monkeypatch.setattr(control_plane, "actor_from_request", lambda _request: {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"})
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda _request, **_kwargs: {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"})
 
     result = control_plane.invite_entra_workspace_member("ws-graph", {"email": "reviewer@contoso.com", "role": "editor", "send_email": True}, trusted)
 

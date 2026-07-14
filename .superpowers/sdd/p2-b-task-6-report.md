@@ -280,3 +280,33 @@ This focused pass closes the experiment-ledger outcome leak and directory-search
 - `npm run build` from `web`: **passed**, Vite transformed **1,756 modules** in 1.17s.
 - `git diff --check`: **passed**.
 - Playwright was not requested or run for this focused R6 pass; no new browser evidence is claimed.
+
+## R7 Fail-Closed Sensitive Authorization (2026-07-14)
+
+This pass separates P2 governance authorization from the general legacy compatibility switch. Easy Auth configuration and tracked `output/` content were not changed.
+
+| R7 finding | Implemented result |
+|---|---|
+| RBAC-unset sensitive bypass | Added `require_sensitive_workspace_permission`, which always requires a trusted tenant identity, resolves current persisted workspace membership, and authorizes the explicit action. `DF_WORKSPACE_RBAC_ENFORCED` no longer affects this guard. |
+| Sensitive route coverage | Settings/member directory, directory search, member invite/update/remove, legacy usage/audit, all governance audit/invitation/summary/ROI/chargeback/trace routes, outcome read/record/verify, and experiment ledger/compare now use the fail-closed guard directly or through the governance-role wrapper. |
+| Explicit server permissions | Governance action permissions now derive `member.manage` from the same trusted active role used for audit, chargeback, and invitation permissions. RBAC compatibility can no longer advertise member management. |
+| Preserved compatibility | Overview, ordinary latest-analysis/pipeline/artifact and run/conversation demo surfaces retain the existing general compatibility behavior; the change is scoped to P2 settings/governance surfaces. |
+| Explicit local development | Sensitive local bypass is disabled by default. It activates only when `DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS=1` and `DF_ENVIRONMENT` is explicitly `local`, `development`, or `test`; setting the bypass flag in production remains fail-closed. |
+| RBAC-unset contract tests | With `DF_WORKSPACE_RBAC_ENFORCED` absent, a 20-route matrix rejects both unauthenticated and trusted nonmember requests before endpoint work. Separate tests prove persisted owner/admin access and viewer `run.read` authorization. |
+
+### R7 Files Changed
+
+- `backend/workspace_authz.py`: independent sensitive permission guard and double-opt-in local/test behavior.
+- `backend/control_plane.py`: sensitive route wiring, governance wrapper reuse, and trusted active-role action permissions.
+- `tests/test_workspace_roles.py`: RBAC-unset fail-closed route matrix, role allow cases, and explicit local bypass contract.
+- `tests/test_entra_member_invites.py`: explicit test-local setup for invitation persistence tests and updated sensitive guard mocks.
+- `tests/test_experiment_versions.py`: explicit test authorization and sensitive `run.read` guard assertion.
+- `tests/test_outcome_roi.py`: explicit test-local authorization for outcome persistence/projection behavior.
+
+### R7 Verification Before Commit
+
+- `python -m pytest tests/test_workspace_roles.py tests/test_entra_member_invites.py tests/test_actor_audit_usage.py tests/test_experiment_versions.py tests/test_outcome_roi.py tests/test_governance_roi_summary.py -q`: **183 passed in 13.09s**.
+- `node --test src/*.test.mjs` from `web`: **52 passed, 0 failed** in 334.91ms.
+- `npm run build` from `web`: **passed**, Vite transformed **1,756 modules** in 733ms.
+- `git diff --check`: **passed**.
+- Playwright was not requested or run for this focused authorization pass; no new browser evidence is claimed.

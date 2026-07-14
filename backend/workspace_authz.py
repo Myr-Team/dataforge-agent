@@ -4,7 +4,7 @@ import json
 import os
 import threading
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 try:
     from .blob_store import upload_blob_json
@@ -150,6 +150,34 @@ def require_workspace_permission(
     return str(role)
 
 
+def require_sensitive_workspace_permission(
+    workspace_id: str,
+    actor: Mapping[str, Any] | None,
+    action: str,
+    *,
+    role_resolver: Callable[[str, Mapping[str, Any] | None], str | None] | None = None,
+) -> str:
+    if _sensitive_local_development_bypass_enabled():
+        return "local_development"
+    if not is_trusted_tenant_identity(actor):
+        raise PermissionError(f"workspace permission denied for {action}")
+    role = (role_resolver or active_workspace_role)(workspace_id, actor)
+    if not authorize(role, action):
+        raise PermissionError(f"workspace permission denied for {action}")
+    return str(role)
+
+
+def _sensitive_local_development_bypass_enabled() -> bool:
+    environment = str(os.environ.get("DF_ENVIRONMENT") or "").strip().lower()
+    enabled = str(os.environ.get("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return enabled and environment in {"local", "development", "test"}
+
+
 def _load_workspace_meta(workspace_id: str) -> dict[str, Any]:
     bundle = _load_workspace_bundle(str(workspace_id or ""))
     if bundle is None:
@@ -250,6 +278,7 @@ __all__ = [
     "WORKSPACE_ROLES",
     "authorize",
     "rbac_enabled",
+    "require_sensitive_workspace_permission",
     "require_workspace_permission",
     "workspace_role",
 ]

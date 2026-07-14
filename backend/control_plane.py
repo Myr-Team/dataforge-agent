@@ -37,7 +37,7 @@ try:
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
-    from .workspace_authz import active_workspace_role, authorize, rbac_enabled, require_workspace_permission, workspace_role
+    from .workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
 except ImportError:
     from audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from artifact_jobs import list_artifact_jobs
@@ -58,7 +58,7 @@ except ImportError:
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
-    from workspace_authz import active_workspace_role, authorize, rbac_enabled, require_workspace_permission, workspace_role
+    from workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
 
 
 router = APIRouter(tags=["control-plane"])
@@ -107,13 +107,13 @@ async def workspace_artifacts(workspace_id: str, request: Request) -> dict[str, 
 
 @router.get("/api/workspaces/{workspace_id}/settings")
 async def workspace_settings(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "workspace.read")
+    _require_sensitive_workspace_action(workspace_id, request, "workspace.read")
     return await _call(workspace_settings_summary, workspace_id, request)
 
 
 @router.get("/api/workspaces/{workspace_id}/members")
 async def workspace_members(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "member.read")
+    _require_sensitive_workspace_action(workspace_id, request, "member.read")
     return await _call(workspace_member_roles, workspace_id, request)
 
 
@@ -124,7 +124,7 @@ async def workspace_member_entra_users(
     query: str = Query(default="", max_length=80),
     limit: int = Query(default=8, ge=1, le=20),
 ) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "member.manage")
+    _require_sensitive_workspace_action(workspace_id, request, "member.manage")
     return await _call(workspace_entra_users, workspace_id, request, query, limit)
 
 
@@ -222,7 +222,7 @@ async def workspace_trace_status(
     run_id: str | None = Query(None, max_length=160),
     correlation_id: str | None = Query(None, max_length=64),
 ) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "workspace.read")
+    _require_sensitive_workspace_action(workspace_id, request, "workspace.read")
     if run_id:
         try:
             run = await _call(get_run, run_id)
@@ -236,7 +236,7 @@ async def workspace_trace_status(
 
 @router.get("/api/workspaces/{workspace_id}/outcomes")
 async def workspace_outcomes(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "outcome.read")
+    _require_sensitive_workspace_action(workspace_id, request, "outcome.read")
     events = await _call(list_outcome_events, workspace_id)
     public_events = await _call(_public_outcome_events, workspace_id, events)
     return {"workspace_id": workspace_id, "events": public_events, "count": len(public_events)}
@@ -244,7 +244,7 @@ async def workspace_outcomes(workspace_id: str, request: Request) -> dict[str, A
 
 @router.get("/api/workspaces/{workspace_id}/experiments")
 async def workspace_experiments(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "run.read")
+    _require_sensitive_workspace_action(workspace_id, request, "run.read")
     return await _call(workspace_experiment_ledger, workspace_id)
 
 
@@ -255,14 +255,14 @@ async def workspace_experiment_compare(
     from_id: str = Query(alias="from"),
     to_id: str = Query(alias="to"),
 ) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "run.read")
+    _require_sensitive_workspace_action(workspace_id, request, "run.read")
     ledger = await _call(workspace_experiment_ledger, workspace_id)
     return await _call(compare_experiment_versions, ledger, from_id, to_id)
 
 
 @router.post("/api/workspaces/{workspace_id}/outcomes")
 async def workspace_outcome_create(workspace_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "outcome.record")
+    _require_sensitive_workspace_action(workspace_id, request, "outcome.record")
     _audit_required(request, workspace_id, "outcome.record", "outcome", "pending")
     try:
         event = await _call(record_outcome_event, workspace_id, body, actor_from_request(request))
@@ -279,7 +279,7 @@ async def workspace_outcome_verify(
     body: dict[str, Any],
     request: Request,
 ) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "outcome.verify")
+    _require_sensitive_workspace_action(workspace_id, request, "outcome.verify")
     _audit_required(request, workspace_id, "outcome.verify", "outcome", event_id, correlation={"outcome_event_id": event_id})
     try:
         event = await _call(
@@ -388,14 +388,21 @@ def _require_workspace_action(workspace_id: str, request: Request | None, action
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
-def _require_governance_role(workspace_id: str, request: Request | None, allowed_roles: set[str], action: str) -> str:
+def _require_sensitive_workspace_action(workspace_id: str, request: Request | None, action: str) -> str:
     actor = actor_from_request(request, fallback=False)
-    if not is_trusted_tenant_identity(actor):
+    try:
+        return require_sensitive_workspace_permission(workspace_id, actor, action, role_resolver=active_workspace_role)
+    except PermissionError as exc:
         _audit_denied(request, workspace_id, action, actor=actor)
-        raise HTTPException(status_code=403, detail=f"trusted Easy Auth tenant identity is required for {action}")
-    role = active_workspace_role(workspace_id, actor)
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _require_governance_role(workspace_id: str, request: Request | None, allowed_roles: set[str], action: str) -> str:
+    role = _require_sensitive_workspace_action(workspace_id, request, action)
+    if role == "local_development":
+        return role
     if role not in allowed_roles:
-        _audit_denied(request, workspace_id, action, actor=actor)
+        _audit_denied(request, workspace_id, action, actor=actor_from_request(request, fallback=False))
         raise HTTPException(status_code=403, detail=f"workspace permission denied for {action}")
     return role
 
@@ -404,16 +411,16 @@ _EXPLICIT_GOVERNANCE_ACTIONS = ("audit.read", "chargeback.read", "invitation.rea
 
 
 def _workspace_action_permissions(workspace_id: str, request: Request | None) -> dict[str, Any]:
-    actor = actor_from_request(request)
-    trusted = is_trusted_tenant_identity(actor)
-    active_role = active_workspace_role(workspace_id, actor) if trusted else None
-    member_role = workspace_role(workspace_id, actor) if rbac_enabled() else "owner"
-    actions = {
-        "audit.read": bool(trusted and authorize(active_role, "audit.read")),
-        "chargeback.read": bool(trusted and authorize(active_role, "chargeback.read")),
-        "invitation.read": bool(trusted and authorize(active_role, "invitation.read")),
-        "member.manage": bool(authorize(member_role, "member.manage")),
-    }
+    actor = actor_from_request(request, fallback=False)
+
+    def allowed(action: str) -> bool:
+        try:
+            require_sensitive_workspace_permission(workspace_id, actor, action, role_resolver=active_workspace_role)
+            return True
+        except PermissionError:
+            return False
+
+    actions = {action: allowed(action) for action in _EXPLICIT_GOVERNANCE_ACTIONS}
     return {
         "actions": actions,
         "reasons": {
@@ -1258,7 +1265,7 @@ def invite_workspace_member(
     member_identity: dict[str, Any] | None = None,
     public_response: bool = True,
 ) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "member.manage")
+    _require_sensitive_workspace_action(workspace_id, request, "member.manage")
     email = _member_email((body or {}).get("email"))
     if not email:
         raise ValueError("A valid member email is required")
@@ -1328,7 +1335,7 @@ def invite_workspace_member(
 
 
 def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "member.manage")
+    _require_sensitive_workspace_action(workspace_id, request, "member.manage")
     payload = dict(body or {})
     selected = _consume_directory_selection(workspace_id, request, payload.get("selection_ref")) if payload.get("selection_ref") else {}
     email = _member_email(selected.get("email") or payload.get("email"))
@@ -1464,7 +1471,7 @@ def _audit_invitation_failure(request: Request | None, workspace_id: str, invita
 
 
 def update_workspace_member_role(workspace_id: str, subject_ref: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "member.manage")
+    _require_sensitive_workspace_action(workspace_id, request, "member.manage")
     meta = _load_workspace_meta(workspace_id)
     target = _resolve_workspace_member_subject_ref(workspace_id, subject_ref, meta)
     role = _member_role((body or {}).get("role"))
@@ -1495,7 +1502,7 @@ def update_workspace_member_role(workspace_id: str, subject_ref: str, body: dict
 
 
 def remove_workspace_member(workspace_id: str, subject_ref: str, request: Request | None = None) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "member.manage")
+    _require_sensitive_workspace_action(workspace_id, request, "member.manage")
     meta = _load_workspace_meta(workspace_id)
     target = _resolve_workspace_member_subject_ref(workspace_id, subject_ref, meta)
     current_key = _actor_key(actor_from_request(request))

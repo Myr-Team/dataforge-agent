@@ -235,6 +235,8 @@ def test_outcome_api_persists_lists_and_verifies(
     _configure_store(tmp_path, monkeypatch)
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "outcome-api-projection-salt")
+    monkeypatch.setenv("DF_ENVIRONMENT", "test")
+    monkeypatch.setenv("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS", "1")
     client = TestClient(app)
     owner_headers = _easy_headers("Owner")
     reviewer_headers = _easy_headers("Reviewer")
