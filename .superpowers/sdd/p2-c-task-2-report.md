@@ -34,3 +34,22 @@
 ## Remaining Limitation
 
 This task intentionally treats mapped time fields as insufficient proof of temporal coverage and does not infer entity relationships from raw data. P2-C onboarding/profile work can add explicit, user-confirmed semantic relationships and temporal coverage without weakening evidence authority.
+
+## Security Remediation
+
+### Root cause
+
+The initial Task 2 contract validated caller-supplied `CapabilitySelection` objects and then retained their reasons, missing-evidence text, and legacy `id` or `name` values. That allowed untrusted free text to reach a bundle, run artifact, or trace event.
+
+### Remediation
+
+- Caller input now contributes only an exact `pack_id` that is present in the bundled registry. `id`, `name`, reasons, and missing-evidence text are ignored.
+- The evidence bundle independently reruns `select_capability_packs` from the bounded normalized-goal, schema-profile, and quality context. A caller ID is retained only when that internal selection independently selected it.
+- MAF participant payloads remove both raw pack selections and the temporary selection context. Agents receive only role-scoped registered guidance.
+- Run artifact, run summary, trace, raw run-log, and artifact-version paths defensively project capability-pack records to bounded registry-derived values. Unknown IDs and free text are excluded.
+
+### Security Verification
+
+- Added adversarial coverage for an invalid `id` or `name` containing an email and a valid `pack_id` carrying prompt-injection and email text in reasons, gaps, and roles.
+- The tests prove the text is absent from the evidence bundle, MAF participant input, MAF artifact, run summary, trace, and raw run log while the internally selected registered pack remains available.
+- Follow-up verification: `79 passed, 1 warning` for Task 2 evidence-bundle, integration, and MAF tests; `735 passed, 1 warning` for the full backend suite. The warning is the existing MAF experimental-workflow notice.

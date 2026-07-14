@@ -5541,12 +5541,22 @@ def _capability_pack_inputs(workspace_id: str) -> tuple[dict[str, Any], dict[str
     return profile, quality
 
 
-def _selected_capability_packs(req: ChatRequest, artifact: dict[str, Any]) -> list[dict[str, Any]]:
-    cached = artifact.get("capability_packs")
-    if isinstance(cached, list):
-        return [dict(item) for item in cached if isinstance(item, Mapping)][:3]
+def _capability_pack_selection_context(req: ChatRequest) -> dict[str, Any]:
     profile, quality = _capability_pack_inputs(req.workspace_id)
-    selections = select_capability_packs(_intent_message(req.message), profile, quality)
+    return {
+        "goal": _intent_message(req.message),
+        "schema_profile": profile,
+        "quality": quality,
+    }
+
+
+def _selected_capability_packs(req: ChatRequest, artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    context = _capability_pack_selection_context(req)
+    selections = select_capability_packs(
+        context["goal"],
+        context["schema_profile"],
+        context["quality"],
+    )
     contract = [selection.model_dump(mode="json") for selection in selections]
     artifact["capability_packs"] = copy.deepcopy(contract)
     return contract
@@ -5563,6 +5573,7 @@ def _maf_team_request(
 ) -> MafTeamRequest:
     experts = set(decision.experts)
     capability_packs = _selected_capability_packs(req, artifact)
+    capability_selection_context = _capability_pack_selection_context(req)
     return MafTeamRequest(
         intent=decision.intent,
         output_mode=decision.output_mode,
@@ -5576,6 +5587,7 @@ def _maf_team_request(
             "routing": decision.model_dump(),
             "conversation_history": artifact.get("_conversation_history", []),
             "capability_packs": capability_packs,
+            "capability_selection_context": capability_selection_context,
         },
         authoritative_corpus=authoritative_corpus or {},
         evidence_catalog=evidence_catalog or [],

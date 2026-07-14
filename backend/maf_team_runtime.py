@@ -1041,7 +1041,11 @@ class MafTeamRuntime:
         normalized = request if isinstance(request, MafTeamRequest) else MafTeamRequest.model_validate(request)
         bundle = build_evidence_bundle(
             normalized.authoritative_corpus,
-            {"workspace_id": normalized.payload.get("workspace_id"), "intent": normalized.intent},
+            {
+                "workspace_id": normalized.payload.get("workspace_id"),
+                "intent": normalized.intent,
+                "capability_selection_context": normalized.payload.get("capability_selection_context"),
+            },
             normalized.payload.get("capability_packs") if isinstance(normalized.payload.get("capability_packs"), list) else [],
             self._bundle_limits,
         )
@@ -1304,6 +1308,7 @@ class MafTeamRuntime:
         # Selection metadata is persisted on the run, but agents receive only the
         # relevant registered guidance through their evidence-bundle view.
         payload.pop("capability_packs", None)
+        payload.pop("capability_selection_context", None)
         history = payload.get("conversation_history")
         if isinstance(history, list):
             bounded_history: list[dict[str, str]] = []

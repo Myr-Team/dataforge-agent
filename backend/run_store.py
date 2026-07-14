@@ -10,9 +10,11 @@ from typing import Any
 
 try:
     from .blob_store import delete_blob_name, download_blob_json, upload_blob_json
+    from .evidence_bundle import sanitize_capability_pack_records
     from .identity import is_trusted_identity, public_actor
 except ImportError:
     from blob_store import delete_blob_name, download_blob_json, upload_blob_json
+    from evidence_bundle import sanitize_capability_pack_records
     from identity import is_trusted_identity, public_actor
 
 
@@ -49,7 +51,7 @@ def start_run(run_id: str, workspace_id: str, message: str, actor: dict[str, Any
 def record_event(run_id: str | None, event: str, data: Any) -> None:
     if not run_id:
         return
-    plain = _plain(data)
+    plain = _sanitize_event_data(event, _plain(data))
     now = _utc_now()
     with _LOCK:
         run = _ACTIVE.get(run_id)
@@ -82,7 +84,7 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
         if event == "audit" and isinstance(plain, dict):
             run["audit"] = plain
         if event == "final" and isinstance(plain, dict):
-            run["final"] = plain
+            run["final"] = _sanitize_final(plain)
 
 
 def complete_run(
@@ -97,9 +99,9 @@ def complete_run(
     if not run:
         return None
     if final is not None:
-        run["final"] = _plain(final)
+        run["final"] = _sanitize_final(final)
     if artifact is not None:
-        run["artifact"] = _plain(artifact)
+        run["artifact"] = _sanitize_artifact(artifact)
     run["status"] = status
     run["completed_at"] = _utc_now()
     run["updated_at"] = run["completed_at"]
@@ -232,7 +234,7 @@ def record_artifact_version(
     source_safe = _safe_name(source_run_id)
     suffix = hashlib.sha1(f"{source_run_id}:{now}:{json.dumps(kinds or [], ensure_ascii=False, default=str)}".encode("utf-8")).hexdigest()[:8]
     version_run_id = f"{source_safe}-artifact-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{suffix}"
-    merged_artifact = _plain(dict(artifact))
+    merged_artifact = _sanitize_artifact(artifact)
     merged_proposal = _plain(proposal if isinstance(proposal, dict) else {})
     if merged_proposal:
         merged_artifact["proposal"] = merged_proposal
@@ -306,7 +308,7 @@ def record_plan_version(
     source_safe = _safe_name(source_run_id)
     suffix = hashlib.sha1(f"{source_run_id}:{now}:plan_draft".encode("utf-8")).hexdigest()[:8]
     version_run_id = f"{source_safe}-plan-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{suffix}"
-    merged_artifact = _plain(dict(artifact))
+    merged_artifact = _sanitize_artifact(artifact)
     plan_text = str(text or "").strip() or str((artifact.get("answer") or {}).get("text") or "").strip()
     merged_artifact["plan_draft"] = {
         "text": plan_text,
@@ -496,6 +498,9 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(run, dict):
         return {}
     normalized = dict(run)
+    normalized["artifact"] = _sanitize_artifact(normalized.get("artifact"))
+    if isinstance(normalized.get("final"), dict):
+        normalized["final"] = _sanitize_final(normalized["final"])
     if isinstance(normalized.get("summary"), dict):
         normalized["registry_summary"] = normalized.get("summary")
         normalized["summary"] = normalized.get("summary_text") or _run_summary_text(normalized)
@@ -515,24 +520,39 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
 def _capability_packs(artifact: Any) -> list[dict[str, Any]]:
     if not isinstance(artifact, dict) or not isinstance(artifact.get("capability_packs"), list):
         return []
-    values: list[dict[str, Any]] = []
-    for item in artifact["capability_packs"][:3]:
-        if not isinstance(item, dict):
-            continue
-        pack_id = _clean_phrase(item.get("pack_id"), 80)
-        confidence = item.get("confidence")
-        if not pack_id or not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
-            continue
-        values.append(
-            {
-                "pack_id": pack_id,
-                "confidence": max(0.0, min(1.0, float(confidence))),
-                "reasons": [_clean_phrase(value, 240) for value in (item.get("reasons") or [])[:12] if _clean_phrase(value, 240)],
-                "matched_schema_roles": [_clean_phrase(value, 80) for value in (item.get("matched_schema_roles") or [])[:24] if _clean_phrase(value, 80)],
-                "missing_evidence": [_clean_phrase(value, 240) for value in (item.get("missing_evidence") or [])[:24] if _clean_phrase(value, 240)],
-            }
-        )
-    return values
+    return sanitize_capability_pack_records(artifact["capability_packs"])
+
+
+def _sanitize_artifact(value: Any) -> dict[str, Any]:
+    plain = _plain(value)
+    if not isinstance(plain, dict):
+        return {}
+    artifact = dict(plain)
+    if isinstance(artifact.get("capability_packs"), list):
+        artifact["capability_packs"] = sanitize_capability_pack_records(artifact["capability_packs"])
+    return artifact
+
+
+def _sanitize_final(value: Any) -> dict[str, Any]:
+    plain = _plain(value)
+    if not isinstance(plain, dict):
+        return {}
+    final = dict(plain)
+    if isinstance(final.get("capability_packs"), list):
+        final["capability_packs"] = sanitize_capability_pack_records(final["capability_packs"])
+    if "artifact" in final:
+        final["artifact"] = _sanitize_artifact(final.get("artifact"))
+    return final
+
+
+def _sanitize_event_data(event: str, data: Any) -> Any:
+    if event != "capability_pack_selection" or not isinstance(data, dict):
+        return data
+    packs = data.get("capability_packs") if isinstance(data.get("capability_packs"), list) else []
+    return {
+        "source": "normalized_goal_schema_profile_quality",
+        "capability_packs": sanitize_capability_pack_records(packs),
+    }
 
 
 _VERDICT_LABELS = {

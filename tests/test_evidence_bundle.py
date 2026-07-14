@@ -83,7 +83,7 @@ def test_agent_view_is_bounded_and_persisted_metadata_excludes_quotes() -> None:
         "evidence_count": 1,
         "profile_fact_count": 1,
         "gap_count": 0,
-        "capability_pack_ids": ["market-lookup"],
+            "capability_pack_ids": [],
     }
     assert "quote" not in repr(metadata)
 
@@ -101,8 +101,8 @@ def test_bundle_caps_gaps_and_capability_pack_ids() -> None:
     bundle = build_evidence_bundle(corpus, route(), packs)
 
     assert len(bundle.gaps) == MAX_BUNDLE_GAPS
-    assert len(bundle.capability_pack_ids) == MAX_CAPABILITY_PACK_IDS
-    assert len(bundle.persisted_metadata()["capability_pack_ids"]) == MAX_CAPABILITY_PACK_IDS
+    assert bundle.capability_pack_ids == []
+    assert bundle.persisted_metadata()["capability_pack_ids"] == []
     with pytest.raises(ValidationError):
         EvidenceBundle(
             workspace_id="workspace-1",

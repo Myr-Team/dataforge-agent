@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
+from numbers import Real
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .capability_packs import load_capability_packs
-from .schemas import CapabilitySelection, Evidence
+from .capability_packs import load_capability_packs, select_capability_packs
+from .schemas import Evidence
 
 
 MAX_EVIDENCE_ITEMS = 12
@@ -33,6 +35,19 @@ _AGENT_GUIDANCE_FIELDS: dict[str, tuple[str, ...]] = {
     "df-auditor": ("validation_methods",),
     "df-producer": ("artifact_sections",),
 }
+_SELECTION_CONTEXT_KEY = "capability_selection_context"
+_SAFE_REASON_PREFIXES = {
+    "matched business-goal concepts: ": "goal_signals",
+    "matched schema roles: ": "schema_roles",
+    "matched metric families: ": "metric_families",
+}
+_SAFE_READINESS_REASONS = frozenset(
+    {
+        "opportunity evidence is insufficient for a reliable capability selection",
+        "available semantic evidence does not support an opportunity capability pack",
+    }
+)
+_SAFE_MISSING_EXACT = frozenset({"time coverage", "data quality", "longer time coverage"})
 
 
 class BundleLimits(BaseModel):
@@ -118,43 +133,175 @@ def _profile_facts(profile: Mapping[str, Any], limits: BundleLimits) -> list[str
     return facts
 
 
-def _capability_pack_contract(packs: Sequence[Any] | None) -> list[dict[str, Any]]:
-    """Resolve only registered packs and keep selection metadata separate from evidence."""
-    definitions = {pack.pack_id: pack for pack in load_capability_packs()}
-    selected: list[dict[str, Any]] = []
-    seen: set[str] = set()
+def _registered_capability_packs() -> dict[str, Any]:
+    return {pack.pack_id: pack for pack in load_capability_packs()}
+
+
+def _requested_capability_pack_ids(packs: Sequence[Any] | None) -> list[str]:
+    """Read untrusted selection inputs as exact registry IDs only."""
+    definitions = _registered_capability_packs()
+    ids: list[str] = []
     for value in packs or ():
-        try:
-            selection = CapabilitySelection.model_validate(_as_mapping(value))
-        except (TypeError, ValueError):
+        candidate = value if isinstance(value, str) else _as_mapping(value).get("pack_id")
+        pack_id = candidate if isinstance(candidate, str) else ""
+        if pack_id not in definitions or pack_id in ids:
             continue
-        if selection.pack_id in seen or selection.pack_id not in definitions:
-            continue
-        seen.add(selection.pack_id)
-        selected.append(
-            {
-                key: selection.model_dump(mode="json")[key]
-                for key in _CAPABILITY_SELECTION_FIELDS
-            }
-        )
-        if len(selected) >= MAX_CAPABILITY_PACKS:
+        ids.append(pack_id)
+        if len(ids) >= MAX_CAPABILITY_PACKS:
             break
-    return selected
+    return ids
+
+
+def _computed_capability_selections(route: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Recompute selections from bounded semantic inputs, never caller metadata."""
+    context = _as_mapping(route.get(_SELECTION_CONTEXT_KEY))
+    goal = context.get("goal")
+    profile = context.get("schema_profile")
+    quality = context.get("quality")
+    if not isinstance(goal, str) or not isinstance(profile, Mapping) or not isinstance(quality, Mapping):
+        return {}
+    try:
+        selections = select_capability_packs(goal[:4096], profile, quality)
+    except (TypeError, ValueError):
+        return {}
+    return {
+        selection.pack_id: {
+            key: selection.model_dump(mode="json")[key]
+            for key in _CAPABILITY_SELECTION_FIELDS
+        }
+        for selection in selections
+    }
+
+
+def _capability_pack_contract(
+    packs: Sequence[Any] | None,
+    route: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Keep only caller IDs that an internal selector independently chose."""
+    computed = _computed_capability_selections(route)
+    return [computed[pack_id] for pack_id in _requested_capability_pack_ids(packs) if pack_id in computed]
+
+
+def _canonical_terms(value: Any, allowed: Sequence[str]) -> list[str] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    canonical = {str(item).casefold(): str(item) for item in allowed}
+    terms: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or item.casefold() not in canonical:
+            return None
+        term = canonical[item.casefold()]
+        if term not in terms:
+            terms.append(term)
+    return sorted(terms)
+
+
+def _canonical_reasons(pack: Any, value: Any) -> list[str] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    reasons: list[str] = []
+    for reason in value:
+        if not isinstance(reason, str):
+            return None
+        if reason in _SAFE_READINESS_REASONS:
+            canonical = reason
+        else:
+            canonical = ""
+            for prefix, attr in _SAFE_REASON_PREFIXES.items():
+                if not reason.startswith(prefix):
+                    continue
+                terms = _canonical_terms(
+                    [part.strip() for part in reason[len(prefix) :].split(",") if part.strip()],
+                    getattr(pack, attr),
+                )
+                if terms is None:
+                    return None
+                canonical = prefix + ", ".join(terms)
+                break
+            if not canonical:
+                return None
+        if canonical not in reasons:
+            reasons.append(canonical)
+    return reasons
+
+
+def _canonical_missing_evidence(pack: Any, value: Any) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    missing: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return None
+        if item in _SAFE_MISSING_EXACT:
+            canonical = item
+        elif item.startswith("schema role: "):
+            role = item.removeprefix("schema role: ")
+            if role not in pack.schema_roles:
+                return None
+            canonical = f"schema role: {role}"
+        elif item.startswith("metric family: "):
+            metric = item.removeprefix("metric family: ")
+            if metric not in pack.metric_families:
+                return None
+            canonical = f"metric family: {metric}"
+        else:
+            return None
+        if canonical not in missing:
+            missing.append(canonical)
+    return missing
+
+
+def sanitize_capability_pack_records(packs: Sequence[Any] | None) -> list[dict[str, Any]]:
+    """Defensively project stored records to registry-derived, non-free-text values."""
+    definitions = _registered_capability_packs()
+    records: list[dict[str, Any]] = []
+    for pack_id in _requested_capability_pack_ids(packs):
+        raw = next(
+            (
+                _as_mapping(value)
+                for value in packs or ()
+                if isinstance(_as_mapping(value).get("pack_id"), str)
+                and _as_mapping(value).get("pack_id") == pack_id
+            ),
+            {},
+        )
+        pack = definitions[pack_id]
+        reasons = _canonical_reasons(pack, raw.get("reasons"))
+        roles = _canonical_terms(raw.get("matched_schema_roles"), pack.schema_roles)
+        missing = _canonical_missing_evidence(pack, raw.get("missing_evidence"))
+        confidence = raw.get("confidence")
+        valid_confidence = (
+            isinstance(confidence, Real)
+            and not isinstance(confidence, bool)
+            and math.isfinite(float(confidence))
+            and 0 <= float(confidence) <= 1
+        )
+        if reasons is None or roles is None or missing is None or not valid_confidence:
+            records.append(
+                {
+                    "pack_id": pack_id,
+                    "confidence": 0.0,
+                    "reasons": [f"registered capability pack: {pack.label}"],
+                    "matched_schema_roles": [],
+                    "missing_evidence": list(pack.evidence_requirements)[:24],
+                }
+            )
+        else:
+            records.append(
+                {
+                    "pack_id": pack_id,
+                    "confidence": round(float(confidence), 4),
+                    "reasons": reasons[:12],
+                    "matched_schema_roles": roles[:24],
+                    "missing_evidence": missing[:24],
+                }
+            )
+    return records
 
 
 def _capability_pack_ids(packs: Sequence[Any] | None) -> list[str]:
-    """Preserve the bounded ID-only contract used by existing evidence bundles."""
-    ids: list[str] = []
-    for pack in packs or ():
-        if isinstance(pack, str):
-            candidate = pack
-        else:
-            value = _as_mapping(pack)
-            candidate = value.get("id") or value.get("pack_id") or value.get("name")
-        text = str(candidate or "").strip()
-        if text and text not in ids:
-            ids.append(text[:120])
-    return sorted(ids)[:MAX_CAPABILITY_PACK_IDS]
+    """Preserve the bounded legacy ID projection from registered IDs only."""
+    return _requested_capability_pack_ids(packs)
 
 
 def _capability_guidance(
@@ -229,7 +376,7 @@ def build_evidence_bundle(
             if str(item).strip()
         }
     )[:MAX_BUNDLE_GAPS]
-    capability_packs = _capability_pack_contract(packs)
+    capability_packs = _capability_pack_contract(packs, route_data)
     payload = {
         "workspace_id": _workspace_id(corpus_data, route_data),
         "evidence": [item.model_dump(mode="json", exclude_none=True) for item in evidence],
@@ -286,4 +433,5 @@ __all__ = [
     "MAX_EVIDENCE_QUOTE_CHARS",
     "build_evidence_bundle",
     "bundle_for_agent",
+    "sanitize_capability_pack_records",
 ]
