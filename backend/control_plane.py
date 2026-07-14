@@ -1151,14 +1151,14 @@ def _consume_directory_selection(workspace_id: str, request: Request | None, sel
     now = time.monotonic()
     with _DIRECTORY_SELECTION_LOCK:
         _prune_directory_selections(now)
-        selected = _DIRECTORY_SELECTIONS.pop(safe_ref, None)
-    if (
-        not selected
-        or selected.get("workspace_id") != workspace_id
-        or selected.get("requester_key") != requester_key
-    ):
-        raise ValueError("Directory selection is unavailable or expired")
-    return selected
+        selected = _DIRECTORY_SELECTIONS.get(safe_ref)
+        if (
+            not selected
+            or selected.get("workspace_id") != workspace_id
+            or selected.get("requester_key") != requester_key
+        ):
+            raise ValueError("Directory selection is unavailable or expired")
+        return _DIRECTORY_SELECTIONS.pop(safe_ref)
 
 
 def _prune_directory_selections(now: float) -> None:
@@ -1734,10 +1734,11 @@ def workspace_experiment_ledger(workspace_id: str) -> dict[str, Any]:
             detail = summary
         if isinstance(detail, dict):
             runs.append(detail)
+    public_outcomes = _public_outcome_events(workspace_id, list_outcome_events(workspace_id))
     return sync_experiment_ledger(
         workspace_id,
         runs,
-        outcomes=list_outcome_events(workspace_id),
+        outcomes=public_outcomes,
     )
 
 

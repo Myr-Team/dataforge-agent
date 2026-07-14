@@ -13,7 +13,7 @@ import {
   roiViewModel,
   traceViewModel,
 } from "./governanceViewModel.js";
-import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
+import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, createWorkspaceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 import {
   Activity,
@@ -2898,6 +2898,9 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
   const [governanceLoadingMore, setGovernanceLoadingMore] = useState(false);
   const [invitationState, setInvitationState] = useState({ workspaceId: "", loading: true, data: null, error: "" });
   const governanceGuard = useRef(createGovernanceRequestGuard());
+  const directoryGuard = useRef(createWorkspaceRequestGuard());
+  const activeWorkspaceIdRef = useRef(workspaceId);
+  activeWorkspaceIdRef.current = workspaceId;
   const governanceToken = useRef(null);
   const memberRequestVersion = useRef(0);
   const invitationRequestVersion = useRef(0);
@@ -3013,6 +3016,8 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
       setMemberLoadError("");
       memberRequestVersion.current += 1;
       invitationRequestVersion.current += 1;
+      directoryGuard.current.begin("");
+      setDirectoryLoading(false);
       governanceGuard.current.begin("");
       setGovernanceLoadingMore(false);
       governanceToken.current = null;
@@ -3024,9 +3029,13 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
     setMemberMeta(null);
     setMemberWorkspaceId("");
     setMemberLoadError("");
+    setMemberError("");
+    setMemberNotice("");
     setDirectoryState({ connected: null, users: [], error: null });
     setDirectoryQuery("");
+    setDirectoryLoading(false);
     setInviteForm({ email: "", name: "", role: "editor", selectionRef: "", subjectLabel: "" });
+    directoryGuard.current.begin(workspaceId);
     governanceToken.current = null;
     governanceGuard.current.begin(workspaceId);
     setGovernanceData(emptyGovernanceData(workspaceId, true));
@@ -3103,10 +3112,14 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
       setMemberError(memberPermissionReason);
       return;
     }
+    const requestWorkspaceId = workspaceId;
+    const requestToken = directoryGuard.current.begin(requestWorkspaceId);
     setDirectoryLoading(true);
     setMemberError("");
-    searchEntraUsers(workspaceId, directoryQuery, 8)
+    searchEntraUsers(requestWorkspaceId, directoryQuery, 8)
       .then((data) => {
+        if (!directoryGuard.current.isCurrent(requestToken, activeWorkspaceIdRef.current)) return;
+        if (String(data?.workspace_id || requestWorkspaceId) !== requestWorkspaceId) return;
         setDirectoryState({
           connected: Boolean(data?.connected),
           users: directorySelectionViewModel(data),
@@ -3121,10 +3134,13 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
         }
       })
       .catch((error) => {
+        if (!directoryGuard.current.isCurrent(requestToken, activeWorkspaceIdRef.current)) return;
         setDirectoryState({ connected: false, users: [], error: { message: error instanceof Error ? error.message : String(error || "") } });
         setMemberError(error instanceof Error ? error.message : String(error || "Entra 用户搜索失败"));
       })
-      .finally(() => setDirectoryLoading(false));
+      .finally(() => {
+        if (directoryGuard.current.isCurrent(requestToken, activeWorkspaceIdRef.current)) setDirectoryLoading(false);
+      });
   };
   const pickDirectoryUser = (account) => {
     const selectionRef = cleanUserValue(account?.selectionRef).toLowerCase();

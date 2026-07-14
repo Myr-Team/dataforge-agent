@@ -5,6 +5,7 @@ import {
   auditPageFailure,
   auditPageSuccess,
   createGovernanceRequestGuard,
+  createWorkspaceRequestGuard,
 } from "./governanceRequestState.js";
 import * as governanceState from "./governanceRequestState.js";
 
@@ -46,4 +47,20 @@ test("cursor failure preserves loaded events and retries the same cursor", () =>
   assert.deepEqual(retried.audit.events.map((event) => event.revision), [4, 3, 2]);
   assert.equal(retried.auditRetryCursor, "");
   assert.equal(retried.errors.auditPage, "");
+});
+
+test("directory search rejects stale success error and finally commits after workspace switch", () => {
+  const guard = createWorkspaceRequestGuard();
+  const workspaceARequest = guard.begin("workspace-a");
+  const workspaceBRequest = guard.begin("workspace-b");
+  const commits = [];
+
+  for (const phase of ["success", "error", "finally"]) {
+    if (guard.isCurrent(workspaceARequest, "workspace-b")) commits.push(phase);
+  }
+
+  assert.deepEqual(commits, []);
+  assert.equal(guard.isCurrent(workspaceARequest, "workspace-a"), false);
+  assert.equal(guard.isCurrent(workspaceBRequest, "workspace-b"), true);
+  assert.equal(guard.capture(workspaceBRequest, "selection_old", "workspace-a"), null);
 });

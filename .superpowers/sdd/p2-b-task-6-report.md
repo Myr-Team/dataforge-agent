@@ -252,3 +252,31 @@ This focused pass closes the R5 directory and invitation response exposures with
 - `npm run build` from `web`: **passed**, Vite transformed **1,756 modules** in 608ms.
 - `git diff --check`: **passed**.
 - Playwright was not rerun in this focused pass because the user requested immediate focused tests, Node tests, build, and commit. No new browser evidence is claimed.
+
+## R6 Experiment Privacy And Directory Request Isolation (2026-07-14)
+
+This focused pass closes the experiment-ledger outcome leak and directory-search workspace race without changing authorization configuration or tracked `output/` content.
+
+| R6 finding | Implemented result |
+|---|---|
+| Experiment outcome verification leak | Experiment ledger generation now receives the existing public outcome projection instead of persistent outcome records. Experiment and comparison responses retain bounded verification status/evidence and stable `member_<HMAC>` reviewer references while recursively excluding actor/reviewer email, OID, tenant, name, and free-form verification notes. |
+| Ordinary `run.read` contract | Whole-response tests exercise both `/experiments` and `/experiments/compare` as a non-admin role granted only `run.read`, and scan the complete serialized JSON for seeded raw author, reviewer, nested actor, tenant, and note values. |
+| Directory workspace generation guard | Directory search uses a workspace request generation plus a render-current workspace reference. Old-workspace success, error, and finalization handlers cannot update results, errors, loading state, notices, or selection references after a switch. |
+| Selection consumption order | The server looks up and validates selection workspace and requesting identity while holding the lock, and removes the token only after both match. `member.manage` remains checked before selection resolution; wrong workspace, wrong requester, and denied permission leave the token intact. |
+
+### R6 Files Changed
+
+- `backend/control_plane.py`: public outcome input for experiment ledgers and validate-before-consume directory selections.
+- `tests/test_experiment_versions.py`: complete experiment and comparison response redaction contract.
+- `tests/test_entra_member_invites.py`: workspace/requester/permission selection-consumption ordering contract.
+- `web/src/components.jsx`: workspace-generation guarded directory success/error/finally commits and switch reset.
+- `web/src/governanceRequestState.js`: reusable workspace request guard with the governance guard preserved as an alias constructor.
+- `web/src/governanceRequestState.test.mjs`: deterministic stale directory success/error/finally rejection coverage.
+
+### R6 Verification Before Commit
+
+- `python -m pytest tests/test_experiment_versions.py tests/test_outcome_roi.py tests/test_entra_member_invites.py tests/test_workspace_roles.py -q`: **113 passed in 10.31s**.
+- `node --test src/*.test.mjs` from `web`: **52 passed, 0 failed** in 310.91ms.
+- `npm run build` from `web`: **passed**, Vite transformed **1,756 modules** in 1.17s.
+- `git diff --check`: **passed**.
+- Playwright was not requested or run for this focused R6 pass; no new browser evidence is claimed.

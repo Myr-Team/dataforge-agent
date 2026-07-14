@@ -1,6 +1,6 @@
 import { appendAuditPage } from "./governanceViewModel.js";
 
-export function createGovernanceRequestGuard() {
+export function createWorkspaceRequestGuard() {
   let generation = 0;
   let workspaceId = "";
   let current = null;
@@ -23,6 +23,10 @@ export function createGovernanceRequestGuard() {
     },
     isCurrent,
   };
+}
+
+export function createGovernanceRequestGuard() {
+  return createWorkspaceRequestGuard();
 }
 
 export function workspaceBoundMemberContract(activeWorkspaceId, loadedWorkspaceId, rows, meta) {

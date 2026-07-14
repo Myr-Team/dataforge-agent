@@ -173,6 +173,50 @@ def test_directory_selection_invite_and_direct_invite_responses_never_echo_ident
             assert raw not in serialized
 
 
+def test_directory_selection_workspace_mismatch_does_not_consume_reference(monkeypatch):
+    monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "directory-selection-salt")
+    actor = {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"}
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: dict(actor))
+    monkeypatch.setattr(control_plane, "search_entra_users", lambda *_args, **_kwargs: {
+        "connected": True,
+        "users": [{
+            "id": "selected-private-oid",
+            "display_name": "Selected Private Name",
+            "email": "selected.private@example.com",
+        }],
+    })
+    directory = control_plane.workspace_entra_users("workspace-a", RequestStub(), "selected", 8)
+    selection_ref = directory["users"][0]["selection_ref"]
+
+    with pytest.raises(ValueError, match="unavailable or expired"):
+        control_plane._consume_directory_selection("workspace-b", RequestStub(), selection_ref)
+
+    assert selection_ref in control_plane._DIRECTORY_SELECTIONS
+    actor["actor_id"] = "different-owner-oid"
+    with pytest.raises(ValueError, match="unavailable or expired"):
+        control_plane._consume_directory_selection("workspace-a", RequestStub(), selection_ref)
+    assert selection_ref in control_plane._DIRECTORY_SELECTIONS
+
+    actor["actor_id"] = "owner-oid"
+    monkeypatch.setattr(
+        control_plane,
+        "require_workspace_permission",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("workspace permission denied for member.manage")),
+    )
+    with pytest.raises(control_plane.HTTPException) as denied:
+        control_plane.invite_entra_workspace_member(
+            "workspace-a",
+            {"selection_ref": selection_ref, "role": "viewer", "send_email": False},
+            RequestStub(),
+        )
+    assert denied.value.status_code == 403
+    assert selection_ref in control_plane._DIRECTORY_SELECTIONS
+
+    selected = control_plane._consume_directory_selection("workspace-a", RequestStub(), selection_ref)
+    assert selected["workspace_id"] == "workspace-a"
+    assert selection_ref not in control_plane._DIRECTORY_SELECTIONS
+
+
 def test_directory_search_permission_denied_is_specific_but_exact_email_invite_still_works(monkeypatch):
     monkeypatch.setattr(graph_client, "graph_token_from_request", lambda request=None: "token")
 
