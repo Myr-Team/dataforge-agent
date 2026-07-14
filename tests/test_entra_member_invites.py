@@ -1,5 +1,6 @@
 import json
 import copy
+import re
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
@@ -17,6 +18,7 @@ class RequestStub:
 
 
 def _workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("DF_INVITATION_PSEUDONYM_SALT", "test-member-projection-salt")
     workspace_root = tmp_path / "workspaces"
     workspace_dir = workspace_root / "ws-graph"
     workspace_dir.mkdir(parents=True)
@@ -525,7 +527,9 @@ def test_entra_invite_falls_back_to_workspace_member_when_graph_unavailable(tmp_
         RequestStub(),
     )
 
-    reviewer = next(member for member in result["members"] if member["email"] == "reviewer@contoso.com")
+    reviewer = next(member for member in result["members"] if member["role"] == "editor")
+    assert re.fullmatch(r"member_[0-9a-f]{40}", reviewer["subject_label"])
+    assert "email" not in reviewer
     assert reviewer["role"] == "editor"
     assert reviewer["status"] == "pending"
     assert result["graph_invite"]["status"] == "unavailable"
@@ -612,6 +616,69 @@ def test_graph_failure_audits_truthful_terminal_event_after_durable_transition(t
     assert secret not in repr((fail_args, fail_kwargs))
 
 
+def test_invitation_history_replays_every_effective_state_and_redacts_identity(monkeypatch):
+    monkeypatch.setattr(invitation_store, "blob_configured", lambda: False)
+    meta = {}
+    inviter = {"actor_id": "owner-raw-oid", "tenant_id": "tenant-secret", "source": "easy_auth"}
+
+    invitation_store.create_pending_invitation(meta, "ws-history", email="pending@contoso.com", role="viewer", invited_by=inviter)
+
+    accepted = invitation_store.create_pending_invitation(meta, "ws-history", email="accepted@contoso.com", role="editor", invited_by=inviter)
+    invitation_store.transition_invitation(meta, accepted["invitation_id"], "accepted", identity={"actor_id": "accepted-raw-oid", "tenant_id": "tenant-secret", "source": "easy_auth"})
+
+    failed = invitation_store.create_pending_invitation(meta, "ws-history", email="failed@contoso.com", role="viewer", invited_by=inviter, provider={"source": "microsoft_graph", "invited_user_id": "provider-raw-oid"})
+    invitation_store.transition_invitation(meta, failed["invitation_id"], "failed", provider={"source": "microsoft_graph", "error_code": "private-provider-code"})
+
+    expired = invitation_store.create_pending_invitation(meta, "ws-history", email="expired@contoso.com", role="viewer", invited_by=inviter)
+    invitation_store.transition_invitation(meta, expired["invitation_id"], "expired")
+
+    revoked = invitation_store.create_pending_invitation(meta, "ws-history", email="revoked@contoso.com", role="admin", invited_by=inviter)
+    invitation_store.transition_invitation(meta, revoked["invitation_id"], "revoked")
+
+    removed = invitation_store.create_pending_invitation(meta, "ws-history", email="removed@contoso.com", role="editor", invited_by=inviter)
+    removed_identity = {"actor_id": "removed-raw-oid", "tenant_id": "tenant-secret", "source": "easy_auth"}
+    invitation_store.transition_invitation(meta, removed["invitation_id"], "accepted", identity=removed_identity)
+    assert invitation_store.consume_accepted_invitation(meta, "ws-history", removed_identity)
+    invitation_store.transition_invitation(meta, removed["invitation_id"], "revoked")
+
+    history = invitation_store.list_invitation_history(meta, "ws-history", pseudonym_salt="test-history-salt")
+    reloaded = invitation_store.list_invitation_history(
+        {"workspace_invitation_events": json.loads(json.dumps(meta["workspace_invitation_events"]))},
+        "ws-history",
+        pseudonym_salt="test-history-salt",
+    )
+
+    assert history == reloaded
+    assert {row["state"] for row in history} == {"pending", "accepted", "failed", "expired", "revoked", "removed"}
+    assert all(re.fullmatch(r"member_[0-9a-f]{40}", row["subject_label"]) for row in history)
+    assert all(re.fullmatch(r"invite_[0-9a-f]{40}", row["invitation_ref"]) for row in history)
+    assert all(set(row) == {"invitation_ref", "subject_label", "role", "state", "invitation_state", "updated_at"} for row in history)
+    serialized = json.dumps(history)
+    for secret in ("@contoso.com", "raw-oid", "tenant-secret", "provider-raw-oid", "private-provider-code"):
+        assert secret not in serialized
+
+
+def test_invitation_history_keeps_same_subject_terminal_attempts_separate_after_reload(tmp_path, monkeypatch):
+    workspace_path = _workspace(tmp_path, monkeypatch)
+    monkeypatch.setenv("DF_INVITATION_PSEUDONYM_SALT", "history-reload-salt")
+    meta = {"workspace_id": "ws-graph"}
+    inviter = {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"}
+    failed = invitation_store.create_pending_invitation(meta, "ws-graph", email="same@contoso.com", role="viewer", invited_by=inviter)
+    invitation_store.transition_invitation(meta, failed["invitation_id"], "failed")
+    accepted = invitation_store.create_pending_invitation(meta, "ws-graph", email="same@contoso.com", role="editor", invited_by=inviter)
+    invitation_store.transition_invitation(meta, accepted["invitation_id"], "accepted", identity={"actor_id": "member-oid", "tenant_id": "tenant-1", "source": "easy_auth"})
+    workspace_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    first = control_plane.workspace_invitation_history("ws-graph")
+    second = control_plane.workspace_invitation_history("ws-graph")
+
+    assert first == second
+    assert [row["state"] for row in first] == ["accepted", "failed"]
+    assert first[0]["subject_label"] == first[1]["subject_label"]
+    assert first[0]["invitation_ref"] != first[1]["invitation_ref"]
+    assert "same@contoso.com" not in json.dumps(first)
+
+
 def test_update_workspace_member_role_persists_role_change(tmp_path, monkeypatch):
     workspace_path = _workspace(tmp_path, monkeypatch)
     workspace_path.write_text(
@@ -642,9 +709,32 @@ def test_update_workspace_member_role_persists_role_change(tmp_path, monkeypatch
         RequestStub(),
     )
 
-    reviewer = next(member for member in result["members"] if member["email"] == "reviewer@contoso.com")
+    reviewer = next(member for member in result["members"] if member["role"] == "viewer")
+    assert re.fullmatch(r"member_[0-9a-f]{40}", reviewer["subject_label"])
+    assert "email" not in reviewer
     assert reviewer["role"] == "viewer"
     saved = json.loads(workspace_path.read_text(encoding="utf-8"))
     assert saved["workspace_members"][0]["role"] == "viewer"
     assert saved["workspace_members"][0]["updated_by"]["email"] == "owner@contoso.com"
     assert uploads and uploads[-1][0] == "workspaces/ws-graph/workspace.json"
+
+
+def test_member_management_accepts_safe_subject_reference_without_public_email(tmp_path, monkeypatch):
+    workspace_path = _workspace(tmp_path, monkeypatch)
+    workspace_path.write_text(
+        json.dumps({
+            "workspace_id": "ws-graph",
+            "workspace_members": [{"name": "Reviewer", "email": "reviewer@contoso.com", "role": "editor", "status": "active"}],
+        }),
+        encoding="utf-8",
+    )
+    subject_label = invitation_store.member_subject_label("ws-graph", "reviewer@contoso.com")
+
+    updated = control_plane.update_workspace_member_role("ws-graph", subject_label, {"role": "viewer"}, RequestStub())
+    removed = control_plane.remove_workspace_member("ws-graph", subject_label, RequestStub())
+
+    assert updated["updated_member"]["subject_label"] == subject_label
+    assert updated["updated_member"]["role"] == "viewer"
+    assert removed["removed_member"] == {"subject_label": subject_label}
+    assert "reviewer@contoso.com" not in json.dumps(updated)
+    assert "reviewer@contoso.com" not in json.dumps(removed)

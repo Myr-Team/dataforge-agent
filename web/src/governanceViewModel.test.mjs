@@ -7,6 +7,7 @@ import {
   chargebackViewModel,
   governancePermissions,
   invitationLifecycleViewModel,
+  memberDirectoryViewModel,
   roiViewModel,
   traceStatusLabel,
 } from "./governanceViewModel.js";
@@ -49,6 +50,30 @@ test("Foundry provider business value uses the provider amount contract", () => 
   assert.equal(model.local.businessValue.text, "未记录");
 });
 
+test("production Foundry status object preserves configured unverified semantics", () => {
+  const model = roiViewModel({
+    local: {
+      status: "estimated",
+      foundry_roi: {
+        status: {
+          state: "configured_unverified",
+          configured: true,
+          source: "foundry_roi_provider",
+          observed_at: "2026-07-14T00:00:00Z",
+          reason: "Provider proof awaits an externally signed attestation",
+        },
+        provider_snapshot: null,
+        difference: null,
+        reconciliation: { reconciled: false, reason: "provider snapshot unavailable" },
+      },
+    },
+  });
+  assert.equal(model.foundryConnectionState, "configured_unverified");
+  assert.equal(model.providerStatus, "configured_unverified");
+  assert.equal(model.provider.label, "已配置，证据未验证");
+  assert.equal(model.provider.businessValue.text, "未记录");
+});
+
 test("chargeback retains evidence status and currency without inventing zero", () => {
   const model = chargebackViewModel({
     members: [
@@ -77,6 +102,20 @@ test("null chargeback evidence never becomes a reported zero", () => {
   assert.equal(model.rows[0].tokenText, "未记录");
   assert.equal(model.rows[0].costText, "未记录");
   assert.equal(model.totalCostText, "未记录");
+});
+
+test("chargeback renders only bounded server subject labels and never raw email fallback", () => {
+  const safe = chargebackViewModel({
+    members: [{ member: { subject_label: "member_0123456789abcdef0123456789abcdef01234567", actor_id: "owner-raw-oid", email: "owner@contoso.com", name: "Owner", status: "active" }, cost: { status: "unknown", total: null, currency: null, by_currency: {} } }],
+    groups: [],
+  });
+  const unsafeFallback = chargebackViewModel({
+    members: [{ member: { actor_id: "owner-raw-oid", email: "owner@contoso.com", name: "Owner", status: "active" }, cost: { status: "unknown", total: null, currency: null, by_currency: {} } }],
+    groups: [],
+  });
+  assert.equal(safe.rows[0].memberLabel, "member_01234567…4567");
+  assert.equal(unsafeFallback.rows[0].memberLabel, "成员（已脱敏）");
+  assert.ok(!JSON.stringify([safe, unsafeFallback]).includes("contoso.com"));
 });
 
 test("audit detail ignores raw actor email OID correlation and secret-like fields", () => {
@@ -124,27 +163,62 @@ test("audit pagination appends immutably and deduplicates revisions", () => {
 });
 
 test("permissions come only from server permission fields", () => {
-  assert.deepEqual(governancePermissions({ permissions: { role: "admin", can_read: true, can_update: false, can_delete: false } }), {
-    role: "admin",
+  assert.deepEqual(governancePermissions({ permissions: { actions: { "audit.read": true, "chargeback.read": true, "invitation.read": true, "member.manage": true }, reasons: {} } }), {
     canReadAudit: true,
     canManageMembers: true,
     canReadChargeback: true,
-    reason: "",
+    canReadInvitations: true,
+    reasons: {},
   });
-  assert.equal(governancePermissions({ current_actor: { email: "owner@example.com" } }).canManageMembers, false);
-  assert.equal(governancePermissions({ current_actor: { email: "owner@example.com" } }).reason, "需要工作区所有者或管理员权限");
+  const unknown = governancePermissions({ current_actor: { email: "owner@example.com" }, permissions: { actions: { "audit.read": true } } });
+  assert.equal(unknown.canManageMembers, false);
+  assert.equal(unknown.canReadChargeback, false);
+  assert.equal(unknown.reasons["member.manage"], "服务端未提供 member.manage 权限");
 });
 
-test("invitation lifecycle preserves pending accepted failed expired and revoked states", () => {
-  const rows = invitationLifecycleViewModel([
-    { email: "pending@example.com", role: "viewer", status: "pending", invitation_id: "invite-1" },
-    { email: "active@example.com", role: "editor", status: "active", invitation_id: "invite-2" },
-  ], [
-    { email: "failed@example.com", role: "viewer", state: "failed" },
-    { email: "expired@example.com", role: "viewer", state: "expired" },
-    { email: "revoked@example.com", role: "viewer", state: "revoked" },
+test("invitation lifecycle preserves reloadable history without email-based merging", () => {
+  const subject = "member_0123456789abcdef0123456789abcdef01234567";
+  const rows = invitationLifecycleViewModel({ invitations: [
+    { invitation_ref: "invite_1111111111111111111111111111111111111111", subject_label: subject, role: "viewer", state: "accepted", updated_at: "2026-07-14T01:00:00Z" },
+    { invitation_ref: "invite_2222222222222222222222222222222222222222", subject_label: subject, role: "viewer", state: "failed", updated_at: "2026-07-14T02:00:00Z", email: "leak@contoso.com" },
+    { invitation_ref: "invite_3333333333333333333333333333333333333333", subject_label: "member_89abcdef0123456789abcdef0123456789abcdef", role: "editor", state: "removed", updated_at: "2026-07-14T03:00:00Z" },
+  ] });
+  assert.deepEqual(rows.map((row) => row.state), ["accepted", "failed", "removed"]);
+  assert.equal(rows[0].subjectLabel, "member_01234567…4567");
+  assert.equal(rows[1].subjectLabel, "member_01234567…4567");
+  assert.equal(rows.length, 3);
+  assert.ok(!JSON.stringify(rows).includes("contoso.com"));
+});
+
+test("settings member rows use only server subject labels and discard raw identity fields", () => {
+  const rows = memberDirectoryViewModel([
+    {
+      subject_label: "member_0123456789abcdef0123456789abcdef01234567",
+      email: "owner@contoso.com",
+      actor_id: "owner-raw-oid",
+      tenant_id: "tenant-secret",
+      name: "Owner Person",
+      role: "owner",
+      status: "active",
+      usage: { runs: 2, total_tokens: 300 },
+    },
+    {
+      email: "unsafe@contoso.com",
+      actor_id: "unsafe-oid",
+      tenant_id: "unsafe-tenant",
+      role: "editor",
+      status: "pending",
+    },
   ]);
-  assert.deepEqual(rows.map((row) => row.state), ["pending", "accepted", "failed", "expired", "revoked"]);
+
+  assert.equal(rows[0].subjectLabel, "member_01234567…4567");
+  assert.equal(rows[0].actionRef, "member_0123456789abcdef0123456789abcdef01234567");
+  assert.equal(rows[1].subjectLabel, "成员（已脱敏）");
+  assert.equal(rows[1].actionRef, "");
+  assert.ok(!JSON.stringify(rows).includes("contoso.com"));
+  assert.ok(!JSON.stringify(rows).includes("raw-oid"));
+  assert.ok(!JSON.stringify(rows).includes("tenant-secret"));
+  assert.ok(!JSON.stringify(rows).includes("Owner Person"));
 });
 
 test("customer-facing governance labels are valid UTF-8 without literal question marks or mojibake", () => {

@@ -303,13 +303,15 @@ def test_workspace_members_include_actor_usage(monkeypatch) -> None:
     result = control_plane.workspace_member_roles("ws-usage", RequestStub())
     members = result["members"]
 
-    assert members[0]["email"] == "owner@contoso.com"
+    assert members[0]["subject_label"].startswith("member_")
+    assert "email" not in members[0]
     assert members[0]["usage"]["total_tokens"] == 11
-    assert any(member["email"] == "reviewer@contoso.com" and member["usage"]["total_tokens"] == 19 for member in members)
+    assert any(member["usage"]["total_tokens"] == 19 and member["subject_label"].startswith("member_") for member in members)
     assert result["usage"]["totals"]["total_tokens"] == 30
 
 
 def test_invited_workspace_member_persists_and_merges_usage(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DF_INVITATION_PSEUDONYM_SALT", "test-member-projection-salt")
     workspace_root = tmp_path / "workspaces"
     workspace_dir = workspace_root / "ws-members"
     workspace_dir.mkdir(parents=True)
@@ -348,7 +350,9 @@ def test_invited_workspace_member_persists_and_merges_usage(tmp_path, monkeypatc
         RequestStub(),
     )
 
-    reviewer = next(member for member in result["members"] if member["email"] == "reviewer@contoso.com")
+    reviewer = next(member for member in result["members"] if member["role"] == "editor")
+    assert reviewer["subject_label"].startswith("member_")
+    assert "email" not in reviewer
     assert reviewer["status"] == "active"
     assert reviewer["role"] == "editor"
     assert reviewer["usage"]["total_tokens"] == 21
@@ -548,10 +552,13 @@ def test_governance_audit_api_is_owner_admin_only_and_truthfully_read_only(monke
     assert allowed.status_code == 200, allowed.text
     assert reads == [("ws-audit", 25, "cursor-1")]
     assert allowed.json()["permissions"] == {
-        "role": "owner",
-        "can_read": True,
-        "can_update": False,
-        "can_delete": False,
+        "actions": {
+            "audit.read": True,
+            "chargeback.read": True,
+            "invitation.read": True,
+            "member.manage": True,
+        },
+        "reasons": {},
     }
 
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "viewer")
@@ -559,8 +566,97 @@ def test_governance_audit_api_is_owner_admin_only_and_truthfully_read_only(monke
 
     assert denied.status_code == 403
     assert reads == [("ws-audit", 25, "cursor-1")]
-    assert denied_events[-1][0][1] == "member.read"
+    assert denied_events[-1][0][1] == "audit.read"
     assert denied_events[-1][1]["result"] == "denied"
+
+
+def test_governance_invitation_history_is_permission_gated_redacted_and_explicit(monkeypatch) -> None:
+    actor = {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"}
+    reads: list[tuple[str, str]] = []
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: actor)
+    monkeypatch.setattr(control_plane, "is_trusted_tenant_identity", lambda _actor: True)
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "owner")
+    monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda workspace_id: {"workspace_id": workspace_id})
+    monkeypatch.setattr(
+        control_plane,
+        "list_invitation_history",
+        lambda _meta, workspace_id: reads.append((workspace_id, actor["actor_id"])) or [{
+            "invitation_ref": "invite_" + "1" * 40,
+            "subject_label": "member_" + "2" * 40,
+            "role": "viewer",
+            "state": "failed",
+            "invitation_state": "failed",
+            "updated_at": "2026-07-14T00:00:00Z",
+        }],
+        raising=False,
+    )
+    client = TestClient(app)
+
+    allowed = client.get("/api/workspaces/ws-history/governance/invitations")
+
+    assert allowed.status_code == 200, allowed.text
+    body = allowed.json()
+    assert reads == [("ws-history", "owner-oid")]
+    assert body["invitations"][0]["subject_label"].startswith("member_")
+    assert body["permissions"] == {
+        "actions": {
+            "audit.read": True,
+            "chargeback.read": True,
+            "invitation.read": True,
+            "member.manage": True,
+        },
+        "reasons": {},
+    }
+    assert "role" not in body["permissions"]
+    assert "email" not in allowed.text
+    assert "owner-oid" not in allowed.text
+
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "viewer")
+    denied = client.get("/api/workspaces/ws-history/governance/invitations")
+    assert denied.status_code == 403
+    assert reads == [("ws-history", "owner-oid")]
+
+
+def test_member_contract_exposes_action_permissions_without_role_inference(monkeypatch) -> None:
+    monkeypatch.setenv("DF_INVITATION_PSEUDONYM_SALT", "test-member-projection-salt")
+    actor = {"actor_id": "editor-oid", "tenant_id": "tenant-1", "source": "easy_auth"}
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: actor)
+    monkeypatch.setattr(control_plane, "workspace_role", lambda *_args: "editor")
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "editor")
+    monkeypatch.setattr(control_plane, "rbac_enabled", lambda: True)
+    monkeypatch.setattr(control_plane, "_workspace_usage_by_actor", lambda _workspace_id: {"members": []})
+    monkeypatch.setattr(control_plane, "_workspace_invited_members", lambda _workspace_id: [])
+    monkeypatch.setattr(control_plane, "default_actor", lambda: actor)
+
+    result = control_plane.workspace_member_roles("ws-members", object())
+
+    assert result["permissions"]["actions"] == {
+        "audit.read": False,
+        "chargeback.read": False,
+        "invitation.read": False,
+        "member.manage": False,
+    }
+    assert set(result["permissions"]["reasons"]) == {"audit.read", "chargeback.read", "invitation.read", "member.manage"}
+    assert "role" not in result["permissions"]
+
+
+def test_member_contract_returns_only_safe_subject_labels_for_settings(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "member-label-secret")
+    actor = {"actor_id": "owner-raw-oid", "tenant_id": "tenant-secret", "email": "owner@contoso.com", "name": "Owner", "source": "easy_auth"}
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: actor)
+    monkeypatch.setattr(control_plane, "default_actor", lambda: actor)
+    monkeypatch.setattr(control_plane, "rbac_enabled", lambda: False)
+    monkeypatch.setattr(control_plane, "_workspace_invited_members", lambda _workspace_id: [{"email": "reviewer@contoso.com", "name": "Reviewer", "actor_id": "reviewer-raw-oid", "tenant_id": "tenant-secret", "role": "editor", "status": "active"}])
+    monkeypatch.setattr(control_plane, "_workspace_usage_by_actor", lambda _workspace_id: {"members": [], "totals": {}})
+
+    result = control_plane.workspace_member_roles("ws-safe-members", object())
+    serialized = json.dumps(result["members"])
+
+    assert len(result["members"]) == 2
+    assert all(set(member).issubset({"subject_label", "role", "status", "source", "usage", "last_seen_at", "invited_at", "updated_at"}) for member in result["members"])
+    assert all(member["subject_label"].startswith("member_") for member in result["members"])
+    for raw in ("@contoso.com", "raw-oid", "tenant-secret", "Owner", "Reviewer"):
+        assert raw not in serialized
 
 
 def test_durable_task_create_start_complete_and_cancel_are_audited(tmp_path, monkeypatch) -> None:

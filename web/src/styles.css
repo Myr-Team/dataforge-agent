@@ -3758,6 +3758,8 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .gov-audit-meta { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 10.5px; white-space: nowrap; }
 .gov-load-more { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 132px; height: 31px; margin: 10px auto 0; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 11.5px; font-weight: 750; cursor: pointer; }
 .gov-load-more:disabled { opacity: .58; cursor: progress; }
+.gov-inline-retry { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; border: 0; background: transparent; color: inherit; font-size: 11px; font-weight: 750; cursor: pointer; }
+.gov-inline-retry:focus-visible { outline: 3px solid var(--blue-soft); outline-offset: 2px; }
 .member-permission-note { display: flex; align-items: center; gap: 6px; margin: -2px 0 10px; color: var(--muted); font-size: 11.5px; }
 .member-directory-search input:disabled,
 .member-invite-form input:disabled,

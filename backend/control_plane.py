@@ -28,14 +28,14 @@ try:
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
     from .foundry_roi import discover_foundry_roi, reconcile_foundry_roi
     from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
-    from .invitation_store import accept_provider_invitation, create_pending_invitation, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from .invitation_store import InvitationPersistenceError, accept_provider_invitation, create_pending_invitation, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
-    from .workspace_authz import active_workspace_role, rbac_enabled, require_workspace_permission, workspace_role
+    from .workspace_authz import active_workspace_role, authorize, rbac_enabled, require_workspace_permission, workspace_role
 except ImportError:
     from audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from artifact_jobs import list_artifact_jobs
@@ -49,14 +49,14 @@ except ImportError:
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
     from foundry_roi import discover_foundry_roi, reconcile_foundry_roi
     from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
-    from invitation_store import accept_provider_invitation, create_pending_invitation, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from invitation_store import InvitationPersistenceError, accept_provider_invitation, create_pending_invitation, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
-    from workspace_authz import active_workspace_role, rbac_enabled, require_workspace_permission, workspace_role
+    from workspace_authz import active_workspace_role, authorize, rbac_enabled, require_workspace_permission, workspace_role
 
 
 router = APIRouter(tags=["control-plane"])
@@ -162,10 +162,21 @@ async def workspace_governance_audit_events(
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = Query(default=None, max_length=512),
 ) -> dict[str, Any]:
-    role = _require_governance_role(workspace_id, request, {"owner", "admin"}, "member.read")
+    _require_governance_role(workspace_id, request, {"owner", "admin"}, "audit.read")
     result = await _call(list_audit_events, workspace_id, limit=limit, cursor=cursor)
-    result["permissions"] = {"role": role, "can_read": True, "can_update": False, "can_delete": False}
+    result["permissions"] = _workspace_action_permissions(workspace_id, request)
     return result
+
+
+@router.get("/api/workspaces/{workspace_id}/governance/invitations")
+async def workspace_governance_invitations(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_governance_role(workspace_id, request, {"owner", "admin"}, "invitation.read")
+    invitations = await _call(workspace_invitation_history, workspace_id)
+    return {
+        "workspace_id": workspace_id,
+        "invitations": invitations,
+        "permissions": _workspace_action_permissions(workspace_id, request),
+    }
 
 
 @router.get("/api/workspaces/{workspace_id}/governance-summary")
@@ -193,7 +204,9 @@ async def workspace_chargeback(
     to_value: str = Query(alias="to", max_length=64),
 ) -> dict[str, Any]:
     _require_governance_role(workspace_id, request, {"owner", "admin"}, "chargeback.read")
-    return await _call(workspace_member_chargeback, workspace_id, from_value, to_value)
+    result = await _call(workspace_member_chargeback, workspace_id, from_value, to_value)
+    result["permissions"] = _workspace_action_permissions(workspace_id, request)
+    return result
 
 
 @router.get("/api/workspaces/{workspace_id}/governance/trace-status")
@@ -350,6 +363,8 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
         raise HTTPException(status_code=503, detail="Task persistence is unavailable") from exc
     except AuditPersistenceError as exc:
         raise HTTPException(status_code=503, detail="Audit persistence is unavailable") from exc
+    except InvitationPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Invitation persistence is unavailable") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -376,6 +391,30 @@ def _require_governance_role(workspace_id: str, request: Request | None, allowed
         _audit_denied(request, workspace_id, action, actor=actor)
         raise HTTPException(status_code=403, detail=f"workspace permission denied for {action}")
     return role
+
+
+_EXPLICIT_GOVERNANCE_ACTIONS = ("audit.read", "chargeback.read", "invitation.read", "member.manage")
+
+
+def _workspace_action_permissions(workspace_id: str, request: Request | None) -> dict[str, Any]:
+    actor = actor_from_request(request)
+    trusted = is_trusted_tenant_identity(actor)
+    active_role = active_workspace_role(workspace_id, actor) if trusted else None
+    member_role = workspace_role(workspace_id, actor) if rbac_enabled() else "owner"
+    actions = {
+        "audit.read": bool(trusted and authorize(active_role, "audit.read")),
+        "chargeback.read": bool(trusted and authorize(active_role, "chargeback.read")),
+        "invitation.read": bool(trusted and authorize(active_role, "invitation.read")),
+        "member.manage": bool(authorize(member_role, "member.manage")),
+    }
+    return {
+        "actions": actions,
+        "reasons": {
+            action: f"服务端未授予 {action} 权限"
+            for action in _EXPLICIT_GOVERNANCE_ACTIONS
+            if not actions[action]
+        },
+    }
 
 
 def _audit_required(
@@ -984,14 +1023,51 @@ def workspace_member_roles(workspace_id: str, request: Request | None = None) ->
         "rbac_enforced": rbac_enabled(),
         "source": current_actor.get("source") or "workspace_default",
         "roles": ["owner", "admin", "editor", "viewer"],
-        "members": members,
+        "members": [_public_workspace_member(workspace_id, member) for member in members],
         "usage": usage,
+        "permissions": _workspace_action_permissions(workspace_id, request),
         "invite": {
             "status": "available",
             "mode": "workspace_members_with_optional_entra_graph",
             "message": "Members are persisted in the workspace for collaboration, token attribution, and audit display. Entra directory search and email invite are used when Microsoft Graph permissions are available.",
         },
     }
+
+
+def workspace_invitation_history(workspace_id: str) -> list[dict[str, Any]]:
+    meta = _load_workspace_meta(workspace_id)
+    return list_invitation_history(meta, workspace_id)
+
+
+def _public_workspace_member(workspace_id: str, member: dict[str, Any]) -> dict[str, Any]:
+    identity_key = _actor_key(member)
+    role = str(member.get("role") or "viewer").strip().lower()
+    if role not in WORKSPACE_MEMBER_ROLES:
+        role = "viewer"
+    return {
+        "subject_label": member_subject_label(workspace_id, identity_key),
+        "role": role,
+        "status": str(member.get("status") or "active") if str(member.get("status") or "active") in WORKSPACE_MEMBER_STATUSES else "pending",
+        "source": str(member.get("source") or "workspace_member"),
+        "usage": member.get("usage") if isinstance(member.get("usage"), dict) else {},
+        "last_seen_at": _clean_text(member.get("last_seen_at")),
+        "invited_at": _clean_text(member.get("invited_at")),
+        "updated_at": _clean_text(member.get("updated_at")),
+    }
+
+
+def _resolve_workspace_member_email(workspace_id: str, reference: str, meta: dict[str, Any]) -> str:
+    direct = _member_email(reference)
+    if direct:
+        return direct
+    safe_reference = str(reference or "").strip().lower()
+    if not re.fullmatch(r"member_[0-9a-f]{40}", safe_reference):
+        raise ValueError("A valid member reference is required")
+    for member in _stored_workspace_members(meta):
+        email = _member_email(member.get("email"))
+        if email and member_subject_label(workspace_id, email) == safe_reference:
+            return email
+    raise ValueError("Workspace member not found")
 
 
 def workspace_entra_users(workspace_id: str, request: Request | None = None, query: str = "", limit: int = 8) -> dict[str, Any]:
@@ -1064,7 +1140,8 @@ def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Re
         meta["workspace_members"] = members
         _save_workspace_meta(workspace_id, meta)
     result = workspace_member_roles(workspace_id, request)
-    result["invited_member"] = next((item for item in result.get("members") or [] if str(item.get("email") or "").lower() == email), None)
+    invited_label = member_subject_label(workspace_id, email)
+    result["invited_member"] = next((item for item in result.get("members") or [] if item.get("subject_label") == invited_label), None)
     result["invitation"] = invitation
     return result
 
@@ -1190,15 +1267,13 @@ def _audit_invitation_failure(request: Request | None, workspace_id: str, invita
 
 def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "member.manage")
-    target = _member_email(email)
-    if not target:
-        raise ValueError("A valid member email is required")
+    meta = _load_workspace_meta(workspace_id)
+    target = _resolve_workspace_member_email(workspace_id, email, meta)
     role = _member_role((body or {}).get("role"))
     current_actor = public_actor(actor_from_request(request))
     if target == _actor_key(current_actor):
         raise ValueError("The current owner role cannot be changed from the members panel")
     _audit_required(request, workspace_id, "member.update", "member", "member")
-    meta = _load_workspace_meta(workspace_id)
     update_invited_member_role(meta, workspace_id, email=target, role=role)
     members = _stored_workspace_members(meta)
     now = _now()
@@ -1216,28 +1291,27 @@ def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, 
     meta["workspace_members"] = members
     _save_workspace_meta(workspace_id, meta)
     result = workspace_member_roles(workspace_id, request)
-    result["updated_member"] = next((item for item in result.get("members") or [] if str(item.get("email") or "").lower() == target), None)
+    target_label = member_subject_label(workspace_id, target)
+    result["updated_member"] = next((item for item in result.get("members") or [] if item.get("subject_label") == target_label), None)
     return result
 
 
 def remove_workspace_member(workspace_id: str, email: str, request: Request | None = None) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "member.manage")
-    target = _member_email(email)
-    if not target:
-        raise ValueError("A valid member email is required")
+    meta = _load_workspace_meta(workspace_id)
+    target = _resolve_workspace_member_email(workspace_id, email, meta)
     current_key = _actor_key(actor_from_request(request))
     if target == current_key:
         raise ValueError("The current owner cannot be removed from the workspace")
     _audit_required(request, workspace_id, "invitation.revoke", "invitation", "pending")
     _audit_required(request, workspace_id, "member.remove", "member", "member")
     with workspace_invitation_lock(workspace_id):
-        meta = _load_workspace_meta(workspace_id)
         members = _stored_workspace_members(meta)
         revoke_effective_invitations(meta, workspace_id, email=target)
         meta["workspace_members"] = [item for item in members if str(item.get("email") or "").lower() != target]
         _save_workspace_meta(workspace_id, meta)
     result = workspace_member_roles(workspace_id, request)
-    result["removed_member"] = {"email": target}
+    result["removed_member"] = {"subject_label": member_subject_label(workspace_id, target)}
     return result
 
 

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import hmac
+import os
 import threading
 import uuid
 from contextlib import contextmanager
@@ -213,6 +216,92 @@ def consume_accepted_invitation(
 def effective_invitation_state(meta: Mapping[str, Any], invitation_id: str) -> str | None:
     event = _latest_events(meta).get(_clean(invitation_id))
     return str(event.get("state")) if event else None
+
+
+def list_invitation_history(
+    meta: Mapping[str, Any],
+    workspace_id: str,
+    *,
+    pseudonym_salt: str | None = None,
+) -> list[dict[str, Any]]:
+    value = _read(workspace_id, meta)
+    events = value.get("workspace_invitation_events") or []
+    _validate_events(events)
+    salt = _pseudonym_salt(pseudonym_salt)
+
+    records: dict[str, dict[str, Any]] = {}
+    for raw in events:
+        if not isinstance(raw, Mapping):
+            continue
+        invitation_id = _clean(raw.get("invitation_id"))
+        if not invitation_id:
+            continue
+        kind = str(raw.get("event_type") or "state")
+        record = records.setdefault(
+            invitation_id,
+            {
+                "email": "",
+                "role": "viewer",
+                "invitation_state": "pending",
+                "activated": False,
+                "updated_at": None,
+            },
+        )
+        if kind == "state":
+            record["email"] = _email(raw.get("email"))
+            record["role"] = _role(raw.get("role"))
+            record["invitation_state"] = _clean(raw.get("state")).lower()
+        elif kind == "role_change":
+            record["role"] = _role(raw.get("role"))
+        elif kind == "activation":
+            record["activated"] = True
+        occurred_at = _clean(raw.get("occurred_at"))
+        if occurred_at:
+            record["updated_at"] = occurred_at
+
+    history: list[dict[str, Any]] = []
+    for invitation_id, record in records.items():
+        invitation_state = str(record["invitation_state"])
+        effective_state = "removed" if invitation_state == "revoked" and record["activated"] else invitation_state
+        history.append(
+            {
+                "invitation_ref": _history_pseudonym("invite", workspace_id, invitation_id, salt),
+                "subject_label": _history_pseudonym("member", workspace_id, str(record["email"]), salt),
+                "role": str(record["role"]),
+                "state": effective_state,
+                "invitation_state": invitation_state,
+                "updated_at": record["updated_at"],
+            }
+        )
+    return sorted(history, key=lambda item: (str(item.get("updated_at") or ""), str(item["invitation_ref"])), reverse=True)
+
+
+def member_subject_label(workspace_id: str, identity_key: str, *, pseudonym_salt: str | None = None) -> str:
+    identity = _clean(identity_key).lower()
+    if not identity:
+        raise InvitationPersistenceError("member identity is unavailable for safe projection")
+    return _history_pseudonym("member", workspace_id, identity, _pseudonym_salt(pseudonym_salt))
+
+
+def _pseudonym_salt(value: str | None = None) -> str:
+    salt = str(
+        value
+        or os.environ.get("DF_INVITATION_PSEUDONYM_SALT")
+        or os.environ.get("DF_WEB_PROXY_SECRET")
+        or ""
+    ).strip()
+    if not salt:
+        raise InvitationPersistenceError("member pseudonym salt is not configured")
+    return salt
+
+
+def _history_pseudonym(prefix: str, workspace_id: str, value: str, salt: str) -> str:
+    digest = hmac.new(
+        salt.encode("utf-8"),
+        f"{workspace_id}\0{prefix}\0{value}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:40]
+    return f"{prefix}_{digest}"
 
 
 def _transition(
@@ -543,6 +632,8 @@ __all__ = [
     "current_invited_member_role",
     "create_pending_invitation",
     "effective_invitation_state",
+    "list_invitation_history",
+    "member_subject_label",
     "revoke_effective_invitations",
     "transition_invitation",
     "update_invited_member_role",

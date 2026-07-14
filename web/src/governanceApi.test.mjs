@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   loadWorkspaceChargeback,
   loadWorkspaceGovernanceAuditEvents,
+  loadWorkspaceInvitationHistory,
   loadWorkspaceRoi,
   loadWorkspaceTraceStatus,
 } from "./api.js";
@@ -29,11 +30,13 @@ test("governance endpoints encode workspace and exact bounded query parameters",
   await loadWorkspaceRoi("ws/a", { from: "2026-07-01T00:00:00Z", to: "2026-08-01T00:00:00Z" });
   await loadWorkspaceChargeback("ws/a", { from: "2026-07-01T00:00:00Z", to: "2026-08-01T00:00:00Z" });
   await loadWorkspaceGovernanceAuditEvents("ws/a", { limit: 25, cursor: "cursor/value" });
+  await loadWorkspaceInvitationHistory("ws/a");
 
   assert.equal(calls[0], "/api/workspaces/ws%2Fa/governance/trace-status?run_id=run%2F1&correlation_id=corr-1");
   assert.equal(calls[1], "/api/workspaces/ws%2Fa/governance/roi?from=2026-07-01T00%3A00%3A00Z&to=2026-08-01T00%3A00%3A00Z");
   assert.equal(calls[2], "/api/workspaces/ws%2Fa/governance/chargeback?from=2026-07-01T00%3A00%3A00Z&to=2026-08-01T00%3A00%3A00Z");
   assert.equal(calls[3], "/api/workspaces/ws%2Fa/governance/audit-events?limit=25&cursor=cursor%2Fvalue");
+  assert.equal(calls[4], "/api/workspaces/ws%2Fa/governance/invitations");
 }));
 
 test("audit pagination clamps the page size to the backend contract", withFetch(async (calls) => {

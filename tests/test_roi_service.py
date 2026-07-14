@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -199,6 +200,9 @@ def test_chargeback_uses_actor_id_and_current_membership_not_telemetry_profile()
     owner = next(row for row in result["members"] if row["member"]["actor_id"] == "actor-owner")
     unknown = next(row for row in result["members"] if row["member"]["status"] == "unknown_or_departed")
     assert owner["member"]["email"] == "owner@example.com"
+    assert re.fullmatch(r"member_[0-9a-f]{40}", owner["member"]["subject_label"])
+    assert re.fullmatch(r"member_[0-9a-f]{40}", unknown["member"]["subject_label"])
+    assert owner["member"]["subject_label"] != unknown["member"]["subject_label"]
     assert "spoofed@example.com" not in str(result)
     assert "leak@example.com" not in str(result)
     assert unknown["member"]["email"] is None

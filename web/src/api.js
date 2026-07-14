@@ -347,6 +347,10 @@ export async function loadWorkspaceGovernanceAuditEvents(workspaceId, { limit = 
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/audit-events?${params.toString()}`);
 }
 
+export async function loadWorkspaceInvitationHistory(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/invitations`);
+}
+
 export async function loadConversationStructuredResult(conversationId) {
   return request(`/api/conversations/${encodeURIComponent(conversationId)}/structured-result`);
 }

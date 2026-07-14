@@ -11,6 +11,7 @@ const ROI_COPY = Object.freeze({
   verified: { label: "已验证", tone: "ok" },
   connected: { label: "已连接，证据状态未记录", tone: "info" },
   discovery_verified: { label: "仅发现已验证", tone: "warn" },
+  configured_unverified: { label: "已配置，证据未验证", tone: "warn" },
   not_configured: { label: "未配置", tone: "neutral" },
   unavailable: { label: "暂不可用", tone: "error" },
   unknown: { label: "未记录", tone: "neutral" },
@@ -23,10 +24,12 @@ const INVITATION_COPY = Object.freeze({
   failed: { label: "发送失败", tone: "error" },
   expired: { label: "已过期", tone: "neutral" },
   revoked: { label: "已撤销", tone: "neutral" },
+  removed: { label: "已移除", tone: "neutral" },
 });
 
 function stateOf(value, fallback = "unknown") {
   const raw = typeof value === "string" ? value : value?.state ?? value?.status;
+  if (raw && typeof raw === "object") return stateOf(raw, fallback);
   const state = String(raw || "").trim().toLowerCase();
   return state || fallback;
 }
@@ -106,7 +109,7 @@ export function traceViewModel(status) {
 export function roiViewModel({ local = {}, provider = null } = {}) {
   const foundry = provider || local?.foundry_roi || {};
   const providerSnapshot = foundry?.provider_snapshot || foundry?.snapshot || {};
-  const foundryConnectionState = stateOf(foundry);
+  const foundryConnectionState = stateOf(foundry?.status ?? foundry);
   const providerStatus = providerSnapshot?.status ? stateOf(providerSnapshot) : foundryConnectionState;
   return {
     localStatus: stateOf(local, "estimated"),
@@ -120,14 +123,11 @@ export function roiViewModel({ local = {}, provider = null } = {}) {
 }
 
 function memberKey(member) {
-  return String(member?.actor_id || member?.email || member?.name || "").trim().toLowerCase();
+  return String(member?.subject_label || member?.actor_id || "").trim().toLowerCase();
 }
 
 function safeMemberLabel(member) {
-  const actorId = String(member?.actor_id || "");
-  if (member?.name) return String(member.name);
-  if (member?.email && member?.status !== "unknown_or_departed") return String(member.email);
-  return boundedPseudonym(actorId, "actor") || "成员（未公开）";
+  return validBoundedPseudonym(member?.subject_label, "member") || "成员（已脱敏）";
 }
 
 export function chargebackViewModel(snapshot) {
@@ -156,9 +156,13 @@ export function chargebackViewModel(snapshot) {
 }
 
 function boundedPseudonym(value, expectedPrefix) {
+  return validBoundedPseudonym(value, expectedPrefix) || `${expectedPrefix}_已脱敏`;
+}
+
+function validBoundedPseudonym(value, expectedPrefix) {
   const raw = String(value || "").trim().toLowerCase();
   const match = raw.match(/^([a-z][a-z0-9_]*_)([0-9a-f]{40,64})$/);
-  if (!match || !match[1].startsWith(`${expectedPrefix}_`)) return `${expectedPrefix}_已脱敏`;
+  if (!match || !match[1].startsWith(`${expectedPrefix}_`)) return "";
   return `${match[1]}${match[2].slice(0, 8)}…${match[2].slice(-4)}`;
 }
 
@@ -195,38 +199,54 @@ export function appendAuditPage(current, next) {
 
 export function governancePermissions(payload) {
   const permissions = payload?.permissions || {};
-  const role = ["owner", "admin"].includes(permissions.role) ? permissions.role : "";
-  const canReadAudit = permissions.can_read === true && Boolean(role);
-  const privileged = canReadAudit && (role === "owner" || role === "admin");
+  const actions = permissions?.actions || {};
+  const serverReasons = permissions?.reasons || {};
+  const reasons = {};
+  for (const action of ["audit.read", "chargeback.read", "invitation.read", "member.manage"]) {
+    if (actions[action] !== true) reasons[action] = String(serverReasons[action] || `服务端未提供 ${action} 权限`);
+  }
   return {
-    role,
-    canReadAudit,
-    canManageMembers: privileged,
-    canReadChargeback: privileged,
-    reason: privileged ? "" : "需要工作区所有者或管理员权限",
+    canReadAudit: actions["audit.read"] === true,
+    canManageMembers: actions["member.manage"] === true,
+    canReadChargeback: actions["chargeback.read"] === true,
+    canReadInvitations: actions["invitation.read"] === true,
+    reasons,
   };
 }
 
-export function invitationLifecycleViewModel(members = [], recent = []) {
-  const rows = [];
-  const seen = new Set();
-  const add = (item, fromMember = false) => {
-    const state = fromMember && item?.status === "active" ? "accepted" : stateOf(item, fromMember ? "pending" : "unknown");
-    const key = String(item?.email || item?.invitation_id || `${state}:${rows.length}`).toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
+export function invitationLifecycleViewModel(payload = {}) {
+  return (Array.isArray(payload?.invitations) ? payload.invitations : []).map((item) => {
+    const state = stateOf(item);
     const copy = INVITATION_COPY[state] || { label: "未记录", tone: "neutral" };
-    rows.push({
-      email: String(item?.email || "").trim(),
-      name: String(item?.name || item?.user || "").trim(),
+    return {
+      invitationRef: validBoundedPseudonym(item?.invitation_ref, "invite") || "invite_已脱敏",
+      subjectLabel: validBoundedPseudonym(item?.subject_label, "member") || "成员（已脱敏）",
       role: ["owner", "admin", "editor", "viewer"].includes(item?.role) ? item.role : "viewer",
       state,
       stateLabel: copy.label,
       tone: copy.tone,
-      updatedAt: item?.updated_at || item?.invited_at || item?.at || null,
-    });
-  };
-  members.filter((member) => member?.invitation_id || member?.status === "pending").forEach((member) => add(member, true));
-  recent.forEach((item) => add(item, false));
-  return rows;
+      updatedAt: item?.updated_at || null,
+    };
+  });
+}
+
+export function memberDirectoryViewModel(members = []) {
+  return (Array.isArray(members) ? members : []).map((member) => {
+    const rawRef = String(member?.subject_label || "").trim().toLowerCase();
+    const actionRef = /^member_[0-9a-f]{40}$/.test(rawRef) ? rawRef : "";
+    const role = ["owner", "admin", "editor", "viewer"].includes(member?.role) ? member.role : "viewer";
+    const status = ["active", "pending"].includes(member?.status) ? member.status : "pending";
+    return {
+      actionRef,
+      subjectLabel: validBoundedPseudonym(actionRef, "member") || "成员（已脱敏）",
+      role,
+      owner: role === "owner",
+      status,
+      source: safeIdentifier(member?.source, "workspace_member"),
+      usage: member?.usage && typeof member.usage === "object" ? member.usage : {},
+      lastSeenAt: member?.last_seen_at || "",
+      invitedAt: member?.invited_at || "",
+      updatedAt: member?.updated_at || "",
+    };
+  });
 }

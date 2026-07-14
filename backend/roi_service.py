@@ -500,10 +500,11 @@ def _memberships(items: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]
 
 
 def _member_label(workspace: str, actor_key: str, members: Mapping[str, Mapping[str, Any]], salt: str) -> dict[str, Any]:
+    subject_label = "member_" + hmac.new(salt.encode(), f"{workspace}:member:{actor_key}".encode(), hashlib.sha256).hexdigest()[:40]
     item = members.get(actor_key)
-    if item: return {"actor_id": str(item.get("actor_id")), "email": item.get("email"), "name": item.get("name") or item.get("user"), "status": "active"}
+    if item: return {"actor_id": str(item.get("actor_id")), "email": item.get("email"), "name": item.get("name") or item.get("user"), "status": "active", "subject_label": subject_label}
     pseudo = hmac.new(salt.encode(), f"{workspace}:{actor_key}".encode(), hashlib.sha256).hexdigest()[:20]
-    return {"actor_id": f"actor_{pseudo}", "email": None, "name": None, "status": "unknown_or_departed"}
+    return {"actor_id": f"actor_{pseudo}", "email": None, "name": None, "status": "unknown_or_departed", "subject_label": subject_label}
 
 
 def _group(member: Mapping[str, Any], currency: str | None, model: str | None, task_kind: str, window: Mapping[str, str]) -> dict[str, Any]:
