@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import math
 import os
@@ -15,8 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 try:
     from .identity import canonical_actor_identity, is_trusted_tenant_identity
+    from .invitation_store import InvitationPersistenceError, member_pseudonym_salt, member_subject_label
 except ImportError:
     from identity import canonical_actor_identity, is_trusted_tenant_identity
+    from invitation_store import InvitationPersistenceError, member_pseudonym_salt, member_subject_label
 
 
 MAX_WINDOW_DAYS = 31
@@ -295,9 +295,10 @@ def build_roi_snapshot(workspace_id: str, window: Mapping[str, Any], *, runs: It
 
 def member_chargeback(workspace_id: str, window: Mapping[str, Any], *, runs: Iterable[Mapping[str, Any]], messages: Iterable[Mapping[str, Any]], tasks: Iterable[Mapping[str, Any]], memberships: Iterable[Mapping[str, Any]], prices: Iterable[Mapping[str, Any]] | None = None, pseudonym_salt: str | None = None, truncated: bool = False) -> dict[str, Any]:
     normalized_window, catalog = parse_time_window(window.get("from"), window.get("to")), _catalog(prices)
-    salt = pseudonym_salt or os.environ.get("DF_ROI_PSEUDONYM_SALT") or os.environ.get("DF_WEB_PROXY_SECRET")
-    if not salt:
-        raise PermissionError("ROI pseudonym salt is not configured")
+    try:
+        salt = member_pseudonym_salt(pseudonym_salt)
+    except InvitationPersistenceError as exc:
+        raise PermissionError("ROI pseudonym salt is not configured") from exc
     members = _memberships(memberships)
     groups: dict[tuple[str, str | None, str | None, str], dict[str, Any]] = {}
     seen: set[str] = set()
@@ -358,7 +359,7 @@ def member_chargeback(workspace_id: str, window: Mapping[str, Any], *, runs: Ite
     total = _money(next(iter(totals.values()))) if len(totals) == 1 and not any_partial else None
     summary: dict[str, dict[str, Any]] = {}
     for row in group_rows:
-        key = row["member"]["actor_id"]
+        key = row["member"]["subject_label"]
         member_summary = summary.setdefault(key, {"member": row["member"], "groups": 0, "cost_by_currency": {}, "partial": False, "has_priced": False})
         member_summary["groups"] += 1
         if row["cost"]["status"] == "partial":
@@ -377,7 +378,7 @@ def member_chargeback(workspace_id: str, window: Mapping[str, Any], *, runs: Ite
         item["cost"] = CostSummary(total=total_cost, status=status, currency=next(iter(by_currency)) if status == "complete" else None, by_currency=by_currency if status != "unknown" else {})
         members_out.append(item)
     total_status = "complete" if total is not None else "partial" if totals or any_partial else "unknown"
-    return ChargebackSnapshot(workspace_id=str(workspace_id), window=normalized_window, groups=sorted(group_rows, key=lambda item: str(item["member"]["actor_id"])), members=members_out, totals=CostSummary(total=total, status=total_status, currency=next(iter(totals)) if total_status == "complete" else None, by_currency={key: _money(value) for key, value in totals.items()} if total_status != "unknown" else {}), duplicate_event_ids=duplicate_event_ids, duplicate_event_count=len(duplicate_event_ids), truncated=truncation).model_dump(mode="json")
+    return ChargebackSnapshot(workspace_id=str(workspace_id), window=normalized_window, groups=sorted(group_rows, key=lambda item: str(item["member"]["subject_label"])), members=members_out, totals=CostSummary(total=total, status=total_status, currency=next(iter(totals)) if total_status == "complete" else None, by_currency={key: _money(value) for key, value in totals.items()} if total_status != "unknown" else {}), duplicate_event_ids=duplicate_event_ids, duplicate_event_count=len(duplicate_event_ids), truncated=truncation).model_dump(mode="json")
 
 
 def _catalog(prices: Iterable[Mapping[str, Any]] | None) -> PriceCatalog:
@@ -500,11 +501,12 @@ def _memberships(items: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]
 
 
 def _member_label(workspace: str, actor_key: str, members: Mapping[str, Mapping[str, Any]], salt: str) -> dict[str, Any]:
-    subject_label = "member_" + hmac.new(salt.encode(), f"{workspace}:member:{actor_key}".encode(), hashlib.sha256).hexdigest()[:40]
     item = members.get(actor_key)
-    if item: return {"actor_id": str(item.get("actor_id")), "email": item.get("email"), "name": item.get("name") or item.get("user"), "status": "active", "subject_label": subject_label}
-    pseudo = hmac.new(salt.encode(), f"{workspace}:{actor_key}".encode(), hashlib.sha256).hexdigest()[:20]
-    return {"actor_id": f"actor_{pseudo}", "email": None, "name": None, "status": "unknown_or_departed", "subject_label": subject_label}
+    identity_key = str(item.get("email") or actor_key).strip().lower() if item else actor_key
+    return {
+        "subject_label": member_subject_label(workspace, identity_key, pseudonym_salt=salt),
+        "status": "active" if item else "unknown_or_departed",
+    }
 
 
 def _group(member: Mapping[str, Any], currency: str | None, model: str | None, task_kind: str, window: Mapping[str, str]) -> dict[str, Any]:

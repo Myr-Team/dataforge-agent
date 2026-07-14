@@ -133,14 +133,14 @@ async def workspace_member_entra_invite(workspace_id: str, body: dict[str, Any],
     return await _call(invite_entra_workspace_member, workspace_id, body, request)
 
 
-@router.patch("/api/workspaces/{workspace_id}/members/{email}")
-async def workspace_member_update(workspace_id: str, email: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
-    return await _call(update_workspace_member_role, workspace_id, email, body, request)
+@router.patch("/api/workspaces/{workspace_id}/members/{subject_ref}")
+async def workspace_member_update(workspace_id: str, subject_ref: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+    return await _call(update_workspace_member_role, workspace_id, subject_ref, body, request)
 
 
-@router.delete("/api/workspaces/{workspace_id}/members/{email}")
-async def workspace_member_remove(workspace_id: str, email: str, request: Request) -> dict[str, Any]:
-    return await _call(remove_workspace_member, workspace_id, email, request)
+@router.delete("/api/workspaces/{workspace_id}/members/{subject_ref}")
+async def workspace_member_remove(workspace_id: str, subject_ref: str, request: Request) -> dict[str, Any]:
+    return await _call(remove_workspace_member, workspace_id, subject_ref, request)
 
 
 @router.get("/api/workspaces/{workspace_id}/usage-summary")
@@ -1024,7 +1024,7 @@ def workspace_member_roles(workspace_id: str, request: Request | None = None) ->
         "source": current_actor.get("source") or "workspace_default",
         "roles": ["owner", "admin", "editor", "viewer"],
         "members": [_public_workspace_member(workspace_id, member) for member in members],
-        "usage": usage,
+        "usage": _public_workspace_usage(workspace_id, usage, members_by_key),
         "permissions": _workspace_action_permissions(workspace_id, request),
         "invite": {
             "status": "available",
@@ -1056,11 +1056,32 @@ def _public_workspace_member(workspace_id: str, member: dict[str, Any]) -> dict[
     }
 
 
-def _resolve_workspace_member_email(workspace_id: str, reference: str, meta: dict[str, Any]) -> str:
-    direct = _member_email(reference)
-    if direct:
-        return direct
-    safe_reference = str(reference or "").strip().lower()
+def _public_workspace_usage(workspace_id: str, usage: dict[str, Any], members_by_key: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    rows = []
+    for item in usage.get("members") or []:
+        if not isinstance(item, dict):
+            continue
+        actor = item.get("actor") if isinstance(item.get("actor"), dict) else {}
+        actor_key = _actor_key(actor)
+        member = members_by_key.get(actor_key) if actor_key else None
+        identity_key = _actor_key(member or actor)
+        if not identity_key:
+            continue
+        rows.append({
+            "subject_label": member_subject_label(workspace_id, identity_key),
+            "usage": item.get("usage") if isinstance(item.get("usage"), dict) else {},
+            "last_seen_at": _clean_text(item.get("last_seen_at")),
+            "last_run_id": _clean_text(item.get("last_run_id")),
+        })
+    return {
+        "totals": usage.get("totals") if isinstance(usage.get("totals"), dict) else {},
+        "members": rows,
+        "source": str(usage.get("source") or "run_store"),
+    }
+
+
+def _resolve_workspace_member_subject_ref(workspace_id: str, subject_ref: str, meta: dict[str, Any]) -> str:
+    safe_reference = str(subject_ref or "").strip().lower()
     if not re.fullmatch(r"member_[0-9a-f]{40}", safe_reference):
         raise ValueError("A valid member reference is required")
     for member in _stored_workspace_members(meta):
@@ -1265,10 +1286,10 @@ def _audit_invitation_failure(request: Request | None, workspace_id: str, invita
         raise HTTPException(status_code=503, detail="Audit persistence is required") from exc
 
 
-def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
+def update_workspace_member_role(workspace_id: str, subject_ref: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "member.manage")
     meta = _load_workspace_meta(workspace_id)
-    target = _resolve_workspace_member_email(workspace_id, email, meta)
+    target = _resolve_workspace_member_subject_ref(workspace_id, subject_ref, meta)
     role = _member_role((body or {}).get("role"))
     current_actor = public_actor(actor_from_request(request))
     if target == _actor_key(current_actor):
@@ -1296,10 +1317,10 @@ def update_workspace_member_role(workspace_id: str, email: str, body: dict[str, 
     return result
 
 
-def remove_workspace_member(workspace_id: str, email: str, request: Request | None = None) -> dict[str, Any]:
+def remove_workspace_member(workspace_id: str, subject_ref: str, request: Request | None = None) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "member.manage")
     meta = _load_workspace_meta(workspace_id)
-    target = _resolve_workspace_member_email(workspace_id, email, meta)
+    target = _resolve_workspace_member_subject_ref(workspace_id, subject_ref, meta)
     current_key = _actor_key(actor_from_request(request))
     if target == current_key:
         raise ValueError("The current owner cannot be removed from the workspace")

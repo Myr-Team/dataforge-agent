@@ -12,7 +12,7 @@ import {
   roiViewModel,
   traceViewModel,
 } from "./governanceViewModel.js";
-import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard } from "./governanceRequestState.js";
+import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 import {
   Activity,
@@ -2881,6 +2881,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
   const [sys, setSys] = useState(null);
   const [memberRows, setMemberRows] = useState([]);
   const [memberMeta, setMemberMeta] = useState(null);
+  const [memberWorkspaceId, setMemberWorkspaceId] = useState("");
   const [membersLoading, setMembersLoading] = useState(false);
   const [memberLoadError, setMemberLoadError] = useState("");
   const [memberAction, setMemberAction] = useState("");
@@ -2891,35 +2892,48 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
   const [directoryState, setDirectoryState] = useState({ connected: null, users: [], error: null });
   const [directoryLoading, setDirectoryLoading] = useState(false);
   const [sendGraphInvite, setSendGraphInvite] = useState(false);
-  const [governanceData, setGovernanceData] = useState({ loading: true, trace: null, roi: null, chargeback: null, audit: null, auditRetryCursor: "", errors: {} });
+  const [governanceData, setGovernanceData] = useState(() => emptyGovernanceData("", true));
   const [governanceWindow, setGovernanceWindow] = useState(initialGovernanceWindow);
   const [governanceLoadingMore, setGovernanceLoadingMore] = useState(false);
-  const [invitationState, setInvitationState] = useState({ loading: true, data: null, error: "" });
+  const [invitationState, setInvitationState] = useState({ workspaceId: "", loading: true, data: null, error: "" });
   const governanceGuard = useRef(createGovernanceRequestGuard());
   const governanceToken = useRef(null);
   const memberRequestVersion = useRef(0);
   const invitationRequestVersion = useRef(0);
   const [workspaceSettings, setWorkspaceSettings] = useState(null);
   const [settingsDrawer, setSettingsDrawer] = useState(null);
-  const applyMemberPayload = (data) => {
+  const applyMemberPayload = (data, sourceWorkspaceId = workspaceId) => {
     setMemberRows(Array.isArray(data?.members) ? data.members : []);
     setMemberMeta(data || null);
+    setMemberWorkspaceId(sourceWorkspaceId);
   };
-  const memberPermissions = governancePermissions(memberMeta || {});
-  const memberPermissionReason = membersLoading ? "正在读取服务端操作权限" : (memberLoadError || memberPermissions.reasons["member.manage"]);
+  const memberContract = workspaceBoundMemberContract(workspaceId, memberWorkspaceId, memberRows, memberMeta);
+  const memberPermissions = governancePermissions(memberContract.meta || {});
+  const permissionsReady = memberContract.ready && !membersLoading && !memberLoadError;
+  const currentGovernanceData = workspaceBoundGovernanceData(workspaceId, governanceData);
+  const currentInvitationState = invitationState.workspaceId === workspaceId
+    ? invitationState
+    : { workspaceId, loading: Boolean(workspaceId), data: null, error: "" };
+  const memberPermissionReason = !permissionsReady ? (memberLoadError || "正在读取服务端操作权限") : memberPermissions.reasons["member.manage"];
   const loadMembersContract = async () => {
     if (!workspaceId) return;
+    const requestWorkspaceId = workspaceId;
     const requestVersion = ++memberRequestVersion.current;
+    setMemberRows([]);
+    setMemberMeta(null);
+    setMemberWorkspaceId("");
     setMembersLoading(true);
     setMemberLoadError("");
     try {
-      const data = await loadMembers(workspaceId);
+      const data = await loadMembers(requestWorkspaceId);
       if (requestVersion !== memberRequestVersion.current) return;
-      applyMemberPayload(data);
+      if (String(data?.workspace_id || requestWorkspaceId) !== requestWorkspaceId) throw new Error("workspace mismatch");
+      applyMemberPayload(data, requestWorkspaceId);
     } catch {
       if (requestVersion !== memberRequestVersion.current) return;
       setMemberRows([]);
       setMemberMeta(null);
+      setMemberWorkspaceId("");
       setMemberLoadError("成员与操作权限读取失败，请重试");
     } finally {
       if (requestVersion === memberRequestVersion.current) setMembersLoading(false);
@@ -2935,43 +2949,45 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
     const requestToken = governanceGuard.current.begin(workspaceId);
     governanceToken.current = requestToken;
     setGovernanceLoadingMore(false);
-    setGovernanceData((current) => ({ ...current, loading: true, auditRetryCursor: "", errors: {} }));
+    setGovernanceData(emptyGovernanceData(workspaceId, true));
     const [traceResult, roiResult, auditResult, chargebackResult] = await Promise.allSettled([
       loadWorkspaceTraceStatus(workspaceId),
       loadWorkspaceRoi(workspaceId, windowQuery),
-      memberPermissions.canReadAudit ? loadWorkspaceGovernanceAuditEvents(workspaceId, { limit: 25 }) : Promise.resolve(null),
-      memberPermissions.canReadChargeback ? loadWorkspaceChargeback(workspaceId, windowQuery) : Promise.resolve(null),
+      permissionsReady && memberPermissions.canReadAudit ? loadWorkspaceGovernanceAuditEvents(workspaceId, { limit: 25 }) : Promise.resolve(null),
+      permissionsReady && memberPermissions.canReadChargeback ? loadWorkspaceChargeback(workspaceId, windowQuery) : Promise.resolve(null),
     ]);
     if (!governanceGuard.current.isCurrent(requestToken, workspaceId)) return;
-    const next = { loading: false, trace: null, roi: null, chargeback: null, audit: null, auditRetryCursor: "", errors: {} };
+    const next = emptyGovernanceData(workspaceId, false);
     if (traceResult.status === "fulfilled") next.trace = traceResult.value;
     else next.errors.trace = "遥测送达状态读取失败，请重试";
     if (roiResult.status === "fulfilled") next.roi = roiResult.value;
     else next.errors.roi = "ROI 证据读取失败，请重试";
-    if (memberPermissions.canReadAudit && auditResult.status === "fulfilled") next.audit = auditResult.value;
-    else if (memberPermissions.canReadAudit) {
+    if (permissionsReady && memberPermissions.canReadAudit && auditResult.status === "fulfilled") next.audit = auditResult.value;
+    else if (permissionsReady && memberPermissions.canReadAudit) {
       next.errors.audit = "审计事件读取失败，请重试";
     }
-    if (memberPermissions.canReadChargeback && chargebackResult.status === "fulfilled") next.chargeback = chargebackResult.value;
-    else if (memberPermissions.canReadChargeback) next.errors.chargeback = "成员归因读取失败，请重试";
+    if (permissionsReady && memberPermissions.canReadChargeback && chargebackResult.status === "fulfilled") next.chargeback = chargebackResult.value;
+    else if (permissionsReady && memberPermissions.canReadChargeback) next.errors.chargeback = "成员归因读取失败，请重试";
     if (governanceGuard.current.isCurrent(requestToken, workspaceId)) setGovernanceData(next);
   };
   const loadInvitationHistory = async () => {
-    if (!workspaceId || membersLoading || memberLoadError || !memberPermissions.canReadInvitations) return;
+    if (!workspaceId || !permissionsReady || !memberPermissions.canReadInvitations) return;
+    const requestWorkspaceId = workspaceId;
     const requestVersion = ++invitationRequestVersion.current;
-    setInvitationState((current) => ({ ...current, loading: true, error: "" }));
+    setInvitationState({ workspaceId: requestWorkspaceId, loading: true, data: null, error: "" });
     try {
-      const data = await loadWorkspaceInvitationHistory(workspaceId);
-      if (requestVersion === invitationRequestVersion.current) setInvitationState({ loading: false, data, error: "" });
+      const data = await loadWorkspaceInvitationHistory(requestWorkspaceId);
+      if (requestVersion === invitationRequestVersion.current) setInvitationState({ workspaceId: requestWorkspaceId, loading: false, data, error: "" });
     } catch {
-      if (requestVersion === invitationRequestVersion.current) setInvitationState((current) => ({ ...current, loading: false, error: "邀请历史读取失败，请重试" }));
+      if (requestVersion === invitationRequestVersion.current) setInvitationState({ workspaceId: requestWorkspaceId, loading: false, data: null, error: "邀请历史读取失败，请重试" });
     }
   };
   const loadMoreGovernanceAudit = async () => {
-    const cursor = governanceData.auditRetryCursor || governanceData.audit?.next_cursor;
+    const cursor = currentGovernanceData.auditRetryCursor || currentGovernanceData.audit?.next_cursor;
     const baseToken = governanceToken.current;
-    if (!workspaceId || !cursor || !baseToken || governanceLoadingMore) return;
-    const requestToken = governanceGuard.current.capture(baseToken, cursor);
+    if (!workspaceId || currentGovernanceData.workspaceId !== workspaceId || !cursor || !baseToken || governanceLoadingMore) return;
+    const requestToken = governanceGuard.current.capture(baseToken, cursor, currentGovernanceData.workspaceId);
+    if (!requestToken) return;
     setGovernanceLoadingMore(true);
     try {
       const page = await loadWorkspaceGovernanceAuditEvents(workspaceId, { limit: 25, cursor });
@@ -2992,15 +3008,27 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
     if (!workspaceId) {
       setMemberRows([]);
       setMemberMeta(null);
+      setMemberWorkspaceId("");
       setMemberLoadError("");
       memberRequestVersion.current += 1;
       invitationRequestVersion.current += 1;
       governanceGuard.current.begin("");
       setGovernanceLoadingMore(false);
-      setGovernanceData({ loading: false, trace: null, roi: null, chargeback: null, audit: null, auditRetryCursor: "", errors: {} });
-      setInvitationState({ loading: false, data: null, error: "" });
+      governanceToken.current = null;
+      setGovernanceData(emptyGovernanceData("", false));
+      setInvitationState({ workspaceId: "", loading: false, data: null, error: "" });
       return undefined;
     }
+    setMemberRows([]);
+    setMemberMeta(null);
+    setMemberWorkspaceId("");
+    setMemberLoadError("");
+    setDirectoryState({ connected: null, users: [], error: null });
+    setDirectoryQuery("");
+    governanceToken.current = null;
+    governanceGuard.current.begin(workspaceId);
+    setGovernanceData(emptyGovernanceData(workspaceId, true));
+    setInvitationState({ workspaceId, loading: true, data: null, error: "" });
     loadMembersContract();
     return () => { memberRequestVersion.current += 1; };
   }, [workspaceId]);
@@ -3015,17 +3043,17 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
   useEffect(() => {
     loadGovernanceEvidence();
     return () => { governanceGuard.current.begin(""); };
-  }, [workspaceId, governanceWindow.from, governanceWindow.to, memberPermissions.canReadAudit, memberPermissions.canReadChargeback]);
+  }, [workspaceId, governanceWindow.from, governanceWindow.to, permissionsReady, memberPermissions.canReadAudit, memberPermissions.canReadChargeback]);
   useEffect(() => {
-    if (membersLoading || memberLoadError) return undefined;
+    if (!permissionsReady) return undefined;
     if (!memberPermissions.canReadInvitations) {
       invitationRequestVersion.current += 1;
-      setInvitationState({ loading: false, data: null, error: "" });
+      setInvitationState({ workspaceId, loading: false, data: null, error: "" });
       return undefined;
     }
     loadInvitationHistory();
     return () => { invitationRequestVersion.current += 1; };
-  }, [workspaceId, membersLoading, memberLoadError, memberPermissions.canReadInvitations]);
+  }, [workspaceId, permissionsReady, memberPermissions.canReadInvitations]);
   useEffect(() => {
     const nodes = SETTINGS_ICON_SRCS.map((href) => {
       const node = document.createElement("link");
@@ -3206,8 +3234,8 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
     : connOk === connectors.length
       ? "全部连接器健康"
       : connOk + " / " + connectors.length + " 个连接器可用";
-  const members = useMemo(() => displayMembersFromApi(memberRows), [memberRows]);
-  const usageTotals = memberMeta?.usage?.totals || {};
+  const members = useMemo(() => displayMembersFromApi(memberContract.rows), [memberContract.rows]);
+  const usageTotals = memberContract.meta?.usage?.totals || {};
   const settingsDrawerCopy = {
     models: {
       title: "模型与生成管理",
@@ -3318,10 +3346,10 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
           ) : tab === "governance" ? (
             <div className="set-governance">
               <GovernanceSummaryPanel
-                data={governanceData}
-                invitationState={invitationState}
-                permissionsPayload={memberMeta}
-                permissionState={{ loading: membersLoading, error: memberLoadError }}
+                data={currentGovernanceData}
+                invitationState={currentInvitationState}
+                permissionsPayload={memberContract.meta}
+                permissionState={{ loading: membersLoading || (!permissionsReady && !memberLoadError), error: memberLoadError }}
                 windowValue={governanceWindow}
                 onWindowChange={setGovernanceWindow}
                 onRetry={loadGovernanceEvidence}
@@ -3423,7 +3451,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
               <div className="member-usage-strip">
                 <span>Runs <b>{formatCount(usageTotals.runs)}</b></span>
                 <span>Tokens <b>{formatGovernanceTokens(usageTotals)}</b></span>
-                <span>Source <b>{memberMeta?.source || "easy_auth"}</b></span>
+                <span>Source <b>{memberContract.meta?.source || "未载入"}</b></span>
               </div>
               {members.map((m, i) => (
                 <div className="set-member" key={i}>

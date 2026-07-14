@@ -6,15 +6,28 @@ import {
   auditPageSuccess,
   createGovernanceRequestGuard,
 } from "./governanceRequestState.js";
+import * as governanceState from "./governanceRequestState.js";
 
 test("stale audit cursor response cannot commit after workspace generation changes", () => {
   const guard = createGovernanceRequestGuard();
   const workspaceA = guard.begin("workspace-a");
   const cursorRequest = guard.capture(workspaceA, "cursor-a");
-  guard.begin("workspace-b");
+  const workspaceB = guard.begin("workspace-b");
 
   assert.equal(guard.isCurrent(cursorRequest, "workspace-b"), false);
   assert.equal(guard.isCurrent(cursorRequest, "workspace-a"), false);
+  assert.equal(guard.capture(workspaceB, "cursor-a", "workspace-a"), null);
+  assert.equal(guard.capture(workspaceB, "cursor-b", "workspace-b")?.cursor, "cursor-b");
+
+  assert.equal(typeof governanceState.workspaceBoundMemberContract, "function");
+  assert.deepEqual(
+    governanceState.workspaceBoundMemberContract("workspace-b", "workspace-a", [{ subject_label: "member_old" }], { permissions: { actions: { "member.manage": true } } }),
+    { ready: false, rows: [], meta: null },
+  );
+  assert.deepEqual(
+    governanceState.workspaceBoundGovernanceData("workspace-b", { workspaceId: "workspace-a", audit: { events: [{ revision: 2 }], next_cursor: "cursor-a" }, auditRetryCursor: "cursor-a" }),
+    { workspaceId: "workspace-b", loading: true, trace: null, roi: null, chargeback: null, audit: null, auditRetryCursor: "", errors: {} },
+  );
 });
 
 test("cursor failure preserves loaded events and retries the same cursor", () => {

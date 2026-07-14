@@ -197,17 +197,16 @@ def test_chargeback_uses_actor_id_and_current_membership_not_telemetry_profile()
         pseudonym_salt="test-salt",
     )
 
-    owner = next(row for row in result["members"] if row["member"]["actor_id"] == "actor-owner")
+    owner = next(row for row in result["members"] if row["member"]["status"] == "active")
     unknown = next(row for row in result["members"] if row["member"]["status"] == "unknown_or_departed")
-    assert owner["member"]["email"] == "owner@example.com"
     assert re.fullmatch(r"member_[0-9a-f]{40}", owner["member"]["subject_label"])
     assert re.fullmatch(r"member_[0-9a-f]{40}", unknown["member"]["subject_label"])
     assert owner["member"]["subject_label"] != unknown["member"]["subject_label"]
-    assert "spoofed@example.com" not in str(result)
-    assert "leak@example.com" not in str(result)
-    assert unknown["member"]["email"] is None
-    assert unknown["member"]["name"] is None
-    assert unknown["member"]["actor_id"].startswith("actor_")
+    assert set(owner["member"]) == {"subject_label", "status"}
+    assert set(unknown["member"]) == {"subject_label", "status"}
+    serialized = str(result)
+    for raw in ("actor-owner", "actor-departed", "tenant-a", "owner@example.com", "Owner", "spoofed@example.com", "leak@example.com"):
+        assert raw not in serialized
 
 
 def test_message_only_chargeback_never_turns_missing_model_cost_into_zero() -> None:

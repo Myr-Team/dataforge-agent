@@ -130,3 +130,40 @@ This section supersedes the earlier frontend-only scope statement and the concer
 ### Remaining Risk
 
 Safe invitation/member labels depend on a stable server-only `DF_INVITATION_PSEUDONYM_SALT` or existing `DF_WEB_PROXY_SECRET`. The contract intentionally returns 503 instead of emitting guessable labels when neither is configured; rotating that salt changes displayed pseudonyms but does not alter journal history or authorization.
+
+## R2 Important-Finding Remediation (2026-07-14)
+
+This pass is limited to the four R2 Important findings and the directly related safe member-reference route cleanup. Easy Auth configuration and tracked `output/` content were not changed.
+
+| R2 finding | Implemented result |
+|---|---|
+| Workspace switch isolation | Member rows, member metadata, derived governance permissions, directory search state, invitation state, governance evidence, audit rows, next cursor, and retry cursor are cleared or workspace-bound immediately. Member and restricted governance actions remain unavailable until the new workspace members contract loads successfully. |
+| Audit generation isolation | Audit page tokens now require the active workspace and matching data workspace. A new generation cannot capture an old workspace cursor, and stale responses cannot commit. |
+| API identity removal | The public members usage projection and chargeback rows expose bounded `subject_label` values instead of raw email, actor ID, tenant ID, or name. Tests inspect the complete serialized response. |
+| Cross-contract attribution | Members, invitation history, and chargeback use the shared server-only member pseudonym helper and salt resolution. The same workspace identity receives the same `member_<HMAC>` label across all three contracts. |
+| Safe member mutation references | PATCH/DELETE resolve only `member_<HMAC>` subject references. Raw email route input is rejected; route and helper parameters are named `subject_ref`. |
+
+### R2 Files Changed
+
+- `backend/control_plane.py`: workspace-safe member usage projection, subject-reference-only mutations, and shared public labels.
+- `backend/invitation_store.py`: shared member pseudonym salt resolution.
+- `backend/roi_service.py`: redacted chargeback member projection using the shared pseudonym helper.
+- `tests/test_actor_audit_usage.py`: complete serialized member/chargeback identity-redaction assertions.
+- `tests/test_entra_member_invites.py`: shared-label contract and raw-email mutation rejection coverage.
+- `tests/test_roi_service.py`: chargeback redaction coverage.
+- `web/src/api.js`: subject-reference member mutation parameters.
+- `web/src/components.jsx`: immediate workspace-bound member, permission, invitation, governance, and audit reset behavior.
+- `web/src/governanceRequestState.js`: member/governance workspace binding and cursor-generation checks.
+- `web/src/governanceRequestState.test.mjs`: switch-window and old-cursor capture regression tests.
+
+### R2 Verification Before Commit
+
+- `python -m pytest tests/test_entra_member_invites.py tests/test_actor_audit_usage.py tests/test_roi_service.py tests/test_foundry_roi.py tests/test_workspace_roles.py -q`: **184 passed in 14.21s**.
+- `node --test src/*.test.mjs` from `web`: **50 passed, 0 failed** in 380.06ms.
+- `npm run build` from `web`: **passed**, Vite transformed **1,756 modules** in 1.30s.
+- `git diff --check`: **passed**.
+- R2 Playwright desktop/mobile rerun: **pending after this commit at the user's direction**. The earlier follow-up's 24/24 result and screenshot paths above predate the R2 changes and are not claimed as R2 evidence.
+
+### R2 Remaining Verification
+
+Run the existing desktop/mobile review fixtures after commit, with emphasis on the workspace-switch loading window, old-cursor rejection, member action disablement, and absence of raw identity in rendered governance surfaces. Store all resulting screenshots and machine-readable results only under untracked `output/`.

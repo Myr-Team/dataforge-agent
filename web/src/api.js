@@ -297,14 +297,14 @@ export async function inviteWorkspaceEntraMember(workspaceId, payload) {
   });
 }
 
-export async function removeWorkspaceMember(workspaceId, email) {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(email)}`, {
+export async function removeWorkspaceMember(workspaceId, subjectRef) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(subjectRef)}`, {
     method: "DELETE",
   });
 }
 
-export async function updateWorkspaceMemberRole(workspaceId, email, role) {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(email)}`, {
+export async function updateWorkspaceMemberRole(workspaceId, subjectRef, role) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(subjectRef)}`, {
     method: "PATCH",
     body: JSON.stringify({ role }),
   });
@@ -493,11 +493,11 @@ export async function inviteMember(workspaceId, payload) {
 export async function inviteEntraMember(workspaceId, payload) {
   return inviteWorkspaceEntraMember(workspaceId, payload);
 }
-export async function removeMember(workspaceId, email) {
-  return removeWorkspaceMember(workspaceId, email);
+export async function removeMember(workspaceId, subjectRef) {
+  return removeWorkspaceMember(workspaceId, subjectRef);
 }
-export async function updateMemberRole(workspaceId, email, role) {
-  return updateWorkspaceMemberRole(workspaceId, email, role);
+export async function updateMemberRole(workspaceId, subjectRef, role) {
+  return updateWorkspaceMemberRole(workspaceId, subjectRef, role);
 }
 
 export async function dwConnectorCapabilities(workspaceId) {

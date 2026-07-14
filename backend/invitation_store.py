@@ -227,7 +227,7 @@ def list_invitation_history(
     value = _read(workspace_id, meta)
     events = value.get("workspace_invitation_events") or []
     _validate_events(events)
-    salt = _pseudonym_salt(pseudonym_salt)
+    salt = member_pseudonym_salt(pseudonym_salt)
 
     records: dict[str, dict[str, Any]] = {}
     for raw in events:
@@ -280,13 +280,15 @@ def member_subject_label(workspace_id: str, identity_key: str, *, pseudonym_salt
     identity = _clean(identity_key).lower()
     if not identity:
         raise InvitationPersistenceError("member identity is unavailable for safe projection")
-    return _history_pseudonym("member", workspace_id, identity, _pseudonym_salt(pseudonym_salt))
+    return _history_pseudonym("member", workspace_id, identity, member_pseudonym_salt(pseudonym_salt))
 
 
-def _pseudonym_salt(value: str | None = None) -> str:
+def member_pseudonym_salt(value: str | None = None) -> str:
     salt = str(
         value
+        or os.environ.get("DF_MEMBER_PSEUDONYM_SALT")
         or os.environ.get("DF_INVITATION_PSEUDONYM_SALT")
+        or os.environ.get("DF_ROI_PSEUDONYM_SALT")
         or os.environ.get("DF_WEB_PROXY_SECRET")
         or ""
     ).strip()
@@ -633,6 +635,7 @@ __all__ = [
     "create_pending_invitation",
     "effective_invitation_state",
     "list_invitation_history",
+    "member_pseudonym_salt",
     "member_subject_label",
     "revoke_effective_invitations",
     "transition_invitation",

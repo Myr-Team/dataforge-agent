@@ -1,6 +1,7 @@
 import base64
 import importlib
 import json
+import re
 import secrets
 from urllib.parse import quote
 
@@ -411,7 +412,12 @@ def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(
         headers=owner_headers,
     )
     assert allowed.status_code == 200
-    assert allowed.json()["members"][0]["member"]["email"] == "owner@example.com"
+    member = allowed.json()["members"][0]["member"]
+    assert re.fullmatch(r"member_[0-9a-f]{40}", member["subject_label"])
+    assert member["status"] == "active"
+    serialized = json.dumps(allowed.json())
+    for raw_identity in ("owner@example.com", "spoofed@example.com", "owner-oid", "tenant-1", "Owner"):
+        assert raw_identity not in serialized
     assert "spoofed@example.com" not in allowed.text
 
 
@@ -647,10 +653,19 @@ def test_member_contract_returns_only_safe_subject_labels_for_settings(monkeypat
     monkeypatch.setattr(control_plane, "default_actor", lambda: actor)
     monkeypatch.setattr(control_plane, "rbac_enabled", lambda: False)
     monkeypatch.setattr(control_plane, "_workspace_invited_members", lambda _workspace_id: [{"email": "reviewer@contoso.com", "name": "Reviewer", "actor_id": "reviewer-raw-oid", "tenant_id": "tenant-secret", "role": "editor", "status": "active"}])
-    monkeypatch.setattr(control_plane, "_workspace_usage_by_actor", lambda _workspace_id: {"members": [], "totals": {}})
+    monkeypatch.setattr(control_plane, "_workspace_usage_by_actor", lambda _workspace_id: {
+        "members": [{
+            "actor": {"email": "reviewer@contoso.com", "actor_id": "reviewer-raw-oid", "tenant_id": "tenant-secret", "name": "Reviewer"},
+            "usage": {"runs": 1, "total_tokens": 12},
+            "last_seen_at": "2026-07-14T00:00:00Z",
+            "last_run_id": "run-private",
+        }],
+        "totals": {"runs": 1, "total_tokens": 12},
+        "source": "run_store",
+    })
 
     result = control_plane.workspace_member_roles("ws-safe-members", object())
-    serialized = json.dumps(result["members"])
+    serialized = json.dumps(result)
 
     assert len(result["members"]) == 2
     assert all(set(member).issubset({"subject_label", "role", "status", "source", "usage", "last_seen_at", "invited_at", "updated_at"}) for member in result["members"])

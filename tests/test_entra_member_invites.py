@@ -282,9 +282,10 @@ def test_removal_fails_closed_when_effective_invitation_revocation_cannot_persis
         encoding="utf-8",
     )
     monkeypatch.setattr(control_plane, "revoke_effective_invitations", lambda *args, **kwargs: (_ for _ in ()).throw(invitation_store.InvitationPersistenceError("conflict")))
+    subject_label = invitation_store.member_subject_label("ws-graph", "reviewer@contoso.com")
 
     with pytest.raises(invitation_store.InvitationPersistenceError, match="conflict"):
-        control_plane.remove_workspace_member("ws-graph", "reviewer@contoso.com", RequestStub())
+        control_plane.remove_workspace_member("ws-graph", subject_label, RequestStub())
 
     assert json.loads(workspace_path.read_text(encoding="utf-8"))["workspace_members"][0]["email"] == "reviewer@contoso.com"
 
@@ -318,7 +319,8 @@ def test_remove_after_reinvite_revokes_the_new_and_prior_effective_invitations(t
         encoding="utf-8",
     )
 
-    control_plane.remove_workspace_member("ws-graph", "reviewer@contoso.com", RequestStub())
+    subject_label = invitation_store.member_subject_label("ws-graph", "reviewer@contoso.com")
+    control_plane.remove_workspace_member("ws-graph", subject_label, RequestStub())
 
     saved = json.loads(workspace_path.read_text(encoding="utf-8"))
     assert saved["workspace_members"] == []
@@ -667,6 +669,7 @@ def test_invitation_history_keeps_same_subject_terminal_attempts_separate_after_
     invitation_store.transition_invitation(meta, failed["invitation_id"], "failed")
     accepted = invitation_store.create_pending_invitation(meta, "ws-graph", email="same@contoso.com", role="editor", invited_by=inviter)
     invitation_store.transition_invitation(meta, accepted["invitation_id"], "accepted", identity={"actor_id": "member-oid", "tenant_id": "tenant-1", "source": "easy_auth"})
+    meta["workspace_members"] = [{"email": "same@contoso.com", "actor_id": "member-oid", "tenant_id": "tenant-1", "role": "editor", "status": "active"}]
     workspace_path.write_text(json.dumps(meta), encoding="utf-8")
 
     first = control_plane.workspace_invitation_history("ws-graph")
@@ -677,6 +680,27 @@ def test_invitation_history_keeps_same_subject_terminal_attempts_separate_after_
     assert first[0]["subject_label"] == first[1]["subject_label"]
     assert first[0]["invitation_ref"] != first[1]["invitation_ref"]
     assert "same@contoso.com" not in json.dumps(first)
+
+    member_contract = control_plane.workspace_member_roles("ws-graph", RequestStub())
+    from backend.roi_service import member_chargeback
+    chargeback = member_chargeback(
+        "ws-graph",
+        {"from": "2026-07-01T00:00:00Z", "to": "2026-07-31T00:00:00Z"},
+        runs=[{
+            "workspace_id": "ws-graph",
+            "completed_at": "2026-07-14T00:00:00Z",
+            "trusted_identity": True,
+            "actor": {"email": "same@contoso.com", "actor_id": "member-oid", "tenant_id": "tenant-1", "source": "easy_auth"},
+            "models": [{"model": "gpt-5", "usage": {"input_tokens": 1, "output_tokens": 1}}],
+        }],
+        messages=[],
+        tasks=[],
+        memberships=[{"email": "same@contoso.com", "actor_id": "member-oid", "tenant_id": "tenant-1", "status": "active"}],
+        prices=[],
+        pseudonym_salt="history-reload-salt",
+    )
+    member_label = next(row["subject_label"] for row in member_contract["members"] if row["role"] == "editor")
+    assert first[0]["subject_label"] == member_label == chargeback["members"][0]["member"]["subject_label"]
 
 
 def test_update_workspace_member_role_persists_role_change(tmp_path, monkeypatch):
@@ -701,10 +725,11 @@ def test_update_workspace_member_role_persists_role_change(tmp_path, monkeypatch
     )
     uploads = []
     monkeypatch.setattr(control_plane, "upload_blob_json", lambda *args, **kwargs: uploads.append(args) or {}, raising=False)
+    subject_label = invitation_store.member_subject_label("ws-graph", "reviewer@contoso.com")
 
     result = control_plane.update_workspace_member_role(
         "ws-graph",
-        "reviewer@contoso.com",
+        subject_label,
         {"role": "viewer"},
         RequestStub(),
     )
@@ -729,6 +754,11 @@ def test_member_management_accepts_safe_subject_reference_without_public_email(t
         encoding="utf-8",
     )
     subject_label = invitation_store.member_subject_label("ws-graph", "reviewer@contoso.com")
+
+    with pytest.raises(ValueError, match="member reference"):
+        control_plane.update_workspace_member_role("ws-graph", "reviewer@contoso.com", {"role": "viewer"}, RequestStub())
+    with pytest.raises(ValueError, match="member reference"):
+        control_plane.remove_workspace_member("ws-graph", "reviewer@contoso.com", RequestStub())
 
     updated = control_plane.update_workspace_member_role("ws-graph", subject_label, {"role": "viewer"}, RequestStub())
     removed = control_plane.remove_workspace_member("ws-graph", subject_label, RequestStub())
