@@ -82,7 +82,11 @@ def build_experiment_ledger(
     outcome_items = [item for item in (outcomes or []) if isinstance(item, dict)]
     versions: list[dict[str, Any]] = []
     version_aliases: dict[str, str] = {}
-    unresolved_lineage: set[str] = set()
+    unresolved_lineage: set[str] = (
+        {"lineage-storage-unavailable"}
+        if registry_state.get("read_status") == "error"
+        else set()
+    )
 
     for run in analysis_runs:
         run_id = str(run.get("run_id") or run.get("conversation_id") or "").strip()
@@ -183,7 +187,12 @@ def build_experiment_ledger(
             ),
         }
         version["decision_delta"] = _decision_delta(previous, version)
-        should_promote = previous is None or version["evidence_changed"] or bool(version["decision_delta"]["changes"])
+        should_promote = bool(
+            persisted_ordinal > 0
+            or previous is None
+            or version["evidence_changed"]
+            or version["decision_delta"]["changes"]
+        )
         if should_promote:
             versions.append(version)
             version_aliases[run_id] = run_id

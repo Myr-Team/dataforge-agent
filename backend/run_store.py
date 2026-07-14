@@ -629,8 +629,21 @@ def hydrate_canonical_experiment_runs(
     }
     unresolved: set[str] = set()
     confirmed_snapshots: set[str] = set()
+    canonical_ordinals: dict[str, int] = {}
     registry = authoritative_run_registry(workspace_id)
     lineage_state = workspace_lineage_state(workspace_id)
+
+    def use_authoritative_payload(run_id: str, payload: dict[str, Any]) -> None:
+        authoritative = copy.deepcopy(payload)
+        if run_id in canonical_ordinals:
+            authoritative["_canonical_ordinal"] = canonical_ordinals[run_id]
+        hydrated[:] = [
+            item
+            for item in hydrated
+            if str(item.get("run_id") or "").strip() != run_id
+        ]
+        hydrated.append(authoritative)
+        by_id[run_id] = authoritative
 
     if registry.get("read_status") == "error" or lineage_state.get("read_status") == "error":
         unresolved.update(
@@ -638,6 +651,8 @@ def hydrate_canonical_experiment_runs(
             for item in hydrated
             if str(item.get("run_id") or "")
         )
+        if not unresolved:
+            unresolved.add("lineage-storage-unavailable")
         return [
             item
             for item in hydrated
@@ -662,14 +677,8 @@ def hydrate_canonical_experiment_runs(
             if isinstance(target, dict) and _lineage_record_matches(record, target):
                 canonical_ordinal = int(record.get("ordinal") or 0)
                 if canonical_ordinal:
-                    target["_canonical_ordinal"] = canonical_ordinal
-                if run_id not in by_id:
-                    by_id[run_id] = target
-                    hydrated.append(target)
-                else:
-                    by_id[run_id].update({key: value for key, value in target.items() if key.startswith("canonical_")})
-                    if canonical_ordinal:
-                        by_id[run_id]["_canonical_ordinal"] = canonical_ordinal
+                    canonical_ordinals[run_id] = canonical_ordinal
+                use_authoritative_payload(run_id, target)
             else:
                 unresolved.add(run_id)
         for record in lineage_state.get("attachment_history") or []:
@@ -678,9 +687,7 @@ def hydrate_canonical_experiment_runs(
                 continue
             snapshot = _load_authoritative_run(snapshot_id)
             if isinstance(snapshot, dict) and _attachment_record_matches(record, snapshot):
-                if snapshot_id not in by_id:
-                    by_id[snapshot_id] = snapshot
-                    hydrated.append(snapshot)
+                use_authoritative_payload(snapshot_id, snapshot)
             else:
                 unresolved.add(snapshot_id)
         if lineage_state.get("lineage_history_complete") is False:
@@ -695,8 +702,7 @@ def hydrate_canonical_experiment_runs(
             if target_id and target_id not in by_id and _lineage_envelope_matches(source, target_id):
                 target = _load_authoritative_run(target_id)
                 if isinstance(target, dict):
-                    by_id[target_id] = target
-                    hydrated.append(target)
+                    use_authoritative_payload(target_id, target)
             if trusted_canonical_experiment_run_id(workspace_id, source, by_id, registry) is None:
                 unresolved.add(source_id)
 
@@ -712,8 +718,7 @@ def hydrate_canonical_experiment_runs(
         if source_id not in by_id:
             target = _load_authoritative_run(source_id)
             if isinstance(target, dict):
-                by_id[source_id] = target
-                hydrated.append(target)
+                use_authoritative_payload(source_id, target)
         target = by_id.get(source_id)
         if (
             not isinstance(target, dict)
@@ -1272,6 +1277,7 @@ def purge_workspace_runs(workspace_id: str) -> dict[str, Any]:
     run_ids = sorted(item for item in run_ids if item)
     deleted_local = 0
     deleted_blob = 0
+    deletion_confirmed = True
     for run_id in run_ids:
         safe = _safe_name(run_id)
         path = RUN_DIR / f"{safe}.json"
@@ -1281,8 +1287,23 @@ def purge_workspace_runs(workspace_id: str) -> dict[str, Any]:
                 deleted_local += 1
             except Exception:
                 pass
-        if delete_blob_name(f"{RUN_BLOB_PREFIX}/{safe}.json"):
-            deleted_blob += 1
+        if path.exists():
+            deletion_confirmed = False
+        if blob_configured():
+            if delete_blob_name(f"{RUN_BLOB_PREFIX}/{safe}.json"):
+                deleted_blob += 1
+            if _load_authoritative_run_read(run_id).status != "missing":
+                deletion_confirmed = False
+    if not deletion_confirmed:
+        return {
+            "workspace_id": workspace_id,
+            "run_ids": run_ids,
+            "deleted_local_runs": deleted_local,
+            "deleted_blob_runs": deleted_blob,
+            "registry_updated": False,
+            "lineage_updated": False,
+            "status": "unavailable",
+        }
     registry_updated = False
     for _attempt in range(8 if blob_configured() else 1):
         registry = authoritative_run_registry()
@@ -1767,6 +1788,65 @@ def _confirmed_authoritative_run(
     return persisted if confirmed else None
 
 
+def _workspace_lineage_write_guard(workspace_id: str) -> dict[str, Any] | None:
+    state = workspace_lineage_state(workspace_id)
+    if state.get("read_status") == "error" or str(state.get("status") or "") == "purging":
+        return None
+    return {
+        "present": bool(state),
+        "revision": int(state.get("revision") or 0),
+        "status": str(state.get("status") or ""),
+    }
+
+
+def _workspace_lineage_guard_matches(workspace_id: str, guard: dict[str, Any]) -> bool:
+    state = workspace_lineage_state(workspace_id)
+    if state.get("read_status") == "error" or str(state.get("status") or "") == "purging":
+        return False
+    if bool(state) != bool(guard.get("present")):
+        return False
+    return (
+        int(state.get("revision") or 0) == int(guard.get("revision") or 0)
+        and str(state.get("status") or "") == str(guard.get("status") or "")
+    )
+
+
+def _workspace_write_unavailable(
+    run: dict[str, Any],
+    registry: dict[str, Any],
+    warning: str,
+) -> dict[str, Any]:
+    run_id = str(run.get("run_id") or "")
+    persisted_result = _load_authoritative_run_read(run_id)
+    persisted = persisted_result.value if persisted_result.status == "present" else None
+    if (
+        isinstance(persisted, dict)
+        and _is_completed_analysis(persisted)
+        and _registry_envelope_matches_run(
+            _registry_entry(registry, run_id),
+            persisted,
+            _LINEAGE_ENVELOPE_KEYS,
+        )
+    ):
+        unavailable = copy.deepcopy(persisted)
+    else:
+        unavailable = copy.deepcopy(run)
+        if _is_completed_analysis(unavailable):
+            _mark_canonical_lineage_unresolved(unavailable, candidate=True)
+        if str(unavailable.get("version_kind") or "") in {"plan_draft", "artifact_generation"}:
+            unavailable["experiment_attachment"] = False
+            unavailable["attachment_commit_status"] = "candidate"
+            unavailable.pop("attachment_commit_id", None)
+            unavailable.pop("attachment_payload_sha256", None)
+    unavailable["persistence"] = {
+        "mode": "unavailable",
+        "confirmed": False,
+        "update_status": "unavailable",
+        "warning": warning,
+    }
+    return _replace_run(run, unavailable)
+
+
 def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
     with _LOCK:
         return _persist_run_locked(run)
@@ -1796,8 +1876,16 @@ def _persist_run_locked(run: dict[str, Any]) -> dict[str, Any]:
             "warning": "durable run registry read is unavailable",
         }
         return _replace_run(run, unavailable)
+    workspace_id = str(run.get("workspace_id") or "")
+    lineage_guard = _workspace_lineage_write_guard(workspace_id)
+    if lineage_guard is None:
+        return _workspace_write_unavailable(
+            run,
+            registry,
+            "workspace lineage is unavailable or purging",
+        )
     if _is_completed_analysis(run):
-        protected = _confirmed_authoritative_run(str(run.get("workspace_id") or ""), str(run.get("run_id") or ""), registry)
+        protected = _confirmed_authoritative_run(workspace_id, str(run.get("run_id") or ""), registry)
         if protected and not _registry_envelope_matches_run(
             _run_summary(protected), run, _LINEAGE_ENVELOPE_KEYS
         ):
@@ -1809,17 +1897,17 @@ def _persist_run_locked(run: dict[str, Any]) -> dict[str, Any]:
             }
             return _replace_run(run, protected)
         if protected:
-            return _persist_confirmed_run_update(run, path, blob_name)
+            return _persist_confirmed_run_update(run, path, blob_name, lineage_guard)
         if _registry_envelope_matches_run(
             _registry_entry(registry, str(run.get("run_id") or "")),
             run,
             _LINEAGE_ENVELOPE_KEYS,
         ):
-            return _persist_confirmed_run_update(run, path, blob_name)
+            return _persist_confirmed_run_update(run, path, blob_name, lineage_guard)
         return _commit_analysis_candidate(run, path, blob_name)
     if str(run.get("version_kind") or "") in {"plan_draft", "artifact_generation"}:
         return _commit_snapshot_candidate(run, path, blob_name)
-    return _persist_generic_run(run, path, blob_name)
+    return _persist_generic_run(run, path, blob_name, lineage_guard)
 
 
 def _commit_analysis_candidate(run: dict[str, Any], path: Path, blob_name: str) -> dict[str, Any]:
@@ -2026,9 +2114,17 @@ def _strip_lineage_for_comparison(run: dict[str, Any], *, sequence: int) -> dict
     return result
 
 
-def _persist_confirmed_run_update(run: dict[str, Any], path: Path, blob_name: str) -> dict[str, Any]:
+def _persist_confirmed_run_update(
+    run: dict[str, Any],
+    path: Path,
+    blob_name: str,
+    lineage_guard: dict[str, Any],
+) -> dict[str, Any]:
+    workspace_id = str(run.get("workspace_id") or "")
     for _attempt in range(8 if blob_configured() else 1):
         registry = authoritative_run_registry()
+        if not _workspace_lineage_guard_matches(workspace_id, lineage_guard):
+            return _workspace_write_unavailable(run, registry, "workspace lineage changed during run update")
         summary_before = _registry_entry(registry, str(run.get("run_id") or ""))
         lineage_state = workspace_lineage_state(str(run.get("workspace_id") or ""))
         state_record = _state_lineage_record(lineage_state, str(run.get("run_id") or ""))
@@ -2045,6 +2141,8 @@ def _persist_confirmed_run_update(run: dict[str, Any], path: Path, blob_name: st
         committed = _commit_registry_summary(registry, summary)
         if committed is None:
             continue
+        if not _workspace_lineage_guard_matches(workspace_id, lineage_guard):
+            return _workspace_write_unavailable(run, committed, "workspace lineage changed during run update")
         run["registry_summary"] = summary
         run["persistence"] = {
             "mode": "local_and_blob" if blob_configured() else "local",
@@ -2061,6 +2159,8 @@ def _persist_confirmed_run_update(run: dict[str, Any], path: Path, blob_name: st
                     "error": f"{type(exc).__name__}: {exc}"[:500],
                 }
                 return run
+            if not _workspace_lineage_guard_matches(workspace_id, lineage_guard):
+                return _workspace_write_unavailable(run, committed, "workspace lineage changed during run update")
             try:
                 _write_run_file(path, run)
             except Exception as exc:
@@ -2185,18 +2285,31 @@ def _commit_snapshot_candidate(run: dict[str, Any], path: Path, blob_name: str) 
     return _replace_run(run, candidate)
 
 
-def _persist_generic_run(run: dict[str, Any], path: Path, blob_name: str) -> dict[str, Any]:
+def _persist_generic_run(
+    run: dict[str, Any],
+    path: Path,
+    blob_name: str,
+    lineage_guard: dict[str, Any],
+) -> dict[str, Any]:
+    workspace_id = str(run.get("workspace_id") or "")
     summary = _run_summary(run)
     committed = None
     for _attempt in range(8 if blob_configured() else 1):
-        committed = _commit_registry_summary(authoritative_run_registry(), summary)
+        registry = authoritative_run_registry()
+        if not _workspace_lineage_guard_matches(workspace_id, lineage_guard):
+            return _workspace_write_unavailable(run, registry, "workspace lineage changed during run completion")
+        committed = _commit_registry_summary(registry, summary)
         if committed is not None:
             break
     try:
         if committed is None:
             raise RuntimeError("run registry conditional update could not be confirmed")
+        if not _workspace_lineage_guard_matches(workspace_id, lineage_guard):
+            return _workspace_write_unavailable(run, committed, "workspace lineage changed during run completion")
         if blob_configured():
             upload_blob_json(blob_name, run)
+            if not _workspace_lineage_guard_matches(workspace_id, lineage_guard):
+                return _workspace_write_unavailable(run, committed, "workspace lineage changed during run completion")
         run["persistence"] = {"mode": "local_and_blob" if blob_configured() else "local", "confirmed": True}
     except Exception as exc:
         run["persistence"] = {"mode": "local_only", "confirmed": False, "error": f"{type(exc).__name__}: {exc}"[:500]}

@@ -399,3 +399,39 @@ GREEN commands and results:
 
 - Blob Storage has no multi-blob atomic transaction. Recovery is demand-driven by a later reservation or purge and uses a five-minute stale threshold; during that interval the workspace remains unavailable rather than exposing partial lineage.
 - Workspace lineage retains at most 512 analysis/canonical records and 1,024 attachment records. Stable ordinals are preserved, but exceeding a bound marks history incomplete and the public ledger unavailable instead of returning an incorrect partial ledger.
+
+## R10 Final Integrity Fixes
+
+### Behavior
+
+- Canonical hydration now replaces any same-ID local candidate with a deep copy of the complete authoritative run Blob after the existing strict registry, lineage-envelope, and content-hash checks. Verdict, evidence, decision fields, and attachment payloads therefore come from the validated Blob rather than a local/remote field merge. Canonical ordinals are added only from trusted persisted canonical-history records.
+- Registry or workspace-lineage read failure emits the bounded sentinel `lineage-storage-unavailable` even when no initial runs exist. An empty input can no longer produce a resolved empty ledger when durable state is unreadable.
+- Persisted canonical-history ordinals force canonical ledger membership. Current evidence/outcome normalization still computes display deltas, but it cannot deduplicate or revoke a historically committed canonical version.
+- All persistence paths check the workspace lifecycle before dispatch. Generic completion and confirmed-run update paths retain and revalidate the lineage revision/status guard before registry commit, Blob publication, and local publication; a purge transition returns bounded unavailable state without claiming persistence.
+- Purge verifies local absence and performs a strict post-delete read for every run Blob. Only a confirmed missing Blob permits registry removal and the final `purged` transition. A present Blob, malformed response, or transient read error leaves the workspace in `purging` with unavailable status.
+
+### R10 TDD Evidence
+
+Initial focused RED command:
+
+`python -m pytest -q tests/test_artifact_version_snapshot.py::test_hydration_replaces_local_candidate_with_exact_confirmed_blob_payload tests/test_artifact_version_snapshot.py::test_empty_run_list_with_strict_lineage_read_error_is_explicitly_unavailable tests/test_artifact_version_snapshot.py::test_persisted_canonical_history_membership_survives_normalization_context_drift tests/test_artifact_version_snapshot.py::test_concurrent_purge_blocks_existing_update_and_generic_completion tests/test_artifact_version_snapshot.py::test_purge_deletion_verification_error_leaves_workspace_purging`
+
+Initial RED result: `5 failed in 3.43s`. Failures showed local candidate payload leakage, resolved empty success on strict read failure, canonical-history revocation under normalization drift, confirmed/generic persistence during purge, and false purge success without deletion confirmation.
+
+GREEN commands and results:
+
+- Focused R10 regressions: `5 passed in 2.50s`.
+- Focused Task3 suite: `84 passed in 9.15s`.
+- Combined Task3, Blob strict-read, persistence, control-plane, run-store, outcome, audit, and workspace-role suite: `286 passed in 38.95s`.
+- Purge writer/deletion regressions repeated five times: `10 passed` across five independent pytest runs.
+
+### R10 Changed Files
+
+- `backend/experiment_store.py`
+- `backend/run_store.py`
+- `tests/test_artifact_version_snapshot.py`
+- `.superpowers/sdd/p2-c-task-3-report.md`
+
+### R10 Remaining Risk
+
+- Azure Blob Storage still has no atomic transaction spanning workspace lineage, the bounded global registry, and run Blobs. Revision guards detect lifecycle movement at each publication phase and all readers fail closed, but an external non-cooperating writer can still create storage debris; purge remains resumable and does not report success until strict absence is proven.
