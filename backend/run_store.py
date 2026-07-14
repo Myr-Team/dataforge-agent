@@ -125,7 +125,7 @@ def list_runs(workspace_id: str | None = None) -> list[dict[str, Any]]:
         if isinstance(item, dict) and item.get("run_id"):
             # A local full run is newer and contains the authoritative steps/models.
             # Do not overwrite its recomputed summary with an older Blob registry row.
-            safe_item = sanitize_capability_metadata(item)
+            safe_item = _sanitize_run_capability_metadata(item)
             if isinstance(safe_item, dict):
                 by_id.setdefault(str(item["run_id"]), safe_item)
     items = list(by_id.values())
@@ -427,7 +427,7 @@ def purge_workspace_runs(workspace_id: str) -> dict[str, Any]:
 
 
 def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
-    sanitized = sanitize_capability_metadata(run)
+    sanitized = _sanitize_run_capability_metadata(run)
     if isinstance(sanitized, dict):
         run.clear()
         run.update(sanitized)
@@ -453,7 +453,7 @@ def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
-    run = sanitize_capability_metadata(run)
+    run = _sanitize_run_capability_metadata(run)
     if not isinstance(run, dict):
         return {}
     artifact = run.get("artifact") or (run.get("final") or {}).get("artifact") or {}
@@ -506,7 +506,7 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
 def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(run, dict):
         return {}
-    normalized = sanitize_capability_metadata(run)
+    normalized = _sanitize_run_capability_metadata(run)
     if not isinstance(normalized, dict):
         return {}
     normalized["artifact"] = _sanitize_artifact(normalized.get("artifact"))
@@ -534,8 +534,67 @@ def _capability_packs(artifact: Any) -> list[dict[str, Any]]:
     return sanitize_capability_pack_records(artifact["capability_packs"])
 
 
+def _copy_capability_pack_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(record) for record in records]
+
+
+def _hydrate_maf_evidence_bundle(container: dict[str, Any], selected_packs: list[dict[str, Any]]) -> None:
+    """Rebuild MAF's ID-only metadata from its sibling selected-pack contract."""
+    if not selected_packs:
+        return
+    maf = container.get("maf")
+    if not isinstance(maf, dict):
+        return
+    metadata = maf.get("evidence_bundle")
+    if not isinstance(metadata, dict):
+        return
+    if "capability_pack_ids" not in metadata and "capability_packs" not in metadata:
+        return
+    metadata["capability_packs"] = _copy_capability_pack_records(selected_packs)
+    metadata["capability_pack_ids"] = [str(record["pack_id"]) for record in selected_packs]
+
+
+def _hydrate_artifact_capability_metadata(value: Any) -> dict[str, Any]:
+    """Use only the artifact's selected contract to repair nested MAF metadata."""
+    artifact = _plain(value)
+    if not isinstance(artifact, dict):
+        return {}
+    selected_packs = _capability_packs(artifact)
+    if selected_packs:
+        artifact["capability_packs"] = _copy_capability_pack_records(selected_packs)
+        _hydrate_maf_evidence_bundle(artifact, selected_packs)
+    return artifact
+
+
+def _sanitize_run_capability_metadata(value: Any) -> Any:
+    """Sanitize a run after reconstructing MAF's legacy ID-only metadata safely."""
+    run = _plain(value)
+    if not isinstance(run, dict):
+        return sanitize_capability_metadata(run)
+
+    artifact = run.get("artifact")
+    if isinstance(artifact, dict):
+        run["artifact"] = _hydrate_artifact_capability_metadata(artifact)
+
+    final = run.get("final")
+    if isinstance(final, dict) and isinstance(final.get("artifact"), dict):
+        hydrated_final = dict(final)
+        hydrated_final["artifact"] = _hydrate_artifact_capability_metadata(final["artifact"])
+        run["final"] = hydrated_final
+
+    summary_packs = run.get("capability_packs")
+    selected_summary_packs = sanitize_capability_pack_records(
+        summary_packs if isinstance(summary_packs, list) else []
+    )
+    if selected_summary_packs:
+        run["capability_packs"] = _copy_capability_pack_records(selected_summary_packs)
+        _hydrate_maf_evidence_bundle(run, selected_summary_packs)
+
+    return sanitize_capability_metadata(run)
+
+
 def _sanitize_artifact(value: Any) -> dict[str, Any]:
-    artifact = sanitize_capability_metadata(_plain(value))
+    artifact = sanitize_capability_metadata(_hydrate_artifact_capability_metadata(value))
     if not isinstance(artifact, dict):
         return {}
     return artifact

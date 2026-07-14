@@ -60,3 +60,11 @@ The initial Task 2 contract validated caller-supplied `CapabilitySelection` obje
 - Run metadata sanitization is recursive. It rebuilds nested `capability_packs` and `capability_pack_ids` together in artifacts, MAF evidence bundles, event data, final payloads, proposals, and historical records.
 - Blob registry summaries are sanitized when read, and persisted run/summary paths sanitize before storage. Local run details, Blob-backed run details, run summaries, raw logs, and latest-analysis all use the same safe projection.
 - Regression coverage includes a registered-but-unselected pack and a historical local/Blob fixture with nested email, name, and directive payloads. API-visible serializations contain neither the untrusted strings nor divergent legacy IDs.
+
+## R3 Persistence Repair
+
+- Normal MAF summaries intentionally persist an ID-only `evidence_bundle`; the selected full contract remains at `artifact.capability_packs`.
+- Before recursive metadata sanitization, the run store rebuilds a nested MAF bundle only from that sibling, registry-projected artifact contract. The nested ID list is overwritten from the reconstructed records; it never accepts IDs from the nested historical payload itself.
+- This preserves the normal selected IDs through local runs, Blob run documents, Blob registry summaries, and run-summary API output, while an unselected registered ID, invalid ID, email, or directive in nested metadata is dropped.
+- The regression fixture uses the exact `EvidenceBundle.persisted_metadata()` shape (only `capability_pack_ids`), forces a Blob-backed detail read, and checks run detail, Blob document, registry summary, API summary, and list output.
+- R3 verification: `85 passed, 1 warning` for the focused capability-pack/MAF/evidence/run-summary suite; `739 passed, 1 warning` for the full backend suite. The warning is the existing MAF experimental-workflow notice.
