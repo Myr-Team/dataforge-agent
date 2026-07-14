@@ -362,6 +362,27 @@ async def test_maf_rebuilds_valid_pack_selection_without_untrusted_metadata(fake
     assert "prompt-injection" not in serialized_inputs
 
 
+@pytest.mark.asyncio
+async def test_maf_excludes_registered_pack_not_selected_by_the_internal_context(fake_registry: FakeRegistry) -> None:
+    selected = capability_selections()[0]
+    request = concurrent_request().model_copy(
+        update={
+            "payload": {
+                **concurrent_request().payload,
+                "capability_packs": [selected, {"pack_id": "growth_retention"}],
+                "capability_selection_context": capability_selection_context(),
+            }
+        }
+    )
+
+    result = await MafTeamRuntime(fake_registry).run(request)
+    corpus_input = fake_registry.inputs["df-corpus-analyst"][0]
+
+    assert result.artifact["capability_packs"] == [selected]
+    assert corpus_input["evidence_bundle"]["capability_pack_ids"] == ["site_channel_selection"]
+    assert "growth_retention" not in json.dumps(corpus_input, ensure_ascii=False)
+
+
 def verdict_values(value: Any) -> list[str]:
     if isinstance(value, dict):
         found = [str(item) for key, item in value.items() if key == "verdict" or key.endswith("_verdict")]

@@ -299,6 +299,30 @@ def sanitize_capability_pack_records(packs: Sequence[Any] | None) -> list[dict[s
     return records
 
 
+def capability_pack_ids_from_records(packs: Sequence[Any] | None) -> list[str]:
+    """Derive legacy IDs only from a sanitized capability-pack projection."""
+    return [
+        str(item["pack_id"])
+        for item in sanitize_capability_pack_records(packs)
+        if isinstance(item.get("pack_id"), str)
+    ]
+
+
+def sanitize_capability_metadata(value: Any) -> Any:
+    """Recursively rebuild capability metadata before it reaches a run-facing contract."""
+    if isinstance(value, Mapping):
+        sanitized = {str(key): sanitize_capability_metadata(item) for key, item in value.items()}
+        if "capability_packs" in value or "capability_pack_ids" in value:
+            raw_packs = value.get("capability_packs")
+            records = sanitize_capability_pack_records(raw_packs if isinstance(raw_packs, list) else [])
+            sanitized["capability_packs"] = records
+            sanitized["capability_pack_ids"] = capability_pack_ids_from_records(records)
+        return sanitized
+    if isinstance(value, list):
+        return [sanitize_capability_metadata(item) for item in value]
+    return value
+
+
 def _capability_pack_ids(packs: Sequence[Any] | None) -> list[str]:
     """Preserve the bounded legacy ID projection from registered IDs only."""
     return _requested_capability_pack_ids(packs)
@@ -382,7 +406,7 @@ def build_evidence_bundle(
         "evidence": [item.model_dump(mode="json", exclude_none=True) for item in evidence],
         "profile_facts": _profile_facts(profile, bounded_limits),
         "gaps": gaps,
-        "capability_pack_ids": _capability_pack_ids(packs),
+        "capability_pack_ids": [str(item["pack_id"]) for item in capability_packs],
         "capability_packs": capability_packs,
     }
     fingerprint = hashlib.sha256(
@@ -433,5 +457,7 @@ __all__ = [
     "MAX_EVIDENCE_QUOTE_CHARS",
     "build_evidence_bundle",
     "bundle_for_agent",
+    "capability_pack_ids_from_records",
+    "sanitize_capability_metadata",
     "sanitize_capability_pack_records",
 ]

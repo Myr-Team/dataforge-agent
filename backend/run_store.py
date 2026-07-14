@@ -10,11 +10,11 @@ from typing import Any
 
 try:
     from .blob_store import delete_blob_name, download_blob_json, upload_blob_json
-    from .evidence_bundle import sanitize_capability_pack_records
+    from .evidence_bundle import sanitize_capability_metadata, sanitize_capability_pack_records
     from .identity import is_trusted_identity, public_actor
 except ImportError:
     from blob_store import delete_blob_name, download_blob_json, upload_blob_json
-    from evidence_bundle import sanitize_capability_pack_records
+    from evidence_bundle import sanitize_capability_metadata, sanitize_capability_pack_records
     from identity import is_trusted_identity, public_actor
 
 
@@ -125,7 +125,9 @@ def list_runs(workspace_id: str | None = None) -> list[dict[str, Any]]:
         if isinstance(item, dict) and item.get("run_id"):
             # A local full run is newer and contains the authoritative steps/models.
             # Do not overwrite its recomputed summary with an older Blob registry row.
-            by_id.setdefault(str(item["run_id"]), item)
+            safe_item = sanitize_capability_metadata(item)
+            if isinstance(safe_item, dict):
+                by_id.setdefault(str(item["run_id"]), safe_item)
     items = list(by_id.values())
     if workspace_id:
         items = [item for item in items if item.get("workspace_id") == workspace_id]
@@ -153,7 +155,7 @@ def update_run_proposal(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]
         artifact = dict(artifact) if isinstance(artifact, dict) else {}
         previous = artifact.get("proposal") if isinstance(artifact.get("proposal"), dict) else {}
         previous = dict(previous or {})
-        incoming = _plain(proposal)
+        incoming = sanitize_capability_metadata(_plain(proposal))
         incoming = incoming if isinstance(incoming, dict) else {}
 
         merged_urls = {}
@@ -425,6 +427,10 @@ def purge_workspace_runs(workspace_id: str) -> dict[str, Any]:
 
 
 def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
+    sanitized = sanitize_capability_metadata(run)
+    if isinstance(sanitized, dict):
+        run.clear()
+        run.update(sanitized)
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     safe = _safe_name(str(run.get("run_id") or "run"))
     path = RUN_DIR / f"{safe}.json"
@@ -447,6 +453,9 @@ def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
+    run = sanitize_capability_metadata(run)
+    if not isinstance(run, dict):
+        return {}
     artifact = run.get("artifact") or (run.get("final") or {}).get("artifact") or {}
     proposal = artifact.get("proposal") if isinstance(artifact, dict) and isinstance(artifact.get("proposal"), dict) else {}
     artifact_urls = proposal.get("artifact_urls") if isinstance(proposal.get("artifact_urls"), dict) else {}
@@ -497,7 +506,9 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
 def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(run, dict):
         return {}
-    normalized = dict(run)
+    normalized = sanitize_capability_metadata(run)
+    if not isinstance(normalized, dict):
+        return {}
     normalized["artifact"] = _sanitize_artifact(normalized.get("artifact"))
     if isinstance(normalized.get("final"), dict):
         normalized["final"] = _sanitize_final(normalized["final"])
@@ -524,22 +535,16 @@ def _capability_packs(artifact: Any) -> list[dict[str, Any]]:
 
 
 def _sanitize_artifact(value: Any) -> dict[str, Any]:
-    plain = _plain(value)
-    if not isinstance(plain, dict):
+    artifact = sanitize_capability_metadata(_plain(value))
+    if not isinstance(artifact, dict):
         return {}
-    artifact = dict(plain)
-    if isinstance(artifact.get("capability_packs"), list):
-        artifact["capability_packs"] = sanitize_capability_pack_records(artifact["capability_packs"])
     return artifact
 
 
 def _sanitize_final(value: Any) -> dict[str, Any]:
-    plain = _plain(value)
-    if not isinstance(plain, dict):
+    final = sanitize_capability_metadata(_plain(value))
+    if not isinstance(final, dict):
         return {}
-    final = dict(plain)
-    if isinstance(final.get("capability_packs"), list):
-        final["capability_packs"] = sanitize_capability_pack_records(final["capability_packs"])
     if "artifact" in final:
         final["artifact"] = _sanitize_artifact(final.get("artifact"))
     return final
@@ -549,10 +554,10 @@ def _sanitize_event_data(event: str, data: Any) -> Any:
     if event != "capability_pack_selection" or not isinstance(data, dict):
         return data
     packs = data.get("capability_packs") if isinstance(data.get("capability_packs"), list) else []
-    return {
+    return sanitize_capability_metadata({
         "source": "normalized_goal_schema_profile_quality",
         "capability_packs": sanitize_capability_pack_records(packs),
-    }
+    })
 
 
 _VERDICT_LABELS = {
@@ -816,7 +821,7 @@ def _compact_step(event: str, data: Any, timestamp: str) -> dict[str, Any]:
     return {
         "time": timestamp,
         "event": event,
-        "data": _truncate(_plain(data), depth=0),
+        "data": _truncate(sanitize_capability_metadata(_plain(data)), depth=0),
     }
 
 

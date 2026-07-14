@@ -53,3 +53,10 @@ The initial Task 2 contract validated caller-supplied `CapabilitySelection` obje
 - Added adversarial coverage for an invalid `id` or `name` containing an email and a valid `pack_id` carrying prompt-injection and email text in reasons, gaps, and roles.
 - The tests prove the text is absent from the evidence bundle, MAF participant input, MAF artifact, run summary, trace, and raw run log while the internally selected registered pack remains available.
 - Follow-up verification: `79 passed, 1 warning` for Task 2 evidence-bundle, integration, and MAF tests; `735 passed, 1 warning` for the full backend suite. The warning is the existing MAF experimental-workflow notice.
+
+## R2 Contract Tightening
+
+- Legacy `capability_pack_ids` now derives from the recomputed `capability_packs` contract, not from the raw candidate list. A registered pack that the internal selector did not choose cannot reach MAF agent input, artifact output, or the persisted bundle metadata.
+- Run metadata sanitization is recursive. It rebuilds nested `capability_packs` and `capability_pack_ids` together in artifacts, MAF evidence bundles, event data, final payloads, proposals, and historical records.
+- Blob registry summaries are sanitized when read, and persisted run/summary paths sanitize before storage. Local run details, Blob-backed run details, run summaries, raw logs, and latest-analysis all use the same safe projection.
+- Regression coverage includes a registered-but-unselected pack and a historical local/Blob fixture with nested email, name, and directive payloads. API-visible serializations contain neither the untrusted strings nor divergent legacy IDs.
