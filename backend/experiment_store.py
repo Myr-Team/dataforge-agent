@@ -53,10 +53,17 @@ def build_experiment_ledger(
     runs: list[dict[str, Any]],
     *,
     outcomes: list[dict[str, Any]] | None = None,
+    registry_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_workspace = str(workspace_id or "").strip()
     if not normalized_workspace:
         raise ValueError("workspace_id is required")
+    if registry_state is None:
+        try:
+            from .run_store import authoritative_run_registry
+        except ImportError:
+            from run_store import authoritative_run_registry
+        registry_state = authoritative_run_registry(normalized_workspace)
     ordered = sorted(
         [
             item
@@ -81,12 +88,16 @@ def build_experiment_ledger(
         run_id = str(run.get("run_id") or run.get("conversation_id") or "").strip()
         canonical_run_id = str(run.get("canonical_experiment_run_id") or "").strip()
         if _has_lineage_metadata(run):
-            trusted_target = _trusted_lineage_target(normalized_workspace, run, runs_by_id)
+            trusted_target = _trusted_lineage_target(normalized_workspace, run, runs_by_id, registry_state)
             if trusted_target is None:
                 unresolved_lineage.add(run_id)
                 version_aliases[run_id] = ""
                 continue
             canonical_run_id = trusted_target
+        elif registry_state.get("history_truncated") is True:
+            unresolved_lineage.add(run_id)
+            version_aliases[run_id] = ""
+            continue
         if str(run.get("canonical_resolution_status") or "").strip().lower() == "unresolved":
             unresolved_lineage.add(run_id)
             version_aliases[run_id] = ""
@@ -202,6 +213,7 @@ def resolve_canonical_experiment_run_id(
     source_run_id: str,
     *,
     outcomes: list[dict[str, Any]] | None = None,
+    registry_state: dict[str, Any] | None = None,
 ) -> str | None:
     requested = str(source_run_id or "").strip()
     if not requested:
@@ -216,7 +228,12 @@ def resolve_canonical_experiment_run_id(
         run_id = str(run.get("run_id") or run.get("conversation_id") or "").strip()
         if run_id != requested:
             continue
-        ledger = build_experiment_ledger(workspace_id, prefix, outcomes=outcomes)
+        ledger = build_experiment_ledger(
+            workspace_id,
+            prefix,
+            outcomes=outcomes,
+            registry_state=registry_state,
+        )
         versions = [item for item in ledger.get("versions") or [] if isinstance(item, Mapping)]
         if not versions:
             return None
@@ -244,7 +261,17 @@ def sync_experiment_ledger(
             for item in runs
             if isinstance(item, dict) and item.get("canonical_experiment_run_id")
         )[:20]
-    ledger = build_experiment_ledger(workspace_id, hydrated_runs, outcomes=outcomes)
+    try:
+        from .run_store import authoritative_run_registry
+    except ImportError:
+        from run_store import authoritative_run_registry
+    registry_state = authoritative_run_registry(workspace_id)
+    ledger = build_experiment_ledger(
+        workspace_id,
+        hydrated_runs,
+        outcomes=outcomes,
+        registry_state=registry_state,
+    )
     if hydration_unresolved:
         existing = set((ledger.get("lineage_resolution") or {}).get("unresolved_run_ids") or [])
         existing.update(hydration_unresolved)
@@ -281,12 +308,13 @@ def _trusted_lineage_target(
     workspace_id: str,
     run: dict[str, Any],
     runs_by_id: dict[str, dict[str, Any]],
+    registry_state: dict[str, Any],
 ) -> str | None:
     try:
         from .run_store import trusted_canonical_experiment_run_id
     except ImportError:
         from run_store import trusted_canonical_experiment_run_id
-    return trusted_canonical_experiment_run_id(workspace_id, run, runs_by_id)
+    return trusted_canonical_experiment_run_id(workspace_id, run, runs_by_id, registry_state)
 
 
 def load_experiment_ledger(workspace_id: str) -> dict[str, Any]:
@@ -872,6 +900,22 @@ def _evidence_semantic_change(
     orientation = _evidence_orientation(direction)
     prior_value = _decimal_value(prior.get("value"))
     latest_value = _decimal_value(latest.get("value"))
+    prior_unit = _normalized_text(prior.get("unit"))
+    latest_unit = _normalized_text(latest.get("unit"))
+    if prior_unit != latest_unit:
+        signals.append(
+            (
+                "adverse",
+                f"unit changed from {prior_unit or 'unknown'} to {latest_unit or 'unknown'}",
+            )
+        )
+    if not orientation and prior_value is not None and latest_value is not None and prior_value != latest_value:
+        signals.append(
+            (
+                "adverse",
+                f"value changed from {prior.get('value')} to {latest.get('value')} without a direction",
+            )
+        )
     if orientation and prior_value is not None and latest_value is not None and prior_value != latest_value:
         favorable = latest_value > prior_value if orientation == "higher" else latest_value < prior_value
         effect = "favorably" if favorable else "adversely"
@@ -1143,10 +1187,11 @@ def _normalized_text(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
-def _run_order_key(item: Mapping[str, Any]) -> tuple[str, str]:
+def _run_order_key(item: Mapping[str, Any]) -> tuple[int, str, str]:
+    sequence = int(item.get("canonical_lineage_sequence") or item.get("_lineage_sequence") or 0)
     timestamp = str(item.get("completed_at") or item.get("updated_at") or item.get("started_at") or "")
     run_id = str(item.get("run_id") or item.get("conversation_id") or "")
-    return timestamp, run_id
+    return sequence, timestamp, run_id
 
 
 def _normalized_token(value: Any) -> str:

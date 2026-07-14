@@ -274,3 +274,52 @@ GREEN results:
 
 - Historical analyses without the trusted lineage envelope remain readable as legacy decisions, but they cannot be accepted as durable aliases when history is truncated. Backfill requires a server-side migration with complete source visibility.
 - The Blob store has conditional single-blob updates, not a multi-blob transaction. The implementation uses conditional registry confirmation and fails lineage closed on any unconfirmed persistence path rather than claiming atomic success.
+
+## R7 Two-Phase Registry-Authoritative Lineage
+
+### Transaction Model
+
+1. A brand-new analysis is first persisted as an unresolved `candidate`; the candidate blob never contains a trusted canonical envelope and is not listed as a confirmed registry run.
+2. Every commit attempt re-reads the winning run registry, hydrates the latest confirmed canonical analysis using its committed content hash/target commit, recomputes the candidate's lineage, and builds a fresh exact envelope. The envelope includes source/canonical IDs, exact experiment version, monotonic lineage sequence, analysis-content hash, source commit ID, and canonical-target commit/hash.
+3. The fresh summary is conditionally committed with the existing revision/ETag compare-and-swap primitive. A CAS loser discards its proposal and repeats step 2; it never retries a precomputed self-canonical result.
+4. Only after registry confirmation is the trusted run blob published. Readers require an exact match between the registry envelope and run envelope. A registry winner whose final blob publication fails therefore remains bounded unavailable, not promoted.
+5. Updates to an already confirmed analysis use a separate path. Registry and blob updates retain the existing envelope; any failure leaves the last confirmed run file/blob intact and never rewrites it as unresolved.
+6. Artifact and plan snapshots follow the same prepare/commit/publish shape. Candidate snapshots have `experiment_attachment: false`; a response can claim attachment only after the registry commit and confirmed snapshot publication both succeed. Hydration removes malformed, candidate, unresolved, or registry-mismatched snapshots from public attachments.
+
+Local-only persistence uses the same protocol under `_LOCK` with an atomically replaced local registry file. Blob-backed persistence uses optimistic registry serialization because the existing Blob helper exposes conditional revision updates but no short registry-lease API.
+
+### Behavior
+
+- Two independently loaded run-store instances sharing one registry produce one confirmed canonical analysis and deterministic aliases. The losing instance recomputes against the winner inside its CAS retry.
+- Candidate or unconfirmed run blobs cannot satisfy canonical resolution. Exact source and target commit/hash fields prevent arbitrary self/non-self lineage from becoming authoritative.
+- Registry/history truncation is propagated into ledger construction. A legacy analysis without a trusted envelope is unavailable rather than synthesized as V1 when complete history is not known.
+- Public ledger hydration includes only registry-confirmed snapshots. An untrusted snapshot is reported through bounded lineage unavailability and never appears in the canonical version's attachment list.
+- Undirected value changes and unit changes are adverse comparison signals. A simultaneous confidence increase produces conflict, cannot enter `strengthened`, and cannot authorize score/confidence/verdict increases.
+
+### R7 TDD Evidence
+
+Initial focused RED command:
+
+`python -m pytest -q tests/test_artifact_version_snapshot.py::test_two_instances_recompute_lineage_after_cas_loss tests/test_artifact_version_snapshot.py::test_failed_registry_confirmation_never_uploads_trusted_candidate tests/test_artifact_version_snapshot.py::test_failed_existing_analysis_update_preserves_confirmed_blob_and_envelope tests/test_artifact_version_snapshot.py::test_snapshot_requires_confirmed_registry_persistence tests/test_experiment_versions.py::test_truncated_registry_rejects_legacy_analysis_without_trusted_lineage tests/test_experiment_versions.py::test_malformed_snapshot_is_not_exposed_as_public_attachment tests/test_experiment_versions.py::test_undirected_value_and_unit_change_conflicts_with_higher_confidence`
+
+Initial RED result: `7 failed in 4.13s`. Failures proved stale self-canonical CAS retries, trusted candidate upload before confirmation, confirmed-envelope revocation on proposal failure, unconfirmed snapshot success, truncated legacy V1 creation, malformed public attachment exposure, and confidence masking undirected value/unit changes.
+
+GREEN results:
+
+- Focused Task3 suite: `66 passed in 6.81s`.
+- Relevant run-store, outcome, control-plane persistence, audit, and workspace-role suite: `124 passed in 9.99s`.
+- Cross-instance CAS regression repeated five times: `5 passed` across five independent pytest runs.
+- `python -m py_compile backend/experiment_store.py backend/outcome_store.py backend/run_store.py backend/orchestrator.py`: exit 0.
+- `git diff --check`: exit 0.
+
+### R7 Changed Files
+
+- `backend/experiment_store.py`
+- `backend/run_store.py`
+- `tests/test_experiment_versions.py`
+- `tests/test_artifact_version_snapshot.py`
+- `.superpowers/sdd/p2-c-task-3-report.md`
+
+### R7 Deliberate Limitation
+
+- Azure Blob Storage does not provide a transaction spanning the registry blob and individual run blob. The registry is the commit record, and readers require exact registry/run envelope agreement. If registry CAS succeeds but trusted run publication fails, the candidate stays unavailable until a later repair/retry; the system never reports promotion or attachment from that partial state.

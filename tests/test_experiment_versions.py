@@ -827,20 +827,23 @@ def test_decision_only_promotion_has_reason_for_each_normalized_field_change() -
     assert decision_delta["summary"] != "No comparable evidence or normalized decision change"
 
 
-def test_untrusted_nonself_lineage_is_bounded_unavailable_not_a_ledger_alias() -> None:
-    canonical = _analysis_run(
-        "analysis-canonical",
+def test_untrusted_nonself_lineage_is_bounded_unavailable_not_a_ledger_alias(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    run_store._ACTIVE.clear()
+    canonical_id = "analysis-canonical"
+    canonical_artifact = _analysis_run(
+        canonical_id,
         verdict="conditional",
         score=3,
         evidence_ref="asset.csv#row-1",
-    )
-    canonical.update(
-        {
-            "canonical_experiment_run_id": "analysis-canonical",
-            "canonical_experiment_version_id": "version:analysis-canonical",
-            "canonical_resolution_status": "resolved",
-            "canonical_lineage_status": "trusted",
-        }
+    )["artifact"]
+    run_store.start_run(canonical_id, "ws-experiment", "Analyze")
+    canonical = run_store.complete_run(
+        canonical_id,
+        status="completed",
+        final={"artifact": canonical_artifact},
+        artifact=canonical_artifact,
     )
     fabricated_alias = _analysis_run(
         "analysis-fabricated-alias",
@@ -853,6 +856,7 @@ def test_untrusted_nonself_lineage_is_bounded_unavailable_not_a_ledger_alias() -
             "canonical_experiment_run_id": "analysis-canonical",
             "canonical_experiment_version_id": "version:analysis-canonical",
             "canonical_resolution_status": "resolved",
+            "canonical_lineage_status": "trusted",
         }
     )
 
@@ -871,6 +875,8 @@ def test_untrusted_nonself_lineage_is_bounded_unavailable_not_a_ledger_alias() -
 
 def test_control_plane_hydrates_trusted_canonical_target_and_attachment(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(experiment_store, "EXPERIMENT_DIR", tmp_path / "experiments")
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
     monkeypatch.setattr(
         control_plane,
         "require_sensitive_workspace_permission",
@@ -879,47 +885,28 @@ def test_control_plane_hydrates_trusted_canonical_target_and_attachment(tmp_path
     workspace_id = "ws-hydrated-lineage"
     canonical_id = "analysis-outside-window"
     alias_id = "analysis-recent-alias"
-    canonical = _analysis_run(
-        canonical_id,
-        verdict="conditional",
-        score=3,
-        evidence_ref="asset.csv#row-1",
+    run_store._ACTIVE.clear()
+    for run_id in (canonical_id, alias_id):
+        artifact = _analysis_run(
+            run_id,
+            verdict="conditional",
+            score=3,
+            evidence_ref="asset.csv#row-1",
+        )["artifact"]
+        artifact["workspace_id"] = workspace_id
+        run_store.start_run(run_id, workspace_id, "Analyze")
+        run_store.complete_run(run_id, status="completed", final={"artifact": artifact}, artifact=artifact)
+    canonical = run_store.get_run(canonical_id)
+    alias = run_store.get_run(alias_id)
+    snapshot = run_store.record_artifact_version(
+        workspace_id=workspace_id,
+        source_run_id=canonical_id,
+        experiment_version_id=f"version:{canonical_id}",
+        artifact=canonical["artifact"],
+        proposal={"artifact_urls": {"pdf": "/api/artifacts/report.pdf"}},
+        kinds=["pdf"],
     )
-    canonical["workspace_id"] = workspace_id
-    canonical.update(
-        {
-            "canonical_experiment_run_id": canonical_id,
-            "canonical_experiment_version_id": f"version:{canonical_id}",
-            "canonical_resolution_status": "resolved",
-            "canonical_lineage_status": "trusted",
-        }
-    )
-    alias = _analysis_run(
-        alias_id,
-        verdict="conditional",
-        score=3,
-        evidence_ref="asset.csv#row-1",
-    )
-    alias["workspace_id"] = workspace_id
-    alias.update(
-        {
-            "canonical_experiment_run_id": canonical_id,
-            "canonical_experiment_version_id": f"version:{canonical_id}",
-            "canonical_resolution_status": "resolved",
-            "canonical_lineage_status": "trusted",
-        }
-    )
-    snapshot = {
-        "run_id": "artifact-recent",
-        "workspace_id": workspace_id,
-        "status": "completed",
-        "completed_at": "2026-07-12T04:00:00Z",
-        "version_kind": "artifact_generation",
-        "source_run_id": canonical_id,
-        "experiment_version_id": f"version:{canonical_id}",
-        "experiment_attachment": True,
-        "artifact": {"proposal": {"artifact_urls": {"pdf": "/api/artifacts/report.pdf"}}},
-    }
+    assert snapshot is not None
     details = {canonical_id: canonical, alias_id: alias, snapshot["run_id"]: snapshot}
     monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: [snapshot, alias])
     monkeypatch.setattr(control_plane, "get_run", lambda run_id: details[run_id])
@@ -950,6 +937,98 @@ def test_favorable_status_with_adverse_confidence_is_not_strengthening() -> None
     promoted = ledger["versions"][1]
     assert promoted["evidence_delta"]["strengthened"] == []
     assert "conflict" in promoted["evidence_delta"]["contradicted"][0]["reason"].lower()
+    assert promoted["decision"]["verdict"] == "conditional"
+    assert promoted["decision"]["dimensions"][0]["score"] == 3
+
+
+def test_truncated_registry_rejects_legacy_analysis_without_trusted_lineage() -> None:
+    legacy = _analysis_run(
+        "legacy-analysis",
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+
+    ledger = experiment_store.build_experiment_ledger(
+        "ws-experiment",
+        [legacy],
+        outcomes=[],
+        registry_state={"history_truncated": True, "runs": []},
+    )
+
+    assert ledger["versions"] == []
+    assert ledger["lineage_resolution"] == {
+        "status": "unavailable",
+        "unresolved_run_ids": ["legacy-analysis"],
+    }
+
+
+def test_malformed_snapshot_is_not_exposed_as_public_attachment(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(experiment_store, "EXPERIMENT_DIR", tmp_path / "experiments")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        control_plane,
+        "require_sensitive_workspace_permission",
+        lambda *_args, **_kwargs: "viewer",
+    )
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-untrusted-snapshot"
+    source_run_id = "analysis-public-source"
+    artifact = _analysis_run(
+        source_run_id,
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )["artifact"]
+    artifact["workspace_id"] = workspace_id
+    run_store.start_run(source_run_id, workspace_id, "Analyze")
+    source = run_store.complete_run(source_run_id, status="completed", final={"artifact": artifact}, artifact=artifact)
+    malformed = {
+        "run_id": "artifact-malformed",
+        "workspace_id": workspace_id,
+        "status": "completed",
+        "completed_at": "2026-07-12T05:00:00Z",
+        "version_kind": "artifact_generation",
+        "source_run_id": source_run_id,
+        "experiment_version_id": f"version:{source_run_id}",
+        "experiment_attachment": True,
+        "attachment_commit_status": "unresolved",
+        "artifact": {"proposal": {"artifact_urls": {"pdf": "/api/artifacts/untrusted.pdf"}}},
+    }
+    details = {source_run_id: source, malformed["run_id"]: malformed}
+    monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: [malformed, source])
+    monkeypatch.setattr(control_plane, "get_run", lambda run_id: details[run_id])
+    monkeypatch.setattr(run_store, "get_run", lambda run_id: details[run_id])
+    monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [])
+
+    response = TestClient(app).get(f"/api/workspaces/{workspace_id}/experiments")
+
+    assert response.status_code == 200
+    version = response.json()["versions"][0]
+    assert version["attachments"]["artifacts"] == []
+    assert response.json()["lineage_resolution"]["status"] == "unavailable"
+
+
+def test_undirected_value_and_unit_change_conflicts_with_higher_confidence() -> None:
+    first = _analysis_run("run-v1", verdict="conditional", score=3, evidence_ref="metric.csv#row-1")
+    second = _analysis_run("run-v2", verdict="feasible", score=4, evidence_ref="metric.csv#row-1")
+    before = first["artifact"]["feasibility"]["dimensions"][0]["evidence"][0]
+    after = second["artifact"]["feasibility"]["dimensions"][0]["evidence"][0]
+    before.update({"value": 10, "unit": "count", "confidence": "market_inferred"})
+    after.update({"value": 12, "unit": "percent", "confidence": "data_confirmed"})
+    first["final"]["artifact"] = first["artifact"]
+    second["final"]["artifact"] = second["artifact"]
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    promoted = ledger["versions"][1]
+    assert promoted["evidence_delta"]["strengthened"] == []
+    assert "conflict" in promoted["evidence_delta"]["contradicted"][0]["reason"].lower()
+    assert "without a direction" in promoted["evidence_delta"]["contradicted"][0]["reason"]
+    assert "unit changed" in promoted["evidence_delta"]["contradicted"][0]["reason"]
     assert promoted["decision"]["verdict"] == "conditional"
     assert promoted["decision"]["dimensions"][0]["score"] == 3
 

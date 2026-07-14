@@ -1,3 +1,9 @@
+import copy
+import importlib.util
+import json
+import sys
+import threading
+
 import backend.orchestrator as orchestrator
 import backend.experiment_store as experiment_store
 import backend.run_store as run_store
@@ -31,6 +37,225 @@ def _analysis_artifact(workspace_id: str, conversation_id: str) -> dict:
         },
         "answer": {"text": "Analysis", "citations": []},
     }
+
+
+def _isolated_run_store(name: str):
+    module_name = f"backend.{name}"
+    spec = importlib.util.spec_from_file_location(module_name, run_store.__file__)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _shared_blob_store(*, synchronize_initial_cas: bool = False):
+    remote: dict[str, dict] = {}
+    remote_lock = threading.Lock()
+    initial_barrier = threading.Barrier(2) if synchronize_initial_cas else None
+
+    def download(name: str):
+        with remote_lock:
+            value = remote.get(name)
+            return copy.deepcopy(value) if value is not None else None
+
+    def upload(name: str, value: dict):
+        with remote_lock:
+            remote[name] = copy.deepcopy(value)
+        return {"blob_name": name}
+
+    def compare_and_swap(name: str, *, expected_revision: int, changes: dict):
+        if initial_barrier is not None and expected_revision == 0:
+            initial_barrier.wait(timeout=5)
+        with remote_lock:
+            current = remote.get(name) or {}
+            if int(current.get("revision") or 0) != expected_revision:
+                return None
+            updated = {**current, **copy.deepcopy(changes)}
+            remote[name] = updated
+            return copy.deepcopy(updated)
+
+    return remote, download, upload, compare_and_swap
+
+
+def test_two_instances_recompute_lineage_after_cas_loss(tmp_path) -> None:
+    first_store = _isolated_run_store("run_store_instance_first")
+    second_store = _isolated_run_store("run_store_instance_second")
+    remote, download, upload, compare_and_swap = _shared_blob_store(synchronize_initial_cas=True)
+    stores = [first_store, second_store]
+    run_ids = ["analysis-instance-a", "analysis-instance-b"]
+    workspace_id = "ws-cross-instance-lineage"
+    for index, store in enumerate(stores):
+        store.RUN_DIR = tmp_path / f"instance-{index}"
+        store.blob_configured = lambda: True
+        store.download_blob_json = download
+        store.upload_blob_json = upload
+        store.compare_and_swap_blob_json = compare_and_swap
+        store.start_run(run_ids[index], workspace_id, "Analyze")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        completed = list(
+            executor.map(
+                lambda pair: pair[0].complete_run(
+                    pair[1],
+                    status="completed",
+                    final={"artifact": _analysis_artifact(workspace_id, pair[1])},
+                    artifact=_analysis_artifact(workspace_id, pair[1]),
+                ),
+                zip(stores, run_ids),
+            )
+        )
+
+    registry = remote[run_store.RUN_REGISTRY_BLOB]
+    entries = {item["run_id"]: item for item in registry["runs"]}
+    canonical_ids = {entries[run_id]["canonical_experiment_run_id"] for run_id in run_ids}
+    assert len(canonical_ids) == 1
+    canonical_id = canonical_ids.pop()
+    assert sum(entries[run_id]["run_id"] == entries[run_id]["canonical_experiment_run_id"] for run_id in run_ids) == 1
+    assert all(entries[run_id]["canonical_lineage_status"] == "trusted" for run_id in run_ids)
+    assert all(item["canonical_experiment_run_id"] == canonical_id for item in completed)
+    assert first_store.resolve_canonical_experiment_source_run_id(workspace_id, run_ids[0]) == canonical_id
+    assert second_store.resolve_canonical_experiment_source_run_id(workspace_id, run_ids[1]) == canonical_id
+
+
+def test_failed_registry_confirmation_never_uploads_trusted_candidate(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(run_store, "compare_and_swap_blob_json", lambda *_args, **_kwargs: None)
+    uploads: list[dict] = []
+    monkeypatch.setattr(
+        run_store,
+        "upload_blob_json",
+        lambda name, value: uploads.append(copy.deepcopy(value)) or {"blob_name": name},
+    )
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-failed-lineage-confirmation"
+    run_id = "analysis-candidate"
+    run_store.start_run(run_id, workspace_id, "Analyze")
+
+    completed = run_store.complete_run(
+        run_id,
+        status="completed",
+        final={"artifact": _analysis_artifact(workspace_id, run_id)},
+        artifact=_analysis_artifact(workspace_id, run_id),
+    )
+
+    run_uploads = [item for item in uploads if item.get("run_id") == run_id]
+    assert run_uploads
+    assert all(item.get("canonical_lineage_status") != "trusted" for item in run_uploads)
+    assert completed["canonical_lineage_status"] in {"candidate", "unresolved"}
+    assert "canonical_experiment_run_id" not in completed
+    assert run_store.resolve_canonical_experiment_source_run_id(workspace_id, run_id) is None
+
+
+def test_truncated_registry_alias_can_serialize_next_duplicate(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-truncated-confirmed-alias"
+    canonical_id = "analysis-canonical"
+    alias_id = "analysis-alias"
+    next_id = "analysis-next-duplicate"
+    for run_id in (canonical_id, alias_id):
+        artifact = _analysis_artifact(workspace_id, run_id)
+        run_store.start_run(run_id, workspace_id, "Analyze")
+        run_store.complete_run(run_id, status="completed", final={"artifact": artifact}, artifact=artifact)
+    registry = run_store.authoritative_run_registry()
+    registry["history_truncated"] = True
+    registry["runs"] = [item for item in registry["runs"] if item.get("run_id") != canonical_id]
+    run_store._write_local_registry(registry)
+
+    artifact = _analysis_artifact(workspace_id, next_id)
+    run_store.start_run(next_id, workspace_id, "Analyze")
+    completed = run_store.complete_run(
+        next_id,
+        status="completed",
+        final={"artifact": artifact},
+        artifact=artifact,
+    )
+
+    assert completed["canonical_lineage_status"] == "trusted"
+    assert completed["canonical_experiment_run_id"] == canonical_id
+    assert run_store.resolve_canonical_experiment_source_run_id(workspace_id, next_id) == canonical_id
+
+
+def test_failed_existing_analysis_update_preserves_confirmed_blob_and_envelope(tmp_path, monkeypatch) -> None:
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(run_store, "download_blob_json", download)
+    monkeypatch.setattr(run_store, "upload_blob_json", upload)
+    monkeypatch.setattr(run_store, "compare_and_swap_blob_json", compare_and_swap)
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-preserve-confirmed"
+    run_id = "analysis-confirmed"
+    run_store.start_run(run_id, workspace_id, "Analyze")
+    confirmed = run_store.complete_run(
+        run_id,
+        status="completed",
+        final={"artifact": _analysis_artifact(workspace_id, run_id)},
+        artifact=_analysis_artifact(workspace_id, run_id),
+    )
+    blob_name = f"{run_store.RUN_BLOB_PREFIX}/{run_store._safe_name(run_id)}.json"
+    confirmed_blob = copy.deepcopy(remote[blob_name])
+    envelope_keys = (
+        "canonical_experiment_run_id",
+        "canonical_experiment_version_id",
+        "canonical_resolution_status",
+        "canonical_lineage_status",
+    )
+    expected_envelope = {key: confirmed.get(key) for key in envelope_keys}
+
+    def fail_run_upload(name: str, value: dict):
+        if name == blob_name:
+            raise RuntimeError("run blob unavailable")
+        return upload(name, value)
+
+    monkeypatch.setattr(run_store, "upload_blob_json", fail_run_upload)
+    run_store.update_run_proposal(run_id, {"artifact_urls": {"pdf": "/api/artifacts/new.pdf"}})
+
+    persisted = json.loads((tmp_path / "runs" / f"{run_store._safe_name(run_id)}.json").read_text(encoding="utf-8"))
+    assert {key: persisted.get(key) for key in envelope_keys} == expected_envelope
+    assert remote[blob_name] == confirmed_blob
+    assert not ((persisted.get("artifact") or {}).get("proposal") or {}).get("artifact_urls")
+
+
+@pytest.mark.parametrize("snapshot_kind", ["artifact", "plan"])
+def test_snapshot_requires_confirmed_registry_persistence(snapshot_kind, tmp_path, monkeypatch) -> None:
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(run_store, "download_blob_json", download)
+    monkeypatch.setattr(run_store, "upload_blob_json", upload)
+    monkeypatch.setattr(run_store, "compare_and_swap_blob_json", compare_and_swap)
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-snapshot-transaction"
+    source_run_id = "analysis-snapshot-source"
+    artifact = _analysis_artifact(workspace_id, source_run_id)
+    run_store.start_run(source_run_id, workspace_id, "Analyze")
+    run_store.complete_run(source_run_id, status="completed", final={"artifact": artifact}, artifact=artifact)
+    monkeypatch.setattr(run_store, "compare_and_swap_blob_json", lambda *_args, **_kwargs: None)
+
+    if snapshot_kind == "artifact":
+        snapshot = run_store.record_artifact_version(
+            workspace_id=workspace_id,
+            source_run_id=source_run_id,
+            experiment_version_id=f"version:{source_run_id}",
+            artifact=artifact,
+            proposal={"artifact_urls": {"pdf": "/api/artifacts/report.pdf"}},
+            kinds=["pdf"],
+        )
+    else:
+        snapshot = run_store.record_plan_version(
+            workspace_id=workspace_id,
+            source_run_id=source_run_id,
+            experiment_version_id=f"version:{source_run_id}",
+            artifact=artifact,
+            text="Pilot plan",
+        )
+
+    assert snapshot is None
 
 
 def test_concurrent_completions_assign_and_persist_lineage_under_one_lock(tmp_path, monkeypatch) -> None:
@@ -280,32 +505,17 @@ def test_produce_omits_experiment_version_id_when_attachment_is_unavailable(tmp_
 
 def test_strict_writer_never_accepts_duplicate_when_canonical_is_outside_300_run_view(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
-    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
-    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    run_store._ACTIVE.clear()
     workspace_id = "ws-long-history"
     canonical_id = "analysis-canonical-old"
     duplicate_id = "analysis-duplicate-new"
-    canonical = {
-        "run_id": canonical_id,
-        "conversation_id": canonical_id,
-        "workspace_id": workspace_id,
-        "status": "completed",
-        "completed_at": "2026-01-01T00:00:00Z",
-        "canonical_experiment_run_id": canonical_id,
-        "canonical_experiment_version_id": f"version:{canonical_id}",
-        "canonical_resolution_status": "resolved",
-        "canonical_lineage_status": "trusted",
-        "artifact": _analysis_artifact(workspace_id, canonical_id),
-    }
-    duplicate = {
-        **canonical,
-        "run_id": duplicate_id,
-        "conversation_id": duplicate_id,
-        "completed_at": "2026-07-01T00:00:00Z",
-        "canonical_experiment_run_id": canonical_id,
-        "canonical_experiment_version_id": f"version:{canonical_id}",
-        "artifact": _analysis_artifact(workspace_id, duplicate_id),
-    }
+    for run_id in (canonical_id, duplicate_id):
+        artifact = _analysis_artifact(workspace_id, run_id)
+        run_store.start_run(run_id, workspace_id, "Analyze")
+        run_store.complete_run(run_id, status="completed", final={"artifact": artifact}, artifact=artifact)
+    canonical = run_store.get_run(canonical_id)
+    duplicate = run_store.get_run(duplicate_id)
     fillers = [
         {
             "run_id": f"snapshot-{index:03d}",
