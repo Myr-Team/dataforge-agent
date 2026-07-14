@@ -1273,18 +1273,34 @@ def _iteration_inputs(req: ChatRequest) -> list[dict[str, Any]]:
         if not label:
             continue
         kind = str(m.get("kind") or "assumption")
-        if kind not in ("assumption", "observed", "target"):
+        if kind not in ("assumption", "observed", "target", "synthetic"):
             kind = "assumption"
-        out.append(
-            {
-                "key": str(m.get("key") or "").strip(),
-                "label": label,
-                "value": str(m.get("value") or "").strip(),
-                "unit": str(m.get("unit") or "").strip(),
-                "kind": kind,
-                "note": str(m.get("note") or "").strip(),
-            }
-        )
+        source_value = m.get("source") if isinstance(m.get("source"), dict) else {}
+        source = {
+            key: str(source_value.get(key))[:240]
+            for key in (
+                "file_id",
+                "file_version",
+                "connector_id",
+                "connector_version",
+                "run_id",
+                "artifact_id",
+                "query_hash",
+                "table_name",
+            )
+            if source_value.get(key) not in (None, "")
+        }
+        metric = {
+            "key": str(m.get("key") or "").strip(),
+            "label": label,
+            "value": str(m.get("value") or "").strip(),
+            "unit": str(m.get("unit") or "").strip(),
+            "kind": kind,
+            "note": str(m.get("note") or "").strip(),
+        }
+        if source:
+            metric["source"] = source
+        out.append(metric)
     return out
 
 
@@ -2906,11 +2922,14 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             updated_run = update_run_proposal(candidate_run_id, result)
             result["persisted_run_id"] = candidate_run_id
+            experiment_version_id = f"version:{candidate_run_id}"
+            result["experiment_version_id"] = experiment_version_id
             try:
                 source_artifact = _produce_run_artifact(updated_run) or _produce_run_artifact(get_run(candidate_run_id)) or artifact
                 version = record_artifact_version(
                     workspace_id=workspace_id,
                     source_run_id=candidate_run_id,
+                    experiment_version_id=experiment_version_id,
                     artifact=source_artifact,
                     proposal=(source_artifact.get("proposal") if isinstance(source_artifact, dict) else None) or result,
                     kinds=[str(kind) for kind in kinds if str(kind).strip()],
@@ -5472,6 +5491,7 @@ async def _persist_chat_completion(
                 record_plan_version,
                 workspace_id=workspace_id,
                 source_run_id=conversation_id,
+                experiment_version_id=f"version:{conversation_id}",
                 artifact=artifact,
                 text=text,
             )

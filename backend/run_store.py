@@ -217,19 +217,23 @@ def record_artifact_version(
     *,
     workspace_id: str,
     source_run_id: str,
+    experiment_version_id: str | None = None,
     artifact: dict[str, Any],
     proposal: dict[str, Any],
     kinds: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
     """Persist a lightweight version snapshot when artifacts are generated from a real analysis.
 
-    This does not create a new feasibility judgement. It records that the current
-    analysis has produced a deliverable version, so the demo's iteration track and
-    comparison UI have a concrete vN entry to show after a user clicks "生成产物".
+    This does not create a new feasibility judgement or experiment version. It
+    records a deliverable attachment against an existing analysis decision.
     """
     workspace_id = str(workspace_id or "").strip()
     source_run_id = str(source_run_id or "").strip()
     if not workspace_id or not source_run_id or not isinstance(artifact, dict):
+        return None
+    expected_experiment_version_id = f"version:{source_run_id}"
+    experiment_version_id = str(experiment_version_id or expected_experiment_version_id).strip()
+    if experiment_version_id != expected_experiment_version_id:
         return None
     feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
     if not (feasibility.get("verdict") or feasibility.get("dimensions")):
@@ -269,6 +273,7 @@ def record_artifact_version(
                 "event": "artifact_version",
                 "data": {
                     "source_run_id": source_run_id,
+                    "experiment_version_id": experiment_version_id,
                     "produced_kinds": produced_kinds,
                     "artifact_urls": (merged_proposal.get("artifact_urls") if isinstance(merged_proposal, dict) else {}) or {},
                 },
@@ -281,10 +286,13 @@ def record_artifact_version(
             "text": f"{title_base or '当前方案'} 已生成产物版本。",
             "artifact": merged_artifact,
             "source_run_id": source_run_id,
+            "experiment_version_id": experiment_version_id,
             "version_kind": "artifact_generation",
         },
         "version_kind": "artifact_generation",
         "source_run_id": source_run_id,
+        "experiment_version_id": experiment_version_id,
+        "experiment_attachment": True,
         "produced_kinds": produced_kinds,
     }
     run["verdict"] = _verdict(run)
@@ -300,6 +308,7 @@ def record_plan_version(
     *,
     workspace_id: str,
     source_run_id: str,
+    experiment_version_id: str | None = None,
     artifact: dict[str, Any],
     text: str,
 ) -> dict[str, Any] | None:
@@ -307,6 +316,10 @@ def record_plan_version(
     workspace_id = str(workspace_id or "").strip()
     source_run_id = str(source_run_id or "").strip()
     if not workspace_id or not source_run_id or not isinstance(artifact, dict):
+        return None
+    expected_experiment_version_id = f"version:{source_run_id}"
+    experiment_version_id = str(experiment_version_id or expected_experiment_version_id).strip()
+    if experiment_version_id != expected_experiment_version_id:
         return None
     feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
     if not (feasibility.get("verdict") or feasibility.get("dimensions")):
@@ -353,6 +366,7 @@ def record_plan_version(
                 "event": "plan_draft_version",
                 "data": {
                     "source_run_id": source_run_id,
+                    "experiment_version_id": experiment_version_id,
                     "produced_kinds": ["plan_draft"],
                 },
             }
@@ -364,10 +378,13 @@ def record_plan_version(
             "text": plan_text,
             "artifact": merged_artifact,
             "source_run_id": source_run_id,
+            "experiment_version_id": experiment_version_id,
             "version_kind": "plan_draft",
         },
         "version_kind": "plan_draft",
         "source_run_id": source_run_id,
+        "experiment_version_id": experiment_version_id,
+        "experiment_attachment": True,
         "produced_kinds": ["plan_draft"],
     }
     run["verdict"] = _verdict(run)
@@ -510,6 +527,8 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "status": run.get("status"),
         "version_kind": run.get("version_kind"),
         "source_run_id": run.get("source_run_id"),
+        "experiment_version_id": run.get("experiment_version_id"),
+        "experiment_attachment": run.get("experiment_attachment") is True,
         "produced_kinds": run.get("produced_kinds") or [],
         "iteration_inputs": iteration_inputs[:12],
         "artifact_urls": {key: value for key, value in (artifact_urls or {}).items() if value},

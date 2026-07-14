@@ -1,4 +1,5 @@
 import backend.orchestrator as orchestrator
+import backend.experiment_store as experiment_store
 import backend.run_store as run_store
 
 
@@ -52,6 +53,7 @@ def test_produce_records_artifact_version_snapshot(tmp_path, monkeypatch) -> Non
 
     assert result["persisted_run_id"] == "run-v1"
     assert result["version_run_id"]
+    assert result["experiment_version_id"] == "version:run-v1"
 
     updated = run_store.get_run("run-v1")
     assert updated["artifact"]["proposal"]["artifact_urls"]["pdf"] == "/api/artifacts/site-v1.pdf"
@@ -59,8 +61,18 @@ def test_produce_records_artifact_version_snapshot(tmp_path, monkeypatch) -> Non
     version = run_store.get_run(result["version_run_id"])
     assert version["version_kind"] == "artifact_generation"
     assert version["source_run_id"] == "run-v1"
+    assert version["experiment_version_id"] == "version:run-v1"
+    assert version["experiment_attachment"] is True
     assert version["verdict"] == "conditional"
     assert version["artifact"]["proposal"]["artifact_urls"]["pdf"] == "/api/artifacts/site-v1.pdf"
 
     summaries = run_store.list_runs("ws-demo")
     assert any(item.get("version_kind") == "artifact_generation" for item in summaries)
+
+    ledger = experiment_store.build_experiment_ledger(
+        "ws-demo",
+        [run_store.get_run(item["run_id"]) for item in summaries],
+        outcomes=[],
+    )
+    assert [item["version_id"] for item in ledger["versions"]] == ["version:run-v1"]
+    assert ledger["versions"][0]["attachments"]["artifacts"][0]["run_id"] == version["run_id"]

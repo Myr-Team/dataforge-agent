@@ -3,6 +3,45 @@ import asyncio
 import backend.orchestrator as orchestrator
 
 
+def test_iteration_inputs_preserve_source_lineage_and_synthetic_kind() -> None:
+    req = type(
+        "Request",
+        (),
+        {
+            "ui_context": {
+                "iteration_inputs": [
+                    {
+                        "label": "pilot_conversion_rate",
+                        "value": 7.2,
+                        "unit": "percent",
+                        "kind": "observed",
+                        "source": {
+                            "file_id": "feedback.csv",
+                            "file_version": "2",
+                            "connector_id": "upload",
+                            "ignored": "not-public-lineage",
+                        },
+                    },
+                    {
+                        "label": "simulated_conversion_rate",
+                        "value": 9.5,
+                        "kind": "synthetic",
+                    },
+                ]
+            }
+        },
+    )()
+
+    metrics = orchestrator._iteration_inputs(req)
+
+    assert metrics[0]["source"] == {
+        "file_id": "feedback.csv",
+        "file_version": "2",
+        "connector_id": "upload",
+    }
+    assert metrics[1]["kind"] == "synthetic"
+
+
 def test_persist_chat_completion_records_plan_draft_version(monkeypatch):
     persisted_messages = []
     completed_runs = []
@@ -76,4 +115,5 @@ def test_persist_chat_completion_records_plan_draft_version(monkeypatch):
     assert len(recorded_versions) == 1
     assert recorded_versions[0]["workspace_id"] == "ws-plan"
     assert recorded_versions[0]["source_run_id"] == "conv-plan"
+    assert recorded_versions[0]["experiment_version_id"] == "version:conv-plan"
     assert recorded_versions[0]["text"].startswith("## 一句话方案")

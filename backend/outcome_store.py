@@ -34,6 +34,7 @@ _SOURCE_KEYS = (
     "file_id",
     "file_version",
     "connector_id",
+    "connector_version",
     "run_id",
     "artifact_id",
     "query_hash",
