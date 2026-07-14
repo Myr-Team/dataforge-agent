@@ -10,9 +10,9 @@ def test_runs_center_does_not_fake_missing_observability_or_calibration() -> Non
     source = COMPONENTS.read_text(encoding="utf-8")
 
     assert 'const verdictLabel = r.verdict ? (VERDICT_LABELS[r.verdict] || r.verdict) : "未记录";' in source
-    assert 't.app_insights && t.otel_sdk ? "已接入" : "未完整配置"' in source
+    assert 't.app_insights && t.otel_sdk ? "已配置" : "未完整配置"' in source
     assert 'cg ? (cg.passed ? "通过" : "未过") : "未记录"' in source
-    assert '不能据此宣称评分已校准' in source
+    assert "本工作区尚未返回 rubric 校准结果，不能据此宣称评分已校准。" in source
     assert 'cg?.spearman ?? "1.00"' not in source
     assert 'cg?.cases ?? 5' not in source
 
@@ -66,11 +66,11 @@ def test_dynamic_maf_view_model_behavior() -> None:
 def test_governance_ui_separates_estimated_roi_from_observed_outcomes() -> None:
     source = COMPONENTS.read_text(encoding="utf-8")
 
-    assert "roi.outcomes" in source
-    assert "真实业务结果" in source
-    assert "security.rbac_enforced" in source
-    assert "governance?.foundry_monitoring" in source
-    assert "估算口径；接入 Azure AI Foundry 原生 ROI 后可切换" not in source
+    assert 'roi.local.outcomeCount ? `${roi.local.outcomeCount} 条` : "未记录"' in source
+    assert 'roi.localStatus === "verified"' in source
+    assert 'roi.foundryConnectionState === "connected"' in source
+    assert "roi.provider.businessValue.text" in source
+    assert "governancePermissions(" in source
 
 
 def test_iteration_ui_uses_backend_experiment_deltas_and_source_lineage() -> None:
@@ -103,7 +103,7 @@ def test_production_api_uses_authenticated_same_origin_proxy() -> None:
     docker_source = (COMPONENTS.parents[1] / "Dockerfile").read_text(encoding="utf-8")
     nginx_source = (COMPONENTS.parents[1] / "nginx.conf.template").read_text(encoding="utf-8")
 
-    assert 'import.meta.env.VITE_API_BASE ?? ""' in api_source
+    assert 'import.meta.env?.VITE_API_BASE ?? ""' in api_source
     assert 'ARG VITE_API_BASE=""' in docker_source
     assert "proxy_pass https://ca-dataforge-backend" in nginx_source
     assert "X-DataForge-Proxy-Secret" in nginx_source

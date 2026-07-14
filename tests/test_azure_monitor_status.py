@@ -353,8 +353,8 @@ def test_trace_status_endpoint_authorizes_before_run_lookup_and_verifies_run_own
     events: list[str] = []
     monkeypatch.setattr(
         control_plane,
-        "require_workspace_permission",
-        lambda _workspace_id, _actor, action: events.append(action) or "viewer",
+        "require_sensitive_workspace_permission",
+        lambda _workspace_id, _actor, action, *, role_resolver: events.append(action) or "viewer",
     )
     monkeypatch.setattr(control_plane, "get_run", lambda _run_id: events.append("get_run") or {"workspace_id": "ws-a"})
     monkeypatch.setattr(
@@ -380,7 +380,11 @@ def test_trace_status_endpoint_authorizes_before_run_lookup_and_verifies_run_own
         asyncio.run(control_plane.workspace_trace_status("ws-a", None, run_id="run-a"))
     assert error.value.status_code == 404
 
-    monkeypatch.setattr(control_plane, "require_workspace_permission", lambda *_args: (_ for _ in ()).throw(PermissionError("workspace.read")))
+    monkeypatch.setattr(
+        control_plane,
+        "require_sensitive_workspace_permission",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("workspace.read")),
+    )
     monkeypatch.setattr(control_plane, "get_run", lambda _run_id: pytest.fail("run lookup must not run before authorization"))
     with pytest.raises(HTTPException) as forbidden:
         asyncio.run(control_plane.workspace_trace_status("ws-a", None, run_id="run-a"))

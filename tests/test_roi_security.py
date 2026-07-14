@@ -102,7 +102,7 @@ def test_chargeback_excludes_untrusted_events_and_uses_workspace_scoped_hmac_and
     assert all("spoofed" not in str(row) for row in result["groups"])
     departed_ws = member_chargeback("ws", WINDOW, runs=[_run(actor_id="departed")], messages=[], tasks=[], memberships=[], prices=[PRICE_USD], pseudonym_salt="salt")
     departed_other = member_chargeback("other", WINDOW, runs=[{**_run(actor_id="departed"), "workspace_id": "other"}], messages=[], tasks=[], memberships=[], prices=[PRICE_USD], pseudonym_salt="salt")
-    assert departed_ws["members"][0]["member"]["actor_id"] != departed_other["members"][0]["member"]["actor_id"]
+    assert departed_ws["members"][0]["member"]["subject_label"] != departed_other["members"][0]["member"]["subject_label"]
 
 
 def test_unpriced_usage_propagates_partial_to_member_and_workspace_totals() -> None:

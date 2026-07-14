@@ -79,9 +79,40 @@ or retain stale assertions for those changes:
   pre-governance UI source strings and need to be updated against the current
   view model rather than restored as stale literals.
 
-No code outside the Task 7 ownership list was changed to conceal these
-failures. P2-B is not ready for release until the cross-task regressions are
-resolved and this complete suite is green.
+At the time of the first full run, no code outside the Task 7 ownership list
+was changed to conceal these failures. P2-B was not ready for release until
+the cross-task regressions were resolved and the complete suite was green.
+
+## Follow-up integration repair
+
+The five failures were repaired without restoring any unsafe behavior:
+
+- The Azure Monitor endpoint test now exercises the fail-closed sensitive
+  authorization helper that the route actually uses.
+- The chargeback privacy test now compares workspace-scoped `subject_label`
+  values instead of asserting that the public API exposes `actor_id`.
+- UI truthfulness tests now assert the current governance view model:
+  separate local and Foundry ROI state, explicit observability fields, and the
+  optional same-origin API base expression used by Vite.
+
+Fresh verification after that repair:
+
+```text
+python -m pytest tests/test_azure_monitor_status.py tests/test_roi_security.py tests/test_ui_truthfulness_contract.py -q
+32 passed in 3.96s
+
+python -m pytest -q
+699 passed, 1 warning in 103.50s
+
+python -m compileall -q backend tests eval
+passed
+
+cd web && npm run build
+passed (Vite 8.0.16; 1756 modules transformed)
+```
+
+The remaining warning is the upstream Microsoft Agent Framework
+`ExperimentalWarning` for functional workflows; it is not a test failure.
 
 ## Remaining production evidence
 
