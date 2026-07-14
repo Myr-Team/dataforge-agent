@@ -11,6 +11,7 @@ import backend.conversation_store as conversation_store
 import backend.audit_store as audit_store
 import backend.control_plane as control_plane
 import backend.data_workbench as data_workbench
+import backend.invitation_store as invitation_store
 import backend.run_store as run_store
 import backend.task_store as task_store
 import backend.workspace_store as workspace_store
@@ -877,10 +878,18 @@ def test_no_email_persisted_workspace_owner_has_one_label_when_current_admin_is_
         "status": "active",
     }
     meta = {"workspace_id": "ws-owner", "workspace_owner": creator, "workspace_members": [admin]}
+    pending = invitation_store.create_pending_invitation(
+        meta,
+        "ws-owner",
+        email="creator.later@contoso.com",
+        role="viewer",
+        invited_by=admin,
+    )
+    invitation_store.transition_invitation(meta, pending["invitation_id"], "accepted", identity=creator)
     run = {
         "run_id": "run-owner",
         "workspace_id": "ws-owner",
-        "actor": creator,
+        "actor": {**creator, "email": "creator.later@contoso.com"},
         "trusted_identity": True,
         "completed_at": "2026-07-14T12:00:00Z",
         "models": [{"model": "gpt-5", "usage": {"input_tokens": 1, "output_tokens": 1}}],
@@ -917,9 +926,19 @@ def test_no_email_persisted_workspace_owner_has_one_label_when_current_admin_is_
     )
     expected = control_plane.member_subject_label("ws-owner", creator)
     owner_label = next(member["subject_label"] for member in member_contract["members"] if member["role"] == "owner")
+    usage_label = member_contract["usage"]["members"][0]["subject_label"]
+    outcome_label = control_plane._public_outcome_event("ws-owner", {
+        "event_id": "outcome-owner",
+        "workspace_id": "ws-owner",
+        "actor": {**creator, "email": "creator.later@contoso.com"},
+        "verification": {"status": "unverified"},
+    })["actor"]["subject_label"]
+    invitation_label = control_plane.workspace_invitation_history("ws-owner")[0]["subject_label"]
 
     assert owner_label == expected
     assert chargeback["members"][0]["member"]["subject_label"] == expected
+    assert usage_label == outcome_label == invitation_label == expected
+    assert len([member for member in member_contract["members"] if member["subject_label"] == expected]) == 1
 
 
 def test_durable_task_create_start_complete_and_cancel_are_audited(tmp_path, monkeypatch) -> None:

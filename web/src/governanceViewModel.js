@@ -230,6 +230,15 @@ export function invitationLifecycleViewModel(payload = {}) {
   });
 }
 
+export function directorySelectionViewModel(payload = {}) {
+  return (Array.isArray(payload?.users) ? payload.users : []).flatMap((item) => {
+    const selectionRef = String(item?.selection_ref || "").trim().toLowerCase();
+    const subjectLabel = validBoundedPseudonym(item?.subject_label, "member");
+    if (!/^selection_[0-9a-f]{40}$/.test(selectionRef) || !subjectLabel) return [];
+    return [{ selectionRef, subjectLabel }];
+  });
+}
+
 export function memberDirectoryViewModel(members = []) {
   return (Array.isArray(members) ? members : []).map((member) => {
     const rawRef = String(member?.subject_label || "").trim().toLowerCase();

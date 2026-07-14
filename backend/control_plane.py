@@ -5,6 +5,8 @@ import json
 import mimetypes
 import os
 import re
+import secrets
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -28,7 +30,7 @@ try:
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
     from .foundry_roi import discover_foundry_roi, reconcile_foundry_roi
     from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
-    from .invitation_store import InvitationPersistenceError, accept_provider_invitation, create_pending_invitation, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from .invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
@@ -49,7 +51,7 @@ except ImportError:
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
     from foundry_roi import discover_foundry_roi, reconcile_foundry_roi
     from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
-    from invitation_store import InvitationPersistenceError, accept_provider_invitation, create_pending_invitation, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
@@ -68,6 +70,9 @@ WORKSPACE_MEMBER_ROLES = {"admin", "editor", "viewer"}
 WORKSPACE_MEMBER_STATUSES = {"pending", "active"}
 
 _HEALTH_CACHE: dict[str, Any] = {"expires": 0.0, "value": None}
+_DIRECTORY_SELECTION_TTL_SECONDS = 300.0
+_DIRECTORY_SELECTION_LOCK = threading.RLock()
+_DIRECTORY_SELECTIONS: dict[str, dict[str, Any]] = {}
 
 
 @router.get("/api/workspaces/{workspace_id}/overview")
@@ -119,7 +124,7 @@ async def workspace_member_entra_users(
     query: str = Query(default="", max_length=80),
     limit: int = Query(default=8, ge=1, le=20),
 ) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "member.read")
+    _require_workspace_action(workspace_id, request, "member.manage")
     return await _call(workspace_entra_users, workspace_id, request, query, limit)
 
 
@@ -1005,8 +1010,9 @@ def workspace_member_roles(workspace_id: str, request: Request | None = None) ->
         key = _actor_key(item)
         if not key:
             continue
-        if key in members_by_key:
-            members_by_key[key].update({k: v for k, v in item.items() if k not in {"role"} or members_by_key[key].get("role") != "owner"})
+        existing = _find_member_by_identity(members_by_key, item)
+        if existing is not None:
+            existing.update({k: v for k, v in item.items() if k not in {"role"} or existing.get("role") != "owner"})
             continue
         members_by_key[key] = dict(item)
     for item in usage.get("members") or []:
@@ -1014,8 +1020,9 @@ def workspace_member_roles(workspace_id: str, request: Request | None = None) ->
         key = _actor_key(actor if isinstance(actor, dict) else {})
         if not key:
             continue
-        if key in members_by_key:
-            row = members_by_key[key]
+        existing = _find_member_by_identity(members_by_key, actor)
+        if existing is not None:
+            row = existing
             if row.get("status") == "pending":
                 row["status"] = "active"
             if not row.get("source") or row.get("source") == "workspace_invite":
@@ -1109,17 +1116,148 @@ def _resolve_workspace_member_subject_ref(workspace_id: str, subject_ref: str, m
     raise ValueError("Workspace member not found")
 
 
-def workspace_entra_users(workspace_id: str, request: Request | None = None, query: str = "", limit: int = 8) -> dict[str, Any]:
-    _safe_workspace_id(workspace_id)
-    result = search_entra_users(query, request, limit=limit)
+def _create_directory_selection(workspace_id: str, request: Request | None, user: dict[str, Any]) -> dict[str, str]:
+    email = _member_email(user.get("email") or user.get("user_principal_name"))
+    if not email:
+        return {}
+    requester = actor_from_request(request)
+    requester_key = canonical_member_identity_key(requester)
+    actor_id = _clean_text(user.get("id"))
+    tenant_id = _clean_text(requester.get("tenant_id"))
+    identity = {"actor_id": actor_id, "tenant_id": tenant_id} if actor_id and tenant_id else {"email": email}
+    selection_ref = f"selection_{secrets.token_hex(20)}"
+    now = time.monotonic()
+    with _DIRECTORY_SELECTION_LOCK:
+        _prune_directory_selections(now)
+        _DIRECTORY_SELECTIONS[selection_ref] = {
+            "workspace_id": workspace_id,
+            "requester_key": requester_key,
+            "email": email,
+            "name": _clean_text(user.get("display_name")),
+            "identity": identity,
+            "expires_at": now + _DIRECTORY_SELECTION_TTL_SECONDS,
+        }
     return {
-        "workspace_id": workspace_id,
-        "query": _clean_text(query),
-        **result,
+        "selection_ref": selection_ref,
+        "subject_label": member_subject_label(workspace_id, identity),
     }
 
 
-def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
+def _consume_directory_selection(workspace_id: str, request: Request | None, selection_ref: Any) -> dict[str, Any]:
+    safe_ref = _clean_text(selection_ref).lower()
+    if not re.fullmatch(r"selection_[0-9a-f]{40}", safe_ref):
+        raise ValueError("A valid directory selection reference is required")
+    requester_key = canonical_member_identity_key(actor_from_request(request))
+    now = time.monotonic()
+    with _DIRECTORY_SELECTION_LOCK:
+        _prune_directory_selections(now)
+        selected = _DIRECTORY_SELECTIONS.pop(safe_ref, None)
+    if (
+        not selected
+        or selected.get("workspace_id") != workspace_id
+        or selected.get("requester_key") != requester_key
+    ):
+        raise ValueError("Directory selection is unavailable or expired")
+    return selected
+
+
+def _prune_directory_selections(now: float) -> None:
+    expired = [key for key, value in _DIRECTORY_SELECTIONS.items() if float(value.get("expires_at") or 0) <= now]
+    for key in expired:
+        _DIRECTORY_SELECTIONS.pop(key, None)
+
+
+def _public_graph_status(value: dict[str, Any], *, default_status: str = "failed") -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    nested_error = source.get("error") if isinstance(source.get("error"), dict) else {}
+    status = str(source.get("status") or default_status).strip().lower()
+    if status not in {"sent", "skipped", "unavailable", "failed"}:
+        status = default_status
+    public: dict[str, Any] = {"status": status}
+    code = str(source.get("code") or source.get("error_code") or nested_error.get("code") or "").strip().lower()
+    if re.fullmatch(r"[a-z][a-z0-9_.-]{0,79}", code):
+        public["code"] = code
+    status_code = source.get("status_code", nested_error.get("status"))
+    if isinstance(status_code, int) and 100 <= status_code <= 599:
+        public["status_code"] = status_code
+    return public
+
+
+def _public_invitation_response(
+    workspace_id: str,
+    invitation: dict[str, Any],
+    identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    accepted_identity = invitation.get("accepted_identity") if isinstance(invitation.get("accepted_identity"), dict) else {}
+    subject_identity = accepted_identity or dict(identity or {}) or {"email": invitation.get("email")}
+    public = {
+        "invitation_ref": invitation_reference(workspace_id, str(invitation.get("invitation_id") or "")),
+        "subject_label": member_subject_label(workspace_id, subject_identity),
+        "role": _member_role(invitation.get("role")),
+        "state": str(invitation.get("state") or "pending"),
+        "updated_at": _clean_text(invitation.get("occurred_at")),
+    }
+    provider = _public_graph_status(invitation.get("provider") or {}, default_status="skipped")
+    if len(provider) > 1 or provider["status"] != "skipped":
+        public["provider"] = provider
+    return public
+
+
+def _same_member_identity(member: dict[str, Any], identity: dict[str, Any], email: str) -> bool:
+    if _member_email(member.get("email")) == email:
+        return True
+    try:
+        return canonical_member_identity_key(member) == canonical_member_identity_key(identity)
+    except InvitationPersistenceError:
+        return False
+
+
+def _apply_stable_identity(member: dict[str, Any], identity: dict[str, Any]) -> None:
+    actor_id = _clean_text(identity.get("actor_id") or identity.get("id") or identity.get("oid"))
+    tenant_id = _clean_text(identity.get("tenant_id") or identity.get("tid"))
+    if actor_id and tenant_id:
+        member["actor_id"] = actor_id
+        member["tenant_id"] = tenant_id
+
+
+def _reconcile_workspace_member(meta: dict[str, Any], email: str, identity: dict[str, Any]) -> None:
+    if not identity.get("actor_id") or not identity.get("tenant_id"):
+        return
+    for member in meta.get("workspace_members") or []:
+        if isinstance(member, dict) and _member_email(member.get("email")) == email:
+            _apply_stable_identity(member, identity)
+
+
+def workspace_entra_users(workspace_id: str, request: Request | None = None, query: str = "", limit: int = 8) -> dict[str, Any]:
+    _safe_workspace_id(workspace_id)
+    result = search_entra_users(query, request, limit=limit)
+    users = []
+    for raw_user in result.get("users") or []:
+        if not isinstance(raw_user, dict):
+            continue
+        selection = _create_directory_selection(workspace_id, request, raw_user)
+        if selection:
+            users.append(selection)
+    public = {
+        "workspace_id": workspace_id,
+        "connected": result.get("connected") is True,
+        "source": "microsoft_graph",
+        "users": users,
+    }
+    if result.get("connected") is not True:
+        public["error"] = _public_graph_status(result.get("error") or {}, default_status="unavailable")
+    return public
+
+
+def invite_workspace_member(
+    workspace_id: str,
+    body: dict[str, Any],
+    request: Request | None = None,
+    *,
+    provider: dict[str, Any] | None = None,
+    member_identity: dict[str, Any] | None = None,
+    public_response: bool = True,
+) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "member.manage")
     email = _member_email((body or {}).get("email"))
     if not email:
@@ -1128,7 +1266,10 @@ def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Re
     name = _clean_text((body or {}).get("name")) or _display_name_from_email(email)
     _audit_required(request, workspace_id, "invitation.create", "invitation", "pending")
     current_actor = public_actor(actor_from_request(request))
-    provider = (body or {}).get("_invitation_provider") if isinstance((body or {}).get("_invitation_provider"), dict) else {}
+    provider = dict(provider or {})
+    stable_identity = dict(member_identity or {})
+    if not stable_identity:
+        stable_identity = {"email": email}
     with workspace_invitation_lock(workspace_id):
         meta = _load_workspace_meta(workspace_id)
         members = _stored_workspace_members(meta)
@@ -1145,7 +1286,7 @@ def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Re
         )
         updated = False
         for member in members:
-            if str(member.get("email") or "").lower() != email:
+            if not _same_member_identity(member, stable_identity, email):
                 continue
             member.update(
                 {
@@ -1159,11 +1300,11 @@ def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Re
                     "invited_by": member.get("invited_by") or invited_by,
                 }
             )
+            _apply_stable_identity(member, stable_identity)
             updated = True
             break
         if not updated:
-            members.append(
-                {
+            member = {
                     "user": name,
                     "name": name,
                     "email": email,
@@ -1175,23 +1316,26 @@ def invite_workspace_member(workspace_id: str, body: dict[str, Any], request: Re
                     "updated_at": now,
                     "invited_by": invited_by,
                 }
-            )
+            _apply_stable_identity(member, stable_identity)
+            members.append(member)
         meta["workspace_members"] = members
         _save_workspace_meta(workspace_id, meta)
     result = workspace_member_roles(workspace_id, request)
-    invited_label = member_subject_label(workspace_id, email)
+    invited_label = member_subject_label(workspace_id, stable_identity)
     result["invited_member"] = next((item for item in result.get("members") or [] if item.get("subject_label") == invited_label), None)
-    result["invitation"] = invitation
+    result["invitation"] = invitation if not public_response else _public_invitation_response(workspace_id, invitation, stable_identity)
     return result
 
 
 def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "member.manage")
     payload = dict(body or {})
-    email = _member_email(payload.get("email"))
+    selected = _consume_directory_selection(workspace_id, request, payload.get("selection_ref")) if payload.get("selection_ref") else {}
+    email = _member_email(selected.get("email") or payload.get("email"))
     if not email:
         raise ValueError("A valid member email is required")
-    name = _clean_text(payload.get("name")) or _display_name_from_email(email)
+    name = _clean_text(selected.get("name") or payload.get("name")) or _display_name_from_email(email)
+    member_identity = selected.get("identity") if isinstance(selected.get("identity"), dict) else {"email": email}
     role = _member_role(payload.get("role"))
     send_email = bool(payload.get("send_email"))
     fallback = payload.get("fallback_to_workspace_member", True) is not False
@@ -1218,13 +1362,16 @@ def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], reque
                 return {
                     "workspace_id": workspace_id,
                     "members": workspace_member_roles(workspace_id, request).get("members") or [],
-                    "graph_invite": graph_invite,
-                    "invitation": invitation,
+                    "graph_invite": _public_graph_status(graph_invite),
+                    "invitation": _public_invitation_response(workspace_id, invitation, member_identity),
                 }
     result = invite_workspace_member(
         workspace_id,
-        {"email": email, "name": name, "role": role, "_invitation_provider": graph_invite, "reinvite": bool(payload.get("reinvite"))},
+        {"email": email, "name": name, "role": role, "reinvite": bool(payload.get("reinvite"))},
         request,
+        provider=graph_invite,
+        member_identity=member_identity,
+        public_response=False,
     )
     invitation_id = str((result.get("invitation") or {}).get("invitation_id") or "")
     if invitation_id and graph_invite.get("status") in {"unavailable", "failed"}:
@@ -1249,8 +1396,20 @@ def invite_entra_workspace_member(workspace_id: str, body: dict[str, Any], reque
             accepted = accept_provider_invitation(meta, workspace_id, invitation_id, graph_invite, inviter=actor_from_request(request))
             if accepted is not None:
                 result["invitation"] = accepted
+                accepted_identity = accepted.get("accepted_identity") if isinstance(accepted.get("accepted_identity"), dict) else {}
+                _reconcile_workspace_member(meta, email, accepted_identity)
                 _save_workspace_meta(workspace_id, meta)
-    result["graph_invite"] = graph_invite
+    refreshed = workspace_member_roles(workspace_id, request)
+    result["members"] = refreshed.get("members") or []
+    result["permissions"] = refreshed.get("permissions") or {}
+    if "usage" in refreshed:
+        result["usage"] = refreshed["usage"]
+    result["invitation"] = _public_invitation_response(workspace_id, result.get("invitation") or {}, member_identity)
+    result["invited_member"] = next(
+        (member for member in result["members"] if member.get("subject_label") == result["invitation"]["subject_label"]),
+        None,
+    )
+    result["graph_invite"] = _public_graph_status(graph_invite)
     return result
 
 
@@ -1991,7 +2150,20 @@ def _round_money(value: float) -> float:
 def _actor_key(actor: dict[str, Any] | None) -> str:
     if not isinstance(actor, dict):
         return ""
-    return str(actor.get("email") or actor.get("actor_id") or actor.get("name") or "").strip().lower()
+    try:
+        return canonical_member_identity_key(actor)
+    except InvitationPersistenceError:
+        return str(actor.get("name") or "").strip().lower()
+
+
+def _find_member_by_identity(members_by_key: dict[str, dict[str, Any]], identity: dict[str, Any]) -> dict[str, Any] | None:
+    key = _actor_key(identity)
+    if key and key in members_by_key:
+        return members_by_key[key]
+    email = _member_email(identity.get("email"))
+    if email:
+        return next((member for member in members_by_key.values() if _member_email(member.get("email")) == email), None)
+    return None
 
 
 def _workspace_invited_members(workspace_id: str) -> list[dict[str, Any]]:

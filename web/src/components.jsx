@@ -6,6 +6,7 @@ import { formatGovernanceTokenLabel, formatGovernanceTokens } from "./governance
 import {
   auditEventViewModel,
   chargebackViewModel,
+  directorySelectionViewModel,
   governancePermissions,
   invitationLifecycleViewModel,
   memberDirectoryViewModel,
@@ -2887,7 +2888,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
   const [memberAction, setMemberAction] = useState("");
   const [memberNotice, setMemberNotice] = useState("");
   const [memberError, setMemberError] = useState("");
-  const [inviteForm, setInviteForm] = useState({ email: "", name: "", role: "editor" });
+  const [inviteForm, setInviteForm] = useState({ email: "", name: "", role: "editor", selectionRef: "", subjectLabel: "" });
   const [directoryQuery, setDirectoryQuery] = useState("");
   const [directoryState, setDirectoryState] = useState({ connected: null, users: [], error: null });
   const [directoryLoading, setDirectoryLoading] = useState(false);
@@ -3025,6 +3026,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
     setMemberLoadError("");
     setDirectoryState({ connected: null, users: [], error: null });
     setDirectoryQuery("");
+    setInviteForm({ email: "", name: "", role: "editor", selectionRef: "", subjectLabel: "" });
     governanceToken.current = null;
     governanceGuard.current.begin(workspaceId);
     setGovernanceData(emptyGovernanceData(workspaceId, true));
@@ -3107,7 +3109,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
       .then((data) => {
         setDirectoryState({
           connected: Boolean(data?.connected),
-          users: Array.isArray(data?.users) ? data.users : [],
+          users: directorySelectionViewModel(data),
           error: data?.error || null,
         });
         if (data?.connected === false) {
@@ -3125,12 +3127,14 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
       .finally(() => setDirectoryLoading(false));
   };
   const pickDirectoryUser = (account) => {
-    const email = cleanUserValue(account?.email || account?.user_principal_name).toLowerCase();
-    if (!email) return;
+    const selectionRef = cleanUserValue(account?.selectionRef).toLowerCase();
+    if (!/^selection_[0-9a-f]{40}$/.test(selectionRef)) return;
     setInviteForm((form) => ({
       ...form,
-      email,
-      name: cleanUserValue(account?.display_name),
+      email: "",
+      name: "",
+      selectionRef,
+      subjectLabel: cleanUserValue(account?.subjectLabel),
     }));
     setMemberNotice("已选择 Entra 用户，确认角色后即可加入当前工作区。");
   };
@@ -3142,7 +3146,8 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
       return;
     }
     const email = cleanUserValue(inviteForm.email).toLowerCase();
-    if (!email || !email.includes("@")) {
+    const selectionRef = cleanUserValue(inviteForm.selectionRef).toLowerCase();
+    if (!selectionRef && (!email || !email.includes("@"))) {
       setMemberError("请输入有效的成员邮箱。");
       setMemberNotice("");
       return;
@@ -3151,8 +3156,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
     setMemberError("");
     setMemberNotice("");
     inviteEntraMember(workspaceId, {
-      email,
-      name: cleanUserValue(inviteForm.name),
+      ...(selectionRef ? { selection_ref: selectionRef } : { email, name: cleanUserValue(inviteForm.name) }),
       role: inviteForm.role || "editor",
       send_email: sendGraphInvite,
       fallback_to_workspace_member: true,
@@ -3161,12 +3165,12 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
       .then((data) => {
         applyMemberPayload(data);
         loadInvitationHistory();
-        setInviteForm({ email: "", name: "", role: "editor" });
+        setInviteForm({ email: "", name: "", role: "editor", selectionRef: "", subjectLabel: "" });
         const graphStatus = data?.graph_invite?.status;
         if (sendGraphInvite && graphStatus === "sent") {
           setMemberNotice("成员已加入工作区，Entra 邀请邮件已发送。");
         } else if (sendGraphInvite && graphStatus && graphStatus !== "skipped") {
-          setMemberNotice(`成员已加入工作区；Entra 邮件未发送：${data?.graph_invite?.error?.message || "需要管理员授权 Graph 权限"}`);
+          setMemberNotice(`成员已加入工作区；Entra 邮件未发送：${data?.graph_invite?.code || "需要管理员授权 Graph 权限"}`);
         } else {
           setMemberNotice("成员已加入工作区列表，可用于后续协作、用量和审计溯源展示。");
         }
@@ -3392,15 +3396,15 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
                   {directoryState.users.map((account) => (
                     <button
                       type="button"
-                      key={account.id || account.email}
+                      key={account.selectionRef}
                       onClick={() => pickDirectoryUser(account)}
                     >
-                      <span className="mbr-av">{memberInitial(account.display_name, "")}</span>
+                      <span className="mbr-av">ID</span>
                       <span>
-                        <b>{account.display_name || "Entra 用户"}</b>
-                        <em>选择后填入邀请邮箱</em>
+                        <b>{account.subjectLabel}</b>
+                        <em>安全目录引用</em>
                       </span>
-                      <small>{account.user_type || "Entra"}</small>
+                      <small>Entra</small>
                     </button>
                   ))}
                 </div>
@@ -3409,7 +3413,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
                 <input
                   type="email"
                   value={inviteForm.email}
-                  onChange={(event) => setInviteForm((form) => ({ ...form, email: event.target.value }))}
+                  onChange={(event) => setInviteForm((form) => ({ ...form, email: event.target.value, selectionRef: "", subjectLabel: "" }))}
                   placeholder="成员邮箱"
                   autoComplete="email"
                   disabled={!memberPermissions.canManageMembers}
@@ -3417,7 +3421,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
                 <input
                   type="text"
                   value={inviteForm.name}
-                  onChange={(event) => setInviteForm((form) => ({ ...form, name: event.target.value }))}
+                  onChange={(event) => setInviteForm((form) => ({ ...form, name: event.target.value, selectionRef: "", subjectLabel: "" }))}
                   placeholder="姓名（可选）"
                   disabled={!memberPermissions.canManageMembers}
                 />

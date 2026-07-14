@@ -48,6 +48,7 @@ Implemented the governance frontend from base `1544f77` without modifying backen
 - `node --test src/*.test.mjs` from `web`: **45 passed, 0 failed**.
 - `npm run build` from `web`: **passed**, Vite transformed 1,755 modules.
 - `git diff --check`: **passed**.
+
 - Playwright acceptance: **14/14 passed** across desktop `1440px` and mobile `390px`.
 - Browser checks: **0 console errors, 0 page errors, 0 request failures**; no page overflow; keyboard focus visible; restricted controls disabled; permission-denied fixtures made no chargeback request.
 - Machine-readable result: `output/playwright/p2-b-task6-governance-acceptance.json`.
@@ -221,3 +222,33 @@ This pass closes the remaining outcome-response identity exposure and the no-ema
 - `node --test src/*.test.mjs` from `web`: **50 passed, 0 failed** in 313.75ms.
 - `npm run build` from `web`: **passed**, Vite transformed **1,756 modules** in 1.14s.
 - `git diff --check`: **passed**.
+
+## R5 Directory Privacy And Identity Continuity (2026-07-14)
+
+This focused pass closes the R5 directory and invitation response exposures without changing Easy Auth configuration or tracked `output/` content.
+
+| R5 finding | Implemented result |
+|---|---|
+| Directory-search privilege and PII | The Entra directory route now requires `member.manage`. Graph results remain internal and the API returns only one-time, workspace/requester-bound `selection_<random>` references plus stable `member_<HMAC>` labels. No name, email, UPN, OID, tenant, or Graph user body is serialized. |
+| Safe selection flow | Directory selection references expire after five minutes and are consumed once. The frontend retains and renders only the safe reference and bounded pseudonym; manual email entry remains available for direct invitation without API re-echo. |
+| Invitation response projection | Direct and Graph invite responses use an allowlisted projection: invitation reference, subject label, role, state, update time, and bounded provider status/code only. Raw journal IDs, accepted identity, provider invitation objects, and Graph errors are excluded. |
+| Canonical identity continuity | The shared identity key now prefers tenant plus OID whenever both are known and falls back to normalized email. Member reconciliation records the stable tenant/OID after provider acceptance and uses email only as an internal alias when older usage lacks tenant context, preventing a second public member label. |
+| Cross-surface attribution | The creator-without-email then later-email fixture proves one stable label across members, member usage, chargeback, outcomes, and invitation history while a different administrator is active. |
+
+### R5 Files Changed
+
+- `backend/control_plane.py`: management-gated directory search, ephemeral safe selection references, invitation response projection, and member identity reconciliation.
+- `backend/invitation_store.py`: tenant/OID-first canonical key, shared invitation references, and invitation-history identity reconciliation.
+- `web/src/components.jsx`: pseudonym-only directory results and selection-reference invitation submission.
+- `web/src/governanceViewModel.js`: strict directory selection projection.
+- `tests/test_entra_member_invites.py`: route authorization, whole-response redaction, safe selection, Graph/direct projection, and updated safe-contract assertions.
+- `tests/test_actor_audit_usage.py`: no-email creator continuity across governance surfaces.
+- `web/src/governanceViewModel.test.mjs`: raw-directory-field rejection and UTF-8-safe pseudonym fixture.
+
+### R5 Verification Before Commit
+
+- `python -m pytest tests/test_entra_member_invites.py tests/test_actor_audit_usage.py -q`: **85 passed in 7.51s**.
+- `node --test src/*.test.mjs` from `web`: **51 passed, 0 failed** in 231.55ms.
+- `npm run build` from `web`: **passed**, Vite transformed **1,756 modules** in 608ms.
+- `git diff --check`: **passed**.
+- Playwright was not rerun in this focused pass because the user requested immediate focused tests, Node tests, build, and commit. No new browser evidence is claimed.

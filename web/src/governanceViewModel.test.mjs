@@ -5,6 +5,7 @@ import {
   appendAuditPage,
   auditEventViewModel,
   chargebackViewModel,
+  directorySelectionViewModel,
   governancePermissions,
   invitationLifecycleViewModel,
   memberDirectoryViewModel,
@@ -219,6 +220,25 @@ test("settings member rows use only server subject labels and discard raw identi
   assert.ok(!JSON.stringify(rows).includes("raw-oid"));
   assert.ok(!JSON.stringify(rows).includes("tenant-secret"));
   assert.ok(!JSON.stringify(rows).includes("Owner Person"));
+});
+
+test("directory selections retain only server references and pseudonyms", () => {
+  const rows = directorySelectionViewModel({ users: [{
+    selection_ref: "selection_0123456789abcdef0123456789abcdef01234567",
+    subject_label: "member_89abcdef0123456789abcdef0123456789abcdef",
+    display_name: "Private Directory Name",
+    email: "private.directory@example.com",
+    user_principal_name: "private.directory@example.com",
+    id: "private-directory-oid",
+  }] });
+
+  assert.deepEqual(rows, [{
+    selectionRef: "selection_0123456789abcdef0123456789abcdef01234567",
+    subjectLabel: "member_89abcdef…cdef",
+  }]);
+  assert.ok(!JSON.stringify(rows).includes("Private Directory Name"));
+  assert.ok(!JSON.stringify(rows).includes("example.com"));
+  assert.ok(!JSON.stringify(rows).includes("private-directory-oid"));
 });
 
 test("customer-facing governance labels are valid UTF-8 without literal question marks or mojibake", () => {

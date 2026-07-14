@@ -7,6 +7,8 @@ from urllib.parse import quote
 import backend.control_plane as control_plane
 import backend.graph_client as graph_client
 import backend.invitation_store as invitation_store
+from backend.app import app
+from fastapi.testclient import TestClient
 import pytest
 
 
@@ -75,6 +77,100 @@ def test_entra_user_search_normalizes_graph_users(monkeypatch):
             "source": "microsoft_graph",
         }
     ]
+
+
+def test_directory_endpoint_requires_member_manage_and_returns_only_safe_selection_refs(monkeypatch):
+    monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "directory-selection-salt")
+    raw_user = {
+        "id": "directory-private-oid",
+        "display_name": "Directory Private Name",
+        "email": "directory.private@example.com",
+        "user_principal_name": "directory.private@example.com",
+        "user_type": "Member",
+        "source": "microsoft_graph",
+    }
+    reads = []
+    actions = []
+    monkeypatch.setattr(control_plane, "search_entra_users", lambda *_args, **_kwargs: reads.append(True) or {"connected": True, "source": "microsoft_graph", "users": [raw_user]})
+
+    def deny(_workspace_id, _actor, action):
+        actions.append(action)
+        raise PermissionError(f"workspace permission denied for {action}")
+
+    monkeypatch.setattr(control_plane, "require_workspace_permission", deny)
+    client = TestClient(app)
+    denied = client.get("/api/workspaces/ws-graph/members/entra-users?query=directory.private@example.com")
+    assert denied.status_code == 403
+    assert actions == ["member.manage"]
+    assert reads == []
+
+    monkeypatch.setattr(control_plane, "require_workspace_permission", lambda _workspace_id, _actor, action: actions.append(action) or "owner")
+    allowed = client.get("/api/workspaces/ws-graph/members/entra-users?query=directory.private@example.com")
+    assert allowed.status_code == 200, allowed.text
+    assert actions[-1] == "member.manage"
+    user = allowed.json()["users"][0]
+    assert set(user) == {"selection_ref", "subject_label"}
+    assert re.fullmatch(r"selection_[0-9a-f]{40}", user["selection_ref"])
+    assert re.fullmatch(r"member_[0-9a-f]{40}", user["subject_label"])
+    serialized = json.dumps(allowed.json())
+    for raw in ("directory.private@example.com", "directory-private-oid", "Directory Private Name", "Member"):
+        assert raw not in serialized
+
+
+def test_directory_selection_invite_and_direct_invite_responses_never_echo_identity(tmp_path, monkeypatch):
+    _workspace(tmp_path, monkeypatch)
+    monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "directory-selection-salt")
+    owner = {"actor_id": "owner-oid", "tenant_id": "tenant-1", "email": "owner@contoso.com", "source": "easy_auth"}
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: owner)
+    monkeypatch.setattr(control_plane, "search_entra_users", lambda *_args, **_kwargs: {
+        "connected": True,
+        "source": "microsoft_graph",
+        "users": [{
+            "id": "selected-private-oid",
+            "display_name": "Selected Private Name",
+            "email": "selected.private@example.com",
+            "user_principal_name": "selected.private@example.com",
+            "user_type": "Member",
+            "source": "microsoft_graph",
+        }],
+    })
+    captured = []
+    monkeypatch.setattr(control_plane, "send_graph_invitation", lambda email, *_args, **kwargs: captured.append((email, kwargs)) or {
+        "status": "sent",
+        "source": "microsoft_graph",
+        "invitation_id": "provider-private-invitation",
+        "invited_user_id": "selected-private-oid",
+        "resource_tenant_id": "tenant-1",
+        "email": email,
+    })
+
+    directory = control_plane.workspace_entra_users("ws-graph", RequestStub(), "selected", 8)
+    selection_ref = directory["users"][0]["selection_ref"]
+    graph_result = control_plane.invite_entra_workspace_member(
+        "ws-graph",
+        {"selection_ref": selection_ref, "role": "editor", "send_email": True},
+        RequestStub(),
+    )
+    direct_result = control_plane.invite_workspace_member(
+        "ws-graph",
+        {"email": "direct.private@example.com", "name": "Direct Private Name", "role": "viewer"},
+        RequestStub(),
+    )
+
+    assert captured[0][0] == "selected.private@example.com"
+    assert graph_result["invited_member"]["subject_label"] == graph_result["invitation"]["subject_label"]
+    for result in (graph_result, direct_result):
+        invitation = result["invitation"]
+        assert set(invitation).issuperset({"invitation_ref", "subject_label", "role", "state", "updated_at"})
+        assert re.fullmatch(r"invite_[0-9a-f]{40}", invitation["invitation_ref"])
+        assert re.fullmatch(r"member_[0-9a-f]{40}", invitation["subject_label"])
+        serialized = json.dumps(result)
+        for raw in (
+            "selected.private@example.com", "selected-private-oid", "Selected Private Name",
+            "direct.private@example.com", "Direct Private Name", "tenant-1",
+            "provider-private-invitation", "owner@contoso.com", "owner-oid",
+        ):
+            assert raw not in serialized
 
 
 def test_directory_search_permission_denied_is_specific_but_exact_email_invite_still_works(monkeypatch):
@@ -378,8 +474,13 @@ def test_graph_id_only_binds_to_trusted_inviter_tenant_and_rejects_missing_tenan
 
     result = control_plane.invite_entra_workspace_member("ws-graph", {"email": "reviewer@contoso.com", "role": "editor", "send_email": True}, trusted)
 
-    assert result["invitation"]["accepted_identity"] == {"actor_id": "oid-reviewer", "tenant_id": "tenant-1"}
-    assert "tenant_id" not in result["invitation"]["provider"]
+    assert result["invitation"]["state"] == "accepted"
+    assert re.fullmatch(r"member_[0-9a-f]{40}", result["invitation"]["subject_label"])
+    assert result["invited_member"]["subject_label"] == result["invitation"]["subject_label"]
+    assert "accepted_identity" not in result["invitation"]
+    assert "provider" not in result["invitation"] or "tenant_id" not in result["invitation"]["provider"]
+    saved = json.loads(workspace_path.read_text(encoding="utf-8"))
+    assert saved["workspace_invitation_events"][-1]["accepted_identity"] == {"actor_id": "oid-reviewer", "tenant_id": "tenant-1"}
     meta = {}
     pending = invitation_store.create_pending_invitation(meta, "ws-graph", email="other@contoso.com", role="viewer", invited_by={"actor_id": "owner", "tenant_id": "tenant-1", "source": "easy_auth"})
     assert invitation_store.accept_provider_invitation(meta, "ws-graph", pending["invitation_id"], {"source": "microsoft_graph", "invited_user_id": "oid-other"}, inviter={"actor_id": "owner", "source": "easy_auth"}) is None
@@ -535,7 +636,7 @@ def test_entra_invite_falls_back_to_workspace_member_when_graph_unavailable(tmp_
     assert reviewer["role"] == "editor"
     assert reviewer["status"] == "pending"
     assert result["graph_invite"]["status"] == "unavailable"
-    assert result["graph_invite"]["error"]["code"] == "graph_token_missing"
+    assert result["graph_invite"]["code"] == "graph_token_missing"
     saved = json.loads(workspace_path.read_text(encoding="utf-8"))
     assert saved["workspace_members"][0]["email"] == "reviewer@contoso.com"
     assert [event["state"] for event in saved["workspace_invitation_events"]] == ["pending", "failed"]
@@ -604,8 +705,8 @@ def test_graph_failure_audits_truthful_terminal_event_after_durable_transition(t
         RequestStub(),
     )
 
-    invitation_id = result["invitation"]["invitation_id"]
     fail_args, fail_kwargs = next((args, kwargs) for args, kwargs in captured if args[1] == "invitation.fail")
+    invitation_id = fail_args[2]["resource_id"]
     assert order.index("durable-save") < order.index("audit:invitation.fail")
     assert fail_args[2] == {
         "workspace_id": "ws-graph",
@@ -615,6 +716,8 @@ def test_graph_failure_audits_truthful_terminal_event_after_durable_transition(t
     assert fail_kwargs["result"] == "failed"
     assert fail_kwargs["reason_code"] == "invitation_failed"
     assert fail_kwargs["correlation"] == {"invitation_id": invitation_id}
+    assert "invitation_id" not in result["invitation"]
+    assert re.fullmatch(r"invite_[0-9a-f]{40}", result["invitation"]["invitation_ref"])
     assert secret not in repr((fail_args, fail_kwargs))
 
 

@@ -230,6 +230,7 @@ def list_invitation_history(
     salt = member_pseudonym_salt(pseudonym_salt)
 
     records: dict[str, dict[str, Any]] = {}
+    known_identity_by_email: dict[str, dict[str, Any]] = {}
     for raw in events:
         if not isinstance(raw, Mapping):
             continue
@@ -244,6 +245,7 @@ def list_invitation_history(
                 "role": "viewer",
                 "invitation_state": "pending",
                 "activated": False,
+                "accepted_identity": {},
                 "updated_at": None,
             },
         )
@@ -251,24 +253,41 @@ def list_invitation_history(
             record["email"] = _email(raw.get("email"))
             record["role"] = _role(raw.get("role"))
             record["invitation_state"] = _clean(raw.get("state")).lower()
+            if _has_identity(raw.get("accepted_identity")):
+                record["accepted_identity"] = _identity_fields(raw.get("accepted_identity"))
         elif kind == "role_change":
             record["role"] = _role(raw.get("role"))
         elif kind == "activation":
             record["activated"] = True
+            if _has_identity(raw.get("accepted_identity")):
+                record["accepted_identity"] = _identity_fields(raw.get("accepted_identity"))
         occurred_at = _clean(raw.get("occurred_at"))
         if occurred_at:
             record["updated_at"] = occurred_at
+
+    for record in records.values():
+        email = str(record.get("email") or "")
+        identity = record.get("accepted_identity")
+        if email and _has_identity(identity):
+            known_identity_by_email[email] = _identity_fields(identity)
+    for member in meta.get("workspace_members") or []:
+        if not isinstance(member, Mapping):
+            continue
+        email = _clean(member.get("email")).lower()
+        if email and "@" in email and _has_identity(member):
+            known_identity_by_email[email] = _identity_fields(member)
 
     history: list[dict[str, Any]] = []
     for invitation_id, record in records.items():
         invitation_state = str(record["invitation_state"])
         effective_state = "removed" if invitation_state == "revoked" and record["activated"] else invitation_state
+        subject_identity = record.get("accepted_identity") or known_identity_by_email.get(str(record["email"])) or str(record["email"])
         history.append(
             {
-                "invitation_ref": _history_pseudonym("invite", workspace_id, invitation_id, salt),
+                "invitation_ref": invitation_reference(workspace_id, invitation_id, pseudonym_salt=salt),
                 "subject_label": member_subject_label(
                     workspace_id,
-                    {"email": str(record["email"])},
+                    subject_identity,
                     pseudonym_salt=salt,
                 ),
                 "role": str(record["role"]),
@@ -282,13 +301,13 @@ def list_invitation_history(
 
 def canonical_member_identity_key(identity: Mapping[str, Any] | str) -> str:
     if isinstance(identity, Mapping):
-        email = _clean(identity.get("email")).lower()
-        if email and "@" in email:
-            return email
         actor_id = _clean(identity.get("actor_id") or identity.get("id") or identity.get("oid")).lower()
         tenant_id = _clean(identity.get("tenant_id") or identity.get("tid")).lower()
         if tenant_id and actor_id:
             return f"{tenant_id}\0{actor_id}"
+        email = _clean(identity.get("email")).lower()
+        if email and "@" in email:
+            return email
     else:
         value = _clean(identity).lower()
         if value and "@" in value:
@@ -298,6 +317,20 @@ def canonical_member_identity_key(identity: Mapping[str, Any] | str) -> str:
             if tenant_id and actor_id:
                 return f"{tenant_id}\0{actor_id}"
     raise InvitationPersistenceError("member identity is unavailable for safe projection")
+
+
+def invitation_reference(
+    workspace_id: str,
+    invitation_id: str,
+    *,
+    pseudonym_salt: str | None = None,
+) -> str:
+    return _history_pseudonym(
+        "invite",
+        workspace_id,
+        _clean(invitation_id),
+        member_pseudonym_salt(pseudonym_salt),
+    )
 
 
 def member_subject_label(
