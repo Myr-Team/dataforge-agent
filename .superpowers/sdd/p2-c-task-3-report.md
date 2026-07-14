@@ -100,3 +100,44 @@ R2 GREEN results:
 - File-only outcomes still require explicit source-run lineage before they can participate in experiment promotion.
 - A new dimension without newly traceable evidence is fail-closed as unverifiable, even if a model presents it as a normalized decision change.
 - Free-form opportunity labels are not promotion identity. A future stable server-issued opportunity ID can be added without restoring wording authority.
+
+## R3 Review Remediation
+
+### Behavior
+
+- Request iteration inputs remain bounded display data. An `observed`/`verified` request body is always `reported_unverified` for promotion purposes.
+- Observed metrics become authoritative only when the server outcome store contains the same event/value/source, a persisted trusted independent verification event, and a source that still validates in the workspace.
+- New or strengthened dimensions require newly added or strengthened traceable evidence attached to that normalized dimension identity. Unrelated synthetic-only dimensions are omitted or clamped and reported as unverifiable.
+- Evidence deltas classify passed/failed transitions and higher/lower-is-better value changes before generic structured contradiction, with deterministic favorable/adverse reasons.
+- Verdict and confidence tokens are case/whitespace normalized; numeric dimension scores canonicalize equivalent values such as `3` and `"3"`.
+- A plan follow-up started under a new conversation resolves the workspace's canonical last-analysis run before follow-up completion, persists the new conversation as the follow-up, and attaches the plan snapshot to the existing version.
+- Artifact responses expose `experiment_version_id` only after exact canonical snapshot persistence succeeds. Failed attachment returns a bounded nonfatal unavailable state and warning without an ID.
+
+### R3 TDD Evidence
+
+RED command:
+
+`python -m pytest -q tests/test_experiment_versions.py tests/test_followup_plan_version.py tests/test_artifact_version_snapshot.py`
+
+RED result: `10 failed, 23 passed in 4.60s`. Failures covered fabricated verification authority, mixed synthetic dimensions, semantic normalization, directional/status delta semantics, new-conversation plan attachment, and premature artifact version IDs.
+
+GREEN commands and results:
+
+- Focused Task3 suite: `33 passed in 5.25s`.
+- Final Task3 plus endpoint/run-store/outcome persistence suite: `51 passed in 6.08s`.
+- `python -m py_compile backend/experiment_store.py backend/outcome_store.py backend/run_store.py backend/orchestrator.py`: exit 0.
+- `git diff --check`: exit 0.
+
+### R3 Changed Files
+
+- `backend/experiment_store.py`
+- `backend/outcome_store.py`
+- `backend/orchestrator.py`
+- `tests/test_experiment_versions.py`
+- `tests/test_followup_plan_version.py`
+- `tests/test_artifact_version_snapshot.py`
+- `.superpowers/sdd/p2-c-task-3-report.md`
+
+### R3 Deliberate Limitation
+
+- Dimension authority is fail-closed: an authoritative metric does not strengthen a dimension unless evidence with that dimension's stable identity is also attached to the completed analysis decision.

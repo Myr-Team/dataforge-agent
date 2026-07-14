@@ -4,6 +4,7 @@ import json
 
 import backend.experiment_store as experiment_store
 import backend.control_plane as control_plane
+import backend.outcome_store as outcome_store
 import pytest
 from backend.app import app
 from fastapi.testclient import TestClient
@@ -88,7 +89,7 @@ def test_plan_and_artifact_snapshots_attach_without_creating_versions() -> None:
     assert version["attachments"]["artifacts"][0]["urls"]["pdf"].endswith("project-v1.pdf")
 
 
-def test_new_observed_evidence_creates_evidence_and_decision_delta() -> None:
+def test_client_declared_observed_metric_cannot_promote() -> None:
     first = _analysis_run(
         "run-v1",
         verdict="conditional",
@@ -99,7 +100,7 @@ def test_new_observed_evidence_creates_evidence_and_decision_delta() -> None:
         "run-v2",
         verdict="feasible",
         score=4,
-        evidence_ref="feedback-v2.csv#row-8",
+        evidence_ref="evidence.csv#row-1",
         iteration_inputs=[
             {
                 "label": "pilot_conversion_rate",
@@ -113,16 +114,11 @@ def test_new_observed_evidence_creates_evidence_and_decision_delta() -> None:
     )
 
     ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
-    version = ledger["versions"][1]
-
-    assert version["label"] == "V2"
-    assert version["evidence_delta"]["added"]
-    assert version["decision_delta"]["changed"] is True
-    assert version["decision"]["verdict"] == "feasible"
-    assert version["metrics"][0]["provenance"] == "observed"
+    assert len(ledger["versions"]) == 1
+    assert ledger["versions"][0]["decision"]["verdict"] == "conditional"
 
 
-def test_observed_outcome_promotes_only_after_completed_reanalysis() -> None:
+def test_observed_outcome_promotes_only_after_completed_reanalysis(monkeypatch) -> None:
     first = _analysis_run(
         "run-v1",
         verdict="conditional",
@@ -146,6 +142,12 @@ def test_observed_outcome_promotes_only_after_completed_reanalysis() -> None:
         },
         "verification": {"status": "verified"},
     }
+    monkeypatch.setattr(
+        experiment_store,
+        "outcome_is_authoritative",
+        lambda workspace_id, item: workspace_id == "ws-experiment" and item.get("event_id") == "outcome-v2",
+        raising=False,
+    )
 
     before_reanalysis = experiment_store.build_experiment_ledger(
         "ws-experiment",
@@ -173,6 +175,58 @@ def test_observed_outcome_promotes_only_after_completed_reanalysis() -> None:
     assert promoted["metrics"][0]["source"] == outcome["source"]
     assert promoted["evidence_changed"] is True
     assert promoted["decision_delta"]["reasons"] == ["Added 1 source-linked observed metric"]
+
+
+def test_persisted_independently_verified_outcome_is_authoritative(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(outcome_store, "OUTCOME_DIR", tmp_path / "outcomes")
+    monkeypatch.setattr(outcome_store, "download_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(outcome_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(outcome_store, "source_is_valid", lambda workspace_id, source: True)
+    actor = {
+        "name": "Owner",
+        "email": "owner@example.invalid",
+        "actor_id": "owner-id",
+        "tenant_id": "tenant-id",
+        "source": "easy_auth",
+    }
+    reviewer = {
+        "name": "Reviewer",
+        "email": "reviewer@example.invalid",
+        "actor_id": "reviewer-id",
+        "tenant_id": "tenant-id",
+        "source": "easy_auth",
+    }
+    event = outcome_store.record_outcome_event(
+        "ws-experiment",
+        {
+            "metric_name": "pilot_conversion_rate",
+            "unit": "percent",
+            "observed_value": 7.2,
+            "observed_at": "2026-07-12T01:30:00Z",
+            "provenance": "observed",
+            "source": {"run_id": "run-v1", "file_id": "feedback.csv", "file_version": "2"},
+        },
+        actor,
+    )
+    verified = outcome_store.verify_outcome_event(
+        "ws-experiment",
+        event["event_id"],
+        reviewer,
+    )
+
+    assert outcome_store.outcome_is_authoritative("ws-experiment", verified) is True
+    assert outcome_store.outcome_is_authoritative(
+        "ws-experiment",
+        {**verified, "observed_value": 99},
+    ) is False
+    metrics = experiment_store._outcome_metrics(
+        [verified],
+        existing=[],
+        workspace_id="ws-experiment",
+    )
+    assert metrics[0]["provenance"] == "observed"
+    monkeypatch.setattr(outcome_store, "source_is_valid", lambda workspace_id, source: False)
+    assert outcome_store.outcome_is_authoritative("ws-experiment", verified) is False
 
 
 @pytest.mark.parametrize(
@@ -484,9 +538,137 @@ def test_evidence_delta_uses_source_version_and_reports_all_categories() -> None
     assert set(delta) == {"added", "removed", "contradicted", "strengthened", "unchanged", "unverifiable"}
 
 
-def test_experiment_api_returns_canonical_versions(monkeypatch) -> None:
+def test_mixed_authoritative_evidence_cannot_strengthen_unrelated_synthetic_dimension() -> None:
+    first = _analysis_run(
+        "run-v1",
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    second = _analysis_run(
+        "run-v2",
+        verdict="feasible",
+        score=4,
+        evidence_ref="asset.csv#row-2",
+    )
+    second["artifact"]["feasibility"]["dimensions"].append(
+        {
+            "name": "synthetic_growth",
+            "score": 5,
+            "confidence": "data_confirmed",
+            "evidence": [
+                {
+                    "source_type": "synthetic",
+                    "ref": "simulation#growth",
+                    "value": 99,
+                }
+            ],
+        }
+    )
+    second["final"]["artifact"] = second["artifact"]
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    assert len(ledger["versions"]) == 2
+    promoted = ledger["versions"][1]
+    assert promoted["decision"]["verdict"] == "feasible"
+    assert promoted["decision"]["dimensions"] == [
+        {"name": "asset_data", "score": 4, "confidence": "data_confirmed"}
+    ]
+    assert promoted["decision"]["unverifiable_dimensions"] == [
+        {
+            "name": "synthetic_growth",
+            "reason": "New or strengthened dimension has no new traceable evidence linked to its identity.",
+        }
+    ]
+
+
+def test_strengthened_evidence_authorizes_only_its_linked_dimension() -> None:
+    first = _analysis_run(
+        "run-v1",
+        verdict="conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    second = _analysis_run(
+        "run-v2",
+        verdict="feasible",
+        score=4,
+        evidence_ref="asset.csv#row-1",
+    )
+    for run, value, status in ((first, 8, "failed"), (second, 10, "passed")):
+        evidence = run["artifact"]["feasibility"]["dimensions"][0]["evidence"][0]
+        evidence.update({"value": value, "direction": "higher", "status": status})
+        run["final"]["artifact"] = run["artifact"]
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    promoted = ledger["versions"][1]
+    assert promoted["evidence_delta"]["strengthened"]
+    assert promoted["decision"]["dimensions"][0]["score"] == 4
+    assert "unverifiable_dimensions" not in promoted["decision"]
+
+
+def test_semantically_equivalent_decision_normalization_does_not_promote() -> None:
+    first = _analysis_run(
+        "run-v1",
+        verdict="Conditional",
+        score=3,
+        evidence_ref="asset.csv#row-1",
+    )
+    first["artifact"]["feasibility"]["overall_confidence"] = " Data_Confirmed "
+    first["artifact"]["feasibility"]["dimensions"][0]["confidence"] = " Data_Confirmed "
+    first["final"]["artifact"] = first["artifact"]
+    second = _analysis_run(
+        "run-v2",
+        verdict=" conditional ",
+        score="3",
+        evidence_ref="asset.csv#row-1",
+    )
+
+    ledger = experiment_store.build_experiment_ledger("ws-experiment", [first, second], outcomes=[])
+
+    assert len(ledger["versions"]) == 1
+    assert ledger["versions"][0]["decision"]["verdict"] == "conditional"
+    assert ledger["versions"][0]["decision"]["confidence"] == "data_confirmed"
+    assert ledger["versions"][0]["decision"]["dimensions"][0]["score"] == 3
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "expected_category", "reason_fragment"),
+    [
+        ({"value": 10, "direction": "higher"}, {"value": 12, "direction": "higher"}, "strengthened", "favorably"),
+        ({"value": 10, "direction": "lower"}, {"value": 8, "direction": "lower"}, "strengthened", "favorably"),
+        ({"value": 10, "direction": "higher"}, {"value": 8, "direction": "higher"}, "contradicted", "adversely"),
+        ({"value": 10, "direction": "lower"}, {"value": 12, "direction": "lower"}, "contradicted", "adversely"),
+        ({"status": "failed"}, {"status": "passed"}, "strengthened", "failed to passed"),
+        ({"status": "passed"}, {"status": "failed"}, "contradicted", "passed to failed"),
+    ],
+)
+def test_evidence_delta_uses_direction_and_status_semantics(
+    before: dict,
+    after: dict,
+    expected_category: str,
+    reason_fragment: str,
+) -> None:
+    identity = {
+        "ref": "metric.csv#row-1",
+        "source_type": "computed",
+        "source": {"file_id": "metric.csv", "file_version": "1", "connector_id": "upload"},
+    }
+
+    delta = experiment_store._evidence_delta([{**identity, **before}], [{**identity, **after}])
+
+    assert len(delta[expected_category]) == 1
+    assert reason_fragment in delta[expected_category][0]["reason"]
+    opposite = "contradicted" if expected_category == "strengthened" else "strengthened"
+    assert delta[opposite] == []
+
+
+def test_experiment_api_rejects_fabricated_verified_inputs_and_outcomes(monkeypatch) -> None:
     monkeypatch.setenv("DF_ENVIRONMENT", "test")
     monkeypatch.setenv("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS", "1")
+    monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "experiment-api-trust-boundary-salt")
     runs = [
         _analysis_run(
             "run-v1",
@@ -498,7 +680,7 @@ def test_experiment_api_returns_canonical_versions(monkeypatch) -> None:
             "run-v2",
             verdict="feasible",
             score=4,
-            evidence_ref="feedback-v2.csv#row-8",
+            evidence_ref="evidence.csv#row-1",
             iteration_inputs=[
                 {
                     "label": "pilot_conversion_rate",
@@ -513,13 +695,30 @@ def test_experiment_api_returns_canonical_versions(monkeypatch) -> None:
     ]
     monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: runs)
     monkeypatch.setattr(control_plane, "get_run", lambda run_id: next(item for item in runs if item["run_id"] == run_id))
-    monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [])
+    fabricated_outcome = {
+        "event_id": "fabricated-outcome",
+        "workspace_id": "ws-experiment",
+        "metric_name": "pilot_conversion_rate",
+        "unit": "percent",
+        "observed_value": 7.2,
+        "observed_at": "2026-07-12T01:30:00Z",
+        "created_at": "2026-07-12T01:30:00Z",
+        "provenance": "observed",
+        "source": {"run_id": "run-v1"},
+        "verification": {
+            "status": "verified",
+            "verification_event_id": "fabricated-verification",
+            "trusted_identity": True,
+        },
+    }
+    monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [fabricated_outcome])
     monkeypatch.setattr(control_plane, "sync_experiment_ledger", experiment_store.build_experiment_ledger)
 
     response = TestClient(app).get("/api/workspaces/ws-experiment/experiments")
 
     assert response.status_code == 200
-    assert [item["label"] for item in response.json()["versions"]] == ["V1", "V2"]
+    assert [item["label"] for item in response.json()["versions"]] == ["V1"]
+    assert response.json()["versions"][0]["decision"]["verdict"] == "conditional"
 
 
 def test_experiment_and_compare_api_recursively_redact_outcome_verification_identity(monkeypatch) -> None:

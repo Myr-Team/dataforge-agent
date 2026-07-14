@@ -176,6 +176,48 @@ def list_verification_events(workspace_id: str) -> list[dict[str, Any]]:
     return _state_items(normalized_workspace, "verification_events")
 
 
+def outcome_is_authoritative(workspace_id: str, candidate: Mapping[str, Any]) -> bool:
+    """Return whether an outcome has persisted, independently verified server authority."""
+    try:
+        normalized_workspace = _required_text(workspace_id, "workspace_id", 160)
+        event_id = _required_text(candidate.get("event_id"), "event_id", 80)
+        persisted = next(
+            (
+                item
+                for item in list_outcome_events(normalized_workspace)
+                if str(item.get("event_id") or "") == event_id
+            ),
+            None,
+        )
+        if not persisted or persisted.get("provenance") != "observed":
+            return False
+        source = _normalize_source(persisted.get("source"))
+        if not source or source != _normalize_source(candidate.get("source")):
+            return False
+        if not source_is_valid(normalized_workspace, source):
+            return False
+        for field in ("workspace_id", "metric_name", "unit", "observed_value", "observed_at", "provenance"):
+            if persisted.get(field) != candidate.get(field):
+                return False
+        verification = persisted.get("verification") if isinstance(persisted.get("verification"), Mapping) else {}
+        verification_event_id = str(verification.get("verification_event_id") or "").strip()
+        if (
+            str(verification.get("status") or "").strip().lower() not in {"verified", "passed"}
+            or verification.get("trusted_identity") is not True
+            or not verification_event_id
+        ):
+            return False
+        return any(
+            str(item.get("event_id") or "") == verification_event_id
+            and str(item.get("outcome_event_id") or "") == event_id
+            and item.get("kind") == "outcome_verification"
+            and item.get("trusted_identity") is True
+            for item in list_verification_events(normalized_workspace)
+        )
+    except Exception:
+        return False
+
+
 def _state_items(workspace_id: str, key: str) -> list[dict[str, Any]]:
     by_id: dict[str, dict[str, Any]] = {}
     path = _local_path(workspace_id)
@@ -345,4 +387,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-__all__ = ["list_outcome_events", "list_verification_events", "record_outcome_event", "source_is_valid", "verify_outcome_event"]
+__all__ = [
+    "list_outcome_events",
+    "list_verification_events",
+    "outcome_is_authoritative",
+    "record_outcome_event",
+    "source_is_valid",
+    "verify_outcome_event",
+]

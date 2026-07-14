@@ -131,3 +131,51 @@ def test_attachment_requires_existing_non_deduplicated_canonical_version(tmp_pat
     assert unknown is None
     assert deduplicated is None
     assert all(item.get("version_kind") != "artifact_generation" for item in run_store.list_runs("ws-attach"))
+
+
+def test_produce_omits_experiment_version_id_when_attachment_is_unavailable(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+    artifact = {
+        "workspace_id": "ws-unavailable",
+        "conversation_id": "run-unavailable",
+        "feasibility": {
+            "opportunity_id": "workspace opportunity",
+            "verdict": "conditional",
+            "dimensions": [],
+        },
+    }
+    run_store.start_run("run-unavailable", "ws-unavailable", "Analyze")
+    run_store.complete_run(
+        "run-unavailable",
+        status="completed",
+        final={"artifact": artifact},
+        artifact=artifact,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_producer",
+        lambda artifact, kinds=None: {"artifact_urls": {"pdf": "/api/artifacts/unavailable.pdf"}},
+    )
+    monkeypatch.setattr(orchestrator, "record_artifact_version", lambda **kwargs: None)
+
+    result = orchestrator.produce_from_existing_report(
+        {
+            "workspace_id": "ws-unavailable",
+            "conversation_id": "run-unavailable",
+            "feasibility": artifact["feasibility"],
+            "kinds": ["pdf"],
+        }
+    )
+
+    assert result["persisted_run_id"] == "run-unavailable"
+    assert "experiment_version_id" not in result
+    assert "version_run_id" not in result
+    assert result["experiment_attachment"] == {
+        "status": "unavailable",
+        "reason": "canonical_version_unavailable",
+    }
+    warning = next(item for item in result["warnings"] if item["kind"] == "version_snapshot")
+    assert warning["error"] == "canonical_version_unavailable"

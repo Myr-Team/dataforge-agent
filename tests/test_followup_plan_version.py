@@ -187,3 +187,83 @@ def test_real_followup_preserves_analysis_run_and_attaches_plan(tmp_path, monkey
     assert len(ledger["versions"]) == 1
     assert ledger["versions"][0]["version_id"] == "version:conv-real-plan"
     assert len(ledger["versions"][0]["attachments"]["plans"]) == 1
+
+
+def test_new_conversation_followup_attaches_plan_to_workspace_last_analysis(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    monkeypatch.setattr(orchestrator, "_persist_assistant_message", lambda *args, **kwargs: None)
+    run_store._ACTIVE.clear()
+    workspace_id = "ws-new-conversation-plan"
+    source_run_id = "analysis-conversation"
+    followup_run_id = "new-followup-conversation"
+    analysis_artifact = {
+        "workspace_id": workspace_id,
+        "conversation_id": source_run_id,
+        "feasibility": {
+            "opportunity_id": "workspace opportunity",
+            "verdict": "conditional",
+            "overall_confidence": "data_confirmed",
+            "dimensions": [
+                {
+                    "name": "asset_data",
+                    "score": 3,
+                    "confidence": "data_confirmed",
+                    "evidence": [
+                        {
+                            "source_type": "corpus",
+                            "ref": "evidence.csv#row-1",
+                            "file_id": "evidence.csv",
+                            "file_version": "1",
+                        }
+                    ],
+                }
+            ],
+        },
+        "answer": {"text": "Analysis", "citations": []},
+    }
+    run_store.start_run(source_run_id, workspace_id, "Analyze")
+    run_store.complete_run(
+        source_run_id,
+        status="completed",
+        final={"artifact": analysis_artifact},
+        artifact=analysis_artifact,
+    )
+    run_store.start_run(followup_run_id, workspace_id, "Draft a plan")
+    monkeypatch.setattr(
+        orchestrator,
+        "_last_analysis_for_workspace",
+        lambda requested_workspace, context=None: run_store.get_run(source_run_id)
+        if requested_workspace == workspace_id
+        else {},
+    )
+    followup_artifact = {
+        "workspace_id": workspace_id,
+        "conversation_id": followup_run_id,
+        "followup": {"answer_type": "plan", "route_hint": "plan_draft"},
+        "output_contract": {"answer_style": "structured_plan"},
+        "answer": {"text": "Pilot plan", "citations": []},
+    }
+
+    asyncio.run(
+        orchestrator._persist_chat_completion(
+            followup_run_id,
+            workspace_id,
+            "Pilot plan",
+            "followup_edit",
+            "followup_edit",
+            {"text": "Pilot plan", "artifact": followup_artifact},
+            followup_artifact,
+        )
+    )
+
+    source = run_store.get_run(source_run_id)
+    followup = run_store.get_run(followup_run_id)
+    details = [run_store.get_run(item["run_id"]) for item in run_store.list_runs(workspace_id)]
+    ledger = experiment_store.build_experiment_ledger(workspace_id, details, outcomes=[])
+    assert source["status"] == "completed"
+    assert followup["status"] == "followup_edit"
+    assert followup.get("version_kind") is None
+    assert [item["version_id"] for item in ledger["versions"]] == [f"version:{source_run_id}"]
+    assert ledger["versions"][0]["attachments"]["plans"][0]["text"] == "Pilot plan"

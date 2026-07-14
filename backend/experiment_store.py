@@ -4,13 +4,16 @@ import json
 import re
 import threading
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
 
 try:
     from .blob_store import download_blob_json, upload_blob_json
+    from .outcome_store import outcome_is_authoritative
 except ImportError:
     from blob_store import download_blob_json, upload_blob_json
+    from outcome_store import outcome_is_authoritative
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +65,7 @@ def build_experiment_ledger(
     snapshots = [item for item in ordered if str(item.get("version_kind") or "") in {"plan_draft", "artifact_generation"}]
     outcome_items = [item for item in (outcomes or []) if isinstance(item, dict)]
     versions: list[dict[str, Any]] = []
+    version_dimension_evidence: list[dict[str, set[str]]] = []
     version_aliases: dict[str, str] = {}
 
     for run in analysis_runs:
@@ -69,15 +73,18 @@ def build_experiment_ledger(
         artifact = _artifact(run)
         feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
         evidence, unverifiable_evidence = _evidence_snapshot(artifact, feasibility)
+        dimension_evidence = _dimension_evidence_keys(feasibility)
         metrics = _metrics(artifact.get("iteration_inputs") or run.get("iteration_inputs") or [])
         linked_outcomes = _outcomes_for_analysis(outcome_items, run, set(version_aliases) | {run_id})
-        metrics.extend(_outcome_metrics(linked_outcomes, existing=metrics))
-        model_verdict = str(feasibility.get("verdict") or run.get("verdict") or "").strip()
+        metrics.extend(_outcome_metrics(linked_outcomes, existing=metrics, workspace_id=normalized_workspace))
+        model_verdict = _normalized_token(feasibility.get("verdict") or run.get("verdict"))
         decision = {
             "opportunity_id": _normalized_text(feasibility.get("opportunity_id")) or None,
             "model_verdict": model_verdict or None,
             "verdict": model_verdict or None,
-            "confidence": feasibility.get("overall_confidence") or feasibility.get("confidence") or run.get("confidence"),
+            "confidence": _normalized_token(
+                feasibility.get("overall_confidence") or feasibility.get("confidence") or run.get("confidence")
+            ) or None,
             "dimensions": _dimension_decisions(feasibility),
             "gaps": sorted({_normalized_text(item) for item in (feasibility.get("gap_list") or []) if _normalized_text(item)}),
         }
@@ -89,8 +96,18 @@ def build_experiment_ledger(
         )
         metric_delta = _metric_delta(previous.get("metrics") if previous else [], metrics)
         supports_strengthening = bool(evidence_delta["added"] or evidence_delta["strengthened"] or metric_delta["added"])
-        if previous and not supports_strengthening:
-            decision = _guard_decision_strengthening(previous.get("decision") or {}, decision)
+        if previous:
+            authoritative_dimensions = _authoritative_dimension_changes(
+                version_dimension_evidence[-1],
+                dimension_evidence,
+                evidence_delta,
+            )
+            decision = _guard_decision_strengthening(
+                previous.get("decision") or {},
+                decision,
+                supports_strengthening=supports_strengthening,
+                authoritative_dimensions=authoritative_dimensions,
+            )
         authoritative_change = bool(
             evidence_delta["added"]
             or evidence_delta["removed"]
@@ -133,6 +150,7 @@ def build_experiment_ledger(
         should_promote = previous is None or version["evidence_changed"] or bool(version["decision_delta"]["changes"])
         if should_promote:
             versions.append(version)
+            version_dimension_evidence.append(dimension_evidence)
             version_aliases[run_id] = run_id
         else:
             version_aliases[run_id] = str(previous.get("run_id") or "")
@@ -360,8 +378,6 @@ def _metrics(raw: Any) -> list[dict[str, Any]]:
         provenance = (
             "synthetic"
             if kind == "synthetic" or item.get("provenance") == "synthetic"
-            else "observed"
-            if kind == "observed" and source and _verification_passed(verification)
             else "reported_unverified"
             if kind == "observed"
             else "target"
@@ -404,7 +420,12 @@ def _recorded_before(item: Mapping[str, Any], completed_at: str) -> bool:
     return bool(completed_at and recorded_at <= completed_at)
 
 
-def _outcome_metrics(outcomes: list[dict[str, Any]], *, existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _outcome_metrics(
+    outcomes: list[dict[str, Any]],
+    *,
+    existing: list[dict[str, Any]],
+    workspace_id: str = "",
+) -> list[dict[str, Any]]:
     keys = {_metric_key(item) for item in existing}
     result: list[dict[str, Any]] = []
     for item in outcomes:
@@ -413,9 +434,10 @@ def _outcome_metrics(outcomes: list[dict[str, Any]], *, existing: list[dict[str,
             kind = "assumption"
         source = _source(item.get("source"))
         verification = _verification(item.get("verification"))
+        authoritative = kind == "observed" and outcome_is_authoritative(workspace_id, item)
         provenance = (
             "observed"
-            if kind == "observed" and source and _verification_passed(verification)
+            if authoritative
             else "reported_unverified"
             if kind == "observed"
             else kind
@@ -496,11 +518,52 @@ def _dimension_decisions(feasibility: Mapping[str, Any]) -> list[dict[str, Any]]
             continue
         normalized = {
             "name": _normalized_text(item.get("name")),
-            **({"score": item.get("score")} if item.get("score") is not None else {}),
-            **({"confidence": _normalized_text(item.get("confidence"))} if _normalized_text(item.get("confidence")) else {}),
+            **({"score": _normalized_number(item.get("score"))} if item.get("score") is not None else {}),
+            **({"confidence": _normalized_token(item.get("confidence"))} if _normalized_token(item.get("confidence")) else {}),
         }
         dimensions.append(normalized)
     return sorted(dimensions, key=lambda item: str(item.get("name") or ""))
+
+
+def _dimension_evidence_keys(feasibility: Mapping[str, Any]) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    for dimension in feasibility.get("dimensions") or []:
+        if not isinstance(dimension, Mapping):
+            continue
+        name = _dimension_identity(dimension.get("name"))
+        if not name:
+            continue
+        keys: set[str] = set()
+        for item in dimension.get("evidence") or []:
+            if not isinstance(item, Mapping):
+                continue
+            normalized = _normalized_evidence(item)
+            if (
+                normalized.get("ref")
+                and normalized.get("source")
+                and normalized.get("source_type") in _TRACEABLE_SOURCE_TYPES
+            ):
+                keys.add(_evidence_key(normalized))
+        result[name] = keys
+    return result
+
+
+def _authoritative_dimension_changes(
+    previous: Mapping[str, set[str]],
+    current: Mapping[str, set[str]],
+    delta: Mapping[str, list[dict[str, Any]]],
+) -> set[str]:
+    changed_keys = {
+        _evidence_key(item)
+        for category in ("added", "strengthened")
+        for item in delta.get(category) or []
+        if isinstance(item, Mapping)
+    }
+    return {
+        name
+        for name, keys in current.items()
+        if keys.intersection(changed_keys)
+    }
 
 
 def _attach_snapshots(
@@ -562,6 +625,20 @@ def _evidence_delta(
         latest_confidence = str(latest.get("confidence") or "")
         prior_rank = _CONFIDENCE_RANK.get(prior_confidence, 0)
         latest_rank = _CONFIDENCE_RANK.get(latest_confidence, 0)
+        semantic_change = _evidence_semantic_change(prior, latest)
+        if semantic_change:
+            category, reason = semantic_change
+            target = strengthened if category == "strengthened" else contradicted
+            target.append(
+                {
+                    "ref": latest.get("ref"),
+                    "source": latest.get("source") or {},
+                    "before": {field: prior.get(field) for field in structured_changes},
+                    "after": {field: latest.get(field) for field in structured_changes},
+                    "reason": reason,
+                }
+            )
+            continue
         if structured_changes or latest_rank < prior_rank:
             reason_parts = []
             if structured_changes:
@@ -612,6 +689,43 @@ def _evidence_delta(
         "unchanged": unchanged,
         "unverifiable": unverifiable_items,
     }
+
+
+def _evidence_semantic_change(
+    prior: Mapping[str, Any],
+    latest: Mapping[str, Any],
+) -> tuple[str, str] | None:
+    prior_status = _normalized_token(prior.get("status"))
+    latest_status = _normalized_token(latest.get("status"))
+    status_rank = {"failed": 0, "fail": 0, "passed": 1, "pass": 1, "verified": 1}
+    if prior_status != latest_status and prior_status in status_rank and latest_status in status_rank:
+        favorable = status_rank[latest_status] > status_rank[prior_status]
+        category = "strengthened" if favorable else "contradicted"
+        adverb = "favorably" if favorable else "adversely"
+        return category, f"Evidence status changed {adverb} from {prior_status} to {latest_status}."
+
+    direction = _normalized_token(latest.get("direction") or latest.get("polarity") or prior.get("direction") or prior.get("polarity"))
+    orientation = _evidence_orientation(direction)
+    prior_value = _decimal_value(prior.get("value"))
+    latest_value = _decimal_value(latest.get("value"))
+    if orientation and prior_value is not None and latest_value is not None and prior_value != latest_value:
+        favorable = latest_value > prior_value if orientation == "higher" else latest_value < prior_value
+        category = "strengthened" if favorable else "contradicted"
+        effect = "favorably" if favorable else "adversely"
+        return (
+            category,
+            f"Evidence value changed {effect} from {prior.get('value')} to {latest.get('value')} "
+            f"with {orientation}-is-better direction.",
+        )
+    return None
+
+
+def _evidence_orientation(value: str) -> str | None:
+    if value in {"higher", "higher_is_better", "increase", "increasing", "positive", "up"}:
+        return "higher"
+    if value in {"lower", "lower_is_better", "decrease", "decreasing", "negative", "down"}:
+        return "lower"
+    return None
 
 
 def _evidence_identity_label(item: Mapping[str, Any]) -> str:
@@ -668,17 +782,24 @@ def _retain_previous_decision(previous: Mapping[str, Any], current: dict[str, An
     return retained
 
 
-def _guard_decision_strengthening(previous: Mapping[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+def _guard_decision_strengthening(
+    previous: Mapping[str, Any],
+    current: dict[str, Any],
+    *,
+    supports_strengthening: bool = False,
+    authoritative_dimensions: set[str] | None = None,
+) -> dict[str, Any]:
     guarded = dict(current)
     changed = False
+    authoritative_dimensions = authoritative_dimensions or set()
     previous_verdict = str(previous.get("verdict") or "")
     model_verdict = str(current.get("model_verdict") or current.get("verdict") or "")
-    if _VERDICT_RANK.get(model_verdict, 0) > _VERDICT_RANK.get(previous_verdict, 0):
+    if not supports_strengthening and _VERDICT_RANK.get(model_verdict, 0) > _VERDICT_RANK.get(previous_verdict, 0):
         guarded["verdict"] = previous.get("verdict")
         changed = True
     previous_confidence = str(previous.get("confidence") or "")
     current_confidence = str(current.get("confidence") or "")
-    if _CONFIDENCE_RANK.get(current_confidence, 0) > _CONFIDENCE_RANK.get(previous_confidence, 0):
+    if not supports_strengthening and _CONFIDENCE_RANK.get(current_confidence, 0) > _CONFIDENCE_RANK.get(previous_confidence, 0):
         guarded["confidence"] = previous.get("confidence")
         changed = True
     previous_dimensions = {
@@ -690,25 +811,47 @@ def _guard_decision_strengthening(previous: Mapping[str, Any], current: dict[str
     unverifiable_dimensions: list[dict[str, str]] = []
     for item in current.get("dimensions") or []:
         dimension = dict(item)
-        before = previous_dimensions.get(str(dimension.get("name") or ""))
-        if before is None:
+        dimension_name = str(dimension.get("name") or "")
+        dimension_identity = _dimension_identity(dimension_name)
+        before = next(
+            (
+                value
+                for name, value in previous_dimensions.items()
+                if _dimension_identity(name) == dimension_identity
+            ),
+            None,
+        )
+        if before is None and dimension_identity not in authoritative_dimensions:
             unverifiable_dimensions.append(
                 {
-                    "name": str(dimension.get("name") or ""),
-                    "reason": "New dimension has no new traceable evidence.",
+                    "name": dimension_name,
+                    "reason": "New or strengthened dimension has no new traceable evidence linked to its identity.",
                 }
             )
             changed = True
             continue
+        if before is None:
+            dimensions.append(dimension)
+            continue
+        strengthened = False
         try:
-            if float(dimension.get("score")) > float(before.get("score")):
+            strengthened = float(dimension.get("score")) > float(before.get("score"))
+            if strengthened and dimension_identity not in authoritative_dimensions:
                 dimension["score"] = before.get("score")
                 changed = True
         except (TypeError, ValueError):
             pass
-        if _CONFIDENCE_RANK.get(str(dimension.get("confidence") or ""), 0) > _CONFIDENCE_RANK.get(str(before.get("confidence") or ""), 0):
+        confidence_strengthened = _CONFIDENCE_RANK.get(str(dimension.get("confidence") or ""), 0) > _CONFIDENCE_RANK.get(str(before.get("confidence") or ""), 0)
+        if confidence_strengthened and dimension_identity not in authoritative_dimensions:
             dimension["confidence"] = before.get("confidence")
             changed = True
+        if (strengthened or confidence_strengthened) and dimension_identity not in authoritative_dimensions:
+            unverifiable_dimensions.append(
+                {
+                    "name": dimension_name,
+                    "reason": "New or strengthened dimension has no new traceable evidence linked to its identity.",
+                }
+            )
         dimensions.append(dimension)
     guarded["dimensions"] = dimensions
     if unverifiable_dimensions:
@@ -758,6 +901,33 @@ def _decision_delta(previous: Mapping[str, Any] | None, current: Mapping[str, An
 
 def _normalized_text(value: Any) -> str:
     return " ".join(str(value or "").split())
+
+
+def _normalized_token(value: Any) -> str:
+    return _normalized_text(value).lower()
+
+
+def _dimension_identity(value: Any) -> str:
+    return _normalized_token(value)
+
+
+def _decimal_value(value: Any) -> Decimal | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return None
+    return number if number.is_finite() else None
+
+
+def _normalized_number(value: Any) -> Any:
+    number = _decimal_value(value)
+    if number is None:
+        return _normalized_text(value) if isinstance(value, str) else value
+    if number == number.to_integral_value():
+        return int(number)
+    return float(number)
 
 
 def _safe_key(value: str) -> str:

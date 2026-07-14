@@ -2927,7 +2927,6 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
             updated_run = update_run_proposal(candidate_run_id, result)
             result["persisted_run_id"] = candidate_run_id
             experiment_version_id = f"version:{candidate_run_id}"
-            result["experiment_version_id"] = experiment_version_id
             try:
                 source_artifact = _produce_run_artifact(updated_run) or _produce_run_artifact(get_run(candidate_run_id)) or artifact
                 version = record_artifact_version(
@@ -2939,13 +2938,31 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
                     kinds=[str(kind) for kind in kinds if str(kind).strip()],
                 )
                 if version and version.get("run_id"):
+                    result["experiment_version_id"] = experiment_version_id
                     result["version_run_id"] = version["run_id"]
-            except Exception as exc:
+                    result["experiment_attachment"] = {"status": "attached"}
+                else:
+                    result["experiment_attachment"] = {
+                        "status": "unavailable",
+                        "reason": "canonical_version_unavailable",
+                    }
+                    result.setdefault("warnings", []).append(
+                        {
+                            "kind": "version_snapshot",
+                            "message": "Artifact generated, but no canonical experiment version was available for attachment.",
+                            "error": "canonical_version_unavailable",
+                        }
+                    )
+            except Exception:
+                result["experiment_attachment"] = {
+                    "status": "unavailable",
+                    "reason": "version_snapshot_failed",
+                }
                 result.setdefault("warnings", []).append(
                     {
                         "kind": "version_snapshot",
                         "message": "产物已生成，但版本迭代记录写入失败；刷新后可能暂时看不到新版本。",
-                        "error": _clean_text(exc, 300),
+                        "error": "version_snapshot_failed",
                     }
                 )
             break
@@ -5488,19 +5505,60 @@ async def _persist_chat_completion(
     try:
         if not citations:
             citations = artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or []
+        plan_source_run_id = (
+            _plan_source_run_id(workspace_id, conversation_id, artifact)
+            if _is_plan_draft_artifact(artifact)
+            else conversation_id
+        )
         await run_in_threadpool(_persist_assistant_message, conversation_id, workspace_id, text, verdict, citations)
         await run_in_threadpool(complete_run, conversation_id, status=status, final=final_payload, artifact=artifact)
         if _is_plan_draft_artifact(artifact):
+            plan_artifact = _plan_attachment_artifact(plan_source_run_id, artifact)
             await run_in_threadpool(
                 record_plan_version,
                 workspace_id=workspace_id,
-                source_run_id=conversation_id,
-                experiment_version_id=f"version:{conversation_id}",
-                artifact=artifact,
+                source_run_id=plan_source_run_id,
+                experiment_version_id=f"version:{plan_source_run_id}",
+                artifact=plan_artifact,
                 text=text,
             )
     except Exception:
         return
+
+
+def _plan_source_run_id(workspace_id: str, conversation_id: str, artifact: Mapping[str, Any]) -> str:
+    explicit = str(artifact.get("source_analysis_run_id") or "").strip()
+    if explicit:
+        return explicit
+    try:
+        last_analysis = _last_analysis_for_workspace(workspace_id)
+    except Exception:
+        last_analysis = {}
+    source_run_id = str(
+        last_analysis.get("run_id")
+        or last_analysis.get("conversation_id")
+        or ""
+    ).strip()
+    return source_run_id or conversation_id
+
+
+def _plan_attachment_artifact(source_run_id: str, artifact: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(artifact)
+    feasibility = result.get("feasibility") if isinstance(result.get("feasibility"), Mapping) else {}
+    if feasibility.get("verdict") or feasibility.get("dimensions"):
+        return result
+    try:
+        source_artifact = _produce_run_artifact(get_run(source_run_id))
+    except (FileNotFoundError, ValueError):
+        source_artifact = {}
+    source_feasibility = (
+        source_artifact.get("feasibility")
+        if isinstance(source_artifact.get("feasibility"), Mapping)
+        else {}
+    )
+    if source_feasibility:
+        result["feasibility"] = dict(source_feasibility)
+    return result
 
 
 def _is_plan_draft_artifact(artifact: dict[str, Any]) -> bool:
