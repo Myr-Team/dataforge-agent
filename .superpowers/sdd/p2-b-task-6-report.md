@@ -167,3 +167,30 @@ This pass is limited to the four R2 Important findings and the directly related 
 ### R2 Remaining Verification
 
 Run the existing desktop/mobile review fixtures after commit, with emphasis on the workspace-switch loading window, old-cursor rejection, member action disablement, and absence of raw identity in rendered governance surfaces. Store all resulting screenshots and machine-readable results only under untracked `output/`.
+
+## R3 Security Remediation (2026-07-14)
+
+This pass closes the legacy-route authorization bypass and remaining API identity projections without changing Easy Auth configuration or tracked `output/` content.
+
+| R3 finding | Implemented result |
+|---|---|
+| Legacy governance bypass | `/usage-summary` now requires trusted active owner/admin `chargeback.read`; `/audit-events` requires trusted active owner/admin `audit.read`; `/governance-summary` requires both actions. Viewer/editor `workspace.read` or `run.read` no longer reaches these sensitive legacy aggregates. |
+| Members usage bypass | `/members` retains the member directory and explicit server permissions, but omits top-level usage plus per-member usage/last-seen fields unless the server grants `chargeback.read`. |
+| API identity projection | Legacy usage, audit, chargeback, governance summary, ROI verification, and current-actor fields now project only stable server-generated `member_<HMAC>` labels. Raw email, OID, tenant, display name, and reviewer actor objects are not serialized. |
+| Full endpoint contract coverage | A whole-response test checks settings, members, all three legacy governance endpoints, and all five new governance endpoints against seeded creator/admin email, OID, tenant, and name values. |
+| Canonical owner attribution | Member projection always prefers persisted `workspace_owner`, independent of the current admin or deployment default actor. Member usage and chargeback therefore resolve the workspace creator to the same stable label. |
+
+### R3 Files Changed
+
+- `backend/control_plane.py`: explicit legacy governance authorization, permission-filtered member usage, safe legacy API projections, safe ROI verification projection, and persisted-owner identity selection.
+- `tests/test_actor_audit_usage.py`: legacy bypass denial, whole-endpoint serialization, member usage filtering, and current-admin-versus-workspace-owner label tests.
+- `tests/test_governance_roi_summary.py`: stable pseudonym configuration, safe legacy chargeback shape, and authenticated legacy endpoint expectations.
+
+### R3 Verification Before Commit
+
+- `python -m pytest tests/test_entra_member_invites.py tests/test_actor_audit_usage.py tests/test_roi_service.py tests/test_foundry_roi.py tests/test_workspace_roles.py tests/test_governance_roi_summary.py -q`: **195 passed in 15.45s**.
+- Post-refinement R3 regression selection: **3 passed, 36 deselected in 5.72s**.
+- `node --test src/*.test.mjs` from `web`: **50 passed, 0 failed** in 317.13ms.
+- `npm run build` from `web`: **passed**, Vite transformed **1,756 modules** in 1.39s.
+- `git diff --check`: **passed**.
+- Full pytest and R3 Playwright desktop/mobile fixtures were not run before this commit at the user's direction to submit the focused security fix immediately. Earlier browser evidence is not claimed as R3 validation.

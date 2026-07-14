@@ -4,12 +4,18 @@ from urllib.parse import quote
 import backend.control_plane as control_plane
 from backend.app import app
 from fastapi.testclient import TestClient
+import pytest
 
 
 class RequestStub:
     headers = {
         "x-dataforge-actor": quote(json.dumps({"name": "Owner", "email": "owner@contoso.com"})),
     }
+
+
+@pytest.fixture(autouse=True)
+def _member_pseudonym_salt(monkeypatch):
+    monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "legacy-governance-test-salt")
 
 
 def test_governance_summary_groups_token_cost_and_roi_by_actor(monkeypatch):
@@ -59,7 +65,8 @@ def test_governance_summary_groups_token_cost_and_roi_by_actor(monkeypatch):
     assert result["roi"]["estimated_value_usd"] is None
     assert result["roi"]["net_value_usd"] is None
     assert result["roi"]["business_value"] is None
-    reviewer_row = next(row for row in result["chargeback"]["members"] if row["actor"]["email"] == "reviewer@contoso.com")
+    reviewer_label = control_plane.member_subject_label("ws-governance", "reviewer@contoso.com")
+    reviewer_row = next(row for row in result["chargeback"]["members"] if row["member"]["subject_label"] == reviewer_label)
     assert reviewer_row["total_tokens"] == 3000
     assert reviewer_row["estimated_cost_usd"] is None
     assert result["audit"]["count"] == 3
@@ -177,6 +184,10 @@ def test_governance_keeps_all_unknown_usage_null(monkeypatch) -> None:
     assert result["chargeback"]["totals"]["total_tokens"] is None
     assert all(item["estimated_cost_usd"] is None for item in result["chargeback"]["members"])
 
+    actor = {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"}
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: actor)
+    monkeypatch.setattr(control_plane, "is_trusted_tenant_identity", lambda _actor: True)
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "owner")
     response = TestClient(app).get("/api/workspaces/ws-unknown/governance-summary")
     assert response.status_code == 200
     body = response.json()

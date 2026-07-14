@@ -145,13 +145,13 @@ async def workspace_member_remove(workspace_id: str, subject_ref: str, request: 
 
 @router.get("/api/workspaces/{workspace_id}/usage-summary")
 async def workspace_usage(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "run.read")
+    _require_governance_role(workspace_id, request, {"owner", "admin"}, "chargeback.read")
     return await _call(workspace_usage_summary, workspace_id, request)
 
 
 @router.get("/api/workspaces/{workspace_id}/audit-events")
 async def workspace_audit(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "run.read")
+    _require_governance_role(workspace_id, request, {"owner", "admin"}, "audit.read")
     return await _call(workspace_audit_events, workspace_id, request)
 
 
@@ -181,7 +181,8 @@ async def workspace_governance_invitations(workspace_id: str, request: Request) 
 
 @router.get("/api/workspaces/{workspace_id}/governance-summary")
 async def workspace_governance(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_workspace_action(workspace_id, request, "workspace.read")
+    _require_governance_role(workspace_id, request, {"owner", "admin"}, "audit.read")
+    _require_governance_role(workspace_id, request, {"owner", "admin"}, "chargeback.read")
     return await _call(workspace_governance_summary, workspace_id, request)
 
 
@@ -982,8 +983,13 @@ def workspace_settings_summary(workspace_id: str, request: Request | None = None
 def workspace_member_roles(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
     current_actor = actor_from_request(request)
     usage = _workspace_usage_by_actor(workspace_id)
-    owner_actor = current_actor if not rbac_enabled() else default_actor()
-    if workspace_role(workspace_id, current_actor) == "owner":
+    try:
+        meta = _load_workspace_meta(workspace_id)
+    except FileNotFoundError:
+        meta = {}
+    stored_owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), dict) else {}
+    owner_actor = stored_owner if _actor_key(stored_owner) else current_actor if not rbac_enabled() else default_actor()
+    if not stored_owner and workspace_role(workspace_id, current_actor) == "owner":
         owner_actor = {**default_actor(), **current_actor}
     owner = member_from_actor(owner_actor, role="owner")
     owner["status"] = "active"
@@ -1018,20 +1024,28 @@ def workspace_member_roles(workspace_id: str, request: Request | None = None) ->
         members_by_key.values(),
         key=lambda item: (0 if str(item.get("role") or "").lower() == "owner" else 1, str(item.get("status") or ""), str(item.get("email") or "")),
     )
-    return {
+    permissions = _workspace_action_permissions(workspace_id, request)
+    public_members = [_public_workspace_member(workspace_id, member) for member in members]
+    if permissions["actions"]["chargeback.read"] is not True:
+        for member in public_members:
+            member.pop("usage", None)
+            member.pop("last_seen_at", None)
+    result = {
         "workspace_id": workspace_id,
         "rbac_enforced": rbac_enabled(),
         "source": current_actor.get("source") or "workspace_default",
         "roles": ["owner", "admin", "editor", "viewer"],
-        "members": [_public_workspace_member(workspace_id, member) for member in members],
-        "usage": _public_workspace_usage(workspace_id, usage, members_by_key),
-        "permissions": _workspace_action_permissions(workspace_id, request),
+        "members": public_members,
+        "permissions": permissions,
         "invite": {
             "status": "available",
             "mode": "workspace_members_with_optional_entra_graph",
             "message": "Members are persisted in the workspace for collaboration, token attribution, and audit display. Entra directory search and email invite are used when Microsoft Graph permissions are available.",
         },
     }
+    if permissions["actions"]["chargeback.read"] is True:
+        result["usage"] = _public_workspace_usage(workspace_id, usage, members_by_key)
+    return result
 
 
 def workspace_invitation_history(workspace_id: str) -> list[dict[str, Any]]:
@@ -1042,7 +1056,7 @@ def workspace_invitation_history(workspace_id: str) -> list[dict[str, Any]]:
 def _public_workspace_member(workspace_id: str, member: dict[str, Any]) -> dict[str, Any]:
     identity_key = _actor_key(member)
     role = str(member.get("role") or "viewer").strip().lower()
-    if role not in WORKSPACE_MEMBER_ROLES:
+    if role not in {*WORKSPACE_MEMBER_ROLES, "owner"}:
         role = "viewer"
     return {
         "subject_label": member_subject_label(workspace_id, identity_key),
@@ -1337,28 +1351,26 @@ def remove_workspace_member(workspace_id: str, subject_ref: str, request: Reques
 
 
 def workspace_usage_summary(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
-    current_actor = public_actor(actor_from_request(request))
     usage = _workspace_usage_by_actor(workspace_id)
     return {
         "workspace_id": workspace_id,
-        "current_actor": current_actor,
-        **usage,
+        **_public_workspace_usage(workspace_id, usage, _workspace_members_by_key(workspace_id)),
     }
 
 
 def workspace_audit_events(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
-    current_actor = public_actor(actor_from_request(request))
+    members_by_key = _workspace_members_by_key(workspace_id)
     events: list[dict[str, Any]] = []
     for summary in list_runs(workspace_id)[:120]:
         run = _safe_value(lambda run_id=summary.get("run_id"): get_run(str(run_id)), summary)
-        actor = public_actor((run or {}).get("actor") if isinstance(run, dict) else {})
+        actor = (run or {}).get("actor") if isinstance(run, dict) and isinstance((run or {}).get("actor"), dict) else {}
         tokens = _token_usage(run if isinstance(run, dict) else summary)
         events.append(
             {
                 "type": "run",
                 "action": "analysis_completed" if not run.get("version_kind") else str(run.get("version_kind")),
                 "at": run.get("completed_at") or run.get("updated_at") or summary.get("time"),
-                "actor": actor,
+                "actor": _public_actor_reference(workspace_id, actor, members_by_key),
                 "run_id": run.get("run_id") or summary.get("run_id"),
                 "title": run.get("title") or summary.get("title"),
                 "summary": run.get("summary") if isinstance(run.get("summary"), str) else summary.get("summary"),
@@ -1375,7 +1387,7 @@ def workspace_audit_events(workspace_id: str, request: Request | None = None) ->
                     "type": "conversation",
                     "action": "message_sent",
                     "at": conv.get("updated_at"),
-                    "actor": public_actor(actor),
+                    "actor": _public_actor_reference(workspace_id, actor, members_by_key),
                     "conversation_id": conv.get("conversation_id"),
                     "title": conv.get("title"),
                     "turn_count": conv.get("turn_count") or 0,
@@ -1384,7 +1396,6 @@ def workspace_audit_events(workspace_id: str, request: Request | None = None) ->
     events = sorted(events, key=lambda item: str(item.get("at") or ""), reverse=True)[:120]
     return {
         "workspace_id": workspace_id,
-        "current_actor": current_actor,
         "events": events,
         "count": len(events),
     }
@@ -1425,15 +1436,14 @@ def audit_experiment_promotion(
 
 
 def workspace_governance_summary(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
-    current_actor = public_actor(actor_from_request(request))
     usage = _workspace_usage_by_actor(workspace_id)
     audit = workspace_audit_events(workspace_id, request)
     roi = _workspace_roi_summary(usage, audit, list_outcome_events(workspace_id))
     foundry_monitoring = _foundry_monitoring_status()
+    members_by_key = _workspace_members_by_key(workspace_id)
     return {
         "workspace_id": workspace_id,
         "generated_at": _now(),
-        "current_actor": current_actor,
         "security": {
             "identity_provider": "Microsoft Entra ID",
             "auth_surface": "Azure Container Apps Easy Auth",
@@ -1450,8 +1460,8 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
                 {"name": "Graph 邀请邮件", "status": "permission_required", "detail": "需要 Graph 权限授权后才会发送真实 Entra 邀请邮件。"},
             ],
         },
-        "usage": usage,
-        "chargeback": _workspace_chargeback(usage, roi),
+        "usage": _public_workspace_usage(workspace_id, usage, members_by_key),
+        "chargeback": _workspace_chargeback(workspace_id, usage, roi, members_by_key),
         "foundry_monitoring": foundry_monitoring,
         "audit": {
             "count": audit.get("count") or 0,
@@ -1460,6 +1470,7 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
             "by_actor": _count_audit_by_actor(audit.get("events") or []),
         },
         "roi": roi,
+        "permissions": _workspace_action_permissions(workspace_id, request),
     }
 
 
@@ -1768,44 +1779,58 @@ def _workspace_roi_summary(
             "verified_count": len(verified_outcomes),
             "synthetic_count": len(synthetic_outcomes),
             "latest_observed_at": latest_observed_at,
-            "metrics": [
-                {
-                    key: item.get(key)
-                    for key in (
-                        "event_id",
-                        "metric_name",
-                        "unit",
-                        "baseline_value",
-                        "target_value",
-                        "observed_value",
-                        "observed_at",
-                        "provenance",
-                        "source",
-                        "verification",
-                    )
-                    if item.get(key) is not None
-                }
-                for item in outcome_items[:20]
-            ],
+            "metrics": [_public_roi_metric(item) for item in outcome_items[:20]],
         },
     }
 
 
-def _workspace_chargeback(usage: dict[str, Any], roi: dict[str, Any]) -> dict[str, Any]:
+def _public_roi_metric(item: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        key: item.get(key)
+        for key in (
+            "event_id",
+            "metric_name",
+            "unit",
+            "baseline_value",
+            "target_value",
+            "observed_value",
+            "observed_at",
+            "provenance",
+            "source",
+        )
+        if item.get(key) is not None
+    }
+    verification = item.get("verification") if isinstance(item.get("verification"), dict) else {}
+    safe_verification = {
+        key: verification.get(key)
+        for key in ("status", "verification_event_id")
+        if verification.get(key) is not None
+    }
+    if safe_verification:
+        result["verification"] = safe_verification
+    return result
+
+
+def _workspace_chargeback(
+    workspace_id: str,
+    usage: dict[str, Any],
+    roi: dict[str, Any],
+    members_by_key: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     totals = usage.get("totals") if isinstance(usage.get("totals"), dict) else {}
     total_tokens_value = totals.get("total_tokens")
     total_tokens = max(0, int(total_tokens_value)) if total_tokens_value is not None else None
     usage_status = totals.get("usage_status") or ("complete" if total_tokens is not None else "unknown")
     rows = []
     for item in usage.get("members") or []:
-        actor = public_actor(item.get("actor") if isinstance(item, dict) else {})
+        actor = item.get("actor") if isinstance(item, dict) and isinstance(item.get("actor"), dict) else {}
         item_usage = item.get("usage") if isinstance(item.get("usage"), dict) else {}
         item_tokens = item_usage.get("total_tokens")
         tokens = int(item_tokens) if item_tokens is not None else None
         share = (tokens / total_tokens) if tokens is not None and total_tokens is not None and total_tokens > 0 else None
         rows.append(
             {
-                "actor": actor,
+                "member": _public_actor_reference(workspace_id, actor, members_by_key),
                 "runs": int(item_usage.get("runs") or 0),
                 "total_tokens": tokens,
                 "prompt_tokens": item_usage.get("prompt_tokens"),
@@ -1845,11 +1870,39 @@ def _count_by_key(items: list[dict[str, Any]], key: str) -> dict[str, int]:
 def _count_audit_by_actor(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     counts: dict[str, dict[str, Any]] = {}
     for item in items:
-        actor = public_actor(item.get("actor") if isinstance(item.get("actor"), dict) else {})
-        key = _actor_key(actor) or "unknown"
-        row = counts.setdefault(key, {"actor": actor, "events": 0})
+        actor = item.get("actor") if isinstance(item.get("actor"), dict) else {}
+        key = str(actor.get("subject_label") or "member_unknown")
+        row = counts.setdefault(key, {"subject_label": key, "events": 0})
         row["events"] += 1
     return sorted(counts.values(), key=lambda item: int(item.get("events") or 0), reverse=True)
+
+
+def _workspace_members_by_key(workspace_id: str) -> dict[str, dict[str, Any]]:
+    try:
+        meta = _load_workspace_meta(workspace_id)
+    except FileNotFoundError:
+        return {}
+    members: dict[str, dict[str, Any]] = {}
+    owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), dict) else {}
+    owner_key = _actor_key(owner)
+    if owner_key:
+        members[owner_key] = {**owner, "role": "owner", "status": "active"}
+    for member in _stored_workspace_members(meta):
+        key = _actor_key(member)
+        if key and key not in members:
+            members[key] = member
+    return members
+
+
+def _public_actor_reference(
+    workspace_id: str,
+    actor: dict[str, Any],
+    members_by_key: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    actor_key = _actor_key(actor)
+    member = members_by_key.get(actor_key) if actor_key else None
+    identity_key = _actor_key(member or actor) or "workspace_default"
+    return {"subject_label": member_subject_label(workspace_id, identity_key)}
 
 
 def _float_env(name: str, default: float) -> float:

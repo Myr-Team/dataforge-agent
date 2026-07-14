@@ -280,6 +280,7 @@ def test_historical_conversation_message_id_is_workspace_scoped_and_untrusted_ac
 
 def test_workspace_members_include_actor_usage(monkeypatch) -> None:
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "owner")
     owner_actor = {"name": "Owner", "email": "owner@contoso.com", "actor_id": "owner-oid"}
     reviewer_actor = {"name": "Reviewer", "email": "reviewer@contoso.com", "actor_id": "reviewer-oid"}
     runs = [
@@ -294,8 +295,9 @@ def test_workspace_members_include_actor_usage(monkeypatch) -> None:
             "x-ms-client-principal": _principal(
                 [
                     {"typ": "name", "val": "Owner"},
-                    {"typ": "preferred_username", "val": "owner@contoso.com"},
-                    {"typ": "oid", "val": "owner-oid"},
+                        {"typ": "preferred_username", "val": "owner@contoso.com"},
+                        {"typ": "oid", "val": "owner-oid"},
+                        {"typ": "tid", "val": "tenant-1"},
                 ]
             ),
             "x-dataforge-proxy-secret": "test-proxy-secret",
@@ -313,6 +315,8 @@ def test_workspace_members_include_actor_usage(monkeypatch) -> None:
 
 def test_invited_workspace_member_persists_and_merges_usage(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DF_INVITATION_PSEUDONYM_SALT", "test-member-projection-salt")
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "owner")
     workspace_root = tmp_path / "workspaces"
     workspace_dir = workspace_root / "ws-members"
     workspace_dir.mkdir(parents=True)
@@ -342,7 +346,13 @@ def test_invited_workspace_member_persists_and_merges_usage(tmp_path, monkeypatc
 
     class RequestStub:
         headers = {
-            "x-dataforge-actor": quote(json.dumps({"name": "Owner", "email": "owner@contoso.com"})),
+            "x-ms-client-principal": _principal([
+                {"typ": "name", "val": "Owner"},
+                {"typ": "preferred_username", "val": "owner@contoso.com"},
+                {"typ": "oid", "val": "owner-oid"},
+                {"typ": "tid", "val": "tenant-1"},
+            ]),
+            "x-dataforge-proxy-secret": "test-proxy-secret",
         }
 
     result = control_plane.invite_workspace_member(
@@ -630,7 +640,15 @@ def test_member_contract_exposes_action_permissions_without_role_inference(monke
     monkeypatch.setattr(control_plane, "workspace_role", lambda *_args: "editor")
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "editor")
     monkeypatch.setattr(control_plane, "rbac_enabled", lambda: True)
-    monkeypatch.setattr(control_plane, "_workspace_usage_by_actor", lambda _workspace_id: {"members": []})
+    monkeypatch.setattr(control_plane, "_workspace_usage_by_actor", lambda _workspace_id: {
+        "members": [{
+            "actor": actor,
+            "usage": {"runs": 1, "total_tokens": 99},
+            "last_seen_at": "2026-07-14T00:00:00Z",
+        }],
+        "totals": {"runs": 1, "total_tokens": 99},
+        "source": "run_store",
+    })
     monkeypatch.setattr(control_plane, "_workspace_invited_members", lambda _workspace_id: [])
     monkeypatch.setattr(control_plane, "default_actor", lambda: actor)
 
@@ -644,6 +662,8 @@ def test_member_contract_exposes_action_permissions_without_role_inference(monke
     }
     assert set(result["permissions"]["reasons"]) == {"audit.read", "chargeback.read", "invitation.read", "member.manage"}
     assert "role" not in result["permissions"]
+    assert "usage" not in result
+    assert all("usage" not in member and "last_seen_at" not in member for member in result["members"])
 
 
 def test_member_contract_returns_only_safe_subject_labels_for_settings(monkeypatch) -> None:
@@ -672,6 +692,235 @@ def test_member_contract_returns_only_safe_subject_labels_for_settings(monkeypat
     assert all(member["subject_label"].startswith("member_") for member in result["members"])
     for raw in ("@contoso.com", "raw-oid", "tenant-secret", "Owner", "Reviewer"):
         assert raw not in serialized
+
+
+def test_legacy_governance_routes_require_explicit_governance_actions(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setattr(control_plane, "workspace_role", lambda _workspace_id, actor: "admin" if actor.get("actor_id") == "admin-oid" else "viewer")
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda _workspace_id, actor: "admin" if actor.get("actor_id") == "admin-oid" else "viewer")
+    monkeypatch.setattr(control_plane, "require_workspace_permission", lambda _workspace_id, actor, _action: "admin" if actor.get("actor_id") == "admin-oid" else "viewer")
+    monkeypatch.setattr(control_plane, "record_audit_event", lambda *_args, **_kwargs: {}, raising=False)
+    monkeypatch.setattr(control_plane, "workspace_usage_summary", lambda workspace_id, _request: {"workspace_id": workspace_id})
+    monkeypatch.setattr(control_plane, "workspace_audit_events", lambda workspace_id, _request: {"workspace_id": workspace_id})
+    monkeypatch.setattr(control_plane, "workspace_governance_summary", lambda workspace_id, _request: {"workspace_id": workspace_id})
+    client = TestClient(app)
+    viewer_headers = {
+        "x-ms-client-principal": _principal([
+            {"typ": "oid", "val": "viewer-oid"},
+            {"typ": "tid", "val": "tenant-private"},
+        ]),
+        "x-dataforge-proxy-secret": "test-proxy-secret",
+    }
+    admin_headers = {
+        "x-ms-client-principal": _principal([
+            {"typ": "oid", "val": "admin-oid"},
+            {"typ": "tid", "val": "tenant-private"},
+        ]),
+        "x-dataforge-proxy-secret": "test-proxy-secret",
+    }
+
+    for path in (
+        "/api/workspaces/ws-private/usage-summary",
+        "/api/workspaces/ws-private/audit-events",
+        "/api/workspaces/ws-private/governance-summary",
+    ):
+        assert client.get(path, headers=viewer_headers).status_code == 403
+        assert client.get(path, headers=admin_headers).status_code == 200
+
+
+def test_all_legacy_and_new_governance_endpoints_serialize_without_raw_identity(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "endpoint-projection-salt")
+    creator = {
+        "name": "Creator Private Name",
+        "email": "creator.private@example.com",
+        "actor_id": "creator-private-oid",
+        "tenant_id": "tenant-private",
+        "source": "easy_auth",
+    }
+    admin = {
+        "name": "Admin Private Name",
+        "email": "admin.private@example.com",
+        "actor_id": "admin-private-oid",
+        "tenant_id": "tenant-private",
+        "source": "easy_auth",
+    }
+    run = {
+        "run_id": "run-private",
+        "workspace_id": "ws-private",
+        "actor": creator,
+        "trusted_identity": True,
+        "status": "completed",
+        "title": "Identity projection run",
+        "completed_at": "2026-07-14T12:00:00Z",
+        "tokens": {"total": 2, "prompt": 1, "completion": 1},
+        "models": [{"model": "gpt-5", "usage": {"input_tokens": 1, "output_tokens": 1}}],
+    }
+    meta = {
+        "workspace_id": "ws-private",
+        "workspace_owner": creator,
+        "workspace_members": [{**admin, "role": "admin", "status": "active"}],
+    }
+    monkeypatch.setattr(control_plane, "workspace_role", lambda *_args: "admin")
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "admin")
+    monkeypatch.setattr(control_plane, "require_workspace_permission", lambda *_args: "admin")
+    monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: meta)
+    monkeypatch.setattr(control_plane, "list_runs", lambda _workspace_id=None: [run])
+    monkeypatch.setattr(control_plane, "get_run", lambda _run_id: run)
+    monkeypatch.setattr(control_plane, "list_conversations", lambda _workspace_id=None: [{
+        "conversation_id": "conv-private",
+        "workspace_id": "ws-private",
+        "updated_at": "2026-07-14T12:01:00Z",
+        "actors": [creator],
+    }])
+    monkeypatch.setattr(control_plane, "list_tasks", lambda _workspace_id=None: [])
+    monkeypatch.setattr(control_plane, "list_outcome_events", lambda _workspace_id: [{
+        "event_id": "outcome-private",
+        "workspace_id": "ws-private",
+        "metric_name": "private-test",
+        "observed_value": 1,
+        "observed_at": "2026-07-14T12:00:00Z",
+        "provenance": "observed",
+        "source": {"kind": "test"},
+        "actor": creator,
+        "verification": {"status": "verified", "verification_event_id": "verify-private", "reviewer": admin},
+    }])
+    monkeypatch.setattr(control_plane, "list_verification_events", lambda _workspace_id: [])
+    monkeypatch.setattr(control_plane, "list_workspace_files", lambda _workspace_id: {"storage": {}, "groups": []})
+    monkeypatch.setattr(control_plane, "system_status", lambda: {"models": {}, "rag": {}, "compliance": {}})
+    monkeypatch.setattr(control_plane, "record_audit_event", lambda *_args, **_kwargs: {}, raising=False)
+    monkeypatch.setattr(control_plane, "list_audit_events", lambda workspace_id, **_kwargs: {
+        "workspace_id": workspace_id,
+        "events": [{
+            "revision": 1,
+            "actor_hash": "actor_" + "a" * 40,
+            "action": "workspace.read",
+            "resource_type": "workspace",
+            "resource_id": "res_" + "b" * 40,
+            "result": "allowed",
+            "reason_code": "authorized",
+            "correlation": {},
+            "at": "2026-07-14T12:00:00Z",
+        }],
+        "count": 1,
+        "next_cursor": None,
+    })
+    monkeypatch.setattr(control_plane, "workspace_invitation_history", lambda _workspace_id: [{
+        "invitation_ref": "invite_" + "c" * 40,
+        "subject_label": "member_" + "d" * 40,
+        "role": "viewer",
+        "state": "accepted",
+        "invitation_state": "accepted",
+        "updated_at": "2026-07-14T12:00:00Z",
+    }])
+
+    class TraceStatus:
+        def model_dump(self):
+            return {"workspace_id": "ws-private", "state": "not_configured"}
+
+    monkeypatch.setattr(control_plane, "get_trace_delivery_status", lambda *_args: TraceStatus())
+    headers = {
+        "x-ms-client-principal": _principal([
+            {"typ": "name", "val": admin["name"]},
+            {"typ": "preferred_username", "val": admin["email"]},
+            {"typ": "oid", "val": admin["actor_id"]},
+            {"typ": "tid", "val": admin["tenant_id"]},
+        ]),
+        "x-dataforge-proxy-secret": "test-proxy-secret",
+    }
+    window = "?from=2026-07-14T00:00:00Z&to=2026-07-15T00:00:00Z"
+    paths = (
+        "/api/workspaces/ws-private/settings",
+        "/api/workspaces/ws-private/members",
+        "/api/workspaces/ws-private/usage-summary",
+        "/api/workspaces/ws-private/audit-events",
+        "/api/workspaces/ws-private/governance-summary",
+        "/api/workspaces/ws-private/governance/audit-events",
+        "/api/workspaces/ws-private/governance/invitations",
+        "/api/workspaces/ws-private/governance/roi" + window,
+        "/api/workspaces/ws-private/governance/chargeback" + window,
+        "/api/workspaces/ws-private/governance/trace-status",
+    )
+    forbidden = (
+        creator["name"], creator["email"], creator["actor_id"],
+        admin["name"], admin["email"], admin["actor_id"], admin["tenant_id"],
+    )
+
+    client = TestClient(app)
+    for path in paths:
+        response = client.get(path, headers=headers)
+        assert response.status_code == 200, (path, response.text)
+        serialized = json.dumps(response.json(), sort_keys=True)
+        for raw_identity in forbidden:
+            assert raw_identity not in serialized, (path, raw_identity, serialized)
+
+
+def test_persisted_workspace_owner_has_one_label_when_current_admin_is_different(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "canonical-owner-salt")
+    creator = {
+        "name": "Workspace Creator",
+        "email": "creator@contoso.com",
+        "actor_id": "creator-oid",
+        "tenant_id": "tenant-1",
+        "source": "easy_auth",
+    }
+    admin = {
+        "name": "Current Admin",
+        "email": "admin@contoso.com",
+        "actor_id": "admin-oid",
+        "tenant_id": "tenant-1",
+        "source": "easy_auth",
+        "role": "admin",
+        "status": "active",
+    }
+    meta = {"workspace_id": "ws-owner", "workspace_owner": creator, "workspace_members": [admin]}
+    run = {
+        "run_id": "run-owner",
+        "workspace_id": "ws-owner",
+        "actor": creator,
+        "trusted_identity": True,
+        "completed_at": "2026-07-14T12:00:00Z",
+        "models": [{"model": "gpt-5", "usage": {"input_tokens": 1, "output_tokens": 1}}],
+    }
+    monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: meta)
+    monkeypatch.setattr(control_plane, "workspace_role", lambda *_args: "admin")
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "admin")
+    monkeypatch.setattr(control_plane, "default_actor", lambda: {
+        "name": "Deployment Default",
+        "email": "default@contoso.com",
+        "actor_id": "default-oid",
+        "tenant_id": "tenant-1",
+        "source": "workspace_default",
+    })
+    monkeypatch.setattr(control_plane, "list_runs", lambda _workspace_id=None: [run])
+    monkeypatch.setattr(control_plane, "get_run", lambda _run_id: run)
+    monkeypatch.setattr(control_plane, "list_conversations", lambda _workspace_id=None: [])
+    monkeypatch.setattr(control_plane, "list_tasks", lambda _workspace_id=None: [])
+    headers = {
+        "x-ms-client-principal": _principal([
+            {"typ": "name", "val": admin["name"]},
+            {"typ": "preferred_username", "val": admin["email"]},
+            {"typ": "oid", "val": admin["actor_id"]},
+            {"typ": "tid", "val": admin["tenant_id"]},
+        ]),
+        "x-dataforge-proxy-secret": "test-proxy-secret",
+    }
+
+    member_contract = control_plane.workspace_member_roles("ws-owner", type("RequestStub", (), {"headers": headers})())
+    chargeback = control_plane.workspace_member_chargeback(
+        "ws-owner",
+        "2026-07-14T00:00:00Z",
+        "2026-07-15T00:00:00Z",
+    )
+    expected = control_plane.member_subject_label("ws-owner", creator["email"])
+    owner_label = next(member["subject_label"] for member in member_contract["members"] if member["role"] == "owner")
+
+    assert owner_label == expected
+    assert chargeback["members"][0]["member"]["subject_label"] == expected
 
 
 def test_durable_task_create_start_complete_and_cancel_are_audited(tmp_path, monkeypatch) -> None:
