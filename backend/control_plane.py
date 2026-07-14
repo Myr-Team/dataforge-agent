@@ -691,7 +691,7 @@ def run_log(run_id: str) -> dict[str, Any]:
         "status": run.get("status"),
         "summary": run_summary(run_id),
         "trace": trace_from_run(run),
-        "raw": _sanitize_detail(run, depth=0),
+        "raw": _public_detail_projection(run, depth=0),
     }
 
 
@@ -740,7 +740,7 @@ def trace_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "duration_ms": duration,
                 "tool_calls": 1 if step.get("event") in {"tool_call", "tool_result"} else 0,
                 "tokens": _usage_from_dict(data),
-                "detail": _sanitize_detail(data, depth=0),
+                "detail": _public_detail_projection(data, depth=0),
                 "source": "run_store.steps",
                 "dynamic": True,
                 "evidence": {
@@ -2537,7 +2537,7 @@ def _flow_trace_from_run(
         if not event:
             continue
         data = step.get("data") if isinstance(step.get("data"), dict) else {}
-        events.append({"event": event, "data": _sanitize_detail(data, depth=0), "time": step.get("time")})
+        events.append({"event": event, "data": _public_detail_projection(data, depth=0), "time": step.get("time")})
     raw_artifact = artifact_override if isinstance(artifact_override, dict) else _artifact(run)
     artifact = raw_artifact if artifact_is_public else _public_artifact_for_run(raw_artifact, run)
     if not _has_web_search_event(events):
@@ -2545,7 +2545,13 @@ def _flow_trace_from_run(
         if market_event:
             events.append(market_event)
     if not any(item.get("event") == "final" for item in events) and _has_full_analysis_artifact(artifact):
-        events.append({"event": "final", "data": {"artifact": artifact}, "time": run.get("completed_at") or run.get("updated_at")})
+        events.append(
+            {
+                "event": "final",
+                "data": _public_detail_projection({"artifact": artifact}, depth=0),
+                "time": run.get("completed_at") or run.get("updated_at"),
+            }
+        )
     return _keep_important_tail(events, limit=60)
 
 
@@ -3050,22 +3056,40 @@ def _elapsed_ms(started: float) -> int:
     return max(0, int((time.perf_counter() - started) * 1000))
 
 
-def _sanitize_detail(value: Any, *, depth: int) -> Any:
+_PUBLIC_DETAIL_CAPABILITY_FIELDS = frozenset(
+    {
+        "capability_pack_provenance",
+        "capability_pack_integrity",
+        "capability_packs",
+        "capability_pack_ids",
+        "signature",
+        "nonce",
+        "scope_fingerprint",
+        "workspace_fingerprint",
+        "selection_fingerprint",
+        "records_fingerprint",
+        "key_id",
+    }
+)
+
+
+def _public_detail_projection(value: Any, *, depth: int) -> Any:
+    """Remove capability-contract internals from every public trace/detail shape."""
     if depth > 5:
         return _clean(value, 500)
     if isinstance(value, dict):
         result = {}
         for key, item in list(value.items())[:80]:
             key_text = str(key)
-            if key_text == "capability_pack_provenance":
+            if key_text.lower() in _PUBLIC_DETAIL_CAPABILITY_FIELDS:
                 continue
             if key_text.lower() in {"password", "secret", "connection_string", "sas", "accountkey", "sig"}:
                 result[key_text] = "[redacted]"
             else:
-                result[key_text] = _sanitize_detail(item, depth=depth + 1)
+                result[key_text] = _public_detail_projection(item, depth=depth + 1)
         return result
     if isinstance(value, list):
-        return [_sanitize_detail(item, depth=depth + 1) for item in value[:80]]
+        return [_public_detail_projection(item, depth=depth + 1) for item in value[:80]]
     return _clean(value, 5000) if isinstance(value, str) else value
 
 

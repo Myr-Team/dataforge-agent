@@ -108,3 +108,10 @@ The initial Task 2 contract validated caller-supplied `CapabilitySelection` obje
 - It recreates the bounded `verified` state only where the same map carries a valid signed, scope-bound selected-pack contract. Maps without a valid contract cannot surface a caller-supplied or historical integrity state.
 - Regression coverage sends a valid root selection plus forged standalone nested `verified` states through the actual `/api/workspaces/{workspace_id}/latest-analysis` route and actual `_frame("final", ...)` SSE encoder. The root selection remains verified; both nested forged values are absent or unavailable.
 - R8 verification: direct regression `1 passed`; focused capability-pack and MAF suite `82 passed, 1 warning` via `python -m pytest tests/test_capability_pack_integration.py tests/test_maf_team_runtime.py -q`. The warning is the existing MAF experimental-workflow notice.
+
+## R10 Public Trace/Detail Projection
+
+- Added one control-plane recursive public-detail projection for trace data and raw run-log data. It strips all capability-contract records, IDs, integrity state, provenance, and signing fields at any depth before a stored or synthesized event reaches a client.
+- `trace_from_run`, `_flow_trace_from_run`, and `run_log.raw` now use this projection. The synthetic final trace event is also projected, while the top-level latest-analysis artifact and run summary retain their separately validated, bounded capability-pack display.
+- Regression writes a persisted arbitrary `tool_result` step with forged `verified` integrity, IDs, records, signature, nonce, and every scope/selection fingerprint. It validates the actual `/api/workspaces/{workspace_id}/latest-analysis` response (`trace` and `run_trace`) and run-log response contain none of those fields, while the signed top-level artifact and run summary remain verified.
+- R10 verification: direct persisted-step regression `1 passed`; focused capability-pack and MAF suite `83 passed, 1 warning` via `python -m pytest tests/test_capability_pack_integration.py tests/test_maf_team_runtime.py -q`. The warning is the existing MAF experimental-workflow notice.
