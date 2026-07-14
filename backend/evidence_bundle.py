@@ -75,14 +75,16 @@ class EvidenceBundle(BaseModel):
 
     def persisted_metadata(self) -> dict[str, Any]:
         """Return the run-record projection without raw evidence or profile text."""
-        return {
+        metadata = {
             "fingerprint": self.fingerprint,
             "evidence_count": len(self.evidence),
             "profile_fact_count": len(self.profile_facts),
             "gap_count": len(self.gaps),
             "capability_pack_ids": list(self.capability_pack_ids),
-            "capability_pack_provenance": dict(self.capability_pack_provenance),
         }
+        if self.capability_pack_provenance:
+            metadata["capability_pack_provenance"] = dict(self.capability_pack_provenance)
+        return metadata
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:

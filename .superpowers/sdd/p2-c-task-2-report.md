@@ -122,3 +122,9 @@ The initial Task 2 contract validated caller-supplied `CapabilitySelection` obje
 - Public artifact projection now removes incoming pack records, legacy IDs, and integrity state before recursion, then recreates all three only from a valid signed, scope-bound contract. Invalid or standalone nested metadata is omitted rather than represented as an `unavailable` contract.
 - Regression creates eight nested maps with the deepest map containing every capability-contract key, forged `verified` state, and unique signing values. It validates actual latest-analysis `trace` and `run_trace`, the run trace and log endpoints, run-log raw data, and decoded `_frame("final", ...)` SSE projection. Their serialized protected surfaces contain none of the forged keys or values, while the valid root artifact remains verified.
 - R11 verification: direct deep-boundary regression `1 passed`; focused capability-pack and MAF suite `84 passed, 1 warning` via `python -m pytest tests/test_capability_pack_integration.py tests/test_maf_team_runtime.py -q`. The warning is the existing MAF experimental-workflow notice.
+
+## R12 Empty Provenance Contract
+
+- `EvidenceBundle.persisted_metadata()` now omits `capability_pack_provenance` when there is no signed capability selection. This restores the established metadata shape for ordinary evidence bundles and avoids emitting an empty provenance object.
+- When a real signed selection exists, the method still includes the non-empty provenance projection; the normal MAF persisted-metadata regression continues to cover that valid path.
+- R12 verification: `89 passed, 1 warning` via `python -m pytest tests/test_evidence_bundle.py tests/test_capability_pack_integration.py tests/test_maf_team_runtime.py -q`. The warning is the existing MAF experimental-workflow notice.
