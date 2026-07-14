@@ -75,3 +75,12 @@ The initial Task 2 contract validated caller-supplied `CapabilitySelection` obje
 - A direct `artifact.maf.evidence_bundle` is rebuilt only when the sibling `artifact.capability_packs` projects to safe selected records. Without that contract, both nested IDs and records remain empty; the same rule applies to Blob registry MAF summaries without a safe top-level contract.
 - The historical local/Blob/API regression fixture contains a registered ID plus email and directive text but no sibling contract. It now exposes zero capability metadata on every read path, while the R3 normal ID-only MAF fixture continues to persist its selected safe pack.
 - R4 final verification: `85 passed, 1 warning` for the focused capability-pack/MAF/evidence/run-summary suite. The warning is the existing MAF experimental-workflow notice.
+
+## R5 Signed Selection Provenance
+
+- Every newly selected capability-pack contract now carries bounded server-produced provenance: a fixed source/version, deterministic fingerprints for the normalized selector inputs and safe record projection, audit-key identifier, and an HMAC signature binding the exact selected IDs and records.
+- The signature is created only after the internal selector recomputes a contract from normalized goal, schema profile, and quality inputs. Caller text, names, reasons, and IDs do not influence the persisted provenance.
+- Artifact, MAF persisted metadata, run summary, Blob registry row, raw run detail, and the `capability_pack_selection` trace event retain records only when the provenance validates against the exact safe projection. Missing, invalid, or mismatched provenance clears both records and legacy IDs; historical records without provenance fail closed.
+- MAF participants continue to receive only registered role-scoped guidance. The provenance object is stripped before any participant payload is created.
+- Regression coverage proves a valid signed internal selection survives local, Blob, API summary, and trace reads. It also proves that a registered-but-unselected `growth_retention` record carrying an email/directive, paired with a valid signature for a different selection, is cleared from artifact, run summary, raw log, and trace.
+- R5 focused verification: `79 passed, 1 warning` via `python -m pytest tests/test_capability_pack_integration.py tests/test_maf_team_runtime.py -q`; `python -m compileall -q` for changed backend modules and `git diff --check` also passed. The warning is the existing MAF experimental-workflow notice.

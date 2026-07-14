@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -11,6 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .audit_store import _active_key, _key_for
 from .capability_packs import load_capability_packs, select_capability_packs
 from .schemas import Evidence
 
@@ -36,6 +38,8 @@ _AGENT_GUIDANCE_FIELDS: dict[str, tuple[str, ...]] = {
     "df-producer": ("artifact_sections",),
 }
 _SELECTION_CONTEXT_KEY = "capability_selection_context"
+_CAPABILITY_PROVENANCE_SOURCE = "normalized_goal_schema_profile_quality"
+_CAPABILITY_PROVENANCE_VERSION = "1"
 _SAFE_REASON_PREFIXES = {
     "matched business-goal concepts: ": "goal_signals",
     "matched schema roles: ": "schema_roles",
@@ -64,6 +68,7 @@ class EvidenceBundle(BaseModel):
     gaps: list[str] = Field(max_length=MAX_BUNDLE_GAPS)
     capability_pack_ids: list[str] = Field(max_length=MAX_CAPABILITY_PACK_IDS)
     capability_packs: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_CAPABILITY_PACKS)
+    capability_pack_provenance: dict[str, str] = Field(default_factory=dict)
 
     def persisted_metadata(self) -> dict[str, Any]:
         """Return the run-record projection without raw evidence or profile text."""
@@ -73,6 +78,7 @@ class EvidenceBundle(BaseModel):
             "profile_fact_count": len(self.profile_facts),
             "gap_count": len(self.gaps),
             "capability_pack_ids": list(self.capability_pack_ids),
+            "capability_pack_provenance": dict(self.capability_pack_provenance),
         }
 
 
@@ -171,6 +177,78 @@ def _computed_capability_selections(route: Mapping[str, Any]) -> dict[str, dict[
         }
         for selection in selections
     }
+
+
+def _canonical_json(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+
+
+def _selector_input_projection(route: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain only the semantic selector inputs in a non-reversible signed digest."""
+    context = _as_mapping(route.get(_SELECTION_CONTEXT_KEY))
+    profile = _as_mapping(context.get("schema_profile"))
+    quality = _as_mapping(context.get("quality"))
+    return {
+        "goal": str(context.get("goal") or "")[:4096],
+        "schema_profile": {
+            key: profile.get(key)
+            for key in ("schema_roles", "metric_families", "entity_relationships", "temporal_coverage")
+        },
+        "quality": {
+            key: quality.get(key)
+            for key in ("completeness", "missing_rate", "missing_pct", "duplicate_rate", "duplicate_pct")
+        },
+    }
+
+
+def _valid_digest(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _capability_pack_provenance(
+    route: Mapping[str, Any],
+    records: Sequence[Mapping[str, Any]],
+) -> dict[str, str]:
+    """Sign an internally selected capability contract without persisting selector inputs."""
+    if not records or not _as_mapping(route.get(_SELECTION_CONTEXT_KEY)):
+        return {}
+    canonical_records = sanitize_capability_pack_records(records)
+    if not canonical_records:
+        return {}
+    pack_ids = [str(record["pack_id"]) for record in canonical_records]
+    selection_fingerprint = hashlib.sha256(
+        _canonical_json({"inputs": _selector_input_projection(route), "pack_ids": pack_ids})
+    ).hexdigest()
+    records_fingerprint = hashlib.sha256(_canonical_json(canonical_records)).hexdigest()
+    try:
+        key_id, key = _active_key()
+    except Exception:
+        return {}
+    payload = {
+        "source": _CAPABILITY_PROVENANCE_SOURCE,
+        "version": _CAPABILITY_PROVENANCE_VERSION,
+        "selection_fingerprint": selection_fingerprint,
+        "records_fingerprint": records_fingerprint,
+        "pack_ids": pack_ids,
+    }
+    return {
+        "source": _CAPABILITY_PROVENANCE_SOURCE,
+        "version": _CAPABILITY_PROVENANCE_VERSION,
+        "selection_fingerprint": selection_fingerprint,
+        "records_fingerprint": records_fingerprint,
+        "key_id": str(key_id),
+        "signature": hmac.new(key, _canonical_json(payload), hashlib.sha256).hexdigest(),
+    }
+
+
+def internally_selected_capability_pack_contract(
+    selection_context: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Return only selector-produced records plus their server-verifiable provenance."""
+    route = {_SELECTION_CONTEXT_KEY: _as_mapping(selection_context)}
+    records = list(_computed_capability_selections(route).values())
+    provenance = _capability_pack_provenance(route, records)
+    return (records, provenance) if records and provenance else ([], {})
 
 
 def _capability_pack_contract(
@@ -299,6 +377,54 @@ def sanitize_capability_pack_records(packs: Sequence[Any] | None) -> list[dict[s
     return records
 
 
+def sanitize_capability_pack_contract(
+    packs: Sequence[Any] | None,
+    provenance: Any,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Accept records only when an internal selector signature binds their exact projection."""
+    records = sanitize_capability_pack_records(packs)
+    source = _as_mapping(provenance)
+    key_id = source.get("key_id")
+    signature = source.get("signature")
+    selection_fingerprint = source.get("selection_fingerprint")
+    records_fingerprint = source.get("records_fingerprint")
+    if (
+        not records
+        or source.get("source") != _CAPABILITY_PROVENANCE_SOURCE
+        or source.get("version") != _CAPABILITY_PROVENANCE_VERSION
+        or not isinstance(key_id, str)
+        or len(key_id) > 64
+        or not _valid_digest(signature)
+        or not _valid_digest(selection_fingerprint)
+        or not _valid_digest(records_fingerprint)
+    ):
+        return [], {}
+    pack_ids = [str(record["pack_id"]) for record in records]
+    if not hmac.compare_digest(records_fingerprint, hashlib.sha256(_canonical_json(records)).hexdigest()):
+        return [], {}
+    payload = {
+        "source": _CAPABILITY_PROVENANCE_SOURCE,
+        "version": _CAPABILITY_PROVENANCE_VERSION,
+        "selection_fingerprint": selection_fingerprint,
+        "records_fingerprint": records_fingerprint,
+        "pack_ids": pack_ids,
+    }
+    try:
+        expected_signature = hmac.new(_key_for(key_id), _canonical_json(payload), hashlib.sha256).hexdigest()
+    except Exception:
+        return [], {}
+    if not hmac.compare_digest(signature, expected_signature):
+        return [], {}
+    return records, {
+        "source": _CAPABILITY_PROVENANCE_SOURCE,
+        "version": _CAPABILITY_PROVENANCE_VERSION,
+        "selection_fingerprint": selection_fingerprint,
+        "records_fingerprint": records_fingerprint,
+        "key_id": key_id,
+        "signature": signature,
+    }
+
+
 def capability_pack_ids_from_records(packs: Sequence[Any] | None) -> list[str]:
     """Derive legacy IDs only from a sanitized capability-pack projection."""
     return [
@@ -311,12 +437,21 @@ def capability_pack_ids_from_records(packs: Sequence[Any] | None) -> list[str]:
 def sanitize_capability_metadata(value: Any) -> Any:
     """Recursively rebuild capability metadata before it reaches a run-facing contract."""
     if isinstance(value, Mapping):
-        sanitized = {str(key): sanitize_capability_metadata(item) for key, item in value.items()}
+        sanitized = {
+            str(key): sanitize_capability_metadata(item)
+            for key, item in value.items()
+            if key != "capability_pack_provenance"
+        }
         if "capability_packs" in value or "capability_pack_ids" in value:
             raw_packs = value.get("capability_packs")
-            records = sanitize_capability_pack_records(raw_packs if isinstance(raw_packs, list) else [])
+            records, provenance = sanitize_capability_pack_contract(
+                raw_packs if isinstance(raw_packs, list) else [],
+                value.get("capability_pack_provenance"),
+            )
             sanitized["capability_packs"] = records
-            sanitized["capability_pack_ids"] = capability_pack_ids_from_records(records)
+            sanitized["capability_pack_ids"] = [str(record["pack_id"]) for record in records]
+            if provenance:
+                sanitized["capability_pack_provenance"] = provenance
         return sanitized
     if isinstance(value, list):
         return [sanitize_capability_metadata(item) for item in value]
@@ -401,6 +536,9 @@ def build_evidence_bundle(
         }
     )[:MAX_BUNDLE_GAPS]
     capability_packs = _capability_pack_contract(packs, route_data)
+    capability_pack_provenance = _capability_pack_provenance(route_data, capability_packs)
+    if capability_packs and not capability_pack_provenance:
+        capability_packs = []
     payload = {
         "workspace_id": _workspace_id(corpus_data, route_data),
         "evidence": [item.model_dump(mode="json", exclude_none=True) for item in evidence],
@@ -408,6 +546,7 @@ def build_evidence_bundle(
         "gaps": gaps,
         "capability_pack_ids": [str(item["pack_id"]) for item in capability_packs],
         "capability_packs": capability_packs,
+        "capability_pack_provenance": capability_pack_provenance if capability_packs else {},
     }
     fingerprint = hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -458,6 +597,8 @@ __all__ = [
     "build_evidence_bundle",
     "bundle_for_agent",
     "capability_pack_ids_from_records",
+    "internally_selected_capability_pack_contract",
     "sanitize_capability_metadata",
+    "sanitize_capability_pack_contract",
     "sanitize_capability_pack_records",
 ]

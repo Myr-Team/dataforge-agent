@@ -1110,6 +1110,9 @@ class MafTeamRuntime:
 
         artifact = dict(artifact)
         artifact["capability_packs"] = list(request.evidence_bundle.capability_packs) if request.evidence_bundle else []
+        artifact["capability_pack_provenance"] = (
+            dict(request.evidence_bundle.capability_pack_provenance) if request.evidence_bundle else {}
+        )
         # Capability packs provide questions and validation methods only. The evidence
         # guard remains the authority for every verdict, including degraded paths.
         artifact["verdict_source"] = "evidence_guard"
@@ -1308,6 +1311,7 @@ class MafTeamRuntime:
         # Selection metadata is persisted on the run, but agents receive only the
         # relevant registered guidance through their evidence-bundle view.
         payload.pop("capability_packs", None)
+        payload.pop("capability_pack_provenance", None)
         payload.pop("capability_selection_context", None)
         history = payload.get("conversation_history")
         if isinstance(history, list):

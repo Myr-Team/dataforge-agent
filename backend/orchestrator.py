@@ -21,7 +21,7 @@ try:
     from . import cache_store
     from . import content_safety
     from .blob_store import upload_artifact
-    from .capability_packs import load_capability_packs, select_capability_packs
+    from .capability_packs import load_capability_packs
     from .chat_loop_primitives import sse
     from .conversation_store import append_message, conversation_context
     from .customer_text import (
@@ -34,6 +34,7 @@ try:
         sanitize_citations,
         sanitize_customer_text,
     )
+    from .evidence_bundle import internally_selected_capability_pack_contract
     from .feasibility_rubric import (
         GUARDRAIL_VERSION,
         apply_post_audit_guardrails,
@@ -93,7 +94,7 @@ except ImportError:
     import cache_store
     import content_safety
     from blob_store import upload_artifact
-    from capability_packs import load_capability_packs, select_capability_packs
+    from capability_packs import load_capability_packs
     from chat_loop_primitives import sse
     from conversation_store import append_message, conversation_context
     from customer_text import (
@@ -106,6 +107,7 @@ except ImportError:
         sanitize_citations,
         sanitize_customer_text,
     )
+    from evidence_bundle import internally_selected_capability_pack_contract
     from feasibility_rubric import (
         GUARDRAIL_VERSION,
         apply_post_audit_guardrails,
@@ -5552,13 +5554,9 @@ def _capability_pack_selection_context(req: ChatRequest) -> dict[str, Any]:
 
 def _selected_capability_packs(req: ChatRequest, artifact: dict[str, Any]) -> list[dict[str, Any]]:
     context = _capability_pack_selection_context(req)
-    selections = select_capability_packs(
-        context["goal"],
-        context["schema_profile"],
-        context["quality"],
-    )
-    contract = [selection.model_dump(mode="json") for selection in selections]
+    contract, provenance = internally_selected_capability_pack_contract(context)
     artifact["capability_packs"] = copy.deepcopy(contract)
+    artifact["capability_pack_provenance"] = copy.deepcopy(provenance)
     return contract
 
 
@@ -5587,6 +5585,9 @@ def _maf_team_request(
             "routing": decision.model_dump(),
             "conversation_history": artifact.get("_conversation_history", []),
             "capability_packs": capability_packs,
+            "capability_pack_provenance": copy.deepcopy(
+                artifact.get("capability_pack_provenance") or {}
+            ),
             "capability_selection_context": capability_selection_context,
         },
         authoritative_corpus=authoritative_corpus or {},
@@ -5863,6 +5864,9 @@ def _merge_maf_artifact(artifact: dict[str, Any], result: MafTeamRunResult) -> N
     capability_packs = runtime_artifact.get("capability_packs")
     if isinstance(capability_packs, list):
         artifact["capability_packs"] = copy.deepcopy(capability_packs)
+    capability_pack_provenance = runtime_artifact.get("capability_pack_provenance")
+    if isinstance(capability_pack_provenance, dict):
+        artifact["capability_pack_provenance"] = copy.deepcopy(capability_pack_provenance)
     if runtime_artifact.get("verdict_source") == "evidence_guard":
         artifact["verdict_source"] = "evidence_guard"
     maf_summary = result.summary.model_dump(mode="json", exclude_none=True)
@@ -5877,6 +5881,7 @@ def _merge_maf_artifact(artifact: dict[str, Any], result: MafTeamRunResult) -> N
                 "gap_count",
                 "capability_pack_ids",
                 "capability_packs",
+                "capability_pack_provenance",
             )
             if key in bundle_metadata
         }
@@ -6061,6 +6066,9 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
             {
                 "source": "normalized_goal_schema_profile_quality",
                 "capability_packs": capability_packs,
+                "capability_pack_provenance": copy.deepcopy(
+                    artifact.get("capability_pack_provenance") or {}
+                ),
             },
         )
     producer_requested = "df-producer" in decision.experts

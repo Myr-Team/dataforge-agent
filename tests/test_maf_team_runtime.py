@@ -320,12 +320,17 @@ async def test_pack_guidance_never_overrides_the_evidence_guard(fake_registry: F
 
     assert low_result.artifact["capability_packs"][0]["pack_id"] == "site_channel_selection"
     assert high_result.artifact["capability_packs"][0]["pack_id"] == "site_channel_selection"
+    assert low_result.artifact["capability_pack_provenance"]["source"] == "normalized_goal_schema_profile_quality"
+    assert high_result.summary.evidence_bundle["capability_pack_provenance"] == high_result.artifact[
+        "capability_pack_provenance"
+    ]
     assert low_result.artifact["verdict"] == "insufficient_evidence"
     assert high_result.artifact["verdict"] != "insufficient_evidence"
     assert low_result.artifact["verdict_source"] == "evidence_guard"
     assert high_result.artifact["verdict_source"] == "evidence_guard"
     feasibility_input = fake_registry.inputs["df-feasibility-analyst"][0]
     assert "capability_packs" not in feasibility_input
+    assert "capability_pack_provenance" not in feasibility_input
     assert "capability_selection_context" not in feasibility_input
     assert feasibility_input["evidence_bundle"]["capability_guidance"][0]["questions"]
 

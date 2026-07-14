@@ -665,6 +665,11 @@ def run_summary(run_id: str) -> dict[str, Any]:
         "summary": run.get("summary") if isinstance(run.get("summary"), str) else _text_summary(run),
         "evidence": evidence,
         "capability_packs": run.get("capability_packs") if isinstance(run.get("capability_packs"), list) else [],
+        "capability_pack_provenance": (
+            run.get("capability_pack_provenance")
+            if isinstance(run.get("capability_pack_provenance"), dict)
+            else {}
+        ),
     }
 
 

@@ -10,11 +10,17 @@ from typing import Any
 
 try:
     from .blob_store import delete_blob_name, download_blob_json, upload_blob_json
-    from .evidence_bundle import sanitize_capability_metadata, sanitize_capability_pack_records
+    from .evidence_bundle import (
+        sanitize_capability_metadata,
+        sanitize_capability_pack_contract,
+    )
     from .identity import is_trusted_identity, public_actor
 except ImportError:
     from blob_store import delete_blob_name, download_blob_json, upload_blob_json
-    from evidence_bundle import sanitize_capability_metadata, sanitize_capability_pack_records
+    from evidence_bundle import (
+        sanitize_capability_metadata,
+        sanitize_capability_pack_contract,
+    )
     from identity import is_trusted_identity, public_actor
 
 
@@ -461,7 +467,7 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
     proposal = artifact.get("proposal") if isinstance(artifact, dict) and isinstance(artifact.get("proposal"), dict) else {}
     artifact_urls = proposal.get("artifact_urls") if isinstance(proposal.get("artifact_urls"), dict) else {}
     iteration_inputs = artifact.get("iteration_inputs") if isinstance(artifact, dict) and isinstance(artifact.get("iteration_inputs"), list) else []
-    capability_packs = _capability_packs(artifact)
+    capability_packs, capability_pack_provenance = _capability_pack_contract(artifact)
     computed_duration = _duration_ms(
         run.get("started_at"),
         run.get("completed_at") or run.get("updated_at"),
@@ -478,7 +484,7 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
                 "name": data.get("name") if isinstance(data, dict) else None,
             }
         )
-    return {
+    summary = {
         "run_id": run.get("run_id"),
         "time": run.get("completed_at") or run.get("updated_at") or run.get("started_at"),
         "started_at": run.get("started_at"),
@@ -504,6 +510,9 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "tokens": _token_usage(run),
         "actor": public_actor(run.get("actor") if isinstance(run.get("actor"), dict) else {}),
     }
+    if capability_pack_provenance:
+        summary["capability_pack_provenance"] = capability_pack_provenance
+    return summary
 
 
 def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
@@ -524,17 +533,29 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
     normalized["actor"] = public_actor(normalized.get("actor") if isinstance(normalized.get("actor"), dict) else {})
     normalized["tokens"] = _token_usage(normalized)
     normalized["maf"] = _maf_summary(normalized)
-    normalized["capability_packs"] = _capability_packs(
+    capability_packs, capability_pack_provenance = _capability_pack_contract(
         normalized.get("artifact") or (normalized.get("final") or {}).get("artifact") or {}
     )
+    normalized["capability_packs"] = capability_packs
+    normalized["capability_pack_ids"] = [str(item["pack_id"]) for item in capability_packs]
+    if capability_pack_provenance:
+        normalized["capability_pack_provenance"] = capability_pack_provenance
+    else:
+        normalized.pop("capability_pack_provenance", None)
     normalized["registry_summary"] = _run_summary(normalized)
     return normalized
 
 
-def _capability_packs(artifact: Any) -> list[dict[str, Any]]:
+def _capability_pack_contract(artifact: Any) -> tuple[list[dict[str, Any]], dict[str, str]]:
     if not isinstance(artifact, dict) or not isinstance(artifact.get("capability_packs"), list):
-        return []
-    return sanitize_capability_pack_records(artifact["capability_packs"])
+        return [], {}
+    return sanitize_capability_pack_contract(
+        artifact["capability_packs"], artifact.get("capability_pack_provenance")
+    )
+
+
+def _capability_packs(artifact: Any) -> list[dict[str, Any]]:
+    return _capability_pack_contract(artifact)[0]
 
 
 def _copy_capability_pack_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -544,18 +565,26 @@ def _copy_capability_pack_records(records: list[dict[str, Any]]) -> list[dict[st
 def _clear_capability_metadata(value: Any) -> None:
     """Clear nested pack metadata before the generic registry sanitizer can rebuild it."""
     if isinstance(value, dict):
-        has_metadata = "capability_pack_ids" in value or "capability_packs" in value
+        has_metadata = any(
+            key in value
+            for key in ("capability_pack_ids", "capability_packs", "capability_pack_provenance")
+        )
         for item in value.values():
             _clear_capability_metadata(item)
         if has_metadata:
             value["capability_pack_ids"] = []
             value["capability_packs"] = []
+            value.pop("capability_pack_provenance", None)
     elif isinstance(value, list):
         for item in value:
             _clear_capability_metadata(item)
 
 
-def _hydrate_maf_evidence_bundle(container: dict[str, Any], selected_packs: list[dict[str, Any]]) -> None:
+def _hydrate_maf_evidence_bundle(
+    container: dict[str, Any],
+    selected_packs: list[dict[str, Any]],
+    provenance: dict[str, str],
+) -> None:
     """Rebuild MAF's ID-only metadata from its sibling selected-pack contract."""
     if not selected_packs:
         return
@@ -569,6 +598,7 @@ def _hydrate_maf_evidence_bundle(container: dict[str, Any], selected_packs: list
         return
     metadata["capability_packs"] = _copy_capability_pack_records(selected_packs)
     metadata["capability_pack_ids"] = [str(record["pack_id"]) for record in selected_packs]
+    metadata["capability_pack_provenance"] = dict(provenance)
 
 
 def _hydrate_artifact_capability_metadata(value: Any) -> dict[str, Any]:
@@ -576,11 +606,12 @@ def _hydrate_artifact_capability_metadata(value: Any) -> dict[str, Any]:
     artifact = _plain(value)
     if not isinstance(artifact, dict):
         return {}
-    selected_packs = _capability_packs(artifact)
+    selected_packs, provenance = _capability_pack_contract(artifact)
     _clear_capability_metadata(artifact)
     if selected_packs:
         artifact["capability_packs"] = _copy_capability_pack_records(selected_packs)
-        _hydrate_maf_evidence_bundle(artifact, selected_packs)
+        artifact["capability_pack_provenance"] = dict(provenance)
+        _hydrate_maf_evidence_bundle(artifact, selected_packs, provenance)
     return artifact
 
 
@@ -603,15 +634,13 @@ def _sanitize_run_capability_metadata(value: Any) -> Any:
     if isinstance(run.get("registry_summary"), dict):
         _clear_capability_metadata(run["registry_summary"])
 
-    summary_packs = run.get("capability_packs")
-    selected_summary_packs = sanitize_capability_pack_records(
-        summary_packs if isinstance(summary_packs, list) else []
-    )
+    selected_summary_packs, summary_provenance = _capability_pack_contract(run)
     if isinstance(run.get("maf"), dict):
         _clear_capability_metadata(run["maf"])
     if selected_summary_packs:
         run["capability_packs"] = _copy_capability_pack_records(selected_summary_packs)
-        _hydrate_maf_evidence_bundle(run, selected_summary_packs)
+        run["capability_pack_provenance"] = dict(summary_provenance)
+        _hydrate_maf_evidence_bundle(run, selected_summary_packs, summary_provenance)
 
     return sanitize_capability_metadata(run)
 
@@ -635,11 +664,18 @@ def _sanitize_final(value: Any) -> dict[str, Any]:
 def _sanitize_event_data(event: str, data: Any) -> Any:
     if event != "capability_pack_selection" or not isinstance(data, dict):
         return data
-    packs = data.get("capability_packs") if isinstance(data.get("capability_packs"), list) else []
-    return sanitize_capability_metadata({
+    packs, provenance = sanitize_capability_pack_contract(
+        data.get("capability_packs") if isinstance(data.get("capability_packs"), list) else [],
+        data.get("capability_pack_provenance"),
+    )
+    sanitized = {
         "source": "normalized_goal_schema_profile_quality",
-        "capability_packs": sanitize_capability_pack_records(packs),
-    })
+        "capability_packs": packs,
+        "capability_pack_ids": [str(record["pack_id"]) for record in packs],
+    }
+    if provenance:
+        sanitized["capability_pack_provenance"] = provenance
+    return sanitized
 
 
 _VERDICT_LABELS = {
