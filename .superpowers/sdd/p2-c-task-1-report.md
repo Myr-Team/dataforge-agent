@@ -19,10 +19,17 @@
 1. The initial `tests/test_capability_packs.py` run failed at collection because `backend.capability_packs` did not exist.
 2. The relationship-specific regression failed while relationship values were treated as opaque values, then passed after semantic token normalization was added.
 3. The Chinese-goal regression failed before Chinese token normalization and generic Chinese goal concepts were added, then passed.
+4. Review follow-up tests reproduced three fail-open paths: invalid quality could be treated as complete, malformed temporal coverage could add a suitability contribution, and nested `name`/`type`/`family` values could act as semantic fields.
+
+## Review follow-up
+
+- Quality now accepts only a mapping with finite numeric completeness-or-missing and duplicate signals. Missing, conflicting, non-numeric, boolean, non-finite, or out-of-range values are invalid and force `risk_data_readiness`.
+- Temporal coverage now requires `available: true` and either a positive numeric `periods`/`count` or an explicit, ordered evidence range with ISO-parseable or finite numeric `start` and `end` values. Raw names, strings that are not time values, booleans, false flags, zero, and malformed structures cannot contribute.
+- Schema input is filtered to the explicit `schema_roles`, `metric_families`, `entity_relationships`, and `temporal_coverage` contract. Semantic values must be direct strings from the data-driven pack vocabulary; nested objects and raw column/dataset fields are ignored.
 
 ## Verification
 
-- `python -m pytest tests/test_capability_packs.py -q` -> 11 passed.
+- `python -m pytest tests/test_capability_packs.py -q` -> 24 passed after review follow-up.
 - `python -m pytest tests/test_agent_generalization_contract.py tests/test_evidence_bundle.py -q` -> 6 passed.
 - `python -m compileall -q backend tests` -> passed.
 - `python -m json.tool backend/data/capability_packs.json` -> passed.

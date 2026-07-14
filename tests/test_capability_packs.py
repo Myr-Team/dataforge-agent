@@ -124,6 +124,74 @@ def test_unknown_or_weak_evidence_returns_data_readiness_without_an_opportunity_
     assert selections[0].missing_evidence
 
 
+@pytest.mark.parametrize(
+    "invalid_quality",
+    [
+        "not-a-mapping",
+        {"completeness": 0.94, "missing_pct": "unknown", "duplicate_pct": 0},
+        {"missing_pct": 6, "duplicate_pct": "unknown"},
+        {"missing_pct": 6, "duplicate_pct": 0, "duplicate_rate": float("nan")},
+    ],
+)
+def test_malformed_quality_degrades_to_data_readiness_without_raising(
+    invalid_quality: object,
+) -> None:
+    selections = select_capability_packs("choose channels", _site_profile(), invalid_quality)
+
+    assert [selection.pack_id for selection in selections] == ["risk_data_readiness"]
+    assert "data quality" in selections[0].missing_evidence
+
+
+@pytest.mark.parametrize(
+    "invalid_temporal_coverage",
+    [
+        "available",
+        {"available": "true", "periods": 8},
+        {"available": True, "periods": "8"},
+        {"available": False, "periods": 8},
+        {"available": True, "periods": 0},
+        {"available": True, "evidence": [{"start": "raw-file-name", "end": "other-file-name"}]},
+        {"available": True, "evidence": [{"start": True, "end": 2}]},
+    ],
+)
+def test_malformed_temporal_coverage_degrades_to_data_readiness_without_raising(
+    invalid_temporal_coverage: object,
+) -> None:
+    profile = _site_profile()
+    profile["temporal_coverage"] = invalid_temporal_coverage
+
+    selections = select_capability_packs("choose channels", profile, quality())
+
+    assert [selection.pack_id for selection in selections] == ["risk_data_readiness"]
+    assert "time coverage" in selections[0].missing_evidence
+
+
+def test_valid_temporal_evidence_can_supply_coverage_without_a_period_count() -> None:
+    profile = _site_profile()
+    profile["temporal_coverage"] = {
+        "available": True,
+        "evidence": [{"start": "2026-01-01", "end": "2026-03-31"}],
+    }
+
+    assert select_capability_packs("choose channels", profile, quality())[0].pack_id == "site_channel_selection"
+
+
+def test_raw_columns_names_types_and_families_cannot_supply_semantic_profile_fields() -> None:
+    adversarial_profile = {
+        "schema_roles": [{"name": "location", "type": "candidate"}],
+        "metric_families": [{"family": "footfall", "name": "conversion"}],
+        "entity_relationships": [{"type": "location_to_demand"}],
+        "temporal_coverage": {"available": True, "periods": 8},
+        "columns": [{"name": "location", "type": "demand", "value": "footfall"}],
+        "dataset_name": "site-channel-selection",
+        "file_name": "location_candidates.csv",
+    }
+
+    selections = select_capability_packs("choose channels", adversarial_profile, quality())
+
+    assert [selection.pack_id for selection in selections] == ["risk_data_readiness"]
+
+
 def test_entity_relationships_contribute_to_the_matching_pack_confidence() -> None:
     base_profile = {
         "schema_roles": ["location", "candidate", "demand", "time"],
@@ -167,3 +235,12 @@ def test_pack_files_are_data_only_and_contain_no_scores_or_named_winners() -> No
         assert "winner" not in text
         assert "industry" not in text
         assert "score" not in text
+
+
+def _site_profile() -> dict[str, object]:
+    return {
+        "schema_roles": ["location", "candidate", "demand", "time"],
+        "metric_families": ["footfall", "conversion", "cost"],
+        "temporal_coverage": {"available": True, "periods": 8},
+        "entity_relationships": ["location_to_demand"],
+    }
