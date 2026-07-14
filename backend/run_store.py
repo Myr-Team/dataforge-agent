@@ -990,7 +990,7 @@ def _compact_step(
 
 def _truncate(value: Any, *, depth: int) -> Any:
     if depth > 5:
-        return str(value)[:300]
+        return "[truncated]"
     if isinstance(value, dict):
         return {str(key): _truncate(item, depth=depth + 1) for key, item in list(value.items())[:80]}
     if isinstance(value, list):

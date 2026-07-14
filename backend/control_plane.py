@@ -3076,7 +3076,7 @@ _PUBLIC_DETAIL_CAPABILITY_FIELDS = frozenset(
 def _public_detail_projection(value: Any, *, depth: int) -> Any:
     """Remove capability-contract internals from every public trace/detail shape."""
     if depth > 5:
-        return _clean(value, 500)
+        return "[truncated]"
     if isinstance(value, dict):
         result = {}
         for key, item in list(value.items())[:80]:

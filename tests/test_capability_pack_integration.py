@@ -600,6 +600,100 @@ def test_latest_analysis_and_run_log_strip_persisted_step_capability_metadata(tm
     assert not _contains_public_trace_capability_metadata(run_log["raw"])
 
 
+def test_deep_capability_metadata_never_survives_public_depth_truncation(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
+    run_store._ACTIVE.clear()
+    selection, provenance = _internally_selected_pack_contract(
+        workspace_id="workspace-1",
+        scope_id="scope-deep-metadata",
+    )
+    deep_metadata: object = {
+        "capability_pack_provenance": {"nonce": "deep-provenance-value"},
+        "capability_pack_integrity": {"status": "verified", "source": "deep-forged-source"},
+        "capability_packs": [{"pack_id": "site_channel_selection"}],
+        "capability_pack_ids": ["site_channel_selection"],
+        "signature": "deep-signature-value",
+        "nonce": "deep-nonce-value",
+        "scope_fingerprint": "deep-scope-value",
+        "workspace_fingerprint": "deep-workspace-value",
+        "selection_fingerprint": "deep-selection-value",
+        "records_fingerprint": "deep-records-value",
+        "key_id": "deep-key-value",
+    }
+    for level in range(8):
+        deep_metadata = {f"level_{level}": deep_metadata}
+    artifact = {
+        "workspace_id": "workspace-1",
+        "capability_packs": [selection],
+        "capability_pack_provenance": provenance,
+        "deep": deep_metadata,
+        "feasibility": {
+            "verdict": "conditional",
+            "dimensions": [{"name": "asset_data", "score": 2}],
+        },
+    }
+    run_store.start_run("scope-deep-metadata", "workspace-1", "choose channels")
+    run_store.record_event("scope-deep-metadata", "tool_result", {"agent": "df-auditor", "deep": deep_metadata})
+    run_store.complete_run("scope-deep-metadata", final={"text": "done"}, artifact=artifact)
+
+    monkeypatch.setattr(control_plane, "_require_workspace_action", lambda *_args, **_kwargs: "editor")
+    client = TestClient(app)
+    latest_response = client.get("/api/workspaces/workspace-1/latest-analysis")
+    trace_response = client.get("/api/runs/scope-deep-metadata/trace")
+    log_response = client.get("/api/runs/scope-deep-metadata/log")
+    frame = orchestrator._frame(
+        "final",
+        {"text": "done", "artifact": artifact},
+        "scope-deep-metadata",
+    )
+    sse_payload = json.loads(frame.split("data: ", 1)[1].strip())
+
+    assert latest_response.status_code == 200
+    assert trace_response.status_code == 200
+    assert log_response.status_code == 200
+    latest = latest_response.json()
+    trace = trace_response.json()
+    run_log = log_response.json()
+    assert latest["artifact"]["capability_pack_integrity"]["status"] == "verified"
+    assert sse_payload["artifact"]["capability_pack_integrity"]["status"] == "verified"
+
+    protected = {
+        "latest_trace": latest["trace"],
+        "latest_run_trace": latest["run_trace"],
+        "trace_endpoint": trace,
+        "run_log_trace": run_log["trace"],
+        "run_log_raw": run_log["raw"],
+        "sse_deep": sse_payload["artifact"]["deep"],
+    }
+    serialized = json.dumps(protected, ensure_ascii=False)
+    for value in (
+        "capability_pack_provenance",
+        "capability_pack_integrity",
+        "capability_packs",
+        "capability_pack_ids",
+        "signature",
+        "nonce",
+        "scope_fingerprint",
+        "workspace_fingerprint",
+        "selection_fingerprint",
+        "records_fingerprint",
+        "key_id",
+        "deep-provenance-value",
+        "deep-forged-source",
+        "deep-signature-value",
+        "deep-nonce-value",
+        "deep-scope-value",
+        "deep-workspace-value",
+        "deep-selection-value",
+        "deep-records-value",
+        "deep-key-value",
+    ):
+        assert value not in serialized
+    assert "verified" not in serialized
+
+
 def test_historical_nested_capability_metadata_is_sanitized_on_all_read_paths(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     run_store.RUN_DIR.mkdir(parents=True, exist_ok=True)
