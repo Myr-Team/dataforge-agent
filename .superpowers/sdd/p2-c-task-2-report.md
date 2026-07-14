@@ -68,3 +68,10 @@ The initial Task 2 contract validated caller-supplied `CapabilitySelection` obje
 - This preserves the normal selected IDs through local runs, Blob run documents, Blob registry summaries, and run-summary API output, while an unselected registered ID, invalid ID, email, or directive in nested metadata is dropped.
 - The regression fixture uses the exact `EvidenceBundle.persisted_metadata()` shape (only `capability_pack_ids`), forces a Blob-backed detail read, and checks run detail, Blob document, registry summary, API summary, and list output.
 - R3 verification: `85 passed, 1 warning` for the focused capability-pack/MAF/evidence/run-summary suite; `739 passed, 1 warning` for the full backend suite. The warning is the existing MAF experimental-workflow notice.
+
+## R4 No-Source Metadata Repair
+
+- Before the generic registry sanitizer runs, run-store recursively clears capability metadata that is not anchored to an artifact-level selected contract.
+- A direct `artifact.maf.evidence_bundle` is rebuilt only when the sibling `artifact.capability_packs` projects to safe selected records. Without that contract, both nested IDs and records remain empty; the same rule applies to Blob registry MAF summaries without a safe top-level contract.
+- The historical local/Blob/API regression fixture contains a registered ID plus email and directive text but no sibling contract. It now exposes zero capability metadata on every read path, while the R3 normal ID-only MAF fixture continues to persist its selected safe pack.
+- R4 final verification: `85 passed, 1 warning` for the focused capability-pack/MAF/evidence/run-summary suite. The warning is the existing MAF experimental-workflow notice.

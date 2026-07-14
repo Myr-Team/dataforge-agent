@@ -435,7 +435,8 @@ def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
     safe = _safe_name(str(run.get("run_id") or "run"))
     path = RUN_DIR / f"{safe}.json"
     run["local_path"] = str(path)
-    summary = dict(run.get("registry_summary") or _run_summary(run))
+    summary = _run_summary(run)
+    run["registry_summary"] = summary
     blob_name = f"{RUN_BLOB_PREFIX}/{safe}.json"
     try:
         run["persistence"] = {"mode": "local_and_blob", "blob_name": blob_name}
@@ -460,6 +461,7 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
     proposal = artifact.get("proposal") if isinstance(artifact, dict) and isinstance(artifact.get("proposal"), dict) else {}
     artifact_urls = proposal.get("artifact_urls") if isinstance(proposal.get("artifact_urls"), dict) else {}
     iteration_inputs = artifact.get("iteration_inputs") if isinstance(artifact, dict) and isinstance(artifact.get("iteration_inputs"), list) else []
+    capability_packs = _capability_packs(artifact)
     computed_duration = _duration_ms(
         run.get("started_at"),
         run.get("completed_at") or run.get("updated_at"),
@@ -494,7 +496,8 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "produced_kinds": run.get("produced_kinds") or [],
         "iteration_inputs": iteration_inputs[:12],
         "artifact_urls": {key: value for key, value in (artifact_urls or {}).items() if value},
-        "capability_packs": _capability_packs(artifact),
+        "capability_packs": capability_packs,
+        "capability_pack_ids": [str(item["pack_id"]) for item in capability_packs],
         "steps": steps,
         "step_count": len(run.get("steps") or []),
         "maf": _maf_summary(run),
@@ -524,7 +527,7 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
     normalized["capability_packs"] = _capability_packs(
         normalized.get("artifact") or (normalized.get("final") or {}).get("artifact") or {}
     )
-    normalized.setdefault("registry_summary", _run_summary(normalized))
+    normalized["registry_summary"] = _run_summary(normalized)
     return normalized
 
 
@@ -536,6 +539,20 @@ def _capability_packs(artifact: Any) -> list[dict[str, Any]]:
 
 def _copy_capability_pack_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [dict(record) for record in records]
+
+
+def _clear_capability_metadata(value: Any) -> None:
+    """Clear nested pack metadata before the generic registry sanitizer can rebuild it."""
+    if isinstance(value, dict):
+        has_metadata = "capability_pack_ids" in value or "capability_packs" in value
+        for item in value.values():
+            _clear_capability_metadata(item)
+        if has_metadata:
+            value["capability_pack_ids"] = []
+            value["capability_packs"] = []
+    elif isinstance(value, list):
+        for item in value:
+            _clear_capability_metadata(item)
 
 
 def _hydrate_maf_evidence_bundle(container: dict[str, Any], selected_packs: list[dict[str, Any]]) -> None:
@@ -560,6 +577,7 @@ def _hydrate_artifact_capability_metadata(value: Any) -> dict[str, Any]:
     if not isinstance(artifact, dict):
         return {}
     selected_packs = _capability_packs(artifact)
+    _clear_capability_metadata(artifact)
     if selected_packs:
         artifact["capability_packs"] = _copy_capability_pack_records(selected_packs)
         _hydrate_maf_evidence_bundle(artifact, selected_packs)
@@ -582,10 +600,15 @@ def _sanitize_run_capability_metadata(value: Any) -> Any:
         hydrated_final["artifact"] = _hydrate_artifact_capability_metadata(final["artifact"])
         run["final"] = hydrated_final
 
+    if isinstance(run.get("registry_summary"), dict):
+        _clear_capability_metadata(run["registry_summary"])
+
     summary_packs = run.get("capability_packs")
     selected_summary_packs = sanitize_capability_pack_records(
         summary_packs if isinstance(summary_packs, list) else []
     )
+    if isinstance(run.get("maf"), dict):
+        _clear_capability_metadata(run["maf"])
     if selected_summary_packs:
         run["capability_packs"] = _copy_capability_pack_records(selected_summary_packs)
         _hydrate_maf_evidence_bundle(run, selected_summary_packs)

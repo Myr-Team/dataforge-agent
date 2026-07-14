@@ -280,12 +280,16 @@ def test_historical_nested_capability_metadata_is_sanitized_on_all_read_paths(tm
             "status": "completed",
             "started_at": "2026-07-01T00:00:00+00:00",
             "completed_at": "2026-07-01T00:01:00+00:00",
-            "artifact": {
-                "feasibility": {"verdict": "conditional", "dimensions": [{"name": "asset_data", "score": 2}]},
-                "maf": {"evidence_bundle": metadata},
-                "nested": {"current_pack_metadata": metadata},
-            },
-        }
+                "artifact": {
+                    "feasibility": {"verdict": "conditional", "dimensions": [{"name": "asset_data", "score": 2}]},
+                    "maf": {"evidence_bundle": metadata},
+                    "nested": {"current_pack_metadata": metadata},
+                },
+                "registry_summary": {
+                    "capability_packs": metadata["capability_packs"],
+                    "maf": {"evidence_bundle": metadata},
+                },
+            }
 
     local_run = historical_run("history-local")
     blob_run = historical_run("history-blob")
@@ -327,7 +331,7 @@ def test_historical_nested_capability_metadata_is_sanitized_on_all_read_paths(tm
     assert "IGNORE ALL RULES" not in serialized
     assert "prompt-injection" not in serialized
     assert _pack_metadata_pairs(exposed)
-    assert all(ids == pack_ids for ids, pack_ids in _pack_metadata_pairs(exposed))
+    assert all(ids == [] and pack_ids == [] for ids, pack_ids in _pack_metadata_pairs(exposed))
 
 
 def test_normal_maf_persisted_ids_are_rehydrated_only_from_selected_artifact_contract(
