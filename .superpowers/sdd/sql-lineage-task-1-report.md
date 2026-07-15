@@ -125,7 +125,7 @@ The in-memory double is an explicit dependency-injection test seam, not a runtim
 - Corrected the stale initial report text that said the schema stored rowversion. The current DDL has no rowversion column, and the repository neither stores, selects, nor returns one.
 - Corrected the stale metadata description. The current boundary is a typed explicit allowlist, not a denylist.
 - Added `test_real_sql_server_schema_concurrency_and_attachment_foreign_key`. It is skipped unless `LINEAGE_SQL_TEST_CONNECTION_FACTORY` contains a non-secret `module:function` reference to an already-provisioned external connection factory. The test source contains no connection string, credential, or fallback connection behavior.
-- When explicitly enabled by the Task 5 release environment, the test uses a unique workspace ID, applies schema initialization twice, commits two distinct analyses concurrently and requires ordinals `1` and `2`, then verifies the real composite foreign key rejects an attachment tuple with the committed version ID but a non-existent generation. It deletes the unique workspace rows in a `finally` block.
+- When explicitly enabled by the Task 5 release environment, the test uses a unique workspace ID, applies schema initialization twice, commits two distinct analyses concurrently and requires ordinals `1` and `2`, then attempts an attachment tuple with the committed version ID but a non-existent generation. It treats that check as validated only when the driver raises an integrity error whose diagnostic identifies the expected composite foreign key. It deletes the unique workspace rows in a `finally` block.
 
 ### Review R2 Test-First Evidence
 
@@ -142,3 +142,33 @@ Result: initial gating run, exit code 0: `11 passed, 1 skipped in 0.14s`. Final 
 ### Remaining Release Prerequisite
 
 Live engine execution is deliberately limited to Task 5. That release environment must supply the external non-secret factory reference and run the opt-in test against a disposable or otherwise dedicated SQL Server/Azure SQL database before release.
+
+## Review R3 Follow-Up
+
+### Foreign-Key Failure Classification
+
+- The opt-in engine test no longer accepts a broad `Exception` for the invalid attachment insert.
+- It requires `pyodbc.IntegrityError`, then requires SQLSTATE `23000` and the exact `FK_experiment_attachment_version` constraint name in the driver diagnostic. Connectivity, authentication, permissions, SQL syntax, and transient failures therefore fail the test instead of passing the foreign-key check.
+- Added focused classifier regressions covering the expected SQL Server foreign-key diagnostic, an authentication diagnostic that mentions the FK name, and a different foreign-key diagnostic.
+
+### Review R3 TDD Evidence
+
+RED command:
+
+```text
+python -m pytest tests/test_lineage_sql.py -q
+```
+
+Result: expected failure, exit code 1. `3 failed, 11 passed, 1 skipped in 0.38s`; each failure was the missing foreign-key diagnostic classifier.
+
+GREEN command:
+
+```text
+python -m pytest tests/test_lineage_sql.py -q
+```
+
+Result: initial GREEN, exit code 0: `14 passed, 1 skipped in 0.17s`. Final pre-commit verification, exit code 0: `14 passed, 1 skipped in 0.15s`.
+
+### Coverage Boundary
+
+The current run did not set the external factory reference, so the opt-in engine test was skipped and provides no live SQL proof yet. Task 5 remains responsible for supplying the factory reference and executing this stricter check against a dedicated SQL Server/Azure SQL database.

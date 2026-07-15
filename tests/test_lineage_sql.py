@@ -25,6 +25,7 @@ _LOCK_MARKERS = (
 )
 _REAL_SQL_FACTORY_ENV = "LINEAGE_SQL_TEST_CONNECTION_FACTORY"
 _FACTORY_REFERENCE_PATTERN = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*")
+_ATTACHMENT_FK_NAME = "FK_experiment_attachment_version"
 
 
 class _MemorySqlDatabase:
@@ -356,6 +357,49 @@ def _cleanup_real_sql_workspace(connection_factory, workspace_id: str) -> None:
         connection.close()
 
 
+class _DiagnosticError(Exception):
+    pass
+
+
+def _is_expected_attachment_fk_violation(error: BaseException) -> bool:
+    diagnostic = " ".join(str(value) for value in error.args)
+    sqlstates = set(re.findall(r"(?<![A-Z0-9])[A-Z0-9]{5}(?![A-Z0-9])", diagnostic.upper()))
+    return (
+        "23000" in sqlstates
+        and _ATTACHMENT_FK_NAME.casefold() in diagnostic.casefold()
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            _DiagnosticError(
+                "23000",
+                '[Microsoft][ODBC Driver 18 for SQL Server][SQL Server]The INSERT statement conflicted with the FOREIGN KEY constraint "FK_experiment_attachment_version". The conflict occurred in database "lineage", table "df_lineage.experiment_version". (547)',
+            ),
+            True,
+        ),
+        (
+            _DiagnosticError(
+                "28000",
+                '[Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Login failed for user. "FK_experiment_attachment_version"',
+            ),
+            False,
+        ),
+        (
+            _DiagnosticError(
+                "23000",
+                '[Microsoft][ODBC Driver 18 for SQL Server][SQL Server]The INSERT statement conflicted with the FOREIGN KEY constraint "FK_other". (547)',
+            ),
+            False,
+        ),
+    ],
+)
+def test_attachment_fk_violation_classifier_requires_sqlstate_and_constraint(error, expected) -> None:
+    assert _is_expected_attachment_fk_violation(error) is expected
+
+
 def _commit(repository, run_id: str, *, decision: str = "a" * 64, evidence: str = "b" * 64):
     return repository.commit_analysis(
         workspace_id="workspace-1",
@@ -575,6 +619,8 @@ def test_actor_metadata_rejects_tokens_claims_and_credentials_in_benign_fields(m
     ),
 )
 def test_real_sql_server_schema_concurrency_and_attachment_foreign_key() -> None:
+    import pyodbc
+
     connection_factory = _real_sql_connection_factory()
     repository = _api().LineageRepository(connection_factory=connection_factory)
     workspace_id = f"it-lineage-{uuid4()}"
@@ -604,7 +650,7 @@ def test_real_sql_server_schema_concurrency_and_attachment_foreign_key() -> None
         try:
             connection.autocommit = False
             cursor = connection.cursor()
-            with pytest.raises(Exception):
+            with pytest.raises(pyodbc.IntegrityError) as raised:
                 cursor.execute(
                     """INSERT INTO df_lineage.experiment_attachment (
                         attachment_id,
@@ -626,6 +672,7 @@ def test_real_sql_server_schema_concurrency_and_attachment_foreign_key() -> None
                     None,
                 )
                 connection.commit()
+            assert _is_expected_attachment_fk_violation(raised.value)
         finally:
             connection.rollback()
             connection.close()
