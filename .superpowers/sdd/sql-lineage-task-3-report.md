@@ -6,14 +6,16 @@ GREEN. Experiment promotion, snapshot attachment, purge, recreation, and authori
 
 ## Scope
 
-Changed only the Task 3 allowlist:
+Changed the Task 3 integration scope, expanded in R1 for SQL repository read seams:
 
 - `backend/experiment_store.py`
 - `backend/run_store.py`
 - `backend/orchestrator.py`
+- `backend/lineage_sql.py`
 - `tests/test_experiment_versions.py`
 - `tests/test_artifact_version_snapshot.py`
 - `tests/test_followup_plan_version.py`
+- `tests/test_lineage_sql.py`
 - `.superpowers/sdd/sql-lineage-task-3-report.md`
 
 Easy Auth, public authorization, SQL identity configuration, repository schema, credentials, and deployment configuration were not changed.
@@ -206,3 +208,30 @@ The skipped test remains the opt-in real SQL Server integration test requiring `
 | Restart after recreation | `current_generation` | Reads generation from SQL, never process hints or Blob state |
 | Generic writer after recreation | Current SQL generation | Stale payload cannot republish |
 | Degraded attachment payload | SQL row remains committed | User and ledger state remain degraded/not-attached |
+
+## R2 Remediation
+
+### RED Evidence
+
+Added a regression for a recreated workspace whose SQL current generation is two and whose authoritative version and attachment rows are empty. Before the projection fix, `sync_experiment_ledger` returned `generation: 1` despite querying SQL generation two.
+
+```text
+python -m pytest tests/test_experiment_versions.py::test_sql_ledger_projects_empty_recreated_generation_from_repository -q
+1 failed
+```
+
+### Change
+
+`sync_experiment_ledger` now passes the SQL-read active generation into `_build_sql_experiment_ledger`. The projection uses that authoritative generation even when there are no committed versions; direct projection callers retain the version-derived fallback only when no authoritative generation was supplied.
+
+### GREEN Evidence
+
+```text
+python -m pytest tests/test_experiment_versions.py::test_sql_ledger_projects_empty_recreated_generation_from_repository -q
+1 passed
+```
+
+```text
+python -m pytest tests/test_experiment_versions.py tests/test_artifact_version_snapshot.py tests/test_followup_plan_version.py tests/test_lineage_sql.py tests/test_lineage_sql_config.py -q
+127 passed, 1 skipped
+```

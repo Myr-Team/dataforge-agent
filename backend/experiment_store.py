@@ -59,6 +59,7 @@ def build_experiment_ledger(
     registry_state: dict[str, Any] | None = None,
     authoritative_versions: Sequence[Any] | None = None,
     authoritative_attachments: Sequence[Any] | None = None,
+    authoritative_generation: int | None = None,
 ) -> dict[str, Any]:
     normalized_workspace = str(workspace_id or "").strip()
     if not normalized_workspace:
@@ -70,6 +71,7 @@ def build_experiment_ledger(
             authoritative_versions,
             outcomes=outcomes,
             authoritative_attachments=authoritative_attachments or (),
+            authoritative_generation=authoritative_generation,
         )
     if registry_state is None:
         try:
@@ -330,6 +332,7 @@ def sync_experiment_ledger(
         outcomes=outcomes,
         authoritative_versions=authoritative_versions,
         authoritative_attachments=authoritative_attachments,
+        authoritative_generation=active_generation,
     )
     with _LOCK:
         path = _local_path(normalized_workspace)
@@ -422,6 +425,7 @@ def _build_sql_experiment_ledger(
     *,
     outcomes: list[dict[str, Any]] | None,
     authoritative_attachments: Sequence[Any],
+    authoritative_generation: int | None,
 ) -> dict[str, Any]:
     ordered_commits = sorted(authoritative_versions, key=lambda item: int(_commit_value(item, "ordinal") or 0))
     runs_by_id = {
@@ -547,7 +551,9 @@ def _build_sql_experiment_ledger(
                 {"run_id": snapshot.get("run_id"), "urls": proposal.get("artifact_urls") or {}, "created_at": snapshot.get("completed_at")}
             )
 
-    generation = int(_commit_value(ordered_commits[-1], "generation") or 1) if ordered_commits else 1
+    generation = int(authoritative_generation or 0)
+    if generation < 1:
+        generation = int(_commit_value(ordered_commits[-1], "generation") or 1) if ordered_commits else 1
     return {
         "version": 1,
         "workspace_id": workspace_id,

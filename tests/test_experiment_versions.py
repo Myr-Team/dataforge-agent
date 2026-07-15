@@ -344,6 +344,22 @@ def test_sql_ledger_does_not_expose_degraded_attachment_payload(_inject_lineage_
     assert ledger["lineage_resolution"]["status"] == "unavailable"
 
 
+def test_sql_ledger_projects_empty_recreated_generation_from_repository(monkeypatch, _inject_lineage_repository) -> None:
+    repository = _inject_lineage_repository
+    monkeypatch.setattr(repository, "current_generation", lambda **_values: 2)
+
+    ledger = experiment_store.sync_experiment_ledger(
+        "ws-empty-recreated-generation",
+        [],
+        lineage_repository=repository,
+        generation=2,
+    )
+
+    assert ledger["generation"] == 2
+    assert ledger["count"] == 0
+    assert ledger["lineage_resolution"] == {"status": "resolved"}
+
+
 def test_authoritative_observed_metric_changes_sql_evidence_fingerprint(monkeypatch) -> None:
     baseline = _analysis_run(
         "analysis-metric-v1", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1"
