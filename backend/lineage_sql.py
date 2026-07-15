@@ -19,6 +19,11 @@ _ACTOR_TYPES = {"member", "service", "system"}
 _AZURE_SQL_SCOPE = "https://database.windows.net/.default"
 _LINEAGE_UNAVAILABLE_MESSAGE = "lineage database is unavailable"
 _SQL_CONNECT_TIMEOUT_SECONDS = 5
+_WORKLOAD_IDENTITY_ENVIRONMENT = (
+    "AZURE_TENANT_ID",
+    "AZURE_CLIENT_ID",
+    "AZURE_FEDERATED_TOKEN_FILE",
+)
 _SQL_SERVER_PATTERN = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.database\.windows\.net"
 )
@@ -122,9 +127,15 @@ class _LineageSqlConnectionFactory:
 
         token: str | None = None
         if category is None:
+            if self._credential is None and _workload_identity_environment_configured():
+                category = "configuration"
+
+        if category is None:
             try:
                 if self._credential is None:
-                    self._credential = ManagedIdentityCredential()
+                    self._credential = ManagedIdentityCredential(
+                        _exclude_workload_identity_credential=True
+                    )
                 token = self._credential.get_token(_AZURE_SQL_SCOPE).token
                 packed_token = _pack_access_token(token)
             except Exception:
@@ -178,6 +189,10 @@ def _lineage_sql_settings(environment: Mapping[str, str]) -> tuple[str, str]:
     if not isinstance(database, str) or not _SQL_DATABASE_PATTERN.fullmatch(database):
         raise ValueError("invalid lineage SQL configuration")
     return server, database
+
+
+def _workload_identity_environment_configured() -> bool:
+    return all(os.environ.get(name) for name in _WORKLOAD_IDENTITY_ENVIRONMENT)
 
 
 def _lineage_sql_connection_string(*, server: str, database: str) -> str:
