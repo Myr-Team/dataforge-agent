@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import copy
 import importlib
+import os
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -20,6 +23,8 @@ _LOCK_MARKERS = (
     "/* lineage:lock-version */",
     "/* lineage:existing-attachment */",
 )
+_REAL_SQL_FACTORY_ENV = "LINEAGE_SQL_TEST_CONNECTION_FACTORY"
+_FACTORY_REFERENCE_PATTERN = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*")
 
 
 class _MemorySqlDatabase:
@@ -311,6 +316,46 @@ def _repository(database: _MemorySqlDatabase):
     return _api().LineageRepository(connection_factory=database.connect)
 
 
+def _real_sql_connection_factory():
+    reference = os.environ[_REAL_SQL_FACTORY_ENV]
+    if not _FACTORY_REFERENCE_PATTERN.fullmatch(reference):
+        pytest.fail(f"{_REAL_SQL_FACTORY_ENV} must be a non-secret module:function reference")
+    module_name, attribute_name = reference.split(":", maxsplit=1)
+    factory = getattr(importlib.import_module(module_name), attribute_name, None)
+    if not callable(factory):
+        pytest.fail(f"{_REAL_SQL_FACTORY_ENV} did not resolve to a callable")
+    return factory
+
+
+def _cleanup_real_sql_workspace(connection_factory, workspace_id: str) -> None:
+    connection = connection_factory()
+    try:
+        connection.autocommit = False
+        cursor = connection.cursor()
+        cursor.execute(
+            "DELETE FROM df_lineage.experiment_attachment WHERE workspace_id = ?",
+            workspace_id,
+        )
+        cursor.execute(
+            "DELETE FROM df_lineage.experiment_version WHERE workspace_id = ?",
+            workspace_id,
+        )
+        cursor.execute(
+            "DELETE FROM df_lineage.workspace_generation_event WHERE workspace_id = ?",
+            workspace_id,
+        )
+        cursor.execute(
+            "DELETE FROM df_lineage.workspace_lineage WHERE workspace_id = ?",
+            workspace_id,
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def _commit(repository, run_id: str, *, decision: str = "a" * 64, evidence: str = "b" * 64):
     return repository.commit_analysis(
         workspace_id="workspace-1",
@@ -520,3 +565,69 @@ def test_actor_metadata_rejects_tokens_claims_and_credentials_in_benign_fields(m
         )
 
     assert database.executions == []
+
+
+@pytest.mark.skipif(
+    not os.environ.get(_REAL_SQL_FACTORY_ENV),
+    reason=(
+        "set LINEAGE_SQL_TEST_CONNECTION_FACTORY to an already-provisioned, "
+        "non-secret module:function connection factory to run Azure SQL coverage"
+    ),
+)
+def test_real_sql_server_schema_concurrency_and_attachment_foreign_key() -> None:
+    connection_factory = _real_sql_connection_factory()
+    repository = _api().LineageRepository(connection_factory=connection_factory)
+    workspace_id = f"it-lineage-{uuid4()}"
+
+    try:
+        repository.initialize_schema()
+        repository.initialize_schema()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            commits = list(
+                executor.map(
+                    lambda item: repository.commit_analysis(
+                        workspace_id=workspace_id,
+                        generation=1,
+                        canonical_run_id=f"integration-run-{item}",
+                        decision_fingerprint=f"{item + 1:064x}",
+                        evidence_fingerprint=f"{item + 101:064x}",
+                        actor_metadata=_ACTOR_METADATA,
+                    ),
+                    range(2),
+                )
+            )
+
+        assert sorted(commit.ordinal for commit in commits) == [1, 2]
+
+        connection = connection_factory()
+        try:
+            connection.autocommit = False
+            cursor = connection.cursor()
+            with pytest.raises(Exception):
+                cursor.execute(
+                    """INSERT INTO df_lineage.experiment_attachment (
+                        attachment_id,
+                        version_id,
+                        workspace_id,
+                        generation,
+                        kind,
+                        source_run_id,
+                        payload_sha256,
+                        actor_metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    str(uuid4()),
+                    commits[0].version_id,
+                    workspace_id,
+                    2,
+                    "plan",
+                    "integration-plan-run",
+                    "f" * 64,
+                    None,
+                )
+                connection.commit()
+        finally:
+            connection.rollback()
+            connection.close()
+    finally:
+        _cleanup_real_sql_workspace(connection_factory, workspace_id)

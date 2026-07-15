@@ -12,7 +12,7 @@ Complete. Task 1 adds the SQL lineage repository and schema only. No application
   - Adds transactional version commit, attachment commit, purge, recreation, schema initialization, and version listing APIs.
 - `backend/sql/lineage_schema.sql`
   - Adds idempotent Azure SQL DDL for workspace lineage, experiment versions, attachments, and generation events.
-  - Adds unique canonical ordinals, composite attachment foreign keys, lifecycle checks, and rowversion storage.
+  - Adds unique canonical ordinals, composite attachment foreign keys, lifecycle checks, and no rowversion column.
 - `tests/test_lineage_sql.py`
   - Adds an explicitly injected in-memory DB-API test double.
   - Covers duplicate and distinct parallel commits, purge/recreate fencing, attachment validation, schema idempotency, parameter binding, required lock hints, and sensitive metadata rejection.
@@ -69,7 +69,7 @@ Result: exit code 0. The final pre-commit run completed with `7 passed in 0.11s`
 - Transaction correctness: each repository operation obtains a fresh explicit connection, disables autocommit, commits only after the operation returns through the context manager, rolls back on all failures, and closes without allowing cleanup errors to replace the bounded result. Purge state transition, attachment deletion, version deletion, tombstone transition, and event insertion are atomic.
 - Locking: workspace creation and lifecycle transitions serialize on `workspace_lineage WITH (UPDLOCK, HOLDLOCK)`. Latest-version comparison, version membership validation, and attachment idempotency checks also use `UPDLOCK, HOLDLOCK`. The workspace lock is held until commit, so canonical ordinal allocation and purge/recreation fencing share one transaction boundary.
 - Injection risk: all dynamic values use `?` parameters. SQL identifiers and statements are static. The only formatted execution is the trusted repository-owned schema file, which contains no runtime values and no `GO` separators.
-- Redaction: unexpected connection or database errors become the fixed `LineageUnavailable("lineage database operation failed")` message with exception chaining suppressed. The module does not log operation parameters or exceptions. Rowversion is neither selected nor returned. Actor metadata is flat, bounded, and rejects claim-, token-, credential-, cookie-, rowversion-, and secret-shaped keys before opening a connection.
+- Redaction: unexpected connection or database errors become the fixed `LineageUnavailable("lineage database operation failed")` message with exception chaining suppressed. The module does not log operation parameters or exceptions. The schema and repository contain no rowversion storage, selection, or return values. Actor metadata uses a typed allowlist: UUID `actor_id`/`request_id`, enumerated `actor_type`, and bounded numeric `actor_sequence`; unknown or nested fields are rejected before opening a connection.
 - Foreign keys: attachments have an application-level locked membership check and a database-level composite foreign key to the exact version/workspace/generation tuple.
 
 ## Commit
@@ -117,3 +117,28 @@ Result: exit code 0. `11 passed in 0.18s`.
 ### Live SQL Limitation and Release Prerequisite
 
 The in-memory double is an explicit dependency-injection test seam, not a runtime fallback and not an Azure SQL compatibility claim. It verifies the SQL contract issued by the repository, but cannot validate SQL Server range locks, `HOLDLOCK` behavior, repeated DDL execution, or foreign-key enforcement by the Azure SQL engine. A disposable Azure SQL or SQL Server engine run covering concurrent ordinal allocation, repeat schema application, and attachment FK rejection is a Task 5 release prerequisite.
+
+## Review R2 Follow-Up
+
+### Corrections and Opt-In Engine Coverage
+
+- Corrected the stale initial report text that said the schema stored rowversion. The current DDL has no rowversion column, and the repository neither stores, selects, nor returns one.
+- Corrected the stale metadata description. The current boundary is a typed explicit allowlist, not a denylist.
+- Added `test_real_sql_server_schema_concurrency_and_attachment_foreign_key`. It is skipped unless `LINEAGE_SQL_TEST_CONNECTION_FACTORY` contains a non-secret `module:function` reference to an already-provisioned external connection factory. The test source contains no connection string, credential, or fallback connection behavior.
+- When explicitly enabled by the Task 5 release environment, the test uses a unique workspace ID, applies schema initialization twice, commits two distinct analyses concurrently and requires ordinals `1` and `2`, then verifies the real composite foreign key rejects an attachment tuple with the committed version ID but a non-existent generation. It deletes the unique workspace rows in a `finally` block.
+
+### Review R2 Test-First Evidence
+
+The integration test was added before any repository refactor. No production change was necessary because `LineageRepository` already accepts only explicit injected connection factories.
+
+Command:
+
+```text
+python -m pytest tests/test_lineage_sql.py -q
+```
+
+Result: initial gating run, exit code 0: `11 passed, 1 skipped in 0.14s`. Final focused verification, exit code 0: `11 passed, 1 skipped in 0.10s`. The skip is intentional and explicit when `LINEAGE_SQL_TEST_CONNECTION_FACTORY` is absent, so normal test runs never attempt a live SQL connection.
+
+### Remaining Release Prerequisite
+
+Live engine execution is deliberately limited to Task 5. That release environment must supply the external non-secret factory reference and run the opt-in test against a disposable or otherwise dedicated SQL Server/Azure SQL database before release.
