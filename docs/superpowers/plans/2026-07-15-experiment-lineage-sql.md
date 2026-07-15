@@ -6,7 +6,7 @@
 
 **Architecture:** A focused SQL repository owns workspace generations, canonical ordinals, and attachment membership. Existing Blob run documents remain display payloads only. `run_store` delegates promotion, purge, recreation, and attachment decisions to the repository, and fails closed when SQL is unavailable.
 
-**Tech Stack:** FastAPI, Python, `pymssql`, Azure managed identity token authentication, Azure SQL Database, pytest.
+**Tech Stack:** FastAPI, Python, `pyodbc` with Microsoft ODBC Driver 18, Azure managed identity token authentication, Azure SQL Database, pytest.
 
 ## Global Constraints
 
@@ -45,7 +45,7 @@
 - Modify: `backend/Dockerfile`
 
 **Interfaces:**
-- Produces: a connection factory using `DefaultAzureCredential` access tokens for `https://database.windows.net/.default`.
+- Produces: a `pyodbc` connection factory using `DefaultAzureCredential` access tokens for `https://database.windows.net/.default` and ODBC Driver 18's `SQL_COPT_SS_ACCESS_TOKEN` attribute.
 - Consumes: `LINEAGE_SQL_SERVER`, `LINEAGE_SQL_DATABASE`, optional explicit local test connection.
 
 - [ ] Write failing tests proving missing configuration and token/connection failure yield `LineageUnavailable` with no leaked details.

@@ -16,13 +16,12 @@ The deployment prerequisite is a Microsoft Entra administrator on the SQL server
 
 ## Data Model
 
-`workspace_lineage` has one row per workspace and serializes transitions with `rowversion` optimistic concurrency:
+`workspace_lineage` has one row per workspace and serializes transitions with transactional `UPDLOCK, HOLDLOCK` row locks:
 
 - `workspace_id` primary key
 - `generation` integer
 - `lifecycle_state` (`active`, `purging`, `purged`)
 - `next_version_ordinal`
-- `row_version` SQL rowversion
 - timestamps
 
 `experiment_version` is append-only and has a unique `(workspace_id, generation, ordinal)` constraint. It stores the canonical run ID, the evidence and decision fingerprints, verdict/confidence projection, and creation metadata.
