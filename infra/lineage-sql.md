@@ -67,13 +67,12 @@ The release verifier requires this marker, all four tables, every named primary/
 
 ## Backend Contained User
 
-Use the preview Container App's observed system-assigned identity principal/object ID. Run this in the target database as the Entra administrator. Replace only the UUID literal; keep the database alias stable.
+Use the preview Container App's system-assigned identity **application (client) ID**, not its principal/object ID. Azure SQL maps a managed identity or service principal `TYPE = E` user from that application ID. Run this in the target database as the Entra administrator. Replace only the UUID literal; keep the database alias stable.
 
 ```sql
-DECLARE @principal_id UNIQUEIDENTIFIER = '00000000-0000-0000-0000-000000000000';
+DECLARE @client_id UNIQUEIDENTIFIER = '00000000-0000-0000-0000-000000000000';
 DECLARE @sid VARCHAR(34) = CONVERT(
-    VARCHAR(34),
-    CONVERT(VARBINARY(16), @principal_id),
+    VARCHAR(34), CONVERT(VARBINARY(16), @client_id),
     1
 );
 
