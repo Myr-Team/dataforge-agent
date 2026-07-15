@@ -10,7 +10,8 @@ docs/
 eval/
 infra/
 mcp-market/
-scripts/
+scripts/*
+!scripts/verify_lineage_sql.py
 tmp/
 workspaces/upload-*/
 *.log

@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = ROOT / "backend" / "Dockerfile"
+DOCKERIGNORE = ROOT / ".dockerignore"
 
 
 def test_backend_image_copies_agent_registry_before_import_smoke() -> None:
@@ -46,6 +47,13 @@ def test_backend_image_packages_only_sql_lineage_verifier() -> None:
         not line.startswith("COPY scripts/") or line == verifier_copy_instruction
         for line in lines
     )
+
+
+def test_backend_image_build_context_includes_sql_lineage_verifier() -> None:
+    ignored_paths = set(DOCKERIGNORE.read_text(encoding="utf-8").splitlines())
+
+    assert "scripts/*" in ignored_paths
+    assert "!scripts/verify_lineage_sql.py" in ignored_paths
 
 
 def test_backend_image_import_smoke_imports_runtime_entrypoints() -> None:
