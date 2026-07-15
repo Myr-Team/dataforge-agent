@@ -197,3 +197,36 @@ Both verifier commands exited zero with `azure_checked=false`, `fail_closed=veri
 5. The eight pre-existing full-suite failures remain outside the Task 5 allowlist.
 
 These blockers keep the release preview-only and prevent any truthful claim of live Azure or production success.
+
+## R1 P1 Follow-up: Bounded Argument Errors
+
+Review R1 found that `argparse.ArgumentParser.parse_args()` used its default error path before the verifier's bounded JSON handling. Unknown credential-like arguments therefore echoed raw values to stderr.
+
+The verifier now uses a parser that raises a message-free internal parse failure. `main()` converts every parser error into this fixed nonzero response:
+
+```json
+{"mode":"verify","reason":"invalid_arguments","status":"failed"}
+```
+
+The parser error path does not render raw argv, option names, or values. Valid `--help` behavior remains argparse-owned and is not an invalid-argument path.
+
+TDD evidence:
+
+```text
+python -m pytest tests/test_verify_lineage_sql.py::test_unknown_credential_like_arguments_are_bounded_and_redacted -q
+1 failed
+```
+
+The expected RED failure occurred because default argparse produced no JSON on stdout and rendered its own error path. The permanent subprocess regression passes a credential-like unknown option and a sentinel, requires a nonzero exit and exactly the bounded JSON result, and asserts that neither the sentinel nor the option name appears in stdout or stderr.
+
+```text
+python -m pytest tests/test_verify_lineage_sql.py tests/test_lineage_sql.py tests/test_lineage_sql_config.py -q
+46 passed, 1 skipped
+
+python scripts/verify_lineage_sql.py --check-prerequisites
+python scripts/verify_lineage_sql.py --dry-run
+```
+
+Both safe verifier commands exited zero with the existing no-Azure bounded output. `python -m py_compile scripts/verify_lineage_sql.py` and `git diff --check` also exited zero. No Azure resource or deployment operation was performed.
+
+Follow-up commit message: `fix: bound lineage verifier argument errors`.

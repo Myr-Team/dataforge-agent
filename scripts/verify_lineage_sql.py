@@ -68,6 +68,15 @@ class VerificationFailure(RuntimeError):
         self.code = code or "verification_failed"
 
 
+class ArgumentParseFailure(RuntimeError):
+    """Raised without argparse's raw argv error rendering."""
+
+
+class _BoundedArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        raise ArgumentParseFailure()
+
+
 @contextmanager
 def suppress_runtime_logging():
     previous = logging.root.manager.disable
@@ -79,7 +88,7 @@ def suppress_runtime_logging():
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _BoundedArgumentParser(
         description="Verify the DataForge lineage SQL release gate without secret inputs."
     )
     safe_mode = parser.add_mutually_exclusive_group()
@@ -583,7 +592,11 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    try:
+        args = build_parser().parse_args(argv)
+    except ArgumentParseFailure:
+        _emit({"mode": "verify", "reason": "invalid_arguments", "status": "failed"})
+        return 2
     with suppress_runtime_logging():
         return _run(args)
 
