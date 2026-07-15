@@ -1,0 +1,641 @@
+from __future__ import annotations
+
+import json
+import re
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
+from uuid import UUID, uuid4
+
+
+_SCHEMA_PATH = Path(__file__).with_name("sql") / "lineage_schema.sql"
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SENSITIVE_METADATA_TERMS = {
+    "accesstoken",
+    "authorization",
+    "claim",
+    "connectionstring",
+    "cookie",
+    "password",
+    "rowversion",
+    "secret",
+    "token",
+}
+
+
+class LineageUnavailable(RuntimeError):
+    """Raised when authoritative lineage cannot safely accept an operation."""
+
+
+@dataclass(frozen=True, slots=True)
+class VersionCommit:
+    version_id: str
+    workspace_id: str
+    generation: int
+    ordinal: int
+    canonical_run_id: str
+    decision_fingerprint: str
+    evidence_fingerprint: str
+    verdict: str | None
+    confidence: str | None
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentCommit:
+    attachment_id: str
+    version_id: str
+    workspace_id: str
+    generation: int
+    kind: str
+    source_run_id: str
+    payload_sha256: str
+    created: bool
+
+
+class _Cursor(Protocol):
+    rowcount: int
+
+    def execute(self, operation: str, *parameters: Any) -> "_Cursor": ...
+
+    def fetchone(self) -> Any | None: ...
+
+    def fetchall(self) -> Sequence[Any]: ...
+
+
+class _Connection(Protocol):
+    autocommit: bool
+
+    def cursor(self) -> _Cursor: ...
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+ConnectionFactory = Callable[[], _Connection]
+
+
+class LineageRepository:
+    """Transactional Azure SQL repository with an explicit pyodbc-style factory."""
+
+    def __init__(
+        self,
+        *,
+        connection_factory: ConnectionFactory,
+        schema_path: Path | None = None,
+    ) -> None:
+        if not callable(connection_factory):
+            raise TypeError("connection_factory must be callable")
+        self._connection_factory = connection_factory
+        self._schema_path = schema_path or _SCHEMA_PATH
+
+    def initialize_schema(self) -> None:
+        schema = self._schema_path.read_text(encoding="utf-8")
+        with self._transaction() as cursor:
+            cursor.execute(f"/* lineage:schema */\n{schema}")
+
+    def commit_analysis(
+        self,
+        *,
+        workspace_id: str,
+        generation: int,
+        canonical_run_id: str,
+        decision_fingerprint: str,
+        evidence_fingerprint: str,
+        verdict: str | None = None,
+        confidence: str | None = None,
+        actor_metadata: Mapping[str, str | int | bool | None] | None = None,
+    ) -> VersionCommit:
+        workspace_id = _bounded_text("workspace_id", workspace_id, 128)
+        generation = _generation(generation)
+        canonical_run_id = _bounded_text("canonical_run_id", canonical_run_id, 128)
+        decision_fingerprint = _sha256("decision_fingerprint", decision_fingerprint)
+        evidence_fingerprint = _sha256("evidence_fingerprint", evidence_fingerprint)
+        verdict = _optional_text("verdict", verdict, 64)
+        confidence = _optional_text("confidence", confidence, 64)
+        actor_json = _actor_metadata_json(actor_metadata)
+
+        with self._transaction() as cursor:
+            workspace = self._lock_workspace(
+                cursor,
+                workspace_id=workspace_id,
+                generation=generation,
+                actor_json=actor_json,
+                create=True,
+            )
+            self._require_active_generation(workspace, generation)
+
+            latest = cursor.execute(
+                """/* lineage:latest-version */
+                SELECT TOP (1)
+                    version_id,
+                    workspace_id,
+                    generation,
+                    ordinal,
+                    canonical_run_id,
+                    decision_fingerprint,
+                    evidence_fingerprint,
+                    verdict,
+                    confidence
+                FROM df_lineage.experiment_version WITH (UPDLOCK, HOLDLOCK)
+                WHERE workspace_id = ? AND generation = ?
+                ORDER BY ordinal DESC""",
+                workspace_id,
+                generation,
+            ).fetchone()
+
+            if latest and (
+                str(latest.decision_fingerprint) == decision_fingerprint
+                and str(latest.evidence_fingerprint) == evidence_fingerprint
+            ):
+                return _version_commit(latest, created=False)
+
+            ordinal = int(workspace.next_version_ordinal)
+            version_id = str(uuid4())
+            cursor.execute(
+                """/* lineage:insert-version */
+                INSERT INTO df_lineage.experiment_version (
+                    version_id,
+                    workspace_id,
+                    generation,
+                    ordinal,
+                    canonical_run_id,
+                    decision_fingerprint,
+                    evidence_fingerprint,
+                    verdict,
+                    confidence,
+                    actor_metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                version_id,
+                workspace_id,
+                generation,
+                ordinal,
+                canonical_run_id,
+                decision_fingerprint,
+                evidence_fingerprint,
+                verdict,
+                confidence,
+                actor_json,
+            )
+            updated = cursor.execute(
+                """/* lineage:advance-ordinal */
+                UPDATE df_lineage.workspace_lineage
+                SET next_version_ordinal = ?, updated_at = SYSUTCDATETIME()
+                WHERE workspace_id = ?
+                  AND generation = ?
+                  AND lifecycle_state = N'active'""",
+                ordinal + 1,
+                workspace_id,
+                generation,
+            )
+            if updated.rowcount != 1:
+                raise LineageUnavailable("workspace generation is not active")
+
+            return VersionCommit(
+                version_id=version_id,
+                workspace_id=workspace_id,
+                generation=generation,
+                ordinal=ordinal,
+                canonical_run_id=canonical_run_id,
+                decision_fingerprint=decision_fingerprint,
+                evidence_fingerprint=evidence_fingerprint,
+                verdict=verdict,
+                confidence=confidence,
+                created=True,
+            )
+
+    def attach_snapshot(
+        self,
+        *,
+        workspace_id: str,
+        generation: int,
+        version_id: str,
+        kind: str,
+        source_run_id: str,
+        payload_sha256: str,
+        actor_metadata: Mapping[str, str | int | bool | None] | None = None,
+    ) -> AttachmentCommit:
+        workspace_id = _bounded_text("workspace_id", workspace_id, 128)
+        generation = _generation(generation)
+        version_id = _uuid_text("version_id", version_id)
+        kind = _bounded_text("kind", kind, 32)
+        source_run_id = _bounded_text("source_run_id", source_run_id, 128)
+        payload_sha256 = _sha256("payload_sha256", payload_sha256)
+        actor_json = _actor_metadata_json(actor_metadata)
+
+        with self._transaction() as cursor:
+            workspace = self._lock_workspace(
+                cursor,
+                workspace_id=workspace_id,
+                generation=generation,
+                actor_json=actor_json,
+                create=False,
+            )
+            self._require_active_generation(workspace, generation)
+
+            version = cursor.execute(
+                """/* lineage:lock-version */
+                SELECT version_id
+                FROM df_lineage.experiment_version WITH (UPDLOCK, HOLDLOCK)
+                WHERE version_id = ? AND workspace_id = ? AND generation = ?""",
+                version_id,
+                workspace_id,
+                generation,
+            ).fetchone()
+            if version is None:
+                raise LineageUnavailable("version is not available for attachment")
+
+            existing = cursor.execute(
+                """/* lineage:existing-attachment */
+                SELECT attachment_id
+                FROM df_lineage.experiment_attachment WITH (UPDLOCK, HOLDLOCK)
+                WHERE version_id = ?
+                  AND kind = ?
+                  AND source_run_id = ?
+                  AND payload_sha256 = ?""",
+                version_id,
+                kind,
+                source_run_id,
+                payload_sha256,
+            ).fetchone()
+            if existing is not None:
+                return AttachmentCommit(
+                    attachment_id=str(existing.attachment_id),
+                    version_id=version_id,
+                    workspace_id=workspace_id,
+                    generation=generation,
+                    kind=kind,
+                    source_run_id=source_run_id,
+                    payload_sha256=payload_sha256,
+                    created=False,
+                )
+
+            attachment_id = str(uuid4())
+            cursor.execute(
+                """/* lineage:insert-attachment */
+                INSERT INTO df_lineage.experiment_attachment (
+                    attachment_id,
+                    version_id,
+                    workspace_id,
+                    generation,
+                    kind,
+                    source_run_id,
+                    payload_sha256,
+                    actor_metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                attachment_id,
+                version_id,
+                workspace_id,
+                generation,
+                kind,
+                source_run_id,
+                payload_sha256,
+                actor_json,
+            )
+            return AttachmentCommit(
+                attachment_id=attachment_id,
+                version_id=version_id,
+                workspace_id=workspace_id,
+                generation=generation,
+                kind=kind,
+                source_run_id=source_run_id,
+                payload_sha256=payload_sha256,
+                created=True,
+            )
+
+    def purge_workspace(
+        self,
+        *,
+        workspace_id: str,
+        generation: int,
+        actor_metadata: Mapping[str, str | int | bool | None] | None = None,
+    ) -> bool:
+        workspace_id = _bounded_text("workspace_id", workspace_id, 128)
+        generation = _generation(generation)
+        actor_json = _actor_metadata_json(actor_metadata)
+
+        with self._transaction() as cursor:
+            workspace = self._lock_workspace(
+                cursor,
+                workspace_id=workspace_id,
+                generation=generation,
+                actor_json=actor_json,
+                create=True,
+            )
+            if int(workspace.generation) != generation:
+                raise LineageUnavailable("workspace generation is not active")
+            if str(workspace.lifecycle_state) == "purged":
+                return False
+            if str(workspace.lifecycle_state) != "active":
+                raise LineageUnavailable("workspace generation is not active")
+
+            marked = cursor.execute(
+                """/* lineage:mark-purging */
+                UPDATE df_lineage.workspace_lineage
+                SET lifecycle_state = N'purging', updated_at = SYSUTCDATETIME()
+                WHERE workspace_id = ?
+                  AND generation = ?
+                  AND lifecycle_state = N'active'""",
+                workspace_id,
+                generation,
+            )
+            if marked.rowcount != 1:
+                raise LineageUnavailable("workspace generation is not active")
+
+            cursor.execute(
+                """/* lineage:delete-attachments */
+                DELETE FROM df_lineage.experiment_attachment
+                WHERE workspace_id = ? AND generation = ?""",
+                workspace_id,
+                generation,
+            )
+            cursor.execute(
+                """/* lineage:delete-versions */
+                DELETE FROM df_lineage.experiment_version
+                WHERE workspace_id = ? AND generation = ?""",
+                workspace_id,
+                generation,
+            )
+            purged = cursor.execute(
+                """/* lineage:mark-purged */
+                UPDATE df_lineage.workspace_lineage
+                SET lifecycle_state = N'purged',
+                    next_version_ordinal = 1,
+                    updated_at = SYSUTCDATETIME()
+                WHERE workspace_id = ?
+                  AND generation = ?
+                  AND lifecycle_state = N'purging'""",
+                workspace_id,
+                generation,
+            )
+            if purged.rowcount != 1:
+                raise LineageUnavailable("workspace purge did not complete")
+            self._insert_generation_event(
+                cursor,
+                workspace_id=workspace_id,
+                generation=generation,
+                event_kind="purged",
+                actor_json=actor_json,
+            )
+            return True
+
+    def recreate_workspace(
+        self,
+        *,
+        workspace_id: str,
+        generation: int,
+        actor_metadata: Mapping[str, str | int | bool | None] | None = None,
+    ) -> int:
+        workspace_id = _bounded_text("workspace_id", workspace_id, 128)
+        generation = _generation(generation)
+        actor_json = _actor_metadata_json(actor_metadata)
+
+        with self._transaction() as cursor:
+            workspace = self._lock_workspace(
+                cursor,
+                workspace_id=workspace_id,
+                generation=generation,
+                actor_json=actor_json,
+                create=False,
+            )
+            if (
+                int(workspace.generation) != generation
+                or str(workspace.lifecycle_state) != "purged"
+            ):
+                raise LineageUnavailable("workspace generation is not purged")
+
+            next_generation = generation + 1
+            updated = cursor.execute(
+                """/* lineage:recreate-workspace */
+                UPDATE df_lineage.workspace_lineage
+                SET generation = ?,
+                    lifecycle_state = N'active',
+                    next_version_ordinal = 1,
+                    updated_at = SYSUTCDATETIME()
+                WHERE workspace_id = ?
+                  AND generation = ?
+                  AND lifecycle_state = N'purged'""",
+                next_generation,
+                workspace_id,
+                generation,
+            )
+            if updated.rowcount != 1:
+                raise LineageUnavailable("workspace generation is not purged")
+            self._insert_generation_event(
+                cursor,
+                workspace_id=workspace_id,
+                generation=next_generation,
+                event_kind="recreated",
+                actor_json=actor_json,
+            )
+            return next_generation
+
+    def list_versions(self, *, workspace_id: str, generation: int) -> tuple[VersionCommit, ...]:
+        workspace_id = _bounded_text("workspace_id", workspace_id, 128)
+        generation = _generation(generation)
+        with self._transaction() as cursor:
+            rows = cursor.execute(
+                """/* lineage:list-versions */
+                SELECT
+                    version_id,
+                    workspace_id,
+                    generation,
+                    ordinal,
+                    canonical_run_id,
+                    decision_fingerprint,
+                    evidence_fingerprint,
+                    verdict,
+                    confidence
+                FROM df_lineage.experiment_version
+                WHERE workspace_id = ? AND generation = ?
+                ORDER BY ordinal ASC""",
+                workspace_id,
+                generation,
+            ).fetchall()
+            return tuple(_version_commit(row, created=False) for row in rows)
+
+    def _lock_workspace(
+        self,
+        cursor: _Cursor,
+        *,
+        workspace_id: str,
+        generation: int,
+        actor_json: str | None,
+        create: bool,
+    ) -> Any:
+        workspace = cursor.execute(
+            """/* lineage:lock-workspace */
+            SELECT workspace_id, generation, lifecycle_state, next_version_ordinal
+            FROM df_lineage.workspace_lineage WITH (UPDLOCK, HOLDLOCK)
+            WHERE workspace_id = ?""",
+            workspace_id,
+        ).fetchone()
+        if workspace is not None:
+            return workspace
+        if not create or generation != 1:
+            raise LineageUnavailable("workspace generation is not active")
+
+        cursor.execute(
+            """/* lineage:insert-workspace */
+            INSERT INTO df_lineage.workspace_lineage (
+                workspace_id, generation, lifecycle_state, next_version_ordinal, actor_metadata
+            ) VALUES (?, ?, N'active', 1, ?)""",
+            workspace_id,
+            generation,
+            actor_json,
+        )
+        return _WorkspaceRow(
+            workspace_id=workspace_id,
+            generation=generation,
+            lifecycle_state="active",
+            next_version_ordinal=1,
+        )
+
+    @staticmethod
+    def _require_active_generation(workspace: Any, generation: int) -> None:
+        if (
+            int(workspace.generation) != generation
+            or str(workspace.lifecycle_state) != "active"
+        ):
+            raise LineageUnavailable("workspace generation is not active")
+
+    @staticmethod
+    def _insert_generation_event(
+        cursor: _Cursor,
+        *,
+        workspace_id: str,
+        generation: int,
+        event_kind: str,
+        actor_json: str | None,
+    ) -> None:
+        cursor.execute(
+            """/* lineage:insert-generation-event */
+            INSERT INTO df_lineage.workspace_generation_event (
+                workspace_id, generation, event_kind, actor_metadata
+            ) VALUES (?, ?, ?, ?)""",
+            workspace_id,
+            generation,
+            event_kind,
+            actor_json,
+        )
+
+    @contextmanager
+    def _transaction(self) -> Iterator[_Cursor]:
+        connection: _Connection | None = None
+        try:
+            connection = self._connection_factory()
+            connection.autocommit = False
+            cursor = connection.cursor()
+            yield cursor
+            connection.commit()
+        except LineageUnavailable:
+            if connection is not None:
+                _quiet_call(connection.rollback)
+            raise
+        except Exception:
+            if connection is not None:
+                _quiet_call(connection.rollback)
+            raise LineageUnavailable("lineage database operation failed") from None
+        finally:
+            if connection is not None:
+                _quiet_call(connection.close)
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkspaceRow:
+    workspace_id: str
+    generation: int
+    lifecycle_state: str
+    next_version_ordinal: int
+
+
+def _version_commit(row: Any, *, created: bool) -> VersionCommit:
+    return VersionCommit(
+        version_id=str(row.version_id),
+        workspace_id=str(row.workspace_id),
+        generation=int(row.generation),
+        ordinal=int(row.ordinal),
+        canonical_run_id=str(row.canonical_run_id),
+        decision_fingerprint=str(row.decision_fingerprint),
+        evidence_fingerprint=str(row.evidence_fingerprint),
+        verdict=str(row.verdict) if row.verdict is not None else None,
+        confidence=str(row.confidence) if row.confidence is not None else None,
+        created=created,
+    )
+
+
+def _generation(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("generation must be a positive integer")
+    return value
+
+
+def _bounded_text(name: str, value: str, maximum: int) -> str:
+    if not isinstance(value, str) or not value or len(value) > maximum:
+        raise ValueError(f"{name} must be between 1 and {maximum} characters")
+    return value
+
+
+def _optional_text(name: str, value: str | None, maximum: int) -> str | None:
+    if value is None:
+        return None
+    return _bounded_text(name, value, maximum)
+
+
+def _sha256(name: str, value: str) -> str:
+    if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
+        raise ValueError(f"{name} must be a normalized lowercase SHA-256")
+    return value
+
+
+def _uuid_text(name: str, value: str) -> str:
+    try:
+        return str(UUID(str(value)))
+    except (TypeError, ValueError, AttributeError):
+        raise ValueError(f"{name} must be a UUID") from None
+
+
+def _actor_metadata_json(
+    metadata: Mapping[str, str | int | bool | None] | None,
+) -> str | None:
+    if metadata is None:
+        return None
+    if not isinstance(metadata, Mapping):
+        raise ValueError("actor_metadata must be a flat mapping")
+
+    safe: dict[str, str | int | bool | None] = {}
+    for key, value in metadata.items():
+        if not isinstance(key, str) or not key or len(key) > 64:
+            raise ValueError("actor_metadata keys must be short strings")
+        normalized_key = re.sub(r"[^a-z0-9]", "", key.casefold())
+        if any(term in normalized_key for term in _SENSITIVE_METADATA_TERMS):
+            raise ValueError("actor_metadata contains a prohibited field")
+        if value is not None and not isinstance(value, (str, int, bool)):
+            raise ValueError("actor_metadata values must be scalar")
+        if isinstance(value, str) and len(value) > 256:
+            raise ValueError("actor_metadata string values are too long")
+        safe[key] = value
+
+    encoded = json.dumps(safe, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    if len(encoded) > 2048:
+        raise ValueError("actor_metadata is too large")
+    return encoded
+
+
+def _quiet_call(operation: Callable[[], Any]) -> None:
+    try:
+        operation()
+    except Exception:
+        pass
+
+
+__all__ = [
+    "AttachmentCommit",
+    "LineageRepository",
+    "LineageUnavailable",
+    "VersionCommit",
+]
