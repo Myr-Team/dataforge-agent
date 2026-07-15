@@ -453,7 +453,7 @@ class LineageRepository:
                 workspace_id=workspace_id,
                 generation=generation,
                 actor_json=actor_json,
-                create=True,
+                create=False,
             )
             if int(workspace.generation) != generation:
                 raise LineageUnavailable("workspace generation is not active")

@@ -12,6 +12,8 @@ from uuid import uuid4
 
 import pytest
 
+import backend.run_store as run_store
+
 
 _ACTOR_METADATA = {
     "actor_id": "00000000-0000-0000-0000-000000000001",
@@ -497,6 +499,53 @@ def test_purge_is_terminal_until_explicit_recreation() -> None:
     )
     assert recreated.ordinal == 1
     assert recreated.generation == 2
+
+
+def test_purge_without_sql_workspace_preserves_legacy_payload(tmp_path, monkeypatch) -> None:
+    database = _MemorySqlDatabase()
+    repository = _repository(database)
+    workspace_id = "workspace-legacy-only"
+    run_id = "legacy-analysis"
+    run_dir = tmp_path / "runs"
+    run_dir.mkdir()
+    payload_path = run_dir / f"{run_store._safe_name(run_id)}.json"
+    payload_path.write_text("{}", encoding="utf-8")
+    summary = {"run_id": run_id, "workspace_id": workspace_id}
+
+    monkeypatch.setattr(run_store, "RUN_DIR", run_dir)
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    monkeypatch.setattr(run_store, "list_runs", lambda _workspace_id=None: [summary])
+    monkeypatch.setattr(
+        run_store,
+        "authoritative_run_registry",
+        lambda _workspace_id=None: {
+            "version": 2,
+            "revision": 1,
+            "history_truncated": False,
+            "read_status": "present",
+            "runs": [summary],
+        },
+    )
+    monkeypatch.setattr(run_store, "_write_local_registry", lambda _value: None)
+    monkeypatch.setattr(run_store, "set_flagship_plan", lambda *_args, **_kwargs: {})
+
+    result = run_store.purge_workspace_runs(
+        workspace_id,
+        lineage_repository=repository,
+    )
+
+    assert result == {
+        "workspace_id": workspace_id,
+        "run_ids": [],
+        "deleted_local_runs": 0,
+        "deleted_blob_runs": 0,
+        "registry_updated": False,
+        "lineage_updated": False,
+        "status": "unavailable",
+        "reason": "lineage_unavailable",
+    }
+    assert payload_path.is_file()
+    assert database.workspaces == {}
 
 
 def test_attachment_requires_a_version_in_the_active_generation() -> None:

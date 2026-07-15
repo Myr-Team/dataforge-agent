@@ -312,15 +312,26 @@ def sync_experiment_ledger(
     try:
         repository = _resolve_lineage_repository(lineage_repository)
         workspace_exists = lineage_workspace_exists(repository, normalized_workspace)
-        if not workspace_exists:
-            legacy_ledger = _legacy_read_ledger(
-                normalized_workspace,
-                outcomes=outcomes,
-                registry_state=legacy_registry_state,
-                run_loader=legacy_run_loader,
-            )
+    except Exception:
+        return _bounded_legacy_read_ledger(
+            normalized_workspace,
+            outcomes=outcomes,
+            registry_state=legacy_registry_state,
+            run_loader=legacy_run_loader,
+        )
+    if not workspace_exists:
+        legacy_ledger = _bounded_legacy_read_ledger(
+            normalized_workspace,
+            outcomes=outcomes,
+            registry_state=legacy_registry_state,
+            run_loader=legacy_run_loader,
+        )
+        try:
             if not lineage_workspace_exists(repository, normalized_workspace):
                 return legacy_ledger
+        except Exception:
+            return legacy_ledger
+    try:
         active_generation = int(repository.current_generation(workspace_id=normalized_workspace))
         if active_generation < 1:
             raise ValueError("invalid lineage generation")
@@ -431,6 +442,24 @@ def lineage_workspace_exists(repository: Any, workspace_id: str) -> bool:
             workspace_id,
         ).fetchone()
     return row is not None
+
+
+def _bounded_legacy_read_ledger(
+    workspace_id: str,
+    *,
+    outcomes: list[dict[str, Any]] | None,
+    registry_state: dict[str, Any] | None,
+    run_loader: Callable[[str], dict[str, Any] | None] | None,
+) -> dict[str, Any]:
+    try:
+        return _legacy_read_ledger(
+            workspace_id,
+            outcomes=outcomes,
+            registry_state=registry_state,
+            run_loader=run_loader,
+        )
+    except Exception:
+        return _legacy_unavailable_ledger(workspace_id)
 
 
 def inspect_legacy_lineage_history(

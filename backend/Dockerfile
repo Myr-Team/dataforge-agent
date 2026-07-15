@@ -25,6 +25,7 @@ RUN apt-get update \
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./backend/
+COPY scripts/verify_lineage_sql.py ./scripts/verify_lineage_sql.py
 COPY ingest/ ./ingest/
 COPY workspaces/ ./workspaces/
 COPY agents/build_agents.py ./agents/build_agents.py
@@ -32,6 +33,7 @@ COPY agents/tool_schemas.json ./agents/tool_schemas.json
 COPY agents/prompts/ ./agents/prompts/
 COPY agents/rubrics/ ./agents/rubrics/
 RUN python -c "import pyodbc; assert 'ODBC Driver 18 for SQL Server' in pyodbc.drivers(), pyodbc.drivers()" \
+    && python scripts/verify_lineage_sql.py --check-prerequisites \
     && python -m backend.import_smoke
 
 EXPOSE 80

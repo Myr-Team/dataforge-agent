@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import backend.control_plane as control_plane
 import backend.experiment_store as experiment_store
+import backend.lineage_sql as lineage_sql
 import backend.migrate_lineage_sql as migrate_lineage_sql
 import backend.run_store as run_store
 
@@ -201,6 +202,41 @@ def test_complete_legacy_history_is_read_only_and_blob_attachments_are_not_membe
     assert migration["status"] == "ready"
     assert migration["legacy_attachment_count"] == 1
     assert migration["attachment_imported_count"] == 0
+
+
+def test_complete_legacy_history_is_read_only_when_sql_configuration_is_unavailable(
+    monkeypatch,
+) -> None:
+    legacy = _trusted_legacy_payload("legacy-v1")
+    factory = lineage_sql.build_lineage_sql_connection_factory(environ={})
+    repository = lineage_sql.LineageRepository(connection_factory=factory)
+    monkeypatch.setattr(
+        experiment_store,
+        "upload_blob_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy rollback reads must not publish Blob lineage")
+        ),
+    )
+
+    ledger = experiment_store.sync_experiment_ledger(
+        "ws-legacy-read",
+        [],
+        lineage_repository=repository,
+        legacy_registry_state={
+            "read_status": "present",
+            "history_truncated": False,
+            "runs": [run_store._run_summary(legacy)],
+        },
+        legacy_run_loader={"legacy-v1": legacy}.get,
+    )
+
+    assert factory.outcome.failure_category == "configuration"
+    assert ledger["source"] == "legacy_blob"
+    assert ledger["lineage_resolution"] == {
+        "status": "read_only",
+        "reason": "legacy_read_only",
+    }
+    assert [item["label"] for item in ledger["versions"]] == ["V1"]
 
 
 def test_mismatched_legacy_attachment_payload_exposes_no_partial_versions() -> None:
