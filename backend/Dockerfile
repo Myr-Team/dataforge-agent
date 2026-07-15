@@ -9,9 +9,18 @@ WORKDIR /app
 # 中文字体 + WeasyPrint(HTML→PDF)运行库
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        ca-certificates curl \
         fonts-wqy-microhei \
         libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 \
         libharfbuzz0b libgdk-pixbuf-2.0-0 libffi8 libjpeg62-turbo shared-mime-info \
+    && . /etc/os-release \
+    && curl -sSL "https://packages.microsoft.com/config/debian/${VERSION_ID%%.*}/packages-microsoft-prod.deb" \
+        -o /tmp/packages-microsoft-prod.deb \
+    && dpkg -i /tmp/packages-microsoft-prod.deb \
+    && rm /tmp/packages-microsoft-prod.deb \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 libgssapi-krb5-2 \
+    && apt-get purge -y --auto-remove curl packages-microsoft-prod \
     && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
