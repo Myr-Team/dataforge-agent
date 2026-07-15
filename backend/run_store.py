@@ -2650,13 +2650,15 @@ def _persist_run_locked(
     # Ordinary run telemetry has no experiment-version membership. It must
     # remain observable when SQL lineage is intentionally unavailable, while
     # an available repository still fences stale workspace generations.
+    repository = None
     try:
         repository = _resolve_lineage_repository(lineage_repository)
         _require_current_sql_generation(repository, run)
     except Exception as exc:
         if type(exc).__name__ != "LineageUnavailable":
             return _sql_lineage_unavailable(run)
-    return _persist_generic_run(run, path, blob_name)
+        repository = None
+    return _persist_generic_run(run, path, blob_name, repository=repository)
 
 
 def _commit_sql_analysis(
@@ -3277,6 +3279,8 @@ def _persist_generic_run(
     run: dict[str, Any],
     path: Path,
     blob_name: str,
+    *,
+    repository: Any | None,
 ) -> dict[str, Any]:
     summary = _run_summary(run)
     try:
@@ -3286,6 +3290,16 @@ def _persist_generic_run(
             raise RuntimeError("run registry conditional update could not be confirmed")
         if blob_configured():
             upload_blob_json(blob_name, run)
+        if repository is not None:
+            try:
+                _require_current_sql_generation(repository, run)
+            except Exception:
+                return _reject_published_workspace_write(
+                    run,
+                    blob_name,
+                    committed,
+                    "workspace generation changed during generic run publication",
+                )
         run["persistence"] = {"mode": "local_and_blob" if blob_configured() else "local", "confirmed": True}
         run["registry_summary"] = summary
         _write_run_file(path, run)
