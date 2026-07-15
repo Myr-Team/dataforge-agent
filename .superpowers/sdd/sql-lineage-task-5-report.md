@@ -14,7 +14,9 @@ Changed only:
 
 - `infra/lineage-sql.md`
 - `scripts/verify_lineage_sql.py`
+- `tests/test_verify_lineage_sql.py`
 - `.superpowers/sdd/sql-lineage-task-5-report.md`
+- `docs/superpowers/plans/2026-07-15-experiment-lineage-sql.md` (R2 scope correction)
 
 `.github/workflows/ci.yml` does not exist, so no workflow was created or modified. Untracked `output/` was present before Task 5 and was left untouched.
 
@@ -76,7 +78,7 @@ The destructive path is disabled unless `--ephemeral-workspace` is a valid UUID.
 
 ## TDD Evidence
 
-The explicit Task 5 allowlist did not permit a committed `tests/` file. A temporary pytest harness was therefore created under existing `tmp/`, used for RED/GREEN evidence, and removed before the final diff.
+The initial Task 5 implementation used a temporary pytest harness under existing `tmp/` for RED/GREEN evidence because the original plan did not list a verifier test file. Those temporary files were removed before the initial final diff. The corrected Task 5 plan now explicitly permits the permanent `tests/test_verify_lineage_sql.py` regression added for R1 P1.
 
 Initial RED, before the verifier existed:
 
@@ -230,3 +232,11 @@ python scripts/verify_lineage_sql.py --dry-run
 Both safe verifier commands exited zero with the existing no-Azure bounded output. `python -m py_compile scripts/verify_lineage_sql.py` and `git diff --check` also exited zero. No Azure resource or deployment operation was performed.
 
 Follow-up commit message: `fix: bound lineage verifier argument errors`.
+
+## R2 Scope Correction
+
+The Task 5 plan now explicitly lists `tests/test_verify_lineage_sql.py` as an allowed created file. The R1 P1 no-echo regression is therefore a permanent, plan-approved test rather than a temporary harness.
+
+The test executes the verifier as a subprocess with an unknown credential-like option and a non-secret sentinel. It requires a nonzero exit, exactly the bounded `invalid_arguments` JSON response on stdout, an empty stderr stream, and absence of both the sentinel and the sensitive option name from both streams. It does not build a SQL connection factory, contact Azure, or write SQL.
+
+This R2 change corrects plan/report scope only. It changes no runtime verifier code, test behavior, Azure resource, or deployment configuration.

@@ -98,6 +98,7 @@
 **Files:**
 - Create: `infra/lineage-sql.md`
 - Modify: `scripts/verify_lineage_sql.py`
+- Create: `tests/test_verify_lineage_sql.py`
 - Modify: `.github/workflows/ci.yml` if present
 
 - [ ] Document Entra SQL administrator, contained user for backend managed identity, least-privilege grants, schema deployment, and rollback.
