@@ -468,3 +468,38 @@ GREEN commands and results:
 ### R11 Remaining Risk
 
 - The protocol coordinates DataForge writers through workspace-lineage CAS and strict final storage checks; Blob Storage still does not provide a multi-Blob transaction. A non-cooperating external writer can create debris, but cannot create trusted lineage or attachments and will force later reads/purges to remain unavailable until cleanup succeeds.
+
+## R12 Terminal Purge And Complete Legacy Proof
+
+### Behavior
+
+- `purged` is terminal for ordinary completion and publication. Generic, analysis, confirmed-update, and snapshot paths return bounded unavailable state without publishing or attaching; a new lifecycle requires an explicit workspace recreation/generation operation outside ordinary run completion.
+- Confirmed, snapshot, and generic publishers verify the exact workspace lifecycle again after their final local write. A lifecycle change cleans remote and local publication, records the rejected writer through lineage CAS, and never returns confirmed. Cleanup failures are persisted as `late_writer_cleanup_failed`, changing the lineage revision so a competing purge final CAS fails.
+- Purge final proof now requires an unchanged `purging` lineage revision, the exact registry revision with no workspace rows, strict remote run-Blob enumeration with no workspace payload, and strict enumeration of every root `RUN_DIR` JSON with no workspace payload. Local or remote deletion exceptions fail closed.
+- Legacy bootstrap validates every supplied lineage-bearing registry row before its first stable CAS: unique run IDs, trusted exact envelopes and deterministic commit IDs, contiguous unique analysis sequences, same-workspace self-canonical targets, aliases targeting only an earlier canonical run, exact target commit/hash bindings, contiguous derived canonical ordinals, and exact confirmed attachment envelopes. Any gap or invalid historical alias leaves migration unavailable and persists no stable lineage.
+
+### R12 TDD Evidence
+
+Initial focused RED command:
+
+`python -m pytest -q tests/test_artifact_version_snapshot.py::test_purged_workspace_rejects_late_generic_and_analysis_completion tests/test_artifact_version_snapshot.py::test_publication_rechecks_lifecycle_after_final_local_write tests/test_artifact_version_snapshot.py::test_purge_final_proof_enumerates_unregistered_local_workspace_run tests/test_artifact_version_snapshot.py::test_late_local_writer_cleanup_failure_invalidates_purge_final_cas tests/test_artifact_version_snapshot.py::test_legacy_bootstrap_rejects_missing_lineage_sequence tests/test_artifact_version_snapshot.py::test_legacy_bootstrap_rejects_historical_alias_to_future_canonical`
+
+Initial RED result: `8 failed in 4.44s`. Failures proved post-purge lifecycle resurrection, confirmed/snapshot/generic success after a late local publication race, false purge success with an unregistered local run, ignored late-writer cleanup failure, stable migration across a missing sequence, and acceptance of an alias targeting a future canonical run.
+
+GREEN results:
+
+- Focused R12 regressions: `8 passed in 3.30s`.
+- Owned Task3 snapshot suite: `42 passed in 7.60s`.
+- Combined Task3, strict Blob, persistence, control-plane, run-store, outcome, audit, and workspace-role suite: `296 passed in 51.41s`.
+- `python -m py_compile backend/run_store.py tests/test_artifact_version_snapshot.py`: exit 0.
+- `git diff --check`: exit 0.
+
+### R12 Changed Files
+
+- `backend/run_store.py`
+- `tests/test_artifact_version_snapshot.py`
+- `.superpowers/sdd/p2-c-task-3-report.md`
+
+### R12 Remaining Risk
+
+- Azure Blob Storage still has no transaction spanning lineage, registry, run Blob, and local cache. Cooperative DataForge writers now detect lifecycle movement after local publication and clean or invalidate purge through CAS; a non-cooperating external writer remains bounded debris that strict purge proof will reject.

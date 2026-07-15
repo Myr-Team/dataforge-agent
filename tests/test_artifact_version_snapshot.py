@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import backend.orchestrator as orchestrator
 import backend.experiment_store as experiment_store
@@ -992,6 +993,340 @@ def test_late_writer_after_purge_enumeration_prevents_purged_success(tmp_path) -
     assert state["status"] == "purging"
     assert state["last_rejected_writer_run_id"] == generic_id
     assert generic_blob not in remote
+
+
+def test_purged_workspace_rejects_late_generic_and_analysis_completion(tmp_path) -> None:
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
+    run_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
+    run_store.list_blob_json_named_strict = lambda prefix: [
+        (name, copy.deepcopy(value))
+        for name, value in remote.items()
+        if name.startswith(prefix) and isinstance(value, dict)
+    ]
+    workspace_id = "ws-terminal-purged"
+    source_id = "analysis-before-terminal-purge"
+    source_artifact = _analysis_artifact(workspace_id, source_id)
+    run_store.start_run(source_id, workspace_id, "Analyze")
+    run_store.complete_run(
+        source_id,
+        status="completed",
+        final={"artifact": source_artifact},
+        artifact=source_artifact,
+    )
+
+    purged = run_store.purge_workspace_runs(workspace_id)
+    assert purged["status"] == "purged"
+
+    generic_id = "generic-after-terminal-purge"
+    run_store.start_run(generic_id, workspace_id, "Follow-up")
+    generic = run_store.complete_run(generic_id, status="completed", final={"text": "Late completion"})
+    analysis_id = "analysis-after-terminal-purge"
+    analysis_artifact = _analysis_artifact(workspace_id, analysis_id)
+    run_store.start_run(analysis_id, workspace_id, "Analyze")
+    analysis = run_store.complete_run(
+        analysis_id,
+        status="completed",
+        final={"artifact": analysis_artifact},
+        artifact=analysis_artifact,
+    )
+
+    state = run_store.workspace_lineage_state(workspace_id)
+    registry = run_store.authoritative_run_registry()
+    assert state["status"] == "purged"
+    for run_id, result in ((generic_id, generic), (analysis_id, analysis)):
+        assert result is not None
+        assert (result.get("persistence") or {}).get("confirmed") is False
+        assert all(str(item.get("run_id") or "") != run_id for item in registry["runs"])
+        assert f"{run_store.RUN_BLOB_PREFIX}/{run_store._safe_name(run_id)}.json" not in remote
+        assert not (run_store.RUN_DIR / f"{run_store._safe_name(run_id)}.json").exists()
+
+
+@pytest.mark.parametrize("writer_kind", ["confirmed", "snapshot", "generic"])
+def test_publication_rechecks_lifecycle_after_final_local_write(writer_kind, tmp_path, monkeypatch) -> None:
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
+    run_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
+    workspace_id = f"ws-post-local-{writer_kind}"
+    source_id = f"analysis-post-local-{writer_kind}"
+    artifact = _analysis_artifact(workspace_id, source_id)
+    run_store.start_run(source_id, workspace_id, "Analyze")
+    run_store.complete_run(
+        source_id,
+        status="completed",
+        final={"artifact": artifact},
+        artifact=artifact,
+    )
+    original_write = run_store._write_run_file
+    rejected_path: list[Path] = []
+
+    def write_then_begin_purge(path: Path, value: dict) -> None:
+        original_write(path, value)
+        persistence = value.get("persistence") if isinstance(value.get("persistence"), dict) else {}
+        is_target = persistence.get("confirmed") is True and (
+            (writer_kind == "confirmed" and str(value.get("run_id") or "") == source_id)
+            or (writer_kind == "snapshot" and str(value.get("version_kind") or "") == "artifact_generation")
+            or (writer_kind == "generic" and str(value.get("run_id") or "") == "generic-post-local")
+        )
+        if is_target and not rejected_path:
+            rejected_path.append(path)
+            state = run_store.workspace_lineage_state(workspace_id)
+            assert run_store._cas_workspace_lineage(
+                state,
+                {"status": "purging", "purge_started_at": run_store._utc_now()},
+            )
+
+    monkeypatch.setattr(run_store, "_write_run_file", write_then_begin_purge)
+    if writer_kind == "confirmed":
+        result = run_store.update_run_proposal(
+            source_id,
+            {"artifact_urls": {"pdf": "/must-not-survive-post-local.pdf"}},
+        )
+    elif writer_kind == "snapshot":
+        result = run_store.record_artifact_version(
+            workspace_id=workspace_id,
+            source_run_id=source_id,
+            experiment_version_id=f"version:{source_id}",
+            artifact=artifact,
+            proposal={"artifact_urls": {"pdf": "/must-not-attach-post-local.pdf"}},
+            kinds=["pdf"],
+        )
+    else:
+        run_store.start_run("generic-post-local", workspace_id, "Follow-up")
+        result = run_store.complete_run(
+            "generic-post-local",
+            status="completed",
+            final={"text": "Late local write"},
+        )
+
+    assert rejected_path
+    if writer_kind == "snapshot":
+        assert result is None
+    else:
+        assert result is not None
+        assert (result.get("persistence") or {}).get("confirmed") is False
+    rejected_run_id = source_id if writer_kind == "confirmed" else (
+        "generic-post-local" if writer_kind == "generic" else rejected_path[0].stem
+    )
+    assert not rejected_path[0].exists()
+    assert f"{run_store.RUN_BLOB_PREFIX}/{run_store._safe_name(rejected_run_id)}.json" not in remote
+
+
+def test_purge_final_proof_enumerates_unregistered_local_workspace_run(tmp_path, monkeypatch) -> None:
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
+    run_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
+    run_store.list_blob_json_named_strict = lambda prefix: [
+        (name, copy.deepcopy(value))
+        for name, value in remote.items()
+        if name.startswith(prefix) and isinstance(value, dict)
+    ]
+    workspace_id = "ws-local-final-proof"
+    source_id = "analysis-local-final-proof"
+    artifact = _analysis_artifact(workspace_id, source_id)
+    run_store.start_run(source_id, workspace_id, "Analyze")
+    run_store.complete_run(
+        source_id,
+        status="completed",
+        final={"artifact": artifact},
+        artifact=artifact,
+    )
+    source_summary = copy.deepcopy(run_store.authoritative_run_registry()["runs"][0])
+    rogue_path = run_store.RUN_DIR / "unregistered-late-local.json"
+    run_store._write_run_file(
+        rogue_path,
+        {
+            "run_id": "unregistered-late-local",
+            "workspace_id": workspace_id,
+            "status": "completed",
+        },
+    )
+    monkeypatch.setattr(run_store, "list_runs", lambda requested_workspace=None: [source_summary])
+
+    result = run_store.purge_workspace_runs(workspace_id)
+
+    assert result["status"] == "unavailable"
+    assert run_store.workspace_lineage_state(workspace_id)["status"] == "purging"
+    assert rogue_path.exists()
+
+
+def test_late_local_writer_cleanup_failure_invalidates_purge_final_cas(tmp_path, monkeypatch) -> None:
+    purge_store = _isolated_run_store("run_store_r12_cleanup_failure_purge")
+    writer_store = _isolated_run_store("run_store_r12_cleanup_failure_writer")
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    shared_run_dir = tmp_path / "shared-runs"
+    _configure_shared_store(purge_store, shared_run_dir, download, upload, compare_and_swap)
+    _configure_shared_store(writer_store, shared_run_dir, download, upload, compare_and_swap)
+    workspace_id = "ws-late-local-cleanup-failure"
+    source_id = "analysis-before-cleanup-failure"
+    artifact = _analysis_artifact(workspace_id, source_id)
+    writer_store.start_run(source_id, workspace_id, "Analyze")
+    writer_store.complete_run(
+        source_id,
+        status="completed",
+        final={"artifact": artifact},
+        artifact=artifact,
+    )
+    generic_id = "generic-late-local-cleanup-failure"
+    generic_path = shared_run_dir / f"{writer_store._safe_name(generic_id)}.json"
+    local_phase_entered = threading.Event()
+    release_local_write = threading.Event()
+    final_cas_entered = threading.Event()
+    release_final_cas = threading.Event()
+    original_write = writer_store._write_run_file
+    original_unlink = Path.unlink
+
+    def delayed_final_local_write(path: Path, value: dict) -> None:
+        persistence = value.get("persistence") if isinstance(value.get("persistence"), dict) else {}
+        if str(value.get("run_id") or "") == generic_id and persistence.get("confirmed") is True:
+            local_phase_entered.set()
+            release_local_write.wait(timeout=5)
+        original_write(path, value)
+
+    def fail_writer_cleanup(path: Path, *args, **kwargs):
+        if path == generic_path and threading.current_thread().name == "late-local-cleanup-writer":
+            raise OSError("local cleanup unavailable")
+        return original_unlink(path, *args, **kwargs)
+
+    def delayed_final_cas(name: str, *, expected_revision: int, changes: dict):
+        if name == purge_store._workspace_lineage_blob(workspace_id) and changes.get("status") == "purged":
+            final_cas_entered.set()
+            release_final_cas.wait(timeout=5)
+        return compare_and_swap(name, expected_revision=expected_revision, changes=changes)
+
+    def named_runs(prefix: str):
+        return [
+            (name, copy.deepcopy(value))
+            for name, value in remote.items()
+            if name.startswith(prefix) and isinstance(value, dict)
+        ]
+
+    writer_store._write_run_file = delayed_final_local_write
+    writer_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
+    purge_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
+    purge_store.list_blob_json_named_strict = named_runs
+    purge_store.compare_and_swap_blob_json = delayed_final_cas
+    monkeypatch.setattr(Path, "unlink", fail_writer_cleanup)
+    writer_result: dict[str, object] = {}
+    purge_result: dict[str, object] = {}
+    writer_store.start_run(generic_id, workspace_id, "Follow-up")
+    writer_thread = threading.Thread(
+        target=lambda: writer_result.update(
+            writer_store.complete_run(generic_id, status="completed", final={"text": "Late"}) or {}
+        ),
+        name="late-local-cleanup-writer",
+    )
+    purge_thread = threading.Thread(
+        target=lambda: purge_result.update(purge_store.purge_workspace_runs(workspace_id)),
+        name="purge-final-cas",
+    )
+    writer_thread.start()
+    assert local_phase_entered.wait(timeout=5)
+    purge_thread.start()
+    try:
+        assert final_cas_entered.wait(timeout=5)
+        release_local_write.set()
+        writer_thread.join(timeout=5)
+        release_final_cas.set()
+        purge_thread.join(timeout=5)
+    finally:
+        release_local_write.set()
+        release_final_cas.set()
+        writer_thread.join(timeout=5)
+        purge_thread.join(timeout=5)
+
+    state = purge_store.workspace_lineage_state(workspace_id)
+    assert (writer_result.get("persistence") or {}).get("confirmed") is False
+    assert purge_result["status"] == "unavailable"
+    assert state["status"] == "purging"
+    assert state["purge_integrity_failure"] == "late_writer_cleanup_failed"
+    assert generic_path.exists()
+
+
+def test_legacy_bootstrap_rejects_missing_lineage_sequence(tmp_path) -> None:
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    _configure_shared_store(run_store, tmp_path / "writer-runs", download, upload, compare_and_swap)
+    workspace_id = "ws-legacy-missing-sequence"
+    for sequence in range(1, 4):
+        run_id = f"analysis-legacy-sequence-{sequence}"
+        artifact = _analysis_artifact(workspace_id, run_id)
+        evidence = artifact["feasibility"]["dimensions"][0]["evidence"][0]
+        evidence.update({"ref": f"evidence.csv#row-{sequence}", "file_version": str(sequence)})
+        run_store.start_run(run_id, workspace_id, "Analyze")
+        completed = run_store.complete_run(
+            run_id,
+            status="completed",
+            final={"artifact": artifact},
+            artifact=artifact,
+        )
+        assert completed["canonical_experiment_run_id"] == run_id
+    remote.pop(run_store._workspace_lineage_blob(workspace_id))
+    registry = remote[run_store.RUN_REGISTRY_BLOB]
+    registry["runs"] = [
+        item for item in registry["runs"] if int(item.get("canonical_lineage_sequence") or 0) != 2
+    ]
+    run_store.RUN_DIR = tmp_path / "fresh-reader-runs"
+
+    migrated = run_store._bootstrap_workspace_lineage(
+        workspace_id,
+        run_store.authoritative_run_registry(),
+    )
+
+    assert migrated == {}
+    assert run_store._workspace_lineage_blob(workspace_id) not in remote
+
+
+def test_legacy_bootstrap_rejects_historical_alias_to_future_canonical(tmp_path) -> None:
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    _configure_shared_store(run_store, tmp_path / "writer-runs", download, upload, compare_and_swap)
+    workspace_id = "ws-legacy-invalid-historical-alias"
+    canonical_id = "analysis-legacy-canonical-v1"
+    alias_id = "analysis-legacy-alias"
+    future_id = "analysis-legacy-canonical-v2"
+    base_artifact = _analysis_artifact(workspace_id, canonical_id)
+    for run_id, artifact in (
+        (canonical_id, base_artifact),
+        (alias_id, copy.deepcopy(base_artifact)),
+    ):
+        run_store.start_run(run_id, workspace_id, "Analyze")
+        run_store.complete_run(run_id, status="completed", final={"artifact": artifact}, artifact=artifact)
+    future_artifact = _analysis_artifact(workspace_id, future_id)
+    future_artifact["feasibility"]["dimensions"][0]["evidence"][0].update(
+        {"ref": "evidence.csv#row-2", "file_version": "2"}
+    )
+    run_store.start_run(future_id, workspace_id, "Analyze")
+    future = run_store.complete_run(
+        future_id,
+        status="completed",
+        final={"artifact": future_artifact},
+        artifact=future_artifact,
+    )
+    assert future["canonical_experiment_run_id"] == future_id
+    alias_blob = f"{run_store.RUN_BLOB_PREFIX}/{run_store._safe_name(alias_id)}.json"
+    forged_alias = copy.deepcopy(remote[alias_blob])
+    run_store._mark_canonical_lineage_trusted(
+        forged_alias,
+        future_id,
+        sequence=2,
+        target_commit_id=future["canonical_lineage_commit_id"],
+        target_content_sha256=future["canonical_lineage_content_sha256"],
+    )
+    remote[alias_blob] = forged_alias
+    registry = remote[run_store.RUN_REGISTRY_BLOB]
+    registry["runs"] = [
+        run_store._run_summary(forged_alias) if str(item.get("run_id") or "") == alias_id else item
+        for item in registry["runs"]
+    ]
+    remote.pop(run_store._workspace_lineage_blob(workspace_id))
+    run_store.RUN_DIR = tmp_path / "fresh-reader-runs"
+
+    migrated = run_store._bootstrap_workspace_lineage(
+        workspace_id,
+        run_store.authoritative_run_registry(),
+    )
+
+    assert migrated == {}
+    assert run_store._workspace_lineage_blob(workspace_id) not in remote
 
 
 def test_failed_existing_analysis_update_preserves_confirmed_blob_and_envelope(tmp_path, monkeypatch) -> None:
