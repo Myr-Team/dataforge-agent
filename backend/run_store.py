@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     from .blob_store import (
@@ -58,6 +58,8 @@ _ATTACHMENT_VERSION_KINDS = {"plan_draft", "artifact_generation"}
 
 _ACTIVE: dict[str, dict[str, Any]] = {}
 _LOCK = threading.RLock()
+_LINEAGE_REPOSITORY_PROVIDER: Callable[[], Any] | None = None
+_LINEAGE_GENERATION_HINTS: dict[str, int] = {}
 _LINEAGE_ENVELOPE_KEYS = (
     "canonical_experiment_run_id",
     "canonical_experiment_version_id",
@@ -85,12 +87,19 @@ class _DurableJsonRead:
     value: dict[str, Any] | None = None
 
 
-def start_run(run_id: str, workspace_id: str, message: str, actor: dict[str, Any] | None = None) -> None:
+def start_run(
+    run_id: str,
+    workspace_id: str,
+    message: str,
+    actor: dict[str, Any] | None = None,
+    *,
+    generation: int | None = None,
+) -> None:
     now = _utc_now()
     clean_actor = public_actor(actor or {})
-    lineage_state = workspace_lineage_state(workspace_id)
-    captured_generation = (
-        0 if lineage_state.get("read_status") == "error" else _workspace_generation(lineage_state)
+    captured_generation = max(
+        WORKSPACE_GENERATION_INITIAL,
+        int(generation or _LINEAGE_GENERATION_HINTS.get(workspace_id) or WORKSPACE_GENERATION_INITIAL),
     )
     with _LOCK:
         _ACTIVE[run_id] = {
@@ -157,6 +166,7 @@ def complete_run(
     status: str = "completed",
     final: dict[str, Any] | None = None,
     artifact: dict[str, Any] | None = None,
+    lineage_repository: Any | None = None,
 ) -> dict[str, Any] | None:
     with _LOCK:
         run = _ACTIVE.pop(run_id, None)
@@ -178,6 +188,7 @@ def complete_run(
             canonical_source_id = resolve_canonical_experiment_source_run_id(
                 str(run.get("workspace_id") or ""),
                 requested_source_id,
+                lineage_repository=lineage_repository,
             )
             try:
                 source_analysis = get_run(run_id)
@@ -192,7 +203,15 @@ def complete_run(
                 run["conversation_id"] = run_id
             if canonical_source_id:
                 run["source_run_id"] = canonical_source_id
-                run["experiment_version_id"] = f"version:{canonical_source_id}"
+                try:
+                    canonical_source = get_run(canonical_source_id)
+                except (FileNotFoundError, ValueError, KeyError):
+                    canonical_source = {}
+                canonical_version_id = str(
+                    canonical_source.get("canonical_experiment_version_id") or ""
+                ).strip()
+                if canonical_version_id:
+                    run["experiment_version_id"] = canonical_version_id
         run["status"] = status
         run["completed_at"] = _utc_now()
         run["updated_at"] = run["completed_at"]
@@ -203,7 +222,7 @@ def complete_run(
         run["title"] = _run_title(run)
         run["summary"] = _run_summary_text(run)
         run["registry_summary"] = _run_summary(run)
-        return _persist_run(run)
+        return _persist_run(run, lineage_repository=lineage_repository)
 
 
 def _is_completed_analysis(run: Any) -> bool:
@@ -321,6 +340,7 @@ def record_artifact_version(
     artifact: dict[str, Any],
     proposal: dict[str, Any],
     kinds: list[str] | tuple[str, ...] | None = None,
+    lineage_repository: Any | None = None,
 ) -> dict[str, Any] | None:
     """Persist a lightweight version snapshot when artifacts are generated from a real analysis.
 
@@ -331,12 +351,19 @@ def record_artifact_version(
     source_run_id = str(source_run_id or "").strip()
     if not workspace_id or not source_run_id or not isinstance(artifact, dict):
         return None
-    expected_experiment_version_id = f"version:{source_run_id}"
-    experiment_version_id = str(experiment_version_id or expected_experiment_version_id).strip()
-    if experiment_version_id != expected_experiment_version_id:
+    try:
+        repository = _resolve_lineage_repository(lineage_repository)
+        committed_version = _sql_version_for_source(
+            workspace_id,
+            source_run_id,
+            experiment_version_id,
+            repository,
+        )
+    except Exception:
         return None
-    if not _canonical_experiment_version_exists(workspace_id, experiment_version_id):
+    if committed_version is None:
         return None
+    experiment_version_id = str(_commit_value(committed_version, "version_id") or "")
     feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
     if not (feasibility.get("verdict") or feasibility.get("dimensions")):
         return None
@@ -365,7 +392,7 @@ def record_artifact_version(
         "run_id": version_run_id,
         "conversation_id": source_run_id,
         "workspace_id": workspace_id,
-        "workspace_generation": int(source_run.get("workspace_generation") or 0),
+        "workspace_generation": int(_commit_value(committed_version, "generation") or 0),
         "message": f"生成产物版本：{', '.join(produced_kinds) or 'artifact'}",
         "status": "completed",
         "started_at": now,
@@ -407,7 +434,7 @@ def record_artifact_version(
     run["title"] = _clean_phrase(f"{base_title} · 产物版", 44)
     run["summary"] = _run_summary_text(run)
     run["registry_summary"] = _run_summary(run)
-    persisted = _persist_run(run)
+    persisted = _persist_run(run, lineage_repository=repository)
     return persisted if _snapshot_persistence_confirmed(persisted) else None
 
 
@@ -418,18 +445,26 @@ def record_plan_version(
     experiment_version_id: str | None = None,
     artifact: dict[str, Any],
     text: str,
+    lineage_repository: Any | None = None,
 ) -> dict[str, Any] | None:
     """Persist a lightweight version snapshot when a follow-up creates a plan draft."""
     workspace_id = str(workspace_id or "").strip()
     source_run_id = str(source_run_id or "").strip()
     if not workspace_id or not source_run_id or not isinstance(artifact, dict):
         return None
-    expected_experiment_version_id = f"version:{source_run_id}"
-    experiment_version_id = str(experiment_version_id or expected_experiment_version_id).strip()
-    if experiment_version_id != expected_experiment_version_id:
+    try:
+        repository = _resolve_lineage_repository(lineage_repository)
+        committed_version = _sql_version_for_source(
+            workspace_id,
+            source_run_id,
+            experiment_version_id,
+            repository,
+        )
+    except Exception:
         return None
-    if not _canonical_experiment_version_exists(workspace_id, experiment_version_id):
+    if committed_version is None:
         return None
+    experiment_version_id = str(_commit_value(committed_version, "version_id") or "")
     feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), dict) else {}
     if not (feasibility.get("verdict") or feasibility.get("dimensions")):
         return None
@@ -465,7 +500,7 @@ def record_plan_version(
         "run_id": version_run_id,
         "conversation_id": source_run_id,
         "workspace_id": workspace_id,
-        "workspace_generation": int(source_run.get("workspace_generation") or 0),
+        "workspace_generation": int(_commit_value(committed_version, "generation") or 0),
         "message": "生成方案草稿版本",
         "status": "completed",
         "started_at": now,
@@ -505,21 +540,44 @@ def record_plan_version(
     run["title"] = _clean_phrase(f"{title_base} · 方案版", 44)
     run["summary"] = _run_summary_text(run)
     run["registry_summary"] = _run_summary(run)
-    persisted = _persist_run(run)
+    persisted = _persist_run(run, lineage_repository=repository)
     return persisted if _snapshot_persistence_confirmed(persisted) else None
 
 
-def _canonical_experiment_version_exists(workspace_id: str, experiment_version_id: str) -> bool:
+def _canonical_experiment_version_exists(
+    workspace_id: str,
+    experiment_version_id: str,
+    *,
+    generation: int | None = None,
+    lineage_repository: Any | None = None,
+) -> bool:
+    workspace_id = str(workspace_id or "").strip()
     version_id = str(experiment_version_id or "").strip()
-    if not version_id.startswith("version:"):
+    if not workspace_id or not version_id:
         return False
-    source_run_id = version_id.removeprefix("version:").strip()
-    if not source_run_id:
+    active_generation = max(
+        WORKSPACE_GENERATION_INITIAL,
+        int(generation or _LINEAGE_GENERATION_HINTS.get(workspace_id) or WORKSPACE_GENERATION_INITIAL),
+    )
+    try:
+        repository = _resolve_lineage_repository(lineage_repository)
+        return any(
+            str(_commit_value(item, "version_id") or "") == version_id
+            for item in repository.list_versions(
+                workspace_id=workspace_id,
+                generation=active_generation,
+            )
+        )
+    except Exception:
         return False
-    return resolve_canonical_experiment_source_run_id(workspace_id, source_run_id) == source_run_id
 
 
-def resolve_canonical_experiment_source_run_id(workspace_id: str, source_run_id: str) -> str | None:
+def resolve_canonical_experiment_source_run_id(
+    workspace_id: str,
+    source_run_id: str,
+    *,
+    lineage_repository: Any | None = None,
+) -> str | None:
     workspace_id = str(workspace_id or "").strip()
     source_run_id = str(source_run_id or "").strip()
     if not workspace_id or not source_run_id:
@@ -527,19 +585,90 @@ def resolve_canonical_experiment_source_run_id(workspace_id: str, source_run_id:
     try:
         source = get_run(source_run_id)
     except (FileNotFoundError, ValueError):
+        source = {}
+    if source and str(source.get("workspace_id") or "") != workspace_id:
         return None
-    if str(source.get("workspace_id") or "") != workspace_id:
+    generation = max(
+        WORKSPACE_GENERATION_INITIAL,
+        int(
+            source.get("workspace_generation")
+            or _LINEAGE_GENERATION_HINTS.get(workspace_id)
+            or WORKSPACE_GENERATION_INITIAL
+        ),
+    )
+    try:
+        repository = _resolve_lineage_repository(lineage_repository)
+        versions = repository.list_versions(workspace_id=workspace_id, generation=generation)
+    except Exception:
         return None
-    persisted = _persisted_canonical_target(workspace_id, source)
-    if persisted:
-        return persisted
-    if _has_canonical_lineage_metadata(source):
+    declared_target = str(source.get("canonical_experiment_run_id") or source_run_id).strip()
+    declared_version = str(source.get("canonical_experiment_version_id") or "").strip()
+    for version in versions:
+        canonical_run_id = str(_commit_value(version, "canonical_run_id") or "")
+        version_id = str(_commit_value(version, "version_id") or "")
+        if canonical_run_id == source_run_id:
+            return source_run_id
+        if (
+            declared_target == canonical_run_id
+            and declared_version
+            and declared_version == version_id
+        ):
+            return canonical_run_id
+    return None
+
+
+def _sql_version_for_source(
+    workspace_id: str,
+    source_run_id: str,
+    requested_version_id: str | None,
+    repository: Any,
+) -> Any | None:
+    try:
+        source = get_run(source_run_id)
+    except (FileNotFoundError, ValueError):
+        source = {}
+    if source and str(source.get("workspace_id") or "") != workspace_id:
         return None
-    if _registry_history_is_truncated():
+    generation = max(
+        WORKSPACE_GENERATION_INITIAL,
+        int(
+            source.get("workspace_generation")
+            or _LINEAGE_GENERATION_HINTS.get(workspace_id)
+            or WORKSPACE_GENERATION_INITIAL
+        ),
+    )
+    target_run_id = str(source.get("canonical_experiment_run_id") or source_run_id).strip()
+    declared_version_id = str(
+        requested_version_id or source.get("canonical_experiment_version_id") or ""
+    ).strip()
+    try:
+        versions = repository.list_versions(workspace_id=workspace_id, generation=generation)
+    except Exception:
         return None
-    runs = _workspace_run_details(workspace_id)
-    resolved = _resolve_canonical_from_runs(workspace_id, runs, source_run_id)
-    return resolved
+    for version in versions:
+        if str(_commit_value(version, "canonical_run_id") or "") != target_run_id:
+            continue
+        version_id = str(_commit_value(version, "version_id") or "")
+        if declared_version_id and declared_version_id != version_id:
+            continue
+        return version
+    return None
+
+
+def _resolve_lineage_repository(repository: Any | None) -> Any:
+    if repository is not None:
+        return repository
+    if _LINEAGE_REPOSITORY_PROVIDER is not None:
+        return _LINEAGE_REPOSITORY_PROVIDER()
+    try:
+        from .app import get_lineage_repository
+    except ImportError:
+        from app import get_lineage_repository
+    return get_lineage_repository()
+
+
+def _commit_value(commit: Any, name: str) -> Any:
+    return commit.get(name) if isinstance(commit, dict) else getattr(commit, name, None)
 
 
 def _persisted_canonical_target(workspace_id: str, source: dict[str, Any]) -> str | None:
@@ -1023,7 +1152,47 @@ def initialize_workspace_lineage(
     return {}
 
 
-def recreate_workspace_generation(workspace_id: str) -> dict[str, Any]:
+def recreate_workspace_generation(
+    workspace_id: str,
+    *,
+    lineage_repository: Any | None = None,
+    generation: int | None = None,
+) -> dict[str, Any]:
+    """Start a new generation only after the SQL lifecycle accepts it."""
+    workspace_id = str(workspace_id or "").strip()
+    if not workspace_id:
+        return {"workspace_id": workspace_id, "status": "unavailable"}
+    current_generation = max(
+        WORKSPACE_GENERATION_INITIAL,
+        int(generation or _LINEAGE_GENERATION_HINTS.get(workspace_id) or WORKSPACE_GENERATION_INITIAL),
+    )
+    try:
+        repository = _resolve_lineage_repository(lineage_repository)
+        next_generation = int(
+            repository.recreate_workspace(
+                workspace_id=workspace_id,
+                generation=current_generation,
+                actor_metadata=None,
+            )
+        )
+    except Exception:
+        return {
+            "workspace_id": workspace_id,
+            "generation": current_generation,
+            "status": "unavailable",
+            "reason": "lineage_unavailable",
+        }
+    _LINEAGE_GENERATION_HINTS[workspace_id] = next_generation
+    return {
+        "version": 3,
+        "workspace_id": workspace_id,
+        "status": "stable",
+        "generation": next_generation,
+        "source": "sql_lineage",
+    }
+
+
+def _legacy_recreate_workspace_generation(workspace_id: str) -> dict[str, Any]:
     """Explicitly start a clean generation after a fully confirmed purge."""
     workspace_id = str(workspace_id or "").strip()
     if not workspace_id:
@@ -1329,7 +1498,126 @@ def set_flagship_plan(workspace_id: str, run_id: str | None) -> dict[str, Any]:
     return {"workspace_id": workspace_id, "flagship_run_id": mapping.get(workspace_id)}
 
 
-def purge_workspace_runs(workspace_id: str) -> dict[str, Any]:
+def purge_workspace_runs(
+    workspace_id: str,
+    *,
+    lineage_repository: Any | None = None,
+    generation: int | None = None,
+) -> dict[str, Any]:
+    """Commit SQL purge first, then best-effort payload cleanup."""
+    workspace_id = str(workspace_id or "").strip()
+    active_generation = max(
+        WORKSPACE_GENERATION_INITIAL,
+        int(generation or _LINEAGE_GENERATION_HINTS.get(workspace_id) or WORKSPACE_GENERATION_INITIAL),
+    )
+    try:
+        repository = _resolve_lineage_repository(lineage_repository)
+        repository.purge_workspace(
+            workspace_id=workspace_id,
+            generation=active_generation,
+            actor_metadata=None,
+        )
+    except Exception:
+        return {
+            "workspace_id": workspace_id,
+            "run_ids": [],
+            "deleted_local_runs": 0,
+            "deleted_blob_runs": 0,
+            "registry_updated": False,
+            "lineage_updated": False,
+            "status": "unavailable",
+            "reason": "lineage_unavailable",
+        }
+
+    _LINEAGE_GENERATION_HINTS[workspace_id] = active_generation
+    payload_failed = False
+    run_ids: set[str] = set()
+    try:
+        run_ids.update(
+            str(item.get("run_id") or "")
+            for item in list_runs(workspace_id)
+            if isinstance(item, dict) and item.get("run_id")
+        )
+    except Exception:
+        payload_failed = True
+    if blob_configured():
+        try:
+            run_ids.update(
+                str(value.get("run_id") or "")
+                for _name, value in list_blob_json_named_strict(f"{RUN_BLOB_PREFIX}/")
+                if isinstance(value, dict)
+                and str(value.get("workspace_id") or "") == workspace_id
+                and value.get("run_id")
+            )
+        except Exception:
+            payload_failed = True
+    run_ids.discard("")
+
+    deleted_local = 0
+    deleted_blob = 0
+    for run_id in sorted(run_ids):
+        path = RUN_DIR / f"{_safe_name(run_id)}.json"
+        try:
+            if path.exists():
+                path.unlink()
+                deleted_local += 1
+        except Exception:
+            payload_failed = True
+        if blob_configured():
+            try:
+                if delete_blob_name(f"{RUN_BLOB_PREFIX}/{_safe_name(run_id)}.json"):
+                    deleted_blob += 1
+            except Exception:
+                payload_failed = True
+
+    registry_updated = False
+    try:
+        registry = authoritative_run_registry()
+        if registry.get("read_status") != "error":
+            entries = [
+                item
+                for item in registry.get("runs") or []
+                if isinstance(item, dict) and str(item.get("workspace_id") or "") != workspace_id
+            ]
+            expected_revision = int(registry.get("revision") or 0)
+            value = {
+                "version": int(registry.get("version") or 2),
+                "revision": expected_revision + 1,
+                "history_truncated": registry.get("history_truncated") is True,
+                "runs": entries,
+            }
+            if blob_configured():
+                registry_updated = compare_and_swap_blob_json(
+                    RUN_REGISTRY_BLOB,
+                    expected_revision=expected_revision,
+                    changes=value,
+                ) is not None
+            else:
+                _write_local_registry(value)
+                registry_updated = True
+        if not registry_updated:
+            payload_failed = True
+    except Exception:
+        payload_failed = True
+    try:
+        set_flagship_plan(workspace_id, None)
+    except Exception:
+        payload_failed = True
+    return {
+        "workspace_id": workspace_id,
+        "generation": active_generation,
+        "run_ids": sorted(run_ids),
+        "deleted_local_runs": deleted_local,
+        "deleted_blob_runs": deleted_blob,
+        "registry_updated": registry_updated,
+        "lineage_updated": True,
+        "status": "purged",
+        "payload_state": "unavailable" if payload_failed else "available",
+        **({"payload_reason": "payload_cleanup_failed"} if payload_failed else {}),
+    }
+
+
+def _legacy_purge_workspace_runs(workspace_id: str) -> dict[str, Any]:
     """Delete one workspace after acquiring its durable lineage lifecycle."""
     workspace_id = str(workspace_id or "").strip()
     registry = authoritative_run_registry()
@@ -2306,12 +2594,20 @@ def _finalize_generation_bound_publication(
     return _reject_published_workspace_write(run, blob_name, registry, warning)
 
 
-def _persist_run(run: dict[str, Any]) -> dict[str, Any]:
+def _persist_run(
+    run: dict[str, Any],
+    *,
+    lineage_repository: Any | None = None,
+) -> dict[str, Any]:
     with _LOCK:
-        return _persist_run_locked(run)
+        return _persist_run_locked(run, lineage_repository=lineage_repository)
 
 
-def _persist_run_locked(run: dict[str, Any]) -> dict[str, Any]:
+def _persist_run_locked(
+    run: dict[str, Any],
+    *,
+    lineage_repository: Any | None = None,
+) -> dict[str, Any]:
     sanitized = _sanitize_run_capability_metadata(run)
     if isinstance(sanitized, dict):
         run.clear()
@@ -2321,6 +2617,18 @@ def _persist_run_locked(run: dict[str, Any]) -> dict[str, Any]:
     path = RUN_DIR / f"{safe}.json"
     run["local_path"] = str(path)
     blob_name = f"{RUN_BLOB_PREFIX}/{safe}.json"
+    if _is_completed_analysis(run):
+        try:
+            repository = _resolve_lineage_repository(lineage_repository)
+            return _commit_sql_analysis(run, path, blob_name, repository)
+        except Exception:
+            return _sql_lineage_unavailable(run)
+    if str(run.get("version_kind") or "") in _ATTACHMENT_VERSION_KINDS:
+        try:
+            repository = _resolve_lineage_repository(lineage_repository)
+            return _commit_sql_snapshot(run, path, blob_name, repository)
+        except Exception:
+            return _sql_lineage_unavailable(run)
     registry = authoritative_run_registry()
     if registry.get("read_status") == "error":
         unavailable = copy.deepcopy(run)
@@ -2347,30 +2655,164 @@ def _persist_run_locked(run: dict[str, Any]) -> dict[str, Any]:
             "workspace lineage is unavailable or purging",
         )
     run["workspace_generation"] = int(lineage_guard.get("generation") or 0)
-    if _is_completed_analysis(run):
-        protected = _confirmed_authoritative_run(workspace_id, str(run.get("run_id") or ""), registry)
-        if protected and not _registry_envelope_matches_run(
-            _run_summary(protected), run, _LINEAGE_ENVELOPE_KEYS
-        ):
-            protected["persistence"] = {
-                "mode": "confirmed_unchanged",
-                "confirmed": True,
-                "update_status": "unavailable",
-                "warning": "stale run state was not allowed to replace confirmed lineage",
-            }
-            return _replace_run(run, protected)
-        if protected:
-            return _persist_confirmed_run_update(run, path, blob_name, lineage_guard)
-        if _registry_envelope_matches_run(
-            _registry_entry(registry, str(run.get("run_id") or "")),
-            run,
-            _LINEAGE_ENVELOPE_KEYS,
-        ):
-            return _persist_confirmed_run_update(run, path, blob_name, lineage_guard)
-        return _commit_analysis_candidate(run, path, blob_name)
-    if str(run.get("version_kind") or "") in _ATTACHMENT_VERSION_KINDS:
-        return _commit_snapshot_candidate(run, path, blob_name, lineage_guard)
     return _persist_generic_run(run, path, blob_name, lineage_guard)
+
+
+def _commit_sql_analysis(
+    run: dict[str, Any],
+    path: Path,
+    blob_name: str,
+    repository: Any,
+) -> dict[str, Any]:
+    try:
+        from .experiment_store import analysis_lineage_fingerprints
+    except ImportError:
+        from experiment_store import analysis_lineage_fingerprints
+
+    workspace_id = str(run.get("workspace_id") or "")
+    generation = max(WORKSPACE_GENERATION_INITIAL, int(run.get("workspace_generation") or 0))
+    decision_fingerprint, evidence_fingerprint = analysis_lineage_fingerprints(run)
+    committed = repository.commit_analysis(
+        workspace_id=workspace_id,
+        generation=generation,
+        canonical_run_id=str(run.get("run_id") or ""),
+        decision_fingerprint=decision_fingerprint,
+        evidence_fingerprint=evidence_fingerprint,
+        actor_metadata=None,
+    )
+    committed_generation = int(_commit_value(committed, "generation") or 0)
+    if committed_generation != generation:
+        raise RuntimeError("lineage commit generation mismatch")
+    canonical_run_id = str(_commit_value(committed, "canonical_run_id") or "")
+    version_id = str(_commit_value(committed, "version_id") or "")
+    ordinal = int(_commit_value(committed, "ordinal") or 0)
+    if not canonical_run_id or not version_id or ordinal < 1:
+        raise RuntimeError("lineage commit is incomplete")
+    run.update(
+        {
+            "workspace_generation": committed_generation,
+            "canonical_experiment_run_id": canonical_run_id,
+            "canonical_experiment_version_id": version_id,
+            "canonical_resolution_status": "resolved",
+            "canonical_lineage_status": "trusted",
+            "canonical_lineage_commit_id": version_id,
+            "canonical_target_commit_id": version_id,
+            "canonical_target_content_sha256": _analysis_content_hash(run),
+            "canonical_lineage_content_sha256": _analysis_content_hash(run),
+            "canonical_lineage_sequence": ordinal,
+            "_canonical_ordinal": ordinal,
+        }
+    )
+    _LINEAGE_GENERATION_HINTS[workspace_id] = committed_generation
+    run["registry_summary"] = _run_summary(run)
+    return _publish_sql_committed_payload(run, path, blob_name)
+
+
+def _commit_sql_snapshot(
+    run: dict[str, Any],
+    path: Path,
+    blob_name: str,
+    repository: Any,
+) -> dict[str, Any]:
+    workspace_id = str(run.get("workspace_id") or "")
+    generation = max(WORKSPACE_GENERATION_INITIAL, int(run.get("workspace_generation") or 0))
+    payload_sha256 = _attachment_payload_hash(run)
+    committed = repository.attach_snapshot(
+        workspace_id=workspace_id,
+        generation=generation,
+        version_id=str(run.get("experiment_version_id") or ""),
+        kind=str(run.get("version_kind") or ""),
+        source_run_id=str(run.get("source_run_id") or ""),
+        payload_sha256=payload_sha256,
+        actor_metadata=None,
+    )
+    if int(_commit_value(committed, "generation") or 0) != generation:
+        raise RuntimeError("attachment commit generation mismatch")
+    attachment_id = str(_commit_value(committed, "attachment_id") or "")
+    if not attachment_id:
+        raise RuntimeError("attachment commit is incomplete")
+    run.update(
+        {
+            "experiment_attachment": True,
+            "attachment_commit_status": "confirmed",
+            "attachment_commit_id": attachment_id,
+            "attachment_payload_sha256": payload_sha256,
+        }
+    )
+    _LINEAGE_GENERATION_HINTS[workspace_id] = generation
+    run["registry_summary"] = _run_summary(run)
+    return _publish_sql_committed_payload(run, path, blob_name)
+
+
+def _publish_sql_committed_payload(
+    run: dict[str, Any],
+    path: Path,
+    blob_name: str,
+) -> dict[str, Any]:
+    payload_failed = False
+    run["persistence"] = {
+        "mode": "local_and_blob" if blob_configured() else "local",
+        "confirmed": True,
+        "payload_state": "available",
+    }
+    try:
+        _write_run_file(path, run)
+    except Exception:
+        payload_failed = True
+    if blob_configured() and not payload_failed:
+        try:
+            upload_blob_json(blob_name, run)
+        except Exception:
+            payload_failed = True
+    if not payload_failed:
+        try:
+            registry = authoritative_run_registry()
+            committed_registry = _commit_registry_summary(registry, _run_summary(run))
+            if committed_registry is None:
+                payload_failed = True
+        except Exception:
+            payload_failed = True
+    if payload_failed:
+        run["persistence"] = {
+            "mode": "degraded",
+            "confirmed": True,
+            "payload_state": "unavailable",
+            "reason": "payload_publication_failed",
+        }
+        try:
+            _write_run_file(path, run)
+        except Exception:
+            pass
+    else:
+        try:
+            _write_run_file(path, run)
+            if blob_configured():
+                upload_blob_json(blob_name, run)
+        except Exception:
+            run["persistence"] = {
+                "mode": "degraded",
+                "confirmed": True,
+                "payload_state": "unavailable",
+                "reason": "payload_publication_failed",
+            }
+            try:
+                _write_run_file(path, run)
+            except Exception:
+                pass
+    return run
+
+
+def _sql_lineage_unavailable(run: dict[str, Any]) -> dict[str, Any]:
+    unavailable = copy.deepcopy(run)
+    for key in _LINEAGE_ENVELOPE_KEYS:
+        unavailable.pop(key, None)
+    unavailable.pop("_canonical_ordinal", None)
+    unavailable["persistence"] = {
+        "mode": "unavailable",
+        "confirmed": False,
+        "reason": "lineage_unavailable",
+    }
+    return _replace_run(run, unavailable)
 
 
 def _commit_analysis_candidate(run: dict[str, Any], path: Path, blob_name: str) -> dict[str, Any]:

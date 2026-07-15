@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import backend.experiment_store as experiment_store
 import backend.control_plane as control_plane
@@ -9,6 +10,86 @@ import backend.run_store as run_store
 import pytest
 from backend.app import app
 from fastapi.testclient import TestClient
+
+
+class _CommittedLineageRepository:
+    def __init__(self, *, legacy_version_ids: bool = False) -> None:
+        self.legacy_version_ids = legacy_version_ids
+        self.versions: list[SimpleNamespace] = []
+        self.attachments: list[SimpleNamespace] = []
+
+    def commit_analysis(self, **values):
+        workspace_versions = [
+            item
+            for item in self.versions
+            if item.workspace_id == values["workspace_id"]
+            and item.generation == values["generation"]
+        ]
+        latest = workspace_versions[-1] if workspace_versions else None
+        if (
+            latest is not None
+            and latest.decision_fingerprint == values["decision_fingerprint"]
+            and latest.evidence_fingerprint == values["evidence_fingerprint"]
+        ):
+            return SimpleNamespace(**{**vars(latest), "created": False})
+        committed = SimpleNamespace(
+            version_id=(
+                f"version:{values['canonical_run_id']}"
+                if self.legacy_version_ids
+                else "11111111-1111-4111-8111-111111111111"
+            ),
+            workspace_id=values["workspace_id"],
+            generation=values["generation"],
+            ordinal=len(workspace_versions) + 1,
+            canonical_run_id=values["canonical_run_id"],
+            decision_fingerprint=values["decision_fingerprint"],
+            evidence_fingerprint=values["evidence_fingerprint"],
+            created=True,
+        )
+        self.versions.append(committed)
+        return committed
+
+    def list_versions(self, *, workspace_id: str, generation: int):
+        return tuple(
+            item
+            for item in self.versions
+            if item.workspace_id == workspace_id and item.generation == generation
+        )
+
+    def attach_snapshot(self, **values):
+        if not any(
+            item.version_id == values["version_id"]
+            and item.workspace_id == values["workspace_id"]
+            and item.generation == values["generation"]
+            for item in self.versions
+        ):
+            raise RuntimeError("version is not available for attachment")
+        committed = SimpleNamespace(
+            attachment_id=f"attachment-{len(self.attachments) + 1}",
+            version_id=values["version_id"],
+            workspace_id=values["workspace_id"],
+            generation=values["generation"],
+            kind=values["kind"],
+            source_run_id=values["source_run_id"],
+            payload_sha256=values["payload_sha256"],
+            created=True,
+        )
+        self.attachments.append(committed)
+        return committed
+
+
+@pytest.fixture(autouse=True)
+def _inject_lineage_repository():
+    original_run_provider = run_store._LINEAGE_REPOSITORY_PROVIDER
+    original_experiment_provider = experiment_store._LINEAGE_REPOSITORY_PROVIDER
+    repository = _CommittedLineageRepository(legacy_version_ids=True)
+    run_store._LINEAGE_REPOSITORY_PROVIDER = lambda: repository
+    experiment_store._LINEAGE_REPOSITORY_PROVIDER = lambda: repository
+    yield repository
+    run_store._LINEAGE_REPOSITORY_PROVIDER = original_run_provider
+    experiment_store._LINEAGE_REPOSITORY_PROVIDER = original_experiment_provider
+    run_store._ACTIVE.clear()
+    run_store._LINEAGE_GENERATION_HINTS.clear()
 
 
 def _analysis_run(
@@ -51,6 +132,83 @@ def _analysis_run(
         "artifact": artifact,
         "final": {"artifact": artifact},
     }
+
+
+def test_committed_sql_version_survives_post_commit_blob_publication_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository = _CommittedLineageRepository()
+    workspace_id = "ws-sql-post-commit-payload"
+    run_id = "analysis-sql-post-commit-payload"
+    artifact = _analysis_run(
+        run_id,
+        verdict="conditional",
+        score=3,
+        evidence_ref="evidence.csv#row-1",
+    )["artifact"]
+
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(run_store, "download_blob_json_strict", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        run_store,
+        "upload_blob_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("blob failed")),
+    )
+
+    run_store.start_run(run_id, workspace_id, "Analyze")
+    completed = run_store.complete_run(
+        run_id,
+        final={"artifact": artifact},
+        artifact=artifact,
+        lineage_repository=repository,
+    )
+
+    assert len(repository.versions) == 1
+    assert completed is not None
+    assert completed["canonical_experiment_version_id"] == repository.versions[0].version_id
+    assert completed["persistence"] == {
+        "mode": "degraded",
+        "confirmed": True,
+        "payload_state": "unavailable",
+        "reason": "payload_publication_failed",
+    }
+
+    ledger = experiment_store.sync_experiment_ledger(
+        workspace_id,
+        [],
+        lineage_repository=repository,
+        generation=1,
+    )
+
+    assert ledger["count"] == 1
+    assert ledger["versions"][0]["version_id"] == repository.versions[0].version_id
+    assert ledger["versions"][0]["ordinal"] == 1
+    assert ledger["versions"][0]["payload"] == {"status": "unavailable"}
+
+
+def test_run_and_attachment_metadata_cannot_strengthen_sql_verdict_fingerprint() -> None:
+    analysis = _analysis_run(
+        "analysis-fingerprint",
+        verdict="conditional",
+        score=3,
+        evidence_ref="evidence.csv#row-1",
+    )
+    decorated = {
+        **analysis,
+        "verdict": "recommended",
+        "confidence": "data_confirmed",
+        "version_kind": "artifact_generation",
+        "experiment_attachment": True,
+        "attachment_commit_status": "confirmed",
+        "attachment_commit_id": "metadata-only",
+    }
+
+    assert experiment_store.analysis_lineage_fingerprints(decorated) == (
+        experiment_store.analysis_lineage_fingerprints(analysis)
+    )
 
 
 def test_plan_and_artifact_snapshots_attach_without_creating_versions() -> None:

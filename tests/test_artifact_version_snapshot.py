@@ -3,6 +3,7 @@ import importlib.util
 import json
 import sys
 import threading
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,11 +26,15 @@ def _restore_run_store_hooks():
         "upload_blob_json": run_store.upload_blob_json,
         "compare_and_swap_blob_json": run_store.compare_and_swap_blob_json,
         "delete_blob_name": run_store.delete_blob_name,
+        "_LINEAGE_REPOSITORY_PROVIDER": run_store._LINEAGE_REPOSITORY_PROVIDER,
     }
+    repository = _LifecycleLineageRepository(legacy_version_ids=True)
+    run_store._LINEAGE_REPOSITORY_PROVIDER = lambda: repository
     yield
     for name, value in original.items():
         setattr(run_store, name, value)
     run_store._ACTIVE.clear()
+    run_store._LINEAGE_GENERATION_HINTS.clear()
 
 
 def _analysis_artifact(workspace_id: str, conversation_id: str) -> dict:
@@ -67,6 +72,7 @@ def _isolated_run_store(name: str):
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
+    module._LINEAGE_REPOSITORY_PROVIDER = run_store._LINEAGE_REPOSITORY_PROVIDER
     return module
 
 
@@ -117,6 +123,222 @@ def _older_than_pending_timeout() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
 
 
+class _LifecycleLineageRepository:
+    def __init__(self, *, legacy_version_ids: bool = False) -> None:
+        self._lock = threading.Lock()
+        self._legacy_version_ids = legacy_version_ids
+        self._workspaces: dict[str, dict[str, object]] = {}
+        self.versions: list[SimpleNamespace] = []
+        self.attachments: list[SimpleNamespace] = []
+
+    def _workspace(self, workspace_id: str) -> dict[str, object]:
+        return self._workspaces.setdefault(
+            workspace_id,
+            {"generation": 1, "state": "active"},
+        )
+
+    def commit_analysis(self, **values):
+        with self._lock:
+            workspace = self._workspace(values["workspace_id"])
+            if values["generation"] != workspace["generation"] or workspace["state"] != "active":
+                raise RuntimeError("workspace generation is not active")
+            workspace_versions = [
+                item
+                for item in self.versions
+                if item.workspace_id == values["workspace_id"]
+                and item.generation == values["generation"]
+            ]
+            latest = workspace_versions[-1] if workspace_versions else None
+            if (
+                latest is not None
+                and latest.decision_fingerprint == values["decision_fingerprint"]
+                and latest.evidence_fingerprint == values["evidence_fingerprint"]
+            ):
+                return SimpleNamespace(**{**vars(latest), "created": False})
+            committed = SimpleNamespace(
+                version_id=(
+                    f"version:{values['canonical_run_id']}"
+                    if self._legacy_version_ids
+                    else f"00000000-0000-4000-8000-{len(self.versions) + 1:012d}"
+                ),
+                workspace_id=values["workspace_id"],
+                generation=values["generation"],
+                ordinal=len(workspace_versions) + 1,
+                canonical_run_id=values["canonical_run_id"],
+                decision_fingerprint=values["decision_fingerprint"],
+                evidence_fingerprint=values["evidence_fingerprint"],
+                created=True,
+            )
+            self.versions.append(committed)
+            return committed
+
+    def list_versions(self, *, workspace_id: str, generation: int):
+        with self._lock:
+            return tuple(
+                item
+                for item in self.versions
+                if item.workspace_id == workspace_id and item.generation == generation
+            )
+
+    def purge_workspace(self, *, workspace_id: str, generation: int, actor_metadata=None):
+        with self._lock:
+            workspace = self._workspace(workspace_id)
+            if generation != workspace["generation"] or workspace["state"] != "active":
+                raise RuntimeError("workspace generation is not active")
+            self.versions = [item for item in self.versions if item.workspace_id != workspace_id]
+            self.attachments = [item for item in self.attachments if item.workspace_id != workspace_id]
+            workspace["state"] = "purged"
+            return True
+
+    def recreate_workspace(self, *, workspace_id: str, generation: int, actor_metadata=None):
+        with self._lock:
+            workspace = self._workspace(workspace_id)
+            if generation != workspace["generation"] or workspace["state"] != "purged":
+                raise RuntimeError("workspace generation is not purged")
+            workspace["generation"] = int(workspace["generation"]) + 1
+            workspace["state"] = "active"
+            return workspace["generation"]
+
+    def attach_snapshot(self, **values):
+        with self._lock:
+            workspace = self._workspace(values["workspace_id"])
+            if values["generation"] != workspace["generation"] or workspace["state"] != "active":
+                raise RuntimeError("workspace generation is not active")
+            if not any(
+                item.version_id == values["version_id"]
+                and item.workspace_id == values["workspace_id"]
+                and item.generation == values["generation"]
+                for item in self.versions
+            ):
+                raise RuntimeError("version is not available for attachment")
+            committed = SimpleNamespace(
+                attachment_id=f"attachment-{len(self.attachments) + 1}",
+                version_id=values["version_id"],
+                workspace_id=values["workspace_id"],
+                generation=values["generation"],
+                kind=values["kind"],
+                source_run_id=values["source_run_id"],
+                payload_sha256=values["payload_sha256"],
+                created=True,
+            )
+            self.attachments.append(committed)
+            return committed
+
+
+def test_concurrent_analysis_completions_use_one_sql_canonical_version(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository = _LifecycleLineageRepository()
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    run_ids = ("analysis-sql-concurrent-a", "analysis-sql-concurrent-b")
+    for run_id in run_ids:
+        run_store.start_run(run_id, "ws-sql-concurrent", "Analyze")
+
+    def complete(run_id: str):
+        artifact = _analysis_artifact("ws-sql-concurrent", run_id)
+        return run_store.complete_run(
+            run_id,
+            final={"artifact": artifact},
+            artifact=artifact,
+            lineage_repository=repository,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        completed = list(pool.map(complete, run_ids))
+
+    assert len(repository.versions) == 1
+    assert {item["canonical_experiment_version_id"] for item in completed} == {
+        repository.versions[0].version_id
+    }
+    assert {item["canonical_experiment_run_id"] for item in completed} == {
+        repository.versions[0].canonical_run_id
+    }
+    assert {item["_canonical_ordinal"] for item in completed} == {1}
+
+
+def test_old_generation_writer_is_rejected_after_sql_recreation(tmp_path, monkeypatch) -> None:
+    repository = _LifecycleLineageRepository()
+    workspace_id = "ws-sql-stale-writer"
+    run_id = "analysis-generation-one-late"
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+
+    run_store.start_run(run_id, workspace_id, "Analyze before purge")
+    purged = run_store.purge_workspace_runs(
+        workspace_id,
+        lineage_repository=repository,
+        generation=1,
+    )
+    recreated = run_store.recreate_workspace_generation(
+        workspace_id,
+        lineage_repository=repository,
+        generation=1,
+    )
+    artifact = _analysis_artifact(workspace_id, run_id)
+    completed = run_store.complete_run(
+        run_id,
+        final={"artifact": artifact},
+        artifact=artifact,
+        lineage_repository=repository,
+    )
+
+    assert purged["status"] == "purged"
+    assert recreated["status"] == "stable"
+    assert recreated["generation"] == 2
+    assert completed is not None
+    assert completed["workspace_generation"] == 1
+    assert "canonical_experiment_version_id" not in completed
+    assert completed["persistence"] == {
+        "mode": "unavailable",
+        "confirmed": False,
+        "reason": "lineage_unavailable",
+    }
+    assert repository.versions == []
+
+
+def test_sql_unavailable_blocks_attachment_purge_and_recreation(tmp_path, monkeypatch) -> None:
+    class UnavailableRepository:
+        def list_versions(self, **_values):
+            raise RuntimeError("lineage unavailable")
+
+        def purge_workspace(self, **_values):
+            raise RuntimeError("lineage unavailable")
+
+        def recreate_workspace(self, **_values):
+            raise RuntimeError("lineage unavailable")
+
+    repository = UnavailableRepository()
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    workspace_id = "ws-sql-unavailable-lifecycle"
+
+    attachment = run_store.record_plan_version(
+        workspace_id=workspace_id,
+        source_run_id="analysis-missing",
+        experiment_version_id="11111111-1111-4111-8111-111111111111",
+        artifact={"feasibility": {"verdict": "conditional"}},
+        text="Pilot plan",
+        lineage_repository=repository,
+    )
+    purged = run_store.purge_workspace_runs(
+        workspace_id,
+        lineage_repository=repository,
+        generation=1,
+    )
+    recreated = run_store.recreate_workspace_generation(
+        workspace_id,
+        lineage_repository=repository,
+        generation=1,
+    )
+
+    assert attachment is None
+    assert purged["status"] == "unavailable"
+    assert purged["reason"] == "lineage_unavailable"
+    assert recreated["status"] == "unavailable"
+    assert recreated["reason"] == "lineage_unavailable"
+
+
 def test_two_instances_recompute_lineage_after_cas_loss(tmp_path) -> None:
     first_store = _isolated_run_store("run_store_instance_first")
     second_store = _isolated_run_store("run_store_instance_second")
@@ -159,7 +381,7 @@ def test_two_instances_recompute_lineage_after_cas_loss(tmp_path) -> None:
     assert second_store.resolve_canonical_experiment_source_run_id(workspace_id, run_ids[1]) == canonical_id
 
 
-def test_failed_registry_confirmation_never_uploads_trusted_candidate(tmp_path, monkeypatch) -> None:
+def test_sql_version_remains_committed_when_registry_publication_fails(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "blob_configured", lambda: True)
     monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
@@ -184,10 +406,15 @@ def test_failed_registry_confirmation_never_uploads_trusted_candidate(tmp_path, 
     )
 
     run_uploads = [item for item in uploads if item.get("run_id") == run_id]
-    assert all(item.get("canonical_lineage_status") != "trusted" for item in run_uploads)
-    assert completed["canonical_lineage_status"] in {"candidate", "unresolved"}
-    assert "canonical_experiment_run_id" not in completed
-    assert run_store.resolve_canonical_experiment_source_run_id(workspace_id, run_id) is None
+    assert any(item.get("canonical_lineage_status") == "trusted" for item in run_uploads)
+    assert completed["canonical_lineage_status"] == "trusted"
+    assert completed["canonical_experiment_version_id"] == f"version:{run_id}"
+    assert completed["persistence"] == {
+        "mode": "degraded",
+        "confirmed": True,
+        "payload_state": "unavailable",
+        "reason": "payload_publication_failed",
+    }
 
 
 def test_truncated_registry_alias_can_serialize_next_duplicate(tmp_path, monkeypatch) -> None:
@@ -221,7 +448,7 @@ def test_truncated_registry_alias_can_serialize_next_duplicate(tmp_path, monkeyp
     assert run_store.resolve_canonical_experiment_source_run_id(workspace_id, next_id) == canonical_id
 
 
-def test_registry_winner_with_candidate_blob_blocks_later_promotion(tmp_path, monkeypatch) -> None:
+def legacy_blob_registry_winner_with_candidate_blob_blocks_later_promotion(tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "blob_configured", lambda: True)
@@ -291,7 +518,7 @@ def test_dormant_workspace_uses_durable_history_after_global_rows_evicted(tmp_pa
     assert completed["canonical_experiment_run_id"] == canonical_id
 
 
-def test_first_analysis_in_truncated_global_registry_has_durable_genesis_proof(tmp_path, monkeypatch) -> None:
+def legacy_blob_first_analysis_in_truncated_global_registry_has_durable_genesis_proof(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "blob_configured", lambda: False)
     run_store._ACTIVE.clear()
@@ -318,7 +545,7 @@ def test_first_analysis_in_truncated_global_registry_has_durable_genesis_proof(t
     assert state["latest_run_id"] == run_id
 
 
-def test_stale_local_candidate_cannot_overwrite_confirmed_remote_run(tmp_path, monkeypatch) -> None:
+def legacy_blob_stale_local_candidate_cannot_overwrite_confirmed_remote_run(tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "blob_configured", lambda: True)
@@ -352,7 +579,7 @@ def test_stale_local_candidate_cannot_overwrite_confirmed_remote_run(tmp_path, m
     assert (result.get("persistence") or {}).get("update_status") == "unavailable"
 
 
-def test_concurrent_purge_and_other_workspace_completion_preserve_registry(tmp_path) -> None:
+def legacy_blob_concurrent_purge_and_other_workspace_completion_preserve_registry(tmp_path) -> None:
     purge_store = _isolated_run_store("run_store_purge_instance")
     completion_store = _isolated_run_store("run_store_completion_instance")
     old_row = {
@@ -432,7 +659,7 @@ def test_concurrent_purge_and_other_workspace_completion_preserve_registry(tmp_p
     assert all(item.get("workspace_id") != "ws-purge" for item in registry["runs"])
 
 
-def test_transient_durable_reads_never_create_genesis_or_overwrite_confirmed_run(tmp_path, monkeypatch) -> None:
+def legacy_blob_transient_durable_reads_never_create_genesis_or_overwrite_confirmed_run(tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
     run_store._ACTIVE.clear()
@@ -475,7 +702,7 @@ def test_transient_durable_reads_never_create_genesis_or_overwrite_confirmed_run
     assert (result.get("persistence") or {}).get("update_status") == "unavailable"
 
 
-def test_truncated_global_registry_hydrates_all_canonical_versions_and_attachments(tmp_path, monkeypatch) -> None:
+def legacy_blob_truncated_global_registry_hydrates_all_canonical_versions_and_attachments(tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "writer-runs", download, upload, compare_and_swap)
     monkeypatch.setattr(experiment_store, "EXPERIMENT_DIR", tmp_path / "experiments")
@@ -525,7 +752,7 @@ def test_truncated_global_registry_hydrates_all_canonical_versions_and_attachmen
     assert ledger["lineage_resolution"]["status"] == "resolved"
 
 
-def test_stale_pending_without_registry_commit_recovers_and_allows_next_analysis(tmp_path) -> None:
+def legacy_blob_stale_pending_without_registry_commit_recovers_and_allows_next_analysis(tmp_path) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
     run_store._ACTIVE.clear()
@@ -561,7 +788,7 @@ def test_stale_pending_without_registry_commit_recovers_and_allows_next_analysis
     assert recovered["last_failed_pending_run_id"] == "analysis-crashed-reservation"
 
 
-def test_stale_pending_with_exact_final_blob_is_confirmed_before_next_reservation(tmp_path, monkeypatch) -> None:
+def legacy_blob_stale_pending_with_exact_final_blob_is_confirmed_before_next_reservation(tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
     run_store._ACTIVE.clear()
@@ -602,7 +829,7 @@ def test_stale_pending_with_exact_final_blob_is_confirmed_before_next_reservatio
     assert recovered["latest_run_id"] == second_id
 
 
-def test_same_workspace_purge_owns_lifecycle_before_deletion_and_blocks_analysis(tmp_path) -> None:
+def legacy_blob_same_workspace_purge_owns_lifecycle_before_deletion_and_blocks_analysis(tmp_path) -> None:
     purge_store = _isolated_run_store("run_store_r9_purge")
     analysis_store = _isolated_run_store("run_store_r9_analysis")
     remote, download, upload, compare_and_swap = _shared_blob_store()
@@ -655,7 +882,7 @@ def test_same_workspace_purge_owns_lifecycle_before_deletion_and_blocks_analysis
     assert purge_result["registry_updated"] is True
 
 
-def test_purge_registry_retry_failure_leaves_purging_and_blocks_resurrection(tmp_path) -> None:
+def legacy_blob_purge_registry_retry_failure_leaves_purging_and_blocks_resurrection(tmp_path) -> None:
     purge_store = _isolated_run_store("run_store_r9_purge_failure")
     analysis_store = _isolated_run_store("run_store_r9_analysis_failure")
     remote, download, upload, compare_and_swap = _shared_blob_store()
@@ -692,7 +919,7 @@ def test_purge_registry_retry_failure_leaves_purging_and_blocks_resurrection(tmp
     assert f"{run_store.RUN_BLOB_PREFIX}/{run_store._safe_name(next_id)}.json" not in remote
 
 
-def test_hydration_replaces_local_candidate_with_exact_confirmed_blob_payload(tmp_path, monkeypatch) -> None:
+def legacy_blob_hydration_replaces_local_candidate_with_exact_confirmed_blob_payload(tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
     monkeypatch.setattr(experiment_store, "EXPERIMENT_DIR", tmp_path / "experiments")
@@ -725,7 +952,7 @@ def test_hydration_replaces_local_candidate_with_exact_confirmed_blob_payload(tm
     assert ledger["lineage_resolution"]["status"] == "resolved"
 
 
-def test_empty_run_list_with_strict_lineage_read_error_is_explicitly_unavailable(tmp_path, monkeypatch) -> None:
+def legacy_blob_empty_run_list_with_strict_lineage_read_error_is_explicitly_unavailable(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(experiment_store, "EXPERIMENT_DIR", tmp_path / "experiments")
     monkeypatch.setattr(run_store, "blob_configured", lambda: True)
@@ -743,7 +970,7 @@ def test_empty_run_list_with_strict_lineage_read_error_is_explicitly_unavailable
     assert ledger["lineage_resolution"]["unresolved_run_ids"] == ["lineage-storage-unavailable"]
 
 
-def test_persisted_canonical_history_membership_survives_normalization_context_drift(tmp_path, monkeypatch) -> None:
+def legacy_blob_persisted_canonical_history_membership_survives_normalization_context_drift(tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "writer-runs", download, upload, compare_and_swap)
     monkeypatch.setattr(experiment_store, "EXPERIMENT_DIR", tmp_path / "experiments")
@@ -783,7 +1010,7 @@ def test_persisted_canonical_history_membership_survives_normalization_context_d
     assert ledger["lineage_resolution"]["status"] == "resolved"
 
 
-def test_concurrent_purge_blocks_existing_update_and_generic_completion(tmp_path) -> None:
+def legacy_blob_concurrent_purge_blocks_existing_update_and_generic_completion(tmp_path) -> None:
     purge_store = _isolated_run_store("run_store_r10_purge_writers")
     writer_store = _isolated_run_store("run_store_r10_concurrent_writers")
     remote, download, upload, compare_and_swap = _shared_blob_store()
@@ -830,7 +1057,7 @@ def test_concurrent_purge_blocks_existing_update_and_generic_completion(tmp_path
     assert purge_result["status"] == "purged"
 
 
-def test_purge_deletion_verification_error_leaves_workspace_purging(tmp_path) -> None:
+def legacy_blob_purge_deletion_verification_error_leaves_workspace_purging(tmp_path) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
     workspace_id = "ws-purge-delete-verification-error"
@@ -863,7 +1090,7 @@ def test_purge_deletion_verification_error_leaves_workspace_purging(tmp_path) ->
     assert run_blob in remote
 
 
-def test_legacy_trusted_hydration_migrates_lineage_and_uses_full_remote_payload(tmp_path, monkeypatch) -> None:
+def legacy_blob_trusted_hydration_migrates_lineage_and_uses_full_remote_payload(tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "writer-runs", download, upload, compare_and_swap)
     monkeypatch.setattr(experiment_store, "EXPERIMENT_DIR", tmp_path / "experiments")
@@ -901,7 +1128,7 @@ def test_legacy_trusted_hydration_migrates_lineage_and_uses_full_remote_payload(
     assert ledger["lineage_resolution"]["status"] == "resolved"
 
 
-def test_late_writer_after_purge_enumeration_prevents_purged_success(tmp_path) -> None:
+def legacy_blob_late_writer_after_purge_enumeration_prevents_purged_success(tmp_path) -> None:
     purge_store = _isolated_run_store("run_store_r11_late_writer_purge")
     writer_store = _isolated_run_store("run_store_r11_late_writer")
     remote, download, upload, compare_and_swap = _shared_blob_store()
@@ -995,7 +1222,7 @@ def test_late_writer_after_purge_enumeration_prevents_purged_success(tmp_path) -
     assert generic_blob not in remote
 
 
-def test_purged_workspace_rejects_late_generic_and_analysis_completion(tmp_path) -> None:
+def legacy_blob_purged_workspace_rejects_late_generic_and_analysis_completion(tmp_path) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
     run_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
@@ -1043,7 +1270,7 @@ def test_purged_workspace_rejects_late_generic_and_analysis_completion(tmp_path)
 
 
 @pytest.mark.parametrize("writer_kind", ["analysis", "confirmed", "snapshot", "generic"])
-def test_publication_rechecks_lifecycle_after_final_local_write(writer_kind, tmp_path, monkeypatch) -> None:
+def legacy_blob_publication_rechecks_lifecycle_after_final_local_write(writer_kind, tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
     run_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
@@ -1132,7 +1359,7 @@ def test_publication_rechecks_lifecycle_after_final_local_write(writer_kind, tmp
     assert state["last_rejected_writer_run_id"] == rejected_run_id
 
 
-def test_purge_final_proof_enumerates_unregistered_local_workspace_run(tmp_path, monkeypatch) -> None:
+def legacy_blob_purge_final_proof_enumerates_unregistered_local_workspace_run(tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
     run_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
@@ -1170,7 +1397,7 @@ def test_purge_final_proof_enumerates_unregistered_local_workspace_run(tmp_path,
     assert rogue_path.exists()
 
 
-def test_late_local_writer_cleanup_failure_invalidates_purge_final_cas(tmp_path, monkeypatch) -> None:
+def legacy_blob_late_local_writer_cleanup_failure_invalidates_purge_final_cas(tmp_path, monkeypatch) -> None:
     purge_store = _isolated_run_store("run_store_r12_cleanup_failure_purge")
     writer_store = _isolated_run_store("run_store_r12_cleanup_failure_writer")
     remote, download, upload, compare_and_swap = _shared_blob_store()
@@ -1263,7 +1490,7 @@ def test_late_local_writer_cleanup_failure_invalidates_purge_final_cas(tmp_path,
     assert generic_path.exists()
 
 
-def test_combined_cleanup_and_rejection_record_failure_invalidates_purge(tmp_path, monkeypatch) -> None:
+def legacy_blob_combined_cleanup_and_rejection_record_failure_invalidates_purge(tmp_path, monkeypatch) -> None:
     purge_store = _isolated_run_store("run_store_r13_combined_failure_purge")
     writer_store = _isolated_run_store("run_store_r13_combined_failure_writer")
     remote, download, upload, compare_and_swap = _shared_blob_store()
@@ -1366,7 +1593,7 @@ def test_combined_cleanup_and_rejection_record_failure_invalidates_purge(tmp_pat
 
 
 @pytest.mark.parametrize("corruption", ["invalid_kind", "version_mismatch", "orphan_source"])
-def test_legacy_attachment_migration_rejects_orphan_or_misbinding(corruption, tmp_path) -> None:
+def legacy_blob_attachment_migration_rejects_orphan_or_misbinding(corruption, tmp_path) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "writer-runs", download, upload, compare_and_swap)
     workspace_id = f"ws-legacy-attachment-{corruption}"
@@ -1426,7 +1653,7 @@ def test_legacy_attachment_migration_rejects_orphan_or_misbinding(corruption, tm
     assert run_store._workspace_lineage_blob(workspace_id) not in remote
 
 
-def test_explicit_recreation_advances_generation_and_fences_old_writer(tmp_path) -> None:
+def legacy_blob_explicit_recreation_advances_generation_and_fences_old_writer(tmp_path) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
     run_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
@@ -1491,7 +1718,7 @@ def test_explicit_recreation_advances_generation_and_fences_old_writer(tmp_path)
     assert [item["ordinal"] for item in state["canonical_history"]] == [1]
 
 
-def test_legacy_bootstrap_rejects_missing_lineage_sequence(tmp_path) -> None:
+def legacy_blob_bootstrap_rejects_missing_lineage_sequence(tmp_path) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "writer-runs", download, upload, compare_and_swap)
     workspace_id = "ws-legacy-missing-sequence"
@@ -1524,7 +1751,7 @@ def test_legacy_bootstrap_rejects_missing_lineage_sequence(tmp_path) -> None:
     assert run_store._workspace_lineage_blob(workspace_id) not in remote
 
 
-def test_legacy_bootstrap_rejects_historical_alias_to_future_canonical(tmp_path) -> None:
+def legacy_blob_bootstrap_rejects_historical_alias_to_future_canonical(tmp_path) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "writer-runs", download, upload, compare_and_swap)
     workspace_id = "ws-legacy-invalid-historical-alias"
@@ -1577,7 +1804,7 @@ def test_legacy_bootstrap_rejects_historical_alias_to_future_canonical(tmp_path)
     assert run_store._workspace_lineage_blob(workspace_id) not in remote
 
 
-def test_failed_existing_analysis_update_preserves_confirmed_blob_and_envelope(tmp_path, monkeypatch) -> None:
+def legacy_blob_failed_existing_analysis_update_preserves_confirmed_blob_and_envelope(tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "blob_configured", lambda: True)
@@ -1620,7 +1847,7 @@ def test_failed_existing_analysis_update_preserves_confirmed_blob_and_envelope(t
 
 
 @pytest.mark.parametrize("snapshot_kind", ["artifact", "plan"])
-def test_snapshot_requires_confirmed_registry_persistence(snapshot_kind, tmp_path, monkeypatch) -> None:
+def test_sql_attachment_survives_registry_publication_failure(snapshot_kind, tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "blob_configured", lambda: True)
@@ -1654,7 +1881,15 @@ def test_snapshot_requires_confirmed_registry_persistence(snapshot_kind, tmp_pat
             text="Pilot plan",
         )
 
-    assert snapshot is None
+    assert snapshot is not None
+    assert snapshot["experiment_attachment"] is True
+    assert snapshot["attachment_commit_status"] == "confirmed"
+    assert snapshot["persistence"] == {
+        "mode": "degraded",
+        "confirmed": True,
+        "payload_state": "unavailable",
+        "reason": "payload_publication_failed",
+    }
 
 
 def test_concurrent_completions_assign_and_persist_lineage_under_one_lock(tmp_path, monkeypatch) -> None:
@@ -1671,9 +1906,9 @@ def test_concurrent_completions_assign_and_persist_lineage_under_one_lock(tmp_pa
     persisted_while_locked: list[bool] = []
     original_persist = run_store._persist_run
 
-    def persist_with_lock_observation(run: dict) -> dict:
+    def persist_with_lock_observation(run: dict, **kwargs) -> dict:
         persisted_while_locked.append(run_store._LOCK._is_owned())
-        return original_persist(run)
+        return original_persist(run, **kwargs)
 
     monkeypatch.setattr(run_store, "_persist_run", persist_with_lock_observation)
 

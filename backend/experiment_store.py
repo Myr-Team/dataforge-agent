@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import re
 import threading
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 try:
     from .blob_store import download_blob_json, upload_blob_json
@@ -21,6 +23,7 @@ EXPERIMENT_DIR = ROOT / "generated-outputs" / "experiments"
 EXPERIMENT_BLOB_PREFIX = "experiments"
 
 _LOCK = threading.RLock()
+_LINEAGE_REPOSITORY_PROVIDER: Any | None = None
 _VERDICT_RANK = {
     "insufficient_evidence": 0,
     "not_yet_feasible": 1,
@@ -54,10 +57,18 @@ def build_experiment_ledger(
     *,
     outcomes: list[dict[str, Any]] | None = None,
     registry_state: dict[str, Any] | None = None,
+    authoritative_versions: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
     normalized_workspace = str(workspace_id or "").strip()
     if not normalized_workspace:
         raise ValueError("workspace_id is required")
+    if authoritative_versions is not None:
+        return _build_sql_experiment_ledger(
+            normalized_workspace,
+            runs,
+            authoritative_versions,
+            outcomes=outcomes,
+        )
     if registry_state is None:
         try:
             from .run_store import authoritative_run_registry
@@ -256,50 +267,288 @@ def sync_experiment_ledger(
     runs: list[dict[str, Any]],
     *,
     outcomes: list[dict[str, Any]] | None = None,
+    lineage_repository: Any | None = None,
+    generation: int | None = None,
 ) -> dict[str, Any]:
-    hydrated_runs = runs
-    hydration_unresolved: list[str] = []
+    normalized_workspace = str(workspace_id or "").strip()
+    if not normalized_workspace:
+        raise ValueError("workspace_id is required")
+    active_generation = generation or max(
+        [int(item.get("workspace_generation") or 0) for item in runs if isinstance(item, dict)]
+        or [1]
+    )
+    active_generation = max(1, active_generation)
     try:
-        from .run_store import hydrate_canonical_experiment_runs
+        repository = _resolve_lineage_repository(lineage_repository)
+        authoritative_versions = repository.list_versions(
+            workspace_id=normalized_workspace,
+            generation=active_generation,
+        )
+    except Exception:
+        return {
+            "version": 1,
+            "workspace_id": normalized_workspace,
+            "generation": active_generation,
+            "generated_at": _now(),
+            "versions": [],
+            "count": 0,
+            "latest_version_id": None,
+            "lineage_resolution": {"status": "unavailable", "reason": "lineage_unavailable"},
+            "source": "sql_lineage",
+        }
+    hydrated_runs = list(runs)
+    hydrated_ids = {
+        str(item.get("run_id") or item.get("conversation_id") or "")
+        for item in hydrated_runs
+        if isinstance(item, dict)
+    }
+    try:
+        from .run_store import get_run
     except ImportError:
-        from run_store import hydrate_canonical_experiment_runs
-    try:
-        hydrated_runs, hydration_unresolved = hydrate_canonical_experiment_runs(workspace_id, runs)
-    except (OSError, ValueError):
-        hydration_unresolved = sorted(
-            str(item.get("run_id") or "")
-            for item in runs
-            if isinstance(item, dict) and item.get("canonical_experiment_run_id")
-        )[:20]
-    try:
-        from .run_store import authoritative_run_registry
-    except ImportError:
-        from run_store import authoritative_run_registry
-    registry_state = authoritative_run_registry(workspace_id)
+        from run_store import get_run
+    for committed in authoritative_versions:
+        canonical_run_id = str(_commit_value(committed, "canonical_run_id") or "")
+        if not canonical_run_id or canonical_run_id in hydrated_ids:
+            continue
+        try:
+            payload = get_run(canonical_run_id)
+        except (FileNotFoundError, ValueError, KeyError):
+            continue
+        if isinstance(payload, dict):
+            hydrated_runs.append(payload)
+            hydrated_ids.add(canonical_run_id)
     ledger = build_experiment_ledger(
-        workspace_id,
+        normalized_workspace,
         hydrated_runs,
         outcomes=outcomes,
-        registry_state=registry_state,
+        authoritative_versions=authoritative_versions,
     )
-    if hydration_unresolved:
-        existing = set((ledger.get("lineage_resolution") or {}).get("unresolved_run_ids") or [])
-        existing.update(hydration_unresolved)
-        ledger["lineage_resolution"] = {
-            "status": "unavailable",
-            "unresolved_run_ids": sorted(existing)[:20],
-        }
     with _LOCK:
-        path = _local_path(workspace_id)
+        path = _local_path(normalized_workspace)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(path)
         try:
-            upload_blob_json(_blob_name(workspace_id), ledger)
+            upload_blob_json(_blob_name(normalized_workspace), ledger)
         except Exception:
-            pass
+            ledger["payload_publication"] = {
+                "status": "unavailable",
+                "reason": "payload_publication_failed",
+            }
+            temporary.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(path)
     return ledger
+
+
+def analysis_lineage_fingerprints(run: Mapping[str, Any]) -> tuple[str, str]:
+    """Fingerprint only evidence-backed decision data used for SQL promotion."""
+    artifact = _artifact(run)
+    feasibility = artifact.get("feasibility") if isinstance(artifact.get("feasibility"), Mapping) else {}
+    evidence, _unverifiable = _evidence_snapshot(artifact, feasibility)
+    evidence_delta = _evidence_delta([], evidence)
+    authoritative_dimensions = _authoritative_dimension_changes(
+        _dimension_evidence_keys(feasibility),
+        evidence_delta,
+    )
+    decision = _guard_decision_strengthening(
+        {},
+        {
+            "model_verdict": _normalized_token(feasibility.get("verdict")) or None,
+            "verdict": _normalized_token(feasibility.get("verdict")) or None,
+            "confidence": _normalized_token(
+                feasibility.get("overall_confidence") or feasibility.get("confidence")
+            )
+            or None,
+            "dimensions": _dimension_decisions(feasibility),
+        },
+        supports_strengthening=bool(authoritative_dimensions),
+        authoritative_dimensions=authoritative_dimensions,
+    )
+    decision_projection = {
+        "verdict": _normalized_decision_field("verdict", decision.get("verdict")),
+        "confidence": _normalized_decision_field("confidence", decision.get("confidence")),
+        "dimensions": _normalized_decision_field("dimensions", decision.get("dimensions")),
+    }
+    return _stable_sha256(decision_projection), _stable_sha256(evidence)
+
+
+def _build_sql_experiment_ledger(
+    workspace_id: str,
+    runs: list[dict[str, Any]],
+    authoritative_versions: Sequence[Any],
+    *,
+    outcomes: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    ordered_commits = sorted(authoritative_versions, key=lambda item: int(_commit_value(item, "ordinal") or 0))
+    runs_by_id = {
+        str(item.get("run_id") or item.get("conversation_id") or ""): item
+        for item in runs
+        if isinstance(item, dict)
+    }
+    canonical_payloads: list[dict[str, Any]] = []
+    for commit in ordered_commits:
+        run_id = str(_commit_value(commit, "canonical_run_id") or "")
+        payload = runs_by_id.get(run_id)
+        if not isinstance(payload, dict):
+            continue
+        if str((payload.get("persistence") or {}).get("payload_state") or "") == "unavailable":
+            continue
+        hydrated = copy.deepcopy(payload)
+        for key in (
+            "canonical_experiment_run_id",
+            "canonical_experiment_version_id",
+            "canonical_resolution_status",
+            "canonical_lineage_status",
+            "canonical_lineage_commit_id",
+            "canonical_target_commit_id",
+            "canonical_target_content_sha256",
+            "canonical_lineage_content_sha256",
+            "canonical_lineage_sequence",
+        ):
+            hydrated.pop(key, None)
+        hydrated["_canonical_ordinal"] = int(_commit_value(commit, "ordinal") or 0)
+        canonical_payloads.append(hydrated)
+
+    hydrated_ledger = build_experiment_ledger(
+        workspace_id,
+        canonical_payloads,
+        outcomes=outcomes,
+        registry_state={"history_truncated": False},
+    )
+    hydrated_by_run = {
+        str(item.get("run_id") or ""): item
+        for item in hydrated_ledger.get("versions") or []
+        if isinstance(item, dict)
+    }
+    versions: list[dict[str, Any]] = []
+    unavailable_run_ids: list[str] = []
+    for commit in ordered_commits:
+        run_id = str(_commit_value(commit, "canonical_run_id") or "")
+        version_id = str(_commit_value(commit, "version_id") or "")
+        ordinal = int(_commit_value(commit, "ordinal") or 0)
+        version = copy.deepcopy(hydrated_by_run.get(run_id) or {})
+        if not version:
+            unavailable_run_ids.append(run_id)
+            version = {
+                "workspace_id": workspace_id,
+                "run_id": run_id,
+                "decision": {},
+                "evidence": [],
+                "metrics": [],
+                "attachments": {"plans": [], "artifacts": []},
+                "payload": {"status": "unavailable"},
+            }
+        else:
+            version["payload"] = {"status": "available"}
+        version.update(
+            {
+                "version_id": version_id,
+                "ordinal": ordinal,
+                "label": f"V{ordinal}",
+                "workspace_id": workspace_id,
+                "run_id": run_id,
+                "generation": int(_commit_value(commit, "generation") or 0),
+            }
+        )
+        versions.append(version)
+
+    by_version_id = {str(item.get("version_id") or ""): item for item in versions}
+    invalid_snapshot_ids: list[str] = []
+    for snapshot in runs:
+        if not isinstance(snapshot, dict) or str(snapshot.get("version_kind") or "") not in {
+            "plan_draft",
+            "artifact_generation",
+        }:
+            continue
+        target = by_version_id.get(str(snapshot.get("experiment_version_id") or ""))
+        if target is None:
+            continue
+        if (
+            snapshot.get("experiment_attachment") is not True
+            or str(snapshot.get("attachment_commit_status") or "") != "confirmed"
+            or not str(snapshot.get("attachment_commit_id") or "")
+            or str(snapshot.get("attachment_payload_sha256") or "")
+            != _snapshot_payload_sha256(snapshot)
+        ):
+            invalid_snapshot_ids.append(str(snapshot.get("run_id") or ""))
+            continue
+        artifact = _artifact(snapshot)
+        if snapshot.get("version_kind") == "plan_draft":
+            draft = artifact.get("plan_draft") if isinstance(artifact.get("plan_draft"), dict) else {}
+            target["attachments"]["plans"].append(
+                {"run_id": snapshot.get("run_id"), "text": draft.get("text"), "created_at": snapshot.get("completed_at")}
+            )
+        elif snapshot.get("version_kind") == "artifact_generation":
+            proposal = artifact.get("proposal") if isinstance(artifact.get("proposal"), dict) else {}
+            target["attachments"]["artifacts"].append(
+                {"run_id": snapshot.get("run_id"), "urls": proposal.get("artifact_urls") or {}, "created_at": snapshot.get("completed_at")}
+            )
+
+    generation = int(_commit_value(ordered_commits[-1], "generation") or 1) if ordered_commits else 1
+    return {
+        "version": 1,
+        "workspace_id": workspace_id,
+        "generation": generation,
+        "generated_at": _now(),
+        "versions": versions,
+        "count": len(versions),
+        "latest_version_id": versions[-1]["version_id"] if versions else None,
+        "lineage_resolution": {
+            "status": "unavailable" if unavailable_run_ids or invalid_snapshot_ids else "resolved",
+            **(
+                {"unresolved_run_ids": sorted(set(unavailable_run_ids + invalid_snapshot_ids))[:20]}
+                if unavailable_run_ids or invalid_snapshot_ids
+                else {}
+            ),
+        },
+        "source": "sql_lineage",
+    }
+
+
+def _commit_value(commit: Any, name: str) -> Any:
+    return commit.get(name) if isinstance(commit, Mapping) else getattr(commit, name, None)
+
+
+def _stable_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _snapshot_payload_sha256(snapshot: Mapping[str, Any]) -> str:
+    artifact = snapshot.get("artifact") if isinstance(snapshot.get("artifact"), Mapping) else {}
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "workspace_id": str(snapshot.get("workspace_id") or ""),
+                "run_id": str(snapshot.get("run_id") or ""),
+                "source_run_id": str(snapshot.get("source_run_id") or ""),
+                "experiment_version_id": str(snapshot.get("experiment_version_id") or ""),
+                "version_kind": str(snapshot.get("version_kind") or ""),
+                "produced_kinds": snapshot.get("produced_kinds")
+                if isinstance(snapshot.get("produced_kinds"), list)
+                else [],
+                "artifact": artifact,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _resolve_lineage_repository(repository: Any | None) -> Any:
+    if repository is not None:
+        return repository
+    if _LINEAGE_REPOSITORY_PROVIDER is not None:
+        return _LINEAGE_REPOSITORY_PROVIDER()
+    try:
+        from .app import get_lineage_repository
+    except ImportError:
+        from app import get_lineage_repository
+    return get_lineage_repository()
 
 
 def _has_lineage_metadata(run: Mapping[str, Any]) -> bool:
@@ -1288,6 +1537,7 @@ def _now() -> str:
 
 
 __all__ = [
+    "analysis_lineage_fingerprints",
     "build_experiment_ledger",
     "compare_experiment_versions",
     "load_experiment_ledger",

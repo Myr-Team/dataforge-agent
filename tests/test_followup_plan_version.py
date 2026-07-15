@@ -1,8 +1,81 @@
 import asyncio
+from types import SimpleNamespace
 
 import backend.experiment_store as experiment_store
 import backend.orchestrator as orchestrator
 import backend.run_store as run_store
+import pytest
+
+
+class _PlanLineageRepository:
+    def __init__(self) -> None:
+        self.versions: list[SimpleNamespace] = []
+        self.attachments: list[SimpleNamespace] = []
+
+    def commit_analysis(self, **values):
+        latest = self.versions[-1] if self.versions else None
+        if (
+            latest is not None
+            and latest.workspace_id == values["workspace_id"]
+            and latest.generation == values["generation"]
+            and latest.decision_fingerprint == values["decision_fingerprint"]
+            and latest.evidence_fingerprint == values["evidence_fingerprint"]
+        ):
+            return SimpleNamespace(**{**vars(latest), "created": False})
+        committed = SimpleNamespace(
+            version_id=f"version:{values['canonical_run_id']}",
+            workspace_id=values["workspace_id"],
+            generation=values["generation"],
+            ordinal=len([item for item in self.versions if item.workspace_id == values["workspace_id"]]) + 1,
+            canonical_run_id=values["canonical_run_id"],
+            decision_fingerprint=values["decision_fingerprint"],
+            evidence_fingerprint=values["evidence_fingerprint"],
+            created=True,
+        )
+        self.versions.append(committed)
+        return committed
+
+    def list_versions(self, *, workspace_id: str, generation: int):
+        return tuple(
+            item
+            for item in self.versions
+            if item.workspace_id == workspace_id and item.generation == generation
+        )
+
+    def attach_snapshot(self, **values):
+        if not any(
+            item.version_id == values["version_id"]
+            and item.workspace_id == values["workspace_id"]
+            and item.generation == values["generation"]
+            for item in self.versions
+        ):
+            raise RuntimeError("version is not available for attachment")
+        committed = SimpleNamespace(
+            attachment_id=f"attachment-{len(self.attachments) + 1}",
+            version_id=values["version_id"],
+            workspace_id=values["workspace_id"],
+            generation=values["generation"],
+            kind=values["kind"],
+            source_run_id=values["source_run_id"],
+            payload_sha256=values["payload_sha256"],
+            created=True,
+        )
+        self.attachments.append(committed)
+        return committed
+
+
+@pytest.fixture(autouse=True)
+def _inject_lineage_repository():
+    original_run_provider = run_store._LINEAGE_REPOSITORY_PROVIDER
+    original_experiment_provider = experiment_store._LINEAGE_REPOSITORY_PROVIDER
+    repository = _PlanLineageRepository()
+    run_store._LINEAGE_REPOSITORY_PROVIDER = lambda: repository
+    experiment_store._LINEAGE_REPOSITORY_PROVIDER = lambda: repository
+    yield repository
+    run_store._LINEAGE_REPOSITORY_PROVIDER = original_run_provider
+    experiment_store._LINEAGE_REPOSITORY_PROVIDER = original_experiment_provider
+    run_store._ACTIVE.clear()
+    run_store._LINEAGE_GENERATION_HINTS.clear()
 
 
 def test_iteration_inputs_preserve_source_lineage_and_synthetic_kind() -> None:
@@ -86,6 +159,11 @@ def test_persist_chat_completion_records_plan_draft_version(monkeypatch):
         orchestrator,
         "resolve_canonical_experiment_source_run_id",
         lambda workspace_id, source_run_id: source_run_id,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_canonical_version_id_for_run",
+        lambda source_run_id: f"version:{source_run_id}",
     )
 
     artifact = {

@@ -2974,7 +2974,11 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             updated_run = update_run_proposal(candidate_run_id, result)
             result["persisted_run_id"] = candidate_run_id
-            experiment_version_id = f"version:{candidate_run_id}"
+            experiment_version_id = str(
+                (updated_run or {}).get("canonical_experiment_version_id")
+                or _canonical_version_id_for_run(candidate_run_id)
+                or ""
+            )
             try:
                 source_artifact = _produce_run_artifact(updated_run) or _produce_run_artifact(get_run(candidate_run_id)) or artifact
                 version = record_artifact_version(
@@ -5564,14 +5568,19 @@ async def _persist_chat_completion(
         await run_in_threadpool(_persist_assistant_message, conversation_id, workspace_id, text, verdict, citations)
         if _is_plan_draft_artifact(artifact):
             plan_artifact = _plan_attachment_artifact(plan_source_run_id, artifact)
+            plan_version_id = _canonical_version_id_for_run(plan_source_run_id)
             try:
-                plan_version = await run_in_threadpool(
-                    record_plan_version,
-                    workspace_id=workspace_id,
-                    source_run_id=plan_source_run_id,
-                    experiment_version_id=f"version:{plan_source_run_id}",
-                    artifact=plan_artifact,
-                    text=text,
+                plan_version = (
+                    await run_in_threadpool(
+                        record_plan_version,
+                        workspace_id=workspace_id,
+                        source_run_id=plan_source_run_id,
+                        experiment_version_id=plan_version_id,
+                        artifact=plan_artifact,
+                        text=text,
+                    )
+                    if plan_version_id
+                    else None
                 )
             except Exception:
                 plan_version = None
@@ -5579,7 +5588,7 @@ async def _persist_chat_completion(
             else:
                 attachment_reason = "canonical_version_unavailable"
             if plan_version and plan_version.get("run_id"):
-                artifact["experiment_version_id"] = f"version:{plan_source_run_id}"
+                artifact["experiment_version_id"] = plan_version_id
                 artifact["experiment_attachment"] = {"status": "attached"}
             else:
                 artifact["experiment_attachment"] = {
@@ -5617,6 +5626,16 @@ def _plan_source_run_id(workspace_id: str, conversation_id: str, artifact: Mappi
     except Exception:
         canonical_run_id = None
     return canonical_run_id or ""
+
+
+def _canonical_version_id_for_run(run_id: str) -> str:
+    if not run_id:
+        return ""
+    try:
+        run = get_run(run_id)
+    except (FileNotFoundError, ValueError, KeyError):
+        return ""
+    return str(run.get("canonical_experiment_version_id") or "").strip()
 
 
 def _plan_attachment_artifact(source_run_id: str, artifact: Mapping[str, Any]) -> dict[str, Any]:
