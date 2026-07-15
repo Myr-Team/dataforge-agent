@@ -503,3 +503,40 @@ GREEN results:
 ### R12 Remaining Risk
 
 - Azure Blob Storage still has no transaction spanning lineage, registry, run Blob, and local cache. Cooperative DataForge writers now detect lifecycle movement after local publication and clean or invalidate purge through CAS; a non-cooperating external writer remains bounded debris that strict purge proof will reject.
+
+## R13 Generation-Bound Final Publication
+
+### Behavior
+
+- Analysis, confirmed-update, snapshot, and generic writers now finish through one generation-bound final-publication helper. It performs the final local write, revalidates the exact lifecycle status and captured generation, removes the local file, run Blob, and registry row on rejection, records the rejected writer durably, and never returns confirmed after a lifecycle transition.
+- Every started run captures the workspace generation. Analysis reservation revalidates the captured value, snapshots inherit their validated source generation, and all final writers fence against generation changes. `recreate_workspace_generation()` is the only ordinary route from `purged` to a clean `stable` lineage; it requires strict local, Blob, and registry absence, increments generation, and resets canonical numbering so the first new analysis is V1.
+- A failed primary rejected-writer CAS is no longer ignored. The writer returns explicit `rejection_record_status: failed`, attempts a separate durable rejection-failure marker, and forces the lifecycle to `purging` when possible. Purge also rechecks registry, Blob, local, status, and revision after its final CAS and demotes a partially finalized purge when late debris remains.
+- Legacy attachment migration inspects every attachment-like registry row and requires an allowed `version_kind`, confirmed attachment envelope, exact `source_run_id` and `version:<source_run_id>`, a source inside the fully validated canonical analysis history, exact source and snapshot registry envelopes, deterministic payload hash, and source-bound commit ID. Invalid kinds, orphan sources, and version misbindings fail unavailable before any attachment history is persisted.
+
+### R13 TDD Evidence
+
+Initial focused RED command:
+
+`python -m pytest -q "tests/test_artifact_version_snapshot.py::test_publication_rechecks_lifecycle_after_final_local_write[analysis]" tests/test_artifact_version_snapshot.py::test_combined_cleanup_and_rejection_record_failure_invalidates_purge tests/test_artifact_version_snapshot.py::test_legacy_attachment_migration_rejects_orphan_or_misbinding tests/test_artifact_version_snapshot.py::test_explicit_recreation_advances_generation_and_fences_old_writer`
+
+Initial RED result: `6 failed in 5.81s`. Failures proved confirmed analysis publication after the final local-write race, ignored rejection-record failure, stable migration of invalid/orphan/misbound legacy attachments, and absence of generation capture and explicit recreation.
+
+Additional rejection-failure-marker RED result: `1 failed in 3.80s` because purge was invalidated only by the post-finalization debris scan and the failed primary rejected-writer CAS had no separate durable failure marker.
+
+GREEN results:
+
+- Focused R13 regressions: `6 passed in 4.11s`.
+- Durable combined cleanup/rejection-record failure regression: `1 passed in 2.99s`.
+- Owned Task3 snapshot suite: `48 passed in 8.53s`.
+- Task3 experiment, follow-up, and snapshot suite: `100 passed in 12.47s`.
+- Final Task3 plus strict Blob, task persistence, control-plane, run-store, outcome, audit, and workspace-role suite: `359 passed in 88.58s`.
+
+### R13 Changed Files
+
+- `backend/run_store.py`
+- `tests/test_artifact_version_snapshot.py`
+- `.superpowers/sdd/p2-c-task-3-report.md`
+
+### R13 Remaining Risk
+
+- Azure Blob Storage still cannot atomically update workspace lineage, the global registry, a run Blob, and local cache. Cooperative writers now use generation fencing, cleanup, a primary rejection record, a secondary rejection-failure marker, and purge post-validation. If durable storage rejects both CAS paths, the caller receives explicit failure and strict storage checks prevent recreation while debris remains, but external repair may still be required.

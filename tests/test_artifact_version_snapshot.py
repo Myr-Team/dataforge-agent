@@ -1042,7 +1042,7 @@ def test_purged_workspace_rejects_late_generic_and_analysis_completion(tmp_path)
         assert not (run_store.RUN_DIR / f"{run_store._safe_name(run_id)}.json").exists()
 
 
-@pytest.mark.parametrize("writer_kind", ["confirmed", "snapshot", "generic"])
+@pytest.mark.parametrize("writer_kind", ["analysis", "confirmed", "snapshot", "generic"])
 def test_publication_rechecks_lifecycle_after_final_local_write(writer_kind, tmp_path, monkeypatch) -> None:
     remote, download, upload, compare_and_swap = _shared_blob_store()
     _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
@@ -1064,7 +1064,8 @@ def test_publication_rechecks_lifecycle_after_final_local_write(writer_kind, tmp
         original_write(path, value)
         persistence = value.get("persistence") if isinstance(value.get("persistence"), dict) else {}
         is_target = persistence.get("confirmed") is True and (
-            (writer_kind == "confirmed" and str(value.get("run_id") or "") == source_id)
+            (writer_kind == "analysis" and str(value.get("run_id") or "") == "analysis-post-local-race")
+            or (writer_kind == "confirmed" and str(value.get("run_id") or "") == source_id)
             or (writer_kind == "snapshot" and str(value.get("version_kind") or "") == "artifact_generation")
             or (writer_kind == "generic" and str(value.get("run_id") or "") == "generic-post-local")
         )
@@ -1077,7 +1078,20 @@ def test_publication_rechecks_lifecycle_after_final_local_write(writer_kind, tmp
             )
 
     monkeypatch.setattr(run_store, "_write_run_file", write_then_begin_purge)
-    if writer_kind == "confirmed":
+    if writer_kind == "analysis":
+        analysis_id = "analysis-post-local-race"
+        analysis_artifact = _analysis_artifact(workspace_id, analysis_id)
+        analysis_artifact["feasibility"]["dimensions"][0]["evidence"][0].update(
+            {"ref": "evidence.csv#row-2", "file_version": "2"}
+        )
+        run_store.start_run(analysis_id, workspace_id, "Analyze again")
+        result = run_store.complete_run(
+            analysis_id,
+            status="completed",
+            final={"artifact": analysis_artifact},
+            artifact=analysis_artifact,
+        )
+    elif writer_kind == "confirmed":
         result = run_store.update_run_proposal(
             source_id,
             {"artifact_urls": {"pdf": "/must-not-survive-post-local.pdf"}},
@@ -1105,11 +1119,17 @@ def test_publication_rechecks_lifecycle_after_final_local_write(writer_kind, tmp
     else:
         assert result is not None
         assert (result.get("persistence") or {}).get("confirmed") is False
-    rejected_run_id = source_id if writer_kind == "confirmed" else (
-        "generic-post-local" if writer_kind == "generic" else rejected_path[0].stem
+    rejected_run_id = (
+        source_id
+        if writer_kind == "confirmed"
+        else "generic-post-local"
+        if writer_kind == "generic"
+        else rejected_path[0].stem
     )
     assert not rejected_path[0].exists()
     assert f"{run_store.RUN_BLOB_PREFIX}/{run_store._safe_name(rejected_run_id)}.json" not in remote
+    state = run_store.workspace_lineage_state(workspace_id)
+    assert state["last_rejected_writer_run_id"] == rejected_run_id
 
 
 def test_purge_final_proof_enumerates_unregistered_local_workspace_run(tmp_path, monkeypatch) -> None:
@@ -1241,6 +1261,234 @@ def test_late_local_writer_cleanup_failure_invalidates_purge_final_cas(tmp_path,
     assert state["status"] == "purging"
     assert state["purge_integrity_failure"] == "late_writer_cleanup_failed"
     assert generic_path.exists()
+
+
+def test_combined_cleanup_and_rejection_record_failure_invalidates_purge(tmp_path, monkeypatch) -> None:
+    purge_store = _isolated_run_store("run_store_r13_combined_failure_purge")
+    writer_store = _isolated_run_store("run_store_r13_combined_failure_writer")
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    shared_run_dir = tmp_path / "shared-runs"
+    _configure_shared_store(purge_store, shared_run_dir, download, upload, compare_and_swap)
+    _configure_shared_store(writer_store, shared_run_dir, download, upload, compare_and_swap)
+    workspace_id = "ws-combined-late-writer-failure"
+    source_id = "analysis-before-combined-failure"
+    artifact = _analysis_artifact(workspace_id, source_id)
+    writer_store.start_run(source_id, workspace_id, "Analyze")
+    writer_store.complete_run(
+        source_id,
+        status="completed",
+        final={"artifact": artifact},
+        artifact=artifact,
+    )
+    generic_id = "generic-combined-late-writer-failure"
+    generic_path = shared_run_dir / f"{writer_store._safe_name(generic_id)}.json"
+    local_phase_entered = threading.Event()
+    release_local_write = threading.Event()
+    final_cas_entered = threading.Event()
+    release_final_cas = threading.Event()
+    original_write = writer_store._write_run_file
+    original_unlink = Path.unlink
+
+    def delayed_final_local_write(path: Path, value: dict) -> None:
+        persistence = value.get("persistence") if isinstance(value.get("persistence"), dict) else {}
+        if str(value.get("run_id") or "") == generic_id and persistence.get("confirmed") is True:
+            local_phase_entered.set()
+            release_local_write.wait(timeout=5)
+        original_write(path, value)
+
+    def fail_writer_cleanup(path: Path, *args, **kwargs):
+        if path == generic_path and threading.current_thread().name == "combined-failure-writer":
+            raise OSError("local cleanup unavailable")
+        return original_unlink(path, *args, **kwargs)
+
+    def reject_rejection_record(name: str, *, expected_revision: int, changes: dict):
+        if (
+            name == writer_store._workspace_lineage_blob(workspace_id)
+            and changes.get("last_rejected_writer_run_id") == generic_id
+        ):
+            return None
+        return compare_and_swap(name, expected_revision=expected_revision, changes=changes)
+
+    def delayed_final_cas(name: str, *, expected_revision: int, changes: dict):
+        if name == purge_store._workspace_lineage_blob(workspace_id) and changes.get("status") == "purged":
+            final_cas_entered.set()
+            release_final_cas.wait(timeout=5)
+        return compare_and_swap(name, expected_revision=expected_revision, changes=changes)
+
+    writer_store._write_run_file = delayed_final_local_write
+    writer_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
+    writer_store.compare_and_swap_blob_json = reject_rejection_record
+    purge_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
+    purge_store.list_blob_json_named_strict = lambda prefix: [
+        (name, copy.deepcopy(value))
+        for name, value in remote.items()
+        if name.startswith(prefix) and isinstance(value, dict)
+    ]
+    purge_store.compare_and_swap_blob_json = delayed_final_cas
+    monkeypatch.setattr(Path, "unlink", fail_writer_cleanup)
+    writer_result: dict[str, object] = {}
+    purge_result: dict[str, object] = {}
+    writer_store.start_run(generic_id, workspace_id, "Follow-up")
+    writer_thread = threading.Thread(
+        target=lambda: writer_result.update(
+            writer_store.complete_run(generic_id, status="completed", final={"text": "Late"}) or {}
+        ),
+        name="combined-failure-writer",
+    )
+    purge_thread = threading.Thread(
+        target=lambda: purge_result.update(purge_store.purge_workspace_runs(workspace_id)),
+        name="combined-failure-purge",
+    )
+    writer_thread.start()
+    assert local_phase_entered.wait(timeout=5)
+    purge_thread.start()
+    try:
+        assert final_cas_entered.wait(timeout=5)
+        release_local_write.set()
+        writer_thread.join(timeout=5)
+        release_final_cas.set()
+        purge_thread.join(timeout=5)
+    finally:
+        release_local_write.set()
+        release_final_cas.set()
+        writer_thread.join(timeout=5)
+        purge_thread.join(timeout=5)
+
+    persistence = writer_result.get("persistence") or {}
+    state = purge_store.workspace_lineage_state(workspace_id)
+    assert persistence.get("confirmed") is False
+    assert persistence.get("rejection_record_status") == "failed"
+    assert purge_result["status"] == "unavailable"
+    assert state["status"] == "purging"
+    assert state["purge_integrity_failure"] == "late_writer_cleanup_failed"
+    assert state["rejected_writer_record_failure_run_id"] == generic_id
+    assert generic_path.exists()
+
+
+@pytest.mark.parametrize("corruption", ["invalid_kind", "version_mismatch", "orphan_source"])
+def test_legacy_attachment_migration_rejects_orphan_or_misbinding(corruption, tmp_path) -> None:
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    _configure_shared_store(run_store, tmp_path / "writer-runs", download, upload, compare_and_swap)
+    workspace_id = f"ws-legacy-attachment-{corruption}"
+    source_id = f"analysis-legacy-attachment-{corruption}"
+    artifact = _analysis_artifact(workspace_id, source_id)
+    run_store.start_run(source_id, workspace_id, "Analyze")
+    source = run_store.complete_run(
+        source_id,
+        status="completed",
+        final={"artifact": artifact},
+        artifact=artifact,
+    )
+    snapshot = run_store.record_artifact_version(
+        workspace_id=workspace_id,
+        source_run_id=source_id,
+        experiment_version_id=f"version:{source_id}",
+        artifact=artifact,
+        proposal={"artifact_urls": {"pdf": "/legacy.pdf"}},
+        kinds=["pdf"],
+    )
+    assert snapshot is not None
+    snapshot_id = str(snapshot["run_id"])
+    snapshot_blob = f"{run_store.RUN_BLOB_PREFIX}/{run_store._safe_name(snapshot_id)}.json"
+    corrupted = copy.deepcopy(remote[snapshot_blob])
+    attachment_source = source
+    if corruption == "invalid_kind":
+        corrupted["version_kind"] = "generic_completion"
+    elif corruption == "version_mismatch":
+        corrupted["experiment_version_id"] = f"version:{source_id}-wrong"
+    else:
+        orphan_id = f"orphan-{source_id}"
+        orphan = copy.deepcopy(source)
+        orphan["run_id"] = orphan_id
+        orphan["conversation_id"] = orphan_id
+        run_store._mark_canonical_lineage_trusted(orphan, orphan_id, sequence=1)
+        remote[f"{run_store.RUN_BLOB_PREFIX}/{run_store._safe_name(orphan_id)}.json"] = orphan
+        corrupted["source_run_id"] = orphan_id
+        corrupted["experiment_version_id"] = f"version:{orphan_id}"
+        attachment_source = orphan
+    corrupted["attachment_payload_sha256"] = run_store._attachment_payload_hash(corrupted)
+    corrupted["attachment_commit_id"] = run_store._attachment_commit_id(corrupted, attachment_source)
+    remote[snapshot_blob] = corrupted
+    registry = remote[run_store.RUN_REGISTRY_BLOB]
+    registry["runs"] = [
+        run_store._run_summary(corrupted) if str(item.get("run_id") or "") == snapshot_id else item
+        for item in registry["runs"]
+    ]
+    remote.pop(run_store._workspace_lineage_blob(workspace_id))
+    run_store.RUN_DIR = tmp_path / "fresh-reader-runs"
+
+    migrated = run_store._bootstrap_workspace_lineage(
+        workspace_id,
+        run_store.authoritative_run_registry(),
+    )
+
+    assert migrated == {}
+    assert run_store._workspace_lineage_blob(workspace_id) not in remote
+
+
+def test_explicit_recreation_advances_generation_and_fences_old_writer(tmp_path) -> None:
+    remote, download, upload, compare_and_swap = _shared_blob_store()
+    _configure_shared_store(run_store, tmp_path / "runs", download, upload, compare_and_swap)
+    run_store.delete_blob_name = lambda name: remote.pop(name, None) is not None
+    run_store.list_blob_json_named_strict = lambda prefix: [
+        (name, copy.deepcopy(value))
+        for name, value in remote.items()
+        if name.startswith(prefix) and isinstance(value, dict)
+    ]
+    workspace_id = "ws-explicit-generation-recreation"
+    source_id = "analysis-generation-one"
+    source_artifact = _analysis_artifact(workspace_id, source_id)
+    run_store.start_run(source_id, workspace_id, "Analyze")
+    first = run_store.complete_run(
+        source_id,
+        status="completed",
+        final={"artifact": source_artifact},
+        artifact=source_artifact,
+    )
+    old_writer_id = "analysis-started-before-recreation"
+    old_artifact = _analysis_artifact(workspace_id, old_writer_id)
+    old_artifact["feasibility"]["dimensions"][0]["evidence"][0].update(
+        {"ref": "old.csv#row-1", "file_id": "old.csv"}
+    )
+    run_store.start_run(old_writer_id, workspace_id, "Old analysis")
+    assert first["workspace_generation"] == 1
+    assert run_store._ACTIVE[old_writer_id]["workspace_generation"] == 1
+
+    purged = run_store.purge_workspace_runs(workspace_id)
+    recreated = run_store.recreate_workspace_generation(workspace_id)
+    old_result = run_store.complete_run(
+        old_writer_id,
+        status="completed",
+        final={"artifact": old_artifact},
+        artifact=old_artifact,
+    )
+    new_id = "analysis-generation-two-v1"
+    new_artifact = _analysis_artifact(workspace_id, new_id)
+    new_artifact["feasibility"]["dimensions"][0]["evidence"][0].update(
+        {"ref": "new.csv#row-1", "file_id": "new.csv"}
+    )
+    run_store.start_run(new_id, workspace_id, "New analysis")
+    new_result = run_store.complete_run(
+        new_id,
+        status="completed",
+        final={"artifact": new_artifact},
+        artifact=new_artifact,
+    )
+
+    state = run_store.workspace_lineage_state(workspace_id)
+    registry = run_store.authoritative_run_registry()
+    assert purged["status"] == "purged"
+    assert recreated["status"] == "stable"
+    assert recreated["generation"] == 2
+    assert (old_result.get("persistence") or {}).get("confirmed") is False
+    assert all(str(item.get("run_id") or "") != old_writer_id for item in registry["runs"])
+    assert new_result["workspace_generation"] == 2
+    assert new_result["canonical_experiment_run_id"] == new_id
+    assert new_result["canonical_experiment_version_id"] == f"version:{new_id}"
+    assert state["generation"] == 2
+    assert state["analysis_count"] == 1
+    assert state["canonical_count"] == 1
+    assert [item["ordinal"] for item in state["canonical_history"]] == [1]
 
 
 def test_legacy_bootstrap_rejects_missing_lineage_sequence(tmp_path) -> None:
