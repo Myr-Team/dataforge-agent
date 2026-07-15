@@ -145,7 +145,7 @@ The full mode exits nonzero unless it can:
 
 The verifier refuses an existing workspace UUID and does not clean it. Omitting the UUID performs no destructive checks and exits nonzero because the full release gate is incomplete.
 
-Current packaging blocker: `backend/Dockerfile` does not copy `scripts/` into the backend image. The full verifier therefore cannot yet be run through an exec session in that immutable revision. Resolve this in a separately approved release-packaging change, or provide another approved execution mechanism that demonstrably uses the exact backend system-assigned identity. A different Container Apps Job system identity is not equivalent evidence.
+The backend image includes `scripts/verify_lineage_sql.py` and validates its safe mode while building. The full verifier must still run through an exec session in the exact immutable preview revision; a different Container Apps Job system identity is not equivalent evidence.
 
 ## Preview-Only Release Flow
 
