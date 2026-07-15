@@ -5,10 +5,11 @@ import hashlib
 import json
 import re
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 try:
     from .blob_store import download_blob_json, upload_blob_json
@@ -49,6 +50,34 @@ _SOURCE_KEYS = (
 )
 _TRACEABLE_SOURCE_TYPES = {"corpus", "computed", "workspace_computed"}
 _EVIDENCE_STRUCTURED_FIELDS = ("value", "unit", "status", "direction", "polarity")
+_LEGACY_LINEAGE_KEYS = (
+    "canonical_experiment_run_id",
+    "canonical_experiment_version_id",
+    "canonical_resolution_status",
+    "canonical_lineage_status",
+    "canonical_lineage_commit_id",
+    "canonical_target_commit_id",
+    "canonical_target_content_sha256",
+    "canonical_lineage_content_sha256",
+    "canonical_lineage_sequence",
+)
+_LEGACY_ATTACHMENT_KEYS = (
+    "source_run_id",
+    "experiment_version_id",
+    "experiment_attachment",
+    "attachment_commit_status",
+    "attachment_commit_id",
+    "attachment_payload_sha256",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyLineageHistory:
+    status: str
+    reason: str | None = None
+    analysis_runs: tuple[dict[str, Any], ...] = ()
+    canonical_runs: tuple[dict[str, Any], ...] = ()
+    attachment_count: int = 0
 
 
 def build_experiment_ledger(
@@ -273,6 +302,8 @@ def sync_experiment_ledger(
     outcomes: list[dict[str, Any]] | None = None,
     lineage_repository: Any | None = None,
     generation: int | None = None,
+    legacy_registry_state: dict[str, Any] | None = None,
+    legacy_run_loader: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     normalized_workspace = str(workspace_id or "").strip()
     if not normalized_workspace:
@@ -280,6 +311,16 @@ def sync_experiment_ledger(
     active_generation = 1
     try:
         repository = _resolve_lineage_repository(lineage_repository)
+        workspace_exists = lineage_workspace_exists(repository, normalized_workspace)
+        if not workspace_exists:
+            legacy_ledger = _legacy_read_ledger(
+                normalized_workspace,
+                outcomes=outcomes,
+                registry_state=legacy_registry_state,
+                run_loader=legacy_run_loader,
+            )
+            if not lineage_workspace_exists(repository, normalized_workspace):
+                return legacy_ledger
         active_generation = int(repository.current_generation(workspace_id=normalized_workspace))
         if active_generation < 1:
             raise ValueError("invalid lineage generation")
@@ -312,9 +353,9 @@ def sync_experiment_ledger(
         if isinstance(item, dict)
     }
     try:
-        from .run_store import get_run
+        from .run_store import get_run, list_runs
     except ImportError:
-        from run_store import get_run
+        from run_store import get_run, list_runs
     for committed in authoritative_versions:
         canonical_run_id = str(_commit_value(committed, "canonical_run_id") or "")
         if not canonical_run_id or canonical_run_id in hydrated_ids:
@@ -326,6 +367,26 @@ def sync_experiment_ledger(
         if isinstance(payload, dict):
             hydrated_runs.append(payload)
             hydrated_ids.add(canonical_run_id)
+    if authoritative_attachments:
+        try:
+            candidate_summaries = list_runs(normalized_workspace)
+        except Exception:
+            candidate_summaries = []
+        for summary in candidate_summaries:
+            if not isinstance(summary, dict):
+                continue
+            run_id = str(summary.get("run_id") or summary.get("conversation_id") or "").strip()
+            if not run_id or run_id in hydrated_ids:
+                continue
+            if str(summary.get("version_kind") or "") not in {"plan_draft", "artifact_generation"}:
+                continue
+            try:
+                payload = get_run(run_id)
+            except (FileNotFoundError, ValueError, KeyError):
+                continue
+            if isinstance(payload, dict):
+                hydrated_runs.append(payload)
+                hydrated_ids.add(run_id)
     ledger = build_experiment_ledger(
         normalized_workspace,
         hydrated_runs,
@@ -350,6 +411,190 @@ def sync_experiment_ledger(
             temporary.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")
             temporary.replace(path)
     return ledger
+
+
+def lineage_workspace_exists(repository: Any, workspace_id: str) -> bool:
+    """Check for the SQL workspace row without inferring existence from empty lists."""
+    checker = getattr(repository, "workspace_exists", None)
+    if callable(checker):
+        return bool(checker(workspace_id=workspace_id))
+    transaction = getattr(repository, "_transaction", None)
+    if not callable(transaction):
+        # Existing repository test doubles predate the explicit existence seam.
+        return True
+    with transaction() as cursor:
+        row = cursor.execute(
+            """/* lineage:workspace-exists */
+            SELECT workspace_id
+            FROM df_lineage.workspace_lineage
+            WHERE workspace_id = ?""",
+            workspace_id,
+        ).fetchone()
+    return row is not None
+
+
+def inspect_legacy_lineage_history(
+    workspace_id: str,
+    *,
+    registry_state: Mapping[str, Any],
+    run_loader: Callable[[str], dict[str, Any] | None],
+) -> LegacyLineageHistory:
+    """Validate a complete legacy Blob history without assigning SQL membership."""
+    normalized_workspace = str(workspace_id or "").strip()
+    if not normalized_workspace:
+        raise ValueError("workspace_id is required")
+    if registry_state.get("read_status") != "present" or registry_state.get("history_truncated") is True:
+        return LegacyLineageHistory(status="legacy_unavailable", reason="history_incomplete")
+
+    workspace_rows = [
+        item
+        for item in registry_state.get("runs") or []
+        if isinstance(item, Mapping) and str(item.get("workspace_id") or "") == normalized_workspace
+    ]
+    row_ids = [str(item.get("run_id") or "").strip() for item in workspace_rows]
+    if any(not run_id for run_id in row_ids) or len(row_ids) != len(set(row_ids)):
+        return LegacyLineageHistory(status="legacy_unavailable", reason="history_incomplete")
+
+    try:
+        from . import run_store
+    except ImportError:
+        import run_store
+
+    analysis_runs: list[dict[str, Any]] = []
+    loaded_analyses: dict[str, dict[str, Any]] = {}
+    attachment_count = 0
+    for summary in workspace_rows:
+        run_id = str(summary.get("run_id") or "")
+        version_kind = str(summary.get("version_kind") or "")
+        is_attachment_candidate = bool(
+            version_kind in {"plan_draft", "artifact_generation"}
+            or summary.get("experiment_attachment") is True
+            or any(str(summary.get(key) or "") for key in _LEGACY_ATTACHMENT_KEYS[3:])
+        )
+        should_load = not version_kind or is_attachment_candidate
+        if not should_load:
+            continue
+        try:
+            payload = run_loader(run_id)
+        except Exception:
+            return LegacyLineageHistory(status="legacy_unavailable", reason="payload_mismatch")
+        if (
+            not isinstance(payload, dict)
+            or str(payload.get("run_id") or "") != run_id
+            or str(payload.get("workspace_id") or "") != normalized_workspace
+        ):
+            return LegacyLineageHistory(status="legacy_unavailable", reason="payload_mismatch")
+        if is_attachment_candidate:
+            attachment_count += 1
+            if (
+                any(summary.get(key) != payload.get(key) for key in _LEGACY_ATTACHMENT_KEYS)
+                or str(payload.get("attachment_payload_sha256") or "")
+                != run_store._attachment_payload_hash(payload)
+            ):
+                return LegacyLineageHistory(status="legacy_unavailable", reason="payload_mismatch")
+            continue
+        if not _is_analysis_version(payload):
+            continue
+        if (
+            any(summary.get(key) != payload.get(key) for key in _LEGACY_LINEAGE_KEYS)
+            or not run_store._lineage_envelope_matches(
+                payload, str(payload.get("canonical_experiment_run_id") or "")
+            )
+        ):
+            return LegacyLineageHistory(status="legacy_unavailable", reason="payload_mismatch")
+        analysis_runs.append(payload)
+        loaded_analyses[run_id] = payload
+
+    ordered = sorted(
+        analysis_runs,
+        key=lambda item: (int(item.get("canonical_lineage_sequence") or 0), str(item.get("run_id") or "")),
+    )
+    sequences = [int(item.get("canonical_lineage_sequence") or 0) for item in ordered]
+    if sequences != list(range(1, len(ordered) + 1)):
+        return LegacyLineageHistory(status="legacy_unavailable", reason="history_incomplete")
+
+    canonical_runs: list[dict[str, Any]] = []
+    for run in ordered:
+        run_id = str(run.get("run_id") or "")
+        target_id = str(run.get("canonical_experiment_run_id") or "")
+        target = loaded_analyses.get(target_id)
+        sequence = int(run.get("canonical_lineage_sequence") or 0)
+        if (
+            not isinstance(target, dict)
+            or str(target.get("canonical_experiment_run_id") or "") != target_id
+            or str(run.get("canonical_lineage_commit_id") or "")
+            != run_store._canonical_lineage_commit_id(run, target_id, sequence)
+            or str(run.get("canonical_target_commit_id") or "")
+            != str(target.get("canonical_lineage_commit_id") or "")
+            or str(run.get("canonical_target_content_sha256") or "")
+            != str(target.get("canonical_lineage_content_sha256") or "")
+            or int(target.get("canonical_lineage_sequence") or 0) > sequence
+        ):
+            return LegacyLineageHistory(status="legacy_unavailable", reason="payload_mismatch")
+        if target_id == run_id:
+            canonical_runs.append(run)
+
+    return LegacyLineageHistory(
+        status="ready",
+        analysis_runs=tuple(copy.deepcopy(item) for item in ordered),
+        canonical_runs=tuple(copy.deepcopy(item) for item in canonical_runs),
+        attachment_count=attachment_count,
+    )
+
+
+def _legacy_read_ledger(
+    workspace_id: str,
+    *,
+    outcomes: list[dict[str, Any]] | None,
+    registry_state: dict[str, Any] | None,
+    run_loader: Callable[[str], dict[str, Any] | None] | None,
+) -> dict[str, Any]:
+    if registry_state is None or run_loader is None:
+        try:
+            from .run_store import authoritative_run_registry, get_run
+        except ImportError:
+            from run_store import authoritative_run_registry, get_run
+        registry_state = authoritative_run_registry(workspace_id)
+        run_loader = get_run
+    history = inspect_legacy_lineage_history(
+        workspace_id,
+        registry_state=registry_state,
+        run_loader=run_loader,
+    )
+    if history.status != "ready":
+        return _legacy_unavailable_ledger(workspace_id)
+
+    canonical_payloads: list[dict[str, Any]] = []
+    for ordinal, run in enumerate(history.canonical_runs, start=1):
+        payload = copy.deepcopy(run)
+        for key in _LEGACY_LINEAGE_KEYS:
+            payload.pop(key, None)
+        payload["_canonical_ordinal"] = ordinal
+        canonical_payloads.append(payload)
+    ledger = build_experiment_ledger(
+        workspace_id,
+        canonical_payloads,
+        outcomes=outcomes,
+        registry_state={"history_truncated": False, "read_status": "present", "runs": []},
+    )
+    ledger["generation"] = 1
+    ledger["lineage_resolution"] = {"status": "read_only", "reason": "legacy_read_only"}
+    ledger["source"] = "legacy_blob"
+    return ledger
+
+
+def _legacy_unavailable_ledger(workspace_id: str) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "workspace_id": workspace_id,
+        "generation": 1,
+        "generated_at": _now(),
+        "versions": [],
+        "count": 0,
+        "latest_version_id": None,
+        "lineage_resolution": {"status": "unavailable", "reason": "legacy_unavailable"},
+        "source": "legacy_blob",
+    }
 
 
 def analysis_lineage_fingerprints(run: Mapping[str, Any]) -> tuple[str, str]:
@@ -551,6 +796,15 @@ def _build_sql_experiment_ledger(
                 {"run_id": snapshot.get("run_id"), "urls": proposal.get("artifact_urls") or {}, "created_at": snapshot.get("completed_at")}
             )
 
+    unresolved_attachment_ids = sorted(
+        {
+            str(_commit_value(item, "attachment_id") or "")
+            for item in authoritative_attachments
+            if str(_commit_value(item, "attachment_id") or "") not in hydrated_attachment_ids
+        }
+        - {""}
+    )
+
     generation = int(authoritative_generation or 0)
     if generation < 1:
         generation = int(_commit_value(ordered_commits[-1], "generation") or 1) if ordered_commits else 1
@@ -563,10 +817,18 @@ def _build_sql_experiment_ledger(
         "count": len(versions),
         "latest_version_id": versions[-1]["version_id"] if versions else None,
         "lineage_resolution": {
-            "status": "unavailable" if unavailable_run_ids or invalid_snapshot_ids else "resolved",
+            "status": (
+                "unavailable"
+                if unavailable_run_ids or invalid_snapshot_ids or unresolved_attachment_ids
+                else "resolved"
+            ),
             **(
-                {"unresolved_run_ids": sorted(set(unavailable_run_ids + invalid_snapshot_ids))[:20]}
-                if unavailable_run_ids or invalid_snapshot_ids
+                {
+                    "unresolved_run_ids": sorted(
+                        set(unavailable_run_ids + invalid_snapshot_ids + unresolved_attachment_ids)
+                    )[:20]
+                }
+                if unavailable_run_ids or invalid_snapshot_ids or unresolved_attachment_ids
                 else {}
             ),
         },

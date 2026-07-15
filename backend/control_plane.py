@@ -1760,23 +1760,13 @@ def _current_workspace_members_for_chargeback(workspace_id: str) -> list[dict[st
 
 
 def workspace_experiment_ledger(workspace_id: str) -> dict[str, Any]:
-    runs: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for summary in list_runs(workspace_id)[:300]:
-        run_id = str(summary.get("run_id") or summary.get("conversation_id") or "").strip()
-        if not run_id or run_id in seen:
-            continue
-        seen.add(run_id)
-        try:
-            detail = get_run(run_id)
-        except FileNotFoundError:
-            detail = summary
-        if isinstance(detail, dict):
-            runs.append(detail)
-    public_outcomes = _public_outcome_events(workspace_id, list_outcome_events(workspace_id))
+    public_outcomes = _safe_value(
+        lambda: _public_outcome_events(workspace_id, list_outcome_events(workspace_id)),
+        [],
+    )
     return sync_experiment_ledger(
         workspace_id,
-        runs,
+        [],
         outcomes=public_outcomes,
     )
 

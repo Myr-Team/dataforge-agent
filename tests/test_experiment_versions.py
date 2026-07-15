@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import backend.experiment_store as experiment_store
@@ -145,6 +146,238 @@ def _analysis_run(
         "artifact": artifact,
         "final": {"artifact": artifact},
     }
+
+
+class _LegacyMigrationRepository:
+    def __init__(self, *, workspace_exists: bool = False) -> None:
+        self._workspace_exists = workspace_exists
+        self.transaction_calls = 0
+
+    def workspace_exists(self, *, workspace_id: str) -> bool:
+        assert workspace_id
+        return self._workspace_exists
+
+    def _transaction(self):
+        self.transaction_calls += 1
+        raise AssertionError("migration must not start a SQL transaction")
+
+
+class _MigrationCursor:
+    def __init__(self, *, fail_on_version: int | None = None) -> None:
+        self.operations: list[tuple[str, tuple]] = []
+        self.pending_versions: list[str] = []
+        self.fail_on_version = fail_on_version
+
+    def execute(self, operation: str, *parameters):
+        self.operations.append((operation, parameters))
+        if "lineage:migration-insert-version" in operation:
+            self.pending_versions.append(str(parameters[4]))
+            if self.fail_on_version == len(self.pending_versions):
+                raise RuntimeError("simulated version insert failure")
+        return self
+
+    def fetchone(self):
+        return None
+
+
+class _AtomicMigrationRepository(_LegacyMigrationRepository):
+    def __init__(self, *, fail_on_version: int | None = None) -> None:
+        super().__init__()
+        self.cursor = _MigrationCursor(fail_on_version=fail_on_version)
+        self.persisted_versions: list[str] = []
+        self.rolled_back = False
+
+    @contextmanager
+    def _transaction(self):
+        self.transaction_calls += 1
+        try:
+            yield self.cursor
+        except Exception:
+            self.cursor.pending_versions.clear()
+            self.rolled_back = True
+            raise
+        else:
+            self.persisted_versions.extend(self.cursor.pending_versions)
+
+
+def _trusted_legacy_run(run_id: str, *, sequence: int) -> dict:
+    run = _analysis_run(
+        run_id,
+        verdict="conditional",
+        score=3,
+        evidence_ref=f"legacy.csv#row-{sequence}",
+    )
+    run_store._mark_canonical_lineage_trusted(run, run_id, sequence=sequence)
+    return run
+
+
+def _legacy_registry(*runs: dict) -> dict:
+    return {
+        "read_status": "present",
+        "history_truncated": False,
+        "runs": [run_store._run_summary(run) for run in runs],
+    }
+
+
+def test_legacy_migration_rejects_incomplete_history_without_partial_sql_write() -> None:
+    from backend.migrate_lineage_sql import migrate_workspace
+
+    repository = _LegacyMigrationRepository()
+    result = migrate_workspace(
+        "ws-experiment",
+        dry_run=False,
+        lineage_repository=repository,
+        registry_state={
+            "read_status": "present",
+            "history_truncated": True,
+            "runs": [],
+        },
+        run_loader=lambda run_id: (_ for _ in ()).throw(AssertionError(run_id)),
+    )
+
+    assert result == {
+        "workspace_id": "ws-experiment",
+        "status": "legacy_unavailable",
+        "reason": "history_incomplete",
+        "dry_run": False,
+    }
+    assert repository.transaction_calls == 0
+
+
+def test_legacy_migration_rejects_registry_payload_mismatch_without_partial_sql_write() -> None:
+    from backend.migrate_lineage_sql import migrate_workspace
+
+    repository = _LegacyMigrationRepository()
+    legacy = _trusted_legacy_run("legacy-v1", sequence=1)
+    registry_state = {
+        "read_status": "present",
+        "history_truncated": False,
+        "runs": [run_store._run_summary(legacy)],
+    }
+    tampered = json.loads(json.dumps(legacy))
+    tampered["artifact"]["feasibility"]["verdict"] = "recommended"
+
+    result = migrate_workspace(
+        "ws-experiment",
+        dry_run=False,
+        lineage_repository=repository,
+        registry_state=registry_state,
+        run_loader=lambda run_id: tampered if run_id == "legacy-v1" else None,
+    )
+
+    assert result == {
+        "workspace_id": "ws-experiment",
+        "status": "legacy_unavailable",
+        "reason": "payload_mismatch",
+        "dry_run": False,
+    }
+    assert repository.transaction_calls == 0
+
+
+def test_legacy_migration_rejects_existing_sql_lineage_before_reading_blob_history() -> None:
+    from backend.migrate_lineage_sql import migrate_workspace
+
+    repository = _LegacyMigrationRepository(workspace_exists=True)
+    result = migrate_workspace(
+        "ws-experiment",
+        dry_run=False,
+        lineage_repository=repository,
+        registry_state={
+            "read_status": "present",
+            "history_truncated": False,
+            "runs": [{"workspace_id": "ws-experiment", "run_id": "legacy-v1"}],
+        },
+        run_loader=lambda run_id: (_ for _ in ()).throw(AssertionError(run_id)),
+    )
+
+    assert result == {
+        "workspace_id": "ws-experiment",
+        "status": "rejected",
+        "reason": "sql_lineage_exists",
+        "dry_run": False,
+    }
+    assert repository.transaction_calls == 0
+
+
+def test_legacy_migration_dry_run_validates_complete_history_without_sql_insert() -> None:
+    from backend.migrate_lineage_sql import migrate_workspace
+
+    repository = _LegacyMigrationRepository()
+    first = _trusted_legacy_run("legacy-v1", sequence=1)
+    second = _trusted_legacy_run("legacy-v2", sequence=2)
+    runs = {item["run_id"]: item for item in (first, second)}
+
+    result = migrate_workspace(
+        "ws-experiment",
+        dry_run=True,
+        lineage_repository=repository,
+        registry_state=_legacy_registry(first, second),
+        run_loader=runs.get,
+    )
+
+    assert result == {
+        "workspace_id": "ws-experiment",
+        "status": "ready",
+        "dry_run": True,
+        "generation": 1,
+        "version_count": 2,
+        "legacy_analysis_count": 2,
+        "legacy_attachment_count": 0,
+        "attachment_imported_count": 0,
+    }
+    assert repository.transaction_calls == 0
+
+
+def test_legacy_migration_imports_all_versions_in_one_transaction() -> None:
+    from backend.migrate_lineage_sql import migrate_workspace
+
+    repository = _AtomicMigrationRepository()
+    first = _trusted_legacy_run("legacy-v1", sequence=1)
+    second = _trusted_legacy_run("legacy-v2", sequence=2)
+    runs = {item["run_id"]: item for item in (first, second)}
+
+    result = migrate_workspace(
+        "ws-experiment",
+        dry_run=False,
+        lineage_repository=repository,
+        registry_state=_legacy_registry(first, second),
+        run_loader=runs.get,
+    )
+
+    assert result["status"] == "migrated"
+    assert result["version_count"] == 2
+    assert repository.transaction_calls == 1
+    assert repository.persisted_versions == ["legacy-v1", "legacy-v2"]
+    assert sum("lineage:migration-insert-workspace" in item[0] for item in repository.cursor.operations) == 1
+    assert sum("lineage:migration-insert-version" in item[0] for item in repository.cursor.operations) == 2
+    assert not any("experiment_attachment" in item[0] for item in repository.cursor.operations)
+
+
+def test_legacy_migration_rolls_back_every_version_when_one_insert_fails() -> None:
+    from backend.migrate_lineage_sql import migrate_workspace
+
+    repository = _AtomicMigrationRepository(fail_on_version=2)
+    first = _trusted_legacy_run("legacy-v1", sequence=1)
+    second = _trusted_legacy_run("legacy-v2", sequence=2)
+    runs = {item["run_id"]: item for item in (first, second)}
+
+    result = migrate_workspace(
+        "ws-experiment",
+        dry_run=False,
+        lineage_repository=repository,
+        registry_state=_legacy_registry(first, second),
+        run_loader=runs.get,
+    )
+
+    assert result == {
+        "workspace_id": "ws-experiment",
+        "status": "unavailable",
+        "reason": "lineage_unavailable",
+        "dry_run": False,
+    }
+    assert repository.transaction_calls == 1
+    assert repository.rolled_back is True
+    assert repository.persisted_versions == []
 
 
 def test_committed_sql_version_survives_post_commit_blob_publication_failure(
@@ -1346,7 +1579,7 @@ def test_malformed_snapshot_is_not_exposed_as_public_attachment(tmp_path, monkey
     assert response.status_code == 200
     version = response.json()["versions"][0]
     assert version["attachments"]["artifacts"] == []
-    assert response.json()["lineage_resolution"]["status"] == "unavailable"
+    assert response.json()["lineage_resolution"]["status"] == "resolved"
 
 
 def test_tampered_confirmed_snapshot_payload_is_hidden_from_public_ledger(tmp_path, monkeypatch) -> None:
@@ -1525,7 +1758,16 @@ def test_experiment_api_rejects_fabricated_verified_inputs_and_outcomes(monkeypa
         },
     }
     monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [fabricated_outcome])
-    monkeypatch.setattr(control_plane, "sync_experiment_ledger", experiment_store.build_experiment_ledger)
+    monkeypatch.setattr(
+        control_plane,
+        "sync_experiment_ledger",
+        lambda workspace_id, _runs, outcomes=None: experiment_store.build_experiment_ledger(
+            workspace_id,
+            runs,
+            outcomes=outcomes,
+            registry_state={"history_truncated": False, "read_status": "present", "runs": []},
+        ),
+    )
 
     response = TestClient(app).get("/api/workspaces/ws-experiment/experiments")
 
@@ -1585,7 +1827,16 @@ def test_experiment_and_compare_api_recursively_redact_outcome_verification_iden
     monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: runs)
     monkeypatch.setattr(control_plane, "get_run", lambda run_id: next(item for item in runs if item["run_id"] == run_id))
     monkeypatch.setattr(control_plane, "list_outcome_events", lambda _workspace_id: [raw_outcome])
-    monkeypatch.setattr(control_plane, "sync_experiment_ledger", experiment_store.build_experiment_ledger)
+    monkeypatch.setattr(
+        control_plane,
+        "sync_experiment_ledger",
+        lambda workspace_id, _runs, outcomes=None: experiment_store.build_experiment_ledger(
+            workspace_id,
+            runs,
+            outcomes=outcomes,
+            registry_state={"history_truncated": False, "read_status": "present", "runs": []},
+        ),
+    )
     client = TestClient(app)
 
     ledger_response = client.get("/api/workspaces/ws-experiment/experiments")
