@@ -31,7 +31,8 @@ COPY agents/build_agents.py ./agents/build_agents.py
 COPY agents/tool_schemas.json ./agents/tool_schemas.json
 COPY agents/prompts/ ./agents/prompts/
 COPY agents/rubrics/ ./agents/rubrics/
-RUN python -m backend.import_smoke
+RUN python -c "import pyodbc; assert 'ODBC Driver 18 for SQL Server' in pyodbc.drivers(), pyodbc.drivers()" \
+    && python -m backend.import_smoke
 
 EXPOSE 80
 CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "80"]

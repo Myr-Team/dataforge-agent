@@ -7,10 +7,10 @@ import struct
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
+from typing import Any, Callable, Iterator, Literal, Mapping, Protocol, Sequence
 from uuid import UUID, uuid4
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import ManagedIdentityCredential
 
 
 _SCHEMA_PATH = Path(__file__).with_name("sql") / "lineage_schema.sql"
@@ -79,6 +79,80 @@ class _Connection(Protocol):
 
 
 ConnectionFactory = Callable[[], _Connection]
+LineageConnectionFailureCategory = Literal["configuration", "token", "driver", "connection"]
+
+
+@dataclass(frozen=True, slots=True)
+class LineageConnectionOutcome:
+    """Safe, in-process state for the most recent connection attempt."""
+
+    available: bool | None
+    failure_category: LineageConnectionFailureCategory | None
+
+
+class _OdbcDriverUnavailable(RuntimeError):
+    pass
+
+
+class _LineageSqlConnectionFactory:
+    def __init__(
+        self,
+        *,
+        environ: Mapping[str, str],
+        credential: Any | None,
+        connect: Callable[..., _Connection] | None,
+    ) -> None:
+        self._environment = environ
+        self._credential = credential
+        self._connect = connect
+        self._outcome = LineageConnectionOutcome(available=None, failure_category=None)
+
+    @property
+    def outcome(self) -> LineageConnectionOutcome:
+        return self._outcome
+
+    def __call__(self) -> _Connection:
+        category: LineageConnectionFailureCategory | None = None
+        connection: _Connection | None = None
+
+        try:
+            server, database = _lineage_sql_settings(self._environment)
+        except Exception:
+            category = "configuration"
+
+        token: str | None = None
+        if category is None:
+            try:
+                if self._credential is None:
+                    self._credential = ManagedIdentityCredential()
+                token = self._credential.get_token(_AZURE_SQL_SCOPE).token
+                packed_token = _pack_access_token(token)
+            except Exception:
+                category = "token"
+
+        if category is None:
+            try:
+                connector = self._connect or _pyodbc_connect
+                connection = connector(
+                    _lineage_sql_connection_string(server=server, database=database),
+                    attrs_before={SQL_COPT_SS_ACCESS_TOKEN: packed_token},
+                    timeout=_SQL_CONNECT_TIMEOUT_SECONDS,
+                )
+            except (ModuleNotFoundError, _OdbcDriverUnavailable):
+                category = "driver"
+            except Exception:
+                category = "connection"
+
+        if category is not None:
+            self._outcome = LineageConnectionOutcome(
+                available=False,
+                failure_category=category,
+            )
+            raise LineageUnavailable(_LINEAGE_UNAVAILABLE_MESSAGE)
+
+        self._outcome = LineageConnectionOutcome(available=True, failure_category=None)
+        assert connection is not None
+        return connection
 
 
 def build_lineage_sql_connection_factory(
@@ -89,27 +163,11 @@ def build_lineage_sql_connection_factory(
 ) -> ConnectionFactory:
     """Build a lazy, managed-identity-only Azure SQL connection factory."""
     environment = os.environ if environ is None else environ
-    active_credential = credential
-
-    def connection_factory() -> _Connection:
-        nonlocal active_credential
-        try:
-            server, database = _lineage_sql_settings(environment)
-            if active_credential is None:
-                active_credential = DefaultAzureCredential()
-            token = active_credential.get_token(_AZURE_SQL_SCOPE).token
-            packed_token = _pack_access_token(token)
-            connector = connect or _pyodbc_connect
-            return connector(
-                _lineage_sql_connection_string(server=server, database=database),
-                attrs_before={SQL_COPT_SS_ACCESS_TOKEN: packed_token},
-                timeout=_SQL_CONNECT_TIMEOUT_SECONDS,
-            )
-        except Exception:
-            pass
-        raise LineageUnavailable(_LINEAGE_UNAVAILABLE_MESSAGE)
-
-    return connection_factory
+    return _LineageSqlConnectionFactory(
+        environ=environment,
+        credential=credential,
+        connect=connect,
+    )
 
 
 def _lineage_sql_settings(environment: Mapping[str, str]) -> tuple[str, str]:
@@ -142,6 +200,8 @@ def _pack_access_token(token: str) -> bytes:
 def _pyodbc_connect(connection_string: str, **kwargs: Any) -> _Connection:
     import pyodbc
 
+    if "ODBC Driver 18 for SQL Server" not in pyodbc.drivers():
+        raise _OdbcDriverUnavailable()
     return pyodbc.connect(connection_string, **kwargs)
 
 
@@ -681,6 +741,7 @@ def _quiet_call(operation: Callable[[], Any]) -> None:
 
 __all__ = [
     "AttachmentCommit",
+    "LineageConnectionOutcome",
     "LineageRepository",
     "LineageUnavailable",
     "SQL_COPT_SS_ACCESS_TOKEN",

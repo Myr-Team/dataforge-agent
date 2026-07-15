@@ -32,7 +32,7 @@ try:
     from .data_workbench import router as data_workbench_router
     from .dependency_health import health_dependencies, health_dependency_details
     from .identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
-    from .lineage_sql import LineageRepository, build_lineage_sql_connection_factory
+    from .lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
     from .observability import observability_snapshot
     from .orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from .rag import search
@@ -84,7 +84,7 @@ except ImportError:
     from data_workbench import router as data_workbench_router
     from dependency_health import health_dependencies, health_dependency_details
     from identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
-    from lineage_sql import LineageRepository, build_lineage_sql_connection_factory
+    from lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
     from observability import observability_snapshot
     from orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from rag import search
@@ -140,14 +140,18 @@ app.add_middleware(
 app.include_router(data_workbench_router)
 app.include_router(control_plane_router)
 
-_LINEAGE_REPOSITORY = LineageRepository(
-    connection_factory=build_lineage_sql_connection_factory()
-)
+_LINEAGE_CONNECTION_FACTORY = build_lineage_sql_connection_factory()
+_LINEAGE_REPOSITORY = LineageRepository(connection_factory=_LINEAGE_CONNECTION_FACTORY)
 
 
 def get_lineage_repository() -> LineageRepository:
     """Return the registered repository without opening a SQL connection."""
     return _LINEAGE_REPOSITORY
+
+
+def get_lineage_sql_connection_outcome() -> LineageConnectionOutcome:
+    """Return only the safe in-process lineage SQL connection outcome."""
+    return _LINEAGE_CONNECTION_FACTORY.outcome
 
 ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "generated-outputs"
 _INGEST_SEMAPHORE = asyncio.Semaphore(max(1, int(os.environ.get("DF_UPLOAD_INGEST_CONCURRENCY", "2"))))

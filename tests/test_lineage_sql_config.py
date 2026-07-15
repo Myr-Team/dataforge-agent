@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import hmac
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -65,16 +67,16 @@ def test_factory_creation_is_lazy_when_sql_configuration_is_missing() -> None:
     assert callable(factory)
 
 
-def test_default_credential_is_constructed_only_when_connection_is_requested(monkeypatch) -> None:
+def test_system_assigned_managed_identity_is_constructed_lazily_without_options(monkeypatch) -> None:
     api = _api()
     credentials = []
 
-    def credential_factory():
+    def credential_factory(*args, **kwargs):
         credential = _Credential()
-        credentials.append(credential)
+        credentials.append((args, kwargs, credential))
         return credential
 
-    monkeypatch.setattr(api, "DefaultAzureCredential", credential_factory)
+    monkeypatch.setattr(api, "ManagedIdentityCredential", credential_factory)
     factory = api.build_lineage_sql_connection_factory(
         environ=_VALID_ENV,
         connect=lambda *args, **kwargs: object(),
@@ -84,7 +86,42 @@ def test_default_credential_is_constructed_only_when_connection_is_requested(mon
     factory()
 
     assert len(credentials) == 1
-    assert credentials[0].scopes == ["https://database.windows.net/.default"]
+    args, kwargs, credential = credentials[0]
+    assert args == ()
+    assert kwargs == {}
+    assert credential.scopes == ["https://database.windows.net/.default"]
+
+
+def test_production_factory_does_not_admit_credential_chain_or_user_assigned_configuration(monkeypatch) -> None:
+    api = _api()
+    credentials = []
+
+    def credential_factory(*args, **kwargs):
+        credential = _Credential()
+        credentials.append((args, kwargs, credential))
+        return credential
+
+    monkeypatch.setattr(api, "ManagedIdentityCredential", credential_factory)
+    environment = {
+        **_VALID_ENV,
+        "AZURE_CLIENT_ID": "user-assigned-identity",
+        "AZURE_CLIENT_SECRET": "not-a-production-lineage-config-value",
+        "AZURE_TENANT_ID": "not-a-production-lineage-config-value",
+    }
+    factory = api.build_lineage_sql_connection_factory(
+        environ=environment,
+        connect=lambda *args, **kwargs: object(),
+    )
+
+    factory()
+
+    assert len(credentials) == 1
+    assert credentials[0][0] == ()
+    assert credentials[0][1] == {}
+    source = Path(api.__file__).read_text(encoding="utf-8")
+    assert "DefaultAzureCredential" not in source
+    assert "ClientSecretCredential" not in source
+    assert "AzureCliCredential" not in source
 
 
 @pytest.mark.parametrize("token_length", [1, 19, 256])
@@ -178,6 +215,87 @@ def test_auth_driver_and_connection_failures_share_one_redacted_error(failure) -
     assert raised.value.__context__ is None
 
 
+@pytest.mark.parametrize(
+    ("environment", "credential", "connect", "expected_category"),
+    [
+        ({}, _Credential(), lambda *args, **kwargs: object(), "configuration"),
+        (
+            _VALID_ENV,
+            SimpleNamespace(get_token=lambda _scope: (_ for _ in ()).throw(RuntimeError("token secret"))),
+            lambda *args, **kwargs: object(),
+            "token",
+        ),
+        (
+            _VALID_ENV,
+            _Credential(),
+            lambda *args, **kwargs: (_ for _ in ()).throw(ModuleNotFoundError("driver path")),
+            "driver",
+        ),
+        (
+            _VALID_ENV,
+            _Credential(),
+            lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("connection detail")),
+            "connection",
+        ),
+    ],
+)
+def test_failure_category_is_retained_only_as_safe_in_process_outcome(
+    environment, credential, connect, expected_category
+) -> None:
+    api = _api()
+    factory = api.build_lineage_sql_connection_factory(
+        environ=environment,
+        credential=credential,
+        connect=connect,
+    )
+
+    with pytest.raises(api.LineageUnavailable) as raised:
+        factory()
+
+    assert str(raised.value) == _UNAVAILABLE_MESSAGE
+    assert factory.outcome == api.LineageConnectionOutcome(
+        available=False,
+        failure_category=expected_category,
+    )
+    assert "secret" not in repr(factory.outcome)
+    assert "path" not in repr(factory.outcome)
+    assert "detail" not in repr(factory.outcome)
+
+
+def test_missing_registered_odbc_driver_is_a_safe_driver_outcome(monkeypatch) -> None:
+    api = _api()
+    connect_calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "pyodbc",
+        SimpleNamespace(
+            drivers=lambda: [],
+            connect=lambda *args, **kwargs: connect_calls.append((args, kwargs)),
+        ),
+    )
+    factory = api.build_lineage_sql_connection_factory(
+        environ=_VALID_ENV,
+        credential=_Credential(),
+    )
+
+    with pytest.raises(api.LineageUnavailable) as raised:
+        factory()
+
+    assert str(raised.value) == _UNAVAILABLE_MESSAGE
+    assert factory.outcome.failure_category == "driver"
+    assert connect_calls == []
+
+
+def test_dockerfile_checks_registered_odbc_driver_before_app_import_smoke() -> None:
+    dockerfile = Path(__file__).parents[1] / "backend" / "Dockerfile"
+    content = dockerfile.read_text(encoding="utf-8")
+
+    assert "import pyodbc" in content
+    assert "pyodbc.drivers()" in content
+    assert "ODBC Driver 18 for SQL Server" in content
+    assert content.index("pyodbc.drivers()") < content.index("python -m backend.import_smoke")
+
+
 def test_app_lineage_repository_registration_is_lazy_without_configuration(monkeypatch) -> None:
     monkeypatch.delenv("LINEAGE_SQL_SERVER", raising=False)
     monkeypatch.delenv("LINEAGE_SQL_DATABASE", raising=False)
@@ -187,6 +305,11 @@ def test_app_lineage_repository_registration_is_lazy_without_configuration(monke
     repository = app_module.get_lineage_repository()
 
     assert isinstance(repository, api.LineageRepository)
+    assert app_module.get_lineage_sql_connection_outcome() == api.LineageConnectionOutcome(
+        available=None,
+        failure_category=None,
+    )
     with pytest.raises(api.LineageUnavailable) as raised:
         repository.initialize_schema()
     assert str(raised.value) == _UNAVAILABLE_MESSAGE
+    assert app_module.get_lineage_sql_connection_outcome().failure_category == "configuration"

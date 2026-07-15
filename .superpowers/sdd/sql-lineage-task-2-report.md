@@ -96,3 +96,58 @@ This report is included in that same commit; the final commit hash is returned a
 
 - Docker is not installed on this machine, so the image could not be built locally. The Dockerfile was reviewed against current Microsoft Debian Driver 18 installation guidance and passed repository diff/syntax inspection only.
 - The real managed-identity Azure SQL path was not exercised because no provisioned test database/factory was configured. The existing Task 1 integration test remains opt-in and was skipped; Task 5 owns Azure provisioning and deployment smoke.
+
+## Review R1 Fix
+
+### Scope
+
+- Replaced the production `DefaultAzureCredential` chain with a zero-argument `ManagedIdentityCredential`. This selects the system-assigned managed identity and does not accept a client ID, service-principal secret, developer credential, or fallback chain.
+- Kept the injected credential and connector arguments as test seams only. The registered application factory supplies neither.
+- Added `LineageConnectionOutcome`, a safe in-process outcome containing only `available` and one bounded category: `configuration`, `token`, `driver`, or `connection`. It never stores raw exception text, tokens, credentials, paths, claims, or rowversions, and it is not returned in exceptions, API responses, or logs.
+- Added an app-level accessor for that in-process outcome without adding a route or changing public health/authentication behavior.
+- Added a Docker build step that imports `pyodbc`, asserts that `ODBC Driver 18 for SQL Server` is registered, then runs the existing backend import smoke. A bad Driver 18 registration now fails the image build.
+
+### TDD Evidence
+
+RED command:
+
+```text
+python -m pytest tests/test_lineage_sql_config.py -q
+```
+
+RED result before the R1 implementation:
+
+```text
+8 failed, 19 passed in 6.00s
+```
+
+Expected failures covered the absent managed-identity class, missing safe outcome object/category access, missing Driver 18 registration preflight, and absent Docker smoke command.
+
+GREEN result after the R1 implementation:
+
+```text
+27 passed in 5.11s
+```
+
+### R1 Verification
+
+```text
+python -m pytest tests/test_lineage_sql_config.py -q
+27 passed in 4.18s
+
+python -m pytest tests/test_lineage_sql.py -q
+14 passed, 1 skipped in 0.11s
+
+python -m backend.import_smoke
+exit 0
+
+python -m compileall -q backend/lineage_sql.py backend/app.py
+exit 0
+
+git diff --check
+exit 0
+```
+
+### Remaining Concern
+
+Docker is still unavailable locally, so the new build-time Driver 18 registration check could not be executed in a container here. It is part of the Dockerfile and will execute during the next ACR/Docker build.
