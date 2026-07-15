@@ -399,6 +399,7 @@ def test_registered_unselected_pack_requires_internal_selector_provenance(tmp_pa
 
 def test_signed_capability_contract_cannot_replay_across_run_or_workspace(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: True)
     stored: dict[str, object] = {}
 
     def upload(name: str, payload: object) -> None:
@@ -406,6 +407,14 @@ def test_signed_capability_contract_cannot_replay_across_run_or_workspace(tmp_pa
 
     monkeypatch.setattr(run_store, "upload_blob_json", upload)
     monkeypatch.setattr(run_store, "download_blob_json", lambda name: stored.get(name, {}))
+    monkeypatch.setattr(run_store, "download_blob_json_strict", lambda name: stored.get(name))
+    monkeypatch.setattr(
+        run_store,
+        "compare_and_swap_blob_json",
+        lambda name, *, expected_revision, changes: stored.update(
+            {name: json.loads(json.dumps(changes))}
+        ) or stored[name],
+    )
     run_store._ACTIVE.clear()
     selection, provenance = _internally_selected_pack_contract(
         workspace_id="workspace-1",
@@ -765,6 +774,7 @@ def test_normal_maf_persisted_ids_are_rehydrated_only_from_selected_artifact_con
 ) -> None:
     """A normal MAF summary stores IDs only; its artifact contract is the safe source."""
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: True)
     stored: dict[str, object] = {}
 
     def upload(name: str, payload: object) -> None:
@@ -772,6 +782,14 @@ def test_normal_maf_persisted_ids_are_rehydrated_only_from_selected_artifact_con
 
     monkeypatch.setattr(run_store, "upload_blob_json", upload)
     monkeypatch.setattr(run_store, "download_blob_json", lambda name: stored.get(name, {}))
+    monkeypatch.setattr(run_store, "download_blob_json_strict", lambda name: stored.get(name))
+    monkeypatch.setattr(
+        run_store,
+        "compare_and_swap_blob_json",
+        lambda name, *, expected_revision, changes: stored.update(
+            {name: json.loads(json.dumps(changes))}
+        ) or stored[name],
+    )
     run_store._ACTIVE.clear()
     def complete(run_id: str, ids: list[str]) -> tuple[dict[str, object], dict[str, str]]:
         selected, provenance = _internally_selected_pack_contract(scope_id=run_id)

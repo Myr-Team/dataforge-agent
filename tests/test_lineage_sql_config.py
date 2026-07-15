@@ -393,6 +393,16 @@ def test_app_lineage_repository_registration_is_lazy_without_configuration(monke
     monkeypatch.delenv("LINEAGE_SQL_DATABASE", raising=False)
     app_module = importlib.import_module("backend.app")
     api = _api()
+    monkeypatch.setattr(
+        app_module,
+        "_LINEAGE_CONNECTION_FACTORY",
+        api.build_lineage_sql_connection_factory(),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_LINEAGE_REPOSITORY",
+        api.LineageRepository(connection_factory=app_module._LINEAGE_CONNECTION_FACTORY),
+    )
 
     repository = app_module.get_lineage_repository()
 
