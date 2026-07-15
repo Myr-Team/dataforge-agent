@@ -15,7 +15,6 @@ BEGIN
             CONSTRAINT DF_workspace_lineage_created_at DEFAULT SYSUTCDATETIME(),
         updated_at DATETIME2(7) NOT NULL
             CONSTRAINT DF_workspace_lineage_updated_at DEFAULT SYSUTCDATETIME(),
-        row_version ROWVERSION NOT NULL,
         CONSTRAINT PK_workspace_lineage PRIMARY KEY (workspace_id),
         CONSTRAINT CK_workspace_lineage_generation CHECK (generation >= 1),
         CONSTRAINT CK_workspace_lineage_state
@@ -34,8 +33,6 @@ BEGIN
         canonical_run_id NVARCHAR(128) NOT NULL,
         decision_fingerprint CHAR(64) NOT NULL,
         evidence_fingerprint CHAR(64) NOT NULL,
-        verdict NVARCHAR(64) NULL,
-        confidence NVARCHAR(64) NULL,
         actor_metadata NVARCHAR(2048) NULL,
         created_at DATETIME2(7) NOT NULL
             CONSTRAINT DF_experiment_version_created_at DEFAULT SYSUTCDATETIME(),

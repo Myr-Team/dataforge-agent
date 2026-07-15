@@ -4,11 +4,22 @@ import copy
 import importlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+
+_ACTOR_METADATA = {
+    "actor_id": "00000000-0000-0000-0000-000000000001",
+    "actor_type": "member",
+}
+_LOCK_MARKERS = (
+    "/* lineage:lock-workspace */",
+    "/* lineage:latest-version */",
+    "/* lineage:lock-version */",
+    "/* lineage:existing-attachment */",
+)
 
 
 class _MemorySqlDatabase:
@@ -84,8 +95,12 @@ class _MemoryCursor:
             database.executions.append((sql, params))
 
         if "/* lineage:schema */" in sql:
+            _assert_schema_contract(sql)
             database.schema_executions += 1
             return self
+
+        if any(marker in sql for marker in _LOCK_MARKERS):
+            assert "WITH (UPDLOCK, HOLDLOCK)" in sql
 
         state = self.connection._begin()
         workspaces = state["workspaces"]
@@ -123,8 +138,6 @@ class _MemoryCursor:
                 canonical_run_id,
                 decision_fingerprint,
                 evidence_fingerprint,
-                verdict,
-                confidence,
                 actor_metadata,
             ) = params
             versions[str(version_id)] = {
@@ -135,8 +148,6 @@ class _MemoryCursor:
                 "canonical_run_id": str(canonical_run_id),
                 "decision_fingerprint": str(decision_fingerprint),
                 "evidence_fingerprint": str(evidence_fingerprint),
-                "verdict": verdict,
-                "confidence": confidence,
                 "actor_metadata": actor_metadata,
             }
             self.rowcount = 1
@@ -181,6 +192,10 @@ class _MemoryCursor:
                 payload_sha256,
                 actor_metadata,
             ) = params
+            version = versions.get(str(version_id))
+            assert version is not None
+            assert version["workspace_id"] == workspace_id
+            assert version["generation"] == generation
             attachments[str(attachment_id)] = {
                 "attachment_id": str(attachment_id),
                 "version_id": str(version_id),
@@ -274,6 +289,20 @@ def _row(value: dict[str, Any]) -> SimpleNamespace:
     return SimpleNamespace(**value)
 
 
+def _assert_schema_contract(sql: str) -> None:
+    ddl = sql.upper()
+    assert "IF OBJECT_ID" in ddl
+    assert "ROWVERSION" not in ddl
+    assert "VERDICT" not in ddl
+    assert "CONFIDENCE" not in ddl
+    assert "UNIQUE (WORKSPACE_ID, GENERATION, ORDINAL)" in ddl
+    assert "FOREIGN KEY (VERSION_ID, WORKSPACE_ID, GENERATION)" in ddl
+    assert (
+        "REFERENCES DF_LINEAGE.EXPERIMENT_VERSION (VERSION_ID, WORKSPACE_ID, GENERATION)"
+        in ddl
+    )
+
+
 def _api():
     return importlib.import_module("backend.lineage_sql")
 
@@ -289,9 +318,7 @@ def _commit(repository, run_id: str, *, decision: str = "a" * 64, evidence: str 
         canonical_run_id=run_id,
         decision_fingerprint=decision,
         evidence_fingerprint=evidence,
-        verdict="conditional",
-        confidence="observed",
-        actor_metadata={"actor_id": "member-1", "actor_type": "member"},
+        actor_metadata=_ACTOR_METADATA,
     )
 
 
@@ -336,10 +363,10 @@ def test_purge_is_terminal_until_explicit_recreation() -> None:
     version = _commit(repository, "run-before-purge")
 
     assert repository.purge_workspace(
-        workspace_id="workspace-1", generation=1, actor_metadata={"actor_id": "member-1"}
+        workspace_id="workspace-1", generation=1, actor_metadata=_ACTOR_METADATA
     )
     assert not repository.purge_workspace(
-        workspace_id="workspace-1", generation=1, actor_metadata={"actor_id": "member-1"}
+        workspace_id="workspace-1", generation=1, actor_metadata=_ACTOR_METADATA
     )
     assert database.versions == {}
 
@@ -356,7 +383,7 @@ def test_purge_is_terminal_until_explicit_recreation() -> None:
         )
 
     assert repository.recreate_workspace(
-        workspace_id="workspace-1", generation=1, actor_metadata={"actor_id": "member-1"}
+        workspace_id="workspace-1", generation=1, actor_metadata=_ACTOR_METADATA
     ) == 2
     with pytest.raises(api.LineageUnavailable, match="workspace generation is not active"):
         _commit(repository, "stale-generation-run")
@@ -417,12 +444,7 @@ def test_schema_is_idempotent_and_declares_database_foreign_keys() -> None:
     repository.initialize_schema()
     repository.initialize_schema()
 
-    schema_path = Path(__file__).parents[1] / "backend" / "sql" / "lineage_schema.sql"
-    schema = schema_path.read_text(encoding="utf-8")
     assert database.schema_executions == 2
-    assert "IF OBJECT_ID" in schema
-    assert "FOREIGN KEY" in schema
-    assert "UNIQUE (workspace_id, generation, ordinal)" in schema
 
 
 def test_dynamic_values_are_bound_and_locking_queries_use_required_hints() -> None:
@@ -445,18 +467,56 @@ def test_dynamic_values_are_bound_and_locking_queries_use_required_hints() -> No
     assert all("UPDLOCK, HOLDLOCK" in sql for sql in lock_statements)
 
 
-def test_actor_metadata_rejects_token_shaped_fields() -> None:
+def test_commit_does_not_accept_caller_selected_outcome_strength() -> None:
     database = _MemorySqlDatabase()
     repository = _repository(database)
 
-    with pytest.raises(ValueError, match="prohibited field"):
+    with pytest.raises(TypeError):
         repository.commit_analysis(
             workspace_id="workspace-1",
             generation=1,
             canonical_run_id="run-1",
             decision_fingerprint="a" * 64,
             evidence_fingerprint="b" * 64,
-            actor_metadata={"id_token": "must-not-be-stored"},
+            verdict="production_confirmed",
+            confidence="observed",
+        )
+
+    assert database.executions == []
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"actor_id": "sql-password=not-safe", "actor_type": "member"},
+        {
+            "actor_id": _ACTOR_METADATA["actor_id"],
+            "actor_type": "member",
+            "request_id": "eyJhbGciOiJub25lIn0.token.claims",
+        },
+        {
+            "actor_id": _ACTOR_METADATA["actor_id"],
+            "actor_type": "member",
+            "context": '{"claims":["not-safe"]}',
+        },
+        {
+            "actor_id": _ACTOR_METADATA["actor_id"],
+            "actor_type": {"nested": "member"},
+        },
+    ],
+)
+def test_actor_metadata_rejects_tokens_claims_and_credentials_in_benign_fields(metadata) -> None:
+    database = _MemorySqlDatabase()
+    repository = _repository(database)
+
+    with pytest.raises(ValueError):
+        repository.commit_analysis(
+            workspace_id="workspace-1",
+            generation=1,
+            canonical_run_id="run-1",
+            decision_fingerprint="a" * 64,
+            evidence_fingerprint="b" * 64,
+            actor_metadata=metadata,
         )
 
     assert database.executions == []

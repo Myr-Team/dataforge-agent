@@ -11,17 +11,7 @@ from uuid import UUID, uuid4
 
 _SCHEMA_PATH = Path(__file__).with_name("sql") / "lineage_schema.sql"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-_SENSITIVE_METADATA_TERMS = {
-    "accesstoken",
-    "authorization",
-    "claim",
-    "connectionstring",
-    "cookie",
-    "password",
-    "rowversion",
-    "secret",
-    "token",
-}
+_ACTOR_TYPES = {"member", "service", "system"}
 
 
 class LineageUnavailable(RuntimeError):
@@ -37,8 +27,6 @@ class VersionCommit:
     canonical_run_id: str
     decision_fingerprint: str
     evidence_fingerprint: str
-    verdict: str | None
-    confidence: str | None
     created: bool
 
 
@@ -106,17 +94,13 @@ class LineageRepository:
         canonical_run_id: str,
         decision_fingerprint: str,
         evidence_fingerprint: str,
-        verdict: str | None = None,
-        confidence: str | None = None,
-        actor_metadata: Mapping[str, str | int | bool | None] | None = None,
+        actor_metadata: Mapping[str, str | int] | None = None,
     ) -> VersionCommit:
         workspace_id = _bounded_text("workspace_id", workspace_id, 128)
         generation = _generation(generation)
         canonical_run_id = _bounded_text("canonical_run_id", canonical_run_id, 128)
         decision_fingerprint = _sha256("decision_fingerprint", decision_fingerprint)
         evidence_fingerprint = _sha256("evidence_fingerprint", evidence_fingerprint)
-        verdict = _optional_text("verdict", verdict, 64)
-        confidence = _optional_text("confidence", confidence, 64)
         actor_json = _actor_metadata_json(actor_metadata)
 
         with self._transaction() as cursor:
@@ -138,9 +122,7 @@ class LineageRepository:
                     ordinal,
                     canonical_run_id,
                     decision_fingerprint,
-                    evidence_fingerprint,
-                    verdict,
-                    confidence
+                    evidence_fingerprint
                 FROM df_lineage.experiment_version WITH (UPDLOCK, HOLDLOCK)
                 WHERE workspace_id = ? AND generation = ?
                 ORDER BY ordinal DESC""",
@@ -166,10 +148,8 @@ class LineageRepository:
                     canonical_run_id,
                     decision_fingerprint,
                     evidence_fingerprint,
-                    verdict,
-                    confidence,
                     actor_metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 version_id,
                 workspace_id,
                 generation,
@@ -177,8 +157,6 @@ class LineageRepository:
                 canonical_run_id,
                 decision_fingerprint,
                 evidence_fingerprint,
-                verdict,
-                confidence,
                 actor_json,
             )
             updated = cursor.execute(
@@ -203,8 +181,6 @@ class LineageRepository:
                 canonical_run_id=canonical_run_id,
                 decision_fingerprint=decision_fingerprint,
                 evidence_fingerprint=evidence_fingerprint,
-                verdict=verdict,
-                confidence=confidence,
                 created=True,
             )
 
@@ -217,7 +193,7 @@ class LineageRepository:
         kind: str,
         source_run_id: str,
         payload_sha256: str,
-        actor_metadata: Mapping[str, str | int | bool | None] | None = None,
+        actor_metadata: Mapping[str, str | int] | None = None,
     ) -> AttachmentCommit:
         workspace_id = _bounded_text("workspace_id", workspace_id, 128)
         generation = _generation(generation)
@@ -312,7 +288,7 @@ class LineageRepository:
         *,
         workspace_id: str,
         generation: int,
-        actor_metadata: Mapping[str, str | int | bool | None] | None = None,
+        actor_metadata: Mapping[str, str | int] | None = None,
     ) -> bool:
         workspace_id = _bounded_text("workspace_id", workspace_id, 128)
         generation = _generation(generation)
@@ -388,7 +364,7 @@ class LineageRepository:
         *,
         workspace_id: str,
         generation: int,
-        actor_metadata: Mapping[str, str | int | bool | None] | None = None,
+        actor_metadata: Mapping[str, str | int] | None = None,
     ) -> int:
         workspace_id = _bounded_text("workspace_id", workspace_id, 128)
         generation = _generation(generation)
@@ -447,9 +423,7 @@ class LineageRepository:
                     ordinal,
                     canonical_run_id,
                     decision_fingerprint,
-                    evidence_fingerprint,
-                    verdict,
-                    confidence
+                    evidence_fingerprint
                 FROM df_lineage.experiment_version
                 WHERE workspace_id = ? AND generation = ?
                 ORDER BY ordinal ASC""",
@@ -562,8 +536,6 @@ def _version_commit(row: Any, *, created: bool) -> VersionCommit:
         canonical_run_id=str(row.canonical_run_id),
         decision_fingerprint=str(row.decision_fingerprint),
         evidence_fingerprint=str(row.evidence_fingerprint),
-        verdict=str(row.verdict) if row.verdict is not None else None,
-        confidence=str(row.confidence) if row.confidence is not None else None,
         created=created,
     )
 
@@ -580,12 +552,6 @@ def _bounded_text(name: str, value: str, maximum: int) -> str:
     return value
 
 
-def _optional_text(name: str, value: str | None, maximum: int) -> str | None:
-    if value is None:
-        return None
-    return _bounded_text(name, value, maximum)
-
-
 def _sha256(name: str, value: str) -> str:
     if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
         raise ValueError(f"{name} must be a normalized lowercase SHA-256")
@@ -600,25 +566,27 @@ def _uuid_text(name: str, value: str) -> str:
 
 
 def _actor_metadata_json(
-    metadata: Mapping[str, str | int | bool | None] | None,
+    metadata: Mapping[str, str | int] | None,
 ) -> str | None:
     if metadata is None:
         return None
     if not isinstance(metadata, Mapping):
         raise ValueError("actor_metadata must be a flat mapping")
 
-    safe: dict[str, str | int | bool | None] = {}
+    safe: dict[str, str | int] = {}
     for key, value in metadata.items():
-        if not isinstance(key, str) or not key or len(key) > 64:
-            raise ValueError("actor_metadata keys must be short strings")
-        normalized_key = re.sub(r"[^a-z0-9]", "", key.casefold())
-        if any(term in normalized_key for term in _SENSITIVE_METADATA_TERMS):
-            raise ValueError("actor_metadata contains a prohibited field")
-        if value is not None and not isinstance(value, (str, int, bool)):
-            raise ValueError("actor_metadata values must be scalar")
-        if isinstance(value, str) and len(value) > 256:
-            raise ValueError("actor_metadata string values are too long")
-        safe[key] = value
+        if key == "actor_id" or key == "request_id":
+            safe[key] = _uuid_text(f"actor_metadata.{key}", value)
+        elif key == "actor_type":
+            if not isinstance(value, str) or value not in _ACTOR_TYPES:
+                raise ValueError("actor_metadata.actor_type is not permitted")
+            safe[key] = value
+        elif key == "actor_sequence":
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 2_147_483_647:
+                raise ValueError("actor_metadata.actor_sequence is not permitted")
+            safe[key] = value
+        else:
+            raise ValueError("actor_metadata contains an unknown field")
 
     encoded = json.dumps(safe, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     if len(encoded) > 2048:
