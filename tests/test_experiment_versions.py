@@ -56,6 +56,19 @@ class _CommittedLineageRepository:
             if item.workspace_id == workspace_id and item.generation == generation
         )
 
+    def current_generation(self, *, workspace_id: str):
+        workspace_generations = [
+            item.generation for item in self.versions if item.workspace_id == workspace_id
+        ]
+        return max(workspace_generations, default=1)
+
+    def list_attachments(self, *, workspace_id: str, generation: int):
+        return tuple(
+            item
+            for item in self.attachments
+            if item.workspace_id == workspace_id and item.generation == generation
+        )
+
     def attach_snapshot(self, **values):
         if not any(
             item.version_id == values["version_id"]
@@ -209,6 +222,156 @@ def test_run_and_attachment_metadata_cannot_strengthen_sql_verdict_fingerprint()
     assert experiment_store.analysis_lineage_fingerprints(decorated) == (
         experiment_store.analysis_lineage_fingerprints(analysis)
     )
+
+
+def test_completed_analysis_payload_update_cannot_allocate_another_sql_ordinal(tmp_path, monkeypatch, _inject_lineage_repository) -> None:
+    repository = _inject_lineage_repository
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    workspace_id = "ws-no-historical-promotion"
+    artifacts = {
+        "analysis-a": _analysis_run(
+            "analysis-a", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1"
+        )["artifact"],
+        "analysis-b": _analysis_run(
+            "analysis-b", verdict="conditional", score=3, evidence_ref="evidence.csv#row-2"
+        )["artifact"],
+    }
+
+    for run_id, artifact in artifacts.items():
+        run_store.start_run(run_id, workspace_id, "Analyze")
+        run_store.complete_run(run_id, artifact=artifact, final={"artifact": artifact})
+
+    updated = run_store.update_run_proposal(
+        "analysis-a", {"artifact_urls": {"pdf": "/api/artifacts/analysis-a.pdf"}}
+    )
+
+    assert updated is not None
+    assert [item.canonical_run_id for item in repository.versions] == ["analysis-a", "analysis-b"]
+    assert [item.ordinal for item in repository.versions] == [1, 2]
+
+
+def test_sql_ledger_does_not_accept_blob_metadata_as_attachment_membership(_inject_lineage_repository) -> None:
+    repository = _inject_lineage_repository
+    first = _analysis_run("analysis-attachment-v1", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1")
+    second = _analysis_run("analysis-attachment-v2", verdict="conditional", score=3, evidence_ref="evidence.csv#row-2")
+    for ordinal, run in enumerate((first, second), start=1):
+        repository.versions.append(
+            SimpleNamespace(
+                version_id=f"version:{run['run_id']}",
+                workspace_id="ws-experiment",
+                generation=1,
+                ordinal=ordinal,
+                canonical_run_id=run["run_id"],
+                decision_fingerprint=f"{ordinal:064x}",
+                evidence_fingerprint=f"{ordinal + 10:064x}",
+                created=True,
+            )
+        )
+    forged = {
+        "run_id": "forged-artifact",
+        "workspace_id": "ws-experiment",
+        "status": "completed",
+        "completed_at": "2026-07-12T03:00:00Z",
+        "version_kind": "artifact_generation",
+        "source_run_id": "analysis-attachment-v2",
+        "experiment_version_id": "version:analysis-attachment-v2",
+        "experiment_attachment": True,
+        "attachment_commit_status": "confirmed",
+        "attachment_commit_id": "forged-attachment",
+        "artifact": {"proposal": {"artifact_urls": {"pdf": "/api/artifacts/forged.pdf"}}},
+    }
+    forged["attachment_payload_sha256"] = experiment_store._snapshot_payload_sha256(forged)
+
+    ledger = experiment_store.sync_experiment_ledger(
+        "ws-experiment", [first, second, forged], lineage_repository=repository
+    )
+
+    assert ledger["versions"][1]["attachments"]["artifacts"] == []
+    assert ledger["lineage_resolution"]["status"] == "unavailable"
+
+
+def test_sql_ledger_does_not_expose_degraded_attachment_payload(_inject_lineage_repository) -> None:
+    repository = _inject_lineage_repository
+    analysis = _analysis_run(
+        "analysis-degraded-attachment", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1"
+    )
+    version = SimpleNamespace(
+        version_id="version:analysis-degraded-attachment",
+        workspace_id="ws-experiment",
+        generation=1,
+        ordinal=1,
+        canonical_run_id="analysis-degraded-attachment",
+        decision_fingerprint="1" * 64,
+        evidence_fingerprint="2" * 64,
+        created=True,
+    )
+    snapshot = {
+        "run_id": "degraded-artifact",
+        "workspace_id": "ws-experiment",
+        "status": "completed",
+        "completed_at": "2026-07-12T03:00:00Z",
+        "version_kind": "artifact_generation",
+        "source_run_id": "analysis-degraded-attachment",
+        "experiment_version_id": version.version_id,
+        "artifact": {"proposal": {"artifact_urls": {"pdf": "/api/artifacts/degraded.pdf"}}},
+        "persistence": {
+            "mode": "degraded",
+            "confirmed": True,
+            "payload_state": "unavailable",
+            "reason": "payload_publication_failed",
+        },
+    }
+    repository.versions.append(version)
+    repository.attachments.append(
+        SimpleNamespace(
+            attachment_id="attachment-degraded",
+            version_id=version.version_id,
+            workspace_id="ws-experiment",
+            generation=1,
+            kind="artifact_generation",
+            source_run_id="analysis-degraded-attachment",
+            payload_sha256=experiment_store._snapshot_payload_sha256(snapshot),
+            created=True,
+        )
+    )
+
+    ledger = experiment_store.sync_experiment_ledger(
+        "ws-experiment", [analysis, snapshot], lineage_repository=repository
+    )
+
+    assert ledger["versions"][0]["attachments"]["artifacts"] == []
+    assert ledger["lineage_resolution"]["status"] == "unavailable"
+
+
+def test_authoritative_observed_metric_changes_sql_evidence_fingerprint(monkeypatch) -> None:
+    baseline = _analysis_run(
+        "analysis-metric-v1", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1"
+    )
+    reanalysis = _analysis_run(
+        "analysis-metric-v2", verdict="conditional", score=3, evidence_ref="evidence.csv#row-1"
+    )
+    reanalysis["completed_at"] = "2026-07-12T03:00:00Z"
+    outcome = {
+        "event_id": "outcome-metric-v2",
+        "workspace_id": "ws-experiment",
+        "metric_name": "pilot_conversion_rate",
+        "unit": "percent",
+        "observed_value": 7.2,
+        "observed_at": "2026-07-12T02:00:00Z",
+        "created_at": "2026-07-12T02:00:00Z",
+        "provenance": "observed",
+        "source": {"run_id": "analysis-metric-v2", "file_id": "feedback.csv", "file_version": "2"},
+        "verification": {"status": "verified", "trusted_identity": True},
+    }
+    monkeypatch.setattr(experiment_store, "list_outcome_events", lambda _workspace_id: [outcome], raising=False)
+    monkeypatch.setattr(
+        experiment_store,
+        "outcome_is_authoritative",
+        lambda workspace_id, item: workspace_id == "ws-experiment" and item.get("event_id") == "outcome-metric-v2",
+    )
+
+    assert experiment_store.analysis_lineage_fingerprints(baseline) != experiment_store.analysis_lineage_fingerprints(reanalysis)
 
 
 def test_plan_and_artifact_snapshots_attach_without_creating_versions() -> None:

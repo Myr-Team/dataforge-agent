@@ -563,6 +563,21 @@ class LineageRepository:
             )
             return next_generation
 
+    def current_generation(self, *, workspace_id: str) -> int:
+        """Read the active generation from SQL; an unseen workspace starts at generation one."""
+        workspace_id = _bounded_text("workspace_id", workspace_id, 128)
+        with self._transaction() as cursor:
+            workspace = cursor.execute(
+                """/* lineage:current-workspace */
+                SELECT workspace_id, generation, lifecycle_state, next_version_ordinal
+                FROM df_lineage.workspace_lineage
+                WHERE workspace_id = ?""",
+                workspace_id,
+            ).fetchone()
+            if workspace is None:
+                return 1
+            return _generation(int(workspace.generation))
+
     def list_versions(self, *, workspace_id: str, generation: int) -> tuple[VersionCommit, ...]:
         workspace_id = _bounded_text("workspace_id", workspace_id, 128)
         generation = _generation(generation)
@@ -584,6 +599,33 @@ class LineageRepository:
                 generation,
             ).fetchall()
             return tuple(_version_commit(row, created=False) for row in rows)
+
+    def list_attachments(
+        self,
+        *,
+        workspace_id: str,
+        generation: int,
+    ) -> tuple[AttachmentCommit, ...]:
+        workspace_id = _bounded_text("workspace_id", workspace_id, 128)
+        generation = _generation(generation)
+        with self._transaction() as cursor:
+            rows = cursor.execute(
+                """/* lineage:list-attachments */
+                SELECT
+                    attachment_id,
+                    version_id,
+                    workspace_id,
+                    generation,
+                    kind,
+                    source_run_id,
+                    payload_sha256
+                FROM df_lineage.experiment_attachment
+                WHERE workspace_id = ? AND generation = ?
+                ORDER BY attachment_id ASC""",
+                workspace_id,
+                generation,
+            ).fetchall()
+            return tuple(_attachment_commit(row, created=False) for row in rows)
 
     def _lock_workspace(
         self,
@@ -689,6 +731,19 @@ def _version_commit(row: Any, *, created: bool) -> VersionCommit:
         canonical_run_id=str(row.canonical_run_id),
         decision_fingerprint=str(row.decision_fingerprint),
         evidence_fingerprint=str(row.evidence_fingerprint),
+        created=created,
+    )
+
+
+def _attachment_commit(row: Any, *, created: bool) -> AttachmentCommit:
+    return AttachmentCommit(
+        attachment_id=str(row.attachment_id),
+        version_id=str(row.version_id),
+        workspace_id=str(row.workspace_id),
+        generation=int(row.generation),
+        kind=str(row.kind),
+        source_run_id=str(row.source_run_id),
+        payload_sha256=str(row.payload_sha256),
         created=created,
     )
 

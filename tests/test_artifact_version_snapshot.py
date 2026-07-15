@@ -180,6 +180,18 @@ class _LifecycleLineageRepository:
                 if item.workspace_id == workspace_id and item.generation == generation
             )
 
+    def current_generation(self, *, workspace_id: str):
+        with self._lock:
+            return int(self._workspace(workspace_id)["generation"])
+
+    def list_attachments(self, *, workspace_id: str, generation: int):
+        with self._lock:
+            return tuple(
+                item
+                for item in self.attachments
+                if item.workspace_id == workspace_id and item.generation == generation
+            )
+
     def purge_workspace(self, *, workspace_id: str, generation: int, actor_metadata=None):
         with self._lock:
             workspace = self._workspace(workspace_id)
@@ -296,6 +308,54 @@ def test_old_generation_writer_is_rejected_after_sql_recreation(tmp_path, monkey
         "reason": "lineage_unavailable",
     }
     assert repository.versions == []
+
+
+def test_restart_discovers_sql_generation_instead_of_defaulting_to_generation_one(tmp_path, monkeypatch) -> None:
+    repository = _LifecycleLineageRepository()
+    workspace_id = "ws-sql-restart-generation"
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    monkeypatch.setattr(run_store, "_LINEAGE_REPOSITORY_PROVIDER", lambda: repository)
+
+    run_store.start_run("analysis-generation-one", workspace_id, "Analyze")
+    initial = _analysis_artifact(workspace_id, "analysis-generation-one")
+    run_store.complete_run("analysis-generation-one", artifact=initial, final={"artifact": initial}, lineage_repository=repository)
+    run_store.purge_workspace_runs(workspace_id, lineage_repository=repository)
+    run_store.recreate_workspace_generation(workspace_id, lineage_repository=repository)
+    run_store._LINEAGE_GENERATION_HINTS.clear()
+
+    run_store.start_run("analysis-after-restart", workspace_id, "Analyze")
+    artifact = _analysis_artifact(workspace_id, "analysis-after-restart")
+    completed = run_store.complete_run(
+        "analysis-after-restart", artifact=artifact, final={"artifact": artifact}, lineage_repository=repository
+    )
+
+    assert run_store._ACTIVE.get("analysis-after-restart") is None
+    assert completed is not None
+    assert completed["workspace_generation"] == 2
+    assert repository.versions[-1].generation == 2
+
+
+def test_old_generation_generic_writer_cannot_republish_after_sql_recreation(tmp_path, monkeypatch) -> None:
+    repository = _LifecycleLineageRepository()
+    workspace_id = "ws-sql-generic-stale-writer"
+    stale_run_id = "followup-generation-one-late"
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "blob_configured", lambda: False)
+    monkeypatch.setattr(run_store, "_LINEAGE_REPOSITORY_PROVIDER", lambda: repository)
+
+    run_store.start_run(stale_run_id, workspace_id, "Follow-up")
+    run_store.purge_workspace_runs(workspace_id, lineage_repository=repository)
+    run_store.recreate_workspace_generation(workspace_id, lineage_repository=repository)
+    completed = run_store.complete_run(stale_run_id, final={"text": "Late generic completion"})
+
+    assert completed is not None
+    assert completed["persistence"] == {
+        "mode": "unavailable",
+        "confirmed": False,
+        "reason": "lineage_unavailable",
+    }
+    assert not (tmp_path / "runs" / f"{run_store._safe_name(stale_run_id)}.json").exists()
 
 
 def test_sql_unavailable_blocks_attachment_purge_and_recreation(tmp_path, monkeypatch) -> None:
@@ -2139,6 +2199,43 @@ def test_produce_omits_experiment_version_id_when_attachment_is_unavailable(tmp_
     }
     warning = next(item for item in result["warnings"] if item["kind"] == "version_snapshot")
     assert warning["error"] == "canonical_version_unavailable"
+
+
+def test_artifact_payload_publication_failure_is_reported_as_degraded(monkeypatch) -> None:
+    source_run_id = "analysis-artifact-degraded"
+    artifact = _analysis_artifact("ws-artifact-degraded", source_run_id)
+    monkeypatch.setattr(orchestrator, "_run_producer", lambda *_args, **_kwargs: {"artifact_urls": {"pdf": "/api/artifacts/report.pdf"}})
+    monkeypatch.setattr(orchestrator, "_produce_persistence_candidates", lambda *_args: [source_run_id])
+    monkeypatch.setattr(orchestrator, "resolve_canonical_experiment_source_run_id", lambda *_args, **_kwargs: source_run_id)
+    monkeypatch.setattr(
+        orchestrator,
+        "update_run_proposal",
+        lambda *_args, **_kwargs: {"canonical_experiment_version_id": "version:analysis-artifact-degraded", "artifact": artifact},
+    )
+    monkeypatch.setattr(orchestrator, "_produce_run_artifact", lambda _run: artifact)
+    monkeypatch.setattr(orchestrator, "get_run", lambda _run_id: {"artifact": artifact})
+    monkeypatch.setattr(
+        orchestrator,
+        "record_artifact_version",
+        lambda **_kwargs: {
+            "run_id": "artifact-snapshot",
+            "persistence": {
+                "mode": "degraded",
+                "confirmed": True,
+                "payload_state": "unavailable",
+                "reason": "payload_publication_failed",
+            },
+        },
+    )
+
+    result = orchestrator.produce_from_existing_report(
+        {"workspace_id": "ws-artifact-degraded", "conversation_id": source_run_id, "kinds": ["pdf"]}
+    )
+
+    assert result["experiment_attachment"] == {
+        "status": "degraded",
+        "reason": "payload_publication_failed",
+    }
 
 
 def test_strict_writer_never_accepts_duplicate_when_canonical_is_outside_300_run_view(tmp_path, monkeypatch) -> None:

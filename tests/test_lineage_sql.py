@@ -116,6 +116,9 @@ class _MemoryCursor:
         if "/* lineage:lock-workspace */" in sql:
             workspace = workspaces.get(str(params[0]))
             self._rows = [_row(workspace)] if workspace else []
+        elif "/* lineage:current-workspace */" in sql:
+            workspace = workspaces.get(str(params[0]))
+            self._rows = [_row(workspace)] if workspace else []
         elif "/* lineage:insert-workspace */" in sql:
             workspace_id, generation, actor_metadata = params
             workspaces[str(workspace_id)] = {
@@ -279,6 +282,15 @@ class _MemoryCursor:
                 if value["workspace_id"] == workspace_id and value["generation"] == generation
             ]
             matches.sort(key=lambda value: value["ordinal"])
+            self._rows = [_row(value) for value in matches]
+        elif "/* lineage:list-attachments */" in sql:
+            workspace_id, generation = params
+            matches = [
+                value
+                for value in attachments.values()
+                if value["workspace_id"] == workspace_id and value["generation"] == generation
+            ]
+            matches.sort(key=lambda value: value["attachment_id"])
             self._rows = [_row(value) for value in matches]
         else:
             raise AssertionError(f"Unexpected SQL statement: {sql}")
@@ -524,6 +536,29 @@ def test_attachment_requires_a_version_in_the_active_generation() -> None:
     assert duplicate.created is False
     assert duplicate.attachment_id == first.attachment_id
     assert len(database.attachments) == 1
+
+
+def test_repository_reads_current_generation_and_sql_attachment_rows() -> None:
+    database = _MemorySqlDatabase()
+    repository = _repository(database)
+    version = _commit(repository, "analysis-run")
+    attachment = repository.attach_snapshot(
+        workspace_id="workspace-1",
+        generation=1,
+        version_id=version.version_id,
+        kind="artifact_generation",
+        source_run_id="analysis-run",
+        payload_sha256="c" * 64,
+    )
+
+    assert repository.current_generation(workspace_id="workspace-1") == 1
+    listed = repository.list_attachments(workspace_id="workspace-1", generation=1)
+    assert [item.attachment_id for item in listed] == [attachment.attachment_id]
+
+    assert repository.purge_workspace(workspace_id="workspace-1", generation=1)
+    assert repository.recreate_workspace(workspace_id="workspace-1", generation=1) == 2
+    assert repository.current_generation(workspace_id="workspace-1") == 2
+    assert repository.list_attachments(workspace_id="workspace-1", generation=2) == ()
 
 
 def test_schema_is_idempotent_and_declares_database_foreign_keys() -> None:

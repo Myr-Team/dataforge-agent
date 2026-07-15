@@ -2992,7 +2992,16 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
                 if version and version.get("run_id"):
                     result["experiment_version_id"] = experiment_version_id
                     result["version_run_id"] = version["run_id"]
-                    result["experiment_attachment"] = {"status": "attached"}
+                    attachment_status = _attachment_publication_status(version)
+                    result["experiment_attachment"] = attachment_status
+                    if attachment_status["status"] != "attached":
+                        result.setdefault("warnings", []).append(
+                            {
+                                "kind": "version_snapshot",
+                                "message": "Artifact generated, but its version payload is temporarily unavailable.",
+                                "error": attachment_status["reason"],
+                            }
+                        )
                 else:
                     result["experiment_attachment"] = {
                         "status": "unavailable",
@@ -3031,6 +3040,17 @@ def produce_from_existing_report(payload: dict[str, Any]) -> dict[str, Any]:
             }
         )
     return result
+
+
+def _attachment_publication_status(snapshot: Mapping[str, Any]) -> dict[str, str]:
+    persistence = snapshot.get("persistence") if isinstance(snapshot, Mapping) else {}
+    if isinstance(persistence, Mapping) and str(persistence.get("payload_state") or "") == "unavailable":
+        reason = str(persistence.get("reason") or "")
+        return {
+            "status": "degraded",
+            "reason": "payload_publication_failed" if reason == "payload_publication_failed" else "payload_unavailable",
+        }
+    return {"status": "attached"}
 
 
 def _existing_proposal(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -5589,7 +5609,16 @@ async def _persist_chat_completion(
                 attachment_reason = "canonical_version_unavailable"
             if plan_version and plan_version.get("run_id"):
                 artifact["experiment_version_id"] = plan_version_id
-                artifact["experiment_attachment"] = {"status": "attached"}
+                attachment_status = _attachment_publication_status(plan_version)
+                artifact["experiment_attachment"] = attachment_status
+                if attachment_status["status"] != "attached":
+                    artifact.setdefault("warnings", []).append(
+                        {
+                            "kind": "plan_version_snapshot",
+                            "message": "Plan generated, but its version payload is temporarily unavailable.",
+                            "error": attachment_status["reason"],
+                        }
+                    )
             else:
                 artifact["experiment_attachment"] = {
                     "status": "unavailable",

@@ -12,10 +12,10 @@ from typing import Any, Mapping, Sequence
 
 try:
     from .blob_store import download_blob_json, upload_blob_json
-    from .outcome_store import outcome_is_authoritative
+    from .outcome_store import list_outcome_events, outcome_is_authoritative
 except ImportError:
     from blob_store import download_blob_json, upload_blob_json
-    from outcome_store import outcome_is_authoritative
+    from outcome_store import list_outcome_events, outcome_is_authoritative
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +58,7 @@ def build_experiment_ledger(
     outcomes: list[dict[str, Any]] | None = None,
     registry_state: dict[str, Any] | None = None,
     authoritative_versions: Sequence[Any] | None = None,
+    authoritative_attachments: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
     normalized_workspace = str(workspace_id or "").strip()
     if not normalized_workspace:
@@ -68,6 +69,7 @@ def build_experiment_ledger(
             runs,
             authoritative_versions,
             outcomes=outcomes,
+            authoritative_attachments=authoritative_attachments or (),
         )
     if registry_state is None:
         try:
@@ -273,14 +275,19 @@ def sync_experiment_ledger(
     normalized_workspace = str(workspace_id or "").strip()
     if not normalized_workspace:
         raise ValueError("workspace_id is required")
-    active_generation = generation or max(
-        [int(item.get("workspace_generation") or 0) for item in runs if isinstance(item, dict)]
-        or [1]
-    )
-    active_generation = max(1, active_generation)
+    active_generation = 1
     try:
         repository = _resolve_lineage_repository(lineage_repository)
+        active_generation = int(repository.current_generation(workspace_id=normalized_workspace))
+        if active_generation < 1:
+            raise ValueError("invalid lineage generation")
+        if generation is not None and int(generation) != active_generation:
+            raise ValueError("stale lineage generation")
         authoritative_versions = repository.list_versions(
+            workspace_id=normalized_workspace,
+            generation=active_generation,
+        )
+        authoritative_attachments = repository.list_attachments(
             workspace_id=normalized_workspace,
             generation=active_generation,
         )
@@ -322,6 +329,7 @@ def sync_experiment_ledger(
         hydrated_runs,
         outcomes=outcomes,
         authoritative_versions=authoritative_versions,
+        authoritative_attachments=authoritative_attachments,
     )
     with _LOCK:
         path = _local_path(normalized_workspace)
@@ -370,7 +378,41 @@ def analysis_lineage_fingerprints(run: Mapping[str, Any]) -> tuple[str, str]:
         "confidence": _normalized_decision_field("confidence", decision.get("confidence")),
         "dimensions": _normalized_decision_field("dimensions", decision.get("dimensions")),
     }
-    return _stable_sha256(decision_projection), _stable_sha256(evidence)
+    evidence_projection = {
+        "evidence": evidence,
+        "authoritative_observed_metrics": _authoritative_observed_metrics(run),
+    }
+    return _stable_sha256(decision_projection), _stable_sha256(evidence_projection)
+
+
+def _authoritative_observed_metrics(run: Mapping[str, Any]) -> list[dict[str, Any]]:
+    workspace_id = str(run.get("workspace_id") or "").strip()
+    run_id = str(run.get("run_id") or run.get("conversation_id") or "").strip()
+    if not workspace_id or not run_id:
+        return []
+    try:
+        outcomes = list_outcome_events(workspace_id)
+    except Exception:
+        return []
+    linked = _outcomes_for_analysis(
+        [item for item in outcomes if isinstance(item, dict)],
+        run,
+        {run_id},
+    )
+    metrics = _outcome_metrics(linked, existing=[], workspace_id=workspace_id)
+    projection = [
+        {
+            "metric_name": item.get("metric_name"),
+            "value": item.get("value"),
+            "unit": item.get("unit"),
+            "source": item.get("source"),
+            "verification": item.get("verification"),
+            "observed_at": item.get("observed_at"),
+        }
+        for item in metrics
+        if item.get("provenance") == "observed" and item.get("source")
+    ]
+    return sorted(projection, key=_metric_key)
 
 
 def _build_sql_experiment_ledger(
@@ -379,6 +421,7 @@ def _build_sql_experiment_ledger(
     authoritative_versions: Sequence[Any],
     *,
     outcomes: list[dict[str, Any]] | None,
+    authoritative_attachments: Sequence[Any],
 ) -> dict[str, Any]:
     ordered_commits = sorted(authoritative_versions, key=lambda item: int(_commit_value(item, "ordinal") or 0))
     runs_by_id = {
@@ -454,6 +497,16 @@ def _build_sql_experiment_ledger(
         versions.append(version)
 
     by_version_id = {str(item.get("version_id") or ""): item for item in versions}
+    attachments_by_key = {
+        (
+            str(_commit_value(item, "version_id") or ""),
+            str(_commit_value(item, "kind") or ""),
+            str(_commit_value(item, "source_run_id") or ""),
+            str(_commit_value(item, "payload_sha256") or ""),
+        ): item
+        for item in authoritative_attachments
+    }
+    hydrated_attachment_ids: set[str] = set()
     invalid_snapshot_ids: list[str] = []
     for snapshot in runs:
         if not isinstance(snapshot, dict) or str(snapshot.get("version_kind") or "") not in {
@@ -464,15 +517,24 @@ def _build_sql_experiment_ledger(
         target = by_version_id.get(str(snapshot.get("experiment_version_id") or ""))
         if target is None:
             continue
-        if (
-            snapshot.get("experiment_attachment") is not True
-            or str(snapshot.get("attachment_commit_status") or "") != "confirmed"
-            or not str(snapshot.get("attachment_commit_id") or "")
-            or str(snapshot.get("attachment_payload_sha256") or "")
-            != _snapshot_payload_sha256(snapshot)
-        ):
+        if str((snapshot.get("persistence") or {}).get("payload_state") or "") == "unavailable":
             invalid_snapshot_ids.append(str(snapshot.get("run_id") or ""))
             continue
+        attachment = attachments_by_key.get(
+            (
+                str(snapshot.get("experiment_version_id") or ""),
+                str(snapshot.get("version_kind") or ""),
+                str(snapshot.get("source_run_id") or ""),
+                _snapshot_payload_sha256(snapshot),
+            )
+        )
+        attachment_id = str(_commit_value(attachment, "attachment_id") or "")
+        if attachment is None or not attachment_id:
+            invalid_snapshot_ids.append(str(snapshot.get("run_id") or ""))
+            continue
+        if attachment_id in hydrated_attachment_ids:
+            continue
+        hydrated_attachment_ids.add(attachment_id)
         artifact = _artifact(snapshot)
         if snapshot.get("version_kind") == "plan_draft":
             draft = artifact.get("plan_draft") if isinstance(artifact.get("plan_draft"), dict) else {}

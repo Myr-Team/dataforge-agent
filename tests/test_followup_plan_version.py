@@ -42,6 +42,19 @@ class _PlanLineageRepository:
             if item.workspace_id == workspace_id and item.generation == generation
         )
 
+    def current_generation(self, *, workspace_id: str):
+        workspace_generations = [
+            item.generation for item in self.versions if item.workspace_id == workspace_id
+        ]
+        return max(workspace_generations, default=1)
+
+    def list_attachments(self, *, workspace_id: str, generation: int):
+        return tuple(
+            item
+            for item in self.attachments
+            if item.workspace_id == workspace_id and item.generation == generation
+        )
+
     def attach_snapshot(self, **values):
         if not any(
             item.version_id == values["version_id"]
@@ -531,4 +544,51 @@ def test_plan_attachment_failure_persists_bounded_warning_status(tmp_path, monke
         "kind": "plan_version_snapshot",
         "message": "Plan generated, but no canonical experiment version was available for attachment.",
         "error": "canonical_version_unavailable",
+    }
+
+
+def test_plan_payload_publication_failure_is_reported_as_degraded(monkeypatch) -> None:
+    persisted: list[dict] = []
+    monkeypatch.setattr(orchestrator, "_persist_assistant_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(orchestrator, "_plan_source_run_id", lambda *_args, **_kwargs: "analysis-plan")
+    monkeypatch.setattr(orchestrator, "_canonical_version_id_for_run", lambda _run_id: "version:analysis-plan")
+    monkeypatch.setattr(
+        orchestrator,
+        "record_plan_version",
+        lambda **_kwargs: {
+            "run_id": "plan-snapshot",
+            "persistence": {
+                "mode": "degraded",
+                "confirmed": True,
+                "payload_state": "unavailable",
+                "reason": "payload_publication_failed",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "complete_run",
+        lambda _run_id, **kwargs: persisted.append(kwargs["artifact"]),
+    )
+    artifact = {
+        "followup": {"answer_type": "plan"},
+        "answer": {"text": "Pilot plan", "citations": []},
+        "feasibility": {"verdict": "conditional", "dimensions": []},
+    }
+
+    asyncio.run(
+        orchestrator._persist_chat_completion(
+            "followup-plan-degraded",
+            "ws-plan-degraded",
+            "Pilot plan",
+            "followup_edit",
+            "followup_edit",
+            {"text": "Pilot plan", "artifact": artifact},
+            artifact,
+        )
+    )
+
+    assert persisted[0]["experiment_attachment"] == {
+        "status": "degraded",
+        "reason": "payload_publication_failed",
     }

@@ -97,10 +97,14 @@ def start_run(
 ) -> None:
     now = _utc_now()
     clean_actor = public_actor(actor or {})
-    captured_generation = max(
-        WORKSPACE_GENERATION_INITIAL,
-        int(generation or _LINEAGE_GENERATION_HINTS.get(workspace_id) or WORKSPACE_GENERATION_INITIAL),
-    )
+    captured_generation = int(generation or 0)
+    if captured_generation < WORKSPACE_GENERATION_INITIAL:
+        try:
+            captured_generation = _current_sql_generation(
+                _resolve_lineage_repository(None), workspace_id
+            )
+        except Exception:
+            captured_generation = 0
     with _LOCK:
         _ACTIVE[run_id] = {
             "run_id": run_id,
@@ -222,7 +226,11 @@ def complete_run(
         run["title"] = _run_title(run)
         run["summary"] = _run_summary_text(run)
         run["registry_summary"] = _run_summary(run)
-        return _persist_run(run, lineage_repository=lineage_repository)
+        return _persist_run(
+            run,
+            lineage_repository=lineage_repository,
+            analysis_completed_event=True,
+        )
 
 
 def _is_completed_analysis(run: Any) -> bool:
@@ -555,12 +563,11 @@ def _canonical_experiment_version_exists(
     version_id = str(experiment_version_id or "").strip()
     if not workspace_id or not version_id:
         return False
-    active_generation = max(
-        WORKSPACE_GENERATION_INITIAL,
-        int(generation or _LINEAGE_GENERATION_HINTS.get(workspace_id) or WORKSPACE_GENERATION_INITIAL),
-    )
     try:
         repository = _resolve_lineage_repository(lineage_repository)
+        active_generation = _current_sql_generation(repository, workspace_id)
+        if generation is not None and int(generation) != active_generation:
+            return False
         return any(
             str(_commit_value(item, "version_id") or "") == version_id
             for item in repository.list_versions(
@@ -588,16 +595,9 @@ def resolve_canonical_experiment_source_run_id(
         source = {}
     if source and str(source.get("workspace_id") or "") != workspace_id:
         return None
-    generation = max(
-        WORKSPACE_GENERATION_INITIAL,
-        int(
-            source.get("workspace_generation")
-            or _LINEAGE_GENERATION_HINTS.get(workspace_id)
-            or WORKSPACE_GENERATION_INITIAL
-        ),
-    )
     try:
         repository = _resolve_lineage_repository(lineage_repository)
+        generation = _current_sql_generation(repository, workspace_id)
         versions = repository.list_versions(workspace_id=workspace_id, generation=generation)
     except Exception:
         return None
@@ -629,19 +629,12 @@ def _sql_version_for_source(
         source = {}
     if source and str(source.get("workspace_id") or "") != workspace_id:
         return None
-    generation = max(
-        WORKSPACE_GENERATION_INITIAL,
-        int(
-            source.get("workspace_generation")
-            or _LINEAGE_GENERATION_HINTS.get(workspace_id)
-            or WORKSPACE_GENERATION_INITIAL
-        ),
-    )
     target_run_id = str(source.get("canonical_experiment_run_id") or source_run_id).strip()
     declared_version_id = str(
         requested_version_id or source.get("canonical_experiment_version_id") or ""
     ).strip()
     try:
+        generation = _current_sql_generation(repository, workspace_id)
         versions = repository.list_versions(workspace_id=workspace_id, generation=generation)
     except Exception:
         return None
@@ -665,6 +658,22 @@ def _resolve_lineage_repository(repository: Any | None) -> Any:
     except ImportError:
         from app import get_lineage_repository
     return get_lineage_repository()
+
+
+def _current_sql_generation(repository: Any, workspace_id: str) -> int:
+    generation = int(repository.current_generation(workspace_id=str(workspace_id or "")))
+    if generation < WORKSPACE_GENERATION_INITIAL:
+        raise RuntimeError("lineage generation is invalid")
+    return generation
+
+
+def _require_current_sql_generation(repository: Any, run: dict[str, Any]) -> int:
+    workspace_id = str(run.get("workspace_id") or "")
+    captured_generation = int(run.get("workspace_generation") or 0)
+    current_generation = _current_sql_generation(repository, workspace_id)
+    if captured_generation != current_generation:
+        raise RuntimeError("lineage generation is not current")
+    return current_generation
 
 
 def _commit_value(commit: Any, name: str) -> Any:
@@ -1162,12 +1171,12 @@ def recreate_workspace_generation(
     workspace_id = str(workspace_id or "").strip()
     if not workspace_id:
         return {"workspace_id": workspace_id, "status": "unavailable"}
-    current_generation = max(
-        WORKSPACE_GENERATION_INITIAL,
-        int(generation or _LINEAGE_GENERATION_HINTS.get(workspace_id) or WORKSPACE_GENERATION_INITIAL),
-    )
+    current_generation: int | None = None
     try:
         repository = _resolve_lineage_repository(lineage_repository)
+        current_generation = _current_sql_generation(repository, workspace_id)
+        if generation is not None and int(generation) != current_generation:
+            raise RuntimeError("lineage generation is not current")
         next_generation = int(
             repository.recreate_workspace(
                 workspace_id=workspace_id,
@@ -1176,12 +1185,14 @@ def recreate_workspace_generation(
             )
         )
     except Exception:
-        return {
+        unavailable = {
             "workspace_id": workspace_id,
-            "generation": current_generation,
             "status": "unavailable",
             "reason": "lineage_unavailable",
         }
+        if current_generation is not None:
+            unavailable["generation"] = current_generation
+        return unavailable
     _LINEAGE_GENERATION_HINTS[workspace_id] = next_generation
     return {
         "version": 3,
@@ -1506,12 +1517,11 @@ def purge_workspace_runs(
 ) -> dict[str, Any]:
     """Commit SQL purge first, then best-effort payload cleanup."""
     workspace_id = str(workspace_id or "").strip()
-    active_generation = max(
-        WORKSPACE_GENERATION_INITIAL,
-        int(generation or _LINEAGE_GENERATION_HINTS.get(workspace_id) or WORKSPACE_GENERATION_INITIAL),
-    )
     try:
         repository = _resolve_lineage_repository(lineage_repository)
+        active_generation = _current_sql_generation(repository, workspace_id)
+        if generation is not None and int(generation) != active_generation:
+            raise RuntimeError("lineage generation is not current")
         repository.purge_workspace(
             workspace_id=workspace_id,
             generation=active_generation,
@@ -2598,15 +2608,21 @@ def _persist_run(
     run: dict[str, Any],
     *,
     lineage_repository: Any | None = None,
+    analysis_completed_event: bool = False,
 ) -> dict[str, Any]:
     with _LOCK:
-        return _persist_run_locked(run, lineage_repository=lineage_repository)
+        return _persist_run_locked(
+            run,
+            lineage_repository=lineage_repository,
+            analysis_completed_event=analysis_completed_event,
+        )
 
 
 def _persist_run_locked(
     run: dict[str, Any],
     *,
     lineage_repository: Any | None = None,
+    analysis_completed_event: bool = False,
 ) -> dict[str, Any]:
     sanitized = _sanitize_run_capability_metadata(run)
     if isinstance(sanitized, dict):
@@ -2620,7 +2636,9 @@ def _persist_run_locked(
     if _is_completed_analysis(run):
         try:
             repository = _resolve_lineage_repository(lineage_repository)
-            return _commit_sql_analysis(run, path, blob_name, repository)
+            if analysis_completed_event:
+                return _commit_sql_analysis(run, path, blob_name, repository)
+            return _refresh_sql_analysis_payload(run, path, blob_name, repository)
         except Exception:
             return _sql_lineage_unavailable(run)
     if str(run.get("version_kind") or "") in _ATTACHMENT_VERSION_KINDS:
@@ -2629,33 +2647,12 @@ def _persist_run_locked(
             return _commit_sql_snapshot(run, path, blob_name, repository)
         except Exception:
             return _sql_lineage_unavailable(run)
-    registry = authoritative_run_registry()
-    if registry.get("read_status") == "error":
-        unavailable = copy.deepcopy(run)
-        if _is_completed_analysis(unavailable) and not _lineage_envelope_matches(
-            unavailable, str(unavailable.get("canonical_experiment_run_id") or "")
-        ):
-            _mark_canonical_lineage_unresolved(unavailable, candidate=True)
-        unavailable["persistence"] = {
-            "mode": "unavailable",
-            "confirmed": False,
-            "update_status": "unavailable",
-            "warning": "durable run registry read is unavailable",
-        }
-        return _replace_run(run, unavailable)
-    workspace_id = str(run.get("workspace_id") or "")
-    lineage_guard = _workspace_lineage_write_guard(
-        workspace_id,
-        int(run.get("workspace_generation") or 0),
-    )
-    if lineage_guard is None:
-        return _workspace_write_unavailable(
-            run,
-            registry,
-            "workspace lineage is unavailable or purging",
-        )
-    run["workspace_generation"] = int(lineage_guard.get("generation") or 0)
-    return _persist_generic_run(run, path, blob_name, lineage_guard)
+    try:
+        repository = _resolve_lineage_repository(lineage_repository)
+        _require_current_sql_generation(repository, run)
+        return _persist_generic_run(run, path, blob_name, repository)
+    except Exception:
+        return _sql_lineage_unavailable(run)
 
 
 def _commit_sql_analysis(
@@ -2670,7 +2667,7 @@ def _commit_sql_analysis(
         from experiment_store import analysis_lineage_fingerprints
 
     workspace_id = str(run.get("workspace_id") or "")
-    generation = max(WORKSPACE_GENERATION_INITIAL, int(run.get("workspace_generation") or 0))
+    generation = _require_current_sql_generation(repository, run)
     decision_fingerprint, evidence_fingerprint = analysis_lineage_fingerprints(run)
     committed = repository.commit_analysis(
         workspace_id=workspace_id,
@@ -2705,7 +2702,33 @@ def _commit_sql_analysis(
     )
     _LINEAGE_GENERATION_HINTS[workspace_id] = committed_generation
     run["registry_summary"] = _run_summary(run)
-    return _publish_sql_committed_payload(run, path, blob_name)
+    return _publish_sql_committed_payload(run, path, blob_name, repository)
+
+
+def _refresh_sql_analysis_payload(
+    run: dict[str, Any],
+    path: Path,
+    blob_name: str,
+    repository: Any,
+) -> dict[str, Any]:
+    workspace_id = str(run.get("workspace_id") or "")
+    generation = _require_current_sql_generation(repository, run)
+    version_id = str(run.get("canonical_experiment_version_id") or "")
+    canonical_run_id = str(run.get("canonical_experiment_run_id") or run.get("run_id") or "")
+    version = next(
+        (
+            item
+            for item in repository.list_versions(workspace_id=workspace_id, generation=generation)
+            if str(_commit_value(item, "version_id") or "") == version_id
+            and str(_commit_value(item, "canonical_run_id") or "") == canonical_run_id
+        ),
+        None,
+    )
+    if version is None:
+        raise RuntimeError("canonical SQL version is unavailable")
+    run["workspace_generation"] = generation
+    run["registry_summary"] = _run_summary(run)
+    return _publish_sql_committed_payload(run, path, blob_name, repository)
 
 
 def _commit_sql_snapshot(
@@ -2715,7 +2738,7 @@ def _commit_sql_snapshot(
     repository: Any,
 ) -> dict[str, Any]:
     workspace_id = str(run.get("workspace_id") or "")
-    generation = max(WORKSPACE_GENERATION_INITIAL, int(run.get("workspace_generation") or 0))
+    generation = _require_current_sql_generation(repository, run)
     payload_sha256 = _attachment_payload_hash(run)
     committed = repository.attach_snapshot(
         workspace_id=workspace_id,
@@ -2741,14 +2764,16 @@ def _commit_sql_snapshot(
     )
     _LINEAGE_GENERATION_HINTS[workspace_id] = generation
     run["registry_summary"] = _run_summary(run)
-    return _publish_sql_committed_payload(run, path, blob_name)
+    return _publish_sql_committed_payload(run, path, blob_name, repository)
 
 
 def _publish_sql_committed_payload(
     run: dict[str, Any],
     path: Path,
     blob_name: str,
+    repository: Any,
 ) -> dict[str, Any]:
+    _require_current_sql_generation(repository, run)
     payload_failed = False
     run["persistence"] = {
         "mode": "local_and_blob" if blob_configured() else "local",
@@ -2761,6 +2786,7 @@ def _publish_sql_committed_payload(
         payload_failed = True
     if blob_configured() and not payload_failed:
         try:
+            _require_current_sql_generation(repository, run)
             upload_blob_json(blob_name, run)
         except Exception:
             payload_failed = True
@@ -2787,6 +2813,7 @@ def _publish_sql_committed_payload(
         try:
             _write_run_file(path, run)
             if blob_configured():
+                _require_current_sql_generation(repository, run)
                 upload_blob_json(blob_name, run)
         except Exception:
             run["persistence"] = {
@@ -3246,44 +3273,25 @@ def _persist_generic_run(
     run: dict[str, Any],
     path: Path,
     blob_name: str,
-    lineage_guard: dict[str, Any],
+    repository: Any,
 ) -> dict[str, Any]:
-    workspace_id = str(run.get("workspace_id") or "")
     summary = _run_summary(run)
-    committed = None
-    for _attempt in range(8 if blob_configured() else 1):
-        registry = authoritative_run_registry()
-        if not _workspace_lineage_guard_matches(workspace_id, lineage_guard):
-            return _workspace_write_unavailable(run, registry, "workspace lineage changed during run completion")
-        committed = _commit_registry_summary(registry, summary)
-        if committed is not None:
-            break
     try:
+        _require_current_sql_generation(repository, run)
+        registry = authoritative_run_registry()
+        committed = _commit_registry_summary(registry, summary)
         if committed is None:
             raise RuntimeError("run registry conditional update could not be confirmed")
-        if not _workspace_lineage_guard_matches(workspace_id, lineage_guard):
-            return _workspace_write_unavailable(run, committed, "workspace lineage changed during run completion")
+        _require_current_sql_generation(repository, run)
         if blob_configured():
             upload_blob_json(blob_name, run)
-            if not _workspace_lineage_guard_matches(workspace_id, lineage_guard):
-                return _reject_published_workspace_write(
-                    run,
-                    blob_name,
-                    committed,
-                    "workspace lineage changed during run completion",
-                )
+            _require_current_sql_generation(repository, run)
         run["persistence"] = {"mode": "local_and_blob" if blob_configured() else "local", "confirmed": True}
-    except Exception as exc:
-        run["persistence"] = {"mode": "local_only", "confirmed": False, "error": f"{type(exc).__name__}: {exc}"[:500]}
-    run["registry_summary"] = summary
-    return _finalize_generation_bound_publication(
-        run,
-        path,
-        blob_name,
-        committed or authoritative_run_registry(),
-        lineage_guard,
-        "workspace lineage changed after local run completion publication",
-    )
+        run["registry_summary"] = summary
+        _write_run_file(path, run)
+        return run
+    except Exception:
+        return _sql_lineage_unavailable(run)
 
 
 def _commit_registry_summary(registry: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any] | None:
