@@ -63,3 +63,19 @@ def test_transaction_probe_identifies_the_failing_stage_without_driver_details(m
 
     assert raised.value.code == "transaction_first_commit_unavailable"
     assert "driver detail" not in str(raised.value)
+
+
+def test_transaction_probe_identifies_rollback_ordinal_mismatch() -> None:
+    module = _script_module()
+
+    with pytest.raises(module.VerificationFailure) as raised:
+        module.assert_transaction_results(
+            first_ordinal=1,
+            duplicate_ordinal=1,
+            duplicate_created=False,
+            duplicate_version_matches=True,
+            post_rollback_ordinals=(1, 3),
+            recreated_ordinal=1,
+        )
+
+    assert raised.value.code == "transaction_rollback_ordinals_invalid"
