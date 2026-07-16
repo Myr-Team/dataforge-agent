@@ -431,6 +431,7 @@ def verify_transaction_behavior(
     rollback_run = f"verify-{workspace_id}-rollback"
     second_run = f"verify-{workspace_id}-second"
     recreated_run = f"verify-{workspace_id}-recreated"
+    stage = "first_commit"
 
     try:
         first = repository.commit_analysis(
@@ -441,6 +442,7 @@ def verify_transaction_behavior(
             evidence_fingerprint="2" * 64,
             actor_metadata=actor,
         )
+        stage = "duplicate_commit"
         duplicate = repository.commit_analysis(
             workspace_id=workspace_id,
             generation=1,
@@ -449,6 +451,7 @@ def verify_transaction_behavior(
             evidence_fingerprint="2" * 64,
             actor_metadata=actor,
         )
+        stage = "rollback_probe"
         rollback_marker = {"triggered": False}
         rollback_repository = LineageRepository(
             connection_factory=lambda: _RollbackProbeConnection(
@@ -476,6 +479,7 @@ def verify_transaction_behavior(
                 code="transaction_rollback_failed",
             )
 
+        stage = "second_commit"
         second = repository.commit_analysis(
             workspace_id=workspace_id,
             generation=1,
@@ -484,20 +488,24 @@ def verify_transaction_behavior(
             evidence_fingerprint="6" * 64,
             actor_metadata=actor,
         )
+        stage = "list_versions"
         after_rollback = repository.list_versions(workspace_id=workspace_id, generation=1)
         if rollback_run in {item.canonical_run_id for item in after_rollback}:
             raise VerificationFailure(
                 "rolled back version remained visible",
                 code="transaction_rollback_failed",
             )
+        stage = "purge"
         if not repository.purge_workspace(
             workspace_id=workspace_id, generation=1, actor_metadata=actor
         ):
             raise VerificationFailure("ephemeral purge did not execute")
+        stage = "recreate"
         if repository.recreate_workspace(
             workspace_id=workspace_id, generation=1, actor_metadata=actor
         ) != 2:
             raise VerificationFailure("ephemeral recreation did not advance generation")
+        stage = "recreated_commit"
         recreated = repository.commit_analysis(
             workspace_id=workspace_id,
             generation=2,
@@ -506,6 +514,7 @@ def verify_transaction_behavior(
             evidence_fingerprint="8" * 64,
             actor_metadata=actor,
         )
+        stage = "assertions"
         assert_transaction_results(
             first_ordinal=first.ordinal,
             duplicate_ordinal=duplicate.ordinal,
@@ -519,6 +528,18 @@ def verify_transaction_behavior(
             "generation_reset": "verified",
             "rollback": "verified",
         }
+    except LineageUnavailable:
+        raise VerificationFailure(
+            "transaction probe could not complete",
+            code=f"transaction_{stage}_unavailable",
+        ) from None
+    except VerificationFailure as error:
+        if error.code == "verification_failed":
+            raise VerificationFailure(
+                "transaction probe did not satisfy its contract",
+                code=f"transaction_{stage}_failed",
+            ) from None
+        raise
     finally:
         _cleanup_ephemeral_workspace(connection_factory, workspace_id)
 
