@@ -408,10 +408,20 @@ def assert_transaction_results(
             "first canonical ordinal was not one",
             code="transaction_first_ordinal_invalid",
         )
-    if duplicate_ordinal != 1 or duplicate_created or not duplicate_version_matches:
+    if duplicate_ordinal != 1:
         raise VerificationFailure(
-            "duplicate analysis allocated a canonical ordinal",
-            code="transaction_duplicate_deduplication_failed",
+            "duplicate analysis used an unexpected canonical ordinal",
+            code="transaction_duplicate_ordinal_invalid",
+        )
+    if duplicate_created:
+        raise VerificationFailure(
+            "duplicate analysis created a new canonical version",
+            code="transaction_duplicate_created_again",
+        )
+    if not duplicate_version_matches:
+        raise VerificationFailure(
+            "duplicate analysis did not resolve to the original version",
+            code="transaction_duplicate_version_mismatch",
         )
     if tuple(post_rollback_ordinals) != (1, 2):
         raise VerificationFailure(

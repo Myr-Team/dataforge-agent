@@ -79,3 +79,19 @@ def test_transaction_probe_identifies_rollback_ordinal_mismatch() -> None:
         )
 
     assert raised.value.code == "transaction_rollback_ordinals_invalid"
+
+
+def test_transaction_probe_identifies_duplicate_recreation() -> None:
+    module = _script_module()
+
+    with pytest.raises(module.VerificationFailure) as raised:
+        module.assert_transaction_results(
+            first_ordinal=1,
+            duplicate_ordinal=1,
+            duplicate_created=True,
+            duplicate_version_matches=True,
+            post_rollback_ordinals=(1, 2),
+            recreated_ordinal=1,
+        )
+
+    assert raised.value.code == "transaction_duplicate_created_again"
