@@ -331,6 +331,23 @@ def _repository(database: _MemorySqlDatabase):
     return _api().LineageRepository(connection_factory=database.connect)
 
 
+def test_version_commit_canonicalizes_sql_uniqueidentifier_text() -> None:
+    api = _api()
+    row = SimpleNamespace(
+        version_id="{A0B1C2D3-E4F5-4678-9012-3456789ABCDE}",
+        workspace_id="workspace-1",
+        generation=1,
+        ordinal=1,
+        canonical_run_id="run-1",
+        decision_fingerprint="1" * 64,
+        evidence_fingerprint="2" * 64,
+    )
+
+    commit = api._version_commit(row, created=False)
+
+    assert commit.version_id == "a0b1c2d3-e4f5-4678-9012-3456789abcde"
+
+
 def _real_sql_connection_factory():
     reference = os.environ[_REAL_SQL_FACTORY_ENV]
     if not _FACTORY_REFERENCE_PATTERN.fullmatch(reference):

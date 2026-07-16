@@ -724,7 +724,7 @@ class _WorkspaceRow:
 
 def _version_commit(row: Any, *, created: bool) -> VersionCommit:
     return VersionCommit(
-        version_id=str(row.version_id),
+        version_id=_uuid_text("version_id", row.version_id),
         workspace_id=str(row.workspace_id),
         generation=int(row.generation),
         ordinal=int(row.ordinal),
