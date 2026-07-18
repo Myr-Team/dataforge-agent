@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import base64
 import json
 import multiprocessing
 from pathlib import Path
@@ -96,6 +97,37 @@ def _request(**overrides) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+def _authorized_headers(monkeypatch) -> dict[str, str]:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_members": [
+                {
+                    "actor_id": "artifact-owner-oid",
+                    "tenant_id": "artifact-tenant",
+                    "role": "owner",
+                    "status": "active",
+                }
+            ]
+        },
+    )
+    principal = {
+        "userDetails": "owner@contoso.com",
+        "claims": [
+            {"typ": "preferred_username", "val": "owner@contoso.com"},
+            {"typ": "oid", "val": "artifact-owner-oid"},
+            {"typ": "tid", "val": "artifact-tenant"},
+        ],
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(principal).encode("utf-8")).decode("ascii")
+    return {
+        "x-ms-client-principal": encoded,
+        "x-dataforge-proxy-secret": "server-only-secret",
+    }
 
 
 def test_job_state_survives_store_reload_without_copying_analysis_payload(tmp_path: Path, monkeypatch) -> None:
@@ -345,13 +377,14 @@ def test_remote_job_blobs_are_authoritative_for_listing(tmp_path: Path, monkeypa
 
 def test_artifact_job_api_rejects_cross_workspace_source_run(tmp_path: Path, monkeypatch) -> None:
     _configure_store(tmp_path, monkeypatch)
+    headers = _authorized_headers(monkeypatch)
     monkeypatch.setattr(
         artifact_jobs,
         "get_run",
         lambda run_id: {"run_id": run_id, "workspace_id": "ws-other", "artifact": {}},
     )
 
-    response = TestClient(app).post("/api/artifact-jobs", json=_request())
+    response = TestClient(app).post("/api/artifact-jobs", json=_request(), headers=headers)
 
     assert response.status_code == 400
     assert "source run does not belong" in response.json()["detail"]
@@ -398,6 +431,7 @@ def test_blob_persist_failure_is_visible_and_compensates_generic_task(tmp_path: 
 
 def test_artifact_job_api_creates_and_exposes_persisted_status(tmp_path: Path, monkeypatch) -> None:
     _configure_store(tmp_path, monkeypatch)
+    headers = _authorized_headers(monkeypatch)
     monkeypatch.setattr(artifact_jobs, "_producer_payload", lambda _job: _request())
     monkeypatch.setattr(
         artifact_jobs,
@@ -416,28 +450,29 @@ def test_artifact_job_api_creates_and_exposes_persisted_status(tmp_path: Path, m
     created = client.post(
         "/api/artifact-jobs",
         json=_request(),
-        headers={"Idempotency-Key": "api-request-1"},
+        headers={**headers, "Idempotency-Key": "api-request-1"},
     )
 
     assert created.status_code == 202
     job_id = created.json()["job_id"]
-    detail = client.get(f"/api/artifact-jobs/{job_id}")
+    detail = client.get(f"/api/artifact-jobs/{job_id}", headers=headers)
     assert detail.status_code == 200
     assert detail.json()["status"] == "completed"
 
-    listed = client.get("/api/workspaces/ws-artifacts/artifact-jobs")
+    listed = client.get("/api/workspaces/ws-artifacts/artifact-jobs", headers=headers)
     assert listed.status_code == 200
     assert listed.json()["jobs"][0]["job_id"] == job_id
 
 
 def test_artifact_job_api_returns_503_for_durable_persistence_failure(monkeypatch) -> None:
+    headers = _authorized_headers(monkeypatch)
     monkeypatch.setattr(
         app_module,
         "create_artifact_job",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ArtifactJobPersistenceError("blob unavailable")),
     )
 
-    response = TestClient(app, raise_server_exceptions=False).post("/api/artifact-jobs", json=_request())
+    response = TestClient(app, raise_server_exceptions=False).post("/api/artifact-jobs", json=_request(), headers=headers)
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Durable artifact job storage is unavailable"
@@ -446,13 +481,14 @@ def test_artifact_job_api_returns_503_for_durable_persistence_failure(monkeypatc
 def test_artifact_job_api_returns_503_when_generic_task_create_is_unavailable(tmp_path: Path, monkeypatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     _configure_task_store(tmp_path, monkeypatch)
+    headers = _authorized_headers(monkeypatch)
     monkeypatch.setattr(
         artifact_jobs,
         "create_task",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskPersistenceError("task store unavailable")),
     )
 
-    response = TestClient(app, raise_server_exceptions=False).post("/api/artifact-jobs", json=_request())
+    response = TestClient(app, raise_server_exceptions=False).post("/api/artifact-jobs", json=_request(), headers=headers)
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Durable artifact job storage is unavailable"
@@ -461,6 +497,7 @@ def test_artifact_job_api_returns_503_when_generic_task_create_is_unavailable(tm
 def test_retryable_artifact_task_creates_and_schedules_a_new_linked_job(tmp_path: Path, monkeypatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     _configure_task_store(tmp_path, monkeypatch)
+    headers = _authorized_headers(monkeypatch)
     monkeypatch.setattr(artifact_jobs, "_producer_payload", lambda _job: _request(kinds=["pdf"]))
     calls: list[str] = []
 
@@ -473,14 +510,14 @@ def test_retryable_artifact_task_creates_and_schedules_a_new_linked_job(tmp_path
 
     monkeypatch.setattr(artifact_jobs, "_produce", fail_once)
     client = TestClient(app, raise_server_exceptions=False)
-    created = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]))
+    created = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers=headers)
 
     assert created.status_code == 202
     failed_task = task_store.get_task(created.json()["task_id"])
     assert failed_task["status"] == "failed"
     assert failed_task["retryable"] is True
 
-    retried = client.post(f"/api/tasks/{failed_task['task_id']}/retry")
+    retried = client.post(f"/api/tasks/{failed_task['task_id']}/retry", headers=headers)
 
     assert retried.status_code == 202
     retry_task = retried.json()
@@ -493,10 +530,11 @@ def test_retryable_artifact_task_creates_and_schedules_a_new_linked_job(tmp_path
 
 def test_retry_rejects_non_dispatchable_task(tmp_path: Path, monkeypatch) -> None:
     _configure_task_store(tmp_path, monkeypatch)
+    headers = _authorized_headers(monkeypatch)
     task = task_store.create_task({"workspace_id": "ws-artifacts", "task_type": "connector.sql.import", "action": "connector.manage"}, actor={})
     task_store.update_task(task["task_id"], status="failed", error={"code": "credential_required"})
 
-    response = TestClient(app, raise_server_exceptions=False).post(f"/api/tasks/{task['task_id']}/retry")
+    response = TestClient(app, raise_server_exceptions=False).post(f"/api/tasks/{task['task_id']}/retry", headers=headers)
 
     assert response.status_code == 409
     assert response.json()["detail"] == "Task retry is not supported"
@@ -505,6 +543,7 @@ def test_retry_rejects_non_dispatchable_task(tmp_path: Path, monkeypatch) -> Non
 def test_artifact_api_recovers_durable_job_after_activation_failure_and_schedules_once(tmp_path: Path, monkeypatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     _configure_task_store(tmp_path, monkeypatch)
+    headers = _authorized_headers(monkeypatch)
     monkeypatch.setattr(artifact_jobs, "_producer_payload", lambda _job: _request(kinds=["pdf"]))
     monkeypatch.setattr(
         artifact_jobs,
@@ -515,7 +554,7 @@ def test_artifact_api_recovers_durable_job_after_activation_failure_and_schedule
     monkeypatch.setattr(artifact_jobs, "activate_prepared_task", lambda _task_id: None, raising=False)
 
     client = TestClient(app, raise_server_exceptions=False)
-    first = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={"Idempotency-Key": "recover-activation"})
+    first = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={**headers, "Idempotency-Key": "recover-activation"})
 
     assert first.status_code == 503
     prepared = task_store.list_tasks("ws-artifacts")[0]
@@ -533,7 +572,7 @@ def test_artifact_api_recovers_durable_job_after_activation_failure_and_schedule
         return original_run(job_id)
 
     monkeypatch.setattr(app_module, "run_artifact_job", run_recovered)
-    second = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={"Idempotency-Key": "recover-activation"})
+    second = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={**headers, "Idempotency-Key": "recover-activation"})
 
     assert second.status_code == 202
     assert second.json()["job_id"] == job_id
@@ -546,11 +585,12 @@ def test_artifact_api_recovers_durable_job_after_activation_failure_and_schedule
 def test_artifact_api_returns_503_when_prepared_recovery_storage_fails(tmp_path: Path, monkeypatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     _configure_task_store(tmp_path, monkeypatch)
+    headers = _authorized_headers(monkeypatch)
     original_activate = artifact_jobs.activate_prepared_task
     monkeypatch.setattr(artifact_jobs, "activate_prepared_task", lambda _task_id: None)
     client = TestClient(app, raise_server_exceptions=False)
 
-    first = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={"Idempotency-Key": "recover-storage-error"})
+    first = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={**headers, "Idempotency-Key": "recover-storage-error"})
 
     assert first.status_code == 503
     prepared = task_store.list_tasks("ws-artifacts")[0]
@@ -560,7 +600,7 @@ def test_artifact_api_returns_503_when_prepared_recovery_storage_fails(tmp_path:
         "activate_prepared_task",
         lambda _task_id: (_ for _ in ()).throw(TaskPersistenceError("blob CAS unavailable")),
     )
-    second = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={"Idempotency-Key": "recover-storage-error"})
+    second = client.post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers={**headers, "Idempotency-Key": "recover-storage-error"})
 
     assert second.status_code == 503
     assert artifact_jobs.get_artifact_job(job_id)["status"] == "queued"
@@ -571,6 +611,7 @@ def test_artifact_api_returns_503_when_prepared_recovery_storage_fails(tmp_path:
 def test_artifact_api_returns_503_when_prepared_recovery_task_list_read_fails(tmp_path: Path, monkeypatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     _configure_task_store(tmp_path, monkeypatch)
+    headers = _authorized_headers(monkeypatch)
     monkeypatch.setattr(task_store, "blob_configured", lambda: True)
     monkeypatch.setattr(
         task_store,
@@ -579,7 +620,7 @@ def test_artifact_api_returns_503_when_prepared_recovery_task_list_read_fails(tm
         raising=False,
     )
 
-    response = TestClient(app, raise_server_exceptions=False).post("/api/artifact-jobs", json=_request(kinds=["pdf"]))
+    response = TestClient(app, raise_server_exceptions=False).post("/api/artifact-jobs", json=_request(kinds=["pdf"]), headers=headers)
 
     assert response.status_code == 503
 
