@@ -133,8 +133,6 @@ def require_workspace_permission(
     actor: Mapping[str, Any] | None,
     action: str,
 ) -> str:
-    if not rbac_enabled():
-        return "compatibility"
     decision = with_action(workspace_access_decision(workspace_id, actor), action)
     if not decision.allowed:
         raise WorkspaceAuthorizationError(action, decision)

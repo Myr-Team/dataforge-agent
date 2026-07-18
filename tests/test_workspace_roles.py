@@ -314,14 +314,13 @@ def test_active_workspace_role_requires_trusted_tenant_and_current_membership(mo
     assert workspace_authz.active_workspace_role("ws-roles", {"actor_id": "former-oid", "tenant_id": "tenant-a", "source": "easy_auth"}) is None
 
 
-def test_permission_gate_is_disabled_until_explicitly_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_permission_gate_fails_closed_for_empty_actor_when_rbac_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
 
-    assert workspace_authz.require_workspace_permission(
-        "ws-roles",
-        {"email": "unknown@contoso.com"},
-        "file.edit",
-    ) == "compatibility"
+    with pytest.raises(workspace_authz.WorkspaceAuthorizationError) as error:
+        workspace_authz.require_workspace_permission("ws-roles", {}, "file.edit")
+
+    assert error.value.decision.reason_code == "identity_missing"
 
 
 def test_sensitive_permission_gate_is_fail_closed_when_general_rbac_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -458,32 +457,50 @@ def test_experiment_ledger_uses_the_normal_run_read_policy_when_rbac_is_unset(mo
     monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
     monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_members": [
+                {"actor_id": "viewer-oid", "tenant_id": "tenant-1", "role": "viewer", "status": "active"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
         control_module,
         "workspace_experiment_ledger",
         lambda workspace_id: {"workspace_id": workspace_id, "versions": [], "count": 0},
     )
     client = TestClient(app)
 
-    response = client.get("/api/workspaces/ws-experiment/experiments")
+    response = client.get(
+        "/api/workspaces/ws-experiment/experiments",
+        headers=_trusted_easy_auth_headers("viewer@contoso.com", actor_id="viewer-oid"),
+    )
 
     assert response.status_code == 200
     assert response.json()["workspace_id"] == "ws-experiment"
 
 
-def test_enabled_permission_gate_rejects_viewer_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+def test_permission_gate_returns_role_denied_for_active_viewer_when_rbac_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "false")
     monkeypatch.setattr(
         workspace_authz,
-        "workspace_role",
-        lambda _workspace_id, _actor: "viewer",
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_members": [
+                {"actor_id": "viewer-oid", "tenant_id": "tenant-a", "role": "viewer", "status": "active"},
+            ],
+        },
     )
 
-    with pytest.raises(PermissionError, match="file.edit"):
+    with pytest.raises(workspace_authz.WorkspaceAuthorizationError) as error:
         workspace_authz.require_workspace_permission(
             "ws-roles",
-            {"email": "viewer@contoso.com"},
+            _actor("viewer-oid"),
             "file.edit",
         )
+
+    assert (error.value.decision.role, error.value.decision.reason_code) == ("viewer", "role_denied")
 
 
 def test_member_management_requires_owner_or_admin_when_rbac_is_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
