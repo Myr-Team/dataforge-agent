@@ -29,6 +29,74 @@ def _trusted_easy_auth_headers(email: str, *, actor_id: str = "oid-user", tenant
     }
 
 
+def _actor(oid: str, tid: str = "tenant-a") -> dict[str, str]:
+    return {"actor_id": oid, "tenant_id": tid, "source": "easy_auth"}
+
+
+def test_access_decision_normalizes_matching_legacy_owner_without_email_grant(monkeypatch: pytest.MonkeyPatch) -> None:
+    saved: list[dict[str, object]] = []
+    meta = {
+        "workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-a"},
+        "workspace_members": [],
+    }
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _id: meta)
+    monkeypatch.setattr(workspace_authz, "_save_workspace_meta", lambda _id, value: saved.append(dict(value)))
+
+    decision = workspace_authz.workspace_access_decision("ws-legacy", _actor("owner-oid"))
+
+    assert (decision.allowed, decision.role, decision.reason_code) == (True, "owner", "owner_match")
+    assert saved[0]["workspace_members"][0]["actor_id"] == "owner-oid"
+    assert saved[0]["workspace_members"][0]["tenant_id"] == "tenant-a"
+    normalization = saved[0]["authorization_normalizations"][0]
+    assert set(normalization) == {"kind", "occurred_at", "identity_correlation"}
+    assert normalization["kind"] == "owner_membership"
+    assert normalization["identity_correlation"].startswith("corr_")
+    assert all(value not in str(normalization) for value in ("owner-oid", "tenant-a"))
+
+    second = workspace_authz.workspace_access_decision("ws-legacy", _actor("owner-oid"))
+
+    assert (second.allowed, second.role, second.reason_code) == (True, "owner", "owner_match")
+    assert len(saved) == 1
+
+
+def test_access_decision_rejects_same_oid_from_another_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _id: {
+        "workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-a"},
+        "workspace_members": [],
+    })
+
+    decision = workspace_authz.workspace_access_decision("ws-legacy", _actor("owner-oid", "tenant-b"))
+
+    assert (decision.allowed, decision.role, decision.reason_code) == (False, None, "tenant_mismatch")
+
+
+@pytest.mark.parametrize(
+    ("actor", "action", "expected"),
+    [
+        ({}, "workspace.read", (False, None, "identity_missing")),
+        (_actor("viewer-oid"), "workspace.read", (True, "viewer", "member_match")),
+        (_actor("removed-oid"), "workspace.read", (False, None, "membership_missing")),
+        (_actor("viewer-oid"), "file.edit", (False, "viewer", "role_denied")),
+    ],
+)
+def test_access_decision_is_bounded(monkeypatch: pytest.MonkeyPatch, actor, action, expected) -> None:
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _id: {
+        "workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-a"},
+        "workspace_members": [
+            {"actor_id": "viewer-oid", "tenant_id": "tenant-a", "role": "viewer", "status": "active"},
+            {"actor_id": "removed-oid", "tenant_id": "tenant-a", "role": "editor", "status": "removed"},
+        ],
+    })
+
+    decision = workspace_authz.workspace_access_decision("ws-access", actor)
+    checked = workspace_authz.with_action(decision, action)
+
+    assert (checked.allowed, checked.role, checked.reason_code) == expected
+
+
 def test_role_capabilities_are_enforced_by_action() -> None:
     assert workspace_authz.authorize("owner", "member.manage") is True
     assert workspace_authz.authorize("admin", "outcome.verify") is True
@@ -625,12 +693,17 @@ def test_forged_client_owner_header_is_rejected_when_rbac_is_enforced(monkeypatc
     assert "workspace.delete" in response.json()["detail"]
 
 
-def test_trusted_web_proxy_easy_auth_principal_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_trusted_web_proxy_easy_auth_principal_matches_persisted_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
-    monkeypatch.setenv("DF_WORKSPACE_OWNER_EMAIL", "owner@contoso.com")
-    monkeypatch.setenv("DF_WORKSPACE_OWNER_OID", "oid-owner")
-    monkeypatch.setenv("DF_WORKSPACE_OWNER_TENANT_ID", "tenant-1")
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": {"actor_id": "oid-owner", "tenant_id": "tenant-1"},
+            "workspace_members": [{"actor_id": "oid-owner", "tenant_id": "tenant-1", "role": "owner", "status": "active"}],
+        },
+    )
     headers = _trusted_easy_auth_headers("owner@contoso.com", actor_id="oid-owner")
 
     response = TestClient(app).get("/api/workspaces/ws-roles/artifact-jobs", headers=headers)
