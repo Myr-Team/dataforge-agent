@@ -42,6 +42,8 @@ def test_access_decision_normalizes_matching_legacy_owner_without_email_grant(mo
     monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
     monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _id: meta)
     monkeypatch.setattr(workspace_authz, "_save_workspace_meta", lambda _id, value: saved.append(dict(value)))
+    monkeypatch.setattr(workspace_authz, "_audit_active_key", lambda: ("audit-key", b"k" * 32))
+    monkeypatch.setattr(workspace_authz, "_audit_actor_hash", lambda _actor, _key: "actor_audit-correlation")
 
     decision = workspace_authz.workspace_access_decision("ws-legacy", _actor("owner-oid"))
 
@@ -51,7 +53,7 @@ def test_access_decision_normalizes_matching_legacy_owner_without_email_grant(mo
     normalization = saved[0]["authorization_normalizations"][0]
     assert set(normalization) == {"kind", "occurred_at", "identity_correlation"}
     assert normalization["kind"] == "owner_membership"
-    assert normalization["identity_correlation"].startswith("corr_")
+    assert normalization["identity_correlation"] == "corr_audit-correlation"
     assert all(value not in str(normalization) for value in ("owner-oid", "tenant-a"))
 
     second = workspace_authz.workspace_access_decision("ws-legacy", _actor("owner-oid"))
@@ -70,6 +72,133 @@ def test_access_decision_rejects_same_oid_from_another_tenant(monkeypatch: pytes
     decision = workspace_authz.workspace_access_decision("ws-legacy", _actor("owner-oid", "tenant-b"))
 
     assert (decision.allowed, decision.role, decision.reason_code) == (False, None, "tenant_mismatch")
+
+
+@pytest.mark.parametrize("rbac_enforced", [False, True])
+def test_access_decision_never_grants_owner_or_member_by_email(monkeypatch: pytest.MonkeyPatch, rbac_enforced: bool) -> None:
+    if rbac_enforced:
+        monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    else:
+        monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_EMAIL", "owner@contoso.com")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _id: {
+            "workspace_owner": {"email": "owner@contoso.com"},
+            "workspace_members": [{"email": "member@contoso.com", "role": "editor", "status": "active"}],
+        },
+    )
+
+    owner = workspace_authz.workspace_access_decision("ws-email", {"email": "owner@contoso.com", "source": "easy_auth"})
+    member = workspace_authz.workspace_access_decision(
+        "ws-email",
+        {"email": "member@contoso.com", "actor_id": "member-oid", "tenant_id": "tenant-a", "source": "easy_auth"},
+    )
+
+    assert (owner.allowed, owner.role, owner.reason_code) == (False, None, "identity_missing")
+    assert (member.allowed, member.role, member.reason_code) == (False, None, "membership_missing")
+
+
+def test_owner_normalization_omits_correlation_when_audit_key_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    saved: list[dict[str, object]] = []
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _id: {"workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-a"}, "workspace_members": []},
+    )
+    monkeypatch.setattr(workspace_authz, "_save_workspace_meta", lambda _id, value: saved.append(dict(value)))
+    monkeypatch.setattr(
+        workspace_authz,
+        "_audit_active_key",
+        lambda: (_ for _ in ()).throw(workspace_authz.AuditPersistenceError("audit key unavailable")),
+    )
+
+    decision = workspace_authz.workspace_access_decision("ws-no-audit-key", _actor("owner-oid"))
+
+    assert (decision.allowed, decision.role, decision.reason_code) == (True, "owner", "owner_match")
+    normalization = saved[0]["authorization_normalizations"][0]
+    assert set(normalization) == {"kind", "occurred_at"}
+
+
+@pytest.mark.parametrize(
+    ("meta", "actor", "expected_reason"),
+    [
+        ({"workspace_members": []}, _actor("outsider-oid"), "membership_missing"),
+        ({"workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-a"}}, _actor("owner-oid", "tenant-b"), "tenant_mismatch"),
+    ],
+)
+def test_sensitive_role_resolver_cannot_override_canonical_denial(
+    monkeypatch: pytest.MonkeyPatch,
+    meta: dict[str, object],
+    actor: dict[str, str],
+    expected_reason: str,
+) -> None:
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _id: meta)
+
+    with pytest.raises(workspace_authz.WorkspaceAuthorizationError) as error:
+        workspace_authz.require_sensitive_workspace_permission(
+            "ws-sensitive",
+            actor,
+            "member.manage",
+            role_resolver=lambda _workspace_id, _actor: "owner",
+        )
+
+    assert error.value.decision.reason_code == expected_reason
+
+
+def test_sensitive_role_resolver_cannot_elevate_canonical_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _id: {
+            "workspace_members": [
+                {"actor_id": "viewer-oid", "tenant_id": "tenant-a", "role": "viewer", "status": "active"},
+            ],
+        },
+    )
+
+    with pytest.raises(workspace_authz.WorkspaceAuthorizationError) as error:
+        workspace_authz.require_sensitive_workspace_permission(
+            "ws-sensitive",
+            _actor("viewer-oid"),
+            "member.manage",
+            role_resolver=lambda _workspace_id, _actor: "owner",
+        )
+
+    assert (error.value.decision.role, error.value.decision.reason_code) == ("viewer", "role_denied")
+
+
+def test_removed_invitation_member_denies_before_accepted_journal_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    actor = _actor("invited-oid")
+    meta = {"workspace_members": []}
+    invitation = invitation_store.create_pending_invitation(
+        meta,
+        "ws-removed-invite",
+        email="invited@contoso.com",
+        role="editor",
+        invited_by=_actor("owner-oid"),
+    )
+    invitation_store.transition_invitation(meta, invitation["invitation_id"], "accepted", identity=actor)
+    invitation_store.consume_accepted_invitation(meta, "ws-removed-invite", actor)
+    meta["workspace_members"] = [
+        {
+            "actor_id": "invited-oid",
+            "tenant_id": "tenant-a",
+            "role": "editor",
+            "status": "removed",
+            "invitation_id": invitation["invitation_id"],
+        }
+    ]
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _id: meta)
+
+    decision = workspace_authz.workspace_access_decision("ws-removed-invite", actor)
+
+    assert (decision.allowed, decision.role, decision.reason_code) == (False, None, "membership_missing")
 
 
 @pytest.mark.parametrize(
@@ -108,18 +237,6 @@ def test_role_capabilities_are_enforced_by_action() -> None:
     assert workspace_authz.authorize(None, "workspace.read") is False
 
 
-def test_default_workspace_owner_resolves_without_stored_member(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: {})
-    monkeypatch.setenv("DF_WORKSPACE_OWNER_EMAIL", "owner@contoso.com")
-
-    role = workspace_authz.workspace_role(
-        "ws-roles",
-        {"email": "OWNER@contoso.com", "actor_id": "oid-owner", "source": "easy_auth"},
-    )
-
-    assert role == "owner"
-
-
 def test_rbac_enabled_rejects_default_owner_and_member_email_without_oid_and_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
     monkeypatch.setenv("DF_WORKSPACE_OWNER_EMAIL", "owner@contoso.com")
@@ -135,7 +252,7 @@ def test_rbac_enabled_rejects_default_owner_and_member_email_without_oid_and_ten
     assert workspace_authz.workspace_role("ws-roles", {"email": "editor@contoso.com", "source": "easy_auth"}) is None
 
 
-def test_stored_member_role_resolves_by_actor_id_or_email(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stored_member_role_requires_matching_tenant_scoped_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         workspace_authz,
         "_load_workspace_meta",
@@ -144,6 +261,7 @@ def test_stored_member_role_resolves_by_actor_id_or_email(monkeypatch: pytest.Mo
                 {
                     "email": "editor@contoso.com",
                     "actor_id": "oid-editor",
+                    "tenant_id": "tenant-a",
                     "role": "editor",
                     "status": "active",
                 },
@@ -156,7 +274,8 @@ def test_stored_member_role_resolves_by_actor_id_or_email(monkeypatch: pytest.Mo
         },
     )
 
-    assert workspace_authz.workspace_role("ws-roles", {"actor_id": "oid-editor", "source": "easy_auth"}) == "editor"
+    assert workspace_authz.workspace_role("ws-roles", _actor("oid-editor")) == "editor"
+    assert workspace_authz.workspace_role("ws-roles", _actor("oid-editor", "tenant-b")) is None
     assert workspace_authz.workspace_role("ws-roles", {"email": "viewer@contoso.com"}) is None
     assert workspace_authz.workspace_role("ws-roles", {"email": "unknown@contoso.com"}) is None
 

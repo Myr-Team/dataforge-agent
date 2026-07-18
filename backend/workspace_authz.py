@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import threading
@@ -11,19 +10,20 @@ from typing import Any, Callable, Mapping
 try:
     from .audit_store import AuditPersistenceError, _active_key as _audit_active_key, _actor_hash as _audit_actor_hash
     from .blob_store import upload_blob_json
-    from .identity import canonical_actor_identity, default_actor, is_trusted_tenant_identity, public_actor
+    from .identity import canonical_actor_identity, is_trusted_tenant_identity, public_actor
     from .invitation_store import InvitationPersistenceError, InvitationTransitionError, consume_accepted_invitation, current_invited_member_role
     from .workspace_store import WORKSPACES, _load_workspace_bundle
 except ImportError:
     from audit_store import AuditPersistenceError, _active_key as _audit_active_key, _actor_hash as _audit_actor_hash
     from blob_store import upload_blob_json
-    from identity import canonical_actor_identity, default_actor, is_trusted_tenant_identity, public_actor
+    from identity import canonical_actor_identity, is_trusted_tenant_identity, public_actor
     from invitation_store import InvitationPersistenceError, InvitationTransitionError, consume_accepted_invitation, current_invited_member_role
     from workspace_store import WORKSPACES, _load_workspace_bundle
 
 
 WORKSPACE_ROLES = ("owner", "admin", "editor", "viewer")
 _LOCK = threading.RLock()
+_ROLE_PRIVILEGE = {role: index for index, role in enumerate(reversed(WORKSPACE_ROLES))}
 
 _READ_ACTIONS = {
     "workspace.read",
@@ -99,8 +99,7 @@ def with_action(decision: WorkspaceAccessDecision, action: str) -> WorkspaceAcce
 
 def workspace_access_decision(workspace_id: str, actor: Mapping[str, Any] | None) -> WorkspaceAccessDecision:
     clean_actor = public_actor(dict(actor or {}))
-    strict = rbac_enabled()
-    if strict and not is_trusted_tenant_identity(clean_actor):
+    if not is_trusted_tenant_identity(clean_actor):
         return WorkspaceAccessDecision(False, None, "identity_missing")
 
     meta = _load_workspace_meta(workspace_id)
@@ -112,9 +111,7 @@ def workspace_access_decision(workspace_id: str, actor: Mapping[str, Any] | None
         return WorkspaceAccessDecision(True, "owner", "owner_match")
     if identity and owner_identity and identity[1] == owner_identity[1]:
         return WorkspaceAccessDecision(False, None, "tenant_mismatch")
-    if not strict and _legacy_default_owner_match(clean_actor):
-        return WorkspaceAccessDecision(True, "owner", "owner_match")
-    return _member_access_decision(workspace_id, meta, clean_actor, strict=strict)
+    return _member_access_decision(workspace_id, meta, clean_actor)
 
 
 def workspace_role(workspace_id: str, actor: Mapping[str, Any] | None) -> str | None:
@@ -156,9 +153,14 @@ def require_sensitive_workspace_permission(
     if not is_trusted_tenant_identity(actor):
         raise WorkspaceAuthorizationError(action, WorkspaceAccessDecision(False, None, "identity_missing"))
     decision = workspace_access_decision(workspace_id, actor)
+    if not decision.allowed:
+        raise WorkspaceAuthorizationError(action, with_action(decision, action))
     if role_resolver is not None:
-        role = role_resolver(workspace_id, actor)
-        decision = WorkspaceAccessDecision(bool(role), role, decision.reason_code if not role else "member_match")
+        role = _normalize_role(role_resolver(workspace_id, actor))
+        if role is None or _ROLE_PRIVILEGE[role] > _ROLE_PRIVILEGE[str(decision.role)]:
+            decision = WorkspaceAccessDecision(False, decision.role, "role_denied")
+        else:
+            decision = WorkspaceAccessDecision(True, role, "member_match")
     checked = with_action(decision, action)
     if not checked.allowed:
         raise WorkspaceAuthorizationError(action, checked)
@@ -184,61 +186,37 @@ def _load_workspace_meta(workspace_id: str) -> dict[str, Any]:
     return dict(meta) if isinstance(meta, dict) else {}
 
 
-def _legacy_default_owner_match(actor: Mapping[str, Any]) -> bool:
-    actor_email = str(actor.get("email") or "").strip().lower()
-    owner_email = str(public_actor(default_actor()).get("email") or "").strip().lower()
-    return bool(actor_email and actor_email == owner_email)
-
-
 def _member_access_decision(
     workspace_id: str,
     meta: dict[str, Any],
     actor: Mapping[str, Any],
-    *,
-    strict: bool,
 ) -> WorkspaceAccessDecision:
     identity = canonical_actor_identity(actor)
     if identity is None:
-        if strict:
-            return WorkspaceAccessDecision(False, None, "identity_missing")
-        return _legacy_member_access_decision(meta, actor)
+        return WorkspaceAccessDecision(False, None, "identity_missing")
 
-    journal_role = current_invited_member_role(meta, workspace_id, actor)
-    if journal_role is not None:
-        return WorkspaceAccessDecision(True, journal_role, "member_match")
-
+    persisted_role: str | None = None
     for item in meta.get("workspace_members") or []:
-        if not isinstance(item, Mapping) or item.get("invitation_id"):
+        if not isinstance(item, Mapping):
             continue
         member_identity = canonical_actor_identity(item)
         if member_identity == identity:
             if str(item.get("status") or "").strip().lower() != "active":
                 return WorkspaceAccessDecision(False, None, "membership_missing")
-            role = _normalize_role(item.get("role"))
-            return WorkspaceAccessDecision(bool(role), role, "member_match" if role else "membership_missing")
-        if member_identity and member_identity[1] == identity[1]:
+            if not item.get("invitation_id"):
+                persisted_role = _normalize_role(item.get("role"))
+        elif member_identity and member_identity[1] == identity[1]:
             return WorkspaceAccessDecision(False, None, "tenant_mismatch")
+
+    journal_role = current_invited_member_role(meta, workspace_id, actor)
+    if journal_role is not None:
+        return WorkspaceAccessDecision(True, journal_role, "member_match")
+    if persisted_role is not None:
+        return WorkspaceAccessDecision(True, persisted_role, "member_match")
 
     activated_role = _activate_accepted_invitation(workspace_id, meta, actor)
     if activated_role:
         return WorkspaceAccessDecision(True, activated_role, "member_match")
-    return WorkspaceAccessDecision(False, None, "membership_missing")
-
-
-def _legacy_member_access_decision(meta: Mapping[str, Any], actor: Mapping[str, Any]) -> WorkspaceAccessDecision:
-    actor_email = str(actor.get("email") or "").strip().lower()
-    actor_id = str(actor.get("actor_id") or "").strip().lower()
-    actor_tenant = str(actor.get("tenant_id") or "").strip().lower()
-    owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), Mapping) else {}
-    if _same_actor(actor_email, actor_id, actor_tenant, owner):
-        return WorkspaceAccessDecision(True, "owner", "owner_match")
-    for item in meta.get("workspace_members") or []:
-        if not isinstance(item, Mapping) or item.get("invitation_id") or not _same_actor(actor_email, actor_id, actor_tenant, item):
-            continue
-        if str(item.get("status") or "").strip().lower() != "active":
-            return WorkspaceAccessDecision(False, None, "membership_missing")
-        role = _normalize_role(item.get("role"))
-        return WorkspaceAccessDecision(bool(role), role, "member_match" if role else "membership_missing")
     return WorkspaceAccessDecision(False, None, "membership_missing")
 
 
@@ -291,37 +269,24 @@ def _normalize_owner_member(workspace_id: str, meta: dict[str, Any], actor: Mapp
         )
 
     normalizations = [dict(item) for item in meta.get("authorization_normalizations") or [] if isinstance(item, Mapping)][-49:]
-    normalizations.append(
-        {
-            "kind": "owner_membership",
-            "occurred_at": datetime.now(timezone.utc).isoformat(),
-            "identity_correlation": _identity_correlation_digest(identity),
-        }
-    )
+    normalization = {"kind": "owner_membership", "occurred_at": datetime.now(timezone.utc).isoformat()}
+    correlation = _identity_correlation_digest(identity)
+    if correlation:
+        normalization["identity_correlation"] = correlation
+    normalizations.append(normalization)
     meta["workspace_members"] = members
     meta["authorization_normalizations"] = normalizations
     _save_workspace_meta(workspace_id, meta)
 
 
-def _identity_correlation_digest(identity: tuple[str, str]) -> str:
+def _identity_correlation_digest(identity: tuple[str, str]) -> str | None:
     actor = {"tenant_id": identity[0], "actor_id": identity[1]}
     try:
         _, key = _audit_active_key()
         digest = _audit_actor_hash(actor, key).removeprefix("actor_")
     except AuditPersistenceError:
-        digest = hashlib.sha256(f"tenant:{identity[0]}|actor:{identity[1]}".encode("utf-8")).hexdigest()[:40]
+        return None
     return f"corr_{digest}"
-
-
-def _same_actor(actor_email: str, actor_id: str, actor_tenant: str, member: Mapping[str, Any]) -> bool:
-    member_id = str(member.get("actor_id") or member.get("id") or "").strip().lower()
-    member_email = str(member.get("email") or "").strip().lower()
-    member_tenant = str(member.get("tenant_id") or member.get("tid") or "").strip().lower()
-    if member_tenant and actor_tenant != member_tenant:
-        return False
-    if member_id:
-        return bool(actor_id and actor_id == member_id)
-    return bool(actor_email and member_email and actor_email == member_email)
 
 
 def _activate_accepted_invitation(
