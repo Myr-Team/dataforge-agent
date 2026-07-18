@@ -36,6 +36,7 @@ configure_monitoring()
 try:
     from .audit_store import record_audit_event
     from .artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, retry_artifact_task, run_artifact_job
+    from .artifact_registry import ArtifactPersistenceError, get_artifact
     from .task_store import TaskPersistenceError, cancel_requested, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
@@ -87,6 +88,7 @@ try:
 except ImportError:
     from audit_store import record_audit_event
     from artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, retry_artifact_task, run_artifact_job
+    from artifact_registry import ArtifactPersistenceError, get_artifact
     from task_store import TaskPersistenceError, cancel_requested, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
@@ -434,30 +436,43 @@ async def remove_workspace(workspace_id: str, request: Request) -> WorkspaceDele
 async def render_pdf(req: RenderPdfRequest, request: Request) -> dict[str, Any]:
     _require_authenticated_workspace_action(req.workspace_id, request, "artifact.generate")
     _audit_required(request, req.workspace_id, "artifact.generate", "artifact", "pdf")
-    return await run_in_threadpool(render_pdf_report, req.proposal, req.template)
+    try:
+        return await run_in_threadpool(render_pdf_report, req.proposal, req.template, workspace_id=req.workspace_id)
+    except ArtifactPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="artifact persistence is unavailable") from exc
 
 
 @app.post("/api/generate-image")
 async def image(req: GenerateImageRequest, request: Request) -> dict[str, Any]:
     _require_authenticated_workspace_action(req.workspace_id, request, "artifact.generate")
     _audit_required(request, req.workspace_id, "artifact.generate", "artifact", "image")
-    return await run_in_threadpool(generate_image, req.prompt, req.size, req.reference_image_urls)
+    try:
+        return await run_in_threadpool(generate_image, req.prompt, req.size, req.reference_image_urls, workspace_id=req.workspace_id)
+    except ArtifactPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="artifact persistence is unavailable") from exc
 
 
 @app.get("/api/artifacts/{name}")
 def artifact(name: str, request: Request) -> Response:
     safe_name = Path(name).name
-    workspace_ids = _artifact_workspace_ids(safe_name)
-    if len(workspace_ids) != 1:
+    if safe_name != name:
         raise HTTPException(status_code=404, detail=f"Artifact not found: {safe_name}")
-    _require_workspace_action(next(iter(workspace_ids)), request, "artifact.read")
-    path = ARTIFACT_DIR / safe_name
-    if path.exists():
-        return FileResponse(path)
-    blob = download_artifact(safe_name)
+    try:
+        record = get_artifact(safe_name)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Artifact not found: {safe_name}") from None
+    except ArtifactPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="artifact persistence is unavailable") from exc
+    if record is None or record.get("status") != "ready":
+        raise HTTPException(status_code=404, detail=f"Artifact not found: {safe_name}")
+    _require_workspace_action(str(record["workspace_id"]), request, "artifact.read")
+    path = ARTIFACT_DIR / str(record["artifact_name"])
+    if path.is_file():
+        return FileResponse(path, media_type=str(record["content_type"]))
+    blob = download_artifact(str(record["artifact_name"]))
     if blob:
-        content, content_type = blob
-        return Response(content=content, media_type=content_type)
+        content, _content_type = blob
+        return Response(content=content, media_type=str(record["content_type"]))
     raise HTTPException(status_code=404, detail=f"Artifact not found: {safe_name}")
 
 
@@ -465,7 +480,10 @@ def artifact(name: str, request: Request) -> Response:
 async def narrate(req: NarrateSummaryRequest, request: Request) -> dict[str, Any]:
     _require_authenticated_workspace_action(req.workspace_id, request, "artifact.generate")
     _audit_required(request, req.workspace_id, "artifact.generate", "artifact", "narration")
-    result = await run_in_threadpool(narrate_summary, req.text, req.voice)
+    try:
+        result = await run_in_threadpool(narrate_summary, req.text, req.voice, workspace_id=req.workspace_id)
+    except ArtifactPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="artifact persistence is unavailable") from exc
     local_path = result.get("local_path")
     if local_path:
         artifact_url = str(request.url_for("artifact", name=Path(str(local_path)).name))
@@ -912,38 +930,6 @@ def _request_correlation(request: Request | None) -> dict[str, str]:
 def _safe_audit_id(value: Any, fallback: str) -> str:
     clean = str(value or "").strip()
     return clean if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}", clean) else fallback
-
-
-def _artifact_workspace_ids(safe_name: str) -> set[str]:
-    workspace_ids: set[str] = set()
-    for job in list_artifact_jobs():
-        workspace_id = str(job.get("workspace_id") or "")
-        if workspace_id and safe_name in _artifact_names(job.get("artifacts")):
-            workspace_ids.add(workspace_id)
-    for run in list_runs():
-        workspace_id = str(run.get("workspace_id") or "")
-        if workspace_id and safe_name in _artifact_names(run.get("artifact_urls")):
-            workspace_ids.add(workspace_id)
-    return workspace_ids
-
-
-def _artifact_names(value: Any, *, depth: int = 0) -> set[str]:
-    if depth > 4:
-        return set()
-    if isinstance(value, str):
-        path = urlparse(value).path
-        return {Path(path).name} if path else set()
-    if isinstance(value, Mapping):
-        names: set[str] = set()
-        for item in list(value.values())[:50]:
-            names.update(_artifact_names(item, depth=depth + 1))
-        return names
-    if isinstance(value, (list, tuple)):
-        names = set()
-        for item in value[:50]:
-            names.update(_artifact_names(item, depth=depth + 1))
-        return names
-    return set()
 
 
 async def _recover_stale_upload_ingest(workspace_id: str) -> None:

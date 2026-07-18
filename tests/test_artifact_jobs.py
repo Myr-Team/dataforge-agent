@@ -9,6 +9,7 @@ from urllib.parse import quote
 import pytest
 
 import backend.artifact_jobs as artifact_jobs
+import backend.artifact_registry as artifact_registry
 import backend.app as app_module
 import backend.task_store as task_store
 import backend.tools.render_pdf as render_pdf
@@ -627,14 +628,19 @@ def test_concurrent_prepared_recovery_returns_a_job_only_once(tmp_path: Path, mo
     assert task_store.get_task(prepared["task_id"])["status"] == "queued"
 
 
-def test_pdf_filename_contains_explicit_plan_version(tmp_path: Path, monkeypatch) -> None:
+def test_pdf_artifact_uses_an_opaque_name_and_workspace_binding(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(render_pdf, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(artifact_registry, "ARTIFACT_RECORD_DIR", tmp_path / "artifact-registry")
+    monkeypatch.setattr(artifact_registry, "blob_configured", lambda: False)
     monkeypatch.setattr(render_pdf, "_html_pdf", lambda _proposal, _template: b"%PDF-1.4\n%%EOF")
-    monkeypatch.setattr(render_pdf, "upload_artifact", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
 
     result = render_pdf.render_pdf_report(
         {"opportunity_id": "Pilot plan", "doc_meta": {"version": "V2"}},
         "project_proposal",
+        workspace_id="ws-artifacts",
     )
 
-    assert "-V2-" in result["artifact_name"]
+    assert result["artifact_name"].startswith("artifact-")
+    assert result["artifact_name"].endswith(".pdf")
+    assert "V2" not in result["artifact_name"]
+    assert artifact_registry.get_artifact(result["artifact_name"])["workspace_id"] == "ws-artifacts"

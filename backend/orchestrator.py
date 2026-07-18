@@ -21,7 +21,7 @@ from starlette.concurrency import run_in_threadpool
 try:
     from . import cache_store
     from . import content_safety
-    from .blob_store import upload_artifact
+    from .artifact_registry import reserve_artifact, write_artifact
     from .capability_packs import load_capability_packs
     from .chat_loop_primitives import sse
     from .conversation_store import append_message, conversation_context, link_run
@@ -107,7 +107,7 @@ try:
 except ImportError:
     import cache_store
     import content_safety
-    from blob_store import upload_artifact
+    from artifact_registry import reserve_artifact, write_artifact
     from capability_packs import load_capability_packs
     from chat_loop_primitives import sse
     from conversation_store import append_message, conversation_context, link_run
@@ -2450,7 +2450,7 @@ def _clean_exec_summary_fallback(text: Any) -> str:
 _PRODUCE_KINDS = ("pdf", "concept_image", "audio", "pilot_plan", "action_plan", "roadmap", "validation_plan")
 
 
-def _run_text_artifact(proposal: dict[str, Any], kind: str) -> dict[str, Any]:
+def _run_text_artifact(proposal: dict[str, Any], kind: str, workspace_id: str) -> dict[str, Any]:
     if kind == "pilot_plan":
         title = "试点实验设计一页纸"
         markdown = _pilot_plan_markdown(proposal)
@@ -2465,27 +2465,28 @@ def _run_text_artifact(proposal: dict[str, Any], kind: str) -> dict[str, Any]:
         markdown = _validation_plan_markdown(proposal)
     else:
         raise ValueError(f"Unsupported text artifact kind: {kind}")
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    safe = _slug(str(proposal.get("opportunity_id") or proposal.get("title") or "dataforge"))
-    path = OUT_DIR / f"{safe}-{kind}-{int(time.time())}.md"
-    path.write_text(markdown, encoding="utf-8")
+    reservation = reserve_artifact(
+        workspace_id=workspace_id,
+        kind=kind,
+        content_type="text/markdown; charset=utf-8",
+        suffix=".md",
+    )
+    record = write_artifact(reservation, markdown.encode("utf-8"), OUT_DIR)
+    path = OUT_DIR / str(record["artifact_name"])
     result: dict[str, Any] = {
         "title": title,
         "kind": kind,
         "content_type": "text/markdown; charset=utf-8",
         "markdown": markdown,
-        "artifact_name": path.name,
-        "artifact_url": f"/api/artifacts/{path.name}",
+        "artifact_name": record["artifact_name"],
+        "artifact_url": f"/api/artifacts/{record['artifact_name']}",
         "local_path": str(path),
-        "bytes": path.stat().st_size,
+        "bytes": int(record["bytes"]),
         "mode": "markdown-data-driven",
     }
-    try:
-        blob = upload_artifact(path.name, path.read_bytes(), "text/markdown; charset=utf-8")
-        result["blob_name"] = blob.get("blob_name")
-        result["blob_url"] = blob.get("blob_url")
-    except Exception as exc:
-        result["blob_error"] = _clean_text(exc, 300)
+    if record.get("blob_url"):
+        result["blob_name"] = record.get("blob_name")
+        result["blob_url"] = record.get("blob_url")
     return result
 
 
@@ -2725,12 +2726,15 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
         except Exception as exc:
             return {"mode": f"{key}_error", "error": _clean_text(exc, 500)}
 
+    workspace_id = str(artifact.get("workspace_id") or "").strip()
+    if not workspace_id:
+        raise ValueError("workspace_id is required for artifact generation")
     with concurrent.futures.ThreadPoolExecutor(max_workers=6, thread_name_prefix="dataforge-producer") as pool:
-        pdf_future = pool.submit(render_pdf_report, proposal, "project_proposal") if "pdf" in wanted else None
-        pilot_future = pool.submit(_run_text_artifact, proposal, "pilot_plan") if "pilot_plan" in wanted else None
-        action_future = pool.submit(_run_text_artifact, proposal, "action_plan") if "action_plan" in wanted else None
-        roadmap_future = pool.submit(_run_text_artifact, proposal, "roadmap") if "roadmap" in wanted else None
-        validation_future = pool.submit(_run_text_artifact, proposal, "validation_plan") if "validation_plan" in wanted else None
+        pdf_future = pool.submit(render_pdf_report, proposal, "project_proposal", workspace_id=workspace_id) if "pdf" in wanted else None
+        pilot_future = pool.submit(_run_text_artifact, proposal, "pilot_plan", workspace_id) if "pilot_plan" in wanted else None
+        action_future = pool.submit(_run_text_artifact, proposal, "action_plan", workspace_id) if "action_plan" in wanted else None
+        roadmap_future = pool.submit(_run_text_artifact, proposal, "roadmap", workspace_id) if "roadmap" in wanted else None
+        validation_future = pool.submit(_run_text_artifact, proposal, "validation_plan", workspace_id) if "validation_plan" in wanted else None
         image_future = None
         if "concept_image" in wanted:
             image_prompt = _image_prompt_from_proposal(proposal)
@@ -2743,8 +2747,9 @@ def _run_producer(artifact: dict[str, Any], kinds: list[str] | None = None) -> d
                 _reference_image_urls(proposal.get("reference_images") or []),
                 str(proposal.get("title") or proposal.get("opportunity_id") or "").strip(),
                 None,
+                workspace_id=workspace_id,
             )
-        audio_future = pool.submit(narrate_summary, _concise_narration_from_proposal(proposal), "zh-CN-XiaoxiaoNeural") if "audio" in wanted else None
+        audio_future = pool.submit(narrate_summary, _concise_narration_from_proposal(proposal), "zh-CN-XiaoxiaoNeural", workspace_id=workspace_id) if "audio" in wanted else None
         if pdf_future:
             pdf = collect_future(pdf_future, "pdf") or {}
             result["pdf"] = pdf

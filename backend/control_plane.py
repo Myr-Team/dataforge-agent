@@ -414,8 +414,6 @@ def _require_sensitive_workspace_action(workspace_id: str, request: Request | No
 
 def _require_governance_role(workspace_id: str, request: Request | None, allowed_roles: set[str], action: str) -> str:
     role = _require_sensitive_workspace_action(workspace_id, request, action)
-    if role == "local_development":
-        return role
     if role not in allowed_roles:
         _audit_denied(request, workspace_id, action, actor=actor_from_request(request, fallback=False))
         raise HTTPException(status_code=403, detail=f"workspace permission denied for {action}")

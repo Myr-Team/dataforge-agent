@@ -15,9 +15,11 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 try:
-    from ..blob_store import download_blob_content, upload_artifact
+    from ..artifact_registry import reserve_artifact, write_artifact
+    from ..blob_store import download_blob_content
 except ImportError:
-    from blob_store import download_blob_content, upload_artifact
+    from artifact_registry import reserve_artifact, write_artifact
+    from blob_store import download_blob_content
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -104,9 +106,15 @@ def generate_image(
     reference_image_urls: list[str] | None = None,
     overlay_title: str | None = None,
     logo_url: str | None = None,
+    *,
+    workspace_id: str,
 ) -> dict[str, Any]:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUT_DIR / f"concept-{int(time.time())}.png"
+    reservation = reserve_artifact(
+        workspace_id=workspace_id,
+        kind="concept_image",
+        content_type="image/png",
+        suffix=".png",
+    )
     width, height = (1024, 1024)
     if size == "1536x1024":
         width, height = (1536, 1024)
@@ -151,25 +159,23 @@ def generate_image(
         composited, overlay_mode = _composite_overlay(image_bytes, overlay_title, logo_bytes)
         image_bytes = composited
 
-    path.write_bytes(image_bytes)
+    record = write_artifact(reservation, image_bytes, OUT_DIR)
+    path = OUT_DIR / str(record["artifact_name"])
     result: dict[str, str | int] = {
         "concept_image_blob_url": path.as_uri(),
-        "artifact_name": path.name,
-        "artifact_url": f"/api/artifacts/{path.name}",
+        "artifact_name": str(record["artifact_name"]),
+        "artifact_url": f"/api/artifacts/{record['artifact_name']}",
         "local_path": str(path),
-        "bytes": path.stat().st_size,
+        "bytes": int(record["bytes"]),
         "size": size,
         "mode": mode,
         "image_error": image_error,
         "reference_image_count": len(reference_inputs),
         "overlay": overlay_mode,
     }
-    try:
-        blob = upload_artifact(path.name, image_bytes, "image/png")
-        result["concept_image_blob_url"] = str(blob.get("blob_url") or result["concept_image_blob_url"])
-        result["blob_name"] = str(blob.get("blob_name") or "")
-    except Exception as exc:
-        result["blob_error"] = f"{type(exc).__name__}: {exc}"[:500]
+    if record.get("blob_url"):
+        result["concept_image_blob_url"] = str(record["blob_url"])
+        result["blob_name"] = str(record.get("blob_name") or "")
     return result
 
 

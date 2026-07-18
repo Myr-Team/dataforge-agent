@@ -95,7 +95,7 @@ def test_producer_keeps_pdf_when_concept_image_fails(monkeypatch) -> None:
     monkeypatch.setattr(orchestrator, "_image_prompt_from_proposal", lambda proposal: "test image")
     monkeypatch.setattr(orchestrator, "_proposal_image_kind", lambda proposal: ("service", "test"))
     monkeypatch.setattr(orchestrator, "_reference_image_urls", lambda references: [])
-    monkeypatch.setattr(orchestrator, "render_pdf_report", lambda proposal, template: {"artifact_url": "/api/artifacts/test.pdf"})
+    monkeypatch.setattr(orchestrator, "render_pdf_report", lambda proposal, template, **_kwargs: {"artifact_url": "/api/artifacts/test.pdf"})
 
     def image_failure(*args, **kwargs):
         raise RuntimeError("image generation failed")

@@ -154,40 +154,46 @@ def _render_pdf_report_tool(workspace_id: str) -> Any:
         trusted_references = _trusted_pdf_reference_images(workspace_id)
         if trusted_references:
             sanitized["reference_images"] = trusted_references
-        return render_pdf_report(sanitized, template)
+        return render_pdf_report(sanitized, template, workspace_id=workspace_id)
 
     return render_authorized_workspace_pdf
 
 
-@tool(
-    name="generate_image",
-    approval_mode="never_require",
-    schema=_GenerateImageInput,
-)
-def generate_image_tool(
-    prompt: str,
-    size: Literal["1024x1024", "1024x1536", "1536x1024"],
-) -> dict[str, Any]:
-    """Generate a concept image for an approved product opportunity."""
-    return generate_image(prompt, size, [])
+def _generate_image_tool(workspace_id: str) -> Any:
+    @tool(
+        name="generate_image",
+        approval_mode="never_require",
+        schema=_GenerateImageInput,
+    )
+    def generate_authorized_workspace_image(
+        prompt: str,
+        size: Literal["1024x1024", "1024x1536", "1536x1024"],
+    ) -> dict[str, Any]:
+        """Generate a concept image for an approved product opportunity."""
+        return generate_image(prompt, size, [], workspace_id=workspace_id)
+
+    return generate_authorized_workspace_image
 
 
-@tool(
-    name="narrate_summary",
-    approval_mode="never_require",
-    schema=_NarrateSummaryInput,
-)
-def narrate_summary_tool(text: str, voice: str) -> dict[str, Any]:
-    """Generate a Chinese spoken executive summary as playable audio."""
-    return narrate_summary(text, voice)
+def _narrate_summary_tool(workspace_id: str) -> Any:
+    @tool(
+        name="narrate_summary",
+        approval_mode="never_require",
+        schema=_NarrateSummaryInput,
+    )
+    def narrate_authorized_workspace_summary(text: str, voice: str) -> dict[str, Any]:
+        """Generate a Chinese spoken executive summary as playable audio."""
+        return narrate_summary(text, voice, workspace_id=workspace_id)
+
+    return narrate_authorized_workspace_summary
 
 
 def _local_tools(workspace_id: str) -> dict[str, Any]:
     return {
         "search_pack_context": _search_pack_context_tool(workspace_id),
         "render_pdf_report": _render_pdf_report_tool(workspace_id),
-        "generate_image": generate_image_tool,
-        "narrate_summary": narrate_summary_tool,
+        "generate_image": _generate_image_tool(workspace_id),
+        "narrate_summary": _narrate_summary_tool(workspace_id),
     }
 
 

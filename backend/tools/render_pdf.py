@@ -11,9 +11,9 @@ from urllib.parse import unquote, urlparse
 from xml.sax.saxutils import escape
 
 try:
-    from ..blob_store import upload_artifact
+    from ..artifact_registry import reserve_artifact, write_artifact
 except ImportError:
-    from blob_store import upload_artifact
+    from artifact_registry import reserve_artifact, write_artifact
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -86,13 +86,19 @@ def _minimal_pdf(text: str) -> bytes:
     return body.encode("utf-8")
 
 
-def render_pdf_report(proposal: dict[str, Any], template: str = "project_proposal") -> dict[str, Any]:
+def render_pdf_report(
+    proposal: dict[str, Any],
+    template: str = "project_proposal",
+    *,
+    workspace_id: str,
+) -> dict[str, Any]:
     proposal = _repair_mojibake_value(proposal)
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = int(time.time())
-    doc_meta = proposal.get("doc_meta") if isinstance(proposal.get("doc_meta"), dict) else {}
-    version = _safe_name(doc_meta.get("version") or "V1")
-    path = OUT_DIR / f"{_safe_name(proposal.get('opportunity_id') or 'proposal')}-{version}-{stamp}.pdf"
+    reservation = reserve_artifact(
+        workspace_id=workspace_id,
+        kind="pdf",
+        content_type="application/pdf",
+        suffix=".pdf",
+    )
     mode = "weasyprint-html-v1"
     pdf_error = ""
     pdf_bytes = None
@@ -108,22 +114,20 @@ def render_pdf_report(proposal: dict[str, Any], template: str = "project_proposa
             pdf_error = (pdf_error + f" | reportlab:{type(exc2).__name__}: {exc2}")[:700]
             text = f"DataForge {template}\n\n{json.dumps(proposal, indent=2, ensure_ascii=False)}"
             pdf_bytes = _minimal_pdf(text)
-    path.write_bytes(pdf_bytes)
+    record = write_artifact(reservation, pdf_bytes, OUT_DIR)
+    path = OUT_DIR / str(record["artifact_name"])
     result: dict[str, Any] = {
         "pdf_blob_url": path.as_uri(),
-        "artifact_name": path.name,
-        "artifact_url": f"/api/artifacts/{path.name}",
-        "bytes": path.stat().st_size,
+        "artifact_name": record["artifact_name"],
+        "artifact_url": f"/api/artifacts/{record['artifact_name']}",
+        "bytes": int(record["bytes"]),
         "local_path": str(path),
         "mode": mode,
         "pdf_error": pdf_error,
     }
-    try:
-        blob = upload_artifact(path.name, pdf_bytes, "application/pdf")
-        result["pdf_blob_url"] = blob.get("blob_url") or result["pdf_blob_url"]
-        result["blob_name"] = blob.get("blob_name")
-    except Exception as exc:
-        result["blob_error"] = f"{type(exc).__name__}: {exc}"[:500]
+    if record.get("blob_url"):
+        result["pdf_blob_url"] = record["blob_url"]
+        result["blob_name"] = record.get("blob_name")
     return result
 
 

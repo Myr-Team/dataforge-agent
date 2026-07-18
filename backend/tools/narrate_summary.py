@@ -7,22 +7,33 @@ import os
 import urllib.error
 import urllib.request
 import wave
+from io import BytesIO
 from pathlib import Path
+from typing import Any
 from xml.sax.saxutils import escape
 
 try:
-    from ..blob_store import upload_artifact
+    from ..artifact_registry import reserve_artifact, write_artifact
 except ImportError:
-    from blob_store import upload_artifact
+    from artifact_registry import reserve_artifact, write_artifact
 
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "generated-outputs"
 
 
-def narrate_summary(text: str, voice: str = "zh-CN-XiaoxiaoNeural") -> dict[str, str | int]:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUT_DIR / f"summary-{int(time.time())}.wav"
+def narrate_summary(
+    text: str,
+    voice: str = "zh-CN-XiaoxiaoNeural",
+    *,
+    workspace_id: str,
+) -> dict[str, str | int]:
+    reservation = reserve_artifact(
+        workspace_id=workspace_id,
+        kind="audio_summary",
+        content_type="audio/wav",
+        suffix=".wav",
+    )
     mode = "local-fallback"
     speech_error = ""
     speech_warning = ""
@@ -56,20 +67,21 @@ def narrate_summary(text: str, voice: str = "zh-CN-XiaoxiaoNeural") -> dict[str,
                 audio = exc.partial
                 speech_warning = f"IncompleteRead: kept {len(audio)} partial bytes"
         if audio.startswith(b"RIFF") and len(audio) > 1000:
-            path.write_bytes(audio)
+            record = write_artifact(reservation, audio, OUT_DIR)
+            path = OUT_DIR / str(record["artifact_name"])
             mode = "azure-speech"
             result: dict[str, str | int] = {
                 "audio_blob_url": path.as_uri(),
-                "artifact_name": path.name,
-                "artifact_url": f"/api/artifacts/{path.name}",
+                "artifact_name": str(record["artifact_name"]),
+                "artifact_url": f"/api/artifacts/{record['artifact_name']}",
                 "local_path": str(path),
-                "bytes": path.stat().st_size,
+                "bytes": int(record["bytes"]),
                 "voice": voice,
                 "mode": mode,
                 "speech_error": speech_error,
                 "speech_warning": speech_warning,
             }
-            _attach_blob(result, path, "audio/wav")
+            _attach_blob(result, record)
             return result
     except Exception as exc:
         mode = "local-fallback"
@@ -82,30 +94,30 @@ def narrate_summary(text: str, voice: str = "zh-CN-XiaoxiaoNeural") -> dict[str,
         # Quiet deterministic tone; cloud Speech replacement plugs into the same contract.
         value = int(1200 * ((i // 40) % 2 - 0.5))
         frames.append(struct.pack("<h", value))
-    with wave.open(str(path), "wb") as wf:
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(b"".join(frames))
+    record = write_artifact(reservation, buffer.getvalue(), OUT_DIR)
+    path = OUT_DIR / str(record["artifact_name"])
     result = {
         "audio_blob_url": path.as_uri(),
-        "artifact_name": path.name,
-        "artifact_url": f"/api/artifacts/{path.name}",
+        "artifact_name": str(record["artifact_name"]),
+        "artifact_url": f"/api/artifacts/{record['artifact_name']}",
         "local_path": str(path),
-        "bytes": path.stat().st_size,
+        "bytes": int(record["bytes"]),
         "voice": voice,
         "mode": mode,
         "speech_error": speech_error,
         "speech_warning": speech_warning,
     }
-    _attach_blob(result, path, "audio/wav")
+    _attach_blob(result, record)
     return result
 
 
-def _attach_blob(result: dict[str, str | int], path: Path, content_type: str) -> None:
-    try:
-        blob = upload_artifact(path.name, path.read_bytes(), content_type)
-        result["audio_blob_url"] = str(blob.get("blob_url") or result["audio_blob_url"])
-        result["blob_name"] = str(blob.get("blob_name") or "")
-    except Exception as exc:
-        result["blob_error"] = f"{type(exc).__name__}: {exc}"[:500]
+def _attach_blob(result: dict[str, str | int], record: dict[str, Any]) -> None:
+    if record.get("blob_url"):
+        result["audio_blob_url"] = str(record["blob_url"])
+        result["blob_name"] = str(record.get("blob_name") or "")

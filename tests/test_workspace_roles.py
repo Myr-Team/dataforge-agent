@@ -10,6 +10,7 @@ import pytest
 import backend.invitation_store as invitation_store
 import backend.workspace_authz as workspace_authz
 from backend.app import app
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -373,6 +374,16 @@ def test_sensitive_permission_denies_empty_actor_with_local_development_flags(mo
         workspace_authz.require_sensitive_workspace_permission("ws-local", {}, "outcome.read")
 
     assert error.value.decision.reason_code == "identity_missing"
+
+
+def test_governance_role_does_not_accept_local_development_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
+    control_plane = importlib.import_module("backend.control_plane")
+    monkeypatch.setattr(control_plane, "_require_sensitive_workspace_action", lambda *_args: "local_development")
+
+    with pytest.raises(HTTPException) as error:
+        control_plane._require_governance_role("ws-governance", None, {"admin"}, "audit.read")
+
+    assert error.value.status_code == 403
 
 
 @pytest.mark.parametrize(
@@ -1011,8 +1022,7 @@ def test_non_member_cannot_download_workspace_artifact(monkeypatch: pytest.Monke
         headers=_trusted_easy_auth_headers("outsider@contoso.com"),
     )
 
-    assert response.status_code == 403
-    assert "artifact.read" in response.json()["detail"]
+    assert response.status_code == 404
 
 
 def test_artifact_download_denies_anonymous_callers_when_rbac_is_unset(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -1037,5 +1047,5 @@ def test_artifact_download_denies_anonymous_callers_when_rbac_is_unset(monkeypat
 
     response = TestClient(app).get("/api/artifacts/private-plan.pdf")
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert b"private artifact" not in response.content

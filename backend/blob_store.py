@@ -458,7 +458,7 @@ def upload_artifact(name: str, content: bytes, content_type: str) -> dict[str, A
     container.upload_blob(
         blob_name,
         content,
-        overwrite=True,
+        overwrite=False,
         content_settings=ContentSettings(content_type=content_type),
     )
     return {"container": _container_name(), "blob_name": blob_name, "blob_url": _blob_url(blob_name)}

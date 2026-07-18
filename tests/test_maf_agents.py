@@ -322,12 +322,12 @@ async def test_image_tool_rejects_model_controlled_references_and_invalid_size(
     monkeypatch.setattr(
         maf_agents,
         "generate_image",
-        lambda prompt, size, references: calls.append((prompt, size, references)) or {"ok": True},
+        lambda prompt, size, references, **kwargs: calls.append((prompt, size, references, kwargs)) or {"ok": True},
     )
     image_tool = registry.agent("df-producer").tools[1]
 
     assert await image_tool.invoke(arguments={"prompt": "concept", "size": "1024x1024"})
-    assert calls == [("concept", "1024x1024", [])]
+    assert calls == [("concept", "1024x1024", [], {"workspace_id": "workspace-authorized"})]
     parameters = image_tool.parameters()
     assert set(parameters["properties"]) == {"prompt", "size"}
     assert parameters["additionalProperties"] is False
@@ -365,7 +365,7 @@ async def test_pdf_tool_strips_model_controlled_logo_and_reference_sources(
     monkeypatch.setattr(
         maf_agents,
         "render_pdf_report",
-        lambda proposal, template: renderer_calls.append((proposal, template)) or {"ok": True},
+        lambda proposal, template, **kwargs: renderer_calls.append((proposal, template, kwargs)) or {"ok": True},
     )
     pdf_tool = registry.agent("df-producer").tools[0]
     malicious_proposal = {
@@ -394,6 +394,7 @@ async def test_pdf_tool_strips_model_controlled_logo_and_reference_sources(
         (
             {"title": "Safe title", "nested": {"keep": "value"}},
             "project_proposal",
+            {"workspace_id": "workspace-authorized"},
         )
     ]
 
@@ -430,7 +431,7 @@ async def test_pdf_tool_injects_only_rebound_same_workspace_reference_assets(
     monkeypatch.setattr(
         maf_agents,
         "render_pdf_report",
-        lambda proposal, template: renderer_calls.append((proposal, template)) or {"ok": True},
+        lambda proposal, template, **kwargs: renderer_calls.append((proposal, template, kwargs)) or {"ok": True},
     )
     pdf_tool = registry.agent("df-producer").tools[0]
 
@@ -466,6 +467,7 @@ async def test_pdf_tool_injects_only_rebound_same_workspace_reference_assets(
                 ],
             },
             "project_proposal",
+            {"workspace_id": "workspace-authorized"},
         )
     ]
 
