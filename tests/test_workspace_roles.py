@@ -364,17 +364,15 @@ def test_sensitive_permission_gate_is_fail_closed_when_general_rbac_is_unset(mon
     ) == "viewer"
 
 
-def test_sensitive_local_development_bypass_requires_two_explicit_environment_flags(monkeypatch: pytest.MonkeyPatch) -> None:
-    control_module = importlib.import_module("backend.control_plane")
+def test_sensitive_permission_denies_empty_actor_with_local_development_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
     monkeypatch.setenv("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS", "1")
-    monkeypatch.setenv("DF_ENVIRONMENT", "production")
-    with pytest.raises(PermissionError):
+    monkeypatch.setenv("DF_ENVIRONMENT", "development")
+
+    with pytest.raises(workspace_authz.WorkspaceAuthorizationError) as error:
         workspace_authz.require_sensitive_workspace_permission("ws-local", {}, "outcome.read")
 
-    monkeypatch.setenv("DF_ENVIRONMENT", "development")
-    assert workspace_authz.require_sensitive_workspace_permission("ws-local", {}, "outcome.read") == "local_development"
-    assert all(control_module._workspace_action_permissions("ws-local", None)["actions"].values())
+    assert error.value.decision.reason_code == "identity_missing"
 
 
 @pytest.mark.parametrize(
@@ -931,6 +929,25 @@ def test_workspace_list_only_returns_memberships_when_rbac_is_enforced(monkeypat
     assert [item["workspace_id"] for item in response.json()["workspaces"]] == ["ws-allowed"]
 
 
+def test_workspace_list_does_not_enumerate_anonymous_callers_when_rbac_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    app_module = importlib.import_module("backend.app")
+    monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setattr(
+        app_module,
+        "list_workspaces",
+        lambda: [
+            {"workspace_id": "ws-private-a", "name": "Private A", "doc_count": 1},
+            {"workspace_id": "ws-private-b", "name": "Private B", "doc_count": 1},
+        ],
+    )
+
+    response = TestClient(app).get("/api/workspaces")
+
+    assert response.status_code == 200
+    assert response.json()["workspaces"] == []
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -996,3 +1013,29 @@ def test_non_member_cannot_download_workspace_artifact(monkeypatch: pytest.Monke
 
     assert response.status_code == 403
     assert "artifact.read" in response.json()["detail"]
+
+
+def test_artifact_download_denies_anonymous_callers_when_rbac_is_unset(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    app_module = importlib.import_module("backend.app")
+    monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    (tmp_path / "private-plan.pdf").write_bytes(b"private artifact")
+    monkeypatch.setattr(app_module, "ARTIFACT_DIR", tmp_path)
+    monkeypatch.setattr(
+        app_module,
+        "list_artifact_jobs",
+        lambda _workspace_id=None: [
+            {
+                "job_id": "artifact_job_private",
+                "workspace_id": "ws-private",
+                "artifacts": {"pdf": {"artifact_url": "/api/artifacts/private-plan.pdf"}},
+            }
+        ],
+    )
+    monkeypatch.setattr(app_module, "list_runs", lambda _workspace_id=None: [])
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: {})
+
+    response = TestClient(app).get("/api/artifacts/private-plan.pdf")
+
+    assert response.status_code == 403
+    assert b"private artifact" not in response.content

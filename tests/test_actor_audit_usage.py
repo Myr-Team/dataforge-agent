@@ -14,6 +14,7 @@ import backend.data_workbench as data_workbench
 import backend.invitation_store as invitation_store
 import backend.run_store as run_store
 import backend.task_store as task_store
+import backend.workspace_authz as workspace_authz
 import backend.workspace_store as workspace_store
 from backend.audit_store import AuditPersistenceError
 from backend.identity import actor_from_headers, actor_from_ui_context, is_trusted_identity, is_trusted_tenant_identity
@@ -88,6 +89,11 @@ def test_roi_endpoint_fails_closed_before_reading_for_compatibility_or_nonmember
     reads: list[str] = []
     monkeypatch.setattr(control_plane, "workspace_roi_snapshot", lambda workspace_id, *_args: reads.append(workspace_id) or {"workspace_id": workspace_id})
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda _workspace_id, actor: "viewer" if actor.get("actor_id") == "viewer-oid" else None)
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {"workspace_members": [{"actor_id": "viewer-oid", "tenant_id": "tenant-1", "role": "viewer", "status": "active"}]},
+    )
     client = TestClient(app)
     query = "?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"
 
@@ -243,10 +249,17 @@ def test_run_summary_and_trace_endpoints_keep_unknown_usage_null(monkeypatch) ->
         "models": [],
     }
     monkeypatch.setattr(control_plane, "get_run", lambda _run_id: run)
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {"workspace_members": [{"actor_id": "viewer-oid", "tenant_id": "tenant-1", "role": "viewer", "status": "active"}]},
+    )
 
     client = TestClient(app)
-    summary = client.get("/api/runs/run-no-usage/summary")
-    trace = client.get("/api/runs/run-no-usage/trace")
+    headers = {"x-ms-client-principal": _principal([{"typ": "oid", "val": "viewer-oid"}, {"typ": "tid", "val": "tenant-1"}]), "x-dataforge-proxy-secret": "test-proxy-secret"}
+    summary = client.get("/api/runs/run-no-usage/summary", headers=headers)
+    trace = client.get("/api/runs/run-no-usage/trace", headers=headers)
 
     assert summary.status_code == 200
     assert summary.json()["tokens"] is None
@@ -303,6 +316,11 @@ def test_historical_conversation_message_id_is_workspace_scoped_and_untrusted_ac
 def test_workspace_members_include_actor_usage(monkeypatch) -> None:
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "owner")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {"workspace_members": [{"actor_id": "owner-oid", "tenant_id": "tenant-1", "role": "owner", "status": "active"}]},
+    )
     owner_actor = {"name": "Owner", "email": "owner@contoso.com", "actor_id": "owner-oid"}
     reviewer_actor = {"name": "Reviewer", "email": "reviewer@contoso.com", "actor_id": "reviewer-oid"}
     runs = [
@@ -339,6 +357,11 @@ def test_invited_workspace_member_persists_and_merges_usage(tmp_path, monkeypatc
     monkeypatch.setenv("DF_INVITATION_PSEUDONYM_SALT", "test-member-projection-salt")
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "owner")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {"workspace_members": [{"actor_id": "owner-oid", "tenant_id": "tenant-1", "role": "owner", "status": "active"}]},
+    )
     workspace_root = tmp_path / "workspaces"
     workspace_dir = workspace_root / "ws-members"
     workspace_dir.mkdir(parents=True)
@@ -422,6 +445,14 @@ def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     monkeypatch.setenv("DF_ROI_PSEUDONYM_SALT", "test-salt")
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda _workspace_id, actor: "owner" if actor.get("actor_id") == "owner-oid" else "editor")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-1"},
+            "workspace_members": [{"actor_id": "editor-oid", "tenant_id": "tenant-1", "role": "editor", "status": "active"}],
+        },
+    )
     client = TestClient(app)
     query = "?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"
     owner_headers = {"x-ms-client-principal": _principal([{"typ": "oid", "val": "owner-oid"}, {"typ": "tid", "val": "tenant-1"}, {"typ": "preferred_username", "val": "owner@example.com"}]), "x-dataforge-proxy-secret": "test-proxy-secret"}
@@ -567,6 +598,8 @@ def test_governance_audit_api_is_owner_admin_only_and_truthfully_read_only(monke
     monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: actor)
     monkeypatch.setattr(control_plane, "is_trusted_tenant_identity", lambda _actor: True)
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "owner")
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: {"workspace_owner": actor})
     monkeypatch.setattr(
         control_plane,
         "list_audit_events",
@@ -585,7 +618,8 @@ def test_governance_audit_api_is_owner_admin_only_and_truthfully_read_only(monke
     monkeypatch.setattr(control_plane, "record_audit_event", lambda *args, **kwargs: denied_events.append((args, kwargs)), raising=False)
     client = TestClient(app)
 
-    allowed = client.get("/api/workspaces/ws-audit/governance/audit-events?limit=25&cursor=cursor-1")
+    headers = {"x-ms-client-principal": _principal([{"typ": "oid", "val": actor["actor_id"]}, {"typ": "tid", "val": actor["tenant_id"]}]), "x-dataforge-proxy-secret": "test-proxy-secret"}
+    allowed = client.get("/api/workspaces/ws-audit/governance/audit-events?limit=25&cursor=cursor-1", headers=headers)
 
     assert allowed.status_code == 200, allowed.text
     assert reads == [("ws-audit", 25, "cursor-1")]
@@ -600,7 +634,7 @@ def test_governance_audit_api_is_owner_admin_only_and_truthfully_read_only(monke
     }
 
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "viewer")
-    denied = client.get("/api/workspaces/ws-audit/governance/audit-events")
+    denied = client.get("/api/workspaces/ws-audit/governance/audit-events", headers=headers)
 
     assert denied.status_code == 403
     assert reads == [("ws-audit", 25, "cursor-1")]
@@ -614,6 +648,8 @@ def test_governance_invitation_history_is_permission_gated_redacted_and_explicit
     monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: actor)
     monkeypatch.setattr(control_plane, "is_trusted_tenant_identity", lambda _actor: True)
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "owner")
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: {"workspace_owner": actor})
     monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda workspace_id: {"workspace_id": workspace_id})
     monkeypatch.setattr(
         control_plane,
@@ -630,7 +666,8 @@ def test_governance_invitation_history_is_permission_gated_redacted_and_explicit
     )
     client = TestClient(app)
 
-    allowed = client.get("/api/workspaces/ws-history/governance/invitations")
+    headers = {"x-ms-client-principal": _principal([{"typ": "oid", "val": actor["actor_id"]}, {"typ": "tid", "val": actor["tenant_id"]}]), "x-dataforge-proxy-secret": "test-proxy-secret"}
+    allowed = client.get("/api/workspaces/ws-history/governance/invitations", headers=headers)
 
     assert allowed.status_code == 200, allowed.text
     body = allowed.json()
@@ -650,7 +687,7 @@ def test_governance_invitation_history_is_permission_gated_redacted_and_explicit
     assert "owner-oid" not in allowed.text
 
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "viewer")
-    denied = client.get("/api/workspaces/ws-history/governance/invitations")
+    denied = client.get("/api/workspaces/ws-history/governance/invitations", headers=headers)
     assert denied.status_code == 403
     assert reads == [("ws-history", "owner-oid")]
 
@@ -722,6 +759,14 @@ def test_legacy_governance_routes_require_explicit_governance_actions(monkeypatc
     monkeypatch.setattr(control_plane, "workspace_role", lambda _workspace_id, actor: "admin" if actor.get("actor_id") == "admin-oid" else "viewer")
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda _workspace_id, actor: "admin" if actor.get("actor_id") == "admin-oid" else "viewer")
     monkeypatch.setattr(control_plane, "require_workspace_permission", lambda _workspace_id, actor, _action: "admin" if actor.get("actor_id") == "admin-oid" else "viewer")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {"workspace_members": [
+            {"actor_id": "admin-oid", "tenant_id": "tenant-private", "role": "admin", "status": "active"},
+            {"actor_id": "viewer-oid", "tenant_id": "tenant-private", "role": "viewer", "status": "active"},
+        ]},
+    )
     monkeypatch.setattr(control_plane, "record_audit_event", lambda *_args, **_kwargs: {}, raising=False)
     monkeypatch.setattr(control_plane, "workspace_usage_summary", lambda workspace_id, _request: {"workspace_id": workspace_id})
     monkeypatch.setattr(control_plane, "workspace_audit_events", lambda workspace_id, _request: {"workspace_id": workspace_id})
@@ -788,6 +833,7 @@ def test_all_legacy_and_new_governance_endpoints_serialize_without_raw_identity(
     monkeypatch.setattr(control_plane, "workspace_role", lambda *_args: "admin")
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "admin")
     monkeypatch.setattr(control_plane, "require_workspace_permission", lambda *_args: "admin")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: meta)
     monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: meta)
     monkeypatch.setattr(control_plane, "list_runs", lambda _workspace_id=None: [run])
     monkeypatch.setattr(control_plane, "get_run", lambda _run_id: run)
@@ -918,6 +964,7 @@ def test_no_email_persisted_workspace_owner_has_one_label_when_current_admin_is_
     monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: meta)
     monkeypatch.setattr(control_plane, "workspace_role", lambda *_args: "admin")
     monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "admin")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: meta)
     monkeypatch.setattr(control_plane, "default_actor", lambda: {
         "name": "Deployment Default",
         "email": "default@contoso.com",

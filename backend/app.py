@@ -60,7 +60,7 @@ try:
         workspace_ingest_status,
         workspace_pending_ingest_jobs,
     )
-    from .workspace_authz import authorize, rbac_enabled, require_workspace_permission, workspace_role
+    from .workspace_authz import authorize, require_workspace_permission, workspace_role
     from .schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -111,7 +111,7 @@ except ImportError:
         workspace_ingest_status,
         workspace_pending_ingest_jobs,
     )
-    from workspace_authz import authorize, rbac_enabled, require_workspace_permission, workspace_role
+    from workspace_authz import authorize, require_workspace_permission, workspace_role
     from schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -248,13 +248,12 @@ async def upload_workspace(
 @app.get("/api/workspaces", response_model=WorkspacesResponse)
 async def workspaces(request: Request) -> WorkspacesResponse:
     items = await run_in_threadpool(list_workspaces)
-    if rbac_enabled():
-        actor = actor_from_request(request)
-        items = [
-            item
-            for item in items
-            if authorize(workspace_role(str(item.get("workspace_id") or ""), actor), "workspace.read")
-        ]
+    actor = actor_from_request(request)
+    items = [
+        item
+        for item in items
+        if authorize(workspace_role(str(item.get("workspace_id") or ""), actor), "workspace.read")
+    ]
     return WorkspacesResponse(workspaces=items)
 
 
@@ -448,11 +447,10 @@ async def image(req: GenerateImageRequest, request: Request) -> dict[str, Any]:
 @app.get("/api/artifacts/{name}")
 def artifact(name: str, request: Request) -> Response:
     safe_name = Path(name).name
-    if rbac_enabled():
-        workspace_ids = _artifact_workspace_ids(safe_name)
-        if len(workspace_ids) != 1:
-            raise HTTPException(status_code=404, detail=f"Artifact not found: {safe_name}")
-        _require_workspace_action(next(iter(workspace_ids)), request, "artifact.read")
+    workspace_ids = _artifact_workspace_ids(safe_name)
+    if len(workspace_ids) != 1:
+        raise HTTPException(status_code=404, detail=f"Artifact not found: {safe_name}")
+    _require_workspace_action(next(iter(workspace_ids)), request, "artifact.read")
     path = ARTIFACT_DIR / safe_name
     if path.exists():
         return FileResponse(path)

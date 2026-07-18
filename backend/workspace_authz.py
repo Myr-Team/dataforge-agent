@@ -146,10 +146,6 @@ def require_sensitive_workspace_permission(
     *,
     role_resolver: Callable[[str, Mapping[str, Any] | None], str | None] | None = None,
 ) -> str:
-    if _sensitive_local_development_bypass_enabled():
-        return "local_development"
-    if not is_trusted_tenant_identity(actor):
-        raise WorkspaceAuthorizationError(action, WorkspaceAccessDecision(False, None, "identity_missing"))
     decision = workspace_access_decision(workspace_id, actor)
     if not decision.allowed:
         raise WorkspaceAuthorizationError(action, with_action(decision, action))
@@ -163,17 +159,6 @@ def require_sensitive_workspace_permission(
     if not checked.allowed:
         raise WorkspaceAuthorizationError(action, checked)
     return str(checked.role)
-
-
-def _sensitive_local_development_bypass_enabled() -> bool:
-    environment = str(os.environ.get("DF_ENVIRONMENT") or "").strip().lower()
-    enabled = str(os.environ.get("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS") or "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    return enabled and environment in {"local", "development", "test"}
 
 
 def _load_workspace_meta(workspace_id: str) -> dict[str, Any]:
