@@ -20,9 +20,10 @@ from starlette.concurrency import run_in_threadpool
 try:
     from .audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from .artifact_jobs import list_artifact_jobs
+    from .artifact_registry import ArtifactPersistenceError, get_artifact
     from .azure_monitor_client import get_trace_delivery_status
     from .task_store import TaskPersistenceError, list_tasks
-    from .blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
+    from .blob_store import blob_configured, download_blob_json, probe_blob_container, upload_blob_json
     from .conversation_store import get_conversation, list_conversations, stable_message_id
     from .data_workbench import list_workspace_files
     from .dependency_health import health_dependencies, health_dependency_details
@@ -42,9 +43,10 @@ try:
 except ImportError:
     from audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from artifact_jobs import list_artifact_jobs
+    from artifact_registry import ArtifactPersistenceError, get_artifact
     from azure_monitor_client import get_trace_delivery_status
     from task_store import TaskPersistenceError, list_tasks
-    from blob_store import blob_configured, download_artifact, download_blob_json, probe_blob_container, upload_blob_json
+    from blob_store import blob_configured, download_blob_json, probe_blob_container, upload_blob_json
     from conversation_store import get_conversation, list_conversations, stable_message_id
     from data_workbench import list_workspace_files
     from dependency_health import health_dependencies, health_dependency_details
@@ -950,17 +952,17 @@ def list_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
         proposal = artifact.get("proposal") if isinstance(artifact.get("proposal"), dict) else {}
         urls = proposal.get("artifact_urls") if isinstance(proposal.get("artifact_urls"), dict) else {}
         for kind, url in urls.items():
-            item = _artifact_item(str(kind), str(url or ""), run, proposal)
-            key = str(item.get("url") or item.get("name"))
-            if key and key not in seen:
+            item = _artifact_item(str(kind), str(url or ""), run, workspace_id, proposal)
+            key = str((item or {}).get("url") or (item or {}).get("name"))
+            if item and key and key not in seen:
                 seen.add(key)
                 items.append(item)
         for kind in ("pdf", "concept_image", "audio_summary", "pilot_plan", "action_plan"):
             value = proposal.get(kind)
             if isinstance(value, dict) and value.get("artifact_url"):
-                item = _artifact_item(kind, str(value.get("artifact_url")), run, proposal)
-                key = str(item.get("url") or item.get("name"))
-                if key and key not in seen:
+                item = _artifact_item(kind, str(value.get("artifact_url")), run, workspace_id, proposal)
+                key = str((item or {}).get("url") or (item or {}).get("name"))
+                if item and key and key not in seen:
                     seen.add(key)
                     items.append(item)
     items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
@@ -2940,16 +2942,26 @@ def _asset_rows(files: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _artifact_item(kind: str, url: str, run: dict[str, Any], proposal: dict[str, Any] | None = None) -> dict[str, Any]:
+def _artifact_item(
+    kind: str,
+    url: str,
+    run: dict[str, Any],
+    workspace_id: str,
+    proposal: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     name = _artifact_name(url) or f"{kind}-{run.get('run_id') or 'artifact'}"
-    local = ARTIFACT_DIR / name
-    bytes_value = local.stat().st_size if local.exists() else None
-    content_type = mimetypes.guess_type(name)[0] or _content_type_for_kind(kind)
-    if bytes_value is None:
-        downloaded = download_artifact(name)
-        if downloaded:
-            bytes_value = len(downloaded[0])
-            content_type = downloaded[1] or content_type
+    try:
+        record = get_artifact(name)
+    except (ArtifactPersistenceError, ValueError):
+        return None
+    if (
+        record is None
+        or record.get("status") != "ready"
+        or str(record.get("workspace_id") or "") != str(workspace_id or "")
+        or str(record.get("kind") or "") != str(kind or "")
+    ):
+        return None
+    content_type = str(record.get("content_type") or mimetypes.guess_type(name)[0] or _content_type_for_kind(kind))
     proposal = proposal if isinstance(proposal, dict) else {}
     generated_by_kind = proposal.get("artifact_generated_at") if isinstance(proposal.get("artifact_generated_at"), dict) else {}
     created_at = (
@@ -2962,10 +2974,10 @@ def _artifact_item(kind: str, url: str, run: dict[str, Any], proposal: dict[str,
     return {
         "name": name,
         "type": _artifact_type(kind, name),
-        "bytes": bytes_value,
+        "bytes": record.get("bytes"),
         "created_at": created_at,
-        "status": "ready" if url else "missing",
-        "url": url,
+        "status": "ready",
+        "url": f"/api/artifacts/{record['artifact_name']}",
         "run_id": run.get("run_id"),
         "content_type": content_type,
     }

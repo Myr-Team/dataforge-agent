@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 import backend.app as app_module
 import backend.artifact_registry as artifact_registry
+import backend.control_plane as control_plane
 import backend.maf_agents as maf_agents
 import backend.tools.generate_image as generate_image
 import backend.tools.narrate_summary as narrate_summary
@@ -96,6 +97,27 @@ def test_download_rejects_reserved_artifact_before_bytes_are_ready(tmp_path, mon
     response = TestClient(app).get(f"/api/artifacts/{reservation['artifact_name']}")
 
     assert response.status_code == 404
+
+
+def test_workspace_artifact_catalog_hides_foreign_registered_artifacts(tmp_path, monkeypatch) -> None:
+    output_dir = _configure_artifact_storage(tmp_path, monkeypatch)
+    monkeypatch.setattr(control_plane, "ARTIFACT_DIR", output_dir)
+    foreign = _write_artifact("ws-b", "pdf", "application/pdf", ".pdf", b"workspace-b", output_dir)
+    monkeypatch.setattr(control_plane, "list_runs", lambda _workspace_id: [{"run_id": "run-a"}])
+    monkeypatch.setattr(
+        control_plane,
+        "get_run",
+        lambda _run_id: {
+            "run_id": "run-a",
+            "workspace_id": "ws-a",
+            "artifact": {"proposal": {"artifact_urls": {"pdf": f"/api/artifacts/{foreign['artifact_name']}"}}},
+        },
+    )
+    monkeypatch.setattr(control_plane, "list_artifact_jobs", lambda _workspace_id: [])
+    monkeypatch.setattr(control_plane, "list_tasks", lambda _workspace_id: [])
+    catalog = control_plane.list_workspace_artifacts("ws-a")
+
+    assert catalog["artifacts"] == []
 
 
 def test_blob_registry_persistence_failure_blocks_artifact_bytes(tmp_path, monkeypatch) -> None:
