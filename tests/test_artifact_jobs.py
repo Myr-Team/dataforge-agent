@@ -16,6 +16,7 @@ import backend.workspace_authz as workspace_authz
 from backend.app import app
 from backend.artifact_jobs import ArtifactJobPersistenceError
 from backend.blob_store import BlobJsonReadError
+from backend.schemas import ProduceRequest
 from backend.task_store import TaskPersistenceError
 from fastapi.testclient import TestClient
 
@@ -112,6 +113,28 @@ def test_job_state_survives_store_reload_without_copying_analysis_payload(tmp_pa
     assert reloaded["plan_version"].startswith("V")
     assert "feasibility" not in reloaded
     assert "answer" not in reloaded
+
+
+def test_explicit_source_run_id_wins_over_legacy_conversation_id(tmp_path: Path, monkeypatch) -> None:
+    _configure_store(tmp_path, monkeypatch)
+
+    job = artifact_jobs.create_artifact_job(
+        _request(conversation_id="legacy-conversation", source_run_id="run-canonical"),
+        actor={},
+    )
+
+    assert job["source_run_id"] == "run-canonical"
+
+
+def test_produce_request_preserves_source_run_id() -> None:
+    request = ProduceRequest(
+        workspace_id="ws-artifacts",
+        source_run_id="run-canonical",
+        kinds=["pdf"],
+        feasibility={"verdict": "conditional"},
+    )
+
+    assert request.model_dump()["source_run_id"] == "run-canonical"
 
 
 def test_idempotency_key_reuses_non_terminal_job(tmp_path: Path, monkeypatch) -> None:

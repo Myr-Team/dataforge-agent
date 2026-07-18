@@ -12,6 +12,7 @@ import time
 import urllib.request
 import uuid
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ try:
     from .blob_store import upload_artifact
     from .capability_packs import load_capability_packs
     from .chat_loop_primitives import sse
-    from .conversation_store import append_message, conversation_context
+    from .conversation_store import append_message, conversation_context, link_run
     from .customer_text import (
         clarify_options_from_context,
         customer_hit_title,
@@ -94,7 +95,7 @@ try:
         update_run_proposal,
     )
     from .schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, GuardedFeasibilityReport, MarketComparison, RoutingDecision
-    from .tracing import agent_trace, finish_maf_agent_span, start_maf_agent_span, trace_event
+    from .tracing import agent_trace, finish_maf_agent_span, foundry_runtime_agent_id, start_maf_agent_span, trace_event, trace_id_from_span
     from .maf_agents import create_agent_registry
     from .maf_contracts import MafRuntimeMode, canary_selected, runtime_mode
     from .maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -109,7 +110,7 @@ except ImportError:
     from blob_store import upload_artifact
     from capability_packs import load_capability_packs
     from chat_loop_primitives import sse
-    from conversation_store import append_message, conversation_context
+    from conversation_store import append_message, conversation_context, link_run
     from customer_text import (
         clarify_options_from_context,
         customer_hit_title,
@@ -180,7 +181,7 @@ except ImportError:
         update_run_proposal,
     )
     from schemas import AuditVerdict, ChatRequest, Evidence, FeasibilityReport, GuardedFeasibilityReport, MarketComparison, RoutingDecision
-    from tracing import agent_trace, finish_maf_agent_span, start_maf_agent_span, trace_event
+    from tracing import agent_trace, finish_maf_agent_span, foundry_runtime_agent_id, start_maf_agent_span, trace_event, trace_id_from_span
     from maf_agents import create_agent_registry
     from maf_contracts import MafRuntimeMode, canary_selected, runtime_mode
     from maf_orchestrator import default_max_revisions, graph_description, maf_enabled, run_feasibility_audit_loop
@@ -555,14 +556,27 @@ def _compact_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return compact
 
 
-def _persist_user_message(conversation_id: str, workspace_id: str, text: str, assume_new: bool = False, actor: dict[str, Any] | None = None) -> None:
+def _persist_user_message(
+    conversation_id: str | None,
+    workspace_id: str,
+    text: str,
+    assume_new: bool = False,
+    actor: dict[str, Any] | None = None,
+    run_id: str | None = None,
+) -> None:
+    if not conversation_id:
+        return
     try:
         append_message(conversation_id, workspace_id=workspace_id, role="user", text=text, actor=actor, remote_load=not assume_new)
+        if run_id and run_id != conversation_id:
+            link_run(conversation_id, workspace_id=workspace_id, run_id=run_id)
     except Exception:
         pass
 
 
-def _persist_assistant_message(conversation_id: str, workspace_id: str, text: str, verdict: str | None = None, citations: list[dict[str, Any]] | None = None) -> None:
+def _persist_assistant_message(conversation_id: str | None, workspace_id: str, text: str, verdict: str | None = None, citations: list[dict[str, Any]] | None = None) -> None:
+    if not conversation_id:
+        return
     try:
         append_message(conversation_id, workspace_id=workspace_id, role="assistant", text=text, verdict=verdict, citations=citations)
     except Exception:
@@ -574,6 +588,11 @@ def _persist_last_analysis(workspace_id: str, final_payload: dict[str, Any]) -> 
         save_workspace_last_analysis(workspace_id, final_payload)
     except Exception:
         pass
+
+
+def _artifact_conversation_id(artifact: Mapping[str, Any]) -> str | None:
+    conversation_id = artifact.get("conversation_id")
+    return str(conversation_id) if conversation_id else None
 
 
 def _artifact_verdict(artifact: dict[str, Any], fallback: str | None = None) -> str | None:
@@ -969,6 +988,47 @@ def _frame(event: str, data: Any, conversation_id: str | None = None) -> str:
     return sse(event, client_data)
 
 
+@dataclass(frozen=True)
+class ExecutionContext:
+    run_id: str
+    origin: str
+    conversation_id: str | None
+    persist_messages: bool
+
+
+def separation_enabled() -> bool:
+    return os.environ.get("DF_SEPARATE_ANALYSIS_CONVERSATIONS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def execution_context(req: ChatRequest) -> ExecutionContext:
+    """Resolve durable execution identity without fabricating a conversation."""
+    requested_origin = str(req.origin or "conversation")
+    if not separation_enabled():
+        conversation_id = str(req.conversation_id or req.run_id or uuid.uuid4())
+        return ExecutionContext(
+            run_id=conversation_id,
+            origin="conversation",
+            conversation_id=conversation_id,
+            persist_messages=True,
+        )
+    origin = requested_origin
+    persist_messages = origin == "conversation" if req.persist_messages is None else bool(req.persist_messages)
+    if origin != "conversation":
+        persist_messages = False
+    conversation_id = str(req.conversation_id) if persist_messages and req.conversation_id else None
+    if persist_messages and not conversation_id:
+        conversation_id = str(uuid.uuid4())
+    run_id = str(req.run_id or uuid.uuid4())
+    if conversation_id and run_id == conversation_id:
+        run_id = str(uuid.uuid4())
+    return ExecutionContext(
+        run_id=run_id,
+        origin=origin,
+        conversation_id=conversation_id,
+        persist_messages=persist_messages,
+    )
+
+
 def _public_final_payload(data: Any, conversation_id: str | None) -> Any:
     """Strip run-bound provenance before a final payload reaches any SSE client."""
     if not isinstance(data, Mapping):
@@ -976,7 +1036,12 @@ def _public_final_payload(data: Any, conversation_id: str | None) -> Any:
     artifact = data.get("artifact")
     workspace_id = artifact.get("workspace_id") if isinstance(artifact, Mapping) else None
     scope = {"workspace_id": workspace_id, "scope_id": conversation_id}
-    return public_artifact_projection(data, scope)
+    public = public_artifact_projection(data, scope)
+    if isinstance(public, dict) and isinstance(artifact, Mapping):
+        for key in ("run_id", "origin", "conversation_id"):
+            if key in artifact:
+                public.setdefault(key, artifact.get(key))
+    return public
 
 
 def _agent_tool_events(agent: str, meta: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -1271,6 +1336,8 @@ def _apply_requested_output_mode(req: ChatRequest, decision: RoutingDecision) ->
 
 
 def _is_auto_analyze_request(req: ChatRequest) -> bool:
+    if str(getattr(req, "origin", "") or "") in {"workspace_auto_analysis", "data_send_analysis"}:
+        return True
     ui_context = getattr(req, "ui_context", None)
     if not isinstance(ui_context, dict):
         return False
@@ -5560,12 +5627,16 @@ async def _emit_lightweight_final(
             decision.intent,
             final_payload,
             artifact,
+            conversation_id=_artifact_conversation_id(artifact),
         )
     )
 
 
+_UNSET = object()
+
+
 async def _persist_chat_completion(
-    conversation_id: str,
+    run_id: str,
     workspace_id: str,
     text: str,
     verdict: str,
@@ -5573,19 +5644,27 @@ async def _persist_chat_completion(
     final_payload: dict[str, Any],
     artifact: dict[str, Any],
     citations: list[dict[str, Any]] | None = None,
+    *,
+    conversation_id: str | None | object = _UNSET,
 ) -> None:
     try:
+        message_conversation_id = (
+            _artifact_conversation_id(artifact) or run_id
+            if conversation_id is _UNSET
+            else conversation_id
+        )
         if not citations:
             citations = artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or []
         plan_source_run_id = (
-            _plan_source_run_id(workspace_id, conversation_id, artifact)
+            _plan_source_run_id(workspace_id, run_id, artifact)
             if _is_plan_draft_artifact(artifact)
-            else conversation_id
+            else run_id
         )
         if _is_plan_draft_artifact(artifact) and plan_source_run_id:
             artifact["source_analysis_run_id"] = plan_source_run_id
             final_payload["artifact"] = artifact
-        await run_in_threadpool(_persist_assistant_message, conversation_id, workspace_id, text, verdict, citations)
+        if message_conversation_id:
+            await run_in_threadpool(_persist_assistant_message, message_conversation_id, workspace_id, text, verdict, citations)
         if _is_plan_draft_artifact(artifact):
             plan_artifact = _plan_attachment_artifact(plan_source_run_id, artifact)
             plan_version_id = _canonical_version_id_for_run(plan_source_run_id)
@@ -5632,7 +5711,7 @@ async def _persist_chat_completion(
                     }
                 )
             final_payload["artifact"] = artifact
-        await run_in_threadpool(complete_run, conversation_id, status=status, final=final_payload, artifact=artifact)
+        await run_in_threadpool(complete_run, run_id, status=status, final=final_payload, artifact=artifact)
     except Exception:
         return
 
@@ -6129,12 +6208,12 @@ async def _emit_full_maf_result(
     req: ChatRequest,
     decision: RoutingDecision,
     artifact: dict[str, Any],
-    conversation_id: str,
+    run_id: str,
     actor: dict[str, Any],
     result: MafTeamRunResult,
 ) -> AsyncIterator[str]:
     if result.market_relevance_trace:
-        record_event(conversation_id, "market_relevance_gate", result.market_relevance_trace)
+        record_event(run_id, "market_relevance_gate", result.market_relevance_trace)
     _merge_maf_artifact(artifact, result)
     required_corpus_failed = "workspace_evidence_unavailable" in result.gaps
     if required_corpus_failed:
@@ -6155,12 +6234,12 @@ async def _emit_full_maf_result(
             audit = AuditVerdict.model_validate(audit_data)
             verdict_contract = _apply_audit_and_verdict_contract(artifact, audit)
             if verdict_contract.get("revised"):
-                yield _frame("revised_verdict", verdict_contract, conversation_id)
+                yield _frame("revised_verdict", verdict_contract, run_id)
         answer_state: dict[str, Any] = {}
-        async for frame in _stream_answer_frames(req, decision, artifact, conversation_id, answer_state):
+        async for frame in _stream_answer_frames(req, decision, artifact, run_id, answer_state):
             yield frame
         if decision.output_mode == "full_package" or "df-producer" in decision.experts:
-            async for frame in _producer_frames(artifact, conversation_id):
+            async for frame in _producer_frames(artifact, run_id):
                 yield frame
         summary = _customer_text(answer_state.get("text") or _final_text(decision, artifact), artifact)
 
@@ -6173,18 +6252,19 @@ async def _emit_full_maf_result(
         "output_contract": artifact["output_contract"],
         "maf": artifact["maf"],
     }
-    await run_in_threadpool(
-        _persist_assistant_message,
-        conversation_id,
-        req.workspace_id,
-        summary,
-        _artifact_verdict(artifact, "completed"),
-        artifact.get("citations") or [],
-    )
+    if _artifact_conversation_id(artifact):
+        await run_in_threadpool(
+            _persist_assistant_message,
+            _artifact_conversation_id(artifact),
+            req.workspace_id,
+            summary,
+            _artifact_verdict(artifact, "completed"),
+            artifact.get("citations") or [],
+        )
     if decision.intent == "feasibility_analysis":
         await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
-    complete_run(conversation_id, status="completed", final=final_payload, artifact=artifact)
-    yield _frame("final", final_payload, conversation_id)
+    complete_run(run_id, status="completed", final=final_payload, artifact=artifact)
+    yield _frame("final", final_payload, run_id)
 
 
 def _maf_terminal_failure_frames(
@@ -6233,37 +6313,85 @@ def _maf_terminal_failure_frames(
 
 async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     actor = public_actor(actor_from_ui_context(req.ui_context))
+    execution = execution_context(req)
     with agent_trace(
         workspace_id=req.workspace_id,
-        conversation_id=req.conversation_id,
+        conversation_id=execution.run_id,
         actor=actor,
-    ):
-        async for frame in _orchestrate_chat_impl(req):
+    ) as span:
+        trace_id = trace_id_from_span(span)
+        trace = (
+            {"trace_id": trace_id, "agent_id": foundry_runtime_agent_id()}
+            if trace_id
+            else None
+        )
+        async for frame in _orchestrate_chat_impl(
+            req,
+            conv_id=execution.run_id,
+            new_conversation=execution.persist_messages and req.conversation_id is None,
+            execution=execution,
+            trace=trace,
+        ):
             yield frame
 
 
-async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
-    conv_id = req.conversation_id or str(uuid.uuid4())
-    new_conversation = req.conversation_id is None
-    history = conversation_context(req.conversation_id, limit=20) if req.conversation_id else []
+async def _orchestrate_chat_impl(
+    req: ChatRequest,
+    *,
+    conv_id: str | None = None,
+    new_conversation: bool | None = None,
+    execution: ExecutionContext | None = None,
+    trace: dict[str, str] | None = None,
+) -> AsyncIterator[str]:
+    execution = execution or execution_context(req)
+    conv_id = conv_id or execution.run_id
+    new_conversation = (execution.persist_messages and req.conversation_id is None) if new_conversation is None else new_conversation
+    conversation_id = execution.conversation_id
+    history = conversation_context(conversation_id, limit=20) if execution.persist_messages and not new_conversation else []
     working_req = _request_with_history(req, history)
     actor = public_actor(actor_from_ui_context(req.ui_context))
     artifact: dict[str, Any] = {
         "workspace_id": req.workspace_id,
-        "conversation_id": conv_id,
+        "run_id": conv_id,
+        "origin": execution.origin,
+        "conversation_id": conversation_id,
         "_conversation_history": _compact_history(history),
     }
     if actor:
         artifact["actor"] = actor
+    if trace:
+        artifact["trace"] = trace
     iteration_inputs = _iteration_inputs(req)
     if iteration_inputs:
         artifact["iteration_inputs"] = iteration_inputs
-    start_run(conv_id, req.workspace_id, req.message, actor=actor)
-    yield _frame("ready", {"conversation_id": conv_id, "workspace_id": req.workspace_id, "actor": actor}, conv_id)
-    yield _frame("user", {"text": req.message, "actor": actor}, conv_id)
+    start_run(
+        conv_id,
+        req.workspace_id,
+        req.message,
+        actor=actor,
+        trace_id=(trace or {}).get("trace_id"),
+        trace_agent_id=(trace or {}).get("agent_id"),
+        conversation_id=conversation_id,
+        origin=execution.origin,
+    )
+    yield _frame(
+        "ready",
+        {
+            "run_id": conv_id,
+            "conversation_id": conversation_id,
+            "workspace_id": req.workspace_id,
+            "origin": execution.origin,
+            "actor": actor,
+            "trace": trace,
+        },
+        conv_id,
+    )
+    if execution.persist_messages:
+        yield _frame("user", {"text": req.message, "actor": actor}, conv_id)
     if iteration_inputs:
         yield _frame("iteration_inputs", {"metrics": iteration_inputs, "count": len(iteration_inputs)}, conv_id)
-    await run_in_threadpool(_persist_user_message, conv_id, req.workspace_id, req.message, new_conversation, actor)
+    if execution.persist_messages:
+        await run_in_threadpool(_persist_user_message, conversation_id, req.workspace_id, req.message, new_conversation, actor, conv_id)
 
     # 负责任 AI：先用 Azure AI Content Safety 过一遍用户输入（jailbreak 注入 + 有害类别），
     # 命中就安全拒答、不进入多 Agent 链。服务异常时 fail-open（screen_input 内部兜底），不影响正常使用。
@@ -6279,7 +6407,8 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
             "artifact": artifact,
             "content_safety": {"blocked": True, "jailbreak": screen.get("jailbreak"), "categories": screen.get("categories", [])},
         }
-        await run_in_threadpool(_persist_assistant_message, conv_id, req.workspace_id, refusal, "content_safety_block")
+        if execution.persist_messages:
+            await run_in_threadpool(_persist_assistant_message, conversation_id, req.workspace_id, refusal, "content_safety_block")
         complete_run(conv_id, status="content_safety_block", final=final_payload, artifact=artifact)
         yield _frame("final", final_payload, conv_id)
         return
@@ -6366,13 +6495,14 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
             "output_contract": artifact["output_contract"],
         }
         frame = _frame("clarify", clarify_payload, conv_id)
-        await run_in_threadpool(
-            _persist_assistant_message,
-            conv_id,
-            req.workspace_id,
-            str(decision.clarifying_question or ""),
-            "clarify",
-        )
+        if execution.persist_messages:
+            await run_in_threadpool(
+                _persist_assistant_message,
+                conversation_id,
+                req.workspace_id,
+                str(decision.clarifying_question or ""),
+                "clarify",
+            )
         complete_run(
             conv_id,
             status="clarify",
@@ -6571,7 +6701,8 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
         except Exception as exc:
             error_payload = {"agent": "df-feasibility-analyst", "message": str(exc)}
             frame = _frame("error", error_payload, conv_id)
-            await run_in_threadpool(_persist_assistant_message, conv_id, req.workspace_id, str(exc), "error")
+            if execution.persist_messages:
+                await run_in_threadpool(_persist_assistant_message, conversation_id, req.workspace_id, str(exc), "error")
             complete_run(conv_id, status="error", final=error_payload, artifact=artifact)
             yield frame
             return
@@ -6752,7 +6883,8 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
         except Exception as exc:
             error_payload = {"agent": "df-auditor", "message": str(exc), "orchestrator": "maf"}
             frame = _frame("error", error_payload, conv_id)
-            await run_in_threadpool(_persist_assistant_message, conv_id, req.workspace_id, str(exc), "error")
+            if execution.persist_messages:
+                await run_in_threadpool(_persist_assistant_message, conversation_id, req.workspace_id, str(exc), "error")
             complete_run(conv_id, status="error", final=error_payload, artifact=artifact)
             yield frame
             return
@@ -6795,7 +6927,8 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
         except Exception as exc:
             error_payload = {"agent": "df-auditor", "message": str(exc)}
             frame = _frame("error", error_payload, conv_id)
-            await run_in_threadpool(_persist_assistant_message, conv_id, req.workspace_id, str(exc), "error")
+            if execution.persist_messages:
+                await run_in_threadpool(_persist_assistant_message, conversation_id, req.workspace_id, str(exc), "error")
             complete_run(conv_id, status="error", final=error_payload, artifact=artifact)
             yield frame
             return
@@ -6874,14 +7007,15 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
                 "output_contract": artifact["output_contract"],
             }
             frame = _frame("final", final_payload, conv_id)
-            await run_in_threadpool(
-                _persist_assistant_message,
-                conv_id,
-                req.workspace_id,
-                summary,
-                _artifact_verdict(artifact, "completed_with_revision_error"),
-                artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or [],
-            )
+            if execution.persist_messages:
+                await run_in_threadpool(
+                    _persist_assistant_message,
+                    conversation_id,
+                    req.workspace_id,
+                    summary,
+                    _artifact_verdict(artifact, "completed_with_revision_error"),
+                    artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or [],
+                )
             if decision.intent == "feasibility_analysis":
                 await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
             complete_run(conv_id, status="completed_with_revision_error", final=final_payload, artifact=artifact)
@@ -6921,17 +7055,19 @@ async def _orchestrate_chat_impl(req: ChatRequest) -> AsyncIterator[str]:
                 final_payload,
                 artifact,
                 list(chat_citations),
+                conversation_id=conversation_id,
             )
         )
         return
-    await run_in_threadpool(
-        _persist_assistant_message,
-        conv_id,
-        req.workspace_id,
-        summary,
-        _artifact_verdict(artifact, "completed"),
-        artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or [],
-    )
+    if execution.persist_messages:
+        await run_in_threadpool(
+            _persist_assistant_message,
+            conversation_id,
+            req.workspace_id,
+            summary,
+            _artifact_verdict(artifact, "completed"),
+            artifact.get("citations") or (artifact.get("answer") or {}).get("citations") or [],
+        )
     if decision.intent == "feasibility_analysis":
         await run_in_threadpool(_persist_last_analysis, req.workspace_id, final_payload)
     complete_run(conv_id, status="completed", final=final_payload, artifact=artifact)

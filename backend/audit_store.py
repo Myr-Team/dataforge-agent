@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from azure.core import MatchConditions
 from azure.core.exceptions import HttpResponseError, ResourceExistsError, ResourceNotFoundError
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings
 from pydantic import BaseModel, ConfigDict
 
@@ -375,7 +375,7 @@ class _BlobAppendBackend:
             account = str(account_name or "").strip()
             if not account:
                 raise AuditPersistenceError("durable audit storage account is not configured")
-            credential: Any = DefaultAzureCredential()
+            credential: Any = ManagedIdentityCredential()
             service = BlobServiceClient(
                 account_url=f"https://{account}.blob.core.windows.net",
                 credential=credential,
@@ -523,11 +523,14 @@ class _BlobAppendBackend:
 
     @staticmethod
     def _list_container_names(container: Any, prefix: str, limit: int | None) -> list[str]:
-        listing = container.list_blobs(name_starts_with=prefix)
+        listing = container.list_blobs(
+            name_starts_with=prefix,
+            **({"results_per_page": limit} if limit is not None else {}),
+        )
         if limit is None:
             return [str(item.name) for item in listing]
         names: list[str] = []
-        for page in listing.by_page(results_per_page=limit):
+        for page in listing.by_page():
             names.extend(str(item.name) for item in page)
             break
         return names[:limit]
@@ -2255,6 +2258,8 @@ def _validate_container_contract(
 
 def _is_production() -> bool:
     environment = str(os.environ.get("DF_ENVIRONMENT") or "").strip().lower()
+    if environment in {"preview", "staging", "test"}:
+        return False
     return environment in {"prod", "production"} or bool(
         os.environ.get("CONTAINER_APP_NAME") or os.environ.get("CONTAINER_APP_REVISION") or os.environ.get("WEBSITE_INSTANCE_ID")
     )

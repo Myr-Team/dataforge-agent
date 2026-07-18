@@ -106,6 +106,22 @@ export function traceViewModel(status) {
   };
 }
 
+export function runTraceReferenceViewModel(reference, deliveryStatus = {}) {
+  const traceId = String(reference?.trace_id || "").trim().toLowerCase();
+  const agentId = String(reference?.agent_id || "").trim();
+  if (!/^[0-9a-f]{32}$/.test(traceId) || !/^[A-Za-z0-9_.:-]{1,128}$/.test(agentId)) {
+    return { available: false, traceId: "", agentId: "", delivery: traceViewModel({}), transactionUrl: "" };
+  }
+  const delivery = traceViewModel(deliveryStatus);
+  return {
+    available: true,
+    traceId,
+    agentId,
+    delivery,
+    transactionUrl: delivery.transactionUrl,
+  };
+}
+
 export function roiViewModel({ local = {}, provider = null } = {}) {
   const foundry = provider || local?.foundry_roi || {};
   const providerSnapshot = foundry?.provider_snapshot || foundry?.snapshot || {};

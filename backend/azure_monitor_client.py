@@ -105,7 +105,7 @@ class RemoteTraceProof(BaseModel):
     correlation_hash: str
     resource_id: str
     application_id: str
-    source_table: Literal["requests", "dependencies"]
+    source_table: Literal["requests", "dependencies", "traces"]
 
     @field_validator("trace_id")
     @classmethod
@@ -367,7 +367,7 @@ def _delivery_query(workspace_hash: str, run_hash: str, correlation_hash: str) -
             raise ValueError("trace hash must be sha256")
     return "\n".join(
         (
-            "union isfuzzy=true withsource=source_table requests, dependencies",
+            "union isfuzzy=true withsource=source_table requests, dependencies, traces",
             f'| where tostring(customDimensions["dataforge.workspace.hash"]) == "{workspace_hash}"',
             f'| where tostring(customDimensions["dataforge.run.hash"]) == "{run_hash}"',
             f'| where tostring(customDimensions["dataforge.correlation.hash"]) == "{correlation_hash}"',

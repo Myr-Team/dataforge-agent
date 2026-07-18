@@ -29,6 +29,7 @@ import {
   WorkspacePane,
 } from "./components.jsx";
 import { PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
+import { executionRequestFields, readyExecutionState } from "./executionIdentity.js";
 
 const DEFAULT_WORKSPACE = "demo-corpus";
 const ARTIFACT_JOB_TERMINAL = new Set(["partial", "completed", "failed", "cancelled"]);
@@ -150,17 +151,25 @@ export function App() {
   const [taskNotifications, setTaskNotifications] = useState([]);
   const [taskActions, setTaskActions] = useState({});
   // 恢复会话时，若消息没带 citations，从对应 run 的 artifact 证据池补上，保证 [n] 悬停索引可用
-  const withRunCitations = useCallback(async (convId, msgs) => {
+  const withRunContext = useCallback(async (convId, msgs) => {
     const needs = msgs.some((m) => m.role === "assistant" && (!m.citations || !m.citations.length) && /\[\d+\]/.test(String(m.text || "")));
-    if (!needs || !convId) return msgs;
+    if (!convId) return msgs;
     try {
       const run = await loadRun(convId);
       const pool = run?.final?.artifact?.citations || run?.artifact?.citations || [];
-      if (!pool.length) return msgs;
-      return msgs.map((m) => (m.role === "assistant" && (!m.citations || !m.citations.length) && /\[\d+\]/.test(String(m.text || "")) ? { ...m, citations: pool } : m));
+      const latestAssistantIndex = msgs.map((m) => m.role).lastIndexOf("assistant");
+      return msgs.map((m, index) => {
+        const next = needs && pool.length && m.role === "assistant" && (!m.citations || !m.citations.length) && /\[\d+\]/.test(String(m.text || ""))
+          ? { ...m, citations: pool }
+          : m;
+        return index === latestAssistantIndex && run?.trace
+          ? { ...next, trace: { ...run.trace, run_id: run.run_id || convId } }
+          : next;
+      });
     } catch { return msgs; }
   }, []);
   const streamRef = useRef("");
+  const traceReferenceRef = useRef(null);
   const revealTimerRef = useRef(null);
   const abortRef = useRef(null);
   const taskSnapshotRef = useRef(new Map());
@@ -280,6 +289,7 @@ export function App() {
 
   const resetRunState = () => {
     streamRef.current = "";
+    traceReferenceRef.current = null;
     clearReveal();
     setStreamText("");
     setTrace([]);
@@ -396,13 +406,14 @@ export function App() {
     loadLatestAnalysis(workspaceId)
       .then((data) => {
         if (cancelled || !data?.found || !hasAnalysisDimensions(data.artifact)) return;
-        setFinalArtifact(data.artifact);
+        setFinalArtifact({
+          ...data.artifact,
+          run_id: data.run_id || data.artifact?.run_id || null,
+          origin: data.origin || data.artifact?.origin || null,
+          conversation_id: data.conversation_id ?? data.artifact?.conversation_id ?? null,
+        });
         const nextTrace = Array.isArray(data.trace) && data.trace.length ? data.trace : (Array.isArray(restoredTrace) ? restoredTrace : []);
         setTrace(nextTrace);
-        if (data.conversation_id) {
-          setActiveConversationId(data.conversation_id);
-          try { window.localStorage.setItem(`df-conv:${workspaceId}`, data.conversation_id); } catch { /* ignore */ }
-        }
         try { window.localStorage.setItem(`df-analysis:${workspaceId}`, JSON.stringify(data.artifact)); } catch { /* ignore */ }
         if (nextTrace.length) {
           try { window.localStorage.setItem(`df-trace:${workspaceId}`, JSON.stringify(nextTrace.slice(-44))); } catch { /* ignore */ }
@@ -431,13 +442,11 @@ export function App() {
       },
       audit: la.audit || {},
       citations: la.citations || [],
+      run_id: la.run_id || null,
+      origin: la.origin || null,
       conversation_id: la.conversation_id,
       recommendation: la.recommendation,
     });
-    if (la.conversation_id) {
-      setActiveConversationId(la.conversation_id);
-      try { window.localStorage.setItem(`df-conv:${workspaceId}`, la.conversation_id); } catch { /* ignore */ }
-    }
   }, [dashboard, finalArtifact, running, workspaceId]);
 
   // 持久化 Agent Flow 轨迹（有真实运行事件时），刷新后流水线状态保持
@@ -458,7 +467,7 @@ export function App() {
     loadConversation(convId).then(async (data) => {
       if (cancelled || !data) return;
       let msgs = (data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] }));
-      msgs = await withRunCitations(convId, msgs);
+      msgs = await withRunContext(convId, msgs);
       if (!cancelled && msgs.length) { setMessages(msgs); setActiveConversationId(convId); }
     }).catch(() => { /* 会话已删除或不可达，忽略 */ });
     return () => { cancelled = true; };
@@ -623,15 +632,21 @@ export function App() {
     // 自动分析(看板)= 完整报告 + 五维评分；会话提问 = 简洁问答(chat)，不重跑五维、答案更短
     const isAuto = !!opts.stayOnDashboard;
     const mode = opts.artifactMode || (isAuto ? "report" : "chat");
+    const executionFields = executionRequestFields({
+      stayOnDashboard: isAuto,
+      executionOrigin: opts.executionOrigin,
+      activeConversationId,
+      newConversation: opts.newConversation,
+    });
     const payload = {
       workspace_id: workspaceId,
       message,
-      conversation_id: opts.newConversation ? null : activeConversationId,
+      ...executionFields,
       artifact_mode: mode,
       ui_context: {
         workspace_name: dashboard?.workspace?.name || workspaceId,
         requested_output: mode,
-        mode: isAuto ? "auto_analysis" : "conversation",
+        mode: executionFields.origin === "conversation" ? "conversation" : "auto_analysis",
         ...(opts.uiContext || {}),
       },
     };
@@ -655,9 +670,15 @@ export function App() {
           refreshTasks(workspaceId).catch(() => {});
           return;
         }
-        if (event.event === "ready" && event.data?.conversation_id) {
-          setActiveConversationId(event.data.conversation_id);
-          try { window.localStorage.setItem(`df-conv:${workspaceId}`, event.data.conversation_id); } catch { /* ignore */ }
+        if (event.event === "ready") {
+          const execution = readyExecutionState(event.data, activeConversationId);
+          traceReferenceRef.current = event.data?.trace
+            ? { ...event.data.trace, run_id: execution.runId }
+            : null;
+          if (execution.persistConversation) {
+            setActiveConversationId(execution.activeConversationId);
+            try { window.localStorage.setItem(`df-conv:${workspaceId}`, execution.activeConversationId); } catch { /* ignore */ }
+          }
         }
         if (event.event === "answer_delta" || event.event === "delta") {
           const delta = event.data?.delta || event.data?.text || "";
@@ -679,12 +700,19 @@ export function App() {
           const c = cd.clarify || cd; // 兼容 {clarify:{...}} 与扁平结构
           const question = c.question || cd.question || cd.text || "我需要多了解一点你的目标，才能给出更有据的分析。";
           const options = Array.isArray(c.options) ? c.options.filter((o) => o && (o.label || o.id || typeof o === "string")) : [];
-          setMessages((items) => [...items, { role: "assistant", text: "", time: new Date().toISOString(), clarify: { question, options } }]);
+          if (!isAuto) {
+            setMessages((items) => [...items, { role: "assistant", text: "", time: new Date().toISOString(), clarify: { question, options }, trace: traceReferenceRef.current }]);
+          }
           setStreamText("");
         }
         if (event.event === "final") {
           terminalEvent = true;
-          const artifact = event.data?.artifact || {};
+          const artifact = {
+            ...(event.data?.artifact || {}),
+            run_id: event.data?.run_id || event.data?.artifact?.run_id || null,
+            origin: event.data?.origin || event.data?.artifact?.origin || null,
+            conversation_id: event.data?.conversation_id ?? event.data?.artifact?.conversation_id ?? null,
+          };
           const text = event.data?.text || artifact.answer?.text || streamRef.current || "已完成分析。";
           // finalArtifact 只在"真正的可行性分析"时更新（含 verdict/五维），聊天/问答不覆盖它——
           // 这样换工作区/聊天后，看板结论与「生成产物」仍基于上次分析，不会拿"你好"这种回复去生成。
@@ -706,6 +734,7 @@ export function App() {
                 time: new Date().toISOString(),
                 citations: artifact.citations || artifact.answer?.citations || [],
                 produceOffer,
+                trace: traceReferenceRef.current || artifact.trace || null,
               },
             ]);
             setStreamText("");
@@ -713,8 +742,13 @@ export function App() {
           };
           // 已经真流式逐块显示过 → 直接用清洗后的 final 文本落定，不再重复打字机动画；
           // 没有流式（少见的兜底）才用客户端打字机揭示。
-          if (deltaCount >= 2) commitFinal();
-          else revealFinalText(text, commitFinal);
+          if (!isAuto) {
+            if (deltaCount >= 2) commitFinal();
+            else revealFinalText(text, commitFinal);
+          } else {
+            setStreamText("");
+            streamRef.current = "";
+          }
           if (!isAuto && activeViewRef.current !== "conversations") {
             setNotice({
               type: "done",
@@ -868,7 +902,7 @@ export function App() {
       setActiveConversationId(conversationId);
       try { window.localStorage.setItem(`df-conv:${workspaceId}`, conversationId); } catch { /* ignore */ }
       let msgs = (data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] }));
-      msgs = await withRunCitations(conversationId, msgs);
+      msgs = await withRunContext(conversationId, msgs);
       setMessages(msgs);
       resetRunState();
       setActiveView("conversations");
@@ -893,7 +927,9 @@ export function App() {
         {
           workspace_id: workspaceId,
           message: "基于当前工作区资料做一次可行性分析，用于生成产物。",
-          conversation_id: activeConversationId,
+          conversation_id: null,
+          origin: "workspace_auto_analysis",
+          persist_messages: false,
           artifact_mode: "report",
           ui_context: { workspace_name: dashboard?.workspace?.name || workspaceId, requested_output: "report", mode: "auto_analysis" },
         },
@@ -902,8 +938,14 @@ export function App() {
             refreshTasks(workspaceId).catch(() => {});
             return;
           }
-          if (event.event === "ready" && event.data?.conversation_id) setActiveConversationId(event.data.conversation_id);
-          if (event.event === "final") captured = event.data?.artifact || null;
+          if (event.event === "final") {
+            captured = {
+              ...(event.data?.artifact || {}),
+              run_id: event.data?.run_id || event.data?.artifact?.run_id || null,
+              origin: event.data?.origin || event.data?.artifact?.origin || null,
+              conversation_id: event.data?.conversation_id ?? event.data?.artifact?.conversation_id ?? null,
+            };
+          }
           if (event.event === "error") streamErrorMessage = event.data?.message || "分析失败。";
         },
       )
@@ -948,7 +990,7 @@ export function App() {
       setNotice({ type: "loading", message: `正在生成${kinds.map((k) => KIND_LABEL[k]).join(" / ")}…` });
       const job = await createArtifactJob({
         workspace_id: workspaceId,
-        conversation_id: activeConversationId || base.conversation_id,
+        source_run_id: base.run_id || base.source_run_id || activeConversationId || base.conversation_id,
         feasibility: base.feasibility || {},
         corpus: base.corpus || {},
         market: base.market || {},

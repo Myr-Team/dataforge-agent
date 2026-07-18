@@ -121,6 +121,39 @@ def test_blob_store_requires_deployment_hmac_key(monkeypatch) -> None:
         audit_store.record_audit_event(_actor(), "file.create", _resource(), {})
 
 
+def test_preview_environment_overrides_container_app_production_detection(monkeypatch) -> None:
+    monkeypatch.setenv("CONTAINER_APP_NAME", "ca-dataforge-backend")
+    monkeypatch.setenv("DF_ENVIRONMENT", "preview")
+
+    assert audit_store._is_production() is False
+
+    monkeypatch.setenv("DF_ENVIRONMENT", "production")
+
+    assert audit_store._is_production() is True
+
+
+def test_production_audit_store_uses_system_managed_identity(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    managed_identity = object()
+    default_credential = object()
+
+    class _Service:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def get_container_client(self, name: str) -> str:
+            return name
+
+    monkeypatch.setenv("DF_ENVIRONMENT", "production")
+    monkeypatch.setattr(audit_store, "ManagedIdentityCredential", lambda: managed_identity, raising=False)
+    monkeypatch.setattr(audit_store, "DefaultAzureCredential", lambda: default_credential)
+    monkeypatch.setattr(audit_store, "BlobServiceClient", _Service)
+
+    audit_store._BlobAppendBackend(account_name="dataforgeprod", managed_identity_only=True)
+
+    assert captured["credential"] is managed_identity
+
+
 def test_audit_event_cannot_be_updated_or_deleted() -> None:
     audit_store.record_audit_event(_actor(), "file.edit", _resource(), {})
 
@@ -951,14 +984,14 @@ def test_r3_blob_latest_segment_lookup_consumes_one_bounded_page() -> None:
         def __iter__(self):
             raise AssertionError("bounded mutation lookup must not enumerate full segment history")
 
-        def by_page(self, *, results_per_page: int):
-            calls.append(results_per_page)
+        def by_page(self):
             yield [Item("events/00000000/99999999.jsonl")]
             raise AssertionError("bounded mutation lookup consumed more than one page")
 
     class Container:
-        def list_blobs(self, *, name_starts_with: str):
+        def list_blobs(self, *, name_starts_with: str, results_per_page: int):
             assert name_starts_with == "events/"
+            calls.append(results_per_page)
             return Listing()
 
     backend = audit_store._BlobAppendBackend.__new__(audit_store._BlobAppendBackend)

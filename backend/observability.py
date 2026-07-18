@@ -26,7 +26,7 @@ def _tracing_status() -> dict[str, Any]:
     conn = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
     enabled = bool(conn)
     try:
-        import azure.monitor.opentelemetry  # noqa: F401
+        import microsoft.opentelemetry  # noqa: F401
 
         sdk = True
     except Exception:
@@ -34,7 +34,7 @@ def _tracing_status() -> dict[str, Any]:
     return {
         "app_insights": enabled,
         "otel_sdk": sdk,
-        "exporter": "azure-monitor-opentelemetry" if enabled else None,
+        "exporter": "microsoft-opentelemetry" if enabled and sdk else None,
         "delivery_confirmation": "remote_query_required",
         "service_name": os.environ.get("OTEL_SERVICE_NAME", "dataforge-backend"),
         "logger_name": "dataforge.trace",

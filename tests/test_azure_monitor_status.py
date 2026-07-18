@@ -237,12 +237,38 @@ def test_query_is_bounded_and_matches_only_hashed_workspace_run_and_correlation(
     assert workspace_hash in query
     assert run_hash in query
     assert correlation_hash in query
-    assert query.startswith("union isfuzzy=true withsource=source_table requests, dependencies")
-    assert "traces" not in query
+    assert query.startswith("union isfuzzy=true withsource=source_table requests, dependencies, traces")
+    assert "traces" in query
     assert "customDimensions" in query
     assert "take 1" in query
     assert args[2]["timespan"].total_seconds() <= 15 * 60
     assert args[2]["server_timeout"] <= 10
+
+
+def test_query_accepts_foundry_root_span_from_traces_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    _monitor_env(monkeypatch)
+    workspace_id = "workspace-private"
+    run_id = "run-private"
+    correlation_id = "e" * 32
+    client = _LogsClient(
+        _QueryResult(
+            [
+                "2026-07-13T00:00:00Z",
+                correlation_id,
+                _APPLICATION_ID,
+                _RESOURCE_ID,
+                "traces",
+                monitor.hash_trace_identifier(run_id),
+                monitor.hash_trace_identifier(correlation_id),
+            ]
+        )
+    )
+
+    remote = monitor.query_trace_delivery(workspace_id, run_id, correlation_id, client_factory=lambda: client)
+
+    assert remote is not None
+    assert remote.source_table == "traces"
+    assert "requests, dependencies, traces" in client.calls[0][1]
 
 
 def test_partial_logs_query_is_unavailable_and_never_uses_partial_data(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -351,11 +377,13 @@ def test_transaction_link_requires_verified_resource_application_and_correlation
 
 def test_trace_status_endpoint_authorizes_before_run_lookup_and_verifies_run_ownership(monkeypatch: pytest.MonkeyPatch) -> None:
     events: list[str] = []
+    monkeypatch.setattr(control_plane, "is_trusted_tenant_identity", lambda _actor: True)
     monkeypatch.setattr(
         control_plane,
-        "require_sensitive_workspace_permission",
-        lambda _workspace_id, _actor, action, *, role_resolver: events.append(action) or "viewer",
+        "workspace_role",
+        lambda _workspace_id, _actor: "viewer",
     )
+    monkeypatch.setattr(control_plane, "authorize", lambda _role, action: events.append(action) or True)
     monkeypatch.setattr(control_plane, "get_run", lambda _run_id: events.append("get_run") or {"workspace_id": "ws-a"})
     monkeypatch.setattr(
         control_plane,
@@ -373,7 +401,7 @@ def test_trace_status_endpoint_authorizes_before_run_lookup_and_verifies_run_own
     payload = asyncio.run(control_plane.workspace_trace_status("ws-a", None, run_id="run-a", correlation_id="a" * 32))
 
     assert payload["state"] == "not_configured"
-    assert events == ["workspace.read", "get_run"]
+    assert events == ["run.read", "get_run"]
 
     monkeypatch.setattr(control_plane, "get_run", lambda _run_id: {"workspace_id": "ws-other"})
     with pytest.raises(HTTPException) as error:
@@ -382,8 +410,8 @@ def test_trace_status_endpoint_authorizes_before_run_lookup_and_verifies_run_own
 
     monkeypatch.setattr(
         control_plane,
-        "require_sensitive_workspace_permission",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("workspace.read")),
+        "authorize",
+        lambda *_args, **_kwargs: False,
     )
     monkeypatch.setattr(control_plane, "get_run", lambda _run_id: pytest.fail("run lookup must not run before authorization"))
     with pytest.raises(HTTPException) as forbidden:

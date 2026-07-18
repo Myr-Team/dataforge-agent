@@ -384,6 +384,37 @@ def test_chat_stream_creates_a_durable_analysis_task_and_exposes_its_id(
     assert task["result"] == {"run_id": "run-chat-1", "version_id": "version-2"}
 
 
+def test_workspace_auto_analysis_stream_uses_run_id_without_message_audit(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_tasks(tmp_path, monkeypatch)
+    audit_actions: list[str] = []
+
+    async def stream(request):
+        assert request.origin == "workspace_auto_analysis"
+        assert request.conversation_id is None
+        yield 'event: ready\ndata: {"run_id":"run-auto-bridge","conversation_id":null,"origin":"workspace_auto_analysis"}\n\n'
+        yield 'event: final\ndata: {"run_id":"run-auto-bridge","conversation_id":null,"artifact":{"run_id":"run-auto-bridge","version_id":"version-3"}}\n\n'
+
+    monkeypatch.setattr(app_module, "_require_workspace_action", lambda *_args: None)
+    monkeypatch.setattr(app_module, "_audit_required", lambda _request, _workspace, action, *_args: audit_actions.append(action))
+    monkeypatch.setattr(app_module, "orchestrate_chat", stream)
+
+    response = TestClient(app).post(
+        "/api/chat",
+        json={
+            "workspace_id": "ws-bridge",
+            "message": "Analyze the workspace",
+            "origin": "workspace_auto_analysis",
+            "persist_messages": False,
+            "conversation_id": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert audit_actions == ["analysis.run"]
+    task = task_store.get_task(response.headers["x-dataforge-task-id"])
+    assert task["result"] == {"run_id": "run-auto-bridge", "version_id": "version-3"}
+
+
 def test_cancelled_chat_stream_leaves_the_durable_task_cancelled(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_tasks(tmp_path, monkeypatch)
     task = task_store.create_task({"workspace_id": "ws-bridge", "task_type": "analysis.run", "action": "analysis.run"}, actor={})

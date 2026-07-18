@@ -29,6 +29,15 @@ _DELIVERY_LOCK = threading.RLock()
 _DELIVERY_RECORDS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
+def _foundry_runtime_agent_id() -> str:
+    """Return the external Foundry registration ID without trusting arbitrary config."""
+
+    configured = str(os.environ.get("FOUNDRY_AGENT_ID") or "").strip()
+    if configured and len(configured) <= 128 and _SAFE_TELEMETRY_NAME.fullmatch(configured):
+        return configured
+    return "dataforge"
+
+
 def _delivery_key(workspace_id: str, run_id: str | None) -> tuple[str, str]:
     return (
         hashlib.sha256(str(workspace_id or "").strip().encode("utf-8")).hexdigest(),
@@ -47,6 +56,16 @@ def _span_correlation_id(span: Any) -> str | None:
         return value if _TRACE_CORRELATION.fullmatch(value) else None
     except Exception:
         return None
+
+
+def trace_id_from_span(span: Any) -> str | None:
+    """Return the current trace ID only when it is safe to expose as a reference."""
+    return _span_correlation_id(span)
+
+
+def foundry_runtime_agent_id() -> str:
+    """Return the validated Foundry external-agent ID used for this process."""
+    return _foundry_runtime_agent_id()
 
 
 def record_local_span_emit(workspace_id: str, run_id: str | None, correlation_id: str | None = None) -> None:
@@ -229,7 +248,7 @@ def agent_trace(
 
     with tracer.start_as_current_span("create_agent DataForge") as span:
         span.set_attribute("gen_ai.operation.name", "create_agent")
-        span.set_attribute("gen_ai.agent.id", "dataforge")
+        span.set_attribute("gen_ai.agent.id", _foundry_runtime_agent_id())
         span.set_attribute("gen_ai.agent.name", "DataForge")
         span.set_attribute("dataforge.workspace.id", workspace_id)
         span.set_attribute("dataforge.workspace.hash", _trace_identifier_hash(workspace_id))
@@ -288,8 +307,9 @@ def start_maf_agent_span(
 
     span = tracer.start_span(f"invoke_agent {agent_id}")
     span.set_attribute("gen_ai.operation.name", "invoke_agent")
-    span.set_attribute("gen_ai.agent.id", agent_id)
+    span.set_attribute("gen_ai.agent.id", _foundry_runtime_agent_id())
     span.set_attribute("gen_ai.agent.name", agent_name)
+    span.set_attribute("dataforge.maf.agent.id", agent_id)
     span.set_attribute("dataforge.maf.collaboration_mode", collaboration_mode)
     span.set_attribute("dataforge.workspace.id", workspace_id)
     span.set_attribute("dataforge.workspace.hash", _trace_identifier_hash(workspace_id))
@@ -404,8 +424,9 @@ def maf_agent_trace(
 
     with tracer.start_as_current_span(f"invoke_agent {agent_id}") as span:
         span.set_attribute("gen_ai.operation.name", "invoke_agent")
-        span.set_attribute("gen_ai.agent.id", agent_id)
+        span.set_attribute("gen_ai.agent.id", _foundry_runtime_agent_id())
         span.set_attribute("gen_ai.agent.name", agent_name)
+        span.set_attribute("dataforge.maf.agent.id", agent_id)
         span.set_attribute("dataforge.maf.collaboration_mode", collaboration_mode)
         span.set_attribute("dataforge.workspace.id", workspace_id)
         span.set_attribute("dataforge.workspace.hash", _trace_identifier_hash(workspace_id))
@@ -487,12 +508,26 @@ def configure_monitoring() -> None:
     if not connection_string:
         return
     try:
-        from azure.monitor.opentelemetry import configure_azure_monitor
+        from microsoft.opentelemetry import use_microsoft_opentelemetry
 
-        configure_azure_monitor(connection_string=connection_string, logger_name="dataforge.trace")
-        LOGGER.info("dataforge_monitoring_configured")
+        os.environ.setdefault("AZURE_EXPERIMENTAL_ENABLE_GENAI_TRACING", "true")
+        os.environ.setdefault("OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental")
+        use_microsoft_opentelemetry(
+            enable_azure_monitor=True,
+            azure_monitor_connection_string=connection_string,
+            sampling_ratio=1.0,
+            instrumentation_options={
+                "fastapi": {"enabled": False},
+                "agent-framework": {
+                    "enabled": True,
+                    "agent_id": _foundry_runtime_agent_id(),
+                    "agent_name": "DataForge",
+                },
+            },
+        )
+        LOGGER.info("dataforge_foundry_monitoring_configured")
     except Exception as exc:
-        LOGGER.warning("dataforge_monitoring_fallback %s", exc)
+        LOGGER.warning("dataforge_monitoring_unavailable %s", type(exc).__name__)
 
 
 def trace_event(event: str, data: Any, conversation_id: str | None = None) -> None:

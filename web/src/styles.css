@@ -3604,6 +3604,37 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .msg-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .msg-actions .msg-copy { margin-top: 0; }
 
+/* Per-run trace references are compact, copyable, and only link out after server verification. */
+.trace-reference {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid #d9e4f1;
+  border-radius: 6px;
+  background: #f8fbff;
+  color: #344054;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.trace-reference.compact { margin: 0 0 10px; }
+.trace-reference-main { display: flex; min-width: 0; align-items: baseline; gap: 7px; }
+.trace-reference-title { color: var(--ink); font-weight: 750; }
+.trace-reference-agent { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.trace-reference-id { display: flex; grid-column: 1 / -1; min-width: 0; align-items: center; gap: 7px; }
+.trace-reference-id code { min-width: 0; overflow: hidden; color: #175cd3; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.trace-reference-copy { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; padding: 2px 5px; border: 1px solid #cdd9e8; border-radius: 4px; background: #fff; color: #344054; font: inherit; cursor: pointer; }
+.trace-reference-copy:hover { border-color: var(--blue); color: var(--blue); }
+.trace-reference-copy:focus-visible { outline: 3px solid var(--blue-soft); outline-offset: 2px; }
+.trace-reference-status { display: flex; grid-column: 1 / -1; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); }
+.trace-reference-status.ok { color: #067647; }
+.trace-reference-status.warn { color: #b54708; }
+.trace-reference-status.error { color: #b42318; }
+.trace-reference-status a { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; color: var(--blue); font-weight: 700; text-decoration: none; }
+.trace-reference-status a:hover { text-decoration: underline; }
+.trace-reference p { grid-column: 1 / -1; margin: 0; color: var(--muted); }
+
 /* ---- markdown 表格 / 运行记录筛选 ---- */
 .rich-table-wrap { overflow-x: auto; margin: 10px 0; }
 .rich-table { width: 100%; border-collapse: collapse; font-size: 13px; }

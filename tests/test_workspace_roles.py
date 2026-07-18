@@ -212,8 +212,6 @@ def test_sensitive_local_development_bypass_requires_two_explicit_environment_fl
         ("GET", "/api/workspaces/ws-sensitive/outcomes"),
         ("POST", "/api/workspaces/ws-sensitive/outcomes"),
         ("POST", "/api/workspaces/ws-sensitive/outcomes/outcome-1/verify"),
-        ("GET", "/api/workspaces/ws-sensitive/experiments"),
-        ("GET", "/api/workspaces/ws-sensitive/experiments/compare?from=version:one&to=version:two"),
     ],
 )
 def test_sensitive_routes_deny_unauthenticated_and_nonmember_when_rbac_env_is_unset(
@@ -266,6 +264,23 @@ def test_sensitive_routes_allow_persisted_owner_and_admin_when_rbac_env_is_unset
 
     assert owner_response.status_code == 200
     assert admin_response.status_code == 200
+
+
+def test_experiment_ledger_uses_the_normal_run_read_policy_when_rbac_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    control_module = importlib.import_module("backend.control_plane")
+    monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setattr(
+        control_module,
+        "workspace_experiment_ledger",
+        lambda workspace_id: {"workspace_id": workspace_id, "versions": [], "count": 0},
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/workspaces/ws-experiment/experiments")
+
+    assert response.status_code == 200
+    assert response.json()["workspace_id"] == "ws-experiment"
 
 
 def test_enabled_permission_gate_rejects_viewer_mutation(monkeypatch: pytest.MonkeyPatch) -> None:

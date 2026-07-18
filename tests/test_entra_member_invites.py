@@ -382,6 +382,16 @@ def test_durable_event_append_retries_after_stale_cas_and_preserves_remote_event
     }
 
 
+def test_durable_absent_journal_is_empty_for_workspace_without_invitations(monkeypatch):
+    monkeypatch.setattr(invitation_store, "blob_configured", lambda: True)
+    monkeypatch.setattr(invitation_store, "download_blob_json", lambda _name: None)
+
+    actor = {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"}
+
+    assert invitation_store.current_invited_member_role({}, "ws-without-invites", actor) is None
+    assert invitation_store.accepted_invitation_for_actor({}, actor, workspace_id="ws-without-invites") is None
+
+
 def test_reinvite_revokes_every_effective_prior_invitation_before_creating_new_one():
     meta = {}
     first = invitation_store.create_pending_invitation(

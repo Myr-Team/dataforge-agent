@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import types
+
 from opentelemetry.trace import StatusCode
 
 import backend.tracing as tracing
@@ -113,7 +116,36 @@ def test_model_response_telemetry_keeps_only_bounded_safe_metadata() -> None:
         assert secret not in combined
 
 
-def test_agent_trace_emits_foundry_agent_identity_without_raw_actor_email() -> None:
+def test_configure_monitoring_uses_foundry_otel_distro_without_sensitive_capture(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    microsoft_module = types.ModuleType("microsoft")
+    otel_module = types.ModuleType("microsoft.opentelemetry")
+
+    def _use_microsoft_opentelemetry(**kwargs: object) -> None:
+        calls.append(dict(kwargs))
+
+    otel_module.use_microsoft_opentelemetry = _use_microsoft_opentelemetry  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "microsoft", microsoft_module)
+    monkeypatch.setitem(sys.modules, "microsoft.opentelemetry", otel_module)
+    monkeypatch.setenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "InstrumentationKey=not-a-secret")
+    monkeypatch.setenv("FOUNDRY_AGENT_ID", "dataforge-runtime-v1")
+
+    tracing.configure_monitoring()
+
+    assert len(calls) == 1
+    options = calls[0]["instrumentation_options"]
+    assert isinstance(options, dict)
+    assert options["fastapi"] == {"enabled": False}
+    assert options["agent-framework"] == {
+        "enabled": True,
+        "agent_id": "dataforge-runtime-v1",
+        "agent_name": "DataForge",
+    }
+    assert "enable_sensitive_data" not in calls[0]
+
+
+def test_agent_trace_emits_configured_external_foundry_identity_without_raw_actor_email(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_AGENT_ID", "dataforge-runtime-v1")
     tracer = _FakeTracer()
 
     with agent_trace(
@@ -130,7 +162,7 @@ def test_agent_trace_emits_foundry_agent_identity_without_raw_actor_email() -> N
 
     attributes = tracer.span.attributes
     assert attributes["gen_ai.operation.name"] == "create_agent"
-    assert attributes["gen_ai.agent.id"] == "dataforge"
+    assert attributes["gen_ai.agent.id"] == "dataforge-runtime-v1"
     assert attributes["gen_ai.agent.name"] == "DataForge"
     assert attributes["dataforge.workspace.id"] == "workspace-1"
     assert attributes["gen_ai.conversation.id"] == "conversation-1"
@@ -141,7 +173,8 @@ def test_agent_trace_emits_foundry_agent_identity_without_raw_actor_email() -> N
     assert tracer.span.statuses[-1].status_code is StatusCode.OK
 
 
-def test_maf_agent_trace_has_redacted_collaboration_attributes() -> None:
+def test_maf_agent_trace_uses_external_identity_and_preserves_internal_agent_attribution(monkeypatch) -> None:
+    monkeypatch.setenv("FOUNDRY_AGENT_ID", "dataforge-runtime-v1")
     tracer = _FakeTracer()
     raw_message = "private customer prompt"
     actor_email = "person@example.com"
@@ -171,8 +204,9 @@ def test_maf_agent_trace_has_redacted_collaboration_attributes() -> None:
         trace_event("maf_agent_completed", {"agent": "df-corpus-analyst", "message": raw_message})
 
     attributes = tracer.span.attributes
-    assert attributes["gen_ai.agent.id"] == "df-corpus-analyst"
+    assert attributes["gen_ai.agent.id"] == "dataforge-runtime-v1"
     assert attributes["gen_ai.agent.name"] == "Workspace evidence analyst"
+    assert attributes["dataforge.maf.agent.id"] == "df-corpus-analyst"
     assert attributes["dataforge.maf.collaboration_mode"] == "concurrent_research"
     assert attributes["dataforge.maf.branch_id"] == "workspace"
     assert attributes["dataforge.maf.handoff.source"] == "df-coordinator"

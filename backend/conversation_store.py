@@ -34,7 +34,7 @@ def get_conversation(conversation_id: str) -> dict[str, Any]:
     return data
 
 
-def list_conversations(workspace_id: str | None = None) -> list[dict[str, Any]]:
+def list_conversations(workspace_id: str | None = None, *, include_system: bool = False) -> list[dict[str, Any]]:
     by_id: dict[str, dict[str, Any]] = {}
     for item in _local_registry_items():
         if item.get("conversation_id"):
@@ -46,6 +46,8 @@ def list_conversations(workspace_id: str | None = None) -> list[dict[str, Any]]:
     items = list(by_id.values())
     if workspace_id:
         items = [item for item in items if item.get("workspace_id") == workspace_id]
+    if not include_system:
+        items = [item for item in items if item.get("visibility") != "system_activity"]
     return sorted(items, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
 
@@ -67,6 +69,8 @@ def append_message(
         conversation = loader(conversation_id) or {
             "conversation_id": conversation_id,
             "workspace_id": workspace_id,
+            "origin": "conversation",
+            "visibility": "default",
             "created_at": now,
             "updated_at": now,
             "messages": [],
@@ -94,6 +98,26 @@ def append_message(
         conversation["messages"] = messages
         conversation["title"] = conversation.get("title") or _title_from_messages(messages)
         conversation["turn_count"] = sum(1 for item in messages if item.get("role") == "user")
+        return _persist_conversation(conversation)
+
+
+def link_run(conversation_id: str, *, workspace_id: str, run_id: str) -> dict[str, Any]:
+    """Link a human conversation to an execution run without adding a message."""
+    now = _utc_now()
+    with _LOCK:
+        conversation = _load_conversation(conversation_id)
+        if not conversation:
+            raise FileNotFoundError(conversation_id)
+        if conversation.get("workspace_id") and conversation.get("workspace_id") != workspace_id:
+            raise ValueError("conversation does not belong to the requested workspace")
+        linked_run_ids = [str(item) for item in (conversation.get("linked_run_ids") or []) if str(item)]
+        if run_id not in linked_run_ids:
+            linked_run_ids.append(run_id)
+        conversation["workspace_id"] = conversation.get("workspace_id") or workspace_id
+        conversation["origin"] = conversation.get("origin") or "conversation"
+        conversation["visibility"] = conversation.get("visibility") or "default"
+        conversation["linked_run_ids"] = linked_run_ids[-50:]
+        conversation["updated_at"] = now
         return _persist_conversation(conversation)
 
 
@@ -198,6 +222,9 @@ def _summary(conversation: dict[str, Any]) -> dict[str, Any]:
     return {
         "conversation_id": conversation.get("conversation_id"),
         "workspace_id": conversation.get("workspace_id"),
+        "origin": conversation.get("origin") or "conversation",
+        "visibility": conversation.get("visibility") or "default",
+        "linked_run_ids": [str(item) for item in (conversation.get("linked_run_ids") or []) if str(item)],
         "title": conversation.get("title") or _title_from_messages(messages),
         "updated_at": conversation.get("updated_at"),
         "turn_count": sum(1 for item in messages if item.get("role") == "user"),

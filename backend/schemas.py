@@ -362,6 +362,11 @@ class RunStep(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class RunTraceReference(BaseModel):
+    trace_id: str
+    agent_id: str
+
+
 class RunSummary(BaseModel):
     run_id: str
     time: str | None = None
@@ -384,6 +389,7 @@ class RunSummary(BaseModel):
     maf: dict[str, Any] | None = None
     tokens: dict[str, int] | None = None
     actor: dict[str, Any] = Field(default_factory=dict)
+    trace: RunTraceReference | None = None
 
 
 class RunsResponse(BaseModel):
@@ -393,6 +399,8 @@ class RunsResponse(BaseModel):
 class ConversationSummary(BaseModel):
     conversation_id: str
     workspace_id: str | None = None
+    origin: str = "conversation"
+    linked_run_ids: list[str] = Field(default_factory=list)
     title: str
     updated_at: str | None = None
     turn_count: int = 0
@@ -425,6 +433,8 @@ class ConversationMessage(BaseModel):
 class ConversationDetailResponse(BaseModel):
     conversation_id: str
     workspace_id: str | None = None
+    origin: str = "conversation"
+    linked_run_ids: list[str] = Field(default_factory=list)
     messages: list[ConversationMessage] = Field(default_factory=list)
     title: str | None = None
     updated_at: str | None = None
@@ -458,6 +468,7 @@ class RunDetailResponse(BaseModel):
     final: dict[str, Any] | None = None
     artifact: dict[str, Any] | None = None
     persistence: dict[str, Any] | None = None
+    trace: RunTraceReference | None = None
 
 
 class RenderPdfRequest(BaseModel):
@@ -481,6 +492,7 @@ class NarrateSummaryRequest(BaseModel):
 
 class ProduceRequest(BaseModel):
     workspace_id: str = "demo-corpus"
+    source_run_id: str | None = None
     conversation_id: str | None = None
     feasibility: dict[str, Any]
     corpus: dict[str, Any] = Field(default_factory=dict)
@@ -513,6 +525,9 @@ class ChatRequest(BaseModel):
     workspace_id: str = "demo-corpus"
     message: str
     conversation_id: str | None = None
+    run_id: str | None = None
+    origin: Literal["conversation", "workspace_auto_analysis", "data_send_analysis"] = "conversation"
+    persist_messages: bool | None = None
     playbook: str | None = None
     artifact_mode: str | None = None
     ui_context: dict[str, Any] = Field(default_factory=dict)

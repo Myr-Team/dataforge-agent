@@ -23,6 +23,16 @@ def test_chat_transport_error_after_terminal_event_does_not_replace_the_result()
     assert "if (terminalEvent) {\n        refreshDashboard(workspaceId);\n        return;\n      }" in app_source
 
 
+def test_conversation_trace_reference_derives_workspace_scope_from_dashboard() -> None:
+    source = COMPONENTS.read_text(encoding="utf-8")
+    start = source.index("function ConversationStudio(")
+    end = source.index("const OUTPUT_PRODUCTS", start)
+    conversation = source[start:end]
+
+    assert 'const workspaceId = dashboard?.workspace_id || workspace?.workspace_id || "";' in conversation
+    assert "<AnswerPanel workspaceId={workspaceId}" in conversation
+
+
 def test_verdict_hero_explains_dimension_only_audit_corrections() -> None:
     source = COMPONENTS.read_text(encoding="utf-8")
 
@@ -105,6 +115,7 @@ def test_production_api_uses_authenticated_same_origin_proxy() -> None:
 
     assert 'import.meta.env?.VITE_API_BASE ?? ""' in api_source
     assert 'ARG VITE_API_BASE=""' in docker_source
-    assert "proxy_pass https://ca-dataforge-backend" in nginx_source
+    assert "ENV DF_BACKEND_UPSTREAM=https://ca-dataforge-backend" in docker_source
+    assert "proxy_pass ${DF_BACKEND_UPSTREAM};" in nginx_source
     assert "X-DataForge-Proxy-Secret" in nginx_source
     assert "X-MS-CLIENT-PRINCIPAL" in nginx_source

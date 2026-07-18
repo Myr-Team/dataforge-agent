@@ -6,7 +6,7 @@ from typing import Any
 
 from azure.core import MatchConditions
 from azure.core.exceptions import ResourceExistsError, ResourceModifiedError, ResourceNotFoundError
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings
 
 
@@ -581,9 +581,10 @@ def _container_client() -> Any:
                 "Missing STORAGE_ACCOUNT_NAME, DF_STORAGE_ACCOUNT, or AZURE_STORAGE_CONNECTION_STRING for Blob persistence"
             )
         storage_key = os.environ.get("AZURE_STORAGE_KEY") or os.environ.get("DF_STORAGE_KEY")
+        credential = storage_key or (ManagedIdentityCredential() if _is_production() else DefaultAzureCredential())
         service = BlobServiceClient(
             account_url=f"https://{account}.blob.core.windows.net",
-            credential=storage_key or DefaultAzureCredential(),
+            credential=credential,
         )
     return service.get_container_client(_container_name())
 
@@ -608,6 +609,17 @@ def _blob_url(blob_name: str) -> str:
 
 def _storage_account_name() -> str:
     return str(os.environ.get("STORAGE_ACCOUNT_NAME") or os.environ.get("DF_STORAGE_ACCOUNT") or "").strip()
+
+
+def _is_production() -> bool:
+    environment = str(os.environ.get("DF_ENVIRONMENT") or "").strip().lower()
+    if environment in {"preview", "staging", "test"}:
+        return False
+    return environment in {"prod", "production"} or bool(
+        os.environ.get("CONTAINER_APP_NAME")
+        or os.environ.get("CONTAINER_APP_REVISION")
+        or os.environ.get("WEBSITE_INSTANCE_ID")
+    )
 
 
 class PathSafe:

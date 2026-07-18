@@ -134,6 +134,27 @@ def test_run_store_persists_actor_and_token_summary(tmp_path, monkeypatch) -> No
     assert summary["tokens"]["total"] == 15
 
 
+def test_run_store_persists_only_validated_external_trace_reference(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+
+    trace_id = "a" * 32
+    run_store.start_run(
+        "run-trace-ref",
+        "ws-trace-ref",
+        "analyze",
+        trace_id=trace_id,
+        trace_agent_id="dataforge-runtime-v1",
+    )
+    run_store.complete_run("run-trace-ref", final={"text": "done"}, artifact={})
+
+    expected = {"trace_id": trace_id, "agent_id": "dataforge-runtime-v1"}
+    assert run_store.get_run("run-trace-ref")["trace"] == expected
+    assert run_store.list_runs("ws-trace-ref")[0]["trace"] == expected
+
+
 def test_token_summary_keeps_route_usage_when_model_response_usage_is_empty(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)

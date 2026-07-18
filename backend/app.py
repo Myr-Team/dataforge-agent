@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping
 from urllib.parse import urlparse
@@ -23,6 +24,16 @@ from pathlib import Path
 from starlette.concurrency import run_in_threadpool
 
 try:
+    from .tracing import configure_monitoring
+except ImportError:
+    from tracing import configure_monitoring
+
+
+# Configure the Foundry-compatible OTel provider before Agent Framework imports.
+configure_monitoring()
+
+
+try:
     from .audit_store import record_audit_event
     from .artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, retry_artifact_task, run_artifact_job
     from .task_store import TaskPersistenceError, cancel_requested, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
@@ -38,7 +49,6 @@ try:
     from .rag import search
     from .run_store import get_flagship_plan, get_run, list_runs, set_flagship_plan
     from .speech_token import issue_speech_token
-    from .tracing import configure_monitoring
     from .workspace_store import (
         create_workspace_upload_job,
         reserve_workspace_id,
@@ -90,7 +100,6 @@ except ImportError:
     from rag import search
     from run_store import get_flagship_plan, get_run, list_runs, set_flagship_plan
     from speech_token import issue_speech_token
-    from tracing import configure_monitoring
     from workspace_store import (
         create_workspace_upload_job,
         reserve_workspace_id,
@@ -127,8 +136,6 @@ except ImportError:
     from tools.narrate_summary import narrate_summary
     from tools.render_pdf import render_pdf_report
 
-
-configure_monitoring()
 
 app = FastAPI(title="DataForge Tool Backend", version="0.10.0")
 app.add_middleware(
@@ -308,7 +315,6 @@ async def workspace_manifest(workspace_id: str, request: Request) -> dict[str, A
 async def workspace_auto_analyze(workspace_id: str, request: Request) -> dict[str, Any]:
     _require_workspace_action(workspace_id, request, "analysis.run")
     _audit_required(request, workspace_id, "analysis.run", "analysis", "auto-analysis")
-    _audit_required(request, workspace_id, "message.create", "message", "pending")
     body: dict[str, Any] = {}
     try:
         body = await request.json()
@@ -325,7 +331,9 @@ async def workspace_auto_analyze(workspace_id: str, request: Request) -> dict[st
     req = ChatRequest(
         workspace_id=workspace_id,
         message=message,
-        conversation_id=body.get("conversation_id"),
+        run_id=f"run_{uuid.uuid4().hex}",
+        origin="workspace_auto_analysis",
+        persist_messages=False,
         playbook=body.get("playbook") or "opportunity_tree",
         artifact_mode=body.get("artifact_mode") or "report",
         ui_context=merge_actor_into_ui_context({
@@ -338,7 +346,8 @@ async def workspace_auto_analyze(workspace_id: str, request: Request) -> dict[st
 
     final_payload: dict[str, Any] | None = None
     error_payload: dict[str, Any] | None = None
-    conversation_id = req.conversation_id
+    run_id = req.run_id
+    conversation_id: str | None = None
     answer_parts: list[str] = []
     events: list[dict[str, Any]] = []
     trace: list[dict[str, Any]] = []
@@ -364,7 +373,8 @@ async def workspace_auto_analyze(workspace_id: str, request: Request) -> dict[st
                     answer_parts.append(str(data.get("delta") or ""))
                 continue
             if event == "ready" and isinstance(data, dict):
-                conversation_id = data.get("conversation_id") or conversation_id
+                run_id = data.get("run_id") or run_id
+                conversation_id = data.get("conversation_id")
             if event == "final" and isinstance(data, dict):
                 final_payload = data
             elif event == "error":
@@ -383,6 +393,7 @@ async def workspace_auto_analyze(workspace_id: str, request: Request) -> dict[st
     artifact = final_payload.get("artifact") if isinstance(final_payload, dict) else {}
     return {
         "workspace_id": workspace_id,
+        "run_id": run_id,
         "conversation_id": conversation_id,
         "status": "completed",
         "final": final_payload,
@@ -684,7 +695,11 @@ async def _sse_keepalive(agen, interval: float = 10.0):
                 yield payload
                 continue
             if kind == "error":
-                raise payload
+                # A generator can fail before it emits its first business frame.
+                # Keep the SSE response valid so clients receive a recoverable
+                # error instead of a misleading transport-level "Failed to fetch".
+                yield 'event: error\ndata: {"message":"Analysis stream failed. Please retry.","code":"stream_failed"}\n\n'
+                return
             if kind == "cancelled":
                 raise asyncio.CancelledError()
             if kind == "done":
@@ -707,11 +722,20 @@ async def _task_backed_chat_stream(req: ChatRequest, task_id: str):
                 break
             suppress_frame = False
             for event, data in _parse_sse_frame(raw_frame):
-                if event == "ready" and isinstance(data, dict) and data.get("conversation_id"):
-                    result["run_id"] = str(data["conversation_id"])
+                if event == "ready" and isinstance(data, dict):
+                    run_id = data.get("run_id") or data.get("conversation_id")
+                    if run_id:
+                        result["run_id"] = str(run_id)
                 elif event == "final" and isinstance(data, dict):
                     artifact = data.get("artifact") if isinstance(data.get("artifact"), dict) else {}
-                    result["run_id"] = str(data.get("conversation_id") or artifact.get("conversation_id") or result.get("run_id") or "")
+                    result["run_id"] = str(
+                        data.get("run_id")
+                        or artifact.get("run_id")
+                        or data.get("conversation_id")
+                        or artifact.get("conversation_id")
+                        or result.get("run_id")
+                        or ""
+                    )
                     version_id = artifact.get("version_id") or artifact.get("version_run_id")
                     if version_id:
                         result["version_id"] = str(version_id)
@@ -753,7 +777,8 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     actor = actor_from_request(request)
     _require_workspace_action(req.workspace_id, request, "analysis.run")
     _audit_required(request, req.workspace_id, "analysis.run", "analysis", "chat")
-    _audit_required(request, req.workspace_id, "message.create", "message", "pending")
+    if req.origin == "conversation":
+        _audit_required(request, req.workspace_id, "message.create", "message", "pending")
     req = req.model_copy(update={"ui_context": merge_actor_into_ui_context(req.ui_context, actor)})
     is_iteration = bool(req.ui_context.get("iteration_inputs")) if isinstance(req.ui_context, dict) else False
     task = create_task(

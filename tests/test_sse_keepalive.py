@@ -27,3 +27,16 @@ async def test_sse_keepalive_consumes_generator_in_one_context() -> None:
     assert frames[-1].startswith("event: second")
     assert ": keepalive\n\n" in frames
     assert marker.get() == "none"
+
+
+@pytest.mark.asyncio
+async def test_sse_keepalive_turns_source_failure_into_a_terminal_sse_error() -> None:
+    async def source():
+        raise RuntimeError("durable task persistence failed")
+        yield ""  # pragma: no cover
+
+    frames = [frame async for frame in _sse_keepalive(source(), interval=0.005)]
+
+    assert frames == [
+        'event: error\ndata: {"message":"Analysis stream failed. Please retry.","code":"stream_failed"}\n\n'
+    ]

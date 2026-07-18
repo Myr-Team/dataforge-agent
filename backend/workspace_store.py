@@ -926,7 +926,9 @@ def _last_analysis_from_final(final_payload: dict[str, Any]) -> dict[str, Any]:
         action_plan = [action_plan]
     analysis = {
         "updated_at": _utc_now_iso(),
+        "run_id": artifact.get("run_id") or final_payload.get("run_id"),
         "conversation_id": artifact.get("conversation_id") or final_payload.get("conversation_id"),
+        "origin": artifact.get("origin") or final_payload.get("origin"),
         "text": str(final_payload.get("text") or answer.get("text") or answer.get("markdown") or "")[:2400],
         "verdict": feasibility.get("verdict"),
         "opportunity_id": feasibility.get("opportunity_id"),

@@ -12,6 +12,7 @@ ENV VITE_API_BASE=$VITE_API_BASE
 RUN npm run build -- --logLevel silent
 
 FROM nginx:1.27-alpine
+ENV DF_BACKEND_UPSTREAM=https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80

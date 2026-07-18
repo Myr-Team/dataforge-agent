@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -10,6 +11,31 @@ from backend.app import app
 import backend.control_plane as control_plane
 import backend.orchestrator as orchestrator
 import backend.run_store as run_store
+
+
+class _CapabilityPackLineageRepository:
+    """Minimal authoritative repository for persisted-analysis projection tests."""
+
+    def current_generation(self, *, workspace_id: str) -> int:
+        return 1
+
+    def commit_analysis(self, **values):
+        return SimpleNamespace(
+            version_id="11111111-1111-4111-8111-111111111111",
+            workspace_id=values["workspace_id"],
+            generation=values["generation"],
+            ordinal=1,
+            canonical_run_id=values["canonical_run_id"],
+            decision_fingerprint=values["decision_fingerprint"],
+            evidence_fingerprint=values["evidence_fingerprint"],
+            created=True,
+        )
+
+
+def _use_authoritative_lineage(monkeypatch) -> _CapabilityPackLineageRepository:
+    repository = _CapabilityPackLineageRepository()
+    monkeypatch.setattr(run_store, "_LINEAGE_REPOSITORY_PROVIDER", lambda: repository)
+    return repository
 
 
 def _site_profile(*, workspace_name: str, file_name: str) -> dict[str, object]:
@@ -476,6 +502,7 @@ def test_public_latest_analysis_and_final_sse_project_capability_provenance(tmp_
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "upload_blob_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
+    _use_authoritative_lineage(monkeypatch)
     run_store._ACTIVE.clear()
     selection, provenance = _internally_selected_pack_contract(
         workspace_id="workspace-1",
@@ -518,6 +545,7 @@ def test_public_projection_drops_nested_forged_capability_pack_integrity(tmp_pat
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "upload_blob_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
+    _use_authoritative_lineage(monkeypatch)
     run_store._ACTIVE.clear()
     selection, provenance = _internally_selected_pack_contract(
         workspace_id="workspace-1",
@@ -557,6 +585,7 @@ def test_latest_analysis_and_run_log_strip_persisted_step_capability_metadata(tm
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "upload_blob_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
+    _use_authoritative_lineage(monkeypatch)
     run_store._ACTIVE.clear()
     selection, provenance = _internally_selected_pack_contract(
         workspace_id="workspace-1",
@@ -613,6 +642,7 @@ def test_deep_capability_metadata_never_survives_public_depth_truncation(tmp_pat
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "upload_blob_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
+    _use_authoritative_lineage(monkeypatch)
     run_store._ACTIVE.clear()
     selection, provenance = _internally_selected_pack_contract(
         workspace_id="workspace-1",

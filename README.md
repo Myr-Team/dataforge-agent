@@ -208,7 +208,7 @@ terraform init && terraform apply
 - `infra/envs/dev/terraform.tfvars.example` — deployment identifiers. Copy to `terraform.tfvars`.
 - `.env`, `*.tfvars`, and `*.tfstate*` are git-ignored. **Never commit real keys or subscription IDs.**
 
-Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_AUTH_MODE` (`auto`, `api_key`, or `managed_identity`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search), `DF_WORKSPACE_RBAC_ENFORCED` (workspace role enforcement), `DF_WEB_PROXY_SECRET` (shared secret for the Web-to-backend identity proxy), and `DF_ARTIFACT_JOB_STALE_SECONDS` (interrupted-job recovery window).
+Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_AUTH_MODE` (`auto`, `api_key`, or `managed_identity`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search), `DF_WORKSPACE_RBAC_ENFORCED` (workspace role enforcement), `DF_WEB_PROXY_SECRET` (shared secret for the Web-to-backend identity proxy), `DF_ARTIFACT_JOB_STALE_SECONDS` (interrupted-job recovery window), and `DF_SEPARATE_ANALYSIS_CONVERSATIONS` (candidate-gated separation of autonomous analysis runs from human message history; default `0`, enable `1` only with the matching frontend revision).
 
 ## Responsible AI
 

@@ -1823,7 +1823,7 @@ def test_experiment_and_compare_api_recursively_redact_outcome_verification_iden
         },
     }
     actions = []
-    monkeypatch.setattr(control_plane, "require_sensitive_workspace_permission", lambda _workspace_id, _actor, action, **_kwargs: actions.append(action) or "viewer")
+    monkeypatch.setattr(control_plane, "require_workspace_permission", lambda _workspace_id, _actor, action: actions.append(action) or "viewer")
     monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: runs)
     monkeypatch.setattr(control_plane, "get_run", lambda run_id: next(item for item in runs if item["run_id"] == run_id))
     monkeypatch.setattr(control_plane, "list_outcome_events", lambda _workspace_id: [raw_outcome])

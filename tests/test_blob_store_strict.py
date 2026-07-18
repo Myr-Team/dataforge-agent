@@ -52,3 +52,28 @@ def test_strict_blob_json_helpers_only_treat_not_found_as_empty(monkeypatch: pyt
         blob_store.download_blob_json_strict("tasks/task_timeout.json")
     with pytest.raises(BlobJsonReadError):
         blob_store.list_blob_json_strict("tasks/")
+
+
+def test_production_workspace_store_uses_system_managed_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    managed_identity = object()
+    default_credential = object()
+
+    class _Service:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def get_container_client(self, name: str) -> str:
+            return name
+
+    monkeypatch.setenv("DF_ENVIRONMENT", "production")
+    monkeypatch.setenv("STORAGE_ACCOUNT_NAME", "dataforgeprod")
+    monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
+    monkeypatch.delenv("AZURE_STORAGE_KEY", raising=False)
+    monkeypatch.delenv("DF_STORAGE_KEY", raising=False)
+    monkeypatch.setattr(blob_store, "ManagedIdentityCredential", lambda: managed_identity, raising=False)
+    monkeypatch.setattr(blob_store, "DefaultAzureCredential", lambda: default_credential)
+    monkeypatch.setattr(blob_store, "BlobServiceClient", _Service)
+
+    assert blob_store._container_client() == blob_store.DEFAULT_CONTAINER
+    assert captured["credential"] is managed_identity

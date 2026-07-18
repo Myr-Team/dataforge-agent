@@ -16,9 +16,9 @@ server {
     }
 
     location /api/ {
-        proxy_pass https://ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io;
+        proxy_pass ${DF_BACKEND_UPSTREAM};
         proxy_ssl_server_name on;
-        proxy_set_header Host ca-dataforge-backend.thankfultree-c0fc8321.eastus2.azurecontainerapps.io;
+        proxy_set_header Host $proxy_host;
         proxy_set_header X-MS-CLIENT-PRINCIPAL $http_x_ms_client_principal;
         proxy_set_header X-MS-CLIENT-PRINCIPAL-ID $http_x_ms_client_principal_id;
         proxy_set_header X-MS-CLIENT-PRINCIPAL-NAME $http_x_ms_client_principal_name;

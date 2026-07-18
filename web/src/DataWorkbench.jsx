@@ -149,7 +149,7 @@ function historyUser(item, currentUser) {
   };
 }
 
-export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, user, tasks = [], onOpenTaskCenter, onWorkspaceDataChanged }) {
+export function DataWorkbench({ dashboard, onUpload, onRun, user, tasks = [], onOpenTaskCenter, onWorkspaceDataChanged }) {
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
   const [tab, setTab] = useState("table");
   const [groups, setGroups] = useState([]);
@@ -881,11 +881,12 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
     if (!active || analyzing) return;
     setAnalyzing(true);
     const message = `请基于数据工作台文件 ${active.name} 做一次可行性分析，说明证据强弱、机会、风险缺口和下一步验证计划。`;
-    showToast("已发送到分析，正在打开会话…");
+    showToast("已发送到分析，正在打开工作区…");
     try {
       if (onRun) {
         await onRun(message, {
-          stayOnDashboard: false,
+          stayOnDashboard: true,
+          executionOrigin: "data_send_analysis",
           artifactMode: "report",
           newConversation: true,
           uiContext: {
@@ -897,8 +898,8 @@ export function DataWorkbench({ dashboard, onUpload, onOpenConversation, onRun, 
         });
       } else {
         const res = await dwAnalyzeFiles(workspaceId, [active.id], message);
-        const cid = res?.conversation_id || res?.jump?.conversation_id;
-        if (cid && onOpenConversation) onOpenConversation(cid);
+        const runId = res?.run_id || res?.jump?.run_id;
+        showToast(runId ? `已发送到分析，运行 ${runId} 已创建。` : "已发送到分析，正在处理。");
       }
     } catch (e) {
       showToast(`发送分析失败：${e.message}`);

@@ -443,6 +443,8 @@ def _read(workspace_id: str, meta: Mapping[str, Any]) -> dict[str, Any]:
     if not blob_configured():
         return {"workspace_invitation_events": copy.deepcopy(_local_events(meta))}
     snapshot = download_blob_json(_blob_name(workspace_id))
+    if snapshot is None and "workspace_invitation_events" not in meta:
+        return {"workspace_invitation_events": []}
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("revision"), int) or not isinstance(snapshot.get("events"), list):
         raise InvitationPersistenceError("invitation event journal is unavailable")
     events = snapshot.get("events")

@@ -10,12 +10,31 @@ import {
   invitationLifecycleViewModel,
   memberDirectoryViewModel,
   roiViewModel,
+  runTraceReferenceViewModel,
   traceStatusLabel,
 } from "./governanceViewModel.js";
 
 test("configured monitoring is not labelled connected without delivery proof", () => {
   assert.equal(traceStatusLabel({ state: "partial" }), "已配置，尚未确认遥测到达");
   assert.notEqual(traceStatusLabel({ state: "partial" }), traceStatusLabel({ state: "connected" }));
+});
+
+test("run trace reference exposes a portal link only after verified delivery", () => {
+  const reference = { trace_id: "a".repeat(32), agent_id: "dataforge-runtime-v1" };
+  const partial = runTraceReferenceViewModel(reference, {
+    state: "partial",
+    transaction_url: "https://portal.azure.com/unsafe-unverified",
+  });
+  const connected = runTraceReferenceViewModel(reference, {
+    state: "connected",
+    transaction_url: "https://portal.azure.com/#trace",
+  });
+
+  assert.equal(partial.traceId, "a".repeat(32));
+  assert.equal(partial.transactionUrl, "");
+  assert.equal(connected.agentId, "dataforge-runtime-v1");
+  assert.equal(connected.transactionUrl, "https://portal.azure.com/#trace");
+  assert.equal(runTraceReferenceViewModel({ trace_id: "not-a-trace", agent_id: "dataforge-runtime-v1" }, {}).available, false);
 });
 
 test("local and Foundry ROI evidence states stay separate", () => {

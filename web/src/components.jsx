@@ -11,6 +11,7 @@ import {
   invitationLifecycleViewModel,
   memberDirectoryViewModel,
   roiViewModel,
+  runTraceReferenceViewModel,
   traceViewModel,
 } from "./governanceViewModel.js";
 import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, createWorkspaceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
@@ -1747,6 +1748,7 @@ function ConversationStudio({
   setSelectedPlaybook,
 }) {
   const workspace = dashboard?.workspace || {};
+  const workspaceId = dashboard?.workspace_id || workspace?.workspace_id || "";
   const presentation = useAgentPresentation(trace, running);
   return (
     <main className="agent-studio conversation-stage">
@@ -1758,7 +1760,7 @@ function ConversationStudio({
         </div>
       </section>
       <QuestionStarter onRun={onRun} running={running} />
-      <AnswerPanel messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} trace={trace} onStop={onStop} />
+      <AnswerPanel workspaceId={workspaceId} messages={messages} streamText={streamText} running={running} presentation={presentation} onRun={onRun} onProduce={onProduce} producing={producing} trace={trace} onStop={onStop} />
       <Composer input={input} setInput={setInput} running={running} onRun={onRun} onStop={onStop} selectedPlaybook={selectedPlaybook} />
     </main>
   );
@@ -2540,6 +2542,54 @@ function GovernanceSummaryPanel({ data, invitationState, permissionsPayload, per
   );
 }
 
+function TraceReference({ workspaceId, runId, reference, compact = false }) {
+  const [delivery, setDelivery] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const model = useMemo(() => runTraceReferenceViewModel(reference, delivery || {}), [reference, delivery]);
+  const resolvedRunId = runId || reference?.run_id || "";
+
+  useEffect(() => {
+    let cancelled = false;
+    setDelivery(null);
+    if (!model.available || !workspaceId || !resolvedRunId) return () => { cancelled = true; };
+    loadWorkspaceTraceStatus(workspaceId, { runId: resolvedRunId, correlationId: model.traceId })
+      .then((value) => { if (!cancelled) setDelivery(value || {}); })
+      .catch(() => { if (!cancelled) setDelivery({ state: "unavailable" }); });
+    return () => { cancelled = true; };
+  }, [workspaceId, resolvedRunId, model.available, model.traceId]);
+
+  if (!model.available) return null;
+  const copyTraceId = async () => {
+    try {
+      await navigator.clipboard.writeText(model.traceId);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  };
+  const statusLabel = delivery ? model.delivery.label : "正在核验远端送达";
+  return (
+    <section className={`trace-reference${compact ? " compact" : ""}`} aria-label="运行溯源">
+      <div className="trace-reference-main">
+        <span className="trace-reference-title">运行溯源</span>
+        <span className="trace-reference-agent">Foundry: {model.agentId}</span>
+      </div>
+      <div className="trace-reference-id">
+        <code>{model.traceId}</code>
+        <button type="button" className="trace-reference-copy" title="复制 Trace ID" aria-label="复制 Trace ID" onClick={copyTraceId}>
+          <Copy size={13} />{copied ? "已复制" : "复制"}
+        </button>
+      </div>
+      <div className={`trace-reference-status ${model.delivery.tone}`}>
+        <span>{statusLabel}</span>
+        {model.transactionUrl ? <a href={model.transactionUrl} target="_blank" rel="noreferrer">Azure Monitor <ArrowUpRight size={13} /></a> : null}
+      </div>
+      {!compact ? <p>可在 Foundry 的 {model.agentId} 中按 Trace ID 搜索此运行。</p> : null}
+    </section>
+  );
+}
+
 function RunsCenter({ dashboard, trace, running, observability, onOpenConversation, tasks }) {
   const runs = dashboard?.runs || [];
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
@@ -2660,6 +2710,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
       <div className="run-body2">
         <section className="card run-trace">
           <div className="rt-head"><strong>本次运行追踪</strong><span className="rt-source">来源：{runEvidenceLabel(basis.trace, "后端运行步骤")}</span><Info size={14} /></div>
+          <TraceReference workspaceId={workspaceId} runId={runId} reference={sm.trace || r.trace} compact />
           <MafCollaborationView model={runMaf} compact />
           {(() => {
             const list = (rtrace && rtrace.length) ? rtrace.map((s) => {
@@ -3887,7 +3938,7 @@ function CopyButton({ text }) {
   );
 }
 
-function AnswerPanel({ messages, streamText, running, presentation, onRun, onProduce, producing, trace, onStop }) {
+function AnswerPanel({ workspaceId, messages, streamText, running, presentation, onRun, onProduce, producing, trace, onStop }) {
   const visible = messages.length || streamText;
   const scrollRef = useRef(null);
   const bottomRef = useRef(null);
@@ -3959,6 +4010,7 @@ function AnswerPanel({ messages, streamText, running, presentation, onRun, onPro
                       ) : null}
                     </div>
                   ) : null}
+                  {message.role === "assistant" ? <TraceReference workspaceId={workspaceId} reference={message.trace} /> : null}
                   {message.produceOffer && onProduce ? (
                     <button
                       type="button"

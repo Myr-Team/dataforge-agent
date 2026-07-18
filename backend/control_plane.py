@@ -224,7 +224,9 @@ async def workspace_trace_status(
     run_id: str | None = Query(None, max_length=160),
     correlation_id: str | None = Query(None, max_length=64),
 ) -> dict[str, Any]:
-    _require_sensitive_workspace_action(workspace_id, request, "workspace.read")
+    # Delivery state is scoped to one already-visible run. It contains no raw
+    # telemetry or audit payload, so regular run readers may view it.
+    _require_trusted_workspace_action(workspace_id, request, "run.read")
     if run_id:
         try:
             run = await _call(get_run, run_id)
@@ -246,7 +248,7 @@ async def workspace_outcomes(workspace_id: str, request: Request) -> dict[str, A
 
 @router.get("/api/workspaces/{workspace_id}/experiments")
 async def workspace_experiments(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_sensitive_workspace_action(workspace_id, request, "run.read")
+    _require_workspace_action(workspace_id, request, "run.read")
     return await _call(workspace_experiment_ledger, workspace_id)
 
 
@@ -257,7 +259,7 @@ async def workspace_experiment_compare(
     from_id: str = Query(alias="from"),
     to_id: str = Query(alias="to"),
 ) -> dict[str, Any]:
-    _require_sensitive_workspace_action(workspace_id, request, "run.read")
+    _require_workspace_action(workspace_id, request, "run.read")
     ledger = await _call(workspace_experiment_ledger, workspace_id)
     return await _call(compare_experiment_versions, ledger, from_id, to_id)
 
@@ -383,11 +385,22 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
 
 
 def _require_workspace_action(workspace_id: str, request: Request | None, action: str) -> str:
+    actor = actor_from_request(request)
     try:
-        return require_workspace_permission(workspace_id, actor_from_request(request), action)
+        return require_workspace_permission(workspace_id, actor, action)
     except PermissionError as exc:
         _audit_denied(request, workspace_id, action)
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _require_trusted_workspace_action(workspace_id: str, request: Request | None, action: str) -> str:
+    """Authorize a normal run reader without exposing sensitive governance data."""
+    actor = actor_from_request(request, fallback=False)
+    role = workspace_role(workspace_id, actor) if is_trusted_tenant_identity(actor) else None
+    if not authorize(role, action):
+        _audit_denied(request, workspace_id, action, actor=actor)
+        raise HTTPException(status_code=403, detail=f"workspace permission denied for {action}")
+    return str(role)
 
 
 def _require_sensitive_workspace_action(workspace_id: str, request: Request | None, action: str) -> str:

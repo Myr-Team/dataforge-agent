@@ -55,6 +55,8 @@ ATTACHMENT_HISTORY_LIMIT = 1024
 LINEAGE_PENDING_TIMEOUT_SECONDS = 300
 WORKSPACE_GENERATION_INITIAL = 1
 _ATTACHMENT_VERSION_KINDS = {"plan_draft", "artifact_generation"}
+_TRACE_REFERENCE_ID = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+_TRACE_REFERENCE_AGENT = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 _ACTIVE: dict[str, dict[str, Any]] = {}
 _LOCK = threading.RLock()
@@ -94,6 +96,10 @@ def start_run(
     actor: dict[str, Any] | None = None,
     *,
     generation: int | None = None,
+    trace_id: str | None = None,
+    trace_agent_id: str | None = None,
+    conversation_id: str | None = None,
+    origin: str = "conversation",
 ) -> None:
     now = _utc_now()
     clean_actor = public_actor(actor or {})
@@ -108,7 +114,8 @@ def start_run(
     with _LOCK:
         _ACTIVE[run_id] = {
             "run_id": run_id,
-            "conversation_id": run_id,
+            "conversation_id": conversation_id if conversation_id is not None or origin != "conversation" else run_id,
+            "origin": origin,
             "workspace_id": workspace_id,
             "message": message,
             "status": "running",
@@ -122,6 +129,9 @@ def start_run(
         if clean_actor:
             _ACTIVE[run_id]["actor"] = clean_actor
         _ACTIVE[run_id]["trusted_identity"] = is_trusted_identity(clean_actor)
+        trace = _safe_trace_reference(trace_id, trace_agent_id)
+        if trace:
+            _ACTIVE[run_id]["trace"] = trace
 
 
 def record_event(run_id: str | None, event: str, data: Any) -> None:
@@ -3420,6 +3430,9 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
     }
     if capability_pack_provenance:
         summary["capability_pack_provenance"] = capability_pack_provenance
+    trace = _safe_trace_reference(run.get("trace"))
+    if trace:
+        summary["trace"] = trace
     return summary
 
 
@@ -3440,6 +3453,11 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(normalized.get("summary"), str):
         normalized["summary"] = _run_summary_text(normalized)
     normalized["actor"] = public_actor(normalized.get("actor") if isinstance(normalized.get("actor"), dict) else {})
+    trace = _safe_trace_reference(normalized.get("trace"))
+    if trace:
+        normalized["trace"] = trace
+    else:
+        normalized.pop("trace", None)
     normalized["tokens"] = _token_usage(normalized)
     normalized["maf"] = _maf_summary(normalized)
     capability_packs, capability_pack_provenance = _capability_pack_contract(
@@ -3454,6 +3472,22 @@ def _normalize_run_detail(run: dict[str, Any]) -> dict[str, Any]:
         normalized.pop("capability_pack_provenance", None)
     normalized["registry_summary"] = _run_summary(normalized)
     return normalized
+
+
+def _safe_trace_reference(value: Any, agent_id: Any | None = None) -> dict[str, str] | None:
+    if isinstance(value, dict):
+        trace_id = value.get("trace_id")
+        resolved_agent_id = value.get("agent_id")
+    else:
+        trace_id = value
+        resolved_agent_id = agent_id
+    safe_trace_id = str(trace_id or "").strip().lower()
+    safe_agent_id = str(resolved_agent_id or "").strip()
+    if not _TRACE_REFERENCE_ID.fullmatch(safe_trace_id):
+        return None
+    if not _TRACE_REFERENCE_AGENT.fullmatch(safe_agent_id):
+        return None
+    return {"trace_id": safe_trace_id, "agent_id": safe_agent_id}
 
 
 def _capability_scope(value: Any) -> dict[str, str]:

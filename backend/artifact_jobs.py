@@ -47,8 +47,8 @@ def create_artifact_job(
     request = dict(payload or {})
     workspace_id = _required_text(request.get("workspace_id"), "workspace_id", 160)
     source_run_id = _required_text(
-        request.get("conversation_id") or request.get("run_id"),
-        "conversation_id",
+        request.get("source_run_id") or request.get("run_id") or request.get("conversation_id"),
+        "source_run_id",
         180,
     )
     kinds = _normalize_kinds(request.get("kinds"))
