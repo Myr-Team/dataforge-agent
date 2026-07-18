@@ -113,12 +113,16 @@ def test_producer_degrades_when_image_fails() -> None:
     original_image = orchestrator.generate_image
     original_refs = orchestrator.workspace_reference_images
     try:
-        orchestrator.render_pdf_report = lambda *_: {
-            "artifact_url": "/api/artifacts/project_proposal/mock.pdf",
-            "local_path": str(ROOT / "artifacts" / "mock.pdf"),
-            "bytes": 1024,
-            "mode": "test_pdf",
-        }
+        def render_pdf_mock(*_args, workspace_id: str, **_kwargs):
+            assert workspace_id == "demo-corpus"
+            return {
+                "artifact_url": "/api/artifacts/project_proposal/mock.pdf",
+                "local_path": str(ROOT / "artifacts" / "mock.pdf"),
+                "bytes": 1024,
+                "mode": "test_pdf",
+            }
+
+        orchestrator.render_pdf_report = render_pdf_mock
         orchestrator.generate_image = lambda *_: (_ for _ in ()).throw(TimeoutError("image timeout"))
         orchestrator.workspace_reference_images = lambda *_: []
         result = orchestrator._run_producer(

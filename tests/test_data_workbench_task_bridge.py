@@ -10,6 +10,7 @@ import backend.data_workbench as data_workbench
 import backend.task_store as task_store
 from backend.connector_store import ConnectorStore
 from backend.task_store import TaskPersistenceError
+from auth_fixtures import active_member, install_workspace_memberships, trusted_headers
 from fastapi.testclient import TestClient
 from backend.app import app
 
@@ -20,6 +21,14 @@ def _configure_tasks(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(task_store, "download_blob_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(task_store, "list_blob_json", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(task_store, "upload_blob_json", lambda *_args, **_kwargs: {})
+
+
+def _authorized_headers(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    install_workspace_memberships(
+        monkeypatch,
+        {"ws-bridge": [active_member("bridge-owner-oid", "bridge-tenant", "owner")]},
+    )
+    return trusted_headers(actor_id="bridge-owner-oid", tenant_id="bridge-tenant")
 
 
 def _connector_record(tmp_path, monkeypatch: pytest.MonkeyPatch, workspace_id: str) -> dict:
@@ -363,6 +372,7 @@ def test_chat_stream_creates_a_durable_analysis_task_and_exposes_its_id(
     task_type: str,
 ) -> None:
     _configure_tasks(tmp_path, monkeypatch)
+    headers = _authorized_headers(monkeypatch)
 
     async def stream(_request):
         yield 'event: ready\ndata: {"conversation_id":"run-chat-1"}\n\n'
@@ -372,6 +382,7 @@ def test_chat_stream_creates_a_durable_analysis_task_and_exposes_its_id(
     response = TestClient(app).post(
         "/api/chat",
         json={"workspace_id": "ws-bridge", "message": "Run analysis", "ui_context": ui_context},
+        headers=headers,
     )
 
     assert response.status_code == 200
@@ -561,8 +572,9 @@ def test_artifact_job_is_not_exposed_when_generic_task_is_not_durable(tmp_path, 
 
 def test_workbench_task_persistence_failure_returns_503_for_file_create(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(data_workbench, "create_workspace_file", lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskPersistenceError("durable unavailable")))
+    headers = _authorized_headers(monkeypatch)
 
-    response = TestClient(app, raise_server_exceptions=False).post("/api/workspaces/ws-bridge/files", json={"name": "new.csv"})
+    response = TestClient(app, raise_server_exceptions=False).post("/api/workspaces/ws-bridge/files", json={"name": "new.csv"}, headers=headers)
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Durable task storage is unavailable"
@@ -570,8 +582,9 @@ def test_workbench_task_persistence_failure_returns_503_for_file_create(monkeypa
 
 def test_workbench_task_persistence_failure_returns_503_for_connector_ingest(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(data_workbench, "import_sql_table", lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskPersistenceError("durable unavailable")))
+    headers = _authorized_headers(monkeypatch)
 
-    response = TestClient(app, raise_server_exceptions=False).post("/api/workspaces/ws-bridge/connectors/sql/import", json={"connection_id": "connector", "table": "sales"})
+    response = TestClient(app, raise_server_exceptions=False).post("/api/workspaces/ws-bridge/connectors/sql/import", json={"connection_id": "connector", "table": "sales"}, headers=headers)
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Durable task storage is unavailable"
@@ -583,8 +596,9 @@ def test_workbench_task_persistence_failure_returns_503_for_selected_file_analys
     monkeypatch.setattr(data_workbench, "_find_document", lambda *_args, **_kwargs: dict(document))
     monkeypatch.setattr(data_workbench, "list_tasks", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(data_workbench, "create_task", lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskPersistenceError("durable unavailable")))
+    headers = _authorized_headers(monkeypatch)
 
-    response = TestClient(app, raise_server_exceptions=False).post("/api/workspaces/ws-bridge/files/analyze", json={"file_ids": ["file-1"]})
+    response = TestClient(app, raise_server_exceptions=False).post("/api/workspaces/ws-bridge/files/analyze", json={"file_ids": ["file-1"]}, headers=headers)
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Durable task storage is unavailable"

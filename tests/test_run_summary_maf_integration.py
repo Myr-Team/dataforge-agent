@@ -6,6 +6,7 @@ import subprocess
 import backend.control_plane as control_plane
 import backend.run_store as run_store
 from starlette.requests import Request
+from auth_fixtures import active_member, install_workspace_memberships, trusted_headers
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,10 @@ def test_real_run_summary_endpoint_exposes_persisted_maf_to_view_model(tmp_path,
     monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
     run_store._ACTIVE.clear()
+    install_workspace_memberships(
+        monkeypatch,
+        {"ws-maf-summary": [active_member("maf-viewer-oid", "maf-tenant", "viewer")]},
+    )
 
     run_id = "run-maf-summary"
     selected = ["df-coordinator", "df-feasibility-analyst"]
@@ -57,7 +62,15 @@ def test_real_run_summary_endpoint_exposes_persisted_maf_to_view_model(tmp_path,
     run_store.complete_run(run_id, final={"text": "done"}, artifact={})
 
     persisted_detail = run_store.get_run(run_id)
-    request = Request({"type": "http", "headers": []})
+    request = Request(
+        {
+            "type": "http",
+            "headers": [
+                (key.encode("ascii"), value.encode("ascii"))
+                for key, value in trusted_headers(actor_id="maf-viewer-oid", tenant_id="maf-tenant").items()
+            ],
+        }
+    )
     summary_payload = asyncio.run(control_plane.run_summary_endpoint(run_id, request))
     trace_payload = asyncio.run(control_plane.run_trace_endpoint(run_id, request))
 

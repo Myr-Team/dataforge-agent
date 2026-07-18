@@ -2,7 +2,6 @@ import json
 import copy
 import re
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import quote
 
 import backend.control_plane as control_plane
 import backend.graph_client as graph_client
@@ -10,19 +9,21 @@ import backend.invitation_store as invitation_store
 from backend.app import app
 from fastapi.testclient import TestClient
 import pytest
+from auth_fixtures import active_member, install_workspace_memberships, trusted_headers
 
 
 class RequestStub:
     def __init__(self, headers=None):
-        self.headers = headers or {
-            "x-dataforge-actor": quote(json.dumps({"name": "Owner", "email": "owner@contoso.com"})),
-        }
+        self.headers = headers or trusted_headers(actor_id="owner-oid", tenant_id="tenant-1")
 
 
 def _workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("DF_INVITATION_PSEUDONYM_SALT", "test-member-projection-salt")
     monkeypatch.setenv("DF_ENVIRONMENT", "test")
-    monkeypatch.setenv("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS", "1")
+    install_workspace_memberships(
+        monkeypatch,
+        {"ws-graph": [active_member("owner-oid", "tenant-1", "owner")]},
+    )
     workspace_root = tmp_path / "workspaces"
     workspace_dir = workspace_root / "ws-graph"
     workspace_dir.mkdir(parents=True)
@@ -510,7 +511,13 @@ def test_graph_invite_without_trusted_provider_tenant_remains_pending(tmp_path, 
     monkeypatch.setattr(
         control_plane,
         "send_graph_invitation",
-        lambda *args, **kwargs: {"status": "sent", "source": "microsoft_graph", "invitation_id": "graph-1", "invited_user_id": "oid-reviewer"},
+        lambda *args, **kwargs: {
+            "status": "sent",
+            "source": "microsoft_graph",
+            "invitation_id": "graph-1",
+            "invited_user_id": "oid-reviewer",
+            "token_source": "app_only",
+        },
     )
 
     result = control_plane.invite_entra_workspace_member(

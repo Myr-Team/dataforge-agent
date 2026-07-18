@@ -468,7 +468,9 @@ def _audit_redaction_report() -> dict[str, Any]:
 
 
 def _authorization_report() -> dict[str, Any]:
-    from backend.workspace_authz import require_sensitive_workspace_permission
+    import backend.workspace_authz as workspace_authz
+
+    require_sensitive_workspace_permission = workspace_authz.require_sensitive_workspace_permission
 
     denied = False
     trusted = {"actor_id": "fixture-admin", "tenant_id": "fixture-tenant", "source": "easy_auth"}
@@ -476,6 +478,19 @@ def _authorization_report() -> dict[str, Any]:
         os.environ,
         {"DF_ENVIRONMENT": "production", "DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS": "0"},
         clear=False,
+    ), patch.object(
+        workspace_authz,
+        "_load_workspace_meta",
+        return_value={
+            "workspace_members": [
+                {
+                    "actor_id": "fixture-admin",
+                    "tenant_id": "fixture-tenant",
+                    "role": "admin",
+                    "status": "active",
+                }
+            ]
+        },
     ):
         try:
             require_sensitive_workspace_permission(

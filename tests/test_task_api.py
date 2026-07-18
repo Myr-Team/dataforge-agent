@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import json
 import shutil
-from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
 
 import backend.task_store as task_store
-import backend.workspace_authz as workspace_authz
 from backend.app import app
 from backend.blob_store import BlobJsonReadError
+from auth_fixtures import active_member, install_workspace_memberships, trusted_headers
 
 
 def _configure_store(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -23,8 +21,12 @@ def _configure_store(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(task_store, "upload_blob_json", lambda *_args, **_kwargs: {})
 
 
-def _headers(email: str) -> dict[str, str]:
-    return {"x-dataforge-actor": quote(json.dumps({"email": email, "actor_id": f"oid-{email}"}))}
+def _headers(actor_id: str, tenant_id: str = "task-tenant") -> dict[str, str]:
+    return trusted_headers(actor_id=actor_id, tenant_id=tenant_id, email=f"{actor_id}@contoso.com")
+
+
+def _install_memberships(monkeypatch: pytest.MonkeyPatch, members: list[dict[str, str]]) -> None:
+    install_workspace_memberships(monkeypatch, {"ws-private": members})
 
 
 def _task() -> dict[str, object]:
@@ -37,12 +39,9 @@ def _task() -> dict[str, object]:
 def test_non_member_cannot_read_task_after_workspace_is_resolved(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     task = _task()
-    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
-    monkeypatch.setenv("DF_WORKSPACE_OWNER_EMAIL", "owner@contoso.com")
-    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: {})
-    monkeypatch.setattr(workspace_authz, "workspace_role", lambda _workspace_id, actor: "owner" if actor.get("email") == "owner@contoso.com" else None)
+    _install_memberships(monkeypatch, [active_member("owner-oid", "task-tenant", "owner")])
 
-    response = TestClient(app).get(f"/api/tasks/{task['task_id']}", headers=_headers("outsider@contoso.com"))
+    response = TestClient(app).get(f"/api/tasks/{task['task_id']}", headers=_headers("outsider-oid"))
 
     assert response.status_code == 403
 
@@ -52,15 +51,12 @@ def test_task_list_and_unsupported_retry_use_workspace_scoped_actions(tmp_path, 
     task = _task()
     task_store.claim_task(task["task_id"], "worker")
     task_store.update_task(task["task_id"], status="failed", error={"message": "failed"})
-    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
-    monkeypatch.setenv("DF_WORKSPACE_OWNER_EMAIL", "owner@contoso.com")
-    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: {})
-    monkeypatch.setattr(workspace_authz, "workspace_role", lambda _workspace_id, actor: "owner" if actor.get("email") == "owner@contoso.com" else None)
+    _install_memberships(monkeypatch, [active_member("owner-oid", "task-tenant", "owner")])
     client = TestClient(app)
 
-    listed = client.get("/api/workspaces/ws-private/tasks", headers=_headers("owner@contoso.com"))
-    retried = client.post(f"/api/tasks/{task['task_id']}/retry", headers=_headers("owner@contoso.com"))
-    denied = client.post(f"/api/tasks/{task['task_id']}/cancel", headers=_headers("outsider@contoso.com"))
+    listed = client.get("/api/workspaces/ws-private/tasks", headers=_headers("owner-oid"))
+    retried = client.post(f"/api/tasks/{task['task_id']}/retry", headers=_headers("owner-oid"))
+    denied = client.post(f"/api/tasks/{task['task_id']}/cancel", headers=_headers("outsider-oid"))
 
     assert listed.status_code == 200
     assert listed.json()["tasks"][0]["task_id"] == task["task_id"]
@@ -72,14 +68,12 @@ def test_task_list_and_unsupported_retry_use_workspace_scoped_actions(tmp_path, 
 def test_workspace_task_list_rejects_member_of_a_different_workspace(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     _task()
-    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
-    monkeypatch.setattr(
-        workspace_authz,
-        "workspace_role",
-        lambda workspace_id, actor: "owner" if workspace_id == "ws-other" and actor.get("email") == "owner@contoso.com" else None,
+    install_workspace_memberships(
+        monkeypatch,
+        {"ws-other": [active_member("owner-oid", "task-tenant", "owner")]},
     )
 
-    response = TestClient(app).get("/api/workspaces/ws-private/tasks", headers=_headers("owner@contoso.com"))
+    response = TestClient(app).get("/api/workspaces/ws-private/tasks", headers=_headers("owner-oid"))
 
     assert response.status_code == 403
 
@@ -90,6 +84,7 @@ def test_task_get_and_workspace_list_return_503_for_strict_blob_read_failures(tm
     monkeypatch.setattr(task_store, "blob_configured", lambda: True)
     monkeypatch.setattr(task_store, "upload_blob_json", lambda name, value: remote.__setitem__(name, dict(value)) or {})
     task = _task()
+    _install_memberships(monkeypatch, [active_member("owner-oid", "task-tenant", "owner")])
     shutil.rmtree(task_store.TASK_DIR)
     monkeypatch.setattr(task_store, "download_blob_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -106,8 +101,8 @@ def test_task_get_and_workspace_list_return_503_for_strict_blob_read_failures(tm
     )
     client = TestClient(app, raise_server_exceptions=False)
 
-    detail = client.get(f"/api/tasks/{task['task_id']}")
-    listed = client.get("/api/workspaces/ws-private/tasks")
+    detail = client.get(f"/api/tasks/{task['task_id']}", headers=_headers("owner-oid"))
+    listed = client.get("/api/workspaces/ws-private/tasks", headers=_headers("owner-oid"))
 
     assert detail.status_code == 503
     assert listed.status_code == 503

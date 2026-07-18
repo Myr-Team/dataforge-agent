@@ -11,6 +11,7 @@ import backend.run_store as run_store
 import pytest
 from backend.app import app
 from fastapi.testclient import TestClient
+from auth_fixtures import active_member, install_workspace_memberships, trusted_headers
 
 
 class _CommittedLineageRepository:
@@ -1447,12 +1448,11 @@ def test_control_plane_hydrates_trusted_canonical_target_and_attachment(tmp_path
     monkeypatch.setattr(experiment_store, "EXPERIMENT_DIR", tmp_path / "experiments")
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(run_store, "blob_configured", lambda: False)
-    monkeypatch.setattr(
-        control_plane,
-        "require_sensitive_workspace_permission",
-        lambda *_args, **_kwargs: "viewer",
-    )
     workspace_id = "ws-hydrated-lineage"
+    install_workspace_memberships(
+        monkeypatch,
+        {workspace_id: [active_member("experiment-viewer-oid", "experiment-tenant", "viewer")]},
+    )
     canonical_id = "analysis-outside-window"
     alias_id = "analysis-recent-alias"
     run_store._ACTIVE.clear()
@@ -1483,7 +1483,10 @@ def test_control_plane_hydrates_trusted_canonical_target_and_attachment(tmp_path
     monkeypatch.setattr(run_store, "get_run", lambda run_id: details[run_id])
     monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [])
 
-    response = TestClient(app).get(f"/api/workspaces/{workspace_id}/experiments")
+    response = TestClient(app).get(
+        f"/api/workspaces/{workspace_id}/experiments",
+        headers=trusted_headers(actor_id="experiment-viewer-oid", tenant_id="experiment-tenant"),
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -1539,13 +1542,12 @@ def test_malformed_snapshot_is_not_exposed_as_public_attachment(tmp_path, monkey
     monkeypatch.setattr(run_store, "blob_configured", lambda: False)
     monkeypatch.setattr(run_store, "upload_blob_json", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(
-        control_plane,
-        "require_sensitive_workspace_permission",
-        lambda *_args, **_kwargs: "viewer",
-    )
     run_store._ACTIVE.clear()
     workspace_id = "ws-untrusted-snapshot"
+    install_workspace_memberships(
+        monkeypatch,
+        {workspace_id: [active_member("experiment-viewer-oid", "experiment-tenant", "viewer")]},
+    )
     source_run_id = "analysis-public-source"
     artifact = _analysis_run(
         source_run_id,
@@ -1574,7 +1576,10 @@ def test_malformed_snapshot_is_not_exposed_as_public_attachment(tmp_path, monkey
     monkeypatch.setattr(run_store, "get_run", lambda run_id: details[run_id])
     monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [])
 
-    response = TestClient(app).get(f"/api/workspaces/{workspace_id}/experiments")
+    response = TestClient(app).get(
+        f"/api/workspaces/{workspace_id}/experiments",
+        headers=trusted_headers(actor_id="experiment-viewer-oid", tenant_id="experiment-tenant"),
+    )
 
     assert response.status_code == 200
     version = response.json()["versions"][0]
@@ -1586,13 +1591,12 @@ def test_tampered_confirmed_snapshot_payload_is_hidden_from_public_ledger(tmp_pa
     monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(experiment_store, "EXPERIMENT_DIR", tmp_path / "experiments")
     monkeypatch.setattr(run_store, "blob_configured", lambda: False)
-    monkeypatch.setattr(
-        control_plane,
-        "require_sensitive_workspace_permission",
-        lambda *_args, **_kwargs: "viewer",
-    )
     run_store._ACTIVE.clear()
     workspace_id = "ws-tampered-snapshot"
+    install_workspace_memberships(
+        monkeypatch,
+        {workspace_id: [active_member("experiment-viewer-oid", "experiment-tenant", "viewer")]},
+    )
     source_run_id = "analysis-tamper-source"
     artifact = _analysis_run(
         source_run_id,
@@ -1624,7 +1628,10 @@ def test_tampered_confirmed_snapshot_payload_is_hidden_from_public_ledger(tmp_pa
     monkeypatch.setattr(control_plane, "get_run", lambda run_id: details[run_id])
     monkeypatch.setattr(control_plane, "list_outcome_events", lambda workspace_id: [])
 
-    response = TestClient(app).get(f"/api/workspaces/{workspace_id}/experiments")
+    response = TestClient(app).get(
+        f"/api/workspaces/{workspace_id}/experiments",
+        headers=trusted_headers(actor_id="experiment-viewer-oid", tenant_id="experiment-tenant"),
+    )
 
     assert response.status_code == 200
     assert response.json()["versions"][0]["attachments"]["artifacts"] == []
@@ -1713,8 +1720,11 @@ def test_evidence_delta_uses_direction_and_status_semantics(
 
 def test_experiment_api_rejects_fabricated_verified_inputs_and_outcomes(monkeypatch) -> None:
     monkeypatch.setenv("DF_ENVIRONMENT", "test")
-    monkeypatch.setenv("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS", "1")
     monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "experiment-api-trust-boundary-salt")
+    install_workspace_memberships(
+        monkeypatch,
+        {"ws-experiment": [active_member("experiment-viewer-oid", "experiment-tenant", "viewer")]},
+    )
     runs = [
         _analysis_run(
             "run-v1",
@@ -1769,7 +1779,10 @@ def test_experiment_api_rejects_fabricated_verified_inputs_and_outcomes(monkeypa
         ),
     )
 
-    response = TestClient(app).get("/api/workspaces/ws-experiment/experiments")
+    response = TestClient(app).get(
+        "/api/workspaces/ws-experiment/experiments",
+        headers=trusted_headers(actor_id="experiment-viewer-oid", tenant_id="experiment-tenant"),
+    )
 
     assert response.status_code == 200
     assert [item["label"] for item in response.json()["versions"]] == ["V1"]

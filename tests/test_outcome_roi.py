@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from urllib.parse import quote
-import base64
 import json
 
 import pytest
@@ -11,6 +9,7 @@ import backend.control_plane as control_plane
 import backend.outcome_store as outcome_store
 from backend.app import app
 from fastapi.testclient import TestClient
+from auth_fixtures import active_member, install_workspace_memberships, trusted_headers
 
 
 def _configure_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -31,9 +30,11 @@ def _actor(name: str = "Owner") -> dict[str, str]:
 
 
 def _easy_headers(name: str) -> dict[str, str]:
-    payload = {"claims": [{"typ": "name", "val": name}, {"typ": "preferred_username", "val": f"{name.lower()}@contoso.com"}, {"typ": "oid", "val": f"oid-{name.lower()}"}, {"typ": "tid", "val": "tenant-a"}]}
-    principal = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
-    return {"x-ms-client-principal": principal, "x-dataforge-proxy-secret": "test-proxy-secret"}
+    return trusted_headers(
+        actor_id=f"oid-{name.lower()}",
+        tenant_id="tenant-a",
+        email=f"{name.lower()}@contoso.com",
+    )
 
 
 def _observed_payload() -> dict[str, object]:
@@ -236,7 +237,15 @@ def test_outcome_api_persists_lists_and_verifies(
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "outcome-api-projection-salt")
     monkeypatch.setenv("DF_ENVIRONMENT", "test")
-    monkeypatch.setenv("DF_SENSITIVE_AUTH_LOCAL_DEV_BYPASS", "1")
+    install_workspace_memberships(
+        monkeypatch,
+        {
+            "ws-roi": [
+                active_member("oid-owner", "tenant-a", "owner"),
+                active_member("oid-reviewer", "tenant-a", "admin"),
+            ]
+        },
+    )
     client = TestClient(app)
     owner_headers = _easy_headers("Owner")
     reviewer_headers = _easy_headers("Reviewer")

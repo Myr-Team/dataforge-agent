@@ -1,16 +1,12 @@
-import json
-from urllib.parse import quote
-
 import backend.control_plane as control_plane
 from backend.app import app
 from fastapi.testclient import TestClient
 import pytest
+from auth_fixtures import active_member, install_workspace_memberships, trusted_headers
 
 
 class RequestStub:
-    headers = {
-        "x-dataforge-actor": quote(json.dumps({"name": "Owner", "email": "owner@contoso.com"})),
-    }
+    headers = trusted_headers(actor_id="owner-oid", tenant_id="tenant-1")
 
 
 @pytest.fixture(autouse=True)
@@ -185,10 +181,14 @@ def test_governance_keeps_all_unknown_usage_null(monkeypatch) -> None:
     assert all(item["estimated_cost_usd"] is None for item in result["chargeback"]["members"])
 
     actor = {"actor_id": "owner-oid", "tenant_id": "tenant-1", "source": "easy_auth"}
-    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: actor)
-    monkeypatch.setattr(control_plane, "is_trusted_tenant_identity", lambda _actor: True)
-    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "owner")
-    response = TestClient(app).get("/api/workspaces/ws-unknown/governance-summary")
+    install_workspace_memberships(
+        monkeypatch,
+        {"ws-unknown": [active_member(actor["actor_id"], actor["tenant_id"], "owner")]},
+    )
+    response = TestClient(app).get(
+        "/api/workspaces/ws-unknown/governance-summary",
+        headers=trusted_headers(actor_id=actor["actor_id"], tenant_id=actor["tenant_id"]),
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["usage"]["totals"]["total_tokens"] is None

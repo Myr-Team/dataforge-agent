@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 import backend.data_workbench as data_workbench
 from backend.app import app
+from auth_fixtures import active_member, install_workspace_memberships, trusted_headers
 
 
 class FakeSecretStore:
@@ -45,10 +46,18 @@ def _configure_durable_connectors(tmp_path, monkeypatch: pytest.MonkeyPatch) -> 
     return secrets
 
 
+def _authorized_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    install_workspace_memberships(
+        monkeypatch,
+        {"ws-safe": [active_member("connector-owner-oid", "connector-tenant", "owner")]},
+    )
+    return TestClient(app, headers=trusted_headers(actor_id="connector-owner-oid", tenant_id="connector-tenant"))
+
+
 def test_connector_api_redacts_credentials_and_reconnects_after_session_state_clear(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_durable_connectors(tmp_path, monkeypatch)
     monkeypatch.setattr(data_workbench, "_sql_tables", lambda _payload: [{"schema": "dbo", "name": "sales", "id": "dbo.sales"}])
-    client = TestClient(app)
+    client = _authorized_client(monkeypatch)
 
     created = client.post(
         "/api/workspaces/ws-safe/connectors/sql/connect",
@@ -80,7 +89,7 @@ def test_sync_creates_safe_durable_task_and_connector_lineage(tmp_path, monkeypa
     monkeypatch.setattr(data_workbench, "run_workspace_ingest_job", lambda *_args: {"state": "ready"})
     lineage: dict[str, object] = {}
     monkeypatch.setattr(data_workbench, "_record_connector_lineage", lambda *_args, **kwargs: lineage.update(kwargs))
-    client = TestClient(app)
+    client = _authorized_client(monkeypatch)
     created = client.post(
         "/api/workspaces/ws-safe/connectors/sql/connect",
         json={"server": "sql.example", "database": "sales", "username": "reader", "password": "very-secret"},
@@ -104,7 +113,7 @@ def test_sync_creates_safe_durable_task_and_connector_lineage(tmp_path, monkeypa
 def test_connector_lifecycle_errors_expose_only_stable_codes(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_durable_connectors(tmp_path, monkeypatch)
     monkeypatch.setattr(data_workbench, "_blob_containers", lambda _payload: (_ for _ in ()).throw(RuntimeError("sig=never-expose;password=never-expose")))
-    client = TestClient(app, raise_server_exceptions=False)
+    client = _authorized_client(monkeypatch)
 
     response = client.post("/api/workspaces/ws-safe/connectors/blob/connect", json={"account": "storageacct", "sas": "sig=never-expose"})
 
@@ -118,7 +127,7 @@ def test_connector_lifecycle_errors_expose_only_stable_codes(tmp_path, monkeypat
 def test_sync_rejects_client_controlled_cursor_and_watermark(tmp_path, monkeypatch: pytest.MonkeyPatch, field: str, value: str) -> None:
     _configure_durable_connectors(tmp_path, monkeypatch)
     monkeypatch.setattr(data_workbench, "_sql_tables", lambda _payload: [{"schema": "dbo", "name": "sales", "id": "dbo.sales"}])
-    client = TestClient(app)
+    client = _authorized_client(monkeypatch)
     connector = client.post(
         "/api/workspaces/ws-safe/connectors/sql/connect",
         json={"server": "sql.example", "database": "sales", "username": "reader", "password": "very-secret"},

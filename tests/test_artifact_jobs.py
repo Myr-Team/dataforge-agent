@@ -673,6 +673,7 @@ def test_pdf_artifact_uses_an_opaque_name_and_workspace_binding(tmp_path: Path, 
     monkeypatch.setattr(render_pdf, "OUT_DIR", tmp_path)
     monkeypatch.setattr(artifact_registry, "ARTIFACT_RECORD_DIR", tmp_path / "artifact-registry")
     monkeypatch.setattr(artifact_registry, "blob_configured", lambda: False)
+    monkeypatch.setattr(artifact_registry.secrets, "token_urlsafe", lambda _size: "opaque_random_fixture_token_000001")
     monkeypatch.setattr(render_pdf, "_html_pdf", lambda _proposal, _template: b"%PDF-1.4\n%%EOF")
 
     result = render_pdf.render_pdf_report(
