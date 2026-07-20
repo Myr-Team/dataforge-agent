@@ -10,10 +10,10 @@ import {
   governancePermissions,
   invitationLifecycleViewModel,
   memberDirectoryViewModel,
-  roiViewModel,
   runTraceReferenceViewModel,
   traceViewModel,
 } from "./governanceViewModel.js";
+import { costValueViewModel } from "./costValueViewModel.js";
 import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, createWorkspaceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 import {
@@ -79,7 +79,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceTraceStatus, loadWorkspaceRoi, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory } from "./api.js";
+import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceTraceStatus, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -2384,6 +2384,86 @@ function GovernanceSectionHead({ icon: Icon, title, description, badge }) {
   );
 }
 
+export function CostValuePanel({ data, loading, error, onRetry, onCreateScenario }) {
+  const view = costValueViewModel(data || {});
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
+
+  const submitScenario = async (event) => {
+    event.preventDefault();
+    if (!onCreateScenario || creating) return;
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const expectedSavedHours = String(values.get("expected_saved_hours") || "").trim();
+    const payload = {
+      title: String(values.get("title") || "").trim(),
+      currency: String(values.get("currency") || "").trim().toUpperCase(),
+      expected_revenue: String(values.get("expected_revenue") || "").trim(),
+      expected_avoided_cost: String(values.get("expected_avoided_cost") || "").trim(),
+      pilot_cost: String(values.get("pilot_cost") || "").trim(),
+      time_horizon_days: String(values.get("time_horizon_days") || "").trim(),
+      ...(expectedSavedHours ? { expected_saved_hours: expectedSavedHours } : {}),
+    };
+    setCreateError("");
+    setCreating(true);
+    try {
+      await onCreateScenario(payload);
+      form.reset();
+    } catch (cause) {
+      setCreateError(cause?.message || "情景估算保存失败，请重试");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <section className="gov-section cost-value-panel" aria-label="成本与价值">
+      <GovernanceSectionHead
+        icon={TrendingUp}
+        title="成本与价值"
+        description="运行成本、结果证据、已验证 ROI 与情景估算分别记录，不相互升级。"
+        badge={loading ? null : { label: view.realized.label, tone: view.realized.tone }}
+      />
+      <GovernanceInlineState loading={loading} error={error} onRetry={onRetry}>
+        <dl className="cost-value-facts">
+          <div><dt>已观察成本</dt><dd>{view.cost.totalText}</dd><small>{view.cost.label}</small></div>
+          <div><dt>结果证据</dt><dd>{view.outcomes.count ? `${view.outcomes.count} 条` : "未记录"}</dd><small>{view.outcomes.label}</small></div>
+          <div><dt>已验证 ROI</dt><dd>{view.realized.roiText}</dd><small>{view.realized.valueText}</small></div>
+          <div><dt>Foundry 追踪来源</dt><dd>{view.foundry.label}</dd><small>{view.foundry.official ? "官方来源" : "未用于 ROI 结论"}</small></div>
+        </dl>
+
+        <div className="cost-value-scenarios">
+          <div className="cost-value-subhead"><h4>情景估算</h4><span>仅用于决策假设，不会覆盖已验证 ROI。</span></div>
+          {view.scenarios.length ? (
+            <div className="cost-value-scenario-list">
+              {view.scenarios.map((scenario) => (
+                <div className="cost-value-scenario" key={scenario.id}>
+                  <div><b>{scenario.title}</b><small>{scenario.revision ? `版本 ${scenario.revision}` : "版本未记录"}</small></div>
+                  <span>{scenario.valueText}</span>
+                  <span>{scenario.roiText}</span>
+                  <span className={`gov-status ${scenario.tone}`}>{scenario.badge}</span>
+                </div>
+              ))}
+            </div>
+          ) : <p className="gov-evidence-note">尚未记录情景估算。添加预算与预期价值后，会保存一条不可变版本记录。</p>}
+        </div>
+
+        <form className="cost-value-form" onSubmit={submitScenario}>
+          <label><span>情景名称</span><input name="title" maxLength="160" required placeholder="例如：首月小范围试点" /></label>
+          <label><span>币种</span><input name="currency" maxLength="3" defaultValue="CNY" required aria-label="币种代码" /></label>
+          <label><span>预期收入</span><input name="expected_revenue" type="number" min="0" step="0.01" required /></label>
+          <label><span>避免成本</span><input name="expected_avoided_cost" type="number" min="0" step="0.01" required /></label>
+          <label><span>试点成本</span><input name="pilot_cost" type="number" min="0" step="0.01" required /></label>
+          <label><span>周期（天）</span><input name="time_horizon_days" type="number" min="1" max="3650" required /></label>
+          <label><span>节省工时（可选）</span><input name="expected_saved_hours" type="number" min="0" step="1" /></label>
+          <button type="submit" className="cost-value-submit" disabled={creating}><Plus size={14} />{creating ? "保存中" : "记录情景"}</button>
+        </form>
+        {createError ? <p className="gov-evidence-note error" role="alert">{createError}</p> : null}
+      </GovernanceInlineState>
+    </section>
+  );
+}
+
 const auditActionLabels = {
   "file.create": "创建文件",
   "file.edit": "编辑文件",
@@ -2400,17 +2480,14 @@ const auditActionLabels = {
   "artifact.generate": "生成产物",
 };
 
-function GovernanceSummaryPanel({ data, invitationState, permissionsPayload, permissionState, windowValue, onWindowChange, onRetry, onInvitationRetry, onPermissionRetry, onLoadMore, loadingMore }) {
+function GovernanceSummaryPanel({ data, invitationState, permissionsPayload, permissionState, windowValue, onWindowChange, onRetry, onCreateScenario, onInvitationRetry, onPermissionRetry, onLoadMore, loadingMore }) {
   const trace = traceViewModel(data.trace || {});
-  const roi = roiViewModel({ local: data.roi || {} });
   const chargeback = chargebackViewModel(data.chargeback || {});
   const permissions = governancePermissions(permissionsPayload || {});
   const invitations = invitationLifecycleViewModel(invitationState.data || {});
   const auditEvents = (data.audit?.events || []).map(auditEventViewModel);
   const errors = data.errors || {};
   const traceBadge = data.loading ? null : { label: trace.label, tone: trace.tone };
-  const localBadge = data.loading ? null : { label: roi.local.label, tone: roi.local.tone };
-  const providerBadge = data.loading ? null : { label: roi.provider.label, tone: roi.provider.tone };
   return (
     <div className="gov-workspace" data-testid="governance-frontend">
       <div className="gov-toolbar">
@@ -2441,33 +2518,7 @@ function GovernanceSummaryPanel({ data, invitationState, permissionsPayload, per
         </GovernanceInlineState>
       </section>
 
-      <div className="gov-roi-band">
-        <section className="gov-section" aria-label="本地 ROI">
-          <GovernanceSectionHead icon={TrendingUp} title="本地 ROI" description="由工作区运行、价格配置和来源关联结果计算，不接受 Foundry 数值覆盖。" badge={localBadge} />
-          <GovernanceInlineState loading={data.loading} error={errors.roi} onRetry={onRetry}>
-            <dl className="gov-facts compact">
-              <div><dt>业务价值</dt><dd>{roi.local.businessValue.text}</dd></div>
-              <div><dt>模型成本</dt><dd>{roi.local.costText}</dd></div>
-              <div><dt>Token</dt><dd>{roi.local.tokenText}</dd></div>
-              <div><dt>结果证据</dt><dd>{roi.local.outcomeCount ? `${roi.local.outcomeCount} 条` : "未记录"}</dd></div>
-            </dl>
-            <p className="gov-evidence-note">{roi.local.unverifiedCount ? `${roi.local.unverifiedCount} 条结果尚未独立验证。` : roi.localStatus === "verified" ? "所有窗口内结果均有独立验证记录。" : "当前状态不会因 Foundry 证据而提升。"}</p>
-          </GovernanceInlineState>
-        </section>
-
-        <section className="gov-section" aria-label="Foundry ROI">
-          <GovernanceSectionHead icon={Server} title="Foundry ROI" description="独立展示外部签名快照；未配置、发现验证与数值验证互不替代。" badge={providerBadge} />
-          <GovernanceInlineState loading={data.loading} error={errors.roi} onRetry={onRetry}>
-            <dl className="gov-facts compact">
-              <div><dt>连接证据</dt><dd>{roi.foundryConnectionState === "connected" ? "快照签名已验证" : roi.provider.label}</dd></div>
-              <div><dt>业务价值</dt><dd>{roi.provider.businessValue.text}</dd></div>
-              <div><dt>供应方状态</dt><dd>{roi.provider.label}</dd></div>
-              <div><dt>本地差异</dt><dd>{roi.difference?.amount != null && roi.difference?.currency ? `${roi.difference.currency} ${roi.difference.amount}` : "未生成"}</dd></div>
-            </dl>
-            <p className="gov-evidence-note">Foundry 记录始终与本地 ROI 分开，不会合并或提升本地证据状态。</p>
-          </GovernanceInlineState>
-        </section>
-      </div>
+      <CostValuePanel data={data.roi || {}} loading={data.loading} error={errors.roi} onRetry={onRetry} onCreateScenario={onCreateScenario} />
 
       <section className="gov-section" aria-label="成员 Token 与成本归因">
         <GovernanceSectionHead icon={Coins} title="成员 Token 与成本归因" description="按可信成员身份和已记录用量归因；未知价格、混合币种和部分证据保持原状态。" badge={!data.loading && permissions.canReadChargeback ? { label: chargeback.totalCostText, tone: chargeback.evidenceStatus === "complete" ? "ok" : "warn" } : null} />
@@ -3007,7 +3058,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
     setGovernanceData(emptyGovernanceData(workspaceId, true));
     const [traceResult, roiResult, auditResult, chargebackResult] = await Promise.allSettled([
       loadWorkspaceTraceStatus(workspaceId),
-      loadWorkspaceRoi(workspaceId, windowQuery),
+      loadWorkspaceCostValue(workspaceId, windowQuery),
       permissionsReady && memberPermissions.canReadAudit ? loadWorkspaceGovernanceAuditEvents(workspaceId, { limit: 25 }) : Promise.resolve(null),
       permissionsReady && memberPermissions.canReadChargeback ? loadWorkspaceChargeback(workspaceId, windowQuery) : Promise.resolve(null),
     ]);
@@ -3024,6 +3075,11 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
     if (permissionsReady && memberPermissions.canReadChargeback && chargebackResult.status === "fulfilled") next.chargeback = chargebackResult.value;
     else if (permissionsReady && memberPermissions.canReadChargeback) next.errors.chargeback = "成员归因读取失败，请重试";
     if (governanceGuard.current.isCurrent(requestToken, workspaceId)) setGovernanceData(next);
+  };
+  const createGovernanceScenario = async (payload) => {
+    if (!workspaceId) throw new Error("请先选择工作区");
+    await createWorkspaceRoiScenario(workspaceId, payload);
+    await loadGovernanceEvidence();
   };
   const loadInvitationHistory = async () => {
     if (!workspaceId || !permissionsReady || !memberPermissions.canReadInvitations) return;
@@ -3424,6 +3480,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
                 windowValue={governanceWindow}
                 onWindowChange={setGovernanceWindow}
                 onRetry={loadGovernanceEvidence}
+                onCreateScenario={createGovernanceScenario}
                 onInvitationRetry={loadInvitationHistory}
                 onPermissionRetry={loadMembersContract}
                 onLoadMore={loadMoreGovernanceAudit}
@@ -4897,7 +4954,7 @@ function eventTitle(item) {
   switch (item.event) {
     case "ready": return "连接运行通道";
     case "user": return "接收用户问题";
-    case "route": return `路由到 ${data.intent || "workflow"}`;
+    case "route": return routeTraceLabel(data);
     case "plan": return `调度 ${(data.experts || []).length} 个 Agent`;
     case "role_change": return "Agent 接手";
     case "tool_call": return `调用 ${data.name || "tool"}`;

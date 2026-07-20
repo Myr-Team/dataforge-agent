@@ -32,6 +32,7 @@ _READ_ACTIONS = {
     "artifact.read",
     "member.read",
     "outcome.read",
+    "roi.scenario.read",
 }
 _EDITOR_ACTIONS = {
     "file.create",
@@ -40,6 +41,7 @@ _EDITOR_ACTIONS = {
     "analysis.run",
     "connector.manage",
     "outcome.record",
+    "roi.scenario.write",
     "artifact.generate",
 }
 _ADMIN_ACTIONS = {

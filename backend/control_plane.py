@@ -30,12 +30,13 @@ try:
     from .evidence_bundle import public_artifact_projection
     from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
-    from .foundry_roi import discover_foundry_roi, reconcile_foundry_roi
+    from .foundry_roi import public_foundry_integration
     from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from .invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
-    from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
+    from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, realized_roi_evidence, record_in_window, roi_cost_evidence, roi_outcome_evidence
+    from .roi_scenario_store import ScenarioPersistenceError, create_roi_scenario, list_roi_scenarios, scenario_projection
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
@@ -53,12 +54,13 @@ except ImportError:
     from evidence_bundle import public_artifact_projection
     from graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
-    from foundry_roi import discover_foundry_roi, reconcile_foundry_roi
+    from foundry_roi import public_foundry_integration
     from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
-    from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, record_in_window
+    from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, realized_roi_evidence, record_in_window, roi_cost_evidence, roi_outcome_evidence
+    from roi_scenario_store import ScenarioPersistenceError, create_roi_scenario, list_roi_scenarios, scenario_projection
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
@@ -206,6 +208,17 @@ async def workspace_roi(
     return await _call(workspace_roi_snapshot, workspace_id, from_value, to_value)
 
 
+@router.get("/api/workspaces/{workspace_id}/governance/cost-value")
+async def workspace_cost_value(
+    workspace_id: str,
+    request: Request,
+    from_value: str = Query(alias="from", max_length=64),
+    to_value: str = Query(alias="to", max_length=64),
+) -> dict[str, Any]:
+    _require_sensitive_workspace_action(workspace_id, request, "workspace.read")
+    return await _call(workspace_cost_value_snapshot, workspace_id, from_value, to_value)
+
+
 @router.get("/api/workspaces/{workspace_id}/governance/chargeback")
 async def workspace_chargeback(
     workspace_id: str,
@@ -246,6 +259,34 @@ async def workspace_outcomes(workspace_id: str, request: Request) -> dict[str, A
     events = await _call(list_outcome_events, workspace_id)
     public_events = await _call(_public_outcome_events, workspace_id, events)
     return {"workspace_id": workspace_id, "events": public_events, "count": len(public_events)}
+
+
+@router.get("/api/workspaces/{workspace_id}/governance/scenarios")
+async def workspace_roi_scenarios(workspace_id: str, request: Request) -> dict[str, Any]:
+    _require_sensitive_workspace_action(workspace_id, request, "roi.scenario.read")
+    scenarios = await _call(list_roi_scenarios, workspace_id)
+    public = [await _call(scenario_projection, workspace_id, item) for item in scenarios]
+    return {"workspace_id": workspace_id, "scenarios": public, "count": len(public)}
+
+
+@router.post("/api/workspaces/{workspace_id}/governance/scenarios")
+async def workspace_roi_scenario_create(workspace_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+    _require_sensitive_workspace_action(workspace_id, request, "roi.scenario.write")
+    data = dict(body or {})
+    previous_id = data.pop("previous_id", None)
+    _audit_required(request, workspace_id, "roi.scenario.write", "roi_scenario", "pending")
+    try:
+        scenario = await _call(
+            create_roi_scenario,
+            workspace_id,
+            data,
+            actor_from_request(request),
+            previous_id=previous_id,
+        )
+    except Exception:
+        _audit_failed(request, workspace_id, "roi.scenario.write", "roi_scenario", "pending")
+        raise
+    return {"workspace_id": workspace_id, "scenario": await _call(scenario_projection, workspace_id, scenario)}
 
 
 @router.get("/api/workspaces/{workspace_id}/experiments")
@@ -378,6 +419,8 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
         raise HTTPException(status_code=503, detail="Audit persistence is unavailable") from exc
     except InvitationPersistenceError as exc:
         raise HTTPException(status_code=503, detail="Invitation persistence is unavailable") from exc
+    except ScenarioPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="ROI scenario persistence is unavailable") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1701,14 +1744,25 @@ def workspace_roi_snapshot(workspace_id: str, from_value: str, to_value: str) ->
         verification_events=list_verification_events(workspace_id),
         truncated=truncated,
     )
-    reconciliation = reconcile_foundry_roi(local=local)
-    local["foundry_roi"] = {
-        "status": reconciliation["foundry_status"],
-        "provider_snapshot": reconciliation["provider"],
-        "difference": reconciliation["difference"],
-        "reconciliation": reconciliation["reconciliation"],
-    }
+    local["cost_evidence"] = roi_cost_evidence(local)
+    local["outcome_evidence"] = roi_outcome_evidence(local)
+    local["foundry_integration"] = public_foundry_integration()
     return local
+
+
+def workspace_cost_value_snapshot(workspace_id: str, from_value: str, to_value: str) -> dict[str, Any]:
+    snapshot = workspace_roi_snapshot(workspace_id, from_value, to_value)
+    scenarios = [scenario_projection(workspace_id, item) for item in list_roi_scenarios(workspace_id)]
+    return {
+        "workspace_id": workspace_id,
+        "window": snapshot["window"],
+        "cost_evidence": snapshot["cost_evidence"],
+        "outcome_evidence": snapshot["outcome_evidence"],
+        "realized_roi": realized_roi_evidence(snapshot),
+        "scenarios": scenarios,
+        "foundry_integration": snapshot["foundry_integration"],
+        "generated_at": snapshot["generated_at"],
+    }
 
 
 def workspace_member_chargeback(workspace_id: str, from_value: str, to_value: str) -> dict[str, Any]:
@@ -1791,7 +1845,7 @@ def _foundry_monitoring_status() -> dict[str, Any]:
     otel_sdk = bool(tracing.get("otel_sdk"))
     status = "partial" if app_insights or otel_sdk else "not_configured"
     registered = str(os.environ.get("DF_FOUNDRY_AGENT_REGISTERED") or "0").strip().lower() in {"1", "true", "yes", "on"}
-    native_roi = discover_foundry_roi().model_dump(mode="json")
+    foundry_integration = public_foundry_integration()
     return {
         "status": status,
         "source": "application_insights" if app_insights else None,
@@ -1799,7 +1853,7 @@ def _foundry_monitoring_status() -> dict[str, Any]:
         "service_name": tracing.get("service_name"),
         "gen_ai_semantic_conventions": app_insights and otel_sdk,
         "foundry_agent_registered": registered,
-        "native_roi_status": native_roi["state"],
+        "foundry_integration_state": foundry_integration["state"],
         "note": (
             "Exporter configuration is present, but remote trace delivery still requires a matching Azure Monitor query."
             if status == "partial"
@@ -1945,18 +1999,11 @@ def _workspace_roi_summary(
         (str(item.get("observed_at") or "") for item in observed_outcomes),
         default="",
     ) or None
-    native_roi = discover_foundry_roi().model_dump(mode="json")
+    foundry_integration = public_foundry_integration()
     return {
         "method": "outcome_ledger" if observed_outcomes else "dataforge_estimate",
         "status": outcome_status,
-        "native_foundry_roi": {
-            "status": native_roi["state"],
-            "configured": native_roi["configured"],
-            "source": native_roi["source"],
-            "observed_at": native_roi["observed_at"],
-            "provider_version": native_roi["provider_version"],
-            "note": native_roi["reason"],
-        },
+        "foundry_integration": foundry_integration,
         "currency": "USD",
         "estimated_cost_usd": None,
         "estimated_value_usd": None,

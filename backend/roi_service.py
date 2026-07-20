@@ -293,6 +293,74 @@ def build_roi_snapshot(workspace_id: str, window: Mapping[str, Any], *, runs: It
     return model.model_dump(mode="json")
 
 
+def roi_cost_evidence(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Project observed model-cost coverage without inventing a monetary value."""
+    cost = snapshot.get("cost") if isinstance(snapshot.get("cost"), Mapping) else {}
+    status = {"complete": "complete", "partial": "incomplete", "unknown": "not_configured"}.get(
+        str(cost.get("status") or ""),
+        "not_configured",
+    )
+    return {
+        "status": status,
+        "total": cost.get("total") if status == "complete" else None,
+        "currency": cost.get("currency") if status == "complete" else None,
+        "by_currency": cost.get("by_currency") if isinstance(cost.get("by_currency"), Mapping) else {},
+        "unpriced_models": list(cost.get("unpriced_models") or [])[:50],
+        "observed_run_ids": list(snapshot.get("observed_run_ids") or [])[:300],
+        "lineage_complete": snapshot.get("lineage_complete") is True,
+    }
+
+
+def roi_outcome_evidence(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep recorded outcomes separate from any scenario or monetary estimate."""
+    outcomes = [str(item) for item in (snapshot.get("outcome_event_ids") or [])[:300] if str(item).strip()]
+    verified = [str(item) for item in (snapshot.get("verified_outcome_event_ids") or [])[:300] if str(item).strip()]
+    status = "verified" if outcomes and len(verified) == len(outcomes) else "observed" if outcomes else "not_recorded"
+    return {
+        "status": status,
+        "outcome_event_ids": outcomes,
+        "verified_outcome_event_ids": verified,
+        "lineage_complete": snapshot.get("lineage_complete") is True,
+    }
+
+
+def realized_roi_evidence(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Calculate ROI only from complete cost and independently verified outcomes."""
+    outcome_ids = [str(item) for item in (snapshot.get("outcome_event_ids") or []) if str(item).strip()]
+    verified_ids = [str(item) for item in (snapshot.get("verified_outcome_event_ids") or []) if str(item).strip()]
+    empty = {"status": "not_recorded", "value": None, "currency": None, "net_value": None, "roi_ratio": None}
+    if not outcome_ids:
+        return empty
+    if str(snapshot.get("status") or "") != "verified" or set(outcome_ids) != set(verified_ids):
+        return {**empty, "status": "incomplete"}
+    cost = snapshot.get("cost") if isinstance(snapshot.get("cost"), Mapping) else {}
+    value = snapshot.get("business_value") if isinstance(snapshot.get("business_value"), Mapping) else {}
+    if str(value.get("status") or "") == "not_monetized" or value.get("total") is None:
+        return {**empty, "status": "not_monetized"}
+    if (
+        str(cost.get("status") or "") != "complete"
+        or cost.get("total") is None
+        or not isinstance(cost.get("currency"), str)
+        or cost.get("currency") != value.get("currency")
+    ):
+        return {**empty, "status": "incomplete"}
+    try:
+        cost_total = float(cost["total"])
+        value_total = float(value["total"])
+    except (KeyError, TypeError, ValueError):
+        return {**empty, "status": "incomplete"}
+    if not math.isfinite(cost_total) or not math.isfinite(value_total) or cost_total < 0 or value_total < 0:
+        return {**empty, "status": "incomplete"}
+    net = _money(value_total - cost_total)
+    return {
+        "status": "verified",
+        "value": _money(value_total),
+        "currency": str(cost["currency"]),
+        "net_value": net,
+        "roi_ratio": None if cost_total == 0 else _money(net / cost_total),
+    }
+
+
 def member_chargeback(workspace_id: str, window: Mapping[str, Any], *, runs: Iterable[Mapping[str, Any]], messages: Iterable[Mapping[str, Any]], tasks: Iterable[Mapping[str, Any]], memberships: Iterable[Mapping[str, Any]], prices: Iterable[Mapping[str, Any]] | None = None, pseudonym_salt: str | None = None, truncated: bool = False) -> dict[str, Any]:
     normalized_window, catalog = parse_time_window(window.get("from"), window.get("to")), _catalog(prices)
     try:
@@ -549,4 +617,4 @@ def _dedupe(items: list[Assumption]) -> list[Assumption]:
 def _money(value: float) -> float: return round(value, 6)
 
 
-__all__ = ["ChargebackSnapshot", "PriceCatalog", "PriceEntry", "RoiSnapshot", "RoiWindowError", "build_roi_snapshot", "load_price_catalog", "member_chargeback", "parse_time_window", "record_in_window"]
+__all__ = ["ChargebackSnapshot", "PriceCatalog", "PriceEntry", "RoiSnapshot", "RoiWindowError", "build_roi_snapshot", "load_price_catalog", "member_chargeback", "parse_time_window", "realized_roi_evidence", "record_in_window", "roi_cost_evidence", "roi_outcome_evidence"]

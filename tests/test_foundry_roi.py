@@ -18,6 +18,7 @@ from backend.foundry_roi import (
     ProviderRoiSnapshot,
     VerifiedDiscoveryAttestation,
     discover_foundry_roi,
+    public_foundry_integration,
     read_foundry_roi,
     reconcile_foundry_roi,
 )
@@ -179,6 +180,17 @@ def test_missing_provider_does_not_attempt_network_or_claim_connection(monkeypat
     assert status.state == "not_configured"
     assert status.configured is False
     assert "provider" in status.reason.lower()
+
+
+def test_public_integration_maps_missing_provider_to_normal_not_connected_state(monkeypatch) -> None:
+    configure_target(monkeypatch)
+
+    integration = public_foundry_integration()
+
+    assert integration["state"] == "not_connected"
+    assert integration["official_source"] is False
+    assert integration["reason_code"] == "provider_not_installed"
+    assert "project.services" not in str(integration)
 
 
 def test_provider_must_discover_exact_target_before_connected(monkeypatch) -> None:

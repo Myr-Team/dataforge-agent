@@ -280,6 +280,40 @@ def discover_foundry_roi(
     return _verify_external_attestation(config, proof, None, verifier)[0]
 
 
+def public_foundry_integration(status: FoundryRoiStatus | None = None) -> dict[str, Any]:
+    """Return only the externally supportable Foundry integration state.
+
+    A configured endpoint or provider discovery is not proof of an official ROI
+    read.  This deliberately omits target configuration and provider monetary
+    values, which remain internal until a supported, attested provider exists.
+    """
+    current = status or discover_foundry_roi()
+    state = {
+        "connected": "verified",
+        "discovery_verified": "available",
+        "configured_unverified": "available",
+        "not_configured": "not_connected",
+        "unavailable": "not_connected",
+    }[current.state]
+    if current.state == "not_configured":
+        reason_code = "provider_not_installed" if "provider" in current.reason.lower() else "not_configured"
+    elif current.state == "configured_unverified":
+        reason_code = "attestation_required"
+    elif current.state == "discovery_verified":
+        reason_code = "snapshot_attestation_required"
+    elif current.state == "connected":
+        reason_code = "verified"
+    else:
+        reason_code = "unavailable"
+    return {
+        "state": state,
+        "official_source": state == "verified",
+        "provider_version": current.provider_version,
+        "observed_at": current.observed_at.isoformat(),
+        "reason_code": reason_code,
+    }
+
+
 def _provider_discovery(
     config: _FoundryRoiAdapterConfig,
     provider: FoundryRoiProvider | None,
@@ -907,6 +941,7 @@ __all__ = [
     "SignedFoundryRoiAttestation",
     "VerifiedDiscoveryAttestation",
     "discover_foundry_roi",
+    "public_foundry_integration",
     "read_foundry_roi",
     "reconcile_foundry_roi",
 ]

@@ -335,6 +335,18 @@ export async function loadWorkspaceRoi(workspaceId, { from, to }) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/roi?${params.toString()}`);
 }
 
+export async function loadWorkspaceCostValue(workspaceId, { from, to }) {
+  const params = new URLSearchParams({ from, to });
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/cost-value?${params.toString()}`);
+}
+
+export async function createWorkspaceRoiScenario(workspaceId, payload) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/scenarios`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function loadWorkspaceChargeback(workspaceId, { from, to }) {
   const params = new URLSearchParams({ from, to });
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/chargeback?${params.toString()}`);

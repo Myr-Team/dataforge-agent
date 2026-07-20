@@ -12,6 +12,8 @@ from backend.roi_service import (
     build_roi_snapshot,
     member_chargeback,
     parse_time_window,
+    roi_cost_evidence,
+    roi_outcome_evidence,
 )
 
 
@@ -123,6 +125,9 @@ def test_missing_model_price_is_partial_and_never_zero_cost() -> None:
     assert snapshot["cost"]["total"] is None
     assert snapshot["cost"]["status"] == "partial"
     assert snapshot["cost"]["unpriced_models"] == ["unknown-model"]
+    assert roi_cost_evidence(snapshot)["status"] == "incomplete"
+    assert roi_cost_evidence(snapshot)["total"] is None
+    assert roi_outcome_evidence(snapshot)["status"] == "not_recorded"
 
 
 def test_verified_state_requires_source_linked_outcome_and_independent_reviewer_event() -> None:

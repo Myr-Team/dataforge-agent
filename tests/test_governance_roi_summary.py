@@ -260,7 +260,7 @@ def test_governance_reports_foundry_compatible_observability_truthfully(monkeypa
     assert "remote trace delivery" in monitoring["note"]
     assert monitoring["gen_ai_semantic_conventions"] is True
     assert monitoring["source"] == "application_insights"
-    assert result["roi"]["native_foundry_roi"]["status"] == "not_configured"
+    assert result["roi"]["foundry_integration"]["state"] == "not_connected"
 
 
 def test_governance_ignores_foundry_roi_feature_flag_without_provider(monkeypatch) -> None:
@@ -271,5 +271,5 @@ def test_governance_ignores_foundry_roi_feature_flag_without_provider(monkeypatc
 
     result = control_plane.workspace_governance_summary("ws-no-provider", RequestStub())
 
-    assert result["foundry_monitoring"]["native_roi_status"] == "not_configured"
-    assert result["roi"]["native_foundry_roi"]["status"] == "not_configured"
+    assert result["foundry_monitoring"]["foundry_integration_state"] == "not_connected"
+    assert result["roi"]["foundry_integration"]["state"] == "not_connected"

@@ -460,8 +460,13 @@ def test_roi_and_chargeback_api_enforce_window_scope_and_member_comparison_role(
 
     roi = client.get(f"/api/workspaces/ws-roi-api/governance/roi{query}", headers=owner_headers)
     assert roi.status_code == 200, roi.text
-    assert roi.json()["business_value"] is None
-    assert roi.json()["cost"]["total"] == 0.0006
+    roi_payload = roi.json()
+    assert roi_payload["business_value"] is None
+    assert roi_payload["cost"]["total"] == 0.0006
+    assert roi_payload["cost_evidence"]["status"] == "complete"
+    assert roi_payload["outcome_evidence"]["status"] == "not_recorded"
+    assert roi_payload["foundry_integration"]["state"] == "not_connected"
+    assert "foundry_roi" not in roi_payload
     assert "spoofed@example.com" not in roi.text
 
     invalid_window = client.get("/api/workspaces/ws-roi-api/governance/roi?from=2026-07-10&to=2026-07-11T00:00:00Z", headers=owner_headers)

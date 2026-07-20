@@ -75,11 +75,15 @@ def test_dynamic_maf_view_model_behavior() -> None:
 
 def test_governance_ui_separates_estimated_roi_from_observed_outcomes() -> None:
     source = COMPONENTS.read_text(encoding="utf-8")
+    api_source = (COMPONENTS.parent / "api.js").read_text(encoding="utf-8")
 
-    assert 'roi.local.outcomeCount ? `${roi.local.outcomeCount} 条` : "未记录"' in source
-    assert 'roi.localStatus === "verified"' in source
-    assert 'roi.foundryConnectionState === "connected"' in source
-    assert "roi.provider.businessValue.text" in source
+    assert "CostValuePanel" in source
+    assert "成本与价值" in source
+    assert "情景估算" in source
+    assert 'foundry.official ? "官方来源" : "未用于 ROI 结论"' in source
+    assert "loadWorkspaceCostValue" in source
+    assert "/governance/cost-value" in api_source
+    assert "roi.provider.businessValue.text" not in source
     assert "governancePermissions(" in source
 
 
