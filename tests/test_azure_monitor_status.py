@@ -261,15 +261,15 @@ def test_query_is_bounded_and_matches_only_hashed_workspace_run_and_correlation(
     assert workspace_hash in query
     assert run_hash in query
     assert correlation_hash in query
-    assert query.startswith("union isfuzzy=true withsource=source_table requests, dependencies, traces")
-    assert "traces" in query
-    assert "customDimensions" in query
+    assert query.startswith("union isfuzzy=true withsource=source_table AppRequests, AppDependencies, AppTraces")
+    assert "AppTraces" in query
+    assert 'column_ifexists("Properties"' in query
     assert "take 1" in query
     assert args[2]["timespan"].total_seconds() <= 15 * 60
     assert args[2]["server_timeout"] <= 10
 
 
-def test_query_accepts_foundry_root_span_from_traces_table(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_query_accepts_foundry_root_span_from_workspace_app_traces_table(monkeypatch: pytest.MonkeyPatch) -> None:
     _monitor_env(monkeypatch)
     workspace_id = "workspace-private"
     run_id = "run-private"
@@ -281,7 +281,7 @@ def test_query_accepts_foundry_root_span_from_traces_table(monkeypatch: pytest.M
                 correlation_id,
                 _APPLICATION_ID,
                 _RESOURCE_ID,
-                "traces",
+                "AppTraces",
                 monitor.hash_trace_identifier(run_id),
                 monitor.hash_trace_identifier(correlation_id),
             ]
@@ -292,7 +292,9 @@ def test_query_accepts_foundry_root_span_from_traces_table(monkeypatch: pytest.M
 
     assert remote is not None
     assert remote.source_table == "traces"
-    assert "requests, dependencies, traces" in client.calls[0][1]
+    recorded_query = client.calls[0][1]
+    assert "AppRequests, AppDependencies, AppTraces" in recorded_query
+    assert 'column_ifexists("Properties"' in recorded_query
 
 
 def test_telemetry_metrics_are_aggregate_only_and_bound_to_hashed_run_identity(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -341,6 +343,8 @@ def test_telemetry_metrics_are_aggregate_only_and_bound_to_hashed_run_identity(m
     assert monitor.hash_trace_identifier(run_id) in recorded_query
     assert monitor.hash_trace_identifier(correlation_id) in recorded_query
     assert "summarize" in recorded_query
+    assert "AppRequests" in recorded_query
+    assert 'column_ifexists("Properties"' in recorded_query
 
 
 def test_partial_logs_query_is_unavailable_and_never_uses_partial_data(monkeypatch: pytest.MonkeyPatch) -> None:

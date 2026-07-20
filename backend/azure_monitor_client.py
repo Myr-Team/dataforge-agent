@@ -344,7 +344,7 @@ def query_trace_delivery(
             correlation_hash=str(row.get("correlation_hash") or ""),
             application_id=str(row.get("appId") or ""),
             resource_id=str(row.get("_ResourceId") or ""),
-            source_table=str(row.get("source_table") or "").lower(),
+            source_table=_logical_source_table(row.get("source_table")),
         )
     except Exception:
         return None
@@ -463,13 +463,14 @@ def _delivery_query(workspace_hash: str, run_hash: str, correlation_hash: str) -
             raise ValueError("trace hash must be sha256")
     return "\n".join(
         (
-            "union isfuzzy=true withsource=source_table requests, dependencies, traces",
-            f'| where tostring(customDimensions["dataforge.workspace.hash"]) == "{workspace_hash}"',
-            f'| where tostring(customDimensions["dataforge.run.hash"]) == "{run_hash}"',
-            f'| where tostring(customDimensions["dataforge.correlation.hash"]) == "{correlation_hash}"',
-            "| project timestamp, operation_Id, appId, _ResourceId, source_table,",
-            '    run_hash=tostring(customDimensions["dataforge.run.hash"]),',
-            '    correlation_hash=tostring(customDimensions["dataforge.correlation.hash"])',
+            "union isfuzzy=true withsource=source_table AppRequests, AppDependencies, AppTraces",
+            '| extend telemetry_properties=column_ifexists("Properties", dynamic({}))',
+            f'| where tostring(telemetry_properties["dataforge.workspace.hash"]) == "{workspace_hash}"',
+            f'| where tostring(telemetry_properties["dataforge.run.hash"]) == "{run_hash}"',
+            f'| where tostring(telemetry_properties["dataforge.correlation.hash"]) == "{correlation_hash}"',
+            "| project timestamp=TimeGenerated, operation_Id=OperationId, appId=ResourceGUID, _ResourceId, source_table,",
+            '    run_hash=tostring(telemetry_properties["dataforge.run.hash"]),',
+            '    correlation_hash=tostring(telemetry_properties["dataforge.correlation.hash"])',
             "| take 1",
         )
     )
@@ -481,18 +482,19 @@ def _metrics_query(workspace_hash: str, run_hash: str, correlation_hash: str) ->
             raise ValueError("trace hash must be sha256")
     return "\n".join(
         (
-            "union isfuzzy=true withsource=source_table requests, dependencies, traces",
-            f'| where tostring(customDimensions["dataforge.workspace.hash"]) == "{workspace_hash}"',
-            f'| where tostring(customDimensions["dataforge.run.hash"]) == "{run_hash}"',
-            f'| where tostring(customDimensions["dataforge.correlation.hash"]) == "{correlation_hash}"',
+            "union isfuzzy=true withsource=source_table AppRequests, AppDependencies, AppTraces",
+            '| extend telemetry_properties=column_ifexists("Properties", dynamic({}))',
+            f'| where tostring(telemetry_properties["dataforge.workspace.hash"]) == "{workspace_hash}"',
+            f'| where tostring(telemetry_properties["dataforge.run.hash"]) == "{run_hash}"',
+            f'| where tostring(telemetry_properties["dataforge.correlation.hash"]) == "{correlation_hash}"',
             "| summarize record_count=count(),",
-            '    request_count=countif(source_table == "requests"),',
-            '    dependency_count=countif(source_table == "dependencies"),',
-            '    trace_event_count=countif(source_table == "traces"),',
-            '    error_count=countif(tolower(tostring(success)) == "false"),',
-            "    first_observed_at=min(timestamp),",
-            "    last_observed_at=max(timestamp)",
-            "    by appId, _ResourceId",
+            '    request_count=countif(source_table =~ "AppRequests"),',
+            '    dependency_count=countif(source_table =~ "AppDependencies"),',
+            '    trace_event_count=countif(source_table =~ "AppTraces"),',
+            '    error_count=countif(tolower(tostring(column_ifexists("Success", ""))) == "false"),',
+            "    first_observed_at=min(TimeGenerated),",
+            "    last_observed_at=max(TimeGenerated)",
+            "    by appId=ResourceGUID, _ResourceId",
             "| take 2",
         )
     )
@@ -575,6 +577,14 @@ def _metric_count(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number >= 0 else None
+
+
+def _logical_source_table(value: Any) -> str:
+    return {
+        "apprequests": "requests",
+        "appdependencies": "dependencies",
+        "apptraces": "traces",
+    }.get(str(value or "").lower(), str(value or "").lower())
 
 
 def _trace_expectation(workspace_id: str, run_id: str, correlation_id: str, config: _MonitorConfig) -> TraceDeliveryExpectation:
