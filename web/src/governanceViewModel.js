@@ -103,6 +103,35 @@ export function traceViewModel(status) {
     deliveredAt: status?.last_export_confirmed_at || null,
     transactionUrl: state === "connected" && /^https:\/\//.test(String(status?.transaction_url || "")) ? status.transaction_url : "",
     errorType: state === "unavailable" && /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(String(status?.error_type || "")) ? status.error_type : "",
+    errorStatus: state === "unavailable" && Number.isInteger(Number(status?.error_status)) ? Number(status.error_status) : null,
+    issueCode: traceIssueCode(status),
+  };
+}
+
+export function traceIssueCode(status) {
+  if (stateOf(status) !== "unavailable") return "";
+  const code = Number(status?.error_status);
+  if (code === 401 || code === 403) return "runtime_access_denied";
+  if (code === 429) return "query_throttled";
+  return "query_unavailable";
+}
+
+export function traceTelemetryMetricsViewModel(status = {}) {
+  const state = stateOf(status);
+  const copy = STATUS_COPY[state] || { label: "未记录", tone: "neutral" };
+  return {
+    state,
+    label: copy.label,
+    tone: copy.tone,
+    available: state === "connected",
+    issueCode: traceIssueCode(status),
+    recordCount: finiteNumber(status?.record_count),
+    requestCount: finiteNumber(status?.request_count),
+    dependencyCount: finiteNumber(status?.dependency_count),
+    traceEventCount: finiteNumber(status?.trace_event_count),
+    errorCount: finiteNumber(status?.error_count),
+    firstObservedAt: status?.first_observed_at || null,
+    lastObservedAt: status?.last_observed_at || null,
   };
 }
 

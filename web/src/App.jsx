@@ -17,7 +17,7 @@ import {
   streamChat,
   uploadWorkspace,
 } from "./api.js";
-import { TaskCenter, isCurrentWorkspaceTaskResponse, taskViewModel, terminalTaskNotifications } from "./TaskCenter.jsx";
+import { TaskCenter, expireTaskNotifications, isCurrentWorkspaceTaskResponse, stampTaskNotifications, taskViewModel, terminalTaskNotifications } from "./TaskCenter.jsx";
 import {
   extractArtifacts,
   MobileNav,
@@ -243,7 +243,12 @@ export function App() {
     }));
     taskHydratedRef.current = true;
     setTasks(next);
-    if (terminalUpdates.length) setTaskNotifications((current) => [...terminalUpdates, ...current].slice(0, 3));
+    if (terminalUpdates.length) {
+      setTaskNotifications((current) => [
+        ...stampTaskNotifications(terminalUpdates),
+        ...expireTaskNotifications(current),
+      ].slice(0, 3));
+    }
   }, [workspaceId]);
 
   const dismissTaskNotification = useCallback((notificationId) => {
@@ -256,6 +261,17 @@ export function App() {
       // Dismissal is convenience state only; task truth remains on the server.
     }
   }, []);
+
+  useEffect(() => {
+    if (!taskNotifications.length) return undefined;
+    const now = Date.now();
+    const expiresAt = Math.min(...taskNotifications.map((task) => Number(task?.notification_expires_at)).filter(Number.isFinite));
+    if (!Number.isFinite(expiresAt)) return undefined;
+    const timer = window.setTimeout(() => {
+      setTaskNotifications((current) => expireTaskNotifications(current));
+    }, Math.max(0, expiresAt - now) + 20);
+    return () => window.clearTimeout(timer);
+  }, [taskNotifications]);
 
   const performTaskAction = useCallback((task, action) => {
     const taskId = task?.task_id;

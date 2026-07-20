@@ -330,6 +330,14 @@ export async function loadWorkspaceTraceStatus(workspaceId, { runId = "", correl
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/trace-status${query ? `?${query}` : ""}`);
 }
 
+export async function loadWorkspaceTraceMetrics(workspaceId, { runId = "", correlationId = "" } = {}) {
+  const params = new URLSearchParams();
+  if (runId) params.set("run_id", runId);
+  if (correlationId) params.set("correlation_id", correlationId);
+  const query = params.toString();
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/trace-metrics${query ? `?${query}` : ""}`);
+}
+
 export async function loadWorkspaceRoi(workspaceId, { from, to }) {
   const params = new URLSearchParams({ from, to });
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/roi?${params.toString()}`);

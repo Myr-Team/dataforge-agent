@@ -10,6 +10,8 @@ import {
   invitationLifecycleViewModel,
   memberDirectoryViewModel,
   roiViewModel,
+  traceIssueCode,
+  traceTelemetryMetricsViewModel,
   runTraceReferenceViewModel,
   traceStatusLabel,
 } from "./governanceViewModel.js";
@@ -35,6 +37,25 @@ test("run trace reference exposes a portal link only after verified delivery", (
   assert.equal(connected.agentId, "dataforge-runtime-v1");
   assert.equal(connected.transactionUrl, "https://portal.azure.com/#trace");
   assert.equal(runTraceReferenceViewModel({ trace_id: "not-a-trace", agent_id: "dataforge-runtime-v1" }, {}).available, false);
+});
+
+test("telemetry metrics render only verified aggregate values and classify access failures", () => {
+  const metrics = traceTelemetryMetricsViewModel({
+    state: "connected",
+    record_count: 12,
+    request_count: 2,
+    dependency_count: 8,
+    trace_event_count: 2,
+    error_count: 1,
+  });
+
+  assert.equal(metrics.available, true);
+  assert.equal(metrics.recordCount, 12);
+  assert.equal(metrics.dependencyCount, 8);
+  assert.equal(metrics.errorCount, 1);
+  assert.equal(traceIssueCode({ state: "unavailable", error_status: 403 }), "runtime_access_denied");
+  assert.equal(traceIssueCode({ state: "unavailable", error_status: 429 }), "query_throttled");
+  assert.equal(traceIssueCode({ state: "partial" }), "");
 });
 
 test("local and Foundry ROI evidence states stay separate", () => {

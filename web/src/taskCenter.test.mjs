@@ -179,3 +179,13 @@ test("uses a server task id and update timestamp for completion notification ide
   const model = taskViewModel({ task_id: "task-42", status: "completed", updated_at: "2026-07-13T06:00:00Z" });
   assert.equal(model.notificationId, "task-42:completed:2026-07-13T06:00:00Z");
 });
+
+test("expires completion notifications after the configured transient window", async () => {
+  const { TASK_NOTIFICATION_TTL_MS, stampTaskNotifications, expireTaskNotifications } = await loadTaskViewModel();
+  const stamped = stampTaskNotifications([{ task_id: "task-42", status: "completed" }], 100);
+
+  assert.equal(TASK_NOTIFICATION_TTL_MS, 2800);
+  assert.equal(stamped[0].notification_expires_at, 2900);
+  assert.equal(expireTaskNotifications(stamped, 2899).length, 1);
+  assert.equal(expireTaskNotifications(stamped, 2900).length, 0);
+});

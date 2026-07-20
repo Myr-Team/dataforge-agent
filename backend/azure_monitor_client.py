@@ -39,6 +39,22 @@ class TraceDeliveryStatus(BaseModel):
     error_status: int | None = None
 
 
+class TraceTelemetryMetrics(BaseModel):
+    """Aggregate-only telemetry for one verified DataForge run."""
+
+    state: Literal["connected", "partial", "not_configured", "unavailable"]
+    correlation_id: str | None = None
+    record_count: int | None = None
+    request_count: int | None = None
+    dependency_count: int | None = None
+    trace_event_count: int | None = None
+    error_count: int | None = None
+    first_observed_at: datetime | None = None
+    last_observed_at: datetime | None = None
+    error_type: str | None = None
+    error_status: int | None = None
+
+
 class TraceDeliveryQueryError(RuntimeError):
     def __init__(self, error_type: str, error_status: int | None = None) -> None:
         self.error_type = _safe_error_type(error_type)
@@ -311,7 +327,7 @@ def query_trace_delivery(
             server_timeout=_QUERY_TIMEOUT_SECONDS,
         )
     except Exception as exc:
-        raise TraceDeliveryQueryError(type(exc).__name__) from None
+        raise TraceDeliveryQueryError(type(exc).__name__, _exception_status(exc)) from None
 
     if _is_partial_result(result):
         raise TraceDeliveryQueryError("LogsQueryPartialResult", _partial_result_status(result))
@@ -333,6 +349,86 @@ def query_trace_delivery(
     except Exception:
         return None
     return proof if _proof_matches(proof, _trace_expectation(workspace_id, run_id, correlation, config)) else None
+
+
+def get_trace_telemetry_metrics(
+    workspace_id: str,
+    run_id: str | None = None,
+    correlation_id: str | None = None,
+) -> TraceTelemetryMetrics:
+    """Return only aggregate telemetry after binding it to one trace identity."""
+    config = _monitor_config()
+    correlation = _safe_correlation_id(correlation_id)
+    if not config:
+        return TraceTelemetryMetrics(state="not_configured", correlation_id=correlation)
+    if not run_id or not correlation:
+        return TraceTelemetryMetrics(state="partial", correlation_id=correlation)
+    return query_trace_telemetry_metrics(workspace_id, run_id, correlation)
+
+
+def query_trace_telemetry_metrics(
+    workspace_id: str,
+    run_id: str,
+    correlation_id: str,
+    *,
+    client_factory: Callable[[], Any] | None = None,
+) -> TraceTelemetryMetrics:
+    """Query bounded metric totals without exposing telemetry rows to callers."""
+    config = _monitor_config()
+    correlation = _safe_correlation_id(correlation_id)
+    if not config:
+        return TraceTelemetryMetrics(state="not_configured", correlation_id=correlation)
+    if not correlation:
+        return TraceTelemetryMetrics(state="partial", correlation_id=None)
+
+    workspace_hash = hash_trace_identifier(workspace_id)
+    run_hash = hash_trace_identifier(run_id)
+    correlation_hash = hash_trace_identifier(correlation)
+    query = _metrics_query(workspace_hash, run_hash, correlation_hash)
+    try:
+        client = client_factory() if client_factory else _managed_identity_logs_client()
+        result = client.query_workspace(
+            config.logs_workspace_id,
+            query,
+            timespan=_QUERY_WINDOW,
+            server_timeout=_QUERY_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        return TraceTelemetryMetrics(
+            state="unavailable",
+            correlation_id=correlation,
+            error_type=_safe_error_type(type(exc).__name__),
+            error_status=_exception_status(exc),
+        )
+
+    if _is_partial_result(result):
+        return TraceTelemetryMetrics(
+            state="unavailable",
+            correlation_id=correlation,
+            error_type="LogsQueryPartialResult",
+            error_status=_partial_result_status(result),
+        )
+
+    row = _first_row(result)
+    if not row:
+        return TraceTelemetryMetrics(state="partial", correlation_id=correlation)
+    if str(row.get("appId") or "").lower() != config.application_id or str(row.get("_ResourceId") or "").lower() != config.resource_id.lower():
+        return TraceTelemetryMetrics(state="partial", correlation_id=correlation)
+
+    record_count = _metric_count(row.get("record_count"))
+    if record_count is None or record_count <= 0:
+        return TraceTelemetryMetrics(state="partial", correlation_id=correlation)
+    return TraceTelemetryMetrics(
+        state="connected",
+        correlation_id=correlation,
+        record_count=record_count,
+        request_count=_metric_count(row.get("request_count")),
+        dependency_count=_metric_count(row.get("dependency_count")),
+        trace_event_count=_metric_count(row.get("trace_event_count")),
+        error_count=_metric_count(row.get("error_count")),
+        first_observed_at=_as_datetime(row.get("first_observed_at")),
+        last_observed_at=_as_datetime(row.get("last_observed_at")),
+    )
 
 
 def build_transaction_link(resource_id: str, application_id: str, correlation_id: str) -> str | None:
@@ -375,6 +471,29 @@ def _delivery_query(workspace_hash: str, run_hash: str, correlation_hash: str) -
             '    run_hash=tostring(customDimensions["dataforge.run.hash"]),',
             '    correlation_hash=tostring(customDimensions["dataforge.correlation.hash"])',
             "| take 1",
+        )
+    )
+
+
+def _metrics_query(workspace_hash: str, run_hash: str, correlation_hash: str) -> str:
+    for value in (workspace_hash, run_hash, correlation_hash):
+        if not _HASH.fullmatch(value):
+            raise ValueError("trace hash must be sha256")
+    return "\n".join(
+        (
+            "union isfuzzy=true withsource=source_table requests, dependencies, traces",
+            f'| where tostring(customDimensions["dataforge.workspace.hash"]) == "{workspace_hash}"',
+            f'| where tostring(customDimensions["dataforge.run.hash"]) == "{run_hash}"',
+            f'| where tostring(customDimensions["dataforge.correlation.hash"]) == "{correlation_hash}"',
+            "| summarize record_count=count(),",
+            '    request_count=countif(source_table == "requests"),',
+            '    dependency_count=countif(source_table == "dependencies"),',
+            '    trace_event_count=countif(source_table == "traces"),',
+            '    error_count=countif(tolower(tostring(success)) == "false"),',
+            "    first_observed_at=min(timestamp),",
+            "    last_observed_at=max(timestamp)",
+            "    by appId, _ResourceId",
+            "| take 2",
         )
     )
 
@@ -436,6 +555,26 @@ def _partial_result_status(result: Any) -> int | None:
 
 def _is_partial_result(result: Any) -> bool:
     return type(result).__name__ == "LogsQueryPartialResult" or getattr(result, "partial_error", None) is not None
+
+
+def _exception_status(exc: Exception) -> int | None:
+    response = getattr(exc, "response", None)
+    return _safe_status(
+        getattr(exc, "status_code", None)
+        or getattr(exc, "status", None)
+        or getattr(response, "status_code", None)
+        or getattr(response, "status", None)
+    )
+
+
+def _metric_count(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
 
 
 def _trace_expectation(workspace_id: str, run_id: str, correlation_id: str, config: _MonitorConfig) -> TraceDeliveryExpectation:

@@ -185,6 +185,30 @@ class _LogsClient:
         return self.result
 
 
+class _MetricQueryResult:
+    def __init__(self, row: list[object]) -> None:
+        self.tables = [
+            type(
+                "Table",
+                (),
+                {
+                    "columns": [
+                        _Column("record_count"),
+                        _Column("request_count"),
+                        _Column("dependency_count"),
+                        _Column("trace_event_count"),
+                        _Column("error_count"),
+                        _Column("first_observed_at"),
+                        _Column("last_observed_at"),
+                        _Column("appId"),
+                        _Column("_ResourceId"),
+                    ],
+                    "rows": [row],
+                },
+            )()
+        ]
+
+
 class _PartialResult:
     def __init__(self, partial_error: object, partial_data: object) -> None:
         self.partial_error = partial_error
@@ -269,6 +293,54 @@ def test_query_accepts_foundry_root_span_from_traces_table(monkeypatch: pytest.M
     assert remote is not None
     assert remote.source_table == "traces"
     assert "requests, dependencies, traces" in client.calls[0][1]
+
+
+def test_telemetry_metrics_are_aggregate_only_and_bound_to_hashed_run_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    _monitor_env(monkeypatch)
+    workspace_id = "workspace-private"
+    run_id = "run-private"
+    correlation_id = "f" * 32
+    client = _LogsClient(
+        _MetricQueryResult(
+            [
+                12,
+                2,
+                8,
+                2,
+                1,
+                "2026-07-20T01:00:00Z",
+                "2026-07-20T01:01:30Z",
+                _APPLICATION_ID,
+                _RESOURCE_ID,
+            ]
+        )
+    )
+    query = getattr(monitor, "query_trace_telemetry_metrics", None)
+    assert callable(query)
+
+    metrics = query(workspace_id, run_id, correlation_id, client_factory=lambda: client)
+
+    assert metrics.state == "connected"
+    assert metrics.record_count == 12
+    assert metrics.request_count == 2
+    assert metrics.dependency_count == 8
+    assert metrics.trace_event_count == 2
+    assert metrics.error_count == 1
+    assert metrics.first_observed_at == datetime(2026, 7, 20, 1, 0, tzinfo=timezone.utc)
+    assert metrics.last_observed_at == datetime(2026, 7, 20, 1, 1, 30, tzinfo=timezone.utc)
+    payload = metrics.model_dump_json()
+    assert workspace_id not in payload
+    assert run_id not in payload
+    assert _RESOURCE_ID not in payload
+    assert _APPLICATION_ID not in payload
+    recorded_query = client.calls[0][1]
+    assert workspace_id not in recorded_query
+    assert run_id not in recorded_query
+    assert correlation_id not in recorded_query
+    assert monitor.hash_trace_identifier(workspace_id) in recorded_query
+    assert monitor.hash_trace_identifier(run_id) in recorded_query
+    assert monitor.hash_trace_identifier(correlation_id) in recorded_query
+    assert "summarize" in recorded_query
 
 
 def test_partial_logs_query_is_unavailable_and_never_uses_partial_data(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -417,3 +489,43 @@ def test_trace_status_endpoint_authorizes_before_run_lookup_and_verifies_run_own
     with pytest.raises(HTTPException) as forbidden:
         asyncio.run(control_plane.workspace_trace_status("ws-a", None, run_id="run-a"))
     assert forbidden.value.status_code == 403
+
+
+def test_trace_metrics_endpoint_authorizes_before_run_lookup_and_returns_only_aggregate_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    telemetry = getattr(monitor, "TraceTelemetryMetrics", None)
+    assert callable(telemetry)
+    monkeypatch.setattr(control_plane, "is_trusted_tenant_identity", lambda _actor: True)
+    monkeypatch.setattr(control_plane, "workspace_role", lambda _workspace_id, _actor: "viewer")
+    monkeypatch.setattr(control_plane, "authorize", lambda _role, action: events.append(action) or True)
+    monkeypatch.setattr(control_plane, "get_run", lambda _run_id: events.append("get_run") or {"workspace_id": "ws-a"})
+    monkeypatch.setattr(
+        control_plane,
+        "get_trace_telemetry_metrics",
+        lambda _workspace_id, _run_id, correlation_id=None: telemetry(
+            state="connected",
+            correlation_id=correlation_id,
+            record_count=6,
+            request_count=1,
+            dependency_count=4,
+            trace_event_count=1,
+            error_count=0,
+        ),
+    )
+
+    payload = asyncio.run(control_plane.workspace_trace_metrics("ws-a", None, run_id="run-a", correlation_id="a" * 32))
+
+    assert payload == {
+        "state": "connected",
+        "correlation_id": "a" * 32,
+        "record_count": 6,
+        "request_count": 1,
+        "dependency_count": 4,
+        "trace_event_count": 1,
+        "error_count": 0,
+        "first_observed_at": None,
+        "last_observed_at": None,
+        "error_type": None,
+        "error_status": None,
+    }
+    assert events == ["run.read", "get_run"]

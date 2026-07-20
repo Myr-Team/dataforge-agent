@@ -404,6 +404,7 @@ def test_governance_role_does_not_accept_local_development_sentinel(monkeypatch:
         ("GET", "/api/workspaces/ws-sensitive/governance/roi?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"),
         ("GET", "/api/workspaces/ws-sensitive/governance/chargeback?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"),
         ("GET", "/api/workspaces/ws-sensitive/governance/trace-status"),
+        ("GET", "/api/workspaces/ws-sensitive/governance/trace-metrics"),
         ("GET", "/api/workspaces/ws-sensitive/outcomes"),
         ("POST", "/api/workspaces/ws-sensitive/outcomes"),
         ("POST", "/api/workspaces/ws-sensitive/outcomes/outcome-1/verify"),

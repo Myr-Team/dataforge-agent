@@ -11,6 +11,7 @@ import {
   invitationLifecycleViewModel,
   memberDirectoryViewModel,
   runTraceReferenceViewModel,
+  traceTelemetryMetricsViewModel,
   traceViewModel,
 } from "./governanceViewModel.js";
 import { costValueViewModel } from "./costValueViewModel.js";
@@ -27,7 +28,6 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
-  CircleUserRound,
   Check,
   Clock3,
   Compass,
@@ -61,7 +61,6 @@ import {
   Cpu,
   HardDrive,
   Mic,
-  LogIn,
   LogOut,
   MessageSquare,
   MoreHorizontal,
@@ -79,7 +78,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceTraceStatus, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory } from "./api.js";
+import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceTraceStatus, loadWorkspaceTraceMetrics, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -168,9 +167,23 @@ export function MobileNav({ active = "workspaces", onChange = () => {} }) {
   );
 }
 
+export function accountViewModel(user = {}, authState = "local") {
+  const suppliedName = String(user?.name || "").trim();
+  const suppliedEmail = String(user?.email || "").trim();
+  const name = suppliedName || "当前账户";
+  const email = suppliedEmail || "账号信息暂不可用";
+  const initial = Array.from(suppliedName || suppliedEmail)[0]?.toUpperCase() || "U";
+  return {
+    initial,
+    name,
+    email,
+    authLabel: authState === "authenticated" ? "已通过 Microsoft Entra 登录" : "本地预览身份",
+  };
+}
+
 function NotificationBell({ count = 0, onOpen = () => {} }) {
   return (
-    <button className="icon-button top-icon" type="button" title="打开全局任务中心" aria-label="打开全局任务中心" onClick={onOpen}>
+    <button className="icon-button top-icon notif" type="button" title="打开全局任务中心" aria-label="打开全局任务中心" onClick={onOpen}>
       <Bell size={16} />
       {count ? <span className="notif-badge">{count}</span> : null}
     </button>
@@ -263,6 +276,7 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
   const workspaces = dashboard?.workspaces || [];
   const health = dashboard?.health || {};
   const deps = health.dependencies || {};
+  const account = accountViewModel(user, authState);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -292,30 +306,21 @@ export function TopBar({ dashboard, workspaceId, onWorkspaceChange, onUpload, on
         </button>
         <NotificationBell count={tasks.filter((task) => ["queued", "running"].includes(task.status)).length} onOpen={onOpenTaskCenter} />
         <div className="user-menu" ref={menuRef}>
-          <button className="user-trigger" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen} title="账户">
-            <div className="avatar" title="账户">
-              账
+          <button className="user-trigger" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen} title={account.name} aria-label={`账户菜单：${account.name}`}>
+            <div className="avatar" aria-hidden="true">
+              {account.initial}
             </div>
           </button>
           {menuOpen ? (
             <div className="account-menu" role="menu">
               <div className="account-card">
-                <div className="avatar large">
-                  账
-                </div>
-                <div>
-                  <strong>当前账户</strong>
-                  <span>已登录账户</span>
+                <div className="avatar large" aria-hidden="true">{account.initial}</div>
+                <div className="account-identity">
+                  <strong title={account.name}>{account.name}</strong>
+                  <span title={account.email}>{account.email}</span>
+                  <small>{account.authLabel}</small>
                 </div>
               </div>
-              <button type="button" role="menuitem">
-                <CircleUserRound size={15} />
-                个人信息
-              </button>
-              <button type="button" role="menuitem">
-                <LogIn size={15} />
-                账户与权限
-              </button>
               <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onLogout(); }}>
                 <LogOut size={15} />
                 {authState === "authenticated" ? "退出登录" : "查看云端登录态"}
@@ -2593,21 +2598,45 @@ function GovernanceSummaryPanel({ data, invitationState, permissionsPayload, per
   );
 }
 
-function TraceReference({ workspaceId, runId, reference, compact = false }) {
+function traceRequestFailure(error) {
+  return {
+    state: "unavailable",
+    error_type: "ClientRequestError",
+    error_status: Number.isInteger(Number(error?.status)) ? Number(error.status) : null,
+  };
+}
+
+function traceIssueLabel(code) {
+  return {
+    runtime_access_denied: "运行身份没有读取 Azure Monitor 的权限",
+    query_throttled: "Azure Monitor 查询正在限流，请稍后刷新",
+    query_unavailable: "远端遥测查询暂不可用，请稍后刷新",
+  }[code] || "";
+}
+
+function TraceReference({ workspaceId, runId, reference, compact = false, showMetrics = false }) {
   const [delivery, setDelivery] = useState(null);
+  const [metrics, setMetrics] = useState(null);
   const [copied, setCopied] = useState(false);
   const model = useMemo(() => runTraceReferenceViewModel(reference, delivery || {}), [reference, delivery]);
+  const metricModel = useMemo(() => traceTelemetryMetricsViewModel(metrics || {}), [metrics]);
   const resolvedRunId = runId || reference?.run_id || "";
 
   useEffect(() => {
     let cancelled = false;
     setDelivery(null);
+    setMetrics(null);
     if (!model.available || !workspaceId || !resolvedRunId) return () => { cancelled = true; };
     loadWorkspaceTraceStatus(workspaceId, { runId: resolvedRunId, correlationId: model.traceId })
       .then((value) => { if (!cancelled) setDelivery(value || {}); })
-      .catch(() => { if (!cancelled) setDelivery({ state: "unavailable" }); });
+      .catch((error) => { if (!cancelled) setDelivery(traceRequestFailure(error)); });
+    if (showMetrics) {
+      loadWorkspaceTraceMetrics(workspaceId, { runId: resolvedRunId, correlationId: model.traceId })
+        .then((value) => { if (!cancelled) setMetrics(value || {}); })
+        .catch((error) => { if (!cancelled) setMetrics(traceRequestFailure(error)); });
+    }
     return () => { cancelled = true; };
-  }, [workspaceId, resolvedRunId, model.available, model.traceId]);
+  }, [workspaceId, resolvedRunId, model.available, model.traceId, showMetrics]);
 
   if (!model.available) return null;
   const copyTraceId = async () => {
@@ -2636,6 +2665,23 @@ function TraceReference({ workspaceId, runId, reference, compact = false }) {
         <span>{statusLabel}</span>
         {model.transactionUrl ? <a href={model.transactionUrl} target="_blank" rel="noreferrer">Azure Monitor <ArrowUpRight size={13} /></a> : null}
       </div>
+      {model.delivery.issueCode ? <p className="trace-reference-issue">{traceIssueLabel(model.delivery.issueCode)}</p> : null}
+      {showMetrics ? (
+        <div className="trace-reference-metrics" aria-live="polite">
+          {metricModel.available ? (
+            <>
+              <span><b>{metricModel.recordCount ?? "未记录"}</b> 已验证记录</span>
+              <span><b>{metricModel.dependencyCount ?? "未记录"}</b> 工具与依赖</span>
+              <span><b>{metricModel.requestCount ?? "未记录"}</b> 请求</span>
+              <span><b>{metricModel.errorCount ?? "未记录"}</b> 失败</span>
+            </>
+          ) : (
+            <span className={`trace-reference-metric-state ${metricModel.tone}`}>
+              {metrics ? (traceIssueLabel(metricModel.issueCode) || metricModel.label) : "正在读取 Azure Monitor 聚合指标"}
+            </span>
+          )}
+        </div>
+      ) : null}
       {!compact ? <p>可在 Foundry 的 {model.agentId} 中按 Trace ID 搜索此运行。</p> : null}
     </section>
   );
@@ -2761,7 +2807,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
       <div className="run-body2">
         <section className="card run-trace">
           <div className="rt-head"><strong>本次运行追踪</strong><span className="rt-source">来源：{runEvidenceLabel(basis.trace, "后端运行步骤")}</span><Info size={14} /></div>
-          <TraceReference workspaceId={workspaceId} runId={runId} reference={sm.trace || r.trace} compact />
+          <TraceReference workspaceId={workspaceId} runId={runId} reference={sm.trace || r.trace} compact showMetrics />
           <MafCollaborationView model={runMaf} compact />
           {(() => {
             const list = (rtrace && rtrace.length) ? rtrace.map((s) => {

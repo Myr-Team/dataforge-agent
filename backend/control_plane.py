@@ -21,7 +21,7 @@ try:
     from .audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from .artifact_jobs import list_artifact_jobs
     from .artifact_registry import ArtifactPersistenceError, get_artifact
-    from .azure_monitor_client import get_trace_delivery_status
+    from .azure_monitor_client import get_trace_delivery_status, get_trace_telemetry_metrics
     from .task_store import TaskPersistenceError, list_tasks
     from .blob_store import blob_configured, download_blob_json, probe_blob_container, upload_blob_json
     from .conversation_store import get_conversation, list_conversations, stable_message_id
@@ -45,7 +45,7 @@ except ImportError:
     from audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from artifact_jobs import list_artifact_jobs
     from artifact_registry import ArtifactPersistenceError, get_artifact
-    from azure_monitor_client import get_trace_delivery_status
+    from azure_monitor_client import get_trace_delivery_status, get_trace_telemetry_metrics
     from task_store import TaskPersistenceError, list_tasks
     from blob_store import blob_configured, download_blob_json, probe_blob_container, upload_blob_json
     from conversation_store import get_conversation, list_conversations, stable_message_id
@@ -251,6 +251,27 @@ async def workspace_trace_status(
             raise HTTPException(status_code=404, detail="run not found")
     status = await _call(get_trace_delivery_status, workspace_id, run_id, correlation_id)
     return status.model_dump()
+
+
+@router.get("/api/workspaces/{workspace_id}/governance/trace-metrics")
+async def workspace_trace_metrics(
+    workspace_id: str,
+    request: Request,
+    run_id: str | None = Query(None, max_length=160),
+    correlation_id: str | None = Query(None, max_length=64),
+) -> dict[str, Any]:
+    # The endpoint is restricted to one already-visible run and returns only
+    # aggregate counts, never a telemetry row, prompt, URL, or identity field.
+    _require_trusted_workspace_action(workspace_id, request, "run.read")
+    if run_id:
+        try:
+            run = await _call(get_run, run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
+        if str(run.get("workspace_id") or "") != workspace_id:
+            raise HTTPException(status_code=404, detail="run not found")
+    metrics = await _call(get_trace_telemetry_metrics, workspace_id, run_id, correlation_id)
+    return metrics.model_dump()
 
 
 @router.get("/api/workspaces/{workspace_id}/outcomes")

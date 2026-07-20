@@ -251,6 +251,7 @@ svg { flex-shrink: 0; }
   background: var(--mint-soft);
 }
 .top-icon { border: 1px solid var(--line); background: var(--surface); }
+.top-icon.notif { position: relative; overflow: visible; }
 .user-menu {
   position: relative;
   display: flex;
@@ -293,6 +294,7 @@ svg { flex-shrink: 0; }
   margin-bottom: 6px;
 }
 .avatar.large { width: 42px; height: 42px; font-size: 16px; }
+.user-trigger .avatar, .account-card .avatar { background: #2563eb; }
 .account-card strong, .account-menu button {
   display: block;
   overflow: hidden;
@@ -308,6 +310,8 @@ svg { flex-shrink: 0; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.account-identity { min-width: 0; display: grid; gap: 2px; }
+.account-identity small { overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .account-menu button {
   display: flex;
   align-items: center;
@@ -2476,7 +2480,7 @@ svg { flex-shrink: 0; }
 .task-icon-button.danger { color: var(--red); }
 .task-center-empty { display: flex; align-items: center; gap: 8px; margin: 18px 0; color: var(--muted); font-size: 13px; }
 .task-toast-stack { position: fixed; top: 68px; right: 18px; z-index: 145; display: grid; gap: 8px; width: min(380px, calc(100vw - 28px)); }
-.task-toast { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto; align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); box-shadow: var(--shadow); color: var(--blue); }
+.task-toast { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto; align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); box-shadow: var(--shadow); color: var(--blue); animation: taskToastLife 2.8s ease-in forwards; }
 .task-toast.success { color: var(--mint); }.task-toast.warning { color: var(--amber); }.task-toast.error { color: var(--red); }
 .task-toast strong, .task-toast small { display: block; color: var(--ink); font-size: 12px; }.task-toast small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .sync-dot.loading svg { animation: spin 1s linear infinite; }
@@ -2485,6 +2489,7 @@ svg { flex-shrink: 0; }
 @keyframes wave { 0%, 100% { transform: scaleY(.55); opacity: .62; } 50% { transform: scaleY(1.25); opacity: 1; } }
 @keyframes blink { 50% { opacity: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes taskToastLife { 0% { opacity: 0; transform: translateY(-6px); } 8%, 86% { opacity: 1; transform: translateY(0); } 100% { opacity: 0; transform: translateY(-4px); } }
 
 @media (max-width: 1360px) {
   body { overflow: auto; }
@@ -3634,6 +3639,14 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .trace-reference-status a { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; color: var(--blue); font-weight: 700; text-decoration: none; }
 .trace-reference-status a:hover { text-decoration: underline; }
 .trace-reference p { grid-column: 1 / -1; margin: 0; color: var(--muted); }
+.trace-reference-issue { color: #b42318 !important; }
+.trace-reference-metrics { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.trace-reference-metrics > span { min-width: 0; padding: 5px 6px; border: 1px solid #d9e4f1; border-radius: 4px; background: #fff; color: var(--muted); font-size: 10px; }
+.trace-reference-metrics b { display: block; overflow: hidden; color: var(--ink); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.trace-reference-metrics .trace-reference-metric-state { grid-column: 1 / -1; color: var(--muted); }
+.trace-reference-metrics .trace-reference-metric-state.error { color: #b42318; }
+.trace-reference-metrics .trace-reference-metric-state.warn { color: #b54708; }
+@media (max-width: 680px) { .trace-reference-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* ---- markdown 表格 / 运行记录筛选 ---- */
 .rich-table-wrap { overflow-x: auto; margin: 10px 0; }

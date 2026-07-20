@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 const TERMINAL_STATUSES = new Set(["partial", "completed", "failed", "cancelled"]);
+export const TASK_NOTIFICATION_TTL_MS = 2800;
 
 const TASK_STATUS_LABELS = {
   preparing: "准备中",
@@ -48,6 +49,16 @@ export function terminalTaskNotifications(tasks, previousSnapshot, hydrated, dis
       && previousSnapshot.get(model.taskId) !== model.notificationId
       && !dismissed.has(model.notificationId);
   });
+}
+
+export function stampTaskNotifications(tasks, now = Date.now()) {
+  const timestamp = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  return tasks.map((task) => ({ ...task, notification_expires_at: timestamp + TASK_NOTIFICATION_TTL_MS }));
+}
+
+export function expireTaskNotifications(tasks, now = Date.now()) {
+  const timestamp = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  return tasks.filter((task) => Number(task?.notification_expires_at) > timestamp);
 }
 
 export function taskStatusLabel(status) {
