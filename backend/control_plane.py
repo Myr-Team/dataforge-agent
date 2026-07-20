@@ -1021,6 +1021,13 @@ def system_status() -> dict[str, Any]:
     health = _cached_health()
     obs = observability_snapshot()
     details = health.get("dependency_details") or {}
+    dependencies = health.get("dependencies") or {}
+    required_dependencies = sorted(
+        name
+        for name in dependencies
+        if not isinstance(details.get(name), dict) or details[name].get("required") is not False
+    )
+    optional_dependencies = sorted(name for name in dependencies if name not in required_dependencies)
     release = {
         "version": os.environ.get("DATAFORGE_VERSION", "1.0.0"),
         "build": os.environ.get("DATAFORGE_BUILD_ID") or os.environ.get("BUILD_ID") or "local",
@@ -1031,11 +1038,13 @@ def system_status() -> dict[str, Any]:
         ),
     }
     return {
-        "ok": all(bool(value) for value in (health.get("dependencies") or {}).values()),
+        "ok": all(bool(dependencies.get(name)) for name in required_dependencies),
         "checked_at": _now(),
         "release": release,
-        "dependencies": health.get("dependencies") or {},
+        "dependencies": dependencies,
         "dependency_details": details,
+        "required_dependencies": required_dependencies,
+        "optional_dependencies": optional_dependencies,
         "models": obs.get("models") or {},
         "rag": {
             "provider": "Azure AI Search",
@@ -1055,7 +1064,7 @@ def system_status() -> dict[str, Any]:
             "identity_discovery": {"mode": "placeholder", "status": "not_configured"},
         },
         "compliance": {
-            "content_safety": bool((health.get("dependencies") or {}).get("content_safety")),
+            "content_safety": bool(dependencies.get("content_safety")),
             "entra": bool(os.environ.get("WEBSITE_AUTH_ENABLED") or os.environ.get("DF_STORAGE_ACCOUNT")),
             "data_residency": os.environ.get("AZURE_REGION") or os.environ.get("REGION_NAME") or "eastus2",
             "otel": bool(_dig(obs, "tracing", "app_insights")),

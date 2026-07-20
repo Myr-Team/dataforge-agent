@@ -71,25 +71,30 @@ def dependency_status() -> dict[str, Any]:
 
 def _probe_all() -> dict[str, dict[str, Any]]:
     probes = {
-        "foundry": _probe_foundry,
-        "foundry_roi": _probe_foundry_roi,
-        "search": _probe_search,
-        "mcp": _probe_mcp,
-        "speech": _probe_speech,
-        "blob": _probe_blob,
-        "content_safety": _probe_content_safety,
-        "key_vault": _probe_key_vault,
+        "foundry": (_probe_foundry, True),
+        "foundry_roi": (_probe_foundry_roi, False),
+        "search": (_probe_search, True),
+        "mcp": (_probe_mcp, True),
+        "speech": (_probe_speech, True),
+        "blob": (_probe_blob, True),
+        "content_safety": (_probe_content_safety, True),
+        "key_vault": (_probe_key_vault, True),
     }
     results: dict[str, dict[str, Any]] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(probes), thread_name_prefix="dataforge-health") as pool:
-        futures = {name: pool.submit(_timed_probe, name, func) for name, func in probes.items()}
+        futures = {
+            name: pool.submit(_timed_probe, name, func, required=required)
+            for name, (func, required) in probes.items()
+        }
         for name, future in futures.items():
             try:
                 results[name] = future.result(timeout=_probe_future_timeout(name))
             except Exception as exc:
+                _, required = probes[name]
                 detail = {
                     "ok": False,
                     "state": "down",
+                    "required": required,
                     "error_type": "timeout",
                     "error": f"{type(exc).__name__}: {exc}"[:500],
                     "latency_ms": int(_probe_future_timeout(name) * 1000),
@@ -107,7 +112,7 @@ def _probe_future_timeout(name: str) -> float:
     return _PROBE_TIMEOUT_SECONDS + 0.4
 
 
-def _timed_probe(name: str, func: Any) -> dict[str, Any]:
+def _timed_probe(name: str, func: Any, *, required: bool) -> dict[str, Any]:
     started = time.perf_counter()
     try:
         detail = func()
@@ -116,6 +121,7 @@ def _timed_probe(name: str, func: Any) -> dict[str, Any]:
     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
     if not isinstance(detail, dict):
         detail = {"ok": False, "state": "down", "error_type": "invalid_result"}
+    detail.setdefault("required", required)
     detail.setdefault("latency_ms", elapsed_ms)
     detail.setdefault("error_type", "none" if detail.get("ok") else "unknown")
     detail.setdefault("observed_at", _now_iso())

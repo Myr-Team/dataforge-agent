@@ -273,3 +273,24 @@ def test_governance_ignores_foundry_roi_feature_flag_without_provider(monkeypatc
 
     assert result["foundry_monitoring"]["foundry_integration_state"] == "not_connected"
     assert result["roi"]["foundry_integration"]["state"] == "not_connected"
+
+
+def test_system_status_keeps_optional_foundry_roi_out_of_required_health(monkeypatch) -> None:
+    monkeypatch.setattr(
+        control_plane,
+        "_cached_health",
+        lambda: {
+            "dependencies": {"foundry": True, "foundry_roi": False, "blob": True},
+            "dependency_details": {
+                "foundry": {"required": True},
+                "foundry_roi": {"required": False, "state": "not_configured"},
+                "blob": {"required": True},
+            },
+        },
+    )
+
+    status = control_plane.system_status()
+
+    assert status["ok"] is True
+    assert status["optional_dependencies"] == ["foundry_roi"]
+    assert status["dependencies"]["foundry_roi"] is False
