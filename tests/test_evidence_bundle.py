@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from backend import evidence_bundle
 from backend.evidence_bundle import (
     MAX_BUNDLE_GAPS,
     MAX_CAPABILITY_PACK_IDS,
@@ -178,3 +179,106 @@ def test_bundle_fingerprint_is_stable_for_equivalent_input_ordering() -> None:
 
     assert first_bundle.fingerprint == second_bundle.fingerprint
     assert first_bundle.model_dump() == second_bundle.model_dump()
+
+
+def test_public_event_projection_drops_unknown_nested_conversation_payloads() -> None:
+    payload = {
+        "opaque": {"anything": {"prompt": "secret", "token": "Bearer hidden"}},
+        "conversation_route": {"mode": "followup", "reason": "raw rationale"},
+    }
+
+    assert evidence_bundle.public_conversation_event("followup", payload, "conv-1") == {
+        "conversation_route": {
+            "mode": "followup",
+            "reason": "Follow-up",
+            "evidence_required": False,
+        }
+    }
+
+
+def test_public_event_projection_preserves_only_typed_user_facing_fields() -> None:
+    marker = "raw-provider-secret"
+    final = evidence_bundle.public_conversation_event(
+        "final",
+        {
+            "text": "Customer-facing answer",
+            "artifact": {
+                "workspace_id": "workspace-1",
+                "answer": {
+                    "text": "Customer-facing answer",
+                    "markdown": "## Answer",
+                    "_llm": {"mode": "safe", "rationale": marker},
+                },
+                "opaque_container": {
+                    "anything": {
+                        "prompt": marker,
+                        "claims": {"email": "person@example.com"},
+                    }
+                },
+            },
+            "provider_error": marker,
+        },
+        "conv-1",
+    )
+
+    assert final["text"] == "Customer-facing answer"
+    assert final["artifact"]["answer"] == {
+        "text": "Customer-facing answer",
+        "markdown": "## Answer",
+        "_llm": {"mode": "safe"},
+    }
+    assert marker not in repr(final)
+    assert "opaque_container" not in final["artifact"]
+    assert "provider_error" not in final
+
+
+def test_sanitize_conversation_metadata_drops_unknown_nested_values() -> None:
+    value = {
+        "conversation_route": {"mode": "followup", "reason": "private rationale"},
+        "opaque_container": {
+            "other_name": {
+                "prompt_text": "raw user prompt",
+                "hidden": "Bearer opaque-credential-value",
+            }
+        },
+        "unknown_scalar": "model rationale",
+        "feasibility": {
+            "dimensions": [
+                {
+                    "name": "market",
+                    "rationale": "private chain-of-thought",
+                    "evidence": [{"id": "e-1", "quote": "public evidence"}],
+                }
+            ],
+            "gap_list": ["private missing-information rationale"],
+        },
+    }
+
+    assert evidence_bundle.sanitize_conversation_metadata(value) == {
+        "conversation_route": {
+            "mode": "followup",
+            "reason": "Follow-up",
+            "evidence_required": False,
+        },
+        "feasibility": {
+            "dimensions": [
+                {
+                    "name": "market",
+                    "evidence": [{"id": "e-1", "quote": "public evidence"}],
+                }
+            ]
+        },
+    }
+
+
+def test_public_artifact_projection_keeps_only_explicit_artifact_contract() -> None:
+    artifact = {
+        "workspace_id": "ws",
+        "answer": {"markdown": "public answer", "raw_prompt": "secret"},
+        "opaque": {"email": "private@example.com"},
+    }
+
+    projected = evidence_bundle.public_artifact_projection(artifact, {"workspace_id": "ws"})
+
+    assert projected["answer"] == {"markdown": "public answer"}
+    assert "opaque" not in projected

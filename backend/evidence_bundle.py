@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import math
+import re
 import secrets
 from collections.abc import Mapping, Sequence
 from numbers import Real
@@ -533,34 +534,788 @@ _PUBLIC_PROVENANCE_FIELDS = frozenset(
     }
 )
 
+_CONVERSATION_ROUTE_MODES = frozenset(
+    {"direct", "followup", "grounded_followup", "plan_draft", "reanalyze", "clarify"}
+)
+_CONVERSATION_ROUTE_REASONS = {
+    "direct": "该问题不需要读取当前工作区证据。",
+    "followup": "Follow-up",
+    "grounded_followup": "该回复需要结合当前工作区证据。",
+    "plan_draft": "该请求会把已有分析整理为可执行方案。",
+    "reanalyze": "当前工作区证据或分析请求需要重新评估。",
+    "clarify": "需要补充关键信息后才能给出基于证据的回答。",
+}
+_SAFE_ROUTING_IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+_SAFE_PUBLIC_IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:@/-]{1,160}$")
+_PUBLIC_ARTIFACT_KINDS = frozenset(
+    {
+        "pdf",
+        "concept_image",
+        "audio_summary",
+        "pilot_plan",
+        "action_plan",
+        "roadmap",
+        "validation_plan",
+        "risk_register",
+        "poster",
+    }
+)
+_MAX_PUBLIC_TEXT_CHARS = 32_768
+_MAX_PUBLIC_LIST_ITEMS = 32
+
+
+def _public_text(value: Any, limit: int = _MAX_PUBLIC_TEXT_CHARS) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text[:limit] if text else None
+
+
+def _public_identifier(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text if _SAFE_PUBLIC_IDENTIFIER.fullmatch(text) else None
+
+
+def _public_number(value: Any) -> int | float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+        return None
+    return value
+
+
+def _public_text_list(value: Any, *, limit: int = 320, items: int = _MAX_PUBLIC_LIST_ITEMS) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [
+        text
+        for raw in value[:items]
+        if (text := _public_text(raw, limit)) is not None
+    ]
+
+
+def _public_identifier_list(value: Any, *, items: int = 12) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [
+        identifier
+        for raw in value[:items]
+        if (identifier := _public_identifier(raw)) is not None
+    ]
+
+
+def _public_url(value: Any) -> str | None:
+    text = _public_text(value, 2048)
+    if text is None:
+        return None
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("sig=", "token=", "secret=", "password=", "credential=")):
+        return None
+    if text.startswith("/") or text.startswith("https://") or text.startswith("http://"):
+        return text
+    return None
+
+
+def conversation_route_projection(value: Any) -> dict[str, Any]:
+    """Expose route state without retaining model rationale or user-derived gaps."""
+    if isinstance(value, Mapping):
+        mode = str(value.get("mode") or "").strip()
+        evidence_required = value.get("evidence_required") is True
+    else:
+        mode = str(value or "").strip()
+        evidence_required = False
+    if mode not in _CONVERSATION_ROUTE_MODES:
+        return {}
+    return {
+        "mode": mode,
+        "reason": _CONVERSATION_ROUTE_REASONS[mode],
+        "evidence_required": evidence_required,
+    }
+
+
+def _routing_projection(value: Any, route: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    intent = str(value.get("intent") or "").strip()
+    if _SAFE_ROUTING_IDENTIFIER.fullmatch(intent):
+        projected["intent"] = intent
+    experts = [
+        item
+        for raw in (value.get("experts") or [])[:12]
+        if _SAFE_ROUTING_IDENTIFIER.fullmatch(item := str(raw).strip())
+    ]
+    if experts or isinstance(value.get("experts"), list):
+        projected["experts"] = experts
+    output_mode = str(value.get("output_mode") or "").strip()
+    if output_mode in {"chat", "report", "full_package"}:
+        projected["output_mode"] = output_mode
+    if isinstance(value.get("needs_clarification"), bool):
+        projected["needs_clarification"] = value["needs_clarification"]
+    safe_route = conversation_route_projection(value.get("conversation_route")) or dict(route or {})
+    if safe_route:
+        projected["conversation_route"] = safe_route
+    return projected
+
+
+def _llm_metadata_projection(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("mode", "response_id"):
+        item = str(value.get(key) or "").strip()
+        if _SAFE_ROUTING_IDENTIFIER.fullmatch(item):
+            projected[key] = item
+    usage = value.get("usage")
+    if isinstance(usage, Mapping):
+        safe_usage = {
+            key: max(0, int(item))
+            for key, item in usage.items()
+            if key in {"input_tokens", "output_tokens", "total_tokens"}
+            and isinstance(item, (int, float))
+            and not isinstance(item, bool)
+        }
+        if safe_usage:
+            projected["usage"] = safe_usage
+    return projected
+
+
+def _project_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("id", "marker", "source_type", "ref", "source_file", "sheet", "chunk_id", "confidence"):
+        if identifier := _public_identifier(value.get(key)):
+            projected[key] = identifier
+    for key in ("title", "quote", "snippet", "excerpt", "content", "claim", "summary", "description", "positioning"):
+        if text := _public_text(value.get(key), 640):
+            projected[key] = text
+    for key in ("row", "score", "rank"):
+        if (number := _public_number(value.get(key))) is not None:
+            projected[key] = number
+    for key in ("url", "source_url"):
+        if url := _public_url(value.get(key)):
+            projected[key] = url
+    return projected
+
+
+def _project_evidence_list(value: Any, *, items: int = 24) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [item for raw in value[:items] if (item := _project_evidence(raw))]
+
+
+def _project_answer(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("text", "markdown"):
+        if text := _public_text(value.get(key)):
+            projected[key] = text
+    if isinstance(value.get("citations"), list):
+        projected["citations"] = _project_evidence_list(value.get("citations"))
+    for key in ("confidence", "confidence_label"):
+        if text := _public_text(value.get(key), 80):
+            projected[key] = text
+    if "_llm" in value:
+        projected["_llm"] = _llm_metadata_projection(value.get("_llm"))
+    return projected
+
+
+def _project_clarify(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    if question := _public_text(value.get("question"), 800):
+        projected["question"] = question
+    options: list[dict[str, str]] = []
+    for index, raw in enumerate((value.get("options") or [])[:5] if isinstance(value.get("options"), list) else []):
+        if isinstance(raw, Mapping):
+            label = _public_text(raw.get("label"), 160)
+            option_id = _public_identifier(raw.get("id")) or f"option-{index + 1}"
+        else:
+            label = _public_text(raw, 160)
+            option_id = f"option-{index + 1}"
+        if label:
+            options.append({"id": option_id, "label": label})
+    if options:
+        projected["options"] = options
+    for key in ("allow_multi", "allow_freeform"):
+        if isinstance(value.get(key), bool):
+            projected[key] = value[key]
+    return projected
+
+
+def _project_output_contract(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("version", "intent", "citation_style", "answer_style"):
+        if text := _public_text(value.get(key), 120):
+            projected[key] = text
+    if isinstance(value.get("sections"), list):
+        projected["sections"] = _public_text_list(value.get("sections"), limit=120, items=16)
+    for key in ("customer_text", "raw_field_names_allowed", "no_numbered_action_plan", "no_dimension_scores"):
+        if isinstance(value.get(key), bool):
+            projected[key] = value[key]
+    if (number := _public_number(value.get("max_target_chars"))) is not None:
+        projected["max_target_chars"] = int(number)
+    return projected
+
+
+def _project_feasibility(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("opportunity_id", "verdict", "overall_confidence", "rubric_version", "guardrail_version", "plan_version"):
+        if text := _public_text(value.get(key), 160):
+            projected[key] = text
+    dimensions: list[dict[str, Any]] = []
+    for raw in (value.get("dimensions") or [])[:10] if isinstance(value.get("dimensions"), list) else []:
+        if not isinstance(raw, Mapping):
+            continue
+        item: dict[str, Any] = {}
+        for key in ("name", "confidence"):
+            if text := _public_text(raw.get(key), 80):
+                item[key] = text
+        if (score := _public_number(raw.get("score"))) is not None:
+            item["score"] = score
+        if isinstance(raw.get("evidence"), list):
+            item["evidence"] = _project_evidence_list(raw.get("evidence"), items=12)
+        if item:
+            dimensions.append(item)
+    if dimensions or isinstance(value.get("dimensions"), list):
+        projected["dimensions"] = dimensions
+    for key in ("guardrails", "evidence_warnings"):
+        if isinstance(value.get(key), list):
+            projected[key] = _public_text_list(value.get(key), limit=360)
+    if (score := _public_number(value.get("rubric_weighted_score"))) is not None:
+        projected["rubric_weighted_score"] = score
+    if "_llm" in value:
+        projected["_llm"] = _llm_metadata_projection(value.get("_llm"))
+    return projected
+
+
+def _project_audit(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("verdict", "status", "target_expert", "agent", "orchestrator"):
+        if text := _public_identifier(value.get(key)):
+            projected[key] = text
+    for key in ("issues", "reason_codes"):
+        if isinstance(value.get(key), (list, tuple)):
+            projected[key] = _public_text_list(value.get(key), limit=360)
+    return projected
+
+
+def _project_verdict_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in (
+        "judgment",
+        "confidence",
+        "rubric_version",
+        "revised_by",
+        "kind",
+        "verdict_before",
+        "verdict_after",
+        "verdict_before_label",
+        "verdict_after_label",
+        "downgrade_reason",
+        "source",
+        "dimension",
+        "dim",
+        "reason",
+    ):
+        if text := _public_text(value.get(key), 360):
+            projected[key] = text
+    for key in ("weighted_score", "score_before", "score_after", "blind", "revised", "delta"):
+        raw = value.get(key)
+        if isinstance(raw, Mapping):
+            projected[key] = _project_verdict_summary(raw)
+        elif (number := _public_number(raw)) is not None:
+            projected[key] = number
+    if isinstance(value.get("disagreement"), list):
+        projected["disagreement"] = [
+            item
+            for raw in value["disagreement"][:12]
+            if (item := _project_verdict_summary(raw))
+        ]
+    if isinstance(value.get("downgrade"), Mapping):
+        projected["downgrade"] = _project_verdict_summary(value.get("downgrade"))
+    return projected
+
+
+def _project_corpus(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    if isinstance(value.get("hits"), list):
+        projected["hits"] = _project_evidence_list(value.get("hits"), items=24)
+    opportunities: list[dict[str, Any]] = []
+    for raw in (value.get("opportunities") or [])[:12] if isinstance(value.get("opportunities"), list) else []:
+        if not isinstance(raw, Mapping):
+            continue
+        item = _project_evidence(raw)
+        evidence = _project_evidence_list(raw.get("supporting_evidence"), items=12)
+        if evidence:
+            item["supporting_evidence"] = evidence
+        if item:
+            opportunities.append(item)
+    if opportunities or isinstance(value.get("opportunities"), list):
+        projected["opportunities"] = opportunities
+    profile = value.get("profile")
+    if isinstance(profile, Mapping):
+        public_profile: dict[str, Any] = {}
+        for key in ("workspace_id", "summary", "customer_summary", "profile_summary"):
+            if text := _public_text(profile.get(key), 1200):
+                public_profile[key] = text
+        for key in ("assets", "gaps_observed"):
+            if isinstance(profile.get(key), list):
+                public_profile[key] = _public_text_list(profile.get(key), limit=320)
+        if isinstance(profile.get("asset_evidence"), list):
+            public_profile["asset_evidence"] = _project_evidence_list(profile.get("asset_evidence"), items=24)
+        projected["profile"] = public_profile
+    return projected
+
+
+def _project_market(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("opportunity_id", "positioning_note", "market_evidence_status", "confidence"):
+        if text := _public_text(value.get(key), 1200):
+            projected[key] = text
+    for key in ("competitors", "external_findings", "sources"):
+        if isinstance(value.get(key), list):
+            projected[key] = _project_evidence_list(value.get(key), items=24)
+    if isinstance(value.get("gaps"), list):
+        projected["gaps"] = _public_text_list(value.get("gaps"), limit=360)
+    if "_llm" in value:
+        projected["_llm"] = _llm_metadata_projection(value.get("_llm"))
+    return projected
+
+
+def _project_proposal_item(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("mode", "status", "content_type"):
+        if identifier := _public_identifier(value.get(key)):
+            projected[key] = identifier
+    if (size := _public_number(value.get("bytes"))) is not None:
+        projected["bytes"] = max(0, int(size))
+    for key in ("artifact_url", "url", "blob_url"):
+        if url := _public_url(value.get(key)):
+            projected[key] = url
+    return projected
+
+
+def _project_proposal(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for kind in _PUBLIC_ARTIFACT_KINDS:
+        if isinstance(value.get(kind), Mapping):
+            projected[kind] = _project_proposal_item(value.get(kind))
+    urls = value.get("artifact_urls")
+    if isinstance(urls, Mapping):
+        projected["artifact_urls"] = {
+            kind: url
+            for kind in _PUBLIC_ARTIFACT_KINDS
+            if (url := _public_url(urls.get(kind))) is not None
+        }
+    return projected
+
+
+def _project_simple_status(
+    value: Any,
+    _conversation_id: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in (
+        "mode",
+        "status",
+        "runtime",
+        "orchestrator",
+        "execution_path",
+        "fast_path",
+        "producer_suppressed",
+        "version",
+        "answer_style",
+        "source",
+        "kind",
+        "label",
+        "route_hint",
+        "answer_type",
+        "experiment_version_id",
+        "source_run_id",
+    ):
+        if text := _public_text(value.get(key), 240):
+            projected[key] = text
+    for key in ("ready", "lightweight", "needs_full_analysis", "should_clarify", "degraded", "fallback"):
+        if isinstance(value.get(key), bool):
+            projected[key] = value[key]
+    for key in ("count", "revision", "max_revisions", "evidence_revision"):
+        if (number := _public_number(value.get(key))) is not None:
+            projected[key] = max(0, int(number))
+    return projected
+
+
+def _project_actor(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("name", "email", "actor_id", "tenant_id", "source"):
+        if text := _public_text(value.get(key), 320):
+            projected[key] = text
+    for key in ("roles", "groups"):
+        if isinstance(value.get(key), (list, tuple)):
+            projected[key] = _public_identifier_list(value.get(key), items=20)
+    return projected
+
+
+def sanitize_conversation_metadata(
+    value: Any,
+    expected_scope: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a typed public artifact envelope; unknown keys are never retained."""
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("workspace_id", "run_id", "origin", "conversation_id", "source_analysis_run_id", "experiment_version_id"):
+        if key in value and (identifier := _public_identifier(value.get(key))):
+            projected[key] = identifier
+    for key in ("text", "summary", "recommendation", "confidence_label"):
+        if key in value and (text := _public_text(value.get(key))):
+            projected[key] = text
+    for key in ("mode", "confidence", "verdict_source"):
+        if key in value and (text := _public_text(value.get(key), 120)):
+            projected[key] = text
+    if (revision := _public_number(value.get("evidence_revision"))) is not None:
+        projected["evidence_revision"] = max(0, int(revision))
+    if isinstance(value.get("routing"), Mapping):
+        projected["routing"] = _routing_projection(value.get("routing"))
+    if route := conversation_route_projection(value.get("conversation_route")):
+        projected["conversation_route"] = route
+    if isinstance(value.get("routing_meta"), Mapping):
+        projected["routing_meta"] = _project_simple_status(value.get("routing_meta"))
+    if isinstance(value.get("answer"), Mapping):
+        projected["answer"] = _project_answer(value.get("answer"))
+    if isinstance(value.get("artifact"), Mapping):
+        projected["artifact"] = public_artifact_projection(value.get("artifact"), expected_scope)
+    if isinstance(value.get("feasibility"), Mapping):
+        projected["feasibility"] = _project_feasibility(value.get("feasibility"))
+    if isinstance(value.get("audit"), Mapping):
+        projected["audit"] = _project_audit(value.get("audit"))
+    if isinstance(value.get("verdict"), Mapping):
+        projected["verdict"] = _project_verdict_summary(value.get("verdict"))
+    if isinstance(value.get("verdict_downgrade"), Mapping):
+        projected["verdict_downgrade"] = _project_verdict_summary(value.get("verdict_downgrade"))
+    if isinstance(value.get("corpus"), Mapping):
+        projected["corpus"] = _project_corpus(value.get("corpus"))
+    if isinstance(value.get("market"), Mapping):
+        projected["market"] = _project_market(value.get("market"))
+    if isinstance(value.get("proposal"), Mapping):
+        projected["proposal"] = _project_proposal(value.get("proposal"))
+    if isinstance(value.get("artifact_urls"), Mapping):
+        projected["artifact_urls"] = _project_proposal({"artifact_urls": value.get("artifact_urls")}).get("artifact_urls", {})
+    if isinstance(value.get("citations"), list):
+        projected["citations"] = _project_evidence_list(value.get("citations"))
+    for key in ("action_plan", "artifact_warnings"):
+        if isinstance(value.get(key), list):
+            projected[key] = _public_text_list(value.get(key), limit=480)
+    for key in ("output_contract", "produce_offer", "pm_skill", "maf", "experiment_attachment"):
+        if isinstance(value.get(key), Mapping):
+            projected[key] = _project_output_contract(value.get(key)) if key == "output_contract" else _project_simple_status(value.get(key))
+    if isinstance(value.get("actor"), Mapping):
+        projected["actor"] = _project_actor(value.get("actor"))
+    if isinstance(value.get("trace"), Mapping):
+        projected["trace"] = {
+            key: identifier
+            for key in ("trace_id", "agent_id")
+            if (identifier := _public_identifier(value["trace"].get(key))) is not None
+        }
+    if isinstance(value.get("reference_images"), list):
+        projected["reference_images"] = [
+            item
+            for raw in value["reference_images"][:12]
+            if (item := _project_proposal_item(raw))
+        ]
+    return projected
+
 
 def public_artifact_projection(value: Any, expected_scope: Mapping[str, Any] | None = None) -> Any:
-    """Project artifacts for API and SSE clients without reusable provenance material."""
-    if isinstance(value, Mapping):
-        raw_packs = value.get("capability_packs")
-        has_capability_metadata = "capability_packs" in value or "capability_pack_ids" in value
-        records, provenance = sanitize_capability_pack_contract(
-            raw_packs if isinstance(raw_packs, list) else [],
-            value.get("capability_pack_provenance"),
-            expected_scope,
-        )
-        projected = {
-            str(key): public_artifact_projection(item, expected_scope)
-            for key, item in value.items()
-            if str(key) not in _PUBLIC_PROVENANCE_FIELDS
+    """Project one final/artifact envelope without arbitrary nested pass-through."""
+    if not isinstance(value, Mapping):
+        return {}
+    projected = sanitize_conversation_metadata(value, expected_scope)
+    raw_packs = value.get("capability_packs")
+    has_capability_metadata = "capability_packs" in value or "capability_pack_ids" in value
+    records, provenance = sanitize_capability_pack_contract(
+        raw_packs if isinstance(raw_packs, list) else [],
+        value.get("capability_pack_provenance"),
+        expected_scope,
+    )
+    if has_capability_metadata and provenance:
+        projected["capability_packs"] = records
+        projected["capability_pack_ids"] = [str(record["pack_id"]) for record in records]
+        projected["capability_pack_integrity"] = {
+            "status": "verified",
+            "source": _CAPABILITY_PROVENANCE_SOURCE,
+            "version": _CAPABILITY_PROVENANCE_VERSION,
         }
-        if has_capability_metadata and provenance:
-            projected["capability_packs"] = records
-            projected["capability_pack_ids"] = [str(record["pack_id"]) for record in records]
-            projected["capability_pack_integrity"] = {
-                "status": "verified",
-                "source": _CAPABILITY_PROVENANCE_SOURCE,
-                "version": _CAPABILITY_PROVENANCE_VERSION,
+    return projected
+
+
+def _project_answer_delta(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    if not isinstance(data, Mapping):
+        return {}
+    delta = _public_text(data.get("delta"), 8192)
+    return {"delta": delta} if delta is not None else {}
+
+
+def _project_final(data: Any, conversation_id: str | None) -> dict[str, Any]:
+    if not isinstance(data, Mapping):
+        return {}
+    artifact = data.get("artifact")
+    workspace_id = artifact.get("workspace_id") if isinstance(artifact, Mapping) else None
+    return public_artifact_projection(
+        data,
+        {"workspace_id": workspace_id, "scope_id": conversation_id},
+    )
+
+
+def _project_model_response(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    if not isinstance(data, Mapping):
+        return {}
+    projected = _llm_metadata_projection(data)
+    for key in ("agent", "orchestrator", "status", "error_category"):
+        if identifier := _public_identifier(data.get(key)):
+            projected[key] = identifier
+    if (revision := _public_number(data.get("revision"))) is not None:
+        projected["revision"] = max(0, int(revision))
+    if isinstance(data.get("retry_count"), int) and not isinstance(data.get("retry_count"), bool):
+        projected["retry_count"] = max(0, min(100, data["retry_count"]))
+    if isinstance(data.get("tool_names"), (list, tuple)):
+        projected["tool_names"] = _public_identifier_list(data.get("tool_names"))
+    if isinstance(data.get("cache_hit"), bool):
+        projected["cache_hit"] = data["cache_hit"]
+    return projected
+
+
+def _project_followup(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    if not isinstance(data, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    if text := _public_text(data.get("text")):
+        projected["text"] = text
+    route = conversation_route_projection(data.get("conversation_route") or data.get("mode"))
+    if route:
+        projected["conversation_route"] = route
+    if isinstance(data.get("clarify"), Mapping):
+        clarify = _project_clarify(data.get("clarify"))
+        if clarify:
+            projected["clarify"] = clarify
+    if isinstance(data.get("lightweight"), bool):
+        projected["lightweight"] = data["lightweight"]
+    projected["experts"] = _public_identifier_list(data.get("experts"))
+    if not projected["experts"] and not isinstance(data.get("experts"), list):
+        projected.pop("experts")
+    return projected
+
+
+def _project_clarify_event(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    return _project_clarify(data)
+
+
+def _project_route_event(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    if not isinstance(data, Mapping):
+        return {}
+    projected = _routing_projection(data)
+    route = conversation_route_projection(data.get("conversation_route") or data.get("mode"))
+    if route:
+        projected.update(
+            {
+                "mode": route["mode"],
+                "conversation_route": route["mode"],
+                "reason": route["reason"],
+                "route_reason": route["reason"],
+                "evidence_required": route["evidence_required"],
             }
+        )
+    if (revision := _public_number(data.get("evidence_revision"))) is not None:
+        projected["evidence_revision"] = max(0, int(revision))
+    return projected
+
+
+def _project_progress(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    if not isinstance(data, Mapping):
+        return {}
+    projected = _project_simple_status(data)
+    for key in ("agent", "name", "branch_id"):
+        if identifier := _public_identifier(data.get(key)):
+            projected[key] = identifier
+    return projected
+
+
+def _project_tool_call(data: Any, conversation_id: str | None) -> dict[str, Any]:
+    projected = _project_progress(data, conversation_id)
+    if isinstance(data, Mapping) and isinstance(data.get("autonomous"), bool):
+        projected["autonomous"] = data["autonomous"]
+    return projected
+
+
+def _project_tool_result(data: Any, conversation_id: str | None) -> dict[str, Any]:
+    projected = _project_tool_call(data, conversation_id)
+    if not isinstance(data, Mapping):
         return projected
-    if isinstance(value, list):
-        return [public_artifact_projection(item, expected_scope) for item in value]
-    return value
+    for key in ("count", "bytes"):
+        if (number := _public_number(data.get(key))) is not None:
+            projected[key] = max(0, int(number))
+    if url := _public_url(data.get("artifact_url")):
+        projected["artifact_url"] = url
+    for key in ("retrieval_modes", "tool_names"):
+        if isinstance(data.get(key), (list, tuple)):
+            projected[key] = _public_identifier_list(data.get(key))
+    return projected
+
+
+def _project_audit_event(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    return _project_audit(data)
+
+
+def _project_revised_verdict(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    return _project_verdict_summary(data)
+
+
+def _project_error(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    projected: dict[str, Any] = {"code": "request_failed"}
+    if isinstance(data, Mapping) and isinstance(data.get("retryable"), bool):
+        projected["retryable"] = data["retryable"]
+    return projected
+
+
+def _project_ready(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    if not isinstance(data, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("run_id", "conversation_id", "workspace_id", "origin"):
+        if identifier := _public_identifier(data.get(key)):
+            projected[key] = identifier
+    if isinstance(data.get("trace"), Mapping):
+        projected["trace"] = {
+            key: identifier
+            for key in ("trace_id", "agent_id")
+            if (identifier := _public_identifier(data["trace"].get(key))) is not None
+        }
+    if (revision := _public_number(data.get("evidence_revision"))) is not None:
+        projected["evidence_revision"] = max(0, int(revision))
+    return projected
+
+
+def _project_content_safety(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    if not isinstance(data, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("blocked", "jailbreak"):
+        if isinstance(data.get(key), bool):
+            projected[key] = data[key]
+    if isinstance(data.get("categories"), (list, tuple)):
+        projected["categories"] = _public_identifier_list(data.get("categories"), items=12)
+    return projected
+
+
+def _project_iteration_inputs(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    if not isinstance(data, Mapping):
+        return {}
+    count = _public_number(data.get("count"))
+    return {"count": max(0, int(count))} if count is not None else {}
+
+
+def _project_blind_verdict(data: Any, _conversation_id: str | None) -> dict[str, Any]:
+    if not isinstance(data, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    if agent := _public_identifier(data.get("agent")):
+        projected["agent"] = agent
+    if isinstance(data.get("verdict"), Mapping):
+        projected["verdict"] = _project_verdict_summary(data.get("verdict"))
+    dimensions: list[dict[str, Any]] = []
+    for raw in (data.get("dimensions") or [])[:10] if isinstance(data.get("dimensions"), list) else []:
+        if not isinstance(raw, Mapping):
+            continue
+        item: dict[str, Any] = {}
+        if text := _public_text(raw.get("dim"), 120):
+            item["dim"] = text
+        if (score := _public_number(raw.get("score"))) is not None:
+            item["score"] = score
+        if confidence := _public_identifier(raw.get("confidence")):
+            item["confidence"] = confidence
+        if item:
+            dimensions.append(item)
+    if dimensions:
+        projected["dimensions"] = dimensions
+    return projected
+
+
+def _project_maf_status(data: Any, conversation_id: str | None) -> dict[str, Any]:
+    projected = _project_model_response(data, conversation_id)
+    if not isinstance(data, Mapping):
+        return projected
+    for key in ("sequence", "duration_ms", "max_revisions"):
+        if (number := _public_number(data.get(key))) is not None:
+            projected[key] = number
+    for key in ("branch_id", "source_agent_id", "target_agent_id"):
+        if identifier := _public_identifier(data.get(key)):
+            projected[key] = identifier
+    for key in ("reason_codes", "selected_agents", "skipped_agents"):
+        if isinstance(data.get(key), (list, tuple)):
+            projected[key] = _public_identifier_list(data.get(key))
+    return projected
+
+
+_PUBLIC_EVENT_PROJECTORS = {
+    "answer_delta": _project_answer_delta,
+    "delta": _project_answer_delta,
+    "final": _project_final,
+    "model_response": _project_model_response,
+    "followup": _project_followup,
+    "clarify": _project_clarify_event,
+    "route": _project_route_event,
+    "plan": _project_route_event,
+    "progress": _project_progress,
+    "role_change": _project_progress,
+    "tool_call": _project_tool_call,
+    "tool_result": _project_tool_result,
+    "audit": _project_audit_event,
+    "revised_verdict": _project_revised_verdict,
+    "error": _project_error,
+    "ready": _project_ready,
+    "content_safety": _project_content_safety,
+    "iteration_inputs": _project_iteration_inputs,
+    "blind_verdict": _project_blind_verdict,
+    "cache": _project_progress,
+    "maf_workflow": _project_simple_status,
+    "maf_fallback": _project_maf_status,
+    "market_relevance_gate": _project_simple_status,
+    "capability_pack_selection": _project_simple_status,
+}
+
+
+def public_conversation_event(
+    event: str,
+    data: Any,
+    conversation_id: str | None,
+) -> dict[str, Any]:
+    """Return the only payload permitted to reach public conversation sinks."""
+    event_name = str(event or "")
+    projector = _PUBLIC_EVENT_PROJECTORS.get(event_name)
+    if projector is None and event_name.startswith("maf_"):
+        projector = _project_maf_status
+    return projector(data, conversation_id) if projector else {}
 
 
 def _capability_pack_ids(packs: Sequence[Any] | None) -> list[str]:
@@ -702,9 +1457,12 @@ __all__ = [
     "build_evidence_bundle",
     "bundle_for_agent",
     "capability_pack_ids_from_records",
+    "conversation_route_projection",
     "internally_selected_capability_pack_contract",
     "public_artifact_projection",
+    "public_conversation_event",
     "sanitize_capability_metadata",
     "sanitize_capability_pack_contract",
     "sanitize_capability_pack_records",
+    "sanitize_conversation_metadata",
 ]
