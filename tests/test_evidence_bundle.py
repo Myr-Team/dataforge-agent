@@ -282,3 +282,156 @@ def test_public_artifact_projection_keeps_only_explicit_artifact_contract() -> N
 
     assert projected["answer"] == {"markdown": "public answer"}
     assert "opaque" not in projected
+
+
+def test_public_artifact_projection_drops_claims_gaps_and_rationale() -> None:
+    marker = "private analysis"
+    artifact = {
+        "workspace_id": "ws",
+        "feasibility": {
+            "verdict": "conditional",
+            "rationale": marker,
+            "gap_list": [marker],
+            "dimensions": [
+                {
+                    "name": "asset_data",
+                    "score": 3,
+                    "confidence": "data_confirmed",
+                    "rationale": marker,
+                    "evidence": [
+                        {
+                            "id": "e-1",
+                            "quote": "observed metric",
+                            "claim": marker,
+                            "gaps": [marker],
+                        }
+                    ],
+                }
+            ],
+        },
+        "corpus": {
+            "hits": [{"id": "h-1", "quote": "observed row", "claim": marker}],
+            "gaps_observed": [marker],
+        },
+        "market": {
+            "evidence": [{"id": "m-1", "quote": "public market source", "claim": marker}],
+            "gaps": [marker],
+        },
+        "rationale": marker,
+    }
+
+    projected = evidence_bundle.public_artifact_projection(artifact, {"workspace_id": "ws"})
+
+    assert marker not in repr(projected)
+    assert projected["feasibility"]["dimensions"][0] == {
+        "name": "asset_data",
+        "score": 3,
+        "confidence": "data_confirmed",
+        "evidence": [{"id": "e-1", "quote": "observed metric"}],
+    }
+
+
+def test_public_artifact_projection_preserves_verified_capability_pack_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DF_CAPABILITY_PACK_SIGNING_KEY", "task-1a-test-signing-key")
+    scope = {"workspace_id": "ws", "scope_id": "run-1"}
+    records, provenance = evidence_bundle.internally_selected_capability_pack_contract(
+        {
+            "goal": "choose channels for demand coverage",
+            "schema_profile": {
+                "schema_roles": ["location", "candidate", "demand", "time"],
+                "metric_families": ["footfall", "conversion", "cost"],
+                "temporal_coverage": {"available": True, "periods": 8},
+                "entity_relationships": ["location_to_demand"],
+            },
+            "quality": {"completeness": 0.94, "duplicate_rate": 0.01},
+        },
+        scope,
+    )
+    assert records
+    persisted = evidence_bundle.sanitize_conversation_metadata(
+        {
+            "workspace_id": "ws",
+            "capability_packs": records,
+            "capability_pack_provenance": provenance,
+        }
+    )
+
+    projected = evidence_bundle.public_artifact_projection(
+        persisted,
+        scope,
+    )
+
+    assert projected["capability_packs"] == records
+    assert projected["capability_pack_ids"] == ["site_channel_selection"]
+    assert projected["capability_pack_integrity"] == {
+        "status": "verified",
+        "source": "normalized_goal_schema_profile_quality",
+        "version": "2",
+    }
+    assert "capability_pack_provenance" not in projected
+
+
+def test_public_artifact_projection_keeps_final_verdict_and_feasibility_contract() -> None:
+    artifact = {
+        "workspace_id": "ws",
+        "verdict": "insufficient_evidence",
+        "feasibility": {
+            "verdict": "insufficient_evidence",
+            "dimensions": [
+                {
+                    "name": "asset_data",
+                    "score": 2,
+                    "confidence": "data_confirmed",
+                    "evidence": [{"ref": "asset.csv#row-1", "quote": "observed row"}],
+                    "rationale": "private",
+                }
+            ],
+        },
+    }
+
+    projected = evidence_bundle.public_artifact_projection(artifact, {"workspace_id": "ws"})
+
+    assert projected == {
+        "workspace_id": "ws",
+        "verdict": "insufficient_evidence",
+        "feasibility": {
+            "verdict": "insufficient_evidence",
+            "dimensions": [
+                {
+                    "name": "asset_data",
+                    "score": 2,
+                    "confidence": "data_confirmed",
+                    "evidence": [{"ref": "asset.csv#row-1", "quote": "observed row"}],
+                }
+            ],
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://example.com/report",
+        "https://user:password@example.com/report",
+        "https://example.com/report?api_key=secret",
+        "https://example.com/report?Signature=secret",
+        "https://example.com/report?credential_hint=secret",
+    ],
+)
+def test_public_artifact_projection_drops_unsafe_urls(url: str) -> None:
+    projected = evidence_bundle.public_artifact_projection(
+        {"proposal": {"artifact_urls": {"pdf": url}}}
+    )
+
+    assert projected == {"proposal": {"artifact_urls": {}}}
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_sanitize_conversation_metadata_drops_non_finite_usage_without_raising(value: float) -> None:
+    projected = evidence_bundle.sanitize_conversation_metadata(
+        {"answer": {"markdown": "public", "_llm": {"usage": {"input_tokens": value}}}}
+    )
+
+    assert projected == {"answer": {"markdown": "public", "_llm": {}}}
