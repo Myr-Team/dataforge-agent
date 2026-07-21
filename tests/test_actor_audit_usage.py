@@ -102,16 +102,19 @@ def test_trusted_identity_requires_proxy_verified_easy_auth_and_actor_id() -> No
     assert is_trusted_tenant_identity({"source": "easy_auth", "actor_id": "oid-1"}) is False
 
 
-def test_roi_endpoint_fails_closed_before_reading_for_compatibility_or_nonmember(monkeypatch) -> None:
+def test_roi_endpoint_fails_closed_before_reading_for_nonowners(monkeypatch) -> None:
     monkeypatch.delenv("DF_WORKSPACE_RBAC_ENFORCED", raising=False)
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     reads: list[str] = []
     monkeypatch.setattr(control_plane, "workspace_roi_snapshot", lambda workspace_id, *_args: reads.append(workspace_id) or {"workspace_id": workspace_id})
-    monkeypatch.setattr(control_plane, "active_workspace_role", lambda _workspace_id, actor: "viewer" if actor.get("actor_id") == "viewer-oid" else None)
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda _workspace_id, actor: "owner" if actor.get("actor_id") == "owner-oid" else "viewer")
     monkeypatch.setattr(
         workspace_authz,
         "_load_workspace_meta",
-        lambda _workspace_id: {"workspace_members": [{"actor_id": "viewer-oid", "tenant_id": "tenant-1", "role": "viewer", "status": "active"}]},
+        lambda _workspace_id: {
+            "workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-1"},
+            "workspace_members": [{"actor_id": "viewer-oid", "tenant_id": "tenant-1", "role": "viewer", "status": "active"}],
+        },
     )
     client = TestClient(app)
     query = "?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"
@@ -120,7 +123,7 @@ def test_roi_endpoint_fails_closed_before_reading_for_compatibility_or_nonmember
         assert client.get(f"/api/workspaces/ws-locked/governance/roi{query}", headers=headers).status_code == 403
     allowed = client.get(
         f"/api/workspaces/ws-locked/governance/roi{query}",
-        headers={"x-ms-client-principal": _principal([{"typ": "oid", "val": "viewer-oid"}, {"typ": "tid", "val": "tenant-1"}]), "x-dataforge-proxy-secret": "test-proxy-secret"},
+        headers={"x-ms-client-principal": _principal([{"typ": "oid", "val": "owner-oid"}, {"typ": "tid", "val": "tenant-1"}]), "x-dataforge-proxy-secret": "test-proxy-secret"},
     )
 
     assert allowed.status_code == 200
@@ -780,16 +783,17 @@ def test_member_contract_returns_only_safe_subject_labels_for_settings(monkeypat
 def test_legacy_governance_routes_require_explicit_governance_actions(monkeypatch) -> None:
     monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
-    monkeypatch.setattr(control_plane, "workspace_role", lambda _workspace_id, actor: "admin" if actor.get("actor_id") == "admin-oid" else "viewer")
-    monkeypatch.setattr(control_plane, "active_workspace_role", lambda _workspace_id, actor: "admin" if actor.get("actor_id") == "admin-oid" else "viewer")
-    monkeypatch.setattr(control_plane, "require_workspace_permission", lambda _workspace_id, actor, _action: "admin" if actor.get("actor_id") == "admin-oid" else "viewer")
+    monkeypatch.setattr(control_plane, "workspace_role", lambda _workspace_id, actor: "owner" if actor.get("actor_id") == "owner-oid" else ("admin" if actor.get("actor_id") == "admin-oid" else "viewer"))
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda _workspace_id, actor: "owner" if actor.get("actor_id") == "owner-oid" else ("admin" if actor.get("actor_id") == "admin-oid" else "viewer"))
+    monkeypatch.setattr(control_plane, "require_workspace_permission", lambda _workspace_id, actor, _action: "owner" if actor.get("actor_id") == "owner-oid" else ("admin" if actor.get("actor_id") == "admin-oid" else "viewer"))
     monkeypatch.setattr(
         workspace_authz,
         "_load_workspace_meta",
         lambda _workspace_id: {"workspace_members": [
             {"actor_id": "admin-oid", "tenant_id": "tenant-private", "role": "admin", "status": "active"},
             {"actor_id": "viewer-oid", "tenant_id": "tenant-private", "role": "viewer", "status": "active"},
-        ]},
+            {"actor_id": "owner-oid", "tenant_id": "tenant-private", "role": "owner", "status": "active"},
+            ], "workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-private"}},
     )
     monkeypatch.setattr(control_plane, "record_audit_event", lambda *_args, **_kwargs: {}, raising=False)
     monkeypatch.setattr(control_plane, "workspace_usage_summary", lambda workspace_id, _request: {"workspace_id": workspace_id})
@@ -810,6 +814,13 @@ def test_legacy_governance_routes_require_explicit_governance_actions(monkeypatc
         ]),
         "x-dataforge-proxy-secret": "test-proxy-secret",
     }
+    owner_headers = {
+        "x-ms-client-principal": _principal([
+            {"typ": "oid", "val": "owner-oid"},
+            {"typ": "tid", "val": "tenant-private"},
+        ]),
+        "x-dataforge-proxy-secret": "test-proxy-secret",
+    }
 
     for path in (
         "/api/workspaces/ws-private/usage-summary",
@@ -817,7 +828,8 @@ def test_legacy_governance_routes_require_explicit_governance_actions(monkeypatc
         "/api/workspaces/ws-private/governance-summary",
     ):
         assert client.get(path, headers=viewer_headers).status_code == 403
-        assert client.get(path, headers=admin_headers).status_code == 200
+        assert client.get(path, headers=admin_headers).status_code == 403
+        assert client.get(path, headers=owner_headers).status_code == 200
 
 
 def test_all_legacy_and_new_governance_endpoints_serialize_without_raw_identity(monkeypatch) -> None:
@@ -854,9 +866,9 @@ def test_all_legacy_and_new_governance_endpoints_serialize_without_raw_identity(
         "workspace_owner": creator,
         "workspace_members": [{**admin, "role": "admin", "status": "active"}],
     }
-    monkeypatch.setattr(control_plane, "workspace_role", lambda *_args: "admin")
-    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "admin")
-    monkeypatch.setattr(control_plane, "require_workspace_permission", lambda *_args: "admin")
+    monkeypatch.setattr(control_plane, "workspace_role", lambda *_args: "owner")
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda *_args: "owner")
+    monkeypatch.setattr(control_plane, "require_workspace_permission", lambda *_args: "owner")
     monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _workspace_id: meta)
     monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: meta)
     monkeypatch.setattr(control_plane, "list_runs", lambda _workspace_id=None: [run])
@@ -915,10 +927,10 @@ def test_all_legacy_and_new_governance_endpoints_serialize_without_raw_identity(
     monkeypatch.setattr(control_plane, "get_trace_delivery_status", lambda *_args: TraceStatus())
     headers = {
         "x-ms-client-principal": _principal([
-            {"typ": "name", "val": admin["name"]},
-            {"typ": "preferred_username", "val": admin["email"]},
-            {"typ": "oid", "val": admin["actor_id"]},
-            {"typ": "tid", "val": admin["tenant_id"]},
+            {"typ": "name", "val": creator["name"]},
+            {"typ": "preferred_username", "val": creator["email"]},
+            {"typ": "oid", "val": creator["actor_id"]},
+            {"typ": "tid", "val": creator["tenant_id"]},
         ]),
         "x-dataforge-proxy-secret": "test-proxy-secret",
     }

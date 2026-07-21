@@ -109,8 +109,8 @@ def test_scenario_routes_use_explicit_governance_actions(monkeypatch, tmp_path: 
     actions: list[str] = []
     monkeypatch.setattr(
         control_plane,
-        "_require_sensitive_workspace_action",
-        lambda _workspace_id, _request, action: actions.append(action) or "editor",
+        "_require_workspace_owner",
+        lambda _workspace_id, _request, action: actions.append(action) or "owner",
     )
     monkeypatch.setattr(control_plane, "_audit_required", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -134,7 +134,7 @@ def test_scenario_route_returns_service_unavailable_when_durable_store_fails(mon
     _configure_store(monkeypatch, tmp_path)
     monkeypatch.setattr(roi_scenario_store, "blob_configured", lambda: True)
     monkeypatch.setattr(roi_scenario_store, "upload_blob_json", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("storage unavailable")))
-    monkeypatch.setattr(control_plane, "_require_sensitive_workspace_action", lambda *_args, **_kwargs: "editor")
+    monkeypatch.setattr(control_plane, "_require_workspace_owner", lambda *_args, **_kwargs: "owner")
     monkeypatch.setattr(control_plane, "_audit_required", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(control_plane, "_audit_failed", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(control_plane, "actor_from_request", lambda _request: {"actor_id": "owner-1"})

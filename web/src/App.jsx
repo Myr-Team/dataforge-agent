@@ -29,7 +29,7 @@ import {
   WorkbenchMain,
   WorkspacePane,
 } from "./components.jsx";
-import { PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
+import { canViewGovernance, PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
 import { executionRequestFields, readyExecutionState } from "./executionIdentity.js";
 
 const DEFAULT_WORKSPACE = "demo-corpus";
@@ -585,9 +585,16 @@ export function App() {
   };
 
   const changePrimaryView = (view) => {
+    if (view === "governance" && !canViewGovernance(workspaceAccess)) return;
     if (view === "settings") setSettingsInitialTab("about");
     setActiveView(view);
   };
+
+  useEffect(() => {
+    if (workspaceAccess && activeView === "governance" && !canViewGovernance(workspaceAccess)) {
+      setActiveView("workspaces");
+    }
+  }, [activeView, workspaceAccess]);
 
   const openMembersSettings = () => {
     setSettingsInitialTab("members");
@@ -1113,7 +1120,7 @@ export function App() {
       />
       <ShellNav active={activeView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} onInviteMembers={openMembersSettings} />
       <div className="workbench">
-        <MobileNav active={activeView} onChange={changePrimaryView} />
+        <MobileNav active={activeView} onChange={changePrimaryView} access={workspaceAccess} />
         <div className="workbench-grid">
           <WorkbenchMain
             view={activeView}

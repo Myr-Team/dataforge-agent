@@ -37,8 +37,8 @@ def test_cost_value_route_keeps_evidence_scenarios_and_integration_separate(monk
     actions: list[str] = []
     monkeypatch.setattr(
         control_plane,
-        "_require_sensitive_workspace_action",
-        lambda _workspace_id, _request, action: actions.append(action) or "viewer",
+        "_require_workspace_owner",
+        lambda _workspace_id, _request, action: actions.append(action) or "owner",
     )
     monkeypatch.setattr(
         control_plane,

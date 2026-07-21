@@ -462,6 +462,43 @@ def test_governance_role_does_not_accept_local_development_sentinel(monkeypatch:
 @pytest.mark.parametrize(
     ("method", "path"),
     [
+        ("GET", "/api/workspaces/ws-owner-governance/usage-summary"),
+        ("GET", "/api/workspaces/ws-owner-governance/audit-events"),
+        ("GET", "/api/workspaces/ws-owner-governance/governance/audit-events"),
+        ("GET", "/api/workspaces/ws-owner-governance/governance/invitations"),
+        ("GET", "/api/workspaces/ws-owner-governance/governance-summary"),
+        ("GET", "/api/workspaces/ws-owner-governance/governance/roi?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"),
+        ("GET", "/api/workspaces/ws-owner-governance/governance/cost-value?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"),
+        ("GET", "/api/workspaces/ws-owner-governance/governance/chargeback?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z"),
+        ("GET", "/api/workspaces/ws-owner-governance/governance/scenarios"),
+        ("POST", "/api/workspaces/ws-owner-governance/governance/scenarios"),
+    ],
+)
+def test_governance_and_roi_routes_reject_workspace_admins(monkeypatch: pytest.MonkeyPatch, method: str, path: str) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": {"actor_id": "creator-oid", "tenant_id": "tenant-1"},
+            "workspace_members": [{"actor_id": "admin-oid", "tenant_id": "tenant-1", "role": "admin", "status": "active"}],
+        },
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.request(
+        method,
+        path,
+        headers=_trusted_easy_auth_headers("admin@contoso.com", actor_id="admin-oid"),
+        json={} if method == "POST" else None,
+    )
+
+    assert response.status_code == 403, (method, path, response.status_code, response.text)
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
         ("GET", "/api/workspaces/ws-sensitive/settings"),
         ("GET", "/api/workspaces/ws-sensitive/members"),
         ("GET", "/api/workspaces/ws-sensitive/members/entra-users?query=user"),

@@ -697,6 +697,7 @@ def test_deep_capability_metadata_never_survives_public_depth_truncation(tmp_pat
     run_log = log_response.json()
     assert latest["artifact"]["capability_pack_integrity"]["status"] == "verified"
     assert sse_payload["artifact"]["capability_pack_integrity"]["status"] == "verified"
+    assert "deep" not in sse_payload["artifact"]
 
     protected = {
         "latest_trace": latest["trace"],
@@ -704,7 +705,7 @@ def test_deep_capability_metadata_never_survives_public_depth_truncation(tmp_pat
         "trace_endpoint": trace,
         "run_log_trace": run_log["trace"],
         "run_log_raw": run_log["raw"],
-        "sse_deep": sse_payload["artifact"]["deep"],
+        "sse_deep_present": "deep" in sse_payload["artifact"],
     }
     serialized = json.dumps(protected, ensure_ascii=False)
     for value in (

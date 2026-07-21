@@ -156,13 +156,13 @@ async def workspace_member_remove(workspace_id: str, subject_ref: str, request: 
 
 @router.get("/api/workspaces/{workspace_id}/usage-summary")
 async def workspace_usage(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_governance_role(workspace_id, request, {"owner", "admin"}, "chargeback.read")
+    _require_workspace_owner(workspace_id, request, "chargeback.read")
     return await _call(workspace_usage_summary, workspace_id, request)
 
 
 @router.get("/api/workspaces/{workspace_id}/audit-events")
 async def workspace_audit(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_governance_role(workspace_id, request, {"owner", "admin"}, "audit.read")
+    _require_workspace_owner(workspace_id, request, "audit.read")
     return await _call(workspace_audit_events, workspace_id, request)
 
 
@@ -173,7 +173,7 @@ async def workspace_governance_audit_events(
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = Query(default=None, max_length=512),
 ) -> dict[str, Any]:
-    _require_governance_role(workspace_id, request, {"owner", "admin"}, "audit.read")
+    _require_workspace_owner(workspace_id, request, "audit.read")
     result = await _call(list_audit_events, workspace_id, limit=limit, cursor=cursor)
     result["permissions"] = _workspace_action_permissions(workspace_id, request)
     return result
@@ -181,7 +181,7 @@ async def workspace_governance_audit_events(
 
 @router.get("/api/workspaces/{workspace_id}/governance/invitations")
 async def workspace_governance_invitations(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_governance_role(workspace_id, request, {"owner", "admin"}, "invitation.read")
+    _require_workspace_owner(workspace_id, request, "invitation.read")
     invitations = await _call(workspace_invitation_history, workspace_id)
     return {
         "workspace_id": workspace_id,
@@ -192,8 +192,7 @@ async def workspace_governance_invitations(workspace_id: str, request: Request) 
 
 @router.get("/api/workspaces/{workspace_id}/governance-summary")
 async def workspace_governance(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_governance_role(workspace_id, request, {"owner", "admin"}, "audit.read")
-    _require_governance_role(workspace_id, request, {"owner", "admin"}, "chargeback.read")
+    _require_workspace_owner(workspace_id, request, "audit.read")
     return await _call(workspace_governance_summary, workspace_id, request)
 
 
@@ -204,7 +203,7 @@ async def workspace_roi(
     from_value: str = Query(alias="from", max_length=64),
     to_value: str = Query(alias="to", max_length=64),
 ) -> dict[str, Any]:
-    _require_governance_role(workspace_id, request, {"owner", "admin", "editor", "viewer"}, "workspace.read")
+    _require_workspace_owner(workspace_id, request, "workspace.read")
     return await _call(workspace_roi_snapshot, workspace_id, from_value, to_value)
 
 
@@ -215,7 +214,7 @@ async def workspace_cost_value(
     from_value: str = Query(alias="from", max_length=64),
     to_value: str = Query(alias="to", max_length=64),
 ) -> dict[str, Any]:
-    _require_sensitive_workspace_action(workspace_id, request, "workspace.read")
+    _require_workspace_owner(workspace_id, request, "workspace.read")
     return await _call(workspace_cost_value_snapshot, workspace_id, from_value, to_value)
 
 
@@ -226,7 +225,7 @@ async def workspace_chargeback(
     from_value: str = Query(alias="from", max_length=64),
     to_value: str = Query(alias="to", max_length=64),
 ) -> dict[str, Any]:
-    _require_governance_role(workspace_id, request, {"owner", "admin"}, "chargeback.read")
+    _require_workspace_owner(workspace_id, request, "chargeback.read")
     result = await _call(workspace_member_chargeback, workspace_id, from_value, to_value)
     result["permissions"] = _workspace_action_permissions(workspace_id, request)
     return result
@@ -284,7 +283,7 @@ async def workspace_outcomes(workspace_id: str, request: Request) -> dict[str, A
 
 @router.get("/api/workspaces/{workspace_id}/governance/scenarios")
 async def workspace_roi_scenarios(workspace_id: str, request: Request) -> dict[str, Any]:
-    _require_sensitive_workspace_action(workspace_id, request, "roi.scenario.read")
+    _require_workspace_owner(workspace_id, request, "roi.scenario.read")
     scenarios = await _call(list_roi_scenarios, workspace_id)
     public = [await _call(scenario_projection, workspace_id, item) for item in scenarios]
     return {"workspace_id": workspace_id, "scenarios": public, "count": len(public)}
@@ -292,7 +291,7 @@ async def workspace_roi_scenarios(workspace_id: str, request: Request) -> dict[s
 
 @router.post("/api/workspaces/{workspace_id}/governance/scenarios")
 async def workspace_roi_scenario_create(workspace_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
-    _require_sensitive_workspace_action(workspace_id, request, "roi.scenario.write")
+    _require_workspace_owner(workspace_id, request, "roi.scenario.write")
     data = dict(body or {})
     previous_id = data.pop("previous_id", None)
     _audit_required(request, workspace_id, "roi.scenario.write", "roi_scenario", "pending")
@@ -484,6 +483,11 @@ def _require_governance_role(workspace_id: str, request: Request | None, allowed
         _audit_denied(request, workspace_id, action, actor=actor_from_request(request, fallback=False))
         raise HTTPException(status_code=403, detail=f"workspace permission denied for {action}")
     return role
+
+
+def _require_workspace_owner(workspace_id: str, request: Request | None, action: str) -> str:
+    """Allow governance and ROI access only to the persisted workspace creator."""
+    return _require_governance_role(workspace_id, request, {"owner"}, action)
 
 
 _EXPLICIT_GOVERNANCE_ACTIONS = ("audit.read", "chargeback.read", "invitation.read", "member.manage")

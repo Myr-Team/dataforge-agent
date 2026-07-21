@@ -262,7 +262,7 @@ async def test_legacy_empty_evidence_market_skip_emits_unavailable_contract(
 
     final = _event_payload(next(frame for frame in frames if frame.startswith("event: final\n")))
     assert final["artifact"]["market"]["market_evidence_status"] == "unavailable"
-    assert "external_market_evidence_unavailable" in final["artifact"]["feasibility"]["gap_list"]
+    assert "gap_list" not in final["artifact"]["feasibility"]
     market = final["artifact"]["market"]
     assert "mode" not in market
     assert set(market["tool_provenance"]["market_lookup"]).isdisjoint(
@@ -307,7 +307,7 @@ async def test_legacy_market_provider_failure_emits_unavailable_contract(
 
     final = _event_payload(next(frame for frame in frames if frame.startswith("event: final\n")))
     assert final["artifact"]["market"]["market_evidence_status"] == "unavailable"
-    assert "external_market_evidence_unavailable" in final["artifact"]["feasibility"]["gap_list"]
+    assert "gap_list" not in final["artifact"]["feasibility"]
     public_surface = "\n".join(frames) + repr(final["artifact"])
     assert "https://private.example" not in public_surface
     assert "verification.sources" not in public_surface

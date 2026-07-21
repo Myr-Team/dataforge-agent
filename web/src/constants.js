@@ -37,6 +37,16 @@ export const NAV_ITEMS = [
   { id: "settings", label: "设置", icon: Settings },
 ];
 
+export function canViewGovernance(access) {
+  return access?.allowed === true && access?.role === "owner";
+}
+
+export function visibleNavItems(access) {
+  return canViewGovernance(access)
+    ? NAV_ITEMS
+    : NAV_ITEMS.filter((item) => item.id !== "governance");
+}
+
 export const AGENTS = [
   { id: "df-coordinator", name: "Coordinator", zh: "协调器", role: "任务编排", icon: Bot },
   { id: "df-corpus-analyst", name: "Corpus Analyst", zh: "语料分析师", role: "检索与画像", icon: Search },

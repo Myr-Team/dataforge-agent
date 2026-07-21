@@ -87,10 +87,10 @@ import {
   CONFIDENCE_LABELS,
   DIMENSION_LABELS,
   INSPECTOR_TABS,
-  NAV_ITEMS,
   PLAYBOOKS,
   QUESTION_STARTERS,
   VERDICT_LABELS,
+  visibleNavItems,
 } from "./constants.js";
 
 const agentMap = new Map(AGENTS.map((agent) => [agent.id, agent]));
@@ -123,7 +123,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, workspace
   return (
     <nav className="shell-nav" aria-label="Primary">
       <div className="nav-stack">
-        {NAV_ITEMS.map((item) => {
+        {visibleNavItems(access).map((item) => {
           const Icon = item.icon;
           return (
             <button
@@ -153,10 +153,10 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, workspace
   );
 }
 
-export function MobileNav({ active = "workspaces", onChange = () => {} }) {
+export function MobileNav({ active = "workspaces", onChange = () => {}, access = null }) {
   return (
     <nav className="mobile-nav" aria-label="Mobile primary">
-      {NAV_ITEMS.map((item) => {
+      {visibleNavItems(access).map((item) => {
         const Icon = item.icon;
         return (
           <button
@@ -3103,7 +3103,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     }
   };
   const loadGovernanceEvidence = async () => {
-    if (!workspaceId) return;
+    if (!governanceOnly || !workspaceId) return;
     const windowQuery = governanceIsoWindow(governanceWindow);
     if (!windowQuery) {
       setGovernanceData((current) => ({ ...current, loading: false, errors: { trace: "请选择有效时间范围", roi: "请选择有效时间范围", chargeback: "请选择有效时间范围", audit: "请选择有效时间范围" } }));
@@ -3139,7 +3139,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     await loadGovernanceEvidence();
   };
   const loadInvitationHistory = async () => {
-    if (!workspaceId || !permissionsReady || !memberPermissions.canReadInvitations) return;
+    if (!governanceOnly || !workspaceId || !permissionsReady || !memberPermissions.canReadInvitations) return;
     const requestWorkspaceId = workspaceId;
     const requestVersion = ++invitationRequestVersion.current;
     setInvitationState({ workspaceId: requestWorkspaceId, loading: true, data: null, error: "" });
@@ -3220,10 +3220,22 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     return () => { cancelled = true; };
   }, [workspaceId]);
   useEffect(() => {
+    if (!governanceOnly) {
+      governanceGuard.current.begin("");
+      governanceToken.current = null;
+      setGovernanceLoadingMore(false);
+      setGovernanceData(emptyGovernanceData("", false));
+      return undefined;
+    }
     loadGovernanceEvidence();
     return () => { governanceGuard.current.begin(""); };
-  }, [workspaceId, governanceWindow.from, governanceWindow.to, permissionsReady, memberPermissions.canReadAudit, memberPermissions.canReadChargeback]);
+  }, [governanceOnly, workspaceId, governanceWindow.from, governanceWindow.to, permissionsReady, memberPermissions.canReadAudit, memberPermissions.canReadChargeback]);
   useEffect(() => {
+    if (!governanceOnly) {
+      invitationRequestVersion.current += 1;
+      setInvitationState({ workspaceId: "", loading: false, data: null, error: "" });
+      return undefined;
+    }
     if (!permissionsReady) return undefined;
     if (!memberPermissions.canReadInvitations) {
       invitationRequestVersion.current += 1;
@@ -3232,7 +3244,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     }
     loadInvitationHistory();
     return () => { invitationRequestVersion.current += 1; };
-  }, [workspaceId, permissionsReady, memberPermissions.canReadInvitations]);
+  }, [governanceOnly, workspaceId, permissionsReady, memberPermissions.canReadInvitations]);
   useEffect(() => {
     const nodes = SETTINGS_ICON_SRCS.map((href) => {
       const node = document.createElement("link");
