@@ -54,6 +54,13 @@ def actor_from_headers(headers: Mapping[str, Any] | None, *, fallback: bool = Tr
         or (_clean(_header(headers, "x-ms-client-principal-id")) if trusted_proxy else "")
     )
     tenant_id = _claim_value(claims, "tid", "tenantid")
+    if trusted_proxy and not tenant_id:
+        supplied_tenant = _clean(_header(headers, "x-dataforge-trusted-tenant"))
+        configured_tenant = _clean(os.environ.get("DF_WORKSPACE_OWNER_TENANT_ID"))
+        if supplied_tenant and configured_tenant and hmac.compare_digest(
+            supplied_tenant.lower(), configured_tenant.lower()
+        ):
+            tenant_id = supplied_tenant
     roles = _claim_values(claims, "roles", "role")
     groups = _claim_values(claims, "groups", "group")
     has_easy_auth_actor = bool(principal or actor_id or email)

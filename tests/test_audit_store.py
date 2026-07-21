@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import secrets
+from types import SimpleNamespace
 
 import pytest
 
@@ -152,6 +153,37 @@ def test_production_audit_store_uses_system_managed_identity(monkeypatch) -> Non
     audit_store._BlobAppendBackend(account_name="dataforgeprod", managed_identity_only=True)
 
     assert captured["credential"] is managed_identity
+
+
+def test_production_contract_check_uses_system_managed_identity_even_with_azure_client_id(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class _ManagedIdentity:
+        def get_token(self, scope: str):
+            calls.append(scope)
+            return SimpleNamespace(token="managed-identity-token")
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"properties": {}}'
+
+    def unexpected_default_credential():
+        raise AssertionError("production audit contract validation must not select DefaultAzureCredential")
+
+    monkeypatch.setenv("DF_ENVIRONMENT", "production")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "unattached-user-assigned-identity")
+    monkeypatch.setattr(audit_store, "ManagedIdentityCredential", _ManagedIdentity)
+    monkeypatch.setattr(audit_store, "DefaultAzureCredential", unexpected_default_credential)
+    monkeypatch.setattr(audit_store.urllib.request, "urlopen", lambda *_args, **_kwargs: _Response())
+
+    assert audit_store._management_get_json("/subscriptions/sub/resource") == {"properties": {}}
+    assert calls == ["https://management.azure.com/.default"]
 
 
 def test_audit_event_cannot_be_updated_or_deleted() -> None:

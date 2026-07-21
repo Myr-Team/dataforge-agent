@@ -2177,7 +2177,10 @@ def _verify_production_storage_contract(write_account_name: str | None = None) -
 
 
 def _management_get_json(resource_path: str) -> dict[str, Any]:
-    token = DefaultAzureCredential().get_token("https://management.azure.com/.default").token
+    # Production audit writes already use the app's system-assigned identity.
+    # Use that same identity for the ARM contract proof so an unrelated
+    # AZURE_CLIENT_ID cannot redirect this security-critical path.
+    token = ManagedIdentityCredential().get_token("https://management.azure.com/.default").token
     request = urllib.request.Request(
         f"https://management.azure.com{resource_path}",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},

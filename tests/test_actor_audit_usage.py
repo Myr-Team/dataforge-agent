@@ -64,6 +64,25 @@ def test_actor_from_easy_auth_claims_extracts_entra_identity(monkeypatch) -> Non
     assert actor["source"] == "easy_auth"
 
 
+def test_actor_from_trusted_proxy_uses_server_tenant_fallback_for_easy_auth_id(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_TENANT_ID", "tenant-456")
+
+    actor = actor_from_headers(
+        {
+            "x-ms-client-principal-id": "oid-123",
+            "x-ms-client-principal-name": "fuzihao@gdjiuyun.onmicrosoft.com",
+            "x-dataforge-proxy-secret": "test-proxy-secret",
+            "x-dataforge-trusted-tenant": "tenant-456",
+        },
+        fallback=False,
+    )
+
+    assert actor["actor_id"] == "oid-123"
+    assert actor["tenant_id"] == "tenant-456"
+    assert actor["source"] == "easy_auth"
+
+
 def test_actor_from_client_actor_header_when_backend_not_behind_easy_auth() -> None:
     raw_actor = quote(json.dumps({"name": "Guest Reviewer", "email": "guest.reviewer@contoso.com"}))
 
