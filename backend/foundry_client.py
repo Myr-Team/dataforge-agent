@@ -9,13 +9,15 @@ from pathlib import Path
 from typing import Any
 
 from azure.ai.projects import AIProjectClient
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, ManagedIdentityCredential, get_bearer_token_provider
 from openai import AzureOpenAI
 from openai.types.responses.response_input_param import FunctionCallOutput
 
 try:
+    from .model_policy import resolve_text_deployment, resolve_text_route
     from .schemas import MarketQueryPlan
 except ImportError:
+    from model_policy import resolve_text_deployment, resolve_text_route
     from schemas import MarketQueryPlan
 
 
@@ -255,7 +257,7 @@ def run_playbook_detail(payload: dict[str, Any]) -> dict[str, Any]:
         "只用提供的 feasibility / evidence / 人群信息，不编造数字；缺数据就说‘需补：…’。中文。只返回 JSON {summary, points, goal}。"
     )
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": 800,
@@ -314,7 +316,7 @@ def run_data_overview(payload: dict[str, Any]) -> dict[str, Any]:
         "中文、客户友好、不要堆术语、不编造。只返回 JSON。"
     )
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": 900,
@@ -385,7 +387,7 @@ def run_plan_metrics_extract(payload: dict[str, Any]) -> dict[str, Any]:
         "抽 3-8 个最关键的即可。中文。只返回 JSON {metrics:[...]}。"
     )
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": 900,
@@ -435,7 +437,7 @@ def run_image_subject(payload: dict[str, Any]) -> dict[str, Any]:
         "只返回 JSON：{subject, kind}。"
     )
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": 400,
@@ -482,7 +484,7 @@ def run_executive_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "5) 中文，正式、简洁。只返回 JSON：{headline, points}。"
     )
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": 700,
@@ -524,7 +526,7 @@ def run_action_plan(payload: dict[str, Any]) -> dict[str, Any]:
         "6) 不同工作区/不同数据必须给出明显不同的方案。中文。只返回 JSON：{recommendation, steps}。"
     )
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": 1300,
@@ -562,6 +564,47 @@ class _DirectOpenAIProjectAdapter:
         return self._openai_client
 
 
+def _chat_model() -> str:
+    return resolve_text_deployment(capability="chat")
+
+
+def _apim_gateway_enabled() -> bool:
+    return str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _gateway_request_headers() -> dict[str, str]:
+    """Attach only privacy-safe lineage markers to APIM-bound model requests."""
+    try:
+        from .tracing import gateway_request_headers
+    except ImportError:
+        from tracing import gateway_request_headers
+    headers = gateway_request_headers()
+    headers["x-dataforge-model-route"] = resolve_text_route(capability="chat").route_id
+    return headers
+
+
+def _configured_apim_openai_client() -> Any | None:
+    """Build the APIM client using only the Container App managed identity."""
+    if not _apim_gateway_enabled():
+        return None
+    gateway_url = str(os.environ.get("DF_APIM_GATEWAY_URL") or "").strip().rstrip("/")
+    audience = str(os.environ.get("DF_APIM_AUDIENCE") or "").strip().rstrip("/")
+    if not gateway_url or not audience:
+        raise RuntimeError(
+            "DF_APIM_GATEWAY_ENABLED requires both DF_APIM_GATEWAY_URL and DF_APIM_AUDIENCE"
+        )
+    return AzureOpenAI(
+        azure_endpoint=gateway_url,
+        azure_ad_token_provider=get_bearer_token_provider(
+            ManagedIdentityCredential(),
+            f"{audience}/.default",
+        ),
+        api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview"),
+        max_retries=0,
+        default_headers=_gateway_request_headers(),
+    )
+
+
 def _configured_azure_openai_client() -> Any | None:
     endpoint = str(os.environ.get("OPENAI_ENDPOINT") or os.environ.get("AZURE_OPENAI_ENDPOINT") or "").strip()
     api_key = str(os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
@@ -576,6 +619,9 @@ def _configured_azure_openai_client() -> Any | None:
 
 
 def _openai_client() -> Any:
+    gateway = _configured_apim_openai_client()
+    if gateway is not None:
+        return gateway
     direct = _configured_azure_openai_client()
     if direct is not None:
         return direct
@@ -583,6 +629,9 @@ def _openai_client() -> Any:
 
 
 def _project_client() -> Any:
+    gateway = _configured_apim_openai_client()
+    if gateway is not None:
+        return _DirectOpenAIProjectAdapter(gateway)
     direct = _configured_azure_openai_client()
     if direct is not None:
         return _DirectOpenAIProjectAdapter(direct)
@@ -706,10 +755,13 @@ def _stream_delta(event: Any) -> str:
 
 
 def _response_meta(response: Any, mode: str) -> dict[str, Any]:
+    route = resolve_text_route(capability="chat")
     meta = {
         "mode": mode,
         "response_id": getattr(response, "id", None),
         "usage": _usage_dict(getattr(response, "usage", None)),
+        "model_route": route.route_id,
+        "model_deployment": route.deployment,
     }
     retry_attempts = getattr(response, "_dataforge_retry_attempts", 0)
     if retry_attempts:
@@ -879,7 +931,7 @@ def _verify_foundry_web_tool(openai_client: Any) -> dict[str, Any]:
         try:
             response = _responses_create_with_retry(
                 openai_client,
-                model=os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+                model=_chat_model(),
                 instructions=instructions,
                 input="Check current public information about enterprise data analytics platforms.",
                 tools=[tool],
@@ -1046,9 +1098,7 @@ def _run_prompt_agent(
     return {
         "text": text,
         "structured": _extract_json(text),
-        "response_id": getattr(response, "id", None),
-        "usage": _usage_dict(getattr(response, "usage", None)),
-        "mode": "foundry_agent_service",
+        **_response_meta(response, "foundry_agent_service"),
         "tool_calls": tool_trace,
     }
 
@@ -1088,7 +1138,7 @@ def run_agent(
     openai_client = client.get_openai_client()
     instructions += "\nKeep the answer concise: 2 to 3 short paragraphs, no repeated schema restatement. Target 450 to 700 Chinese characters."
     create_args = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": input_text,
         "max_output_tokens": max_output_tokens,
@@ -1107,9 +1157,7 @@ def run_agent(
     return {
         "text": text,
         "structured": _extract_json(text),
-        "response_id": getattr(response, "id", None),
-        "usage": _usage_dict(getattr(response, "usage", None)),
-        "mode": "responses_schema",
+        **_response_meta(response, "responses_schema"),
     }
 
 
@@ -1151,16 +1199,13 @@ def run_market_mcp_research(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("df-market-researcher did not return competitors from MCP market_lookup")
     for competitor in competitors:
         competitor.setdefault("retrieval_query", query_plan.retrieval_query)
+    meta = _response_meta(response, "foundry_agent_mcp")
+    meta["tool_calls"] = [{key: value for key, value in call.items() if key != "output"} for call in tool_calls]
     return {
         "competitors": competitors,
         "sources": sources,
         "positioning_note": "Competitor context was retrieved through Foundry Agent Service MCP market_lookup.",
-        "_llm": {
-            "mode": "foundry_agent_mcp",
-            "response_id": getattr(response, "id", None),
-            "usage": _usage_dict(getattr(response, "usage", None)),
-            "tool_calls": [{key: value for key, value in call.items() if key != "output"} for call in tool_calls],
-        },
+        "_llm": meta,
     }
 
 
@@ -1177,7 +1222,7 @@ def run_coordinator_guidance(payload: dict[str, Any]) -> dict[str, Any]:
         "只返回 JSON。"
     )
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": 700,
@@ -1195,9 +1240,7 @@ def run_coordinator_guidance(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "question": str(data.get("question") or "").strip(),
         "options": data.get("options") if isinstance(data.get("options"), list) else [],
-        "response_id": getattr(response, "id", None),
-        "usage": _usage_dict(getattr(response, "usage", None)),
-        "mode": "coordinator_llm",
+        **_response_meta(response, "coordinator_llm"),
     }
 
 
@@ -1221,7 +1264,7 @@ def run_coordinator_route(payload: dict[str, Any]) -> dict[str, Any]:
         "Return concise JSON only. Write reason and any clarifying question in Chinese."
     )
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": 650,
@@ -1295,7 +1338,7 @@ def stream_grounded_chat_answer(payload: dict[str, Any]) -> Any:
     openai_client = client.get_openai_client()
     instructions = _GROUNDED_CHAT_BODY + "\n直接输出最终回答正文（方案模板里的换行必须保留），不要输出 JSON、不要加任何前后缀说明。"
     create_args = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": 1700,
@@ -1346,7 +1389,7 @@ def run_followup_assessment(payload: dict[str, Any]) -> dict[str, Any]:
         "the customer-facing text. Return JSON only, in the user's language."
     )
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": 850,
@@ -1368,9 +1411,7 @@ def run_followup_assessment(payload: dict[str, Any]) -> dict[str, Any]:
         "gaps": gaps[:6],
         "clarify": str(data.get("clarify") or "").strip(),
         "should_clarify": bool(data.get("should_clarify")),
-        "response_id": getattr(response, "id", None),
-        "usage": _usage_dict(getattr(response, "usage", None)),
-        "mode": "followup_assessment",
+        **_response_meta(response, "followup_assessment"),
     }
 
 
@@ -1405,7 +1446,7 @@ def run_answer_composer(payload: dict[str, Any]) -> dict[str, Any]:
         "Return JSON only."
     )
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": int(os.environ.get("DF_ANSWER_COMPOSER_MAX_TOKENS", "1200")),
@@ -1431,9 +1472,7 @@ def run_answer_composer(payload: dict[str, Any]) -> dict[str, Any]:
         "needs_full_analysis": bool(data.get("needs_full_analysis")),
         "route_hint": str(data.get("route_hint") or "direct_answer"),
         "answer_type": str(data.get("answer_type") or "brief_answer"),
-        "response_id": getattr(response, "id", None),
-        "usage": _usage_dict(getattr(response, "usage", None)),
-        "mode": "answer_composer",
+        **_response_meta(response, "answer_composer"),
     }
 
 
@@ -1446,7 +1485,7 @@ def _coordinator_text_response(
     max_output_tokens: int = 900,
 ) -> dict[str, Any]:
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": max_output_tokens,
@@ -1467,9 +1506,7 @@ def _coordinator_text_response(
         output_text = _best_effort_text_field(text) or text.strip()
     return {
         "text": output_text,
-        "response_id": getattr(response, "id", None),
-        "usage": _usage_dict(getattr(response, "usage", None)),
-        "mode": mode,
+        **_response_meta(response, mode),
     }
 
 
@@ -1533,7 +1570,7 @@ def run_market_web_research(payload: dict[str, Any]) -> dict[str, Any]:
         "输出 2 到 4 条外部竞品/同类机会对比结论，每条必须尽量带 source_url；positioning_note 要短，说明竞品在做什么、价格/玩法、我们的差异点。"
     )
     create_args: dict[str, Any] = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "tools": [verification["tool"]],
@@ -1608,7 +1645,7 @@ def stream_grounded_answer(payload: dict[str, Any]) -> Any:
         "5) 不要只输出模板句，要结合本次数据给出 3 到 6 段可读分析。"
     )
     create_args = {
-        "model": os.environ.get("DF_CHAT_DEPLOYMENT", "gpt-5.1"),
+        "model": _chat_model(),
         "instructions": instructions,
         "input": json.dumps(payload, ensure_ascii=False, indent=2),
         "max_output_tokens": 520,

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "serviceName": { "type": "string" },
+    "appInsightsInstrumentationKey": { "type": "secureString" }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ApiManagement/service/loggers",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('serviceName'), 'dataforge-appinsights')]",
+      "properties": {
+        "loggerType": "applicationInsights",
+        "description": "DataForge APIM gateway telemetry",
+        "credentials": {
+          "instrumentationKey": "[parameters('appInsightsInstrumentationKey')]"
+        },
+        "isBuffered": true
+      }
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/diagnostics",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}', parameters('serviceName'), 'dataforge-text', 'applicationinsights')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/loggers', parameters('serviceName'), 'dataforge-appinsights')]"
+      ],
+      "properties": {
+        "loggerId": "[resourceId('Microsoft.ApiManagement/service/loggers', parameters('serviceName'), 'dataforge-appinsights')]",
+        "alwaysLog": "allErrors",
+        "sampling": {
+          "samplingType": "fixed",
+          "percentage": 100
+        },
+        "metrics": true,
+        "verbosity": "information",
+        "logClientIp": false,
+        "frontend": {
+          "request": { "headers": [], "body": { "bytes": 0 } },
+          "response": { "headers": [], "body": { "bytes": 0 } }
+        },
+        "backend": {
+          "request": { "headers": [], "body": { "bytes": 0 } },
+          "response": { "headers": [], "body": { "bytes": 0 } }
+        },
+        "httpCorrelationProtocol": "W3C"
+      }
+    }
+  ]
+}

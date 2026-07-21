@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import importlib.util
 import os
@@ -8,6 +9,25 @@ import os
 import pytest
 
 import backend.azure_monitor_client as monitor
+
+
+def test_first_row_accepts_azure_monitor_iterable_row() -> None:
+    class Column:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class Row:
+        def __iter__(self):
+            return iter(("value-a", 2))
+
+    class Table:
+        columns = [Column("alpha"), Column("beta")]
+        rows = [Row()]
+
+    class Result:
+        tables = [Table()]
+
+    assert monitor._first_row(Result()) == {"alpha": "value-a", "beta": 2}
 import backend.control_plane as control_plane
 import backend.tracing as tracing
 from fastapi import HTTPException
@@ -128,6 +148,45 @@ def test_remote_proof_binds_correlation_hash_to_its_trace_id() -> None:
             application_id=_APPLICATION_ID,
             source_table="requests",
         )
+
+
+def test_agent_trace_exposes_only_hashed_gateway_lineage_headers() -> None:
+    trace_id = "d" * 32
+
+    class _Span:
+        def __init__(self) -> None:
+            self.attributes = {}
+
+        def set_attribute(self, key, value) -> None:
+            self.attributes[key] = value
+
+        def set_status(self, *_args) -> None:
+            return None
+
+        def get_span_context(self):
+            return type("SpanContext", (), {"trace_id": int(trace_id, 16)})()
+
+    class _Tracer:
+        @contextmanager
+        def start_as_current_span(self, _name):
+            yield _Span()
+
+    with tracing.agent_trace(
+        workspace_id="workspace-private",
+        conversation_id="run-private",
+        actor={"actor_id": "owner-oid", "email": "owner@example.com"},
+        tracer=_Tracer(),
+    ):
+        headers = tracing.gateway_request_headers()
+
+    assert headers == {
+        "x-dataforge-workspace-hash": monitor.hash_trace_identifier("workspace-private"),
+        "x-dataforge-run-hash": monitor.hash_trace_identifier("run-private"),
+        "x-dataforge-actor-hash": monitor.hash_trace_identifier("owner-oid"),
+        "x-dataforge-correlation-id": trace_id,
+    }
+    assert "owner@example.com" not in repr(headers)
+    assert tracing.gateway_request_headers() == {}
 
 
 def test_not_configured_and_unavailable_are_distinct_from_partial() -> None:

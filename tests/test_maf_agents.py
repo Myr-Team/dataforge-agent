@@ -214,6 +214,57 @@ def test_registry_prefers_azure_openai_key_client_when_configured(monkeypatch):
     ]
 
 
+def test_maf_uses_apim_managed_identity_when_gateway_is_enabled(monkeypatch):
+    created = []
+    provider_calls = []
+
+    class FakeGatewayClient:
+        def __init__(self, **kwargs) -> None:
+            created.append(kwargs)
+
+    class Credential:
+        pass
+
+    monkeypatch.setattr(maf_agents, "OpenAIChatClient", FakeGatewayClient)
+    monkeypatch.setattr(maf_agents, "ManagedIdentityCredential", Credential)
+    monkeypatch.setattr(
+        maf_agents,
+        "gateway_request_headers",
+        lambda: {"x-dataforge-workspace-hash": "w" * 64, "x-dataforge-correlation-id": "c" * 32},
+    )
+    monkeypatch.setattr(
+        maf_agents,
+        "get_bearer_token_provider",
+        lambda credential, scope: provider_calls.append((credential, scope)) or "gateway-token-provider",
+    )
+    monkeypatch.setenv("DF_APIM_GATEWAY_ENABLED", "true")
+    monkeypatch.setenv("DF_APIM_GATEWAY_URL", "https://gateway.example.invalid/")
+    monkeypatch.setenv("DF_APIM_AUDIENCE", "api://dataforge-gateway")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "must-not-be-used")
+    monkeypatch.setenv("OPENAI_ENDPOINT", "https://direct.example.invalid/")
+    monkeypatch.setenv("DF_CHAT_DEPLOYMENT", "gpt-test")
+
+    client = maf_agents._create_maf_chat_client()
+
+    assert isinstance(client, FakeGatewayClient)
+    assert len(provider_calls) == 1
+    assert isinstance(provider_calls[0][0], Credential)
+    assert provider_calls[0][1] == "api://dataforge-gateway/.default"
+    assert created == [
+        {
+            "model": "gpt-test",
+            "credential": "gateway-token-provider",
+            "azure_endpoint": "https://gateway.example.invalid",
+            "api_version": "preview",
+            "default_headers": {
+                "x-dataforge-workspace-hash": "w" * 64,
+                "x-dataforge-correlation-id": "c" * 32,
+                "x-dataforge-model-route": "default",
+            },
+        }
+    ]
+
+
 def test_registry_can_force_managed_identity_client(monkeypatch):
     created = []
 

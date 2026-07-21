@@ -1,0 +1,70 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "serviceName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50,
+      "metadata": {
+        "description": "Globally unique API Management service name."
+      }
+    },
+    "publisherEmail": {
+      "type": "string",
+      "minLength": 3,
+      "metadata": {
+        "description": "API Management publisher notification address."
+      }
+    },
+    "publisherName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ApiManagement/service",
+      "apiVersion": "2024-05-01",
+      "name": "[parameters('serviceName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "sku": {
+        "name": "StandardV2",
+        "capacity": 1
+      },
+      "tags": {
+        "application": "dataforge",
+        "purpose": "ai-gateway-monitoring",
+        "environment": "preview",
+        "managedBy": "arm"
+      },
+      "properties": {
+        "publisherEmail": "[parameters('publisherEmail')]",
+        "publisherName": "[parameters('publisherName')]",
+        "publicNetworkAccess": "Enabled"
+      }
+    }
+  ],
+  "outputs": {
+    "resourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.ApiManagement/service', parameters('serviceName'))]"
+    },
+    "gatewayUrl": {
+      "type": "string",
+      "value": "[format('https://{0}.azure-api.net', parameters('serviceName'))]"
+    },
+    "principalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ApiManagement/service', parameters('serviceName')), '2024-05-01', 'full').identity.principalId]"
+    }
+  }
+}

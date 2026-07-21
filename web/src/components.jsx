@@ -15,6 +15,7 @@ import {
   traceViewModel,
 } from "./governanceViewModel.js";
 import { costValueViewModel } from "./costValueViewModel.js";
+import { monitoringSnapshotViewModel } from "./monitoringViewModel.js";
 import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, createWorkspaceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 import {
@@ -78,7 +79,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceTraceStatus, loadWorkspaceTraceMetrics, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory } from "./api.js";
+import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance, loadWorkspaceTraceStatus, loadWorkspaceTraceMetrics, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -126,17 +127,19 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, workspace
         {visibleNavItems(access).map((item) => {
           const Icon = item.icon;
           return (
-            <button
-              key={item.id}
-              data-tour={item.id === "runs" ? "runs" : item.id === "artifacts" ? "artifacts-nav" : undefined}
-              className={active === item.id ? "nav-icon active" : "nav-icon"}
-              type="button"
-              title={item.label}
-              onClick={() => onChange(item.id)}
-            >
-              <Icon size={19} />
-              <span>{item.label}</span>
-            </button>
+            <div className="nav-item-wrap" key={item.id}>
+              {item.id === "governance" ? <div className="nav-section-divider" aria-hidden="true" /> : null}
+              <button
+                data-tour={item.id === "runs" ? "runs" : item.id === "artifacts" ? "artifacts-nav" : undefined}
+                className={active === item.id ? "nav-icon active" : "nav-icon"}
+                type="button"
+                title={item.label}
+                onClick={() => onChange(item.id)}
+              >
+                <Icon size={19} />
+                <span>{item.label}</span>
+              </button>
+            </div>
           );
         })}
       </div>
@@ -2495,6 +2498,45 @@ const auditActionLabels = {
   "artifact.generate": "生成产物",
 };
 
+function MonitoringOverviewPanel({ snapshot, loading, error, onRetry }) {
+  const view = monitoringSnapshotViewModel(snapshot || {});
+  return (
+    <section className="gov-section gov-monitoring" aria-label="监视概览">
+      <GovernanceSectionHead
+        icon={Activity}
+        title="监视概览"
+        description="汇总当前工作区的调用归因、网关状态、Token 记录与运行可靠性；没有服务端证据时保持未记录。"
+        badge={!loading ? { label: view.gateway.label, tone: view.gateway.tone } : null}
+      />
+      <GovernanceInlineState loading={loading} error={error} onRetry={onRetry}>
+        <div className="gov-monitor-grid">
+          <article className="gov-monitor-item">
+            <span>网关</span>
+            <b>{view.gateway.label}</b>
+            <small>{view.gateway.governedCalls === null ? "尚无已验证的网关调用" : `${view.gateway.governedCalls} 次已验证调用`}</small>
+          </article>
+          <article className="gov-monitor-item">
+            <span>Token 消耗</span>
+            <b>{view.tokenLabel}</b>
+            <small>输入 {view.inputLabel} · 输出 {view.outputLabel}</small>
+          </article>
+          <article className="gov-monitor-item">
+            <span>运行可靠性</span>
+            <b>{view.reliability.completedRuns} 完成 / {view.reliability.failedRuns} 失败</b>
+            <small>{view.reliability.auditEvents} 条审计事件</small>
+          </article>
+          <article className="gov-monitor-item">
+            <span>归因覆盖</span>
+            <b>{view.knownRuns} 条已记录</b>
+            <small>{view.unknownRuns ? `${view.unknownRuns} 条仍缺少完整使用量` : "当前没有缺失使用量的运行"}</small>
+          </article>
+        </div>
+        <p className="gov-evidence-note">证据来源：{view.evidenceSource} · 默认模型：{view.models.label} · 允许路线：{view.models.routeCount}</p>
+      </GovernanceInlineState>
+    </section>
+  );
+}
+
 function GovernanceSummaryPanel({ data, invitationState, permissionsPayload, permissionState, windowValue, onWindowChange, onRetry, onCreateScenario, onInvitationRetry, onPermissionRetry, onLoadMore, loadingMore }) {
   const trace = traceViewModel(data.trace || {});
   const chargeback = chargebackViewModel(data.chargeback || {});
@@ -2505,6 +2547,12 @@ function GovernanceSummaryPanel({ data, invitationState, permissionsPayload, per
   const traceBadge = data.loading ? null : { label: trace.label, tone: trace.tone };
   return (
     <div className="gov-workspace" data-testid="governance-frontend">
+      <MonitoringOverviewPanel
+        snapshot={data.monitoring}
+        loading={data.loading}
+        error={errors.monitoring}
+        onRetry={onRetry}
+      />
       <div className="gov-toolbar">
         <div>
           <h2>治理证据</h2>
@@ -3113,7 +3161,8 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     governanceToken.current = requestToken;
     setGovernanceLoadingMore(false);
     setGovernanceData(emptyGovernanceData(workspaceId, true));
-    const [traceResult, roiResult, auditResult, chargebackResult] = await Promise.allSettled([
+    const [summaryResult, traceResult, roiResult, auditResult, chargebackResult] = await Promise.allSettled([
+      loadWorkspaceGovernance(workspaceId),
       loadWorkspaceTraceStatus(workspaceId),
       loadWorkspaceCostValue(workspaceId, windowQuery),
       permissionsReady && memberPermissions.canReadAudit ? loadWorkspaceGovernanceAuditEvents(workspaceId, { limit: 25 }) : Promise.resolve(null),
@@ -3121,6 +3170,8 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     ]);
     if (!governanceGuard.current.isCurrent(requestToken, workspaceId)) return;
     const next = emptyGovernanceData(workspaceId, false);
+    if (summaryResult.status === "fulfilled") next.monitoring = summaryResult.value?.monitoring || null;
+    else next.errors.monitoring = "监视概览读取失败，请重试";
     if (traceResult.status === "fulfilled") next.trace = traceResult.value;
     else next.errors.trace = "遥测送达状态读取失败，请重试";
     if (roiResult.status === "fulfilled") next.roi = roiResult.value;
@@ -3505,9 +3556,9 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     return (
       <main className="agent-studio governance-stage">
         <header className="conv-head">
-          <span className="eyeless-label">Governance / ROI</span>
-          <h1>治理与 ROI</h1>
-          <p>查看当前工作区的身份归因、不可变审计、Foundry 遥测送达、成本证据和已验证结果。</p>
+          <span className="eyeless-label">Monitoring</span>
+          <h1>监视</h1>
+          <p>查看当前工作区的身份归因、不可变审计、遥测送达、Token 用量和价值证据。</p>
         </header>
         <div className="governance-page-body">{governancePanel}</div>
       </main>

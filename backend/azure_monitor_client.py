@@ -16,6 +16,7 @@ from pydantic import BaseModel, field_validator, model_validator
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _UUID = re.compile(r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$", re.IGNORECASE)
 _CORRELATION = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+_GATEWAY_ID = re.compile(r"^[A-Za-z0-9-]{1,80}$")
 _RESOURCE_ID = re.compile(
     r"^/subscriptions/[0-9a-f-]{36}/resourcegroups/[a-z0-9._()-]+/providers/microsoft\.insights/components/[a-z0-9._-]+$",
     re.IGNORECASE,
@@ -25,6 +26,7 @@ _QUERY_TIMEOUT_SECONDS = 10
 _CACHE_TTL_SECONDS = 30.0
 _CACHE_LOCK = threading.RLock()
 _CONFIRMED_CACHE: dict[tuple[str, str, str, str, str], tuple[float, "RemoteTraceProof"]] = {}
+_GATEWAY_METRIC_CACHE: dict[tuple[str, str, str, str], tuple[float, "GatewayMetricEvidence"]] = {}
 
 
 class TraceDeliveryStatus(BaseModel):
@@ -53,6 +55,16 @@ class TraceTelemetryMetrics(BaseModel):
     last_observed_at: datetime | None = None
     error_type: str | None = None
     error_status: int | None = None
+
+
+class GatewayMetricEvidence(BaseModel):
+    """Workspace-scoped APIM metric proof without exposing raw telemetry."""
+
+    state: Literal["verified", "pending", "unavailable", "not_configured"]
+    governed_calls: int | None = None
+    total_tokens: int | None = None
+    last_observed_at: datetime | None = None
+    provenance: Literal["apim_custom_metric", "apim_metric_pending", "apim_metric_query_unavailable", "apim_metric_not_configured"]
 
 
 class TraceDeliveryQueryError(RuntimeError):
@@ -366,6 +378,76 @@ def get_trace_telemetry_metrics(
     return query_trace_telemetry_metrics(workspace_id, run_id, correlation)
 
 
+def get_gateway_metric_evidence(
+    workspace_id: str,
+    gateway_id: str,
+    *,
+    client_factory: Callable[[], Any] | None = None,
+) -> GatewayMetricEvidence:
+    """Confirm APIM token-metric evidence for one workspace hash only."""
+    config = _monitor_config()
+    safe_gateway_id = str(gateway_id or "").strip()
+    if not config or not _GATEWAY_ID.fullmatch(safe_gateway_id):
+        return GatewayMetricEvidence(
+            state="not_configured",
+            provenance="apim_metric_not_configured",
+        )
+
+    workspace_hash = hash_trace_identifier(workspace_id)
+    cache_key = (workspace_hash, safe_gateway_id.lower(), config.application_id, config.resource_id.lower())
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        cached = _GATEWAY_METRIC_CACHE.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    query = _gateway_metrics_query(workspace_hash, safe_gateway_id)
+    try:
+        client = client_factory() if client_factory else _managed_identity_logs_client()
+        result = client.query_workspace(
+            config.logs_workspace_id,
+            query,
+            timespan=timedelta(hours=24),
+            server_timeout=_QUERY_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        evidence = GatewayMetricEvidence(
+            state="unavailable",
+            provenance="apim_metric_query_unavailable",
+        )
+        _cache_gateway_metric(cache_key, evidence)
+        return evidence
+
+    if _is_partial_result(result):
+        evidence = GatewayMetricEvidence(
+            state="unavailable",
+            provenance="apim_metric_query_unavailable",
+        )
+        _cache_gateway_metric(cache_key, evidence)
+        return evidence
+
+    row = _first_row(result)
+    if not row or str(row.get("appId") or "").lower() != config.application_id or str(row.get("_ResourceId") or "").lower() != config.resource_id.lower():
+        evidence = GatewayMetricEvidence(state="pending", provenance="apim_metric_pending")
+        _cache_gateway_metric(cache_key, evidence)
+        return evidence
+
+    calls = _metric_count(row.get("governed_calls"))
+    if calls is None or calls <= 0:
+        evidence = GatewayMetricEvidence(state="pending", provenance="apim_metric_pending")
+        _cache_gateway_metric(cache_key, evidence)
+        return evidence
+    evidence = GatewayMetricEvidence(
+        state="verified",
+        governed_calls=calls,
+        total_tokens=_metric_count(row.get("total_tokens")),
+        last_observed_at=_as_datetime(row.get("last_observed_at")),
+        provenance="apim_custom_metric",
+    )
+    _cache_gateway_metric(cache_key, evidence)
+    return evidence
+
+
 def query_trace_telemetry_metrics(
     workspace_id: str,
     run_id: str,
@@ -500,6 +582,27 @@ def _metrics_query(workspace_hash: str, run_hash: str, correlation_hash: str) ->
     )
 
 
+def _gateway_metrics_query(workspace_hash: str, gateway_id: str) -> str:
+    if not _HASH.fullmatch(workspace_hash):
+        raise ValueError("workspace hash must be sha256")
+    if not _GATEWAY_ID.fullmatch(gateway_id):
+        raise ValueError("gateway id is invalid")
+    return "\n".join(
+        (
+            "AppMetrics",
+            '| where Name == "Total Tokens"',
+            '| extend metric_properties=column_ifexists("Properties", dynamic({}))',
+            f'| where tostring(metric_properties["Workspace Hash"]) == "{workspace_hash}"',
+            f'| where tostring(metric_properties["Service ID"]) == "{gateway_id}"',
+            "| summarize governed_calls=sum(tolong(ItemCount)),",
+            "    total_tokens=sum(tolong(Sum)),",
+            "    last_observed_at=max(TimeGenerated)",
+            "    by appId=ResourceGUID, _ResourceId",
+            "| take 2",
+        )
+    )
+
+
 def _first_row(result: Any) -> dict[str, Any] | None:
     tables = getattr(result, "tables", None)
     if not isinstance(tables, list) or not tables:
@@ -511,9 +614,13 @@ def _first_row(result: Any) -> dict[str, Any] | None:
         return None
     names = [str(getattr(column, "name", column)) for column in columns]
     row = rows[0]
-    if not isinstance(row, (list, tuple)) or len(row) != len(names):
+    try:
+        values = list(row)
+    except TypeError:
         return None
-    return dict(zip(names, row, strict=True))
+    if len(values) != len(names):
+        return None
+    return dict(zip(names, values, strict=True))
 
 
 def _cached_confirmation(key: tuple[str, str, str, str, str], expected: TraceDeliveryExpectation) -> RemoteTraceProof | None:
@@ -535,6 +642,11 @@ def _cache_confirmation(key: tuple[str, str, str, str, str], proof: RemoteTraceP
         return
     with _CACHE_LOCK:
         _CONFIRMED_CACHE[key] = (time.monotonic() + _CACHE_TTL_SECONDS, proof)
+
+
+def _cache_gateway_metric(key: tuple[str, str, str, str], evidence: GatewayMetricEvidence) -> None:
+    with _CACHE_LOCK:
+        _GATEWAY_METRIC_CACHE[key] = (time.monotonic() + _CACHE_TTL_SECONDS, evidence)
 
 
 def _managed_identity_logs_client() -> Any:

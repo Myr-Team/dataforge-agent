@@ -161,7 +161,9 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
             run.setdefault("models", []).append(
                 {
                     "agent": plain.get("agent"),
-                    "model": plain.get("model") or plain.get("model_name"),
+                    "model": plain.get("model") or plain.get("model_name") or plain.get("model_deployment"),
+                    "model_route": plain.get("model_route"),
+                    "model_deployment": plain.get("model_deployment"),
                     "response_id": plain.get("response_id"),
                     "usage": plain.get("usage") or {},
                     "mode": plain.get("mode"),

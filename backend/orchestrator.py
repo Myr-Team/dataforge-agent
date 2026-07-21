@@ -5502,6 +5502,22 @@ def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: lis
     return run_coordinator_direct_reply(payload)
 
 
+def _llm_result_metadata(result: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: result.get(key)
+        for key in (
+            "mode",
+            "response_id",
+            "usage",
+            "model_route",
+            "model_deployment",
+            "error",
+            "composer_error",
+        )
+        if key in result
+    }
+
+
 async def _emit_lightweight_final(
     req: ChatRequest,
     decision: RoutingDecision,
@@ -5546,7 +5562,7 @@ async def _emit_lightweight_final(
     for delta in chunks:
         yield _frame("answer_delta", {"delta": delta}, conv_id)
         await asyncio.sleep(pace)
-    meta = {key: result.get(key) for key in ("mode", "response_id", "usage", "error", "composer_error") if key in result}
+    meta = _llm_result_metadata(result)
     gaps = [str(item).strip() for item in (result.get("gaps") or []) if str(item).strip()]
     clarify_text = str(result.get("clarify") or "").strip()
     clarify_payload = {"question": clarify_text, "reason": "followup_needs_scope"} if clarify_text else None

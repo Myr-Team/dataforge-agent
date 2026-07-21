@@ -21,7 +21,7 @@ try:
     from .audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from .artifact_jobs import list_artifact_jobs
     from .artifact_registry import ArtifactPersistenceError, get_artifact
-    from .azure_monitor_client import get_trace_delivery_status, get_trace_telemetry_metrics
+    from .azure_monitor_client import get_gateway_metric_evidence, get_trace_delivery_status, get_trace_telemetry_metrics
     from .task_store import TaskPersistenceError, list_tasks
     from .blob_store import blob_configured, download_blob_json, probe_blob_container, upload_blob_json
     from .conversation_store import get_conversation, list_conversations, stable_message_id
@@ -33,6 +33,8 @@ try:
     from .foundry_roi import public_foundry_integration
     from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from .invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from .model_policy import public_model_route_snapshot
+    from .monitoring_service import build_monitoring_snapshot
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, realized_roi_evidence, record_in_window, roi_cost_evidence, roi_outcome_evidence
@@ -45,7 +47,7 @@ except ImportError:
     from audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from artifact_jobs import list_artifact_jobs
     from artifact_registry import ArtifactPersistenceError, get_artifact
-    from azure_monitor_client import get_trace_delivery_status, get_trace_telemetry_metrics
+    from azure_monitor_client import get_gateway_metric_evidence, get_trace_delivery_status, get_trace_telemetry_metrics
     from task_store import TaskPersistenceError, list_tasks
     from blob_store import blob_configured, download_blob_json, probe_blob_container, upload_blob_json
     from conversation_store import get_conversation, list_conversations, stable_message_id
@@ -57,6 +59,8 @@ except ImportError:
     from foundry_roi import public_foundry_integration
     from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from model_policy import public_model_route_snapshot
+    from monitoring_service import build_monitoring_snapshot
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, realized_roi_evidence, record_in_window, roi_cost_evidence, roi_outcome_evidence
@@ -1732,6 +1736,28 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
     audit = workspace_audit_events(workspace_id, request)
     roi = _workspace_roi_summary(usage, audit, list_outcome_events(workspace_id))
     foundry_monitoring = _foundry_monitoring_status()
+    gateway_enabled = str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+    expected_gateway_id = os.environ.get("DF_APIM_EXPECTED_GATEWAY_ID")
+    gateway_evidence = (
+        get_gateway_metric_evidence(workspace_id, str(expected_gateway_id or ""))
+        if gateway_enabled and str(expected_gateway_id or "").strip()
+        else None
+    )
+    gateway_evidence_payload = (
+        gateway_evidence.model_dump()
+        if hasattr(gateway_evidence, "model_dump")
+        else gateway_evidence
+        if isinstance(gateway_evidence, dict)
+        else None
+    )
+    monitoring = build_monitoring_snapshot(
+        usage,
+        audit,
+        gateway_enabled=gateway_enabled,
+        expected_gateway_id=expected_gateway_id,
+        gateway_evidence=gateway_evidence_payload,
+    )
+    monitoring["models"] = public_model_route_snapshot()
     members_by_key = _workspace_members_by_key(workspace_id)
     return {
         "workspace_id": workspace_id,
@@ -1755,6 +1781,7 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
         "usage": _public_workspace_usage(workspace_id, usage, members_by_key),
         "chargeback": _workspace_chargeback(workspace_id, usage, roi, members_by_key),
         "foundry_monitoring": foundry_monitoring,
+        "monitoring": monitoring,
         "audit": {
             "count": audit.get("count") or 0,
             "events": (audit.get("events") or [])[:20],
@@ -1902,6 +1929,8 @@ def _workspace_usage_by_actor(workspace_id: str) -> dict[str, Any]:
         "runs": 0,
         "agent_runs": 0,
         "snapshot_runs": 0,
+        "completed_runs": 0,
+        "failed_runs": 0,
         "known_usage_runs": 0,
         "unknown_usage_runs": 0,
         "total_tokens": None,
@@ -1952,6 +1981,11 @@ def _workspace_usage_by_actor(workspace_id: str) -> dict[str, Any]:
             row["last_run_id"] = run_id
         totals["runs"] += 1
         totals["snapshot_runs" if is_snapshot else "agent_runs"] += 1
+        status = str(detail.get("status") or summary.get("status") or "").strip().lower()
+        if status in {"failed", "error"}:
+            totals["failed_runs"] += 1
+        elif status in {"completed", "complete", "success"}:
+            totals["completed_runs"] += 1
         totals[coverage_key] += 1
         if tokens is not None:
             for output_key, token_key in (("total_tokens", "total"), ("prompt_tokens", "prompt"), ("completion_tokens", "completion")):

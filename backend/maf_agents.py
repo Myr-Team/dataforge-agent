@@ -12,13 +12,15 @@ from urllib.parse import quote
 from agent_framework import Agent, tool
 from agent_framework.foundry import FoundryChatClient
 from agent_framework.openai import OpenAIChatClient
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, ManagedIdentityCredential, get_bearer_token_provider
 from pydantic import BaseModel, ConfigDict, Field
 
 from agents.build_agents import AGENTS
 
+from .model_policy import resolve_text_deployment, resolve_text_route
 from .rag import search
 from .schemas import AuditVerdict, FeasibilityReport
+from .tracing import gateway_request_headers
 from .tools.generate_image import generate_image
 from .tools.narrate_summary import narrate_summary
 from .tools.render_pdf import render_pdf_report
@@ -266,7 +268,33 @@ def _create_maf_chat_client() -> Any:
     if auth_mode not in {"auto", "api_key", "managed_identity"}:
         raise ValueError("DF_MAF_AUTH_MODE must be auto, api_key, or managed_identity")
 
-    model = os.environ["DF_CHAT_DEPLOYMENT"]
+    model = resolve_text_deployment(capability="analysis")
+    gateway_enabled = str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if gateway_enabled:
+        gateway_url = str(os.environ.get("DF_APIM_GATEWAY_URL") or "").strip().rstrip("/")
+        audience = str(os.environ.get("DF_APIM_AUDIENCE") or "").strip().rstrip("/")
+        if not gateway_url or not audience:
+            raise RuntimeError(
+                "DF_APIM_GATEWAY_ENABLED requires both DF_APIM_GATEWAY_URL and DF_APIM_AUDIENCE"
+            )
+        gateway_headers = gateway_request_headers()
+        gateway_headers["x-dataforge-model-route"] = resolve_text_route(capability="analysis").route_id
+        return OpenAIChatClient(
+            model=model,
+            credential=get_bearer_token_provider(
+                ManagedIdentityCredential(),
+                f"{audience}/.default",
+            ),
+            azure_endpoint=gateway_url,
+            api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "preview"),
+            default_headers=gateway_headers,
+        )
+
     api_key = str(os.environ.get("AZURE_OPENAI_API_KEY") or "").strip()
     azure_endpoint = str(
         os.environ.get("OPENAI_ENDPOINT") or os.environ.get("AZURE_OPENAI_ENDPOINT") or ""

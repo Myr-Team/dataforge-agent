@@ -23,6 +23,10 @@ if not LOGGER.handlers:
 
 
 _CURRENT_AGENT_SPAN: ContextVar[Any | None] = ContextVar("dataforge_agent_span", default=None)
+_CURRENT_GATEWAY_HEADERS: ContextVar[dict[str, str] | None] = ContextVar(
+    "dataforge_gateway_headers",
+    default=None,
+)
 _SAFE_TELEMETRY_NAME = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _TRACE_CORRELATION = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 _DELIVERY_LOCK = threading.RLock()
@@ -61,6 +65,11 @@ def _span_correlation_id(span: Any) -> str | None:
 def trace_id_from_span(span: Any) -> str | None:
     """Return the current trace ID only when it is safe to expose as a reference."""
     return _span_correlation_id(span)
+
+
+def gateway_request_headers() -> dict[str, str]:
+    """Return only one-way request lineage markers for an APIM call."""
+    return dict(_CURRENT_GATEWAY_HEADERS.get() or {})
 
 
 def foundry_runtime_agent_id() -> str:
@@ -262,7 +271,18 @@ def agent_trace(
         if actor_id:
             span.set_attribute("enduser.id", actor_id)
 
+        gateway_headers = {"x-dataforge-workspace-hash": _trace_identifier_hash(workspace_id)}
+        if conversation_id:
+            gateway_headers["x-dataforge-run-hash"] = _trace_identifier_hash(conversation_id)
+        if correlation_id:
+            gateway_headers["x-dataforge-correlation-id"] = correlation_id
+        if isinstance(actor, dict):
+            identity = str(actor.get("actor_id") or actor.get("email") or actor.get("id") or actor.get("name") or "").strip().lower()
+            if identity:
+                gateway_headers["x-dataforge-actor-hash"] = _trace_identifier_hash(identity)
+
         token = _CURRENT_AGENT_SPAN.set(span)
+        gateway_token = _CURRENT_GATEWAY_HEADERS.set(gateway_headers)
         try:
             yield span
         except Exception as exc:
@@ -279,6 +299,7 @@ def agent_trace(
                 pass
         finally:
             record_local_span_emit(workspace_id, conversation_id, _span_correlation_id(span))
+            _CURRENT_GATEWAY_HEADERS.reset(gateway_token)
             _CURRENT_AGENT_SPAN.reset(token)
 
 

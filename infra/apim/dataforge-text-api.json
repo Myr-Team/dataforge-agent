@@ -1,0 +1,91 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "serviceName": { "type": "string" },
+    "foundryEndpoint": {
+      "type": "string",
+      "defaultValue": "https://agent-demo-foundry-fuzh.openai.azure.com/openai"
+    },
+    "tenantId": { "type": "string" },
+    "allowedAudience": {
+      "type": "string",
+      "defaultValue": "api://dataforge-apim-disabled"
+    },
+    "requiredApplicationRole": {
+      "type": "string",
+      "defaultValue": "invoke_as_application"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ApiManagement/service/apis",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('serviceName'), 'dataforge-text')]",
+      "properties": {
+        "displayName": "DataForge Text Models",
+        "description": "Private DataForge text-model gateway. Calls require a validated Entra token from the runtime identity.",
+        "path": "openai",
+        "protocols": ["https"],
+        "serviceUrl": "[parameters('foundryEndpoint')]",
+        "subscriptionRequired": false
+      }
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}', parameters('serviceName'), 'dataforge-text', 'responses-post')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', parameters('serviceName'), 'dataforge-text')]"
+      ],
+      "properties": {
+        "displayName": "Create response",
+        "method": "POST",
+        "urlTemplate": "/responses",
+        "templateParameters": [],
+        "request": {
+          "queryParameters": [
+            { "name": "api-version", "required": true, "type": "string" }
+          ]
+        },
+        "responses": [
+          { "statusCode": 200, "description": "Model response" }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}', parameters('serviceName'), 'dataforge-text', 'chat-completions-post')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', parameters('serviceName'), 'dataforge-text')]"
+      ],
+      "properties": {
+        "displayName": "Create chat completion",
+        "method": "POST",
+        "urlTemplate": "/chat/completions",
+        "templateParameters": [],
+        "request": {
+          "queryParameters": [
+            { "name": "api-version", "required": true, "type": "string" }
+          ]
+        },
+        "responses": [
+          { "statusCode": 200, "description": "Model response" }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/policies",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}', parameters('serviceName'), 'dataforge-text', 'policy')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', parameters('serviceName'), 'dataforge-text')]"
+      ],
+      "properties": {
+        "format": "rawxml",
+        "value": "[concat('<policies><inbound><base /><validate-jwt header-name=\"Authorization\" require-scheme=\"Bearer\" failed-validation-httpcode=\"401\" failed-validation-error-message=\"A valid DataForge runtime token with the required application role is required.\"><openid-config url=\"https://login.microsoftonline.com/', parameters('tenantId'), '/.well-known/openid-configuration\" /><audiences><audience>', parameters('allowedAudience'), '</audience></audiences><required-claims><claim name=\"roles\" match=\"any\"><value>', parameters('requiredApplicationRole'), '</value></claim></required-claims></validate-jwt><set-variable name=\"dataforgeCorrelation\" value=\"@(context.Request.Headers.GetValueOrDefault(&quot;x-dataforge-correlation-id&quot;, &quot;&quot;))\" /><llm-emit-token-metric namespace=\"DataForge.LLM\"><dimension name=\"API ID\" /><dimension name=\"Gateway ID\" /><dimension name=\"Workspace Hash\" value=\"@(context.Request.Headers.GetValueOrDefault(&quot;x-dataforge-workspace-hash&quot;, &quot;unknown&quot;))\" /></llm-emit-token-metric><set-header name=\"x-dataforge-workspace-hash\" exists-action=\"delete\" /><set-header name=\"x-dataforge-run-hash\" exists-action=\"delete\" /><set-header name=\"x-dataforge-actor-hash\" exists-action=\"delete\" /><set-header name=\"x-dataforge-correlation-id\" exists-action=\"delete\" /><set-header name=\"x-dataforge-model-route\" exists-action=\"delete\" /><authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" /></inbound><backend><base /></backend><outbound><base /><set-header name=\"x-dataforge-gateway-correlation\" exists-action=\"override\"><value>@((string)context.Variables[&quot;dataforgeCorrelation&quot;])</value></set-header></outbound><on-error><base /></on-error></policies>')]"
+      }
+    }
+  ]
+}
