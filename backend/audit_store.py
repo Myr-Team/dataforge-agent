@@ -2245,16 +2245,10 @@ def _validate_container_contract(
         str(item.get("tag") or "")
         for item in tags if isinstance(item, Mapping)
     } if isinstance(tags, list) else set()
-    history = legal_hold.get("protectedAppendWritesHistory", legal_hold.get("protected_append_writes_history"))
-    history = history if isinstance(history, Mapping) else {}
-    legal_append_value = history.get(
-        "allowProtectedAppendWritesAll", history.get("allow_protected_append_writes_all")
-    )
     legal_hold_ok = (
         bool(expected_tag)
         and hold_active
         and expected_tag in active_tags
-        and legal_append_value is protected_append
     )
     return locked and append_ok and legal_hold_ok
 

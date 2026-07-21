@@ -427,6 +427,43 @@ def test_remediation_production_contract_requires_all_blob_controls(monkeypatch)
             )
 
 
+def test_production_contract_uses_locked_policy_not_legal_hold_history_for_append_authorization() -> None:
+    service = {
+        "isVersioningEnabled": True,
+        "deleteRetentionPolicy": {"enabled": True, "days": 30},
+        "containerDeleteRetentionPolicy": {"enabled": True, "days": 30},
+    }
+    active_policy = {"state": "Locked", "allowProtectedAppendWrites": True}
+    sealed_policy = {"state": "Locked", "allowProtectedAppendWrites": False}
+    # Azure exposes this as historical legal-hold metadata, not the locked
+    # retention policy's effective append authorization.
+    active_container = {
+        "hasLegalHold": True,
+        "legalHold": {
+            "hasLegalHold": True,
+            "tags": [{"tag": "dataforgeaudit"}],
+            "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": False},
+        },
+    }
+    sealed_container = {
+        "hasLegalHold": True,
+        "legalHold": {
+            "hasLegalHold": True,
+            "tags": [{"tag": "dataforgeaudit"}],
+            "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": False},
+        },
+    }
+
+    audit_store._validate_production_contract(
+        service,
+        active_policy,
+        active_container,
+        "dataforgeaudit",
+        sealed_policy,
+        sealed_container,
+    )
+
+
 def _production_storage_env(monkeypatch, *, account: str = "writeaccount") -> str:
     resource_id = (
         "/subscriptions/sub-expected/resourceGroups/rg-expected/providers/"
@@ -1411,13 +1448,6 @@ def test_r3_production_contract_requires_configured_legal_hold_tag() -> None:
     for broken in [
         {**container, "hasLegalHold": False},
         {**container, "legalHold": {**container["legalHold"], "tags": [{"tag": "otherhold"}]}},
-        {
-            **container,
-            "legalHold": {
-                **container["legalHold"],
-                "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": False},
-            },
-        },
     ]:
         with pytest.raises(audit_store.AuditPersistenceError, match="legal hold|contract"):
             audit_store._validate_production_contract(
@@ -1553,19 +1583,7 @@ def test_r4_production_contract_requires_sealed_container_without_protected_appe
     audit_store._validate_production_contract(
         service, active_policy, active_container, "dataforgeaudit", sealed_policy, sealed_container
     )
-    for broken_policy, broken_container in [
-        ({**sealed_policy, "allowProtectedAppendWrites": True}, sealed_container),
-        (
-            sealed_policy,
-            {
-                **sealed_container,
-                "legalHold": {
-                    **sealed_container["legalHold"],
-                    "protectedAppendWritesHistory": {"allowProtectedAppendWritesAll": True},
-                },
-            },
-        ),
-    ]:
+    for broken_policy, broken_container in [({**sealed_policy, "allowProtectedAppendWrites": True}, sealed_container)]:
         with pytest.raises(audit_store.AuditPersistenceError, match="sealed|contract"):
             audit_store._validate_production_contract(
                 service, active_policy, active_container, "dataforgeaudit", broken_policy, broken_container
