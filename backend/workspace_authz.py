@@ -111,6 +111,9 @@ def workspace_access_decision(workspace_id: str, actor: Mapping[str, Any] | None
     if identity and identity == owner_identity:
         _normalize_owner_member(workspace_id, meta, clean_actor)
         return WorkspaceAccessDecision(True, "owner", "owner_match")
+    if identity and owner_identity is None and _bind_legacy_unowned_configured_owner(meta, clean_actor):
+        _normalize_owner_member(workspace_id, meta, clean_actor)
+        return WorkspaceAccessDecision(True, "owner", "owner_match")
     if identity and owner_identity is None and _bind_legacy_configured_owner(meta, clean_actor):
         _normalize_owner_member(workspace_id, meta, clean_actor)
         return WorkspaceAccessDecision(True, "owner", "owner_match")
@@ -301,6 +304,42 @@ def _bind_legacy_configured_owner(meta: dict[str, Any], actor: Mapping[str, Any]
     meta["workspace_owner"] = bound_owner
     normalizations = [dict(item) for item in meta.get("authorization_normalizations") or [] if isinstance(item, Mapping)][-49:]
     normalization = {"kind": "legacy_configured_owner_binding", "occurred_at": datetime.now(timezone.utc).isoformat()}
+    correlation = _identity_correlation_digest(identity)
+    if correlation:
+        normalization["identity_correlation"] = correlation
+    normalizations.append(normalization)
+    meta["authorization_normalizations"] = normalizations
+    return True
+
+
+def _bind_legacy_unowned_configured_owner(meta: dict[str, Any], actor: Mapping[str, Any]) -> bool:
+    """Recover only a completely unowned pre-RBAC workspace for the configured Entra owner."""
+    identity = canonical_actor_identity(actor)
+    configured_identity = (
+        str(os.environ.get("DF_WORKSPACE_OWNER_TENANT_ID") or "").strip().lower(),
+        str(os.environ.get("DF_WORKSPACE_OWNER_OID") or "").strip().lower(),
+    )
+    owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), Mapping) else {}
+    members = meta.get("workspace_members") or []
+    if (
+        not identity
+        or not is_trusted_tenant_identity(actor)
+        or not all(configured_identity)
+        or identity != configured_identity
+        or owner
+        or any(isinstance(item, Mapping) for item in members)
+    ):
+        return False
+
+    bound_owner = {
+        key: actor[key]
+        for key in ("name", "email", "actor_id", "tenant_id")
+        if actor.get(key) not in (None, "")
+    }
+    bound_owner["source"] = "legacy_unowned_owner_binding"
+    meta["workspace_owner"] = bound_owner
+    normalizations = [dict(item) for item in meta.get("authorization_normalizations") or [] if isinstance(item, Mapping)][-49:]
+    normalization = {"kind": "legacy_unowned_owner_binding", "occurred_at": datetime.now(timezone.utc).isoformat()}
     correlation = _identity_correlation_digest(identity)
     if correlation:
         normalization["identity_correlation"] = correlation

@@ -97,6 +97,45 @@ def test_access_decision_binds_only_configured_owner_to_legacy_email_owner(monke
     assert (denied.allowed, denied.role, denied.reason_code) == (False, None, "membership_missing")
 
 
+def test_access_decision_binds_configured_owner_to_unowned_pre_rbac_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    saved: list[dict[str, object]] = []
+    meta = {"workspace_id": "ws-pre-rbac"}
+    actor = {
+        "email": "owner@contoso.com",
+        "actor_id": "owner-oid",
+        "tenant_id": "tenant-a",
+        "source": "easy_auth",
+    }
+    monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_OID", "owner-oid")
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_TENANT_ID", "tenant-a")
+    monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _id: meta)
+    monkeypatch.setattr(workspace_authz, "_save_workspace_meta", lambda _id, value: saved.append(dict(value)))
+    monkeypatch.setattr(workspace_authz, "_audit_active_key", lambda: ("audit-key", b"k" * 32))
+    monkeypatch.setattr(workspace_authz, "_audit_actor_hash", lambda _actor, _key: "actor_audit-correlation")
+
+    decision = workspace_authz.workspace_access_decision("ws-pre-rbac", actor)
+
+    assert (decision.allowed, decision.role, decision.reason_code) == (True, "owner", "owner_match")
+    assert saved[0]["workspace_owner"]["actor_id"] == "owner-oid"
+    assert saved[0]["workspace_owner"]["tenant_id"] == "tenant-a"
+    assert saved[0]["workspace_members"] == [
+        {
+            "actor_id": "owner-oid",
+            "tenant_id": "tenant-a",
+            "role": "owner",
+            "status": "active",
+            "source": "workspace_owner",
+        }
+    ]
+    assert saved[0]["authorization_normalizations"][0]["kind"] == "legacy_unowned_owner_binding"
+    assert all(value not in str(saved[0]["authorization_normalizations"][0]) for value in ("owner-oid", "tenant-a"))
+
+    denied = workspace_authz.workspace_access_decision("ws-pre-rbac", {**actor, "actor_id": "other-oid"})
+
+    assert (denied.allowed, denied.role, denied.reason_code) == (False, None, "membership_missing")
+
+
 def test_access_decision_rejects_same_oid_from_another_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DF_WORKSPACE_RBAC_ENFORCED", "1")
     monkeypatch.setattr(workspace_authz, "_load_workspace_meta", lambda _id: {
