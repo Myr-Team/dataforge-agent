@@ -138,6 +138,10 @@ export async function loadDashboard(workspaceId) {
   }
 }
 
+export async function loadWorkspaceAccess(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/access`);
+}
+
 export async function loadLatestAnalysis(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/latest-analysis`);
 }

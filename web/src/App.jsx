@@ -5,6 +5,7 @@ import {
   listWorkspaces,
   loadConversation,
   loadDashboard,
+  loadWorkspaceAccess,
   loadLatestAnalysis,
   loadObservability,
   loadArtifactJob,
@@ -119,6 +120,7 @@ const hasAnalysisDimensions = (artifact) => {
 export function App() {
   const [workspaceId, setWorkspaceId] = useState(DEFAULT_WORKSPACE);
   const [dashboard, setDashboard] = useState(null);
+  const [workspaceAccess, setWorkspaceAccess] = useState(null);
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState("");
   const [messages, setMessages] = useState([]);
@@ -195,7 +197,10 @@ export function App() {
   const refreshDashboard = useCallback(async (id = workspaceId) => {
     setDashboardLoading(true);
     setDashboardError("");
+    setWorkspaceAccess(null);
     try {
+      const access = await loadWorkspaceAccess(id).catch(() => null);
+      setWorkspaceAccess(access);
       const data = await loadDashboard(id);
       setDashboard(data);
     } catch (error) {
@@ -1106,7 +1111,7 @@ export function App() {
         tasks={tasks}
         onOpenTaskCenter={() => setTaskDrawerOpen(true)}
       />
-      <ShellNav active={activeView} onChange={changePrimaryView} workspace={dashboard?.workspace} onInviteMembers={openMembersSettings} />
+      <ShellNav active={activeView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} onInviteMembers={openMembersSettings} />
       <div className="workbench">
         <MobileNav active={activeView} onChange={changePrimaryView} />
         <div className="workbench-grid">

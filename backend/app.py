@@ -61,7 +61,7 @@ try:
         workspace_ingest_status,
         workspace_pending_ingest_jobs,
     )
-    from .workspace_authz import authorize, require_workspace_permission, workspace_role
+    from .workspace_authz import authorize, require_workspace_permission, workspace_access_decision, workspace_role
     from .schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -113,7 +113,7 @@ except ImportError:
         workspace_ingest_status,
         workspace_pending_ingest_jobs,
     )
-    from workspace_authz import authorize, require_workspace_permission, workspace_role
+    from workspace_authz import authorize, require_workspace_permission, workspace_access_decision, workspace_role
     from schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -270,6 +270,21 @@ async def workspace_detail(workspace_id: str, request: Request) -> WorkspaceDeta
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return WorkspaceDetailResponse.model_validate(result)
+
+
+@app.get("/api/workspaces/{workspace_id}/access")
+async def workspace_access(workspace_id: str, request: Request) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,159}", str(workspace_id or "")):
+        raise HTTPException(status_code=400, detail="workspace_id is invalid")
+    actor = actor_from_request(request, fallback=False)
+    decision = workspace_access_decision(workspace_id, actor)
+    return {
+        "workspace_id": workspace_id,
+        "authenticated": is_trusted_tenant_identity(actor),
+        "allowed": decision.allowed,
+        "role": decision.role if decision.allowed else None,
+        "reason_code": decision.reason_code,
+    }
 
 
 @app.get("/api/workspaces/{workspace_id}/dashboard", response_model=WorkspaceDashboardResponse)

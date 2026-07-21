@@ -112,7 +112,14 @@ function memberRoleLabel(role) {
   return cleanUserValue(role) || "成员";
 }
 
-export function ShellNav({ active = "workspaces", onChange = () => {}, workspace = {}, onInviteMembers = () => {} }) {
+export function ShellNav({ active = "workspaces", onChange = () => {}, workspace = {}, access = null, onInviteMembers = () => {} }) {
+  const roleLabel = access?.allowed
+    ? memberRoleLabel(access.role)
+    : access?.authenticated === false
+      ? "身份未验证"
+      : access
+        ? "无工作区权限"
+        : "正在核验";
   return (
     <nav className="shell-nav" aria-label="Primary">
       <div className="nav-stack">
@@ -137,7 +144,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, workspace
         <div className="wsf-k">Workspace</div>
         <div className="wsf-v">{workspace.name || "当前工作区"}</div>
         <div className="wsf-k">Role</div>
-        <div className="wsf-v wsf-last">Owner</div>
+        <div className="wsf-v wsf-last">{roleLabel}</div>
         <button className="wsf-invite" type="button" title="打开成员、权限和用量溯源" onClick={onInviteMembers}>
           <UserPlus size={15} /> Invite members
         </button>

@@ -111,6 +111,9 @@ def workspace_access_decision(workspace_id: str, actor: Mapping[str, Any] | None
     if identity and identity == owner_identity:
         _normalize_owner_member(workspace_id, meta, clean_actor)
         return WorkspaceAccessDecision(True, "owner", "owner_match")
+    if identity and owner_identity is None and _bind_legacy_configured_owner(meta, clean_actor):
+        _normalize_owner_member(workspace_id, meta, clean_actor)
+        return WorkspaceAccessDecision(True, "owner", "owner_match")
     if identity and owner_identity and identity[1] == owner_identity[1]:
         return WorkspaceAccessDecision(False, None, "tenant_mismatch")
     return _member_access_decision(workspace_id, meta, clean_actor)
@@ -262,6 +265,48 @@ def _normalize_owner_member(workspace_id: str, meta: dict[str, Any], actor: Mapp
     meta["workspace_members"] = members
     meta["authorization_normalizations"] = normalizations
     _save_workspace_meta(workspace_id, meta)
+
+
+def _bind_legacy_configured_owner(meta: dict[str, Any], actor: Mapping[str, Any]) -> bool:
+    """Bind a pre-RBAC owner row only to the configured Entra owner identity."""
+    identity = canonical_actor_identity(actor)
+    owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), Mapping) else {}
+    configured_identity = (
+        str(os.environ.get("DF_WORKSPACE_OWNER_TENANT_ID") or "").strip().lower(),
+        str(os.environ.get("DF_WORKSPACE_OWNER_OID") or "").strip().lower(),
+    )
+    configured_email = str(os.environ.get("DF_WORKSPACE_OWNER_EMAIL") or "").strip().lower()
+    owner_email = str(owner.get("email") or "").strip().lower()
+    actor_email = str(actor.get("email") or "").strip().lower()
+    if (
+        not identity
+        or not is_trusted_tenant_identity(actor)
+        or canonical_actor_identity(owner) is not None
+        or not all(configured_identity)
+        or not configured_email
+        or identity != configured_identity
+        or owner_email != configured_email
+        or actor_email != configured_email
+    ):
+        return False
+
+    bound_owner = dict(owner)
+    bound_owner.update(
+        {
+            "actor_id": actor.get("actor_id"),
+            "tenant_id": actor.get("tenant_id"),
+            "source": "legacy_owner_binding",
+        }
+    )
+    meta["workspace_owner"] = bound_owner
+    normalizations = [dict(item) for item in meta.get("authorization_normalizations") or [] if isinstance(item, Mapping)][-49:]
+    normalization = {"kind": "legacy_configured_owner_binding", "occurred_at": datetime.now(timezone.utc).isoformat()}
+    correlation = _identity_correlation_digest(identity)
+    if correlation:
+        normalization["identity_correlation"] = correlation
+    normalizations.append(normalization)
+    meta["authorization_normalizations"] = normalizations
+    return True
 
 
 def _identity_correlation_digest(identity: tuple[str, str]) -> str | None:
