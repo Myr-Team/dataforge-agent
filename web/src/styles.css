@@ -3628,6 +3628,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .trace-reference-title { color: var(--ink); font-weight: 750; }
 .trace-reference-agent { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .trace-reference-id { display: flex; grid-column: 1 / -1; min-width: 0; align-items: center; gap: 7px; }
+.trace-reference-field { flex: 0 0 auto; color: var(--muted); font-size: 10px; font-weight: 700; }
 .trace-reference-id code { min-width: 0; overflow: hidden; color: #175cd3; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .trace-reference-copy { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; padding: 2px 5px; border: 1px solid #cdd9e8; border-radius: 4px; background: #fff; color: #344054; font: inherit; cursor: pointer; }
 .trace-reference-copy:hover { border-color: var(--blue); color: var(--blue); }
@@ -3638,6 +3639,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .trace-reference-status.error { color: #b42318; }
 .trace-reference-status a { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; color: var(--blue); font-weight: 700; text-decoration: none; }
 .trace-reference-status a:hover { text-decoration: underline; }
+.trace-reference-status b { color: inherit; font-weight: 750; }
 .trace-reference p { grid-column: 1 / -1; margin: 0; color: var(--muted); }
 .trace-reference-issue { color: #b42318 !important; }
 .trace-reference-metrics { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
@@ -3665,6 +3667,8 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .conv-chart { width: 100%; max-width: 440px; height: auto; display: block; }
 
 /* Governance operations view */
+.agent-studio.governance-stage { display: flex; flex-direction: column; gap: 16px; overflow-y: auto; padding: 20px 26px; }
+.governance-page-body { min-width: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface); }
 .set-governance,
 .settings-stage .set-governance { padding: 0; min-width: 0; }
 .set-bottom > *,

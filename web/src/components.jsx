@@ -637,6 +637,9 @@ function WorkbenchMainInner({
   if (view === "runs") {
     return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} tasks={tasks} />;
   }
+  if (view === "governance") {
+    return <SettingsCenter dashboard={dashboard} observability={observability} user={user} governanceOnly />;
+  }
   if (view === "settings") {
     return <SettingsCenter dashboard={dashboard} observability={observability} user={user} initialTab={settingsInitialTab} />;
   }
@@ -2660,16 +2663,17 @@ function TraceReference({ workspaceId, runId, reference, compact = false, showMe
     <section className={`trace-reference${compact ? " compact" : ""}`} aria-label="运行溯源">
       <div className="trace-reference-main">
         <span className="trace-reference-title">运行溯源</span>
-        <span className="trace-reference-agent">Foundry: {model.agentId}</span>
+        <span className="trace-reference-agent">关联 Agent：{model.agentId}</span>
       </div>
       <div className="trace-reference-id">
+        <span className="trace-reference-field">Trace ID</span>
         <code>{model.traceId}</code>
         <button type="button" className="trace-reference-copy" title="复制 Trace ID" aria-label="复制 Trace ID" onClick={copyTraceId}>
           <Copy size={13} />{copied ? "已复制" : "复制"}
         </button>
       </div>
       <div className={`trace-reference-status ${model.delivery.tone}`}>
-        <span>{statusLabel}</span>
+        <span><b>Azure Monitor</b> · {statusLabel}</span>
         {model.transactionUrl ? <a href={model.transactionUrl} target="_blank" rel="noreferrer">Azure Monitor <ArrowUpRight size={13} /></a> : null}
       </div>
       {model.delivery.issueCode ? <p className="trace-reference-issue">{traceIssueLabel(model.delivery.issueCode)}</p> : null}
@@ -3028,10 +3032,10 @@ function governanceIsoWindow(value) {
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
-function SettingsCenter({ dashboard, observability, user, initialTab = "about" }) {
+function SettingsCenter({ dashboard, observability, user, initialTab = "about", governanceOnly = false }) {
   const health = dashboard?.health || {};
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
-  const [tab, setTab] = useState("about");
+  const [tab, setTab] = useState(() => governanceOnly ? "governance" : "about");
   const [probing, setProbing] = useState(false);
   const [probedAt, setProbedAt] = useState(null);
   const [sys, setSys] = useState(null);
@@ -3166,8 +3170,12 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
   };
   useEffect(() => { loadSystemStatus().then(setSys).catch(() => {}); }, []);
   useEffect(() => {
+    if (governanceOnly) {
+      setTab("governance");
+      return;
+    }
     if (initialTab === "members") setTab("members");
-  }, [initialTab]);
+  }, [initialTab, governanceOnly]);
   useEffect(() => {
     if (!workspaceId) {
       setMemberRows([]);
@@ -3465,6 +3473,34 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
       <p className="set-cfg-desc">{desc}</p>
     </section>
   );
+  const governancePanel = (
+    <GovernanceSummaryPanel
+      data={currentGovernanceData}
+      invitationState={currentInvitationState}
+      permissionsPayload={memberContract.meta}
+      permissionState={{ loading: membersLoading || (!permissionsReady && !memberLoadError), error: memberLoadError }}
+      windowValue={governanceWindow}
+      onWindowChange={setGovernanceWindow}
+      onRetry={loadGovernanceEvidence}
+      onCreateScenario={createGovernanceScenario}
+      onInvitationRetry={loadInvitationHistory}
+      onPermissionRetry={loadMembersContract}
+      onLoadMore={loadMoreGovernanceAudit}
+      loadingMore={governanceLoadingMore}
+    />
+  );
+  if (governanceOnly) {
+    return (
+      <main className="agent-studio governance-stage">
+        <header className="conv-head">
+          <span className="eyeless-label">Governance / ROI</span>
+          <h1>治理与 ROI</h1>
+          <p>查看当前工作区的身份归因、不可变审计、Foundry 遥测送达、成本证据和已验证结果。</p>
+        </header>
+        <div className="governance-page-body">{governancePanel}</div>
+      </main>
+    );
+  }
   return (
     <main className="agent-studio settings-stage">
       <header className="conv-head">
@@ -3486,7 +3522,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
         {cfgCard(<Cpu size={16} />, "工作区偏好", [["界面语言", "简体中文"], ["主题", "浅色（深色即将支持）"], ["时区", "跟随系统"], ["数据持久化", "Azure Blob（工作区/会话/产物）"], ["默认时区显示", "跟随系统"]], "自定义界面语言、主题、时区与数据持久化偏好。", "preferences")}
       </div>
 
-      <div className={`set-bottom ${tab === "governance" ? "governance-active" : ""}`}>
+      <div className="set-bottom">
         <section className="card set-conn">
           <div className="set-conn-h"><strong>集成与连接状态</strong>
             <button type="button" className="set-refresh" onClick={reprobe} disabled={probing}>
@@ -3512,7 +3548,6 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
           <div className="set-tabs">
             <button type="button" className={tab === "about" ? "set-tab active" : "set-tab"} onClick={() => setTab("about")}>关于</button>
             <button type="button" className={tab === "members" ? "set-tab active" : "set-tab"} onClick={() => setTab("members")}>成员与权限</button>
-            <button type="button" className={tab === "governance" ? "set-tab active" : "set-tab"} onClick={() => setTab("governance")}>治理与 ROI</button>
           </div>
           {tab === "about" ? (
             <div className="set-about-body">
@@ -3522,23 +3557,6 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about" }
               {kv("部署环境", release.environment || "未记录")}
               <div className="set-kv"><span>服务协议</span><button type="button" className="lnk lnk-btn" onClick={() => openSettingsHelp("terms")}>查看服务协议</button></div>
               <div className="set-kv"><span>隐私政策</span><button type="button" className="lnk lnk-btn" onClick={() => openSettingsHelp("privacy")}>查看隐私政策</button></div>
-            </div>
-          ) : tab === "governance" ? (
-            <div className="set-governance">
-              <GovernanceSummaryPanel
-                data={currentGovernanceData}
-                invitationState={currentInvitationState}
-                permissionsPayload={memberContract.meta}
-                permissionState={{ loading: membersLoading || (!permissionsReady && !memberLoadError), error: memberLoadError }}
-                windowValue={governanceWindow}
-                onWindowChange={setGovernanceWindow}
-                onRetry={loadGovernanceEvidence}
-                onCreateScenario={createGovernanceScenario}
-                onInvitationRetry={loadInvitationHistory}
-                onPermissionRetry={loadMembersContract}
-                onLoadMore={loadMoreGovernanceAudit}
-                loadingMore={governanceLoadingMore}
-              />
             </div>
           ) : (
             <div className="set-members">

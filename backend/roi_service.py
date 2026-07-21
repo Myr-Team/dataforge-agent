@@ -454,21 +454,22 @@ def _catalog(prices: Iterable[Mapping[str, Any]] | None) -> PriceCatalog:
 
 
 def _usage_cost(runs: list[Mapping[str, Any]], catalog: PriceCatalog) -> tuple[UsageSummary, CostSummary, list[Assumption]]:
-    inputs = outputs = totals = 0; observed = False; unpriced: set[str] = set(); by_currency: dict[str, float] = {}; assumptions: list[Assumption] = []; seen: set[str] = set(); duplicates: list[str] = []
+    inputs = outputs = totals = 0; known_usage = False; unpriced: set[str] = set(); by_currency: dict[str, float] = {}; assumptions: list[Assumption] = []; seen: set[str] = set(); duplicates: list[str] = []
     for run in runs:
         for index, model, tokens in _run_usage(run):
             event_id = str(run.get("run_id") or "run") + ":" + str(run.get("models", [])[index].get("usage_event_id") or run.get("models", [])[index].get("response_id") or index)
             if event_id in seen: duplicates.append(event_id); continue
-            seen.add(event_id); observed = True
+            seen.add(event_id)
             if tokens is None: unpriced.add(model); continue
+            known_usage = True
             inputs += tokens["input_tokens"]; outputs += tokens["output_tokens"]; totals += tokens["total_tokens"]
             price = _price(catalog, model, _record_time(run, "run"))
             if price is None: unpriced.add(model); continue
             by_currency[price.currency] = by_currency.get(price.currency, 0) + tokens["input_tokens"] / 1_000_000 * price.input_per_1m + tokens["output_tokens"] / 1_000_000 * price.output_per_1m
             assumptions.append(Assumption(kind="model_price", source=price.source, formula="input_tokens/1_000_000*input_per_1m + output_tokens/1_000_000*output_per_1m", status="configured", model=price.model, version=price.version, currency=price.currency, unit=price.unit, effective_from=price.effective_from, effective_to=price.effective_to, input_per_1m=price.input_per_1m, output_per_1m=price.output_per_1m))
-    status = "unknown" if not observed else "partial" if unpriced or len(by_currency) != 1 else "complete"
+    status = "unknown" if not seen else "partial" if unpriced or len(by_currency) != 1 else "complete"
     total = _money(next(iter(by_currency.values()))) if status == "complete" else None
-    return UsageSummary(runs=len(runs), input_tokens=inputs if observed else None, output_tokens=outputs if observed else None, total_tokens=totals if observed else None, models=sorted({model for run in runs for _, model, _ in _run_usage(run)}), duplicate_usage_event_ids=duplicates), CostSummary(total=total, status=status, currency=next(iter(by_currency)) if status == "complete" else None, by_currency={key: _money(value) for key, value in by_currency.items()} if status != "unknown" else {}, unpriced_models=sorted(unpriced)), _dedupe(assumptions)
+    return UsageSummary(runs=len(runs), input_tokens=inputs if known_usage else None, output_tokens=outputs if known_usage else None, total_tokens=totals if known_usage else None, models=sorted({model for run in runs for _, model, _ in _run_usage(run)}), duplicate_usage_event_ids=duplicates), CostSummary(total=total, status=status, currency=next(iter(by_currency)) if status == "complete" else None, by_currency={key: _money(value) for key, value in by_currency.items()} if status != "unknown" else {}, unpriced_models=sorted(unpriced)), _dedupe(assumptions)
 
 
 def _run_lineage(runs: Iterable[Mapping[str, Any]]) -> tuple[list[str], list[str]]:
@@ -492,7 +493,11 @@ def _run_usage(run: Mapping[str, Any]) -> list[tuple[int, str, dict[str, int] | 
         if not isinstance(usage, Mapping): output.append((index, model, None)); continue
         if "input_tokens" not in usage or "output_tokens" not in usage:
             if "total_tokens" in usage or "total" in usage: output.append((index, model, None)); continue
-        output.append((index, model, _tokens(usage)))
+        try:
+            tokens = _tokens(usage)
+        except ValueError:
+            tokens = None
+        output.append((index, model, tokens))
     return output
 
 

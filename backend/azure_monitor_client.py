@@ -541,9 +541,19 @@ def _managed_identity_logs_client() -> Any:
     from azure.identity import ManagedIdentityCredential
     from azure.monitor.query import LogsQueryClient
 
-    client_id = str(os.environ.get("AZURE_CLIENT_ID") or "").strip()
+    client_id = monitor_identity_client_id()
     credential = ManagedIdentityCredential(client_id=client_id) if client_id else ManagedIdentityCredential()
     return LogsQueryClient(credential)
+
+
+def monitor_identity_client_id() -> str | None:
+    """Use an explicitly configured Monitor identity, otherwise the app system identity.
+
+    ``AZURE_CLIENT_ID`` belongs to the Foundry/OpenAI workload configuration and
+    can refer to an identity that is not attached to this Container App.
+    """
+    value = str(os.environ.get("DF_AZURE_MONITOR_CLIENT_ID") or "").strip()
+    return value or None
 
 
 def _partial_result_status(result: Any) -> int | None:

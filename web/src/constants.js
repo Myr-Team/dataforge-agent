@@ -21,6 +21,7 @@ import {
   Route,
   Search,
   Settings,
+  ShieldCheck,
   Sparkles,
   Target,
   WalletCards,
@@ -32,6 +33,7 @@ export const NAV_ITEMS = [
   { id: "runs", label: "运行记录", icon: Route },
   { id: "conversations", label: "会话", icon: MessageSquare },
   { id: "artifacts", label: "产物", icon: Boxes },
+  { id: "governance", label: "治理与 ROI", icon: ShieldCheck },
   { id: "settings", label: "设置", icon: Settings },
 ];
 

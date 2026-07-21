@@ -388,6 +388,19 @@ def test_query_client_is_injected_for_tests_without_default_credential_chain(mon
     assert "DefaultAzureCredential" not in open(monitor.__file__, encoding="utf-8").read()
 
 
+def test_monitor_query_identity_does_not_reuse_foundry_client_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AZURE_CLIENT_ID", "foundry-workload-identity")
+    monkeypatch.delenv("DF_AZURE_MONITOR_CLIENT_ID", raising=False)
+
+    resolver = getattr(monitor, "monitor_identity_client_id", None)
+
+    assert callable(resolver)
+    assert resolver() is None
+
+    monkeypatch.setenv("DF_AZURE_MONITOR_CLIENT_ID", "monitor-query-identity")
+    assert resolver() == "monitor-query-identity"
+
+
 def test_success_confirmation_cache_is_scoped_and_does_not_cache_partial(monkeypatch: pytest.MonkeyPatch) -> None:
     _monitor_env(monkeypatch)
     reset = getattr(monitor, "clear_trace_delivery_cache", None)

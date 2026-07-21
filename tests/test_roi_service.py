@@ -130,6 +130,37 @@ def test_missing_model_price_is_partial_and_never_zero_cost() -> None:
     assert roi_outcome_evidence(snapshot)["status"] == "not_recorded"
 
 
+def test_malformed_token_usage_degrades_roi_snapshot_to_partial_evidence() -> None:
+    malformed = _run()
+    malformed["models"] = [{"model": "gpt-5", "usage": {"input_tokens": float("nan"), "output_tokens": 500}}]
+
+    snapshot = build_roi_snapshot("ws-roi", _window(), runs=[malformed], outcomes=[], prices=PRICES)
+
+    assert snapshot["cost"]["status"] == "partial"
+    assert snapshot["cost"]["total"] is None
+    assert snapshot["usage"]["input_tokens"] is None
+    assert snapshot["usage"]["total_tokens"] is None
+
+
+def test_malformed_token_usage_degrades_member_chargeback_to_partial_evidence() -> None:
+    malformed = _run()
+    malformed["models"] = [{"model": "gpt-5", "usage": {"input_tokens": "not-a-number", "output_tokens": 500}}]
+
+    result = member_chargeback(
+        "ws-roi",
+        _window(),
+        runs=[malformed],
+        messages=[],
+        tasks=[],
+        memberships=[{"actor_id": "actor-owner", "tenant_id": "tenant-a", "status": "active"}],
+        prices=PRICES,
+        pseudonym_salt="test-salt",
+    )
+
+    assert result["groups"][0]["cost"]["status"] == "partial"
+    assert result["groups"][0]["cost"]["total"] is None
+
+
 def test_verified_state_requires_source_linked_outcome_and_independent_reviewer_event() -> None:
     missing_event = _outcome(verified=True)
     missing_event["verification"] = {"status": "verified", "reviewer": {"actor_id": "actor-reviewer"}}
