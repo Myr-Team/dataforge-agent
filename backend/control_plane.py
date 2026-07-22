@@ -11,7 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -34,6 +34,7 @@ try:
     from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from .invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from .model_policy import public_model_route_snapshot
+    from .monitoring_dashboard import build_monitor_dashboard
     from .monitoring_service import build_monitoring_snapshot
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
@@ -60,6 +61,7 @@ except ImportError:
     from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
     from invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from model_policy import public_model_route_snapshot
+    from monitoring_dashboard import build_monitor_dashboard
     from monitoring_service import build_monitoring_snapshot
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
@@ -233,6 +235,28 @@ async def workspace_chargeback(
     result = await _call(workspace_member_chargeback, workspace_id, from_value, to_value)
     result["permissions"] = _workspace_action_permissions(workspace_id, request)
     return result
+
+
+@router.get("/api/monitoring")
+async def monitoring_dashboard(
+    request: Request,
+    scope: Literal["current", "portfolio"] = Query("current"),
+    workspace_id: str = Query(min_length=1, max_length=160),
+    from_value: str = Query(alias="from", max_length=64),
+    to_value: str = Query(alias="to", max_length=64),
+) -> dict[str, Any]:
+    owned_ids = _owned_workspace_ids(request)
+    if workspace_id not in owned_ids:
+        raise HTTPException(status_code=403, detail="workspace access denied for monitor.read")
+    selected_ids = owned_ids if scope == "portfolio" else [workspace_id]
+    return await _call(
+        _monitor_dashboard_payload,
+        selected_ids,
+        scope=scope,
+        from_value=from_value,
+        to_value=to_value,
+        actor=actor_from_request(request, fallback=False),
+    )
 
 
 @router.get("/api/workspaces/{workspace_id}/governance/trace-status")
@@ -492,6 +516,31 @@ def _require_governance_role(workspace_id: str, request: Request | None, allowed
 def _require_workspace_owner(workspace_id: str, request: Request | None, action: str) -> str:
     """Allow governance and ROI access only to the persisted workspace creator."""
     return _require_governance_role(workspace_id, request, {"owner"}, action)
+
+
+def _owned_workspace_ids(request: Request | None) -> list[str]:
+    actor = actor_from_request(request, fallback=False)
+    identity = canonical_actor_identity(actor)
+    if identity is None:
+        return []
+    owned: list[str] = []
+    seen: set[str] = set()
+    for item in list_workspaces():
+        if not isinstance(item, dict):
+            continue
+        workspace_id = str(item.get("workspace_id") or "").strip()
+        if not workspace_id or workspace_id in seen:
+            continue
+        try:
+            meta = _load_workspace_meta(workspace_id)
+        except FileNotFoundError:
+            continue
+        owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), dict) else {}
+        if canonical_actor_identity(owner) != identity:
+            continue
+        seen.add(workspace_id)
+        owned.append(workspace_id)
+    return owned
 
 
 _EXPLICIT_GOVERNANCE_ACTIONS = ("audit.read", "chargeback.read", "invitation.read", "member.manage")
@@ -1793,6 +1842,39 @@ def workspace_governance_summary(workspace_id: str, request: Request | None = No
     }
 
 
+def _monitor_dashboard_payload(
+    workspace_ids: list[str],
+    *,
+    scope: str,
+    from_value: str,
+    to_value: str,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    payload = build_monitor_dashboard(
+        workspace_ids,
+        scope=scope,
+        from_value=from_value,
+        to_value=to_value,
+        actor=actor,
+        run_loader=list_runs,
+        cost_loader=workspace_cost_value_snapshot,
+        audit_loader=workspace_audit_events,
+        outcome_loader=list_outcome_events,
+        chargeback_loader=workspace_member_chargeback,
+    )
+    gateway_calls = _gateway_governed_calls(workspace_ids)
+    if gateway_calls is not None:
+        coverage = payload.setdefault("coverage", {})
+        current_calls = coverage.get("governed_text_calls")
+        base_calls = int(current_calls) if isinstance(current_calls, int) else 0
+        coverage["governed_text_calls"] = max(base_calls, gateway_calls)
+        freshness = payload.setdefault("freshness", {})
+        sources = freshness.get("sources")
+        if isinstance(sources, list) and "apim" not in sources:
+            sources.append("apim")
+    return payload
+
+
 def workspace_roi_snapshot(workspace_id: str, from_value: str, to_value: str) -> dict[str, Any]:
     window = parse_time_window(from_value, to_value)
     runs, truncated = _workspace_run_details_for_roi(workspace_id, window)
@@ -1854,6 +1936,31 @@ def _workspace_run_details_for_roi(workspace_id: str, window: dict[str, str]) ->
         if isinstance(detail, dict) and str(detail.get("workspace_id") or "") == workspace_id:
             rows.append(detail)
     return rows, len(candidates) > 300
+
+
+def _gateway_governed_calls(workspace_ids: list[str]) -> int | None:
+    gateway_enabled = str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+    expected_gateway_id = str(os.environ.get("DF_APIM_EXPECTED_GATEWAY_ID") or "").strip()
+    if not gateway_enabled or not expected_gateway_id:
+        return None
+    observed = False
+    total = 0
+    for workspace_id in workspace_ids:
+        evidence = _safe_value(lambda workspace_id=workspace_id: get_gateway_metric_evidence(workspace_id, expected_gateway_id), None)
+        payload = (
+            evidence.model_dump()
+            if hasattr(evidence, "model_dump")
+            else evidence
+            if isinstance(evidence, dict)
+            else {}
+        )
+        if str(payload.get("state") or "").strip().lower() != "verified":
+            continue
+        calls = payload.get("governed_calls")
+        if isinstance(calls, (int, float)) and not isinstance(calls, bool) and calls >= 0:
+            observed = True
+            total += int(calls)
+    return total if observed else None
 
 
 def _workspace_messages_for_chargeback(workspace_id: str, window: dict[str, str]) -> tuple[list[dict[str, Any]], bool]:
