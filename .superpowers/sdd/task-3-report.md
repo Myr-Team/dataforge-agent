@@ -122,3 +122,64 @@ Follow-up regression coverage:
 ## Commit
 
 - `718a22d` - `feat: add bounded followup context packs`
+
+## Correction pass
+
+Review feedback identified one real persistence leak and one missing regression.
+This correction pass changed only:
+
+- `backend/run_store.py`
+- `tests/test_context_pack_integration.py`
+
+### Root cause
+
+- `record_context_pack(...)` already sanitized top-level run metadata, but
+  `complete_run(..., artifact=...)` persisted `artifact["context_pack"]`
+  through `_sanitize_artifact(...)` without applying the explicit Context Pack
+  allowlist.
+- Lightweight follow-up already had a durable-fact lookup fallback path, but no
+  integration test locked that behavior in.
+
+### Red
+
+Focused red run:
+
+- `python -m pytest tests/test_context_pack_integration.py -k "nested_artifact_context_pack_metadata or durable_fact_lookup_fails" -q`
+  - failed first on
+    `test_run_store_sanitizes_nested_artifact_context_pack_metadata`
+  - persisted artifact still contained:
+    - `profile_revision`
+    - `analysis_revision`
+    - `evidence_refs`
+    - `debug_text`
+
+### Green
+
+After fixing the run-store boundary to re-sanitize nested
+`artifact["context_pack"]` with `_sanitize_context_pack_metadata(...)`:
+
+- `python -m pytest tests/test_context_pack_integration.py -k "nested_artifact_context_pack_metadata or durable_fact_lookup_fails" -q`
+  - `2 passed`
+
+Full focused Context Pack suite:
+
+- `python -m pytest tests/test_context_pack.py tests/test_context_pack_integration.py tests/test_conversation_execution_linkage.py tests/test_followup_provisional_choice.py tests/test_followup_plan_version.py -q`
+  - `43 passed in 6.62s`
+
+### Behavior now locked
+
+- Nested `artifact.context_pack` persists only the public allowlisted metadata:
+  - `status`
+  - `version`
+  - `scope`
+  - `fingerprint`
+  - `durable_fact_ids`
+  - `durable_fact_kinds`
+  - `fact_count`
+  - `workspace_fact_count`
+  - `audit_constraint_count`
+  - allowlisted fallback reasons when present
+- Follow-up still succeeds when durable fact lookup raises.
+- That fallback uses legacy compact history and records only
+  `conversation_fact_lookup_failed`.
+- Raw exception text does not leak into the returned follow-up payload.

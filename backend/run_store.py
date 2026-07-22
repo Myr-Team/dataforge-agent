@@ -3644,6 +3644,9 @@ def _sanitize_artifact(value: Any, expected_scope: dict[str, str] | None = None)
     )
     if not isinstance(artifact, dict):
         return {}
+    context_pack = artifact.get("context_pack")
+    if isinstance(context_pack, dict):
+        artifact["context_pack"] = _sanitize_context_pack_metadata(context_pack)
     return artifact
 
 
