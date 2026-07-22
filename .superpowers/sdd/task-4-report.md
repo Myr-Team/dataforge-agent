@@ -51,6 +51,33 @@
    - `python -m pytest tests/test_monitoring_dashboard_api.py -q`
    - Result: `2 passed in 5.84s`
 
+### Review-fix cycle evidence
+
+1. Reviewer regression red:
+
+   - `python -m pytest tests/test_context_evaluation.py tests/test_monitoring_dashboard.py -q`
+   - Result:
+     - `TypeError: ... runner() got an unexpected keyword argument 'variant'`
+     - `AssertionError: {'status': 'passed'} != {'status': 'malformed'}`
+     - `AssertionError: {'eligible': True, 'status': 'passed'} != {'eligible': False, 'status': 'malformed'}`
+
+2. Fix verification:
+
+   - `python -m pytest tests/test_context_evaluation.py tests/test_monitoring_dashboard.py -q`
+   - Result: `15 passed in 0.24s`
+
+3. Final focused suite after the fix:
+
+   - `python -m pytest tests/test_context_evaluation.py tests/test_model_policy.py tests/test_monitoring_dashboard.py tests/test_monitoring_dashboard_api.py -q`
+   - Result: `33 passed in 5.35s`
+
+### Review-fix scope
+
+- Updated `backend/context_evaluation.py` so `evaluate_context_candidate()` honors the public one-argument runner contract by passing a copied mapping with safe `variant: "paired"` metadata instead of undocumented kwargs.
+- Added centralized gate-status sanitization with a strict allowlist. Unknown statuses such as `passed` now fail closed to `malformed`, keep `eligible: false`, and flow consistently through both `load_evaluation_gate()` and monitor projections.
+- Updated `backend/monitoring_dashboard.py` to reuse the same sanitization boundary when a custom evaluation loader bypasses the default gate loader.
+- Added regression coverage in `tests/test_context_evaluation.py` and `tests/test_monitoring_dashboard.py` for the normal one-argument runner and unknown gate statuses.
+
 ### Residual risks
 
 - The gate reads a local summary file and safely disables the candidate route

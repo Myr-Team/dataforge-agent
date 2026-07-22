@@ -5,8 +5,10 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 try:
+    from .context_evaluation import sanitize_evaluation_status
     from .model_policy import context_optimization_gate
 except ImportError:
+    from context_evaluation import sanitize_evaluation_status
     from model_policy import context_optimization_gate
 
 
@@ -513,11 +515,12 @@ def _context_optimization_summary(evaluation_loader: EvaluationLoader | None) ->
         raw = loader("followup")
     except Exception:
         raw = {}
+    status = sanitize_evaluation_status((raw or {}).get("status"))
     return {
-        "status": str((raw or {}).get("status") or "unavailable").strip().lower() or "unavailable",
+        "status": status,
         "sample_count": _as_int((raw or {}).get("sample_count")),
         "evaluator_version": _clean((raw or {}).get("evaluator_version")) or None,
-        "eligible": bool((raw or {}).get("eligible") is True),
+        "eligible": bool((raw or {}).get("eligible") is True) if status == "evaluated" else False,
     }
 
 

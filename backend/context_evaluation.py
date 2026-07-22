@@ -13,6 +13,7 @@ DEFAULT_CONTEXT_EVALUATION_CASES_PATH = ROOT / "eval" / "context_optimization_ca
 DEFAULT_CONTEXT_EVALUATION_SUMMARY_PATH = ROOT / "eval" / "context_optimization_summary.json"
 DEFAULT_STALE_DAYS = 30
 _METRIC_KEYS = ("evidence_coverage", "completion")
+_ALLOWED_GATE_STATUSES = frozenset({"evaluated", "unavailable", "stale", "malformed"})
 
 
 EvaluationRunner = Callable[[Mapping[str, Any]], Mapping[str, Any]]
@@ -42,7 +43,7 @@ class EvaluationSummary:
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "EvaluationSummary":
         route_id = str(payload.get("route_id") or "followup").strip().lower() or "followup"
-        status = str(payload.get("status") or "evaluated").strip().lower() or "evaluated"
+        status = sanitize_evaluation_status(payload.get("status"), default="evaluated")
         evaluator_version = str(payload.get("evaluator_version") or "").strip()
         if not evaluator_version:
             raise ValueError("evaluator_version is required")
@@ -87,7 +88,9 @@ def evaluate_context_candidate(
     for case in cases:
         if not isinstance(case, Mapping):
             continue
-        result = runner(case, variant="paired")
+        runner_case = dict(case)
+        runner_case["variant"] = "paired"
+        result = runner(runner_case)
         if not isinstance(result, Mapping):
             raise ValueError("runner must return a mapping")
         baseline = _validated_metrics(result.get("baseline"))
@@ -139,7 +142,7 @@ def load_evaluation_gate(
         return _gate_projection("malformed", None, None, False)
     if _is_stale(summary, now=now, stale_after_days=stale_after_days):
         return _gate_projection("stale", summary.sample_count, summary.evaluator_version, False)
-    status = summary.status if summary.status else "evaluated"
+    status = sanitize_evaluation_status(summary.status, default="evaluated")
     return _gate_projection(status, summary.sample_count, summary.evaluator_version, status == "evaluated" and candidate_route_eligible(summary))
 
 
@@ -162,12 +165,21 @@ def _configured_stale_days() -> int:
     return value if value is not None and value > 0 else DEFAULT_STALE_DAYS
 
 
+def sanitize_evaluation_status(value: Any, *, default: str = "unavailable") -> str:
+    normalized_default = _normalized_gate_status(default)
+    normalized = _normalized_gate_status(value)
+    if normalized:
+        return normalized
+    return normalized_default or "unavailable"
+
+
 def _gate_projection(status: str, sample_count: int | None, evaluator_version: str | None, eligible: bool) -> dict[str, Any]:
+    normalized_status = sanitize_evaluation_status(status)
     return {
-        "status": str(status or "unavailable").strip().lower() or "unavailable",
+        "status": normalized_status,
         "sample_count": sample_count if isinstance(sample_count, int) else None,
         "evaluator_version": str(evaluator_version).strip() if evaluator_version else None,
-        "eligible": bool(eligible),
+        "eligible": bool(eligible) if normalized_status == "evaluated" else False,
     }
 
 
@@ -235,3 +247,12 @@ def _as_float(value: Any) -> float | None:
         return float(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _normalized_gate_status(value: Any) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized in _ALLOWED_GATE_STATUSES:
+        return normalized
+    return "malformed"

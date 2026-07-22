@@ -92,6 +92,30 @@ def test_monitor_dashboard_reports_context_optimization_gate_without_claiming_su
     }
 
 
+def test_monitor_dashboard_fail_closes_unknown_context_optimization_status() -> None:
+    payload = build_monitor_dashboard(
+        ["ws-a"],
+        scope="current",
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-07-08T00:00:00Z",
+        actor={"actor_id": "owner-a"},
+        run_loader=lambda _workspace_id: [],
+        evaluation_loader=lambda _route_id="followup": {
+            "status": "passed",
+            "sample_count": 12,
+            "evaluator_version": "context-v1",
+            "eligible": True,
+        },
+    )
+
+    assert payload["summary"]["quality"]["context_optimization"] == {
+        "status": "malformed",
+        "sample_count": 12,
+        "evaluator_version": "context-v1",
+        "eligible": False,
+    }
+
+
 def test_usage_from_dict_preserves_zero_totals_and_missing_splits() -> None:
     assert _usage_from_dict({"total": 0}) == {"input": None, "output": None, "total": 0}
     assert _usage_from_dict({"total": 50}) == {"input": None, "output": None, "total": 50}

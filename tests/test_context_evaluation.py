@@ -59,9 +59,10 @@ def test_evaluate_context_candidate_returns_safe_aggregate_summary() -> None:
         {"case_id": "ctx-001", "scenario": "site-selection follow-up"},
         {"case_id": "ctx-002", "scenario": "pricing follow-up"},
     ]
+    observed_variants: list[str] = []
 
-    def runner(case: dict[str, str], *, variant: str) -> dict[str, object]:
-        _ = variant
+    def runner(case: dict[str, str]) -> dict[str, object]:
+        observed_variants.append(case["variant"])
         if case["case_id"] == "ctx-001":
             return {
                 "baseline": {"evidence_coverage": 0.80, "completion": 0.82, "raw_answer": "never persist"},
@@ -82,6 +83,11 @@ def test_evaluate_context_candidate_returns_safe_aggregate_summary() -> None:
         generated_at="2026-07-22T00:00:00Z",
     )
 
+    assert observed_variants == ["paired", "paired"]
+    assert cases == [
+        {"case_id": "ctx-001", "scenario": "site-selection follow-up"},
+        {"case_id": "ctx-002", "scenario": "pricing follow-up"},
+    ]
     assert summary.to_payload() == {
         "route_id": "followup",
         "status": "evaluated",
@@ -141,5 +147,30 @@ def test_load_evaluation_gate_rejects_malformed_summary_without_leaking_fields(t
         "status": "malformed",
         "sample_count": None,
         "evaluator_version": None,
+        "eligible": False,
+    }
+
+
+def test_load_evaluation_gate_fail_closes_unknown_summary_status(tmp_path) -> None:
+    path = tmp_path / "context-summary.json"
+    path.write_text(
+        json.dumps(
+            {
+                "route_id": "followup",
+                "status": "passed",
+                "generated_at": "2026-07-20T00:00:00Z",
+                "sample_count": 24,
+                "evaluator_version": "context-v1",
+                "baseline": {"evidence_coverage": 0.90, "completion": 0.85},
+                "candidate": {"evidence_coverage": 0.92, "completion": 0.88},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_evaluation_gate(path, route_id="followup", now="2026-07-22T00:00:00Z") == {
+        "status": "malformed",
+        "sample_count": 24,
+        "evaluator_version": "context-v1",
         "eligible": False,
     }
