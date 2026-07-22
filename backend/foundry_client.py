@@ -14,10 +14,10 @@ from openai import AzureOpenAI
 from openai.types.responses.response_input_param import FunctionCallOutput
 
 try:
-    from .model_policy import resolve_text_deployment, resolve_text_route
+    from .model_policy import current_text_route, resolve_text_deployment, resolve_text_route, safe_fallback_reason
     from .schemas import MarketQueryPlan
 except ImportError:
-    from model_policy import resolve_text_deployment, resolve_text_route
+    from model_policy import current_text_route, resolve_text_deployment, resolve_text_route, safe_fallback_reason
     from schemas import MarketQueryPlan
 
 
@@ -565,7 +565,7 @@ class _DirectOpenAIProjectAdapter:
 
 
 def _chat_model() -> str:
-    return resolve_text_deployment(capability="chat")
+    return current_text_route().route.deployment
 
 
 def _apim_gateway_enabled() -> bool:
@@ -579,7 +579,7 @@ def _gateway_request_headers() -> dict[str, str]:
     except ImportError:
         from tracing import gateway_request_headers
     headers = gateway_request_headers()
-    headers["x-dataforge-model-route"] = resolve_text_route(capability="chat").route_id
+    headers["x-dataforge-model-route"] = current_text_route().route.route_id
     return headers
 
 
@@ -697,6 +697,7 @@ def _llm_retry_delay(attempt: int) -> float:
 def _responses_create_with_retry(openai_client: Any, **create_args: Any) -> Any:
     retry_count = 0
     while True:
+        started = time.perf_counter()
         try:
             response = openai_client.responses.create(**create_args)
             if retry_count:
@@ -704,6 +705,10 @@ def _responses_create_with_retry(openai_client: Any, **create_args: Any) -> Any:
                     setattr(response, "_dataforge_retry_attempts", retry_count)
                 except Exception:
                     pass
+            try:
+                setattr(response, "_dataforge_latency_ms", int((time.perf_counter() - started) * 1000))
+            except Exception:
+                pass
             return response
         except Exception as exc:
             if retry_count >= len(_LLM_RETRY_DELAYS) or not _is_transient_llm_error(exc):
@@ -744,6 +749,13 @@ def _usage_dict(usage: Any) -> dict[str, Any]:
     }
 
 
+def _usage_observed(usage: dict[str, Any]) -> bool:
+    return any(
+        key in usage and isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool)
+        for key in ("input_tokens", "output_tokens", "total_tokens", "prompt", "completion", "total")
+    )
+
+
 def _stream_delta(event: Any) -> str:
     event_type = str(getattr(event, "type", "") or "")
     delta = getattr(event, "delta", None)
@@ -755,13 +767,23 @@ def _stream_delta(event: Any) -> str:
 
 
 def _response_meta(response: Any, mode: str) -> dict[str, Any]:
-    route = resolve_text_route(capability="chat")
+    selected = current_text_route()
+    usage = _usage_dict(getattr(response, "usage", None))
+    fallback_reason = selected.fallback_reason
+    if not _usage_observed(usage):
+        fallback_reason = fallback_reason or "provider_usage_missing"
     meta = {
         "mode": mode,
         "response_id": getattr(response, "id", None),
-        "usage": _usage_dict(getattr(response, "usage", None)),
-        "model_route": route.route_id,
-        "model_deployment": route.deployment,
+        "usage": usage,
+        "route": selected.route.route_id,
+        "deployment": selected.route.deployment,
+        "selection": selected.selection,
+        "fallback_reason": safe_fallback_reason(fallback_reason),
+        "execution_kind": selected.execution_kind,
+        "latency_ms": getattr(response, "_dataforge_latency_ms", None),
+        "model_route": selected.route.route_id,
+        "model_deployment": selected.route.deployment,
     }
     retry_attempts = getattr(response, "_dataforge_retry_attempts", 0)
     if retry_attempts:

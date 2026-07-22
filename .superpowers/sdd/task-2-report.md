@@ -101,3 +101,72 @@ Focused verification command:
 `python -m pytest tests/test_maf_agents.py -q`
 
 - Result after implementation: `14 passed`.
+
+---
+
+## Task 2 (2026-07-22): Actual Route and Telemetry Persistence
+
+### Scoped files
+
+- `backend/model_policy.py`
+- `backend/foundry_client.py`
+- `backend/maf_agents.py`
+- `backend/orchestrator.py`
+- `backend/run_store.py`
+- `tests/test_model_policy.py`
+- `tests/test_model_route_telemetry.py`
+
+### What changed
+
+- Added execution-kind route selection in `backend/model_policy.py`:
+  - `full_analysis` and `audit_repair` select analysis-capable routes.
+  - `follow_up` can select a dedicated follow-up route only when the caller enables it.
+  - direct reply paths prefer non-analysis chat routes when available.
+- Added `SelectedTextRoute`, `select_text_route_record(...)`, `select_text_route(...)`, and `model_route_scope(...)` so Foundry calls, APIM headers, MAF gateway headers, and persisted run records read the same selected route.
+- `backend/foundry_client.py` now:
+  - resolves model deployment from the active route scope;
+  - stamps APIM-bound requests with the scoped `x-dataforge-model-route`;
+  - records `route`, `deployment`, `selection`, `fallback_reason`, `execution_kind`, `latency_ms`, and compatibility keys in `_response_meta(...)`;
+  - captures per-call latency in `_responses_create_with_retry(...)`.
+- `backend/maf_agents.py` now builds the APIM/MAF chat client from the active scoped route instead of independently resolving an analysis route.
+- `backend/orchestrator.py` now scopes routing/LLM calls by execution kind:
+  - coordinator direct replies;
+  - lightweight follow-up answer-composer / assessment / direct reply;
+  - feasibility analyst;
+  - auditor;
+  - MAF full-analysis runtime setup.
+- `backend/run_store.py` now persists a normalized model record with:
+  - `route`
+  - `deployment`
+  - `selection`
+  - `fallback_reason`
+  - `execution_kind`
+  - `latency_ms`
+  - normalized `usage` (`prompt` / `completion` / `total`)
+  - compatibility fields (`model_route`, `model_deployment`, `provider_usage`).
+
+### TDD evidence
+
+Red commands:
+
+- `python -m pytest tests/test_model_policy.py::test_full_analysis_never_selects_followup_candidate_route -q`
+  - failed with `ImportError: cannot import name 'select_text_route'`
+- `python -m pytest tests/test_model_route_telemetry.py::test_followup_run_persists_selected_route_model_usage_and_latency -q`
+  - failed with `ImportError: cannot import name 'model_route_scope'`
+
+Green commands:
+
+- `python -m pytest tests/test_model_policy.py::test_full_analysis_never_selects_followup_candidate_route -q`
+  - `1 passed`
+- `python -m pytest tests/test_model_route_telemetry.py::test_followup_run_persists_selected_route_model_usage_and_latency -q`
+  - `1 passed`
+- `python -m pytest tests/test_model_policy.py tests/test_model_route_telemetry.py tests/test_tracing_telemetry.py -q`
+  - `16 passed`
+- `python -m pytest tests/test_model_policy.py tests/test_model_route_telemetry.py tests/test_tracing_telemetry.py tests/test_gateway_client.py tests/test_maf_agents.py -q`
+  - `38 passed`
+
+### Residual risks
+
+- The persisted run model row now carries both normalized `usage` and raw `provider_usage` to preserve compatibility with existing readers. A later cleanup task can remove the raw mirror once downstream consumers are migrated.
+- Task 2 does not yet gate follow-up candidate routing on offline evaluation. That eligibility layer is still Task 4.
+- Image-generation calls remain out of scope, by design.

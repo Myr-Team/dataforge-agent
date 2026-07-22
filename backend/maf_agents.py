@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agents.build_agents import AGENTS
 
-from .model_policy import resolve_text_deployment, resolve_text_route
+from .model_policy import current_text_route, resolve_text_deployment, resolve_text_route
 from .rag import search
 from .schemas import AuditVerdict, FeasibilityReport
 from .tracing import gateway_request_headers
@@ -268,7 +268,8 @@ def _create_maf_chat_client() -> Any:
     if auth_mode not in {"auto", "api_key", "managed_identity"}:
         raise ValueError("DF_MAF_AUTH_MODE must be auto, api_key, or managed_identity")
 
-    model = resolve_text_deployment(capability="analysis")
+    selected = current_text_route()
+    model = selected.route.deployment
     gateway_enabled = str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {
         "1",
         "true",
@@ -283,7 +284,7 @@ def _create_maf_chat_client() -> Any:
                 "DF_APIM_GATEWAY_ENABLED requires both DF_APIM_GATEWAY_URL and DF_APIM_AUDIENCE"
             )
         gateway_headers = gateway_request_headers()
-        gateway_headers["x-dataforge-model-route"] = resolve_text_route(capability="analysis").route_id
+        gateway_headers["x-dataforge-model-route"] = selected.route.route_id
         return OpenAIChatClient(
             model=model,
             credential=get_bearer_token_provider(

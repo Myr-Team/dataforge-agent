@@ -80,6 +80,7 @@ try:
         public_market_comparison,
         unavailable_market_comparison,
     )
+    from .model_policy import model_route_scope, select_text_route_record
     from .pm_skills import playbook_suggestion
     from .rag import search
     from .router import deterministic_route
@@ -166,6 +167,7 @@ except ImportError:
         public_market_comparison,
         unavailable_market_comparison,
     )
+    from model_policy import model_route_scope, select_text_route_record
     from pm_skills import playbook_suggestion
     from rag import search
     from router import deterministic_route
@@ -1102,7 +1104,8 @@ def _coordinator(req: ChatRequest, history: list[dict[str, Any]]) -> tuple[Routi
         "style_nonce": uuid.uuid4().hex[:8],
     }
     try:
-        raw = run_coordinator_route(payload)
+        with model_route_scope(route=select_text_route_record("direct_reply")):
+            raw = run_coordinator_route(payload)
         decision = _routing_decision_from_llm(req, raw)
         return decision, raw.get("_llm") or {"mode": "coordinator_route"}
     except Exception as exc:
@@ -1844,11 +1847,29 @@ def _model_meta(result: dict[str, Any]) -> dict[str, Any]:
         "response_id": result.get("response_id"),
         "usage": result.get("usage") or {},
     }
-    if result.get("mode"):
-        meta["mode"] = result["mode"]
-    if result.get("tool_calls") is not None:
-        meta["tool_calls"] = result["tool_calls"]
+    for key in (
+        "mode",
+        "tool_calls",
+        "route",
+        "deployment",
+        "selection",
+        "fallback_reason",
+        "execution_kind",
+        "latency_ms",
+        "model_route",
+        "model_deployment",
+    ):
+        if result.get(key) is not None:
+            meta[key] = result[key]
     return meta
+
+
+def _execution_kind_for_decision(decision: RoutingDecision) -> str:
+    if decision.intent == "feasibility_analysis":
+        return "full_analysis"
+    if decision.intent == "followup_edit":
+        return "follow_up"
+    return "direct_reply"
 
 
 def _clean_sentence_end(text: str) -> str:
@@ -2062,12 +2083,13 @@ def _run_feasibility_analyst(
             "metrics": iteration_inputs,
         }
     try:
-        result = run_agent(
-            "df-feasibility-analyst",
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            response_schema=FeasibilityReport.model_json_schema(),
-            max_output_tokens=2800,
-        )
+        with model_route_scope(route=select_text_route_record("full_analysis")):
+            result = run_agent(
+                "df-feasibility-analyst",
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                response_schema=FeasibilityReport.model_json_schema(),
+                max_output_tokens=2800,
+            )
         report = FeasibilityReport.model_validate(result["structured"])
         report, evidence_warnings = _verify_evidence(report, catalog)
         report = _normalize_feasibility_confidence(report)
@@ -3288,12 +3310,13 @@ def _audit_artifact(req: ChatRequest, artifact: dict[str, Any]) -> tuple[AuditVe
         "market_provenance_policy": "External market claims must remain market_inferred and must not be treated as workspace data_confirmed facts.",
     }
     try:
-        result = run_agent(
-            "df-auditor",
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            response_schema=AuditVerdict.model_json_schema(),
-            max_output_tokens=700,
-        )
+        with model_route_scope(route=select_text_route_record("audit_repair")):
+            result = run_agent(
+                "df-auditor",
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                response_schema=AuditVerdict.model_json_schema(),
+                max_output_tokens=700,
+            )
     except Exception as exc:
         return (
             AuditVerdict(verdict="pass", issues=[], target_expert=None),
@@ -4714,17 +4737,23 @@ async def _stream_answer_frames(
     conversation_id: str,
     state: dict[str, Any],
 ) -> AsyncIterator[str]:
+    selected_route = select_text_route_record(
+        _execution_kind_for_decision(decision),
+        candidate_enabled=decision.intent == "followup_edit",
+    )
     # 会话作答优先走真流式；失败（未发出任何 delta）再回退到同步渲染。
     if _is_conversation_answer(req, decision):
         try:
-            async for frame in _stream_chat_answer_frames(req, decision, artifact, conversation_id, state):
-                yield frame
+            with model_route_scope(route=selected_route):
+                async for frame in _stream_chat_answer_frames(req, decision, artifact, conversation_id, state):
+                    yield frame
             return
         except _ChatStreamUnavailable:
             pass
         except Exception:
             pass
-    answer = _structured_answer_v10(req, decision, artifact)
+    with model_route_scope(route=selected_route):
+        answer = _structured_answer_v10(req, decision, artifact)
     text = _customer_text(answer.get("markdown") or _final_text(decision, artifact), artifact)
     meta = dict(answer.get("_llm") or {})
     citations = sanitize_citations(answer.get("citations", []), _customer_field_labels(artifact))
@@ -5428,6 +5457,10 @@ def _run_answer_composer_first(
 
 def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: list[dict[str, Any]]) -> dict[str, Any]:
     context = workspace_context(req.workspace_id)
+    selected_route = select_text_route_record(
+        "follow_up" if decision.intent == "followup_edit" else "direct_reply",
+        candidate_enabled=decision.intent == "followup_edit",
+    )
     payload = {
         "workspace_id": req.workspace_id,
         "workspace_context": {
@@ -5458,7 +5491,8 @@ def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: lis
             }
         composer_error = ""
         try:
-            composed = _run_answer_composer_first(req, decision, previous, last_analysis, context, history)
+            with model_route_scope(route=selected_route):
+                composed = _run_answer_composer_first(req, decision, previous, last_analysis, context, history)
             if composed:
                 return composed
         except Exception as exc:
@@ -5489,7 +5523,8 @@ def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: lis
         payload["previous_assistant_answer"] = previous[:1800]
         payload["last_analysis"] = last_analysis
         try:
-            result = run_followup_assessment(payload)
+            with model_route_scope(route=selected_route):
+                result = run_followup_assessment(payload)
             if composer_error:
                 result["composer_error"] = composer_error
             return result
@@ -5499,7 +5534,8 @@ def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: lis
             if composer_error:
                 fallback["composer_error"] = composer_error
             return fallback
-    return run_coordinator_direct_reply(payload)
+    with model_route_scope(route=selected_route):
+        return run_coordinator_direct_reply(payload)
 
 
 def _llm_result_metadata(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -5509,6 +5545,12 @@ def _llm_result_metadata(result: Mapping[str, Any]) -> dict[str, Any]:
             "mode",
             "response_id",
             "usage",
+            "route",
+            "deployment",
+            "selection",
+            "fallback_reason",
+            "execution_kind",
+            "latency_ms",
             "model_route",
             "model_deployment",
             "error",
@@ -5991,17 +6033,18 @@ async def _try_full_maf_runtime(
         authoritative_corpus=authoritative_corpus,
         evidence_catalog=catalog,
     )
-    registry = create_agent_registry(workspace_id=req.workspace_id)
-    runtime = MafTeamRuntime(
-        registry,
-        feasibility_validator=lambda output: _validate_full_maf_feasibility_output(
-            req,
-            artifact,
-            output,
-        ),
-        audit_validator=_validate_full_maf_audit_output,
-    )
-    return await runtime.run(team_request, event_sink=event_sink)
+    with model_route_scope(route=select_text_route_record("full_analysis")):
+        registry = create_agent_registry(workspace_id=req.workspace_id)
+        runtime = MafTeamRuntime(
+            registry,
+            feasibility_validator=lambda output: _validate_full_maf_feasibility_output(
+                req,
+                artifact,
+                output,
+            ),
+            audit_validator=_validate_full_maf_audit_output,
+        )
+        return await runtime.run(team_request, event_sink=event_sink)
 
 
 def _maf_error_category(error: Exception) -> str:

@@ -158,14 +158,24 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
         step = _compact_step(event, plain, now, _capability_scope(run))
         run.setdefault("steps", []).append(step)
         if event == "model_response" and isinstance(plain, dict):
+            normalized_usage = _normalized_observed_usage(plain.get("usage"))
+            route = plain.get("route") or plain.get("model_route")
+            deployment = plain.get("deployment") or plain.get("model_deployment") or plain.get("model") or plain.get("model_name")
             run.setdefault("models", []).append(
                 {
                     "agent": plain.get("agent"),
-                    "model": plain.get("model") or plain.get("model_name") or plain.get("model_deployment"),
-                    "model_route": plain.get("model_route"),
-                    "model_deployment": plain.get("model_deployment"),
+                    "model": deployment,
+                    "route": route,
+                    "deployment": deployment,
+                    "selection": plain.get("selection"),
+                    "fallback_reason": plain.get("fallback_reason"),
+                    "execution_kind": plain.get("execution_kind"),
+                    "latency_ms": plain.get("latency_ms"),
+                    "model_route": route,
+                    "model_deployment": deployment,
                     "response_id": plain.get("response_id"),
-                    "usage": plain.get("usage") or {},
+                    "usage": normalized_usage,
+                    "provider_usage": _plain(plain.get("usage") or {}),
                     "mode": plain.get("mode"),
                     "time": now,
                 }
@@ -3986,6 +3996,8 @@ def _usage_is_observed(data: Any) -> bool:
             "completion_tokens",
             "output_tokens",
             "total_tokens",
+            "prompt",
+            "completion",
             "total",
         )
     )
@@ -3995,10 +4007,31 @@ def _usage_from_dict(data: dict[str, Any]) -> dict[str, int]:
     usage = data.get("usage") if "usage" in data else data
     if not isinstance(usage, dict):
         return {"total": 0, "prompt": 0, "completion": 0}
-    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or usage.get("prompt") or 0)
+    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or usage.get("completion") or 0)
     total = int(usage.get("total_tokens") or usage.get("total") or prompt + completion)
     return {"total": total, "prompt": prompt, "completion": completion}
+
+
+def _normalized_observed_usage(data: Any) -> dict[str, int]:
+    usage = data.get("usage") if isinstance(data, dict) and "usage" in data else data
+    if not isinstance(usage, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for target, source in (
+        ("prompt", "prompt"),
+        ("prompt", "input_tokens"),
+        ("completion", "completion"),
+        ("completion", "output_tokens"),
+        ("total", "total"),
+        ("total", "total_tokens"),
+    ):
+        if target in normalized:
+            continue
+        value = usage.get(source)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            normalized[target] = int(value)
+    return normalized
 
 
 def _verdict(run: dict[str, Any]) -> str | None:
