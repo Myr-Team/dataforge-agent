@@ -22,38 +22,54 @@ Focused result:
 - `python -m pytest tests/test_monitoring_dashboard_api.py::test_monitor_dashboard_reconciles_model_and_route_totals_with_run_records -q`
 - Result: `1 passed in 5.63s`
 
+## Evaluation contract note
+
+This task keeps the stable evaluation boundary explicit:
+
+- `measurement_scope='deterministic_harness'`
+- `production_quality_claim=false`
+- groundedness and unsupported-claim rate remain fixture/reference-propagation contract checks
+- the deterministic harness is for runtime contract verification, not production answer quality
+
 ## Automated verification
 
 1. Focused monitoring API suite
    - Command: `python -m pytest tests/test_monitoring_dashboard_api.py -q`
    - Result: `3 passed in 6.02s`
 
-2. Full backend pytest
-   - Command: `python -m pytest -q`
-   - Result: `1030 passed, 1 skipped, 1 failed, 1 warning in 141.01s`
-   - Residual: `tests/test_model_route_telemetry.py::test_followup_run_persists_selected_route_model_usage_and_latency`
-   - Reason observed: the test still expects `followup`, while the current offline evaluation gate leaves the candidate route ineligible and the truthful selected route falls back to `analysis`.
+2. Focused model route telemetry suite
+   - Command: `python -m pytest tests/test_model_route_telemetry.py -q`
+   - Result: `3 passed in 6.59s`
+   - Coverage: explicit eligible follow-up route persists `followup`; default fail-closed gate fallback persists `analysis` with `fallback_reason="candidate_not_eligible"`.
 
-3. Full frontend node tests
-   - Command: `node --test <expanded list of web/src/*.test.mjs>`
-   - Result: `74 passed, 1 failed in 1078.8152ms`
-   - Residual: `web/src/costValuePanel.test.mjs`
-   - Reason observed: SSR import load failure for `/src/components.jsx` (`ERR_LOAD_URL`), outside the Task 6 monitor scope.
+3. Focused model policy suite
+   - Command: `python -m pytest tests/test_model_policy.py -q`
+   - Result: `16 passed in 6.02s`
 
-4. Task 6 direct frontend test
+4. Full frontend node tests
+   - Command: `node --test web/src/*.test.mjs`
+   - Result: `75 passed in 5042.916ms`
+   - Note: `web/src/costValuePanel.test.mjs` now uses the actual `web` root for Vite SSR, so `server.ssrLoadModule("/src/components.jsx")` resolves cleanly under bare `node --test`.
+
+5. Task 6 direct frontend test
    - Command: `node --test web/src/monitorDashboardViewModel.test.mjs`
    - Result: `4 passed in 174.3078ms`
 
-5. Frontend production build
+6. Frontend production build
    - Command: `npm --prefix web run build`
-   - Result: `passed; 1761 modules transformed, built in 1.24s`
+   - Result: `passed; 1761 modules transformed, built in 1.69s`
+
+7. Full backend pytest
+   - Command: `python -m pytest -q`
+   - Result: `1032 passed, 1 skipped, 1 warning in 152.74s`
+   - Warning: `ExperimentalWarning: [FUNCTIONAL_WORKFLOWS] workflow is experimental and may change or be removed in future versions without notice.`
 
 ## Non-live residuals
 
 - Candidate Container Apps deployment was not performed in this task.
 - Signed-in browser smoke was not performed in this task.
 - The validation record keeps candidate URL, revision, screenshot, and trace fields pending on purpose.
-- Full-repo automated verification is not yet clean because of the two pre-existing failures listed above.
+- Full-repo automated verification is now clean; live Azure/browser evidence remains pending by design.
 
 ## Commit scope
 

@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { createServer } from "vite";
 
 let server;
+const webRoot = fileURLToPath(new URL("..", import.meta.url));
 
 test.before(async () => {
   server = await createServer({
-    root: process.cwd(),
+    root: webRoot,
     server: { middlewareMode: true },
     appType: "custom",
   });
