@@ -326,6 +326,16 @@ export async function loadWorkspaceGovernance(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance-summary`);
 }
 
+export async function loadMonitoringDashboard({ scope = "current", workspaceId, from, to, signal } = {}) {
+  const params = new URLSearchParams({
+    scope: String(scope || "current"),
+    workspace_id: String(workspaceId || ""),
+    from: String(from || ""),
+    to: String(to || ""),
+  });
+  return request(`/api/monitoring?${params.toString()}`, { signal });
+}
+
 export async function loadWorkspaceTraceStatus(workspaceId, { runId = "", correlationId = "" } = {}) {
   const params = new URLSearchParams();
   if (runId) params.set("run_id", runId);

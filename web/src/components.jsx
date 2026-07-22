@@ -18,6 +18,7 @@ import { costValueViewModel } from "./costValueViewModel.js";
 import { monitoringSnapshotViewModel } from "./monitoringViewModel.js";
 import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, createWorkspaceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
+const MonitorPage = lazy(() => import("./MonitorPage.jsx").then((m) => ({ default: m.MonitorPage })));
 import {
   Activity,
   AlertTriangle,
@@ -128,7 +129,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, workspace
           const Icon = item.icon;
           return (
             <div className="nav-item-wrap" key={item.id}>
-              {item.id === "governance" ? <div className="nav-section-divider" aria-hidden="true" /> : null}
+              {item.id === "monitor" ? <div className="nav-section-divider" aria-hidden="true" /> : null}
               <button
                 data-tour={item.id === "runs" ? "runs" : item.id === "artifacts" ? "artifacts-nav" : undefined}
                 className={active === item.id ? "nav-icon active" : "nav-icon"}
@@ -607,8 +608,10 @@ function WorkbenchMainInner({
   settingsInitialTab,
   onWorkspaceDataChanged,
   onOpenTaskCenter,
+  workspaceAccess,
 }) {
-  if (view === "conversations") {
+  const resolvedView = view === "governance" ? "monitor" : view;
+  if (resolvedView === "conversations") {
     return (
       <ConversationStudio
         dashboard={dashboard}
@@ -627,23 +630,27 @@ function WorkbenchMainInner({
       />
     );
   }
-  if (view === "data") {
+  if (resolvedView === "data") {
     return (
       <Suspense fallback={<main className="agent-studio data-stage"><div style={{ padding: 40, color: "var(--muted)" }}>加载数据工作台…</div></main>}>
         <DataWorkbench dashboard={dashboard} onUpload={onAppendUpload} onOpenConversation={onOpenConversation} onRun={onRun} user={user} tasks={tasks} onOpenTaskCenter={onOpenTaskCenter} onWorkspaceDataChanged={onWorkspaceDataChanged} />
       </Suspense>
     );
   }
-  if (view === "artifacts") {
+  if (resolvedView === "artifacts") {
     return <ArtifactsCenter dashboard={dashboard} artifacts={artifacts} artifact={finalArtifact} artifactRefreshKey={artifactRefreshKey} onProduce={onProduce} producing={producing} onUploadReference={onUploadReference} />;
   }
-  if (view === "runs") {
+  if (resolvedView === "runs") {
     return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} tasks={tasks} />;
   }
-  if (view === "governance") {
-    return <SettingsCenter dashboard={dashboard} observability={observability} user={user} governanceOnly />;
+  if (resolvedView === "monitor") {
+    return (
+      <Suspense fallback={<main className="agent-studio monitor-stage"><div style={{ padding: 40, color: "var(--muted)" }}>加载监视页...</div></main>}>
+        <MonitorPage workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id || ""} workspaceAccess={workspaceAccess} />
+      </Suspense>
+    );
   }
-  if (view === "settings") {
+  if (resolvedView === "settings") {
     return <SettingsCenter dashboard={dashboard} observability={observability} user={user} initialTab={settingsInitialTab} />;
   }
   return (

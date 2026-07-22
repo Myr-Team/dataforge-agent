@@ -29,7 +29,7 @@ import {
   WorkbenchMain,
   WorkspacePane,
 } from "./components.jsx";
-import { canViewGovernance, PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
+import { canViewGovernance, normalizePrimaryView, PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
 import { executionRequestFields, readyExecutionState } from "./executionIdentity.js";
 
 const DEFAULT_WORKSPACE = "demo-corpus";
@@ -585,13 +585,19 @@ export function App() {
   };
 
   const changePrimaryView = (view) => {
-    if (view === "governance" && !canViewGovernance(workspaceAccess)) return;
-    if (view === "settings") setSettingsInitialTab("about");
-    setActiveView(view);
+    const nextView = normalizePrimaryView(view);
+    if (nextView === "monitor" && !canViewGovernance(workspaceAccess)) return;
+    if (nextView === "settings") setSettingsInitialTab("about");
+    setActiveView(nextView);
   };
 
   useEffect(() => {
-    if (workspaceAccess && activeView === "governance" && !canViewGovernance(workspaceAccess)) {
+    const nextView = normalizePrimaryView(activeView);
+    if (nextView !== activeView) {
+      setActiveView(nextView);
+      return;
+    }
+    if (workspaceAccess && nextView === "monitor" && !canViewGovernance(workspaceAccess)) {
       setActiveView("workspaces");
     }
   }, [activeView, workspaceAccess]);
@@ -1153,6 +1159,7 @@ export function App() {
             settingsInitialTab={settingsInitialTab}
             onWorkspaceDataChanged={() => refreshDashboard(workspaceId)}
             onOpenTaskCenter={() => setTaskDrawerOpen(true)}
+            workspaceAccess={workspaceAccess}
           />
         </div>
       </div>

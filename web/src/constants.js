@@ -33,7 +33,7 @@ export const NAV_ITEMS = [
   { id: "runs", label: "运行记录", icon: Route },
   { id: "conversations", label: "会话", icon: MessageSquare },
   { id: "artifacts", label: "产物", icon: Boxes },
-  { id: "governance", label: "监视", icon: ShieldCheck },
+  { id: "monitor", label: "监视", icon: ShieldCheck },
   { id: "settings", label: "设置", icon: Settings },
 ];
 
@@ -41,10 +41,14 @@ export function canViewGovernance(access) {
   return access?.allowed === true && access?.role === "owner";
 }
 
+export function normalizePrimaryView(view) {
+  return view === "governance" ? "monitor" : view;
+}
+
 export function visibleNavItems(access) {
   return canViewGovernance(access)
     ? NAV_ITEMS
-    : NAV_ITEMS.filter((item) => item.id !== "governance");
+    : NAV_ITEMS.filter((item) => item.id !== "monitor");
 }
 
 export const AGENTS = [

@@ -1,86 +1,66 @@
-# Task 5 Report: Dynamic MAF Collaboration Visibility
+## Task 5 Report
 
-## Scope
+### Scope
 
-Implemented Task 5 only in the assigned frontend, contract-test, and report files. No backend, authentication, runtime, or unrelated working-tree files were edited.
+- `web/src/MonitorPage.jsx`
+- `web/src/monitorDashboardViewModel.js`
+- `web/src/monitorDashboardViewModel.test.mjs`
+- `web/src/constants.test.mjs`
+- `web/src/api.js`
+- `web/src/constants.js`
+- `web/src/App.jsx`
+- `web/src/components.jsx`
+- `web/src/styles.css`
 
-## TDD Evidence
+### Red phase
 
-1. Added focused contract tests for the complete dynamic MAF event family, pure view-model derivation, persisted `maf` summary consumption, selected/skipped participants, collaboration modes, and legacy `maf_workflow` preservation.
-2. Ran `python -m pytest tests/test_ui_truthfulness_contract.py -q` before implementation.
-3. Confirmed the expected RED result: `2 failed, 5 passed`. Failures were limited to missing `maf_plan` handling and the missing `deriveMafViewModel()` boundary.
-4. Implemented the dynamic view model and rendering.
-5. Re-ran the focused suite after implementation: `8 passed`.
+1. `node --test web/src/constants.test.mjs`
+   - Failed because `constants.js` did not export `normalizePrimaryView`.
+   - Error: `SyntaxError: The requested module './constants.js' does not provide an export named 'normalizePrimaryView'`
+2. `node --test web/src/monitorDashboardViewModel.test.mjs`
+   - Failed because monitor member rows surfaced `actor_id`.
+   - Assertion: expected `成员`, actual `raw-owner-id`.
 
-## Implementation
+### Implementation
 
-- Added pure helpers that normalize both live nested SSE events and flattened persisted trace rows without mutating source data.
-- Derived the collaboration mode, actual selected and skipped agents, per-agent state and metrics, parallel branches, handoffs, review rounds, and fallback details from trace or persisted `maf` data.
-- Made observed event data override contradictory skipped-agent records, and paired start/finish events into one branch, handoff, or review record.
-- Replaced the fixed six-agent Agent Flow only when dynamic MAF events exist. Older runs continue through the existing fixed pipeline and `maf_workflow` audit/revision rendering.
-- Added the same collaboration view to Runs Center so persisted traces show grouped participant facts before the detailed trace rows.
-- Added truthful unknown, running, completed, failed, degraded, and fallback states. Missing status or duration renders as unrecorded rather than success.
-- Added restrained divider-based responsive styles using the existing palette and Lucide icons. No new gradient, decorative card treatment, or palette was introduced.
+- Added `normalizePrimaryView(view)` so legacy `governance` resolves to the single owner-only top-level `monitor` concept.
+- Tightened `monitorDashboardViewModel` into a safe pure projection:
+  - allowlisted state mapping for cost, ROI, optimization status
+  - removed raw payload passthrough
+  - stopped falling back to `actor_id` in member labels
+  - added safe scope label projection for toolbar/meta display
+- Rebuilt `MonitorPage` as a fixed-geometry BI surface with:
+  - owner guard using server-backed workspace access
+  - request cancellation plus request-id guard
+  - stable loading/error/empty frames
+  - data-layer-only opacity/transform transitions during refresh
+- Updated `App.jsx` and `components.jsx` so legacy governance view selection normalizes into `monitor`.
+- Refined monitor CSS so loading never shifts card/chart geometry and ranking bars use a restrained solid fill.
 
-## Verification
+### Green phase
 
-- `python -m pytest tests/test_ui_truthfulness_contract.py -q`: `8 passed`
-- `npm run build` from `web`: Vite transformed `1750` modules and completed successfully.
-- `git diff --check` on the owned source and test files: no whitespace errors.
+1. `node --test web/src/constants.test.mjs`
+   - Pass: 3/3
+2. `node --test web/src/monitorDashboardViewModel.test.mjs`
+   - Pass: 3/3
+3. `node --test web/src/monitorDashboardViewModel.test.mjs web/src/constants.test.mjs web/src/governanceViewModel.test.mjs web/src/navigationContract.test.mjs`
+   - Pass: 27/27
+4. `npm --prefix web run build`
+   - Pass: Vite build exited 0
+   - Output bundles included `dist/assets/MonitorPage-4kR8HQHs.js` and updated `dist/assets/index-D4vgeuII.css`
 
-## Review
+### Changed files
 
-Self-review covered all Task 5 event names, live and persisted payload shapes, participant truthfulness, review-round pairing, fallback visibility, responsive constraints, and legacy rendering preservation. Automated subagent review was unavailable in this session.
+- `web/src/MonitorPage.jsx`
+- `web/src/monitorDashboardViewModel.js`
+- `web/src/monitorDashboardViewModel.test.mjs`
+- `web/src/constants.test.mjs`
+- `web/src/constants.js`
+- `web/src/App.jsx`
+- `web/src/components.jsx`
+- `web/src/styles.css`
 
-## Concerns
+### Residual risks
 
-None within Task 5 scope. End-to-end production visibility depends on Task 4 persisting and exposing the documented MAF summary and trace events.
-
-## Review Fixes - 2026-07-12
-
-### Findings Addressed
-
-- Extracted the pure transformer to `web/src/mafViewModel.js` and replaced Task 5 source-string assertions with executable Node behavior tests invoked by the Python UI contract.
-- Made live/persisted `maf_plan` facts authoritative for mode, selected agents, skipped agents, reason codes, and `max_revisions`; persisted `summary.maf` is now only a merge source when trace fields are absent.
-- Ignored inferred top-level MAF trace intervals. Agent latency now sums only nested `duration_ms` measurements from `maf_agent_completed` events; start, failure, branch, handoff, and review events cannot inflate it.
-- Cleared persisted latency when newer trace facts show start/failure without a completed measurement.
-- Added data-derived status tone classes: completed is mint, running is amber, failed is red, and unknown/recorded is neutral.
-- Preserved the legacy `maf_workflow` path; the pure helper explicitly returns no dynamic model for a legacy-only trace.
-
-### TDD Evidence
-
-1. Added the executable behavior fixture before creating the module and ran the focused Python contract.
-2. Confirmed RED: `1 failed, 5 passed`; Node reported `ERR_MODULE_NOT_FOUND` for `mafViewModel.js`.
-3. Added the pure module and reached `5/5` passing Node behavior scenarios.
-4. Added the stale persisted-latency case and confirmed a second RED result: expected `null`, received `888`.
-5. Restricted duration precedence to completed-event detail and re-ran the Node fixture: `5 passed`.
-
-### Final Verification
-
-- `python -m pytest tests/test_ui_truthfulness_contract.py -q`: `6 passed`; this executes the five-case Node behavior suite.
-- `npm run build` from `web`: Vite transformed `1751` modules and completed successfully.
-- `git diff --check` on all owned files: no whitespace errors.
-
-## Persisted Summary Integration Fix - 2026-07-12
-
-### Root Cause
-
-`run_store.get_run()` already normalized each persisted run with the real event-derived `maf` summary. `control_plane.run_summary()` manually projected the normalized detail into the `/api/runs/{run_id}/summary` payload but omitted that field, so Runs Center received `summary.maf` as missing even though it correctly passed `summary?.maf` into the view model.
-
-### Fix
-
-- Added the normalized `run["maf"]` object to the existing summary projection without reconstructing, defaulting, or fabricating MAF facts.
-- Left the route, endpoint signature, `_call` error handling, existing response fields, and authentication boundary unchanged.
-- Added a real integration test that persists MAF plan/completion events, calls the actual summary and trace endpoint functions, compares the endpoint MAF object with normalized run detail, and sends those exact JSON payloads through `deriveMafViewModel()` in Node.
-
-### TDD Evidence
-
-1. Added `tests/test_run_summary_maf_integration.py` before the endpoint projection change.
-2. Confirmed RED at the expected boundary: `KeyError: 'maf'` from the real summary endpoint payload.
-3. Forwarded the normalized persisted field and re-ran the integration test: `1 passed`.
-
-### Verification
-
-- Focused persisted-summary, control-plane evidence, MAF run-store, and UI behavioral tests: `10 passed`.
-- `npm run build` from `web`: Vite transformed `1751` modules and completed successfully.
-- `git diff --check` on the scoped files: no whitespace errors.
+- This task did not add browser-level interaction tests for the monitor toolbar; candidate browser smoke remains in Task 6.
+- The worktree already contained unrelated unstaged changes (`web/src/navigationContract.test.mjs` and generated `workspaces/*`), which were intentionally left out of this task.
