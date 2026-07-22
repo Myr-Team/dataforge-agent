@@ -286,3 +286,41 @@ Green commands:
 Residual risk after final-final correction:
 
 - This closes the absent-versus-explicit-unknown gap for response metadata and persisted model rows. If future callers bypass `_response_meta(...)` and inject their own usage objects into run events, they still need to honor the same contract: absent counters stay absent, explicit unknown counters stay explicit.
+
+### Step-event correction (2026-07-22): sanitize persisted model_response step usage
+
+Reviewer follow-up found that Task 2 still had one remaining provider-usage leak in the persisted `steps[]` trail. `record_event(...)` already built normalized model rows for `run["models"]`, but `_compact_step(...)` still stored the raw `model_response` payload, so `steps[0]["data"]["usage"]` retained provider-specific fields such as `cache_read_tokens`, `reasoning_content`, or other arbitrary extras.
+
+What changed:
+
+- `backend/run_store.py::_sanitize_event_data(...)`
+  - now special-cases `model_response` events before step compaction;
+  - routes them through a dedicated sanitizer instead of writing the raw event payload into `steps[]`.
+- `backend/run_store.py::_sanitize_model_response_event_data(...)`
+  - removes the raw `provider_usage` mirror if it is present;
+  - normalizes `usage` with the same `_normalized_observed_usage(...)` helper used by persisted model rows;
+  - therefore preserves observed `0`, preserves explicit unknown counters as `None`, and keeps absent evidence as `{}`.
+- `tests/test_model_policy.py::test_run_store_persists_effective_model_route_and_deployment`
+  - now asserts both persisted surfaces:
+    - `run["models"][0]["usage"] == {"prompt": 0, "completion": 3, "total": 3}`
+    - `run["steps"][0]["data"]["usage"] == {"prompt": 0, "completion": 3, "total": 3}`
+  - and therefore proves provider-specific extras are no longer retained in the step trail.
+
+TDD evidence:
+
+Red command:
+
+- `python -m pytest tests/test_model_policy.py::test_run_store_persists_effective_model_route_and_deployment -q`
+  - Result before the fix: `1 failed`
+  - Failure showed `steps[0]["data"]["usage"]` still contained `cache_read_tokens` and `sensitive_detail` instead of the normalized allowlist.
+
+Green commands:
+
+- `python -m pytest tests/test_model_policy.py::test_run_store_persists_effective_model_route_and_deployment -q`
+  - Result after the fix: `1 passed`
+- `python -m pytest tests/test_model_policy.py tests/test_model_route_telemetry.py tests/test_tracing_telemetry.py tests/test_gateway_client.py tests/test_maf_agents.py -q`
+  - Result after the fix: `46 passed`
+
+Residual risk after step-event correction:
+
+- This closes the provider-usage leak for the `model_response` step path that Task 2 owns. If a future telemetry event introduces another raw provider payload type, it needs its own explicit sanitizer before persistence.

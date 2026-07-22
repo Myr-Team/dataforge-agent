@@ -237,6 +237,12 @@ def test_run_store_persists_effective_model_route_and_deployment(tmp_path, monke
             "time": run_store.get_run("run-model-route")["models"][0]["time"],
         }
     ]
+    assert run_store.get_run("run-model-route")["steps"][0]["data"] == {
+        "agent": "df-coordinator",
+        "model_route": "primary-analysis",
+        "model_deployment": "gpt-5.1",
+        "usage": {"prompt": 0, "completion": 3, "total": 3},
+    }
 
 
 def test_run_store_persists_partial_usage_without_fabricating_unknown_counts(tmp_path, monkeypatch) -> None:

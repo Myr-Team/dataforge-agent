@@ -3643,6 +3643,8 @@ def _sanitize_event_data(
     data: Any,
     expected_scope: dict[str, str] | None = None,
 ) -> Any:
+    if event == "model_response" and isinstance(data, dict):
+        return _sanitize_model_response_event_data(data)
     if event != "capability_pack_selection" or not isinstance(data, dict):
         return data
     packs, provenance = sanitize_capability_pack_contract(
@@ -3657,6 +3659,13 @@ def _sanitize_event_data(
     }
     if provenance:
         sanitized["capability_pack_provenance"] = provenance
+    return sanitized
+
+
+def _sanitize_model_response_event_data(data: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(data)
+    sanitized.pop("provider_usage", None)
+    sanitized["usage"] = _normalized_observed_usage(data.get("usage"))
     return sanitized
 
 
