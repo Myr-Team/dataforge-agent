@@ -754,6 +754,7 @@ def _usage_value(usage: Any, *keys: str) -> int | None:
 
 
 def _usage_has_known_keys(usage: Any) -> bool:
+    known_keys = ("input_tokens", "prompt_tokens", "prompt", "output_tokens", "completion_tokens", "completion", "total_tokens", "total")
     values: dict[str, Any]
     if hasattr(usage, "model_dump"):
         dumped = usage.model_dump()
@@ -761,20 +762,8 @@ def _usage_has_known_keys(usage: Any) -> bool:
     elif isinstance(usage, dict):
         values = usage
     else:
-        values = {
-            key: getattr(usage, key, None)
-            for key in (
-                "input_tokens",
-                "prompt_tokens",
-                "prompt",
-                "output_tokens",
-                "completion_tokens",
-                "completion",
-                "total_tokens",
-                "total",
-            )
-        }
-    return any(key in values for key in ("input_tokens", "prompt_tokens", "prompt", "output_tokens", "completion_tokens", "completion", "total_tokens", "total"))
+        return any(hasattr(usage, key) for key in known_keys)
+    return any(key in values for key in known_keys)
 
 
 def _usage_dict(usage: Any) -> dict[str, Any]:

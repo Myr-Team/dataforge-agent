@@ -248,3 +248,41 @@ Green commands:
 Residual risk after final correction:
 
 - This change fixes model response metadata and persisted model rows only. Higher-level aggregate token summaries still follow their own existing normalization rules and should be evaluated separately if we want end-to-end unknown-token propagation in every summary surface.
+
+### Final-final correction (2026-07-22): absent usage objects no longer fabricate null counters
+
+Reviewer follow-up found one last absent-versus-explicit-unknown bug in `backend/foundry_client.py`: for non-dict usage objects, `_usage_has_known_keys(...)` synthesized a dict containing every allowlisted key before checking membership. That meant an object with no recognized token attributes at all still looked like a provider that had explicitly returned all three counters as unknown, so `_usage_dict(...)` emitted:
+
+`{"input_tokens": None, "output_tokens": None, "total_tokens": None}`
+
+That synthetic null usage then flowed into run persistence as:
+
+`{"prompt": None, "completion": None, "total": None}`
+
+What changed:
+
+- `backend/foundry_client.py::_usage_has_known_keys(...)`
+  - now distinguishes object attributes from synthetic placeholders;
+  - for dict/model-dump payloads, it still preserves explicit allowlisted keys set to `None`;
+  - for plain objects, it now checks `hasattr(...)` against the allowlisted token aliases instead of manufacturing a dict with every candidate key.
+- No run-store logic change was required. Once absent usage stays absent in response metadata, persisted model rows keep `usage: {}` instead of three fabricated nulls.
+
+TDD evidence:
+
+Red command:
+
+- `python -m pytest tests/test_model_policy.py::test_response_metadata_omits_absent_usage_object_without_known_counters tests/test_model_policy.py::test_run_store_does_not_fabricate_unknown_counts_for_absent_usage -q`
+  - Result before the fix: `2 failed`
+  - Failure 1 showed `_usage_dict(EmptyUsage())` returned `{"input_tokens": None, "output_tokens": None, "total_tokens": None}` instead of `{}`.
+  - Failure 2 showed run persistence stored `{"prompt": None, "completion": None, "total": None}` instead of `{}` for the same absent-evidence case.
+
+Green commands:
+
+- `python -m pytest tests/test_model_policy.py::test_response_metadata_omits_absent_usage_object_without_known_counters tests/test_model_policy.py::test_run_store_does_not_fabricate_unknown_counts_for_absent_usage -q`
+  - Result after the fix: `2 passed`
+- `python -m pytest tests/test_model_policy.py tests/test_model_route_telemetry.py tests/test_tracing_telemetry.py tests/test_gateway_client.py tests/test_maf_agents.py -q`
+  - Result after the fix: `46 passed`
+
+Residual risk after final-final correction:
+
+- This closes the absent-versus-explicit-unknown gap for response metadata and persisted model rows. If future callers bypass `_response_meta(...)` and inject their own usage objects into run events, they still need to honor the same contract: absent counters stay absent, explicit unknown counters stay explicit.
