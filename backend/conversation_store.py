@@ -25,6 +25,14 @@ CONVERSATION_BLOB_PREFIX = "conversations"
 
 _LOCK = threading.RLock()
 _BLOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dataforge-conversation-blob")
+_ALLOWED_DURABLE_FACT_KINDS = frozenset(
+    {
+        "verified_constraint",
+        "selected_metric",
+        "accepted_scope",
+        "evidence_revision",
+    }
+)
 
 
 def get_conversation(conversation_id: str) -> dict[str, Any]:
@@ -129,6 +137,88 @@ def conversation_context(conversation_id: str | None, *, limit: int = 6) -> list
         return []
     messages = [item for item in data.get("messages") or [] if isinstance(item, dict)]
     return messages[-limit:]
+
+
+def record_durable_fact(
+    conversation_id: str,
+    *,
+    workspace_id: str,
+    fact: dict[str, Any],
+    remote_load: bool = True,
+) -> dict[str, Any]:
+    kind = str((fact or {}).get("kind") or "").strip()
+    if kind not in _ALLOWED_DURABLE_FACT_KINDS:
+        raise ValueError("durable fact kind is not allowlisted")
+    text = str((fact or {}).get("text") or "").strip()
+    if not text:
+        raise ValueError("durable fact text is required")
+    now = _utc_now()
+    clean_workspace_id = str(workspace_id or "").strip()
+    clean_conversation_id = str(conversation_id or "").strip()
+    if not clean_workspace_id or not clean_conversation_id:
+        raise ValueError("conversation_id and workspace_id are required")
+    with _LOCK:
+        loader = _load_conversation if remote_load else _load_local_conversation
+        conversation = loader(clean_conversation_id) or {
+            "conversation_id": clean_conversation_id,
+            "workspace_id": clean_workspace_id,
+            "origin": "conversation",
+            "visibility": "default",
+            "created_at": now,
+            "updated_at": now,
+            "messages": [],
+        }
+        if conversation.get("workspace_id") and conversation.get("workspace_id") != clean_workspace_id:
+            raise ValueError("conversation does not belong to the requested workspace")
+        stored = {
+            "fact_id": str((fact or {}).get("fact_id") or (fact or {}).get("id") or f"fact_{uuid4().hex[:12]}").strip(),
+            "scope": f"{clean_workspace_id}:{clean_conversation_id}",
+            "workspace_id": clean_workspace_id,
+            "conversation_id": clean_conversation_id,
+            "kind": kind,
+            "text": text,
+            "source_run_id": str((fact or {}).get("source_run_id") or "").strip() or None,
+            "source_revision": str((fact or {}).get("source_revision") or "").strip() or None,
+            "evidence_ref": str((fact or {}).get("evidence_ref") or "").strip() or None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        durable_facts = [item for item in (conversation.get("durable_facts") or []) if isinstance(item, dict)]
+        durable_facts = [
+            item
+            for item in durable_facts
+            if str(item.get("fact_id") or "").strip() != stored["fact_id"]
+        ]
+        durable_facts.append({key: value for key, value in stored.items() if value not in (None, "")})
+        conversation["workspace_id"] = clean_workspace_id
+        conversation["updated_at"] = now
+        conversation["durable_facts"] = durable_facts[-50:]
+        _persist_conversation(conversation)
+        return conversation["durable_facts"][-1]
+
+
+def conversation_durable_facts(
+    conversation_id: str | None,
+    *,
+    workspace_id: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    if not conversation_id:
+        return []
+    data = _load_conversation(conversation_id)
+    if not data:
+        return []
+    clean_workspace_id = str(workspace_id or data.get("workspace_id") or "").strip()
+    scope = f"{clean_workspace_id}:{conversation_id}" if clean_workspace_id else ""
+    facts = [item for item in data.get("durable_facts") or [] if isinstance(item, dict)]
+    filtered: list[dict[str, Any]] = []
+    for item in facts:
+        if scope and str(item.get("scope") or "").strip() != scope:
+            continue
+        if str(item.get("kind") or "").strip() not in _ALLOWED_DURABLE_FACT_KINDS:
+            continue
+        filtered.append(dict(item))
+    return filtered[-limit:]
 
 
 def stable_message_id(workspace_id: str, conversation_id: str, index: int, message: dict[str, Any]) -> str:

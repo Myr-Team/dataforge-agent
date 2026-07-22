@@ -24,7 +24,13 @@ try:
     from .artifact_registry import reserve_artifact, write_artifact
     from .capability_packs import load_capability_packs
     from .chat_loop_primitives import sse
-    from .conversation_store import append_message, conversation_context, link_run
+    from .context_pack import build_context_pack
+    from .conversation_store import (
+        append_message,
+        conversation_context,
+        conversation_durable_facts,
+        link_run,
+    )
     from .customer_text import (
         clarify_options_from_context,
         customer_hit_title,
@@ -89,6 +95,7 @@ try:
         get_run,
         list_runs,
         record_artifact_version,
+        record_context_pack,
         record_event,
         record_plan_version,
         resolve_canonical_experiment_source_run_id,
@@ -111,7 +118,13 @@ except ImportError:
     from artifact_registry import reserve_artifact, write_artifact
     from capability_packs import load_capability_packs
     from chat_loop_primitives import sse
-    from conversation_store import append_message, conversation_context, link_run
+    from context_pack import build_context_pack
+    from conversation_store import (
+        append_message,
+        conversation_context,
+        conversation_durable_facts,
+        link_run,
+    )
     from customer_text import (
         clarify_options_from_context,
         customer_hit_title,
@@ -176,6 +189,7 @@ except ImportError:
         get_run,
         list_runs,
         record_artifact_version,
+        record_context_pack,
         record_event,
         record_plan_version,
         resolve_canonical_experiment_source_run_id,
@@ -556,6 +570,43 @@ def _compact_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if text:
             compact.append({"role": item.get("role"), "text": text, "time": item.get("time")})
     return compact
+
+
+def _context_pack_fallback(reason: str) -> dict[str, Any]:
+    return {"status": "fallback", "fallback_reason": reason}
+
+
+def _followup_payload_with_context_pack(
+    req: ChatRequest,
+    payload: dict[str, Any],
+    history: list[dict[str, Any]],
+    last_analysis: dict[str, Any],
+    previous: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    payload = dict(payload)
+    payload["last_analysis"] = last_analysis
+    try:
+        facts = conversation_durable_facts(req.conversation_id, workspace_id=req.workspace_id)
+    except Exception:
+        payload["conversation_history"] = _compact_history(history)
+        if previous:
+            payload["previous_assistant_answer"] = previous[:1800]
+        return payload, _context_pack_fallback("conversation_fact_lookup_failed")
+    try:
+        pack = build_context_pack(
+            request=req,
+            profile=payload.get("workspace_context") or {},
+            analysis=last_analysis,
+            facts=facts,
+        )
+    except Exception:
+        payload["conversation_history"] = _compact_history(history)
+        if previous:
+            payload["previous_assistant_answer"] = previous[:1800]
+        return payload, _context_pack_fallback("pack_build_failed")
+    payload["conversation_history"] = []
+    payload["context_pack"] = pack.prompt_projection
+    return payload, json.loads(pack.serialized_for_telemetry)
 
 
 def _persist_user_message(
@@ -5520,16 +5571,23 @@ def _lightweight_reply(req: ChatRequest, decision: RoutingDecision, history: lis
             if composer_error:
                 clarification["composer_error"] = composer_error
             return clarification
-        payload["previous_assistant_answer"] = previous[:1800]
-        payload["last_analysis"] = last_analysis
+        payload, context_pack_meta = _followup_payload_with_context_pack(
+            req,
+            payload,
+            history,
+            last_analysis,
+            previous,
+        )
         try:
             with model_route_scope(route=selected_route):
                 result = run_followup_assessment(payload)
+            result["context_pack"] = context_pack_meta
             if composer_error:
                 result["composer_error"] = composer_error
             return result
         except Exception as exc:
             fallback = _fallback_followup_assessment(req, previous, last_analysis)
+            fallback["context_pack"] = context_pack_meta
             fallback["error"] = _clean_text(exc, 300)
             if composer_error:
                 fallback["composer_error"] = composer_error
@@ -5578,7 +5636,12 @@ async def _emit_lightweight_final(
         },
         conv_id,
     )
-    reply_task = asyncio.create_task(run_in_threadpool(_lightweight_reply, req, decision, history))
+    effective_req = (
+        req.model_copy(update={"conversation_id": _artifact_conversation_id(artifact)})
+        if _artifact_conversation_id(artifact) and _artifact_conversation_id(artifact) != req.conversation_id
+        else req
+    )
+    reply_task = asyncio.create_task(run_in_threadpool(_lightweight_reply, effective_req, decision, history))
     async for frame in _progress_frames(
         reply_task,
         conv_id,
@@ -5605,6 +5668,7 @@ async def _emit_lightweight_final(
         yield _frame("answer_delta", {"delta": delta}, conv_id)
         await asyncio.sleep(pace)
     meta = _llm_result_metadata(result)
+    context_pack_meta = result.get("context_pack") if isinstance(result.get("context_pack"), dict) else None
     gaps = [str(item).strip() for item in (result.get("gaps") or []) if str(item).strip()]
     clarify_text = str(result.get("clarify") or "").strip()
     clarify_payload = {"question": clarify_text, "reason": "followup_needs_scope"} if clarify_text else None
@@ -5620,6 +5684,9 @@ async def _emit_lightweight_final(
         artifact["citations"] = sanitize_citations([item for item in result_citations if isinstance(item, dict)], field_labels)
     if produce_offer:
         artifact["produce_offer"] = produce_offer
+    if context_pack_meta:
+        artifact["context_pack"] = context_pack_meta
+        record_context_pack(conv_id, context_pack_meta)
     artifact["followup"] = {
         "assessment": result.get("assessment"),
         "gaps": gaps,
