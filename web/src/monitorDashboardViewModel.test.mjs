@@ -86,3 +86,12 @@ test("monitor view model never surfaces raw actor ids when member labels are abs
   assert.equal(view.memberRows[0].label, "成员");
   assert.ok(!("raw" in view));
 });
+
+test("monitor view model preserves explicit zero token totals for member display", () => {
+  const view = monitorDashboardViewModel({
+    members: [{ member_label: "owner-a", runs: 1, total_tokens: 0, cost: { total: 0, currency: "USD", status: "known" } }],
+  });
+
+  assert.equal(view.memberRows[0].totalTokens, 0);
+  assert.equal(view.memberRows[0].totalTokensLabel, "0");
+});

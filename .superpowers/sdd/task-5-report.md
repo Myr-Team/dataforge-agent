@@ -2,65 +2,56 @@
 
 ### Scope
 
+- `.superpowers/sdd/task-5-report.md`
+- `web/src/App.jsx`
 - `web/src/MonitorPage.jsx`
+- `web/src/constants.js`
+- `web/src/constants.test.mjs`
 - `web/src/monitorDashboardViewModel.js`
 - `web/src/monitorDashboardViewModel.test.mjs`
-- `web/src/constants.test.mjs`
-- `web/src/api.js`
-- `web/src/constants.js`
-- `web/src/App.jsx`
-- `web/src/components.jsx`
-- `web/src/styles.css`
+- `web/src/navigationContract.test.mjs`
 
 ### Red phase
 
 1. `node --test web/src/constants.test.mjs`
-   - Failed because `constants.js` did not export `normalizePrimaryView`.
-   - Error: `SyntaxError: The requested module './constants.js' does not provide an export named 'normalizePrimaryView'`
+   - Failed because `constants.js` did not export `resolvePrimaryView`.
+   - Error: `SyntaxError: The requested module './constants.js' does not provide an export named 'resolvePrimaryView'`
 2. `node --test web/src/monitorDashboardViewModel.test.mjs`
-   - Failed because monitor member rows surfaced `actor_id`.
-   - Assertion: expected `成员`, actual `raw-owner-id`.
+   - Failed because member display did not carry a stable zero-token label.
+   - Assertion: expected `'0'`, actual `undefined`.
 
 ### Implementation
 
-- Added `normalizePrimaryView(view)` so legacy `governance` resolves to the single owner-only top-level `monitor` concept.
-- Tightened `monitorDashboardViewModel` into a safe pure projection:
-  - allowlisted state mapping for cost, ROI, optimization status
-  - removed raw payload passthrough
-  - stopped falling back to `actor_id` in member labels
-  - added safe scope label projection for toolbar/meta display
-- Rebuilt `MonitorPage` as a fixed-geometry BI surface with:
-  - owner guard using server-backed workspace access
-  - request cancellation plus request-id guard
-  - stable loading/error/empty frames
-  - data-layer-only opacity/transform transitions during refresh
-- Updated `App.jsx` and `components.jsx` so legacy governance view selection normalizes into `monitor`.
-- Refined monitor CSS so loading never shifts card/chart geometry and ranking bars use a restrained solid fill.
+- Added `resolvePrimaryView(view, access)` so legacy `governance` and direct `monitor` deep links render as `workspaces` until owner access is positively confirmed.
+- Updated `App.jsx` to render navigation and `WorkbenchMain` from the resolved safe view, while still normalizing persisted legacy values.
+- Extended `monitorDashboardViewModel` to emit `memberRows[].totalTokensLabel`, preserving explicit zero totals as `"0"` instead of collapsing to `未记录`.
+- Updated `MonitorPage` to render the member token label directly from the view model.
+- Included the already-corrected `web/src/navigationContract.test.mjs` rename so the committed tree, not only the dirty worktree, reflects the owner-only `monitor` nav contract.
 
 ### Green phase
 
 1. `node --test web/src/constants.test.mjs`
-   - Pass: 3/3
+   - Pass: 4/4
 2. `node --test web/src/monitorDashboardViewModel.test.mjs`
-   - Pass: 3/3
-3. `node --test web/src/monitorDashboardViewModel.test.mjs web/src/constants.test.mjs web/src/governanceViewModel.test.mjs web/src/navigationContract.test.mjs`
-   - Pass: 27/27
+   - Pass: 4/4
+3. `node --test web/src/constants.test.mjs web/src/monitorDashboardViewModel.test.mjs web/src/governanceViewModel.test.mjs web/src/navigationContract.test.mjs`
+   - Pass: 29/29
 4. `npm --prefix web run build`
    - Pass: Vite build exited 0
-   - Output bundles included `dist/assets/MonitorPage-4kR8HQHs.js` and updated `dist/assets/index-D4vgeuII.css`
+   - Output bundles included `dist/assets/MonitorPage-BbONBzzl.js` and updated `dist/assets/index-BZjjyjnF.js`
 
 ### Changed files
 
+- `.superpowers/sdd/task-5-report.md`
+- `web/src/App.jsx`
 - `web/src/MonitorPage.jsx`
+- `web/src/constants.js`
+- `web/src/constants.test.mjs`
 - `web/src/monitorDashboardViewModel.js`
 - `web/src/monitorDashboardViewModel.test.mjs`
-- `web/src/constants.test.mjs`
-- `web/src/constants.js`
-- `web/src/App.jsx`
-- `web/src/components.jsx`
-- `web/src/styles.css`
+- `web/src/navigationContract.test.mjs`
 
 ### Residual risks
 
-- This task did not add browser-level interaction tests for the monitor toolbar; candidate browser smoke remains in Task 6.
-- The worktree already contained unrelated unstaged changes (`web/src/navigationContract.test.mjs` and generated `workspaces/*`), which were intentionally left out of this task.
+- This task still relies on Task 6 browser smoke to validate that owner access resolves before the monitor view is ever chosen in a real signed-in session.
+- The worktree still contains unrelated generated `workspaces/*` directories, which were intentionally left untracked.

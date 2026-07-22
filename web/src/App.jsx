@@ -29,7 +29,7 @@ import {
   WorkbenchMain,
   WorkspacePane,
 } from "./components.jsx";
-import { canViewGovernance, normalizePrimaryView, PLAYBOOKS, VERDICT_LABELS } from "./constants.js";
+import { normalizePrimaryView, PLAYBOOKS, resolvePrimaryView, VERDICT_LABELS } from "./constants.js";
 import { executionRequestFields, readyExecutionState } from "./executionIdentity.js";
 
 const DEFAULT_WORKSPACE = "demo-corpus";
@@ -585,8 +585,7 @@ export function App() {
   };
 
   const changePrimaryView = (view) => {
-    const nextView = normalizePrimaryView(view);
-    if (nextView === "monitor" && !canViewGovernance(workspaceAccess)) return;
+    const nextView = resolvePrimaryView(view, workspaceAccess);
     if (nextView === "settings") setSettingsInitialTab("about");
     setActiveView(nextView);
   };
@@ -597,10 +596,13 @@ export function App() {
       setActiveView(nextView);
       return;
     }
-    if (workspaceAccess && nextView === "monitor" && !canViewGovernance(workspaceAccess)) {
-      setActiveView("workspaces");
+    const safeView = resolvePrimaryView(nextView, workspaceAccess);
+    if (workspaceAccess && safeView !== nextView) {
+      setActiveView(safeView);
     }
   }, [activeView, workspaceAccess]);
+
+  const renderView = resolvePrimaryView(activeView, workspaceAccess);
 
   const openMembersSettings = () => {
     setSettingsInitialTab("members");
@@ -1124,12 +1126,12 @@ export function App() {
         tasks={tasks}
         onOpenTaskCenter={() => setTaskDrawerOpen(true)}
       />
-      <ShellNav active={activeView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} onInviteMembers={openMembersSettings} />
+      <ShellNav active={renderView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} onInviteMembers={openMembersSettings} />
       <div className="workbench">
-        <MobileNav active={activeView} onChange={changePrimaryView} access={workspaceAccess} />
+        <MobileNav active={renderView} onChange={changePrimaryView} access={workspaceAccess} />
         <div className="workbench-grid">
           <WorkbenchMain
-            view={activeView}
+            view={renderView}
             setView={setActiveView}
             dashboard={dashboard}
             messages={messages}

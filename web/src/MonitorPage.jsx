@@ -257,7 +257,7 @@ function MemberTable({ rows }) {
               <small>{row.calls} 次运行</small>
             </div>
           </div>
-          <strong>{row.totalTokens ? `${row.totalTokens}` : "未记录"}</strong>
+          <strong>{row.totalTokensLabel || "未记录"}</strong>
           <span>{row.costLabel}</span>
         </div>
       ))}

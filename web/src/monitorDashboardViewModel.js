@@ -146,6 +146,7 @@ export function monitorDashboardViewModel(payload = {}) {
       label: String(row.member_label || row.subject_label || "成员"),
       calls: asInt(row.runs) || 0,
       totalTokens: asInt(row.total_tokens) || 0,
+      totalTokensLabel: formatInteger(row.total_tokens),
       costLabel: formatCurrency(row?.cost?.total, row?.cost?.currency || "USD"),
     })),
     opportunity: {

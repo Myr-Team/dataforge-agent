@@ -45,6 +45,12 @@ export function normalizePrimaryView(view) {
   return view === "governance" ? "monitor" : view;
 }
 
+export function resolvePrimaryView(view, access, fallback = "workspaces") {
+  const normalized = normalizePrimaryView(view);
+  if (normalized === "monitor" && !canViewGovernance(access)) return fallback;
+  return normalized;
+}
+
 export function visibleNavItems(access) {
   return canViewGovernance(access)
     ? NAV_ITEMS

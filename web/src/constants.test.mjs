@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { NAV_ITEMS, normalizePrimaryView, visibleNavItems } from "./constants.js";
+import { NAV_ITEMS, normalizePrimaryView, resolvePrimaryView, visibleNavItems } from "./constants.js";
 
 test("monitor navigation is visible only to a workspace owner", () => {
   const ownerItems = visibleNavItems({ allowed: true, role: "owner" });
@@ -24,4 +24,11 @@ test("legacy governance view resolves to the monitor workspace route", () => {
   assert.equal(normalizePrimaryView("governance"), "monitor");
   assert.equal(normalizePrimaryView("monitor"), "monitor");
   assert.equal(normalizePrimaryView("settings"), "settings");
+});
+
+test("monitor route falls back until owner access is explicitly confirmed", () => {
+  assert.equal(resolvePrimaryView("monitor", null), "workspaces");
+  assert.equal(resolvePrimaryView("governance", null), "workspaces");
+  assert.equal(resolvePrimaryView("monitor", { allowed: true, role: "admin" }), "workspaces");
+  assert.equal(resolvePrimaryView("monitor", { allowed: true, role: "owner" }), "monitor");
 });
