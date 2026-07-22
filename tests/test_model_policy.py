@@ -54,11 +54,112 @@ def test_full_analysis_never_selects_followup_candidate_route(monkeypatch) -> No
         ),
     )
     monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "analysis")
+    monkeypatch.setattr(
+        "backend.model_policy.context_optimization_gate",
+        lambda route_id="followup": {
+            "status": "evaluated",
+            "sample_count": 24,
+            "evaluator_version": "context-v1",
+            "eligible": route_id == "followup",
+        },
+    )
 
     assert select_text_route("full_analysis").route_id == "analysis"
     assert select_text_route("audit_repair").route_id == "analysis"
     assert select_text_route("follow_up", candidate_enabled=False).route_id == "reply"
     assert select_text_route("follow_up", candidate_enabled=True).route_id == "followup"
+
+
+def test_followup_candidate_requires_eligible_offline_evaluation(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "analysis",
+                    "deployment": "gpt-5.1",
+                    "label": "Analysis",
+                    "capabilities": ["analysis", "chat"],
+                },
+                {
+                    "id": "followup",
+                    "deployment": "gpt-5-mini",
+                    "label": "Follow-up",
+                    "capabilities": ["followup"],
+                },
+                {
+                    "id": "reply",
+                    "deployment": "gpt-5-nano",
+                    "label": "Reply",
+                    "capabilities": ["chat"],
+                },
+            ]
+        ),
+    )
+    monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "analysis")
+    monkeypatch.setattr(
+        "backend.model_policy.context_optimization_gate",
+        lambda route_id="followup": {
+            "status": "evaluated",
+            "sample_count": 24,
+            "evaluator_version": "context-v1",
+            "eligible": route_id == "followup",
+        },
+    )
+
+    assert select_text_route("follow_up", candidate_enabled=True).route_id == "followup"
+
+    monkeypatch.setattr(
+        "backend.model_policy.context_optimization_gate",
+        lambda route_id="followup": {
+            "status": "evaluated",
+            "sample_count": 24,
+            "evaluator_version": "context-v1",
+            "eligible": False,
+        },
+    )
+
+    assert select_text_route("follow_up", candidate_enabled=True).route_id == "reply"
+
+
+def test_followup_candidate_does_not_enable_when_gate_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "analysis",
+                    "deployment": "gpt-5.1",
+                    "label": "Analysis",
+                    "capabilities": ["analysis", "chat"],
+                },
+                {
+                    "id": "followup",
+                    "deployment": "gpt-5-mini",
+                    "label": "Follow-up",
+                    "capabilities": ["followup"],
+                },
+                {
+                    "id": "reply",
+                    "deployment": "gpt-5-nano",
+                    "label": "Reply",
+                    "capabilities": ["chat"],
+                },
+            ]
+        ),
+    )
+    monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "analysis")
+    monkeypatch.setattr(
+        "backend.model_policy.context_optimization_gate",
+        lambda route_id="followup": {
+            "status": "unavailable",
+            "sample_count": None,
+            "evaluator_version": None,
+            "eligible": False,
+        },
+    )
+
+    assert select_text_route("follow_up", candidate_enabled=True).route_id == "reply"
 
 
 def test_response_metadata_records_effective_route_and_deployment(monkeypatch) -> None:
@@ -393,6 +494,15 @@ def test_model_route_scope_restores_outer_route_when_nested(monkeypatch) -> None
         ),
     )
     monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "analysis")
+    monkeypatch.setattr(
+        "backend.model_policy.context_optimization_gate",
+        lambda route_id="followup": {
+            "status": "evaluated",
+            "sample_count": 24,
+            "evaluator_version": "context-v1",
+            "eligible": route_id == "followup",
+        },
+    )
 
     with model_route_scope(route=select_text_route("full_analysis"), execution_kind="full_analysis"):
         assert current_text_route().route.route_id == "analysis"
@@ -460,6 +570,15 @@ def test_model_route_scope_does_not_bleed_between_requests(monkeypatch) -> None:
         ),
     )
     monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "analysis")
+    monkeypatch.setattr(
+        "backend.model_policy.context_optimization_gate",
+        lambda route_id="followup": {
+            "status": "evaluated",
+            "sample_count": 24,
+            "evaluator_version": "context-v1",
+            "eligible": route_id == "followup",
+        },
+    )
 
     with model_route_scope(route=select_text_route("follow_up", candidate_enabled=True), execution_kind="follow_up"):
         assert current_text_route().route.route_id == "followup"

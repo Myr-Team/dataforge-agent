@@ -1,0 +1,22 @@
+[
+  {"case_id": "ctx-001", "scenario": "site-selection follow-up", "intent": "follow_up"},
+  {"case_id": "ctx-002", "scenario": "pricing clarification", "intent": "follow_up"},
+  {"case_id": "ctx-003", "scenario": "pilot scope refinement", "intent": "follow_up"},
+  {"case_id": "ctx-004", "scenario": "audit downgrade explanation", "intent": "follow_up"},
+  {"case_id": "ctx-005", "scenario": "budget constraint check", "intent": "follow_up"},
+  {"case_id": "ctx-006", "scenario": "evidence gap summary", "intent": "follow_up"},
+  {"case_id": "ctx-007", "scenario": "trial city selection", "intent": "follow_up"},
+  {"case_id": "ctx-008", "scenario": "channel viability question", "intent": "follow_up"},
+  {"case_id": "ctx-009", "scenario": "risk mitigation planning", "intent": "follow_up"},
+  {"case_id": "ctx-010", "scenario": "next-step prioritization", "intent": "follow_up"},
+  {"case_id": "ctx-011", "scenario": "stakeholder recap request", "intent": "follow_up"},
+  {"case_id": "ctx-012", "scenario": "metrics interpretation", "intent": "follow_up"},
+  {"case_id": "ctx-013", "scenario": "candidate point comparison", "intent": "follow_up"},
+  {"case_id": "ctx-014", "scenario": "document evidence summary", "intent": "follow_up"},
+  {"case_id": "ctx-015", "scenario": "market signal clarification", "intent": "follow_up"},
+  {"case_id": "ctx-016", "scenario": "cost boundary reminder", "intent": "follow_up"},
+  {"case_id": "ctx-017", "scenario": "launch readiness check", "intent": "follow_up"},
+  {"case_id": "ctx-018", "scenario": "route explanation request", "intent": "follow_up"},
+  {"case_id": "ctx-019", "scenario": "model output reconciliation", "intent": "follow_up"},
+  {"case_id": "ctx-020", "scenario": "final recommendation recap", "intent": "follow_up"}
+]

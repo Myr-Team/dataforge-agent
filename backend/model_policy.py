@@ -4,9 +4,15 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import json
 import os
+from pathlib import Path
 import re
 from dataclasses import dataclass
 from typing import Iterator
+
+try:
+    from .context_evaluation import DEFAULT_CONTEXT_EVALUATION_SUMMARY_PATH, load_evaluation_gate
+except ImportError:
+    from context_evaluation import DEFAULT_CONTEXT_EVALUATION_SUMMARY_PATH, load_evaluation_gate
 
 
 _ROUTE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -140,9 +146,24 @@ def select_text_route_record(
     fallback_reason: str | None = None
     capability = desired
     prefer_non_analysis_for_chat = normalized_kind in {"follow_up", "direct_reply"}
-    if desired == "followup" and not candidate_enabled:
+    if desired == "followup":
+        if candidate_enabled:
+            try:
+                candidate_route = _pick_route(capability="followup")
+            except ModelPolicyError:
+                fallback_reason = "capability_missing"
+            else:
+                gate = context_optimization_gate(candidate_route.route_id)
+                if gate.get("eligible") is True:
+                    return SelectedTextRoute(
+                        route=candidate_route,
+                        execution_kind=normalized_kind,
+                        selection="policy",
+                    )
+                fallback_reason = "candidate_not_eligible"
+        else:
+            fallback_reason = "candidate_not_eligible"
         capability = "chat"
-        fallback_reason = "candidate_not_eligible"
     try:
         route = _pick_route(
             capability=capability,
@@ -233,3 +254,9 @@ def public_model_route_snapshot() -> dict[str, object]:
             for route in routes
         ],
     }
+
+
+def context_optimization_gate(route_id: str = "followup") -> dict[str, object]:
+    configured = str(os.environ.get("DF_CONTEXT_EVALUATION_SUMMARY_PATH") or "").strip()
+    summary_path = Path(configured) if configured else DEFAULT_CONTEXT_EVALUATION_SUMMARY_PATH
+    return load_evaluation_gate(summary_path, route_id=str(route_id or "followup").strip().lower() or "followup")

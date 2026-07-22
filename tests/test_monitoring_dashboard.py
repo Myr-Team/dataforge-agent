@@ -59,6 +59,36 @@ def test_monitor_dashboard_keeps_audited_runs_unknown_when_only_activity_feed_ex
         "audited_runs": None,
         "rework_runs": 0,
         "evaluator_coverage_pct": None,
+        "context_optimization": {
+            "status": "unavailable",
+            "sample_count": None,
+            "evaluator_version": None,
+            "eligible": False,
+        },
+    }
+
+
+def test_monitor_dashboard_reports_context_optimization_gate_without_claiming_success() -> None:
+    payload = build_monitor_dashboard(
+        ["ws-a"],
+        scope="current",
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-07-08T00:00:00Z",
+        actor={"actor_id": "owner-a"},
+        run_loader=lambda _workspace_id: [],
+        evaluation_loader=lambda route_id="followup": {
+            "status": "stale" if route_id == "followup" else "unavailable",
+            "sample_count": 12,
+            "evaluator_version": "context-v1",
+            "eligible": False,
+        },
+    )
+
+    assert payload["summary"]["quality"]["context_optimization"] == {
+        "status": "stale",
+        "sample_count": 12,
+        "evaluator_version": "context-v1",
+        "eligible": False,
     }
 
 

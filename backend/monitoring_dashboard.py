@@ -4,12 +4,18 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+try:
+    from .model_policy import context_optimization_gate
+except ImportError:
+    from model_policy import context_optimization_gate
+
 
 RunLoader = Callable[[str], list[dict[str, Any]]]
 SnapshotLoader = Callable[[str, str, str], dict[str, Any]]
 AuditLoader = Callable[[str], dict[str, Any]]
 OutcomeLoader = Callable[[str], list[dict[str, Any]]]
 ChargebackLoader = Callable[[str, str, str], dict[str, Any]]
+EvaluationLoader = Callable[[str], dict[str, Any]]
 
 
 def build_monitor_dashboard(
@@ -24,6 +30,7 @@ def build_monitor_dashboard(
     audit_loader: AuditLoader | None = None,
     outcome_loader: OutcomeLoader | None = None,
     chargeback_loader: ChargebackLoader | None = None,
+    evaluation_loader: EvaluationLoader | None = None,
 ) -> dict[str, Any]:
     workspace_ids = _ordered_workspace_ids(workspace_ids)
     rows = _run_rows(workspace_ids, from_value, to_value, run_loader)
@@ -40,7 +47,7 @@ def build_monitor_dashboard(
             "calls": _call_summary(rows),
             "tokens": summary_tokens,
             "cost": _cost_summary(cost_snapshots),
-            "quality": _quality_summary(rows, audit_snapshots),
+            "quality": _quality_summary(rows, audit_snapshots, evaluation_loader),
             "roi": _roi_summary(cost_snapshots, outcome_snapshots),
         },
         "series": {"daily": _daily_series(rows)},
@@ -283,7 +290,11 @@ def _cost_summary(cost_snapshots: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _quality_summary(rows: list[dict[str, Any]], audit_snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+def _quality_summary(
+    rows: list[dict[str, Any]],
+    audit_snapshots: list[dict[str, Any]],
+    evaluation_loader: EvaluationLoader | None,
+) -> dict[str, Any]:
     rework_runs = 0
     audited_runs = 0
     observed_audit_verdict = False
@@ -301,6 +312,7 @@ def _quality_summary(rows: list[dict[str, Any]], audit_snapshots: list[dict[str,
         "audited_runs": audited_runs if observed_audit_verdict else None,
         "rework_runs": rework_runs,
         "evaluator_coverage_pct": None,
+        "context_optimization": _context_optimization_summary(evaluation_loader),
     }
 
 
@@ -492,6 +504,20 @@ def _coverage(rows: list[dict[str, Any]]) -> dict[str, int]:
     return {
         "governed_text_calls": governed_text_calls,
         "out_of_scope_image_calls": out_of_scope_image_calls,
+    }
+
+
+def _context_optimization_summary(evaluation_loader: EvaluationLoader | None) -> dict[str, Any]:
+    loader = evaluation_loader or context_optimization_gate
+    try:
+        raw = loader("followup")
+    except Exception:
+        raw = {}
+    return {
+        "status": str((raw or {}).get("status") or "unavailable").strip().lower() or "unavailable",
+        "sample_count": _as_int((raw or {}).get("sample_count")),
+        "evaluator_version": _clean((raw or {}).get("evaluator_version")) or None,
+        "eligible": bool((raw or {}).get("eligible") is True),
     }
 
 
