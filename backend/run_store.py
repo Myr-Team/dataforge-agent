@@ -22,6 +22,7 @@ try:
         list_blob_json_named_strict,
         upload_blob_json,
     )
+    from .context_pack import public_context_pack_metadata
     from .evidence_bundle import (
         sanitize_capability_metadata,
         sanitize_capability_pack_contract,
@@ -38,6 +39,7 @@ except ImportError:
         list_blob_json_named_strict,
         upload_blob_json,
     )
+    from context_pack import public_context_pack_metadata
     from evidence_bundle import (
         sanitize_capability_metadata,
         sanitize_capability_pack_contract,
@@ -3691,45 +3693,7 @@ def _sanitize_model_response_event_data(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _sanitize_context_pack_metadata(data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict):
-        return {}
-    sanitized: dict[str, Any] = {}
-    status = str(data.get("status") or "").strip().lower()
-    if status in {"ready", "fallback"}:
-        sanitized["status"] = status
-    version = str(data.get("version") or "").strip()
-    if version:
-        sanitized["version"] = version[:64]
-    fingerprint = str(data.get("fingerprint") or "").strip()
-    if fingerprint:
-        sanitized["fingerprint"] = fingerprint[:128]
-    fallback_reason = str(data.get("fallback_reason") or "").strip().lower()
-    if fallback_reason in {
-        "pack_build_failed",
-        "conversation_fact_lookup_failed",
-        "pack_unavailable",
-    }:
-        sanitized["fallback_reason"] = fallback_reason
-    scope = data.get("scope")
-    if isinstance(scope, dict):
-        workspace_id = str(scope.get("workspace_id") or "").strip()
-        conversation_id = str(scope.get("conversation_id") or "").strip()
-        sanitized["scope"] = {
-            "workspace_id": workspace_id[:160],
-            "conversation_id": conversation_id[:160],
-        }
-    for source_key, target_key in (
-        ("durable_fact_ids", "durable_fact_ids"),
-        ("durable_fact_kinds", "durable_fact_kinds"),
-    ):
-        values = data.get(source_key)
-        if isinstance(values, list):
-            sanitized[target_key] = [str(item).strip()[:128] for item in values if str(item).strip()][:16]
-    for key in ("fact_count", "workspace_fact_count", "audit_constraint_count"):
-        value = data.get(key)
-        if isinstance(value, int) and value >= 0:
-            sanitized[key] = value
-    return sanitized
+    return public_context_pack_metadata(data)
 
 
 _VERDICT_LABELS = {

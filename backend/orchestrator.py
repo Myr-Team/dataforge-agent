@@ -24,7 +24,7 @@ try:
     from .artifact_registry import reserve_artifact, write_artifact
     from .capability_packs import load_capability_packs
     from .chat_loop_primitives import sse
-    from .context_pack import build_context_pack
+    from .context_pack import build_context_pack, public_context_pack_metadata
     from .conversation_store import (
         append_message,
         conversation_context,
@@ -118,7 +118,7 @@ except ImportError:
     from artifact_registry import reserve_artifact, write_artifact
     from capability_packs import load_capability_packs
     from chat_loop_primitives import sse
-    from context_pack import build_context_pack
+    from context_pack import build_context_pack, public_context_pack_metadata
     from conversation_store import (
         append_message,
         conversation_context,
@@ -606,7 +606,7 @@ def _followup_payload_with_context_pack(
         return payload, _context_pack_fallback("pack_build_failed")
     payload["conversation_history"] = []
     payload["context_pack"] = pack.prompt_projection
-    return payload, json.loads(pack.serialized_for_telemetry)
+    return payload, public_context_pack_metadata(json.loads(pack.serialized_for_telemetry))
 
 
 def _persist_user_message(

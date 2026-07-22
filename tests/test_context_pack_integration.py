@@ -202,6 +202,17 @@ def test_followup_uses_context_pack_projection_when_available(monkeypatch) -> No
         "conversation_id": "conv-a",
     }
     assert captured_payloads[0]["context_pack"]["durable_facts"][0]["text"] == "Budget is capped at 50k"
+    assert result["context_pack"] == {
+        "status": "ready",
+        "version": "context-pack-v1",
+        "scope": {"workspace_id": "ws-a", "conversation_id": "conv-a"},
+        "fingerprint": result["context_pack"]["fingerprint"],
+        "durable_fact_ids": ["fact-1"],
+        "durable_fact_kinds": ["verified_constraint"],
+        "fact_count": 1,
+        "workspace_fact_count": 4,
+        "audit_constraint_count": 2,
+    }
 
 
 def test_run_store_persists_safe_context_pack_metadata(tmp_path, monkeypatch) -> None:

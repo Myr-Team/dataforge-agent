@@ -183,3 +183,51 @@ Full focused Context Pack suite:
 - That fallback uses legacy compact history and records only
   `conversation_fact_lookup_failed`.
 - Raw exception text does not leak into the returned follow-up payload.
+
+## Response-path correction
+
+The independent re-review found one more real gap: the successful lightweight
+follow-up path returned `json.loads(pack.serialized_for_telemetry)` directly as
+`result["context_pack"]`, so the final SSE payload still exposed internal-only
+fields such as:
+
+- `profile_revision`
+- `analysis_revision`
+- `evidence_refs`
+
+That was not a persisted-run leak anymore, but it still violated the Task 3
+contract that follow-up integrations should carry only public Context Pack
+metadata.
+
+### Fix
+
+- Added `public_context_pack_metadata(...)` to `backend/context_pack.py` as the
+  single explicit allowlist for public Context Pack metadata.
+- Updated `backend/orchestrator.py` to project successful follow-up
+  `context_pack` metadata through that helper before attaching it to the reply
+  result and final payload.
+- Updated `backend/run_store.py` to reuse the same helper, so top-level run,
+  steps, nested artifacts, and reply-path metadata now share one allowlist
+  instead of two drifting implementations.
+- Extended
+  `tests/test_context_pack_integration.py::test_followup_uses_context_pack_projection_when_available`
+  to assert that the returned reply metadata contains only the public keys.
+
+### Verification
+
+- `python -m pytest tests/test_context_pack_integration.py::test_followup_uses_context_pack_projection_when_available -q`
+  - `1 passed`
+- `python -m pytest tests/test_context_pack.py tests/test_context_pack_integration.py tests/test_conversation_execution_linkage.py tests/test_followup_provisional_choice.py tests/test_followup_plan_version.py -q`
+  - `43 passed in 7.81s`
+
+Direct repro after the fix now returns only:
+
+- `status`
+- `version`
+- `fingerprint`
+- `scope`
+- `durable_fact_ids`
+- `durable_fact_kinds`
+- `fact_count`
+- `workspace_fact_count`
+- `audit_constraint_count`
