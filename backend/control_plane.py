@@ -1862,7 +1862,7 @@ def _monitor_dashboard_payload(
         outcome_loader=list_outcome_events,
         chargeback_loader=workspace_member_chargeback,
     )
-    gateway_calls = _gateway_governed_calls(workspace_ids)
+    gateway_calls = _gateway_governed_calls(workspace_ids, from_value=from_value, to_value=to_value)
     if gateway_calls is not None:
         coverage = payload.setdefault("coverage", {})
         current_calls = coverage.get("governed_text_calls")
@@ -1938,7 +1938,12 @@ def _workspace_run_details_for_roi(workspace_id: str, window: dict[str, str]) ->
     return rows, len(candidates) > 300
 
 
-def _gateway_governed_calls(workspace_ids: list[str]) -> int | None:
+def _gateway_governed_calls(
+    workspace_ids: list[str],
+    *,
+    from_value: str | None = None,
+    to_value: str | None = None,
+) -> int | None:
     gateway_enabled = str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
     expected_gateway_id = str(os.environ.get("DF_APIM_EXPECTED_GATEWAY_ID") or "").strip()
     if not gateway_enabled or not expected_gateway_id:
@@ -1946,7 +1951,15 @@ def _gateway_governed_calls(workspace_ids: list[str]) -> int | None:
     observed = False
     total = 0
     for workspace_id in workspace_ids:
-        evidence = _safe_value(lambda workspace_id=workspace_id: get_gateway_metric_evidence(workspace_id, expected_gateway_id), None)
+        evidence = _safe_value(
+            lambda workspace_id=workspace_id: get_gateway_metric_evidence(
+                workspace_id,
+                expected_gateway_id,
+                from_value=from_value,
+                to_value=to_value,
+            ),
+            None,
+        )
         payload = (
             evidence.model_dump()
             if hasattr(evidence, "model_dump")

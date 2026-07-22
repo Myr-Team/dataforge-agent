@@ -26,7 +26,7 @@ _QUERY_TIMEOUT_SECONDS = 10
 _CACHE_TTL_SECONDS = 30.0
 _CACHE_LOCK = threading.RLock()
 _CONFIRMED_CACHE: dict[tuple[str, str, str, str, str], tuple[float, "RemoteTraceProof"]] = {}
-_GATEWAY_METRIC_CACHE: dict[tuple[str, str, str, str], tuple[float, "GatewayMetricEvidence"]] = {}
+_GATEWAY_METRIC_CACHE: dict[tuple[str, str, str, str, str, str], tuple[float, "GatewayMetricEvidence"]] = {}
 
 
 class TraceDeliveryStatus(BaseModel):
@@ -382,6 +382,8 @@ def get_gateway_metric_evidence(
     workspace_id: str,
     gateway_id: str,
     *,
+    from_value: str | None = None,
+    to_value: str | None = None,
     client_factory: Callable[[], Any] | None = None,
 ) -> GatewayMetricEvidence:
     """Confirm APIM token-metric evidence for one workspace hash only."""
@@ -393,8 +395,16 @@ def get_gateway_metric_evidence(
             provenance="apim_metric_not_configured",
         )
 
+    timespan = _gateway_metric_timespan(from_value, to_value)
+    if timespan is None:
+        return GatewayMetricEvidence(
+            state="unavailable",
+            provenance="apim_metric_query_unavailable",
+        )
+
     workspace_hash = hash_trace_identifier(workspace_id)
-    cache_key = (workspace_hash, safe_gateway_id.lower(), config.application_id, config.resource_id.lower())
+    window_key = _gateway_metric_window_key(from_value, to_value)
+    cache_key = (workspace_hash, safe_gateway_id.lower(), config.application_id, config.resource_id.lower(), window_key[0], window_key[1])
     now = time.monotonic()
     with _CACHE_LOCK:
         cached = _GATEWAY_METRIC_CACHE.get(cache_key)
@@ -407,7 +417,7 @@ def get_gateway_metric_evidence(
         result = client.query_workspace(
             config.logs_workspace_id,
             query,
-            timespan=timedelta(hours=24),
+            timespan=timespan,
             server_timeout=_QUERY_TIMEOUT_SECONDS,
         )
     except Exception:
@@ -644,9 +654,29 @@ def _cache_confirmation(key: tuple[str, str, str, str, str], proof: RemoteTraceP
         _CONFIRMED_CACHE[key] = (time.monotonic() + _CACHE_TTL_SECONDS, proof)
 
 
-def _cache_gateway_metric(key: tuple[str, str, str, str], evidence: GatewayMetricEvidence) -> None:
+def _cache_gateway_metric(key: tuple[str, str, str, str, str, str], evidence: GatewayMetricEvidence) -> None:
     with _CACHE_LOCK:
         _GATEWAY_METRIC_CACHE[key] = (time.monotonic() + _CACHE_TTL_SECONDS, evidence)
+
+
+def _gateway_metric_timespan(from_value: str | None, to_value: str | None) -> tuple[datetime, datetime] | timedelta | None:
+    if from_value is None and to_value is None:
+        return timedelta(hours=24)
+    start = _as_datetime(from_value)
+    end = _as_datetime(to_value)
+    if start is None or end is None or start > end:
+        return None
+    return (start, end)
+
+
+def _gateway_metric_window_key(from_value: str | None, to_value: str | None) -> tuple[str, str]:
+    timespan = _gateway_metric_timespan(from_value, to_value)
+    if isinstance(timespan, timedelta):
+        return ("rolling", f"{int(timespan.total_seconds())}")
+    if isinstance(timespan, tuple):
+        start, end = timespan
+        return (start.isoformat(), end.isoformat())
+    return ("invalid", "invalid")
 
 
 def _managed_identity_logs_client() -> Any:

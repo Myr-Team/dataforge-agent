@@ -208,19 +208,31 @@ def _usage_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     total_total = 0
     known_runs = 0
     unknown_runs = 0
+    input_complete = True
+    output_complete = True
+    total_complete = True
     for row in rows:
         usage = _row_usage(row)
         if usage is None:
             unknown_runs += 1
             continue
         known_runs += 1
-        input_total += usage["input"]
-        output_total += usage["output"]
-        total_total += usage["total"]
+        if usage.get("input") is None:
+            input_complete = False
+        else:
+            input_total += int(usage["input"])
+        if usage.get("output") is None:
+            output_complete = False
+        else:
+            output_total += int(usage["output"])
+        if usage.get("total") is None:
+            total_complete = False
+        else:
+            total_total += int(usage["total"])
     return {
-        "input": input_total if known_runs else None,
-        "output": output_total if known_runs else None,
-        "total": total_total if known_runs else None,
+        "input": input_total if known_runs and input_complete else None,
+        "output": output_total if known_runs and output_complete else None,
+        "total": total_total if known_runs and total_complete else None,
         "known_runs": known_runs,
         "unknown_runs": unknown_runs,
     }
@@ -272,23 +284,21 @@ def _cost_summary(cost_snapshots: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _quality_summary(rows: list[dict[str, Any]], audit_snapshots: list[dict[str, Any]]) -> dict[str, Any]:
-    audit_count = 0
-    for snapshot in audit_snapshots:
-        audit_count += int(snapshot.get("count") or 0)
     rework_runs = 0
     audited_runs = 0
+    observed_audit_verdict = False
     for row in rows:
         audit = row.get("audit") if isinstance(row.get("audit"), dict) else {}
         verdict = str(audit.get("verdict") or audit.get("status") or "").strip().lower()
         if verdict:
+            observed_audit_verdict = True
             audited_runs += 1
         if verdict in {"revise", "downgraded", "rework"}:
             rework_runs += 1
-    if audited_runs == 0:
-        audited_runs = audit_count
+    _ = audit_snapshots
     return {
         "evidence_coverage_pct": None,
-        "audited_runs": audited_runs,
+        "audited_runs": audited_runs if observed_audit_verdict else None,
         "rework_runs": rework_runs,
         "evaluator_coverage_pct": None,
     }
@@ -362,7 +372,9 @@ def _daily_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             bucket["failed"] += 1
         usage = _row_usage(row)
         if usage is not None:
-            bucket["total_tokens"] = int(bucket["total_tokens"] or 0) + usage["total"]
+            total_tokens = usage.get("total")
+            if isinstance(total_tokens, int):
+                bucket["total_tokens"] = int(bucket["total_tokens"] or 0) + total_tokens
     return [buckets[key] for key in sorted(buckets)]
 
 
@@ -388,7 +400,7 @@ def _model_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 {"deployment": deployment, "route": route, "calls": 0, "total_tokens": 0},
             )
             group["calls"] += 1
-            group["total_tokens"] += usage["total"] if usage is not None else 0
+            group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
     return sorted(groups.values(), key=lambda item: (-int(item["calls"]), item["deployment"], item["route"]))
 
 
@@ -403,7 +415,7 @@ def _route_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             usage = _usage_from_dict(model.get("usage") if isinstance(model.get("usage"), dict) else model)
             group = groups.setdefault(route, {"route": route, "calls": 0, "total_tokens": 0})
             group["calls"] += 1
-            group["total_tokens"] += usage["total"] if usage is not None else 0
+            group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
             emitted = True
         if emitted:
             continue
@@ -411,7 +423,7 @@ def _route_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         group = groups.setdefault(route, {"route": route, "calls": 0, "total_tokens": 0})
         group["calls"] += 1
         usage = _row_usage(row)
-        group["total_tokens"] += usage["total"] if usage is not None else 0
+        group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
     return sorted(groups.values(), key=lambda item: (-int(item["calls"]), item["route"]))
 
 
@@ -445,13 +457,8 @@ def _member_rows(
             )
     if members:
         return sorted(members, key=lambda item: item["subject_label"])
-    actor_id = _clean(actor.get("actor_id"))
-    if not actor_id:
-        return []
-    calls = sum(1 for row in rows if _clean(_dig(row, "actor", "actor_id")) == actor_id)
-    if calls <= 0:
-        return []
-    return [{"subject_label": "Current owner", "groups": 1, "cost": {"status": "unknown", "total": None, "currency": None}}]
+    _ = (rows, actor)
+    return []
 
 
 def _opportunity(rows: list[dict[str, Any]], usage: dict[str, Any]) -> dict[str, Any]:
@@ -502,22 +509,28 @@ def _row_usage(row: dict[str, Any]) -> dict[str, int] | None:
     return None
 
 
-def _usage_from_dict(data: dict[str, Any] | None) -> dict[str, int] | None:
+def _usage_from_dict(data: dict[str, Any] | None) -> dict[str, int | None] | None:
     if not isinstance(data, dict):
         return None
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else data
-    total = _as_int(usage.get("total")) or _as_int(usage.get("total_tokens"))
-    input_value = _as_int(usage.get("input")) or _as_int(usage.get("prompt")) or _as_int(usage.get("prompt_tokens"))
-    output_value = _as_int(usage.get("output")) or _as_int(usage.get("completion")) or _as_int(usage.get("completion_tokens"))
+    total = _first_present_int(usage, "total", "total_tokens")
+    input_value = _first_present_int(usage, "input", "prompt", "prompt_tokens", "input_tokens")
+    output_value = _first_present_int(usage, "output", "completion", "completion_tokens", "output_tokens")
     if total is None and input_value is None and output_value is None:
         return None
-    if input_value is None:
-        input_value = 0
-    if output_value is None:
-        output_value = 0
-    if total is None:
+    if total is None and input_value is not None and output_value is not None:
         total = input_value + output_value
     return {"input": input_value, "output": output_value, "total": total}
+
+
+def _first_present_int(data: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        if key not in data:
+            continue
+        value = _as_int(data.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 def _in_window(row: dict[str, Any], from_value: str, to_value: str) -> bool:

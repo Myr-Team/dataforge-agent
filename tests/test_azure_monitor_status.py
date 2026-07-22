@@ -268,6 +268,26 @@ class _MetricQueryResult:
         ]
 
 
+class _GatewayMetricQueryResult:
+    def __init__(self, row: list[object]) -> None:
+        self.tables = [
+            type(
+                "Table",
+                (),
+                {
+                    "columns": [
+                        _Column("governed_calls"),
+                        _Column("total_tokens"),
+                        _Column("last_observed_at"),
+                        _Column("appId"),
+                        _Column("_ResourceId"),
+                    ],
+                    "rows": [row],
+                },
+            )()
+        ]
+
+
 class _PartialResult:
     def __init__(self, partial_error: object, partial_data: object) -> None:
         self.partial_error = partial_error
@@ -354,6 +374,36 @@ def test_query_accepts_foundry_root_span_from_workspace_app_traces_table(monkeyp
     recorded_query = client.calls[0][1]
     assert "AppRequests, AppDependencies, AppTraces" in recorded_query
     assert 'column_ifexists("Properties"' in recorded_query
+
+
+def test_gateway_metric_evidence_uses_exact_requested_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    _monitor_env(monkeypatch)
+    client = _LogsClient(
+        _GatewayMetricQueryResult(
+            [
+                4,
+                120,
+                "2026-07-13T00:05:00Z",
+                _APPLICATION_ID,
+                _RESOURCE_ID,
+            ]
+        )
+    )
+    start = datetime(2026, 7, 3, 1, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 7, 5, 9, 30, tzinfo=timezone.utc)
+
+    evidence = monitor.get_gateway_metric_evidence(
+        "workspace-private",
+        "dfmonapim721",
+        from_value="2026-07-03T01:00:00Z",
+        to_value="2026-07-05T09:30:00Z",
+        client_factory=lambda: client,
+    )
+
+    assert evidence.state == "verified"
+    assert evidence.governed_calls == 4
+    args = client.calls[0]
+    assert args[2]["timespan"] == (start, end)
 
 
 def test_telemetry_metrics_are_aggregate_only_and_bound_to_hashed_run_identity(monkeypatch: pytest.MonkeyPatch) -> None:
