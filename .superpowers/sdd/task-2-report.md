@@ -212,3 +212,39 @@ Residual risks after correction:
 
 - This correction intentionally narrows model response usage telemetry to the three server-recognized token counters only. If a future provider introduces a new token counter we actually want, it must be explicitly allowlisted first.
 - Task 2 still does not decide whether the follow-up candidate route is eligible from offline evaluation evidence. That gate remains Task 4.
+
+### Final correction (2026-07-22): preserve unknown allowlisted counters as null
+
+Reviewer follow-up found one remaining truthfulness bug in the previous correction: partial provider usage such as `{"input_tokens": None, "output_tokens": 3, "total_tokens": None}` was still losing the unknown counters during normalization. The response metadata kept only `output_tokens`, and the persisted run model row kept only `completion`.
+
+What changed:
+
+- `backend/foundry_client.py::_usage_dict(...)`
+  - now returns the three DataForge-allowlisted counters whenever the provider usage object exposes any recognized token keys;
+  - preserves explicit unknown values as `None`;
+  - still strips arbitrary extra provider fields;
+  - still keeps observed `0` as `0`.
+- `backend/run_store.py::_normalized_observed_usage(...)`
+  - now mirrors that contract for persisted model telemetry;
+  - returns exactly the normalized `prompt` / `completion` / `total` keys when any recognized provider token key is present;
+  - preserves unknown counters as `None` instead of dropping them.
+
+TDD evidence:
+
+Red command:
+
+- `python -m pytest tests/test_model_policy.py::test_response_metadata_preserves_unknown_allowlisted_usage_fields tests/test_model_policy.py::test_run_store_persists_partial_usage_without_fabricating_unknown_counts -q`
+  - Result before the fix: `2 failed`
+  - Failure 1 showed `_response_meta(...)["usage"]` collapsed to `{"output_tokens": 3}`.
+  - Failure 2 showed persisted model usage collapsed to `{"completion": 3}`.
+
+Green commands:
+
+- `python -m pytest tests/test_model_policy.py::test_response_metadata_preserves_unknown_allowlisted_usage_fields tests/test_model_policy.py::test_run_store_persists_partial_usage_without_fabricating_unknown_counts -q`
+  - Result after the fix: `2 passed`
+- `python -m pytest tests/test_model_policy.py tests/test_model_route_telemetry.py tests/test_tracing_telemetry.py tests/test_gateway_client.py tests/test_maf_agents.py -q`
+  - Result after the fix: `44 passed`
+
+Residual risk after final correction:
+
+- This change fixes model response metadata and persisted model rows only. Higher-level aggregate token summaries still follow their own existing normalization rules and should be evaluated separately if we want end-to-end unknown-token propagation in every summary surface.

@@ -753,13 +753,38 @@ def _usage_value(usage: Any, *keys: str) -> int | None:
     return None
 
 
+def _usage_has_known_keys(usage: Any) -> bool:
+    values: dict[str, Any]
+    if hasattr(usage, "model_dump"):
+        dumped = usage.model_dump()
+        values = dumped if isinstance(dumped, dict) else {}
+    elif isinstance(usage, dict):
+        values = usage
+    else:
+        values = {
+            key: getattr(usage, key, None)
+            for key in (
+                "input_tokens",
+                "prompt_tokens",
+                "prompt",
+                "output_tokens",
+                "completion_tokens",
+                "completion",
+                "total_tokens",
+                "total",
+            )
+        }
+    return any(key in values for key in ("input_tokens", "prompt_tokens", "prompt", "output_tokens", "completion_tokens", "completion", "total_tokens", "total"))
+
+
 def _usage_dict(usage: Any) -> dict[str, Any]:
-    normalized = {
+    if not _usage_has_known_keys(usage):
+        return {}
+    return {
         "input_tokens": _usage_value(usage, "input_tokens", "prompt_tokens", "prompt"),
         "output_tokens": _usage_value(usage, "output_tokens", "completion_tokens", "completion"),
         "total_tokens": _usage_value(usage, "total_tokens", "total"),
     }
-    return {key: value for key, value in normalized.items() if value is not None}
 
 
 def _usage_observed(usage: dict[str, Any]) -> bool:

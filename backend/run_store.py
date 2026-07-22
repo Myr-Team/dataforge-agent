@@ -4012,24 +4012,25 @@ def _usage_from_dict(data: dict[str, Any]) -> dict[str, int]:
     return {"total": total, "prompt": prompt, "completion": completion}
 
 
-def _normalized_observed_usage(data: Any) -> dict[str, int]:
+def _normalized_observed_usage(data: Any) -> dict[str, int | None]:
     usage = data.get("usage") if isinstance(data, dict) and "usage" in data else data
     if not isinstance(usage, dict):
         return {}
-    normalized: dict[str, int] = {}
-    for target, source in (
-        ("prompt", "prompt"),
-        ("prompt", "input_tokens"),
-        ("completion", "completion"),
-        ("completion", "output_tokens"),
-        ("total", "total"),
-        ("total", "total_tokens"),
-    ):
-        if target in normalized:
-            continue
-        value = usage.get(source)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            normalized[target] = int(value)
+    source_pairs = {
+        "prompt": ("prompt", "input_tokens"),
+        "completion": ("completion", "output_tokens"),
+        "total": ("total", "total_tokens"),
+    }
+    if not any(source in usage for sources in source_pairs.values() for source in sources):
+        return {}
+    normalized: dict[str, int | None] = {}
+    for target, sources in source_pairs.items():
+        normalized[target] = None
+        for source in sources:
+            value = usage.get(source)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                normalized[target] = int(value)
+                break
     return normalized
 
 

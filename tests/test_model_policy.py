@@ -107,6 +107,43 @@ def test_response_metadata_records_effective_route_and_deployment(monkeypatch) -
     }
 
 
+def test_response_metadata_preserves_unknown_allowlisted_usage_fields(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "primary-analysis",
+                    "deployment": "gpt-5.1",
+                    "label": "Primary analysis",
+                    "capabilities": ["chat", "analysis"],
+                }
+            ]
+        ),
+    )
+    monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "primary-analysis")
+
+    response = type(
+        "Response",
+        (),
+        {
+            "id": "resp-partial-usage",
+            "usage": {
+                "input_tokens": None,
+                "output_tokens": 3,
+                "total_tokens": None,
+                "cache_read_tokens": 99,
+            },
+        },
+    )()
+
+    assert foundry_client._response_meta(response, "unit-test")["usage"] == {
+        "input_tokens": None,
+        "output_tokens": 3,
+        "total_tokens": None,
+    }
+
+
 def test_followup_persistence_metadata_keeps_effective_model_route() -> None:
     assert orchestrator._llm_result_metadata(
         {
@@ -166,6 +203,51 @@ def test_run_store_persists_effective_model_route_and_deployment(tmp_path, monke
             "usage": {"prompt": 0, "completion": 3, "total": 3},
             "mode": None,
             "time": run_store.get_run("run-model-route")["models"][0]["time"],
+        }
+    ]
+
+
+def test_run_store_persists_partial_usage_without_fabricating_unknown_counts(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+
+    run_store.start_run("run-partial-usage", "workspace-model-route", "chat")
+    run_store.record_event(
+        "run-partial-usage",
+        "model_response",
+        {
+            "agent": "df-coordinator",
+            "model_route": "primary-analysis",
+            "model_deployment": "gpt-5.1",
+            "usage": {
+                "input_tokens": None,
+                "output_tokens": 3,
+                "total_tokens": None,
+                "cache_read_tokens": 999,
+                "sensitive_detail": "never-store-me",
+            },
+        },
+    )
+    run_store.complete_run("run-partial-usage", final={"text": "done"}, artifact={})
+
+    assert run_store.get_run("run-partial-usage")["models"] == [
+        {
+            "agent": "df-coordinator",
+            "model": "gpt-5.1",
+            "route": "primary-analysis",
+            "deployment": "gpt-5.1",
+            "selection": None,
+            "fallback_reason": None,
+            "execution_kind": None,
+            "latency_ms": None,
+            "model_route": "primary-analysis",
+            "model_deployment": "gpt-5.1",
+            "response_id": None,
+            "usage": {"prompt": None, "completion": 3, "total": None},
+            "mode": None,
+            "time": run_store.get_run("run-partial-usage")["models"][0]["time"],
         }
     ]
 
