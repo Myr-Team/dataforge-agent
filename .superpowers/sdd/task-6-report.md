@@ -1,63 +1,63 @@
-# Task 6 Report: MAF Runtime Evaluation Gate
+# Task 6 Report: Monitor BI verification and documentation
 
-## Delivered
+## Scope completed
 
-- Added a connector-free deterministic evaluation runner that compares a legacy baseline with the real `MafTeamRuntime` entrypoint using bounded fake agents.
-- Added seven schema- and evidence-driven cases covering `direct`, `concurrent_research`, `specialist_handoff`, and `bounded_review` plus weak evidence, missing optional market evidence, ambiguous follow-up, a high-impact conclusion, and forced runtime failure.
-- Added contract tests for case coverage, semantic-only routing inputs, truthful unknown metrics, stable documentation, and exactly-once fallback.
-- Updated both READMEs for `off`/`audit`/`full`, stable canary selection, exactly-once fallback, supported collaboration patterns, stable package versions, and the explicit exclusion of Magentic and Foundry Hosted Agents.
+- Added monitor API reconciliation coverage in [tests/test_monitoring_dashboard_api.py](C:\Users\12140\Documents\Agent-Demo-project-worktrees\codex-monitor-bi-context\tests\test_monitoring_dashboard_api.py).
+- Updated [README.md](C:\Users\12140\Documents\Agent-Demo-project-worktrees\codex-monitor-bi-context\README.md) with truthful monitoring, model-routing, APIM governance, Context Pack, and Foundry ROI boundaries.
+- Updated [backend/.env.example](C:\Users\12140\Documents\Agent-Demo-project-worktrees\codex-monitor-bi-context\backend\.env.example) with safe placeholders for route allowlists and the offline evaluation gate.
+- Created [docs/validation/2026-07-22-monitor-bi-evidence.md](C:\Users\12140\Documents\Agent-Demo-project-worktrees\codex-monitor-bi-context\docs\validation\2026-07-22-monitor-bi-evidence.md) as an honest candidate-verification record with runtime-only fields left pending.
 
-## Deterministic Evaluation
+## Reconciliation coverage
 
-Command:
+Added `test_monitor_dashboard_reconciles_model_and_route_totals_with_run_records`.
 
-```text
-python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json
-```
+What it proves:
 
-Deterministic harness result from this checkout:
+- `models` counts only normalized execution rows with route/model telemetry.
+- `routes` may exceed `models` because route projection preserves `unknown` executions when a run has no model telemetry.
+- `coverage.governed_text_calls` matches the counted governed text model rows.
 
-The report scope is `measurement_scope='deterministic_harness'` with `production_quality_claim=false`. Groundedness and unsupported-claim rate are fixture/reference-propagation contract checks, not production answer quality measurements.
+Focused result:
 
-| Metric | Value | Status | Sample size |
-|---|---:|---|---:|
-| selection_accuracy | 1.0 | measured | 7 |
-| groundedness (fixture contract check) | 1.0 | measured | 7 claims |
-| unsupported_claim_rate (fixture contract check) | 0.0 | measured | 7 claims |
-| latency_ms | 35.325371 | measured | 7 cases |
-| tokens | null | unknown | 0 |
-| task_completion | 1.0 | measured | 7 cases |
-| fallback_rate | 0.142857 | measured | 7 cases |
+- `python -m pytest tests/test_monitoring_dashboard_api.py::test_monitor_dashboard_reconciles_model_and_route_totals_with_run_records -q`
+- Result: `1 passed in 5.63s`
 
-The forced runtime failure recorded `fallback_attempts=1`. Token usage is absent from the deterministic runtime result contract and is therefore reported as `null`/`unknown`, not zero.
+## Automated verification
 
-## Verification
+1. Focused monitoring API suite
+   - Command: `python -m pytest tests/test_monitoring_dashboard_api.py -q`
+   - Result: `3 passed in 6.02s`
 
-- `python -m pytest tests/test_maf_evaluation_contract.py tests/test_maf_team_runtime.py tests/test_maf_contracts.py -q`: 31 passed, one upstream MAF experimental-workflow warning.
-- `npm run build` in `web`: passed; 1,750 modules transformed.
-- `python -m pytest -q`: 103 passed, 1 failed. The failure is outside Task 6 ownership in `tests/test_tracing_telemetry.py::test_agent_trace_emits_foundry_agent_identity_without_raw_actor_email`; the installed OpenTelemetry `Status` object representation does not contain the test's expected `OK` string.
-- No deployment or canary environment changes were performed.
+2. Full backend pytest
+   - Command: `python -m pytest -q`
+   - Result: `1030 passed, 1 skipped, 1 failed, 1 warning in 141.01s`
+   - Residual: `tests/test_model_route_telemetry.py::test_followup_run_persists_selected_route_model_usage_and_latency`
+   - Reason observed: the test still expects `followup`, while the current offline evaluation gate leaves the candidate route ineligible and the truthful selected route falls back to `analysis`.
 
-## Stable MAF Compatibility Fix (2026-07-12)
+3. Full frontend node tests
+   - Command: `node --test <expanded list of web/src/*.test.mjs>`
+   - Result: `74 passed, 1 failed in 1078.8152ms`
+   - Residual: `web/src/costValuePanel.test.mjs`
+   - Reason observed: SSR import load failure for `/src/components.jsx` (`ERR_LOAD_URL`), outside the Task 6 monitor scope.
 
-Stable MAF collaboration now validates sequential participants against the runtime-checkable `SupportsAgentRun` protocol. The Task 6 deterministic fake previously exposed only `id`, `name`, and an async `run`, so `SequentialBuilder` rejected concurrent-case participants before execution.
+4. Task 6 direct frontend test
+   - Command: `node --test web/src/monitorDashboardViewModel.test.mjs`
+   - Result: `4 passed in 174.3078ms`
 
-The deterministic fake now matches the stable Task 3 test-double contract: it exposes `description`, stream-aware `run`, `AgentResponse`/`ResponseStream` results, and `create_session`/`get_session`, while retaining queued local outputs and injected failures with no network calls. Regression coverage verifies both direct protocol acceptance by `SequentialBuilder` and execution of every configured case.
+5. Frontend production build
+   - Command: `npm --prefix web run build`
+   - Result: `passed; 1761 modules transformed, built in 1.24s`
 
-Exact verification results:
+## Non-live residuals
 
-- `python -m pytest tests/test_maf_evaluation_contract.py -q`: 7 passed, 1 upstream MAF experimental-workflow warning, in 3.63 seconds.
-- `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`: completed all 7 cases. Deterministic harness metrics were `selection_accuracy=1.0`, `groundedness=1.0`, `unsupported_claim_rate=0.0`, `latency_ms=37.236957`, `tokens=null/unknown`, `task_completion=1.0`, and `fallback_rate=0.142857`. The groundedness values were fixture contract checks rather than production quality measurements, and the forced failure retained `fallback_attempts=1`.
-- `python -m pytest -q`: 135 passed, 1 upstream MAF experimental-workflow warning, in 7.98 seconds.
-- `npm run build` in `web`: passed; Vite 8.0.16 transformed 1,751 modules and built in 488 ms.
-- No deployment or canary environment changes were performed.
+- Candidate Container Apps deployment was not performed in this task.
+- Signed-in browser smoke was not performed in this task.
+- The validation record keeps candidate URL, revision, screenshot, and trace fields pending on purpose.
+- Full-repo automated verification is not yet clean because of the two pre-existing failures listed above.
 
-## P1 Evaluation Truthfulness Fix (2026-07-12)
+## Commit scope
 
-The deterministic JSON now declares `measurement_scope='deterministic_harness'` and `production_quality_claim=false` at the report level and on every metric. `groundedness` and `unsupported_claim_rate` additionally declare `interpretation='fixture_reference_propagation_contract_check'`: they are fixture/reference-propagation contract checks, not production answer quality measurements. Tokens remain `null`/`unknown` because the harness has no usage telemetry.
-
-Exact verification results:
-
-- `python -m pytest tests/test_maf_evaluation_contract.py -q`: 7 passed, 1 upstream MAF experimental-workflow warning, in 3.51 seconds.
-- `python eval/run_maf_runtime_eval.py --mode deterministic --output generated-outputs/maf-runtime-eval.json`: completed all 7 cases with `selection_accuracy=1.0`, fixture-contract `groundedness=1.0`, fixture-contract `unsupported_claim_rate=0.0`, `latency_ms=37.640143`, `tokens=null/unknown`, `task_completion=1.0`, and `fallback_rate=0.142857`; forced fallback remained exactly once with `fallback_attempts=1`.
-- No deployment or canary environment changes were performed.
+- No Azure deployment
+- No auth changes
+- No Container Apps traffic change
+- No secret material added

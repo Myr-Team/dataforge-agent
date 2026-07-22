@@ -86,7 +86,13 @@ Routing is decided at runtime by the auditor's conclusion via conditional edges 
 ### Current implementation boundary
 
 - The first-class MAF team runtime supports four bounded collaboration patterns: `direct`, `concurrent_research`, `specialist_handoff`, and `bounded_review`. Each run reports its selected-agent budget, revision cap, wall-clock time, participant work, and provider-reported token usage; unavailable usage stays `null`. The legacy audit/revise graph remains available in `audit` mode.
+- Owner-only monitoring reads one truthful telemetry projection: run records, normalized model-route metadata, owner chargeback, verified outcome records, and APIM/Azure Monitor evidence where configured. The Monitor page never fabricates price, ROI, evaluation, or trace success when those sources are absent.
+- APIM governance scope is currently limited to governed text-model calls. Image generation remains visible as out-of-scope coverage but is not counted as governed text cost or route usage until it has a separate gateway path.
+- Context Pack optimization is follow-up only. Full analysis, audit repair, and market-research paths continue to use their existing evidence-rich execution context and are never routed through the lightweight candidate path.
+- Persisted Context Pack telemetry is metadata-only: scope, version, fingerprint, evidence references, durable-fact identifiers, and bounded fallback state. Raw prompts, raw conversation history, customer evidence text, and Entra claims are excluded.
+- Candidate follow-up routes are disabled by default and become eligible only when an offline evaluation summary exists, is fresh, has enough samples, and does not regress evidence coverage or completion.
 - Governance separates three different facts: observed model usage/cost, estimated time-value assumptions, and source-linked business outcomes. Outcome records move from `measured` to `verified` only through an explicit reviewer action. Application Insights/OpenTelemetry connectivity is shown separately from Foundry native ROI, which is not connected yet.
+- Foundry ROI Preview is not integrated into DataForge today. The product can display verified local ROI from reviewed outcome records and can separately show that Foundry ROI remains unavailable, not configured, or access-dependent.
 - Analysis runs form a canonical experiment ledger. Plan and artifact snapshots attach to their source analysis instead of pretending to be new experiments. Each version exposes evidence, metric provenance, evidence deltas, and decision deltas; synthetic, market-only, or untraceable inputs cannot promote the effective verdict.
 - Artifact generation runs as persisted background jobs with per-kind partial success, refresh recovery, idempotency, and atomic worker claims. PDF filenames carry the source plan version (`V1`, `V2`, ...).
 - The global task center reads durable server task records across analysis, artifact, ingest, and connector flows. It supports truthful queued/running/terminal states, recovery after refresh, cancellation, and retries only where a server-side dispatcher exists.
@@ -208,8 +214,23 @@ terraform init && terraform apply
 - `infra/envs/dev/terraform.tfvars.example` — deployment identifiers. Copy to `terraform.tfvars`.
 - `.env`, `*.tfvars`, and `*.tfstate*` are git-ignored. **Never commit real keys or subscription IDs.**
 
-Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_AUTH_MODE` (`auto`, `api_key`, or `managed_identity`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search), `DF_WORKSPACE_RBAC_ENFORCED` (workspace role enforcement), `DF_WEB_PROXY_SECRET` (shared secret for the Web-to-backend identity proxy), `DF_ARTIFACT_JOB_STALE_SECONDS` (interrupted-job recovery window), and `DF_SEPARATE_ANALYSIS_CONVERSATIONS` (candidate-gated separation of autonomous analysis runs from human message history; default `0`, enable `1` only with the matching frontend revision).
+Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_AUTH_MODE` (`auto`, `api_key`, or `managed_identity`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search), `DF_WORKSPACE_RBAC_ENFORCED` (workspace role enforcement), `DF_WEB_PROXY_SECRET` (shared secret for the Web-to-backend identity proxy), `DF_ARTIFACT_JOB_STALE_SECONDS` (interrupted-job recovery window), `DF_SEPARATE_ANALYSIS_CONVERSATIONS` (candidate-gated separation of autonomous analysis runs from human message history; default `0`, enable `1` only with the matching frontend revision), `DF_MODEL_ROUTE_ALLOWLIST` / `DF_DEFAULT_MODEL_ROUTE` (server-owned text-route allowlist and default route), and `DF_CONTEXT_EVALUATION_SUMMARY_PATH` / `DF_CONTEXT_EVALUATION_STALE_DAYS` (offline evaluation gate inputs for candidate follow-up routing).
 
+## Monitoring and model routing
+
+- `Monitor` is an owner-only surface. Backend authorization decides access for both navigation and API reads; the frontend only reflects that server-backed permission.
+- `models` and `routes` show different but related truths. `models` counts normalized model execution records that actually carried deployment or usage metadata. `routes` additionally preserves executions whose route is only known as `unknown`, so route totals may exceed model totals.
+- `coverage.governed_text_calls` is the governed text-call floor from normalized run metadata, and it can be raised by APIM evidence when that evidence is configured and verified for the requested window.
+- Missing pricing or business outcome evidence must stay `unavailable` or `pending_verification`; a number appears only when the underlying evidence exists.
+- The context-optimization status in Monitor comes from the offline gate summary only: `status`, `sample_count`, `evaluator_version`, and `eligible`. It is not a claim that a candidate route is live in production.
+
+## Configuration
+
+- `backend/.env.example` — all backend environment variables (Azure endpoints, keys, feature flags). Copy to `.env`.
+- `infra/envs/dev/terraform.tfvars.example` — deployment identifiers. Copy to `terraform.tfvars`.
+- `.env`, `*.tfvars`, and `*.tfstate*` are git-ignored. **Never commit real keys or subscription IDs.**
+
+Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_AUTH_MODE` (`auto`, `api_key`, or `managed_identity`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search), `DF_WORKSPACE_RBAC_ENFORCED` (workspace role enforcement), `DF_WEB_PROXY_SECRET` (shared secret for the Web-to-backend identity proxy), `DF_ARTIFACT_JOB_STALE_SECONDS` (interrupted-job recovery window), `DF_SEPARATE_ANALYSIS_CONVERSATIONS` (candidate-gated separation of autonomous analysis runs from human message history; default `0`, enable `1` only with the matching frontend revision), `DF_MODEL_ROUTE_ALLOWLIST` / `DF_DEFAULT_MODEL_ROUTE` (server-owned text-route allowlist and default route), and `DF_CONTEXT_EVALUATION_SUMMARY_PATH` / `DF_CONTEXT_EVALUATION_STALE_DAYS` (offline evaluation gate inputs for candidate follow-up routing).
 ## Responsible AI
 
 - **Prompt-injection defense** via Azure AI Content Safety on inputs.
