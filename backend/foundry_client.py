@@ -735,18 +735,31 @@ def _stream_response_events_with_retry(openai_client: Any, create_args: dict[str
             retry_count += 1
 
 
-def _usage_dict(usage: Any) -> dict[str, Any]:
+def _usage_value(usage: Any, *keys: str) -> int | None:
+    values: dict[str, Any]
     if usage is None:
-        return {}
+        return None
     if hasattr(usage, "model_dump"):
-        return usage.model_dump()
-    if isinstance(usage, dict):
-        return usage
-    return {
-        "input_tokens": getattr(usage, "input_tokens", None),
-        "output_tokens": getattr(usage, "output_tokens", None),
-        "total_tokens": getattr(usage, "total_tokens", None),
+        dumped = usage.model_dump()
+        values = dumped if isinstance(dumped, dict) else {}
+    elif isinstance(usage, dict):
+        values = usage
+    else:
+        values = {key: getattr(usage, key, None) for key in keys}
+    for key in keys:
+        value = values.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value)
+    return None
+
+
+def _usage_dict(usage: Any) -> dict[str, Any]:
+    normalized = {
+        "input_tokens": _usage_value(usage, "input_tokens", "prompt_tokens", "prompt"),
+        "output_tokens": _usage_value(usage, "output_tokens", "completion_tokens", "completion"),
+        "total_tokens": _usage_value(usage, "total_tokens", "total"),
     }
+    return {key: value for key, value in normalized.items() if value is not None}
 
 
 def _usage_observed(usage: dict[str, Any]) -> bool:

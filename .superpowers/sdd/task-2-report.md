@@ -167,6 +167,48 @@ Green commands:
 
 ### Residual risks
 
-- The persisted run model row now carries both normalized `usage` and raw `provider_usage` to preserve compatibility with existing readers. A later cleanup task can remove the raw mirror once downstream consumers are migrated.
 - Task 2 does not yet gate follow-up candidate routing on offline evaluation. That eligibility layer is still Task 4.
 - Image-generation calls remain out of scope, by design.
+
+### Correction pass (2026-07-22): telemetry minimization and route-scope regressions
+
+Scoped files:
+
+- `backend/foundry_client.py`
+- `backend/run_store.py`
+- `tests/test_model_policy.py`
+
+What changed:
+
+- `_usage_dict(...)` now emits only the DataForge-safe allowlisted token fields:
+  - `input_tokens`
+  - `output_tokens`
+  - `total_tokens`
+- Provider-specific or arbitrary extra usage fields such as cache details, reasoning content, or other future keys are dropped before response metadata is produced.
+- `backend/run_store.py` no longer persists raw `provider_usage` into run model rows. Persisted model telemetry keeps only the normalized `usage` block (`prompt` / `completion` / `total`) plus the selected route metadata.
+- Added deterministic `model_route_scope(...)` regression tests covering:
+  - ordinary exit restoring the default route;
+  - nested scope exit restoring the outer route;
+  - exception exit restoring the prior/default route;
+  - no cross-request route bleed after scope exit.
+
+TDD evidence:
+
+Red command:
+
+- `python -m pytest tests/test_model_policy.py::test_response_metadata_records_effective_route_and_deployment tests/test_model_policy.py::test_run_store_persists_effective_model_route_and_deployment tests/test_model_policy.py::test_model_route_scope_restores_default_after_exit tests/test_model_policy.py::test_model_route_scope_restores_outer_route_when_nested tests/test_model_policy.py::test_model_route_scope_restores_prior_route_after_exception tests/test_model_policy.py::test_model_route_scope_does_not_bleed_between_requests -q`
+  - Result before the fix: `2 failed, 4 passed`
+  - Failure 1 proved `_response_meta(...)` leaked unrecognized provider usage fields (`cache_read_tokens`, `reasoning_content`).
+  - Failure 2 proved `run_store` still persisted raw `provider_usage`, including unrecognized fields (`cache_read_tokens`, `sensitive_detail`).
+
+Green commands:
+
+- `python -m pytest tests/test_model_policy.py::test_response_metadata_records_effective_route_and_deployment tests/test_model_policy.py::test_run_store_persists_effective_model_route_and_deployment tests/test_model_policy.py::test_model_route_scope_restores_default_after_exit tests/test_model_policy.py::test_model_route_scope_restores_outer_route_when_nested tests/test_model_policy.py::test_model_route_scope_restores_prior_route_after_exception tests/test_model_policy.py::test_model_route_scope_does_not_bleed_between_requests -q`
+  - Result after the fix: `6 passed`
+- `python -m pytest tests/test_model_policy.py tests/test_model_route_telemetry.py tests/test_tracing_telemetry.py tests/test_gateway_client.py tests/test_maf_agents.py -q`
+  - Result after the fix: `42 passed`
+
+Residual risks after correction:
+
+- This correction intentionally narrows model response usage telemetry to the three server-recognized token counters only. If a future provider introduces a new token counter we actually want, it must be explicitly allowlisted first.
+- Task 2 still does not decide whether the follow-up candidate route is eligible from offline evaluation evidence. That gate remains Task 4.

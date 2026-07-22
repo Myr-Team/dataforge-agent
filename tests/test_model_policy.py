@@ -5,7 +5,7 @@ import json
 import backend.foundry_client as foundry_client
 import backend.orchestrator as orchestrator
 import backend.run_store as run_store
-from backend.model_policy import public_model_route_snapshot, select_text_route
+from backend.model_policy import current_text_route, model_route_scope, public_model_route_snapshot, select_text_route
 
 
 def test_chat_model_uses_only_the_server_allowlist(monkeypatch) -> None:
@@ -77,7 +77,20 @@ def test_response_metadata_records_effective_route_and_deployment(monkeypatch) -
     )
     monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "primary-analysis")
 
-    response = type("Response", (), {"id": "resp-1", "usage": {"input_tokens": 8, "output_tokens": 3, "total_tokens": 11}})()
+    response = type(
+        "Response",
+        (),
+        {
+            "id": "resp-1",
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 3,
+                "total_tokens": 11,
+                "cache_read_tokens": 99,
+                "reasoning_content": "do not persist",
+            },
+        },
+    )()
 
     assert foundry_client._response_meta(response, "unit-test") == {
         "mode": "unit-test",
@@ -126,7 +139,13 @@ def test_run_store_persists_effective_model_route_and_deployment(tmp_path, monke
             "agent": "df-coordinator",
             "model_route": "primary-analysis",
             "model_deployment": "gpt-5.1",
-            "usage": {"input_tokens": 8, "output_tokens": 3, "total_tokens": 11},
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 3,
+                "total_tokens": 3,
+                "cache_read_tokens": 999,
+                "sensitive_detail": "never-store-me",
+            },
         },
     )
     run_store.complete_run("run-model-route", final={"text": "done"}, artifact={})
@@ -144,12 +163,149 @@ def test_run_store_persists_effective_model_route_and_deployment(tmp_path, monke
             "model_route": "primary-analysis",
             "model_deployment": "gpt-5.1",
             "response_id": None,
-            "usage": {"prompt": 8, "completion": 3, "total": 11},
-            "provider_usage": {"input_tokens": 8, "output_tokens": 3, "total_tokens": 11},
+            "usage": {"prompt": 0, "completion": 3, "total": 3},
             "mode": None,
             "time": run_store.get_run("run-model-route")["models"][0]["time"],
         }
     ]
+
+
+def test_model_route_scope_restores_default_after_exit(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "analysis",
+                    "deployment": "gpt-5.1",
+                    "label": "Analysis",
+                    "capabilities": ["analysis", "chat"],
+                },
+                {
+                    "id": "followup",
+                    "deployment": "gpt-5-mini",
+                    "label": "Follow-up",
+                    "capabilities": ["followup"],
+                },
+                {
+                    "id": "reply",
+                    "deployment": "gpt-5-nano",
+                    "label": "Reply",
+                    "capabilities": ["chat"],
+                },
+            ]
+        ),
+    )
+    monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "analysis")
+
+    assert current_text_route().route.route_id == "reply"
+    with model_route_scope(route=select_text_route("full_analysis"), execution_kind="full_analysis"):
+        assert current_text_route().route.route_id == "analysis"
+    assert current_text_route().route.route_id == "reply"
+
+
+def test_model_route_scope_restores_outer_route_when_nested(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "analysis",
+                    "deployment": "gpt-5.1",
+                    "label": "Analysis",
+                    "capabilities": ["analysis", "chat"],
+                },
+                {
+                    "id": "followup",
+                    "deployment": "gpt-5-mini",
+                    "label": "Follow-up",
+                    "capabilities": ["followup"],
+                },
+                {
+                    "id": "reply",
+                    "deployment": "gpt-5-nano",
+                    "label": "Reply",
+                    "capabilities": ["chat"],
+                },
+            ]
+        ),
+    )
+    monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "analysis")
+
+    with model_route_scope(route=select_text_route("full_analysis"), execution_kind="full_analysis"):
+        assert current_text_route().route.route_id == "analysis"
+        with model_route_scope(route=select_text_route("follow_up", candidate_enabled=True), execution_kind="follow_up"):
+            assert current_text_route().route.route_id == "followup"
+        assert current_text_route().route.route_id == "analysis"
+
+
+def test_model_route_scope_restores_prior_route_after_exception(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "analysis",
+                    "deployment": "gpt-5.1",
+                    "label": "Analysis",
+                    "capabilities": ["analysis", "chat"],
+                },
+                {
+                    "id": "reply",
+                    "deployment": "gpt-5-nano",
+                    "label": "Reply",
+                    "capabilities": ["chat"],
+                },
+            ]
+        ),
+    )
+    monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "analysis")
+
+    try:
+        with model_route_scope(route=select_text_route("full_analysis"), execution_kind="full_analysis"):
+            assert current_text_route().route.route_id == "analysis"
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+
+    assert current_text_route().route.route_id == "reply"
+
+
+def test_model_route_scope_does_not_bleed_between_requests(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "analysis",
+                    "deployment": "gpt-5.1",
+                    "label": "Analysis",
+                    "capabilities": ["analysis", "chat"],
+                },
+                {
+                    "id": "followup",
+                    "deployment": "gpt-5-mini",
+                    "label": "Follow-up",
+                    "capabilities": ["followup"],
+                },
+                {
+                    "id": "reply",
+                    "deployment": "gpt-5-nano",
+                    "label": "Reply",
+                    "capabilities": ["chat"],
+                },
+            ]
+        ),
+    )
+    monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "analysis")
+
+    with model_route_scope(route=select_text_route("follow_up", candidate_enabled=True), execution_kind="follow_up"):
+        assert current_text_route().route.route_id == "followup"
+    assert current_text_route().route.route_id == "reply"
+
+    with model_route_scope(route=select_text_route("full_analysis"), execution_kind="full_analysis"):
+        assert current_text_route().route.route_id == "analysis"
+    assert current_text_route().route.route_id == "reply"
 
 
 def test_public_model_route_snapshot_exposes_only_allowlisted_routes(monkeypatch) -> None:

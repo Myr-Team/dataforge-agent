@@ -175,7 +175,6 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
                     "model_deployment": deployment,
                     "response_id": plain.get("response_id"),
                     "usage": normalized_usage,
-                    "provider_usage": _plain(plain.get("usage") or {}),
                     "mode": plain.get("mode"),
                     "time": now,
                 }
