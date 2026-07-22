@@ -2,12 +2,12 @@
 
 Date: `2026-07-22`
 Scope: Monitor BI, truthful model-route telemetry, bounded follow-up Context Pack gating
-Validation status: `automated verification in progress; candidate deployment and browser smoke pending`
+Validation status: `candidate deployed at zero traffic; authenticated visual smoke pending`
 
 ## Boundaries
 
 - This record must not invent candidate URLs, revision names, screenshots, trace IDs, or runtime timestamps.
-- This task did not deploy to Azure, change Container Apps traffic, or modify authentication.
+- The candidate is deployed with zero traffic. Production revisions and authentication configuration were not changed.
 - Foundry ROI Preview is not treated as integrated evidence here. Any later runtime note must keep local verified ROI separate from Foundry ROI availability.
 
 ## Automated verification
@@ -21,16 +21,15 @@ Validation status: `automated verification in progress; candidate deployment and
 ### Full backend pytest
 
 - Command: `python -m pytest -q`
-- Status: `failed`
-- Result summary: `1030 passed, 1 skipped, 1 failed, 1 warning in 141.01s`
-- Failure detail: `tests/test_model_route_telemetry.py::test_followup_run_persists_selected_route_model_usage_and_latency` still expects `x-dataforge-model-route == "followup"` even when the offline candidate gate leaves follow-up ineligible and the truthful selected route falls back to `analysis`.
+- Status: `passed`
+- Result summary: `1032 passed, 1 skipped, 1 warning in 147.72s`
+- Residual warning: `backend/maf_team_runtime.py:1065` emits an existing experimental API warning.
 
 ### Frontend node tests
 
 - Command: `node --test <expanded list of web/src/*.test.mjs>`
-- Status: `failed`
-- Result summary: `74 passed, 1 failed in 1078.8152ms`
-- Failure detail: `web/src/costValuePanel.test.mjs` failed SSR loading `/src/components.jsx` (`ERR_LOAD_URL`). This is outside the Task 6 monitor scope.
+- Status: `passed`
+- Result summary: `75 passed`
 
 ### Task 6 direct frontend coverage
 
@@ -42,20 +41,25 @@ Validation status: `automated verification in progress; candidate deployment and
 
 - Command: `npm --prefix web run build`
 - Status: `passed`
-- Result summary: `vite build passed; 1761 modules transformed, built in 1.24s`
+- Result summary: `vite build passed; 1761 modules transformed, built in 1.69s`
 
 ## Candidate deployment evidence
 
-Status: `pending - not executed in Task 6`
+Status: `passed at zero traffic`
 
-- Candidate backend revision: `PENDING_AFTER_DEPLOY`
-- Candidate web revision: `PENDING_AFTER_DEPLOY`
-- Candidate URL: `PENDING_AFTER_DEPLOY`
-- Validation timestamp (UTC): `PENDING_AFTER_DEPLOY`
+- Candidate backend revision: `ca-dataforge-backend--mbi722` (`Healthy`, one replica, `0%` traffic)
+- Candidate web revision: `ca-dataforge-web--mbifx722` (`Healthy`, one replica, `0%` traffic)
+- Candidate URL: `https://ca-dataforge-web---lineage.thankfultree-c0fc8321.eastus2.azurecontainerapps.io/`
+- Candidate backend URL: `https://ca-dataforge-backend---mbi.thankfultree-c0fc8321.eastus2.azurecontainerapps.io/`
+- Candidate web upstream: the candidate backend URL above
+- Validation timestamp (UTC): `2026-07-22T10:22:12Z`
+- Backend health probe: `GET /api/health` returned `ok: true`.
+- Access-control probe: unauthenticated `GET /api/monitoring` with a workspace and time window returned `403 workspace access denied for monitor.read`.
+- Production web traffic remained on `ca-dataforge-web--monprod722` at `100%`; production backend traffic remained on `ca-dataforge-backend--apimprod723` at `100%`.
 
 ## Signed-in browser smoke
 
-Status: `pending - not executed in Task 6`
+Status: `blocked on a user-authenticated browser session`
 
 Record later:
 
@@ -77,7 +81,7 @@ Checklist to fill later:
 
 ## Trace and APIM correlation
 
-Status: `pending - not executed in Task 6`
+Status: `not claimed in this deployment pass`
 
 - APIM evidence window: `PENDING_AFTER_SMOKE`
 - Foundry/OTel trace correlation ID(s): `PENDING_AFTER_SMOKE`
@@ -86,4 +90,4 @@ Status: `pending - not executed in Task 6`
 ## Promotion decision
 
 - Current recommendation: `do not promote from this document alone`
-- Reason: `candidate deployment and signed-in browser evidence are still pending`
+- Reason: `the candidate is healthy and zero-traffic, but its owner-only visual smoke and trace/APIM correlation still require a signed-in session and a real governed call`
