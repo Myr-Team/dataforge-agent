@@ -2,14 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Bot,
+  Clock3,
+  Database,
   Image as ImageIcon,
   Loader2,
   RefreshCw,
   Route,
   ShieldCheck,
-  Sparkles,
-  Users,
   WalletCards,
+  X,
 } from "lucide-react";
 
 import { loadMonitoringDashboard } from "./api.js";
@@ -53,21 +54,20 @@ function statusTone(value) {
 
 function metricIcon(cardId) {
   return {
+    governed: ShieldCheck,
     calls: Activity,
     tokens: Bot,
     cost: WalletCards,
-    quality: ShieldCheck,
-    roi: Sparkles,
+    cache: Database,
   }[cardId] || Activity;
 }
 
 function cardEntries(view) {
   return [
-    { id: "calls", label: "调用", ...view.cards.calls },
+    { id: "governed", label: "受治理调用", ...view.cards.governed },
     { id: "tokens", label: "Tokens", ...view.cards.tokens },
     { id: "cost", label: "估算消耗", ...view.cards.cost },
-    { id: "quality", label: "质量", ...view.cards.quality },
-    { id: "roi", label: "已验证 ROI", ...view.cards.roi },
+    { id: "cache", label: "Redis 复用", ...view.cards.cache },
   ];
 }
 
@@ -88,7 +88,7 @@ function MetricCard({ card }) {
       </div>
       <strong>{card.value}</strong>
       <div className="monitor-card-foot">
-        <span className={`monitor-badge ${statusTone(card.badge)}`}>{card.badge}</span>
+        <span className={`monitor-badge ${card.tone || statusTone(card.badge)}`}>{card.badge}</span>
         <small>{card.meta}</small>
       </div>
     </article>
@@ -118,10 +118,10 @@ function FrameState({ kind, message = "" }) {
   );
 }
 
-function Frame({ title, subtitle, children, loading = false, error = "", empty = false, hasData = false }) {
+function Frame({ title, subtitle, children, loading = false, error = "", empty = false, hasData = false, className = "" }) {
   const blockingState = hasData ? "" : loading ? "loading" : error ? "error" : empty ? "empty" : "";
   return (
-    <section className="monitor-frame">
+    <section className={`monitor-frame ${className}`.trim()}>
       <header className="monitor-frame-head">
         <div>
           <h3>{title}</h3>
@@ -277,6 +277,80 @@ function MemberTable({ rows }) {
   );
 }
 
+function RequestStatus({ state, label }) {
+  return <span className={`monitor-request-status ${state}`}>{label}</span>;
+}
+
+function RecentRequests({ rows, onOpen }) {
+  return (
+    <div className="monitor-request-table" role="table" aria-label="最近请求">
+      <div className="monitor-request-head" role="row">
+        <span role="columnheader">时间</span>
+        <span role="columnheader">路由 / 模型</span>
+        <span role="columnheader">状态</span>
+        <span role="columnheader">缓存</span>
+        <span role="columnheader">用量</span>
+        <span role="columnheader">耗时</span>
+      </div>
+      {rows.map((row, index) => (
+        <button
+          key={`${row.occurredAt}-${row.route}-${index}`}
+          type="button"
+          className="monitor-request-row"
+          role="row"
+          onClick={() => onOpen(row)}
+          title="查看安全溯源详情"
+        >
+          <span role="cell" className="monitor-request-time"><Clock3 size={14} />{row.occurredLabel}</span>
+          <span role="cell" className="monitor-request-route"><b>{row.route}</b><small>{row.deployment}</small></span>
+          <span role="cell"><RequestStatus state={row.status} label={row.statusLabel} /></span>
+          <span role="cell" className={`monitor-cache-state ${row.cacheState}`}>{row.cacheLabel}</span>
+          <span role="cell" className="monitor-request-number">{row.tokensLabel}</span>
+          <span role="cell" className="monitor-request-number">{row.durationLabel}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RequestDrawer({ request, onClose }) {
+  if (!request) return null;
+  const details = [
+    ["发生时间", request.occurredLabel],
+    ["工作区", request.workspaceLabel],
+    ["成员归因", request.memberLabel],
+    ["模型路由", request.route],
+    ["模型部署", request.deployment],
+    ["请求状态", request.statusLabel],
+    ["缓存状态", request.cacheLabel],
+    ["Token", request.tokensLabel],
+    ["模型耗时", request.durationLabel],
+    ["运行 Agent", request.traceAgent],
+    ["追踪参考", request.traceLabel],
+  ];
+  return (
+    <div className="drawer-overlay" role="presentation" onClick={onClose}>
+      <aside className="side-drawer monitor-request-drawer" role="dialog" aria-modal="true" aria-label="请求溯源详情" onClick={(event) => event.stopPropagation()}>
+        <header className="drawer-head">
+          <div>
+            <h3>请求溯源</h3>
+            <p>仅显示安全的运行级元数据。</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭请求溯源" title="关闭"><X size={18} /></button>
+        </header>
+        <div className="drawer-body monitor-request-detail-list">
+          {details.map(([label, value]) => (
+            <div key={label}>
+              <span>{label}</span>
+              <b>{value}</b>
+            </div>
+          ))}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 function EmptyMonitorShell({ title, message }) {
   return (
     <main className="agent-studio monitor-stage">
@@ -298,7 +372,12 @@ export function MonitorPage({ workspaceId = "", workspaceAccess = null }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [reloadSeed, setReloadSeed] = useState(0);
+  const [selectedRequest, setSelectedRequest] = useState(null);
   const requestRef = useRef(0);
+
+  useEffect(() => {
+    setSelectedRequest(null);
+  }, [workspaceId]);
 
   useEffect(() => {
     if (!isOwner || !workspaceId) {
@@ -340,6 +419,7 @@ export function MonitorPage({ workspaceId = "", workspaceAccess = null }) {
   const modelRows = Array.isArray(view.modelRows) ? view.modelRows : [];
   const routeRows = Array.isArray(view.routeRows) ? view.routeRows : [];
   const memberRows = Array.isArray(view.memberRows) ? view.memberRows : [];
+  const requestRows = Array.isArray(view.requestRows) ? view.requestRows : [];
   const generatedAt = snapshot?.freshness?.generated_at
     ? new Date(snapshot.freshness.generated_at).toLocaleString("zh-CN")
     : "未记录";
@@ -422,7 +502,20 @@ export function MonitorPage({ workspaceId = "", workspaceAccess = null }) {
             <MemberTable rows={memberRows} />
           </Frame>
         </div>
+
+        <Frame
+          className="monitor-request-frame"
+          title="最近请求"
+          subtitle="运行级溯源：路由、模型、用量、缓存与追踪参考。不会展示提示词、错误原文或原始身份标识。"
+          loading={loading}
+          error={error}
+          empty={!requestRows.length}
+          hasData={hasSnapshot && requestRows.length > 0}
+        >
+          <RecentRequests rows={requestRows} onOpen={setSelectedRequest} />
+        </Frame>
       </section>
+      <RequestDrawer request={selectedRequest} onClose={() => setSelectedRequest(null)} />
     </main>
   );
 }

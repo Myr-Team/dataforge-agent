@@ -158,3 +158,54 @@ test("monitor view model labels partially verified APIM portfolio evidence", () 
   assert.equal(view.gateway.label, "部分 APIM 指标已验证");
   assert.equal(view.gateway.scopeLabel, "1 / 2 个工作区已验证");
 });
+
+test("monitor view model keeps Redis reuse separate from APIM evidence and only projects safe request fields", () => {
+  const view = monitorDashboardViewModel({
+    summary: {
+      cache: {
+        eligible: 3,
+        hits: 1,
+        misses: 2,
+        unavailable: 0,
+        hit_rate_pct: 33.33,
+        avoided_tokens: 480,
+        avoided_cost: { status: "estimated", amount: 0.0018, currency: "USD" },
+      },
+    },
+    gateway: {
+      state: "verified",
+      governed_calls: 7,
+      total_tokens: 420,
+      provenance: "apim_custom_metric",
+      workspace_count: 1,
+    },
+    requests: [{
+      run_id: "run-safe-1",
+      occurred_at: "2026-07-24T02:00:00Z",
+      member_label: "成员 A",
+      workspace_label: "工作区 1",
+      route: "analysis",
+      deployment: "gpt-5.6-sol",
+      status: "completed",
+      tokens: { input: 80, output: 40, total: 120 },
+      duration_ms: 22,
+      cache: { state: "hit", provider: "redis" },
+      trace: { trace_id: "0123456789abcdef0123456789abcdef", agent_id: "dataforge-runtime-v1" },
+      prompt: "must never surface",
+      error: "must never surface",
+      actor_id: "must never surface",
+    }],
+  });
+
+  assert.equal(view.cards.cache.value, "33%");
+  assert.equal(view.cards.cache.badge, "1 命中");
+  assert.match(view.cards.cache.meta, /480/);
+  assert.equal(view.gateway.callsLabel, "7");
+  assert.equal(view.requestRows.length, 1);
+  assert.equal(view.requestRows[0].cacheLabel, "Redis 命中");
+  assert.equal(view.requestRows[0].durationLabel, "22 ms");
+  assert.equal(view.requestRows[0].tokensLabel, "120");
+  assert.equal(view.requestRows[0].statusLabel, "成功");
+  assert.equal(view.requestRows[0].traceLabel, "0123456789abcdef0123456789abcdef");
+  assert.ok(!JSON.stringify(view.requestRows[0]).includes("must never surface"));
+});

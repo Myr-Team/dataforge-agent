@@ -71,6 +71,112 @@ function roiBadge(summary = {}) {
   return "不可用";
 }
 
+function cacheView(summary = {}) {
+  const eligible = Math.max(asInt(summary.eligible) || 0, 0);
+  const hits = Math.min(Math.max(asInt(summary.hits) || 0, 0), eligible);
+  const misses = Math.min(Math.max(asInt(summary.misses) || 0, 0), Math.max(eligible - hits, 0));
+  const unavailable = Math.max(asInt(summary.unavailable) || 0, 0);
+  const recordedRate = asNumber(summary.hit_rate_pct);
+  const hitRate = eligible > 0
+    ? Math.min(Math.max(recordedRate === null ? (hits / eligible) * 100 : recordedRate, 0), 100)
+    : null;
+  const avoidedTokens = Math.max(asInt(summary.avoided_tokens) || 0, 0);
+  const avoidedCost = summary.avoided_cost && typeof summary.avoided_cost === "object" ? summary.avoided_cost : {};
+  const avoidedCostStatus = allowedState(avoidedCost.status, new Set(["estimated", "partial", "unavailable"]), "unavailable");
+  const reuseDetail = avoidedCostStatus === "estimated"
+    ? `；估算避免 ${formatCurrency(avoidedCost.amount, avoidedCost.currency)}`
+    : avoidedCostStatus === "partial"
+      ? "；部分复用尚未计价"
+      : "；避免成本待计价";
+
+  if (!eligible) {
+    return {
+      value: "未记录",
+      badge: unavailable ? "缓存不可用" : "待记录",
+      tone: unavailable ? "warn" : "neutral",
+      meta: unavailable ? `${formatInteger(unavailable)} 次 Redis 不可用` : "尚无可缓存的分析调用",
+    };
+  }
+
+  return {
+    value: formatPercent(hitRate, 0),
+    badge: `${formatInteger(hits)} 命中`,
+    tone: hits > 0 ? "ok" : "neutral",
+    meta: `${formatInteger(hits)} 命中 / ${formatInteger(eligible)} 可缓存；避免 ${formatInteger(avoidedTokens)} Tokens${reuseDetail}`,
+    hits,
+    misses,
+    unavailable,
+  };
+}
+
+function requestCacheLabel(cache = {}) {
+  const state = allowedState(cache.state, new Set(["hit", "miss", "unavailable", "bypassed"]), "bypassed");
+  if (state === "hit") return "Redis 命中";
+  if (state === "miss") return "Redis 未命中";
+  if (state === "unavailable") return "Redis 不可用";
+  return "不适用";
+}
+
+function requestStatusLabel(status) {
+  const value = allowedState(status, new Set(["completed", "succeeded", "failed", "cancelled", "unknown"]), "unknown");
+  return {
+    completed: "成功",
+    succeeded: "成功",
+    failed: "失败",
+    cancelled: "已取消",
+    unknown: "未记录",
+  }[value];
+}
+
+function requestStatusState(status) {
+  const value = allowedState(status, new Set(["completed", "succeeded", "failed", "cancelled", "unknown"]), "unknown");
+  return value === "completed" ? "succeeded" : value;
+}
+
+function requestTokenTotal(value) {
+  const scalar = asInt(value);
+  if (scalar !== null && scalar >= 0) return scalar;
+  const usage = value && typeof value === "object" ? value : {};
+  const total = asInt(usage.total ?? usage.total_tokens);
+  if (total !== null && total >= 0) return total;
+  const input = asInt(usage.input ?? usage.input_tokens ?? usage.prompt_tokens);
+  const output = asInt(usage.output ?? usage.output_tokens ?? usage.completion_tokens);
+  if (input !== null && input >= 0 && output !== null && output >= 0) return input + output;
+  return null;
+}
+
+function requestTimeLabel(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(value)) return "未记录";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "未记录";
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function requestRows(rows = []) {
+  return rows.map((row) => {
+    const cache = row?.cache && typeof row.cache === "object" ? row.cache : {};
+    const trace = row?.trace && typeof row.trace === "object" ? row.trace : {};
+    const durationMs = asInt(row?.duration_ms);
+    return {
+      runId: typeof row?.run_id === "string" ? row.run_id : "",
+      occurredAt: typeof row?.occurred_at === "string" ? row.occurred_at : "",
+      occurredLabel: requestTimeLabel(row?.occurred_at),
+      memberLabel: typeof row?.member_label === "string" && row.member_label.trim() ? row.member_label.trim() : "未归因",
+      workspaceLabel: typeof row?.workspace_label === "string" && row.workspace_label.trim() ? row.workspace_label.trim() : "当前工作区",
+      route: typeof row?.route === "string" && row.route.trim() ? row.route.trim() : "未记录",
+      deployment: typeof row?.deployment === "string" && row.deployment.trim() ? row.deployment.trim() : "未记录",
+      status: requestStatusState(row?.status),
+      statusLabel: requestStatusLabel(row?.status),
+      tokensLabel: formatInteger(requestTokenTotal(row?.tokens)),
+      durationLabel: durationMs === null || durationMs < 0 ? "未记录" : `${formatInteger(durationMs)} ms`,
+      cacheLabel: requestCacheLabel(cache),
+      cacheState: allowedState(cache.state, new Set(["hit", "miss", "unavailable", "bypassed"]), "bypassed"),
+      traceLabel: typeof trace.trace_id === "string" && /^[a-f0-9]{32}$/i.test(trace.trace_id.trim()) ? trace.trace_id.trim().toLowerCase() : "未记录",
+      traceAgent: typeof trace.agent_id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(trace.agent_id.trim()) ? trace.agent_id.trim() : "未记录",
+    };
+  });
+}
+
 function scopeLabel(scope = {}) {
   const kind = String(scope.kind || "").trim().toLowerCase();
   if (typeof scope.label === "string" && scope.label.trim()) return scope.label.trim();
@@ -154,6 +260,7 @@ export function monitorDashboardViewModel(payload = {}) {
   const routeCallTotal = routes.reduce((sum, row) => sum + (asInt(row.calls) || 0), 0);
   const costStatus = allowedState(cost.status, new Set(["available", "estimated", "partial", "unavailable"]), "unavailable");
   const roiStatus = allowedState(roi.status, new Set(["verified", "pending_verification", "unavailable"]), "unavailable");
+  const gateway = gatewayEvidenceView(payload?.gateway || {});
   const opportunityStatus = allowedState(
     payload?.opportunity?.status,
     new Set(["available", "unavailable", "pending_verification", "partial", "stale", "error"]),
@@ -162,6 +269,12 @@ export function monitorDashboardViewModel(payload = {}) {
 
   return {
     cards: {
+      governed: {
+        value: gateway.callsLabel,
+        badge: gateway.label,
+        tone: gateway.tone,
+        meta: `${gateway.sourceLabel}；${gateway.tokensLabel} 网关 Tokens`,
+      },
       calls: {
         value: formatInteger(calls.observed),
         badge: `${formatInteger(calls.succeeded)} 成功`,
@@ -181,6 +294,7 @@ export function monitorDashboardViewModel(payload = {}) {
             ? `${formatInteger(cost.unpriced_calls)} 次调用未计价`
             : cost.price_catalog_version || String(cost.currency || "USD"),
       },
+      cache: cacheView(summary.cache || {}),
       quality: {
         value: quality.audited_runs === null ? "未记录" : formatInteger(quality.audited_runs),
         badge: qualityBadge(quality),
@@ -219,6 +333,7 @@ export function monitorDashboardViewModel(payload = {}) {
       totalTokensLabel: formatInteger(row.total_tokens),
       costLabel: formatCurrency(row?.cost?.total, row?.cost?.currency || "USD"),
     })),
+    requestRows: requestRows(Array.isArray(payload.requests) ? payload.requests : []),
     opportunity: {
       status: opportunityStatus,
       kind: payload?.opportunity?.kind || null,
@@ -228,7 +343,7 @@ export function monitorDashboardViewModel(payload = {}) {
       governedTextLabel: formatInteger(payload?.coverage?.governed_text_calls),
       imageCallLabel: formatInteger(payload?.coverage?.out_of_scope_image_calls),
     },
-    gateway: gatewayEvidenceView(payload?.gateway || {}),
+    gateway,
     scope: payload.scope || {},
     scopeLabel: scopeLabel(payload.scope || {}),
   };
