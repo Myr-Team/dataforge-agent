@@ -807,6 +807,8 @@ async def _task_backed_chat_stream(req: ChatRequest, task_id: str):
 async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     actor = actor_from_request(request)
     _require_workspace_action(req.workspace_id, request, "analysis.run")
+    if req.model_route_id and workspace_role(req.workspace_id, actor) != "owner":
+        raise HTTPException(status_code=403, detail="workspace permission denied for model_routing.write")
     _audit_required(request, req.workspace_id, "analysis.run", "analysis", "chat")
     if req.origin == "conversation":
         _audit_required(request, req.workspace_id, "message.create", "message", "pending")

@@ -673,6 +673,20 @@ def test_viewer_mutation_endpoint_returns_forbidden(monkeypatch: pytest.MonkeyPa
     assert "file.edit" in response.json()["detail"]
 
 
+def test_editor_cannot_submit_manual_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("backend.app._require_workspace_action", lambda *_args: "editor")
+    monkeypatch.setattr("backend.app.workspace_role", lambda *_args: "editor")
+
+    response = TestClient(app).post(
+        "/api/chat",
+        json={"workspace_id": "ws-model", "message": "reply", "model_route_id": "terra"},
+        headers=_trusted_easy_auth_headers("editor@contoso.example", actor_id="editor-oid"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "workspace permission denied for model_routing.write"
+
+
 @pytest.mark.parametrize(
     ("method", "path", "kwargs", "action"),
     [

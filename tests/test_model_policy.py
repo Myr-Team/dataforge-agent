@@ -5,7 +5,7 @@ import json
 import backend.foundry_client as foundry_client
 import backend.orchestrator as orchestrator
 import backend.run_store as run_store
-from backend.model_policy import current_text_route, model_route_scope, public_model_route_snapshot, select_text_route, select_text_route_record
+from backend.model_policy import current_text_route, model_route_scope, public_model_route_snapshot, select_text_route, select_text_route_record, workspace_model_policy_scope
 
 
 def test_chat_model_uses_only_the_server_allowlist(monkeypatch) -> None:
@@ -54,6 +54,28 @@ def test_workspace_policy_and_manual_override_select_allowlisted_routes(monkeypa
     assert manual_selected.route.route_id == "sol"
     assert manual_selected.selection == "manual"
     assert manual_selected.policy_revision == 4
+
+
+def test_workspace_policy_scope_applies_to_nested_route_selection(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {"id": "sol", "deployment": "gpt-5.6-sol", "label": "Sol", "capabilities": ["chat", "analysis"]},
+                {"id": "luna", "deployment": "gpt-5.6-luna", "label": "Luna", "capabilities": ["chat", "analysis"]},
+            ]
+        ),
+    )
+    with workspace_model_policy_scope(
+        policy={"revision": 3, "assignments": {"full_analysis": {"primary_route_id": "sol"}}},
+        price_card={"revision": 5, "currency": "USD", "entries": []},
+    ):
+        selected = select_text_route_record("full_analysis")
+
+    assert selected.route.route_id == "sol"
+    assert selected.selection == "workspace_policy"
+    assert selected.policy_revision == 3
+    assert selected.price_card_revision == 5
 
 
 def test_full_analysis_never_selects_followup_candidate_route(monkeypatch) -> None:
@@ -234,6 +256,9 @@ def test_response_metadata_records_effective_route_and_deployment(monkeypatch) -
         "latency_ms": None,
         "model_route": "primary-analysis",
         "model_deployment": "gpt-5.1",
+        "policy_revision": None,
+        "price_card_revision": None,
+        "cost_estimate": {"status": "unavailable", "reason": "price_not_configured"},
     }
 
 

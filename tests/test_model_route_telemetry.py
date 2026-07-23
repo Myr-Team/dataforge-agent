@@ -80,6 +80,73 @@ def test_followup_run_persists_selected_route_model_usage_and_latency(tmp_path, 
     assert model["latency_ms"] == 120
 
 
+def test_model_response_pins_workspace_price_card_estimate(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "terra",
+                    "deployment": "gpt-5.6-terra",
+                    "label": "Terra",
+                    "capabilities": ["chat", "analysis"],
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+    price_card = {
+        "revision": 7,
+        "currency": "USD",
+        "entries": [
+            {
+                "route_id": "terra",
+                "input_per_million": 2,
+                "output_per_million": 8,
+                "source_label": "test price card",
+                "updated_at": "2026-07-23T00:00:00Z",
+            }
+        ],
+    }
+    selected = select_text_route_record(
+        "direct_reply",
+        policy={"revision": 4, "assignments": {"direct_reply": {"primary_route_id": "terra"}}},
+        price_card=price_card,
+    )
+    response = type(
+        "Response",
+        (),
+        {
+            "id": "resp-priced-1",
+            "usage": {"input_tokens": 1_000, "output_tokens": 500, "total_tokens": 1_500},
+        },
+    )()
+
+    with model_route_scope(route=selected, price_card=price_card):
+        meta = foundry_client._response_meta(response, "unit")
+
+    assert meta["policy_revision"] == 4
+    assert meta["price_card_revision"] == 7
+    assert meta["cost_estimate"]["status"] == "estimated"
+    assert meta["cost_estimate"]["amount"] == 0.006
+    run_store.start_run("run-priced-telemetry", "workspace-priced", "price route")
+    run_store.record_event("run-priced-telemetry", "model_response", {"agent": "df-coordinator", **meta})
+    run_store.complete_run("run-priced-telemetry", final={"text": "done"}, artifact={})
+    stored = run_store.get_run("run-priced-telemetry")["models"][0]
+    assert stored["cost_estimate"]["amount"] == 0.006
+    assert set(stored["cost_estimate"]) == {
+        "status",
+        "currency",
+        "amount",
+        "price_card_revision",
+        "route_id",
+        "formula",
+    }
+
+
 def test_followup_run_falls_back_when_candidate_route_is_not_eligible(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "DF_MODEL_ROUTE_ALLOWLIST",

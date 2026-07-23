@@ -14,10 +14,12 @@ from openai import AzureOpenAI
 from openai.types.responses.response_input_param import FunctionCallOutput
 
 try:
-    from .model_policy import current_text_route, resolve_text_deployment, resolve_text_route, safe_fallback_reason
+    from .model_policy import current_model_price_card, current_text_route, resolve_text_deployment, resolve_text_route, safe_fallback_reason
+    from .workspace_model_config import estimate_model_cost
     from .schemas import MarketQueryPlan
 except ImportError:
-    from model_policy import current_text_route, resolve_text_deployment, resolve_text_route, safe_fallback_reason
+    from model_policy import current_model_price_card, current_text_route, resolve_text_deployment, resolve_text_route, safe_fallback_reason
+    from workspace_model_config import estimate_model_cost
     from schemas import MarketQueryPlan
 
 
@@ -796,6 +798,7 @@ def _stream_delta(event: Any) -> str:
 def _response_meta(response: Any, mode: str) -> dict[str, Any]:
     selected = current_text_route()
     usage = _usage_dict(getattr(response, "usage", None))
+    price_card = current_model_price_card()
     fallback_reason = selected.fallback_reason
     if not _usage_observed(usage):
         fallback_reason = fallback_reason or "provider_usage_missing"
@@ -811,6 +814,13 @@ def _response_meta(response: Any, mode: str) -> dict[str, Any]:
         "latency_ms": getattr(response, "_dataforge_latency_ms", None),
         "model_route": selected.route.route_id,
         "model_deployment": selected.route.deployment,
+        "policy_revision": selected.policy_revision,
+        "price_card_revision": selected.price_card_revision,
+        "cost_estimate": estimate_model_cost(
+            usage,
+            {"route_id": selected.route.route_id, "price_card_revision": selected.price_card_revision},
+            price_card,
+        ),
     }
     retry_attempts = getattr(response, "_dataforge_retry_attempts", 0)
     if retry_attempts:

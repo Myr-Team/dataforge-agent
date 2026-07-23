@@ -824,6 +824,17 @@ def get_workspace_detail(workspace_id: str) -> dict[str, Any]:
     }
 
 
+def load_workspace_model_configuration(workspace_id: str) -> dict[str, Any]:
+    """Return internal model policy data without exposing it in general workspace detail."""
+    workspace_id = str(workspace_id or "").strip()
+    bundle = _load_workspace_bundle(workspace_id)
+    meta = bundle[0] if bundle else {}
+    return {
+        "policy": dict(meta.get("model_routing_policy") or {}) if isinstance(meta.get("model_routing_policy"), dict) else {},
+        "price_card": dict(meta.get("model_price_card") or {}) if isinstance(meta.get("model_price_card"), dict) else {},
+    }
+
+
 def workspace_context(workspace_id: str) -> dict[str, Any]:
     workspace_id = str(workspace_id or "").strip()
     if _prefer_blob_workspace_state(workspace_id):

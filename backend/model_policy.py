@@ -58,6 +58,10 @@ class SelectedTextRoute:
 
 
 _ROUTE_SCOPE: ContextVar[SelectedTextRoute | None] = ContextVar("dataforge_model_route_scope", default=None)
+_PRICE_CARD_SCOPE: ContextVar[dict[str, Any] | None] = ContextVar("dataforge_model_price_card_scope", default=None)
+_WORKSPACE_POLICY_SCOPE: ContextVar[dict[str, Any] | None] = ContextVar("dataforge_workspace_model_policy_scope", default=None)
+_WORKSPACE_PRICE_CARD_SCOPE: ContextVar[dict[str, Any] | None] = ContextVar("dataforge_workspace_price_card_scope", default=None)
+_MANUAL_ROUTE_SCOPE: ContextVar[str | None] = ContextVar("dataforge_manual_model_route_scope", default=None)
 
 
 def list_allowed_model_routes() -> list[ModelRoute]:
@@ -176,6 +180,12 @@ def select_text_route_record(
     price_card: Mapping[str, Any] | None = None,
 ) -> SelectedTextRoute:
     normalized_kind = str(execution_kind or "direct_reply").strip().lower()
+    if policy is None:
+        policy = _WORKSPACE_POLICY_SCOPE.get()
+    if price_card is None:
+        price_card = _WORKSPACE_PRICE_CARD_SCOPE.get()
+    if manual_route_id is None:
+        manual_route_id = _MANUAL_ROUTE_SCOPE.get()
     policy_revision = _policy_revision(policy)
     price_card_revision = _price_card_revision(price_card)
     workspace_capability = EXECUTION_KIND_CAPABILITIES.get(normalized_kind, "chat")
@@ -270,6 +280,19 @@ def current_text_route() -> SelectedTextRoute:
     )
 
 
+def current_model_price_card() -> dict[str, Any]:
+    scoped = _PRICE_CARD_SCOPE.get()
+    if not isinstance(scoped, dict):
+        scoped = _WORKSPACE_PRICE_CARD_SCOPE.get()
+    if not isinstance(scoped, dict):
+        return {"revision": 0, "currency": "USD", "entries": []}
+    return {
+        "revision": scoped.get("revision", 0),
+        "currency": scoped.get("currency", "USD"),
+        "entries": [dict(item) for item in scoped.get("entries") or [] if isinstance(item, Mapping)],
+    }
+
+
 def safe_fallback_reason(value: str | None) -> str | None:
     normalized = str(value or "").strip().lower()
     if not normalized:
@@ -284,6 +307,7 @@ def model_route_scope(
     execution_kind: str | None = None,
     selection: str = "policy",
     fallback_reason: str | None = None,
+    price_card: Mapping[str, Any] | None = None,
 ) -> Iterator[SelectedTextRoute]:
     scoped = route if isinstance(route, SelectedTextRoute) else SelectedTextRoute(
         route=route,
@@ -301,10 +325,40 @@ def model_route_scope(
             price_card_revision=scoped.price_card_revision,
         )
     )
+    inherited_price_card = _WORKSPACE_PRICE_CARD_SCOPE.get()
+    effective_price_card = price_card if isinstance(price_card, Mapping) else inherited_price_card
+    price_token = _PRICE_CARD_SCOPE.set(
+        {
+            "revision": (effective_price_card or {}).get("revision", 0),
+            "currency": (effective_price_card or {}).get("currency", "USD"),
+            "entries": [dict(item) for item in (effective_price_card or {}).get("entries") or [] if isinstance(item, Mapping)],
+        }
+        if isinstance(effective_price_card, Mapping)
+        else None
+    )
     try:
         yield _ROUTE_SCOPE.get() or scoped
     finally:
+        _PRICE_CARD_SCOPE.reset(price_token)
         _ROUTE_SCOPE.reset(token)
+
+
+@contextmanager
+def workspace_model_policy_scope(
+    *,
+    policy: Mapping[str, Any] | None = None,
+    price_card: Mapping[str, Any] | None = None,
+    manual_route_id: str | None = None,
+) -> Iterator[None]:
+    policy_token = _WORKSPACE_POLICY_SCOPE.set(dict(policy) if isinstance(policy, Mapping) else None)
+    price_token = _WORKSPACE_PRICE_CARD_SCOPE.set(dict(price_card) if isinstance(price_card, Mapping) else None)
+    manual_token = _MANUAL_ROUTE_SCOPE.set(str(manual_route_id).strip().lower() if manual_route_id else None)
+    try:
+        yield None
+    finally:
+        _MANUAL_ROUTE_SCOPE.reset(manual_token)
+        _WORKSPACE_PRICE_CARD_SCOPE.reset(price_token)
+        _WORKSPACE_POLICY_SCOPE.reset(policy_token)
 
 
 def public_model_route_snapshot() -> dict[str, object]:

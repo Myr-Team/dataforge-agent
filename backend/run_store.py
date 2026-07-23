@@ -163,24 +163,28 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
             normalized_usage = _normalized_observed_usage(plain.get("usage"))
             route = plain.get("route") or plain.get("model_route")
             deployment = plain.get("deployment") or plain.get("model_deployment") or plain.get("model") or plain.get("model_name")
-            run.setdefault("models", []).append(
-                {
-                    "agent": plain.get("agent"),
-                    "model": deployment,
-                    "route": route,
-                    "deployment": deployment,
-                    "selection": plain.get("selection"),
-                    "fallback_reason": plain.get("fallback_reason"),
-                    "execution_kind": plain.get("execution_kind"),
-                    "latency_ms": plain.get("latency_ms"),
-                    "model_route": route,
-                    "model_deployment": deployment,
-                    "response_id": plain.get("response_id"),
-                    "usage": normalized_usage,
-                    "mode": plain.get("mode"),
-                    "time": now,
-                }
-            )
+            model_record = {
+                "agent": plain.get("agent"),
+                "model": deployment,
+                "route": route,
+                "deployment": deployment,
+                "selection": plain.get("selection"),
+                "fallback_reason": plain.get("fallback_reason"),
+                "execution_kind": plain.get("execution_kind"),
+                "latency_ms": plain.get("latency_ms"),
+                "model_route": route,
+                "model_deployment": deployment,
+                "response_id": plain.get("response_id"),
+                "usage": normalized_usage,
+                "mode": plain.get("mode"),
+                "time": now,
+            }
+            for key in ("policy_revision", "price_card_revision"):
+                if key in plain:
+                    model_record[key] = plain.get(key)
+            if "cost_estimate" in plain:
+                model_record["cost_estimate"] = _safe_cost_estimate(plain.get("cost_estimate"))
+            run.setdefault("models", []).append(model_record)
         if event == "audit" and isinstance(plain, dict):
             run["audit"] = plain
         if event == "final" and isinstance(plain, dict):
@@ -3689,7 +3693,40 @@ def _sanitize_model_response_event_data(data: dict[str, Any]) -> dict[str, Any]:
     sanitized = dict(data)
     sanitized.pop("provider_usage", None)
     sanitized["usage"] = _normalized_observed_usage(data.get("usage"))
+    if "cost_estimate" in data:
+        sanitized["cost_estimate"] = _safe_cost_estimate(data.get("cost_estimate"))
     return sanitized
+
+
+def _safe_cost_estimate(value: Any) -> dict[str, Any]:
+    data = dict(value) if isinstance(value, dict) else {}
+    status = str(data.get("status") or "unavailable").strip().lower()
+    if status != "estimated":
+        reason = str(data.get("reason") or "price_not_configured").strip().lower()
+        return {"status": "unavailable", "reason": reason if reason in {"usage_not_recorded", "price_not_configured"} else "price_not_configured"}
+    amount = data.get("amount")
+    revision = data.get("price_card_revision")
+    route_id = str(data.get("route_id") or "").strip().lower()
+    currency = str(data.get("currency") or "").strip().upper()
+    if (
+        not isinstance(amount, (int, float))
+        or isinstance(amount, bool)
+        or amount < 0
+        or not isinstance(revision, int)
+        or isinstance(revision, bool)
+        or revision < 0
+        or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", route_id)
+        or not re.fullmatch(r"[A-Z]{3}", currency)
+    ):
+        return {"status": "unavailable", "reason": "price_not_configured"}
+    return {
+        "status": "estimated",
+        "currency": currency,
+        "amount": round(float(amount), 6),
+        "price_card_revision": revision,
+        "route_id": route_id,
+        "formula": "input_tokens/1_000_000*input_per_million + output_tokens/1_000_000*output_per_million",
+    }
 
 
 def _sanitize_context_pack_metadata(data: Any) -> dict[str, Any]:

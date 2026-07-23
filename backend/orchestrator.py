@@ -86,7 +86,7 @@ try:
         public_market_comparison,
         unavailable_market_comparison,
     )
-    from .model_policy import model_route_scope, select_text_route_record
+    from .model_policy import model_route_scope, select_text_route_record, workspace_model_policy_scope
     from .pm_skills import playbook_suggestion
     from .rag import search
     from .router import deterministic_route
@@ -111,7 +111,7 @@ try:
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
-    from .workspace_store import get_workspace_detail, save_workspace_last_analysis, workspace_context, workspace_reference_images
+    from .workspace_store import get_workspace_detail, load_workspace_model_configuration, save_workspace_last_analysis, workspace_context, workspace_reference_images
 except ImportError:
     import cache_store
     import content_safety
@@ -180,7 +180,7 @@ except ImportError:
         public_market_comparison,
         unavailable_market_comparison,
     )
-    from model_policy import model_route_scope, select_text_route_record
+    from model_policy import model_route_scope, select_text_route_record, workspace_model_policy_scope
     from pm_skills import playbook_suggestion
     from rag import search
     from router import deterministic_route
@@ -205,7 +205,7 @@ except ImportError:
     from tools.generate_image import generate_image
     from tools.narrate_summary import narrate_summary
     from tools.render_pdf import render_pdf_report
-    from workspace_store import get_workspace_detail, save_workspace_last_analysis, workspace_context, workspace_reference_images
+    from workspace_store import get_workspace_detail, load_workspace_model_configuration, save_workspace_last_analysis, workspace_context, workspace_reference_images
 
 
 PRODUCT_TERMS = (
@@ -6445,25 +6445,31 @@ def _maf_terminal_failure_frames(
 async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     actor = public_actor(actor_from_ui_context(req.ui_context))
     execution = execution_context(req)
-    with agent_trace(
-        workspace_id=req.workspace_id,
-        conversation_id=execution.run_id,
-        actor=actor,
-    ) as span:
-        trace_id = trace_id_from_span(span)
-        trace = (
-            {"trace_id": trace_id, "agent_id": foundry_runtime_agent_id()}
-            if trace_id
-            else None
-        )
-        async for frame in _orchestrate_chat_impl(
-            req,
-            conv_id=execution.run_id,
-            new_conversation=execution.persist_messages and req.conversation_id is None,
-            execution=execution,
-            trace=trace,
-        ):
-            yield frame
+    model_config = load_workspace_model_configuration(req.workspace_id)
+    with workspace_model_policy_scope(
+        policy=model_config.get("policy"),
+        price_card=model_config.get("price_card"),
+        manual_route_id=req.model_route_id,
+    ):
+        with agent_trace(
+            workspace_id=req.workspace_id,
+            conversation_id=execution.run_id,
+            actor=actor,
+        ) as span:
+            trace_id = trace_id_from_span(span)
+            trace = (
+                {"trace_id": trace_id, "agent_id": foundry_runtime_agent_id()}
+                if trace_id
+                else None
+            )
+            async for frame in _orchestrate_chat_impl(
+                req,
+                conv_id=execution.run_id,
+                new_conversation=execution.persist_messages and req.conversation_id is None,
+                execution=execution,
+                trace=trace,
+            ):
+                yield frame
 
 
 async def _orchestrate_chat_impl(
