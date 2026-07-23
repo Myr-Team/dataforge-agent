@@ -211,3 +211,15 @@ Task 1 commit: `02a3d891fb6e0a8e086e08020d7c4c93e4fa4661`
 The brief referenced `tests/test_orchestrator_smoke.py`, but that file was
 absent in this fork. It was added as the focused cache-hit safety test. Full
 suite, deployment, and dashboard aggregation verification remain later tasks.
+
+### P2 cache-write contract review fix
+
+- Added `test_feasibility_cache_miss_stores_only_safe_result_and_source_meter`.
+  It captures `cache_store.set_json` on a cache miss and asserts that the
+  stored value has only `result` and `meter`, excludes `_llm` from `result`,
+  and retains only normalized source usage and source cost fields in `meter`.
+- Red: after temporarily removing the source-meter construction, the new test
+  failed with `cached["meter"] == {}` instead of the expected normalized meter
+  (`1 failed in 3.95s`). The implementation was restored unchanged.
+- Green: `python -m pytest tests/test_orchestrator_smoke.py tests/test_run_store_dynamic.py tests/test_model_route_telemetry.py -q`
+  returned `9 passed in 4.70s`.
