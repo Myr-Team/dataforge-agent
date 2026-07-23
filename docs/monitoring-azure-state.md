@@ -1,6 +1,6 @@
 # Monitoring Azure Deployment State
 
-Last verified: `2026-07-21`.
+Last verified: `2026-07-24`.
 
 ## Deployment Identity
 
@@ -76,23 +76,57 @@ tokens, APIM keys, or model API keys in this file.
 
 ## Production Activation
 
-- Backend production revision: `ca-dataforge-backend--apimprod723` at `100%`
-  traffic, using `dataforge-backend:monitoring-20260721-v4` with APIM gateway
-  mode enabled. `ca-dataforge-backend--apimprod721` is retained as a rollback
-  revision with zero traffic.
-- Web production revision: `ca-dataforge-web--monprod722` at `100%` traffic,
-  using `dataforge-web:monitoring-20260721-v2`.
+- Backend production revision: `ca-dataforge-backend--monitorcachee08b4d2` at
+  `100%` traffic, using `dataforge-backend:monitor-cache-e08b4d2`.
+  `ca-dataforge-backend--apimprod723` remains retained as a zero-traffic
+  rollback revision.
+- Web production revision: `ca-dataforge-web--monitorcachee08b4d2` at `100%`
+  traffic, using `dataforge-web:monitor-cache-e08b4d2`.
+  `ca-dataforge-web--monprod722` remains retained as a zero-traffic rollback
+  revision.
 - The production web revision explicitly proxies to the production backend
   root hostname. The `monitor` preview label remains at `0%` and points to
   the independently validated preview revisions.
-- Post-cutover backend `GET /api/health` returned HTTP `200`; required
-  dependency probes were healthy. The public web endpoint returned Easy Auth
-  HTTP `401` when unauthenticated, as expected.
+- The new backend and web revisions were created at `0%`, reached `Healthy`,
+  then were promoted backend-first. Post-cutover
+  `GET /api/health` returned HTTP `200` with Foundry, Blob, and Content Safety
+  probes healthy. The public web endpoint continues to route unauthenticated
+  requests to Easy Auth, as expected.
+- Automated verification before build: `1063 passed, 1 skipped` in the full
+  backend suite; `86` frontend tests and the Vite production build passed.
+- An authenticated production browser session loaded the owner-only `监视`
+  navigation after cutover. The browser automation session reset while reading
+  a larger monitor-page snapshot, so this record does not claim an
+  authenticated cache miss/hit interaction from that session.
 - The production gateway candidate passed its direct health check and a
   DataForge-client inference through APIM before the traffic cutover. Existing
   text-model and MAF application calls now use the managed-identity APIM route.
   Image generation remains on its existing direct Azure OpenAI integration and
   is explicitly outside the current APIM coverage.
+
+## Cache and Request Observability
+
+- Feasibility-analysis cache events are now persisted with only safe Redis
+  meter fields: state, provider, elapsed time, and on a hit, valid source token
+  usage and a price-card estimate. Cache keys, prompts, responses, credentials,
+  and provider error text are not persisted in this meter.
+- `/api/monitoring` now exposes a separate `summary.cache` aggregation. It
+  reports eligible Redis events, hits, misses, unavailable events, hit rate,
+  avoided source tokens, and an `estimated` / `partial` / `unavailable` avoided
+  cost state. It never treats cache savings as an Azure billing amount.
+- The same endpoint returns at most 30 newest request records. Each record is
+  an allow-listed projection of event time, safe member pseudonym when the
+  tenant identity is trusted, non-identifying workspace label, route,
+  deployment, normalized status, observed tokens, model latency, Redis state,
+  and validated trace metadata. Raw Entra IDs, email addresses, prompts,
+  errors, headers, cache keys, response IDs, and workspace IDs are excluded.
+- The production `监视` page presents APIM governance, observed tokens,
+  estimated cost, and Redis reuse as separate KPI cards. It also provides a
+  bounded recent-request table and a details drawer containing only the safe
+  request fields above.
+- APIM evidence and Redis reuse measure different boundaries: APIM verifies
+  governed text-model ingress; Redis describes application-side reuse. Their
+  token and cost figures are deliberately not added together.
 
 ## APIM Metric Ingestion
 
