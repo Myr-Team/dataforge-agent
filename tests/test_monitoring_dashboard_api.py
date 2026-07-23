@@ -345,9 +345,11 @@ def test_monitor_api_projects_only_bounded_safe_cache_requests(
             "status": "completed",
             "completed_at": f"2026-07-24T00:{index:02d}:00Z",
             "duration_ms": index,
-            "message": "do not expose this prompt",
+            "message": "do not expose this message",
+            "prompt": "do not expose this prompt",
+            "error": "do not expose this error",
             "headers": {"authorization": "do-not-expose"},
-            "actor": {"actor_id": "raw-entra-id", "tenant_id": "raw-tenant-id", "email": "owner@example.test"},
+            "actor": {"actor_id": "raw-entra-id", "tenant_id": "raw-tenant-id", "email": "owner@example.test", "source": "easy_auth"},
             "trusted_identity": True,
             "trace": {"trace_id": "a" * 32, "agent_id": "dataforge-runtime-v1"},
             "models": [

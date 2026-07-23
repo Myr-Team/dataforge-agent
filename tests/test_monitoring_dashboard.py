@@ -353,3 +353,48 @@ def test_dashboard_marks_cache_avoidance_unavailable_without_source_price() -> N
         "currency": None,
         "unpriced_hits": 1,
     }
+
+
+def test_dashboard_projects_model_event_time_latency_and_trusted_member_only() -> None:
+    dashboard = build_monitor_dashboard(
+        ["ws-cache"],
+        scope="current",
+        from_value="2026-07-23T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+        actor={},
+        run_loader=lambda _workspace_id: [
+            {
+                "run_id": "run-ordered",
+                "workspace_id": "ws-cache",
+                "status": "completed",
+                "completed_at": "2026-07-23T23:59:00Z",
+                "duration_ms": 9_999,
+                "trusted_identity": True,
+                "actor": {"actor_id": "actor-a", "tenant_id": "tenant-a"},
+                "models": [
+                    {
+                        "route": "analysis",
+                        "deployment": "lexically-later-but-older",
+                        "time": "2026-07-24T01:00:00+02:00",
+                        "latency_ms": 11,
+                    },
+                    {
+                        "route": "analysis",
+                        "deployment": "chronologically-newer",
+                        "time": "2026-07-23T23:30:00Z",
+                        "latency_ms": 22,
+                    },
+                ],
+            }
+        ],
+    )
+
+    requests = dashboard["requests"]
+
+    assert [item["deployment"] for item in requests] == [
+        "chronologically-newer",
+        "lexically-later-but-older",
+    ]
+    assert requests[0]["duration_ms"] == 22
+    assert requests[1]["duration_ms"] == 11
+    assert all(item["member_label"] is None for item in requests)

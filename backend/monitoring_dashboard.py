@@ -8,10 +8,12 @@ from typing import Any, Callable
 
 try:
     from .context_evaluation import sanitize_evaluation_status
+    from .identity import is_trusted_tenant_identity
     from .invitation_store import member_subject_label
     from .model_policy import context_optimization_gate
 except ImportError:
     from context_evaluation import sanitize_evaluation_status
+    from identity import is_trusted_tenant_identity
     from invitation_store import member_subject_label
     from model_policy import context_optimization_gate
 
@@ -615,15 +617,15 @@ def _request_rows(rows: list[dict[str, Any]], workspace_ids: list[str]) -> list[
     requests: list[dict[str, Any]] = []
     for row, model in _iter_model_events(rows):
         workspace_id = _clean(row.get("workspace_id"))
-        occurred_at = _row_time(row)
+        occurred_at = _parse_time(model.get("time")) or _row_time(row)
         if not workspace_id or workspace_id not in workspace_labels or occurred_at is None:
             continue
         cache = _cache_projection(model.get("cache"))
         usage = _usage_from_dict(model.get("usage") if isinstance(model.get("usage"), dict) else model)
-        duration_ms = _as_int(row.get("duration_ms"))
+        latency_ms = _as_int(model.get("latency_ms"))
         request = {
             "run_id": _clean(row.get("run_id"))[:160],
-            "occurred_at": occurred_at.isoformat().replace("+00:00", "Z"),
+            "occurred_at": occurred_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             "member_label": _request_member_label(row, workspace_id),
             "workspace_label": workspace_labels[workspace_id],
             "route": (_clean(model.get("route")) or _clean(row.get("route")) or "unknown")[:128],
@@ -632,16 +634,20 @@ def _request_rows(rows: list[dict[str, Any]], workspace_ids: list[str]) -> list[
             "tokens": usage,
             "cache": cache,
             "trace": _request_trace(row.get("trace")),
+            "_occurred_at": occurred_at,
         }
-        if duration_ms is not None and duration_ms >= 0:
-            request["duration_ms"] = duration_ms
+        if latency_ms is not None and latency_ms >= 0:
+            request["duration_ms"] = latency_ms
         requests.append(request)
-    return sorted(requests, key=lambda item: (item["occurred_at"], item["run_id"]), reverse=True)[:30]
+    ordered = sorted(requests, key=lambda item: (item["_occurred_at"], item["run_id"]), reverse=True)[:30]
+    for request in ordered:
+        request.pop("_occurred_at", None)
+    return ordered
 
 
 def _request_member_label(row: dict[str, Any], workspace_id: str) -> str | None:
     actor = row.get("actor") if isinstance(row.get("actor"), dict) else {}
-    if row.get("trusted_identity") is not True or not _clean(actor.get("actor_id")) or not _clean(actor.get("tenant_id")):
+    if not is_trusted_tenant_identity(actor):
         return None
     try:
         return member_subject_label(workspace_id, {"actor_id": actor["actor_id"], "tenant_id": actor["tenant_id"]})
