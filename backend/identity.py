@@ -150,7 +150,7 @@ def normalized_email_domains(value: Any) -> list[str]:
             continue
         seen.add(domain)
         domains.append(domain)
-    return domains
+    return domains[:20]
 
 
 def canonical_actor_identity(actor: Mapping[str, Any] | None) -> tuple[str, str] | None:

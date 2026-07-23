@@ -10,6 +10,7 @@ import {
   loadObservability,
   loadArtifactJob,
   loadArtifactJobs,
+  loadGovernanceCapabilities,
   loadWorkspaceTasks,
   cancelTask,
   retryTask,
@@ -121,6 +122,7 @@ export function App() {
   const [workspaceId, setWorkspaceId] = useState(DEFAULT_WORKSPACE);
   const [dashboard, setDashboard] = useState(null);
   const [workspaceAccess, setWorkspaceAccess] = useState(null);
+  const [governanceCapabilities, setGovernanceCapabilities] = useState(null);
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState("");
   const [messages, setMessages] = useState([]);
@@ -198,11 +200,16 @@ export function App() {
     setDashboardLoading(true);
     setDashboardError("");
     setWorkspaceAccess(null);
+    setGovernanceCapabilities(null);
     try {
       const access = await loadWorkspaceAccess(id).catch(() => null);
       setWorkspaceAccess(access);
-      const data = await loadDashboard(id);
+      const [data, capabilities] = await Promise.all([
+        loadDashboard(id),
+        loadGovernanceCapabilities(id).catch(() => null),
+      ]);
       setDashboard(data);
+      setGovernanceCapabilities(capabilities);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/Workspace not found/i.test(message)) {
@@ -585,7 +592,7 @@ export function App() {
   };
 
   const changePrimaryView = (view) => {
-    const nextView = resolvePrimaryView(view, workspaceAccess);
+    const nextView = resolvePrimaryView(view, governanceCapabilities);
     if (nextView === "settings") setSettingsInitialTab("about");
     setActiveView(nextView);
   };
@@ -596,17 +603,16 @@ export function App() {
       setActiveView(nextView);
       return;
     }
-    const safeView = resolvePrimaryView(nextView, workspaceAccess);
-    if (workspaceAccess && safeView !== nextView) {
+    const safeView = resolvePrimaryView(nextView, governanceCapabilities);
+    if (governanceCapabilities && safeView !== nextView) {
       setActiveView(safeView);
     }
-  }, [activeView, workspaceAccess]);
+  }, [activeView, governanceCapabilities]);
 
-  const renderView = resolvePrimaryView(activeView, workspaceAccess);
+  const renderView = resolvePrimaryView(activeView, governanceCapabilities);
 
   const openMembersSettings = () => {
-    setSettingsInitialTab("members");
-    setActiveView("settings");
+    setActiveView("members");
   };
 
   const startNewConversation = () => {
@@ -1126,9 +1132,9 @@ export function App() {
         tasks={tasks}
         onOpenTaskCenter={() => setTaskDrawerOpen(true)}
       />
-      <ShellNav active={renderView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} onInviteMembers={openMembersSettings} />
+      <ShellNav active={renderView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} capabilities={governanceCapabilities} onInviteMembers={openMembersSettings} />
       <div className="workbench">
-        <MobileNav active={renderView} onChange={changePrimaryView} access={workspaceAccess} />
+        <MobileNav active={renderView} onChange={changePrimaryView} capabilities={governanceCapabilities} />
         <div className="workbench-grid">
           <WorkbenchMain
             view={renderView}
@@ -1162,6 +1168,7 @@ export function App() {
             onWorkspaceDataChanged={() => refreshDashboard(workspaceId)}
             onOpenTaskCenter={() => setTaskDrawerOpen(true)}
             workspaceAccess={workspaceAccess}
+            governanceCapabilities={governanceCapabilities}
           />
         </div>
       </div>

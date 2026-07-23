@@ -17,8 +17,8 @@ import {
 import { costValueViewModel } from "./costValueViewModel.js";
 import { monitoringSnapshotViewModel } from "./monitoringViewModel.js";
 import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, createWorkspaceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
+import { GovernanceCenter } from "./GovernanceCenter.jsx";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
-const MonitorPage = lazy(() => import("./MonitorPage.jsx").then((m) => ({ default: m.MonitorPage })));
 import {
   Activity,
   AlertTriangle,
@@ -92,6 +92,7 @@ import {
   PLAYBOOKS,
   QUESTION_STARTERS,
   VERDICT_LABELS,
+  visibleNavGroups,
   visibleNavItems,
 } from "./constants.js";
 
@@ -114,7 +115,7 @@ function memberRoleLabel(role) {
   return cleanUserValue(role) || "成员";
 }
 
-export function ShellNav({ active = "workspaces", onChange = () => {}, workspace = {}, access = null, onInviteMembers = () => {} }) {
+export function ShellNav({ active = "workspaces", onChange = () => {}, workspace = {}, access = null, capabilities = null, onInviteMembers = () => {} }) {
   const roleLabel = access?.allowed
     ? memberRoleLabel(access.role)
     : access?.authenticated === false
@@ -122,45 +123,51 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, workspace
       : access
         ? "无工作区权限"
         : "正在核验";
+  const navGroups = visibleNavGroups(capabilities);
+  const canOpenMembers = capabilities?.sections?.members?.visible === true;
   return (
     <nav className="shell-nav" aria-label="Primary">
       <div className="nav-stack">
-        {visibleNavItems(access).map((item) => {
-          const Icon = item.icon;
-          return (
-            <div className="nav-item-wrap" key={item.id}>
-              {item.id === "monitor" ? <div className="nav-section-divider" aria-hidden="true" /> : null}
-              <button
-                data-tour={item.id === "runs" ? "runs" : item.id === "artifacts" ? "artifacts-nav" : undefined}
-                className={active === item.id ? "nav-icon active" : "nav-icon"}
-                type="button"
-                title={item.label}
-                onClick={() => onChange(item.id)}
-              >
-                <Icon size={19} />
-                <span>{item.label}</span>
-              </button>
-            </div>
-          );
-        })}
+        {navGroups.map((group) => (
+          <section className="nav-group" key={group.id} aria-label={group.label}>
+            {group.id === "governance" ? <div className="nav-group-label">{group.label}</div> : null}
+            {group.items.map((item) => {
+              const Icon = item.icon;
+              return (
+                <div className="nav-item-wrap" key={item.id}>
+                  <button
+                    data-tour={item.id === "runs" ? "runs" : item.id === "artifacts" ? "artifacts-nav" : undefined}
+                    className={active === item.id ? "nav-icon active" : "nav-icon"}
+                    type="button"
+                    title={item.label}
+                    onClick={() => onChange(item.id)}
+                  >
+                    <Icon size={19} />
+                    <span>{item.label}</span>
+                  </button>
+                </div>
+              );
+            })}
+          </section>
+        ))}
       </div>
       <div className="ws-foot">
         <div className="wsf-k">Workspace</div>
         <div className="wsf-v">{workspace.name || "当前工作区"}</div>
         <div className="wsf-k">Role</div>
         <div className="wsf-v wsf-last">{roleLabel}</div>
-        <button className="wsf-invite" type="button" title="打开成员、权限和用量溯源" onClick={onInviteMembers}>
+        {canOpenMembers ? <button className="wsf-invite" type="button" title="打开成员、权限和用量溯源" onClick={onInviteMembers}>
           <UserPlus size={15} /> Invite members
-        </button>
+        </button> : null}
       </div>
     </nav>
   );
 }
 
-export function MobileNav({ active = "workspaces", onChange = () => {}, access = null }) {
+export function MobileNav({ active = "workspaces", onChange = () => {}, capabilities = null }) {
   return (
     <nav className="mobile-nav" aria-label="Mobile primary">
-      {visibleNavItems(access).map((item) => {
+      {visibleNavItems(capabilities).map((item) => {
         const Icon = item.icon;
         return (
           <button
@@ -609,8 +616,9 @@ function WorkbenchMainInner({
   onWorkspaceDataChanged,
   onOpenTaskCenter,
   workspaceAccess,
+  governanceCapabilities,
 }) {
-  const resolvedView = view === "governance" ? "monitor" : view;
+  const resolvedView = view === "governance" ? "lineage" : view === "monitor" ? "cost-value" : view;
   if (resolvedView === "conversations") {
     return (
       <ConversationStudio
@@ -643,15 +651,16 @@ function WorkbenchMainInner({
   if (resolvedView === "runs") {
     return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} tasks={tasks} />;
   }
-  if (resolvedView === "monitor") {
+  if (["members", "lineage", "cost-value", "models-connections", "settings"].includes(resolvedView)) {
     return (
-      <Suspense fallback={<main className="agent-studio monitor-stage"><div style={{ padding: 40, color: "var(--muted)" }}>加载监视页...</div></main>}>
-        <MonitorPage workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id || ""} workspaceAccess={workspaceAccess} />
-      </Suspense>
+      <GovernanceCenter
+        section={resolvedView}
+        workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id || ""}
+        capabilities={governanceCapabilities}
+        dashboard={dashboard}
+        workspaceAccess={workspaceAccess}
+      />
     );
-  }
-  if (resolvedView === "settings") {
-    return <SettingsCenter dashboard={dashboard} observability={observability} user={user} initialTab={settingsInitialTab} />;
   }
   return (
     <DashboardStudio

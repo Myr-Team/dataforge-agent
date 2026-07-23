@@ -24,37 +24,68 @@ import {
   ShieldCheck,
   Sparkles,
   Target,
+  UsersRound,
+  ListTree,
+  ServerCog,
   WalletCards,
 } from "lucide-react";
 
-export const NAV_ITEMS = [
-  { id: "workspaces", label: "工作区", icon: Home },
-  { id: "data", label: "数据", icon: Database },
-  { id: "runs", label: "运行记录", icon: Route },
-  { id: "conversations", label: "会话", icon: MessageSquare },
-  { id: "artifacts", label: "产物", icon: Boxes },
-  { id: "monitor", label: "监视", icon: ShieldCheck },
-  { id: "settings", label: "设置", icon: Settings },
+export const NAV_GROUPS = [
+  {
+    id: "workspace",
+    label: "工作区",
+    items: [
+      { id: "workspaces", label: "工作区", icon: Home },
+      { id: "data", label: "数据", icon: Database },
+      { id: "runs", label: "运行记录", icon: Route },
+      { id: "conversations", label: "会话", icon: MessageSquare },
+      { id: "artifacts", label: "产物", icon: Boxes },
+    ],
+  },
+  {
+    id: "governance",
+    label: "治理",
+    items: [
+      { id: "members", label: "成员与协作", icon: UsersRound, capabilityKey: "members" },
+      { id: "lineage", label: "审计与溯源", icon: ListTree, capabilityKey: "lineage" },
+      { id: "cost-value", label: "成本与价值", icon: LineChart, capabilityKey: "cost_value" },
+      { id: "models-connections", label: "模型与连接", icon: ServerCog, capabilityKey: "models_connections" },
+      { id: "settings", label: "设置", icon: Settings, capabilityKey: "settings" },
+    ],
+  },
 ];
+
+export const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
 
 export function canViewGovernance(access) {
   return access?.allowed === true && access?.role === "owner";
 }
 
 export function normalizePrimaryView(view) {
-  return view === "governance" ? "monitor" : view;
+  if (view === "governance") return "lineage";
+  if (view === "monitor") return "cost-value";
+  return view;
 }
 
-export function resolvePrimaryView(view, access, fallback = "workspaces") {
+export function resolvePrimaryView(view, capabilities, fallback = "workspaces") {
   const normalized = normalizePrimaryView(view);
-  if (normalized === "monitor" && !canViewGovernance(access)) return fallback;
+  const item = NAV_ITEMS.find((entry) => entry.id === normalized);
+  if (!item) return fallback;
+  if (item.capabilityKey && capabilities?.sections?.[item.capabilityKey]?.visible !== true) return fallback;
   return normalized;
 }
 
-export function visibleNavItems(access) {
-  return canViewGovernance(access)
-    ? NAV_ITEMS
-    : NAV_ITEMS.filter((item) => item.id !== "monitor");
+export function visibleNavGroups(capabilities) {
+  return NAV_GROUPS
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.capabilityKey || capabilities?.sections?.[item.capabilityKey]?.visible === true),
+    }))
+    .filter((group) => group.items.length > 0);
+}
+
+export function visibleNavItems(capabilities) {
+  return visibleNavGroups(capabilities).flatMap((group) => group.items);
 }
 
 export const AGENTS = [

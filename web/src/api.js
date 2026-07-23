@@ -326,6 +326,28 @@ export async function loadWorkspaceGovernance(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance-summary`);
 }
 
+export async function loadGovernanceCapabilities(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/capabilities`);
+}
+
+export async function loadGovernanceLineage(workspaceId, { scope = "self", cursor = "", limit = 50 } = {}) {
+  const boundedLimit = Math.max(1, Math.min(100, Number.parseInt(limit, 10) || 50));
+  const params = new URLSearchParams({ scope: scope === "workspace" ? "workspace" : "self", limit: String(boundedLimit) });
+  if (cursor) params.set("cursor", cursor);
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/lineage?${params.toString()}`);
+}
+
+export async function loadEnterpriseIdentityPolicy(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/identity-policy`);
+}
+
+export async function updateEnterpriseIdentityPolicy(workspaceId, trustedEmailDomains) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/identity-policy`, {
+    method: "PUT",
+    body: JSON.stringify({ trusted_email_domains: trustedEmailDomains }),
+  });
+}
+
 export async function loadMonitoringDashboard({ scope = "current", workspaceId, from, to, signal } = {}) {
   const params = new URLSearchParams({
     scope: String(scope || "current"),

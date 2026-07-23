@@ -175,6 +175,14 @@ function safeMemberLabel(member) {
   return validBoundedPseudonym(member?.subject_label, "member") || "成员（已脱敏）";
 }
 
+function verifiedEnterpriseDisplay(member) {
+  if (member?.identity_visibility !== "verified_enterprise") return null;
+  const name = String(member?.display?.name || "").trim().replace(/[\r\n\t]/g, " ");
+  const email = String(member?.display?.email || "").trim().toLowerCase();
+  if (!name || name.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null;
+  return { name, email };
+}
+
 export function chargebackViewModel(snapshot) {
   const groups = Array.isArray(snapshot?.groups) ? snapshot.groups : [];
   const rows = (Array.isArray(snapshot?.members) ? snapshot.members : []).map((row) => {
@@ -290,9 +298,14 @@ export function memberDirectoryViewModel(members = []) {
     const actionRef = /^member_[0-9a-f]{40}$/.test(rawRef) ? rawRef : "";
     const role = ["owner", "admin", "editor", "viewer"].includes(member?.role) ? member.role : "viewer";
     const status = ["active", "pending"].includes(member?.status) ? member.status : "pending";
+    const display = verifiedEnterpriseDisplay(member);
+    const subjectLabel = validBoundedPseudonym(actionRef, "member") || "成员（已脱敏）";
     return {
       actionRef,
-      subjectLabel: validBoundedPseudonym(actionRef, "member") || "成员（已脱敏）",
+      subjectLabel,
+      label: display?.name || subjectLabel,
+      detail: display?.email || "",
+      identityVisibility: display ? "verified_enterprise" : "pseudonymous",
       role,
       owner: role === "owner",
       status,
