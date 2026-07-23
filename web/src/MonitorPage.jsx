@@ -46,7 +46,7 @@ function clampWindow(next) {
 function statusTone(value) {
   const status = String(value || "").trim().toLowerCase();
   if (["verified", "available", "evaluated"].includes(status)) return "ok";
-  if (["pending_verification", "stale", "partial"].includes(status)) return "warn";
+  if (["pending_verification", "stale", "partial", "estimated"].includes(status)) return "warn";
   if (["malformed", "failed", "error"].includes(status)) return "error";
   return "neutral";
 }
@@ -65,7 +65,7 @@ function cardEntries(view) {
   return [
     { id: "calls", label: "调用", ...view.cards.calls },
     { id: "tokens", label: "Tokens", ...view.cards.tokens },
-    { id: "cost", label: "成本", ...view.cards.cost },
+    { id: "cost", label: "估算消耗", ...view.cards.cost },
     { id: "quality", label: "质量", ...view.cards.quality },
     { id: "roi", label: "已验证 ROI", ...view.cards.roi },
   ];
@@ -209,7 +209,7 @@ function RankedBars({ rows, labelKey, valueKey, valueLabel, icon }) {
           </div>
           <div className="monitor-ranked-meta">
             <b>{row[valueKey]}</b>
-            <small>{valueLabel}</small>
+            <small>{row.secondaryLabel || row.selectionLabel || valueLabel}</small>
           </div>
         </div>
       ))}

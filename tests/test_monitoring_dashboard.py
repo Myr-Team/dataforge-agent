@@ -230,10 +230,10 @@ def test_monitor_dashboard_aggregates_persisted_estimates_by_route_and_execution
         "unpriced_calls": 1,
     }
     assert payload["routes"] == [
-        {"route": "terra", "calls": 1, "total_tokens": 1_500, "selection_counts": {"manual": 1}},
-        {"route": "luna", "calls": 1, "total_tokens": 12, "selection_counts": {"workspace_policy": 1}},
+        {"route": "terra", "calls": 1, "total_tokens": 1_500, "selection_counts": {"manual": 1}, "estimated_cost": {"status": "estimated", "amount": 0.012, "currency": "USD", "unpriced_calls": 0}},
+        {"route": "luna", "calls": 1, "total_tokens": 12, "selection_counts": {"workspace_policy": 1}, "estimated_cost": {"status": "unavailable", "amount": None, "currency": None, "unpriced_calls": 1}},
     ]
     assert payload["execution_kinds"] == [
-        {"execution_kind": "direct_reply", "calls": 1, "total_tokens": 12, "selection_counts": {"workspace_policy": 1}},
-        {"execution_kind": "full_analysis", "calls": 1, "total_tokens": 1_500, "selection_counts": {"manual": 1}},
+        {"execution_kind": "direct_reply", "calls": 1, "total_tokens": 12, "selection_counts": {"workspace_policy": 1}, "estimated_cost": {"status": "unavailable", "amount": None, "currency": None, "unpriced_calls": 1}},
+        {"execution_kind": "full_analysis", "calls": 1, "total_tokens": 1_500, "selection_counts": {"manual": 1}, "estimated_cost": {"status": "estimated", "amount": 0.012, "currency": "USD", "unpriced_calls": 0}},
     ]

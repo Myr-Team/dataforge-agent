@@ -463,7 +463,8 @@ def _model_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         group["calls"] += 1
         group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
         _increment_selection(group, model)
-    return sorted(groups.values(), key=lambda item: (-int(item["calls"]), -int(item["total_tokens"]), item["deployment"], item["route"]))
+        _increment_estimated_cost(group, model)
+    return sorted((_finalize_estimated_cost(group) for group in groups.values()), key=lambda item: (-int(item["calls"]), -int(item["total_tokens"]), item["deployment"], item["route"]))
 
 
 def _route_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -477,6 +478,7 @@ def _route_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             group["calls"] += 1
             group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
             _increment_selection(group, model)
+            _increment_estimated_cost(group, model)
             emitted = True
         if emitted:
             continue
@@ -485,7 +487,7 @@ def _route_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         group["calls"] += 1
         usage = _row_usage(row)
         group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
-    return sorted(groups.values(), key=lambda item: (-int(item["calls"]), -int(item["total_tokens"]), item["route"]))
+    return sorted((_finalize_estimated_cost(group) for group in groups.values()), key=lambda item: (-int(item["calls"]), -int(item["total_tokens"]), item["route"]))
 
 
 def _execution_kind_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -497,7 +499,8 @@ def _execution_kind_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         group["calls"] += 1
         group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
         _increment_selection(group, model)
-    return sorted(groups.values(), key=lambda item: (-int(item["calls"]), item["execution_kind"]))
+        _increment_estimated_cost(group, model)
+    return sorted((_finalize_estimated_cost(group) for group in groups.values()), key=lambda item: (-int(item["calls"]), item["execution_kind"]))
 
 
 def _iter_model_events(rows: list[dict[str, Any]]):
@@ -521,6 +524,62 @@ def _increment_selection(group: dict[str, Any], model: dict[str, Any]) -> None:
         return
     counts = group.setdefault("selection_counts", {})
     counts[selection] = int(counts.get(selection) or 0) + 1
+
+
+def _increment_estimated_cost(group: dict[str, Any], model: dict[str, Any]) -> None:
+    if "cost_estimate" not in model:
+        return
+    group["_cost_observed"] = True
+    estimate = model.get("cost_estimate") if isinstance(model.get("cost_estimate"), dict) else {}
+    if str(estimate.get("status") or "").strip().lower() != "estimated":
+        group["_cost_unpriced"] = int(group.get("_cost_unpriced") or 0) + 1
+        return
+    amount = estimate.get("amount")
+    currency = str(estimate.get("currency") or "").strip().upper()
+    if (
+        not isinstance(amount, (int, float))
+        or isinstance(amount, bool)
+        or not math.isfinite(float(amount))
+        or float(amount) < 0
+        or not currency
+    ):
+        group["_cost_unpriced"] = int(group.get("_cost_unpriced") or 0) + 1
+        return
+    group.setdefault("_cost_amounts", []).append(float(amount))
+    group.setdefault("_cost_currencies", set()).add(currency)
+
+
+def _finalize_estimated_cost(group: dict[str, Any]) -> dict[str, Any]:
+    result = dict(group)
+    observed = result.pop("_cost_observed", False)
+    amounts = result.pop("_cost_amounts", [])
+    currencies = result.pop("_cost_currencies", set())
+    unpriced_calls = int(result.pop("_cost_unpriced", 0) or 0)
+    if not observed:
+        return result
+    if not amounts:
+        result["estimated_cost"] = {
+            "status": "unavailable",
+            "amount": None,
+            "currency": None,
+            "unpriced_calls": unpriced_calls,
+        }
+        return result
+    if unpriced_calls or len(currencies) != 1:
+        result["estimated_cost"] = {
+            "status": "partial",
+            "amount": None,
+            "currency": None,
+            "unpriced_calls": unpriced_calls,
+        }
+        return result
+    result["estimated_cost"] = {
+        "status": "estimated",
+        "amount": round(sum(amounts), 6),
+        "currency": next(iter(currencies)),
+        "unpriced_calls": 0,
+    }
+    return result
 
 
 def _member_rows(

@@ -843,9 +843,8 @@ def test_editor_governance_capabilities_hide_owner_sections(monkeypatch) -> None
     assert result["sections"] == {
         "members": {"visible": True, "write": False},
         "lineage": {"visible": True, "scope": "self"},
-        "cost_value": {"visible": False},
-        "models_connections": {"visible": False},
-        "settings": {"visible": False},
+        "monitor": {"visible": False},
+        "model_routing": {"visible": False},
     }
 
 

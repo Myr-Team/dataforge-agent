@@ -20,13 +20,12 @@ import {
   PanelRight,
   Route,
   Search,
-  Settings,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Target,
   UsersRound,
   ListTree,
-  ServerCog,
   WalletCards,
 } from "lucide-react";
 
@@ -48,9 +47,8 @@ export const NAV_GROUPS = [
     items: [
       { id: "members", label: "成员与协作", icon: UsersRound, capabilityKey: "members" },
       { id: "lineage", label: "审计与溯源", icon: ListTree, capabilityKey: "lineage" },
-      { id: "cost-value", label: "成本与价值", icon: LineChart, capabilityKey: "cost_value" },
-      { id: "models-connections", label: "模型与连接", icon: ServerCog, capabilityKey: "models_connections" },
-      { id: "settings", label: "设置", icon: Settings, capabilityKey: "settings" },
+      { id: "monitor", label: "监视", icon: LineChart, capabilityKey: "monitor" },
+      { id: "model-routing", label: "模型路由", icon: SlidersHorizontal, capabilityKey: "model_routing" },
     ],
   },
 ];
@@ -63,7 +61,9 @@ export function canViewGovernance(access) {
 
 export function normalizePrimaryView(view) {
   if (view === "governance") return "lineage";
-  if (view === "monitor") return "cost-value";
+  if (view === "cost-value") return "monitor";
+  if (view === "models-connections") return "model-routing";
+  if (view === "settings") return "workspaces";
   return view;
 }
 

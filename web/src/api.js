@@ -348,6 +348,28 @@ export async function updateEnterpriseIdentityPolicy(workspaceId, trustedEmailDo
   });
 }
 
+export async function loadWorkspaceModelRouting(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/model-routing`);
+}
+
+export async function updateWorkspaceModelRouting(workspaceId, policy) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/model-routing`, {
+    method: "PUT",
+    body: JSON.stringify(policy),
+  });
+}
+
+export async function loadWorkspaceModelPriceCard(workspaceId) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/model-price-card`);
+}
+
+export async function updateWorkspaceModelPriceCard(workspaceId, priceCard) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/model-price-card`, {
+    method: "PUT",
+    body: JSON.stringify(priceCard),
+  });
+}
+
 export async function loadMonitoringDashboard({ scope = "current", workspaceId, from, to, signal } = {}) {
   const params = new URLSearchParams({
     scope: String(scope || "current"),

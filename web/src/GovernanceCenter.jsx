@@ -14,6 +14,7 @@ import { EnterpriseIdentityPolicyModal } from "./EnterpriseIdentityPolicyModal.j
 import { memberDirectoryViewModel } from "./governanceViewModel.js";
 import { resolveLineageScope } from "./governanceCenterModel.js";
 import { MonitorPage } from "./MonitorPage.jsx";
+import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
 
 const MEMBER_ROLES = ["admin", "editor", "viewer"];
 
@@ -166,21 +167,10 @@ function LineagePage({ workspaceId, capabilities }) {
   return <main className="governance-page"><SectionHeader kicker="Lineage" title="审计与溯源" description={scope === "workspace" ? "显示当前工作区的安全操作脉络。" : "仅显示由当前身份发起的安全操作脉络。"} actions={<button className="icon-button" type="button" title="刷新溯源记录" aria-label="刷新溯源记录" onClick={loadLineage}><RefreshCw size={17} /></button>} /><div className="governance-data-frame"><PageState loading={state.loading} error={state.error} empty={!state.loading && !state.error && !rows.length} onRetry={loadLineage} />{!state.loading && !state.error && rows.length ? <div className="governance-timeline">{rows.map((row) => <article className="governance-lineage-row" key={row.correlation_ref}><div className="governance-lineage-dot" /><div><b>{row.title}</b><p>{row.route} · {row.status} · 数据版本 {row.data_revision ?? "未记录"}</p><small>{row.timestamp ? new Date(row.timestamp).toLocaleString("zh-CN") : "未记录"} · {row.initiator?.subject_label || "成员（已脱敏）"}</small></div><code>{row.correlation_ref}</code></article>)}</div> : null}</div></main>;
 }
 
-function ModelsConnectionsPage({ dashboard }) {
-  const dependencies = Object.entries(dashboard?.health?.dependencies || dashboard?.dependency_details || {}).slice(0, 12);
-  return <main className="governance-page"><SectionHeader kicker="Runtime" title="模型与连接" description="展示当前工作区使用的运行依赖状态；凭证和连接串不会在此页面呈现。" /><div className="governance-data-frame">{dependencies.length ? <div className="governance-dependency-list">{dependencies.map(([name, value]) => <div key={name}><span>{name}</span><b className={String(value?.state || value || "").toLowerCase().includes("ok") ? "ok" : "neutral"}>{typeof value === "object" ? value?.state || "已配置" : String(value)}</b></div>)}</div> : <PageState empty />}</div></main>;
-}
-
-function SettingsPage({ dashboard }) {
-  const workspace = dashboard?.workspace || {};
-  return <main className="governance-page"><SectionHeader kicker="Workspace" title="设置" description="当前工作区的生命周期与运行配置概览。高风险配置保留在服务端治理边界内。" /><div className="governance-data-frame governance-settings-grid"><div><span>工作区</span><b>{workspace.name || dashboard?.workspace_id || "未记录"}</b></div><div><span>数据资产</span><b>{workspace.doc_count ?? "未记录"}</b></div><div><span>最近更新</span><b>{workspace.updated_at ? new Date(workspace.updated_at).toLocaleString("zh-CN") : "未记录"}</b></div></div></main>;
-}
-
 export function GovernanceCenter({ section, workspaceId, capabilities, dashboard, workspaceAccess }) {
-  if (section === "cost-value") return <MonitorPage workspaceId={workspaceId} workspaceAccess={workspaceAccess} />;
+  if (section === "monitor") return <MonitorPage workspaceId={workspaceId} workspaceAccess={workspaceAccess} />;
   if (section === "members") return <MembersPage workspaceId={workspaceId} capabilities={capabilities} />;
   if (section === "lineage") return <LineagePage workspaceId={workspaceId} capabilities={capabilities} />;
-  if (section === "models-connections") return <ModelsConnectionsPage dashboard={dashboard} />;
-  if (section === "settings") return <SettingsPage dashboard={dashboard} />;
+  if (section === "model-routing") return <ModelRoutingPage workspaceId={workspaceId} />;
   return <main className="governance-page"><PageState empty /></main>;
 }

@@ -618,7 +618,7 @@ function WorkbenchMainInner({
   workspaceAccess,
   governanceCapabilities,
 }) {
-  const resolvedView = view === "governance" ? "lineage" : view === "monitor" ? "cost-value" : view;
+  const resolvedView = view === "governance" ? "lineage" : view === "cost-value" ? "monitor" : view;
   if (resolvedView === "conversations") {
     return (
       <ConversationStudio
@@ -651,7 +651,7 @@ function WorkbenchMainInner({
   if (resolvedView === "runs") {
     return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} tasks={tasks} />;
   }
-  if (["members", "lineage", "cost-value", "models-connections", "settings"].includes(resolvedView)) {
+  if (["members", "lineage", "monitor", "model-routing"].includes(resolvedView)) {
     return (
       <GovernanceCenter
         section={resolvedView}

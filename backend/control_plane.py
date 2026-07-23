@@ -1415,9 +1415,8 @@ def _governance_sections(role: str | None) -> dict[str, dict[str, Any]]:
     return {
         "members": {"visible": True, "write": is_owner},
         "lineage": {"visible": True, "scope": "workspace" if is_owner else "self"},
-        "cost_value": {"visible": is_owner},
-        "models_connections": {"visible": is_owner},
-        "settings": {"visible": is_owner},
+        "monitor": {"visible": is_owner},
+        "model_routing": {"visible": is_owner},
     }
 
 

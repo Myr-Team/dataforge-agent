@@ -5,6 +5,8 @@ import {
   loadEnterpriseIdentityPolicy,
   loadGovernanceCapabilities,
   loadGovernanceLineage,
+  loadWorkspaceModelPriceCard,
+  loadWorkspaceModelRouting,
   loadWorkspaceChargeback,
   loadWorkspaceGovernanceAuditEvents,
   loadWorkspaceInvitationHistory,
@@ -37,6 +39,8 @@ test("governance endpoints encode workspace and exact bounded query parameters",
   await loadGovernanceCapabilities("ws/a");
   await loadGovernanceLineage("ws/a", { scope: "workspace", limit: 1000, cursor: "next/value" });
   await loadEnterpriseIdentityPolicy("ws/a");
+  await loadWorkspaceModelRouting("ws/a");
+  await loadWorkspaceModelPriceCard("ws/a");
 
   assert.equal(calls[0], "/api/workspaces/ws%2Fa/governance/trace-status?run_id=run%2F1&correlation_id=corr-1");
   assert.equal(calls[1], "/api/workspaces/ws%2Fa/governance/roi?from=2026-07-01T00%3A00%3A00Z&to=2026-08-01T00%3A00%3A00Z");
@@ -46,6 +50,8 @@ test("governance endpoints encode workspace and exact bounded query parameters",
   assert.equal(calls[5], "/api/workspaces/ws%2Fa/governance/capabilities");
   assert.equal(calls[6], "/api/workspaces/ws%2Fa/governance/lineage?scope=workspace&limit=100&cursor=next%2Fvalue");
   assert.equal(calls[7], "/api/workspaces/ws%2Fa/governance/identity-policy");
+  assert.equal(calls[8], "/api/workspaces/ws%2Fa/governance/model-routing");
+  assert.equal(calls[9], "/api/workspaces/ws%2Fa/governance/model-price-card");
 }));
 
 test("audit pagination clamps the page size to the backend contract", withFetch(async (calls) => {

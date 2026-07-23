@@ -95,3 +95,23 @@ test("monitor view model preserves explicit zero token totals for member display
   assert.equal(view.memberRows[0].totalTokens, 0);
   assert.equal(view.memberRows[0].totalTokensLabel, "0");
 });
+
+test("monitor view model labels persisted model estimates without claiming verified billing", () => {
+  const view = monitorDashboardViewModel({
+    summary: {
+      calls: { observed: 2, succeeded: 2, failed: 0, unknown: 0 },
+      tokens: { input: 30, output: 10, total: 40, known_runs: 2, unknown_runs: 0 },
+      cost: { status: "estimated", amount: 0.0042, currency: "USD", unpriced_calls: 0 },
+      quality: { audited_runs: 0, rework_runs: 0, context_optimization: {} },
+      roi: { status: "unavailable" },
+    },
+    models: [{ deployment: "gpt-5.6-sol", route: "sol", calls: 2, total_tokens: 40, selection_counts: { workspace_policy: 2 }, estimated_cost: { status: "estimated", amount: 0.0042, currency: "USD" } }],
+    routes: [{ route: "sol", calls: 2, total_tokens: 40, selection_counts: { workspace_policy: 2 }, estimated_cost: { status: "estimated", amount: 0.0042, currency: "USD" } }],
+  });
+
+  assert.equal(view.cards.cost.value, "USD 0.00");
+  assert.equal(view.cards.cost.badge, "估算");
+  assert.match(view.cards.cost.meta, /Owner 维护价格卡/);
+  assert.equal(view.routeRows[0].selectionLabel, "策略 2 次");
+  assert.match(view.modelRows[0].secondaryLabel, /估算 USD/);
+});

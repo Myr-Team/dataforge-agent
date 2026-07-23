@@ -78,6 +78,29 @@ function scopeLabel(scope = {}) {
   return "当前工作区";
 }
 
+function selectionLabel(counts = {}) {
+  const source = counts && typeof counts === "object" ? counts : {};
+  const labels = [
+    ["manual", "手动"],
+    ["workspace_policy", "策略"],
+    ["fallback", "备选"],
+    ["policy", "默认"],
+  ];
+  const parts = labels
+    .map(([key, label]) => [label, asInt(source[key]) || 0])
+    .filter(([, count]) => count > 0)
+    .map(([label, count]) => `${label} ${count} 次`);
+  return parts.join(" · ") || "未记录选择来源";
+}
+
+function estimatedCostLabel(cost = {}) {
+  const status = allowedState(cost.status, new Set(["estimated", "partial", "unavailable"]), "unavailable");
+  if (status === "estimated") return `估算 ${formatCurrency(cost.amount, cost.currency)}`;
+  if (status === "partial") return `${formatInteger(cost.unpriced_calls)} 次未计价`;
+  if (status === "unavailable") return "未配置估算参考";
+  return "";
+}
+
 export function monitorDashboardViewModel(payload = {}) {
   const summary = payload.summary || {};
   const calls = summary.calls || {};
@@ -92,7 +115,7 @@ export function monitorDashboardViewModel(payload = {}) {
   const observedCalls = asInt(calls.observed) || 0;
   const modelCallTotal = models.reduce((sum, row) => sum + (asInt(row.calls) || 0), 0);
   const routeCallTotal = routes.reduce((sum, row) => sum + (asInt(row.calls) || 0), 0);
-  const costStatus = allowedState(cost.status, new Set(["available", "unavailable"]), "unavailable");
+  const costStatus = allowedState(cost.status, new Set(["available", "estimated", "partial", "unavailable"]), "unavailable");
   const roiStatus = allowedState(roi.status, new Set(["verified", "pending_verification", "unavailable"]), "unavailable");
   const opportunityStatus = allowedState(
     payload?.opportunity?.status,
@@ -113,9 +136,13 @@ export function monitorDashboardViewModel(payload = {}) {
         meta: tokenMeta(tokens),
       },
       cost: {
-        value: costStatus === "available" ? formatCurrency(cost.amount, cost.currency) : "未记录",
-        badge: costStatus === "available" ? "已计价" : "不可用",
-        meta: cost.price_catalog_version || String(cost.currency || "USD"),
+        value: ["available", "estimated"].includes(costStatus) ? formatCurrency(cost.amount, cost.currency) : "未记录",
+        badge: costStatus === "estimated" ? "估算" : costStatus === "available" ? "已计价" : costStatus === "partial" ? "部分未计价" : "不可用",
+        meta: costStatus === "estimated"
+          ? "Owner 维护价格卡；非 Azure 账单"
+          : costStatus === "partial"
+            ? `${formatInteger(cost.unpriced_calls)} 次调用未计价`
+            : cost.price_catalog_version || String(cost.currency || "USD"),
       },
       quality: {
         value: quality.audited_runs === null ? "未记录" : formatInteger(quality.audited_runs),
@@ -135,12 +162,18 @@ export function monitorDashboardViewModel(payload = {}) {
       calls: asInt(row.calls) || 0,
       totalTokens: asInt(row.total_tokens) || 0,
       shareLabel: shareLabel(row.calls, modelCallTotal || observedCalls),
+      selectionLabel: selectionLabel(row.selection_counts),
+      estimatedCostLabel: estimatedCostLabel(row.estimated_cost),
+      secondaryLabel: [selectionLabel(row.selection_counts), estimatedCostLabel(row.estimated_cost)].filter(Boolean).join(" · "),
     })),
     routeRows: routes.map((row) => ({
       route: String(row.route || "unknown"),
       calls: asInt(row.calls) || 0,
       totalTokens: asInt(row.total_tokens) || 0,
       shareLabel: shareLabel(row.calls, routeCallTotal || observedCalls),
+      selectionLabel: selectionLabel(row.selection_counts),
+      estimatedCostLabel: estimatedCostLabel(row.estimated_cost),
+      secondaryLabel: [selectionLabel(row.selection_counts), estimatedCostLabel(row.estimated_cost)].filter(Boolean).join(" · "),
     })),
     memberRows: members.map((row) => ({
       label: String(row.member_label || row.subject_label || "成员"),

@@ -593,7 +593,6 @@ export function App() {
 
   const changePrimaryView = (view) => {
     const nextView = resolvePrimaryView(view, governanceCapabilities);
-    if (nextView === "settings") setSettingsInitialTab("about");
     setActiveView(nextView);
   };
 

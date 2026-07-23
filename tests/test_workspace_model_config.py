@@ -37,7 +37,7 @@ def test_workspace_policy_rejects_incompatible_route() -> None:
         )
 
 
-def test_workspace_policy_requires_followup_capability_for_follow_up() -> None:
+def test_workspace_policy_uses_chat_capability_for_configured_follow_up() -> None:
     routes = [
         ModelRoute("chat", "gpt-5.6-chat", "Chat", frozenset({"chat"})),
         ModelRoute("followup", "gpt-5.6-followup", "Follow-up", frozenset({"followup"})),
@@ -45,16 +45,16 @@ def test_workspace_policy_requires_followup_capability_for_follow_up() -> None:
 
     with pytest.raises(ValueError, match="capability"):
         validate_workspace_routing_policy(
-            {"assignments": {"follow_up": {"primary_route_id": "chat"}}},
+            {"assignments": {"follow_up": {"primary_route_id": "followup"}}},
             routes,
         )
 
     policy = validate_workspace_routing_policy(
-        {"assignments": {"follow_up": {"primary_route_id": "followup"}}},
+        {"assignments": {"follow_up": {"primary_route_id": "chat"}}},
         routes,
     )
 
-    assert policy["assignments"]["follow_up"]["primary_route_id"] == "followup"
+    assert policy["assignments"]["follow_up"]["primary_route_id"] == "chat"
 
 
 def test_price_card_estimate_requires_complete_usage_and_matching_price() -> None:
