@@ -258,6 +258,7 @@ def test_dashboard_aggregates_cache_only_for_eligible_model_events() -> None:
                     {
                         "route": "analysis",
                         "deployment": "gpt-cache",
+                        "time": "2026-07-23T12:00:00Z",
                         "usage": {"total": 4},
                         "cache": {
                             "state": "hit",
@@ -383,6 +384,11 @@ def test_dashboard_projects_model_event_time_latency_and_trusted_member_only() -
                         "deployment": "chronologically-newer",
                         "time": "2026-07-23T23:30:00Z",
                         "latency_ms": 22,
+                    },
+                    {
+                        "route": "analysis",
+                        "deployment": "missing-event-time",
+                        "latency_ms": 33,
                     },
                 ],
             }

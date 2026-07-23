@@ -378,3 +378,28 @@ persistence, or frontend files changed.
 - A review cleanup removed an unused helper parameter.
 - Pre-existing untracked workspace fixtures and `.superpowers/brainstorm/`
   remain untouched and unstaged.
+
+### Review correction: request telemetry provenance
+
+The review correction keeps request rows tied to persisted model events rather
+than run-level lifecycle data.
+
+- Request occurrence time is parsed from `models[].time`, converted to UTC,
+  and ordered by the parsed datetime so ISO offsets cannot change chronology.
+- Request duration is derived from `models[].latency_ms`, not the run duration.
+- Member labels reapply `is_trusted_tenant_identity(actor)` instead of trusting
+  the persisted boolean marker alone.
+- The allow-list projection continues to omit run- and model-level prompts,
+  messages, errors, headers, raw identity values, response IDs, and cache keys.
+- A model event without a valid persisted event time produces no request row;
+  it is not assigned the run completion time.
+
+TDD evidence:
+
+1. RED: `python -m pytest tests/test_monitoring_dashboard.py::test_dashboard_projects_model_event_time_latency_and_trusted_member_only tests/test_monitoring_dashboard_api.py::test_monitor_api_projects_only_bounded_safe_cache_requests -q`
+   returned `1 failed, 1 passed in 4.90s`. The missing-time model was projected
+   as the newest request from the run completion timestamp.
+2. GREEN: `python -m pytest tests/test_monitoring_dashboard.py tests/test_monitoring_dashboard_api.py -q`
+   returned `18 passed in 4.20s` after the fallback was removed.
+3. `python -m compileall -q backend/monitoring_dashboard.py` and
+   `git diff --check` exited `0` before commit.

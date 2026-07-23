@@ -617,7 +617,7 @@ def _request_rows(rows: list[dict[str, Any]], workspace_ids: list[str]) -> list[
     requests: list[dict[str, Any]] = []
     for row, model in _iter_model_events(rows):
         workspace_id = _clean(row.get("workspace_id"))
-        occurred_at = _parse_time(model.get("time")) or _row_time(row)
+        occurred_at = _parse_time(model.get("time"))
         if not workspace_id or workspace_id not in workspace_labels or occurred_at is None:
             continue
         cache = _cache_projection(model.get("cache"))

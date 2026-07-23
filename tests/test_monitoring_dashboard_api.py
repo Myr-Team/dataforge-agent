@@ -357,6 +357,8 @@ def test_monitor_api_projects_only_bounded_safe_cache_requests(
                     "route": "analysis",
                     "deployment": "gpt-cache",
                     "response_id": "response-should-not-expose",
+                    "time": f"2026-07-24T00:{index:02d}:00Z",
+                    "latency_ms": index,
                     "usage": {"prompt": 10, "completion": 2, "total": 12},
                     "cache": {"state": "hit", "provider": "redis", "cache_key": "do-not-expose"},
                 }
