@@ -1054,6 +1054,32 @@ def test_workspace_access_endpoint_reports_current_trusted_owner_without_identit
     }
 
 
+def test_workspace_access_endpoint_reports_candidate_demo_owner_for_trusted_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setenv("DF_ENVIRONMENT", "candidate")
+    monkeypatch.setenv("DF_DEMO_PERMISSIVE_ACCESS", "1")
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_TENANT_ID", "tenant-1")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {"workspace_owner": {"actor_id": "creator-oid", "tenant_id": "tenant-1"}, "workspace_members": []},
+    )
+
+    response = TestClient(app).get(
+        "/api/workspaces/ws-demo/access",
+        headers=_trusted_easy_auth_headers("demo@contoso.com", actor_id="demo-oid", tenant_id="tenant-1"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "workspace_id": "ws-demo",
+        "authenticated": True,
+        "allowed": True,
+        "role": "owner",
+        "reason_code": "demo_tenant_owner",
+    }
+
+
 def test_pending_invitation_rejects_mismatched_oid_or_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         workspace_authz,
