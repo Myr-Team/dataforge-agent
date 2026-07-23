@@ -7,12 +7,14 @@ import os
 from pathlib import Path
 import re
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Any, Iterator, Mapping
 
 try:
     from .context_evaluation import DEFAULT_CONTEXT_EVALUATION_SUMMARY_PATH, load_evaluation_gate
+    from .workspace_model_config import EXECUTION_KIND_CAPABILITIES
 except ImportError:
     from context_evaluation import DEFAULT_CONTEXT_EVALUATION_SUMMARY_PATH, load_evaluation_gate
+    from workspace_model_config import EXECUTION_KIND_CAPABILITIES
 
 
 _ROUTE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -51,6 +53,8 @@ class SelectedTextRoute:
     execution_kind: str
     selection: str = "policy"
     fallback_reason: str | None = None
+    policy_revision: int | None = None
+    price_card_revision: int | None = None
 
 
 _ROUTE_SCOPE: ContextVar[SelectedTextRoute | None] = ContextVar("dataforge_model_route_scope", default=None)
@@ -136,12 +140,75 @@ def _pick_route(
     return routes[0]
 
 
+def _allowlisted_route(route_id: str, *, capability: str) -> ModelRoute | None:
+    normalized = str(route_id or "").strip().lower()
+    for route in list_allowed_model_routes():
+        if route.route_id == normalized and str(capability or "").strip().lower() in route.capabilities:
+            return route
+    return None
+
+
+def _policy_revision(policy: Mapping[str, Any] | None) -> int | None:
+    value = (policy or {}).get("revision") if isinstance(policy, Mapping) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _price_card_revision(price_card: Mapping[str, Any] | None) -> int | None:
+    value = (price_card or {}).get("revision") if isinstance(price_card, Mapping) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _workspace_assignment(
+    policy: Mapping[str, Any] | None,
+    execution_kind: str,
+) -> Mapping[str, Any] | None:
+    assignments = (policy or {}).get("assignments") if isinstance(policy, Mapping) else None
+    candidate = assignments.get(execution_kind) if isinstance(assignments, Mapping) else None
+    return candidate if isinstance(candidate, Mapping) else None
+
+
 def select_text_route_record(
     execution_kind: str,
     *,
     candidate_enabled: bool = False,
+    policy: Mapping[str, Any] | None = None,
+    manual_route_id: str | None = None,
+    price_card: Mapping[str, Any] | None = None,
 ) -> SelectedTextRoute:
     normalized_kind = str(execution_kind or "direct_reply").strip().lower()
+    policy_revision = _policy_revision(policy)
+    price_card_revision = _price_card_revision(price_card)
+    workspace_capability = EXECUTION_KIND_CAPABILITIES.get(normalized_kind, "chat")
+    if manual_route_id:
+        manual = _allowlisted_route(str(manual_route_id), capability=workspace_capability)
+        if manual is None:
+            raise ModelPolicyError("Requested model route is not allowlisted or compatible")
+        return SelectedTextRoute(
+            route=manual,
+            execution_kind=normalized_kind,
+            selection="manual",
+            policy_revision=policy_revision,
+            price_card_revision=price_card_revision,
+        )
+    assignment = _workspace_assignment(policy, normalized_kind)
+    if assignment is not None:
+        for field_name, selection, fallback_reason in (
+            ("primary_route_id", "workspace_policy", None),
+            ("fallback_route_id", "fallback", "capability_missing"),
+        ):
+            route_id = str(assignment.get(field_name) or "").strip().lower()
+            if not route_id:
+                continue
+            selected = _allowlisted_route(route_id, capability=workspace_capability)
+            if selected is not None:
+                return SelectedTextRoute(
+                    route=selected,
+                    execution_kind=normalized_kind,
+                    selection=selection,
+                    fallback_reason=fallback_reason,
+                    policy_revision=policy_revision,
+                    price_card_revision=price_card_revision,
+                )
     desired = _EXECUTION_KIND_CAPABILITY.get(normalized_kind, "chat")
     fallback_reason: str | None = None
     capability = desired
@@ -159,6 +226,8 @@ def select_text_route_record(
                         route=candidate_route,
                         execution_kind=normalized_kind,
                         selection="policy",
+                        policy_revision=policy_revision,
+                        price_card_revision=price_card_revision,
                     )
                 fallback_reason = "candidate_not_eligible"
         else:
@@ -182,6 +251,8 @@ def select_text_route_record(
         execution_kind=normalized_kind,
         selection="policy",
         fallback_reason=fallback_reason,
+        policy_revision=policy_revision,
+        price_card_revision=price_card_revision,
     )
 
 
@@ -226,6 +297,8 @@ def model_route_scope(
             execution_kind=scoped.execution_kind,
             selection=str(scoped.selection or "policy").strip().lower() or "policy",
             fallback_reason=safe_fallback_reason(scoped.fallback_reason),
+            policy_revision=scoped.policy_revision,
+            price_card_revision=scoped.price_card_revision,
         )
     )
     try:

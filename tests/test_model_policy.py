@@ -5,7 +5,7 @@ import json
 import backend.foundry_client as foundry_client
 import backend.orchestrator as orchestrator
 import backend.run_store as run_store
-from backend.model_policy import current_text_route, model_route_scope, public_model_route_snapshot, select_text_route
+from backend.model_policy import current_text_route, model_route_scope, public_model_route_snapshot, select_text_route, select_text_route_record
 
 
 def test_chat_model_uses_only_the_server_allowlist(monkeypatch) -> None:
@@ -25,6 +25,35 @@ def test_chat_model_uses_only_the_server_allowlist(monkeypatch) -> None:
     monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "primary-analysis")
 
     assert getattr(foundry_client, "_chat_model", lambda: "")() == "gpt-5.1"
+
+
+def test_workspace_policy_and_manual_override_select_allowlisted_routes(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {"id": "sol", "deployment": "gpt-5.6-sol", "label": "Sol", "capabilities": ["chat", "analysis"]},
+                {"id": "luna", "deployment": "gpt-5.6-luna", "label": "Luna", "capabilities": ["chat"]},
+            ]
+        ),
+    )
+    policy = {
+        "revision": 4,
+        "assignments": {
+            "direct_reply": {"primary_route_id": "luna", "fallback_route_id": "sol"},
+            "full_analysis": {"primary_route_id": "sol", "fallback_route_id": "sol"},
+        },
+    }
+
+    policy_selected = select_text_route_record("direct_reply", policy=policy)
+    manual_selected = select_text_route_record("direct_reply", policy=policy, manual_route_id="sol")
+
+    assert policy_selected.route.route_id == "luna"
+    assert policy_selected.selection == "workspace_policy"
+    assert policy_selected.policy_revision == 4
+    assert manual_selected.route.route_id == "sol"
+    assert manual_selected.selection == "manual"
+    assert manual_selected.policy_revision == 4
 
 
 def test_full_analysis_never_selects_followup_candidate_route(monkeypatch) -> None:
