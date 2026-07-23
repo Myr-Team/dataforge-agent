@@ -11,6 +11,7 @@ import {
   invitationLifecycleViewModel,
   memberDirectoryViewModel,
   runTraceReferenceViewModel,
+  traceNeedsRefresh,
   traceTelemetryMetricsViewModel,
   traceViewModel,
 } from "./governanceViewModel.js";
@@ -2692,25 +2693,39 @@ function TraceReference({ workspaceId, runId, reference, compact = false, showMe
   const [delivery, setDelivery] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [refreshSeed, setRefreshSeed] = useState(0);
   const model = useMemo(() => runTraceReferenceViewModel(reference, delivery || {}), [reference, delivery]);
   const metricModel = useMemo(() => traceTelemetryMetricsViewModel(metrics || {}), [metrics]);
   const resolvedRunId = runId || reference?.run_id || "";
 
   useEffect(() => {
     let cancelled = false;
+    let retryTimer = null;
+    let retryCount = 0;
     setDelivery(null);
     setMetrics(null);
     if (!model.available || !workspaceId || !resolvedRunId) return () => { cancelled = true; };
-    loadWorkspaceTraceStatus(workspaceId, { runId: resolvedRunId, correlationId: model.traceId })
-      .then((value) => { if (!cancelled) setDelivery(value || {}); })
-      .catch((error) => { if (!cancelled) setDelivery(traceRequestFailure(error)); });
-    if (showMetrics) {
-      loadWorkspaceTraceMetrics(workspaceId, { runId: resolvedRunId, correlationId: model.traceId })
-        .then((value) => { if (!cancelled) setMetrics(value || {}); })
-        .catch((error) => { if (!cancelled) setMetrics(traceRequestFailure(error)); });
-    }
-    return () => { cancelled = true; };
-  }, [workspaceId, resolvedRunId, model.available, model.traceId, showMetrics]);
+    const refreshTrace = async () => {
+      const statusPromise = loadWorkspaceTraceStatus(workspaceId, { runId: resolvedRunId, correlationId: model.traceId })
+        .catch((error) => traceRequestFailure(error));
+      const metricsPromise = showMetrics
+        ? loadWorkspaceTraceMetrics(workspaceId, { runId: resolvedRunId, correlationId: model.traceId }).catch((error) => traceRequestFailure(error))
+        : Promise.resolve(null);
+      const [nextDelivery, nextMetrics] = await Promise.all([statusPromise, metricsPromise]);
+      if (cancelled) return;
+      setDelivery(nextDelivery || {});
+      if (showMetrics) setMetrics(nextMetrics || {});
+      if (traceNeedsRefresh(nextDelivery) && retryCount < 3) {
+        retryCount += 1;
+        retryTimer = window.setTimeout(refreshTrace, 8000);
+      }
+    };
+    refreshTrace();
+    return () => {
+      cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+    };
+  }, [workspaceId, resolvedRunId, model.available, model.traceId, showMetrics, refreshSeed]);
 
   if (!model.available) return null;
   const copyTraceId = async () => {
@@ -2738,7 +2753,10 @@ function TraceReference({ workspaceId, runId, reference, compact = false, showMe
       </div>
       <div className={`trace-reference-status ${model.delivery.tone}`}>
         <span><b>Azure Monitor</b> · {statusLabel}</span>
-        {model.transactionUrl ? <a href={model.transactionUrl} target="_blank" rel="noreferrer">Azure Monitor <ArrowUpRight size={13} /></a> : null}
+        <span className="trace-reference-actions">
+          <button type="button" className="trace-reference-refresh" onClick={() => setRefreshSeed((value) => value + 1)}>刷新</button>
+          {model.transactionUrl ? <a href={model.transactionUrl} target="_blank" rel="noreferrer">Azure Monitor <ArrowUpRight size={13} /></a> : null}
+        </span>
       </div>
       {model.delivery.issueCode ? <p className="trace-reference-issue">{traceIssueLabel(model.delivery.issueCode)}</p> : null}
       {showMetrics ? (

@@ -2220,7 +2220,18 @@ def _monitor_dashboard_payload(
         outcome_loader=list_outcome_events,
         chargeback_loader=workspace_member_chargeback,
     )
-    gateway_calls = _gateway_governed_calls(workspace_ids, from_value=from_value, to_value=to_value)
+    gateway_evidence = _gateway_evidence_for_workspaces(
+        workspace_ids,
+        from_value=from_value,
+        to_value=to_value,
+    )
+    gateway = _gateway_evidence_projection(
+        gateway_evidence,
+        workspace_count=len(workspace_ids),
+        configured=_apim_gateway_configured(),
+    )
+    payload["gateway"] = gateway
+    gateway_calls = gateway.get("governed_calls") if gateway.get("state") in {"verified", "partial"} else None
     if gateway_calls is not None:
         coverage = payload.setdefault("coverage", {})
         current_calls = coverage.get("governed_text_calls")
@@ -2296,18 +2307,23 @@ def _workspace_run_details_for_roi(workspace_id: str, window: dict[str, str]) ->
     return rows, len(candidates) > 300
 
 
-def _gateway_governed_calls(
+def _apim_gateway_configured() -> bool:
+    gateway_enabled = str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+    expected_gateway_id = str(os.environ.get("DF_APIM_EXPECTED_GATEWAY_ID") or "").strip()
+    return gateway_enabled and bool(expected_gateway_id)
+
+
+def _gateway_evidence_for_workspaces(
     workspace_ids: list[str],
     *,
     from_value: str | None = None,
     to_value: str | None = None,
-) -> int | None:
+) -> list[dict[str, Any]]:
     gateway_enabled = str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
     expected_gateway_id = str(os.environ.get("DF_APIM_EXPECTED_GATEWAY_ID") or "").strip()
     if not gateway_enabled or not expected_gateway_id:
-        return None
-    observed = False
-    total = 0
+        return []
+    evidence_rows: list[dict[str, Any]] = []
     for workspace_id in workspace_ids:
         evidence = _safe_value(
             lambda workspace_id=workspace_id: get_gateway_metric_evidence(
@@ -2325,13 +2341,65 @@ def _gateway_governed_calls(
             if isinstance(evidence, dict)
             else {}
         )
-        if str(payload.get("state") or "").strip().lower() != "verified":
-            continue
-        calls = payload.get("governed_calls")
-        if isinstance(calls, (int, float)) and not isinstance(calls, bool) and calls >= 0:
-            observed = True
-            total += int(calls)
-    return total if observed else None
+        evidence_rows.append(payload)
+    return evidence_rows
+
+
+def _gateway_evidence_projection(
+    evidence_rows: list[dict[str, Any]],
+    *,
+    workspace_count: int,
+    configured: bool,
+) -> dict[str, Any]:
+    """Return bounded APIM proof separately from provider usage stored on runs."""
+    if not configured:
+        return {
+            "state": "not_configured",
+            "governed_calls": None,
+            "total_tokens": None,
+            "last_observed_at": None,
+            "provenance": "apim_metric_not_configured",
+            "verified_workspace_count": 0,
+            "workspace_count": workspace_count,
+        }
+
+    verified = [row for row in evidence_rows if str(row.get("state") or "").strip().lower() == "verified"]
+    if verified:
+        calls = [row.get("governed_calls") for row in verified]
+        total_tokens = [row.get("total_tokens") for row in verified]
+        observed_at = [str(row.get("last_observed_at") or "").strip() for row in verified]
+        valid_calls = [int(value) for value in calls if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0]
+        complete_tokens = len(total_tokens) == len(verified) and all(
+            isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+            for value in total_tokens
+        )
+        state = "verified" if len(verified) == workspace_count else "partial"
+        return {
+            "state": state,
+            "governed_calls": sum(valid_calls) if len(valid_calls) == len(verified) else None,
+            "total_tokens": sum(int(value) for value in total_tokens) if complete_tokens else None,
+            "last_observed_at": max((value for value in observed_at if value), default=None),
+            "provenance": "apim_custom_metric",
+            "verified_workspace_count": len(verified),
+            "workspace_count": workspace_count,
+        }
+
+    states = {str(row.get("state") or "").strip().lower() for row in evidence_rows}
+    if "pending" in states:
+        state, provenance = "pending", "apim_metric_pending"
+    elif "unavailable" in states:
+        state, provenance = "unavailable", "apim_metric_query_unavailable"
+    else:
+        state, provenance = "not_configured", "apim_metric_not_configured"
+    return {
+        "state": state,
+        "governed_calls": None,
+        "total_tokens": None,
+        "last_observed_at": None,
+        "provenance": provenance,
+        "verified_workspace_count": 0,
+        "workspace_count": workspace_count,
+    }
 
 
 def _workspace_messages_for_chargeback(workspace_id: str, window: dict[str, str]) -> tuple[list[dict[str, Any]], bool]:

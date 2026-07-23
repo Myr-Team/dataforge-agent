@@ -217,7 +217,7 @@ function RankedBars({ rows, labelKey, valueKey, valueLabel, icon }) {
   );
 }
 
-function CoveragePanel({ coverage, opportunity }) {
+function CoveragePanel({ coverage, gateway, opportunity }) {
   return (
     <div className="monitor-coverage">
       <div className="monitor-coverage-metrics">
@@ -235,6 +235,18 @@ function CoveragePanel({ coverage, opportunity }) {
             <strong>{coverage.imageCallLabel}</strong>
           </div>
         </article>
+      </div>
+      <div className={`monitor-gateway-proof ${gateway.tone}`}>
+        <div>
+          <small>网关核验</small>
+          <strong>{gateway.label}</strong>
+        </div>
+        <span>{gateway.workspaceCount > 1 ? gateway.scopeLabel : gateway.sourceLabel}</span>
+        <dl>
+          <div><dt>受治理调用</dt><dd>{gateway.callsLabel}</dd></div>
+          <div><dt>网关 Tokens</dt><dd>{gateway.tokensLabel}</dd></div>
+          <div><dt>最后观测</dt><dd>{gateway.lastObservedAt ? new Date(gateway.lastObservedAt).toLocaleString("zh-CN") : "未记录"}</dd></div>
+        </dl>
       </div>
       <div className={`monitor-opportunity ${statusTone(opportunity.status)}`}>
         <small>{opportunity.kind ? `优化机会 / ${opportunity.kind}` : "优化机会"}</small>
@@ -398,7 +410,7 @@ export function MonitorPage({ workspaceId = "", workspaceAccess = null }) {
             <TrendChart rows={dailyRows} />
           </Frame>
           <Frame title="覆盖与机会" subtitle="只基于后端记录的治理边界与优化摘要" loading={loading} error={error} empty={!hasSnapshot} hasData={hasSnapshot}>
-            <CoveragePanel coverage={view.coverage} opportunity={view.opportunity} />
+            <CoveragePanel coverage={view.coverage} gateway={view.gateway} opportunity={view.opportunity} />
           </Frame>
           <Frame title="模型消耗" subtitle="按模型部署汇总调用与 Tokens" loading={loading} error={error} empty={!modelRows.length} hasData={hasSnapshot && modelRows.length > 0}>
             <RankedBars rows={modelRows} labelKey="deployment" valueKey="calls" valueLabel="调用" icon={<Bot size={15} />} />

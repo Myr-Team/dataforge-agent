@@ -91,6 +91,10 @@ export function traceStatusLabel(status) {
   return (STATUS_COPY[stateOf(status)] || { label: "未记录" }).label;
 }
 
+export function traceNeedsRefresh(status) {
+  return stateOf(status) === "partial";
+}
+
 export function traceViewModel(status) {
   const state = stateOf(status);
   const copy = STATUS_COPY[state] || { label: "未记录", tone: "neutral" };

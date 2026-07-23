@@ -115,3 +115,46 @@ test("monitor view model labels persisted model estimates without claiming verif
   assert.equal(view.routeRows[0].selectionLabel, "策略 2 次");
   assert.match(view.modelRows[0].secondaryLabel, /估算 USD/);
 });
+
+test("monitor view model keeps APIM proof distinct from per-run token observations", () => {
+  const view = monitorDashboardViewModel({
+    summary: {
+      calls: { observed: 3, succeeded: 3, failed: 0, unknown: 0 },
+      tokens: { input: 80, output: 20, total: 100, known_runs: 1, unknown_runs: 2 },
+      cost: { status: "unavailable", amount: null, currency: "USD" },
+      quality: { audited_runs: 0, rework_runs: 0, context_optimization: {} },
+      roi: { status: "unavailable" },
+    },
+    gateway: {
+      state: "verified",
+      governed_calls: 7,
+      total_tokens: 420,
+      last_observed_at: "2026-07-05T09:28:00Z",
+      provenance: "apim_custom_metric",
+      workspace_count: 1,
+    },
+  });
+
+  assert.equal(view.cards.tokens.value, "100");
+  assert.equal(view.gateway.label, "APIM 指标已验证");
+  assert.equal(view.gateway.callsLabel, "7");
+  assert.equal(view.gateway.tokensLabel, "420");
+  assert.equal(view.gateway.sourceLabel, "APIM 自定义指标");
+  assert.equal(view.gateway.lastObservedAt, "2026-07-05T09:28:00Z");
+});
+
+test("monitor view model labels partially verified APIM portfolio evidence", () => {
+  const view = monitorDashboardViewModel({
+    gateway: {
+      state: "partial",
+      governed_calls: 7,
+      total_tokens: 420,
+      provenance: "apim_custom_metric",
+      verified_workspace_count: 1,
+      workspace_count: 2,
+    },
+  });
+
+  assert.equal(view.gateway.label, "部分 APIM 指标已验证");
+  assert.equal(view.gateway.scopeLabel, "1 / 2 个工作区已验证");
+});

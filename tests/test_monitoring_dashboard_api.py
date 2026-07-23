@@ -196,6 +196,93 @@ def test_monitor_api_uses_requested_window_for_gateway_evidence(
     assert captured == [("ws-owned", "dfmonapim721", "2026-07-03T01:00:00Z", "2026-07-05T09:30:00Z")]
 
 
+def test_monitor_api_keeps_apim_evidence_separate_from_run_store_usage(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(control_plane, "_owned_workspace_ids", lambda _request: ["ws-owned"], raising=False)
+    monkeypatch.setenv("DF_APIM_GATEWAY_ENABLED", "true")
+    monkeypatch.setenv("DF_APIM_EXPECTED_GATEWAY_ID", "dfmonapim721")
+    monkeypatch.setattr(
+        control_plane,
+        "build_monitor_dashboard",
+        lambda workspace_ids, **_kwargs: {
+            "scope": {"kind": "current", "workspace_ids": workspace_ids},
+            "window": {"from": "2026-07-03T01:00:00Z", "to": "2026-07-05T09:30:00Z", "timezone": "UTC"},
+            "freshness": {"generated_at": "2026-07-08T00:00:00Z", "sources": ["run_store"]},
+            "summary": {
+                "calls": {"observed": 3, "succeeded": 3, "failed": 0, "unknown": 0},
+                "tokens": {"input": 80, "output": 20, "total": 100, "known_runs": 1, "unknown_runs": 2},
+                "cost": {"status": "unavailable", "amount": None, "currency": "USD", "price_catalog_version": None},
+                "quality": {"evidence_coverage_pct": None, "audited_runs": 0, "rework_runs": 0, "evaluator_coverage_pct": None},
+                "roi": {"status": "pending_verification", "verified_value": None, "model_cost": None, "evaluator_cost": None, "roi_pct": None},
+            },
+            "series": {"daily": []},
+            "models": [],
+            "routes": [],
+            "members": [],
+            "opportunity": {"status": "unavailable", "kind": None, "message": "No eligible optimization evidence yet."},
+            "coverage": {"governed_text_calls": 1, "out_of_scope_image_calls": 0},
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "get_gateway_metric_evidence",
+        lambda *_args, **_kwargs: {
+            "state": "verified",
+            "governed_calls": 7,
+            "total_tokens": 420,
+            "last_observed_at": "2026-07-05T09:28:00Z",
+            "provenance": "apim_custom_metric",
+        },
+        raising=False,
+    )
+
+    response = client.get(
+        "/api/monitoring?scope=current&workspace_id=ws-owned&from=2026-07-03T01:00:00Z&to=2026-07-05T09:30:00Z",
+        headers=trusted_headers(actor_id="owner-oid", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["tokens"]["total"] == 100
+    assert body["coverage"]["governed_text_calls"] == 7
+    assert body["gateway"] == {
+        "state": "verified",
+        "governed_calls": 7,
+        "total_tokens": 420,
+        "last_observed_at": "2026-07-05T09:28:00Z",
+        "provenance": "apim_custom_metric",
+        "verified_workspace_count": 1,
+        "workspace_count": 1,
+    }
+    assert "apim" in body["freshness"]["sources"]
+
+
+def test_gateway_evidence_projection_does_not_promote_partial_portfolio_proof() -> None:
+    projection = control_plane._gateway_evidence_projection(
+        [
+            {
+                "state": "verified",
+                "governed_calls": 7,
+                "total_tokens": 420,
+                "last_observed_at": "2026-07-05T09:28:00Z",
+                "provenance": "apim_custom_metric",
+            },
+            {"state": "pending", "provenance": "apim_metric_pending"},
+        ],
+        workspace_count=2,
+        configured=True,
+    )
+
+    assert projection["state"] == "partial"
+    assert projection["governed_calls"] == 7
+    assert projection["total_tokens"] == 420
+    assert projection["verified_workspace_count"] == 1
+    assert projection["workspace_count"] == 2
+
+
 def test_monitor_dashboard_reconciles_model_and_route_totals_with_run_records(
     client: TestClient,
     seeded_owner_runs: list[dict[str, object]],

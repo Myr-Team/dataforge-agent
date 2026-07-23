@@ -101,6 +101,43 @@ function estimatedCostLabel(cost = {}) {
   return "";
 }
 
+const GATEWAY_COPY = Object.freeze({
+  verified: { label: "APIM 指标已验证", tone: "ok" },
+  partial: { label: "部分 APIM 指标已验证", tone: "warn" },
+  pending: { label: "等待 APIM 指标", tone: "warn" },
+  unavailable: { label: "APIM 指标暂不可用", tone: "error" },
+  not_configured: { label: "未配置 APIM 指标", tone: "neutral" },
+});
+
+const GATEWAY_SOURCE_COPY = Object.freeze({
+  apim_custom_metric: "APIM 自定义指标",
+  apim_metric_pending: "APIM 指标采集中",
+  apim_metric_query_unavailable: "APIM 指标查询",
+  apim_metric_not_configured: "未配置 APIM 指标",
+});
+
+function gatewayEvidenceView(value = {}) {
+  const state = allowedState(value.state, new Set(["verified", "partial", "pending", "unavailable", "not_configured"]), "not_configured");
+  const copy = GATEWAY_COPY[state];
+  const provenance = String(value.provenance || "").trim();
+  const lastObservedAt = typeof value.last_observed_at === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value.last_observed_at)
+    ? value.last_observed_at
+    : null;
+  const verifiedWorkspaceCount = asInt(value.verified_workspace_count) || 0;
+  const workspaceCount = asInt(value.workspace_count) || 0;
+  return {
+    state,
+    label: copy.label,
+    tone: copy.tone,
+    callsLabel: formatInteger(value.governed_calls),
+    tokensLabel: formatInteger(value.total_tokens),
+    sourceLabel: GATEWAY_SOURCE_COPY[provenance] || "未记录网关来源",
+    lastObservedAt,
+    workspaceCount,
+    scopeLabel: workspaceCount > 1 ? `${verifiedWorkspaceCount} / ${workspaceCount} 个工作区已验证` : "当前工作区",
+  };
+}
+
 export function monitorDashboardViewModel(payload = {}) {
   const summary = payload.summary || {};
   const calls = summary.calls || {};
@@ -191,6 +228,7 @@ export function monitorDashboardViewModel(payload = {}) {
       governedTextLabel: formatInteger(payload?.coverage?.governed_text_calls),
       imageCallLabel: formatInteger(payload?.coverage?.out_of_scope_image_calls),
     },
+    gateway: gatewayEvidenceView(payload?.gateway || {}),
     scope: payload.scope || {},
     scopeLabel: scopeLabel(payload.scope || {}),
   };

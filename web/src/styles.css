@@ -3712,6 +3712,10 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .trace-reference-status.warn { color: #b54708; }
 .trace-reference-status.error { color: #b42318; }
 .trace-reference-status a { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; color: var(--blue); font-weight: 700; text-decoration: none; }
+.trace-reference-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 7px; }
+.trace-reference-refresh { padding: 0; border: 0; background: transparent; color: var(--blue); font: inherit; font-weight: 700; cursor: pointer; }
+.trace-reference-refresh:hover { text-decoration: underline; }
+.trace-reference-refresh:focus-visible { outline: 3px solid var(--blue-soft); outline-offset: 2px; border-radius: 2px; }
 .trace-reference-status a:hover { text-decoration: underline; }
 .trace-reference-status b { color: inherit; font-weight: 750; }
 .trace-reference p { grid-column: 1 / -1; margin: 0; color: var(--muted); }
@@ -4443,6 +4447,27 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   font-size: 18px;
   font-weight: 780;
 }
+.monitor-gateway-proof {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 12px;
+  padding: 12px 14px;
+  border: 1px solid #d9e4f1;
+  border-radius: 8px;
+  background: #fff;
+}
+.monitor-gateway-proof small,
+.monitor-gateway-proof > span,
+.monitor-gateway-proof dt { color: #667085; font-size: 10.5px; }
+.monitor-gateway-proof strong { display: block; margin-top: 2px; color: #344054; font-size: 13px; }
+.monitor-gateway-proof.ok strong { color: #067647; }
+.monitor-gateway-proof.warn strong { color: #b54708; }
+.monitor-gateway-proof.error strong { color: #b42318; }
+.monitor-gateway-proof > span { align-self: center; text-align: right; }
+.monitor-gateway-proof dl { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 3px 0 0; }
+.monitor-gateway-proof dl div { min-width: 0; }
+.monitor-gateway-proof dt { margin: 0; }
+.monitor-gateway-proof dd { margin: 2px 0 0; overflow: hidden; color: #344054; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .monitor-opportunity {
   display: grid;
   align-content: start;

@@ -12,6 +12,7 @@ import {
   roiViewModel,
   traceIssueCode,
   traceTelemetryMetricsViewModel,
+  traceNeedsRefresh,
   runTraceReferenceViewModel,
   traceStatusLabel,
 } from "./governanceViewModel.js";
@@ -56,6 +57,9 @@ test("telemetry metrics render only verified aggregate values and classify acces
   assert.equal(traceIssueCode({ state: "unavailable", error_status: 403 }), "runtime_access_denied");
   assert.equal(traceIssueCode({ state: "unavailable", error_status: 429 }), "query_throttled");
   assert.equal(traceIssueCode({ state: "partial" }), "");
+  assert.equal(traceNeedsRefresh({ state: "partial" }), true);
+  assert.equal(traceNeedsRefresh({ state: "connected" }), false);
+  assert.equal(traceNeedsRefresh({ state: "unavailable", error_status: 403 }), false);
 });
 
 test("local and Foundry ROI evidence states stay separate", () => {
