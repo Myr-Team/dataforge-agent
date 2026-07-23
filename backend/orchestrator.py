@@ -86,7 +86,7 @@ try:
         public_market_comparison,
         unavailable_market_comparison,
     )
-    from .model_policy import model_route_scope, select_text_route_record, workspace_model_policy_scope
+    from .model_policy import SelectedTextRoute, current_model_price_card, current_text_route, model_route_scope, select_text_route_record, workspace_model_policy_scope
     from .pm_skills import playbook_suggestion
     from .rag import search
     from .router import deterministic_route
@@ -111,6 +111,7 @@ try:
     from .tools.generate_image import generate_image
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
+    from .workspace_model_config import estimate_model_cost
     from .workspace_store import get_workspace_detail, load_workspace_model_configuration, save_workspace_last_analysis, workspace_context, workspace_reference_images
 except ImportError:
     import cache_store
@@ -180,7 +181,7 @@ except ImportError:
         public_market_comparison,
         unavailable_market_comparison,
     )
-    from model_policy import model_route_scope, select_text_route_record, workspace_model_policy_scope
+    from model_policy import SelectedTextRoute, current_model_price_card, current_text_route, model_route_scope, select_text_route_record, workspace_model_policy_scope
     from pm_skills import playbook_suggestion
     from rag import search
     from router import deterministic_route
@@ -205,6 +206,7 @@ except ImportError:
     from tools.generate_image import generate_image
     from tools.narrate_summary import narrate_summary
     from tools.render_pdf import render_pdf_report
+    from workspace_model_config import estimate_model_cost
     from workspace_store import get_workspace_detail, load_workspace_model_configuration, save_workspace_last_analysis, workspace_context, workspace_reference_images
 
 
@@ -6076,6 +6078,7 @@ async def _try_full_maf_runtime(
     conversation_id: str,
     *,
     event_sink: Any | None = None,
+    selected_route: SelectedTextRoute | None = None,
 ) -> MafTeamRunResult | None:
     if runtime_mode() is not MafRuntimeMode.FULL:
         return None
@@ -6100,7 +6103,7 @@ async def _try_full_maf_runtime(
         authoritative_corpus=authoritative_corpus,
         evidence_catalog=catalog,
     )
-    with model_route_scope(route=select_text_route_record("full_analysis")):
+    with model_route_scope(route=selected_route or select_text_route_record("full_analysis")):
         registry = create_agent_registry(workspace_id=req.workspace_id)
         runtime = MafTeamRuntime(
             registry,
@@ -6217,12 +6220,25 @@ class _MafLiveTelemetry:
 def _maf_model_response_payload(
     event: MafRuntimeEvent,
     mode: str,
+    *,
+    selected_route: SelectedTextRoute | None = None,
+    price_card: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    selected = selected_route or current_text_route()
     payload: dict[str, Any] = {
         "agent": event.agent_id,
         "orchestrator": "maf_full",
         "mode": mode,
         "status": event.status,
+        "route": selected.route.route_id,
+        "deployment": selected.route.deployment,
+        "model_route": selected.route.route_id,
+        "model_deployment": selected.route.deployment,
+        "selection": selected.selection,
+        "fallback_reason": selected.fallback_reason,
+        "execution_kind": selected.execution_kind,
+        "policy_revision": selected.policy_revision,
+        "price_card_revision": selected.price_card_revision,
     }
     if event.response_id:
         payload["response_id"] = event.response_id
@@ -6237,6 +6253,13 @@ def _maf_model_response_payload(
     }
     if usage:
         payload["usage"] = usage
+    payload["cost_estimate"] = estimate_model_cost(
+        usage,
+        {"route_id": selected.route.route_id, "price_card_revision": selected.price_card_revision},
+        price_card if isinstance(price_card, Mapping) else current_model_price_card(),
+    )
+    if event.duration_ms is not None:
+        payload["latency_ms"] = event.duration_ms
     if event.retry_count is not None:
         payload["retry_count"] = event.retry_count
     if event.tool_names:
@@ -6253,6 +6276,8 @@ def _maf_live_event_frames(
     *,
     mode: str,
     conversation_id: str,
+    selected_route: SelectedTextRoute | None = None,
+    price_card: Mapping[str, Any] | None = None,
 ) -> list[str]:
     payload = _maf_event_payload(event)
     frames = [_frame(event.event, payload, conversation_id)]
@@ -6260,7 +6285,12 @@ def _maf_live_event_frames(
         frames.append(
             _frame(
                 "model_response",
-                _maf_model_response_payload(event, mode),
+                _maf_model_response_payload(
+                    event,
+                    mode,
+                    selected_route=selected_route,
+                    price_card=price_card,
+                ),
                 conversation_id,
             )
         )
@@ -6657,6 +6687,8 @@ async def _orchestrate_chat_impl(
     full_maf_result: MafTeamRunResult | None = None
     event_queue: asyncio.Queue[Any] = asyncio.Queue()
     runtime_done = object()
+    full_maf_route = select_text_route_record("full_analysis")
+    full_maf_price_card = current_model_price_card()
     live_telemetry = _MafLiveTelemetry(req=req, conversation_id=conv_id, actor=actor)
     maf_execution_started = False
 
@@ -6674,6 +6706,7 @@ async def _orchestrate_chat_impl(
                 artifact,
                 conv_id,
                 event_sink=publish_full_maf_event,
+                selected_route=full_maf_route,
             )
         finally:
             await event_queue.put(runtime_done)
@@ -6691,6 +6724,8 @@ async def _orchestrate_chat_impl(
                 observed,
                 mode=live_telemetry.mode,
                 conversation_id=conv_id,
+                selected_route=full_maf_route,
+                price_card=full_maf_price_card,
             ):
                 yield frame
         full_maf_result = await full_maf_task

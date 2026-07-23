@@ -4,8 +4,10 @@ import json
 
 import backend.foundry_client as foundry_client
 import backend.maf_agents as maf_agents
+import backend.orchestrator as orchestrator
 import backend.run_store as run_store
-from backend.model_policy import model_route_scope, select_text_route, select_text_route_record
+from backend.maf_team_runtime import MafRuntimeEvent
+from backend.model_policy import ModelRoute, model_route_scope, select_text_route, select_text_route_record
 
 
 def test_followup_run_persists_selected_route_model_usage_and_latency(tmp_path, monkeypatch) -> None:
@@ -208,6 +210,51 @@ def test_followup_run_falls_back_when_candidate_route_is_not_eligible(tmp_path, 
     assert model["fallback_reason"] == "candidate_not_eligible"
     assert model["usage"] == {"prompt": 22, "completion": 8, "total": 30}
     assert model["latency_ms"] == 95
+
+
+def test_maf_model_response_persists_scoped_route_and_price_card(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+    route = ModelRoute("terra", "gpt-5.6-terra", "Terra", frozenset({"analysis"}))
+    price_card = {
+        "revision": 7,
+        "currency": "USD",
+        "entries": [
+            {
+                "route_id": "terra",
+                "input_per_million": 2,
+                "output_per_million": 8,
+                "source_label": "test price card",
+                "updated_at": "2026-07-23T00:00:00Z",
+            }
+        ],
+    }
+    event = MafRuntimeEvent(
+        sequence=1,
+        event="maf_agent_completed",
+        status="completed",
+        agent_id="df-feasibility-analyst",
+        input_tokens=1_000,
+        output_tokens=500,
+        total_tokens=1_500,
+        duration_ms=120,
+    )
+
+    with model_route_scope(route=route, execution_kind="full_analysis", price_card=price_card):
+        payload = orchestrator._maf_model_response_payload(event, "specialist_handoff")
+
+    run_store.start_run("run-maf-priced", "workspace-priced", "MAF priced route")
+    run_store.record_event("run-maf-priced", "model_response", payload)
+    run_store.complete_run("run-maf-priced", final={"text": "done"}, artifact={})
+
+    model = run_store.get_run("run-maf-priced")["models"][0]
+    assert model["route"] == "terra"
+    assert model["deployment"] == "gpt-5.6-terra"
+    assert model["execution_kind"] == "full_analysis"
+    assert model["cost_estimate"]["status"] == "estimated"
+    assert model["cost_estimate"]["amount"] == 0.006
 
 
 def test_maf_gateway_client_uses_selected_analysis_route_header(monkeypatch) -> None:

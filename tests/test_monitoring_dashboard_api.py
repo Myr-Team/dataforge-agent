@@ -116,6 +116,23 @@ def test_monitor_api_rejects_non_owner_and_limits_portfolio_to_owned_workspaces(
     assert allowed.json()["scope"]["workspace_ids"] == ["ws-owned"]
 
 
+def test_owned_workspace_ids_honors_active_demo_owner_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    actor = {"source": "easy_auth", "tenant_id": "tenant-a", "actor_id": "demo-owner"}
+    metadata_reads: list[str] = []
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda _request, fallback=False: actor)
+    monkeypatch.setattr(control_plane, "list_workspaces", lambda: [{"workspace_id": "ws-demo"}])
+    monkeypatch.setattr(
+        control_plane,
+        "_load_workspace_meta",
+        lambda workspace_id: metadata_reads.append(workspace_id)
+        or {"workspace_owner": {"tenant_id": "tenant-a", "actor_id": "persisted-owner"}},
+    )
+    monkeypatch.setattr(control_plane, "active_workspace_role", lambda _workspace_id, _actor: "owner")
+
+    assert control_plane._owned_workspace_ids(None) == ["ws-demo"]
+    assert metadata_reads == []
+
+
 def test_monitor_api_uses_requested_window_for_gateway_evidence(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

@@ -15,6 +15,7 @@ from backend.maf_team_runtime import (
     RuntimeCollaborationPlan,
     RuntimeMafRunSummary,
 )
+from backend.model_policy import select_text_route_record
 from backend.run_store import _maf_summary, _normalize_run_detail
 from backend.schemas import (
     ChatRequest,
@@ -503,17 +504,21 @@ async def test_full_mode_binds_registry_maps_route_and_emits_compatible_events(m
     model_response = _event_payload(
         next(frame for frame in frames if frame.startswith("event: model_response\n"))
     )
-    assert model_response == {
-        "agent": "df-coordinator",
-        "orchestrator": "maf_full",
-        "mode": "specialist_handoff",
-        "status": "completed",
-        "response_id": "resp-coordinator-1",
-        "usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
-        "retry_count": 1,
-        "tool_names": ["route_request"],
-        "cache_hit": True,
-    }
+    selected_route = select_text_route_record("full_analysis")
+    assert model_response["agent"] == "df-coordinator"
+    assert model_response["orchestrator"] == "maf_full"
+    assert model_response["mode"] == "specialist_handoff"
+    assert model_response["status"] == "completed"
+    assert model_response["response_id"] == "resp-coordinator-1"
+    assert model_response["usage"] == {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18}
+    assert model_response["retry_count"] == 1
+    assert model_response["tool_names"] == ["route_request"]
+    assert model_response["cache_hit"] is True
+    assert model_response["route"] == selected_route.route.route_id
+    assert model_response["deployment"] == selected_route.route.deployment
+    assert model_response["execution_kind"] == "full_analysis"
+    assert model_response["selection"] == selected_route.selection
+    assert model_response["cost_estimate"]["status"] == "unavailable"
     coordinator_span = next(item for item in captured["span_finishes"] if item["agent_id"] == "df-coordinator")
     assert coordinator_span["token_usage"] == model_response["usage"]
     assert coordinator_span["retry_count"] == 1

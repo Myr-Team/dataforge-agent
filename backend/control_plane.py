@@ -578,8 +578,7 @@ def _require_workspace_owner(workspace_id: str, request: Request | None, action:
 
 def _owned_workspace_ids(request: Request | None) -> list[str]:
     actor = actor_from_request(request, fallback=False)
-    identity = canonical_actor_identity(actor)
-    if identity is None:
+    if canonical_actor_identity(actor) is None:
         return []
     owned: list[str] = []
     seen: set[str] = set()
@@ -590,11 +589,10 @@ def _owned_workspace_ids(request: Request | None) -> list[str]:
         if not workspace_id or workspace_id in seen:
             continue
         try:
-            meta = _load_workspace_meta(workspace_id)
+            role = active_workspace_role(workspace_id, actor)
         except FileNotFoundError:
             continue
-        owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), dict) else {}
-        if canonical_actor_identity(owner) != identity:
+        if role != "owner":
             continue
         seen.add(workspace_id)
         owned.append(workspace_id)
