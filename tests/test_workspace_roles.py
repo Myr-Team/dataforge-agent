@@ -148,6 +148,52 @@ def test_access_decision_rejects_same_oid_from_another_tenant(monkeypatch: pytes
     assert (decision.allowed, decision.role, decision.reason_code) == (False, None, "tenant_mismatch")
 
 
+def test_candidate_demo_permissive_access_grants_same_tenant_owner_without_membership(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DF_ENVIRONMENT", "candidate")
+    monkeypatch.setenv("DF_DEMO_PERMISSIVE_ACCESS", "1")
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_TENANT_ID", "tenant-a")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _id: {"workspace_owner": {"actor_id": "creator-oid", "tenant_id": "tenant-a"}, "workspace_members": []},
+    )
+
+    actor = _actor("demo-user-oid", "tenant-a")
+    decision = workspace_authz.workspace_access_decision("ws-demo", actor)
+
+    assert (decision.allowed, decision.role, decision.reason_code) == (True, "owner", "demo_tenant_owner")
+    assert workspace_authz.active_workspace_role("ws-demo", actor) == "owner"
+    assert workspace_authz.require_workspace_permission("ws-demo", actor, "workspace.delete") == "owner"
+
+
+@pytest.mark.parametrize(
+    ("environment", "actor", "expected_reason"),
+    [
+        ("production", _actor("demo-user-oid", "tenant-a"), "membership_missing"),
+        ("candidate", _actor("demo-user-oid", "tenant-b"), "membership_missing"),
+        ("candidate", {"actor_id": "demo-user-oid", "tenant_id": "tenant-a", "source": "client_actor"}, "identity_missing"),
+    ],
+)
+def test_demo_permissive_access_does_not_bypass_environment_or_trusted_tenant_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: str,
+    actor: dict[str, str],
+    expected_reason: str,
+) -> None:
+    monkeypatch.setenv("DF_ENVIRONMENT", environment)
+    monkeypatch.setenv("DF_DEMO_PERMISSIVE_ACCESS", "1")
+    monkeypatch.setenv("DF_WORKSPACE_OWNER_TENANT_ID", "tenant-a")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _id: {"workspace_owner": {"actor_id": "creator-oid", "tenant_id": "tenant-a"}, "workspace_members": []},
+    )
+
+    decision = workspace_authz.workspace_access_decision("ws-demo", actor)
+
+    assert (decision.allowed, decision.role, decision.reason_code) == (False, None, expected_reason)
+
+
 @pytest.mark.parametrize("rbac_enforced", [False, True])
 def test_access_decision_never_grants_owner_or_member_by_email(monkeypatch: pytest.MonkeyPatch, rbac_enforced: bool) -> None:
     if rbac_enforced:

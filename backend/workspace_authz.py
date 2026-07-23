@@ -82,6 +82,27 @@ def rbac_enabled() -> bool:
     }
 
 
+def demo_permissive_access_enabled() -> bool:
+    """Allow a candidate/demo revision to present owner controls to signed-in tenant users.
+
+    This is intentionally double-gated so a production revision remains fail-closed
+    unless both the non-production environment and the explicit demo switch are set.
+    """
+    environment = str(os.environ.get("DF_ENVIRONMENT") or "").strip().lower()
+    enabled = str(os.environ.get("DF_DEMO_PERMISSIVE_ACCESS") or "").strip().lower()
+    return environment in {"candidate", "preview", "demo"} and enabled in {"1", "true", "yes", "on"}
+
+
+def _demo_tenant_owner_decision(actor: Mapping[str, Any]) -> WorkspaceAccessDecision | None:
+    if not demo_permissive_access_enabled() or not is_trusted_tenant_identity(actor):
+        return None
+    configured_tenant = str(os.environ.get("DF_WORKSPACE_OWNER_TENANT_ID") or "").strip().lower()
+    actor_tenant = str(actor.get("tenant_id") or "").strip().lower()
+    if not configured_tenant or configured_tenant != actor_tenant:
+        return None
+    return WorkspaceAccessDecision(True, "owner", "demo_tenant_owner")
+
+
 def authorize(role: str | None, action: str) -> bool:
     normalized_role = _normalize_role(role)
     normalized_action = str(action or "").strip().lower()
@@ -108,6 +129,9 @@ def workspace_access_decision(workspace_id: str, actor: Mapping[str, Any] | None
     clean_actor = public_actor(dict(actor or {}))
     if not is_trusted_tenant_identity(clean_actor):
         return WorkspaceAccessDecision(False, None, "identity_missing")
+    demo_decision = _demo_tenant_owner_decision(clean_actor)
+    if demo_decision is not None:
+        return demo_decision
 
     meta = _load_workspace_meta(workspace_id)
     identity = canonical_actor_identity(clean_actor)
@@ -133,7 +157,7 @@ def workspace_role(workspace_id: str, actor: Mapping[str, Any] | None) -> str | 
 
 
 def active_workspace_role(workspace_id: str, actor: Mapping[str, Any] | None) -> str | None:
-    """Resolve only a current persisted membership for fail-closed governance reads."""
+    """Resolve a persisted role, or the explicitly-gated candidate demo owner role."""
     clean_actor = public_actor(dict(actor or {}))
     if not is_trusted_tenant_identity(clean_actor):
         return None
@@ -446,6 +470,7 @@ __all__ = [
     "WorkspaceAuthorizationError",
     "active_workspace_role",
     "authorize",
+    "demo_permissive_access_enabled",
     "rbac_enabled",
     "require_sensitive_workspace_permission",
     "require_workspace_permission",
