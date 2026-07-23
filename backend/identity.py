@@ -4,6 +4,7 @@ import base64
 import hmac
 import json
 import os
+import re
 from typing import Any, Mapping
 from urllib.parse import unquote
 
@@ -128,6 +129,28 @@ def is_trusted_identity(actor: Mapping[str, Any] | None) -> bool:
 def is_trusted_tenant_identity(actor: Mapping[str, Any] | None) -> bool:
     clean = _sanitize_actor(dict(actor or {}), fallback=False)
     return is_trusted_identity(clean) and bool(str(clean.get("tenant_id") or "").strip())
+
+
+def email_domain(value: Any) -> str:
+    """Return a normalized email domain only for a valid address."""
+    email = _valid_email(value).lower()
+    return email.rsplit("@", 1)[-1] if email else ""
+
+
+def normalized_email_domains(value: Any) -> list[str]:
+    """Normalize a configured enterprise allowlist without accepting malformed domains."""
+    domains: list[str] = []
+    seen: set[str] = set()
+    for item in _string_list(value):
+        domain = item.strip().lower().rstrip(".")
+        if not re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+",
+            domain,
+        ) or domain in seen:
+            continue
+        seen.add(domain)
+        domains.append(domain)
+    return domains
 
 
 def canonical_actor_identity(actor: Mapping[str, Any] | None) -> tuple[str, str] | None:

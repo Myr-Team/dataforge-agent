@@ -18,6 +18,7 @@ import backend.workspace_authz as workspace_authz
 import backend.workspace_store as workspace_store
 from backend.audit_store import AuditPersistenceError
 from backend.identity import actor_from_headers, actor_from_ui_context, is_trusted_identity, is_trusted_tenant_identity
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from backend.app import app
 
@@ -752,6 +753,158 @@ def test_member_contract_exposes_action_permissions_without_role_inference(monke
     assert all("usage" not in member and "last_seen_at" not in member for member in result["members"])
 
 
+def test_member_contract_reveals_only_verified_enterprise_identities(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "member-identity-policy-secret")
+    owner = {
+        "actor_id": "owner-raw-oid",
+        "tenant_id": "tenant-secret",
+        "email": "owner@contoso.com",
+        "name": "Owner",
+        "source": "easy_auth",
+    }
+    trusted_member = {
+        "actor_id": "trusted-raw-oid",
+        "tenant_id": "tenant-secret",
+        "email": "analyst@contoso.com",
+        "name": "Enterprise Analyst",
+        "role": "editor",
+        "status": "active",
+        "source": "easy_auth",
+    }
+    external_member = {
+        "actor_id": "external-raw-oid",
+        "tenant_id": "tenant-secret",
+        "email": "reviewer@partner.example",
+        "name": "External Reviewer",
+        "role": "viewer",
+        "status": "active",
+        "source": "easy_auth",
+    }
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: owner)
+    monkeypatch.setattr(control_plane, "default_actor", lambda: owner)
+    monkeypatch.setattr(control_plane, "rbac_enabled", lambda: False)
+    monkeypatch.setattr(
+        control_plane,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": owner,
+            "enterprise_identity_policy": {"trusted_email_domains": ["CONTOSO.COM", "contoso.com"]},
+        },
+    )
+    monkeypatch.setattr(control_plane, "_workspace_invited_members", lambda _workspace_id: [trusted_member, external_member])
+    monkeypatch.setattr(control_plane, "_workspace_usage_by_actor", lambda _workspace_id: {"members": [], "totals": {}})
+
+    result = control_plane.workspace_member_roles("ws-enterprise-members", object())
+    members = {member["subject_label"]: member for member in result["members"]}
+
+    owner_label = invitation_store.member_subject_label("ws-enterprise-members", owner)
+    trusted_label = invitation_store.member_subject_label("ws-enterprise-members", trusted_member)
+    external_label = invitation_store.member_subject_label("ws-enterprise-members", external_member)
+    assert members[owner_label]["identity_visibility"] == "verified_enterprise"
+    assert members[owner_label]["display"] == {"name": "Owner", "email": "owner@contoso.com"}
+    assert members[trusted_label]["identity_visibility"] == "verified_enterprise"
+    assert members[trusted_label]["display"] == {"name": "Enterprise Analyst", "email": "analyst@contoso.com"}
+    assert members[external_label]["identity_visibility"] == "pseudonymous"
+    assert "display" not in members[external_label]
+    serialized = json.dumps(result)
+    assert "external-raw-oid" not in serialized
+    assert "reviewer@partner.example" not in serialized
+
+
+def test_owner_can_update_enterprise_identity_policy_with_normalized_domains(monkeypatch) -> None:
+    owner = {
+        "actor_id": "owner-raw-oid",
+        "tenant_id": "tenant-secret",
+        "email": "owner@contoso.com",
+        "name": "Owner",
+        "source": "easy_auth",
+    }
+    saved: dict[str, object] = {}
+    monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: {"workspace_owner": owner})
+    monkeypatch.setattr(control_plane, "_save_workspace_meta", lambda workspace_id, meta: saved.update({"workspace_id": workspace_id, "meta": meta}))
+    monkeypatch.setattr(control_plane, "_require_workspace_owner", lambda workspace_id, request, action: "owner")
+
+    result = control_plane.update_workspace_enterprise_identity_policy(
+        "ws-enterprise-members",
+        {"trusted_email_domains": [" CONTOSO.COM ", "contoso.com", "invalid-domain", 7]},
+        object(),
+    )
+
+    assert result == {"workspace_id": "ws-enterprise-members", "trusted_email_domains": ["contoso.com"]}
+    assert saved["workspace_id"] == "ws-enterprise-members"
+    assert saved["meta"]["enterprise_identity_policy"] == {"trusted_email_domains": ["contoso.com"]}
+
+
+def test_editor_governance_capabilities_hide_owner_sections(monkeypatch) -> None:
+    monkeypatch.setattr(control_plane, "_require_sensitive_workspace_action", lambda *_args, **_kwargs: "editor")
+
+    result = control_plane.workspace_governance_capabilities("ws-governance", object())
+
+    assert result["sections"] == {
+        "members": {"visible": True, "write": False},
+        "lineage": {"visible": True, "scope": "self"},
+        "cost_value": {"visible": False},
+        "models_connections": {"visible": False},
+        "settings": {"visible": False},
+    }
+
+
+def test_editor_cannot_request_workspace_lineage(monkeypatch) -> None:
+    monkeypatch.setattr(control_plane, "_require_sensitive_workspace_action", lambda *_args, **_kwargs: "editor")
+
+    with pytest.raises(HTTPException) as error:
+        control_plane.workspace_governance_lineage("ws-governance", "workspace", object())
+
+    assert error.value.status_code == 403
+
+
+def test_self_lineage_omits_prompt_and_raw_identity_fields(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "lineage-projection-secret")
+    actor = {
+        "actor_id": "member-raw-oid",
+        "tenant_id": "tenant-secret",
+        "email": "member@contoso.com",
+        "name": "Member",
+        "source": "easy_auth",
+    }
+    monkeypatch.setattr(control_plane, "_require_sensitive_workspace_action", lambda *_args, **_kwargs: "editor")
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: actor)
+    monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: {"workspace_owner": actor})
+    monkeypatch.setattr(control_plane, "list_runs", lambda _workspace_id: [{"run_id": "run-private"}])
+    monkeypatch.setattr(
+        control_plane,
+        "get_run",
+        lambda _run_id: {
+            "run_id": "run-private",
+            "actor": actor,
+            "message": "private prompt text",
+            "title": "private title",
+            "status": "completed",
+            "completed_at": "2026-07-23T04:00:00Z",
+            "workspace_generation": 3,
+        },
+    )
+    monkeypatch.setattr(control_plane, "list_conversations", lambda _workspace_id: [])
+
+    result = control_plane.workspace_governance_lineage("ws-governance", "self", object())
+    serialized = json.dumps(result)
+
+    assert result["scope"] == "self"
+    assert result["items"] == [{
+        "title": "Analysis run",
+        "timestamp": "2026-07-23T04:00:00Z",
+        "route": "analysis",
+        "status": "completed",
+        "correlation_ref": result["items"][0]["correlation_ref"],
+        "data_revision": 3,
+        "evidence_revision": None,
+        "initiator": {"subject_label": result["items"][0]["initiator"]["subject_label"]},
+        "freshness": "recorded",
+    }]
+    for private in ("private prompt text", "private title", "member-raw-oid", "tenant-secret", "member@contoso.com"):
+        assert private not in serialized
+
+
 def test_member_contract_returns_only_safe_subject_labels_for_settings(monkeypatch) -> None:
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "member-label-secret")
     actor = {"actor_id": "owner-raw-oid", "tenant_id": "tenant-secret", "email": "owner@contoso.com", "name": "Owner", "source": "easy_auth"}
@@ -774,7 +927,7 @@ def test_member_contract_returns_only_safe_subject_labels_for_settings(monkeypat
     serialized = json.dumps(result)
 
     assert len(result["members"]) == 2
-    assert all(set(member).issubset({"subject_label", "role", "status", "source", "usage", "last_seen_at", "invited_at", "updated_at"}) for member in result["members"])
+    assert all(set(member).issubset({"subject_label", "role", "status", "source", "usage", "last_seen_at", "invited_at", "updated_at", "identity_visibility", "display"}) for member in result["members"])
     assert all(member["subject_label"].startswith("member_") for member in result["members"])
     for raw in ("@contoso.com", "raw-oid", "tenant-secret", "Owner", "Reviewer"):
         assert raw not in serialized

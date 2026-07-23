@@ -47,6 +47,7 @@ _EDITOR_ACTIONS = {
 _ADMIN_ACTIONS = {
     "audit.read",
     "chargeback.read",
+    "identity_policy.write",
     "invitation.read",
     "member.manage",
     "outcome.verify",

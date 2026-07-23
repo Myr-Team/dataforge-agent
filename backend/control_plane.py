@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -31,8 +33,8 @@ try:
     from .graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
     from .foundry_roi import public_foundry_integration
-    from .identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
-    from .invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from .identity import actor_from_request, canonical_actor_identity, default_actor, email_domain, is_trusted_tenant_identity, member_from_actor, normalized_email_domains, public_actor
+    from .invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from .model_policy import public_model_route_snapshot
     from .monitoring_dashboard import build_monitor_dashboard
     from .monitoring_service import build_monitoring_snapshot
@@ -58,8 +60,8 @@ except ImportError:
     from graph_client import GraphClientError, search_entra_users, send_graph_invitation
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
     from foundry_roi import public_foundry_integration
-    from identity import actor_from_request, canonical_actor_identity, default_actor, is_trusted_tenant_identity, member_from_actor, public_actor
-    from invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from identity import actor_from_request, canonical_actor_identity, default_actor, email_domain, is_trusted_tenant_identity, member_from_actor, normalized_email_domains, public_actor
+    from invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from model_policy import public_model_route_snapshot
     from monitoring_dashboard import build_monitor_dashboard
     from monitoring_service import build_monitoring_snapshot
@@ -127,6 +129,32 @@ async def workspace_settings(workspace_id: str, request: Request) -> dict[str, A
 async def workspace_members(workspace_id: str, request: Request) -> dict[str, Any]:
     _require_sensitive_workspace_action(workspace_id, request, "member.read")
     return await _call(workspace_member_roles, workspace_id, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/governance/identity-policy")
+async def workspace_identity_policy(workspace_id: str, request: Request) -> dict[str, Any]:
+    return await _call(workspace_enterprise_identity_policy, workspace_id, request)
+
+
+@router.put("/api/workspaces/{workspace_id}/governance/identity-policy")
+async def update_workspace_identity_policy(workspace_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
+    return await _call(update_workspace_enterprise_identity_policy, workspace_id, body, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/governance/capabilities")
+async def workspace_governance_capabilities_endpoint(workspace_id: str, request: Request) -> dict[str, Any]:
+    return await _call(workspace_governance_capabilities, workspace_id, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/governance/lineage")
+async def workspace_governance_lineage_endpoint(
+    workspace_id: str,
+    request: Request,
+    scope: Literal["self", "workspace"] = Query(default="self"),
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=32),
+) -> dict[str, Any]:
+    return await _call(workspace_governance_lineage, workspace_id, scope, request, limit, cursor)
 
 
 @router.get("/api/workspaces/{workspace_id}/members/entra-users")
@@ -1168,6 +1196,80 @@ def workspace_settings_summary(workspace_id: str, request: Request | None = None
     }
 
 
+def workspace_enterprise_identity_policy(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
+    _require_workspace_owner(workspace_id, request, "identity_policy.write")
+    try:
+        meta = _load_workspace_meta(workspace_id)
+    except FileNotFoundError:
+        meta = {}
+    return {"workspace_id": workspace_id, **_workspace_enterprise_identity_policy(meta)}
+
+
+def update_workspace_enterprise_identity_policy(
+    workspace_id: str,
+    body: dict[str, Any] | None,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    _require_workspace_owner(workspace_id, request, "identity_policy.write")
+    meta = _load_workspace_meta(workspace_id)
+    raw = body if isinstance(body, dict) else {}
+    policy = {"trusted_email_domains": normalized_email_domains(raw.get("trusted_email_domains"))}
+    meta["enterprise_identity_policy"] = policy
+    _save_workspace_meta(workspace_id, meta)
+    return {"workspace_id": workspace_id, **policy}
+
+
+def workspace_governance_capabilities(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
+    role = _require_sensitive_workspace_action(workspace_id, request, "workspace.read")
+    return {
+        "workspace_id": workspace_id,
+        "sections": _governance_sections(role),
+    }
+
+
+def workspace_governance_lineage(
+    workspace_id: str,
+    scope: str = "self",
+    request: Request | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    role = _require_sensitive_workspace_action(workspace_id, request, "workspace.read")
+    requested_scope = str(scope or "self").strip().lower()
+    if requested_scope not in {"self", "workspace"}:
+        raise ValueError("scope must be self or workspace")
+    if requested_scope == "workspace" and role != "owner":
+        raise HTTPException(status_code=403, detail="workspace permission denied for audit.read")
+    effective_scope = "workspace" if requested_scope == "workspace" and role == "owner" else "self"
+    current_actor = actor_from_request(request, fallback=False)
+    current_identity = canonical_actor_identity(current_actor)
+    if effective_scope == "self" and current_identity is None:
+        raise HTTPException(status_code=403, detail="workspace permission denied for workspace.read")
+    bounded_limit = min(max(int(limit or 50), 1), 100)
+    offset = _lineage_cursor_offset(cursor)
+    items = _workspace_lineage_items(workspace_id, current_identity if effective_scope == "self" else None)
+    page = items[offset:offset + bounded_limit]
+    next_offset = offset + len(page)
+    return {
+        "workspace_id": workspace_id,
+        "scope": effective_scope,
+        "items": page,
+        "next_cursor": str(next_offset) if next_offset < len(items) else None,
+        "count": len(page),
+    }
+
+
+def _governance_sections(role: str | None) -> dict[str, dict[str, Any]]:
+    is_owner = str(role or "").strip().lower() == "owner"
+    return {
+        "members": {"visible": True, "write": is_owner},
+        "lineage": {"visible": True, "scope": "workspace" if is_owner else "self"},
+        "cost_value": {"visible": is_owner},
+        "models_connections": {"visible": is_owner},
+        "settings": {"visible": is_owner},
+    }
+
+
 def workspace_member_roles(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
     current_actor = actor_from_request(request)
     usage = _workspace_usage_by_actor(workspace_id)
@@ -1219,7 +1321,8 @@ def workspace_member_roles(workspace_id: str, request: Request | None = None) ->
         key=lambda item: (0 if str(item.get("role") or "").lower() == "owner" else 1, str(item.get("status") or ""), str(item.get("email") or "")),
     )
     permissions = _workspace_action_permissions(workspace_id, request)
-    public_members = [_public_workspace_member(workspace_id, member) for member in members]
+    identity_policy = _workspace_enterprise_identity_policy(meta)
+    public_members = [_public_workspace_member(workspace_id, member, identity_policy) for member in members]
     if permissions["actions"]["chargeback.read"] is not True:
         for member in public_members:
             member.pop("usage", None)
@@ -1247,11 +1350,32 @@ def workspace_invitation_history(workspace_id: str) -> list[dict[str, Any]]:
     return list_invitation_history(meta, workspace_id)
 
 
-def _public_workspace_member(workspace_id: str, member: dict[str, Any]) -> dict[str, Any]:
+def _workspace_enterprise_identity_policy(meta: dict[str, Any] | None) -> dict[str, Any]:
+    raw = (meta or {}).get("enterprise_identity_policy")
+    raw = raw if isinstance(raw, dict) else {}
+    return {"trusted_email_domains": normalized_email_domains(raw.get("trusted_email_domains"))}
+
+
+def _member_enterprise_display(member: dict[str, Any], policy: dict[str, Any]) -> dict[str, str] | None:
+    if str(member.get("status") or "active").lower() != "active" or not is_trusted_tenant_identity(member):
+        return None
+    email = _member_email(member.get("email"))
+    allowed_domains = set(normalized_email_domains(policy.get("trusted_email_domains")))
+    if not email or email_domain(email) not in allowed_domains:
+        return None
+    name = _clean_text(member.get("user") or member.get("name")) or _display_name_from_email(email)
+    return {"name": name, "email": email}
+
+
+def _public_workspace_member(
+    workspace_id: str,
+    member: dict[str, Any],
+    identity_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     role = str(member.get("role") or "viewer").strip().lower()
     if role not in {*WORKSPACE_MEMBER_ROLES, "owner"}:
         role = "viewer"
-    return {
+    public_member = {
         "subject_label": member_subject_label(workspace_id, member),
         "role": role,
         "status": str(member.get("status") or "active") if str(member.get("status") or "active") in WORKSPACE_MEMBER_STATUSES else "pending",
@@ -1261,6 +1385,13 @@ def _public_workspace_member(workspace_id: str, member: dict[str, Any]) -> dict[
         "invited_at": _clean_text(member.get("invited_at")),
         "updated_at": _clean_text(member.get("updated_at")),
     }
+    display = _member_enterprise_display(member, identity_policy or {})
+    if display:
+        public_member["identity_visibility"] = "verified_enterprise"
+        public_member["display"] = display
+    else:
+        public_member["identity_visibility"] = "pseudonymous"
+    return public_member
 
 
 def _public_workspace_usage(workspace_id: str, usage: dict[str, Any], members_by_key: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -1744,6 +1875,85 @@ def workspace_audit_events(workspace_id: str, request: Request | None = None) ->
         "events": events,
         "count": len(events),
     }
+
+
+def _workspace_lineage_items(
+    workspace_id: str,
+    only_actor: tuple[str, str] | None,
+) -> list[dict[str, Any]]:
+    members_by_key = _workspace_members_by_key(workspace_id)
+    items: list[dict[str, Any]] = []
+    for summary in list_runs(workspace_id)[:240]:
+        if not isinstance(summary, dict):
+            continue
+        run_id = _clean_text(summary.get("run_id"))
+        if not run_id:
+            continue
+        run = _safe_value(lambda: get_run(run_id), summary)
+        run = run if isinstance(run, dict) else summary
+        actor = run.get("actor") if isinstance(run.get("actor"), dict) else {}
+        if only_actor is not None and canonical_actor_identity(actor) != only_actor:
+            continue
+        status = _lineage_status(run.get("status"))
+        version = run.get("workspace_generation")
+        items.append({
+            "title": "Analysis run",
+            "timestamp": _lineage_timestamp(run),
+            "route": "analysis",
+            "status": status,
+            "correlation_ref": _lineage_correlation_ref(workspace_id, "run", run_id),
+            "data_revision": int(version) if isinstance(version, int) else None,
+            "evidence_revision": None,
+            "initiator": _public_actor_reference(workspace_id, actor, members_by_key),
+            "freshness": "recorded",
+        })
+    for conversation in list_conversations(workspace_id)[:160]:
+        if not isinstance(conversation, dict):
+            continue
+        conversation_id = _clean_text(conversation.get("conversation_id"))
+        actors = [item for item in conversation.get("actors") or [] if isinstance(item, dict)]
+        if only_actor is not None:
+            actors = [actor for actor in actors if canonical_actor_identity(actor) == only_actor]
+        if only_actor is not None and not actors:
+            continue
+        actor = actors[-1] if actors else {}
+        items.append({
+            "title": "Conversation follow-up",
+            "timestamp": _clean_text(conversation.get("updated_at")),
+            "route": "conversation",
+            "status": "recorded",
+            "correlation_ref": _lineage_correlation_ref(workspace_id, "conversation", conversation_id or "unknown"),
+            "data_revision": None,
+            "evidence_revision": None,
+            "initiator": _public_actor_reference(workspace_id, actor, members_by_key),
+            "freshness": "recorded",
+        })
+    return sorted(items, key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+
+
+def _lineage_cursor_offset(cursor: str | None) -> int:
+    try:
+        return max(0, int(str(cursor or "0")))
+    except (TypeError, ValueError):
+        raise ValueError("lineage cursor is invalid") from None
+
+
+def _lineage_correlation_ref(workspace_id: str, record_type: str, record_id: str) -> str:
+    digest = hmac.new(
+        member_pseudonym_salt().encode("utf-8"),
+        f"{workspace_id}\0lineage:{record_type}\0{record_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:24]
+    return f"lineage_{digest}"
+
+
+def _lineage_status(value: Any) -> str:
+    status = _clean_text(value).lower()
+    return status if status in {"completed", "failed", "cancelled", "running", "followup", "recorded"} else "recorded"
+
+
+def _lineage_timestamp(run: dict[str, Any]) -> str:
+    return _clean_text(run.get("completed_at") or run.get("updated_at") or run.get("started_at") or run.get("time"))
 
 
 def audit_experiment_promotion(
