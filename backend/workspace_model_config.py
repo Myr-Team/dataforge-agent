@@ -14,7 +14,7 @@ EXECUTION_KINDS = (
 )
 EXECUTION_KIND_CAPABILITIES = {
     "direct_reply": "chat",
-    "follow_up": "chat",
+    "follow_up": "followup",
     "full_analysis": "analysis",
     "audit_repair": "analysis",
 }

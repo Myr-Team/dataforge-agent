@@ -35,7 +35,7 @@ try:
     from .foundry_roi import public_foundry_integration
     from .identity import actor_from_request, canonical_actor_identity, default_actor, email_domain, is_trusted_tenant_identity, member_from_actor, normalized_email_domains, public_actor
     from .invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
-    from .model_policy import public_model_route_snapshot
+    from .model_policy import list_allowed_model_routes, public_model_route_snapshot
     from .monitoring_dashboard import build_monitor_dashboard
     from .monitoring_service import build_monitoring_snapshot
     from .observability import observability_snapshot
@@ -45,6 +45,7 @@ try:
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
+    from .workspace_model_config import normalize_workspace_price_card, public_workspace_model_config, validate_workspace_routing_policy
     from .workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
 except ImportError:
     from audit_store import AuditPersistenceError, list_audit_events, record_audit_event
@@ -62,7 +63,7 @@ except ImportError:
     from foundry_roi import public_foundry_integration
     from identity import actor_from_request, canonical_actor_identity, default_actor, email_domain, is_trusted_tenant_identity, member_from_actor, normalized_email_domains, public_actor
     from invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
-    from model_policy import public_model_route_snapshot
+    from model_policy import list_allowed_model_routes, public_model_route_snapshot
     from monitoring_dashboard import build_monitor_dashboard
     from monitoring_service import build_monitoring_snapshot
     from observability import observability_snapshot
@@ -72,6 +73,7 @@ except ImportError:
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
+    from workspace_model_config import normalize_workspace_price_card, public_workspace_model_config, validate_workspace_routing_policy
     from workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
 
 
@@ -144,6 +146,34 @@ async def update_workspace_identity_policy(workspace_id: str, body: dict[str, An
 @router.get("/api/workspaces/{workspace_id}/governance/capabilities")
 async def workspace_governance_capabilities_endpoint(workspace_id: str, request: Request) -> dict[str, Any]:
     return await _call(workspace_governance_capabilities, workspace_id, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/governance/model-routing")
+async def workspace_model_routing_endpoint(workspace_id: str, request: Request) -> dict[str, Any]:
+    return await _call(workspace_model_routing, workspace_id, request)
+
+
+@router.put("/api/workspaces/{workspace_id}/governance/model-routing")
+async def update_workspace_model_routing_endpoint(
+    workspace_id: str,
+    body: dict[str, Any],
+    request: Request,
+) -> dict[str, Any]:
+    return await _call(update_workspace_model_routing, workspace_id, body, request)
+
+
+@router.get("/api/workspaces/{workspace_id}/governance/model-price-card")
+async def workspace_model_price_card_endpoint(workspace_id: str, request: Request) -> dict[str, Any]:
+    return await _call(workspace_model_price_card, workspace_id, request)
+
+
+@router.put("/api/workspaces/{workspace_id}/governance/model-price-card")
+async def update_workspace_model_price_card_endpoint(
+    workspace_id: str,
+    body: dict[str, Any],
+    request: Request,
+) -> dict[str, Any]:
+    return await _call(update_workspace_model_price_card, workspace_id, body, request)
 
 
 @router.get("/api/workspaces/{workspace_id}/governance/lineage")
@@ -1217,6 +1247,127 @@ def update_workspace_enterprise_identity_policy(
     meta["enterprise_identity_policy"] = policy
     _save_workspace_meta(workspace_id, meta)
     return {"workspace_id": workspace_id, **policy}
+
+
+def workspace_model_routing(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
+    _require_workspace_owner(workspace_id, request, "model_routing.read")
+    meta = _load_workspace_meta(workspace_id)
+    policy, price_card = public_workspace_model_config(meta)
+    snapshot = _available_model_route_snapshot()
+    return {
+        "workspace_id": workspace_id,
+        "routes": snapshot["routes"],
+        "default_route": snapshot["default_route"],
+        "policy": policy,
+        "price_card": _public_price_card_state(price_card),
+    }
+
+
+def update_workspace_model_routing(
+    workspace_id: str,
+    body: dict[str, Any] | None,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    _require_workspace_owner(workspace_id, request, "model_routing.write")
+    meta = _load_workspace_meta(workspace_id)
+    existing_policy, price_card = public_workspace_model_config(meta)
+    routes = _available_model_routes()
+    policy = validate_workspace_routing_policy(
+        body if isinstance(body, dict) else {},
+        routes,
+        revision=_next_model_config_revision(existing_policy),
+        updated_at=_model_config_timestamp(),
+    )
+    _audit_required(request, workspace_id, "model_routing.write", "model_routing_policy", str(policy["revision"]))
+    try:
+        meta["model_routing_policy"] = policy
+        _save_workspace_meta(workspace_id, meta)
+    except Exception:
+        _audit_failed(request, workspace_id, "model_routing.write", "model_routing_policy", str(policy["revision"]))
+        raise
+    return {
+        "workspace_id": workspace_id,
+        "policy": policy,
+        "price_card": _public_price_card_state(price_card),
+    }
+
+
+def workspace_model_price_card(workspace_id: str, request: Request | None = None) -> dict[str, Any]:
+    _require_workspace_owner(workspace_id, request, "model_price_card.read")
+    meta = _load_workspace_meta(workspace_id)
+    _, price_card = public_workspace_model_config(meta)
+    return {"workspace_id": workspace_id, "price_card": price_card}
+
+
+def update_workspace_model_price_card(
+    workspace_id: str,
+    body: dict[str, Any] | None,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    _require_workspace_owner(workspace_id, request, "model_price_card.write")
+    meta = _load_workspace_meta(workspace_id)
+    existing_policy, existing_price_card = public_workspace_model_config(meta)
+    price_card = normalize_workspace_price_card(
+        body if isinstance(body, dict) else {},
+        _available_model_routes(),
+        revision=_next_model_config_revision(existing_price_card),
+        updated_at=_model_config_timestamp(),
+    )
+    _audit_required(request, workspace_id, "model_price_card.write", "model_price_card", str(price_card["revision"]))
+    try:
+        meta["model_price_card"] = price_card
+        _save_workspace_meta(workspace_id, meta)
+    except Exception:
+        _audit_failed(request, workspace_id, "model_price_card.write", "model_price_card", str(price_card["revision"]))
+        raise
+    return {
+        "workspace_id": workspace_id,
+        "policy": existing_policy,
+        "price_card": price_card,
+    }
+
+
+def _available_model_route_snapshot() -> dict[str, Any]:
+    snapshot = public_model_route_snapshot()
+    if str(snapshot.get("state") or "").strip().lower() != "available":
+        raise ValueError("Model routing is not available")
+    routes = snapshot.get("routes")
+    if not isinstance(routes, list) or not routes:
+        raise ValueError("Model routing is not available")
+    return {
+        "default_route": str(snapshot.get("default_route") or "").strip() or None,
+        "routes": [dict(item) for item in routes if isinstance(item, dict)],
+    }
+
+
+def _available_model_routes() -> list[Any]:
+    _available_model_route_snapshot()
+    return list_allowed_model_routes()
+
+
+def _next_model_config_revision(config: dict[str, Any]) -> int:
+    value = config.get("revision") if isinstance(config, dict) else 0
+    return int(value) + 1 if isinstance(value, int) and value >= 0 else 1
+
+
+def _public_price_card_state(price_card: dict[str, Any]) -> dict[str, Any]:
+    entries = price_card.get("entries") if isinstance(price_card, dict) else []
+    updated_at = str(price_card.get("updated_at") or "").strip() if isinstance(price_card, dict) else ""
+    return {
+        "state": "configured" if entries else "not_configured",
+        "revision": _next_model_config_revision(price_card) - 1,
+        "currency": str(price_card.get("currency") or "USD") if isinstance(price_card, dict) else "USD",
+        "configured_route_ids": [
+            str(item.get("route_id") or "")
+            for item in entries or []
+            if isinstance(item, dict) and str(item.get("route_id") or "").strip()
+        ],
+        "updated_at": updated_at or None,
+    }
+
+
+def _model_config_timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def workspace_governance_capabilities(workspace_id: str, request: Request | None = None) -> dict[str, Any]:

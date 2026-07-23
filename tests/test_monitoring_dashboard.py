@@ -175,3 +175,65 @@ def test_monitor_dashboard_does_not_fabricate_member_rows_without_chargeback_evi
     )
 
     assert payload["members"] == []
+
+
+def test_monitor_dashboard_aggregates_persisted_estimates_by_route_and_execution_kind() -> None:
+    payload = build_monitor_dashboard(
+        ["ws-model"],
+        scope="current",
+        from_value="2026-07-23T00:00:00Z",
+        to_value="2026-07-24T00:00:00Z",
+        actor={},
+        run_loader=lambda _workspace_id: [
+            {
+                "run_id": "run-priced",
+                "workspace_id": "ws-model",
+                "status": "completed",
+                "completed_at": "2026-07-23T12:00:00Z",
+                "models": [
+                    {
+                        "response_id": "response-1",
+                        "route": "terra",
+                        "deployment": "gpt-5.6-terra",
+                        "selection": "manual",
+                        "execution_kind": "full_analysis",
+                        "usage": {"prompt": 1_000, "completion": 500, "total": 1_500},
+                        "cost_estimate": {"status": "estimated", "currency": "USD", "amount": 0.012, "price_card_revision": 3, "route_id": "terra"},
+                    },
+                    {
+                        "response_id": "response-1",
+                        "route": "terra",
+                        "deployment": "gpt-5.6-terra",
+                        "selection": "manual",
+                        "execution_kind": "full_analysis",
+                        "usage": {"prompt": 1_000, "completion": 500, "total": 1_500},
+                        "cost_estimate": {"status": "estimated", "currency": "USD", "amount": 0.012, "price_card_revision": 3, "route_id": "terra"},
+                    },
+                    {
+                        "response_id": "response-unpriced",
+                        "route": "luna",
+                        "deployment": "gpt-5.6-luna",
+                        "selection": "workspace_policy",
+                        "execution_kind": "direct_reply",
+                        "usage": {"prompt": 10, "completion": 2, "total": 12},
+                        "cost_estimate": {"status": "unavailable", "reason": "price_not_configured"},
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert payload["summary"]["cost"] == {
+        "status": "partial",
+        "amount": None,
+        "currency": None,
+        "unpriced_calls": 1,
+    }
+    assert payload["routes"] == [
+        {"route": "terra", "calls": 1, "total_tokens": 1_500, "selection_counts": {"manual": 1}},
+        {"route": "luna", "calls": 1, "total_tokens": 12, "selection_counts": {"workspace_policy": 1}},
+    ]
+    assert payload["execution_kinds"] == [
+        {"execution_kind": "direct_reply", "calls": 1, "total_tokens": 12, "selection_counts": {"workspace_policy": 1}},
+        {"execution_kind": "full_analysis", "calls": 1, "total_tokens": 1_500, "selection_counts": {"manual": 1}},
+    ]

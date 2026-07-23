@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
+import math
 from typing import Any, Callable
 
 try:
@@ -41,6 +42,7 @@ def build_monitor_dashboard(
     outcome_snapshots = _load_outcome_snapshots(workspace_ids, outcome_loader)
     chargeback_snapshots = _load_chargeback_snapshots(workspace_ids, from_value, to_value, chargeback_loader)
     summary_tokens = _usage_summary(rows)
+    persisted_cost = _persisted_cost_summary(rows)
     return {
         "scope": _scope_projection(scope, workspace_ids),
         "window": {"from": from_value, "to": to_value, "timezone": "UTC"},
@@ -48,13 +50,14 @@ def build_monitor_dashboard(
         "summary": {
             "calls": _call_summary(rows),
             "tokens": summary_tokens,
-            "cost": _cost_summary(cost_snapshots),
+            "cost": persisted_cost if persisted_cost is not None else _cost_summary(cost_snapshots),
             "quality": _quality_summary(rows, audit_snapshots, evaluation_loader),
             "roi": _roi_summary(cost_snapshots, outcome_snapshots),
         },
         "series": {"daily": _daily_series(rows)},
         "models": _model_rows(rows),
         "routes": _route_rows(rows),
+        "execution_kinds": _execution_kind_rows(rows),
         "members": _member_rows(chargeback_snapshots, rows, actor),
         "opportunity": _opportunity(rows, summary_tokens),
         "coverage": _coverage(rows),
@@ -292,6 +295,53 @@ def _cost_summary(cost_snapshots: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _persisted_cost_summary(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    events = list(_iter_model_events(rows))
+    if not events:
+        return None
+    amounts: list[float] = []
+    currencies: set[str] = set()
+    unpriced_calls = 0
+    for _row, model in events:
+        estimate = model.get("cost_estimate") if isinstance(model.get("cost_estimate"), dict) else {}
+        if str(estimate.get("status") or "").strip().lower() != "estimated":
+            unpriced_calls += 1
+            continue
+        amount = estimate.get("amount")
+        currency = str(estimate.get("currency") or "").strip().upper()
+        if (
+            not isinstance(amount, (int, float))
+            or isinstance(amount, bool)
+            or not math.isfinite(float(amount))
+            or float(amount) < 0
+            or not currency
+        ):
+            unpriced_calls += 1
+            continue
+        amounts.append(float(amount))
+        currencies.add(currency)
+    if unpriced_calls or len(currencies) != 1:
+        return {
+            "status": "partial",
+            "amount": None,
+            "currency": None,
+            "unpriced_calls": unpriced_calls,
+        }
+    if not amounts:
+        return {
+            "status": "unavailable",
+            "amount": None,
+            "currency": None,
+            "unpriced_calls": len(events),
+        }
+    return {
+        "status": "estimated",
+        "amount": round(sum(amounts), 6),
+        "currency": next(iter(currencies)),
+        "unpriced_calls": 0,
+    }
+
+
 def _quality_summary(
     rows: list[dict[str, Any]],
     audit_snapshots: list[dict[str, Any]],
@@ -394,42 +444,39 @@ def _daily_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _model_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in rows:
-        for model in row.get("models") or []:
-            if not isinstance(model, dict):
-                continue
-            route = _clean(model.get("route")) or _clean(row.get("route")) or "unknown"
-            deployment = (
-                _clean(model.get("deployment"))
-                or _clean(model.get("model"))
-                or _clean(model.get("deployment_name"))
-                or "unknown"
-            )
-            if route == "unknown" and deployment == "unknown":
-                continue
-            usage = _usage_from_dict(model.get("usage") if isinstance(model.get("usage"), dict) else model)
-            key = (deployment, route)
-            group = groups.setdefault(
-                key,
-                {"deployment": deployment, "route": route, "calls": 0, "total_tokens": 0},
-            )
-            group["calls"] += 1
-            group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
-    return sorted(groups.values(), key=lambda item: (-int(item["calls"]), item["deployment"], item["route"]))
+    for row, model in _iter_model_events(rows):
+        route = _clean(model.get("route")) or _clean(row.get("route")) or "unknown"
+        deployment = (
+            _clean(model.get("deployment"))
+            or _clean(model.get("model"))
+            or _clean(model.get("deployment_name"))
+            or "unknown"
+        )
+        if route == "unknown" and deployment == "unknown":
+            continue
+        usage = _usage_from_dict(model.get("usage") if isinstance(model.get("usage"), dict) else model)
+        key = (deployment, route)
+        group = groups.setdefault(
+            key,
+            {"deployment": deployment, "route": route, "calls": 0, "total_tokens": 0},
+        )
+        group["calls"] += 1
+        group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
+        _increment_selection(group, model)
+    return sorted(groups.values(), key=lambda item: (-int(item["calls"]), -int(item["total_tokens"]), item["deployment"], item["route"]))
 
 
 def _route_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[str, dict[str, Any]] = {}
     for row in rows:
         emitted = False
-        for model in row.get("models") or []:
-            if not isinstance(model, dict):
-                continue
+        for _model_row, model in _iter_model_events([row]):
             route = _clean(model.get("route")) or _clean(row.get("route")) or "unknown"
             usage = _usage_from_dict(model.get("usage") if isinstance(model.get("usage"), dict) else model)
             group = groups.setdefault(route, {"route": route, "calls": 0, "total_tokens": 0})
             group["calls"] += 1
             group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
+            _increment_selection(group, model)
             emitted = True
         if emitted:
             continue
@@ -438,7 +485,42 @@ def _route_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         group["calls"] += 1
         usage = _row_usage(row)
         group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
-    return sorted(groups.values(), key=lambda item: (-int(item["calls"]), item["route"]))
+    return sorted(groups.values(), key=lambda item: (-int(item["calls"]), -int(item["total_tokens"]), item["route"]))
+
+
+def _execution_kind_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for _row, model in _iter_model_events(rows):
+        execution_kind = _clean(model.get("execution_kind")) or "unknown"
+        usage = _usage_from_dict(model.get("usage") if isinstance(model.get("usage"), dict) else model)
+        group = groups.setdefault(execution_kind, {"execution_kind": execution_kind, "calls": 0, "total_tokens": 0})
+        group["calls"] += 1
+        group["total_tokens"] += int(usage["total"]) if usage is not None and isinstance(usage.get("total"), int) else 0
+        _increment_selection(group, model)
+    return sorted(groups.values(), key=lambda item: (-int(item["calls"]), item["execution_kind"]))
+
+
+def _iter_model_events(rows: list[dict[str, Any]]):
+    seen: set[str] = set()
+    for row_index, row in enumerate(rows):
+        run_id = _clean(row.get("run_id")) or f"row-{row_index}"
+        for model_index, model in enumerate(row.get("models") or []):
+            if not isinstance(model, dict):
+                continue
+            response_id = _clean(model.get("response_id"))
+            key = f"{run_id}:response:{response_id}" if response_id else f"{run_id}:index:{model_index}"
+            if key in seen:
+                continue
+            seen.add(key)
+            yield row, model
+
+
+def _increment_selection(group: dict[str, Any], model: dict[str, Any]) -> None:
+    selection = _clean(model.get("selection"))
+    if not selection:
+        return
+    counts = group.setdefault("selection_counts", {})
+    counts[selection] = int(counts.get(selection) or 0) + 1
 
 
 def _member_rows(
