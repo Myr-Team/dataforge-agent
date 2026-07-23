@@ -184,6 +184,10 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
                     model_record[key] = plain.get(key)
             if "cost_estimate" in plain:
                 model_record["cost_estimate"] = _safe_cost_estimate(plain.get("cost_estimate"))
+            if "cache" in plain:
+                cache = normalize_cache_meter(plain.get("cache"))
+                if cache:
+                    model_record["cache"] = cache
             run.setdefault("models", []).append(model_record)
         if event == "audit" and isinstance(plain, dict):
             run["audit"] = plain
@@ -3695,7 +3699,42 @@ def _sanitize_model_response_event_data(data: dict[str, Any]) -> dict[str, Any]:
     sanitized["usage"] = _normalized_observed_usage(data.get("usage"))
     if "cost_estimate" in data:
         sanitized["cost_estimate"] = _safe_cost_estimate(data.get("cost_estimate"))
+    if "cache" in data:
+        cache = normalize_cache_meter(data.get("cache"))
+        if cache:
+            sanitized["cache"] = cache
+        else:
+            sanitized.pop("cache", None)
     return sanitized
+
+
+def normalize_cache_meter(value: Any) -> dict[str, Any]:
+    """Return the cache fields that are safe to persist with a model event."""
+    data = dict(value) if isinstance(value, dict) else {}
+    state = str(data.get("state") or "").strip().lower()
+    if state not in {"hit", "miss", "unavailable", "bypassed"}:
+        return {}
+    provider = str(data.get("provider") or "").strip().lower()
+    if provider != "redis":
+        return {}
+    safe = {"state": state, "provider": provider}
+    elapsed_ms = data.get("elapsed_ms")
+    if isinstance(elapsed_ms, (int, float)) and not isinstance(elapsed_ms, bool):
+        try:
+            elapsed = int(elapsed_ms)
+        except (OverflowError, ValueError):
+            elapsed = -1
+        if elapsed >= 0:
+            safe["elapsed_ms"] = elapsed
+    if state == "hit":
+        source_usage = _normalized_observed_usage(data.get("source_usage"))
+        if source_usage:
+            safe["source_usage"] = source_usage
+        source_cost = _safe_cost_estimate(data.get("source_cost_estimate"))
+        if source_cost.get("status") == "estimated":
+            source_cost.pop("formula", None)
+            safe["source_cost_estimate"] = source_cost
+    return safe
 
 
 def _safe_cost_estimate(value: Any) -> dict[str, Any]:

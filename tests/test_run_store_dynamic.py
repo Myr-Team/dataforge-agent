@@ -42,3 +42,55 @@ def test_list_runs_prefers_recomputed_local_summary_over_stale_registry(tmp_path
 
     assert summary["tokens"]["total"] == 19
     assert summary["duration_ms"] != 618000
+
+
+def test_record_event_persists_only_safe_cache_metering(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+
+    run_store.start_run("cache-run", "ws-a", "Analyze", {})
+    run_store.record_event(
+        "cache-run",
+        "model_response",
+        {
+            "deployment": "gpt-5.6-sol",
+            "route": "analysis",
+            "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+            "cache": {
+                "state": "hit",
+                "provider": "redis",
+                "elapsed_ms": 3,
+                "source_usage": {"prompt": 10, "completion": 2, "total": 12, "raw_usage": "drop"},
+                "source_cost_estimate": {
+                    "status": "estimated",
+                    "currency": "USD",
+                    "amount": 0.001,
+                    "price_card_revision": 4,
+                    "route_id": "analysis",
+                    "source_label": "drop",
+                },
+                "key_sample": "redis://secret-cache-key",
+                "error": "drop",
+            },
+        },
+    )
+
+    result = run_store.complete_run("cache-run")
+
+    assert result is not None
+    assert result["models"][0]["cache"] == {
+        "state": "hit",
+        "provider": "redis",
+        "elapsed_ms": 3,
+        "source_usage": {"prompt": 10, "completion": 2, "total": 12},
+        "source_cost_estimate": {
+            "status": "estimated",
+            "currency": "USD",
+            "amount": 0.001,
+            "price_card_revision": 4,
+            "route_id": "analysis",
+        },
+    }
+    assert "key_sample" not in result["steps"][0]["data"]["cache"]

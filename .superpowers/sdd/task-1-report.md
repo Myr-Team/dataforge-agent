@@ -156,3 +156,58 @@ Task 1 commit: `02a3d891fb6e0a8e086e08020d7c4c93e4fa4661`
 7. Focused correction verification
    - Command: `python -m pytest tests/test_monitoring_dashboard.py tests/test_monitoring_dashboard_api.py tests/test_monitoring_service.py tests/test_azure_monitor_status.py -q`
    - Result: `30 passed in 12.57s`
+
+---
+
+## Cache persistence pass
+
+### Status and scope
+
+- Commit message: `feat: persist safe Redis cache metering`
+- Files: `backend/orchestrator.py`, `backend/run_store.py`,
+  `tests/test_run_store_dynamic.py`, and `tests/test_orchestrator_smoke.py`.
+
+### Delivered behavior
+
+- Redis feasibility entries now wrap the feasibility result with a bounded
+  source meter.
+- Cache hits restore only `state`, `provider`, optional `elapsed_ms`, optional
+  `source_usage`, and optional `source_cost_estimate` into `_llm.cache`.
+- The run store normalizes those values into `models[].cache` and compact
+  model-response step data. Unrecognized data is discarded.
+- Cache hits emit a model-response event for persistence without adding a
+  model response ID.
+- Cache-key samples and cache lookup metadata are not attached to feasibility
+  telemetry or artifacts.
+
+### Constraints checked
+
+- Easy Auth and workspace authorization were not modified.
+- The cache meter does not persist prompts, raw Entra IDs, headers, tokens,
+  connection strings, or cache keys.
+- Redis reuse remains application-level telemetry; no APIM data model or
+  aggregation code changed.
+
+### TDD evidence
+
+1. Red
+   - Command: `python -m pytest tests/test_run_store_dynamic.py tests/test_orchestrator_smoke.py -q`
+   - Result: `2 failed, 1 passed in 10.27s`.
+   - Failures: `model_record` dropped `cache`; the cache-hit metadata retained
+     cache-key-derived fields and an error rather than the bounded contract.
+
+2. Green
+   - Command: `python -m pytest tests/test_run_store_dynamic.py tests/test_orchestrator_smoke.py -q`
+   - Result: `3 passed in 4.25s`.
+
+3. Final focused verification
+   - Command: `python -m pytest tests/test_run_store_dynamic.py tests/test_orchestrator_smoke.py tests/test_model_route_telemetry.py -q`
+   - Result: `8 passed in 4.32s`.
+   - `python -m compileall -q backend/orchestrator.py backend/run_store.py`
+     and `git diff --check` both exited `0`.
+
+### Concern
+
+The brief referenced `tests/test_orchestrator_smoke.py`, but that file was
+absent in this fork. It was added as the focused cache-hit safety test. Full
+suite, deployment, and dashboard aggregation verification remain later tasks.

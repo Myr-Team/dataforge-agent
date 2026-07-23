@@ -99,6 +99,7 @@ try:
         record_event,
         record_plan_version,
         resolve_canonical_experiment_source_run_id,
+        normalize_cache_meter,
         start_run,
         update_run_proposal,
     )
@@ -194,6 +195,7 @@ except ImportError:
         record_event,
         record_plan_version,
         resolve_canonical_experiment_source_run_id,
+        normalize_cache_meter,
         start_run,
         update_run_proposal,
     )
@@ -2080,7 +2082,6 @@ def _feasibility_cache_key(req: ChatRequest, artifact: dict[str, Any]) -> tuple[
         "retrieval_mode": retrieval_mode,
         "query_hash": query_hash,
         "cache_bust_hash": cache_bust_hash or None,
-        "key_sample": key,
     }
 
 
@@ -2102,19 +2103,20 @@ def _run_feasibility_analyst(
         data = apply_pre_audit_guardrails(report.model_dump(), catalog, req.message)
         data["_llm"] = {"mode": "empty_evidence_deterministic", "response_id": None, "usage": {}}
         return data
-    cache_key, cache_meta = _feasibility_cache_key(req, artifact)
+    cache_key, _ = _feasibility_cache_key(req, artifact)
     if not audit_feedback and os.environ.get("DF_DISABLE_REDIS_CACHE") != "1":
         cached, get_meta = cache_store.get_json(cache_key)
         if cached:
-            cached["_llm"] = {
-                **(cached.get("_llm") or {}),
+            cached_result = cached.get("result") if isinstance(cached.get("result"), dict) else cached
+            meter = cached.get("meter") if isinstance(cached.get("meter"), dict) else {}
+            cached_result = dict(cached_result)
+            cached_result["_llm"] = {
                 "mode": "redis_cached_feasibility",
-                "cache": get_meta | cache_meta,
+                "cache": _cache_meter(get_meta, meter),
                 "response_id": None,
                 "usage": {},
             }
-            return cached
-        artifact["_feasibility_cache"] = {"get": get_meta | cache_meta}
+            return cached_result
     payload = {
         "workspace_id": req.workspace_id,
         "user_request": req.message,
@@ -2152,11 +2154,46 @@ def _run_feasibility_analyst(
         data["_llm"] = _model_meta(result)
         data["_llm"]["evidence_warnings"] = evidence_warnings
         if not audit_feedback and os.environ.get("DF_DISABLE_REDIS_CACHE") != "1":
-            set_meta = cache_store.set_json(cache_key, {key: value for key, value in data.items() if key != "_llm"})
-            data["_llm"]["cache"] = (artifact.get("_feasibility_cache") or {}).get("get", {}) | {"set": set_meta, **cache_meta}
+            source_meter = normalize_cache_meter(
+                {
+                    "state": "hit",
+                    "provider": "redis",
+                    "source_usage": result.get("usage"),
+                    "source_cost_estimate": result.get("cost_estimate"),
+                }
+            )
+            cache_store.set_json(
+                cache_key,
+                {
+                    "result": {key: value for key, value in data.items() if key != "_llm"},
+                    "meter": {
+                        key: source_meter[key]
+                        for key in ("source_usage", "source_cost_estimate")
+                        if key in source_meter
+                    },
+                },
+            )
+            data["_llm"]["cache"] = _cache_meter(get_meta)
         return data
     except Exception as exc:
         return _fallback_feasibility(req, artifact, catalog, str(exc))
+
+
+def _cache_meter(cache_meta: Mapping[str, Any], source_meter: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    source = source_meter or {}
+    return normalize_cache_meter(
+        {
+            "state": cache_meta.get("status"),
+            "provider": cache_meta.get("provider"),
+            "elapsed_ms": cache_meta.get("elapsed_ms"),
+            "source_usage": source.get("source_usage"),
+            "source_cost_estimate": source.get("source_cost_estimate"),
+        }
+    )
+
+
+def _has_model_response_data(metadata: Mapping[str, Any]) -> bool:
+    return bool(metadata.get("response_id") or metadata.get("cache"))
 
 
 def _market_lookup(category: str, keywords: list[str]) -> dict[str, Any]:
@@ -6868,7 +6905,7 @@ async def _orchestrate_chat_impl(
             llm_meta = (artifact.get("feasibility") or {}).get("_llm") or {}
             for event, data in _agent_tool_events("df-feasibility-analyst", llm_meta):
                 yield _frame(event, data, conv_id)
-            if llm_meta.get("response_id"):
+            if _has_model_response_data(llm_meta):
                 yield _frame("model_response", {"agent": "df-feasibility-analyst", **llm_meta}, conv_id)
         except Exception as exc:
             error_payload = {"agent": "df-feasibility-analyst", "message": str(exc)}
@@ -7068,7 +7105,7 @@ async def _orchestrate_chat_impl(
                 yield _frame("role_change", {"agent": "df-feasibility-analyst", "revision": rev, "orchestrator": "maf"}, conv_id)
                 for event, data in _agent_tool_events("df-feasibility-analyst", meta):
                     yield _frame(event, {"revision": rev, **data}, conv_id)
-                if meta.get("response_id"):
+                if _has_model_response_data(meta):
                     yield _frame("model_response", {"agent": "df-feasibility-analyst", "revision": rev, **meta}, conv_id)
             else:  # auditor node
                 if rev:
@@ -7125,7 +7162,7 @@ async def _orchestrate_chat_impl(
             revision_meta = revision_feasibility.get("_llm", {})
             for event, data in _agent_tool_events("df-feasibility-analyst", revision_meta):
                 yield _frame(event, {"revision": 1, **data}, conv_id)
-            if revision_meta.get("response_id"):
+            if _has_model_response_data(revision_meta):
                 yield _frame("model_response", {"agent": "df-feasibility-analyst", "revision": 1, **revision_meta}, conv_id)
             if (
                 revision_meta.get("mode") == "fallback_after_agent_error"
