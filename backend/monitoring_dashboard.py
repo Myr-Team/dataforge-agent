@@ -3,13 +3,16 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 import math
+import re
 from typing import Any, Callable
 
 try:
     from .context_evaluation import sanitize_evaluation_status
+    from .invitation_store import member_subject_label
     from .model_policy import context_optimization_gate
 except ImportError:
     from context_evaluation import sanitize_evaluation_status
+    from invitation_store import member_subject_label
     from model_policy import context_optimization_gate
 
 
@@ -51,6 +54,7 @@ def build_monitor_dashboard(
             "calls": _call_summary(rows),
             "tokens": summary_tokens,
             "cost": persisted_cost if persisted_cost is not None else _cost_summary(cost_snapshots),
+            "cache": _cache_summary(rows),
             "quality": _quality_summary(rows, audit_snapshots, evaluation_loader),
             "roi": _roi_summary(cost_snapshots, outcome_snapshots),
         },
@@ -59,6 +63,7 @@ def build_monitor_dashboard(
         "routes": _route_rows(rows),
         "execution_kinds": _execution_kind_rows(rows),
         "members": _member_rows(chargeback_snapshots, rows, actor),
+        "requests": _request_rows(rows, workspace_ids),
         "opportunity": _opportunity(rows, summary_tokens),
         "coverage": _coverage(rows),
     }
@@ -501,6 +506,165 @@ def _execution_kind_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         _increment_selection(group, model)
         _increment_estimated_cost(group, model)
     return sorted((_finalize_estimated_cost(group) for group in groups.values()), key=lambda item: (-int(item["calls"]), item["execution_kind"]))
+
+
+def _cache_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    eligible = 0
+    hits = 0
+    misses = 0
+    unavailable = 0
+    avoided_tokens = 0
+    amounts: list[float] = []
+    currencies: set[str] = set()
+    unpriced_hits = 0
+    for _row, model in _iter_model_events(rows):
+        cache = _cache_projection(model.get("cache"))
+        if cache is None or cache["state"] not in {"hit", "miss", "unavailable"}:
+            continue
+        eligible += 1
+        state = cache["state"]
+        if state == "miss":
+            misses += 1
+            continue
+        if state == "unavailable":
+            unavailable += 1
+            continue
+        hits += 1
+        usage = cache.get("source_usage")
+        if isinstance(usage, dict) and isinstance(usage.get("total"), int) and usage["total"] >= 0:
+            avoided_tokens += usage["total"]
+        estimate = _source_cost_estimate(cache.get("source_cost_estimate"))
+        if estimate is None:
+            unpriced_hits += 1
+            continue
+        amounts.append(estimate["amount"])
+        currencies.add(estimate["currency"])
+    return {
+        "eligible": eligible,
+        "hits": hits,
+        "misses": misses,
+        "unavailable": unavailable,
+        "hit_rate_pct": round((hits / eligible) * 100, 2) if eligible else None,
+        "avoided_tokens": avoided_tokens,
+        "avoided_cost": _avoided_cost_summary(amounts, currencies, unpriced_hits),
+    }
+
+
+def _avoided_cost_summary(
+    amounts: list[float],
+    currencies: set[str],
+    unpriced_hits: int,
+) -> dict[str, Any]:
+    if not amounts:
+        return {"status": "unavailable", "amount": None, "currency": None, "unpriced_hits": unpriced_hits}
+    if unpriced_hits or len(currencies) != 1:
+        return {"status": "partial", "amount": None, "currency": None, "unpriced_hits": unpriced_hits}
+    return {
+        "status": "estimated",
+        "amount": round(sum(amounts), 6),
+        "currency": next(iter(currencies)),
+        "unpriced_hits": 0,
+    }
+
+
+def _cache_projection(value: Any) -> dict[str, Any] | None:
+    cache = value if isinstance(value, dict) else {}
+    state = _clean(cache.get("state")).lower()
+    if state not in {"hit", "miss", "unavailable", "bypassed"} or _clean(cache.get("provider")).lower() != "redis":
+        return None
+    result: dict[str, Any] = {"state": state, "provider": "redis"}
+    elapsed_ms = _as_int(cache.get("elapsed_ms"))
+    if elapsed_ms is not None and elapsed_ms >= 0:
+        result["elapsed_ms"] = elapsed_ms
+    if state != "hit":
+        return result
+    usage = _source_usage(cache.get("source_usage"))
+    if usage is not None:
+        result["source_usage"] = usage
+    estimate = _source_cost_estimate(cache.get("source_cost_estimate"))
+    if estimate is not None:
+        result["source_cost_estimate"] = estimate
+    return result
+
+
+def _source_usage(value: Any) -> dict[str, int | None] | None:
+    usage = _usage_from_dict(value if isinstance(value, dict) else None)
+    if usage is None or any(item is not None and item < 0 for item in usage.values()):
+        return None
+    return usage
+
+
+def _source_cost_estimate(value: Any) -> dict[str, Any] | None:
+    estimate = value if isinstance(value, dict) else {}
+    amount = estimate.get("amount")
+    currency = _clean(estimate.get("currency")).upper()
+    if (
+        _clean(estimate.get("status")).lower() != "estimated"
+        or not isinstance(amount, (int, float))
+        or isinstance(amount, bool)
+        or not math.isfinite(float(amount))
+        or float(amount) < 0
+        or not re.fullmatch(r"[A-Z]{3}", currency)
+    ):
+        return None
+    return {"status": "estimated", "amount": round(float(amount), 6), "currency": currency}
+
+
+def _request_rows(rows: list[dict[str, Any]], workspace_ids: list[str]) -> list[dict[str, Any]]:
+    workspace_labels = {workspace_id: f"Workspace {index + 1}" for index, workspace_id in enumerate(workspace_ids)}
+    requests: list[dict[str, Any]] = []
+    for row, model in _iter_model_events(rows):
+        workspace_id = _clean(row.get("workspace_id"))
+        occurred_at = _row_time(row)
+        if not workspace_id or workspace_id not in workspace_labels or occurred_at is None:
+            continue
+        cache = _cache_projection(model.get("cache"))
+        usage = _usage_from_dict(model.get("usage") if isinstance(model.get("usage"), dict) else model)
+        duration_ms = _as_int(row.get("duration_ms"))
+        request = {
+            "run_id": _clean(row.get("run_id"))[:160],
+            "occurred_at": occurred_at.isoformat().replace("+00:00", "Z"),
+            "member_label": _request_member_label(row, workspace_id),
+            "workspace_label": workspace_labels[workspace_id],
+            "route": (_clean(model.get("route")) or _clean(row.get("route")) or "unknown")[:128],
+            "deployment": (_clean(model.get("deployment")) or _clean(model.get("model")) or _clean(model.get("deployment_name")) or "unknown")[:128],
+            "status": _request_status(row.get("status")),
+            "tokens": usage,
+            "cache": cache,
+            "trace": _request_trace(row.get("trace")),
+        }
+        if duration_ms is not None and duration_ms >= 0:
+            request["duration_ms"] = duration_ms
+        requests.append(request)
+    return sorted(requests, key=lambda item: (item["occurred_at"], item["run_id"]), reverse=True)[:30]
+
+
+def _request_member_label(row: dict[str, Any], workspace_id: str) -> str | None:
+    actor = row.get("actor") if isinstance(row.get("actor"), dict) else {}
+    if row.get("trusted_identity") is not True or not _clean(actor.get("actor_id")) or not _clean(actor.get("tenant_id")):
+        return None
+    try:
+        return member_subject_label(workspace_id, {"actor_id": actor["actor_id"], "tenant_id": actor["tenant_id"]})
+    except Exception:
+        return None
+
+
+def _request_status(value: Any) -> str:
+    status = _clean(value).lower()
+    if status in {"completed", "succeeded", "success"}:
+        return "completed"
+    if status in {"failed", "error", "cancelled", "canceled"}:
+        return "failed"
+    return "unknown"
+
+
+def _request_trace(value: Any) -> dict[str, str] | None:
+    trace = value if isinstance(value, dict) else {}
+    trace_id = _clean(trace.get("trace_id")).lower()
+    agent_id = _clean(trace.get("agent_id"))
+    if not re.fullmatch(r"[a-f0-9]{32}", trace_id) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", agent_id):
+        return None
+    return {"trace_id": trace_id, "agent_id": agent_id}
 
 
 def _iter_model_events(rows: list[dict[str, Any]]):

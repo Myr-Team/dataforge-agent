@@ -324,3 +324,57 @@ Green commands:
 Residual risk after step-event correction:
 
 - This closes the provider-usage leak for the `model_response` step path that Task 2 owns. If a future telemetry event introduces another raw provider payload type, it needs its own explicit sanitizer before persistence.
+
+---
+
+## Task 2 (2026-07-24): APIM and Redis Cache Monitoring Projection
+
+### Scoped files
+
+- `backend/monitoring_dashboard.py`
+- `tests/test_monitoring_dashboard.py`
+- `tests/test_monitoring_dashboard_api.py`
+
+No Easy Auth, workspace authorization, APIM metric ingestion, Redis
+persistence, or frontend files changed.
+
+### Delivered behavior
+
+- `summary.cache` aggregates only Redis `hit`, `miss`, and `unavailable`
+  model cache events. `bypassed`, unknown legacy states, and non-Redis records
+  are excluded.
+- It reports hit rate, avoided source tokens, and `avoided_cost` as
+  `estimated`, `partial`, or `unavailable`. These are price-card estimates,
+  never billing figures.
+- The monitor payload exposes at most 30 newest-first model-event request rows.
+  The new allow-listed projection contains only run ID, occurrence time,
+  pseudonymous member label when a server-marked trusted identity is present,
+  non-identifying workspace label, route, deployment, normalized status,
+  optional duration, observed tokens, normalized Redis cache details, and a
+  validated trace reference.
+- It does not project prompt/message/error/header data, raw Entra or workspace
+  IDs, cache keys, or model response IDs.
+- APIM evidence remains an existing independent aggregation path; Task 2 does
+  not read it or combine its metrics with cache/token figures.
+
+### TDD and verification
+
+1. RED: `python -m pytest tests/test_monitoring_dashboard.py tests/test_monitoring_dashboard_api.py -q`
+   returned `2 failed, 14 passed in 5.19s`, with the intended missing
+   `summary.cache` and `requests` keys.
+2. GREEN: the same command returned `16 passed in 4.19s` after implementation.
+3. Self-review added an unpriced-hit regression proving that avoided source
+   tokens may be known while `avoided_cost.status` is `unavailable`.
+4. Final focused verification returned `17 passed in 4.10s`.
+   `python -m compileall -q backend/monitoring_dashboard.py` and
+   `git diff --check` both exited `0`.
+
+### Review notes
+
+- The cache aggregator validates the Redis provider before treating an event as
+  eligible.
+- The request projector builds a new allow-listed object instead of copying run
+  records and applies its 30-row bound only after descending time order.
+- A review cleanup removed an unused helper parameter.
+- Pre-existing untracked workspace fixtures and `.superpowers/brainstorm/`
+  remain untouched and unstaged.

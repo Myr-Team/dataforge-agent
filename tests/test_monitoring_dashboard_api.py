@@ -331,3 +331,58 @@ def test_monitor_dashboard_reconciles_model_and_route_totals_with_run_records(
     assert model_calls <= body["summary"]["calls"]["observed"]
     assert body["coverage"]["governed_text_calls"] == model_calls
     assert unknown_route_calls == 1
+
+
+def test_monitor_api_projects_only_bounded_safe_cache_requests(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(control_plane, "_owned_workspace_ids", lambda _request: ["ws-private"], raising=False)
+    runs = [
+        {
+            "run_id": f"run-{index:02d}",
+            "workspace_id": "ws-private",
+            "status": "completed",
+            "completed_at": f"2026-07-24T00:{index:02d}:00Z",
+            "duration_ms": index,
+            "message": "do not expose this prompt",
+            "headers": {"authorization": "do-not-expose"},
+            "actor": {"actor_id": "raw-entra-id", "tenant_id": "raw-tenant-id", "email": "owner@example.test"},
+            "trusted_identity": True,
+            "trace": {"trace_id": "a" * 32, "agent_id": "dataforge-runtime-v1"},
+            "models": [
+                {
+                    "route": "analysis",
+                    "deployment": "gpt-cache",
+                    "response_id": "response-should-not-expose",
+                    "usage": {"prompt": 10, "completion": 2, "total": 12},
+                    "cache": {"state": "hit", "provider": "redis", "cache_key": "do-not-expose"},
+                }
+            ],
+        }
+        for index in range(31)
+    ]
+    monkeypatch.setattr(control_plane, "list_runs", lambda workspace_id=None: runs if workspace_id == "ws-private" else [], raising=False)
+    monkeypatch.setattr(control_plane, "workspace_cost_value_snapshot", lambda *_args: {}, raising=False)
+    monkeypatch.setattr(control_plane, "workspace_audit_events", lambda _workspace_id: {"count": 0, "events": []}, raising=False)
+    monkeypatch.setattr(control_plane, "list_outcome_events", lambda _workspace_id: [], raising=False)
+    monkeypatch.setattr(control_plane, "workspace_member_chargeback", lambda *_args: {"members": []}, raising=False)
+    monkeypatch.setattr(control_plane, "_gateway_governed_calls", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr(monitoring_dashboard, "context_optimization_gate", lambda _route_id: {}, raising=False)
+
+    response = client.get(
+        "/api/monitoring?scope=current&workspace_id=ws-private&from=2026-07-24T00:00:00Z&to=2026-07-24T00:59:00Z",
+        headers=trusted_headers(actor_id="owner-oid", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    requests = response.json()["requests"]
+    assert len(requests) == 30
+    assert requests[0]["run_id"] == "run-30"
+    assert requests[0]["workspace_label"] == "Workspace 1"
+    assert requests[0]["member_label"].startswith("member_")
+    assert requests[0]["cache"] == {"state": "hit", "provider": "redis"}
+    assert requests[0]["trace"] == {"trace_id": "a" * 32, "agent_id": "dataforge-runtime-v1"}
+    serialized = str(requests)
+    for secret in ("do not expose", "raw-entra-id", "raw-tenant-id", "owner@example.test", "ws-private", "cache_key", "response-should-not-expose"):
+        assert secret not in serialized

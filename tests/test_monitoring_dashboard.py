@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from backend.monitoring_dashboard import _usage_from_dict, build_monitor_dashboard
 
 
@@ -237,3 +239,117 @@ def test_monitor_dashboard_aggregates_persisted_estimates_by_route_and_execution
         {"execution_kind": "direct_reply", "calls": 1, "total_tokens": 12, "selection_counts": {"workspace_policy": 1}, "estimated_cost": {"status": "unavailable", "amount": None, "currency": None, "unpriced_calls": 1}},
         {"execution_kind": "full_analysis", "calls": 1, "total_tokens": 1_500, "selection_counts": {"manual": 1}, "estimated_cost": {"status": "estimated", "amount": 0.012, "currency": "USD", "unpriced_calls": 0}},
     ]
+
+
+def test_dashboard_aggregates_cache_only_for_eligible_model_events() -> None:
+    dashboard = build_monitor_dashboard(
+        ["ws-cache"],
+        scope="current",
+        from_value="2026-07-23T00:00:00Z",
+        to_value="2026-07-24T00:00:00Z",
+        actor={},
+        run_loader=lambda _workspace_id: [
+            {
+                "run_id": "run-hit",
+                "workspace_id": "ws-cache",
+                "status": "completed",
+                "completed_at": "2026-07-23T12:00:00Z",
+                "models": [
+                    {
+                        "route": "analysis",
+                        "deployment": "gpt-cache",
+                        "usage": {"total": 4},
+                        "cache": {
+                            "state": "hit",
+                            "provider": "redis",
+                            "elapsed_ms": 2,
+                            "source_usage": {"prompt": 100, "completion": 20, "total": 120},
+                            "source_cost_estimate": {
+                                "status": "estimated",
+                                "currency": "USD",
+                                "amount": 0.001,
+                                "price_card_revision": 1,
+                                "route_id": "analysis",
+                            },
+                        },
+                    }
+                ],
+            },
+            {
+                "run_id": "run-miss",
+                "workspace_id": "ws-cache",
+                "status": "completed",
+                "completed_at": "2026-07-23T11:00:00Z",
+                "models": [{"route": "analysis", "deployment": "gpt-cache", "cache": {"state": "miss", "provider": "redis"}}],
+            },
+            {
+                "run_id": "run-unavailable",
+                "workspace_id": "ws-cache",
+                "status": "completed",
+                "completed_at": "2026-07-23T10:00:00Z",
+                "models": [{"route": "analysis", "deployment": "gpt-cache", "cache": {"state": "unavailable", "provider": "redis"}}],
+            },
+            {
+                "run_id": "run-bypassed",
+                "workspace_id": "ws-cache",
+                "status": "completed",
+                "completed_at": "2026-07-23T09:00:00Z",
+                "models": [{"route": "analysis", "deployment": "gpt-cache", "cache": {"state": "bypassed", "provider": "redis"}}],
+            },
+            {
+                "run_id": "run-legacy",
+                "workspace_id": "ws-cache",
+                "status": "completed",
+                "completed_at": "2026-07-23T08:00:00Z",
+                "models": [{"route": "analysis", "deployment": "gpt-cache", "cache": {"state": "legacy"}}],
+            },
+        ],
+    )
+
+    assert dashboard["summary"]["cache"] == {
+        "eligible": 3,
+        "hits": 1,
+        "misses": 1,
+        "unavailable": 1,
+        "hit_rate_pct": pytest.approx(33.33),
+        "avoided_tokens": 120,
+        "avoided_cost": {"status": "estimated", "amount": 0.001, "currency": "USD", "unpriced_hits": 0},
+    }
+    assert dashboard["requests"][0]["cache"]["state"] == "hit"
+
+
+def test_dashboard_marks_cache_avoidance_unavailable_without_source_price() -> None:
+    dashboard = build_monitor_dashboard(
+        ["ws-cache"],
+        scope="current",
+        from_value="2026-07-23T00:00:00Z",
+        to_value="2026-07-24T00:00:00Z",
+        actor={},
+        run_loader=lambda _workspace_id: [
+            {
+                "run_id": "run-unpriced-hit",
+                "workspace_id": "ws-cache",
+                "status": "completed",
+                "completed_at": "2026-07-23T12:00:00Z",
+                "models": [
+                    {
+                        "route": "analysis",
+                        "deployment": "gpt-cache",
+                        "cache": {
+                            "state": "hit",
+                            "provider": "redis",
+                            "source_usage": {"total": 120},
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert dashboard["summary"]["cache"]["avoided_tokens"] == 120
+    assert dashboard["summary"]["cache"]["avoided_cost"] == {
+        "status": "unavailable",
+        "amount": None,
+        "currency": None,
+        "unpriced_hits": 1,
+    }
