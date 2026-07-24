@@ -104,6 +104,7 @@ class FinOpsQueryService:
         cost_values = [row.estimated_cost.amount for row in rows if row.estimated_cost.amount is not None]
         latencies = sorted(row.latency_ms for row in rows if row.latency_ms is not None)
         failures = sum(row.status == "failed" for row in rows)
+        succeeded = sum(row.status == "succeeded" for row in rows)
         cache_eligible = [row for row in rows if row.cache.eligible is True]
         cache_hits = sum(row.cache.state == "hit" for row in cache_eligible)
         governed = sum(row.gateway_coverage == "apim_governed" for row in rows)
@@ -129,6 +130,7 @@ class FinOpsQueryService:
                 "known_requests": len(latencies),
             },
             "error_rate_pct": round((failures / len(rows)) * 100, 2) if rows else None,
+            "success_rate_pct": round((succeeded / len(rows)) * 100, 2) if rows else None,
             "cache_hit_rate_pct": round((cache_hits / len(cache_eligible)) * 100, 2) if cache_eligible else None,
             "apim_coverage_pct": round((governed / len(rows)) * 100, 2) if rows else None,
         }

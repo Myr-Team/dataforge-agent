@@ -146,6 +146,42 @@ def test_finops_bootstrap_requires_summary_permission(
     assert response.json()["detail"] == "workspace access denied for finops.summary.read"
 
 
+def test_finops_bootstrap_projects_server_side_budget_usage(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    management = FinOpsManagementService(InMemoryManagementRepository())
+    management.create_policy(
+        tenant_ref="tenantref-a",
+        actor_ref="actor-owner",
+        policy_type="daily_cost_budget",
+        configuration={
+            "daily_budget_usd": 0.01,
+            "warning_pct": 80,
+            "critical_pct": 100,
+        },
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_management_service",
+        lambda: management,
+    )
+
+    response = client.get(
+        "/api/finops/bootstrap?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["overview"]["metrics"]["budget"] == {
+        "amount": 0.24,
+        "used_amount": 0.001,
+        "usage_pct": 0.4167,
+        "status": "estimated",
+        "source": "daily_cost_budget",
+    }
+
+
 def test_finops_read_contract_and_request_detail_are_privacy_bounded(client: TestClient) -> None:
     headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
     overview = client.get(

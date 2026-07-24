@@ -122,6 +122,7 @@ def test_overview_keeps_unpriced_requests_visible_instead_of_inventing_cost() ->
         "unpriced_requests": 1,
         "status": "partial",
     }
+    assert response["metrics"]["success_rate_pct"] == 100.0
     assert response["data_status"] == "partial"
 
 

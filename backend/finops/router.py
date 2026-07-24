@@ -380,6 +380,10 @@ async def bootstrap(
             detail="workspace access denied for finops.summary.read",
         )
     payload = service.bootstrap(query)
+    payload["overview"]["metrics"]["budget"] = _bootstrap_budget(
+        query,
+        payload["overview"]["metrics"],
+    )
     payload["anomalies"] = {
         "items": _bootstrap_anomaly_summaries(query),
         "count": 0,
@@ -387,6 +391,51 @@ async def bootstrap(
     payload["anomalies"]["count"] = len(payload["anomalies"]["items"])
     payload["insights"] = {"finops": None, "roi": None}
     return payload
+
+
+def _bootstrap_budget(
+    query: FinOpsQuery,
+    metrics: Mapping[str, Any],
+) -> dict[str, Any]:
+    budget_policy = next(
+        (
+            item
+            for item in get_finops_management_service().list_policies(
+                tenant_ref=query.tenant_ref
+            )
+            if item.status == "enabled" and item.policy_type == "daily_cost_budget"
+        ),
+        None,
+    )
+    cost = metrics.get("estimated_cost")
+    used_amount = cost.get("amount") if isinstance(cost, Mapping) else None
+    if budget_policy is None:
+        return {
+            "amount": None,
+            "used_amount": used_amount,
+            "usage_pct": None,
+            "status": "unavailable",
+            "source": None,
+        }
+    start = _parse_time(query.from_value)
+    end = _parse_time(query.to_value)
+    seconds = max(0.0, (end - start).total_seconds())
+    days = max(1, int((seconds + 86_399) // 86_400))
+    daily_budget = float(budget_policy.configuration["daily_budget_usd"])
+    amount = round(daily_budget * days, 8)
+    usage_pct = (
+        round(float(used_amount) / amount * 100, 4)
+        if used_amount is not None and amount > 0
+        else None
+    )
+    cost_status = str(cost.get("status") or "unavailable") if isinstance(cost, Mapping) else "unavailable"
+    return {
+        "amount": amount,
+        "used_amount": used_amount,
+        "usage_pct": usage_pct,
+        "status": cost_status,
+        "source": "daily_cost_budget",
+    }
 
 
 def _bootstrap_anomaly_summaries(query: FinOpsQuery) -> list[dict[str, Any]]:

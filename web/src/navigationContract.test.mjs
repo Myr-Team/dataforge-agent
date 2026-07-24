@@ -4,11 +4,18 @@ import test from "node:test";
 import { NAV_GROUPS, visibleNavItems } from "./constants.js";
 
 test("governance capabilities control the visible destinations", () => {
-  const governance = NAV_GROUPS.find((group) => group.id === "governance");
+  const workspace = NAV_GROUPS.find((group) => group.id === "workspace");
+  const operations = NAV_GROUPS.find((group) => group.id === "operations");
+  const system = NAV_GROUPS.find((group) => group.id === "system");
 
-  assert.ok(governance);
-  assert.equal(governance.label, "治理");
-  assert.deepEqual(governance.items.map((item) => item.id), ["members", "lineage", "monitor", "model-routing"]);
+  assert.equal(workspace.label, "业务工作台");
+  assert.deepEqual(workspace.items.map((item) => item.id), ["workspaces", "data", "conversations", "artifacts"]);
+  assert.equal(operations.label, "运营治理");
+  assert.deepEqual(operations.items.map((item) => item.id), ["finops"]);
+  assert.equal(operations.items[0].label, "运营驾驶舱");
+  assert.equal(system.label, "系统");
+  assert.deepEqual(system.items.map((item) => item.id), ["settings"]);
+  assert.equal(NAV_GROUPS.some((group) => group.items.some((item) => ["lineage", "monitor", "model-routing"].includes(item.id))), false);
 });
 
 test("unavailable governance capabilities do not render as disabled navigation", () => {
@@ -17,10 +24,13 @@ test("unavailable governance capabilities do not render as disabled navigation",
     lineage: { visible: true },
     monitor: { visible: false },
     model_routing: { visible: false },
+    finops: { visible: false },
   } });
 
-  assert.ok(items.some((item) => item.id === "members"));
-  assert.ok(items.some((item) => item.id === "lineage"));
+  assert.ok(items.some((item) => item.id === "settings"));
+  assert.ok(!items.some((item) => item.id === "members"));
+  assert.ok(!items.some((item) => item.id === "lineage"));
   assert.ok(!items.some((item) => item.id === "monitor"));
   assert.ok(!items.some((item) => item.id === "model-routing"));
+  assert.ok(!items.some((item) => item.id === "finops"));
 });

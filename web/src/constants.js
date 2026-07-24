@@ -32,23 +32,26 @@ import {
 export const NAV_GROUPS = [
   {
     id: "workspace",
-    label: "工作区",
+    label: "业务工作台",
     items: [
       { id: "workspaces", label: "工作区", icon: Home },
-      { id: "data", label: "数据", icon: Database },
-      { id: "runs", label: "运行记录", icon: Route },
-      { id: "conversations", label: "会话", icon: MessageSquare },
-      { id: "artifacts", label: "产物", icon: Boxes },
+      { id: "data", label: "数据资产", icon: Database },
+      { id: "conversations", label: "会话与运行", icon: MessageSquare },
+      { id: "artifacts", label: "分析产物", icon: Boxes },
     ],
   },
   {
-    id: "governance",
-    label: "治理",
+    id: "operations",
+    label: "运营治理",
     items: [
-      { id: "members", label: "成员与协作", icon: UsersRound, capabilityKey: "members" },
-      { id: "lineage", label: "审计与溯源", icon: ListTree, capabilityKey: "lineage" },
-      { id: "monitor", label: "监视", icon: LineChart, capabilityKey: "monitor" },
-      { id: "model-routing", label: "模型路由", icon: SlidersHorizontal, capabilityKey: "model_routing" },
+      { id: "finops", label: "运营驾驶舱", icon: WalletCards, capabilityKey: "finops" },
+    ],
+  },
+  {
+    id: "system",
+    label: "系统",
+    items: [
+      { id: "settings", label: "设置", icon: SlidersHorizontal },
     ],
   },
 ];
@@ -60,10 +63,7 @@ export function canViewGovernance(access) {
 }
 
 export function normalizePrimaryView(view) {
-  if (view === "governance") return "lineage";
-  if (view === "cost-value") return "monitor";
-  if (view === "models-connections") return "model-routing";
-  if (view === "settings") return "workspaces";
+  if (["governance", "cost-value", "models-connections"].includes(view)) return "finops";
   return view;
 }
 

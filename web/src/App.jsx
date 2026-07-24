@@ -1215,6 +1215,7 @@ export function App() {
             onOpenTaskCenter={() => setTaskDrawerOpen(true)}
             workspaceAccess={workspaceAccess}
             governanceCapabilities={governanceCapabilities}
+            finopsPreloadScope={finopsScope}
           />
         </div>
       </div>

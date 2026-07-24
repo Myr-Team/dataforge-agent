@@ -9,6 +9,7 @@ const ownerCapabilities = {
     lineage: { visible: true, scope: "workspace" },
     monitor: { visible: true },
     model_routing: { visible: true },
+    finops: { visible: true },
   },
 };
 
@@ -22,30 +23,29 @@ test("editor navigation excludes owner-only governance entries", () => {
     },
   });
 
-  assert.deepEqual(items.map((item) => item.id), [
-    "workspaces", "data", "runs", "conversations", "artifacts", "members", "lineage",
-  ]);
+  assert.deepEqual(items.map((item) => item.id), ["workspaces", "data", "conversations", "artifacts", "settings"]);
 });
 
-test("governance navigation is grouped after the operational workspace routes", () => {
+test("operations dashboard is grouped between business workbench and system settings", () => {
   const workspaceGroup = NAV_GROUPS.find((group) => group.id === "workspace");
-  const governanceGroup = NAV_GROUPS.find((group) => group.id === "governance");
+  const operationsGroup = NAV_GROUPS.find((group) => group.id === "operations");
+  const systemGroup = NAV_GROUPS.find((group) => group.id === "system");
 
-  assert.deepEqual(workspaceGroup.items.map((item) => item.id), ["workspaces", "data", "runs", "conversations", "artifacts"]);
-  assert.deepEqual(governanceGroup.items.map((item) => item.id), ["members", "lineage", "monitor", "model-routing"]);
-  assert.equal(NAV_ITEMS.find((item) => item.id === "monitor")?.capabilityKey, "monitor");
+  assert.deepEqual(workspaceGroup.items.map((item) => item.id), ["workspaces", "data", "conversations", "artifacts"]);
+  assert.deepEqual(operationsGroup.items.map((item) => item.id), ["finops"]);
+  assert.deepEqual(systemGroup.items.map((item) => item.id), ["settings"]);
+  assert.equal(NAV_ITEMS.find((item) => item.id === "finops")?.capabilityKey, "finops");
 });
 
-test("legacy governance routes resolve to their focused governance pages", () => {
-  assert.equal(normalizePrimaryView("governance"), "lineage");
-  assert.equal(normalizePrimaryView("cost-value"), "monitor");
-  assert.equal(normalizePrimaryView("models-connections"), "model-routing");
-  assert.equal(normalizePrimaryView("settings"), "workspaces");
+test("legacy governance routes converge on the operations dashboard", () => {
+  assert.equal(normalizePrimaryView("governance"), "finops");
+  assert.equal(normalizePrimaryView("cost-value"), "finops");
+  assert.equal(normalizePrimaryView("models-connections"), "finops");
+  assert.equal(normalizePrimaryView("settings"), "settings");
 });
 
-test("owner-only routes fall back until server capabilities explicitly allow them", () => {
-  assert.equal(resolvePrimaryView("monitor", null), "workspaces");
-  assert.equal(resolvePrimaryView("monitor", null), "workspaces");
-  assert.equal(resolvePrimaryView("monitor", { sections: { monitor: { visible: false } } }), "workspaces");
-  assert.equal(resolvePrimaryView("monitor", ownerCapabilities), "monitor");
+test("operations dashboard falls back until server capabilities explicitly allow it", () => {
+  assert.equal(resolvePrimaryView("finops", null), "workspaces");
+  assert.equal(resolvePrimaryView("finops", { sections: { finops: { visible: false } } }), "workspaces");
+  assert.equal(resolvePrimaryView("finops", ownerCapabilities), "finops");
 });

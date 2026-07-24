@@ -19,9 +19,9 @@ import { costValueViewModel } from "./costValueViewModel.js";
 import { monitoringSnapshotViewModel } from "./monitoringViewModel.js";
 import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, createWorkspaceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
 import { GovernanceCenter } from "./GovernanceCenter.jsx";
-import { FinOpsPortal } from "./FinOpsPortal.jsx";
 import { finopsIntentHandlers } from "./finopsNavigation.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
+const FinOpsPortal = lazy(() => import("./FinOpsPortal.jsx").then((m) => ({ default: m.FinOpsPortal })));
 import {
   Activity,
   AlertTriangle,
@@ -133,7 +133,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, workspace
       <div className="nav-stack">
         {navGroups.map((group) => (
           <section className="nav-group" key={group.id} aria-label={group.label}>
-            {group.id === "governance" ? <div className="nav-group-label">{group.label}</div> : null}
+            <div className="nav-group-label">{group.label}</div>
             {group.items.map((item) => {
               const Icon = item.icon;
               return (
@@ -622,6 +622,7 @@ function WorkbenchMainInner({
   onOpenTaskCenter,
   workspaceAccess,
   governanceCapabilities,
+  finopsPreloadScope,
 }) {
   const resolvedView = view === "governance" ? "lineage" : view === "cost-value" ? "monitor" : view;
   if (resolvedView === "conversations") {
@@ -657,7 +658,18 @@ function WorkbenchMainInner({
     return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} tasks={tasks} />;
   }
   if (resolvedView === "finops") {
-    return <FinOpsPortal workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id || ""} />;
+    return (
+      <Suspense fallback={<main className="finops-page"><div className="finops-section-loading">正在打开运营驾驶舱</div></main>}>
+        <FinOpsPortal
+          workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id || ""}
+          preloadScopeKey={finopsPreloadScope?.key || ""}
+          permissions={governanceCapabilities?.sections?.finops?.permissions || {}}
+        />
+      </Suspense>
+    );
+  }
+  if (resolvedView === "settings") {
+    return <SettingsCenter dashboard={dashboard} observability={observability} user={user} initialTab={settingsInitialTab} />;
   }
   if (["members", "lineage", "monitor", "model-routing"].includes(resolvedView)) {
     return (
