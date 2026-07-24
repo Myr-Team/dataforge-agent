@@ -63,6 +63,12 @@ def client(
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "finops-test-secret")
     monkeypatch.setenv("DF_FINOPS_READ_ENABLED", "1")
+    monkeypatch.setenv("DF_FINOPS_SQL_ENABLED", "0")
+    monkeypatch.setattr(
+        finops_router,
+        "_EVIDENCE_REPOSITORY",
+        finops_router.InMemoryEvidenceAliasRepository(),
+    )
     monkeypatch.setattr(
         finops_router,
         "get_finops_query_service",
@@ -209,6 +215,69 @@ def test_finops_read_contract_and_request_detail_are_privacy_bounded(client: Tes
     assert "provider_response_id" not in serialized
 
 
+def test_finops_request_detail_requires_owner_or_admin(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "viewer"},
+    )
+
+    response = client.get(
+        "/api/finops/requests/req_aaaaaaaaaaaa?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="viewer-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "workspace access denied for finops.request_detail.read"
+    )
+    assert "req_aaaaaaaaaaaa" not in response.text
+
+
+def test_finops_request_detail_returns_application_request_and_visible_response(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        finops_router,
+        "get_run",
+        lambda _run_id: {
+            "run_id": "run-a",
+            "workspace_id": "ws-a",
+            "status": "completed",
+            "message": "分析本月销售异常",
+            "final": {
+                "text": "已定位主要变化来自华东区域。",
+                "provider_response": "must-not-escape",
+            },
+            "system_prompt": "must-not-escape",
+            "internal_error": "must-not-escape",
+        },
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "_workspace_name",
+        lambda _workspace_id: "Commerce",
+    )
+
+    response = client.get(
+        "/api/finops/requests/req_aaaaaaaaaaaa?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["display"]["name"].startswith("Commerce · 分析运行 · ")
+    assert payload["business_request"]["text"] == "分析本月销售异常"
+    assert payload["business_response"]["text"] == "已定位主要变化来自华东区域。"
+    assert payload["technical_refs"]["request_ref"] == "req_aaaaaaaaaaaa"
+    for forbidden in ("provider_response", "system_prompt", "internal_error", "must-not-escape"):
+        assert forbidden not in response.text
+
+
 def test_finops_request_detail_builds_server_owned_azure_monitor_link(
     client: TestClient,
     repository: InMemoryFinOpsRepository,
@@ -240,6 +309,39 @@ def test_finops_request_detail_builds_server_owned_azure_monitor_link(
     assert detail.status_code == 200
     assert detail.json()["links"]["azure_monitor"].endswith(
         "/4f8b0f37b5824af5a2ac7ed9129ee70b"
+    )
+
+
+def test_finops_request_detail_builds_server_owned_foundry_trace_link(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace_id = "0123456789abcdef0123456789abcdef"
+    monkeypatch.setattr(
+        finops_router,
+        "get_run",
+        lambda _run_id: {
+            "run_id": "run-a",
+            "workspace_id": "ws-a",
+            "status": "completed",
+            "message": "分析销售变化",
+            "final": {"text": "分析已完成。"},
+            "trace": {"trace_id": trace_id, "agent_id": "df-coordinator"},
+        },
+    )
+    monkeypatch.setenv(
+        "DF_FINOPS_FOUNDRY_TRACE_LINK_TEMPLATE",
+        "https://ai.azure.com/trace/{trace_id}",
+    )
+
+    response = client.get(
+        "/api/finops/requests/req_aaaaaaaaaaaa?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["links"]["foundry_trace"] == (
+        f"https://ai.azure.com/trace/{trace_id}"
     )
 
 

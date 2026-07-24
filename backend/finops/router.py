@@ -13,18 +13,22 @@ try:
     from .. import cache_store
     from ..identity import actor_from_request, is_trusted_tenant_identity
     from ..lineage_sql import build_lineage_sql_connection_factory
-    from ..run_store import list_runs
+    from ..run_store import get_run, list_runs
     from ..workspace_authz import active_workspace_role
     from ..workspace_store import list_workspaces
 except ImportError:
     import cache_store
     from identity import actor_from_request, is_trusted_tenant_identity
     from lineage_sql import build_lineage_sql_connection_factory
-    from run_store import list_runs
+    from run_store import get_run, list_runs
     from workspace_authz import active_workspace_role
     from workspace_store import list_workspaces
 
 from .normalization import opaque_ref
+from .evidence_repository import (
+    InMemoryEvidenceAliasRepository,
+    SqlEvidenceAliasRepository,
+)
 from .anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
 from .anomaly_store import (
     AnomalyConflict,
@@ -54,6 +58,7 @@ from .management import FinOpsManagementService, InMemoryManagementRepository
 from .price_card_client import ManagementPriceCardClient, price_card_version
 from .query import FinOpsQuery, FinOpsQueryService
 from .query_cache import CachedFinOpsQueryService
+from .request_detail import FinOpsRequestDetailService, build_foundry_trace_link
 from .repository import RunStoreFinOpsRepository
 from .sql_repository import SqlFinOpsRepository
 from .sql_management import SqlFinOpsManagementRepository
@@ -86,6 +91,8 @@ _SQL_REPOSITORY: SqlFinOpsRepository | None = None
 _SQL_MANAGEMENT_SERVICE: FinOpsManagementService | None = None
 _SQL_ACTION_REPOSITORY: SqlFinOpsActionRepository | None = None
 _SQL_ANOMALY_SERVICE: FinOpsAnomalyService | None = None
+_EVIDENCE_REPOSITORY = InMemoryEvidenceAliasRepository()
+_SQL_EVIDENCE_REPOSITORY: SqlEvidenceAliasRepository | None = None
 
 
 def _enabled(name: str) -> bool:
@@ -168,6 +175,27 @@ def get_finops_anomaly_service() -> FinOpsAnomalyService:
             )
         return _SQL_ANOMALY_SERVICE
     return _ANOMALY_SERVICE
+
+
+def get_finops_evidence_alias_repository() -> Any:
+    global _SQL_EVIDENCE_REPOSITORY
+    if _enabled("DF_FINOPS_SQL_ENABLED"):
+        if _SQL_EVIDENCE_REPOSITORY is None:
+            _SQL_EVIDENCE_REPOSITORY = SqlEvidenceAliasRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        return _SQL_EVIDENCE_REPOSITORY
+    return _EVIDENCE_REPOSITORY
+
+
+def _workspace_name(workspace_id: str) -> str:
+    for item in list_workspaces():
+        if (
+            isinstance(item, Mapping)
+            and str(item.get("workspace_id") or "").strip() == workspace_id
+        ):
+            return str(item.get("name") or "").strip()
+    return ""
 
 
 def _anomaly_evaluation_input(
@@ -589,13 +617,36 @@ async def request_detail(
     actor_ref: str | None = Query(default=None, max_length=128),
     model: str | None = Query(default=None, max_length=160),
 ) -> dict[str, Any]:
-    service, query, _ = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
-    payload = service.request_detail(query, request_ref)
+    service, query, roles = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
+    if not all(role in {"owner", "admin"} for role in roles.values()):
+        raise HTTPException(
+            status_code=403,
+            detail="workspace access denied for finops.request_detail.read",
+        )
+    detail_service = FinOpsRequestDetailService(
+        query_service=service,
+        alias_repository=get_finops_evidence_alias_repository(),
+        run_loader=get_run,
+        workspace_name_resolver=_workspace_name,
+    )
+    payload = detail_service.build(query, request_ref, can_trace=True)
     if payload is None:
         raise HTTPException(status_code=404, detail="FinOps request not found")
-    link = _azure_monitor_link(payload.get("request"), query)
+    link = _azure_monitor_link(payload.get("technical_refs"), query)
     if link:
-        payload["links"] = {"azure_monitor": link}
+        payload.setdefault("links", {})["azure_monitor"] = link
+    trace_refs = payload.get("technical_refs")
+    trace_id = (
+        str(trace_refs.get("trace_id") or "").strip()
+        if isinstance(trace_refs, Mapping)
+        else ""
+    )
+    trace_link = build_foundry_trace_link(
+        str(os.environ.get("DF_FINOPS_FOUNDRY_TRACE_LINK_TEMPLATE") or ""),
+        trace_id,
+    )
+    if trace_link:
+        payload.setdefault("links", {})["foundry_trace"] = trace_link
     return payload
 
 
