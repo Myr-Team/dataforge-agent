@@ -270,6 +270,36 @@ BEGIN
     );
 END;
 
+IF OBJECT_ID(N'df_finops.insight', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.insight (
+        insight_id NVARCHAR(64) NOT NULL,
+        tenant_ref NVARCHAR(128) NOT NULL,
+        agent_kind NVARCHAR(16) NOT NULL,
+        workspace_scope_hash CHAR(64) NOT NULL,
+        trigger_type NVARCHAR(64) NOT NULL,
+        trigger_ref NVARCHAR(160) NULL,
+        trigger_fingerprint CHAR(64) NOT NULL,
+        insight_status NVARCHAR(32) NOT NULL,
+        generated_at DATETIME2(7) NOT NULL,
+        expires_at DATETIME2(7) NOT NULL,
+        insight_payload NVARCHAR(MAX) NOT NULL,
+        CONSTRAINT PK_finops_insight PRIMARY KEY (insight_id),
+        CONSTRAINT UQ_finops_insight_trigger UNIQUE (
+            tenant_ref, agent_kind, trigger_fingerprint
+        ),
+        CONSTRAINT CK_finops_insight_kind CHECK (
+            agent_kind IN (N'finops', N'roi')
+        ),
+        CONSTRAINT CK_finops_insight_status CHECK (
+            insight_status IN (
+                N'ready', N'insufficient_data', N'failed', N'stale'
+            )
+        ),
+        CONSTRAINT CK_finops_insight_json CHECK (ISJSON(insight_payload) = 1)
+    );
+END;
+
 IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
     WHERE object_id = OBJECT_ID(N'df_finops.request_event')

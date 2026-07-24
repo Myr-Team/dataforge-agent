@@ -92,6 +92,7 @@ def test_finops_schema_is_additive_and_contains_ledger_rollup_and_governance_tab
         "governance_action",
         "action_transition",
         "evidence_alias",
+        "insight",
     ):
         assert f"df_finops.{table}" in lowered
     assert "drop table" not in lowered
