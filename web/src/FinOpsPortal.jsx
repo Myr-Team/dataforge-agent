@@ -17,6 +17,8 @@ import {
 
 import {
   acknowledgeFinOpsAnomaly,
+  analyzeFinOpsInsight,
+  createFinOpsAction,
   loadFinOpsActions,
   loadFinOpsAgents,
   loadFinOpsAnomalies,
@@ -39,6 +41,7 @@ import {
   finopsBootstrapViewData,
   finopsBreakdownRows,
   finopsMetricCards,
+  finopsInsightViewModel,
   finopsRequestViewModel,
   finopsTrendViewModel,
   formatFinOpsCost,
@@ -105,6 +108,8 @@ function EvidenceBadge({ status }) {
     resolved: "已解决",
     stale: "已过期",
     failed: "失败",
+    ready: "分析完成",
+    insufficient_data: "证据不足",
   }[normalized] || normalized;
   return <span className={`finops-evidence ${normalized}`}>{label}</span>;
 }
@@ -290,26 +295,65 @@ function AttentionList({ items, onEvidence = null }) {
 }
 
 
-function AgentInsightCard({ kind, insight }) {
+function AgentInsightCard({
+  kind,
+  insight,
+  busy = false,
+  message = "",
+  onAnalyze = null,
+  onEvidence = null,
+  onCreateDraft = null,
+}) {
   const title = kind === "roi" ? "ROI Agent" : "FinOps Agent";
   const icon = kind === "roi" ? <Sparkles size={17} /> : <Bot size={17} />;
-  if (!insight) {
-    return (
-      <article className="finops-agent-card empty">
-        <header>{icon}<div><b>{title}</b><span>尚无分析结论</span></div></header>
-        <p>有符合条件的异常或已验证结果后，分析结论会出现在这里。</p>
-      </article>
-    );
-  }
+  const view = finopsInsightViewModel(insight);
   return (
-    <article className={`finops-agent-card ${insight.status || ""}`}>
+    <article className={`finops-agent-card ${view.state}`}>
       <header>
         {icon}
-        <div><b>{title}</b><span>{insight.title || "运营分析"}</span></div>
-        <EvidenceBadge status={insight.status} />
+        <div><b>{title}</b><span>{view.title}</span></div>
+        <EvidenceBadge status={view.state} />
       </header>
-      <p>{insight.summary || "证据不足，暂不生成推测性结论。"}</p>
-      <small>{insight.generated_at ? `分析于 ${new Date(insight.generated_at).toLocaleString("zh-CN")}` : "尚未分析"}</small>
+      <p>{view.summary}</p>
+      {view.findings.length ? (
+        <ul className="finops-agent-findings">
+          {view.findings.map((finding, index) => (
+            <li key={`${finding.kind}:${index}`}>
+              <button type="button" onClick={() => onEvidence?.(`${title}：${finding.statement}`)}>
+                {finding.statement}
+              </button>
+              <small>{finding.evidenceCount || finding.evidenceRefs.length} 条证据</small>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {view.gaps.length ? (
+        <ul className="finops-agent-gaps">
+          {view.gaps.map((gap) => <li key={gap}>{gap}</li>)}
+        </ul>
+      ) : null}
+      {view.draftSuggestions.length && onCreateDraft ? (
+        <div className="finops-agent-drafts">
+          {view.draftSuggestions.map((suggestion, index) => (
+            <button
+              type="button"
+              key={`${suggestion.actionType}:${index}`}
+              onClick={() => onCreateDraft(kind, suggestion)}
+            >
+              创建治理草案 · {suggestion.reason}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <footer>
+        <small>{view.generatedAt ? `分析于 ${new Date(view.generatedAt).toLocaleString("zh-CN")}` : "尚未分析"}</small>
+        {onAnalyze ? (
+          <button type="button" disabled={busy} onClick={() => onAnalyze(kind)}>
+            {busy ? "分析中…" : "重新分析"}
+          </button>
+        ) : null}
+      </footer>
+      {message ? <em className="finops-agent-message">{message}</em> : null}
     </article>
   );
 }
@@ -343,7 +387,14 @@ function OverviewPage({ data, onEvidence = null }) {
 }
 
 
-function CostPage({ overviewData, detail, onEvidence = null }) {
+function CostPage({
+  overviewData,
+  detail,
+  onEvidence = null,
+  agentOperation,
+  onAnalyze,
+  onCreateDraft,
+}) {
   const agents = finopsBreakdownRows({ items: detail.agents?.agents || [] });
   const models = finopsBreakdownRows({ items: detail.agents?.models || [] });
   return (
@@ -366,7 +417,15 @@ function CostPage({ overviewData, detail, onEvidence = null }) {
           <HorizontalBars rows={models} valueKey="cost" valueFormatter={(value) => formatFinOpsCost(value, value == null ? "unavailable" : "estimated")} />
         </Panel>
         <Panel title="FinOps Agent" subtitle="解释成本变化与优化机会" className="span-2">
-          <AgentInsightCard kind="finops" insight={overviewData.insights?.finops} />
+          <AgentInsightCard
+            kind="finops"
+            insight={overviewData.insights?.finops}
+            busy={agentOperation?.busyKind === "finops"}
+            message={agentOperation?.kind === "finops" ? agentOperation.message : ""}
+            onAnalyze={onAnalyze}
+            onEvidence={onEvidence}
+            onCreateDraft={onCreateDraft}
+          />
         </Panel>
       </div>
     </>
@@ -386,7 +445,14 @@ function ValueCard({ label, value, meta, status }) {
 }
 
 
-function RoiPage({ detail, insight }) {
+function RoiPage({
+  detail,
+  insight,
+  agentOperation,
+  onAnalyze,
+  onEvidence,
+  onCreateDraft,
+}) {
   const roi = detail.roi || {};
   const costValue = detail.costValue || {};
   const realized = costValue.realized_roi || {};
@@ -419,7 +485,15 @@ function RoiPage({ detail, insight }) {
         </div>
       </Panel>
       <Panel title="ROI Agent" subtitle="只分析已验证结果，不补造价值">
-        <AgentInsightCard kind="roi" insight={insight} />
+        <AgentInsightCard
+          kind="roi"
+          insight={insight}
+          busy={agentOperation?.busyKind === "roi"}
+          message={agentOperation?.kind === "roi" ? agentOperation.message : ""}
+          onAnalyze={onAnalyze}
+          onEvidence={onEvidence}
+          onCreateDraft={onCreateDraft}
+        />
       </Panel>
       <Panel title="证据缺口" subtitle="补齐后才能形成可复核 ROI" className="span-2">
         {outcomes.status === "verified" && cost.status === "complete" ? (
@@ -445,6 +519,9 @@ function RiskPage({
   onAnomalyAction,
   onActionTransition,
   onEvidence,
+  agentOperation,
+  onAnalyze,
+  onCreateDraft,
 }) {
   const anomalies = Array.isArray(data.anomalies?.items) ? data.anomalies.items : [];
   const recommendations = Array.isArray(data.recommendations?.items) ? data.recommendations.items : [];
@@ -473,8 +550,24 @@ function RiskPage({
       </Panel>
       <Panel title="风险分析 Agent" subtitle="Agent 只能解释和生成草案">
         <div className="finops-agent-stack">
-          <AgentInsightCard kind="finops" insight={insights?.finops} />
-          <AgentInsightCard kind="roi" insight={insights?.roi} />
+          <AgentInsightCard
+            kind="finops"
+            insight={insights?.finops}
+            busy={agentOperation?.busyKind === "finops"}
+            message={agentOperation?.kind === "finops" ? agentOperation.message : ""}
+            onAnalyze={onAnalyze}
+            onEvidence={onEvidence}
+            onCreateDraft={onCreateDraft}
+          />
+          <AgentInsightCard
+            kind="roi"
+            insight={insights?.roi}
+            busy={agentOperation?.busyKind === "roi"}
+            message={agentOperation?.kind === "roi" ? agentOperation.message : ""}
+            onAnalyze={onAnalyze}
+            onEvidence={onEvidence}
+            onCreateDraft={onCreateDraft}
+          />
         </div>
       </Panel>
       <Panel title="优化建议" subtitle="每条建议都需要证据与人工判断">
@@ -709,6 +802,11 @@ export function FinOpsPortal({
   const [filterOptions, setFilterOptions] = useState(initialView.filterOptions);
   const [refreshKey, setRefreshKey] = useState(0);
   const [governance, setGovernance] = useState({ busyId: "", error: "" });
+  const [agentOperation, setAgentOperation] = useState({
+    busyKind: "",
+    kind: "",
+    message: "",
+  });
   const [evidenceState, setEvidenceState] = useState({
     open: false,
     reason: "",
@@ -938,6 +1036,52 @@ export function FinOpsPortal({
     }
   };
 
+  const analyzeInsight = async (kind) => {
+    setAgentOperation({ busyKind: kind, kind, message: "" });
+    try {
+      const result = await analyzeFinOpsInsight({
+        agent_kind: kind,
+        workspace_id: workspaceId,
+        from: query.from,
+        to: query.to,
+      });
+      const message = result?.status === "existing"
+        ? "当前证据版本已有分析结果"
+        : "分析已提交，完成后会随数据更新显示";
+      setAgentOperation({ busyKind: "", kind, message });
+      window.setTimeout(refresh, 1500);
+    } catch (error) {
+      setAgentOperation({
+        busyKind: "",
+        kind,
+        message: error instanceof Error ? error.message : "分析提交失败",
+      });
+    }
+  };
+
+  const createInsightDraft = async (kind, suggestion) => {
+    if (permissions["finops.action.draft"] === false) return;
+    setAgentOperation({ busyKind: kind, kind, message: "" });
+    try {
+      const result = await createFinOpsAction({
+        action_type: suggestion.actionType,
+        payload: suggestion.payload,
+      });
+      const status = result?.action?.status;
+      setAgentOperation({
+        busyKind: "",
+        kind,
+        message: status === "draft" ? "治理草案已创建，尚未提交审批" : "草案创建结果需复核",
+      });
+    } catch (error) {
+      setAgentOperation({
+        busyKind: "",
+        kind,
+        message: error instanceof Error ? error.message : "治理草案创建失败",
+      });
+    }
+  };
+
   const generatedAt = overviewState.generatedAt || overviewState.data?.overview?.freshness?.generated_at;
   const visibleTabs = FINOPS_TABS.filter((item) => {
     if (item.id === "cost") return permissions["finops.cost.read"] !== false;
@@ -1012,13 +1156,13 @@ export function FinOpsPortal({
         {showDetailLoading ? <div className="finops-section-loading"><Loader2 className="spin" size={18} />正在读取当前页面</div> : null}
         {!showDetailLoading && detailState.error ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{detailState.error}</span><button type="button" onClick={refresh}>重试</button></div> : null}
         {!showDetailLoading && !detailState.error && tab === "cost"
-          ? <CostPage overviewData={overviewState.data} detail={detailState.data} onEvidence={canOpenEvidence ? openEvidence : null} />
+          ? <CostPage overviewData={overviewState.data} detail={detailState.data} onEvidence={canOpenEvidence ? openEvidence : null} agentOperation={agentOperation} onAnalyze={analyzeInsight} onCreateDraft={permissions["finops.action.draft"] !== false ? createInsightDraft : null} />
           : null}
         {!showDetailLoading && !detailState.error && tab === "roi"
-          ? <RoiPage detail={detailState.data} insight={overviewState.data.insights?.roi} />
+          ? <RoiPage detail={detailState.data} insight={overviewState.data.insights?.roi} agentOperation={agentOperation} onAnalyze={analyzeInsight} onEvidence={canOpenEvidence ? openEvidence : null} onCreateDraft={permissions["finops.action.draft"] !== false ? createInsightDraft : null} />
           : null}
         {!showDetailLoading && !detailState.error && tab === "risk"
-          ? <RiskPage data={detailState.data} insights={overviewState.data.insights} busyId={governance.busyId} actionError={governance.error} onAnomalyAction={manageAnomaly} onActionTransition={transitionAction} onEvidence={canOpenEvidence ? openEvidence : null} />
+          ? <RiskPage data={detailState.data} insights={overviewState.data.insights} busyId={governance.busyId} actionError={governance.error} onAnomalyAction={manageAnomaly} onActionTransition={transitionAction} onEvidence={canOpenEvidence ? openEvidence : null} agentOperation={agentOperation} onAnalyze={analyzeInsight} onCreateDraft={permissions["finops.action.draft"] !== false ? createInsightDraft : null} />
           : null}
       </section>
 

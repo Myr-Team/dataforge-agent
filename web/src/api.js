@@ -85,6 +85,7 @@ export function buildFinOpsQuery(filters = {}) {
     limit: filters.limit,
     bucket: filters.bucket,
     group_by: filters.groupBy,
+    agent_kind: filters.agentKind,
   };
   Object.entries(supported).forEach(([key, value]) => {
     if (value !== undefined && value !== null && String(value).trim() !== "") {
@@ -137,6 +138,17 @@ export function loadFinOpsRequests(filters = {}, options = {}) {
 
 export function loadFinOpsRequest(requestRef, filters = {}, options = {}) {
   return loadFinOpsResource(`requests/${encodeURIComponent(requestRef)}`, filters, options);
+}
+
+export function loadFinOpsInsights(filters = {}, options = {}) {
+  return loadFinOpsResource("insights", filters, options);
+}
+
+export function analyzeFinOpsInsight(payload) {
+  return request("/api/finops/insights/analyze", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function loadFinOpsActions(filters = {}, options = {}) {

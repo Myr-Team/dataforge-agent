@@ -205,6 +205,67 @@ export function finopsRequestViewModel(item = {}) {
   };
 }
 
+
+export function finopsInsightViewModel(item = null) {
+  if (!item) {
+    return {
+      state: "empty",
+      stateLabel: "尚未分析",
+      title: "尚无分析结论",
+      summary: "有可复核证据后，可按需运行分析。",
+      findings: [],
+      gaps: [],
+      draftSuggestions: [],
+      evidenceState: "unavailable",
+      confidence: null,
+      generatedAt: "",
+    };
+  }
+  const state = String(item.status || "failed");
+  const stateLabel = {
+    ready: "分析完成",
+    insufficient_data: "证据不足",
+    stale: "分析结果已过期",
+    failed: "分析暂不可用",
+  }[state] || "分析暂不可用";
+  const findings = ["ready", "stale"].includes(state)
+    ? (Array.isArray(item.findings) ? item.findings : []).map((finding) => ({
+      kind: finding.kind || "evidence_gap",
+      statement: finding.statement || "未记录",
+      evidenceRefs: Array.isArray(finding.evidence_refs) ? finding.evidence_refs : [],
+      evidenceCount: Number(finding.evidence_count || finding.evidence_refs?.length || 0),
+    }))
+    : [];
+  const gaps = Array.isArray(item.evidence_gaps)
+    ? item.evidence_gaps.filter(Boolean)
+    : [];
+  return {
+    state,
+    stateLabel,
+    title: item.title || stateLabel,
+    summary: state === "insufficient_data"
+      ? "证据不足，暂不生成推测性结论。"
+      : state === "failed"
+        ? "分析暂不可用"
+        : item.summary || "未记录",
+    findings,
+    gaps,
+    draftSuggestions: state === "ready"
+      ? (Array.isArray(item.draft_suggestions) ? item.draft_suggestions : []).map((suggestion) => ({
+        actionType: suggestion.action_type || "",
+        reason: suggestion.reason || "",
+        payload: suggestion.payload && typeof suggestion.payload === "object"
+          ? { ...suggestion.payload }
+          : {},
+      }))
+      : [],
+    evidenceState: item.evidence_state || "unavailable",
+    confidence: item.confidence ?? null,
+    generatedAt: item.generated_at || "",
+  };
+}
+
+
 export function finopsBreakdownRows(payload = {}) {
   return (Array.isArray(payload?.items) ? payload.items : []).map((item) => ({
     key: item.key || "未记录",
