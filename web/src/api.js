@@ -71,6 +71,102 @@ async function request(path, options = {}) {
 
 export const apiFetch = request;
 
+export function buildFinOpsQuery(filters = {}) {
+  const params = new URLSearchParams();
+  const supported = {
+    from: filters.from,
+    to: filters.to,
+    department_id: filters.departmentId,
+    workspace_id: filters.workspaceId,
+    agent_id: filters.agentId,
+    actor_ref: filters.actorRef,
+    model: filters.model,
+    cursor: filters.cursor,
+    limit: filters.limit,
+    bucket: filters.bucket,
+    group_by: filters.groupBy,
+  };
+  Object.entries(supported).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      params.set(key, String(value));
+    }
+  });
+  return params.toString();
+}
+
+function loadFinOpsResource(resource, filters = {}, options = {}) {
+  const query = buildFinOpsQuery(filters);
+  return request(`/api/finops/${resource}${query ? `?${query}` : ""}`, options);
+}
+
+export function loadFinOpsFilters(filters = {}, options = {}) {
+  return loadFinOpsResource("filters", filters, options);
+}
+
+export function loadFinOpsBootstrap(filters = {}, options = {}) {
+  return loadFinOpsResource("bootstrap", filters, options);
+}
+
+export function loadFinOpsOverview(filters = {}, options = {}) {
+  return loadFinOpsResource("overview", filters, options);
+}
+
+export function loadFinOpsBreakdowns(groupBy, filters = {}, options = {}) {
+  return loadFinOpsResource("breakdowns", { ...filters, groupBy }, options);
+}
+
+export function loadFinOpsAgents(filters = {}, options = {}) {
+  return loadFinOpsResource("agents", filters, options);
+}
+
+export function loadFinOpsTrends(bucket, filters = {}, options = {}) {
+  return loadFinOpsResource("trends", { ...filters, bucket }, options);
+}
+
+export function loadFinOpsAnomalies(filters = {}, options = {}) {
+  return loadFinOpsResource("anomalies", filters, options);
+}
+
+export function loadFinOpsRecommendations(filters = {}, options = {}) {
+  return loadFinOpsResource("recommendations", filters, options);
+}
+
+export function loadFinOpsRequests(filters = {}, options = {}) {
+  return loadFinOpsResource("requests", filters, options);
+}
+
+export function loadFinOpsRequest(requestRef, filters = {}, options = {}) {
+  return loadFinOpsResource(`requests/${encodeURIComponent(requestRef)}`, filters, options);
+}
+
+export function loadFinOpsActions(filters = {}, options = {}) {
+  return loadFinOpsResource("actions", filters, options);
+}
+
+export function acknowledgeFinOpsAnomaly(anomalyId) {
+  return request(`/api/finops/anomalies/${encodeURIComponent(anomalyId)}/acknowledge`, {
+    method: "POST",
+  });
+}
+
+export function suppressFinOpsAnomaly(anomalyId, reason, until = "") {
+  return request(`/api/finops/anomalies/${encodeURIComponent(anomalyId)}/suppress`, {
+    method: "POST",
+    body: JSON.stringify({ reason, ...(until ? { until } : {}) }),
+  });
+}
+
+export function createFinOpsAction(payload) {
+  return request("/api/finops/actions", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function transitionFinOpsAction(actionId, transition, payload = null) {
+  return request(`/api/finops/actions/${encodeURIComponent(actionId)}/${encodeURIComponent(transition)}`, {
+    method: "POST",
+    ...(payload ? { body: JSON.stringify(payload) } : {}),
+  });
+}
+
 export function artifactLink(artifact) {
   if (!artifact) return "";
   const url =
