@@ -15,6 +15,11 @@ from backend.finops.governance import FinOpsActionService, InMemoryActionReposit
 from backend.finops.management import FinOpsManagementService, InMemoryManagementRepository
 from backend.finops.anomaly_store import FinOpsAnomalyService, InMemoryAnomalyRepository
 from backend.finops.anomalies import DetectedAnomaly
+from backend.finops.insight_repository import (
+    InMemoryInsightRepository,
+    InsightPage,
+)
+from backend.finops.insights import FinOpsInsight
 from auth_fixtures import trusted_headers
 
 
@@ -343,6 +348,159 @@ def test_finops_request_detail_builds_server_owned_foundry_trace_link(
     assert response.json()["links"]["foundry_trace"] == (
         f"https://ai.azure.com/trace/{trace_id}"
     )
+
+
+def _ready_insight() -> FinOpsInsight:
+    return FinOpsInsight.model_validate(
+        {
+            "insight_id": "ins_aaaaaaaaaaaa",
+            "agent_kind": "finops",
+            "tenant_ref": "tenantref-a",
+            "workspace_ids": ["ws-a"],
+            "window": {
+                "from": "2026-07-01T00:00:00Z",
+                "to": "2026-07-25T00:00:00Z",
+            },
+            "trigger_type": "manual",
+            "trigger_ref": "manual-a",
+            "trigger_fingerprint": "a" * 64,
+            "title": "成本变化",
+            "summary": "主分析流程是当前主要成本驱动。",
+            "findings": [
+                {
+                    "kind": "cost_driver",
+                    "statement": "当前结论具备请求证据。",
+                    "evidence_refs": ["req_aaaaaaaaaaaa"],
+                }
+            ],
+            "evidence_refs": ["req_aaaaaaaaaaaa"],
+            "evidence_state": "estimated",
+            "confidence": 0.8,
+            "source_revisions": {"input": "rev-1"},
+            "evidence_gaps": [],
+            "draft_suggestions": [],
+            "generated_at": "2026-07-24T02:00:00Z",
+            "expires_at": "2026-07-24T08:00:00Z",
+            "status": "ready",
+        }
+    )
+
+
+def test_finops_insight_reads_never_invoke_agent(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    insight = _ready_insight()
+
+    class ReadOnlyInsightService:
+        def list(self, **_kwargs):
+            return InsightPage(items=[insight], count=1, next_cursor=None)
+
+        def latest(self, **_kwargs):
+            return insight
+
+        def analyze(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            raise AssertionError("GET must not invoke an analysis agent")
+
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_insight_service",
+        lambda: ReadOnlyInsightService(),
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+
+    listing = client.get(
+        "/api/finops/insights?agent_kind=finops&workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=headers,
+    )
+    bootstrap = client.get(
+        "/api/finops/bootstrap?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=headers,
+    )
+
+    assert listing.status_code == 200
+    assert listing.json()["items"][0]["title"] == "成本变化"
+    assert bootstrap.status_code == 200
+    assert bootstrap.json()["insights"]["finops"]["title"] == "成本变化"
+    assert calls == 0
+
+
+def test_finops_manual_analysis_is_accepted_as_background_work(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class RecordingInsightService:
+        def fingerprint(self, **_kwargs):
+            return "f" * 64
+
+        def by_fingerprint(self, **_kwargs):
+            return None
+
+        def analyze(self, **kwargs):
+            calls.append(kwargs)
+            return _ready_insight()
+
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_insight_service",
+        lambda: RecordingInsightService(),
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "_manual_insight_input",
+        lambda **_kwargs: {
+            "status": "ready",
+            "evidence_refs": ["req_aaaaaaaaaaaa"],
+        },
+    )
+
+    response = client.post(
+        "/api/finops/insights/analyze",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "agent_kind": "finops",
+            "workspace_id": "ws-a",
+            "from": "2026-07-01T00:00:00Z",
+            "to": "2026-07-25T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "status": "scheduled",
+        "agent_kind": "finops",
+        "trigger_fingerprint": "f" * 64,
+    }
+    assert len(calls) == 1
+
+
+def test_finops_manual_analysis_requires_corresponding_read_permission(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "viewer"},
+    )
+
+    response = client.post(
+        "/api/finops/insights/analyze",
+        headers=trusted_headers(actor_id="viewer-a", tenant_id="tenant-a"),
+        json={
+            "agent_kind": "finops",
+            "workspace_id": "ws-a",
+            "from": "2026-07-01T00:00:00Z",
+            "to": "2026-07-25T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 403
 
 
 def test_finops_actor_breakdown_requires_admin_or_owner(

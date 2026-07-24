@@ -171,6 +171,53 @@ class SqlInsightRepository:
             )
         return insight.model_copy(deep=True)
 
+    def replace(self, insight: FinOpsInsight) -> FinOpsInsight:
+        with self._transaction() as cursor:
+            existing = cursor.execute(
+                """/* finops:insight-replace-read */
+                SELECT tenant_ref FROM df_finops.insight WITH (UPDLOCK, HOLDLOCK)
+                WHERE insight_id = ?""",
+                insight.insight_id,
+            ).fetchone()
+            if existing is None:
+                raise ValueError("insight does not exist")
+            if str(existing[0]) != insight.tenant_ref:
+                raise ValueError("insight id belongs to another tenant")
+            cursor.execute(
+                """/* finops:insight-replace-update */
+                UPDATE df_finops.insight
+                SET insight_status = ?, generated_at = ?, expires_at = ?,
+                    insight_payload = ?
+                WHERE insight_id = ? AND tenant_ref = ?""",
+                insight.status,
+                insight.generated_at,
+                insight.expires_at,
+                insight.model_dump_json(by_alias=True),
+                insight.insight_id,
+                insight.tenant_ref,
+            )
+        return insight.model_copy(deep=True)
+
+    def get_by_fingerprint(
+        self,
+        *,
+        tenant_ref: str,
+        agent_kind: AgentKind,
+        trigger_fingerprint: str,
+    ) -> FinOpsInsight | None:
+        with self._transaction() as cursor:
+            row = cursor.execute(
+                """/* finops:insight-by-fingerprint */
+                SELECT insight_payload
+                FROM df_finops.insight
+                WHERE tenant_ref = ? AND agent_kind = ?
+                  AND trigger_fingerprint = ?""",
+                tenant_ref,
+                agent_kind,
+                trigger_fingerprint,
+            ).fetchone()
+        return _from_payload(row[0]) if row is not None else None
+
     def list(
         self,
         *,

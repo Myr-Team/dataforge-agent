@@ -7,7 +7,7 @@ import threading
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 try:
@@ -30,6 +30,7 @@ OUTCOME_BLOB_PREFIX = "outcomes"
 
 _LOCK = threading.RLock()
 _PROVENANCE = {"assumption", "target", "observed", "synthetic"}
+_VERIFIED_OUTCOME_TRIGGER: Callable[[dict[str, Any]], None] | None = None
 _SOURCE_KEYS = (
     "file_id",
     "file_version",
@@ -163,7 +164,20 @@ def verify_outcome_event(
         if matched is None:
             raise FileNotFoundError(normalized_event_id)
         _persist(normalized_workspace, events, verification_events)
-        return matched
+        result = dict(matched)
+    if _VERIFIED_OUTCOME_TRIGGER is not None:
+        try:
+            _VERIFIED_OUTCOME_TRIGGER(result)
+        except Exception:
+            pass
+    return result
+
+
+def configure_verified_outcome_trigger(
+    callback: Callable[[dict[str, Any]], None] | None,
+) -> None:
+    global _VERIFIED_OUTCOME_TRIGGER
+    _VERIFIED_OUTCOME_TRIGGER = callback
 
 
 def list_outcome_events(workspace_id: str) -> list[dict[str, Any]]:
@@ -388,6 +402,7 @@ def _now() -> str:
 
 
 __all__ = [
+    "configure_verified_outcome_trigger",
     "list_outcome_events",
     "list_verification_events",
     "outcome_is_authoritative",

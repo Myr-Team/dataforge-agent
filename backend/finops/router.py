@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Literal, Mapping
 from urllib.parse import quote, urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import ValidationError
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 try:
     from .. import cache_store
     from ..identity import actor_from_request, is_trusted_tenant_identity
+    from ..foundry_client import run_agent
     from ..lineage_sql import build_lineage_sql_connection_factory
     from ..run_store import get_run, list_runs
     from ..workspace_authz import active_workspace_role
@@ -19,6 +22,7 @@ try:
 except ImportError:
     import cache_store
     from identity import actor_from_request, is_trusted_tenant_identity
+    from foundry_client import run_agent
     from lineage_sql import build_lineage_sql_connection_factory
     from run_store import get_run, list_runs
     from workspace_authz import active_workspace_role
@@ -30,6 +34,8 @@ from .evidence_repository import (
     SqlEvidenceAliasRepository,
 )
 from .anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
+from .agent_inputs import build_finops_agent_input, build_roi_agent_input
+from .analysis_agents import FinOpsAnalysisAgent
 from .anomaly_store import (
     AnomalyConflict,
     AnomalyNotFound,
@@ -59,6 +65,8 @@ from .price_card_client import ManagementPriceCardClient, price_card_version
 from .query import FinOpsQuery, FinOpsQueryService
 from .query_cache import CachedFinOpsQueryService
 from .request_detail import FinOpsRequestDetailService, build_foundry_trace_link
+from .insight_repository import InMemoryInsightRepository, SqlInsightRepository
+from .insight_service import FinOpsInsightService
 from .repository import RunStoreFinOpsRepository
 from .sql_repository import SqlFinOpsRepository
 from .sql_management import SqlFinOpsManagementRepository
@@ -93,6 +101,20 @@ _SQL_ACTION_REPOSITORY: SqlFinOpsActionRepository | None = None
 _SQL_ANOMALY_SERVICE: FinOpsAnomalyService | None = None
 _EVIDENCE_REPOSITORY = InMemoryEvidenceAliasRepository()
 _SQL_EVIDENCE_REPOSITORY: SqlEvidenceAliasRepository | None = None
+_INSIGHT_REPOSITORY = InMemoryInsightRepository()
+_SQL_INSIGHT_REPOSITORY: SqlInsightRepository | None = None
+
+
+class InsightAnalyzeRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+
+    agent_kind: Literal["finops", "roi"]
+    workspace_id: str = Field(min_length=1, max_length=160)
+    from_value: str = Field(alias="from", min_length=1, max_length=64)
+    to_value: str = Field(alias="to", min_length=1, max_length=64)
 
 
 def _enabled(name: str) -> bool:
@@ -186,6 +208,25 @@ def get_finops_evidence_alias_repository() -> Any:
             )
         return _SQL_EVIDENCE_REPOSITORY
     return _EVIDENCE_REPOSITORY
+
+
+def get_finops_insight_service() -> FinOpsInsightService:
+    global _SQL_INSIGHT_REPOSITORY
+    if _enabled("DF_FINOPS_SQL_ENABLED"):
+        if _SQL_INSIGHT_REPOSITORY is None:
+            _SQL_INSIGHT_REPOSITORY = SqlInsightRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        repository = _SQL_INSIGHT_REPOSITORY
+    else:
+        repository = _INSIGHT_REPOSITORY
+    return FinOpsInsightService(
+        repository=repository,
+        runner=FinOpsAnalysisAgent(
+            repository=repository,
+            model_runner=run_agent,
+        ),
+    )
 
 
 def _workspace_name(workspace_id: str) -> str:
@@ -417,8 +458,27 @@ async def bootstrap(
         "count": 0,
     }
     payload["anomalies"]["count"] = len(payload["anomalies"]["items"])
-    payload["insights"] = {"finops": None, "roi": None}
+    payload["insights"] = _bootstrap_insights(query)
     return payload
+
+
+def _bootstrap_insights(query: FinOpsQuery) -> dict[str, Any]:
+    service = get_finops_insight_service()
+    return {
+        kind: _public_insight(
+            service.latest(
+                tenant_ref=query.tenant_ref,
+                authorized_workspace_ids=(
+                    (query.workspace_id,)
+                    if query.workspace_id
+                    else query.authorized_workspace_ids
+                ),
+                agent_kind=kind,
+            ),
+            include_evidence_refs=False,
+        )
+        for kind in ("finops", "roi")
+    }
 
 
 def _bootstrap_budget(
@@ -668,6 +728,243 @@ def _azure_monitor_link(value: Any, query: FinOpsQuery) -> str | None:
     for key, replacement in replacements.items():
         result = result.replace(key, replacement)
     return result if "{" not in result and "}" not in result else None
+
+
+@router.get("/insights")
+async def insights(
+    request: Request,
+    agent_kind: Literal["finops", "roi"] | None = Query(default=None),
+    from_value: str | None = Query(default=None, alias="from", max_length=64),
+    to_value: str | None = Query(default=None, alias="to", max_length=64),
+    department_id: str | None = Query(default=None, max_length=128),
+    workspace_id: str | None = Query(default=None, max_length=160),
+    agent_id: str | None = Query(default=None, max_length=128),
+    actor_ref: str | None = Query(default=None, max_length=128),
+    model: str | None = Query(default=None, max_length=160),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    query_service, query, roles = _common(
+        request,
+        from_value,
+        to_value,
+        department_id,
+        workspace_id,
+        agent_id,
+        actor_ref,
+        model,
+        cursor=cursor,
+        limit=limit,
+    )
+    if not all(role in {"owner", "admin"} for role in roles.values()):
+        raise HTTPException(
+            status_code=403,
+            detail="workspace access denied for finops.summary.read",
+        )
+    page = get_finops_insight_service().list(
+        tenant_ref=query.tenant_ref,
+        authorized_workspace_ids=(
+            (query.workspace_id,)
+            if query.workspace_id
+            else query.authorized_workspace_ids
+        ),
+        agent_kind=agent_kind,
+        cursor=cursor,
+        limit=limit,
+    )
+    payload = query_service.requests(query)
+    payload.pop("items", None)
+    payload.update(
+        {
+            "items": [
+                _public_insight(item, include_evidence_refs=True)
+                for item in page.items
+            ],
+            "count": page.count,
+            "next_cursor": page.next_cursor,
+        }
+    )
+    return payload
+
+
+@router.post("/insights/analyze", status_code=202)
+async def analyze_insight(
+    body: InsightAnalyzeRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    query_service, query, roles = _common(
+        request,
+        body.from_value,
+        body.to_value,
+        None,
+        body.workspace_id,
+        None,
+        None,
+        None,
+    )
+    if not all(role in {"owner", "admin"} for role in roles.values()):
+        permission = (
+            "finops.roi.read"
+            if body.agent_kind == "roi"
+            else "finops.cost.read"
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=f"workspace access denied for {permission}",
+        )
+    input_payload = _manual_insight_input(
+        agent_kind=body.agent_kind,
+        query=query,
+        query_service=query_service,
+    )
+    source_revision = hashlib.sha256(
+        json.dumps(
+            input_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    service = get_finops_insight_service()
+    selected_workspace_ids = (
+        (query.workspace_id,)
+        if query.workspace_id
+        else query.authorized_workspace_ids
+    )
+    fingerprint = service.fingerprint(
+        agent_kind=body.agent_kind,
+        tenant_ref=query.tenant_ref,
+        workspace_ids=selected_workspace_ids,
+        trigger_type="manual",
+        trigger_ref=f"manual:{body.workspace_id}:{body.agent_kind}",
+        source_revision=source_revision,
+    )
+    existing = service.by_fingerprint(
+        agent_kind=body.agent_kind,
+        tenant_ref=query.tenant_ref,
+        trigger_fingerprint=fingerprint,
+    )
+    if existing is not None:
+        return {
+            "status": "existing",
+            "agent_kind": body.agent_kind,
+            "trigger_fingerprint": fingerprint,
+        }
+    background_tasks.add_task(
+        service.analyze,
+        agent_kind=body.agent_kind,
+        tenant_ref=query.tenant_ref,
+        workspace_ids=selected_workspace_ids,
+        window={"from": query.from_value, "to": query.to_value},
+        trigger_type="manual",
+        trigger_ref=f"manual:{body.workspace_id}:{body.agent_kind}",
+        source_revision=source_revision,
+        input_payload=input_payload,
+    )
+    return {
+        "status": "scheduled",
+        "agent_kind": body.agent_kind,
+        "trigger_fingerprint": fingerprint,
+    }
+
+
+def _manual_insight_input(
+    *,
+    agent_kind: Literal["finops", "roi"],
+    query: FinOpsQuery,
+    query_service: Any,
+) -> dict[str, Any]:
+    if agent_kind == "finops":
+        selected_workspace_ids = (
+            (query.workspace_id,)
+            if query.workspace_id
+            else query.authorized_workspace_ids
+        )
+        anomalies = get_finops_anomaly_service().list(
+            tenant_ref=query.tenant_ref,
+            workspace_ids=selected_workspace_ids,
+        )
+        active_price_card = next(
+            (
+                item
+                for item in get_finops_management_service().list_price_cards(
+                    tenant_ref=query.tenant_ref
+                )
+                if item.status == "active"
+            ),
+            None,
+        )
+        return build_finops_agent_input(
+            query,
+            query_service,
+            anomalies=[
+                item.model_dump(mode="json", exclude={"tenant_ref"})
+                for item in anomalies
+            ],
+            price_card_revision=(
+                active_price_card.revision_id if active_price_card else None
+            ),
+        )
+    if not query.workspace_id:
+        return {
+            "status": "insufficient_data",
+            "agent_kind": "roi",
+            "workspace_id": "",
+            "window": {"from": query.from_value, "to": query.to_value},
+            "evidence_refs": [],
+            "evidence_gaps": ["ROI 分析需要选择单个工作区"],
+        }
+    try:
+        try:
+            from ..control_plane import workspace_roi_snapshot
+            from ..outcome_store import list_outcome_events
+        except ImportError:
+            from control_plane import workspace_roi_snapshot
+            from outcome_store import list_outcome_events
+        snapshot = workspace_roi_snapshot(
+            query.workspace_id,
+            query.from_value,
+            query.to_value,
+        )
+        outcomes = list_outcome_events(query.workspace_id)
+    except Exception:
+        return {
+            "status": "insufficient_data",
+            "agent_kind": "roi",
+            "workspace_id": query.workspace_id,
+            "window": {"from": query.from_value, "to": query.to_value},
+            "evidence_refs": [],
+            "evidence_gaps": ["已验证结果事件不足"],
+        }
+    return build_roi_agent_input(
+        query.workspace_id,
+        {"from": query.from_value, "to": query.to_value},
+        snapshot,
+        outcomes,
+    )
+
+
+def _public_insight(
+    value: Any,
+    *,
+    include_evidence_refs: bool,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    payload = value.model_dump(
+        mode="json",
+        by_alias=True,
+        exclude={"tenant_ref", "trigger_fingerprint"},
+    )
+    if not include_evidence_refs:
+        payload["evidence_count"] = len(payload.get("evidence_refs") or [])
+        payload.pop("evidence_refs", None)
+        for finding in payload.get("findings") or []:
+            if isinstance(finding, dict):
+                finding["evidence_count"] = len(finding.get("evidence_refs") or [])
+                finding.pop("evidence_refs", None)
+    return payload
 
 
 def _empty_collection(
