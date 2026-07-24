@@ -113,7 +113,7 @@ try:
     from .tools.narrate_summary import narrate_summary
     from .tools.render_pdf import render_pdf_report
     from .workspace_model_config import estimate_model_cost
-    from .workspace_store import get_workspace_detail, load_workspace_model_configuration, save_workspace_last_analysis, workspace_context, workspace_reference_images
+    from .workspace_store import get_workspace_detail, load_workspace_finops_cache_policy, load_workspace_model_configuration, save_workspace_last_analysis, workspace_context, workspace_reference_images
 except ImportError:
     import cache_store
     import content_safety
@@ -209,7 +209,7 @@ except ImportError:
     from tools.narrate_summary import narrate_summary
     from tools.render_pdf import render_pdf_report
     from workspace_model_config import estimate_model_cost
-    from workspace_store import get_workspace_detail, load_workspace_model_configuration, save_workspace_last_analysis, workspace_context, workspace_reference_images
+    from workspace_store import get_workspace_detail, load_workspace_finops_cache_policy, load_workspace_model_configuration, save_workspace_last_analysis, workspace_context, workspace_reference_images
 
 
 PRODUCT_TERMS = (
@@ -258,6 +258,27 @@ MCP_TOOL_ALLOWLIST: dict[str, dict[str, Any]] = {
         "implemented": False,
     },
 }
+
+
+def _workspace_finops_cache_settings(workspace_id: str) -> tuple[bool, int]:
+    try:
+        policy = load_workspace_finops_cache_policy(workspace_id)
+    except Exception:
+        policy = {}
+    raw_ttl = policy.get("ttl_seconds")
+    try:
+        ttl_seconds = int(
+            raw_ttl
+            if raw_ttl is not None
+            else os.environ.get("DF_REDIS_CACHE_TTL_SECONDS", "3600")
+        )
+    except (TypeError, ValueError):
+        ttl_seconds = 3600
+    ttl_seconds = max(30, min(ttl_seconds, 86400))
+    enabled = policy.get("enabled") is not False
+    if os.environ.get("DF_DISABLE_REDIS_CACHE") == "1":
+        enabled = False
+    return enabled, ttl_seconds
 
 
 def _contains(text: str, terms: tuple[str, ...]) -> bool:
@@ -2104,7 +2125,9 @@ def _run_feasibility_analyst(
         data["_llm"] = {"mode": "empty_evidence_deterministic", "response_id": None, "usage": {}}
         return data
     cache_key, _ = _feasibility_cache_key(req, artifact)
-    if not audit_feedback and os.environ.get("DF_DISABLE_REDIS_CACHE") != "1":
+    cache_enabled, cache_ttl_seconds = _workspace_finops_cache_settings(req.workspace_id)
+    get_meta: dict[str, Any] = {"provider": "redis", "status": "bypassed"}
+    if not audit_feedback and cache_enabled:
         cached, get_meta = cache_store.get_json(cache_key)
         if cached:
             cached_result = cached.get("result") if isinstance(cached.get("result"), dict) else cached
@@ -2153,7 +2176,7 @@ def _run_feasibility_analyst(
         data = apply_pre_audit_guardrails(report.model_dump(), catalog, req.message)
         data["_llm"] = _model_meta(result)
         data["_llm"]["evidence_warnings"] = evidence_warnings
-        if not audit_feedback and os.environ.get("DF_DISABLE_REDIS_CACHE") != "1":
+        if not audit_feedback and cache_enabled:
             source_meter = normalize_cache_meter(
                 {
                     "state": "hit",
@@ -2162,17 +2185,23 @@ def _run_feasibility_analyst(
                     "source_cost_estimate": result.get("cost_estimate"),
                 }
             )
-            cache_store.set_json(
-                cache_key,
-                {
-                    "result": {key: value for key, value in data.items() if key != "_llm"},
-                    "meter": {
-                        key: source_meter[key]
-                        for key in ("source_usage", "source_cost_estimate")
-                        if key in source_meter
-                    },
+            cached_payload = {
+                "result": {key: value for key, value in data.items() if key != "_llm"},
+                "meter": {
+                    key: source_meter[key]
+                    for key in ("source_usage", "source_cost_estimate")
+                    if key in source_meter
                 },
-            )
+            }
+            try:
+                cache_store.set_json(
+                    cache_key,
+                    cached_payload,
+                    ttl_seconds=cache_ttl_seconds,
+                )
+            except TypeError:
+                # Compatibility for narrow cache adapters used by existing callers.
+                cache_store.set_json(cache_key, cached_payload)
             data["_llm"]["cache"] = _cache_meter(get_meta)
         return data
     except Exception as exc:

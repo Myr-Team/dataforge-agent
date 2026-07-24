@@ -835,6 +835,79 @@ def load_workspace_model_configuration(workspace_id: str) -> dict[str, Any]:
     }
 
 
+def load_workspace_finops_cache_policy(workspace_id: str) -> dict[str, Any]:
+    workspace_id = str(workspace_id or "").strip()
+    bundle = _load_workspace_bundle(workspace_id)
+    if bundle is None:
+        raise FileNotFoundError(workspace_id)
+    meta = bundle[0]
+    raw = meta.get("finops_cache_policy")
+    policy = dict(raw) if isinstance(raw, dict) else {}
+    version = policy.get("version")
+    ttl_seconds = policy.get("ttl_seconds")
+    try:
+        default_ttl_seconds = int(os.environ.get("DF_REDIS_CACHE_TTL_SECONDS", "3600"))
+    except ValueError:
+        default_ttl_seconds = 3600
+    default_ttl_seconds = max(30, min(default_ttl_seconds, 86400))
+    return {
+        "version": version if isinstance(version, int) and not isinstance(version, bool) and version >= 0 else 0,
+        "enabled": policy.get("enabled") if isinstance(policy.get("enabled"), bool) else True,
+        "ttl_seconds": (
+            ttl_seconds
+            if isinstance(ttl_seconds, int)
+            and not isinstance(ttl_seconds, bool)
+            and 30 <= ttl_seconds <= 86400
+            else default_ttl_seconds
+        ),
+        **({"updated_at": str(policy["updated_at"])} if policy.get("updated_at") else {}),
+    }
+
+
+def save_workspace_finops_model_policy(workspace_id: str, policy: dict[str, Any]) -> None:
+    _save_workspace_finops_setting(workspace_id, "model_routing_policy", policy)
+
+
+def save_workspace_finops_cache_policy(workspace_id: str, policy: dict[str, Any]) -> None:
+    clean = dict(policy or {})
+    version = clean.get("version")
+    ttl_seconds = clean.get("ttl_seconds")
+    if not isinstance(version, int) or isinstance(version, bool) or version < 0:
+        raise ValueError("cache policy version is invalid")
+    if not isinstance(clean.get("enabled"), bool):
+        raise ValueError("cache policy enabled is invalid")
+    if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool) or not 30 <= ttl_seconds <= 86400:
+        raise ValueError("cache policy ttl is invalid")
+    _save_workspace_finops_setting(workspace_id, "finops_cache_policy", clean)
+
+
+def _save_workspace_finops_setting(
+    workspace_id: str,
+    key: str,
+    value: dict[str, Any],
+) -> None:
+    workspace_id = str(workspace_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}", workspace_id):
+        raise ValueError("workspace_id is invalid")
+    if key not in {"model_routing_policy", "finops_cache_policy"}:
+        raise ValueError("unsupported FinOps workspace setting")
+    bundle = _load_workspace_bundle(workspace_id)
+    if bundle is None:
+        raise FileNotFoundError(workspace_id)
+    meta = dict(bundle[0])
+    meta[key] = dict(value)
+    meta["workspace_id"] = str(meta.get("workspace_id") or workspace_id)
+    meta["updated_at"] = _utc_now_iso()
+    workspace_dir = WORKSPACES / workspace_id
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "workspace.json").write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    upload_blob_json(f"workspaces/{workspace_id}/workspace.json", meta)
+    _CONTEXT_CACHE.pop(workspace_id, None)
+
+
 def workspace_context(workspace_id: str) -> dict[str, Any]:
     workspace_id = str(workspace_id or "").strip()
     if _prefer_blob_workspace_state(workspace_id):

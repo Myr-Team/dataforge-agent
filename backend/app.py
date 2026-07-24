@@ -18,6 +18,7 @@ from fastapi import Request
 from fastapi import UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.responses import Response
 from fastapi.responses import StreamingResponse
 from pathlib import Path
@@ -44,6 +45,8 @@ try:
     from .data_workbench import router as data_workbench_router
     from .dependency_health import health_dependencies, health_dependency_details
     from .identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
+    from .finops.router import router as finops_router
+    from .finops.sql_repository import FinOpsPersistenceError
     from .lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
     from .observability import observability_snapshot
     from .orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
@@ -96,6 +99,8 @@ except ImportError:
     from data_workbench import router as data_workbench_router
     from dependency_health import health_dependencies, health_dependency_details
     from identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
+    from finops.router import router as finops_router
+    from finops.sql_repository import FinOpsPersistenceError
     from lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
     from observability import observability_snapshot
     from orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
@@ -140,6 +145,17 @@ except ImportError:
 
 
 app = FastAPI(title="DataForge Tool Backend", version="0.10.0")
+
+
+@app.exception_handler(FinOpsPersistenceError)
+async def finops_persistence_error_handler(
+    _request: Request,
+    _exc: FinOpsPersistenceError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "FinOps persistence service is unavailable"},
+    )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -148,6 +164,7 @@ app.add_middleware(
 )
 app.include_router(data_workbench_router)
 app.include_router(control_plane_router)
+app.include_router(finops_router)
 
 _LINEAGE_CONNECTION_FACTORY = build_lineage_sql_connection_factory()
 _LINEAGE_REPOSITORY = LineageRepository(connection_factory=_LINEAGE_CONNECTION_FACTORY)

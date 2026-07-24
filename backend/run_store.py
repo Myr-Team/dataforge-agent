@@ -221,6 +221,7 @@ def complete_run(
     artifact: dict[str, Any] | None = None,
     lineage_repository: Any | None = None,
 ) -> dict[str, Any] | None:
+    persisted: dict[str, Any] | None = None
     with _LOCK:
         run = _ACTIVE.pop(run_id, None)
         if not run:
@@ -275,11 +276,23 @@ def complete_run(
         run["title"] = _run_title(run)
         run["summary"] = _run_summary_text(run)
         run["registry_summary"] = _run_summary(run)
-        return _persist_run(
+        persisted = _persist_run(
             run,
             lineage_repository=lineage_repository,
             analysis_completed_event=True,
         )
+    if persisted is not None:
+        try:
+            try:
+                from .finops.ingestion import ingest_completed_run
+            except ImportError:
+                from finops.ingestion import ingest_completed_run
+
+            ingest_completed_run(persisted)
+        except Exception:
+            # FinOps is additive and must never make the analysis ledger fail.
+            pass
+    return persisted
 
 
 def _is_completed_analysis(run: Any) -> bool:
@@ -3718,6 +3731,8 @@ def normalize_cache_meter(value: Any) -> dict[str, Any]:
     if provider != "redis":
         return {}
     safe = {"state": state, "provider": provider}
+    if isinstance(data.get("eligible"), bool):
+        safe["eligible"] = data["eligible"]
     elapsed_ms = data.get("elapsed_ms")
     if isinstance(elapsed_ms, (int, float)) and not isinstance(elapsed_ms, bool):
         try:
