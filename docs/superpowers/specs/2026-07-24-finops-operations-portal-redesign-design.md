@@ -266,11 +266,45 @@ Agent 可以创建类型化 `draft` 治理动作，但不能 submit、approve、
 
 建议新增接口：
 
+- `GET /api/finops/bootstrap`
 - `GET /api/finops/insights`
 - `POST /api/finops/insights/analyze`
 - `GET /api/finops/requests/{request_ref}` 增加 display、business_request、business_response、timeline、technical_refs 和 links
 
 已有 overview、breakdowns、trends、anomalies、recommendations 和 actions 接口继续作为底层能力，Portal 只重组其呈现方式。
+
+### 8.1 Portal Bootstrap 与预加载
+
+当前 Portal 进入后才请求 filters、overview、trends、breakdowns 和 anomalies，用户会先看到整页等待。重构后新增受权限保护的轻量 bootstrap：
+
+- 首屏六个指标。
+- 最近 30 天的有界趋势摘要。
+- 部门 Top 5。
+- 前三项开放异常。
+- FinOps Agent 与 ROI Agent insight 摘要。
+- 全局筛选项。
+
+bootstrap 不包含请求正文、完整请求列表、完整部门明细、技术 ID 或 Trace。它只组合已有查询服务的有界结果，不建立第二套指标口径。
+
+预加载流程：
+
+1. 当前 workspace 与治理能力投影加载完成。
+2. 只有 `finops.summary.read` 为 true 时才允许预加载。
+3. 浏览器空闲时调用 bootstrap；`requestIdleCallback` 不可用时使用有界延迟回退。
+4. 用户悬停、聚焦或触摸“运营驾驶舱”入口时再次触发幂等预取。
+5. 多个相同预取共用同一个 in-flight Promise，避免重复请求。
+6. 进入 Portal 时同步消费内存缓存，并在后台静默 revalidate。
+7. revalidate 成功后无闪烁更新；失败时保留旧数据并显示“数据更新中”或“更新失败”。
+
+缓存规则：
+
+- 缓存键至少包含 tenant、workspace、权限能力集、默认时间窗口和筛选条件。
+- 首版只使用当前浏览器会话内存，不把客户运营数据写入 localStorage。
+- 60 秒内结果可直接使用并静默校验。
+- 超过 60 秒但未超过 5 分钟的结果可以先展示，同时明确标记正在更新。
+- 超过 5 分钟或缺少缓存时显示局部 skeleton，不回退为虚构数据。
+- workspace、tenant、权限、用户身份或登录状态变化时立即清除不匹配缓存并取消 in-flight 请求。
+- 请求详情、业务正文、完整下钻列表和 Foundry Trace 永不预加载。
 
 ## 9. 权限与隐私
 
@@ -333,6 +367,10 @@ Agent 可以创建类型化 `draft` 治理动作，但不能 submit、approve、
 - 证据不足、Agent 失败、过期 insight 和缺失价目表均返回明确状态。
 - Portal 刷新不会隐式触发 Agent。
 - Agent 不能 approve 或 execute 动作。
+- bootstrap 在没有 `finops.summary.read` 时拒绝访问。
+- bootstrap 的响应不包含正文、技术 ID 或 Trace。
+- tenant、workspace、权限和筛选变化不会复用错误缓存。
+- 多次预加载会合并为一次 in-flight 请求。
 
 ### 11.2 前端
 
@@ -345,6 +383,12 @@ Agent 可以创建类型化 `draft` 治理动作，但不能 submit、approve、
 - 财务角色不渲染正文、ID 或 Trace 入口。
 - 缺失值和过期 insight 不显示伪造数字。
 - 请求证据抽屉支持键盘关闭、焦点约束和移动端布局。
+- 权限与 workspace 完成解析后才开始预加载。
+- 首次进入优先显示 bootstrap 缓存，再静默 revalidate。
+- hover、focus、touch 和 idle 预加载不会重复发起相同请求。
+- workspace 切换、权限变化和退出会清理缓存并取消旧请求。
+- 无缓存时使用局部 skeleton，不出现整页阻塞等待。
+- revalidate 失败保留已知数据并显示非阻塞状态。
 
 ### 11.3 真实门禁
 
@@ -356,6 +400,8 @@ Agent 可以创建类型化 `draft` 治理动作，但不能 submit、approve、
 - ROI Agent 的结果只包含已验证结果事件。
 - 财务用户无法读取正文；IT 管理员可以读取授权 workspace 的详情。
 - 一条建议只能创建 draft，不能绕过审批直接执行。
+- 从已加载工作区进入运营驾驶舱时，bootstrap 缓存能够立即完成首屏渲染。
+- 预加载不会读取请求正文、Trace 或未授权 workspace 数据。
 - Python、Node、Vite 和 Playwright 回归通过。
 - 未经用户明确批准，不切换生产流量，不启用生产治理执行。
 
@@ -363,7 +409,7 @@ Agent 可以创建类型化 `draft` 治理动作，但不能 submit、approve、
 
 - 保留已有 FinOps 请求账本、查询、异常、建议和动作能力。
 - 移除或隐藏重复的 Portal 页面，不删除其底层查询接口。
-- 先完成四页信息架构和角色可见性，再接入友好命名和证据抽屉，最后启用两个 Agent。
+- 先完成 bootstrap、四页信息架构和角色可见性，再接入友好命名和证据抽屉，最后启用两个 Agent。
 - 已有请求没有 alias 时按确定性回退规则惰性补齐。
 - `DF_FINOPS_ACTIONS_ENABLED` 继续默认关闭。
 - 候选环境验收完成前保持零生产流量。
