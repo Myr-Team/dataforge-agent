@@ -137,34 +137,71 @@ export function finopsTrendViewModel(payload = {}) {
 }
 
 export function finopsRequestViewModel(item = {}) {
+  const metrics = item?.metrics || {};
+  const technicalRefs = item?.technical_refs || {};
   const cache = {
     hit: "命中",
     miss: "未命中",
     bypassed: "绕过",
     unavailable: "未记录",
-  }[item?.cache?.state] || "未记录";
+  }[metrics?.cache?.state] || "未记录";
+  const technicalLabels = {
+    request_ref: "请求关联",
+    run_id: "MAF 运行",
+    apim_correlation_id: "APIM 关联",
+    price_card_revision: "价目表版本",
+    trace_id: "Foundry Trace",
+    agent_id: "Agent",
+  };
+  const technicalItems = Object.entries(technicalRefs)
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim())
+    .map(([key, value]) => ({
+      key,
+      label: technicalLabels[key] || key,
+      value: String(value),
+    }));
   return {
-    requestRef: item.request_ref || "",
-    occurredAt: item.occurred_at || "",
-    workspaceId: item.workspace_id || "未记录",
-    departmentId: item.department_id || "未归属",
-    actorRef: item.actor_ref || "未记录",
-    runId: item.run_id || "未记录",
-    agentId: item.agent_id || "未记录",
-    model: item.deployment || item.model || "未记录",
-    route: item.route || "未记录",
+    title: item?.display?.name || "请求证据",
+    operation: item?.display?.operation || "操作记录",
+    occurredAt: item?.display?.occurred_at || "",
     status: item.status || "unknown",
-    correlation: item.apim_correlation_id || item.correlation_ref || "未记录",
-    tokens: item?.tokens?.total ?? null,
-    tokenDetail: item.tokens || {},
+    tokens: metrics?.tokens?.total ?? null,
+    tokenDetail: metrics.tokens || {},
     cache,
-    cost: formatFinOpsCost(item?.estimated_cost?.amount, item?.estimated_cost?.status),
-    costStatus: item?.estimated_cost?.status || "unavailable",
-    priceRevision: item?.estimated_cost?.price_card_revision || "未记录",
-    latency: formatFinOpsDuration(item.latency_ms),
-    errorCategory: item.error_category || "无",
-    gatewayCoverage: item.gateway_coverage || "unknown",
-    evidenceState: item.evidence_state || "unavailable",
+    cost: formatFinOpsCost(
+      metrics?.estimated_cost?.amount,
+      metrics?.estimated_cost?.status,
+    ),
+    costStatus: metrics?.estimated_cost?.status || "unavailable",
+    latency: formatFinOpsDuration(metrics.latency_ms),
+    errorCategory: metrics.error_category || "无",
+    gatewayCoverage: metrics.gateway_coverage || "unknown",
+    evidenceState: metrics.evidence_state || "unavailable",
+    businessRequest: {
+      text: item?.business_request?.text || "未记录",
+      status: item?.business_request?.status || "unavailable",
+    },
+    businessResponse: {
+      text: item?.business_response?.text || "未记录",
+      status: item?.business_response?.status || "unavailable",
+    },
+    timeline: Array.isArray(item.timeline) ? item.timeline : [],
+    technical: {
+      expanded: false,
+      items: technicalItems,
+    },
+    links: {
+      foundryTrace: item?.links?.foundry_trace || "",
+      azureMonitor: item?.links?.azure_monitor || "",
+    },
+    sectionOrder: [
+      "summary",
+      "metrics",
+      "business_request",
+      "business_response",
+      "timeline",
+      "technical",
+    ],
   };
 }
 

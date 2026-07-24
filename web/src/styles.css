@@ -4666,6 +4666,8 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-metric > div { display: flex; min-height: 18px; align-items: center; justify-content: space-between; gap: 6px; color: #667085; font-size: 10.5px; }
 .finops-metric > strong { display: block; overflow: hidden; margin: 8px 0 5px; color: #101828; font-size: 23px; font-weight: 720; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
 .finops-metric > small { display: block; overflow: hidden; color: #98a2b3; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.finops-metric > button { margin-top: 9px; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9.5px; font-weight: 650; }
+.finops-metric > button:hover { text-decoration: underline; }
 .finops-metric.warning { box-shadow: inset 0 2px 0 #fdb022; }
 .finops-metric.critical { box-shadow: inset 0 2px 0 #f04438; }
 .finops-metrics-skeleton .finops-metric { display: grid; gap: 10px; }
@@ -4711,6 +4713,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-trend-stack i { display: block; width: 100%; flex: none; }
 .finops-insights, .finops-anomaly-list, .finops-recommendations { display: grid; }
 .finops-insights > div, .finops-recommendations > div { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: start; gap: 9px; border-bottom: 1px solid #edf0f5; padding: 12px 14px; color: #f79009; }
+.finops-insights > div > button { grid-column: 2 / -1; width: fit-content; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9.5px; font-weight: 650; }
 .finops-insights > div:last-child, .finops-recommendations > div:last-child { border-bottom: 0; }
 .finops-insights span, .finops-recommendations span { display: grid; gap: 3px; color: #344054; }
 .finops-insights b, .finops-recommendations b { font-size: 10.5px; }
@@ -4767,19 +4770,39 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-more { display: block; margin: 12px auto; border: 1px solid #d0d5dd; border-radius: 7px; background: #fff; padding: 7px 12px; color: #344054; font: inherit; font-size: 10.5px; cursor: pointer; }
 .finops-footnote { display: flex; max-width: 1500px; margin: 12px auto 0; align-items: center; gap: 7px; color: #98a2b3; font-size: 9.5px; }
 .finops-drawer-backdrop { position: fixed; z-index: 90; inset: 0; background: rgba(15, 23, 42, .28); }
-.finops-drawer { position: absolute; top: 0; right: 0; display: grid; width: min(480px, 100%); height: 100%; grid-template-rows: auto minmax(0, 1fr); background: #fff; box-shadow: -18px 0 48px rgba(15, 23, 42, .15); }
+.finops-drawer { position: absolute; top: 0; right: 0; display: grid; width: min(540px, 100%); height: 100%; grid-template-rows: auto minmax(0, 1fr); background: #fff; box-shadow: -18px 0 48px rgba(15, 23, 42, .15); }
 .finops-drawer > header { display: flex; min-height: 72px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e7ebf1; padding: 13px 17px; }
 .finops-drawer header span { color: #175cd3; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-.finops-drawer header h2 { margin: 4px 0 0; color: #1d2939; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.finops-drawer header h2 { margin: 4px 0 0; color: #1d2939; font-size: 14px; font-weight: 720; line-height: 1.35; }
+.finops-drawer header p { margin: 4px 0 0; color: #667085; font-size: 10px; }
 .finops-drawer header button { display: grid; width: 32px; height: 32px; border: 0; border-radius: 8px; place-items: center; background: #f2f4f7; color: #475467; cursor: pointer; }
 .finops-drawer-body { overflow: auto; padding: 16px; }
 .finops-drawer-body section { margin-bottom: 14px; border: 1px solid #e7ebf1; border-radius: 9px; overflow: hidden; }
-.finops-drawer-body h3 { margin: 0; border-bottom: 1px solid #edf0f5; padding: 10px 12px; color: #344054; font-size: 11px; }
+.finops-drawer-body h3 { display: flex; margin: 0; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid #edf0f5; padding: 10px 12px; color: #344054; font-size: 11px; }
 .finops-drawer-body dl { margin: 0; }
 .finops-drawer-body dl > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; border-bottom: 1px solid #edf0f5; padding: 9px 12px; }
 .finops-drawer-body dl > div:last-child { border-bottom: 0; }
 .finops-drawer-body dt { color: #98a2b3; font-size: 9.5px; }
 .finops-drawer-body dd { overflow-wrap: anywhere; margin: 0; color: #344054; font-size: 10.5px; text-align: right; }
+.finops-drawer-state { display: flex; min-height: 240px; align-items: center; justify-content: center; gap: 8px; color: #667085; font-size: 11px; }
+.finops-drawer-state.error { color: #b42318; }
+.finops-business-evidence p { margin: 0; padding: 13px 14px; color: #344054; font-size: 11px; line-height: 1.65; white-space: pre-wrap; }
+.finops-evidence-timeline { display: grid; margin: 0; padding: 12px 14px; list-style: none; }
+.finops-evidence-timeline li { position: relative; display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; min-height: 42px; }
+.finops-evidence-timeline li:not(:last-child)::after { position: absolute; top: 15px; bottom: -1px; left: 5px; width: 1px; background: #d0d5dd; content: ""; }
+.finops-evidence-timeline i { z-index: 1; width: 11px; height: 11px; margin-top: 2px; border: 3px solid #dbeafe; border-radius: 50%; background: #175cd3; }
+.finops-evidence-timeline span { display: grid; align-content: start; gap: 3px; }
+.finops-evidence-timeline b { color: #344054; font-size: 10.5px; }
+.finops-evidence-timeline small { color: #98a2b3; font-size: 9.5px; }
+.finops-technical { margin-bottom: 14px; border: 1px solid #e7ebf1; border-radius: 9px; overflow: hidden; }
+.finops-technical summary { padding: 10px 12px; color: #667085; cursor: pointer; font-size: 10.5px; font-weight: 650; }
+.finops-technical[open] summary { border-bottom: 1px solid #edf0f5; }
+.finops-technical dl { margin: 0; }
+.finops-technical dl > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; border-bottom: 1px solid #edf0f5; padding: 9px 12px; }
+.finops-technical dl > div:last-child { border-bottom: 0; }
+.finops-technical dt { color: #98a2b3; font-size: 9.5px; }
+.finops-technical dd { overflow-wrap: anywhere; margin: 0; color: #344054; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9.5px; text-align: right; }
+.finops-evidence-links { display: grid; gap: 8px; }
 .finops-monitor-link { display: flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #b2ddff; border-radius: 8px; background: #eff8ff; padding: 9px; color: #175cd3; font-size: 10.5px; text-decoration: none; }
 .finops-monitor-unavailable { margin: 0; border: 1px dashed #d0d5dd; border-radius: 8px; padding: 9px; color: #98a2b3; font-size: 10.5px; text-align: center; }
 
@@ -4807,4 +4830,6 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-request-tools label { width: 100%; }
   .finops-footnote { align-items: flex-start; }
   .finops-value-grid { grid-template-columns: 1fr; }
+  .finops-drawer { width: 100%; }
+  .finops-drawer-body { padding: 12px; }
 }

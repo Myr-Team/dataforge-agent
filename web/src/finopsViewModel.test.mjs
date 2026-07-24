@@ -94,31 +94,52 @@ test("finops trend view model keeps token categories separate", () => {
 });
 
 
-test("request view model exposes safe correlation and never expects raw provider id", () => {
+test("request detail view model prefers friendly evidence and keeps technical refs collapsed", () => {
   const request = finopsRequestViewModel({
-    request_ref: "req_safe",
-    correlation_ref: "corr_safe",
-    run_id: "run-safe",
-    tokens: { input: 10, output: 2, total: 12 },
-    cache: { state: "hit" },
-    estimated_cost: { amount: 0.0012, status: "estimated", currency: "USD" },
-    latency_ms: 1234,
-    error_category: null,
+    display: {
+      name: "Commerce · 分析运行 · 7月24日 10:42",
+      operation: "分析运行",
+      occurred_at: "2026-07-24T02:42:00Z",
+    },
+    status: "succeeded",
+    metrics: {
+      tokens: { input: 10, output: 2, total: 12 },
+      cache: { state: "hit" },
+      estimated_cost: { amount: 0.0012, status: "estimated", currency: "USD" },
+      latency_ms: 1234,
+      gateway_coverage: "apim_governed",
+    },
+    business_request: { text: "分析本月销售异常", status: "recorded" },
+    business_response: { text: "已定位主要变化来自华东区域。", status: "recorded" },
+    technical_refs: {
+      request_ref: "req_safe",
+      run_id: "run-safe",
+      apim_correlation_id: "4f8b0f37b5824af5a2ac7ed9129ee70b",
+    },
+    links: { foundry_trace: "https://ai.azure.com/trace/safe" },
   });
 
-  assert.equal(request.correlation, "corr_safe");
+  assert.equal(request.title, "Commerce · 分析运行 · 7月24日 10:42");
+  assert.equal(request.businessRequest.text, "分析本月销售异常");
+  assert.equal(request.businessResponse.text, "已定位主要变化来自华东区域。");
   assert.equal(request.cost, "$0.0012");
   assert.equal(request.cache, "命中");
+  assert.equal(request.technical.expanded, false);
+  assert.equal(request.technical.items[0].value, "req_safe");
+  assert.equal(request.links.foundryTrace, "https://ai.azure.com/trace/safe");
   assert.equal(Object.hasOwn(request, "providerResponseId"), false);
 });
 
 
-test("request view model prefers validated APIM correlation for trace display", () => {
+test("request detail view model marks missing business evidence without fake trace actions", () => {
   const request = finopsRequestViewModel({
-    request_ref: "req_safe",
-    correlation_ref: "corr_hmac_internal",
-    apim_correlation_id: "4f8b0f37b5824af5a2ac7ed9129ee70b",
+    display: { name: "工作区 · 操作记录 · 7月24日 10:42" },
+    business_request: { text: null, status: "unavailable" },
+    business_response: { text: null, status: "unavailable" },
+    links: {},
   });
 
-  assert.equal(request.correlation, "4f8b0f37b5824af5a2ac7ed9129ee70b");
+  assert.equal(request.businessRequest.text, "未记录");
+  assert.equal(request.businessResponse.text, "未记录");
+  assert.equal(request.links.foundryTrace, "");
 });
