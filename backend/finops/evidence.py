@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .models import FinOpsRequestEvent
+
 
 EvidenceObjectKind = Literal["request", "run", "trace", "apim", "price_revision"]
 _CHINA_TIME = timezone(timedelta(hours=8))
@@ -69,6 +71,22 @@ def build_evidence_alias(
 
 def operation_label(operation_code: str) -> str:
     return OPERATION_LABELS.get(str(operation_code or "").strip(), "操作记录")
+
+
+def operation_code_for_event(event: FinOpsRequestEvent) -> str:
+    execution_kind = str(event.execution_kind or "").strip().lower()
+    route = str(event.route or "").strip().lower()
+    if execution_kind in {"followup", "followup_edit", "conversation_followup"}:
+        return "conversation_followup"
+    if event.call_class in {"tool", "mcp"}:
+        return "tool_call"
+    if execution_kind in {"cache", "cache_evaluation"}:
+        return "cache_evaluation"
+    if execution_kind in {"verification", "outcome_verification"}:
+        return "outcome_verification"
+    if route in {"analysis", "orchestrator"} or event.run_id:
+        return "analysis_run"
+    return "model_call" if event.call_class == "model" else "unknown"
 
 
 def _aware_utc(value: datetime) -> datetime:
