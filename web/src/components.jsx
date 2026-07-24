@@ -19,6 +19,8 @@ import { costValueViewModel } from "./costValueViewModel.js";
 import { monitoringSnapshotViewModel } from "./monitoringViewModel.js";
 import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, createWorkspaceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
 import { GovernanceCenter } from "./GovernanceCenter.jsx";
+import { FinOpsPortal } from "./FinOpsPortal.jsx";
+import { finopsIntentHandlers } from "./finopsNavigation.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 import {
   Activity,
@@ -116,7 +118,7 @@ function memberRoleLabel(role) {
   return cleanUserValue(role) || "成员";
 }
 
-export function ShellNav({ active = "workspaces", onChange = () => {}, workspace = {}, access = null, capabilities = null, onInviteMembers = () => {} }) {
+export function ShellNav({ active = "workspaces", onChange = () => {}, workspace = {}, access = null, capabilities = null, onInviteMembers = () => {}, onFinOpsIntent = () => {} }) {
   const roleLabel = access?.allowed
     ? memberRoleLabel(access.role)
     : access?.authenticated === false
@@ -142,6 +144,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, workspace
                     type="button"
                     title={item.label}
                     onClick={() => onChange(item.id)}
+                    {...finopsIntentHandlers(item, onFinOpsIntent)}
                   >
                     <Icon size={19} />
                     <span>{item.label}</span>
@@ -165,7 +168,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, workspace
   );
 }
 
-export function MobileNav({ active = "workspaces", onChange = () => {}, capabilities = null }) {
+export function MobileNav({ active = "workspaces", onChange = () => {}, capabilities = null, onFinOpsIntent = () => {} }) {
   return (
     <nav className="mobile-nav" aria-label="Mobile primary">
       {visibleNavItems(capabilities).map((item) => {
@@ -176,6 +179,7 @@ export function MobileNav({ active = "workspaces", onChange = () => {}, capabili
             className={active === item.id ? "mobile-nav-item active" : "mobile-nav-item"}
             type="button"
             onClick={() => onChange(item.id)}
+            {...finopsIntentHandlers(item, onFinOpsIntent)}
           >
             <Icon size={17} />
             <span>{item.label}</span>
@@ -651,6 +655,9 @@ function WorkbenchMainInner({
   }
   if (resolvedView === "runs") {
     return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} tasks={tasks} />;
+  }
+  if (resolvedView === "finops") {
+    return <FinOpsPortal workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id || ""} />;
   }
   if (["members", "lineage", "monitor", "model-routing"].includes(resolvedView)) {
     return (

@@ -5,6 +5,7 @@ import {
   listWorkspaces,
   loadConversation,
   loadDashboard,
+  loadFinOpsBootstrap,
   loadWorkspaceAccess,
   loadLatestAnalysis,
   loadObservability,
@@ -19,6 +20,14 @@ import {
   streamChat,
   uploadWorkspace,
 } from "./api.js";
+import {
+  clearFinOpsBootstrap,
+  prefetchFinOpsBootstrap,
+} from "./finopsPreload.js";
+import {
+  finopsPreloadScope,
+  scheduleFinOpsPreload,
+} from "./finopsNavigation.js";
 import { TaskCenter, expireTaskNotifications, isCurrentWorkspaceTaskResponse, stampTaskNotifications, taskViewModel, terminalTaskNotifications } from "./TaskCenter.jsx";
 import {
   extractArtifacts,
@@ -182,6 +191,25 @@ export function App() {
   const workspaceIdRef = useRef(workspaceId);
   const taskRequestRef = useRef(0);
   const taskAbortRef = useRef(null);
+  const finopsScope = useMemo(
+    () => finopsPreloadScope({
+      authState,
+      workspaceId,
+      user,
+      capabilities: governanceCapabilities,
+    }),
+    [authState, governanceCapabilities, user, workspaceId],
+  );
+  const preloadFinOps = useCallback(() => {
+    if (!finopsScope) return Promise.resolve(null);
+    return prefetchFinOpsBootstrap(
+      finopsScope.key,
+      ({ signal }) => loadFinOpsBootstrap(
+        { workspaceId: finopsScope.workspaceId },
+        { signal },
+      ),
+    );
+  }, [finopsScope]);
 
   useEffect(() => {
     activeViewRef.current = activeView;
@@ -190,6 +218,25 @@ export function App() {
   useEffect(() => {
     workspaceIdRef.current = workspaceId;
   }, [workspaceId]);
+
+  useEffect(() => {
+    if (!finopsScope) {
+      clearFinOpsBootstrap();
+      return undefined;
+    }
+    const cancelScheduled = scheduleFinOpsPreload(
+      () => preloadFinOps().catch((error) => {
+        if (error?.name !== "AbortError") {
+          console.warn("FinOps bootstrap preload failed", error);
+        }
+      }),
+      window,
+    );
+    return () => {
+      cancelScheduled();
+      clearFinOpsBootstrap(finopsScope.key);
+    };
+  }, [finopsScope, preloadFinOps]);
 
   const currentPlaybook = useMemo(
     () => PLAYBOOKS.find((item) => item.id === selectedPlaybook) || PLAYBOOKS[0],
@@ -1131,9 +1178,9 @@ export function App() {
         tasks={tasks}
         onOpenTaskCenter={() => setTaskDrawerOpen(true)}
       />
-      <ShellNav active={renderView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} capabilities={governanceCapabilities} onInviteMembers={openMembersSettings} />
+      <ShellNav active={renderView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} capabilities={governanceCapabilities} onInviteMembers={openMembersSettings} onFinOpsIntent={preloadFinOps} />
       <div className="workbench">
-        <MobileNav active={renderView} onChange={changePrimaryView} capabilities={governanceCapabilities} />
+        <MobileNav active={renderView} onChange={changePrimaryView} capabilities={governanceCapabilities} onFinOpsIntent={preloadFinOps} />
         <div className="workbench-grid">
           <WorkbenchMain
             view={renderView}
