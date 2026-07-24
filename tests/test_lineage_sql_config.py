@@ -108,6 +108,38 @@ def test_system_assigned_managed_identity_is_constructed_lazily_with_workload_id
     assert credential.scopes == ["https://database.windows.net/.default"]
 
 
+def test_dedicated_user_assigned_managed_identity_is_selected_lazily(monkeypatch) -> None:
+    api = _api()
+    credentials = []
+    client_id = "11111111-2222-3333-4444-555555555555"
+
+    def credential_factory(*args, **kwargs):
+        credential = _Credential()
+        credentials.append((args, kwargs, credential))
+        return credential
+
+    monkeypatch.setattr(api, "ManagedIdentityCredential", credential_factory)
+    factory = api.build_lineage_sql_connection_factory(
+        environ={
+            **_VALID_ENV,
+            "LINEAGE_SQL_MANAGED_IDENTITY_CLIENT_ID": client_id,
+        },
+        connect=lambda *args, **kwargs: object(),
+    )
+
+    assert credentials == []
+    factory()
+
+    assert len(credentials) == 1
+    args, kwargs, credential = credentials[0]
+    assert args == ()
+    assert kwargs == {
+        "client_id": client_id,
+        "_exclude_workload_identity_credential": True,
+    }
+    assert credential.scopes == ["https://database.windows.net/.default"]
+
+
 def test_production_factory_does_not_admit_credential_chain_or_user_assigned_configuration(monkeypatch) -> None:
     api = _api()
     credentials = []

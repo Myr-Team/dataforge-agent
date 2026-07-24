@@ -133,9 +133,21 @@ class _LineageSqlConnectionFactory:
         if category is None:
             try:
                 if self._credential is None:
-                    self._credential = ManagedIdentityCredential(
-                        _exclude_workload_identity_credential=True
-                    )
+                    managed_identity_client_id = str(
+                        self._environment.get(
+                            "LINEAGE_SQL_MANAGED_IDENTITY_CLIENT_ID",
+                            "",
+                        )
+                    ).strip()
+                    if managed_identity_client_id:
+                        self._credential = ManagedIdentityCredential(
+                            client_id=managed_identity_client_id,
+                            _exclude_workload_identity_credential=True,
+                        )
+                    else:
+                        self._credential = ManagedIdentityCredential(
+                            _exclude_workload_identity_credential=True
+                        )
                 token = self._credential.get_token(_AZURE_SQL_SCOPE).token
                 packed_token = _pack_access_token(token)
             except Exception:
