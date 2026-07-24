@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+from typing import Any, Iterable, Mapping
+
+from .query import FinOpsQuery
+
+
+def build_finops_agent_input(
+    query: FinOpsQuery,
+    query_service: Any,
+    *,
+    anomalies: Iterable[Mapping[str, Any]] = (),
+    price_card_revision: str | None = None,
+) -> dict[str, Any]:
+    overview = query_service.overview(query)
+    trends = query_service.trends(query, "day")
+    departments = query_service.breakdowns(query, "department")
+    workspaces = query_service.breakdowns(query, "workspace")
+    request_page = query_service.requests(query)
+    evidence_refs = [
+        str(item.get("request_ref") or "").strip()
+        for item in request_page.get("items", [])[:50]
+        if isinstance(item, Mapping) and str(item.get("request_ref") or "").strip()
+    ]
+    if not evidence_refs:
+        return {
+            "status": "insufficient_data",
+            "agent_kind": "finops",
+            "scope": {"workspace_ids": list(_selected_workspace_ids(query))},
+            "window": {"from": query.from_value, "to": query.to_value},
+            "evidence_refs": [],
+            "evidence_gaps": ["请求级成本证据不足"],
+        }
+    return {
+        "status": "ready",
+        "agent_kind": "finops",
+        "scope": {"workspace_ids": list(_selected_workspace_ids(query))},
+        "window": {"from": query.from_value, "to": query.to_value},
+        "overview": {"metrics": _copy_mapping(overview.get("metrics"))},
+        "trends": [
+            _pick(
+                item,
+                "bucket",
+                "requests",
+                "tokens",
+                "estimated_cost",
+                "data_status",
+            )
+            for item in trends.get("items", [])[-31:]
+            if isinstance(item, Mapping)
+        ],
+        "breakdowns": {
+            "departments": [
+                _pick(
+                    item,
+                    "key",
+                    "requests",
+                    "tokens",
+                    "estimated_cost",
+                    "error_rate_pct",
+                    "p95_latency_ms",
+                    "data_status",
+                )
+                for item in departments.get("items", [])[:20]
+                if isinstance(item, Mapping)
+            ],
+            "workspaces": [
+                _pick(
+                    item,
+                    "key",
+                    "requests",
+                    "tokens",
+                    "estimated_cost",
+                    "error_rate_pct",
+                    "p95_latency_ms",
+                    "data_status",
+                )
+                for item in workspaces.get("items", [])[:20]
+                if isinstance(item, Mapping)
+            ],
+        },
+        "anomalies": [
+            _pick(
+                item,
+                "anomaly_id",
+                "policy_type",
+                "severity",
+                "status",
+                "observed_value",
+                "threshold_value",
+                "sample_count",
+            )
+            for item in list(anomalies)[:20]
+            if isinstance(item, Mapping)
+        ],
+        "price_card_revision": (
+            str(price_card_revision or "").strip()[:160] or None
+        ),
+        "evidence_refs": list(dict.fromkeys(evidence_refs)),
+        "evidence_gaps": [],
+    }
+
+
+def build_roi_agent_input(
+    workspace_id: str,
+    window: Mapping[str, Any],
+    roi_snapshot: Mapping[str, Any],
+    verified_outcomes: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    normalized_window = {
+        "from": str(window.get("from") or ""),
+        "to": str(window.get("to") or ""),
+    }
+    allowed_ids = {
+        str(value or "").strip()
+        for value in roi_snapshot.get("verified_outcome_event_ids", [])
+        if str(value or "").strip()
+    }
+    projected: list[dict[str, Any]] = []
+    for item in verified_outcomes:
+        if not isinstance(item, Mapping):
+            continue
+        event_id = str(item.get("event_id") or "").strip()
+        verification = (
+            item.get("verification")
+            if isinstance(item.get("verification"), Mapping)
+            else {}
+        )
+        if (
+            not event_id
+            or event_id not in allowed_ids
+            or str(item.get("workspace_id") or "").strip() != workspace_id
+            or str(verification.get("status") or "").strip().lower() != "verified"
+        ):
+            continue
+        business_value = (
+            item.get("business_value")
+            if isinstance(item.get("business_value"), Mapping)
+            else {}
+        )
+        projected.append(
+            {
+                "event_id": event_id,
+                "observed_at": item.get("observed_at"),
+                "observed_value": item.get("observed_value"),
+                "business_value": _pick(
+                    business_value,
+                    "value",
+                    "currency",
+                    "formula",
+                    "status",
+                ),
+                "verification_status": "verified",
+            }
+        )
+        if len(projected) >= 50:
+            break
+    if not projected:
+        return {
+            "status": "insufficient_data",
+            "agent_kind": "roi",
+            "workspace_id": workspace_id,
+            "window": normalized_window,
+            "evidence_refs": [],
+            "evidence_gaps": ["已验证结果事件不足"],
+        }
+    evidence_refs = [item["event_id"] for item in projected]
+    return {
+        "status": "ready",
+        "agent_kind": "roi",
+        "workspace_id": workspace_id,
+        "window": normalized_window,
+        "roi_snapshot": {
+            "status": roi_snapshot.get("status"),
+            "cost": _copy_mapping(roi_snapshot.get("cost")),
+            "business_value": _copy_mapping(roi_snapshot.get("business_value")),
+            "lineage_complete": roi_snapshot.get("lineage_complete"),
+            "truncated": bool(roi_snapshot.get("truncated")),
+        },
+        "verified_outcomes": projected,
+        "evidence_refs": evidence_refs,
+        "evidence_gaps": [],
+    }
+
+
+def _selected_workspace_ids(query: FinOpsQuery) -> tuple[str, ...]:
+    return (
+        (query.workspace_id,)
+        if query.workspace_id
+        else query.authorized_workspace_ids
+    )
+
+
+def _pick(value: Mapping[str, Any], *keys: str) -> dict[str, Any]:
+    return {key: value.get(key) for key in keys if key in value}
+
+
+def _copy_mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
