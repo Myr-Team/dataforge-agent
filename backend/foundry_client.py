@@ -29,6 +29,8 @@ PROMPTS = ROOT / "agents" / "prompts"
 PROMPT_FILES = {
     "df-feasibility-analyst": "feasibility_analyst.md",
     "df-auditor": "auditor.md",
+    "df-finops-analyst": "finops_insight.md",
+    "df-roi-analyst": "roi_insight.md",
 }
 
 _WEB_TOOL_CACHE: dict[str, Any] | None = None
