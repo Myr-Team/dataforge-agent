@@ -1,0 +1,488 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+from fastapi.testclient import TestClient
+
+import backend.finops.router as finops_router
+from backend.app import app
+from backend.finops.models import FinOpsRequestEvent, TokenUsage
+from backend.finops.query import FinOpsQueryService
+from backend.finops.repository import InMemoryFinOpsRepository
+from backend.finops.sql_repository import FinOpsPersistenceError
+from backend.finops.governance import FinOpsActionService, InMemoryActionRepository, RecordingExecutor
+from backend.finops.management import FinOpsManagementService, InMemoryManagementRepository
+from backend.finops.anomaly_store import FinOpsAnomalyService, InMemoryAnomalyRepository
+from backend.finops.anomalies import DetectedAnomaly
+from auth_fixtures import trusted_headers
+
+
+@pytest.fixture
+def repository() -> InMemoryFinOpsRepository:
+    value = InMemoryFinOpsRepository()
+    value.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_aaaaaaaaaaaa",
+                    "occurred_at": datetime(2026, 7, 24, 2, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenantref-a",
+                    "workspace_id": "ws-a",
+                    "actor_ref": "actor-safe",
+                    "run_id": "run-a",
+                    "agent_id": "df-coordinator",
+                    "deployment": "gpt-5-mini",
+                    "route": "analysis",
+                    "status": "succeeded",
+                    "tokens": TokenUsage(input=10, output=2, total=12),
+                    "gateway_coverage": "apim_governed",
+                    "estimated_cost": {
+                        "amount": 0.001,
+                        "currency": "USD",
+                        "status": "estimated",
+                        "price_card_revision": "price-1",
+                    },
+                    "evidence_state": "observed",
+                    "correlation_ref": "corr-safe",
+                    "usage_source": "provider",
+                    "internal_correlation_key": "join-secret",
+                }
+            )
+        ]
+    )
+    return value
+
+
+@pytest.fixture
+def client(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: InMemoryFinOpsRepository,
+) -> TestClient:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "finops-test-secret")
+    monkeypatch.setenv("DF_FINOPS_READ_ENABLED", "1")
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_query_service",
+        lambda: FinOpsQueryService(repository),
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "owner"},
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "_tenant_ref",
+        lambda _actor: "tenantref-a",
+    )
+    return TestClient(app)
+
+
+def test_finops_read_flag_fails_closed(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DF_FINOPS_READ_ENABLED", "0")
+    response = client.get(
+        "/api/finops/overview?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert response.status_code == 404
+
+
+def test_finops_rejects_untrusted_and_out_of_scope_workspace(client: TestClient) -> None:
+    untrusted = client.get(
+        "/api/finops/overview?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z"
+    )
+    denied = client.get(
+        "/api/finops/overview?workspace_id=ws-b&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert untrusted.status_code == 401
+    assert denied.status_code == 403
+
+
+def test_finops_bootstrap_is_bounded_and_omits_request_evidence(client: TestClient) -> None:
+    response = client.get(
+        "/api/finops/bootstrap?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["overview"]["metrics"]["requests"] == 1
+    assert payload["trend"]["bucket"] == "day"
+    assert payload["departments"]["count"] <= 5
+    assert len(payload["anomalies"]["items"]) <= 3
+    assert payload["insights"] == {"finops": None, "roi": None}
+    serialized = response.text
+    for forbidden in (
+        "request_ref",
+        "run_id",
+        "trace_id",
+        "correlation",
+        "business_request",
+        "business_response",
+    ):
+        assert forbidden not in serialized
+
+
+def test_finops_bootstrap_requires_summary_permission(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "viewer"},
+    )
+
+    response = client.get(
+        "/api/finops/bootstrap?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="viewer-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "workspace access denied for finops.summary.read"
+
+
+def test_finops_read_contract_and_request_detail_are_privacy_bounded(client: TestClient) -> None:
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    overview = client.get(
+        "/api/finops/overview?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=headers,
+    )
+    requests = client.get(
+        "/api/finops/requests?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=headers,
+    )
+    detail = client.get(
+        "/api/finops/requests/req_aaaaaaaaaaaa?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=headers,
+    )
+
+    assert overview.status_code == 200
+    assert overview.json()["metrics"]["requests"] == 1
+    assert requests.status_code == 200
+    assert requests.json()["items"][0]["request_ref"] == "req_aaaaaaaaaaaa"
+    assert detail.status_code == 200
+    serialized = detail.text
+    assert "join-secret" not in serialized
+    assert "corr-safe" not in serialized
+    assert "correlation_ref" not in serialized
+    assert "provider_response_id" not in serialized
+
+
+def test_finops_request_detail_builds_server_owned_azure_monitor_link(
+    client: TestClient,
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = repository.get_event(
+        tenant_ref="tenantref-a",
+        workspace_ids=("ws-a",),
+        request_ref="req_aaaaaaaaaaaa",
+    )
+    assert current is not None
+    repository.upsert_events(
+        [
+            current.model_copy(
+                update={"apim_correlation_id": "4f8b0f37b5824af5a2ac7ed9129ee70b"}
+            )
+        ]
+    )
+    monkeypatch.setenv(
+        "DF_FINOPS_AZURE_MONITOR_LINK_TEMPLATE",
+        "https://portal.azure.com/#blade/DataForge/query/{correlation_id}",
+    )
+
+    detail = client.get(
+        "/api/finops/requests/req_aaaaaaaaaaaa?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert detail.status_code == 200
+    assert detail.json()["links"]["azure_monitor"].endswith(
+        "/4f8b0f37b5824af5a2ac7ed9129ee70b"
+    )
+
+
+def test_finops_actor_breakdown_requires_admin_or_owner(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "viewer"},
+    )
+    response = client.get(
+        "/api/finops/breakdowns?group_by=actor&workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="viewer-a", tenant_id="tenant-a"),
+    )
+    assert response.status_code == 403
+
+
+def test_finops_window_is_limited_to_ninety_days(client: TestClient) -> None:
+    response = client.get(
+        "/api/finops/overview?workspace_id=ws-a&from=2026-01-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert response.status_code == 422
+
+
+def test_finops_sql_read_failure_returns_bounded_service_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingService:
+        def overview(self, _query):
+            raise FinOpsPersistenceError("server detail must not escape")
+
+    monkeypatch.setattr(finops_router, "get_finops_query_service", lambda: FailingService())
+    response = client.get(
+        "/api/finops/overview?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "FinOps persistence service is unavailable"
+    assert "server detail" not in response.text
+
+
+def test_finops_action_api_enforces_two_person_approval_and_execution_flag(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FinOpsActionService(
+        repository=InMemoryActionRepository(),
+        executors={"cache_policy": RecordingExecutor(current_version="v1")},
+    )
+    monkeypatch.setattr(finops_router, "get_finops_action_service", lambda: service)
+    proposer = trusted_headers(actor_id="proposer", tenant_id="tenant-a")
+    approver = trusted_headers(actor_id="approver", tenant_id="tenant-a")
+    created = client.post(
+        "/api/finops/actions",
+        headers=proposer,
+        json={
+            "action_type": "cache_policy",
+            "payload": {
+                "workspace_id": "ws-a",
+                "enabled": True,
+                "ttl_seconds": 600,
+                "base_version": "v1",
+            },
+        },
+    )
+    assert created.status_code == 201
+    action_id = created.json()["action"]["action_id"]
+    assert client.post(f"/api/finops/actions/{action_id}/submit", headers=proposer).status_code == 200
+    assert client.post(f"/api/finops/actions/{action_id}/approve", headers=proposer).status_code == 403
+    assert client.post(f"/api/finops/actions/{action_id}/approve", headers=approver).status_code == 200
+
+    monkeypatch.setenv("DF_FINOPS_ACTIONS_ENABLED", "0")
+    assert client.post(f"/api/finops/actions/{action_id}/execute", headers=approver).status_code == 403
+    monkeypatch.setenv("DF_FINOPS_ACTIONS_ENABLED", "1")
+    assert client.post(f"/api/finops/actions/{action_id}/execute", headers=approver).json()["action"]["status"] == "verifying"
+    assert client.post(f"/api/finops/actions/{action_id}/verify", headers=approver).json()["action"]["status"] == "succeeded"
+
+
+def test_finops_action_transition_rechecks_target_workspace_admin_scope(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FinOpsActionService(
+        repository=InMemoryActionRepository(),
+        executors={"cache_policy": RecordingExecutor(current_version="v1")},
+    )
+    monkeypatch.setattr(finops_router, "get_finops_action_service", lambda: service)
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda actor: (
+            {"ws-b": "owner"}
+            if actor.get("actor_id") == "owner-b"
+            else {"ws-a": "owner"}
+        ),
+    )
+    owner_b = trusted_headers(actor_id="owner-b", tenant_id="tenant-a")
+    owner_a = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/finops/actions",
+        headers=owner_b,
+        json={
+            "action_type": "cache_policy",
+            "payload": {
+                "workspace_id": "ws-b",
+                "enabled": True,
+                "ttl_seconds": 600,
+                "base_version": "v1",
+            },
+        },
+    )
+    assert created.status_code == 201
+    action_id = created.json()["action"]["action_id"]
+
+    denied = client.post(f"/api/finops/actions/{action_id}/submit", headers=owner_a)
+
+    assert denied.status_code == 403
+    assert service.get(tenant_ref="tenantref-a", action_id=action_id).status == "draft"
+
+
+def test_finops_anomaly_api_supports_admin_acknowledge_and_suppress(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    anomaly_service = FinOpsAnomalyService(InMemoryAnomalyRepository())
+    monkeypatch.setattr(finops_router, "get_finops_anomaly_service", lambda: anomaly_service)
+    monkeypatch.setattr(
+        finops_router,
+        "evaluate_default_anomalies",
+        lambda _value: [
+            DetectedAnomaly(
+                anomaly_id="anomaly_apim_ws-a",
+                policy_type="apim_coverage",
+                severity="warning",
+                observed_value=90,
+                threshold_value=95,
+                sample_count=25,
+                workspace_ids=["ws-a"],
+                recommendation="Inspect unmanaged routes.",
+            )
+        ],
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    listing = client.get(
+        "/api/finops/anomalies?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=headers,
+    )
+    assert listing.status_code == 200
+    anomaly_id = next(
+        item["anomaly_id"]
+        for item in listing.json()["items"]
+        if item["policy_type"] == "apim_coverage"
+    )
+
+    acknowledged = client.post(
+        f"/api/finops/anomalies/{anomaly_id}/acknowledge",
+        headers=headers,
+    )
+    assert acknowledged.status_code == 200
+    assert acknowledged.json()["anomaly"]["status"] == "acknowledged"
+
+    suppressed = client.post(
+        f"/api/finops/anomalies/{anomaly_id}/suppress",
+        headers=headers,
+        json={"reason": "candidate maintenance"},
+    )
+    assert suppressed.status_code == 200
+    assert suppressed.json()["anomaly"]["status"] == "suppressed"
+
+
+def test_finops_anomaly_mutation_rechecks_all_target_workspace_scopes(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    anomaly_service = FinOpsAnomalyService(InMemoryAnomalyRepository())
+    anomaly_service.reconcile(
+        tenant_ref="tenantref-a",
+        findings=[
+            DetectedAnomaly(
+                anomaly_id="anomaly_private_ws-b",
+                policy_type="apim_coverage",
+                severity="warning",
+                observed_value=90,
+                threshold_value=95,
+                sample_count=25,
+                workspace_ids=["ws-b"],
+                recommendation="Inspect unmanaged routes.",
+            )
+        ],
+        scope_workspace_ids=("ws-b",),
+    )
+    monkeypatch.setattr(finops_router, "get_finops_anomaly_service", lambda: anomaly_service)
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "owner"},
+    )
+
+    denied = client.post(
+        "/api/finops/anomalies/anomaly_private_ws-b/acknowledge",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert denied.status_code == 403
+    assert anomaly_service.get(
+        tenant_ref="tenantref-a",
+        anomaly_id="anomaly_private_ws-b",
+    ).status == "open"
+
+
+def test_finops_management_api_supports_department_mapping_and_typed_policies(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FinOpsManagementService(InMemoryManagementRepository())
+    monkeypatch.setattr(finops_router, "get_finops_management_service", lambda: service)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/finops/departments",
+        headers=headers,
+        json={"department_id": "engineering", "display_name": "Engineering"},
+    )
+    assigned = client.put(
+        "/api/finops/workspace-assignments/ws-a",
+        headers=headers,
+        json={"department_id": "engineering"},
+    )
+    policies = client.post(
+        "/api/finops/policies",
+        headers=headers,
+        json={
+            "policy_type": "error_rate",
+            "configuration": {"threshold_pct": 5, "minimum_requests": 20, "window_minutes": 15},
+        },
+    )
+    rejected = client.post(
+        "/api/finops/policies",
+        headers=headers,
+        json={
+            "policy_type": "error_rate",
+            "configuration": {
+                "threshold_pct": 5,
+                "minimum_requests": 20,
+                "window_minutes": 15,
+                "script": "not allowed",
+            },
+        },
+    )
+    disabled = client.delete(
+        f"/api/finops/policies/{policies.json()['policy']['policy_id']}",
+        headers=headers,
+    )
+    assert created.status_code == 201
+    assert assigned.json()["assignment"]["department_id"] == "engineering"
+    assert policies.status_code == 201
+    assert rejected.status_code == 422
+    assert disabled.status_code == 200
+    assert disabled.json()["policy"]["status"] == "disabled"
+
+
+def test_finops_apim_action_rejects_unsupported_token_window_at_creation(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/finops/actions",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "action_type": "apim_token_limit",
+            "payload": {
+                "workspace_id": "ws-a",
+                "quota_tokens": 1000,
+                "window_seconds": 30,
+                "base_version": "etag-v1",
+            },
+        },
+    )
+
+    assert response.status_code == 422

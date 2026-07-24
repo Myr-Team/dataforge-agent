@@ -1410,11 +1410,27 @@ def workspace_governance_lineage(
 
 def _governance_sections(role: str | None) -> dict[str, dict[str, Any]]:
     is_owner = str(role or "").strip().lower() == "owner"
+    is_admin = str(role or "").strip().lower() in {"owner", "admin"}
+    finops_visible = is_admin and str(
+        os.environ.get("DF_FINOPS_READ_ENABLED") or "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    finops_permissions = {
+        "finops.summary.read": finops_visible,
+        "finops.cost.read": finops_visible,
+        "finops.roi.read": finops_visible,
+        "finops.request_detail.read": finops_visible,
+        "finops.trace.read": finops_visible,
+        "finops.action.draft": finops_visible,
+    }
     return {
         "members": {"visible": True, "write": is_owner},
         "lineage": {"visible": True, "scope": "workspace" if is_owner else "self"},
         "monitor": {"visible": is_owner},
         "model_routing": {"visible": is_owner},
+        "finops": {
+            "visible": finops_visible,
+            "permissions": finops_permissions,
+        },
     }
 
 

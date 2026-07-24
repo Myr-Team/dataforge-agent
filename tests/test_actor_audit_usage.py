@@ -845,6 +845,36 @@ def test_editor_governance_capabilities_hide_owner_sections(monkeypatch) -> None
         "lineage": {"visible": True, "scope": "self"},
         "monitor": {"visible": False},
         "model_routing": {"visible": False},
+        "finops": {
+            "visible": False,
+            "permissions": {
+                "finops.summary.read": False,
+                "finops.cost.read": False,
+                "finops.roi.read": False,
+                "finops.request_detail.read": False,
+                "finops.trace.read": False,
+                "finops.action.draft": False,
+            },
+        },
+    }
+
+
+def test_owner_governance_capabilities_project_finops_permissions(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FINOPS_READ_ENABLED", "1")
+    monkeypatch.setattr(control_plane, "_require_sensitive_workspace_action", lambda *_args, **_kwargs: "owner")
+
+    result = control_plane.workspace_governance_capabilities("ws-governance", object())
+
+    assert result["sections"]["finops"] == {
+        "visible": True,
+        "permissions": {
+            "finops.summary.read": True,
+            "finops.cost.read": True,
+            "finops.roi.read": True,
+            "finops.request_detail.read": True,
+            "finops.trace.read": True,
+            "finops.action.draft": True,
+        },
     }
 
 

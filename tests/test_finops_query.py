@@ -148,6 +148,7 @@ def test_bootstrap_reuses_query_metrics_and_bounds_department_summary() -> None:
     assert payload["trend"]["bucket"] == "day"
     assert payload["departments"]["count"] == 5
     assert len(payload["departments"]["items"]) == 5
+    assert payload["filters"]["workspaces"] == ["ws-a"]
 
 
 def test_bootstrap_never_contains_request_or_trace_identifiers() -> None:

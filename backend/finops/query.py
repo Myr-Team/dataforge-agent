@@ -81,6 +81,7 @@ class FinOpsQueryService:
     def bootstrap(self, query: FinOpsQuery) -> dict[str, Any]:
         rows = self._rows(query)
         departments = self._breakdowns_from_rows(query, rows, "department")
+        filters = self._filters_from_rows(query, rows)
         departments["items"] = departments["items"][:5]
         departments["count"] = len(departments["items"])
         payload = self._envelope(query, rows)
@@ -89,7 +90,7 @@ class FinOpsQueryService:
                 "overview": self._overview_from_rows(query, rows),
                 "trend": self._trends_from_rows(query, rows, "day"),
                 "departments": departments,
-                "filters": self._filters_from_rows(query, rows),
+                "filters": filters["filters"],
             }
         )
         return payload
