@@ -1725,6 +1725,24 @@ def _require_admin_scope(
         raise HTTPException(status_code=403, detail="workspace access denied for finops.write")
 
 
+def _require_tenant_owner(roles: Mapping[str, str]) -> None:
+    """Tenant-level pricing writes require Owner across every authorized workspace."""
+    if not roles or not all(role == "owner" for role in roles.values()):
+        raise HTTPException(
+            status_code=403,
+            detail="official price mapping requires owner",
+        )
+
+
+def _require_tenant_admin(roles: Mapping[str, str]) -> None:
+    """Tenant-level policy writes require Owner/Admin across every workspace."""
+    if not roles or not all(role in {"owner", "admin"} for role in roles.values()):
+        raise HTTPException(
+            status_code=403,
+            detail="FinOps policy management requires admin or owner across all workspaces",
+        )
+
+
 def _action_response(action: Any) -> dict[str, Any]:
     return {
         "action": action.model_dump(mode="json"),
@@ -2061,11 +2079,7 @@ async def update_official_pricing_mapping(
     request: Request,
 ) -> dict[str, Any]:
     tenant_ref, actor_ref, roles = _pricing_read_context(request)
-    if not any(role == "owner" for role in roles.values()):
-        raise HTTPException(
-            status_code=403,
-            detail="official price mapping requires owner",
-        )
+    _require_tenant_owner(roles)
     catalog = load_official_price_catalog()
     price = catalog.get(body.official_price_key)
     if price is None:
@@ -2104,11 +2118,7 @@ async def delete_official_pricing_mapping(
     request: Request,
 ) -> Response:
     tenant_ref, _, roles = _pricing_read_context(request)
-    if not any(role == "owner" for role in roles.values()):
-        raise HTTPException(
-            status_code=403,
-            detail="official price mapping requires owner",
-        )
+    _require_tenant_owner(roles)
     deleted = get_finops_price_mapping_repository().delete(tenant_ref, deployment)
     if not deleted:
         raise HTTPException(
@@ -2179,7 +2189,8 @@ async def list_policies(request: Request) -> dict[str, Any]:
 
 @router.post("/policies", status_code=201)
 async def create_policy(body: dict[str, Any], request: Request) -> dict[str, Any]:
-    tenant_ref, actor_ref, _ = _write_context(request)
+    tenant_ref, actor_ref, roles = _write_context(request)
+    _require_tenant_admin(roles)
     raw = body if isinstance(body, dict) else {}
     configuration = raw.get("configuration") if isinstance(raw.get("configuration"), dict) else {}
     try:
@@ -2196,7 +2207,8 @@ async def create_policy(body: dict[str, Any], request: Request) -> dict[str, Any
 
 @router.patch("/policies/{policy_id}")
 async def update_policy(policy_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
-    tenant_ref, actor_ref, _ = _write_context(request)
+    tenant_ref, actor_ref, roles = _write_context(request)
+    _require_tenant_admin(roles)
     raw = body if isinstance(body, dict) else {}
     configuration = raw.get("configuration") if isinstance(raw.get("configuration"), dict) else {}
     try:
@@ -2215,7 +2227,8 @@ async def update_policy(policy_id: str, body: dict[str, Any], request: Request) 
 
 @router.delete("/policies/{policy_id}")
 async def disable_policy(policy_id: str, request: Request) -> dict[str, Any]:
-    tenant_ref, actor_ref, _ = _write_context(request)
+    tenant_ref, actor_ref, roles = _write_context(request)
+    _require_tenant_admin(roles)
     service = get_finops_management_service()
     current = next(
         (

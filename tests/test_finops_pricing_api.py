@@ -11,7 +11,12 @@ from backend.finops.sql_pricing import InMemoryPriceMappingRepository
 from auth_fixtures import trusted_headers
 
 
-def _client(monkeypatch, *, role: str = "owner") -> TestClient:
+def _client(
+    monkeypatch,
+    *,
+    role: str = "owner",
+    roles: dict[str, str] | None = None,
+) -> TestClient:
     repository = InMemoryPriceMappingRepository()
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "finops-test-secret")
@@ -25,7 +30,7 @@ def _client(monkeypatch, *, role: str = "owner") -> TestClient:
     monkeypatch.setattr(
         finops_router,
         "_authorized_workspace_roles",
-        lambda _actor: {"ws-a": role},
+        lambda _actor: dict(roles) if roles is not None else {"ws-a": role},
     )
     monkeypatch.setattr(finops_router, "_tenant_ref", lambda _actor: "tenantref-a")
     monkeypatch.setattr(finops_router, "_actor_ref", lambda _actor: "actorref-a")
@@ -113,6 +118,49 @@ def test_pricing_mapping_delete_requires_owner(monkeypatch) -> None:
     response = client.delete(
         "/api/finops/pricing/mappings/gpt-5.6-terra",
         headers=trusted_headers(actor_id="admin-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 403
+
+
+def test_pricing_mapping_requires_owner_across_all_workspaces(monkeypatch) -> None:
+    # Owner of one workspace but only a member of another must not be able to
+    # write the tenant-level official price mapping.
+    client = _client(monkeypatch, roles={"ws-a": "owner", "ws-b": "member"})
+
+    response = client.put(
+        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
+            "base_revision": 0,
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_pricing_mapping_delete_requires_owner_across_all_workspaces(monkeypatch) -> None:
+    client = _client(monkeypatch, roles={"ws-a": "owner", "ws-b": "admin"})
+
+    response = client.delete(
+        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 403
+
+
+def test_policy_write_requires_admin_across_all_workspaces(monkeypatch) -> None:
+    client = _client(monkeypatch, roles={"ws-a": "owner", "ws-b": "member"})
+
+    response = client.post(
+        "/api/finops/policies",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "policy_type": "unpriced_requests",
+            "configuration": {"threshold_pct": 5},
+        },
     )
 
     assert response.status_code == 403
