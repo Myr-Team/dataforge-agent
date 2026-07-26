@@ -5025,6 +5025,9 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-ai-messages article.assistant { justify-self: start; background: #f2f4f7; color: #344054; }
 .finops-ai-messages article button { width: fit-content; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9px; font-weight: 650; }
 .finops-ai-thinking { display: flex; align-items: center; gap: 6px; color: #667085; font-size: 10px; }
+.finops-ai-evidence-labels { display: grid; gap: 3px; margin-top: 7px; color: #667085; font-size: 10px; }
+.finops-ai-evidence-labels b { color: #344054; font-size: 10px; }
+.finops-ai-evidence-labels em { overflow: hidden; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .finops-ai-suggestions { display: flex; gap: 6px; overflow-x: auto; border-top: 1px solid #edf0f5; padding: 8px 10px; }
 .finops-ai-suggestions button { min-height: 27px; flex: none; border: 1px solid #d7e2f0; border-radius: 999px; background: #fff; padding: 0 9px; color: #475467; cursor: pointer; font: inherit; font-size: 9.5px; white-space: nowrap; }
 .finops-ai-suggestions button:hover { border-color: #84adf2; color: #175cd3; }

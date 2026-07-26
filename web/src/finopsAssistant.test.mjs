@@ -16,6 +16,10 @@ test("operations assistant is a compact anchored popover rather than a dashboard
   assert.match(component, /clearFinOpsAssistantConversation/);
   assert.match(component, /conversation_ref/);
   assert.match(component, /清空历史/);
+  assert.match(component, /evidenceLabels/);
+  assert.match(component, /相关证据/);
+  assert.match(component, /publicAssistantContent/);
+  assert.match(component, /req_/);
   assert.match(component, /className="finops-ai-launcher"/);
   assert.match(component, /className="finops-ai-popover"/);
   assert.match(component, /aria-expanded=\{open\}/);

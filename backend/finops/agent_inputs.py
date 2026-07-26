@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .query import FinOpsQuery
 
@@ -11,16 +11,32 @@ def build_finops_agent_input(
     *,
     anomalies: Iterable[Mapping[str, Any]] = (),
     price_card_revision: str | None = None,
+    evidence_name_resolver: Callable[[Mapping[str, Any]], str] | None = None,
 ) -> dict[str, Any]:
     overview = query_service.overview(query)
     trends = query_service.trends(query, "day")
     departments = query_service.breakdowns(query, "department")
     workspaces = query_service.breakdowns(query, "workspace")
     request_page = query_service.requests(query)
-    evidence_refs = [
-        str(item.get("request_ref") or "").strip()
+    evidence_items = [
+        item
         for item in request_page.get("items", [])[:50]
         if isinstance(item, Mapping) and str(item.get("request_ref") or "").strip()
+    ]
+    evidence_refs = [
+        str(item.get("request_ref") or "").strip()
+        for item in evidence_items
+    ]
+    evidence_catalog = [
+        {
+            "ref": str(item.get("request_ref") or "").strip(),
+            "display_name": _evidence_display_name(
+                item,
+                index=index,
+                resolver=evidence_name_resolver,
+            ),
+        }
+        for index, item in enumerate(evidence_items)
     ]
     if not evidence_refs:
         return {
@@ -29,6 +45,7 @@ def build_finops_agent_input(
             "scope": {"workspace_ids": list(_selected_workspace_ids(query))},
             "window": {"from": query.from_value, "to": query.to_value},
             "evidence_refs": [],
+            "evidence_catalog": [],
             "evidence_gaps": ["请求级成本证据不足"],
         }
     return {
@@ -97,8 +114,25 @@ def build_finops_agent_input(
             str(price_card_revision or "").strip()[:160] or None
         ),
         "evidence_refs": list(dict.fromkeys(evidence_refs)),
+        "evidence_catalog": evidence_catalog,
         "evidence_gaps": [],
     }
+
+
+def _evidence_display_name(
+    item: Mapping[str, Any],
+    *,
+    index: int,
+    resolver: Callable[[Mapping[str, Any]], str] | None,
+) -> str:
+    if resolver is not None:
+        try:
+            resolved = " ".join(str(resolver(item) or "").split())[:320]
+        except (KeyError, TypeError, ValueError):
+            resolved = ""
+        if resolved:
+            return resolved
+    return f"运营证据 {index + 1}"
 
 
 def build_roi_agent_input(

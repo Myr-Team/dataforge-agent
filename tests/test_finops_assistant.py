@@ -54,7 +54,7 @@ def test_assistant_returns_only_allowlisted_evidence() -> None:
     def runner(*_args: object, **_kwargs: object) -> dict[str, object]:
         return {
             "structured": {
-                "answer": "缓存命中率下降主要来自当前模型范围内的未命中请求。",
+                "answer": "缓存命中率下降主要来自当前模型范围内的未命中请求。[req_safe]",
                 "evidence_refs": ["req_safe"],
                 "suggested_questions": ["哪些工作区贡献最大？"],
             }
@@ -65,11 +65,19 @@ def test_assistant_returns_only_allowlisted_evidence() -> None:
         evidence_payload={
             "overview": {"cache_hit_rate_pct": 62.5},
             "evidence_refs": ["req_safe"],
+            "evidence_catalog": [
+                {
+                    "ref": "req_safe",
+                    "display_name": "工作区 A · 模型调用 · 7月26日 10:00",
+                }
+            ],
         },
     )
 
     assert result.status == "ready"
     assert result.evidence_refs == ["req_safe"]
+    assert "req_safe" not in result.answer
+    assert result.evidence_labels == ["工作区 A · 模型调用 · 7月26日 10:00"]
     assert result.evidence_state == "observed"
     assert result.suggested_questions == ["哪些工作区贡献最大？"]
 

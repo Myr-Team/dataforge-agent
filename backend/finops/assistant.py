@@ -113,6 +113,7 @@ class AssistantResponse(BaseModel):
     status: Literal["ready", "insufficient_data", "unavailable"]
     answer: str
     evidence_refs: list[str] = Field(default_factory=list)
+    evidence_labels: list[str] = Field(default_factory=list)
     evidence_state: EvidenceState
     suggested_questions: list[str] = Field(default_factory=list)
 
@@ -142,6 +143,10 @@ class FinOpsAssistantService:
             for value in evidence_payload.get("evidence_refs", [])
             if _SAFE_REF.fullmatch(str(value or "").strip())
         }
+        evidence_labels = _evidence_labels(
+            evidence_payload.get("evidence_catalog"),
+            allowed_refs=allowed_refs,
+        )
         if not allowed_refs:
             return AssistantResponse(
                 status="insufficient_data",
@@ -151,7 +156,11 @@ class FinOpsAssistantService:
                 suggested_questions=[],
             )
         payload = {
-            "task": "根据所选运营指标回答用户问题，仅引用 evidence_refs 中的证据；不要批准或执行治理动作。",
+            "task": (
+                "根据所选运营指标回答用户问题，仅在结构化 evidence_refs 字段引用允许的证据；"
+                "回答正文只能使用 evidence_catalog 的 display_name，不得输出原始 evidence ref；"
+                "不要批准或执行治理动作。"
+            ),
             "question": request.question,
             "metric_context": request.metric_context.model_dump(
                 mode="json",
@@ -179,10 +188,19 @@ class FinOpsAssistantService:
             cited = set(output.evidence_refs)
             if not cited.issubset(allowed_refs):
                 raise ValueError("assistant cited evidence outside the allowed scope")
+            public_labels = [
+                evidence_labels.get(ref) or f"运营证据 {index + 1}"
+                for index, ref in enumerate(output.evidence_refs)
+            ]
             return AssistantResponse(
                 status="ready",
-                answer=output.answer,
+                answer=_public_answer(
+                    output.answer,
+                    evidence_refs=output.evidence_refs,
+                    evidence_labels=evidence_labels,
+                ),
                 evidence_refs=output.evidence_refs,
+                evidence_labels=public_labels,
                 evidence_state=request.metric_context.evidence_state,
                 suggested_questions=output.suggested_questions,
             )
@@ -194,3 +212,37 @@ class FinOpsAssistantService:
                 evidence_state="unavailable",
                 suggested_questions=[],
             )
+
+
+def _evidence_labels(
+    raw_catalog: Any,
+    *,
+    allowed_refs: set[str],
+) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    if not isinstance(raw_catalog, list):
+        return labels
+    for item in raw_catalog:
+        if not isinstance(item, Mapping):
+            continue
+        ref = str(item.get("ref") or "").strip()
+        label = " ".join(str(item.get("display_name") or "").split())[:320]
+        if ref in allowed_refs and label:
+            labels.setdefault(ref, label)
+    return labels
+
+
+def _public_answer(
+    answer: str,
+    *,
+    evidence_refs: list[str],
+    evidence_labels: Mapping[str, str],
+) -> str:
+    public = answer
+    for index, ref in enumerate(evidence_refs):
+        label = evidence_labels.get(ref) or f"运营证据 {index + 1}"
+        public = re.sub(rf"\[\s*{re.escape(ref)}\s*\]", "", public)
+        public = public.replace(ref, label)
+    public = re.sub(r"\s+([，。；：,.!?])", r"\1", public)
+    public = " ".join(public.split()).strip()
+    return public or "已基于相关运营证据完成分析，请通过“查看证据”复核明细。"

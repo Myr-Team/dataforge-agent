@@ -24,6 +24,16 @@ const DEFAULT_QUESTIONS = [
 ];
 
 
+export function publicAssistantContent(value) {
+  return String(value || "")
+    .replace(/\[\s*req_[A-Za-z0-9_-]+\s*\]/gi, "")
+    .replace(/\breq_[A-Za-z0-9_-]+\b/gi, "运营证据")
+    .replace(/\s+([，。；：,.!?])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
 export function FinOpsAssistant({
   context,
   openRequest = 0,
@@ -93,6 +103,9 @@ export function FinOpsAssistant({
           role: "assistant",
           content: response?.answer || "当前分析暂不可用。",
           evidenceRefs: Array.isArray(response?.evidence_refs) ? response.evidence_refs : [],
+          evidenceLabels: Array.isArray(response?.evidence_labels)
+            ? response.evidence_labels.filter((value) => value && !/^req_/i.test(String(value)))
+            : [],
           evidenceState: response?.evidence_state || "unavailable",
           suggestions: Array.isArray(response?.suggested_questions)
             ? response.suggested_questions
@@ -190,7 +203,19 @@ export function FinOpsAssistant({
             ) : null}
             {messages.map((message, index) => (
               <article className={message.role} key={`${message.role}:${index}`}>
-                <span>{message.content}</span>
+                <span>
+                  {message.role === "assistant"
+                    ? publicAssistantContent(message.content)
+                    : message.content}
+                </span>
+                {message.role === "assistant" && message.evidenceLabels?.length ? (
+                  <small className="finops-ai-evidence-labels">
+                    <b>相关证据</b>
+                    {message.evidenceLabels.slice(0, 3).map((label) => (
+                      <em key={label}>{label}</em>
+                    ))}
+                  </small>
+                ) : null}
                 {message.role === "assistant" && message.evidenceRefs?.length && onEvidence ? (
                   <button type="button" onClick={() => onEvidence(`AI 回答 · ${message.evidenceRefs.length} 条证据`)}>
                     查看证据

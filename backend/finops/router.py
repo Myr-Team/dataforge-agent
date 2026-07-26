@@ -29,6 +29,7 @@ except ImportError:
     from workspace_store import list_workspaces
 
 from .normalization import opaque_ref
+from .evidence import build_evidence_alias, operation_code_for_event
 from .evidence_repository import (
     InMemoryEvidenceAliasRepository,
     SqlEvidenceAliasRepository,
@@ -77,6 +78,7 @@ from .sql_pricing import (
     SqlPriceMappingRepository,
 )
 from .query import FinOpsQuery, FinOpsQueryService
+from .models import FinOpsRequestEvent
 from .query_cache import CachedFinOpsQueryService
 from .request_detail import FinOpsRequestDetailService, build_foundry_trace_link
 from .planning import (
@@ -334,6 +336,22 @@ def _workspace_name(workspace_id: str) -> str:
         ):
             return str(item.get("name") or "").strip()
     return ""
+
+
+def _assistant_evidence_name(item: Mapping[str, Any]) -> str:
+    event = FinOpsRequestEvent.model_validate(item)
+    alias = get_finops_evidence_alias_repository().get_or_create(
+        build_evidence_alias(
+            tenant_ref=event.tenant_ref,
+            workspace_id=event.workspace_id,
+            workspace_name=_workspace_name(event.workspace_id),
+            object_kind="request",
+            object_ref=event.request_ref,
+            operation_code=operation_code_for_event(event),
+            occurred_at=event.occurred_at,
+        )
+    )
+    return alias.display_name
 
 
 def _anomaly_evaluation_input(
@@ -801,7 +819,11 @@ async def assistant_query(
                 ),
             ),
         )
-    evidence_payload = build_finops_agent_input(query, query_service)
+    evidence_payload = build_finops_agent_input(
+        query,
+        query_service,
+        evidence_name_resolver=_assistant_evidence_name,
+    )
     response = get_finops_assistant_service().answer(
         request=body,
         evidence_payload=evidence_payload,
