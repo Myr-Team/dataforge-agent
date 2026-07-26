@@ -15,6 +15,8 @@ from .evidence_repository import SqlEvidenceAliasRepository
 from .normalization import normalize_run_event, opaque_ref
 from .management import FinOpsManagementService, estimate_request_cost
 from .models import EstimatedCost
+from .official_pricing import load_official_price_catalog
+from .sql_pricing import SqlPriceMappingRepository
 from .sql_management import SqlFinOpsManagementRepository
 from .sql_repository import SqlFinOpsRepository
 
@@ -24,6 +26,7 @@ def ingest_completed_run(
     *,
     repository: Any | None = None,
     management_service: FinOpsManagementService | None = None,
+    price_mapping_repository: Any | None = None,
     alias_repository: Any | None = None,
     workspace_name_resolver: Callable[[str], str] | None = None,
     hmac_secret: str | None = None,
@@ -49,10 +52,14 @@ def ingest_completed_run(
         manager = management_service or FinOpsManagementService(
             SqlFinOpsManagementRepository(connection_factory=factory)
         )
+        price_mappings = price_mapping_repository or SqlPriceMappingRepository(
+            connection_factory=factory
+        )
     else:
         target = repository
         alias_target = alias_repository
         manager = management_service
+        price_mappings = price_mapping_repository
     workspace_id = str(run.get("workspace_id") or "").strip()
     department_id = (
         manager.workspace_department(tenant_ref, workspace_id)
@@ -80,8 +87,30 @@ def ingest_completed_run(
                 hmac_secret=secret,
                 department_id=department_id,
             )
+            if event.estimated_cost.amount is None and event.tokens.observed:
+                deployment = event.deployment or event.model
+                mapping = (
+                    price_mappings.get(tenant_ref, deployment)
+                    if price_mappings is not None and deployment
+                    else None
+                )
+                if mapping is not None:
+                    estimate = load_official_price_catalog().estimate(
+                        mapping.official_price_key,
+                        event.tokens,
+                    )
+                    estimate = estimate.model_copy(
+                        update={
+                            "official_price_key": mapping.official_price_key,
+                            "mapping_revision": mapping.mapping_revision,
+                        }
+                    )
+                    event = event.model_copy(
+                        update={"estimated_cost": estimate}
+                    )
             if (
                 event.estimated_cost.amount is None
+                and event.estimated_cost.status != "partial"
                 and event.tokens.observed
                 and active_price_card is not None
             ):

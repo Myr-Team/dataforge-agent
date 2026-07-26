@@ -56,6 +56,8 @@ class EstimatedCost(BaseModel):
     currency: Literal["USD"] = "USD"
     status: Literal["estimated", "partial", "unavailable"] = "unavailable"
     price_card_revision: str | None = Field(default=None, max_length=128)
+    official_price_key: str | None = Field(default=None, max_length=240)
+    mapping_revision: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_price_evidence(self) -> "EstimatedCost":

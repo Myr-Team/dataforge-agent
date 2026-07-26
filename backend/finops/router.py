@@ -63,6 +63,13 @@ from .executors import (
 )
 from .management import FinOpsManagementService, InMemoryManagementRepository
 from .price_card_client import ManagementPriceCardClient, price_card_version
+from .official_pricing import load_official_price_catalog
+from .sql_pricing import (
+    DeploymentPriceMapping,
+    InMemoryPriceMappingRepository,
+    PriceMappingConflict,
+    SqlPriceMappingRepository,
+)
 from .query import FinOpsQuery, FinOpsQueryService
 from .query_cache import CachedFinOpsQueryService
 from .request_detail import FinOpsRequestDetailService, build_foundry_trace_link
@@ -121,6 +128,8 @@ _SQL_INSIGHT_REPOSITORY: SqlInsightRepository | None = None
 _PLANNING_REPOSITORY = InMemoryPlanningRepository()
 _SAVED_VIEW_REPOSITORY = InMemorySavedViewRepository()
 _SQL_PLANNING_REPOSITORY: SqlFinOpsPlanningRepository | None = None
+_PRICE_MAPPING_REPOSITORY = InMemoryPriceMappingRepository()
+_SQL_PRICE_MAPPING_REPOSITORY: SqlPriceMappingRepository | None = None
 
 
 class InsightAnalyzeRequest(BaseModel):
@@ -133,6 +142,13 @@ class InsightAnalyzeRequest(BaseModel):
     workspace_id: str = Field(min_length=1, max_length=160)
     from_value: str = Field(alias="from", min_length=1, max_length=64)
     to_value: str = Field(alias="to", min_length=1, max_length=64)
+
+
+class PriceMappingUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    official_price_key: str = Field(min_length=3, max_length=240)
+    base_revision: int = Field(ge=0)
 
 
 def _enabled(name: str) -> bool:
@@ -202,6 +218,17 @@ def get_finops_management_service() -> FinOpsManagementService:
             )
         return _SQL_MANAGEMENT_SERVICE
     return _MANAGEMENT_SERVICE
+
+
+def get_finops_price_mapping_repository() -> Any:
+    global _SQL_PRICE_MAPPING_REPOSITORY
+    if _enabled("DF_FINOPS_SQL_ENABLED"):
+        if _SQL_PRICE_MAPPING_REPOSITORY is None:
+            _SQL_PRICE_MAPPING_REPOSITORY = SqlPriceMappingRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        return _SQL_PRICE_MAPPING_REPOSITORY
+    return _PRICE_MAPPING_REPOSITORY
 
 
 def get_finops_anomaly_service() -> FinOpsAnomalyService:
@@ -1476,6 +1503,32 @@ def _write_context(request: Request, *, workspace_id: str | None = None) -> tupl
         raise HTTPException(status_code=503, detail="FinOps evidence service is unavailable") from exc
 
 
+def _pricing_read_context(
+    request: Request,
+) -> tuple[str, str, dict[str, str]]:
+    if not _enabled("DF_FINOPS_READ_ENABLED"):
+        raise HTTPException(status_code=404, detail="FinOps capability is disabled")
+    actor = actor_from_request(request, fallback=False)
+    if not is_trusted_tenant_identity(actor):
+        raise HTTPException(
+            status_code=401,
+            detail="trusted tenant identity is required",
+        )
+    roles = _authorized_workspace_roles(actor)
+    if not roles:
+        raise HTTPException(
+            status_code=403,
+            detail="workspace access denied for finops.pricing.read",
+        )
+    try:
+        return _tenant_ref(actor), _actor_ref(actor), roles
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="FinOps evidence service is unavailable",
+        ) from exc
+
+
 def _require_admin_scope(
     roles: Mapping[str, str],
     workspace_ids: list[str] | tuple[str, ...],
@@ -1759,6 +1812,66 @@ async def assign_workspace_department(workspace_id: str, body: dict[str, Any], r
     except Exception as exc:
         raise _management_error(exc) from exc
     return {"assignment": assignment}
+
+
+@router.get("/pricing/catalog")
+async def official_pricing_catalog(request: Request) -> dict[str, Any]:
+    _pricing_read_context(request)
+    catalog = load_official_price_catalog()
+    return {
+        "revision": catalog.revision,
+        "currency": "USD",
+        "items": [
+            item.model_dump(mode="json")
+            for item in catalog.entries
+        ],
+        "count": len(catalog.entries),
+    }
+
+
+@router.get("/pricing/mappings")
+async def official_pricing_mappings(request: Request) -> dict[str, Any]:
+    tenant_ref, _, _ = _pricing_read_context(request)
+    items = get_finops_price_mapping_repository().list(tenant_ref)
+    return {
+        "items": [item.model_dump(mode="json") for item in items],
+        "count": len(items),
+    }
+
+
+@router.put("/pricing/mappings/{deployment}")
+async def update_official_pricing_mapping(
+    deployment: str,
+    body: PriceMappingUpdateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_ref, actor_ref, roles = _pricing_read_context(request)
+    if not any(role == "owner" for role in roles.values()):
+        raise HTTPException(
+            status_code=403,
+            detail="official price mapping requires owner",
+        )
+    catalog = load_official_price_catalog()
+    if catalog.get(body.official_price_key) is None:
+        raise HTTPException(
+            status_code=422,
+            detail="official price key is not in the server catalog",
+        )
+    mapping = DeploymentPriceMapping(
+        tenant_ref=tenant_ref,
+        deployment=deployment,
+        official_price_key=body.official_price_key,
+        mapping_revision=body.base_revision + 1,
+        updated_by_ref=actor_ref,
+    )
+    try:
+        saved = get_finops_price_mapping_repository().upsert(
+            mapping,
+            base_revision=body.base_revision,
+        )
+    except PriceMappingConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"mapping": saved.model_dump(mode="json")}
 
 
 @router.get("/price-cards")

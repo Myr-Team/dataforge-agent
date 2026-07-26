@@ -4,6 +4,10 @@ from backend.finops.ingestion import ingest_completed_run
 from backend.finops.evidence_repository import InMemoryEvidenceAliasRepository
 from backend.finops.management import FinOpsManagementService, InMemoryManagementRepository
 from backend.finops.repository import InMemoryFinOpsRepository
+from backend.finops.sql_pricing import (
+    DeploymentPriceMapping,
+    InMemoryPriceMappingRepository,
+)
 
 
 def _run() -> dict[str, object]:
@@ -169,3 +173,45 @@ def test_completed_run_ingestion_applies_department_and_active_price_revision(mo
     assert event.department_id == "engineering"
     assert event.estimated_cost.amount == 0.000036
     assert event.estimated_cost.price_card_revision == revision.revision_id
+
+
+def test_completed_run_ingestion_uses_official_deployment_mapping(monkeypatch) -> None:
+    repository = InMemoryFinOpsRepository()
+    mappings = InMemoryPriceMappingRepository()
+    monkeypatch.setenv("DF_FINOPS_SQL_ENABLED", "1")
+    first = ingest_completed_run(_run(), repository=repository, hmac_secret="secret")
+    tenant_ref = str(first["tenant_ref"])
+    mappings.upsert(
+        DeploymentPriceMapping(
+            tenant_ref=tenant_ref,
+            deployment="gpt-5-mini",
+            official_price_key="azure-openai:gpt-5.1:global-standard:global",
+            mapping_revision=1,
+            updated_by_ref="actor-owner",
+        ),
+        base_revision=0,
+    )
+
+    ingest_completed_run(
+        _run(),
+        repository=repository,
+        price_mapping_repository=mappings,
+        hmac_secret="secret",
+    )
+    [event] = repository.list_events(
+        tenant_ref=tenant_ref,
+        workspace_ids=("ws-a",),
+        from_value="2026-07-24T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    assert event.estimated_cost.amount == 0.0000325
+    assert (
+        event.estimated_cost.price_card_revision
+        == "azure-retail-2026-07-26"
+    )
+    assert (
+        event.estimated_cost.official_price_key
+        == "azure-openai:gpt-5.1:global-standard:global"
+    )
+    assert event.estimated_cost.mapping_revision == 1
