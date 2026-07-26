@@ -22,6 +22,27 @@ export const bootstrapPayload = {
   overview: {
     freshness: { generated_at: NOW },
     data_status: "partial",
+    trust: {
+      pricing: {
+        priced_requests: 58,
+        unpriced_requests: 2,
+        coverage_pct: 96.67,
+        state: "partial",
+      },
+      tokens: {
+        known_requests: 60,
+        unknown_requests: 0,
+        coverage_pct: 100,
+        state: "complete",
+      },
+      apim: {
+        app_observed_requests: 60,
+        apim_governed_requests: 58,
+        unmatched_metric_records: 2,
+        coverage_pct: 96.67,
+        state: "reconciliation_pending",
+      },
+    },
     metrics: {
       requests: 60,
       tokens: {
@@ -74,6 +95,7 @@ export const bootstrapPayload = {
           total: 650,
         },
         estimated_cost: 0.007,
+        p95_latency_ms: 1800,
         data_status: "available",
       },
       {
@@ -87,6 +109,7 @@ export const bootstrapPayload = {
           total: 905,
         },
         estimated_cost: 0.0102,
+        p95_latency_ms: 2300,
         data_status: "partial",
       },
       {
@@ -100,6 +123,7 @@ export const bootstrapPayload = {
           total: 752,
         },
         estimated_cost: 0.0097,
+        p95_latency_ms: 2100,
         data_status: "partial",
       },
     ],

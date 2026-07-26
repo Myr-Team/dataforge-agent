@@ -2,7 +2,7 @@ const numberFormat = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }
 
 export const FINOPS_TABS = [
   { id: "overview", label: "运营总览" },
-  { id: "cost", label: "成本与预算" },
+  { id: "cost", label: "成本分析" },
   { id: "roi", label: "效能与 ROI" },
   { id: "risk", label: "风险与优化" },
 ];
@@ -16,7 +16,7 @@ export function formatFinOpsNumber(value, fallback = "未记录") {
 }
 
 export function formatFinOpsCost(value, status = "") {
-  if (!hasNumber(value)) return status === "unavailable" ? "不可用" : "未记录";
+  if (!hasNumber(value)) return ["unavailable", "unpriced"].includes(status) ? "未计价" : "未记录";
   const digits = value >= 1 ? 2 : value >= 0.01 ? 4 : 6;
   return `$${value.toFixed(digits).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
@@ -62,11 +62,9 @@ export function finopsBootstrapViewData(payload = {}) {
 export function finopsMetricCards(payload = {}) {
   const metrics = payload?.metrics || {};
   const cost = metrics.estimated_cost || {};
-  const budget = metrics.budget || {};
   const latency = metrics.latency || {};
   const tokens = metrics.tokens || {};
   const cache = metrics.cache || {};
-  const coverage = metrics.apim_coverage_pct;
   const dataStatus = payload?.data_status || "unavailable";
   return [
     {
@@ -87,33 +85,6 @@ export function finopsMetricCards(payload = {}) {
         priceRevision: cost.price_card_revision || "",
         dataStatus,
         evidenceState: cost.status || "unavailable",
-      },
-    },
-    {
-      id: "budget",
-      label: "预算使用",
-      value: budget.status === "unavailable"
-        ? "未配置"
-        : formatFinOpsPercent(budget.usage_pct),
-      meta: hasNumber(budget.amount)
-        ? `${formatFinOpsCost(budget.used_amount, budget.status)} / ${formatFinOpsCost(budget.amount, "estimated")}`
-        : "等待预算策略",
-      tone: hasNumber(budget.usage_pct) && budget.usage_pct >= 100
-        ? "critical"
-        : hasNumber(budget.usage_pct) && budget.usage_pct >= 80
-          ? "warning"
-          : "neutral",
-      metric: {
-        id: "budget_usage",
-        label: "预算使用",
-        value: budget.usage_pct ?? null,
-        unit: "%",
-        kind: "budget",
-        amount: budget.amount ?? null,
-        usedAmount: budget.used_amount ?? null,
-        usagePct: budget.usage_pct ?? null,
-        dataStatus,
-        evidenceState: budget.status || "unavailable",
       },
     },
     {
@@ -230,24 +201,6 @@ export function finopsMetricCards(payload = {}) {
         evidenceState: cache.eligible_requests ? "observed" : "unavailable",
       },
     },
-    {
-      id: "coverage",
-      label: "APIM 覆盖率",
-      value: formatFinOpsPercent(coverage),
-      meta: "APIM governed / observed",
-      tone: hasNumber(coverage) && coverage < 95 ? "warning" : "neutral",
-      metric: {
-        id: "apim_coverage",
-        label: "APIM 覆盖率",
-        value: coverage ?? null,
-        unit: "%",
-        kind: "coverage",
-        coveragePct: coverage ?? null,
-        requests: metrics.requests ?? null,
-        dataStatus,
-        evidenceState: hasNumber(coverage) ? "observed" : "unavailable",
-      },
-    },
   ];
 }
 
@@ -257,6 +210,7 @@ export function finopsTrendViewModel(payload = {}) {
     label: String(item.bucket || "").replace("T00:00:00Z", "").replace("T", " ").replace(":00:00Z", ":00"),
     requests: hasNumber(item.requests) ? item.requests : 0,
     cost: item.estimated_cost,
+    p95: item.p95_latency_ms,
     total: item?.tokens?.total,
     series: {
       input: item?.tokens?.input ?? null,

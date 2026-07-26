@@ -33,19 +33,15 @@ test("finops metric cards preserve unavailable and partial evidence", () => {
 
   assert.deepEqual(cards.map((item) => item.id), [
     "cost",
-    "budget",
     "requests",
     "tokens",
     "success",
     "p95",
     "cache",
-    "coverage",
   ]);
-  assert.equal(cards.find((item) => item.id === "cost").value, "不可用");
-  assert.equal(cards.find((item) => item.id === "budget").value, "未配置");
+  assert.equal(cards.find((item) => item.id === "cost").value, "未计价");
   assert.equal(cards.find((item) => item.id === "p95").value, "未记录");
   assert.equal(cards.find((item) => item.id === "cache").value, "未记录");
-  assert.equal(cards.find((item) => item.id === "coverage").tone, "warning");
   assert.equal(cards.find((item) => item.id === "cost").metric.kind, "cost");
   assert.equal(cards.find((item) => item.id === "success").metric.kind, "quality");
   assert.equal(cards.find((item) => item.id === "cache").metric.kind, "cache");
@@ -54,7 +50,7 @@ test("finops metric cards preserve unavailable and partial evidence", () => {
 
 test("FinOps portal exposes four operations pages and natural update copy", () => {
   assert.deepEqual(FINOPS_TABS.map((item) => item.id), ["overview", "cost", "roi", "risk"]);
-  assert.deepEqual(FINOPS_TABS.map((item) => item.label), ["运营总览", "成本与预算", "效能与 ROI", "风险与优化"]);
+  assert.deepEqual(FINOPS_TABS.map((item) => item.label), ["运营总览", "成本分析", "效能与 ROI", "风险与优化"]);
   assert.equal(
     formatRelativeUpdateTime("2026-07-24T02:00:00Z", Date.parse("2026-07-24T02:01:20Z")),
     "1 分钟前更新",

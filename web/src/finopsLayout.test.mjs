@@ -15,3 +15,18 @@ test("operations header isolates title copy from the synchronization control", a
   assert.match(styles, /\.finops-head-copy\s*>\s*span/);
   assert.match(styles, /\.finops-live\s*>\s*span/);
 });
+
+
+test("overview uses six metrics, data trust, selectable trend and no budget forecast", async () => {
+  const component = await readFile(
+    new URL("./FinOpsPortal.jsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(component, /aria-label="趋势指标"/);
+  assert.match(component, /title="数据可信度"/);
+  assert.match(component, /计价覆盖/);
+  assert.match(component, /Token 覆盖/);
+  assert.match(component, /APIM 对账/);
+  assert.doesNotMatch(component, /title="预算消耗与期末预测"/);
+});

@@ -4680,7 +4680,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-tabs button:hover { color: #344054; }
 .finops-tabs button.active { border-bottom-color: var(--finops-blue); color: var(--finops-blue); }
 .finops-content { max-width: 1500px; min-height: 360px; margin: 0 auto; }
-.finops-metrics { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 1px; margin-bottom: 12px; border: 1px solid #dfe5ee; border-radius: 10px; overflow: visible; background: #dfe5ee; }
+.finops-metrics { display: grid; grid-template-columns: repeat(6, minmax(118px, 1fr)); gap: 1px; margin-bottom: 12px; border: 1px solid #dfe5ee; border-radius: 10px; overflow: visible; background: #dfe5ee; }
 .finops-metric { position: relative; min-width: 0; outline: 0; background: #fff; padding: 14px 14px 13px; transition: opacity 160ms ease, transform 160ms ease, box-shadow 160ms ease; }
 .finops-metric:first-child { border-radius: 9px 0 0; }
 .finops-metric:nth-child(4) { border-radius: 0 9px 0 0; }
@@ -4741,7 +4741,13 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-bar-row > div { height: 8px; overflow: hidden; border-radius: 999px; background: #eef2f7; }
 .finops-bar-row i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #175cd3, #53b1fd); }
 .finops-bar-row b { color: #344054; font-size: 10.5px; font-variant-numeric: tabular-nums; text-align: right; }
-.finops-trend-chart { display: grid; min-height: 270px; grid-template-rows: auto minmax(0, 1fr); padding: 14px 16px 12px; }
+.finops-trend-chart { position: relative; display: grid; min-height: 286px; grid-template-rows: auto minmax(0, 1fr); padding: 14px 16px 12px 62px; }
+.finops-trend-switch { display: flex; gap: 3px; border-bottom: 1px solid #edf0f5; padding: 10px 14px 0; }
+.finops-trend-switch button { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 7px 11px 8px; color: #667085; font-size: 11px; cursor: pointer; }
+.finops-trend-switch button:hover, .finops-trend-switch button:focus-visible { color: #175cd3; }
+.finops-trend-switch button.active { border-bottom-color: #175cd3; color: #175cd3; font-weight: 700; }
+.finops-trend-scale { position: absolute; top: 45px; bottom: 35px; left: 12px; display: flex; width: 44px; justify-content: space-between; flex-direction: column; color: #98a2b3; font-size: 8px; text-align: right; }
+.finops-trend-value { align-self: end; overflow: hidden; max-width: 100%; padding: 0 2px 3px; color: #475467; font-size: 8px; font-weight: 650; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .finops-trend-legend { display: flex; justify-content: flex-end; gap: 13px; color: #667085; font-size: 9.5px; }
 .finops-trend-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .finops-trend-legend i { width: 7px; height: 7px; border-radius: 2px; }
@@ -4766,6 +4772,16 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-trend-tooltip b { color: #1d2939; font-size: 10px; }
 .finops-trend-tooltip span { display: flex; justify-content: space-between; gap: 10px; color: #667085; font-size: 9.5px; }
 .finops-trend-tooltip strong { color: #344054; }
+.finops-help-icon { flex: none; color: #98a2b3; }
+.finops-trust-grid { display: grid; gap: 0; }
+.finops-trust-grid article { display: grid; gap: 7px; border-bottom: 1px solid #edf0f5; padding: 13px 15px; }
+.finops-trust-grid article:last-child { border-bottom: 0; }
+.finops-trust-grid header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.finops-trust-grid header span { color: #344054; font-size: 11px; font-weight: 650; }
+.finops-trust-grid strong { color: #101828; font-size: 20px; letter-spacing: -.02em; }
+.finops-trust-grid small { color: #667085; font-size: 9.5px; }
+.finops-trust-grid article > div { height: 4px; overflow: hidden; border-radius: 999px; background: #eef2f7; }
+.finops-trust-grid article > div i { display: block; height: 100%; border-radius: inherit; background: #2e90fa; transition: width 220ms ease; }
 .finops-insights, .finops-anomaly-list, .finops-recommendations { display: grid; }
 .finops-insights > div, .finops-recommendations > div { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: start; gap: 9px; border-bottom: 1px solid #edf0f5; padding: 12px 14px; color: #f79009; }
 .finops-insights > div > button { grid-column: 2 / -1; width: fit-content; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9.5px; font-weight: 650; }
@@ -4972,7 +4988,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-ai-suggestions button:disabled { cursor: wait; opacity: .55; }
 
 @media (max-width: 1280px) {
-  .finops-metrics { grid-template-columns: repeat(4, minmax(130px, 1fr)); }
+  .finops-metrics { grid-template-columns: repeat(3, minmax(130px, 1fr)); }
   .finops-value-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 980px) {

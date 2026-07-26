@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   BookmarkPlus,
   Clock3,
+  CircleHelp,
   Database,
   Download,
   ExternalLink,
@@ -24,7 +25,6 @@ import {
   loadFinOpsAnomalies,
   loadFinOpsBootstrap,
   loadFinOpsBreakdowns,
-  loadFinOpsBudgets,
   loadFinOpsOpportunities,
   loadFinOpsRecommendations,
   loadFinOpsRequest,
@@ -117,7 +117,10 @@ function EvidenceBadge({ status }) {
     incomplete: "证据不足",
     not_recorded: "未记录",
     not_configured: "未配置",
-    unavailable: "不可用",
+    unavailable: "待接入",
+    unpriced: "未计价",
+    no_samples: "暂无样本",
+    reconciliation_pending: "待对账",
     open: "待处理",
     acknowledged: "已确认",
     suppressed: "已抑制",
@@ -175,6 +178,7 @@ function MetricCards({
           >
             <div>
               <span>{card.label}</span>
+              <CircleHelp className="finops-help-icon" size={13} aria-hidden="true" />
               <EvidenceBadge status={card.metric.evidenceState} />
             </div>
             <strong>{card.value}</strong>
@@ -196,7 +200,7 @@ function MetricCards({
                   ))}
                 </dl>
               ) : <p>当前指标暂无更多可复核明细。</p>}
-              <small>当前筛选范围 · {tooltip.dataStatus === "complete" ? "数据完整" : tooltip.dataStatus === "partial" ? "部分数据" : "数据不可用"}</small>
+              <small>当前筛选范围 · {tooltip.dataStatus === "complete" ? "数据完整" : tooltip.dataStatus === "partial" ? "数据不完整" : "待接入"}</small>
             </div>
           </article>
         );
@@ -209,7 +213,7 @@ function MetricCards({
 function MetricSkeleton() {
   return (
     <section className="finops-metrics finops-metrics-skeleton" aria-label="正在加载运营指标">
-      {Array.from({ length: 8 }, (_, index) => (
+      {Array.from({ length: 6 }, (_, index) => (
         <article className="finops-metric" key={index}>
           <i />
           <b />
@@ -261,35 +265,50 @@ function TrendBars({
 }) {
   const rows = finopsTrendViewModel(payload);
   const comparisonRows = finopsTrendViewModel(comparisonPayload || {});
+  const metricValue = (row) => ({
+    cost: row?.cost,
+    requests: row?.requests,
+    p95: row?.p95,
+    total: row?.total,
+  }[metric]);
+  const formatValue = (value) => {
+    if (metric === "cost") return formatFinOpsCost(value, value == null ? "unavailable" : "estimated");
+    if (metric === "p95") return formatFinOpsDuration(value);
+    return `${formatFinOpsNumber(value, "0")} ${metric === "total" ? "Token" : "次"}`;
+  };
   const values = [
-    ...rows.map((row) => Number(metric === "cost" ? row.cost : row.total || 0)),
-    ...comparisonRows.map((row) => Number(metric === "cost" ? row.cost : row.total || 0)),
+    ...rows.map((row) => Number(metricValue(row) || 0)),
+    ...comparisonRows.map((row) => Number(metricValue(row) || 0)),
   ];
   const maximum = Math.max(...values, 1);
   if (!rows.length) return <EmptyState />;
   return (
     <div className="finops-trend-chart">
       <div className="finops-trend-legend">
-        {metric === "cost" ? (
-          <span><i className="input" />估算成本</span>
-        ) : (
+        {metric === "total" ? (
           <>
             <span><i className="input" />输入</span>
             <span><i className="output" />输出</span>
             <span><i className="cached" />缓存</span>
             <span><i className="reasoning" />推理</span>
           </>
+        ) : (
+          <span><i className="input" />{{ cost: "估算成本", requests: "调用次数", p95: "P95 延迟" }[metric]}</span>
         )}
+      </div>
+      <div className="finops-trend-scale" aria-hidden="true">
+        <span>{formatValue(maximum)}</span>
+        <span>{formatValue(maximum / 2)}</span>
+        <span>{formatValue(0)}</span>
       </div>
       <div className="finops-trend-columns">
         {rows.slice(-14).map((row, visibleIndex, visibleRows) => {
-          const value = Number(metric === "cost" ? row.cost : row.total || 0);
-          const height = Math.max(4, (value / maximum) * 100);
+          const rawValue = metricValue(row);
+          const value = Number(rawValue || 0);
+          const height = value > 0 ? Math.max(2, (value / maximum) * 100) : 0;
           const comparisonOffset = Math.max(0, comparisonRows.length - visibleRows.length);
           const comparisonRow = comparisonRows[comparisonOffset + visibleIndex];
-          const comparisonValue = Number(metric === "cost"
-            ? comparisonRow?.cost
-            : comparisonRow?.total || 0);
+          const comparisonValue = Number(metricValue(comparisonRow) || 0);
           const comparisonHeight = comparisonRow
             ? Math.max(2, (comparisonValue / maximum) * 100)
             : 0;
@@ -305,20 +324,21 @@ function TrendBars({
               className="finops-trend-column"
               key={row.bucket}
               tabIndex={0}
-              aria-label={`${row.label}，${metric === "cost" ? formatFinOpsCost(row.cost, row.cost == null ? "unavailable" : "estimated") : `${value} Token`}`}
+              aria-label={`${row.label}，${formatValue(rawValue)}`}
             >
               {comparisonRow ? (
                 <i
                   className="finops-trend-comparison"
                   style={{ height: `${comparisonHeight}%` }}
-                  title={`上一周期 ${metric === "cost" ? formatFinOpsCost(comparisonRow.cost, comparisonRow.cost == null ? "unavailable" : "estimated") : `${comparisonValue} Token`}`}
+                  title={`上一周期 ${formatValue(comparisonValue)}`}
                 />
               ) : null}
               {rowEvents.length ? (
                 <i className="finops-trend-event" title={`${rowEvents.length} 条运营事件`} />
               ) : null}
+              <b className="finops-trend-value">{formatValue(rawValue)}</b>
               <div className="finops-trend-stack" style={{ height: `${height}%` }}>
-                {metric === "cost"
+                {metric !== "total"
                   ? <i className="input" style={{ height: "100%" }} />
                   : parts.map((part) => part.value
                     ? <i key={part.key} className={part.key} style={{ height: `${(part.value / partTotal) * 100}%` }} />
@@ -327,8 +347,8 @@ function TrendBars({
               <span>{row.label.slice(5)}</span>
               <div className="finops-trend-tooltip" role="tooltip">
                 <b>{row.label}</b>
-                {metric === "cost" ? (
-                  <span>估算成本 <strong>{formatFinOpsCost(row.cost, row.cost == null ? "unavailable" : "estimated")}</strong></span>
+                {metric !== "total" ? (
+                  <span>{{ cost: "估算成本", requests: "调用次数", p95: "P95 延迟" }[metric]} <strong>{formatValue(rawValue)}</strong></span>
                 ) : (
                   <>
                     <span>输入 <strong>{formatFinOpsNumber(row.series.input)}</strong></span>
@@ -416,6 +436,48 @@ function AttentionList({ items, onEvidence = null }) {
 }
 
 
+function DataTrust({ trust = {} }) {
+  const items = [
+    {
+      id: "pricing",
+      label: "计价覆盖",
+      value: trust.pricing?.coverage_pct,
+      meta: `${formatFinOpsNumber(trust.pricing?.priced_requests, "0")} 已计价 · ${formatFinOpsNumber(trust.pricing?.unpriced_requests, "0")} 未计价`,
+      state: trust.pricing?.state,
+    },
+    {
+      id: "tokens",
+      label: "Token 覆盖",
+      value: trust.tokens?.coverage_pct,
+      meta: `${formatFinOpsNumber(trust.tokens?.known_requests, "0")} 已记录 · ${formatFinOpsNumber(trust.tokens?.unknown_requests, "0")} 缺失`,
+      state: trust.tokens?.state,
+    },
+    {
+      id: "apim",
+      label: "APIM 对账",
+      value: trust.apim?.coverage_pct,
+      meta: `${formatFinOpsNumber(trust.apim?.apim_governed_requests, "0")} 已关联 · ${formatFinOpsNumber(trust.apim?.app_observed_requests, "0")} 应用观测`,
+      state: trust.apim?.state,
+    },
+  ];
+  return (
+    <div className="finops-trust-grid">
+      {items.map((item) => (
+        <article key={item.id}>
+          <header>
+            <span>{item.label}</span>
+            <EvidenceBadge status={item.state} />
+          </header>
+          <strong>{formatFinOpsPercent(item.value, "暂无样本")}</strong>
+          <small>{item.meta}</small>
+          <div aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, Number(item.value || 0)))}%` }} /></div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+
 function OverviewPage({
   data,
   scope,
@@ -424,16 +486,37 @@ function OverviewPage({
   onAsk = null,
   onDimensionSelect = null,
 }) {
+  const [trendMetric, setTrendMetric] = useState("total");
   const departmentRows = finopsBreakdownRows(data.department);
   const anomalies = Array.isArray(data.anomalies?.items) ? data.anomalies.items : [];
   return (
     <>
       <MetricCards payload={data.overview} scope={scope} onEvidence={onEvidence} onAsk={onAsk} />
       <div className="finops-grid finops-grid-wide">
-        <Panel title="成本与调用趋势" subtitle="最近 30 天的 Token 结构与调用变化" className="span-2">
-          <TrendBars payload={data.trends} comparisonPayload={comparison} events={anomalies} />
+        <Panel title="使用与成本趋势" subtitle="统一零基线，数值与柱高按真实数据比例呈现" className="span-2">
+          <div className="finops-trend-switch" aria-label="趋势指标">
+            {[
+              ["total", "Token"],
+              ["requests", "调用"],
+              ["cost", "成本"],
+              ["p95", "P95"],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={trendMetric === id ? "active" : ""}
+                onClick={() => setTrendMetric(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <TrendBars metric={trendMetric} payload={data.trends} comparisonPayload={comparison} events={anomalies} />
         </Panel>
-        <Panel title="需要关注" subtitle="预算、延迟、计价和网关治理">
+        <Panel title="数据可信度" subtitle="明确哪些数字已记录、已计价并完成网关对账">
+          <DataTrust trust={data.overview?.trust || data.trust || {}} />
+        </Panel>
+        <Panel title="需要关注" subtitle="仅显示可下钻或可修正的事项">
           <AttentionList items={anomalies} onEvidence={onEvidence} />
         </Panel>
         <Panel title="部门成本与运行质量" subtitle="未映射 workspace 统一进入“未归属”">
@@ -524,9 +607,6 @@ function CostPage({
         {exportUrl ? <a href={exportUrl}><Download size={14} />导出 CSV</a> : null}
       </div>
       <div className="finops-grid">
-        <Panel title="预算消耗与期末预测" subtitle="仅使用已计价证据形成预测" className="span-2">
-          <BudgetForecast payload={detail.budgets} />
-        </Panel>
         <Panel title="成本趋势" subtitle="请求级价目表估算，不代表 Azure 实际账单" className="span-2">
           <TrendBars payload={overviewData.trends} metric="cost" comparisonPayload={comparison} events={overviewData.anomalies?.items || []} />
         </Panel>
@@ -1161,12 +1241,10 @@ export function FinOpsPortal({
       cost: () => Promise.all([
         loadFinOpsBreakdowns("workspace", query, { signal: controller.signal }),
         loadFinOpsAgents(query, { signal: controller.signal }),
-        loadFinOpsBudgets(query, { signal: controller.signal }),
         loadFinOpsSavedViews({ workspaceId }, { signal: controller.signal }),
-      ]).then(([workspace, agents, budgets, views]) => ({
+      ]).then(([workspace, agents, views]) => ({
         workspace,
         agents,
-        budgets,
         views,
       })),
       roi: () => Promise.all([
@@ -1318,7 +1396,7 @@ export function FinOpsPortal({
         <div className="finops-head-copy">
           <p>AI OPERATIONS</p>
           <h1>运营管理</h1>
-          <span>让 IT 与财务在同一视图理解成本、预算、效能、价值与风险。</span>
+          <span>让 IT 与财务在同一视图理解成本、效能、价值与风险。</span>
         </div>
         <div className="finops-live">
           <i />
