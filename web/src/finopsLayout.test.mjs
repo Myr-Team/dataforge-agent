@@ -32,13 +32,16 @@ test("overview uses six metrics, data trust, selectable trend and no budget fore
 });
 
 
-test("trend bars share one full-height plot track with their value labels", async () => {
+test("trend bars scale inside a dedicated plot track without clipping near-maximum values", async () => {
   const [component, styles] = await Promise.all([
     readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8"),
     readFile(new URL("./styles.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(component, /className="finops-trend-plot"/);
+  assert.match(component, /className="finops-trend-bar-slot"/);
   assert.match(styles, /\.finops-trend-plot\s*\{[^}]*height:\s*100%/s);
-  assert.match(styles, /\.finops-trend-stack\s*\{[^}]*max-height:\s*calc\(100% - 18px\)/s);
+  assert.match(styles, /\.finops-trend-plot\s*\{[^}]*grid-template-rows:\s*18px minmax\(0, 1fr\)/s);
+  assert.match(styles, /\.finops-trend-bar-slot\s*\{[^}]*height:\s*100%[^}]*align-items:\s*flex-end/s);
+  assert.doesNotMatch(styles, /\.finops-trend-stack\s*\{[^}]*max-height:/s);
 });
