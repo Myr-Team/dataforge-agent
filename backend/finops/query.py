@@ -240,19 +240,27 @@ class FinOpsQueryService:
         items = []
         for key, rows in sorted(grouped.items()):
             totals = Counter()
+            known: Counter = Counter()
             for row in rows:
                 for name in ("input", "output", "cached_input", "reasoning", "total"):
                     value = getattr(row.tokens, name)
                     if value is not None:
                         totals[name] += value
+                        known[name] += 1
             costs = [row.estimated_cost.amount for row in rows if row.estimated_cost.amount is not None]
             latencies = sorted(
                 row.latency_ms
                 for row in rows
                 if row.latency_ms is not None
             )
+            # Distinguish an observed zero from a missing observation: only
+            # collapse to None when no row contributed a known value.
+            token_totals = {
+                name: (totals[name] if known[name] else None)
+                for name in ("input", "output", "cached_input", "reasoning", "total")
+            }
             metric_values = {
-                "tokens": totals["total"] if totals["total"] else None,
+                "tokens": token_totals["total"],
                 "requests": len(rows),
                 "estimated_cost": (
                     round(sum(costs), 8) if costs else None
@@ -263,11 +271,11 @@ class FinOpsQueryService:
                 {
                     "bucket": key,
                     "requests": len(rows),
-                    "tokens": {name: totals[name] if totals[name] else None for name in ("input", "output", "cached_input", "reasoning", "total")},
+                    "tokens": token_totals,
                     "estimated_cost": round(sum(costs), 8) if costs else None,
                     "p95_latency_ms": _percentile(latencies, 0.95),
                     "value": metric_values[metric],
-                    "data_status": _data_status(rows),
+                    "data_status": _metric_data_status(rows, metric),
                 }
             )
         payload = self._envelope(query, rows)
@@ -424,6 +432,30 @@ def _data_status(rows: list[FinOpsRequestEvent]) -> str:
     ):
         return "partial"
     return "available"
+
+
+def _metric_data_status(rows: list[FinOpsRequestEvent], metric: str) -> str:
+    """Report completeness for the selected metric only.
+
+    Request counts are always exact, so token/cost/latency gaps must not
+    degrade a request-count trend. Other metrics reflect how many rows carry
+    the observation backing that specific metric.
+    """
+    if not rows:
+        return "unavailable"
+    if metric == "requests":
+        return "available"
+    if metric == "tokens":
+        known = sum(row.tokens.total is not None for row in rows)
+    elif metric == "estimated_cost":
+        known = sum(row.estimated_cost.amount is not None for row in rows)
+    elif metric == "p95_latency_ms":
+        known = sum(row.latency_ms is not None for row in rows)
+    else:
+        return _data_status(rows)
+    if known == 0:
+        return "unavailable"
+    return "available" if known == len(rows) else "partial"
 
 
 def _coverage_state(
