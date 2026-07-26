@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .models import FinOpsRequestEvent, TokenUsage
 from .normalization import opaque_ref
+from .official_pricing import estimate_official_cost
 from .reconciliation import reconcile_events
 
 
@@ -136,6 +137,42 @@ def reconcile_apim_observations(
     return sorted(reconciled.values(), key=lambda event: (event.occurred_at, event.request_ref))
 
 
+def price_reconciled_events(
+    events: Iterable[FinOpsRequestEvent],
+    *,
+    tenant_ref: str,
+    price_mapping_repository: Any,
+) -> list[FinOpsRequestEvent]:
+    """Price events that recovered usage from APIM using official mappings.
+
+    Only unpriced events with observed usage and a compatible official mapping
+    are estimated. Deployments without a mapping remain unpriced; the manual
+    price list is never consulted.
+    """
+    priced: list[FinOpsRequestEvent] = []
+    for event in events:
+        if (
+            price_mapping_repository is not None
+            and event.estimated_cost.amount is None
+            and event.tokens.observed
+        ):
+            deployment = event.deployment or event.model
+            mapping = (
+                price_mapping_repository.get(tenant_ref, deployment)
+                if deployment
+                else None
+            )
+            if mapping is not None:
+                estimate = estimate_official_cost(
+                    mapping.official_price_key,
+                    mapping.mapping_revision,
+                    event.tokens,
+                )
+                event = event.model_copy(update={"estimated_cost": estimate})
+        priced.append(event)
+    return priced
+
+
 def collect_apim_usage(
     *,
     repository: Any,
@@ -145,6 +182,7 @@ def collect_apim_usage(
     from_value: str,
     to_value: str,
     hmac_secret: str,
+    price_mapping_repository: Any | None = None,
 ) -> dict[str, Any]:
     application_events = repository.list_events(
         tenant_ref=tenant_ref,
@@ -163,6 +201,11 @@ def collect_apim_usage(
         application_events,
         observations,
         hmac_secret=hmac_secret,
+    )
+    reconciled = price_reconciled_events(
+        reconciled,
+        tenant_ref=tenant_ref,
+        price_mapping_repository=price_mapping_repository,
     )
     repository.upsert_events(reconciled)
     correlation_refs = {

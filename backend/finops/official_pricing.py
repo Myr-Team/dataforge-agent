@@ -102,8 +102,29 @@ def load_official_price_catalog() -> OfficialPriceCatalog:
     return OfficialPriceCatalog.model_validate(payload)
 
 
+def estimate_official_cost(
+    official_price_key: str,
+    mapping_revision: int | None,
+    tokens: TokenUsage,
+) -> EstimatedCost:
+    """Estimate a request cost from the official catalog for a mapped key.
+
+    The returned estimate always records the official price key and mapping
+    revision so historical requests remain tied to the revision that priced
+    them. When the catalog cannot price the usage, the amount stays ``None``.
+    """
+    estimate = load_official_price_catalog().estimate(official_price_key, tokens)
+    return estimate.model_copy(
+        update={
+            "official_price_key": official_price_key,
+            "mapping_revision": mapping_revision,
+        }
+    )
+
+
 __all__ = [
     "OfficialPrice",
     "OfficialPriceCatalog",
+    "estimate_official_cost",
     "load_official_price_catalog",
 ]

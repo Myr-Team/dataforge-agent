@@ -12,6 +12,10 @@ from backend.finops.apim_collector import (
 from backend.finops.apim_backfill import run_apim_backfill
 from backend.finops.models import FinOpsRequestEvent, TokenUsage
 from backend.finops.repository import InMemoryFinOpsRepository
+from backend.finops.sql_pricing import (
+    DeploymentPriceMapping,
+    InMemoryPriceMappingRepository,
+)
 
 
 def _app_event() -> FinOpsRequestEvent:
@@ -191,3 +195,119 @@ def test_apim_collection_counts_only_observations_matched_in_current_window() ->
 
     assert result["reconciled_events"] == 1
     assert result["unmatched_observations"] == 1
+
+
+def test_apim_reconciliation_prices_recovered_tokens_with_official_mapping() -> None:
+    secret = "test-secret"
+    correlation_id = "4f8b0f37b5824af5a2ac7ed9129ee70b"
+    app = _app_event().model_copy(
+        update={
+            "tokens": TokenUsage(),
+            "deployment": "gpt-5-mini",
+            "usage_source": "application",
+            "evidence_state": "partial",
+            "correlation_ref": default_correlation_ref(
+                "tenant-safe", correlation_id, secret
+            ),
+        }
+    )
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events([app])
+    mappings = InMemoryPriceMappingRepository()
+    mappings.upsert(
+        DeploymentPriceMapping(
+            tenant_ref="tenant-safe",
+            deployment="gpt-5-mini",
+            official_price_key="azure-openai:gpt-5.1:global-standard:global",
+            mapping_revision=1,
+            updated_by_ref="actor-owner",
+        ),
+        base_revision=0,
+    )
+    rows = [
+        {
+            "occurred_at": "2026-07-24T02:00:01Z",
+            "correlation_id": correlation_id,
+            "prompt_tokens": 20,
+            "completion_tokens": 5,
+            "total_tokens": 25,
+            "deployment": "gpt-5-mini",
+            "is_streaming": False,
+            "status_code": 200,
+        }
+    ]
+
+    collect_apim_usage(
+        repository=repository,
+        query_rows=lambda _query: rows,
+        tenant_ref="tenant-safe",
+        workspace_ids=("ws-a",),
+        from_value="2026-07-24T01:55:00Z",
+        to_value="2026-07-24T02:05:00Z",
+        hmac_secret=secret,
+        price_mapping_repository=mappings,
+    )
+
+    [event] = repository.list_events(
+        tenant_ref="tenant-safe",
+        workspace_ids=("ws-a",),
+        from_value="2026-07-24T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+    assert event.tokens.total == 25
+    assert event.estimated_cost.amount == 7.5e-05
+    assert (
+        event.estimated_cost.official_price_key
+        == "azure-openai:gpt-5.1:global-standard:global"
+    )
+    assert event.estimated_cost.mapping_revision == 1
+
+
+def test_apim_reconciliation_leaves_unmapped_deployment_unpriced() -> None:
+    secret = "test-secret"
+    correlation_id = "4f8b0f37b5824af5a2ac7ed9129ee70b"
+    app = _app_event().model_copy(
+        update={
+            "tokens": TokenUsage(),
+            "deployment": "unmapped-deployment",
+            "usage_source": "application",
+            "evidence_state": "partial",
+            "correlation_ref": default_correlation_ref(
+                "tenant-safe", correlation_id, secret
+            ),
+        }
+    )
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events([app])
+    rows = [
+        {
+            "occurred_at": "2026-07-24T02:00:01Z",
+            "correlation_id": correlation_id,
+            "prompt_tokens": 20,
+            "completion_tokens": 5,
+            "total_tokens": 25,
+            "deployment": "unmapped-deployment",
+            "is_streaming": False,
+            "status_code": 200,
+        }
+    ]
+
+    collect_apim_usage(
+        repository=repository,
+        query_rows=lambda _query: rows,
+        tenant_ref="tenant-safe",
+        workspace_ids=("ws-a",),
+        from_value="2026-07-24T01:55:00Z",
+        to_value="2026-07-24T02:05:00Z",
+        hmac_secret=secret,
+        price_mapping_repository=InMemoryPriceMappingRepository(),
+    )
+
+    [event] = repository.list_events(
+        tenant_ref="tenant-safe",
+        workspace_ids=("ws-a",),
+        from_value="2026-07-24T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+    assert event.tokens.total == 25
+    assert event.estimated_cost.amount is None

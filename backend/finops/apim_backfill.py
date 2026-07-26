@@ -17,6 +17,7 @@ def run_apim_backfill(
     from_value: str,
     to_value: str,
     hmac_secret: str,
+    price_mapping_repository: Any | None = None,
 ) -> dict[str, Any]:
     """Reconcile one APIM evidence window across all opaque SQL ledger scopes."""
 
@@ -39,6 +40,7 @@ def run_apim_backfill(
             from_value=from_value,
             to_value=to_value,
             hmac_secret=hmac_secret,
+            price_mapping_repository=price_mapping_repository,
         )
         totals["scope_count"] += 1
         totals["application_events"] += int(result["application_events"])
@@ -80,6 +82,7 @@ def main() -> int:
             from_value=from_value,
             to_value=to_value,
             hmac_secret=secret,
+            price_mapping_repository=_price_mapping_repository(),
         )
     except Exception as exc:
         print(
@@ -99,6 +102,18 @@ def _sql_repository() -> SqlFinOpsRepository:
     except ImportError:
         from lineage_sql import build_lineage_sql_connection_factory
     return SqlFinOpsRepository(connection_factory=build_lineage_sql_connection_factory())
+
+
+def _price_mapping_repository() -> Any:
+    try:
+        from ..lineage_sql import build_lineage_sql_connection_factory
+    except ImportError:
+        from lineage_sql import build_lineage_sql_connection_factory
+    from .sql_pricing import SqlPriceMappingRepository
+
+    return SqlPriceMappingRepository(
+        connection_factory=build_lineage_sql_connection_factory()
+    )
 
 
 def _logs_query_rows(

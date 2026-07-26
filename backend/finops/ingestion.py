@@ -14,7 +14,7 @@ from .evidence import build_evidence_alias, operation_code_for_event
 from .evidence_repository import SqlEvidenceAliasRepository
 from .normalization import normalize_run_event, opaque_ref
 from .management import FinOpsManagementService
-from .official_pricing import load_official_price_catalog
+from .official_pricing import estimate_official_cost
 from .sql_pricing import SqlPriceMappingRepository
 from .sql_management import SqlFinOpsManagementRepository
 from .sql_repository import SqlFinOpsRepository
@@ -84,15 +84,10 @@ def ingest_completed_run(
                     else None
                 )
                 if mapping is not None:
-                    estimate = load_official_price_catalog().estimate(
+                    estimate = estimate_official_cost(
                         mapping.official_price_key,
+                        mapping.mapping_revision,
                         event.tokens,
-                    )
-                    estimate = estimate.model_copy(
-                        update={
-                            "official_price_key": mapping.official_price_key,
-                            "mapping_revision": mapping.mapping_revision,
-                        }
                     )
                     event = event.model_copy(
                         update={"estimated_cost": estimate}
