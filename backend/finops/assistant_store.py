@@ -8,6 +8,10 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class AssistantConversationExpired(RuntimeError):
+    """Raised when writing to a conversation whose retention window elapsed."""
+
+
 class AssistantScope(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -80,11 +84,12 @@ class InMemoryAssistantConversationStore:
         self, scope: AssistantScope
     ) -> tuple[AssistantConversation, ...]:
         prefix = (scope.tenant_ref, scope.actor_ref, scope.workspace_id)
+        now = self._now()
         with self._lock:
             rows = [
                 value
                 for key, value in self._conversations.items()
-                if key[:3] == prefix
+                if key[:3] == prefix and value.expires_at > now
             ]
         return tuple(sorted(rows, key=lambda item: item.updated_at, reverse=True))
 
@@ -94,8 +99,10 @@ class InMemoryAssistantConversationStore:
         conversation_ref: str,
     ) -> tuple[AssistantMessage, ...]:
         key = self._key(scope, conversation_ref)
+        now = self._now()
         with self._lock:
-            if key not in self._conversations:
+            conversation = self._conversations.get(key)
+            if conversation is None or conversation.expires_at <= now:
                 return ()
             return tuple(self._messages.get(key, ()))
 
@@ -111,6 +118,8 @@ class InMemoryAssistantConversationStore:
             conversation = self._conversations.get(key)
             if conversation is None:
                 raise KeyError(conversation_ref)
+            if conversation.expires_at <= now:
+                raise AssistantConversationExpired(conversation_ref)
             stored = message.model_copy(
                 update={"created_at": message.created_at or now}
             )
@@ -146,6 +155,7 @@ class InMemoryAssistantConversationStore:
 
 __all__ = [
     "AssistantConversation",
+    "AssistantConversationExpired",
     "AssistantMessage",
     "AssistantScope",
     "InMemoryAssistantConversationStore",

@@ -39,6 +39,7 @@ from .agent_inputs import build_finops_agent_input, build_roi_agent_input
 from .analysis_agents import FinOpsAnalysisAgent
 from .assistant import AssistantRequest, AssistantTurn, FinOpsAssistantService
 from .assistant_store import (
+    AssistantConversationExpired,
     AssistantMessage,
     AssistantScope,
     InMemoryAssistantConversationStore,
@@ -813,18 +814,24 @@ async def assistant_query(
                 ]
             }
         )
-        store.append(
-            scope,
-            conversation_ref,
-            AssistantMessage(
-                role="user",
-                content=body.question,
-                metric_context_payload=body.metric_context.model_dump(
-                    mode="json",
-                    by_alias=True,
+        try:
+            store.append(
+                scope,
+                conversation_ref,
+                AssistantMessage(
+                    role="user",
+                    content=body.question,
+                    metric_context_payload=body.metric_context.model_dump(
+                        mode="json",
+                        by_alias=True,
+                    ),
                 ),
-            ),
-        )
+            )
+        except AssistantConversationExpired as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Operations AI conversation expired",
+            ) from exc
     evidence_payload = build_finops_agent_input(
         query,
         query_service,
@@ -835,14 +842,17 @@ async def assistant_query(
         evidence_payload=evidence_payload,
     )
     if store is not None and conversation_ref:
-        store.append(
-            scope,
-            conversation_ref,
-            AssistantMessage(
-                role="assistant",
-                content=response.answer,
-            ),
-        )
+        try:
+            store.append(
+                scope,
+                conversation_ref,
+                AssistantMessage(
+                    role="assistant",
+                    content=response.answer,
+                ),
+            )
+        except AssistantConversationExpired:
+            pass
     return {
         **response.model_dump(mode="json"),
         "conversation_ref": conversation_ref,
