@@ -268,6 +268,51 @@ export function finopsTrendViewModel(payload = {}) {
   }));
 }
 
+export function finopsBudgetView(payload = {}) {
+  const budget = Array.isArray(payload?.items) ? payload.items[0] : null;
+  if (!budget) {
+    return {
+      name: "未配置预算",
+      amountLabel: "未记录",
+      spentLabel: "未记录",
+      forecastLabel: "暂不可用",
+      usagePct: null,
+      thresholdState: "unavailable",
+      confidence: "unavailable",
+      status: "unavailable",
+    };
+  }
+  const progress = budget.progress || {};
+  return {
+    name: budget.name || "预算",
+    amountLabel: formatFinOpsCost(budget.amount, "estimated"),
+    spentLabel: formatFinOpsCost(progress.spent_amount, progress.spent_amount == null ? "unavailable" : "estimated"),
+    forecastLabel: formatFinOpsCost(progress.forecast_amount, progress.forecast_status),
+    usagePct: hasNumber(progress.usage_pct) ? progress.usage_pct : null,
+    thresholdState: progress.threshold_state || "unavailable",
+    confidence: progress.confidence || "unavailable",
+    status: progress.forecast_status || "unavailable",
+  };
+}
+
+export function finopsDoughnutSegments(rows = [], valueKey = "cost") {
+  const values = rows
+    .map((row) => ({
+      key: String(row.key || "未记录"),
+      value: hasNumber(row[valueKey]) && row[valueKey] > 0 ? row[valueKey] : null,
+    }))
+    .filter((row) => row.value != null);
+  const total = values.reduce((sum, row) => sum + row.value, 0);
+  if (!total) return [];
+  return values
+    .sort((a, b) => b.value - a.value)
+    .map((row, index) => ({
+      ...row,
+      colorIndex: index % 6,
+      sharePct: Number(((row.value / total) * 100).toFixed(1)),
+    }));
+}
+
 export function finopsRequestViewModel(item = {}) {
   const metrics = item?.metrics || {};
   const technicalRefs = item?.technical_refs || {};

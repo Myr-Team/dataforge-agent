@@ -242,35 +242,35 @@ git commit -m "feat: add metric-aware operations assistant"
 - Produces: `GET/POST/DELETE /api/finops/views`.
 - Produces: `GET /api/finops/export.csv`.
 
-- [ ] **Step 1: Write failing budget and allocation tests**
+- [x] **Step 1: Write failing budget and allocation tests**
 
 Test an organization/department/workspace budget, unique workspace allocation, “未归属”, 80/100 thresholds, elapsed-period burn rate and end-of-period forecast with explicit `estimated` status.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `python -m pytest tests/test_finops_planning.py -q`
 
 Expected: FAIL because planning service is absent.
 
-- [ ] **Step 3: Implement planning domain and additive SQL**
+- [x] **Step 3: Implement planning domain and additive SQL**
 
 Create strict `BudgetDefinition`, `BudgetProgress`, `SavedView` models; add tenant-scoped tables with optimistic versions; compute forecast only from priced evidence and return confidence/data status.
 
-- [ ] **Step 4: Write failing API authorization and export tests**
+- [x] **Step 4: Write failing API authorization and export tests**
 
 Verify tenant isolation, workspace narrowing, safe saved-view fields, CSV formula neutralization, UTF-8 BOM and no raw actor/provider identifiers.
 
-- [ ] **Step 5: Verify RED and implement routes**
+- [x] **Step 5: Verify RED and implement routes**
 
 Run: `python -m pytest tests/test_finops_saved_views.py tests/test_finops_api.py -q`
 
 Expected before implementation: FAIL; after bounded routes and repositories: PASS.
 
-- [ ] **Step 6: Implement Cost & Budget UI**
+- [x] **Step 6: Implement Cost & Budget UI**
 
 Add budget burn, forecast band, department/workspace allocation, model/Agent doughnuts, unpriced coverage, IT/Finance saved views and authorized CSV export. Zero/single-category doughnuts use an empty or single-total state.
 
-- [ ] **Step 7: Verify Task 3**
+- [x] **Step 7: Verify Task 3**
 
 Run: `python -m pytest tests/test_finops_planning.py tests/test_finops_saved_views.py tests/test_finops_api.py tests/test_finops_sql.py -q`
 
@@ -278,7 +278,7 @@ Run: `node --test src/finopsViewModel.test.mjs src/finopsApi.test.mjs`
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit Task 3**
+- [x] **Step 8: Commit Task 3**
 
 ```powershell
 git add -- backend/finops/planning.py backend/finops/saved_views.py backend/finops/sql_planning.py backend/sql/finops_schema.sql backend/finops/router.py web/src/api.js web/src/FinOpsPortal.jsx web/src/finopsViewModel.js tests/test_finops_planning.py tests/test_finops_saved_views.py tests/test_finops_api.py web/src/finopsViewModel.test.mjs

@@ -213,6 +213,32 @@ export function loadFinOpsActions(filters = {}, options = {}) {
   return loadFinOpsResource("actions", filters, options);
 }
 
+export function loadFinOpsBudgets(filters = {}, options = {}) {
+  return loadFinOpsResource("budgets", filters, options);
+}
+
+export function loadFinOpsSavedViews(filters = {}, options = {}) {
+  return loadFinOpsResource("views", filters, options);
+}
+
+export function createFinOpsSavedView(payload) {
+  return request("/api/finops/views", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteFinOpsSavedView(viewId) {
+  return request(`/api/finops/views/${encodeURIComponent(viewId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function finOpsExportUrl(groupBy, filters = {}) {
+  const query = buildFinOpsQuery({ ...filters, groupBy });
+  return `${API_BASE}/api/finops/export.csv${query ? `?${query}` : ""}`;
+}
+
 export function acknowledgeFinOpsAnomaly(anomalyId) {
   return request(`/api/finops/anomalies/${encodeURIComponent(anomalyId)}/acknowledge`, {
     method: "POST",

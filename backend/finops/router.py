@@ -8,7 +8,7 @@ from statistics import median
 from typing import Any, Literal, Mapping
 from urllib.parse import quote, urlparse
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 try:
@@ -66,6 +66,18 @@ from .price_card_client import ManagementPriceCardClient, price_card_version
 from .query import FinOpsQuery, FinOpsQueryService
 from .query_cache import CachedFinOpsQueryService
 from .request_detail import FinOpsRequestDetailService, build_foundry_trace_link
+from .planning import (
+    BudgetDefinition,
+    FinOpsPlanningService,
+    InMemoryPlanningRepository,
+)
+from .saved_views import (
+    FinOpsSavedViewService,
+    InMemorySavedViewRepository,
+    SavedViewCreate,
+    export_breakdown_csv,
+)
+from .sql_planning import SqlFinOpsPlanningRepository
 from .insight_repository import InMemoryInsightRepository, SqlInsightRepository
 from .insight_service import FinOpsInsightService
 from .repository import RunStoreFinOpsRepository
@@ -104,6 +116,9 @@ _EVIDENCE_REPOSITORY = InMemoryEvidenceAliasRepository()
 _SQL_EVIDENCE_REPOSITORY: SqlEvidenceAliasRepository | None = None
 _INSIGHT_REPOSITORY = InMemoryInsightRepository()
 _SQL_INSIGHT_REPOSITORY: SqlInsightRepository | None = None
+_PLANNING_REPOSITORY = InMemoryPlanningRepository()
+_SAVED_VIEW_REPOSITORY = InMemorySavedViewRepository()
+_SQL_PLANNING_REPOSITORY: SqlFinOpsPlanningRepository | None = None
 
 
 class InsightAnalyzeRequest(BaseModel):
@@ -232,6 +247,28 @@ def get_finops_insight_service() -> FinOpsInsightService:
 
 def get_finops_assistant_service() -> FinOpsAssistantService:
     return FinOpsAssistantService(model_runner=run_agent)
+
+
+def get_finops_planning_service() -> FinOpsPlanningService:
+    global _SQL_PLANNING_REPOSITORY
+    if _enabled("DF_FINOPS_SQL_ENABLED"):
+        if _SQL_PLANNING_REPOSITORY is None:
+            _SQL_PLANNING_REPOSITORY = SqlFinOpsPlanningRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        return FinOpsPlanningService(_SQL_PLANNING_REPOSITORY)
+    return FinOpsPlanningService(_PLANNING_REPOSITORY)
+
+
+def get_finops_saved_view_service() -> FinOpsSavedViewService:
+    global _SQL_PLANNING_REPOSITORY
+    if _enabled("DF_FINOPS_SQL_ENABLED"):
+        if _SQL_PLANNING_REPOSITORY is None:
+            _SQL_PLANNING_REPOSITORY = SqlFinOpsPlanningRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        return FinOpsSavedViewService(_SQL_PLANNING_REPOSITORY)
+    return FinOpsSavedViewService(_SAVED_VIEW_REPOSITORY)
 
 
 def _workspace_name(workspace_id: str) -> str:
@@ -600,6 +637,174 @@ async def assistant_query(
         evidence_payload=evidence_payload,
     )
     return response.model_dump(mode="json")
+
+
+@router.get("/budgets")
+async def list_budgets(
+    request: Request,
+    from_value: str | None = Query(default=None, alias="from", max_length=64),
+    to_value: str | None = Query(default=None, alias="to", max_length=64),
+    workspace_id: str | None = Query(default=None, max_length=160),
+) -> dict[str, Any]:
+    query_service, query, roles = _common(
+        request, from_value, to_value, None, workspace_id, None, None, None
+    )
+    if not all(role in {"owner", "admin"} for role in roles.values()):
+        raise HTTPException(status_code=403, detail="FinOps budgets require admin or owner")
+    overview_payload = query_service.overview(query)
+    metrics = overview_payload.get("metrics") or {}
+    cost = metrics.get("estimated_cost") or {}
+    service = get_finops_planning_service()
+    selected = []
+    for budget in service.list(tenant_ref=query.tenant_ref):
+        if budget.scope_type == "workspace":
+            if budget.scope_id not in query.authorized_workspace_ids:
+                continue
+            if workspace_id and budget.scope_id != workspace_id:
+                continue
+        progress = service.progress(
+            budget,
+            spent_amount=cost.get("amount"),
+            priced_requests=int(cost.get("priced_requests") or 0),
+            total_requests=int(metrics.get("requests") or 0),
+        )
+        payload = budget.model_dump(mode="json")
+        payload["progress"] = progress.model_dump(mode="json")
+        selected.append(payload)
+    return {
+        "items": selected,
+        "count": len(selected),
+        "scope": overview_payload.get("scope"),
+        "window": overview_payload.get("window"),
+        "currency": "USD",
+        "data_status": overview_payload.get("data_status", "unavailable"),
+    }
+
+
+@router.post("/budgets", status_code=201)
+async def create_budget(
+    body: BudgetDefinition,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_ref, actor_ref, roles = _write_context(
+        request,
+        workspace_id=body.scope_id if body.scope_type == "workspace" else None,
+    )
+    if body.scope_type == "organization" and not all(
+        role in {"owner", "admin"} for role in roles.values()
+    ):
+        raise HTTPException(status_code=403, detail="organization budget requires admin or owner")
+    try:
+        budget = get_finops_planning_service().create_budget(
+            tenant_ref=tenant_ref,
+            actor_ref=actor_ref,
+            value=body,
+        )
+    except Exception as exc:
+        raise _management_error(exc) from exc
+    return {"budget": budget.model_dump(mode="json")}
+
+
+class BudgetUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_version: int = Field(ge=1)
+    budget: BudgetDefinition
+
+
+@router.patch("/budgets/{budget_id}")
+async def update_budget(
+    budget_id: str,
+    body: BudgetUpdateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_ref, actor_ref, _ = _write_context(
+        request,
+        workspace_id=body.budget.scope_id if body.budget.scope_type == "workspace" else None,
+    )
+    try:
+        budget = get_finops_planning_service().update_budget(
+            tenant_ref=tenant_ref,
+            actor_ref=actor_ref,
+            budget_id=budget_id,
+            value=body.budget,
+            base_version=body.base_version,
+        )
+    except Exception as exc:
+        raise _management_error(exc) from exc
+    return {"budget": budget.model_dump(mode="json")}
+
+
+@router.get("/views")
+async def list_saved_views(
+    request: Request,
+    workspace_id: str | None = Query(default=None, max_length=160),
+) -> dict[str, Any]:
+    _, query, roles = _common(
+        request, None, None, None, workspace_id, None, None, None
+    )
+    if not all(role in {"owner", "admin"} for role in roles.values()):
+        raise HTTPException(status_code=403, detail="FinOps saved views require admin or owner")
+    items = get_finops_saved_view_service().list(
+        tenant_ref=query.tenant_ref,
+        authorized_workspace_ids=query.authorized_workspace_ids,
+    )
+    return {"items": [item.model_dump(mode="json") for item in items], "count": len(items)}
+
+
+@router.post("/views", status_code=201)
+async def create_saved_view(
+    body: SavedViewCreate,
+    request: Request,
+) -> dict[str, Any]:
+    workspace_id = body.filters.get("workspace_id")
+    tenant_ref, actor_ref, _ = _write_context(request, workspace_id=workspace_id)
+    try:
+        saved = get_finops_saved_view_service().create(
+            tenant_ref=tenant_ref,
+            actor_ref=actor_ref,
+            value=body,
+        )
+    except Exception as exc:
+        raise _management_error(exc) from exc
+    return {"view": saved.model_dump(mode="json")}
+
+
+@router.delete("/views/{view_id}")
+async def delete_saved_view(view_id: str, request: Request) -> Response:
+    tenant_ref, _, _ = _write_context(request)
+    deleted = get_finops_saved_view_service().delete(
+        tenant_ref=tenant_ref,
+        view_id=view_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="FinOps saved view not found")
+    return Response(status_code=204)
+
+
+@router.get("/export.csv")
+async def export_finops_csv(
+    request: Request,
+    group_by: Literal["department", "workspace", "agent", "model"] = Query(default="workspace"),
+    from_value: str | None = Query(default=None, alias="from", max_length=64),
+    to_value: str | None = Query(default=None, alias="to", max_length=64),
+    department_id: str | None = Query(default=None, max_length=128),
+    workspace_id: str | None = Query(default=None, max_length=160),
+    agent_id: str | None = Query(default=None, max_length=128),
+    model: str | None = Query(default=None, max_length=160),
+) -> Response:
+    service, query, roles = _common(
+        request, from_value, to_value, department_id, workspace_id, agent_id, None, model
+    )
+    if not all(role in {"owner", "admin"} for role in roles.values()):
+        raise HTTPException(status_code=403, detail="FinOps export requires admin or owner")
+    payload = service.breakdowns(query, group_by)
+    content = export_breakdown_csv(payload.get("items") or [])
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="dataforge-finops.csv"'},
+    )
 
 
 @router.get("/filters")

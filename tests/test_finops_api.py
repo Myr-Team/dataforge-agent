@@ -16,6 +16,8 @@ from backend.finops.management import FinOpsManagementService, InMemoryManagemen
 from backend.finops.anomaly_store import FinOpsAnomalyService, InMemoryAnomalyRepository
 from backend.finops.anomalies import DetectedAnomaly
 from backend.finops.assistant import FinOpsAssistantService
+from backend.finops.planning import FinOpsPlanningService, InMemoryPlanningRepository
+from backend.finops.saved_views import FinOpsSavedViewService, InMemorySavedViewRepository
 from backend.finops.insight_repository import (
     InMemoryInsightRepository,
     InsightPage,
@@ -91,6 +93,19 @@ def client(
         lambda _actor: "tenantref-a",
     )
     return TestClient(app)
+
+
+def _planning_services(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_planning_service",
+        lambda: FinOpsPlanningService(InMemoryPlanningRepository()),
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_saved_view_service",
+        lambda: FinOpsSavedViewService(InMemorySavedViewRepository()),
+    )
 
 
 def test_finops_read_flag_fails_closed(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,6 +207,94 @@ def test_finops_bootstrap_projects_server_side_budget_usage(
         "status": "estimated",
         "source": "daily_cost_budget",
     }
+
+
+def test_finops_budget_saved_view_and_csv_routes_are_bounded(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planning = FinOpsPlanningService(InMemoryPlanningRepository())
+    views = FinOpsSavedViewService(InMemorySavedViewRepository())
+    monkeypatch.setattr(finops_router, "get_finops_planning_service", lambda: planning)
+    monkeypatch.setattr(finops_router, "get_finops_saved_view_service", lambda: views)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+
+    created_budget = client.post(
+        "/api/finops/budgets",
+        headers=headers,
+        json={
+            "name": "工作区月度预算",
+            "scope_type": "workspace",
+            "scope_id": "ws-a",
+            "period_start": "2026-07-01T00:00:00Z",
+            "period_end": "2026-08-01T00:00:00Z",
+            "amount": 100,
+        },
+    )
+    created_view = client.post(
+        "/api/finops/views",
+        headers=headers,
+        json={
+            "name": "财务视图",
+            "audience": "finance",
+            "tab": "cost",
+            "filters": {"workspace_id": "ws-a", "model": "gpt-5-mini"},
+        },
+    )
+    budgets = client.get(
+        "/api/finops/budgets?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=headers,
+    )
+    saved_views = client.get(
+        "/api/finops/views?workspace_id=ws-a",
+        headers=headers,
+    )
+    exported = client.get(
+        "/api/finops/export.csv?group_by=model&workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=headers,
+    )
+
+    assert created_budget.status_code == 201
+    assert created_view.status_code == 201
+    assert budgets.status_code == 200
+    assert budgets.json()["items"][0]["progress"]["forecast_status"] == "estimated"
+    assert saved_views.status_code == 200
+    assert saved_views.json()["items"][0]["filters"]["workspace_id"] == "ws-a"
+    assert exported.status_code == 200
+    assert exported.content.startswith(b"\xef\xbb\xbf")
+    assert "actor-safe" not in exported.text
+    assert "provider" not in exported.text
+
+
+def test_finops_saved_view_rejects_unsafe_filter_and_foreign_workspace(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    views = FinOpsSavedViewService(InMemorySavedViewRepository())
+    monkeypatch.setattr(finops_router, "get_finops_saved_view_service", lambda: views)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+
+    unsafe = client.post(
+        "/api/finops/views",
+        headers=headers,
+        json={
+            "name": "不安全",
+            "tab": "cost",
+            "filters": {"actor_ref": "raw-user"},
+        },
+    )
+    foreign = client.post(
+        "/api/finops/views",
+        headers=headers,
+        json={
+            "name": "越权",
+            "tab": "cost",
+            "filters": {"workspace_id": "ws-b"},
+        },
+    )
+
+    assert unsafe.status_code == 422
+    assert foreign.status_code == 403
 
 
 def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(

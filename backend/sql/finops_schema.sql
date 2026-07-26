@@ -300,6 +300,50 @@ BEGIN
     );
 END;
 
+IF OBJECT_ID(N'df_finops.budget', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.budget (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        budget_id NVARCHAR(64) NOT NULL,
+        name NVARCHAR(160) NOT NULL,
+        scope_type NVARCHAR(24) NOT NULL,
+        scope_id NVARCHAR(160) NULL,
+        period_start DATETIME2(7) NOT NULL,
+        period_end DATETIME2(7) NOT NULL,
+        amount DECIMAL(19, 8) NOT NULL,
+        currency CHAR(3) NOT NULL CONSTRAINT DF_finops_budget_currency DEFAULT 'USD',
+        warning_pct DECIMAL(8, 4) NOT NULL,
+        critical_pct DECIMAL(8, 4) NOT NULL,
+        version INT NOT NULL,
+        updated_at DATETIME2(7) NOT NULL CONSTRAINT DF_finops_budget_updated DEFAULT SYSUTCDATETIME(),
+        updated_by NVARCHAR(128) NOT NULL,
+        CONSTRAINT PK_finops_budget PRIMARY KEY (tenant_ref, budget_id),
+        CONSTRAINT CK_finops_budget_scope CHECK (scope_type IN (N'organization', N'department', N'workspace')),
+        CONSTRAINT CK_finops_budget_currency CHECK (currency = 'USD'),
+        CONSTRAINT CK_finops_budget_period CHECK (period_start < period_end),
+        CONSTRAINT CK_finops_budget_amount CHECK (amount > 0)
+    );
+END;
+
+IF OBJECT_ID(N'df_finops.saved_view', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.saved_view (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        view_id NVARCHAR(64) NOT NULL,
+        name NVARCHAR(120) NOT NULL,
+        audience NVARCHAR(16) NOT NULL,
+        portal_tab NVARCHAR(16) NOT NULL,
+        filter_payload NVARCHAR(MAX) NOT NULL,
+        version INT NOT NULL,
+        created_by NVARCHAR(128) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL CONSTRAINT DF_finops_view_updated DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_finops_saved_view PRIMARY KEY (tenant_ref, view_id),
+        CONSTRAINT CK_finops_view_filters CHECK (ISJSON(filter_payload) = 1),
+        CONSTRAINT CK_finops_view_audience CHECK (audience IN (N'it', N'finance', N'shared')),
+        CONSTRAINT CK_finops_view_tab CHECK (portal_tab IN (N'overview', N'cost', N'roi', N'risk'))
+    );
+END;
+
 IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
     WHERE object_id = OBJECT_ID(N'df_finops.request_event')

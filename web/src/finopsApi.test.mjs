@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -110,4 +111,14 @@ test("metric-aware assistant sends only the typed request body", async () => {
   assert.equal(captured.url, "/api/finops/assistant/query");
   assert.equal(captured.options.method, "POST");
   assert.equal(JSON.parse(captured.options.body).metric_context.metric_id, "estimated_cost");
+});
+
+
+test("planning APIs use bounded native endpoints", async () => {
+  const source = await readFile(new URL("./api.js", import.meta.url), "utf8");
+
+  assert.match(source, /loadFinOpsBudgets/);
+  assert.match(source, /loadFinOpsSavedViews/);
+  assert.match(source, /createFinOpsSavedView/);
+  assert.match(source, /finops\/export\.csv/);
 });

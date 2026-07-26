@@ -7,6 +7,8 @@ import {
   finopsMetricCards,
   finopsRequestViewModel,
   finopsTrendViewModel,
+  finopsBudgetView,
+  finopsDoughnutSegments,
   formatRelativeUpdateTime,
 } from "./finopsViewModel.js";
 
@@ -148,4 +150,32 @@ test("request detail view model marks missing business evidence without fake tra
   assert.equal(request.businessRequest.text, "未记录");
   assert.equal(request.businessResponse.text, "未记录");
   assert.equal(request.links.foundryTrace, "");
+});
+
+
+test("budget and allocation view models preserve estimated and unavailable states", () => {
+  const budget = finopsBudgetView({
+    items: [{
+      name: "月度预算",
+      amount: 100,
+      progress: {
+        spent_amount: 40,
+        usage_pct: 40,
+        forecast_amount: 80,
+        forecast_status: "estimated",
+        confidence: "partial",
+        threshold_state: "normal",
+      },
+    }],
+  });
+  const doughnut = finopsDoughnutSegments([
+    { key: "gpt-5", cost: 8 },
+    { key: "gpt-4.1", cost: 2 },
+  ], "cost");
+
+  assert.equal(budget.name, "月度预算");
+  assert.equal(budget.forecastLabel, "$80");
+  assert.equal(budget.status, "estimated");
+  assert.deepEqual(doughnut.map((item) => item.sharePct), [80, 20]);
+  assert.deepEqual(finopsDoughnutSegments([{ key: "unknown", cost: null }], "cost"), []);
 });

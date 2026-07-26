@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  BookmarkPlus,
   Clock3,
   Database,
+  Download,
   ExternalLink,
   Gauge,
   Loader2,
@@ -15,14 +17,18 @@ import {
 
 import {
   acknowledgeFinOpsAnomaly,
+  createFinOpsSavedView,
+  finOpsExportUrl,
   loadFinOpsActions,
   loadFinOpsAgents,
   loadFinOpsAnomalies,
   loadFinOpsBootstrap,
   loadFinOpsBreakdowns,
+  loadFinOpsBudgets,
   loadFinOpsRecommendations,
   loadFinOpsRequest,
   loadFinOpsRequests,
+  loadFinOpsSavedViews,
   loadFinOpsTrends,
   loadWorkspaceCostValue,
   loadWorkspaceRoi,
@@ -44,7 +50,9 @@ import {
 import {
   FINOPS_TABS,
   finopsBootstrapViewData,
+  finopsBudgetView,
   finopsBreakdownRows,
+  finopsDoughnutSegments,
   finopsMetricCards,
   finopsRequestViewModel,
   finopsTrendViewModel,
@@ -433,6 +441,63 @@ function OverviewPage({
 }
 
 
+function AllocationDoughnut({ rows, title }) {
+  const segments = finopsDoughnutSegments(rows, "cost");
+  if (!segments.length) return <EmptyState>当前范围没有可计价的分摊数据。</EmptyState>;
+  let cursor = 0;
+  const gradient = segments.map((segment) => {
+    const start = cursor;
+    cursor += segment.sharePct;
+    return `var(--finops-chart-${segment.colorIndex}) ${start}% ${cursor}%`;
+  }).join(", ");
+  return (
+    <div className="finops-doughnut-layout">
+      <div
+        className="finops-doughnut"
+        style={{ background: `conic-gradient(${gradient})` }}
+        role="img"
+        aria-label={`${title}，${segments.map((item) => `${item.key} ${item.sharePct}%`).join("，")}`}
+      >
+        <span><b>{segments.length}</b><small>个分类</small></span>
+      </div>
+      <div className="finops-doughnut-legend">
+        {segments.slice(0, 6).map((item) => (
+          <div key={item.key}>
+            <i style={{ background: `var(--finops-chart-${item.colorIndex})` }} />
+            <span title={item.key}>{item.key}</span>
+            <b>{item.sharePct}%</b>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+function BudgetForecast({ payload }) {
+  const budget = finopsBudgetView(payload);
+  const progress = Math.max(0, Math.min(100, budget.usagePct || 0));
+  return (
+    <div className={`finops-budget-forecast ${budget.thresholdState}`}>
+      <header>
+        <span><b>{budget.name}</b><small>请求级估算成本，不代表实际账单</small></span>
+        <EvidenceBadge status={budget.status} />
+      </header>
+      <div className="finops-budget-values">
+        <span><small>已使用</small><b>{budget.spentLabel}</b></span>
+        <span><small>预算</small><b>{budget.amountLabel}</b></span>
+        <span><small>期末预测</small><b>{budget.forecastLabel}</b></span>
+      </div>
+      <div className="finops-budget-track"><i style={{ width: `${progress}%` }} /></div>
+      <footer>
+        <span>{budget.usagePct == null ? "预算进度暂不可用" : `已使用 ${formatFinOpsPercent(budget.usagePct)}`}</span>
+        <span>预测置信度：{budget.confidence === "complete" ? "完整" : budget.confidence === "partial" ? "部分" : "不可用"}</span>
+      </footer>
+    </div>
+  );
+}
+
+
 function CostPage({
   overviewData,
   detail,
@@ -441,13 +506,23 @@ function CostPage({
   onEvidence = null,
   onAsk = null,
   onDimensionSelect = null,
+  onSaveView = null,
+  exportUrl = "",
 }) {
   const agents = finopsBreakdownRows({ items: detail.agents?.agents || [] });
   const models = finopsBreakdownRows({ items: detail.agents?.models || [] });
   return (
     <>
       <MetricCards payload={overviewData.overview} scope={scope} onEvidence={onEvidence} onAsk={onAsk} />
+      <div className="finops-page-actions">
+        <span>{detail.views?.count ? `${detail.views.count} 个已保存视图` : "可保存当前 IT / 财务筛选范围"}</span>
+        {onSaveView ? <button type="button" onClick={onSaveView}><BookmarkPlus size={14} />保存财务视图</button> : null}
+        {exportUrl ? <a href={exportUrl}><Download size={14} />导出 CSV</a> : null}
+      </div>
       <div className="finops-grid">
+        <Panel title="预算消耗与期末预测" subtitle="仅使用已计价证据形成预测" className="span-2">
+          <BudgetForecast payload={detail.budgets} />
+        </Panel>
         <Panel title="成本趋势" subtitle="请求级价目表估算，不代表 Azure 实际账单" className="span-2">
           <TrendBars payload={overviewData.trends} metric="cost" comparisonPayload={comparison} events={overviewData.anomalies?.items || []} />
         </Panel>
@@ -462,6 +537,12 @@ function CostPage({
         </Panel>
         <Panel title="模型成本归因" subtitle="按 deployment 聚合">
           <HorizontalBars rows={models} valueKey="cost" dimension="model" onSelect={onDimensionSelect} valueFormatter={(value) => formatFinOpsCost(value, value == null ? "unavailable" : "estimated")} />
+        </Panel>
+        <Panel title="Agent 成本结构" subtitle="分类占比使用同一估算账本">
+          <AllocationDoughnut rows={agents} title="Agent 成本结构" />
+        </Panel>
+        <Panel title="模型成本结构" subtitle="单一分类仍保留完整圆环">
+          <AllocationDoughnut rows={models} title="模型成本结构" />
         </Panel>
       </div>
     </>
@@ -997,7 +1078,14 @@ export function FinOpsPortal({
       cost: () => Promise.all([
         loadFinOpsBreakdowns("workspace", query, { signal: controller.signal }),
         loadFinOpsAgents(query, { signal: controller.signal }),
-      ]).then(([workspace, agents]) => ({ workspace, agents })),
+        loadFinOpsBudgets(query, { signal: controller.signal }),
+        loadFinOpsSavedViews({ workspaceId }, { signal: controller.signal }),
+      ]).then(([workspace, agents, budgets, views]) => ({
+        workspace,
+        agents,
+        budgets,
+        views,
+      })),
       roi: () => Promise.all([
         loadWorkspaceRoi(workspaceId, { from: query.from, to: query.to }),
         loadWorkspaceCostValue(workspaceId, { from: query.from, to: query.to }),
@@ -1084,6 +1172,30 @@ export function FinOpsPortal({
       setGovernance({ busyId: "", error: "" });
     } catch (error) {
       setGovernance({ busyId: "", error: error instanceof Error ? error.message : "审批动作失败" });
+    }
+  };
+
+  const saveCurrentView = async () => {
+    setGovernance({ busyId: "save-view", error: "" });
+    try {
+      await createFinOpsSavedView({
+        name: `财务视图 ${windowValue.from} 至 ${windowValue.to}`,
+        audience: "finance",
+        tab: "cost",
+        filters: {
+          workspace_id: workspaceId,
+          ...(filters.departmentId ? { department_id: filters.departmentId } : {}),
+          ...(filters.agentId ? { agent_id: filters.agentId } : {}),
+          ...(filters.model ? { model: filters.model } : {}),
+        },
+      });
+      refresh();
+      setGovernance({ busyId: "", error: "" });
+    } catch (error) {
+      setGovernance({
+        busyId: "",
+        error: error instanceof Error ? error.message : "视图保存失败",
+      });
     }
   };
 
@@ -1203,7 +1315,7 @@ export function FinOpsPortal({
         {showDetailLoading ? <div className="finops-section-loading"><Loader2 className="spin" size={18} />正在读取当前页面</div> : null}
         {!showDetailLoading && detailState.error ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{detailState.error}</span><button type="button" onClick={refresh}>重试</button></div> : null}
         {!showDetailLoading && !detailState.error && tab === "cost"
-          ? <CostPage overviewData={overviewState.data} detail={detailState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} />
+          ? <CostPage overviewData={overviewState.data} detail={detailState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} onSaveView={governance.busyId === "save-view" ? null : saveCurrentView} exportUrl={finOpsExportUrl("workspace", query)} />
           : null}
         {!showDetailLoading && !detailState.error && tab === "roi"
           ? <RoiPage detail={detailState.data} />
