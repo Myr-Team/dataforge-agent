@@ -4,11 +4,13 @@ import test from "node:test";
 
 import {
   buildFinOpsQuery,
+  deleteFinOpsOfficialPriceMapping,
   loadFinOpsBootstrap,
   loadFinOpsOfficialPriceCatalog,
   loadFinOpsOfficialPriceMappings,
   queryFinOpsAssistant,
   updateFinOpsOfficialPriceMapping,
+  updateWorkspaceModelRouting,
   toUserFacingRequestError,
 } from "./api.js";
 
@@ -154,4 +156,47 @@ test("official pricing APIs use the server-owned catalog and typed mapping body"
     official_price_key: "azure-openai:gpt-5.1:global-standard:global",
     base_revision: 2,
   });
+});
+
+test("deleting a wrong mapping issues a DELETE and tolerates a 204 body", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), method: options.method });
+    return { ok: true, status: 204 };
+  };
+
+  let result;
+  try {
+    result = await deleteFinOpsOfficialPriceMapping("gpt-5.6-terra");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls[0].url, "/api/finops/pricing/mappings/gpt-5.6-terra");
+  assert.equal(calls[0].method, "DELETE");
+  assert.deepEqual(result, {});
+});
+
+test("model routing save carries base_revision for optimistic concurrency", async () => {
+  const originalFetch = globalThis.fetch;
+  let captured = null;
+  globalThis.fetch = async (url, options = {}) => {
+    captured = { url: String(url), options };
+    return { ok: true, json: async () => ({ policy: { revision: 4 } }) };
+  };
+
+  try {
+    await updateWorkspaceModelRouting("ws-a", {
+      assignments: {},
+      agent_assignments: {},
+      base_revision: 3,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.url, "/api/workspaces/ws-a/governance/model-routing");
+  assert.equal(captured.options.method, "PUT");
+  assert.equal(JSON.parse(captured.options.body).base_revision, 3);
 });

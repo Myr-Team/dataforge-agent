@@ -4250,7 +4250,9 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .routing-advanced > .routing-assignment-table { margin-left: 16px; margin-right: 16px; }
 .routing-advanced > p { margin-top: -4px; color: #667085; font-size: 11px; }
 .routing-catalog-revision { align-self: center; color: #667085; font-size: 10.5px; }
-.routing-official-price-row { display: grid; grid-template-columns: minmax(180px, .9fr) 82px minmax(300px, 1.65fr) 80px; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid #eef2f7; }
+.routing-official-price-row { display: grid; grid-template-columns: minmax(180px, .9fr) 82px minmax(300px, 1.65fr) minmax(96px, auto); align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid #eef2f7; }
+.routing-price-actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+.routing-unmap-button { display: inline-flex; min-height: 28px; align-items: center; justify-content: center; gap: 5px; font-size: 11px; font-weight: 600; }
 .routing-official-price-row > div { min-width: 0; }
 .routing-official-price-row b,
 .routing-official-price-row small { display: block; overflow-wrap: anywhere; }

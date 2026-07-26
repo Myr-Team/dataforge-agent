@@ -6,9 +6,11 @@ import {
   RefreshCw,
   Save,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 
 import {
+  deleteFinOpsOfficialPriceMapping,
   loadFinOpsOfficialPriceCatalog,
   loadFinOpsOfficialPriceMappings,
   loadWorkspaceModelRouting,
@@ -181,17 +183,22 @@ export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
     setSaveError("");
     setNotice("");
     try {
-      const payload = await updateWorkspaceModelRouting(
-        workspaceId,
-        assignmentPayload(assignments, agentAssignments, defaultRouteId),
-      );
+      const payload = await updateWorkspaceModelRouting(workspaceId, {
+        ...assignmentPayload(assignments, agentAssignments, defaultRouteId),
+        base_revision: view.policyRevision,
+      });
       setState((current) => ({
         ...current,
         payload: { ...(current.payload || {}), ...payload },
       }));
       setNotice("模型分配已保存；新运行会按 Agent 分别记录模型、Token 与估算成本。");
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : "模型分配保存失败");
+      if (error && error.status === 409) {
+        setSaveError("模型分配已被其他管理员更新，已为你载入最新版本，请复核后重新保存。");
+        await load();
+      } else {
+        setSaveError(error instanceof Error ? error.message : "模型分配保存失败");
+      }
     } finally {
       setSaving("");
     }
@@ -223,6 +230,25 @@ export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
       setNotice(`${deployment} 已关联官方价格记录，新请求将按该版本估算。`);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "官方价格关联失败");
+    } finally {
+      setSaving("");
+    }
+  };
+
+  const removeMapping = async (deployment) => {
+    setSaving(`mapping:${deployment}`);
+    setSaveError("");
+    setNotice("");
+    try {
+      await deleteFinOpsOfficialPriceMapping(deployment);
+      setState((value) => ({
+        ...value,
+        mappings: value.mappings.filter((item) => item.deployment !== deployment),
+      }));
+      setMappingDraft((current) => ({ ...current, [deployment]: "" }));
+      setNotice(`${deployment} 已解除官方价格关联并恢复未计价，历史估算版本保持不变。`);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "解除官方价格关联失败");
     } finally {
       setSaving("");
     }
@@ -354,10 +380,24 @@ export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
                         </select>
                         {selected?.source_url ? <a href={selected.source_url} target="_blank" rel="noreferrer" title="查看官方价格来源"><ExternalLink size={13} />官方来源</a> : null}
                       </div>
-                      <button className="routing-map-button" type="button" disabled={busy || !mappingDraft[route.deployment]} onClick={() => saveMapping(route.deployment)}>
-                        {busy ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
-                        关联
-                      </button>
+                      <div className="routing-price-actions">
+                        <button className="routing-map-button" type="button" disabled={busy || !mappingDraft[route.deployment]} onClick={() => saveMapping(route.deployment)}>
+                          {busy ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
+                          关联
+                        </button>
+                        {mapping ? (
+                          <button
+                            className="ghost-button routing-unmap-button"
+                            type="button"
+                            disabled={busy}
+                            onClick={() => removeMapping(route.deployment)}
+                            aria-label={`解除${route.label}官方价格关联`}
+                          >
+                            <Trash2 size={14} />
+                            解除关联
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                   );
                 })}

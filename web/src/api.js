@@ -71,6 +71,9 @@ async function request(path, options = {}) {
     error.status = response.status;
     throw error;
   }
+  if (response.status === 204) {
+    return {};
+  }
   return response.json();
 }
 
@@ -620,6 +623,12 @@ export async function updateFinOpsOfficialPriceMapping(
       official_price_key: String(officialPriceKey || ""),
       base_revision: Number.isInteger(baseRevision) ? baseRevision : 0,
     }),
+  });
+}
+
+export async function deleteFinOpsOfficialPriceMapping(deployment) {
+  return request(`/api/finops/pricing/mappings/${encodeURIComponent(deployment)}`, {
+    method: "DELETE",
   });
 }
 
