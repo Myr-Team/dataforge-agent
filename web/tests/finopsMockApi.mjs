@@ -264,6 +264,60 @@ export async function installFinOpsMockApi(page, calls = []) {
       body = {};
     } else if (path === "/api/finops/bootstrap") {
       body = bootstrapPayload;
+    } else if (path === "/api/workspaces/demo-corpus/governance/model-routing") {
+      body = {
+        workspace_id: "demo-corpus",
+        default_route: "analysis",
+        routes: [
+          {
+            id: "analysis",
+            deployment: "gpt-5.1",
+            label: "GPT-5.1",
+            capabilities: ["analysis", "chat"],
+          },
+          {
+            id: "terra",
+            deployment: "gpt-5.6-terra",
+            label: "GPT-5.6 Terra",
+            capabilities: ["analysis", "chat"],
+          },
+        ],
+        policy: {
+          revision: 3,
+          default_route_id: "analysis",
+          assignments: {},
+          agent_assignments: {
+            "df-auditor": {
+              primary_route_id: "terra",
+              fallback_route_id: "analysis",
+            },
+          },
+        },
+        price_card: { state: "not_configured", revision: 0, currency: "USD" },
+      };
+    } else if (path === "/api/finops/pricing/catalog") {
+      body = {
+        revision: "azure-retail-2026-07-26",
+        currency: "USD",
+        items: [{
+          price_key: "azure-openai:gpt-5.1:global-standard:global",
+          official_model: "gpt-5.1",
+          display_name: "GPT-5.1 Global Standard",
+          input_per_million: 1.25,
+          output_per_million: 10,
+          source_url: "https://prices.azure.com/api/retail/prices",
+        }],
+        count: 1,
+      };
+    } else if (path === "/api/finops/pricing/mappings") {
+      body = {
+        items: [{
+          deployment: "gpt-5.1",
+          official_price_key: "azure-openai:gpt-5.1:global-standard:global",
+          mapping_revision: 1,
+        }],
+        count: 1,
+      };
     } else if (path === "/api/finops/requests") {
       body = {
         ...bootstrapPayload,

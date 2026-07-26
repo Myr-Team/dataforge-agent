@@ -28,6 +28,17 @@ test("operations management is immediately discoverable and supports metric dril
 
   await expect(page.getByText("数据可信度")).toBeVisible();
   await expect(page.getByText("计价覆盖")).toBeVisible();
+  await page.getByRole("button", { name: "关联官方模型价格" }).click();
+  await expect(page.getByRole("dialog", { name: "模型分配与官方价格" })).toBeVisible();
+  await expect(page.getByText("Agent 模型分配")).toBeVisible();
+  await expect(page.getByText("审计 Agent")).toBeVisible();
+  await expect(page.getByLabel("审计 Agent主要模型")).toHaveValue("terra");
+  await expect(page.locator(".routing-price-status.unpriced")).toHaveCount(1);
+  await page.screenshot({
+    path: path.join(outputDir, "operations-model-settings-desktop.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "关闭模型配置" }).click();
   await page.screenshot({
     path: path.join(outputDir, "operations-management-overview-desktop.png"),
     fullPage: true,
@@ -71,4 +82,17 @@ test("operations management stays usable on mobile without a full-screen AI draw
     path: path.join(outputDir, "operations-management-mobile.png"),
     fullPage: true,
   });
+});
+
+
+test("settings opens the same persisted Agent model configuration", async ({ page }) => {
+  await installFinOpsMockApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).click();
+  await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
+  const modelCard = page.locator(".set-cfg").filter({ hasText: "模型与生成" });
+  await modelCard.getByRole("button", { name: "管理" }).click();
+  await expect(page.getByText("Agent 模型分配")).toBeVisible();
+  await expect(page.getByLabel("审计 Agent主要模型")).toHaveValue("terra");
+  await expect(page.locator(".side-drawer.wide")).toBeVisible();
 });

@@ -20,6 +20,7 @@ import { monitoringSnapshotViewModel } from "./monitoringViewModel.js";
 import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, createWorkspaceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
 import { GovernanceCenter } from "./GovernanceCenter.jsx";
 import { finopsIntentHandlers } from "./finopsNavigation.js";
+import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 const FinOpsPortal = lazy(() => import("./FinOpsPortal.jsx").then((m) => ({ default: m.FinOpsPortal })));
 import {
@@ -1957,7 +1958,7 @@ function ArtifactsCenter({ dashboard, artifacts, artifact, artifactRefreshKey = 
 }
 
 // 通用右侧抽屉
-function SideDrawer({ open, title, onClose, children }) {
+function SideDrawer({ open, title, onClose, children, wide = false }) {
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -1967,7 +1968,7 @@ function SideDrawer({ open, title, onClose, children }) {
   if (!open) return null;
   return createPortal(
     <div className="drawer-overlay" onClick={onClose} role="dialog" aria-modal="true">
-      <aside className="side-drawer" onClick={(e) => e.stopPropagation()}>
+      <aside className={`side-drawer ${wide ? "wide" : ""}`} onClick={(e) => e.stopPropagation()}>
         <div className="drawer-head"><strong>{title}</strong><button type="button" className="icon-button" onClick={onClose}><X size={17} /></button></div>
         <div className="drawer-body">{children}</div>
       </aside>
@@ -3806,10 +3807,15 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
         open={Boolean(settingsDrawer)}
         title={settingsDrawerCopy[settingsDrawer]?.title || "设置说明"}
         onClose={() => setSettingsDrawer(null)}
+        wide={settingsDrawer === "models"}
       >
-        <div className="settings-info-drawer">
-          {(settingsDrawerCopy[settingsDrawer]?.body || []).map((line, index) => <p key={index}>{line}</p>)}
-        </div>
+        {settingsDrawer === "models"
+          ? <ModelRoutingPage workspaceId={workspaceId} embedded />
+          : (
+            <div className="settings-info-drawer">
+              {(settingsDrawerCopy[settingsDrawer]?.body || []).map((line, index) => <p key={index}>{line}</p>)}
+            </div>
+          )}
       </SideDrawer>
     </main>
   );

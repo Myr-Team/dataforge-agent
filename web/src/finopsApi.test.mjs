@@ -5,7 +5,10 @@ import test from "node:test";
 import {
   buildFinOpsQuery,
   loadFinOpsBootstrap,
+  loadFinOpsOfficialPriceCatalog,
+  loadFinOpsOfficialPriceMappings,
   queryFinOpsAssistant,
+  updateFinOpsOfficialPriceMapping,
   toUserFacingRequestError,
 } from "./api.js";
 
@@ -121,4 +124,34 @@ test("planning APIs use bounded native endpoints", async () => {
   assert.match(source, /loadFinOpsSavedViews/);
   assert.match(source, /createFinOpsSavedView/);
   assert.match(source, /finops\/export\.csv/);
+});
+
+test("official pricing APIs use the server-owned catalog and typed mapping body", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    return { ok: true, json: async () => ({ items: [] }) };
+  };
+
+  try {
+    await loadFinOpsOfficialPriceCatalog();
+    await loadFinOpsOfficialPriceMappings();
+    await updateFinOpsOfficialPriceMapping("gpt-5.6-terra", {
+      officialPriceKey: "azure-openai:gpt-5.1:global-standard:global",
+      baseRevision: 2,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(calls.map((item) => item.url), [
+    "/api/finops/pricing/catalog",
+    "/api/finops/pricing/mappings",
+    "/api/finops/pricing/mappings/gpt-5.6-terra",
+  ]);
+  assert.deepEqual(JSON.parse(calls[2].options.body), {
+    official_price_key: "azure-openai:gpt-5.1:global-standard:global",
+    base_revision: 2,
+  });
 });

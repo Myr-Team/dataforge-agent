@@ -602,6 +602,27 @@ export async function updateWorkspaceModelPriceCard(workspaceId, priceCard) {
   });
 }
 
+export async function loadFinOpsOfficialPriceCatalog() {
+  return request("/api/finops/pricing/catalog");
+}
+
+export async function loadFinOpsOfficialPriceMappings() {
+  return request("/api/finops/pricing/mappings");
+}
+
+export async function updateFinOpsOfficialPriceMapping(
+  deployment,
+  { officialPriceKey, baseRevision = 0 },
+) {
+  return request(`/api/finops/pricing/mappings/${encodeURIComponent(deployment)}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      official_price_key: String(officialPriceKey || ""),
+      base_revision: Number.isInteger(baseRevision) ? baseRevision : 0,
+    }),
+  });
+}
+
 export async function loadMonitoringDashboard({ scope = "current", workspaceId, from, to, signal } = {}) {
   const params = new URLSearchParams({
     scope: String(scope || "current"),

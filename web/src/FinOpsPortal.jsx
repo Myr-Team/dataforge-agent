@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Gauge,
   Loader2,
+  Pencil,
   RefreshCw,
   ShieldCheck,
   TrendingUp,
@@ -42,6 +43,7 @@ import {
   readFinOpsBootstrap,
 } from "./finopsPreload.js";
 import { FinOpsAssistant } from "./FinOpsAssistant.jsx";
+import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
 import {
   applyDimensionFilter,
   filterChips,
@@ -163,6 +165,7 @@ function MetricCards({
   scope,
   onEvidence = null,
   onAsk = null,
+  onConfigurePricing = null,
 }) {
   return (
     <section className="finops-metrics" aria-label="运营核心指标">
@@ -180,6 +183,20 @@ function MetricCards({
               <span>{card.label}</span>
               <CircleHelp className="finops-help-icon" size={13} aria-hidden="true" />
               <EvidenceBadge status={card.metric.evidenceState} />
+              {card.id === "cost" && onConfigurePricing ? (
+                <button
+                  className="finops-price-edit"
+                  type="button"
+                  title="关联官方模型价格"
+                  aria-label="关联官方模型价格"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onConfigurePricing();
+                  }}
+                >
+                  <Pencil size={12} />
+                </button>
+              ) : null}
             </div>
             <strong>{card.value}</strong>
             <small>{card.meta}</small>
@@ -485,13 +502,14 @@ function OverviewPage({
   onEvidence = null,
   onAsk = null,
   onDimensionSelect = null,
+  onConfigurePricing = null,
 }) {
   const [trendMetric, setTrendMetric] = useState("total");
   const departmentRows = finopsBreakdownRows(data.department);
   const anomalies = Array.isArray(data.anomalies?.items) ? data.anomalies.items : [];
   return (
     <>
-      <MetricCards payload={data.overview} scope={scope} onEvidence={onEvidence} onAsk={onAsk} />
+      <MetricCards payload={data.overview} scope={scope} onEvidence={onEvidence} onAsk={onAsk} onConfigurePricing={onConfigurePricing} />
       <div className="finops-grid finops-grid-wide">
         <Panel title="使用与成本趋势" subtitle="统一零基线，数值与柱高按真实数据比例呈现" className="span-2">
           <div className="finops-trend-switch" aria-label="趋势指标">
@@ -595,12 +613,13 @@ function CostPage({
   onDimensionSelect = null,
   onSaveView = null,
   exportUrl = "",
+  onConfigurePricing = null,
 }) {
   const agents = finopsBreakdownRows({ items: detail.agents?.agents || [] });
   const models = finopsBreakdownRows({ items: detail.agents?.models || [] });
   return (
     <>
-      <MetricCards payload={overviewData.overview} scope={scope} onEvidence={onEvidence} onAsk={onAsk} />
+      <MetricCards payload={overviewData.overview} scope={scope} onEvidence={onEvidence} onAsk={onAsk} onConfigurePricing={onConfigurePricing} />
       <div className="finops-page-actions">
         <span>{detail.views?.count ? `${detail.views.count} 个已保存视图` : "可保存当前 IT / 财务筛选范围"}</span>
         {onSaveView ? <button type="button" onClick={onSaveView}><BookmarkPlus size={14} />保存财务视图</button> : null}
@@ -1052,6 +1071,7 @@ export function FinOpsPortal({
     context: null,
     openRequest: 0,
   });
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const [evidenceState, setEvidenceState] = useState({
     open: false,
     reason: "",
@@ -1478,12 +1498,12 @@ export function FinOpsPortal({
           ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{overviewState.error}</span><button type="button" onClick={refresh}>重试</button></div>
           : null}
         {!overviewState.loading && overviewState.data?.overview?.metrics && tab === "overview"
-          ? <OverviewPage data={overviewState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} />
+          ? <OverviewPage data={overviewState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} onConfigurePricing={() => setModelSettingsOpen(true)} />
           : null}
         {showDetailLoading ? <div className="finops-section-loading"><Loader2 className="spin" size={18} />正在读取当前页面</div> : null}
         {!showDetailLoading && detailState.error ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{detailState.error}</span><button type="button" onClick={refresh}>重试</button></div> : null}
         {!showDetailLoading && !detailState.error && tab === "cost"
-          ? <CostPage overviewData={overviewState.data} detail={detailState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} onSaveView={governance.busyId === "save-view" ? null : saveCurrentView} exportUrl={finOpsExportUrl("workspace", query)} />
+          ? <CostPage overviewData={overviewState.data} detail={detailState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} onSaveView={governance.busyId === "save-view" ? null : saveCurrentView} exportUrl={finOpsExportUrl("workspace", query)} onConfigurePricing={() => setModelSettingsOpen(true)} />
           : null}
         {!showDetailLoading && !detailState.error && tab === "roi"
           ? <RoiPage detail={detailState.data} />
@@ -1508,6 +1528,21 @@ export function FinOpsPortal({
         onClearContext={() => setAssistantState((state) => ({ ...state, context: null }))}
         onEvidence={canOpenEvidence ? openEvidence : null}
       />
+      {modelSettingsOpen ? (
+        <div className="finops-model-modal-backdrop" role="presentation" onMouseDown={() => setModelSettingsOpen(false)}>
+          <section className="finops-model-modal" role="dialog" aria-modal="true" aria-labelledby="finops-model-modal-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header>
+              <div>
+                <p>MODEL & COST</p>
+                <h2 id="finops-model-modal-title">模型分配与官方价格</h2>
+                <span>配置保存后，新请求会按 Agent 和模型进入运营统计。</span>
+              </div>
+              <button className="icon-button" type="button" aria-label="关闭模型配置" onClick={() => setModelSettingsOpen(false)}><X size={17} /></button>
+            </header>
+            <ModelRoutingPage workspaceId={workspaceId} embedded />
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
