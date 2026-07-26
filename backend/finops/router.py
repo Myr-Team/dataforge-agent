@@ -36,6 +36,7 @@ from .evidence_repository import (
 from .anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
 from .agent_inputs import build_finops_agent_input, build_roi_agent_input
 from .analysis_agents import FinOpsAnalysisAgent
+from .assistant import AssistantRequest, FinOpsAssistantService
 from .anomaly_store import (
     AnomalyConflict,
     AnomalyNotFound,
@@ -227,6 +228,10 @@ def get_finops_insight_service() -> FinOpsInsightService:
             model_runner=run_agent,
         ),
     )
+
+
+def get_finops_assistant_service() -> FinOpsAssistantService:
+    return FinOpsAssistantService(model_runner=run_agent)
 
 
 def _workspace_name(workspace_id: str) -> str:
@@ -565,6 +570,36 @@ def _bootstrap_anomaly_summaries(query: FinOpsQuery) -> list[dict[str, Any]]:
         }
         for item in open_items[:3]
     ]
+
+
+@router.post("/assistant/query")
+async def assistant_query(
+    body: AssistantRequest,
+    request: Request,
+) -> dict[str, Any]:
+    context = body.metric_context
+    filters = context.filters
+    query_service, query, roles = _common(
+        request,
+        context.window.from_value,
+        context.window.to_value,
+        filters.department_id,
+        filters.workspace_id,
+        filters.agent_id,
+        filters.actor_ref,
+        filters.model,
+    )
+    if not all(role in {"owner", "admin"} for role in roles.values()):
+        raise HTTPException(
+            status_code=403,
+            detail="workspace access denied for finops.summary.read",
+        )
+    evidence_payload = build_finops_agent_input(query, query_service)
+    response = get_finops_assistant_service().answer(
+        request=body,
+        evidence_payload=evidence_payload,
+    )
+    return response.model_dump(mode="json")
 
 
 @router.get("/filters")

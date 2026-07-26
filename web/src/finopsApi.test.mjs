@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildFinOpsQuery,
   loadFinOpsBootstrap,
+  queryFinOpsAssistant,
   toUserFacingRequestError,
 } from "./api.js";
 
@@ -68,4 +69,45 @@ test("network failure remains a service message when auth is still valid", async
 
   assert.equal(error.message, "暂时无法连接服务，请稍后重试");
   assert.equal(error.code, "service_unreachable");
+});
+
+test("metric-aware assistant sends only the typed request body", async () => {
+  const originalFetch = globalThis.fetch;
+  let captured = null;
+  globalThis.fetch = async (url, options) => {
+    captured = { url: String(url), options };
+    return {
+      ok: true,
+      json: async () => ({
+        status: "ready",
+        answer: "已按当前指标分析。",
+        evidence_refs: ["req_safe"],
+        evidence_state: "observed",
+        suggested_questions: [],
+      }),
+    };
+  };
+
+  try {
+    await queryFinOpsAssistant({
+      question: "为什么变化？",
+      metric_context: {
+        metric_id: "estimated_cost",
+        label: "估算成本",
+        value: 0.01,
+        unit: "USD",
+        window: { from: "2026-07-01T00:00:00Z", to: "2026-07-26T00:00:00Z" },
+        filters: { workspace_id: "ws-a" },
+        data_status: "partial",
+        evidence_state: "estimated",
+      },
+      history: [],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.url, "/api/finops/assistant/query");
+  assert.equal(captured.options.method, "POST");
+  assert.equal(JSON.parse(captured.options.body).metric_context.metric_id, "estimated_cost");
 });

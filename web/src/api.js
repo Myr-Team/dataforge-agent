@@ -201,6 +201,14 @@ export function analyzeFinOpsInsight(payload) {
   });
 }
 
+export function queryFinOpsAssistant(payload, options = {}) {
+  return request("/api/finops/assistant/query", {
+    ...options,
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function loadFinOpsActions(filters = {}, options = {}) {
   return loadFinOpsResource("actions", filters, options);
 }

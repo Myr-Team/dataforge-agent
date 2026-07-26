@@ -64,7 +64,10 @@ export function finopsMetricCards(payload = {}) {
   const cost = metrics.estimated_cost || {};
   const budget = metrics.budget || {};
   const latency = metrics.latency || {};
+  const tokens = metrics.tokens || {};
+  const cache = metrics.cache || {};
   const coverage = metrics.apim_coverage_pct;
+  const dataStatus = payload?.data_status || "unavailable";
   return [
     {
       id: "cost",
@@ -72,6 +75,19 @@ export function finopsMetricCards(payload = {}) {
       value: formatFinOpsCost(cost.amount, cost.status),
       meta: cost.status === "partial" ? `${cost.unpriced_requests || 0} 次未计价` : "USD · 非账单",
       tone: cost.status === "partial" || cost.status === "unavailable" ? "warning" : "neutral",
+      metric: {
+        id: "estimated_cost",
+        label: "估算成本",
+        value: cost.amount ?? null,
+        unit: "USD",
+        kind: "cost",
+        amount: cost.amount ?? null,
+        pricedRequests: cost.priced_requests ?? null,
+        unpricedRequests: cost.unpriced_requests ?? null,
+        priceRevision: cost.price_card_revision || "",
+        dataStatus,
+        evidenceState: cost.status || "unavailable",
+      },
     },
     {
       id: "budget",
@@ -87,6 +103,18 @@ export function finopsMetricCards(payload = {}) {
         : hasNumber(budget.usage_pct) && budget.usage_pct >= 80
           ? "warning"
           : "neutral",
+      metric: {
+        id: "budget_usage",
+        label: "预算使用",
+        value: budget.usage_pct ?? null,
+        unit: "%",
+        kind: "budget",
+        amount: budget.amount ?? null,
+        usedAmount: budget.used_amount ?? null,
+        usagePct: budget.usage_pct ?? null,
+        dataStatus,
+        evidenceState: budget.status || "unavailable",
+      },
     },
     {
       id: "requests",
@@ -94,20 +122,113 @@ export function finopsMetricCards(payload = {}) {
       value: formatFinOpsNumber(metrics.requests, "0"),
       meta: "授权范围内已观测调用",
       tone: "neutral",
+      metric: {
+        id: "requests",
+        label: "调用次数",
+        value: metrics.requests ?? null,
+        unit: "次",
+        kind: "quality",
+        requests: metrics.requests ?? null,
+        successRatePct: metrics.success_rate_pct ?? null,
+        p50Ms: latency.p50_ms ?? null,
+        p95Ms: latency.p95_ms ?? null,
+        dataStatus,
+        evidenceState: dataStatus === "complete" ? "observed" : dataStatus,
+      },
+    },
+    {
+      id: "tokens",
+      label: "Token",
+      value: formatFinOpsNumber(tokens.total),
+      meta: tokens.unknown_requests
+        ? `${tokens.unknown_requests} 次调用未记录`
+        : "输入、输出、缓存与推理",
+      tone: tokens.unknown_requests ? "warning" : "neutral",
+      metric: {
+        id: "tokens",
+        label: "Token",
+        value: tokens.total ?? null,
+        unit: "Token",
+        kind: "tokens",
+        tokens: {
+          input: tokens.input ?? null,
+          output: tokens.output ?? null,
+          cachedInput: tokens.cached_input ?? null,
+          reasoning: tokens.reasoning ?? null,
+          total: tokens.total ?? null,
+        },
+        dataStatus,
+        evidenceState: tokens.known_requests ? (tokens.unknown_requests ? "partial" : "observed") : "unavailable",
+      },
     },
     {
       id: "success",
       label: "成功率",
       value: formatFinOpsPercent(metrics.success_rate_pct),
-      meta: "成功调用 / 已观测调用",
+      meta: hasNumber(metrics.error_rate_pct)
+        ? `错误率 ${formatFinOpsPercent(metrics.error_rate_pct)}`
+        : "成功调用 / 已观测调用",
       tone: hasNumber(metrics.success_rate_pct) && metrics.success_rate_pct < 95 ? "warning" : "neutral",
+      metric: {
+        id: "success_rate",
+        label: "成功率",
+        value: metrics.success_rate_pct ?? null,
+        unit: "%",
+        kind: "quality",
+        requests: metrics.requests ?? null,
+        successRatePct: metrics.success_rate_pct ?? null,
+        p50Ms: latency.p50_ms ?? null,
+        p95Ms: latency.p95_ms ?? null,
+        dataStatus,
+        evidenceState: dataStatus === "complete" ? "observed" : dataStatus,
+      },
     },
     {
       id: "p95",
       label: "P95 延迟",
       value: formatFinOpsDuration(latency.p95_ms),
-      meta: hasNumber(latency.p95_ms) && latency.p95_ms > 2000 ? "超过默认阈值" : "请求延迟",
+      meta: hasNumber(latency.p95_ms) && latency.p95_ms > 2000
+        ? "超过默认阈值"
+        : `P50 ${formatFinOpsDuration(latency.p50_ms)}`,
       tone: hasNumber(latency.p95_ms) && latency.p95_ms > 2000 ? "warning" : "neutral",
+      metric: {
+        id: "p95_latency",
+        label: "P95 延迟",
+        value: latency.p95_ms ?? null,
+        unit: "ms",
+        kind: "quality",
+        requests: latency.known_requests ?? null,
+        successRatePct: metrics.success_rate_pct ?? null,
+        p50Ms: latency.p50_ms ?? null,
+        p95Ms: latency.p95_ms ?? null,
+        dataStatus,
+        evidenceState: latency.known_requests ? (latency.known_requests < metrics.requests ? "partial" : "observed") : "unavailable",
+      },
+    },
+    {
+      id: "cache",
+      label: "缓存命中率",
+      value: formatFinOpsPercent(metrics.cache_hit_rate_pct),
+      meta: hasNumber(cache.eligible_requests)
+        ? `${formatFinOpsNumber(cache.eligible_requests, "0")} 次可缓存调用`
+        : "缓存状态未记录",
+      tone: hasNumber(metrics.cache_hit_rate_pct) && metrics.cache_hit_rate_pct < 60 ? "warning" : "neutral",
+      metric: {
+        id: "cache_hit_rate",
+        label: "缓存命中率",
+        value: metrics.cache_hit_rate_pct ?? null,
+        unit: "%",
+        kind: "cache",
+        cache: {
+          hit: cache.hit ?? null,
+          miss: cache.miss ?? null,
+          bypassed: cache.bypassed ?? null,
+          unavailable: cache.unavailable ?? null,
+          eligible: cache.eligible_requests ?? null,
+        },
+        dataStatus,
+        evidenceState: cache.eligible_requests ? "observed" : "unavailable",
+      },
     },
     {
       id: "coverage",
@@ -115,6 +236,17 @@ export function finopsMetricCards(payload = {}) {
       value: formatFinOpsPercent(coverage),
       meta: "APIM governed / observed",
       tone: hasNumber(coverage) && coverage < 95 ? "warning" : "neutral",
+      metric: {
+        id: "apim_coverage",
+        label: "APIM 覆盖率",
+        value: coverage ?? null,
+        unit: "%",
+        kind: "coverage",
+        coveragePct: coverage ?? null,
+        requests: metrics.requests ?? null,
+        dataStatus,
+        evidenceState: hasNumber(coverage) ? "observed" : "unavailable",
+      },
     },
   ];
 }

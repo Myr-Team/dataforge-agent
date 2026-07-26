@@ -31,14 +31,20 @@ test("finops metric cards preserve unavailable and partial evidence", () => {
     "cost",
     "budget",
     "requests",
+    "tokens",
     "success",
     "p95",
+    "cache",
     "coverage",
   ]);
   assert.equal(cards.find((item) => item.id === "cost").value, "不可用");
   assert.equal(cards.find((item) => item.id === "budget").value, "未配置");
   assert.equal(cards.find((item) => item.id === "p95").value, "未记录");
+  assert.equal(cards.find((item) => item.id === "cache").value, "未记录");
   assert.equal(cards.find((item) => item.id === "coverage").tone, "warning");
+  assert.equal(cards.find((item) => item.id === "cost").metric.kind, "cost");
+  assert.equal(cards.find((item) => item.id === "success").metric.kind, "quality");
+  assert.equal(cards.find((item) => item.id === "cache").metric.kind, "cache");
 });
 
 

@@ -107,13 +107,29 @@ class FinOpsQueryService:
         succeeded = sum(row.status == "succeeded" for row in rows)
         cache_eligible = [row for row in rows if row.cache.eligible is True]
         cache_hits = sum(row.cache.state == "hit" for row in cache_eligible)
+        cache_counts = {
+            state: sum(row.cache.state == state for row in rows)
+            for state in ("hit", "miss", "bypassed", "unavailable")
+        }
         governed = sum(row.gateway_coverage == "apim_governed" for row in rows)
         priced = len(cost_values)
+
+        def token_total(field: str) -> int | None:
+            values = [
+                getattr(row.tokens, field)
+                for row in rows
+                if getattr(row.tokens, field) is not None
+            ]
+            return sum(values) if values else None
 
         payload = self._envelope(query, rows)
         payload["metrics"] = {
             "requests": len(rows),
             "tokens": {
+                "input": token_total("input"),
+                "output": token_total("output"),
+                "cached_input": token_total("cached_input"),
+                "reasoning": token_total("reasoning"),
                 "total": sum(token_values) if token_values else None,
                 "known_requests": len(token_values),
                 "unknown_requests": len(rows) - len(token_values),
@@ -131,6 +147,10 @@ class FinOpsQueryService:
             },
             "error_rate_pct": round((failures / len(rows)) * 100, 2) if rows else None,
             "success_rate_pct": round((succeeded / len(rows)) * 100, 2) if rows else None,
+            "cache": {
+                "eligible_requests": len(cache_eligible),
+                **cache_counts,
+            },
             "cache_hit_rate_pct": round((cache_hits / len(cache_eligible)) * 100, 2) if cache_eligible else None,
             "apim_coverage_pct": round((governed / len(rows)) * 100, 2) if rows else None,
         }

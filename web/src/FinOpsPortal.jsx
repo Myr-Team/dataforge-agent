@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
-  Bot,
   Clock3,
   Database,
   ExternalLink,
@@ -9,7 +8,6 @@ import {
   Loader2,
   RefreshCw,
   ShieldCheck,
-  Sparkles,
   TrendingUp,
   WalletCards,
   X,
@@ -17,8 +15,6 @@ import {
 
 import {
   acknowledgeFinOpsAnomaly,
-  analyzeFinOpsInsight,
-  createFinOpsAction,
   loadFinOpsActions,
   loadFinOpsAgents,
   loadFinOpsAnomalies,
@@ -27,6 +23,7 @@ import {
   loadFinOpsRecommendations,
   loadFinOpsRequest,
   loadFinOpsRequests,
+  loadFinOpsTrends,
   loadWorkspaceCostValue,
   loadWorkspaceRoi,
   suppressFinOpsAnomaly,
@@ -36,12 +33,19 @@ import {
   prefetchFinOpsBootstrap,
   readFinOpsBootstrap,
 } from "./finopsPreload.js";
+import { FinOpsAssistant } from "./FinOpsAssistant.jsx";
+import {
+  applyDimensionFilter,
+  filterChips,
+  metricContext,
+  metricTooltip,
+  previousEqualWindow,
+} from "./finopsInteraction.js";
 import {
   FINOPS_TABS,
   finopsBootstrapViewData,
   finopsBreakdownRows,
   finopsMetricCards,
-  finopsInsightViewModel,
   finopsRequestViewModel,
   finopsTrendViewModel,
   formatFinOpsCost,
@@ -130,24 +134,61 @@ function Panel({ title, subtitle = "", children, className = "" }) {
 }
 
 
-function MetricCards({ payload, onEvidence = null }) {
+function formatMetricTooltipValue(row) {
+  if (row.format === "currency") return formatFinOpsCost(row.value, "estimated");
+  if (row.format === "percent") return formatFinOpsPercent(row.value);
+  if (row.format === "duration") return formatFinOpsDuration(row.value);
+  if (row.format === "text") return row.value;
+  return formatFinOpsNumber(row.value);
+}
+
+
+function MetricCards({
+  payload,
+  scope,
+  onEvidence = null,
+  onAsk = null,
+}) {
   return (
     <section className="finops-metrics" aria-label="运营核心指标">
-      {finopsMetricCards(payload).map((card) => (
-        <article className={`finops-metric ${card.tone}`} key={card.id}>
-          <div>
-            <span>{card.label}</span>
-            <EvidenceBadge status={payload?.data_status} />
-          </div>
-          <strong>{card.value}</strong>
-          <small>{card.meta}</small>
-          {onEvidence ? (
-            <button type="button" onClick={() => onEvidence(`${card.label}指标`)}>
-              查看请求证据
-            </button>
-          ) : null}
-        </article>
-      ))}
+      {finopsMetricCards(payload).map((card) => {
+        const tooltip = metricTooltip(card.metric);
+        const context = metricContext(card.metric, scope);
+        return (
+          <article
+            className={`finops-metric ${card.tone}`}
+            key={card.id}
+            tabIndex={0}
+            aria-label={`${card.label} ${card.value}`}
+          >
+            <div>
+              <span>{card.label}</span>
+              <EvidenceBadge status={card.metric.evidenceState} />
+            </div>
+            <strong>{card.value}</strong>
+            <small>{card.meta}</small>
+            <div className="finops-metric-actions">
+              {onAsk ? <button type="button" onClick={() => onAsk(context)}>问 AI</button> : null}
+              {onEvidence ? (
+                <button type="button" onClick={() => onEvidence(`${card.label}指标`)}>
+                  查看证据
+                </button>
+              ) : null}
+            </div>
+            <div className="finops-metric-tooltip" role="tooltip">
+              <header><b>{tooltip.title}</b><EvidenceBadge status={tooltip.evidenceState} /></header>
+              {tooltip.rows.length ? (
+                <dl>
+                  {tooltip.rows.map((row) => (
+                    <div key={row.label}><dt>{row.label}</dt><dd>{formatMetricTooltipValue(row)}</dd></div>
+                  ))}
+                </dl>
+              ) : <p>当前指标暂无更多可复核明细。</p>}
+              <small>当前筛选范围 · {tooltip.dataStatus === "complete" ? "数据完整" : tooltip.dataStatus === "partial" ? "部分数据" : "数据不可用"}</small>
+            </div>
+          </article>
+        );
+      })}
     </section>
   );
 }
@@ -156,7 +197,7 @@ function MetricCards({ payload, onEvidence = null }) {
 function MetricSkeleton() {
   return (
     <section className="finops-metrics finops-metrics-skeleton" aria-label="正在加载运营指标">
-      {Array.from({ length: 6 }, (_, index) => (
+      {Array.from({ length: 8 }, (_, index) => (
         <article className="finops-metric" key={index}>
           <i />
           <b />
@@ -168,28 +209,50 @@ function MetricSkeleton() {
 }
 
 
-function HorizontalBars({ rows, valueKey = "requests", valueFormatter = formatFinOpsNumber }) {
+function HorizontalBars({
+  rows,
+  valueKey = "requests",
+  valueFormatter = formatFinOpsNumber,
+  dimension = "",
+  onSelect = null,
+}) {
   const maximum = Math.max(...rows.map((row) => Number(row[valueKey] || 0)), 1);
   if (!rows.length) return <EmptyState />;
   return (
     <div className="finops-bars">
       {rows.slice(0, 10).map((row) => (
-        <div className="finops-bar-row" key={row.key}>
+        <button
+          className="finops-bar-row"
+          key={row.key}
+          type="button"
+          disabled={!dimension || !onSelect}
+          onClick={() => onSelect?.({ dimension, value: row.key })}
+          aria-label={`${row.key}，${valueFormatter(row[valueKey])}`}
+        >
           <span title={row.key}>{row.key}</span>
           <div>
             <i style={{ width: `${Math.max(2, (Number(row[valueKey] || 0) / maximum) * 100)}%` }} />
           </div>
           <b>{valueFormatter(row[valueKey])}</b>
-        </div>
+        </button>
       ))}
     </div>
   );
 }
 
 
-function TrendBars({ payload, metric = "total" }) {
+function TrendBars({
+  payload,
+  metric = "total",
+  comparisonPayload = null,
+  events = [],
+}) {
   const rows = finopsTrendViewModel(payload);
-  const values = rows.map((row) => Number(metric === "cost" ? row.cost : row.total || 0));
+  const comparisonRows = finopsTrendViewModel(comparisonPayload || {});
+  const values = [
+    ...rows.map((row) => Number(metric === "cost" ? row.cost : row.total || 0)),
+    ...comparisonRows.map((row) => Number(metric === "cost" ? row.cost : row.total || 0)),
+  ];
   const maximum = Math.max(...values, 1);
   if (!rows.length) return <EmptyState />;
   return (
@@ -207,9 +270,19 @@ function TrendBars({ payload, metric = "total" }) {
         )}
       </div>
       <div className="finops-trend-columns">
-        {rows.slice(-14).map((row) => {
+        {rows.slice(-14).map((row, visibleIndex, visibleRows) => {
           const value = Number(metric === "cost" ? row.cost : row.total || 0);
           const height = Math.max(4, (value / maximum) * 100);
+          const comparisonOffset = Math.max(0, comparisonRows.length - visibleRows.length);
+          const comparisonRow = comparisonRows[comparisonOffset + visibleIndex];
+          const comparisonValue = Number(metric === "cost"
+            ? comparisonRow?.cost
+            : comparisonRow?.total || 0);
+          const comparisonHeight = comparisonRow
+            ? Math.max(2, (comparisonValue / maximum) * 100)
+            : 0;
+          const rowDate = row.label.slice(0, 10);
+          const rowEvents = events.filter((item) => String(item.observed_at || "").startsWith(rowDate));
           const parts = ["input", "output", "cached", "reasoning"].map((key) => ({
             key,
             value: Number(row.series[key] || 0),
@@ -219,8 +292,19 @@ function TrendBars({ payload, metric = "total" }) {
             <div
               className="finops-trend-column"
               key={row.bucket}
-              title={`${row.label} · ${metric === "cost" ? formatFinOpsCost(row.cost, row.cost == null ? "unavailable" : "estimated") : `${value} Token`}`}
+              tabIndex={0}
+              aria-label={`${row.label}，${metric === "cost" ? formatFinOpsCost(row.cost, row.cost == null ? "unavailable" : "estimated") : `${value} Token`}`}
             >
+              {comparisonRow ? (
+                <i
+                  className="finops-trend-comparison"
+                  style={{ height: `${comparisonHeight}%` }}
+                  title={`上一周期 ${metric === "cost" ? formatFinOpsCost(comparisonRow.cost, comparisonRow.cost == null ? "unavailable" : "estimated") : `${comparisonValue} Token`}`}
+                />
+              ) : null}
+              {rowEvents.length ? (
+                <i className="finops-trend-event" title={`${rowEvents.length} 条运营事件`} />
+              ) : null}
               <div className="finops-trend-stack" style={{ height: `${height}%` }}>
                 {metric === "cost"
                   ? <i className="input" style={{ height: "100%" }} />
@@ -229,6 +313,20 @@ function TrendBars({ payload, metric = "total" }) {
                     : null)}
               </div>
               <span>{row.label.slice(5)}</span>
+              <div className="finops-trend-tooltip" role="tooltip">
+                <b>{row.label}</b>
+                {metric === "cost" ? (
+                  <span>估算成本 <strong>{formatFinOpsCost(row.cost, row.cost == null ? "unavailable" : "estimated")}</strong></span>
+                ) : (
+                  <>
+                    <span>输入 <strong>{formatFinOpsNumber(row.series.input)}</strong></span>
+                    <span>输出 <strong>{formatFinOpsNumber(row.series.output)}</strong></span>
+                    <span>缓存 <strong>{formatFinOpsNumber(row.series.cached)}</strong></span>
+                    <span>推理 <strong>{formatFinOpsNumber(row.series.reasoning)}</strong></span>
+                    <span>合计 <strong>{formatFinOpsNumber(row.total)}</strong></span>
+                  </>
+                )}
+              </div>
             </div>
           );
         })}
@@ -238,7 +336,7 @@ function TrendBars({ payload, metric = "total" }) {
 }
 
 
-function BreakdownTable({ rows }) {
+function BreakdownTable({ rows, dimension = "", onSelect = null }) {
   if (!rows.length) return <EmptyState />;
   return (
     <div className="finops-table-scroll">
@@ -255,7 +353,18 @@ function BreakdownTable({ rows }) {
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.key}>
+            <tr
+              key={row.key}
+              className={dimension && onSelect ? "interactive" : ""}
+              tabIndex={dimension && onSelect ? 0 : undefined}
+              onClick={() => onSelect?.({ dimension, value: row.key })}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelect?.({ dimension, value: row.key });
+                }
+              }}
+            >
               <td><b>{row.key}</b></td>
               <td>{formatFinOpsNumber(row.requests, "0")}</td>
               <td>{formatFinOpsNumber(row.tokens)}</td>
@@ -295,91 +404,28 @@ function AttentionList({ items, onEvidence = null }) {
 }
 
 
-function AgentInsightCard({
-  kind,
-  insight,
-  busy = false,
-  message = "",
-  onAnalyze = null,
+function OverviewPage({
+  data,
+  scope,
+  comparison,
   onEvidence = null,
-  onCreateDraft = null,
+  onAsk = null,
+  onDimensionSelect = null,
 }) {
-  const title = kind === "roi" ? "ROI Agent" : "FinOps Agent";
-  const icon = kind === "roi" ? <Sparkles size={17} /> : <Bot size={17} />;
-  const view = finopsInsightViewModel(insight);
-  return (
-    <article className={`finops-agent-card ${view.state}`}>
-      <header>
-        {icon}
-        <div><b>{title}</b><span>{view.title}</span></div>
-        <EvidenceBadge status={view.state} />
-      </header>
-      <p>{view.summary}</p>
-      {view.findings.length ? (
-        <ul className="finops-agent-findings">
-          {view.findings.map((finding, index) => (
-            <li key={`${finding.kind}:${index}`}>
-              <button type="button" onClick={() => onEvidence?.(`${title}：${finding.statement}`)}>
-                {finding.statement}
-              </button>
-              <small>{finding.evidenceCount || finding.evidenceRefs.length} 条证据</small>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {view.gaps.length ? (
-        <ul className="finops-agent-gaps">
-          {view.gaps.map((gap) => <li key={gap}>{gap}</li>)}
-        </ul>
-      ) : null}
-      {view.draftSuggestions.length && onCreateDraft ? (
-        <div className="finops-agent-drafts">
-          {view.draftSuggestions.map((suggestion, index) => (
-            <button
-              type="button"
-              key={`${suggestion.actionType}:${index}`}
-              onClick={() => onCreateDraft(kind, suggestion)}
-            >
-              创建治理草案 · {suggestion.reason}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      <footer>
-        <small>{view.generatedAt ? `分析于 ${new Date(view.generatedAt).toLocaleString("zh-CN")}` : "尚未分析"}</small>
-        {onAnalyze ? (
-          <button type="button" disabled={busy} onClick={() => onAnalyze(kind)}>
-            {busy ? "分析中…" : "重新分析"}
-          </button>
-        ) : null}
-      </footer>
-      {message ? <em className="finops-agent-message">{message}</em> : null}
-    </article>
-  );
-}
-
-
-function OverviewPage({ data, onEvidence = null }) {
   const departmentRows = finopsBreakdownRows(data.department);
   const anomalies = Array.isArray(data.anomalies?.items) ? data.anomalies.items : [];
   return (
     <>
-      <MetricCards payload={data.overview} onEvidence={onEvidence} />
+      <MetricCards payload={data.overview} scope={scope} onEvidence={onEvidence} onAsk={onAsk} />
       <div className="finops-grid finops-grid-wide">
         <Panel title="成本与调用趋势" subtitle="最近 30 天的 Token 结构与调用变化" className="span-2">
-          <TrendBars payload={data.trends} />
+          <TrendBars payload={data.trends} comparisonPayload={comparison} events={anomalies} />
         </Panel>
         <Panel title="需要关注" subtitle="预算、延迟、计价和网关治理">
           <AttentionList items={anomalies} onEvidence={onEvidence} />
         </Panel>
         <Panel title="部门成本与运行质量" subtitle="未映射 workspace 统一进入“未归属”">
-          <BreakdownTable rows={departmentRows} />
-        </Panel>
-        <Panel title="价值与优化摘要" subtitle="分析结论与运营数据分开更新时间">
-          <div className="finops-agent-stack">
-            <AgentInsightCard kind="finops" insight={data.insights?.finops} />
-            <AgentInsightCard kind="roi" insight={data.insights?.roi} />
-          </div>
+          <BreakdownTable rows={departmentRows} dimension="department" onSelect={onDimensionSelect} />
         </Panel>
       </div>
     </>
@@ -390,42 +436,32 @@ function OverviewPage({ data, onEvidence = null }) {
 function CostPage({
   overviewData,
   detail,
+  scope,
+  comparison,
   onEvidence = null,
-  agentOperation,
-  onAnalyze,
-  onCreateDraft,
+  onAsk = null,
+  onDimensionSelect = null,
 }) {
   const agents = finopsBreakdownRows({ items: detail.agents?.agents || [] });
   const models = finopsBreakdownRows({ items: detail.agents?.models || [] });
   return (
     <>
-      <MetricCards payload={overviewData.overview} onEvidence={onEvidence} />
+      <MetricCards payload={overviewData.overview} scope={scope} onEvidence={onEvidence} onAsk={onAsk} />
       <div className="finops-grid">
         <Panel title="成本趋势" subtitle="请求级价目表估算，不代表 Azure 实际账单" className="span-2">
-          <TrendBars payload={overviewData.trends} metric="cost" />
+          <TrendBars payload={overviewData.trends} metric="cost" comparisonPayload={comparison} events={overviewData.anomalies?.items || []} />
         </Panel>
         <Panel title="部门成本归因" subtitle="部门与专案按同一账本口径聚合">
-          <BreakdownTable rows={finopsBreakdownRows(overviewData.department)} />
+          <BreakdownTable rows={finopsBreakdownRows(overviewData.department)} dimension="department" onSelect={onDimensionSelect} />
         </Panel>
         <Panel title="专案成本归因" subtitle="每个 workspace 最多归属一个部门">
           <BreakdownTable rows={finopsBreakdownRows(detail.workspace)} />
         </Panel>
         <Panel title="Agent 成本归因" subtitle="Agent 只作为下钻维度">
-          <HorizontalBars rows={agents} valueKey="cost" valueFormatter={(value) => formatFinOpsCost(value, value == null ? "unavailable" : "estimated")} />
+          <HorizontalBars rows={agents} valueKey="cost" dimension="agent" onSelect={onDimensionSelect} valueFormatter={(value) => formatFinOpsCost(value, value == null ? "unavailable" : "estimated")} />
         </Panel>
         <Panel title="模型成本归因" subtitle="按 deployment 聚合">
-          <HorizontalBars rows={models} valueKey="cost" valueFormatter={(value) => formatFinOpsCost(value, value == null ? "unavailable" : "estimated")} />
-        </Panel>
-        <Panel title="FinOps Agent" subtitle="解释成本变化与优化机会" className="span-2">
-          <AgentInsightCard
-            kind="finops"
-            insight={overviewData.insights?.finops}
-            busy={agentOperation?.busyKind === "finops"}
-            message={agentOperation?.kind === "finops" ? agentOperation.message : ""}
-            onAnalyze={onAnalyze}
-            onEvidence={onEvidence}
-            onCreateDraft={onCreateDraft}
-          />
+          <HorizontalBars rows={models} valueKey="cost" dimension="model" onSelect={onDimensionSelect} valueFormatter={(value) => formatFinOpsCost(value, value == null ? "unavailable" : "estimated")} />
         </Panel>
       </div>
     </>
@@ -447,11 +483,6 @@ function ValueCard({ label, value, meta, status }) {
 
 function RoiPage({
   detail,
-  insight,
-  agentOperation,
-  onAnalyze,
-  onEvidence,
-  onCreateDraft,
 }) {
   const roi = detail.roi || {};
   const costValue = detail.costValue || {};
@@ -484,16 +515,11 @@ function RoiPage({
           <div><span>链路完整性</span><EvidenceBadge status={roi.lineage_complete ? "complete" : "partial"} /></div>
         </div>
       </Panel>
-      <Panel title="ROI Agent" subtitle="只分析已验证结果，不补造价值">
-        <AgentInsightCard
-          kind="roi"
-          insight={insight}
-          busy={agentOperation?.busyKind === "roi"}
-          message={agentOperation?.kind === "roi" ? agentOperation.message : ""}
-          onAnalyze={onAnalyze}
-          onEvidence={onEvidence}
-          onCreateDraft={onCreateDraft}
-        />
+      <Panel title="ROI 口径" subtitle="投入、使用、产出与业务结果必须逐层具备证据">
+        <div className="finops-gap-list">
+          <span>估算成本与实际账单保持分离。</span>
+          <span>只有已验证业务结果才进入可复核 ROI。</span>
+        </div>
       </Panel>
       <Panel title="证据缺口" subtitle="补齐后才能形成可复核 ROI" className="span-2">
         {outcomes.status === "verified" && cost.status === "complete" ? (
@@ -513,15 +539,11 @@ function RoiPage({
 
 function RiskPage({
   data,
-  insights,
   busyId,
   actionError,
   onAnomalyAction,
   onActionTransition,
   onEvidence,
-  agentOperation,
-  onAnalyze,
-  onCreateDraft,
 }) {
   const anomalies = Array.isArray(data.anomalies?.items) ? data.anomalies.items : [];
   const recommendations = Array.isArray(data.recommendations?.items) ? data.recommendations.items : [];
@@ -547,28 +569,6 @@ function RiskPage({
             ))}
           </div>
         ) : <EmptyState>没有达到样本门槛的异常。</EmptyState>}
-      </Panel>
-      <Panel title="风险分析 Agent" subtitle="Agent 只能解释和生成草案">
-        <div className="finops-agent-stack">
-          <AgentInsightCard
-            kind="finops"
-            insight={insights?.finops}
-            busy={agentOperation?.busyKind === "finops"}
-            message={agentOperation?.kind === "finops" ? agentOperation.message : ""}
-            onAnalyze={onAnalyze}
-            onEvidence={onEvidence}
-            onCreateDraft={onCreateDraft}
-          />
-          <AgentInsightCard
-            kind="roi"
-            insight={insights?.roi}
-            busy={agentOperation?.busyKind === "roi"}
-            message={agentOperation?.kind === "roi" ? agentOperation.message : ""}
-            onAnalyze={onAnalyze}
-            onEvidence={onEvidence}
-            onCreateDraft={onCreateDraft}
-          />
-        </div>
       </Panel>
       <Panel title="优化建议" subtitle="每条建议都需要证据与人工判断">
         {recommendations.length ? (
@@ -800,12 +800,13 @@ export function FinOpsPortal({
   });
   const [detailState, setDetailState] = useState({ loading: false, error: "", data: {} });
   const [filterOptions, setFilterOptions] = useState(initialView.filterOptions);
+  const [comparisonEnabled, setComparisonEnabled] = useState(false);
+  const [comparisonState, setComparisonState] = useState({ loading: false, data: null });
   const [refreshKey, setRefreshKey] = useState(0);
   const [governance, setGovernance] = useState({ busyId: "", error: "" });
-  const [agentOperation, setAgentOperation] = useState({
-    busyKind: "",
-    kind: "",
-    message: "",
+  const [assistantState, setAssistantState] = useState({
+    context: null,
+    openRequest: 0,
   });
   const [evidenceState, setEvidenceState] = useState({
     open: false,
@@ -834,8 +835,34 @@ export function FinOpsPortal({
     && !filters.agentId
     && !filters.model
   );
+  const assistantScope = useMemo(() => ({
+    window: {
+      from: query.from,
+      to: query.to,
+    },
+    filters: {
+      workspaceId,
+      departmentId: filters.departmentId,
+      agentId: filters.agentId,
+      model: filters.model,
+    },
+  }), [filters, query.from, query.to, workspaceId]);
 
   const refresh = useCallback(() => setRefreshKey((value) => value + 1), []);
+  const openAssistant = useCallback((context) => {
+    setAssistantState((state) => ({
+      context,
+      openRequest: state.openRequest + 1,
+    }));
+  }, []);
+  const selectDimension = useCallback((selection) => {
+    setFilters((value) => applyDimensionFilter(value, selection));
+  }, []);
+  const activeFilterChips = useMemo(() => filterChips({
+    departmentId: filters.departmentId,
+    agentId: filters.agentId,
+    model: filters.model,
+  }), [filters]);
   const closeEvidence = useCallback(() => {
     evidenceController.current?.abort();
     evidenceController.current = null;
@@ -996,6 +1023,30 @@ export function FinOpsPortal({
   }, [query, refreshKey, tab, workspaceId]);
 
   useEffect(() => {
+    if (!comparisonEnabled || !workspaceId) {
+      setComparisonState({ loading: false, data: null });
+      return undefined;
+    }
+    const comparisonWindow = previousEqualWindow({ from: query.from, to: query.to });
+    if (!comparisonWindow) {
+      setComparisonState({ loading: false, data: null });
+      return undefined;
+    }
+    const controller = new AbortController();
+    setComparisonState((state) => ({ ...state, loading: true }));
+    loadFinOpsTrends("day", {
+      ...query,
+      from: comparisonWindow.from,
+      to: comparisonWindow.to,
+    }, { signal: controller.signal }).then((data) => {
+      setComparisonState({ loading: false, data });
+    }).catch((error) => {
+      if (error?.name !== "AbortError") setComparisonState({ loading: false, data: null });
+    });
+    return () => controller.abort();
+  }, [comparisonEnabled, query, refreshKey, workspaceId]);
+
+  useEffect(() => {
     const timer = window.setInterval(refresh, 60_000);
     return () => window.clearInterval(timer);
   }, [refresh]);
@@ -1036,53 +1087,21 @@ export function FinOpsPortal({
     }
   };
 
-  const analyzeInsight = async (kind) => {
-    setAgentOperation({ busyKind: kind, kind, message: "" });
-    try {
-      const result = await analyzeFinOpsInsight({
-        agent_kind: kind,
-        workspace_id: workspaceId,
-        from: query.from,
-        to: query.to,
-      });
-      const message = result?.status === "existing"
-        ? "当前证据版本已有分析结果"
-        : "分析已提交，完成后会随数据更新显示";
-      setAgentOperation({ busyKind: "", kind, message });
-      window.setTimeout(refresh, 1500);
-    } catch (error) {
-      setAgentOperation({
-        busyKind: "",
-        kind,
-        message: error instanceof Error ? error.message : "分析提交失败",
-      });
-    }
-  };
-
-  const createInsightDraft = async (kind, suggestion) => {
-    if (permissions["finops.action.draft"] === false) return;
-    setAgentOperation({ busyKind: kind, kind, message: "" });
-    try {
-      const result = await createFinOpsAction({
-        action_type: suggestion.actionType,
-        payload: suggestion.payload,
-      });
-      const status = result?.action?.status;
-      setAgentOperation({
-        busyKind: "",
-        kind,
-        message: status === "draft" ? "治理草案已创建，尚未提交审批" : "草案创建结果需复核",
-      });
-    } catch (error) {
-      setAgentOperation({
-        busyKind: "",
-        kind,
-        message: error instanceof Error ? error.message : "治理草案创建失败",
-      });
-    }
-  };
-
   const generatedAt = overviewState.generatedAt || overviewState.data?.overview?.freshness?.generated_at;
+  const overviewDataStatus = overviewState.data?.overview?.data_status || "unavailable";
+  const generalAssistantContext = useMemo(() => metricContext({
+    id: "operations_overview",
+    label: FINOPS_TABS.find((item) => item.id === tab)?.label || "运营总览",
+    value: null,
+    unit: "",
+    kind: "overview",
+    dataStatus: overviewDataStatus,
+    evidenceState: overviewDataStatus === "complete"
+      ? "observed"
+      : overviewDataStatus === "partial"
+        ? "partial"
+        : "unavailable",
+  }, assistantScope), [assistantScope, overviewDataStatus, tab]);
   const visibleTabs = FINOPS_TABS.filter((item) => {
     if (item.id === "cost") return permissions["finops.cost.read"] !== false;
     if (item.id === "roi") return permissions["finops.roi.read"] !== false;
@@ -1128,7 +1147,35 @@ export function FinOpsPortal({
           <option value="">全部模型</option>
           {(filterOptions?.filters?.models || []).map((item) => <option key={item}>{item}</option>)}
         </select>
+        <button
+          type="button"
+          className={`finops-compare-toggle ${comparisonEnabled ? "active" : ""}`}
+          aria-pressed={comparisonEnabled}
+          onClick={() => setComparisonEnabled((value) => !value)}
+        >
+          {comparisonState.loading ? <Loader2 className="spin" size={13} /> : null}
+          对比上一周期
+        </button>
       </section>
+      {activeFilterChips.length ? (
+        <div className="finops-filter-chips" aria-label="当前筛选">
+          <span>当前范围</span>
+          {activeFilterChips.map((chip) => (
+            <button
+              type="button"
+              key={chip.key}
+              onClick={() => setFilters((value) => ({ ...value, [chip.key]: "" }))}
+              aria-label={`移除${chip.label}筛选 ${chip.value}`}
+            >
+              {chip.label}：{chip.value}
+              <X size={12} />
+            </button>
+          ))}
+          <button type="button" className="clear" onClick={() => setFilters({ departmentId: "", agentId: "", model: "" })}>
+            清除全部
+          </button>
+        </div>
+      ) : null}
 
       <nav className="finops-tabs" aria-label="运营管理页面">
         {visibleTabs.map((item) => {
@@ -1151,18 +1198,18 @@ export function FinOpsPortal({
           ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{overviewState.error}</span><button type="button" onClick={refresh}>重试</button></div>
           : null}
         {!overviewState.loading && overviewState.data?.overview?.metrics && tab === "overview"
-          ? <OverviewPage data={overviewState.data} onEvidence={canOpenEvidence ? openEvidence : null} />
+          ? <OverviewPage data={overviewState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} />
           : null}
         {showDetailLoading ? <div className="finops-section-loading"><Loader2 className="spin" size={18} />正在读取当前页面</div> : null}
         {!showDetailLoading && detailState.error ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{detailState.error}</span><button type="button" onClick={refresh}>重试</button></div> : null}
         {!showDetailLoading && !detailState.error && tab === "cost"
-          ? <CostPage overviewData={overviewState.data} detail={detailState.data} onEvidence={canOpenEvidence ? openEvidence : null} agentOperation={agentOperation} onAnalyze={analyzeInsight} onCreateDraft={permissions["finops.action.draft"] !== false ? createInsightDraft : null} />
+          ? <CostPage overviewData={overviewState.data} detail={detailState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} />
           : null}
         {!showDetailLoading && !detailState.error && tab === "roi"
-          ? <RoiPage detail={detailState.data} insight={overviewState.data.insights?.roi} agentOperation={agentOperation} onAnalyze={analyzeInsight} onEvidence={canOpenEvidence ? openEvidence : null} onCreateDraft={permissions["finops.action.draft"] !== false ? createInsightDraft : null} />
+          ? <RoiPage detail={detailState.data} />
           : null}
         {!showDetailLoading && !detailState.error && tab === "risk"
-          ? <RiskPage data={detailState.data} insights={overviewState.data.insights} busyId={governance.busyId} actionError={governance.error} onAnomalyAction={manageAnomaly} onActionTransition={transitionAction} onEvidence={canOpenEvidence ? openEvidence : null} agentOperation={agentOperation} onAnalyze={analyzeInsight} onCreateDraft={permissions["finops.action.draft"] !== false ? createInsightDraft : null} />
+          ? <RiskPage data={detailState.data} busyId={governance.busyId} actionError={governance.error} onAnomalyAction={manageAnomaly} onActionTransition={transitionAction} onEvidence={canOpenEvidence ? openEvidence : null} />
           : null}
       </section>
 
@@ -1174,6 +1221,12 @@ export function FinOpsPortal({
         state={evidenceState}
         onClose={closeEvidence}
         restoreFocusRef={evidenceTrigger}
+      />
+      <FinOpsAssistant
+        context={assistantState.context || generalAssistantContext}
+        openRequest={assistantState.openRequest}
+        onClearContext={() => setAssistantState((state) => ({ ...state, context: null }))}
+        onEvidence={canOpenEvidence ? openEvidence : null}
       />
     </main>
   );

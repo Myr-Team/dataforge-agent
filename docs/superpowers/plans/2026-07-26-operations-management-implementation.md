@@ -150,7 +150,7 @@ git commit -m "fix: stabilize operations shell and analysis visibility"
 - Produces: `metricTooltip(metric) -> { rows, evidenceState, actions }`.
 - Produces: `POST /api/finops/assistant/query`.
 
-- [ ] **Step 1: Write failing interaction view-model tests**
+- [x] **Step 1: Write failing interaction view-model tests**
 
 ```js
 assert.equal(metricTooltip({ kind: "cache", cache: { hit: 8, miss: 2 } }).rows[0].label, "缓存命中");
@@ -158,17 +158,17 @@ assert.equal(metricTooltip({ kind: "latency", p95_ms: 2100 }).rows.some((row) =>
 assert.deepEqual(applyDimensionFilter({}, { dimension: "model", value: "gpt-5" }), { model: "gpt-5" });
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `node --test src/finopsInteraction.test.mjs src/finopsViewModel.test.mjs`
 
 Expected: FAIL because the interaction module is absent.
 
-- [ ] **Step 3: Implement pure interaction models**
+- [x] **Step 3: Implement pure interaction models**
 
 Implement metric-specific rows, safe `MetricContext`, equal-period comparison metadata, filter chips, reset, reduced-motion state and URL-safe non-sensitive filter serialization.
 
-- [ ] **Step 4: Write failing assistant service tests**
+- [x] **Step 4: Write failing assistant service tests**
 
 ```python
 def test_assistant_rejects_unknown_context_fields_and_cites_allowed_evidence():
@@ -188,25 +188,25 @@ def test_assistant_rejects_unknown_context_fields_and_cites_allowed_evidence():
     assert body.metric_context.metric_id == "cache_hit_rate"
 ```
 
-- [ ] **Step 5: Verify backend RED**
+- [x] **Step 5: Verify backend RED**
 
 Run: `python -m pytest tests/test_finops_assistant.py -q`
 
 Expected: FAIL because `backend.finops.assistant` is absent.
 
-- [ ] **Step 6: Implement typed assistant**
+- [x] **Step 6: Implement typed assistant**
 
 Add strict Pydantic request/response types, reuse the Foundry analysis runner with only bounded aggregates and allowlisted evidence refs, and return answer, evidence state, evidence links and suggested follow-ups. Do not expose approval or execution operations.
 
-- [ ] **Step 7: Replace Agent cards with compact popover**
+- [x] **Step 7: Replace Agent cards with compact popover**
 
 Add a fixed AI button, anchored non-modal chat popover, context chip, four suggested questions, message history limited to the current page session, clear-context action and “查看证据”. Remove full-width FinOps/ROI Agent panels.
 
-- [ ] **Step 8: Add accessible chart interaction**
+- [x] **Step 8: Add accessible chart interaction**
 
 Add hover/focus/tap tooltips, 160–220ms opacity/transform transitions, cross-chart selection, filter chips, comparison labels and event annotations. Under `prefers-reduced-motion: reduce`, remove transitions.
 
-- [ ] **Step 9: Verify Task 2**
+- [x] **Step 9: Verify Task 2**
 
 Run: `node --test src/finopsInteraction.test.mjs src/finopsViewModel.test.mjs src/finopsApi.test.mjs`
 
@@ -214,7 +214,7 @@ Run: `python -m pytest tests/test_finops_assistant.py tests/test_finops_api.py -
 
 Expected: PASS.
 
-- [ ] **Step 10: Commit Task 2**
+- [x] **Step 10: Commit Task 2**
 
 ```powershell
 git add -- web/src/finopsInteraction.js web/src/finopsInteraction.test.mjs web/src/FinOpsAssistant.jsx web/src/FinOpsPortal.jsx web/src/finopsViewModel.js web/src/finopsViewModel.test.mjs web/src/api.js web/src/styles.css backend/finops/assistant.py backend/finops/router.py tests/test_finops_assistant.py

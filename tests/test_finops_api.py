@@ -15,6 +15,7 @@ from backend.finops.governance import FinOpsActionService, InMemoryActionReposit
 from backend.finops.management import FinOpsManagementService, InMemoryManagementRepository
 from backend.finops.anomaly_store import FinOpsAnomalyService, InMemoryAnomalyRepository
 from backend.finops.anomalies import DetectedAnomaly
+from backend.finops.assistant import FinOpsAssistantService
 from backend.finops.insight_repository import (
     InMemoryInsightRepository,
     InsightPage,
@@ -191,6 +192,70 @@ def test_finops_bootstrap_projects_server_side_budget_usage(
         "status": "estimated",
         "source": "daily_cost_budget",
     }
+
+
+def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def runner(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "structured": {
+                "answer": "当前模型范围内只有一条已观测请求，可继续扩大样本后比较。",
+                "evidence_refs": ["req_aaaaaaaaaaaa"],
+                "suggested_questions": ["与上一周期相比如何？"],
+            }
+        }
+
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_assistant_service",
+        lambda: FinOpsAssistantService(model_runner=runner),
+    )
+    payload = {
+        "question": "这个模型的成本为什么变化？",
+        "metric_context": {
+            "metric_id": "model_cost",
+            "label": "模型成本",
+            "value": 0.001,
+            "unit": "USD",
+            "dimension": "model",
+            "dimension_value": "gpt-5-mini",
+            "window": {
+                "from": "2026-07-01T00:00:00Z",
+                "to": "2026-07-25T00:00:00Z",
+            },
+            "filters": {
+                "workspace_id": "ws-a",
+                "model": "gpt-5-mini",
+            },
+            "data_status": "partial",
+            "evidence_state": "observed",
+        },
+        "history": [],
+    }
+    response = client.post(
+        "/api/finops/assistant/query",
+        json=payload,
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "answer": "当前模型范围内只有一条已观测请求，可继续扩大样本后比较。",
+        "evidence_refs": ["req_aaaaaaaaaaaa"],
+        "evidence_state": "observed",
+        "suggested_questions": ["与上一周期相比如何？"],
+    }
+
+    payload["metric_context"]["filters"]["workspace_id"] = "ws-b"
+    denied = client.post(
+        "/api/finops/assistant/query",
+        json=payload,
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert denied.status_code == 403
 
 
 def test_finops_read_contract_and_request_detail_are_privacy_bounded(client: TestClient) -> None:

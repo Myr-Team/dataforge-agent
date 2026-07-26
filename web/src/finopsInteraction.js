@@ -1,0 +1,146 @@
+const FILTER_FIELDS = {
+  departmentId: { api: "department_id", label: "部门" },
+  workspaceId: { api: "workspace_id", label: "工作区" },
+  actorRef: { api: "actor_ref", label: "人员" },
+  agentId: { api: "agent_id", label: "Agent" },
+  model: { api: "model", label: "模型" },
+};
+
+const DIMENSION_FIELDS = {
+  department: "departmentId",
+  workspace: "workspaceId",
+  actor: "actorRef",
+  agent: "agentId",
+  model: "model",
+};
+
+const CACHE_STATES = new Set(["hit", "miss", "bypassed", "unavailable"]);
+
+
+function finite(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+
+function bounded(value, length = 160) {
+  return String(value ?? "").trim().slice(0, length);
+}
+
+
+function pushNumber(rows, label, value, format = "number") {
+  if (!finite(value)) return;
+  rows.push({ label, value, format });
+}
+
+
+export function metricTooltip(metric = {}) {
+  const rows = [];
+  if (metric.kind === "tokens") {
+    pushNumber(rows, "输入 Token", metric.tokens?.input);
+    pushNumber(rows, "输出 Token", metric.tokens?.output);
+    pushNumber(rows, "缓存输入", metric.tokens?.cachedInput);
+    pushNumber(rows, "推理 Token", metric.tokens?.reasoning);
+    pushNumber(rows, "Token 总量", metric.tokens?.total);
+  } else if (metric.kind === "cache") {
+    pushNumber(rows, "缓存命中", metric.cache?.hit);
+    pushNumber(rows, "缓存未命中", metric.cache?.miss);
+    pushNumber(rows, "绕过缓存", metric.cache?.bypassed);
+    pushNumber(rows, "状态不可用", metric.cache?.unavailable);
+    pushNumber(rows, "可缓存样本", metric.cache?.eligible);
+  } else if (metric.kind === "cost") {
+    pushNumber(rows, "估算成本", metric.amount, "currency");
+    pushNumber(rows, "已计价请求", metric.pricedRequests);
+    pushNumber(rows, "未计价请求", metric.unpricedRequests);
+    if (bounded(metric.priceRevision)) {
+      rows.push({ label: "价目表版本", value: bounded(metric.priceRevision), format: "text" });
+    }
+  } else if (metric.kind === "budget") {
+    pushNumber(rows, "预算额度", metric.amount, "currency");
+    pushNumber(rows, "已使用", metric.usedAmount, "currency");
+    pushNumber(rows, "使用比例", metric.usagePct, "percent");
+  } else if (metric.kind === "coverage") {
+    pushNumber(rows, "APIM 覆盖率", metric.coveragePct, "percent");
+    pushNumber(rows, "调用样本", metric.requests);
+  } else if (metric.kind === "quality") {
+    pushNumber(rows, "调用样本", metric.requests);
+    pushNumber(rows, "成功率", metric.successRatePct, "percent");
+    pushNumber(rows, "P50", metric.p50Ms, "duration");
+    pushNumber(rows, "P95", metric.p95Ms, "duration");
+    pushNumber(rows, "4xx", metric.error4xx);
+    pushNumber(rows, "5xx", metric.error5xx);
+  } else {
+    pushNumber(rows, "调用", metric.requests);
+    pushNumber(rows, "成功率", metric.successRatePct, "percent");
+    pushNumber(rows, "Token", metric.tokens?.total);
+    pushNumber(rows, "估算成本", metric.amount, "currency");
+    pushNumber(rows, "P95", metric.p95Ms, "duration");
+  }
+  return {
+    title: bounded(metric.label, 120) || "指标详情",
+    rows,
+    dataStatus: bounded(metric.dataStatus, 32) || "unavailable",
+    evidenceState: bounded(metric.evidenceState, 32) || "unavailable",
+  };
+}
+
+
+export function metricContext(metric = {}, scope = {}) {
+  const filters = {};
+  Object.entries(FILTER_FIELDS).forEach(([field, descriptor]) => {
+    const value = bounded(scope?.filters?.[field]);
+    if (value) filters[descriptor.api] = value;
+  });
+  const window = {};
+  const from = bounded(scope?.window?.from, 40);
+  const to = bounded(scope?.window?.to, 40);
+  if (from) window.from = from;
+  if (to) window.to = to;
+  const result = {
+    metric_id: bounded(metric.id, 96),
+    label: bounded(metric.label, 120),
+    value: finite(metric.value) ? metric.value : bounded(metric.value, 120) || null,
+    unit: bounded(metric.unit, 24),
+    dimension: bounded(metric.dimension, 48) || null,
+    dimension_value: bounded(metric.dimensionValue, 160) || null,
+    window,
+    filters,
+    data_status: bounded(metric.dataStatus, 32) || "unavailable",
+    evidence_state: bounded(metric.evidenceState, 32) || "unavailable",
+  };
+  const cacheState = bounded(metric.cacheState, 24);
+  if (CACHE_STATES.has(cacheState)) result.cache_state = cacheState;
+  return result;
+}
+
+
+export function applyDimensionFilter(filters = {}, selection = {}) {
+  const field = DIMENSION_FIELDS[selection.dimension];
+  if (!field) return { ...filters };
+  return {
+    ...filters,
+    [field]: bounded(selection.value),
+  };
+}
+
+
+export function filterChips(filters = {}) {
+  return Object.entries(FILTER_FIELDS)
+    .map(([key, descriptor]) => ({
+      key,
+      label: descriptor.label,
+      value: bounded(filters[key]),
+    }))
+    .filter((item) => item.value);
+}
+
+
+export function previousEqualWindow(window = {}) {
+  const from = Date.parse(window.from);
+  const to = Date.parse(window.to);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) return null;
+  const duration = to - from;
+  return {
+    from: new Date(from - duration).toISOString(),
+    to: new Date(from).toISOString(),
+  };
+}

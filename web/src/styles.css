@@ -4653,22 +4653,47 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-toolbar select,
 .finops-date-range { min-height: 34px; border: 1px solid #dfe5ee; border-radius: 8px; background: #fff; color: #344054; font: inherit; font-size: 11.5px; }
 .finops-toolbar select { min-width: 132px; padding: 0 28px 0 10px; }
+.finops-compare-toggle { display: inline-flex; min-height: 34px; align-items: center; gap: 6px; border: 1px solid #dfe5ee; border-radius: 8px; background: #fff; padding: 0 10px; color: #667085; cursor: pointer; font: inherit; font-size: 10.5px; }
+.finops-compare-toggle:hover,
+.finops-compare-toggle.active { border-color: #84adf2; background: #eff6ff; color: #175cd3; }
 .finops-date-range { display: flex; align-items: center; gap: 7px; padding: 0 9px; }
 .finops-date-range input { width: 112px; border: 0; outline: 0; background: transparent; color: #344054; font: inherit; font-size: 11.5px; }
 .finops-date-range span { color: #98a2b3; }
+.finops-filter-chips { display: flex; max-width: 1500px; margin: -3px auto 10px; align-items: center; gap: 6px; flex-wrap: wrap; color: #98a2b3; font-size: 9.5px; }
+.finops-filter-chips > button { display: inline-flex; min-height: 25px; align-items: center; gap: 5px; border: 1px solid #cfe0f5; border-radius: 999px; background: #f4f8fe; padding: 0 8px; color: #175cd3; cursor: pointer; font: inherit; font-size: 9.5px; }
+.finops-filter-chips > button:hover { background: #eaf2fc; }
+.finops-filter-chips > button.clear { border-color: transparent; background: transparent; color: #667085; }
 .finops-tabs { display: flex; max-width: 1500px; margin: 0 auto 14px; overflow-x: auto; border-bottom: 1px solid #dfe5ee; gap: 4px; }
 .finops-tabs button { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 0 12px; color: #667085; font: inherit; font-size: 12px; font-weight: 620; white-space: nowrap; cursor: pointer; }
 .finops-tabs button:hover { color: #344054; }
 .finops-tabs button.active { border-bottom-color: var(--finops-blue); color: var(--finops-blue); }
 .finops-content { max-width: 1500px; min-height: 360px; margin: 0 auto; }
-.finops-metrics { display: grid; grid-template-columns: repeat(6, minmax(130px, 1fr)); margin-bottom: 12px; border: 1px solid #dfe5ee; border-radius: 10px; overflow: hidden; background: #fff; }
-.finops-metric { min-width: 0; padding: 14px 14px 13px; border-right: 1px solid #edf0f5; }
-.finops-metric:last-child { border-right: 0; }
-.finops-metric > div { display: flex; min-height: 18px; align-items: center; justify-content: space-between; gap: 6px; color: #667085; font-size: 10.5px; }
+.finops-metrics { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 1px; margin-bottom: 12px; border: 1px solid #dfe5ee; border-radius: 10px; overflow: visible; background: #dfe5ee; }
+.finops-metric { position: relative; min-width: 0; outline: 0; background: #fff; padding: 14px 14px 13px; transition: opacity 160ms ease, transform 160ms ease, box-shadow 160ms ease; }
+.finops-metric:first-child { border-radius: 9px 0 0; }
+.finops-metric:nth-child(4) { border-radius: 0 9px 0 0; }
+.finops-metric:nth-child(5) { border-radius: 0 0 0 9px; }
+.finops-metric:last-child { border-radius: 0 0 9px; }
+.finops-metrics:has(.finops-metric:hover) .finops-metric:not(:hover),
+.finops-metrics:has(.finops-metric:focus-within) .finops-metric:not(:focus-within) { opacity: .72; }
+.finops-metric:hover,
+.finops-metric:focus-within { z-index: 4; box-shadow: 0 12px 28px rgba(16, 24, 40, .12); transform: translateY(-2px); }
+.finops-metric > div:first-child { display: flex; min-height: 18px; align-items: center; justify-content: space-between; gap: 6px; color: #667085; font-size: 10.5px; }
 .finops-metric > strong { display: block; overflow: hidden; margin: 8px 0 5px; color: #101828; font-size: 23px; font-weight: 720; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
 .finops-metric > small { display: block; overflow: hidden; color: #98a2b3; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
-.finops-metric > button { margin-top: 9px; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9.5px; font-weight: 650; }
-.finops-metric > button:hover { text-decoration: underline; }
+.finops-metric-actions { display: flex; min-height: 18px; align-items: center; gap: 10px; margin-top: 9px; }
+.finops-metric-actions button { border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9.5px; font-weight: 650; }
+.finops-metric-actions button:hover { text-decoration: underline; }
+.finops-metric-tooltip { position: absolute; z-index: 8; top: calc(100% - 3px); left: 12px; display: grid; width: min(280px, calc(100vw - 52px)); gap: 9px; border: 1px solid #d7e2f0; border-radius: 10px; background: rgba(255, 255, 255, .98); box-shadow: 0 18px 42px rgba(16, 24, 40, .16); padding: 12px; opacity: 0; pointer-events: none; transform: translateY(-5px); transition: opacity 150ms ease, transform 150ms ease; }
+.finops-metric:hover .finops-metric-tooltip,
+.finops-metric:focus-within .finops-metric-tooltip { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.finops-metric-tooltip > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.finops-metric-tooltip > header b { color: #1d2939; font-size: 11px; }
+.finops-metric-tooltip dl { display: grid; gap: 6px; margin: 0; }
+.finops-metric-tooltip dl > div { display: flex; align-items: center; justify-content: space-between; gap: 14px; color: #667085; font-size: 10px; }
+.finops-metric-tooltip dd { margin: 0; color: #344054; font-weight: 680; }
+.finops-metric-tooltip p { margin: 0; color: #98a2b3; font-size: 10px; line-height: 1.5; }
+.finops-metric-tooltip > small { color: #98a2b3; font-size: 9px; }
 .finops-metric.warning { box-shadow: inset 0 2px 0 #fdb022; }
 .finops-metric.critical { box-shadow: inset 0 2px 0 #f04438; }
 .finops-metrics-skeleton .finops-metric { display: grid; gap: 10px; }
@@ -4694,7 +4719,11 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-state button { border: 1px solid #d0d5dd; border-radius: 7px; background: #fff; padding: 6px 10px; color: #344054; cursor: pointer; }
 .finops-empty { min-height: 210px; color: #98a2b3; }
 .finops-bars { display: grid; gap: 11px; padding: 17px 16px; }
-.finops-bar-row { display: grid; grid-template-columns: minmax(100px, 150px) minmax(80px, 1fr) 62px; align-items: center; gap: 10px; }
+.finops-bar-row { display: grid; width: 100%; grid-template-columns: minmax(100px, 150px) minmax(80px, 1fr) 62px; align-items: center; gap: 10px; border: 0; border-radius: 7px; background: transparent; padding: 5px 7px; font: inherit; text-align: left; transition: background 140ms ease, transform 140ms ease; }
+.finops-bar-row:not(:disabled) { cursor: pointer; }
+.finops-bar-row:not(:disabled):hover,
+.finops-bar-row:not(:disabled):focus-visible { outline: 0; background: #f1f7ff; transform: translateX(2px); }
+.finops-bar-row:disabled { opacity: 1; }
 .finops-bar-row > span { overflow: hidden; color: #475467; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .finops-bar-row > div { height: 8px; overflow: hidden; border-radius: 999px; background: #eef2f7; }
 .finops-bar-row i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #175cd3, #53b1fd); }
@@ -4708,10 +4737,22 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-trend-legend .cached, .finops-trend-stack .cached { background: #84caff; }
 .finops-trend-legend .reasoning, .finops-trend-stack .reasoning { background: #b2ddff; }
 .finops-trend-columns { display: flex; height: 220px; align-items: flex-end; gap: clamp(5px, 1.4vw, 18px); border-bottom: 1px solid #dfe5ee; padding: 12px 8px 0; }
-.finops-trend-column { display: grid; height: 100%; flex: 1; align-items: end; grid-template-rows: minmax(0, 1fr) 24px; justify-items: stretch; }
+.finops-trend-column { position: relative; display: grid; height: 100%; flex: 1; outline: 0; align-items: end; grid-template-rows: minmax(0, 1fr) 24px; justify-items: stretch; }
+.finops-trend-columns:has(.finops-trend-column:hover) .finops-trend-column:not(:hover),
+.finops-trend-columns:has(.finops-trend-column:focus) .finops-trend-column:not(:focus) { opacity: .48; }
 .finops-trend-column > span { align-self: center; overflow: hidden; color: #98a2b3; font-size: 8.5px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
-.finops-trend-stack { display: flex; width: min(34px, 78%); min-height: 4px; align-self: end; justify-self: center; overflow: hidden; flex-direction: column-reverse; border-radius: 4px 4px 0 0; background: #eef2f7; }
+.finops-trend-stack { display: flex; width: min(34px, 78%); min-height: 4px; align-self: end; justify-self: center; overflow: hidden; flex-direction: column-reverse; border-radius: 4px 4px 0 0; background: #eef2f7; transition: filter 160ms ease, transform 160ms ease; transform-origin: bottom; }
+.finops-trend-column:hover .finops-trend-stack,
+.finops-trend-column:focus .finops-trend-stack { filter: saturate(1.16); transform: scaleX(1.08); }
 .finops-trend-stack i { display: block; width: 100%; flex: none; }
+.finops-trend-comparison { position: absolute; right: 8%; bottom: 24px; width: 84%; max-width: 42px; border-top: 2px dashed #98a2b3; opacity: .72; pointer-events: none; }
+.finops-trend-event { position: absolute; z-index: 3; top: 5px; left: 50%; width: 7px; height: 7px; border: 2px solid #fff; border-radius: 50%; background: #f79009; box-shadow: 0 0 0 1px #fdb022; transform: translateX(-50%); }
+.finops-trend-tooltip { position: absolute; z-index: 7; bottom: calc(100% - 24px); left: 50%; display: grid; width: 180px; gap: 5px; border: 1px solid #d7e2f0; border-radius: 9px; background: #fff; box-shadow: 0 14px 34px rgba(16, 24, 40, .16); padding: 10px; opacity: 0; pointer-events: none; transform: translate(-50%, 5px); transition: opacity 150ms ease, transform 150ms ease; }
+.finops-trend-column:hover .finops-trend-tooltip,
+.finops-trend-column:focus .finops-trend-tooltip { opacity: 1; transform: translate(-50%, 0); }
+.finops-trend-tooltip b { color: #1d2939; font-size: 10px; }
+.finops-trend-tooltip span { display: flex; justify-content: space-between; gap: 10px; color: #667085; font-size: 9.5px; }
+.finops-trend-tooltip strong { color: #344054; }
 .finops-insights, .finops-anomaly-list, .finops-recommendations { display: grid; }
 .finops-insights > div, .finops-recommendations > div { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: start; gap: 9px; border-bottom: 1px solid #edf0f5; padding: 12px 14px; color: #f79009; }
 .finops-insights > div > button { grid-column: 2 / -1; width: fit-content; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9.5px; font-weight: 650; }
@@ -4725,6 +4766,9 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-table th, .finops-table td { border-bottom: 1px solid #edf0f5; padding: 11px 13px; color: #475467; font-size: 10.5px; text-align: left; vertical-align: middle; }
 .finops-table th { background: #fbfcfe; color: #98a2b3; font-size: 9px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
 .finops-table tbody tr:last-child td { border-bottom: 0; }
+.finops-table tbody tr.interactive { cursor: pointer; transition: background 140ms ease; }
+.finops-table tbody tr.interactive:hover,
+.finops-table tbody tr.interactive:focus-visible { outline: 0; background: #f1f7ff; }
 .finops-table b { color: #1d2939; font-weight: 670; }
 .finops-table td small { display: block; margin-top: 3px; color: #98a2b3; font-size: 9px; }
 .finops-anomaly-list article { border-bottom: 1px solid #edf0f5; padding: 13px 15px; }
@@ -4821,11 +4865,42 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-evidence-links { display: grid; gap: 8px; }
 .finops-monitor-link { display: flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #b2ddff; border-radius: 8px; background: #eff8ff; padding: 9px; color: #175cd3; font-size: 10.5px; text-decoration: none; }
 .finops-monitor-unavailable { margin: 0; border: 1px dashed #d0d5dd; border-radius: 8px; padding: 9px; color: #98a2b3; font-size: 10.5px; text-align: center; }
+.finops-ai-launcher { position: fixed; z-index: 78; right: 24px; bottom: 22px; display: inline-flex; min-height: 42px; align-items: center; gap: 7px; border: 1px solid #175cd3; border-radius: 999px; background: #175cd3; box-shadow: 0 12px 28px rgba(23, 92, 211, .26); padding: 0 15px; color: #fff; cursor: pointer; font: inherit; font-size: 11px; font-weight: 720; transition: background 150ms ease, box-shadow 150ms ease, transform 150ms ease; }
+.finops-ai-launcher:hover,
+.finops-ai-launcher:focus-visible { outline: 0; background: #1849a9; box-shadow: 0 15px 34px rgba(23, 92, 211, .3); transform: translateY(-2px); }
+.finops-ai-popover { position: fixed; z-index: 79; right: 24px; bottom: 76px; display: grid; width: min(390px, calc(100vw - 28px)); max-height: min(620px, calc(100vh - 108px)); grid-template-rows: auto auto minmax(92px, 1fr) auto auto; overflow: hidden; border: 1px solid #d7e2f0; border-radius: 14px; background: #fff; box-shadow: 0 24px 64px rgba(16, 24, 40, .2); animation: finops-popover-in 170ms ease-out; }
+@keyframes finops-popover-in { from { opacity: 0; transform: translateY(8px) scale(.985); } }
+.finops-ai-popover > header { display: grid; min-height: 58px; grid-template-columns: 32px minmax(0, 1fr) 30px; align-items: center; gap: 9px; border-bottom: 1px solid #edf0f5; padding: 9px 11px; }
+.finops-ai-popover > header > span { display: grid; width: 32px; height: 32px; border-radius: 9px; place-items: center; background: #eff6ff; color: #175cd3; }
+.finops-ai-popover > header > div { display: grid; gap: 2px; }
+.finops-ai-popover > header b { color: #1d2939; font-size: 12px; }
+.finops-ai-popover > header small { color: #98a2b3; font-size: 9.5px; }
+.finops-ai-popover > header button { display: grid; width: 30px; height: 30px; border: 0; border-radius: 8px; place-items: center; background: transparent; color: #667085; cursor: pointer; }
+.finops-ai-popover > header button:hover { background: #f2f4f7; }
+.finops-ai-context { display: flex; min-height: 38px; align-items: center; gap: 6px; border-bottom: 1px solid #edf0f5; background: #f8fbff; padding: 7px 11px; }
+.finops-ai-context > span { color: #98a2b3; font-size: 9px; }
+.finops-ai-context > b { overflow: hidden; color: #175cd3; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.finops-ai-context > small { overflow: hidden; color: #667085; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.finops-ai-context > button { margin-left: auto; border: 0; background: transparent; padding: 0; color: #667085; cursor: pointer; font: inherit; font-size: 9px; }
+.finops-ai-messages { display: grid; align-content: start; gap: 8px; overflow: auto; padding: 12px; }
+.finops-ai-messages > p { margin: 0; border: 1px dashed #d0d5dd; border-radius: 9px; padding: 11px; color: #667085; font-size: 10.5px; line-height: 1.6; }
+.finops-ai-messages article { display: grid; max-width: 88%; gap: 6px; border-radius: 10px; padding: 9px 10px; font-size: 10.5px; line-height: 1.55; }
+.finops-ai-messages article.user { justify-self: end; background: #175cd3; color: #fff; }
+.finops-ai-messages article.assistant { justify-self: start; background: #f2f4f7; color: #344054; }
+.finops-ai-messages article button { width: fit-content; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9px; font-weight: 650; }
+.finops-ai-thinking { display: flex; align-items: center; gap: 6px; color: #667085; font-size: 10px; }
+.finops-ai-suggestions { display: flex; gap: 6px; overflow-x: auto; border-top: 1px solid #edf0f5; padding: 8px 10px; }
+.finops-ai-suggestions button { min-height: 27px; flex: none; border: 1px solid #d7e2f0; border-radius: 999px; background: #fff; padding: 0 9px; color: #475467; cursor: pointer; font: inherit; font-size: 9.5px; white-space: nowrap; }
+.finops-ai-suggestions button:hover { border-color: #84adf2; color: #175cd3; }
+.finops-ai-input { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 7px; border-top: 1px solid #edf0f5; padding: 9px 10px; }
+.finops-ai-input input { min-width: 0; height: 32px; border: 1px solid #d0d5dd; border-radius: 8px; outline: 0; padding: 0 9px; color: #344054; font: inherit; font-size: 10.5px; }
+.finops-ai-input input:focus { border-color: #84adf2; box-shadow: 0 0 0 3px rgba(23, 92, 211, .08); }
+.finops-ai-input button { display: grid; width: 32px; height: 32px; border: 0; border-radius: 8px; place-items: center; background: #175cd3; color: #fff; cursor: pointer; }
+.finops-ai-input button:disabled,
+.finops-ai-suggestions button:disabled { cursor: wait; opacity: .55; }
 
 @media (max-width: 1280px) {
-  .finops-metrics { grid-template-columns: repeat(3, minmax(130px, 1fr)); }
-  .finops-metric:nth-child(3n) { border-right: 0; }
-  .finops-metric:nth-child(-n + 3) { border-bottom: 1px solid #edf0f5; }
+  .finops-metrics { grid-template-columns: repeat(4, minmax(130px, 1fr)); }
   .finops-value-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 980px) {
@@ -4836,11 +4911,16 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 }
 @media (max-width: 640px) {
   .finops-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .finops-metric:nth-child(even) { border-right: 0; }
-  .finops-metric { border-bottom: 1px solid #edf0f5; }
+  .finops-metric:first-child { border-radius: 9px 0 0; }
+  .finops-metric:nth-child(2) { border-radius: 0 9px 0 0; }
+  .finops-metric:nth-child(4),
+  .finops-metric:nth-child(5) { border-radius: 0; }
+  .finops-metric:nth-child(7) { border-radius: 0 0 0 9px; }
+  .finops-metric:last-child { border-radius: 0 0 9px; }
   .finops-toolbar { display: grid; grid-template-columns: 1fr 1fr; }
   .finops-date-range { grid-column: 1 / -1; }
   .finops-toolbar select { min-width: 0; width: 100%; }
+  .finops-compare-toggle { justify-content: center; }
   .finops-live { align-self: flex-start; }
   .finops-request-tools { align-items: stretch; flex-direction: column; }
   .finops-request-tools label { width: 100%; }
@@ -4848,4 +4928,18 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-value-grid { grid-template-columns: 1fr; }
   .finops-drawer { width: 100%; }
   .finops-drawer-body { padding: 12px; }
+  .finops-ai-launcher { right: 14px; bottom: 14px; }
+  .finops-ai-popover { right: 14px; bottom: 66px; max-height: calc(100vh - 82px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .finops-metric,
+  .finops-trend-column,
+  .finops-trend-stack,
+  .finops-trend-comparison,
+  .finops-trend-event,
+  .finops-bar-row,
+  .finops-ai-launcher,
+  .finops-ai-popover,
+  .finops-metric-tooltip,
+  .finops-trend-tooltip { animation: none !important; transition: none !important; }
 }

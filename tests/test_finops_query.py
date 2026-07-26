@@ -126,6 +126,59 @@ def test_overview_keeps_unpriced_requests_visible_instead_of_inventing_cost() ->
     assert response["data_status"] == "partial"
 
 
+def test_overview_exposes_recorded_token_and_cache_composition() -> None:
+    raw_events = []
+    for request_ref, tokens, cache in (
+        (
+            "req_aaaaaaaaaaaa",
+            {"input": 80, "output": 20, "cached_input": 10, "total": 100},
+            {"state": "hit", "eligible": True},
+        ),
+        (
+            "req_bbbbbbbbbbbb",
+            {"input": 40, "output": 10, "reasoning": 5, "total": 55},
+            {"state": "miss", "eligible": True},
+        ),
+        (
+            "req_cccccccccccc",
+            {},
+            {"state": "bypassed", "eligible": False},
+        ),
+    ):
+        payload = _event(request_ref, total=None).model_dump(mode="python")
+        payload["tokens"] = tokens
+        payload["cache"] = cache
+        raw_events.append(FinOpsRequestEvent.model_validate(payload))
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events(raw_events)
+
+    response = FinOpsQueryService(repository).overview(
+        FinOpsQuery(
+            tenant_ref="tenant-a",
+            authorized_workspace_ids=("ws-a",),
+            from_value="2026-07-01T00:00:00Z",
+            to_value="2026-07-25T00:00:00Z",
+        )
+    )
+
+    assert response["metrics"]["tokens"] == {
+        "input": 120,
+        "output": 30,
+        "cached_input": 10,
+        "reasoning": 5,
+        "total": 155,
+        "known_requests": 2,
+        "unknown_requests": 1,
+    }
+    assert response["metrics"]["cache"] == {
+        "eligible_requests": 2,
+        "hit": 1,
+        "miss": 1,
+        "bypassed": 1,
+        "unavailable": 0,
+    }
+
+
 def test_bootstrap_reuses_query_metrics_and_bounds_department_summary() -> None:
     repository = InMemoryFinOpsRepository()
     repository.upsert_events(
