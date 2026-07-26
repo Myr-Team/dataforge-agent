@@ -70,7 +70,10 @@ from .executors import (
 )
 from .management import FinOpsManagementService, InMemoryManagementRepository
 from .price_card_client import ManagementPriceCardClient, price_card_version
-from .official_pricing import load_official_price_catalog
+from .official_pricing import (
+    load_official_price_catalog,
+    official_price_supports_call_classes,
+)
 from .sql_pricing import (
     DeploymentPriceMapping,
     InMemoryPriceMappingRepository,
@@ -1998,6 +2001,34 @@ async def assign_workspace_department(workspace_id: str, body: dict[str, Any], r
     return {"assignment": assignment}
 
 
+def _observed_deployment_call_classes(
+    tenant_ref: str,
+    authorized_workspace_ids: tuple[str, ...],
+    deployment: str,
+) -> set[str]:
+    """Collect the call classes observed for a deployment in the ledger.
+
+    Used to validate that an official (text-model) price entry is compatible
+    with the deployment before an Owner maps it. Failures are treated as no
+    observation so a new, unobserved deployment can still be pre-mapped.
+    """
+    if not authorized_workspace_ids:
+        return set()
+    try:
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        query = FinOpsQuery(
+            tenant_ref=tenant_ref,
+            authorized_workspace_ids=authorized_workspace_ids,
+            from_value=_iso(now - timedelta(days=90)),
+            to_value=_iso(now),
+            model=deployment,
+        )
+        events = get_finops_query_service().events(query)
+    except Exception:
+        return set()
+    return {event.call_class for event in events}
+
+
 @router.get("/pricing/catalog")
 async def official_pricing_catalog(request: Request) -> dict[str, Any]:
     _pricing_read_context(request)
@@ -2036,10 +2067,19 @@ async def update_official_pricing_mapping(
             detail="official price mapping requires owner",
         )
     catalog = load_official_price_catalog()
-    if catalog.get(body.official_price_key) is None:
+    price = catalog.get(body.official_price_key)
+    if price is None:
         raise HTTPException(
             status_code=422,
             detail="official price key is not in the server catalog",
+        )
+    if not official_price_supports_call_classes(
+        price,
+        _observed_deployment_call_classes(tenant_ref, tuple(sorted(roles)), deployment),
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="deployment usage is not compatible with the official price entry",
         )
     mapping = DeploymentPriceMapping(
         tenant_ref=tenant_ref,

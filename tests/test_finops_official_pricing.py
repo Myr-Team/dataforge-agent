@@ -10,6 +10,7 @@ from backend.finops.official_pricing import (
     OfficialPrice,
     OfficialPriceCatalog,
     load_official_price_catalog,
+    official_price_supports_call_classes,
 )
 
 
@@ -82,6 +83,20 @@ def test_incomplete_token_evidence_is_partial() -> None:
 
     assert estimate.status == "partial"
     assert estimate.amount is None
+
+
+def test_official_price_compatibility_is_based_on_observed_modality() -> None:
+    price = _price()
+
+    # A deployment with no observed usage cannot be disproven; allow mapping.
+    assert official_price_supports_call_classes(price, set()) is True
+    # A deployment observed making model (LLM) calls is compatible.
+    assert official_price_supports_call_classes(price, {"model"}) is True
+    assert official_price_supports_call_classes(price, {"model", "tool"}) is True
+    # A deployment observed only as image/speech/embedding is incompatible with
+    # a text-model token price entry.
+    assert official_price_supports_call_classes(price, {"image"}) is False
+    assert official_price_supports_call_classes(price, {"speech", "embedding"}) is False
 
 
 def test_bundled_catalog_contains_verified_gpt_5_1_global_standard() -> None:

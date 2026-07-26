@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 
 import backend.finops.router as finops_router
 from backend.app import app
+from backend.finops.models import FinOpsRequestEvent, TokenUsage
 from backend.finops.sql_pricing import InMemoryPriceMappingRepository
 from auth_fixtures import trusted_headers
 
@@ -113,3 +116,67 @@ def test_pricing_mapping_delete_requires_owner(monkeypatch) -> None:
     )
 
     assert response.status_code == 403
+
+
+def _deployment_event(call_class: str, deployment: str) -> FinOpsRequestEvent:
+    return FinOpsRequestEvent.model_validate(
+        {
+            "request_ref": "req_aaaaaaaaaaaa",
+            "occurred_at": datetime(2026, 7, 24, 2, 0, tzinfo=timezone.utc),
+            "call_class": call_class,
+            "tenant_ref": "tenantref-a",
+            "workspace_id": "ws-a",
+            "deployment": deployment,
+            "status": "succeeded",
+            "tokens": TokenUsage(input=10, output=2, total=12),
+        }
+    )
+
+
+class _StubQueryService:
+    def __init__(self, events: list[FinOpsRequestEvent]) -> None:
+        self._events = events
+
+    def events(self, _query) -> list[FinOpsRequestEvent]:
+        return self._events
+
+
+def test_pricing_mapping_rejects_incompatible_deployment(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_query_service",
+        lambda: _StubQueryService([_deployment_event("image", "gpt-5.6-terra")]),
+    )
+
+    response = client.put(
+        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
+            "base_revision": 0,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "compatible" in response.json()["detail"]
+
+
+def test_pricing_mapping_allows_observed_model_deployment(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_query_service",
+        lambda: _StubQueryService([_deployment_event("model", "gpt-5.6-terra")]),
+    )
+
+    response = client.put(
+        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
+            "base_revision": 0,
+        },
+    )
+
+    assert response.status_code == 200

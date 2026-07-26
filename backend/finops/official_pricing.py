@@ -102,6 +102,28 @@ def load_official_price_catalog() -> OfficialPriceCatalog:
     return OfficialPriceCatalog.model_validate(payload)
 
 
+# The official catalog only publishes text-model token prices. A deployment
+# alias may only be mapped to such an entry when it is actually observed making
+# model (LLM) calls; image, speech, and embedding deployments are incompatible.
+_MODEL_CALL_CLASSES = frozenset({"model"})
+
+
+def official_price_supports_call_classes(
+    price: "OfficialPrice",
+    call_classes: "set[str] | frozenset[str] | tuple[str, ...]",
+) -> bool:
+    """Return True when a deployment's observed usage is compatible with a price.
+
+    An unobserved deployment (empty ``call_classes``) is allowed because the
+    owner is pre-mapping the unpriced queue. A deployment that has been observed
+    but never as a model call is incompatible with a text-model price entry.
+    """
+    observed = {str(value) for value in call_classes if value}
+    if not observed:
+        return True
+    return bool(observed & _MODEL_CALL_CLASSES)
+
+
 def estimate_official_cost(
     official_price_key: str,
     mapping_revision: int | None,
@@ -127,4 +149,5 @@ __all__ = [
     "OfficialPriceCatalog",
     "estimate_official_cost",
     "load_official_price_catalog",
+    "official_price_supports_call_classes",
 ]
