@@ -2058,6 +2058,26 @@ async def update_official_pricing_mapping(
     return {"mapping": saved.model_dump(mode="json")}
 
 
+@router.delete("/pricing/mappings/{deployment}", status_code=204)
+async def delete_official_pricing_mapping(
+    deployment: str,
+    request: Request,
+) -> Response:
+    tenant_ref, _, roles = _pricing_read_context(request)
+    if not any(role == "owner" for role in roles.values()):
+        raise HTTPException(
+            status_code=403,
+            detail="official price mapping requires owner",
+        )
+    deleted = get_finops_price_mapping_repository().delete(tenant_ref, deployment)
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail="official price mapping not found",
+        )
+    return Response(status_code=204)
+
+
 @router.get("/price-cards")
 async def list_price_cards(request: Request) -> dict[str, Any]:
     tenant_ref, _, _ = _write_context(request)

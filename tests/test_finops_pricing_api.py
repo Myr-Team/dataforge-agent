@@ -80,3 +80,36 @@ def test_pricing_mapping_write_requires_owner(monkeypatch) -> None:
     )
 
     assert response.status_code == 403
+
+
+def test_pricing_mapping_delete_removes_wrong_mapping(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    url = "/api/finops/pricing/mappings/gpt-5.6-terra"
+
+    client.put(
+        url,
+        headers=headers,
+        json={
+            "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
+            "base_revision": 0,
+        },
+    )
+    deleted = client.delete(url, headers=headers)
+    missing = client.delete(url, headers=headers)
+    mappings = client.get("/api/finops/pricing/mappings", headers=headers)
+
+    assert deleted.status_code == 204
+    assert missing.status_code == 404
+    assert mappings.json()["count"] == 0
+
+
+def test_pricing_mapping_delete_requires_owner(monkeypatch) -> None:
+    client = _client(monkeypatch, role="admin")
+
+    response = client.delete(
+        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        headers=trusted_headers(actor_id="admin-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 403

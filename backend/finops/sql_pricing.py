@@ -61,6 +61,10 @@ class InMemoryPriceMappingRepository:
             self._rows[key] = mapping
         return mapping
 
+    def delete(self, tenant_ref: str, deployment: str) -> bool:
+        with self._lock:
+            return self._rows.pop((tenant_ref, deployment), None) is not None
+
 
 class SqlPriceMappingRepository:
     def __init__(self, *, connection_factory: Callable[[], Any]) -> None:
@@ -140,6 +144,29 @@ class SqlPriceMappingRepository:
                 raise PriceMappingConflict("price mapping revision conflict")
             connection.commit()
             return mapping
+        except Exception:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            connection.close()
+
+    def delete(self, tenant_ref: str, deployment: str) -> bool:
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """/* finops:delete-price-mapping */
+                DELETE FROM df_finops.official_price_mapping
+                WHERE tenant_ref = ? AND deployment = ?""",
+                tenant_ref,
+                deployment,
+            )
+            deleted = int(getattr(cursor, "rowcount", 0) or 0) > 0
+            connection.commit()
+            return deleted
         except Exception:
             try:
                 connection.rollback()
