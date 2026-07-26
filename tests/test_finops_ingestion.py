@@ -242,3 +242,55 @@ def test_completed_run_ingestion_uses_official_deployment_mapping(monkeypatch) -
         == "azure-openai:gpt-5.1:global-standard:global"
     )
     assert event.estimated_cost.mapping_revision == 1
+
+
+def test_duplicate_ingestion_preserves_recorded_price_revision(monkeypatch) -> None:
+    """Re-ingesting a run must not reprice it under a newer mapping revision."""
+    repository = InMemoryFinOpsRepository()
+    mappings = InMemoryPriceMappingRepository()
+    monkeypatch.setenv("DF_FINOPS_SQL_ENABLED", "1")
+    first = ingest_completed_run(_run(), repository=repository, hmac_secret="secret")
+    tenant_ref = str(first["tenant_ref"])
+    mappings.upsert(
+        DeploymentPriceMapping(
+            tenant_ref=tenant_ref,
+            deployment="gpt-5-mini",
+            official_price_key="azure-openai:gpt-5.1:global-standard:global",
+            mapping_revision=1,
+            updated_by_ref="actor-owner",
+        ),
+        base_revision=0,
+    )
+    ingest_completed_run(
+        _run(),
+        repository=repository,
+        price_mapping_repository=mappings,
+        hmac_secret="secret",
+    )
+
+    # The mapping is corrected to a new revision after the request was recorded.
+    mappings.upsert(
+        DeploymentPriceMapping(
+            tenant_ref=tenant_ref,
+            deployment="gpt-5-mini",
+            official_price_key="azure-openai:gpt-5.1:global-standard:global",
+            mapping_revision=2,
+            updated_by_ref="actor-owner",
+        ),
+        base_revision=1,
+    )
+    ingest_completed_run(
+        _run(),
+        repository=repository,
+        price_mapping_repository=mappings,
+        hmac_secret="secret",
+    )
+    [event] = repository.list_events(
+        tenant_ref=tenant_ref,
+        workspace_ids=("ws-a",),
+        from_value="2026-07-24T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    assert event.estimated_cost.amount == 0.0000325
+    assert event.estimated_cost.mapping_revision == 1

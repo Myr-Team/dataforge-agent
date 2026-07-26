@@ -76,7 +76,15 @@ def ingest_completed_run(
                 hmac_secret=secret,
                 department_id=department_id,
             )
-            if event.estimated_cost.amount is None and event.tokens.observed:
+            recorded = _recorded_event(target, event)
+            if recorded is not None and recorded.estimated_cost.amount is not None:
+                # Historical request estimates remain tied to the revision that
+                # priced them. A duplicate ingest must never reprice under a
+                # newer mapping or overwrite the recorded price version.
+                event = event.model_copy(
+                    update={"estimated_cost": recorded.estimated_cost}
+                )
+            elif event.estimated_cost.amount is None and event.tokens.observed:
                 deployment = event.deployment or event.model
                 mapping = (
                     price_mappings.get(tenant_ref, deployment)
@@ -130,6 +138,20 @@ def ingest_completed_run(
         "events": len(events),
         "tenant_ref": tenant_ref,
     }
+
+
+def _recorded_event(target: Any, event: Any) -> Any | None:
+    getter = getattr(target, "get_event", None)
+    if getter is None:
+        return None
+    try:
+        return getter(
+            tenant_ref=event.tenant_ref,
+            workspace_ids=(event.workspace_id,),
+            request_ref=event.request_ref,
+        )
+    except Exception:
+        return None
 
 
 def _enabled(name: str) -> bool:
