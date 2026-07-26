@@ -56,6 +56,37 @@ def test_workspace_policy_and_manual_override_select_allowlisted_routes(monkeypa
     assert manual_selected.policy_revision == 4
 
 
+def test_agent_route_precedes_execution_kind_and_workspace_default(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {"id": "sol", "deployment": "gpt-5.6-sol", "label": "Sol", "capabilities": ["chat", "analysis"]},
+                {"id": "luna", "deployment": "gpt-5.6-luna", "label": "Luna", "capabilities": ["chat", "analysis"]},
+            ]
+        ),
+    )
+    policy = {
+        "revision": 5,
+        "default_route_id": "luna",
+        "agent_assignments": {
+            "df-feasibility-analyst": {"primary_route_id": "sol"}
+        },
+        "assignments": {
+            "full_analysis": {"primary_route_id": "luna"}
+        },
+    }
+
+    selected = select_text_route_record(
+        "full_analysis",
+        agent_id="df-feasibility-analyst",
+        policy=policy,
+    )
+
+    assert selected.route.route_id == "sol"
+    assert selected.selection == "agent_policy"
+
+
 def test_workspace_policy_scope_applies_to_nested_route_selection(monkeypatch) -> None:
     monkeypatch.setenv(
         "DF_MODEL_ROUTE_ALLOWLIST",

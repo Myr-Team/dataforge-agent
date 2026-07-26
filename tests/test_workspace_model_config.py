@@ -57,6 +57,36 @@ def test_workspace_policy_uses_chat_capability_for_configured_follow_up() -> Non
     assert policy["assignments"]["follow_up"]["primary_route_id"] == "chat"
 
 
+def test_workspace_policy_accepts_default_and_per_agent_routes() -> None:
+    policy = validate_workspace_routing_policy(
+        {
+            "default_route_id": "sol",
+            "agent_assignments": {
+                "df-feasibility-analyst": {
+                    "primary_route_id": "sol",
+                    "fallback_route_id": "sol",
+                }
+            },
+            "assignments": {},
+        },
+        _routes(),
+    )
+
+    assert policy["default_route_id"] == "sol"
+    assert policy["agent_assignments"]["df-feasibility-analyst"][
+        "primary_route_id"
+    ] == "sol"
+    with pytest.raises(ValueError, match="Agent"):
+        validate_workspace_routing_policy(
+            {
+                "agent_assignments": {
+                    "unknown-agent": {"primary_route_id": "sol"}
+                }
+            },
+            _routes(),
+        )
+
+
 def test_price_card_estimate_requires_complete_usage_and_matching_price() -> None:
     card = normalize_workspace_price_card(
         {

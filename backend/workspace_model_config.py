@@ -18,6 +18,14 @@ EXECUTION_KIND_CAPABILITIES = {
     "full_analysis": "analysis",
     "audit_repair": "analysis",
 }
+AGENT_IDS = (
+    "df-coordinator",
+    "df-corpus-analyst",
+    "df-market-researcher",
+    "df-feasibility-analyst",
+    "df-auditor",
+    "df-producer",
+)
 
 _ROUTE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
@@ -43,6 +51,34 @@ def validate_workspace_routing_policy(
         raise ValueError("Model routing execution kind is invalid")
 
     route_map = _routes_by_id(routes)
+    default_route_id = _route_id(
+        payload.get("default_route_id"),
+        required=False,
+    )
+    if default_route_id:
+        _require_capability(route_map, default_route_id, "chat")
+    raw_agent_assignments = payload.get("agent_assignments") or {}
+    if not isinstance(raw_agent_assignments, Mapping):
+        raise ValueError("Model routing Agent assignments must be an object")
+    unknown_agents = set(raw_agent_assignments) - set(AGENT_IDS)
+    if unknown_agents:
+        raise ValueError("Model routing Agent is invalid")
+    agent_assignments: dict[str, dict[str, str | None]] = {}
+    for agent_id in AGENT_IDS:
+        source = raw_agent_assignments.get(agent_id)
+        if source is None:
+            continue
+        if not isinstance(source, Mapping):
+            raise ValueError("Model routing Agent assignment must be an object")
+        primary = _route_id(source.get("primary_route_id"), required=True)
+        fallback = _route_id(source.get("fallback_route_id"), required=False)
+        _require_capability(route_map, primary, "analysis")
+        if fallback:
+            _require_capability(route_map, fallback, "analysis")
+        agent_assignments[agent_id] = {
+            "primary_route_id": primary,
+            "fallback_route_id": fallback,
+        }
     assignments: dict[str, dict[str, str | None]] = {}
     for kind in EXECUTION_KINDS:
         source = source_assignments.get(kind)
@@ -60,7 +96,12 @@ def validate_workspace_routing_policy(
             "fallback_route_id": fallback,
         }
 
-    result: dict[str, Any] = {"assignments": assignments}
+    result: dict[str, Any] = {
+        "assignments": assignments,
+        "agent_assignments": agent_assignments,
+    }
+    if default_route_id:
+        result["default_route_id"] = default_route_id
     if revision is not None:
         result["revision"] = _revision(revision)
     if updated_at is not None:
@@ -247,6 +288,7 @@ def _utc_now() -> str:
 __all__ = [
     "EXECUTION_KINDS",
     "EXECUTION_KIND_CAPABILITIES",
+    "AGENT_IDS",
     "estimate_model_cost",
     "normalize_workspace_price_card",
     "public_workspace_model_config",

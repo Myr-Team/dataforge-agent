@@ -174,6 +174,7 @@ def _workspace_assignment(
 def select_text_route_record(
     execution_kind: str,
     *,
+    agent_id: str | None = None,
     candidate_enabled: bool = False,
     policy: Mapping[str, Any] | None = None,
     manual_route_id: str | None = None,
@@ -200,10 +201,34 @@ def select_text_route_record(
             policy_revision=policy_revision,
             price_card_revision=price_card_revision,
         )
-    assignment = _workspace_assignment(policy, normalized_kind)
-    if assignment is not None:
+    agent_assignments = (
+        policy.get("agent_assignments")
+        if isinstance(policy, Mapping)
+        else None
+    )
+    agent_assignment = (
+        agent_assignments.get(str(agent_id or ""))
+        if isinstance(agent_assignments, Mapping)
+        else None
+    )
+    assignment_candidates = [
+        (agent_assignment, "agent_policy"),
+        (_workspace_assignment(policy, normalized_kind), "workspace_policy"),
+    ]
+    default_route_id = (
+        str(policy.get("default_route_id") or "").strip().lower()
+        if isinstance(policy, Mapping)
+        else ""
+    )
+    if default_route_id:
+        assignment_candidates.append(
+            ({"primary_route_id": default_route_id}, "workspace_default")
+        )
+    for assignment, primary_selection in assignment_candidates:
+        if not isinstance(assignment, Mapping):
+            continue
         for field_name, selection, fallback_reason in (
-            ("primary_route_id", "workspace_policy", None),
+            ("primary_route_id", primary_selection, None),
             ("fallback_route_id", "fallback", "capability_missing"),
         ):
             route_id = str(assignment.get(field_name) or "").strip().lower()
