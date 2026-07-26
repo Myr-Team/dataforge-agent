@@ -1269,9 +1269,11 @@ def update_workspace_model_routing(
     _require_workspace_owner(workspace_id, request, "model_routing.write")
     meta = _load_workspace_meta(workspace_id)
     existing_policy, price_card = public_workspace_model_config(meta)
+    raw_body = body if isinstance(body, dict) else {}
+    _require_matching_config_revision(existing_policy, raw_body, "model routing policy")
     routes = _available_model_routes()
     policy = validate_workspace_routing_policy(
-        body if isinstance(body, dict) else {},
+        {key: value for key, value in raw_body.items() if key != "base_revision"},
         routes,
         revision=_next_model_config_revision(existing_policy),
         updated_at=_model_config_timestamp(),
@@ -1305,8 +1307,10 @@ def update_workspace_model_price_card(
     _require_workspace_owner(workspace_id, request, "model_price_card.write")
     meta = _load_workspace_meta(workspace_id)
     existing_policy, existing_price_card = public_workspace_model_config(meta)
+    raw_body = body if isinstance(body, dict) else {}
+    _require_matching_config_revision(existing_price_card, raw_body, "model price card")
     price_card = normalize_workspace_price_card(
-        body if isinstance(body, dict) else {},
+        {key: value for key, value in raw_body.items() if key != "base_revision"},
         _available_model_routes(),
         revision=_next_model_config_revision(existing_price_card),
         updated_at=_model_config_timestamp(),
@@ -1343,9 +1347,38 @@ def _available_model_routes() -> list[Any]:
     return list_allowed_model_routes()
 
 
-def _next_model_config_revision(config: dict[str, Any]) -> int:
+def _current_model_config_revision(config: dict[str, Any]) -> int:
     value = config.get("revision") if isinstance(config, dict) else 0
-    return int(value) + 1 if isinstance(value, int) and value >= 0 else 1
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _next_model_config_revision(config: dict[str, Any]) -> int:
+    return _current_model_config_revision(config) + 1
+
+
+def _require_matching_config_revision(
+    existing: dict[str, Any],
+    body: dict[str, Any],
+    label: str,
+) -> None:
+    """Enforce optimistic concurrency so stale writers cannot clobber updates."""
+    current = _current_model_config_revision(existing)
+    raw = body.get("base_revision") if isinstance(body, dict) else None
+    if raw is None:
+        # Backward compatible: only safe to omit before any revision exists.
+        if current == 0:
+            return
+        raise HTTPException(
+            status_code=409,
+            detail=f"{label} revision conflict: expected base_revision {current}",
+        )
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise ValueError(f"{label} base_revision is invalid")
+    if raw != current:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{label} revision conflict: expected base_revision {current}",
+        )
 
 
 def _public_price_card_state(price_card: dict[str, Any]) -> dict[str, Any]:
