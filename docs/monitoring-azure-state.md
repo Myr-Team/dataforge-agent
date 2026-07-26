@@ -1,6 +1,22 @@
 # Monitoring Azure Deployment State
 
-Last verified: `2026-07-24`.
+Last verified: `2026-07-26`.
+
+## Operations Management production
+
+- Backend production revision:
+  `ca-dataforge-backend--opsmgmt03602adv2` at `100%` traffic, using
+  `dataforge-backend:opsmgmt-03602ad`.
+- Web production revision:
+  `ca-dataforge-web--opsmgmt03602adp` at `100%` traffic, using
+  `dataforge-web:opsmgmt-03602ad`.
+- Both revisions were verified `Healthy` after zero-traffic candidate checks.
+- Rollback revisions remain retained:
+  `ca-dataforge-backend--finopsmi15d03c9` and
+  `ca-dataforge-web--finopsprod8ed23f4`.
+- FinOps read access is enabled and governance execution remains disabled.
+- Detailed evidence is recorded in
+  `docs/validation/2026-07-26-operations-management-production.md`.
 
 ## Deployment Identity
 

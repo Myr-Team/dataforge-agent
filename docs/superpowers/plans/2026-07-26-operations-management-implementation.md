@@ -376,7 +376,7 @@ Run: `npx playwright test`
 
 Expected: all commands exit 0; no failed tests; browser screenshots show no clipping, late navigation or layout shift.
 
-- [ ] **Step 6: Deploy zero-traffic candidates and verify**
+- [x] **Step 6: Deploy zero-traffic candidates and verify**
 
 Deploy backend and web candidates with zero traffic, then verify health, authenticated APIs, desktop/mobile hard refresh and rollback target. Do not enable governance actions or switch production traffic before candidate evidence is recorded.
 
