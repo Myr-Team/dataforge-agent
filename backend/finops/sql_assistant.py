@@ -88,6 +88,79 @@ class SqlAssistantConversationStore:
             conversation_ref,
         )
 
+    def list_conversations(
+        self,
+        scope: AssistantScope,
+    ) -> tuple[AssistantConversation, ...]:
+        rows = self._query(
+            """/* finops:list-assistant-conversations */
+            SELECT conversation_ref, title, created_at, updated_at, expires_at
+            FROM df_finops.assistant_conversation
+            WHERE tenant_ref = ? AND actor_ref = ? AND workspace_id = ?
+              AND expires_at > SYSUTCDATETIME()
+            ORDER BY updated_at DESC""",
+            scope.tenant_ref,
+            scope.actor_ref,
+            scope.workspace_id,
+        )
+        return tuple(
+            AssistantConversation(
+                conversation_ref=row[0],
+                title=row[1],
+                created_at=row[2],
+                updated_at=row[3],
+                expires_at=row[4],
+            )
+            for row in rows
+        )
+
+    def get_messages(
+        self,
+        scope: AssistantScope,
+        conversation_ref: str,
+    ) -> tuple[AssistantMessage, ...]:
+        rows = self._query(
+            """/* finops:list-assistant-messages */
+            SELECT role, content, metric_context_payload, created_at
+            FROM df_finops.assistant_message
+            WHERE tenant_ref = ? AND actor_ref = ? AND workspace_id = ?
+              AND conversation_ref = ?
+            ORDER BY message_id""",
+            scope.tenant_ref,
+            scope.actor_ref,
+            scope.workspace_id,
+            conversation_ref,
+        )
+        return tuple(
+            AssistantMessage(
+                role=row[0],
+                content=row[1],
+                metric_context_payload=(
+                    json.loads(row[2]) if row[2] else None
+                ),
+                created_at=row[3],
+            )
+            for row in rows
+        )
+
+    def clear(
+        self,
+        scope: AssistantScope,
+        conversation_ref: str,
+    ) -> None:
+        affected = self._execute(
+            """/* finops:clear-assistant-conversation */
+            DELETE FROM df_finops.assistant_conversation
+            WHERE tenant_ref = ? AND actor_ref = ? AND workspace_id = ?
+              AND conversation_ref = ?""",
+            scope.tenant_ref,
+            scope.actor_ref,
+            scope.workspace_id,
+            conversation_ref,
+        )
+        if affected == 0:
+            raise KeyError(conversation_ref)
+
     def purge_expired(self, now: datetime | None = None) -> int:
         return self._execute(
             """/* finops:purge-assistant-conversations */
@@ -110,6 +183,21 @@ class SqlAssistantConversationStore:
             except Exception:
                 pass
             raise
+        finally:
+            connection.close()
+
+    def _query(
+        self,
+        operation: str,
+        *parameters: object,
+    ) -> list[Any]:
+        connection = self._connection_factory()
+        try:
+            return list(
+                connection.cursor().execute(
+                    operation, *parameters
+                ).fetchall()
+            )
         finally:
             connection.close()
 

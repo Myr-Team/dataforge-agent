@@ -69,6 +69,10 @@ class AssistantRequest(BaseModel):
     question: str = Field(min_length=1, max_length=600)
     metric_context: AssistantMetricContext
     history: list[AssistantTurn] = Field(default_factory=list, max_length=6)
+    conversation_ref: str | None = Field(
+        default=None,
+        pattern=r"^foc_[0-9a-f]{32}$",
+    )
 
     @field_validator("question")
     @classmethod

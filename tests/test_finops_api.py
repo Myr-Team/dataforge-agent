@@ -413,7 +413,9 @@ def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(
     )
 
     assert response.status_code == 200
-    assert response.json() == {
+    response_payload = response.json()
+    assert response_payload.pop("conversation_ref").startswith("foc_")
+    assert response_payload == {
         "status": "ready",
         "answer": "当前模型范围内只有一条已观测请求，可继续扩大样本后比较。",
         "evidence_refs": ["req_aaaaaaaaaaaa"],

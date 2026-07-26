@@ -213,6 +213,38 @@ export function queryFinOpsAssistant(payload, options = {}) {
   });
 }
 
+export function loadFinOpsAssistantConversations(workspaceId, options = {}) {
+  return loadFinOpsResource(
+    "assistant/conversations",
+    { workspaceId },
+    options,
+  );
+}
+
+export function loadFinOpsAssistantMessages(
+  conversationRef,
+  workspaceId,
+  options = {},
+) {
+  return loadFinOpsResource(
+    `assistant/conversations/${encodeURIComponent(conversationRef)}/messages`,
+    { workspaceId },
+    options,
+  );
+}
+
+export function clearFinOpsAssistantConversation(
+  conversationRef,
+  workspaceId,
+  options = {},
+) {
+  const query = buildFinOpsQuery({ workspaceId });
+  return request(
+    `/api/finops/assistant/conversations/${encodeURIComponent(conversationRef)}?${query}`,
+    { ...options, method: "DELETE" },
+  );
+}
+
 export function loadFinOpsActions(filters = {}, options = {}) {
   return loadFinOpsResource("actions", filters, options);
 }

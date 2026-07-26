@@ -4,10 +4,16 @@ import {
   Loader2,
   Send,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 
-import { queryFinOpsAssistant } from "./api.js";
+import {
+  clearFinOpsAssistantConversation,
+  loadFinOpsAssistantConversations,
+  loadFinOpsAssistantMessages,
+  queryFinOpsAssistant,
+} from "./api.js";
 
 
 const DEFAULT_QUESTIONS = [
@@ -28,6 +34,7 @@ export function FinOpsAssistant({
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [messages, setMessages] = useState([]);
+  const [conversationRef, setConversationRef] = useState("");
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -37,6 +44,29 @@ export function FinOpsAssistant({
   useEffect(() => {
     if (openRequest > 0) setOpen(true);
   }, [openRequest]);
+
+  const workspaceId = context?.filters?.workspace_id || "";
+
+  useEffect(() => {
+    if (!open || !workspaceId) return undefined;
+    const controller = new AbortController();
+    loadFinOpsAssistantConversations(workspaceId, {
+      signal: controller.signal,
+    }).then(async (payload) => {
+      const latest = Array.isArray(payload?.items) ? payload.items[0] : null;
+      if (!latest?.conversation_ref) return;
+      const history = await loadFinOpsAssistantMessages(
+        latest.conversation_ref,
+        workspaceId,
+        { signal: controller.signal },
+      );
+      setConversationRef(latest.conversation_ref);
+      setMessages(Array.isArray(history?.items) ? history.items : []);
+    }).catch((error) => {
+      if (error?.name !== "AbortError") setMessages([]);
+    });
+    return () => controller.abort();
+  }, [open, workspaceId]);
 
   const ask = async (rawQuestion) => {
     const question = String(rawQuestion || "").trim();
@@ -52,7 +82,11 @@ export function FinOpsAssistant({
         question,
         metric_context: context,
         history,
+        ...(conversationRef ? { conversation_ref: conversationRef } : {}),
       });
+      if (response?.conversation_ref) {
+        setConversationRef(response.conversation_ref);
+      }
       setMessages((items) => [
         ...items,
         {
@@ -87,6 +121,20 @@ export function FinOpsAssistant({
     .find((item) => item.role === "assistant" && item.suggestions?.length)
     ?.suggestions;
   const suggestions = latestSuggestions || DEFAULT_QUESTIONS;
+  const clearHistory = async () => {
+    if (!conversationRef || !workspaceId || busy) return;
+    setBusy(true);
+    try {
+      await clearFinOpsAssistantConversation(
+        conversationRef,
+        workspaceId,
+      );
+      setConversationRef("");
+      setMessages([]);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <>
@@ -111,11 +159,22 @@ export function FinOpsAssistant({
             <span><Bot size={17} /></span>
             <div>
               <b>运营 AI</b>
-              <small>基于当前授权数据解释指标</small>
+              <small>历史保留 30 天，可跨设备继续</small>
             </div>
-            <button type="button" onClick={() => setOpen(false)} aria-label="关闭运营 AI">
-              <X size={16} />
-            </button>
+            <span className="finops-ai-header-actions">
+              <button
+                type="button"
+                onClick={clearHistory}
+                disabled={!conversationRef || busy}
+                aria-label="清空历史"
+                title="清空历史"
+              >
+                <Trash2 size={14} />
+              </button>
+              <button type="button" onClick={() => setOpen(false)} aria-label="关闭运营 AI">
+                <X size={16} />
+              </button>
+            </span>
           </header>
           <div className="finops-ai-context">
             <span>正在询问</span>

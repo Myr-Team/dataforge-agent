@@ -36,7 +36,13 @@ from .evidence_repository import (
 from .anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
 from .agent_inputs import build_finops_agent_input, build_roi_agent_input
 from .analysis_agents import FinOpsAnalysisAgent
-from .assistant import AssistantRequest, FinOpsAssistantService
+from .assistant import AssistantRequest, AssistantTurn, FinOpsAssistantService
+from .assistant_store import (
+    AssistantMessage,
+    AssistantScope,
+    InMemoryAssistantConversationStore,
+)
+from .sql_assistant import SqlAssistantConversationStore
 from .anomaly_store import (
     AnomalyConflict,
     AnomalyNotFound,
@@ -130,6 +136,8 @@ _SAVED_VIEW_REPOSITORY = InMemorySavedViewRepository()
 _SQL_PLANNING_REPOSITORY: SqlFinOpsPlanningRepository | None = None
 _PRICE_MAPPING_REPOSITORY = InMemoryPriceMappingRepository()
 _SQL_PRICE_MAPPING_REPOSITORY: SqlPriceMappingRepository | None = None
+_ASSISTANT_STORE = InMemoryAssistantConversationStore()
+_SQL_ASSISTANT_STORE: SqlAssistantConversationStore | None = None
 
 
 class InsightAnalyzeRequest(BaseModel):
@@ -149,6 +157,13 @@ class PriceMappingUpdateRequest(BaseModel):
 
     official_price_key: str = Field(min_length=3, max_length=240)
     base_revision: int = Field(ge=0)
+
+
+class AssistantConversationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(min_length=1, max_length=160)
+    title: str = Field(default="新会话", min_length=1, max_length=120)
 
 
 def _enabled(name: str) -> bool:
@@ -229,6 +244,17 @@ def get_finops_price_mapping_repository() -> Any:
             )
         return _SQL_PRICE_MAPPING_REPOSITORY
     return _PRICE_MAPPING_REPOSITORY
+
+
+def get_finops_assistant_store() -> Any:
+    global _SQL_ASSISTANT_STORE
+    if _enabled("DF_FINOPS_SQL_ENABLED"):
+        if _SQL_ASSISTANT_STORE is None:
+            _SQL_ASSISTANT_STORE = SqlAssistantConversationStore(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        return _SQL_ASSISTANT_STORE
+    return _ASSISTANT_STORE
 
 
 def get_finops_anomaly_service() -> FinOpsAnomalyService:
@@ -638,6 +664,79 @@ def _bootstrap_anomaly_summaries(query: FinOpsQuery) -> list[dict[str, Any]]:
     ]
 
 
+def _assistant_scope(request: Request, workspace_id: str) -> AssistantScope:
+    tenant_ref, actor_ref, roles = _pricing_read_context(request)
+    if workspace_id not in roles:
+        raise HTTPException(
+            status_code=403,
+            detail="workspace access denied for finops.assistant.read",
+        )
+    return AssistantScope(
+        tenant_ref=tenant_ref,
+        actor_ref=actor_ref,
+        workspace_id=workspace_id,
+    )
+
+
+@router.get("/assistant/conversations")
+async def list_assistant_conversations(
+    request: Request,
+    workspace_id: str = Query(..., min_length=1, max_length=160),
+) -> dict[str, Any]:
+    scope = _assistant_scope(request, workspace_id)
+    items = get_finops_assistant_store().list_conversations(scope)
+    return {
+        "items": [item.model_dump(mode="json") for item in items],
+        "count": len(items),
+    }
+
+
+@router.post("/assistant/conversations", status_code=201)
+async def create_assistant_conversation(
+    body: AssistantConversationCreate,
+    request: Request,
+) -> dict[str, Any]:
+    scope = _assistant_scope(request, body.workspace_id)
+    value = get_finops_assistant_store().create(scope, title=body.title)
+    return {"conversation": value.model_dump(mode="json")}
+
+
+@router.get("/assistant/conversations/{conversation_ref}/messages")
+async def get_assistant_messages(
+    conversation_ref: str,
+    request: Request,
+    workspace_id: str = Query(..., min_length=1, max_length=160),
+) -> dict[str, Any]:
+    scope = _assistant_scope(request, workspace_id)
+    items = get_finops_assistant_store().get_messages(
+        scope, conversation_ref
+    )
+    return {
+        "items": [item.model_dump(mode="json") for item in items],
+        "count": len(items),
+    }
+
+
+@router.delete(
+    "/assistant/conversations/{conversation_ref}",
+    status_code=204,
+)
+async def clear_assistant_conversation(
+    conversation_ref: str,
+    request: Request,
+    workspace_id: str = Query(..., min_length=1, max_length=160),
+) -> Response:
+    scope = _assistant_scope(request, workspace_id)
+    try:
+        get_finops_assistant_store().clear(scope, conversation_ref)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Operations AI conversation not found",
+        ) from exc
+    return Response(status_code=204)
+
+
 @router.post("/assistant/query")
 async def assistant_query(
     body: AssistantRequest,
@@ -660,12 +759,66 @@ async def assistant_query(
             status_code=403,
             detail="workspace access denied for finops.summary.read",
         )
+    workspace_id = str(filters.workspace_id or query.workspace_id or "").strip()
+    scope = _assistant_scope(request, workspace_id) if workspace_id else None
+    store = get_finops_assistant_store() if scope is not None else None
+    conversation_ref = body.conversation_ref
+    if store is not None:
+        if not conversation_ref:
+            conversation_ref = store.create(
+                scope,
+                title=body.question[:120],
+            ).conversation_ref
+        persisted = store.get_messages(scope, conversation_ref)
+        if body.conversation_ref and not persisted and not any(
+            item.conversation_ref == conversation_ref
+            for item in store.list_conversations(scope)
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="Operations AI conversation not found",
+            )
+        body = body.model_copy(
+            update={
+                "history": [
+                    AssistantTurn(
+                        role=item.role,
+                        content=item.content,
+                    )
+                    for item in persisted[-6:]
+                ]
+            }
+        )
+        store.append(
+            scope,
+            conversation_ref,
+            AssistantMessage(
+                role="user",
+                content=body.question,
+                metric_context_payload=body.metric_context.model_dump(
+                    mode="json",
+                    by_alias=True,
+                ),
+            ),
+        )
     evidence_payload = build_finops_agent_input(query, query_service)
     response = get_finops_assistant_service().answer(
         request=body,
         evidence_payload=evidence_payload,
     )
-    return response.model_dump(mode="json")
+    if store is not None and conversation_ref:
+        store.append(
+            scope,
+            conversation_ref,
+            AssistantMessage(
+                role="assistant",
+                content=response.answer,
+            ),
+        )
+    return {
+        **response.model_dump(mode="json"),
+        "conversation_ref": conversation_ref,
+    }
 
 
 @router.get("/budgets")

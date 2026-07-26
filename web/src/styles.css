@@ -4958,13 +4958,15 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-ai-launcher[aria-expanded="true"] { opacity: 0; pointer-events: none; transform: translateY(6px); }
 .finops-ai-popover { position: fixed; z-index: 79; right: 24px; bottom: 76px; display: grid; width: min(390px, calc(100vw - 28px)); max-height: min(620px, calc(100vh - 108px)); grid-template-rows: auto auto minmax(92px, 1fr) auto auto; overflow: hidden; border: 1px solid #d7e2f0; border-radius: 14px; background: #fff; box-shadow: 0 24px 64px rgba(16, 24, 40, .2); animation: finops-popover-in 170ms ease-out; }
 @keyframes finops-popover-in { from { opacity: 0; transform: translateY(8px) scale(.985); } }
-.finops-ai-popover > header { display: grid; min-height: 58px; grid-template-columns: 32px minmax(0, 1fr) 30px; align-items: center; gap: 9px; border-bottom: 1px solid #edf0f5; padding: 9px 11px; }
-.finops-ai-popover > header > span { display: grid; width: 32px; height: 32px; border-radius: 9px; place-items: center; background: #eff6ff; color: #175cd3; }
+.finops-ai-popover > header { display: grid; min-height: 58px; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 9px; border-bottom: 1px solid #edf0f5; padding: 9px 11px; }
+.finops-ai-popover > header > span:first-child { display: grid; width: 32px; height: 32px; border-radius: 9px; place-items: center; background: #eff6ff; color: #175cd3; }
 .finops-ai-popover > header > div { display: grid; gap: 2px; }
 .finops-ai-popover > header b { color: #1d2939; font-size: 12px; }
 .finops-ai-popover > header small { color: #98a2b3; font-size: 9.5px; }
 .finops-ai-popover > header button { display: grid; width: 30px; height: 30px; border: 0; border-radius: 8px; place-items: center; background: transparent; color: #667085; cursor: pointer; }
 .finops-ai-popover > header button:hover { background: #f2f4f7; }
+.finops-ai-header-actions { display: flex; gap: 2px; }
+.finops-ai-header-actions button:disabled { cursor: not-allowed; opacity: .35; }
 .finops-ai-context { display: flex; min-height: 38px; align-items: center; gap: 6px; border-bottom: 1px solid #edf0f5; background: #f8fbff; padding: 7px 11px; }
 .finops-ai-context > span { color: #98a2b3; font-size: 9px; }
 .finops-ai-context > b { overflow: hidden; color: #175cd3; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
