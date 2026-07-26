@@ -1094,9 +1094,9 @@ export function FinOpsPortal({
   return (
     <main className="finops-page">
       <header className="finops-head">
-        <div>
+        <div className="finops-head-copy">
           <p>AI OPERATIONS</p>
-          <h1>运营驾驶舱</h1>
+          <h1>运营管理</h1>
           <span>让 IT 与财务在同一视图理解成本、预算、效能、价值与风险。</span>
         </div>
         <div className="finops-live">
@@ -1130,7 +1130,7 @@ export function FinOpsPortal({
         </select>
       </section>
 
-      <nav className="finops-tabs" aria-label="运营驾驶舱页面">
+      <nav className="finops-tabs" aria-label="运营管理页面">
         {visibleTabs.map((item) => {
           const Icon = TAB_ICONS[item.id];
           return (

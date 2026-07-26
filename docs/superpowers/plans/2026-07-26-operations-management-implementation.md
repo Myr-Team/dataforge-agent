@@ -38,7 +38,7 @@
 - Produces: `executionMessageVisibility(options) -> { appendUser, appendAssistant }`.
 - Produces: `toUserFacingRequestError(error, authProbe) -> Promise<Error>`.
 
-- [ ] **Step 1: Write failing shell and navigation tests**
+- [x] **Step 1: Write failing shell and navigation tests**
 
 ```js
 assert.deepEqual(
@@ -50,13 +50,13 @@ assert.equal(navigationAccessState("finops", null), "loading");
 assert.equal(navigationAccessState("finops", { sections: { finops: { visible: false } } }), "denied");
 ```
 
-- [ ] **Step 2: Run navigation tests and verify RED**
+- [x] **Step 2: Run navigation tests and verify RED**
 
 Run: `node --test src/constants.test.mjs src/navigationContract.test.mjs src/shellNavigation.test.mjs`
 
 Expected: FAIL because runs is absent, FinOps is filtered before capability resolution, and the footer still exists.
 
-- [ ] **Step 3: Implement stable shell**
+- [x] **Step 3: Implement stable shell**
 
 ```js
 export function visibleNavGroups() {
@@ -72,7 +72,7 @@ export function navigationAccessState(view, capabilities) {
 
 Add the dedicated `runs` item, rename labels to “会话”“运营管理”, remove `.ws-foot`, and render the FinOps local loading/denied state without hiding the navigation.
 
-- [ ] **Step 4: Write failing automatic-analysis visibility test**
+- [x] **Step 4: Write failing automatic-analysis visibility test**
 
 ```js
 assert.deepEqual(executionMessageVisibility({ stayOnDashboard: true }), {
@@ -82,13 +82,13 @@ assert.deepEqual(executionMessageVisibility({ stayOnDashboard: true }), {
 assert.equal(executionMessageVisibility({}).appendUser, true);
 ```
 
-- [ ] **Step 5: Run execution test and verify RED**
+- [x] **Step 5: Run execution test and verify RED**
 
 Run: `node --test src/executionIdentity.test.mjs`
 
 Expected: FAIL because `executionMessageVisibility` does not exist.
 
-- [ ] **Step 6: Implement hidden automatic-analysis messages**
+- [x] **Step 6: Implement hidden automatic-analysis messages**
 
 ```js
 export function executionMessageVisibility(options = {}) {
@@ -99,7 +99,7 @@ export function executionMessageVisibility(options = {}) {
 
 Use it before `setMessages` in `App.run`; keep payload `origin` and `persist_messages=false` unchanged.
 
-- [ ] **Step 7: Write failing localized network/auth test**
+- [x] **Step 7: Write failing localized network/auth test**
 
 ```js
 const error = await toUserFacingRequestError(
@@ -109,13 +109,13 @@ const error = await toUserFacingRequestError(
 assert.equal(error.message, "登录已失效，请刷新后重新登录");
 ```
 
-- [ ] **Step 8: Run API test and verify RED**
+- [x] **Step 8: Run API test and verify RED**
 
 Run: `node --test src/finopsApi.test.mjs`
 
 Expected: FAIL because the error classifier does not exist.
 
-- [ ] **Step 9: Implement auth-aware error translation and verify GREEN**
+- [x] **Step 9: Implement auth-aware error translation and verify GREEN**
 
 Catch only transient fetch failures, probe `/.auth/me`, and return either the login-expired message or “暂时无法连接服务，请稍后重试”; never return raw `Failed to fetch`.
 
@@ -123,7 +123,7 @@ Run: `node --test src/constants.test.mjs src/navigationContract.test.mjs src/she
 
 Expected: PASS.
 
-- [ ] **Step 10: Commit Task 1**
+- [x] **Step 10: Commit Task 1**
 
 ```powershell
 git add -- web/src/constants.js web/src/components.jsx web/src/App.jsx web/src/api.js web/src/executionIdentity.js web/src/constants.test.mjs web/src/navigationContract.test.mjs web/src/shellNavigation.test.mjs web/src/executionIdentity.test.mjs web/src/finopsApi.test.mjs

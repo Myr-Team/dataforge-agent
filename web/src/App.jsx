@@ -40,7 +40,12 @@ import {
   WorkspacePane,
 } from "./components.jsx";
 import { normalizePrimaryView, PLAYBOOKS, resolvePrimaryView, VERDICT_LABELS } from "./constants.js";
-import { executionRequestFields, readyExecutionState } from "./executionIdentity.js";
+import {
+  executionMessageVisibility,
+  executionRequestFields,
+  filterCustomerConversationMessages,
+  readyExecutionState,
+} from "./executionIdentity.js";
 
 const DEFAULT_WORKSPACE = "demo-corpus";
 const ARTIFACT_JOB_TERMINAL = new Set(["partial", "completed", "failed", "cancelled"]);
@@ -541,7 +546,9 @@ export function App() {
     if (!convId) return undefined;
     loadConversation(convId).then(async (data) => {
       if (cancelled || !data) return;
-      let msgs = (data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] }));
+      let msgs = filterCustomerConversationMessages(
+        (data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] })),
+      );
       msgs = await withRunContext(convId, msgs);
       if (!cancelled && msgs.length) { setMessages(msgs); setActiveConversationId(convId); }
     }).catch(() => { /* 会话已删除或不可达，忽略 */ });
@@ -696,6 +703,8 @@ export function App() {
   const run = async (rawMessage = input, opts = {}) => {
     const message = String(rawMessage || "").trim();
     if (!message || running || demoReveal.active) return;
+    const isAuto = opts.stayOnDashboard === true;
+    const messageVisibility = executionMessageVisibility(opts);
 
     if (opts.regenerate) {
       // 重新生成：保留原问题，移除上一条 AI 回答后重跑
@@ -704,7 +713,7 @@ export function App() {
         while (copy.length && copy[copy.length - 1].role === "assistant") copy.pop();
         return copy;
       });
-    } else {
+    } else if (messageVisibility.appendUser) {
       setMessages((items) => [...items, { role: "user", text: message, time: new Date().toISOString() }]);
     }
     setInput("");
@@ -718,7 +727,6 @@ export function App() {
     resetRunState();
 
     // 自动分析(看板)= 完整报告 + 五维评分；会话提问 = 简洁问答(chat)，不重跑五维、答案更短
-    const isAuto = !!opts.stayOnDashboard;
     const mode = opts.artifactMode || (isAuto ? "report" : "chat");
     const executionFields = executionRequestFields({
       stayOnDashboard: isAuto,
@@ -872,24 +880,30 @@ export function App() {
       }
       if (error?.name === "AbortError" || controller.signal.aborted) {
         // 用户主动点了「停止生成」——不当作错误
-        setMessages((items) => [...items, { role: "assistant", text: "已停止本次生成。", time: new Date().toISOString() }]);
+        if (messageVisibility.appendAssistant) {
+          setMessages((items) => [...items, { role: "assistant", text: "已停止本次生成。", time: new Date().toISOString() }]);
+        }
       } else {
         const messageText = error instanceof Error ? error.message : String(error);
         setTrace((items) => [...items, { event: "error", data: { message: messageText } }]);
         const partialText = String(streamRef.current || streamText || "").trim();
         if (partialText && isTransientFetchError(error)) {
-          setMessages((items) => [
-            ...items,
-            {
-              role: "assistant",
-              text: partialText,
-              time: new Date().toISOString(),
-              recoverable: { prompt: message, message: messageText },
-            },
-          ]);
+          if (messageVisibility.appendAssistant) {
+            setMessages((items) => [
+              ...items,
+              {
+                role: "assistant",
+                text: partialText,
+                time: new Date().toISOString(),
+                recoverable: { prompt: message, message: messageText },
+              },
+            ]);
+          }
           setNotice({ type: "done", message: "连接中断，已保留已生成内容，可重试/继续。" });
         } else {
-          setMessages((items) => [...items, { role: "assistant", text: `运行失败：${messageText}`, time: new Date().toISOString() }]);
+          if (messageVisibility.appendAssistant) {
+            setMessages((items) => [...items, { role: "assistant", text: `运行失败：${messageText}`, time: new Date().toISOString() }]);
+          }
           setNotice({ type: "error", message: `运行失败：${messageText}` });
         }
       }
@@ -989,7 +1003,9 @@ export function App() {
       const data = await loadConversation(conversationId);
       setActiveConversationId(conversationId);
       try { window.localStorage.setItem(`df-conv:${workspaceId}`, conversationId); } catch { /* ignore */ }
-      let msgs = (data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] }));
+      let msgs = filterCustomerConversationMessages(
+        (data.messages || []).map((item) => ({ role: item.role, text: item.text, time: item.time, verdict: item.verdict, citations: item.citations || [] })),
+      );
       msgs = await withRunContext(conversationId, msgs);
       setMessages(msgs);
       resetRunState();

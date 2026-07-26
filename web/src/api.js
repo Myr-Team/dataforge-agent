@@ -45,15 +45,20 @@ function errorMessageFromPayload(data, fallback) {
 }
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      Accept: "application/json",
-      ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
-      ...clientActorHeaders(),
-      ...(options.headers || {}),
-    },
-    ...options,
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      headers: {
+        Accept: "application/json",
+        ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+        ...clientActorHeaders(),
+        ...(options.headers || {}),
+      },
+      ...options,
+    });
+  } catch (error) {
+    throw await toUserFacingRequestError(error);
+  }
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
     try {
@@ -70,6 +75,51 @@ async function request(path, options = {}) {
 }
 
 export const apiFetch = request;
+
+
+async function probeEasyAuthSession() {
+  if (typeof window === "undefined") return { authenticated: null };
+  const endpoint = import.meta.env?.VITE_AUTH_ME || "/.auth/me";
+  try {
+    const response = await fetch(endpoint, {
+      headers: { Accept: "application/json" },
+      credentials: "same-origin",
+    });
+    if (response.status === 401 || response.status === 403) {
+      return { authenticated: false };
+    }
+    if (!response.ok) return { authenticated: null };
+    const data = await response.json();
+    const principal = Array.isArray(data)
+      ? data[0]
+      : data?.clientPrincipal || data;
+    const authenticated = Boolean(
+      principal?.user_id
+      || principal?.userId
+      || principal?.userDetails
+      || principal?.user_name
+      || principal?.identityProvider,
+    );
+    return { authenticated };
+  } catch {
+    return { authenticated: null };
+  }
+}
+
+
+export async function toUserFacingRequestError(error, authProbe = probeEasyAuthSession) {
+  if (!isTransientFetchError(error)) return error;
+  const auth = await authProbe();
+  const expired = auth?.authenticated === false;
+  const translated = new Error(
+    expired
+      ? "登录已失效，请刷新后重新登录"
+      : "暂时无法连接服务，请稍后重试",
+  );
+  translated.code = expired ? "auth_session_expired" : "service_unreachable";
+  translated.cause = error;
+  return translated;
+}
 
 export function buildFinOpsQuery(filters = {}) {
   const params = new URLSearchParams();

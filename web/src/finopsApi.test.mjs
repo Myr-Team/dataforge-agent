@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildFinOpsQuery, loadFinOpsBootstrap } from "./api.js";
+import {
+  buildFinOpsQuery,
+  loadFinOpsBootstrap,
+  toUserFacingRequestError,
+} from "./api.js";
 
 
 test("buildFinOpsQuery emits only supported non-empty filters", () => {
@@ -44,4 +48,24 @@ test("loadFinOpsBootstrap calls the bounded bootstrap endpoint", async () => {
 
   assert.match(requestedUrl, /^\/api\/finops\/bootstrap\?/);
   assert.match(requestedUrl, /workspace_id=ws-a/);
+});
+
+test("network failure reports an expired login only after an auth probe", async () => {
+  const error = await toUserFacingRequestError(
+    new TypeError("Failed to fetch"),
+    async () => ({ authenticated: false }),
+  );
+
+  assert.equal(error.message, "登录已失效，请刷新后重新登录");
+  assert.equal(error.code, "auth_session_expired");
+});
+
+test("network failure remains a service message when auth is still valid", async () => {
+  const error = await toUserFacingRequestError(
+    new TypeError("Failed to fetch"),
+    async () => ({ authenticated: true }),
+  );
+
+  assert.equal(error.message, "暂时无法连接服务，请稍后重试");
+  assert.equal(error.code, "service_unreachable");
 });

@@ -36,7 +36,8 @@ export const NAV_GROUPS = [
     items: [
       { id: "workspaces", label: "工作区", icon: Home },
       { id: "data", label: "数据资产", icon: Database },
-      { id: "conversations", label: "会话与运行", icon: MessageSquare },
+      { id: "conversations", label: "会话", icon: MessageSquare },
+      { id: "runs", label: "运行记录", icon: ListTree },
       { id: "artifacts", label: "分析产物", icon: Boxes },
     ],
   },
@@ -44,7 +45,7 @@ export const NAV_GROUPS = [
     id: "operations",
     label: "运营治理",
     items: [
-      { id: "finops", label: "运营驾驶舱", icon: WalletCards, capabilityKey: "finops" },
+      { id: "finops", label: "运营管理", icon: WalletCards, capabilityKey: "finops" },
     ],
   },
   {
@@ -71,17 +72,20 @@ export function resolvePrimaryView(view, capabilities, fallback = "workspaces") 
   const normalized = normalizePrimaryView(view);
   const item = NAV_ITEMS.find((entry) => entry.id === normalized);
   if (!item) return fallback;
-  if (item.capabilityKey && capabilities?.sections?.[item.capabilityKey]?.visible !== true) return fallback;
   return normalized;
 }
 
-export function visibleNavGroups(capabilities) {
-  return NAV_GROUPS
-    .map((group) => ({
-      ...group,
-      items: group.items.filter((item) => !item.capabilityKey || capabilities?.sections?.[item.capabilityKey]?.visible === true),
-    }))
-    .filter((group) => group.items.length > 0);
+export function navigationAccessState(view, capabilities) {
+  const item = NAV_ITEMS.find((entry) => entry.id === normalizePrimaryView(view));
+  if (!item?.capabilityKey) return "allowed";
+  if (!capabilities) return "loading";
+  return capabilities?.sections?.[item.capabilityKey]?.visible === true
+    ? "allowed"
+    : "denied";
+}
+
+export function visibleNavGroups() {
+  return NAV_GROUPS;
 }
 
 export function visibleNavItems(capabilities) {

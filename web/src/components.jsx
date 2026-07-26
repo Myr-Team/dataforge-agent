@@ -95,6 +95,7 @@ import {
   PLAYBOOKS,
   QUESTION_STARTERS,
   VERDICT_LABELS,
+  navigationAccessState,
   visibleNavGroups,
   visibleNavItems,
 } from "./constants.js";
@@ -118,16 +119,8 @@ function memberRoleLabel(role) {
   return cleanUserValue(role) || "成员";
 }
 
-export function ShellNav({ active = "workspaces", onChange = () => {}, workspace = {}, access = null, capabilities = null, onInviteMembers = () => {}, onFinOpsIntent = () => {} }) {
-  const roleLabel = access?.allowed
-    ? memberRoleLabel(access.role)
-    : access?.authenticated === false
-      ? "身份未验证"
-      : access
-        ? "无工作区权限"
-        : "正在核验";
-  const navGroups = visibleNavGroups(capabilities);
-  const canOpenMembers = capabilities?.sections?.members?.visible === true;
+export function ShellNav({ active = "workspaces", onChange = () => {}, onFinOpsIntent = () => {} }) {
+  const navGroups = visibleNavGroups();
   return (
     <nav className="shell-nav" aria-label="Primary">
       <div className="nav-stack">
@@ -154,15 +147,6 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, workspace
             })}
           </section>
         ))}
-      </div>
-      <div className="ws-foot">
-        <div className="wsf-k">Workspace</div>
-        <div className="wsf-v">{workspace.name || "当前工作区"}</div>
-        <div className="wsf-k">Role</div>
-        <div className="wsf-v wsf-last">{roleLabel}</div>
-        {canOpenMembers ? <button className="wsf-invite" type="button" title="打开成员、权限和用量溯源" onClick={onInviteMembers}>
-          <UserPlus size={15} /> Invite members
-        </button> : null}
       </div>
     </nav>
   );
@@ -658,8 +642,15 @@ function WorkbenchMainInner({
     return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} tasks={tasks} />;
   }
   if (resolvedView === "finops") {
+    const accessState = navigationAccessState("finops", governanceCapabilities);
+    if (accessState === "loading") {
+      return <main className="finops-page"><div className="finops-section-loading">正在核验运营管理权限</div></main>;
+    }
+    if (accessState === "denied") {
+      return <main className="finops-page"><div className="finops-state finops-state-error"><ShieldCheck size={18} /><span>当前账户无权访问运营管理</span></div></main>;
+    }
     return (
-      <Suspense fallback={<main className="finops-page"><div className="finops-section-loading">正在打开运营驾驶舱</div></main>}>
+      <Suspense fallback={<main className="finops-page"><div className="finops-section-loading">正在打开运营管理</div></main>}>
         <FinOpsPortal
           workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id || ""}
           preloadScopeKey={finopsPreloadScope?.key || ""}
