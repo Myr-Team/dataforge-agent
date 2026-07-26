@@ -230,3 +230,63 @@ def test_bootstrap_never_contains_request_or_trace_identifiers() -> None:
     assert "request_ref" not in serialized
     assert "run-secret" not in serialized
     assert "4f8b0f37b5824af5a2ac7ed9129ee70b" not in serialized
+
+
+def test_overview_exposes_pricing_token_and_apim_trust() -> None:
+    repository = InMemoryFinOpsRepository()
+    first = _event("req_aaaaaaaaaaaa", total=100, cost=0.01)
+    second = _event("req_bbbbbbbbbbbb", total=None, cost=None).model_copy(
+        update={"gateway_coverage": "apim_governed"}
+    )
+    repository.upsert_events([first, second])
+    service = FinOpsQueryService(repository)
+    query = FinOpsQuery(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    trust = service.overview(query)["trust"]
+
+    assert trust["pricing"] == {
+        "priced_requests": 1,
+        "unpriced_requests": 1,
+        "coverage_pct": 50.0,
+        "state": "partial",
+    }
+    assert trust["tokens"] == {
+        "known_requests": 1,
+        "unknown_requests": 1,
+        "coverage_pct": 50.0,
+        "state": "partial",
+    }
+    assert trust["apim"]["apim_governed_requests"] == 1
+    assert trust["apim"]["state"] == "reconciliation_pending"
+
+
+def test_trends_selects_metric_and_preserves_exact_value() -> None:
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events(
+        [
+            _event("req_aaaaaaaaaaaa", total=100, cost=0.01),
+            _event("req_bbbbbbbbbbbb", total=50, cost=None),
+        ]
+    )
+    service = FinOpsQueryService(repository)
+    query = FinOpsQuery(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    tokens = service.trends(query, "day", metric="tokens")
+    cost = service.trends(query, "day", metric="estimated_cost")
+
+    assert tokens["metric"] == "tokens"
+    assert tokens["unit"] == "Token"
+    assert tokens["items"][0]["value"] == 150
+    assert cost["metric"] == "estimated_cost"
+    assert cost["unit"] == "USD"
+    assert cost["items"][0]["value"] == 0.01

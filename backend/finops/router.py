@@ -964,6 +964,12 @@ async def agents(
 async def trends(
     request: Request,
     bucket: Literal["hour", "day"] = Query(default="day"),
+    metric: Literal[
+        "tokens",
+        "requests",
+        "estimated_cost",
+        "p95_latency_ms",
+    ] = Query(default="tokens"),
     from_value: str | None = Query(default=None, alias="from", max_length=64),
     to_value: str | None = Query(default=None, alias="to", max_length=64),
     department_id: str | None = Query(default=None, max_length=128),
@@ -973,7 +979,7 @@ async def trends(
     model: str | None = Query(default=None, max_length=160),
 ) -> dict[str, Any]:
     service, query, _ = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
-    return service.trends(query, bucket)
+    return service.trends(query, bucket, metric=metric)
 
 
 @router.get("/requests")

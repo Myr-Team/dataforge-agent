@@ -88,9 +88,12 @@ class FinOpsQueryService:
         payload.update(
             {
                 "overview": self._overview_from_rows(query, rows),
-                "trend": self._trends_from_rows(query, rows, "day"),
+                "trend": self._trends_from_rows(
+                    query, rows, "day", "tokens"
+                ),
                 "departments": departments,
                 "filters": filters["filters"],
+                "trust": _trust(rows),
             }
         )
         return payload
@@ -155,6 +158,7 @@ class FinOpsQueryService:
             "apim_coverage_pct": round((governed / len(rows)) * 100, 2) if rows else None,
         }
         payload["insights"] = []
+        payload["trust"] = _trust(rows)
         return payload
 
     def breakdowns(self, query: FinOpsQuery, group_by: str) -> dict[str, Any]:
@@ -202,17 +206,31 @@ class FinOpsQueryService:
         payload.update({"group_by": group_by, "items": items, "count": len(items)})
         return payload
 
-    def trends(self, query: FinOpsQuery, bucket: str) -> dict[str, Any]:
+    def trends(
+        self,
+        query: FinOpsQuery,
+        bucket: str,
+        *,
+        metric: str = "tokens",
+    ) -> dict[str, Any]:
         if bucket not in {"hour", "day"}:
             raise ValueError("unsupported bucket")
+        if metric not in {
+            "tokens",
+            "requests",
+            "estimated_cost",
+            "p95_latency_ms",
+        }:
+            raise ValueError("unsupported metric")
         rows = self._rows(query)
-        return self._trends_from_rows(query, rows, bucket)
+        return self._trends_from_rows(query, rows, bucket, metric)
 
     def _trends_from_rows(
         self,
         query: FinOpsQuery,
         rows: list[FinOpsRequestEvent],
         bucket: str,
+        metric: str = "tokens",
     ) -> dict[str, Any]:
         grouped: dict[str, list[FinOpsRequestEvent]] = {}
         for event in rows:
@@ -228,17 +246,46 @@ class FinOpsQueryService:
                     if value is not None:
                         totals[name] += value
             costs = [row.estimated_cost.amount for row in rows if row.estimated_cost.amount is not None]
+            latencies = sorted(
+                row.latency_ms
+                for row in rows
+                if row.latency_ms is not None
+            )
+            metric_values = {
+                "tokens": totals["total"] if totals["total"] else None,
+                "requests": len(rows),
+                "estimated_cost": (
+                    round(sum(costs), 8) if costs else None
+                ),
+                "p95_latency_ms": _percentile(latencies, 0.95),
+            }
             items.append(
                 {
                     "bucket": key,
                     "requests": len(rows),
                     "tokens": {name: totals[name] if totals[name] else None for name in ("input", "output", "cached_input", "reasoning", "total")},
                     "estimated_cost": round(sum(costs), 8) if costs else None,
+                    "p95_latency_ms": _percentile(latencies, 0.95),
+                    "value": metric_values[metric],
                     "data_status": _data_status(rows),
                 }
             )
         payload = self._envelope(query, rows)
-        payload.update({"bucket": bucket, "items": items, "count": len(items)})
+        units = {
+            "tokens": "Token",
+            "requests": "次",
+            "estimated_cost": "USD",
+            "p95_latency_ms": "ms",
+        }
+        payload.update(
+            {
+                "bucket": bucket,
+                "metric": metric,
+                "unit": units[metric],
+                "items": items,
+                "count": len(items),
+            }
+        )
         return payload
 
     def filters(self, query: FinOpsQuery) -> dict[str, Any]:
@@ -377,6 +424,70 @@ def _data_status(rows: list[FinOpsRequestEvent]) -> str:
     ):
         return "partial"
     return "available"
+
+
+def _coverage_state(
+    total: int,
+    known: int,
+    *,
+    empty_state: str = "no_samples",
+    none_state: str = "partial",
+) -> str:
+    if total == 0:
+        return empty_state
+    if known == 0:
+        return none_state
+    return "complete" if known == total else "partial"
+
+
+def _trust(rows: list[FinOpsRequestEvent]) -> dict[str, Any]:
+    total = len(rows)
+    priced = sum(
+        row.estimated_cost.amount is not None
+        for row in rows
+    )
+    token_known = sum(row.tokens.total is not None for row in rows)
+    governed = sum(
+        row.gateway_coverage == "apim_governed"
+        for row in rows
+    )
+
+    def coverage(known: int) -> float | None:
+        return round(known / total * 100, 4) if total else None
+
+    return {
+        "pricing": {
+            "priced_requests": priced,
+            "unpriced_requests": total - priced,
+            "coverage_pct": coverage(priced),
+            "state": _coverage_state(
+                total,
+                priced,
+                none_state="unpriced",
+            ),
+        },
+        "tokens": {
+            "known_requests": token_known,
+            "unknown_requests": total - token_known,
+            "coverage_pct": coverage(token_known),
+            "state": _coverage_state(total, token_known),
+        },
+        "apim": {
+            "app_observed_requests": total,
+            "apim_governed_requests": governed,
+            "unmatched_metric_records": None,
+            "coverage_pct": coverage(governed),
+            "state": (
+                "no_samples"
+                if not total
+                else (
+                    "complete"
+                    if governed == total
+                    else "reconciliation_pending"
+                )
+            ),
+        },
+    }
 
 
 def _parse_time(value: str) -> datetime:

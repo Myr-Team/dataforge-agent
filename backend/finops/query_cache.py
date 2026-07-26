@@ -47,12 +47,20 @@ class CachedFinOpsQueryService:
     def agents(self, query: FinOpsQuery) -> dict[str, Any]:
         return self._cached("agents", query, lambda: self._delegate.agents(query))
 
-    def trends(self, query: FinOpsQuery, bucket: str) -> dict[str, Any]:
+    def trends(
+        self,
+        query: FinOpsQuery,
+        bucket: str,
+        *,
+        metric: str = "tokens",
+    ) -> dict[str, Any]:
         return self._cached(
             "trends",
             query,
-            lambda: self._delegate.trends(query, bucket),
-            extras={"bucket": bucket},
+            lambda: self._delegate.trends(
+                query, bucket, metric=metric
+            ),
+            extras={"bucket": bucket, "metric": metric},
         )
 
     def requests(self, query: FinOpsQuery) -> dict[str, Any]:
