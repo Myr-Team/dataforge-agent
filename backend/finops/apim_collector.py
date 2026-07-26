@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -70,16 +70,55 @@ def apim_usage_query(from_value: str, to_value: str) -> str:
             "let gateway = ApiManagementGatewayLogs",
             f"| where TimeGenerated between (datetime({start_text}) .. datetime({end_text}))",
             "| summarize arg_max(TimeGenerated, *) by CorrelationId",
-            "| project CorrelationId, latency_ms=TotalTime, status_code=ResponseCode;",
-            "llm",
+            "| project occurred_at=TimeGenerated, CorrelationId, latency_ms=TotalTime, status_code=ResponseCode;",
+            "let matched = llm",
             "| join kind=leftouter gateway on CorrelationId",
             "| project occurred_at, correlation_id=CorrelationId, prompt_tokens=PromptTokens,",
             "    completion_tokens=CompletionTokens, total_tokens=TotalTokens,",
             "    deployment=DeploymentName, model=ModelName, is_streaming=IsStreamCompletion,",
-            "    latency_ms, status_code",
+            "    latency_ms, status_code, record_kind='llm';",
+            "let gateway_only = gateway",
+            "| join kind=leftanti llm on CorrelationId",
+            "| where status_code >= 400",
+            "| project occurred_at, correlation_id=CorrelationId, latency_ms, status_code,",
+            "    record_kind='gateway_error';",
+            "union matched, gateway_only",
             "| order by occurred_at asc",
         )
     )
+
+
+def summarize_gateway_only_errors(
+    rows: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Aggregate Gateway-only 4xx/5xx rows into privacy-safe evidence.
+
+    Gateway-only rows are requests observed in the APIM gateway log that never
+    correlate to an LLM completion or application run. Only aggregate counts by
+    HTTP status class are surfaced; no correlation identifiers are retained.
+    """
+    client_error = 0
+    server_error = 0
+    breakdown: dict[str, int] = {}
+    for row in rows:
+        try:
+            status = int(row.get("status_code"))
+        except (TypeError, ValueError):
+            continue
+        if status < 400 or status > 599:
+            continue
+        if status < 500:
+            client_error += 1
+        else:
+            server_error += 1
+        key = str(status)
+        breakdown[key] = breakdown.get(key, 0) + 1
+    return {
+        "total": client_error + server_error,
+        "client_error_4xx": client_error,
+        "server_error_5xx": server_error,
+        "status_breakdown": dict(sorted(breakdown.items())),
+    }
 
 
 def reconcile_apim_observations(
@@ -191,10 +230,20 @@ def collect_apim_usage(
         to_value=to_value,
     )
     observations: list[ApimLlmObservation] = []
+    gateway_only_rows: list[Mapping[str, Any]] = []
     rejected = 0
     for row in query_rows(apim_usage_query(from_value, to_value)):
+        record_kind = str(row.get("record_kind") or "llm") if isinstance(row, Mapping) else "llm"
+        if record_kind == "gateway_error":
+            gateway_only_rows.append(row)
+            continue
+        payload = (
+            {key: value for key, value in row.items() if key != "record_kind"}
+            if isinstance(row, Mapping)
+            else row
+        )
         try:
-            observations.append(ApimLlmObservation.model_validate(row))
+            observations.append(ApimLlmObservation.model_validate(payload))
         except (TypeError, ValueError):
             rejected += 1
     reconciled = reconcile_apim_observations(
@@ -226,6 +275,7 @@ def collect_apim_usage(
         "rejected_observations": rejected,
         "reconciled_events": matched,
         "unmatched_observations": max(0, len(observations) - matched),
+        "gateway_only_errors": summarize_gateway_only_errors(gateway_only_rows),
         "window": {"from": from_value, "to": to_value},
     }
 

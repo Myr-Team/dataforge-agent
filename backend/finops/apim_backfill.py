@@ -5,7 +5,11 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping
 
-from .apim_collector import apim_usage_query, collect_apim_usage
+from .apim_collector import (
+    apim_usage_query,
+    collect_apim_usage,
+    summarize_gateway_only_errors,
+)
 from .sql_repository import SqlFinOpsRepository
 
 
@@ -22,10 +26,16 @@ def run_apim_backfill(
     """Reconcile one APIM evidence window across all opaque SQL ledger scopes."""
 
     observations = list(query_rows(apim_usage_query(from_value, to_value)))
+    gateway_only_rows = [
+        row
+        for row in observations
+        if isinstance(row, Mapping) and str(row.get("record_kind") or "") == "gateway_error"
+    ]
+    llm_rows = [row for row in observations if row not in gateway_only_rows]
     totals = {
         "scope_count": 0,
         "application_events": 0,
-        "apim_observations": len(observations),
+        "apim_observations": len(llm_rows),
         "rejected_observations": 0,
         "reconciled_events": 0,
     }
@@ -55,6 +65,7 @@ def run_apim_backfill(
         - totals["reconciled_events"]
         - totals["rejected_observations"],
     )
+    totals["gateway_only_errors"] = summarize_gateway_only_errors(gateway_only_rows)
     totals["window"] = {"from": from_value, "to": to_value}
     return totals
 
