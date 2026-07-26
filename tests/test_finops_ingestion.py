@@ -114,7 +114,16 @@ def test_completed_run_ingestion_associates_stable_request_and_run_aliases(
     assert stable_alias.workspace_name_snapshot == "Commerce"
 
 
-def test_completed_run_ingestion_applies_department_and_active_price_revision(monkeypatch) -> None:
+def test_completed_run_ingestion_assigns_department_but_never_uses_manual_price_card(
+    monkeypatch,
+) -> None:
+    """A manual (Owner-authored) price card must not price requests.
+
+    The remediation forbids falling back to the manual price list when no
+    official-price mapping covers the deployment. The request stays unpriced
+    even when an active manual price card exists, while department attribution
+    remains intact.
+    """
     repository = InMemoryFinOpsRepository()
     management = FinOpsManagementService(InMemoryManagementRepository())
     monkeypatch.setenv("DF_FINOPS_SQL_ENABLED", "1")
@@ -171,8 +180,26 @@ def test_completed_run_ingestion_applies_department_and_active_price_revision(mo
         to_value="2026-07-25T00:00:00Z",
     )
     assert event.department_id == "engineering"
-    assert event.estimated_cost.amount == 0.000036
-    assert event.estimated_cost.price_card_revision == revision.revision_id
+    assert event.estimated_cost.amount is None
+    assert event.estimated_cost.status == "unavailable"
+    assert event.estimated_cost.price_card_revision is None
+
+
+def test_completed_run_ingestion_stays_unpriced_without_official_mapping(
+    monkeypatch,
+) -> None:
+    repository = InMemoryFinOpsRepository()
+    monkeypatch.setenv("DF_FINOPS_SQL_ENABLED", "1")
+    result = ingest_completed_run(_run(), repository=repository, hmac_secret="secret")
+    [event] = repository.list_events(
+        tenant_ref=str(result["tenant_ref"]),
+        workspace_ids=("ws-a",),
+        from_value="2026-07-24T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+    assert event.tokens.total == 12
+    assert event.estimated_cost.amount is None
+    assert event.estimated_cost.status == "unavailable"
 
 
 def test_completed_run_ingestion_uses_official_deployment_mapping(monkeypatch) -> None:

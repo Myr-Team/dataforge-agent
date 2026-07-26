@@ -13,8 +13,7 @@ except ImportError:
 from .evidence import build_evidence_alias, operation_code_for_event
 from .evidence_repository import SqlEvidenceAliasRepository
 from .normalization import normalize_run_event, opaque_ref
-from .management import FinOpsManagementService, estimate_request_cost
-from .models import EstimatedCost
+from .management import FinOpsManagementService
 from .official_pricing import load_official_price_catalog
 from .sql_pricing import SqlPriceMappingRepository
 from .sql_management import SqlFinOpsManagementRepository
@@ -66,16 +65,6 @@ def ingest_completed_run(
         if manager is not None and workspace_id
         else None
     )
-    active_price_card = None
-    if manager is not None:
-        active_price_card = next(
-            (
-                revision
-                for revision in manager.list_price_cards(tenant_ref=tenant_ref)
-                if revision.status == "active"
-            ),
-            None,
-        )
     models = run.get("models") if isinstance(run.get("models"), list) else []
     events = []
     for index in range(len(models)):
@@ -108,30 +97,6 @@ def ingest_completed_run(
                     event = event.model_copy(
                         update={"estimated_cost": estimate}
                     )
-            if (
-                event.estimated_cost.amount is None
-                and event.estimated_cost.status != "partial"
-                and event.tokens.observed
-                and active_price_card is not None
-            ):
-                deployment = event.deployment or event.model
-                price = next(
-                    (item for item in active_price_card.items if item.deployment == deployment),
-                    None,
-                )
-                if price is not None:
-                    amount = estimate_request_cost(event.tokens, price)
-                    if amount is not None:
-                        event = event.model_copy(
-                            update={
-                                "estimated_cost": EstimatedCost(
-                                    amount=amount,
-                                    currency=active_price_card.currency,
-                                    status="estimated",
-                                    price_card_revision=active_price_card.revision_id,
-                                )
-                            }
-                        )
             events.append(event)
         except (TypeError, ValueError):
             continue
