@@ -30,3 +30,15 @@ test("overview uses six metrics, data trust, selectable trend and no budget fore
   assert.match(component, /APIM 对账/);
   assert.doesNotMatch(component, /title="预算消耗与期末预测"/);
 });
+
+
+test("trend bars share one full-height plot track with their value labels", async () => {
+  const [component, styles] = await Promise.all([
+    readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(component, /className="finops-trend-plot"/);
+  assert.match(styles, /\.finops-trend-plot\s*\{[^}]*height:\s*100%/s);
+  assert.match(styles, /\.finops-trend-stack\s*\{[^}]*max-height:\s*calc\(100% - 18px\)/s);
+});

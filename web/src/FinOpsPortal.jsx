@@ -353,13 +353,15 @@ function TrendBars({
               {rowEvents.length ? (
                 <i className="finops-trend-event" title={`${rowEvents.length} 条运营事件`} />
               ) : null}
-              <b className="finops-trend-value">{formatValue(rawValue)}</b>
-              <div className="finops-trend-stack" style={{ height: `${height}%` }}>
-                {metric !== "total"
-                  ? <i className="input" style={{ height: "100%" }} />
-                  : parts.map((part) => part.value
-                    ? <i key={part.key} className={part.key} style={{ height: `${(part.value / partTotal) * 100}%` }} />
-                    : null)}
+              <div className="finops-trend-plot">
+                <b className="finops-trend-value">{formatValue(rawValue)}</b>
+                <div className="finops-trend-stack" style={{ height: `${height}%` }}>
+                  {metric !== "total"
+                    ? <i className="input" style={{ height: "100%" }} />
+                    : parts.map((part) => part.value
+                      ? <i key={part.key} className={part.key} style={{ height: `${(part.value / partTotal) * 100}%` }} />
+                      : null)}
+                </div>
               </div>
               <span>{row.label.slice(5)}</span>
               <div className="finops-trend-tooltip" role="tooltip">
