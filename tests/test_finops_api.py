@@ -333,6 +333,39 @@ def test_finops_roi_economics_is_workspace_bounded_and_evidence_safe(
     assert denied.status_code == 403
 
 
+def test_finops_opportunity_queue_never_executes_actions(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        finops_router,
+        "evaluate_default_anomalies",
+        lambda _value: [
+            DetectedAnomaly(
+                anomaly_id="anomaly-budget",
+                policy_type="daily_cost_budget",
+                severity="critical",
+                observed_value=120,
+                threshold_value=100,
+                sample_count=40,
+                workspace_ids=["ws-a"],
+                recommendation="复核成本贡献来源",
+            )
+        ],
+    )
+
+    response = client.get(
+        "/api/finops/opportunities?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["queue_state"] == "ready"
+    assert item["action_status"] == "suggested"
+    assert item["estimated_savings"] == 0.0001
+
+
 def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

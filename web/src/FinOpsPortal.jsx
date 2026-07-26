@@ -25,6 +25,7 @@ import {
   loadFinOpsBootstrap,
   loadFinOpsBreakdowns,
   loadFinOpsBudgets,
+  loadFinOpsOpportunities,
   loadFinOpsRecommendations,
   loadFinOpsRequest,
   loadFinOpsRequests,
@@ -55,6 +56,7 @@ import {
   finopsBreakdownRows,
   finopsDoughnutSegments,
   finopsMetricCards,
+  finopsOpportunityRows,
   finopsRequestViewModel,
   finopsRoiEconomicsView,
   finopsTrendViewModel,
@@ -684,8 +686,34 @@ function RiskPage({
   const anomalies = Array.isArray(data.anomalies?.items) ? data.anomalies.items : [];
   const recommendations = Array.isArray(data.recommendations?.items) ? data.recommendations.items : [];
   const actions = Array.isArray(data.actions?.items) ? data.actions.items : [];
+  const opportunities = finopsOpportunityRows(data.opportunities);
   return (
     <div className="finops-grid">
+      <Panel title="优化机会队列" subtitle="按影响、证据置信度与实施难度排序；不自动执行" className="span-2">
+        {opportunities.length ? (
+          <div className="finops-opportunity-list">
+            {opportunities.map((item) => (
+              <article key={item.opportunity_id} className={item.queue_state}>
+                <div>
+                  <span><b>{item.title}</b><small>{item.recommendation}</small></span>
+                  <EvidenceBadge status={item.evidence_state} />
+                </div>
+                <dl>
+                  <div><dt>影响</dt><dd>{item.impactLabel}</dd></div>
+                  <div><dt>置信度</dt><dd>{item.confidenceLabel}</dd></div>
+                  <div><dt>实施难度</dt><dd>{item.effortLabel}</dd></div>
+                  <div><dt>潜在节省</dt><dd>{item.savingsLabel}</dd></div>
+                </dl>
+                <footer>
+                  <span>{item.stateLabel}</span>
+                  <b>{item.actionLabel}</b>
+                  {onEvidence ? <button type="button" onClick={() => onEvidence(item.title)}>查看证据</button> : null}
+                </footer>
+              </article>
+            ))}
+          </div>
+        ) : <EmptyState>当前没有达到证据门槛的优化机会。</EmptyState>}
+      </Panel>
       <Panel title="开放异常" subtitle="只显示达到样本门槛的规则">
         {anomalies.length ? (
           <div className="finops-anomaly-list">
@@ -1150,7 +1178,13 @@ export function FinOpsPortal({
         loadFinOpsAnomalies(query, { signal: controller.signal }),
         loadFinOpsRecommendations(query, { signal: controller.signal }),
         loadFinOpsActions(query, { signal: controller.signal }),
-      ]).then(([anomalies, recommendations, actions]) => ({ anomalies, recommendations, actions })),
+        loadFinOpsOpportunities(query, { signal: controller.signal }),
+      ]).then(([anomalies, recommendations, actions, opportunities]) => ({
+        anomalies,
+        recommendations,
+        actions,
+        opportunities,
+      })),
     };
     requests[tab]().then((data) => {
       if (current === detailSequence.current) setDetailState({ loading: false, error: "", data });

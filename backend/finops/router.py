@@ -79,6 +79,7 @@ from .saved_views import (
 )
 from .sql_planning import SqlFinOpsPlanningRepository
 from .roi_economics import build_roi_economics
+from .opportunities import build_opportunity_queue
 from .insight_repository import InMemoryInsightRepository, SqlInsightRepository
 from .insight_service import FinOpsInsightService
 from .repository import RunStoreFinOpsRepository
@@ -1366,6 +1367,61 @@ async def recommendations(
         }
     )
     return payload
+
+
+@router.get("/opportunities")
+async def opportunities(
+    request: Request,
+    from_value: str | None = Query(default=None, alias="from", max_length=64),
+    to_value: str | None = Query(default=None, alias="to", max_length=64),
+    department_id: str | None = Query(default=None, max_length=128),
+    workspace_id: str | None = Query(default=None, max_length=160),
+    agent_id: str | None = Query(default=None, max_length=128),
+    actor_ref: str | None = Query(default=None, max_length=128),
+    model: str | None = Query(default=None, max_length=160),
+) -> dict[str, Any]:
+    service, query, roles = _common(
+        request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model
+    )
+    if not all(role in {"owner", "admin"} for role in roles.values()):
+        raise HTTPException(status_code=403, detail="FinOps opportunities require admin or owner")
+    events = service.events(query)
+    findings = evaluate_default_anomalies(
+        _anomaly_evaluation_input(events, tenant_ref=query.tenant_ref)
+    )
+    anomaly_items = [
+        {
+            **item.model_dump(mode="json"),
+            "evidence_state": "observed" if item.sample_count >= 20 else "partial",
+        }
+        for item in findings
+    ]
+    recommendation_items = [
+        {
+            "policy_type": item.policy_type,
+            "recommendation": item.recommendation,
+        }
+        for item in findings
+    ]
+    metrics = (service.overview(query).get("metrics") or {})
+    cost = metrics.get("estimated_cost") or {}
+    requests = int(metrics.get("requests") or 0)
+    priced_requests = int(cost.get("priced_requests") or 0)
+    coverage = round(priced_requests / requests * 100, 4) if requests else None
+    items = build_opportunity_queue(
+        anomalies=anomaly_items,
+        recommendations=recommendation_items,
+        priced_cost=cost.get("amount"),
+        priced_coverage_pct=coverage,
+    )
+    return {
+        "items": items,
+        "count": len(items),
+        "scope": {"workspace_ids": list(query.authorized_workspace_ids)},
+        "window": {"from": query.from_value, "to": query.to_value},
+        "currency": "USD",
+        "data_status": "complete" if coverage == 100 else "partial" if requests else "unavailable",
+    }
 
 
 @router.get("/actions")

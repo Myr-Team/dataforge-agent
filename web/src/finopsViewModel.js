@@ -333,6 +333,20 @@ export function finopsRoiEconomicsView(payload = {}) {
   };
 }
 
+export function finopsOpportunityRows(payload = {}) {
+  return (Array.isArray(payload?.items) ? payload.items : []).map((item) => ({
+    ...item,
+    stateLabel: item.queue_state === "ready" ? "可评估" : "观察中",
+    savingsLabel: hasNumber(item.estimated_savings)
+      ? formatFinOpsCost(item.estimated_savings, "estimated")
+      : "暂不可估算",
+    impactLabel: { high: "高", medium: "中", low: "低" }[item.impact] || "未记录",
+    confidenceLabel: { high: "高", medium: "中", low: "低" }[item.confidence] || "未记录",
+    effortLabel: { high: "高", medium: "中", low: "低" }[item.effort] || "未记录",
+    actionLabel: "建议 · 需人工审批",
+  }));
+}
+
 export function finopsRequestViewModel(item = {}) {
   const metrics = item?.metrics || {};
   const technicalRefs = item?.technical_refs || {};

@@ -10,6 +10,7 @@ import {
   finopsBudgetView,
   finopsDoughnutSegments,
   finopsRoiEconomicsView,
+  finopsOpportunityRows,
   formatRelativeUpdateTime,
 } from "./finopsViewModel.js";
 
@@ -199,4 +200,26 @@ test("ROI economics view keeps verified ROI separate from estimated scenarios", 
   assert.equal(view.verifiedRoiLabel, "150%");
   assert.equal(view.scenarios[0].status, "estimated");
   assert.equal(finopsRoiEconomicsView({}).verifiedRoiLabel, "证据不足");
+});
+
+
+test("opportunity rows keep observing and estimated savings states explicit", () => {
+  const rows = finopsOpportunityRows({
+    items: [
+      {
+        opportunity_id: "opp-a",
+        title: "缓存效率优化",
+        impact: "medium",
+        confidence: "low",
+        effort: "medium",
+        queue_state: "observing",
+        estimated_savings: null,
+        evidence_state: "partial",
+      },
+    ],
+  });
+
+  assert.equal(rows[0].stateLabel, "观察中");
+  assert.equal(rows[0].savingsLabel, "暂不可估算");
+  assert.equal(rows[0].actionLabel, "建议 · 需人工审批");
 });

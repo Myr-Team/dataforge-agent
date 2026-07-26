@@ -346,25 +346,25 @@ git commit -m "feat: add evidence-based roi economics"
 - Produces: `GET /api/finops/opportunities`.
 - Consumes: anomalies, recommendations, estimated impact, evidence coverage and governance actions.
 
-- [ ] **Step 1: Write failing opportunity-ranking tests**
+- [x] **Step 1: Write failing opportunity-ranking tests**
 
 Verify impact/confidence/effort ordering, insufficient samples entering “观察中”, no savings estimate without priced evidence, and no automatic action transitions.
 
-- [ ] **Step 2: Verify RED and implement queue**
+- [x] **Step 2: Verify RED and implement queue**
 
 Run: `python -m pytest tests/test_finops_opportunities.py -q`
 
 Expected before implementation: FAIL; after typed aggregator and route: PASS.
 
-- [ ] **Step 3: Implement risk workbench**
+- [x] **Step 3: Implement risk workbench**
 
 Unify trend annotations, anomaly rows and recommendations around one opportunity ID; show impact, confidence, difficulty, evidence and typed draft action.
 
-- [ ] **Step 4: Add Playwright acceptance**
+- [x] **Step 4: Add Playwright acceptance**
 
 Cover immediate navigation, desktop/mobile layout, stable skeleton, localized auth failure, component partial failure, hover/focus/tap metric tooltip, cross-filtering, AI popover, run navigation, hidden auto-analysis message, budget/ROI/risk states and reduced motion.
 
-- [ ] **Step 5: Run full verification**
+- [x] **Step 5: Run full verification**
 
 Run: `python -m pytest -q`
 
@@ -380,7 +380,7 @@ Expected: all commands exit 0; no failed tests; browser screenshots show no clip
 
 Deploy backend and web candidates with zero traffic, then verify health, authenticated APIs, desktop/mobile hard refresh and rollback target. Do not enable governance actions or switch production traffic before candidate evidence is recorded.
 
-- [ ] **Step 7: Commit Task 5**
+- [x] **Step 7: Commit Task 5**
 
 ```powershell
 git add -- backend/finops/opportunities.py backend/finops/router.py web/src/FinOpsPortal.jsx web/src/finopsViewModel.js web/src/styles.css tests/test_finops_opportunities.py web/src/finopsViewModel.test.mjs web/tests/finops-operations-management.spec.mjs

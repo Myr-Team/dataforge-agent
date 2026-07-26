@@ -24,7 +24,15 @@ export const bootstrapPayload = {
     data_status: "partial",
     metrics: {
       requests: 60,
-      tokens: { total: 2307, known_requests: 60, unknown_requests: 0 },
+      tokens: {
+        input: 1750,
+        output: 430,
+        cached_input: 232,
+        reasoning: 75,
+        total: 2487,
+        known_requests: 60,
+        unknown_requests: 0,
+      },
       estimated_cost: {
         amount: 0.0269,
         priced_requests: 58,
@@ -42,6 +50,13 @@ export const bootstrapPayload = {
       error_rate_pct: 6.7,
       success_rate_pct: 93.3,
       cache_hit_rate_pct: 42,
+      cache: {
+        eligible_requests: 50,
+        hit: 21,
+        miss: 29,
+        bypassed: 8,
+        unavailable: 2,
+      },
       apim_coverage_pct: 96.67,
     },
   },
@@ -303,6 +318,32 @@ export async function installFinOpsMockApi(page, calls = []) {
           },
         ],
       };
+    } else if (path === "/api/finops/budgets") {
+      body = {
+        items: [{
+          budget_id: "budget-a",
+          name: "Commerce 月度预算",
+          scope_type: "workspace",
+          scope_id: "demo-corpus",
+          amount: 0.1,
+          currency: "USD",
+          progress: {
+            spent_amount: 0.0269,
+            usage_pct: 26.9,
+            forecast_amount: 0.041,
+            forecast_status: "estimated",
+            confidence: "partial",
+            threshold_state: "normal",
+          },
+        }],
+        count: 1,
+      };
+    } else if (path === "/api/finops/views") {
+      body = request.method() === "POST"
+        ? { view: { view_id: "view-a", name: "财务视图" } }
+        : { items: [], count: 0 };
+    } else if (path === "/api/finops/trends") {
+      body = bootstrapPayload.trend;
     } else if (path === "/api/finops/anomalies") {
       body = {
         ...bootstrapPayload,
@@ -322,6 +363,26 @@ export async function installFinOpsMockApi(page, calls = []) {
       };
     } else if (path === "/api/finops/recommendations") {
       body = { ...bootstrapPayload, items: [], count: 0 };
+    } else if (path === "/api/finops/opportunities") {
+      body = {
+        ...bootstrapPayload,
+        items: [{
+          opportunity_id: "opp-latency",
+          anomaly_id: "anom-a",
+          policy_type: "p95_latency",
+          title: "响应时延优化",
+          recommendation: "定位慢请求与模型路由瓶颈。",
+          impact: "medium",
+          confidence: "high",
+          effort: "high",
+          queue_state: "ready",
+          sample_count: 60,
+          evidence_state: "observed",
+          estimated_savings: null,
+          action_status: "suggested",
+        }],
+        count: 1,
+      };
     } else if (path === "/api/finops/actions" && request.method() === "GET") {
       body = { ...bootstrapPayload, items: [], count: 0 };
     } else if (path === "/api/finops/actions" && request.method() === "POST") {
@@ -336,6 +397,31 @@ export async function installFinOpsMockApi(page, calls = []) {
         status: "scheduled",
         agent_kind: "finops",
         trigger_fingerprint: "f".repeat(64),
+      };
+    } else if (path === "/api/finops/assistant/query") {
+      body = {
+        answer: "当前缓存命中率为 42%，50 次可缓存调用中有 21 次命中。",
+        evidence_state: "observed",
+        evidence_refs: ["req_aaaaaaaaaaaa"],
+        suggested_questions: ["与上一周期相比如何？"],
+      };
+    } else if (path === "/api/finops/roi/economics") {
+      body = {
+        workspace_id: "demo-corpus",
+        funnel: [
+          { id: "investment", label: "投入", value: 0.0269, unit: "USD", status: "estimated" },
+          { id: "usage", label: "使用", value: 60, unit: "次调用", status: "observed" },
+          { id: "output", label: "产出", value: null, unit: "个产物", status: "unavailable" },
+          { id: "outcome", label: "业务结果", value: null, unit: "项已验证结果", status: "not_recorded" },
+        ],
+        unit_economics: {
+          cost_per_successful_request: { label: "每次成功调用成本", value: 0.00048, currency: "USD", status: "estimated" },
+          cost_per_analysis: { label: "每次分析成本", value: 0.0269, currency: "USD", status: "estimated" },
+          cost_per_artifact: { label: "每个产物成本", value: null, currency: null, status: "unavailable" },
+        },
+        verified_roi: { status: "not_recorded", value: null },
+        evidence_gaps: ["独立验证的业务结果", "可计数的交付产物"],
+        scenarios: [],
       };
     } else if (path === "/api/workspaces/demo-corpus/governance/roi") {
       body = {

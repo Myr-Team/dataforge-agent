@@ -182,6 +182,10 @@ export function loadFinOpsRecommendations(filters = {}, options = {}) {
   return loadFinOpsResource("recommendations", filters, options);
 }
 
+export function loadFinOpsOpportunities(filters = {}, options = {}) {
+  return loadFinOpsResource("opportunities", filters, options);
+}
+
 export function loadFinOpsRequests(filters = {}, options = {}) {
   return loadFinOpsResource("requests", filters, options);
 }

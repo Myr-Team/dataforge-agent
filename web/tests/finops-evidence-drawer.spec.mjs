@@ -10,11 +10,11 @@ test("owner drills from operations metric into friendly request evidence", async
   await installFinOpsMockApi(page);
   await page.goto("/");
 
-  await page.getByRole("button", { name: "运营驾驶舱" }).first().click();
-  await expect(page.getByRole("heading", { name: "运营驾驶舱" })).toBeVisible();
+  await page.getByRole("button", { name: "运营管理" }).first().click();
+  await expect(page.getByRole("heading", { name: "运营管理" })).toBeVisible();
   await expect(page.getByText("数据更新中")).not.toBeVisible();
 
-  await page.getByRole("button", { name: "查看请求证据" }).first().click();
+  await page.getByRole("button", { name: "查看证据" }).first().click();
   const dialog = page.getByRole("dialog", { name: /Commerce · 分析运行/ });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("分析本月销售异常")).toBeVisible();
@@ -43,8 +43,8 @@ test("evidence drawer is full-width and keyboard closable on mobile", async ({ p
   await installFinOpsMockApi(page);
   await page.goto("/");
 
-  await page.getByRole("button", { name: "运营驾驶舱" }).last().click();
-  await page.getByRole("button", { name: "查看请求证据" }).first().click();
+  await page.getByRole("button", { name: "运营管理" }).last().click();
+  await page.getByRole("button", { name: "查看证据" }).first().click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   const width = await dialog.evaluate((node) => node.getBoundingClientRect().width);
