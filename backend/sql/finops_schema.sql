@@ -163,6 +163,79 @@ BEGIN
     );
 END;
 
+IF OBJECT_ID(N'df_finops.official_price_mapping', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.official_price_mapping (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        deployment NVARCHAR(160) NOT NULL,
+        official_price_key NVARCHAR(240) NOT NULL,
+        mapping_revision INT NOT NULL,
+        updated_by_ref NVARCHAR(128) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_official_mapping_updated DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_finops_official_price_mapping PRIMARY KEY (
+            tenant_ref, deployment
+        ),
+        CONSTRAINT CK_finops_official_mapping_revision CHECK (
+            mapping_revision >= 1
+        )
+    );
+END;
+
+IF OBJECT_ID(N'df_finops.assistant_conversation', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.assistant_conversation (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        actor_ref NVARCHAR(128) NOT NULL,
+        workspace_id NVARCHAR(160) NOT NULL,
+        conversation_ref NVARCHAR(128) NOT NULL,
+        title NVARCHAR(120) NOT NULL,
+        created_at DATETIME2(7) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        expires_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_assistant_conversation PRIMARY KEY (
+            tenant_ref, actor_ref, workspace_id, conversation_ref
+        )
+    );
+    CREATE INDEX IX_finops_assistant_conversation_recent
+        ON df_finops.assistant_conversation (
+            tenant_ref, actor_ref, workspace_id, updated_at DESC
+        );
+    CREATE INDEX IX_finops_assistant_conversation_expiry
+        ON df_finops.assistant_conversation (expires_at);
+END;
+
+IF OBJECT_ID(N'df_finops.assistant_message', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.assistant_message (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        actor_ref NVARCHAR(128) NOT NULL,
+        workspace_id NVARCHAR(160) NOT NULL,
+        conversation_ref NVARCHAR(128) NOT NULL,
+        message_id BIGINT IDENTITY(1, 1) NOT NULL,
+        role NVARCHAR(16) NOT NULL,
+        content NVARCHAR(1600) NOT NULL,
+        metric_context_payload NVARCHAR(MAX) NULL,
+        created_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_assistant_message PRIMARY KEY (message_id),
+        CONSTRAINT FK_finops_assistant_message_conversation FOREIGN KEY (
+            tenant_ref, actor_ref, workspace_id, conversation_ref
+        ) REFERENCES df_finops.assistant_conversation (
+            tenant_ref, actor_ref, workspace_id, conversation_ref
+        ) ON DELETE CASCADE,
+        CONSTRAINT CK_finops_assistant_message_role CHECK (
+            role IN (N'user', N'assistant')
+        ),
+        CONSTRAINT CK_finops_assistant_message_context CHECK (
+            metric_context_payload IS NULL OR ISJSON(metric_context_payload) = 1
+        )
+    );
+    CREATE INDEX IX_finops_assistant_message_order
+        ON df_finops.assistant_message (
+            tenant_ref, actor_ref, workspace_id, conversation_ref, message_id
+        );
+END;
+
 IF OBJECT_ID(N'df_finops.policy', N'U') IS NULL
 BEGIN
     CREATE TABLE df_finops.policy (

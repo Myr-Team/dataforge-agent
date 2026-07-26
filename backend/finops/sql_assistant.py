@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable
+from uuid import uuid4
+
+from .assistant_store import (
+    AssistantConversation,
+    AssistantMessage,
+    AssistantScope,
+)
+
+
+class SqlAssistantConversationStore:
+    def __init__(
+        self,
+        *,
+        connection_factory: Callable[[], Any],
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._connection_factory = connection_factory
+        self._now = now or (lambda: datetime.now(timezone.utc))
+
+    def create(
+        self,
+        scope: AssistantScope,
+        *,
+        title: str,
+        retention_days: int = 30,
+    ) -> AssistantConversation:
+        now = self._now()
+        value = AssistantConversation(
+            conversation_ref=f"foc_{uuid4().hex}",
+            title=" ".join(str(title or "").split())[:120] or "新会话",
+            created_at=now,
+            updated_at=now,
+            expires_at=now + timedelta(days=max(1, min(retention_days, 30))),
+        )
+        self._execute(
+            """/* finops:create-assistant-conversation */
+            INSERT INTO df_finops.assistant_conversation (
+                tenant_ref, actor_ref, workspace_id, conversation_ref, title,
+                created_at, updated_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            scope.tenant_ref,
+            scope.actor_ref,
+            scope.workspace_id,
+            value.conversation_ref,
+            value.title,
+            value.created_at,
+            value.updated_at,
+            value.expires_at,
+        )
+        return value
+
+    def append(
+        self,
+        scope: AssistantScope,
+        conversation_ref: str,
+        message: AssistantMessage,
+    ) -> None:
+        self._execute(
+            """/* finops:append-assistant-message */
+            INSERT INTO df_finops.assistant_message (
+                tenant_ref, actor_ref, workspace_id, conversation_ref,
+                role, content, metric_context_payload, created_at
+            )
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE EXISTS (
+                SELECT 1 FROM df_finops.assistant_conversation
+                WHERE tenant_ref = ? AND actor_ref = ? AND workspace_id = ?
+                  AND conversation_ref = ?
+            )""",
+            scope.tenant_ref,
+            scope.actor_ref,
+            scope.workspace_id,
+            conversation_ref,
+            message.role,
+            message.content,
+            json.dumps(message.metric_context_payload, ensure_ascii=False)
+            if message.metric_context_payload is not None
+            else None,
+            message.created_at or self._now(),
+            scope.tenant_ref,
+            scope.actor_ref,
+            scope.workspace_id,
+            conversation_ref,
+        )
+
+    def purge_expired(self, now: datetime | None = None) -> int:
+        return self._execute(
+            """/* finops:purge-assistant-conversations */
+            DELETE FROM df_finops.assistant_conversation
+            WHERE expires_at <= ?""",
+            now or self._now(),
+        )
+
+    def _execute(self, operation: str, *parameters: object) -> int:
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(operation, *parameters)
+            affected = int(getattr(cursor, "rowcount", 0) or 0)
+            connection.commit()
+            return affected
+        except Exception:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            connection.close()
+
+
+__all__ = ["SqlAssistantConversationStore"]
