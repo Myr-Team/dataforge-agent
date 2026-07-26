@@ -137,6 +137,7 @@ def test_apim_backfill_queries_once_and_reconciles_each_sql_scope() -> None:
     assert len(requested_queries) == 1
     assert result["scope_count"] == 2
     assert result["application_events"] == 2
+    assert result["unmatched_observations"] == 0
     assert "tenant-safe" not in str(result)
     assert "ws-a" not in str(result)
 

@@ -47,3 +47,22 @@ def test_gateway_diagnostic_enables_application_insights_custom_metrics() -> Non
             message = diagnostic["properties"][pipeline][direction]
             assert message["headers"] == []
             assert message["body"]["bytes"] == 0
+
+
+def test_apim_resource_diagnostic_populates_gateway_and_llm_tables() -> None:
+    template = json.loads(TELEMETRY_TEMPLATE.read_text(encoding="utf-8"))
+    diagnostic = next(
+        item
+        for item in template["resources"]
+        if item["type"]
+        == "Microsoft.ApiManagement/service/providers/diagnosticSettings"
+    )
+
+    assert "logAnalyticsWorkspaceResourceId" in template["parameters"]
+    assert diagnostic["properties"]["logAnalyticsDestinationType"] == "Dedicated"
+    enabled = {
+        item["category"]
+        for item in diagnostic["properties"]["logs"]
+        if item["enabled"]
+    }
+    assert enabled == {"GatewayLogs", "GatewayLlmLogs"}

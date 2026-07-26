@@ -42,8 +42,17 @@ def run_apim_backfill(
         )
         totals["scope_count"] += 1
         totals["application_events"] += int(result["application_events"])
-        totals["rejected_observations"] += int(result["rejected_observations"])
+        totals["rejected_observations"] = max(
+            totals["rejected_observations"],
+            int(result["rejected_observations"]),
+        )
         totals["reconciled_events"] += int(result["reconciled_events"])
+    totals["unmatched_observations"] = max(
+        0,
+        totals["apim_observations"]
+        - totals["reconciled_events"]
+        - totals["rejected_observations"],
+    )
     totals["window"] = {"from": from_value, "to": to_value}
     return totals
 

@@ -3,7 +3,8 @@
   "contentVersion": "1.0.0.0",
   "parameters": {
     "serviceName": { "type": "string" },
-    "appInsightsInstrumentationKey": { "type": "secureString" }
+    "appInsightsInstrumentationKey": { "type": "secureString" },
+    "logAnalyticsWorkspaceResourceId": { "type": "string" }
   },
   "resources": [
     {
@@ -45,6 +46,26 @@
           "response": { "headers": [], "body": { "bytes": 0 } }
         },
         "httpCorrelationProtocol": "W3C"
+      }
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/providers/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "name": "[format('{0}/{1}/{2}', parameters('serviceName'), 'Microsoft.Insights', 'dataforge-loganalytics')]",
+      "properties": {
+        "workspaceId": "[parameters('logAnalyticsWorkspaceResourceId')]",
+        "logAnalyticsDestinationType": "Dedicated",
+        "logs": [
+          {
+            "category": "GatewayLogs",
+            "enabled": true
+          },
+          {
+            "category": "GatewayLlmLogs",
+            "enabled": true
+          }
+        ],
+        "metrics": []
       }
     }
   ]
