@@ -28,6 +28,7 @@ import {
   loadFinOpsRecommendations,
   loadFinOpsRequest,
   loadFinOpsRequests,
+  loadFinOpsRoiEconomics,
   loadFinOpsSavedViews,
   loadFinOpsTrends,
   loadWorkspaceCostValue,
@@ -55,6 +56,7 @@ import {
   finopsDoughnutSegments,
   finopsMetricCards,
   finopsRequestViewModel,
+  finopsRoiEconomicsView,
   finopsTrendViewModel,
   formatFinOpsCost,
   formatFinOpsDuration,
@@ -562,6 +564,58 @@ function ValueCard({ label, value, meta, status }) {
 }
 
 
+function RoiEconomics({ payload }) {
+  const view = finopsRoiEconomicsView(payload);
+  return (
+    <>
+      <Panel title="ROI 证据漏斗" subtitle="从投入、使用、产出到已验证业务结果" className="span-2">
+        {view.funnel.length ? (
+          <div className="finops-roi-funnel">
+            {view.funnel.map((stage, index) => (
+              <article key={stage.id}>
+                <span>{index + 1}</span>
+                <small>{stage.label}</small>
+                <b>{stage.value == null ? "未记录" : `${formatFinOpsNumber(stage.value)} ${stage.unit || ""}`.trim()}</b>
+                <EvidenceBadge status={stage.status} />
+              </article>
+            ))}
+          </div>
+        ) : <EmptyState>当前范围没有可形成漏斗的证据。</EmptyState>}
+      </Panel>
+      <section className="finops-value-grid span-2">
+        {view.unitEconomics.map((item) => (
+          <ValueCard
+            key={item.label}
+            label={item.label}
+            value={item.valueLabel}
+            meta="仅基于完整成本与已观测分母"
+            status={item.status}
+          />
+        ))}
+        <ValueCard
+          label="可复核 ROI"
+          value={view.verifiedRoiLabel}
+          meta="不包含估算情景"
+          status={view.verifiedRoiStatus}
+        />
+      </section>
+      <Panel title="情景测算" subtitle="估算情景与已验证 ROI 严格分开" className="span-2">
+        {view.scenarios.length ? (
+          <div className="finops-scenarios">
+            {view.scenarios.map((item) => (
+              <article key={item.scenario_id}>
+                <span><b>{item.title || "ROI 情景"}</b><small>版本 {item.revision || 1}</small></span>
+                <EvidenceBadge status="estimated" />
+              </article>
+            ))}
+          </div>
+        ) : <EmptyState>当前没有已保存的 ROI 估算情景。</EmptyState>}
+      </Panel>
+    </>
+  );
+}
+
+
 function RoiPage({
   detail,
 }) {
@@ -582,6 +636,7 @@ function RoiPage({
     : `${formatFinOpsNumber(realized.roi_ratio * 100)}%`;
   return (
     <div className="finops-grid">
+      <RoiEconomics payload={detail.economics} />
       <section className="finops-value-grid span-2">
         <ValueCard label="已记录业务价值" value={businessValue} meta={`${verifiedCount} 个已验证结果`} status={business.status || "not_recorded"} />
         <ValueCard label="可复核 ROI" value={roiValue} meta="仅使用完整成本与已验证结果" status={realized.status || "not_recorded"} />
@@ -1089,7 +1144,8 @@ export function FinOpsPortal({
       roi: () => Promise.all([
         loadWorkspaceRoi(workspaceId, { from: query.from, to: query.to }),
         loadWorkspaceCostValue(workspaceId, { from: query.from, to: query.to }),
-      ]).then(([roi, costValue]) => ({ roi, costValue })),
+        loadFinOpsRoiEconomics(query, { signal: controller.signal }),
+      ]).then(([roi, costValue, economics]) => ({ roi, costValue, economics })),
       risk: () => Promise.all([
         loadFinOpsAnomalies(query, { signal: controller.signal }),
         loadFinOpsRecommendations(query, { signal: controller.signal }),

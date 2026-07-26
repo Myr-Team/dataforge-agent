@@ -217,6 +217,10 @@ export function loadFinOpsBudgets(filters = {}, options = {}) {
   return loadFinOpsResource("budgets", filters, options);
 }
 
+export function loadFinOpsRoiEconomics(filters = {}, options = {}) {
+  return loadFinOpsResource("roi/economics", filters, options);
+}
+
 export function loadFinOpsSavedViews(filters = {}, options = {}) {
   return loadFinOpsResource("views", filters, options);
 }

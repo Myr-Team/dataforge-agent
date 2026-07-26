@@ -313,6 +313,26 @@ export function finopsDoughnutSegments(rows = [], valueKey = "cost") {
     }));
 }
 
+export function finopsRoiEconomicsView(payload = {}) {
+  const verified = payload.verified_roi || {};
+  const unitEconomics = Object.values(payload.unit_economics || {}).map((item) => ({
+    label: item.label || "单位成本",
+    valueLabel: item.value == null ? "暂不可用" : formatFinOpsCost(item.value, item.status),
+    status: item.status || "unavailable",
+  }));
+  return {
+    funnel: Array.isArray(payload.funnel) ? payload.funnel : [],
+    unitEconomics,
+    verifiedRoiLabel: verified.status === "verified" && hasNumber(verified.value)
+      ? formatFinOpsPercent(verified.value * 100)
+      : "证据不足",
+    verifiedRoiStatus: verified.status || "not_recorded",
+    scenarios: (Array.isArray(payload.scenarios) ? payload.scenarios : [])
+      .filter((item) => item.status === "estimated"),
+    evidenceGaps: Array.isArray(payload.evidence_gaps) ? payload.evidence_gaps : [],
+  };
+}
+
 export function finopsRequestViewModel(item = {}) {
   const metrics = item?.metrics || {};
   const technicalRefs = item?.technical_refs || {};

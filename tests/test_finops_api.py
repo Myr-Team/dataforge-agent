@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.finops.router as finops_router
+import backend.control_plane as control_plane
 from backend.app import app
 from backend.finops.models import FinOpsRequestEvent, TokenUsage
 from backend.finops.query import FinOpsQueryService
@@ -295,6 +296,41 @@ def test_finops_saved_view_rejects_unsafe_filter_and_foreign_workspace(
 
     assert unsafe.status_code == 422
     assert foreign.status_code == 403
+
+
+def test_finops_roi_economics_is_workspace_bounded_and_evidence_safe(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        control_plane,
+        "workspace_roi_snapshot",
+        lambda *_args: {"usage": {"runs": 1}},
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "workspace_cost_value_snapshot",
+        lambda *_args: {
+            "cost_evidence": {"status": "complete", "total": 0.001, "currency": "USD"},
+            "outcome_evidence": {"status": "not_recorded", "outcome_event_ids": []},
+            "realized_roi": {"status": "not_recorded", "roi_ratio": None},
+            "scenarios": [{"scenario_id": "roi_scenario_aaaaaaaaaaaaaaaa", "status": "estimated"}],
+        },
+    )
+
+    response = client.get(
+        "/api/finops/roi/economics?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    denied = client.get(
+        "/api/finops/roi/economics?workspace_id=ws-b",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["verified_roi"]["value"] is None
+    assert response.json()["scenarios"][0]["status"] == "estimated"
+    assert denied.status_code == 403
 
 
 def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(

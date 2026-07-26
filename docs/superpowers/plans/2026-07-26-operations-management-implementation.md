@@ -299,25 +299,25 @@ git commit -m "feat: add finops planning and allocation"
 - Produces: `GET /api/finops/roi/economics`.
 - Consumes: existing workspace ROI snapshot, verified outcome events and immutable ROI scenarios.
 
-- [ ] **Step 1: Write failing unit-economics tests**
+- [x] **Step 1: Write failing unit-economics tests**
 
 Cover cost per successful request/analysis/artifact, zero denominators, partial costs, verified business values, evidence gaps and estimated scenarios.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `python -m pytest tests/test_finops_roi_economics.py -q`
 
 Expected: FAIL because the aggregator is absent.
 
-- [ ] **Step 3: Implement evidence-safe ROI economics**
+- [x] **Step 3: Implement evidence-safe ROI economics**
 
 Return the four-stage funnel `investment → usage → output → outcome`; emit verified ROI only when both cost and value evidence are complete; keep scenarios labelled `estimated`.
 
-- [ ] **Step 4: Implement ROI UI**
+- [x] **Step 4: Implement ROI UI**
 
 Render the funnel, unit-economics cards, evidence gaps, verified value sources and scenario comparison without showing a single unsupported ROI percentage.
 
-- [ ] **Step 5: Verify and commit Task 4**
+- [x] **Step 5: Verify and commit Task 4**
 
 Run: `python -m pytest tests/test_finops_roi_economics.py tests/test_roi_service.py tests/test_roi_scenarios.py -q`
 

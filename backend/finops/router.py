@@ -78,6 +78,7 @@ from .saved_views import (
     export_breakdown_csv,
 )
 from .sql_planning import SqlFinOpsPlanningRepository
+from .roi_economics import build_roi_economics
 from .insight_repository import InMemoryInsightRepository, SqlInsightRepository
 from .insight_service import FinOpsInsightService
 from .repository import RunStoreFinOpsRepository
@@ -750,6 +751,67 @@ async def list_saved_views(
         authorized_workspace_ids=query.authorized_workspace_ids,
     )
     return {"items": [item.model_dump(mode="json") for item in items], "count": len(items)}
+
+
+@router.get("/roi/economics")
+async def roi_economics(
+    request: Request,
+    from_value: str | None = Query(default=None, alias="from", max_length=64),
+    to_value: str | None = Query(default=None, alias="to", max_length=64),
+    workspace_id: str = Query(..., min_length=1, max_length=160),
+) -> dict[str, Any]:
+    query_service, query, roles = _common(
+        request, from_value, to_value, None, workspace_id, None, None, None
+    )
+    if roles.get(workspace_id) not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="ROI economics require admin or owner")
+    try:
+        try:
+            from ..control_plane import (
+                workspace_cost_value_snapshot,
+                workspace_roi_snapshot,
+            )
+        except ImportError:
+            from control_plane import (
+                workspace_cost_value_snapshot,
+                workspace_roi_snapshot,
+            )
+        snapshot = workspace_roi_snapshot(
+            workspace_id, query.from_value, query.to_value
+        )
+        cost_value = workspace_cost_value_snapshot(
+            workspace_id, query.from_value, query.to_value
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="ROI evidence service is unavailable",
+        ) from exc
+    metrics = (query_service.overview(query).get("metrics") or {})
+    requests = int(metrics.get("requests") or 0)
+    success_rate = metrics.get("success_rate_pct")
+    successful_requests = (
+        round(requests * float(success_rate) / 100)
+        if success_rate is not None
+        else 0
+    )
+    usage = snapshot.get("usage") if isinstance(snapshot.get("usage"), Mapping) else {}
+    payload = build_roi_economics(
+        cost_evidence=cost_value.get("cost_evidence") or {},
+        outcome_evidence=cost_value.get("outcome_evidence") or {},
+        realized_roi=cost_value.get("realized_roi") or {},
+        requests=requests,
+        successful_requests=successful_requests,
+        analyses=int(usage.get("runs") or 0),
+        artifacts=0,
+        scenarios=list(cost_value.get("scenarios") or []),
+    )
+    payload.update({
+        "workspace_id": workspace_id,
+        "window": {"from": query.from_value, "to": query.to_value},
+        "currency": "USD",
+    })
+    return payload
 
 
 @router.post("/views", status_code=201)

@@ -4825,6 +4825,20 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-value-card > strong { display: block; margin: 9px 0 5px; overflow: hidden; color: #101828; font-size: 22px; text-overflow: ellipsis; white-space: nowrap; }
 .finops-value-card > small { display: block; padding-right: 54px; color: #98a2b3; font-size: 9.5px; }
 .finops-value-card > .finops-evidence { position: absolute; top: 10px; right: 10px; }
+.finops-roi-funnel { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 18px; }
+.finops-roi-funnel article { position: relative; display: grid; min-height: 116px; align-content: center; gap: 7px; border: 1px solid #dbe7f8; border-right: 0; background: linear-gradient(135deg, #fff, #f7faff); padding: 14px 16px; }
+.finops-roi-funnel article:first-child { border-radius: 10px 0 0 10px; }
+.finops-roi-funnel article:last-child { border-right: 1px solid #dbe7f8; border-radius: 0 10px 10px 0; }
+.finops-roi-funnel article > span { position: absolute; top: 9px; left: 10px; display: grid; width: 18px; height: 18px; border-radius: 50%; place-items: center; background: #eff6ff; color: #175cd3; font-size: 8px; font-weight: 750; }
+.finops-roi-funnel article > small { color: #667085; font-size: 9.5px; }
+.finops-roi-funnel article > b { color: #1d2939; font-size: 15px; }
+.finops-roi-funnel article > .finops-evidence { width: fit-content; }
+.finops-scenarios { display: grid; padding: 8px 14px; }
+.finops-scenarios article { display: flex; min-height: 48px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #edf0f5; }
+.finops-scenarios article:last-child { border-bottom: 0; }
+.finops-scenarios article > span { display: grid; gap: 3px; }
+.finops-scenarios b { color: #344054; font-size: 10.5px; }
+.finops-scenarios small { color: #98a2b3; font-size: 9px; }
 .finops-evidence-summary { display: grid; padding: 8px 14px; }
 .finops-evidence-summary > div { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #edf0f5; color: #475467; font-size: 10.5px; }
 .finops-evidence-summary > div:last-child { border-bottom: 0; }
@@ -4968,6 +4982,10 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-page-actions button,
   .finops-page-actions a { justify-content: center; }
   .finops-value-grid { grid-template-columns: 1fr; }
+  .finops-roi-funnel { grid-template-columns: 1fr; }
+  .finops-roi-funnel article { min-height: 88px; border-right: 1px solid #dbe7f8; border-bottom: 0; }
+  .finops-roi-funnel article:first-child { border-radius: 10px 10px 0 0; }
+  .finops-roi-funnel article:last-child { border-bottom: 1px solid #dbe7f8; border-radius: 0 0 10px 10px; }
   .finops-budget-values { grid-template-columns: 1fr; }
   .finops-budget-forecast > footer { flex-direction: column; }
   .finops-doughnut-layout { grid-template-columns: 1fr; justify-items: center; }

@@ -9,6 +9,7 @@ import {
   finopsTrendViewModel,
   finopsBudgetView,
   finopsDoughnutSegments,
+  finopsRoiEconomicsView,
   formatRelativeUpdateTime,
 } from "./finopsViewModel.js";
 
@@ -178,4 +179,24 @@ test("budget and allocation view models preserve estimated and unavailable state
   assert.equal(budget.status, "estimated");
   assert.deepEqual(doughnut.map((item) => item.sharePct), [80, 20]);
   assert.deepEqual(finopsDoughnutSegments([{ key: "unknown", cost: null }], "cost"), []);
+});
+
+
+test("ROI economics view keeps verified ROI separate from estimated scenarios", () => {
+  const view = finopsRoiEconomicsView({
+    funnel: [
+      { id: "investment", label: "投入", value: 12, unit: "USD", status: "estimated" },
+      { id: "outcome", label: "业务结果", value: 1, unit: "项已验证结果", status: "verified" },
+    ],
+    unit_economics: {
+      cost_per_analysis: { label: "每次分析成本", value: 3, currency: "USD", status: "estimated" },
+    },
+    verified_roi: { status: "verified", value: 1.5, currency: "USD" },
+    scenarios: [{ scenario_id: "roi_scenario_a", status: "estimated", title: "扩容情景" }],
+    evidence_gaps: [],
+  });
+
+  assert.equal(view.verifiedRoiLabel, "150%");
+  assert.equal(view.scenarios[0].status, "estimated");
+  assert.equal(finopsRoiEconomicsView({}).verifiedRoiLabel, "证据不足");
 });
