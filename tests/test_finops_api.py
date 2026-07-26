@@ -436,6 +436,60 @@ def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(
     assert denied.status_code == 403
 
 
+def test_finops_assistant_reuses_a_long_persisted_answer_without_rejecting_history(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    long_answer = "当前证据支持继续观察 APIM 对账状态。" * 45
+
+    def runner(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "structured": {
+                "answer": long_answer,
+                "evidence_refs": ["req_aaaaaaaaaaaa"],
+                "suggested_questions": [],
+            }
+        }
+
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_assistant_service",
+        lambda: FinOpsAssistantService(model_runner=runner),
+    )
+    payload = {
+        "question": "当前状态如何？",
+        "metric_context": {
+            "metric_id": "apim_coverage",
+            "label": "APIM 对账",
+            "value": 0,
+            "unit": "%",
+            "window": {
+                "from": "2026-07-01T00:00:00Z",
+                "to": "2026-07-25T00:00:00Z",
+            },
+            "filters": {"workspace_id": "ws-a"},
+            "data_status": "partial",
+            "evidence_state": "observed",
+        },
+        "history": [],
+    }
+    first = client.post(
+        "/api/finops/assistant/query",
+        json=payload,
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert first.status_code == 200
+    payload["conversation_ref"] = first.json()["conversation_ref"]
+
+    second = client.post(
+        "/api/finops/assistant/query",
+        json=payload,
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert second.status_code == 200
+
+
 def test_finops_read_contract_and_request_detail_are_privacy_bounded(client: TestClient) -> None:
     headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
     overview = client.get(

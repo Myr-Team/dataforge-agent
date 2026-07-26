@@ -801,7 +801,10 @@ async def assistant_query(
                 "history": [
                     AssistantTurn(
                         role=item.role,
-                        content=item.content,
+                        content=(
+                            " ".join(str(item.content or "").split())[:600]
+                            or "历史记录"
+                        ),
                     )
                     for item in persisted[-6:]
                 ]

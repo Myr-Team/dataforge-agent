@@ -83,7 +83,14 @@ export function FinOpsAssistant({
     if (!question || !context || busy) return;
     const history = messages
       .slice(-6)
-      .map((item) => ({ role: item.role, content: item.content }));
+      .map((item) => ({
+        role: item.role,
+        content: (
+          item.role === "assistant"
+            ? publicAssistantContent(item.content)
+            : String(item.content || "")
+        ).slice(0, 600),
+      }));
     setMessages((items) => [...items, { role: "user", content: question }]);
     setInput("");
     setBusy(true);
