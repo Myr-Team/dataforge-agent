@@ -7,7 +7,13 @@ import backend.maf_agents as maf_agents
 import backend.orchestrator as orchestrator
 import backend.run_store as run_store
 from backend.maf_team_runtime import MafRuntimeEvent
-from backend.model_policy import ModelRoute, model_route_scope, select_text_route, select_text_route_record
+from backend.model_policy import (
+    ModelRoute,
+    model_route_scope,
+    select_text_route,
+    select_text_route_record,
+    workspace_model_policy_scope,
+)
 
 
 def test_followup_run_persists_selected_route_model_usage_and_latency(tmp_path, monkeypatch) -> None:
@@ -312,3 +318,58 @@ def test_maf_gateway_client_uses_selected_analysis_route_header(monkeypatch) -> 
     assert provider_calls[0][1] == "api://dataforge-gateway/.default"
     assert created[0]["model"] == "gpt-5.1"
     assert created[0]["default_headers"]["x-dataforge-model-route"] == "analysis"
+
+
+def test_maf_live_event_uses_the_completed_agents_assigned_route(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "analysis",
+                    "deployment": "gpt-5.1",
+                    "label": "Analysis",
+                    "capabilities": ["analysis", "chat"],
+                },
+                {
+                    "id": "terra",
+                    "deployment": "gpt-5.6-terra",
+                    "label": "Terra",
+                    "capabilities": ["analysis", "chat"],
+                },
+            ]
+        ),
+    )
+    event = MafRuntimeEvent(
+        sequence=1,
+        event="maf_agent_completed",
+        status="completed",
+        agent_id="df-auditor",
+        input_tokens=80,
+        output_tokens=20,
+        total_tokens=100,
+    )
+    policy = {
+        "revision": 9,
+        "agent_assignments": {
+            "df-auditor": {
+                "primary_route_id": "terra",
+                "fallback_route_id": "analysis",
+            }
+        },
+    }
+
+    with workspace_model_policy_scope(policy=policy):
+        frames = orchestrator._maf_live_event_frames(
+            event,
+            mode="specialist_handoff",
+            conversation_id="run-agent-route",
+            selected_route=select_text_route_record("full_analysis"),
+        )
+
+    model_payload = json.loads(frames[1].split("data: ", 1)[1])
+    assert model_payload["agent"] == "df-auditor"
+    assert model_payload["route"] == "terra"
+    assert model_payload["deployment"] == "gpt-5.6-terra"
+    assert model_payload["selection"] == "agent_policy"
+    assert model_payload["policy_revision"] == 9

@@ -17,7 +17,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agents.build_agents import AGENTS
 
-from .model_policy import current_text_route, resolve_text_deployment, resolve_text_route
+from .model_policy import (
+    ModelRoute,
+    SelectedTextRoute,
+    current_text_route,
+    resolve_text_deployment,
+    resolve_text_route,
+    select_text_route_record,
+)
 from .rag import search
 from .schemas import AuditVerdict, FeasibilityReport
 from .tracing import gateway_request_headers
@@ -263,12 +270,12 @@ def _create_foundry_agent(spec: AgentSpec, client: Any, workspace_id: str) -> Ag
     )
 
 
-def _create_maf_chat_client() -> Any:
+def _create_maf_chat_client(selected_route: SelectedTextRoute | None = None) -> Any:
     auth_mode = str(os.environ.get("DF_MAF_AUTH_MODE") or "auto").strip().lower()
     if auth_mode not in {"auto", "api_key", "managed_identity"}:
         raise ValueError("DF_MAF_AUTH_MODE must be auto, api_key, or managed_identity")
 
-    selected = current_text_route()
+    selected = selected_route or current_text_route()
     model = selected.route.deployment
     gateway_enabled = str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {
         "1",
@@ -332,7 +339,11 @@ def create_agent_registry(
 
     specs = _agent_specs()
     if client_factory is None:
-        client = _create_maf_chat_client()
-        client_factory = lambda spec: _create_foundry_agent(spec, client, authorized_workspace_id)
+        def materialize(spec: AgentSpec) -> Agent:
+            selected = select_text_route_record("full_analysis", agent_id=spec.agent_id)
+            client = _create_maf_chat_client(selected)
+            return _create_foundry_agent(spec, client, authorized_workspace_id)
+
+        client_factory = materialize
 
     return MafAgentRegistry(specs, {spec.agent_id: client_factory(spec) for spec in specs})

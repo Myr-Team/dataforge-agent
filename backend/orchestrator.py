@@ -6348,13 +6348,17 @@ def _maf_live_event_frames(
     payload = _maf_event_payload(event)
     frames = [_frame(event.event, payload, conversation_id)]
     if event.event == "maf_agent_completed" and event.status == "completed" and event.agent_id:
+        agent_route = select_text_route_record(
+            "full_analysis",
+            agent_id=event.agent_id,
+        )
         frames.append(
             _frame(
                 "model_response",
                 _maf_model_response_payload(
                     event,
                     mode,
-                    selected_route=selected_route,
+                    selected_route=agent_route,
                     price_card=price_card,
                 ),
                 conversation_id,

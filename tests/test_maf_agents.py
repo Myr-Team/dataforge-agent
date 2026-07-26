@@ -211,7 +211,7 @@ def test_registry_prefers_azure_openai_key_client_when_configured(monkeypatch):
             "azure_endpoint": "https://example.openai.azure.com/",
             "api_version": "preview",
         }
-    ]
+    ] * 6
 
 
 def test_maf_uses_apim_managed_identity_when_gateway_is_enabled(monkeypatch):
@@ -293,7 +293,78 @@ def test_registry_can_force_managed_identity_client(monkeypatch):
             "project_endpoint": "https://example.services.ai.azure.com/api/projects/test",
             "model": "gpt-test",
             "credential": "managed-credential",
-        }
+        },
+        {
+            "project_endpoint": "https://example.services.ai.azure.com/api/projects/test",
+            "model": "gpt-test",
+            "credential": "managed-credential",
+        },
+        {
+            "project_endpoint": "https://example.services.ai.azure.com/api/projects/test",
+            "model": "gpt-test",
+            "credential": "managed-credential",
+        },
+        {
+            "project_endpoint": "https://example.services.ai.azure.com/api/projects/test",
+            "model": "gpt-test",
+            "credential": "managed-credential",
+        },
+        {
+            "project_endpoint": "https://example.services.ai.azure.com/api/projects/test",
+            "model": "gpt-test",
+            "credential": "managed-credential",
+        },
+        {
+            "project_endpoint": "https://example.services.ai.azure.com/api/projects/test",
+            "model": "gpt-test",
+            "credential": "managed-credential",
+        },
+    ]
+
+
+def test_registry_materializes_each_agent_with_its_selected_route(monkeypatch):
+    created: list[dict[str, Any]] = []
+    selected_agents: list[str | None] = []
+
+    class FakeManagedIdentityClient:
+        def __init__(self, **kwargs) -> None:
+            created.append(kwargs)
+
+    def select_route(execution_kind: str, *, agent_id: str | None = None):
+        selected_agents.append(agent_id)
+        route = maf_agents.ModelRoute(
+            route_id=f"route-{len(selected_agents)}",
+            deployment=f"deployment-{agent_id}",
+            label=str(agent_id),
+            capabilities=frozenset({"analysis"}),
+        )
+        return maf_agents.SelectedTextRoute(
+            route=route,
+            execution_kind=execution_kind,
+            selection="agent_policy",
+            policy_revision=7,
+        )
+
+    monkeypatch.setattr(maf_agents, "FoundryChatClient", FakeManagedIdentityClient)
+    monkeypatch.setattr(maf_agents, "DefaultAzureCredential", lambda: "managed-credential")
+    monkeypatch.setattr(maf_agents, "select_text_route_record", select_route)
+    monkeypatch.setattr(
+        maf_agents,
+        "_create_foundry_agent",
+        lambda spec, client, workspace_id: type(
+            "MaterializedAgent",
+            (),
+            {"spec": spec, "client": client},
+        )(),
+    )
+    monkeypatch.setenv("DF_MAF_AUTH_MODE", "managed_identity")
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example.services.ai.azure.com/api/projects/test")
+
+    registry = create_agent_registry(workspace_id="workspace-authorized")
+
+    assert selected_agents == list(registry.ids())
+    assert [item["model"] for item in created] == [
+        f"deployment-{agent_id}" for agent_id in registry.ids()
     ]
 
 
