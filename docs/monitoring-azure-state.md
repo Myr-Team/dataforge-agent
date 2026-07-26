@@ -202,3 +202,19 @@ az containerapp show -g rg-dataforge-dev -n ca-dataforge-backend `
 
 If the deployment identity changes, rerun the role verification before making
 any production routing change.
+
+## 2026-07-26 Operations Management production update
+
+- Current backend: `ca-dataforge-backend--ops1596d4f`, Healthy, 100% traffic,
+  digest `sha256:1514a5d5ca2b567983936ea89cc2b8406ed761c3ee98ebef10f41c8b596a10dd`.
+- Current web: `ca-dataforge-web--ops4769b33`, Healthy, 100% traffic, digest
+  `sha256:a459ad22a061e5cc006751f25fb65b17bf72dc952b3a33702aef669466ba2993`.
+- FinOps read access is enabled; governance execution remains disabled.
+- Authenticated UI acceptance verified immediate primary navigation, aligned
+  update status, real trend proportions, compact persisted Operations AI,
+  friendly evidence names, and no application console errors.
+- The APIM reconciliation job is healthy and scheduled, but its latest
+  ten-minute window contained zero application and APIM observations.
+  Non-zero request correlation remains an explicit open acceptance gate.
+- Full evidence:
+  `docs/validation/2026-07-26-operations-management-evidence-pricing-production.md`.
