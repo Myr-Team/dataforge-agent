@@ -235,10 +235,11 @@ def test_completed_run_ingestion_uses_official_deployment_mapping(monkeypatch) -
     from backend.finops.official_pricing import load_official_price_catalog
 
     assert event.estimated_cost.amount == 0.0000325
-    assert (
-        event.estimated_cost.price_card_revision
-        == load_official_price_catalog().revision
+    price = load_official_price_catalog().get(
+        "azure-openai:gpt-5.1:global-standard:global"
     )
+    assert price is not None
+    assert event.estimated_cost.price_card_revision == price.revision
     assert (
         event.estimated_cost.official_price_key
         == "azure-openai:gpt-5.1:global-standard:global"

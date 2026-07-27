@@ -4210,11 +4210,17 @@ def _normalized_observed_usage(data: Any) -> dict[str, int | None]:
         "prompt": ("prompt", "input_tokens"),
         "completion": ("completion", "output_tokens"),
         "total": ("total", "total_tokens"),
+        "cached_input": ("cached_input",),
+        "reasoning": ("reasoning", "reasoning_tokens"),
     }
     if not any(source in usage for sources in source_pairs.values() for source in sources):
         return {}
     normalized: dict[str, int | None] = {}
     for target, sources in source_pairs.items():
+        if target in {"cached_input", "reasoning"} and not any(
+            source in usage for source in sources
+        ):
+            continue
         normalized[target] = None
         for source in sources:
             value = usage.get(source)

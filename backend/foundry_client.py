@@ -777,11 +777,20 @@ def _usage_has_known_keys(usage: Any) -> bool:
 def _usage_dict(usage: Any) -> dict[str, Any]:
     if not _usage_has_known_keys(usage):
         return {}
-    return {
+    normalized = {
         "input_tokens": _usage_value(usage, "input_tokens", "prompt_tokens", "prompt"),
         "output_tokens": _usage_value(usage, "output_tokens", "completion_tokens", "completion"),
         "total_tokens": _usage_value(usage, "total_tokens", "total"),
     }
+    cached_input = _usage_value(
+        usage,
+        "cached_input",
+        "provider_cache_hit_tokens",
+        "prompt_cache_hit_tokens",
+    )
+    if cached_input is not None:
+        normalized["cached_input"] = cached_input
+    return normalized
 
 
 def _provider_cache_dict(usage: Any) -> dict[str, Any]:

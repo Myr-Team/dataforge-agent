@@ -7,8 +7,10 @@ from pydantic import ValidationError
 
 from backend.finops.models import TokenUsage
 from backend.finops.official_pricing import (
+    AttemptPriceInput,
     OfficialPrice,
     OfficialPriceCatalog,
+    estimate_attempt_costs,
     load_official_price_catalog,
     official_price_supports_call_classes,
 )
@@ -125,3 +127,95 @@ def test_bundled_catalog_contains_verified_gpt_5_6_global_standard_tiers() -> No
         assert entry.output_per_million == Decimal(prices[1])
         assert entry.cached_input_per_million == Decimal(prices[2])
         assert str(entry.source_url).startswith("https://prices.azure.com/")
+
+
+def test_bundled_catalog_contains_verified_deepseek_v4_prices() -> None:
+    catalog = load_official_price_catalog()
+    expected = {
+        "deepseek:deepseek-v4-flash:official": (
+            "0.14",
+            "0.0028",
+            "0.28",
+        ),
+        "deepseek:deepseek-v4-pro:official": (
+            "0.435",
+            "0.003625",
+            "0.87",
+        ),
+    }
+
+    for price_key, prices in expected.items():
+        entry = catalog.get(price_key)
+        assert entry is not None
+        assert entry.provider == "deepseek"
+        assert entry.input_per_million == Decimal(prices[0])
+        assert entry.cached_input_per_million == Decimal(prices[1])
+        assert entry.output_per_million == Decimal(prices[2])
+        assert (
+            entry.source_url
+            == "https://api-docs.deepseek.com/quick_start/pricing/"
+        )
+        assert entry.revision == "deepseek-2026-07-28-v1"
+
+
+def test_deepseek_cost_uses_cache_hit_and_miss_input_populations() -> None:
+    estimate = load_official_price_catalog().estimate(
+        "deepseek:deepseek-v4-pro:official",
+        TokenUsage(
+            input=1_000_000,
+            cached_input=800_000,
+            output=100_000,
+            reasoning=40_000,
+            total=1_140_000,
+        ),
+    )
+
+    # 200k miss * .435 + 800k hit * .003625 + 100k output * .87.
+    # Reasoning is already part of provider completion usage and is not added.
+    assert Decimal(str(estimate.amount)) == Decimal("0.1769")
+
+
+def test_fallback_attempt_costs_are_priced_separately_and_summed() -> None:
+    result = estimate_attempt_costs(
+        [
+            AttemptPriceInput(
+                attempt=1,
+                official_price_key="deepseek:deepseek-v4-flash:official",
+                mapping_revision=2,
+                tokens=TokenUsage(
+                    input=1000,
+                    cached_input=0,
+                    output=0,
+                    total=1000,
+                ),
+            ),
+            AttemptPriceInput(
+                attempt=2,
+                official_price_key="azure-openai:gpt-5.1:global-standard:global",
+                mapping_revision=4,
+                tokens=TokenUsage(input=1000, output=100, total=1100),
+            ),
+        ]
+    )
+
+    assert result["status"] == "estimated"
+    assert result["priced_attempts"] == 2
+    assert result["unpriced_attempts"] == 0
+    assert Decimal(str(result["amount"])) == Decimal("0.00239")
+    assert [item["attempt"] for item in result["attempts"]] == [1, 2]
+
+
+def test_fallback_cost_keeps_unsupported_attempt_unpriced() -> None:
+    result = estimate_attempt_costs(
+        [
+            AttemptPriceInput(
+                attempt=1,
+                official_price_key="deepseek:unsupported:official",
+                tokens=TokenUsage(input=100, output=10, total=110),
+            )
+        ]
+    )
+
+    assert result["status"] == "unavailable"
+    assert result["amount"] is None
+    assert result["unpriced_attempts"] == 1

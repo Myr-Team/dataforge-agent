@@ -4,7 +4,7 @@ import json
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -17,6 +17,7 @@ _OFFICIAL_HOSTS = {
     "azure.microsoft.com",
     "learn.microsoft.com",
     "prices.azure.com",
+    "api-docs.deepseek.com",
 }
 
 
@@ -24,7 +25,7 @@ class OfficialPrice(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     price_key: str = Field(min_length=3, max_length=240)
-    provider: Literal["azure-openai", "openai"]
+    provider: Literal["azure-openai", "openai", "deepseek"]
     official_model: str = Field(min_length=1, max_length=160)
     display_name: str = Field(min_length=1, max_length=200)
     deployment_type: str = Field(min_length=1, max_length=80)
@@ -44,7 +45,7 @@ class OfficialPrice(BaseModel):
     def validate_official_source(cls, value: str) -> str:
         parsed = urlparse(value)
         if parsed.scheme != "https" or (parsed.hostname or "").lower() not in _OFFICIAL_HOSTS:
-            raise ValueError("price source must be an official Microsoft HTTPS URL")
+            raise ValueError("price source must be an approved official HTTPS URL")
         return value
 
 
@@ -94,6 +95,58 @@ class OfficialPriceCatalog(BaseModel):
             status="estimated",
             price_card_revision=price.revision,
         )
+
+
+class AttemptPriceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt: int = Field(ge=1)
+    official_price_key: str = Field(min_length=3, max_length=240)
+    mapping_revision: int | None = Field(default=None, ge=1)
+    tokens: TokenUsage
+
+
+def estimate_attempt_costs(
+    attempts: list[AttemptPriceInput],
+) -> dict[str, Any]:
+    """Price every actual provider attempt without hiding partial fallback cost."""
+    catalog = load_official_price_catalog()
+    items: list[dict[str, Any]] = []
+    amounts: list[Decimal] = []
+    priced = 0
+    for attempt in attempts:
+        estimate = catalog.estimate(attempt.official_price_key, attempt.tokens)
+        estimate = estimate.model_copy(
+            update={
+                "official_price_key": attempt.official_price_key,
+                "mapping_revision": attempt.mapping_revision,
+            }
+        )
+        if estimate.amount is not None:
+            priced += 1
+            amounts.append(Decimal(str(estimate.amount)))
+        items.append(
+            {
+                "attempt": attempt.attempt,
+                "official_price_key": attempt.official_price_key,
+                "estimate": estimate.model_dump(mode="json"),
+            }
+        )
+    total = sum(amounts, Decimal("0")) if amounts else None
+    return {
+        "currency": "USD",
+        "amount": float(total) if total is not None else None,
+        "status": (
+            "unavailable"
+            if not attempts or priced == 0
+            else "partial"
+            if priced < len(attempts)
+            else "estimated"
+        ),
+        "priced_attempts": priced,
+        "unpriced_attempts": len(attempts) - priced,
+        "attempts": items,
+    }
 
 
 @lru_cache(maxsize=1)
@@ -147,6 +200,8 @@ def estimate_official_cost(
 __all__ = [
     "OfficialPrice",
     "OfficialPriceCatalog",
+    "AttemptPriceInput",
+    "estimate_attempt_costs",
     "estimate_official_cost",
     "load_official_price_catalog",
     "official_price_supports_call_classes",

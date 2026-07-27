@@ -561,19 +561,19 @@ Each immutable catalog record includes:
 
 These values were re-verified against the official DeepSeek pricing page on 2026-07-27. `locally_effective_at` is the start of DataForge's catalog revision, not a claim about when DeepSeek first introduced the price. Re-verify before committing implementation and create a new revision if the official page has changed.
 
-- [ ] **Step 1: Re-verify the official catalog at implementation time**
+- [x] **Step 1: Re-verify the official catalog at implementation time**
 
 Use only the official DeepSeek pricing page. Record model IDs, cache-hit input, cache-miss input, output rates, effective date, source URL, and review timestamp. Do not infer future or alias-model rates.
 
-- [ ] **Step 2: Write RED price and calculation tests**
+- [x] **Step 2: Write RED price and calculation tests**
 
 Cover cache hit/miss input, output, reasoning treatment, per-attempt fallback cost, unsupported model, missing usage, historical revision stability, and decimal rounding.
 
-- [ ] **Step 3: Extend the immutable catalog and calculator**
+- [x] **Step 3: Extend the immutable catalog and calculator**
 
 Calculate each actual attempt separately. Redis savings require a source result with pinned model/price/observed usage. Provider KV savings use hit-vs-miss price difference only.
 
-- [ ] **Step 4: Pass tests and commit**
+- [x] **Step 4: Pass tests and commit**
 
 ```powershell
 python -m pytest -q tests/test_finops_official_pricing.py tests/test_finops_management.py tests/test_finops_sql_management.py

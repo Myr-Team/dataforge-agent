@@ -6,6 +6,8 @@ import backend.foundry_client as foundry_client
 import backend.orchestrator as orchestrator
 import backend.run_store as run_store
 from backend.model_policy import (
+    ModelRoute,
+    SelectedTextRoute,
     ModelPolicyError,
     current_text_route,
     list_allowed_model_routes,
@@ -417,6 +419,47 @@ def test_response_metadata_records_effective_route_and_deployment(monkeypatch) -
         "policy_revision": None,
         "price_card_revision": None,
         "cost_estimate": {"status": "unavailable", "reason": "price_not_configured"},
+    }
+
+
+def test_external_response_metadata_records_provider_cache_populations() -> None:
+    response = type(
+        "Response",
+        (),
+        {
+            "id": "resp-external",
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "prompt_cache_hit_tokens": 80,
+                "prompt_cache_miss_tokens": 20,
+            },
+        },
+    )()
+    selected = SelectedTextRoute(
+        route=ModelRoute(
+            "deepseek-analysis",
+            "deepseek-v4-pro",
+            "DeepSeek V4 Pro",
+            frozenset({"analysis"}),
+            provider_id="provider-deepseek",
+            provider_type="deepseek",
+            model_id="deepseek-v4-pro",
+        ),
+        execution_kind="full_analysis",
+    )
+
+    with model_route_scope(route=selected):
+        metadata = foundry_client._response_meta(response, "unit-test")
+
+    assert metadata["usage"]["cached_input"] == 80
+    assert metadata["provider_cache"] == {
+        "state": "partial_hit",
+        "hit_tokens": 80,
+        "miss_tokens": 20,
+        "hit_rate_pct": 80.0,
+        "evidence_state": "observed",
     }
 
 
