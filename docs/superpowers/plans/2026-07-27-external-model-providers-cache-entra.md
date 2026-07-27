@@ -38,7 +38,7 @@
 - New tables are created only when absent.
 - Migration command must fail closed and report a safe category when the managed identity lacks DDL permission.
 
-- [ ] **Step 1: Record the exact baseline and rollback targets**
+- [x] **Step 1: Record the exact baseline and rollback targets**
 
 Run:
 
@@ -51,7 +51,7 @@ az containerapp revision list --name ca-dataforge-web --resource-group rg-datafo
 
 Expected: current production and rollback revisions are named in the runbook; no secret-bearing environment output is captured.
 
-- [ ] **Step 2: Write failing migration tests**
+- [x] **Step 2: Write failing migration tests**
 
 Add assertions that repeated execution is idempotent and that these organization-scoped tables and indexes are present:
 
@@ -70,7 +70,7 @@ python -m pytest -q tests/test_finops_sql_migration.py tests/test_finops_sql_rep
 
 Expected: RED because the tables and repositories do not exist.
 
-- [ ] **Step 3: Add the additive schema**
+- [x] **Step 3: Add the additive schema**
 
 Use tenant-scoped composite keys and revisions:
 

@@ -447,6 +447,134 @@ BEGIN
         ON df_finops.gateway_unmatched_rollup (scope, bucket_at);
 END;
 
+IF OBJECT_ID(N'df_finops.model_provider', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.model_provider (
+        tenant_ref NVARCHAR(160) NOT NULL,
+        provider_id NVARCHAR(80) NOT NULL,
+        provider_type NVARCHAR(40) NOT NULL,
+        display_name NVARCHAR(120) NOT NULL,
+        base_url NVARCHAR(320) NOT NULL,
+        secret_ref NVARCHAR(240) NOT NULL,
+        connection_state NVARCHAR(32) NOT NULL,
+        governance_state NVARCHAR(32) NOT NULL,
+        available_models_json NVARCHAR(MAX) NOT NULL
+            CONSTRAINT DF_finops_model_provider_models DEFAULT N'[]',
+        last_tested_at DATETIME2(7) NULL,
+        last_success_at DATETIME2(7) NULL,
+        safe_error_category NVARCHAR(64) NULL,
+        revision INT NOT NULL,
+        created_by_ref NVARCHAR(160) NOT NULL,
+        updated_by_ref NVARCHAR(160) NOT NULL,
+        created_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_model_provider_created DEFAULT SYSUTCDATETIME(),
+        updated_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_model_provider_updated DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_finops_model_provider PRIMARY KEY (tenant_ref, provider_id),
+        CONSTRAINT CK_finops_model_provider_type CHECK (
+            provider_type IN (N'deepseek')
+        ),
+        CONSTRAINT CK_finops_model_provider_connection CHECK (
+            connection_state IN (
+                N'testing', N'connected', N'degraded', N'invalid', N'disabled'
+            )
+        ),
+        CONSTRAINT CK_finops_model_provider_governance CHECK (
+            governance_state IN (
+                N'pending', N'governed', N'degraded', N'unmanaged'
+            )
+        ),
+        CONSTRAINT CK_finops_model_provider_models CHECK (
+            ISJSON(available_models_json) = 1
+        ),
+        CONSTRAINT CK_finops_model_provider_revision CHECK (revision >= 1)
+    );
+    CREATE UNIQUE INDEX UQ_finops_model_provider_name
+        ON df_finops.model_provider (tenant_ref, display_name);
+END;
+
+IF OBJECT_ID(N'df_finops.model_provider_model', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.model_provider_model (
+        tenant_ref NVARCHAR(160) NOT NULL,
+        provider_id NVARCHAR(80) NOT NULL,
+        model_id NVARCHAR(160) NOT NULL,
+        display_name NVARCHAR(200) NOT NULL,
+        capability_payload NVARCHAR(MAX) NOT NULL,
+        support_state NVARCHAR(32) NOT NULL,
+        price_key NVARCHAR(240) NULL,
+        observed_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_model_provider_model PRIMARY KEY (tenant_ref, provider_id, model_id),
+        CONSTRAINT FK_finops_model_provider_model_provider FOREIGN KEY (
+            tenant_ref, provider_id
+        ) REFERENCES df_finops.model_provider (tenant_ref, provider_id),
+        CONSTRAINT CK_finops_model_provider_capability CHECK (
+            ISJSON(capability_payload) = 1
+        ),
+        CONSTRAINT CK_finops_model_provider_support CHECK (
+            support_state IN (N'supported', N'unsupported', N'unpriced')
+        )
+    );
+END;
+
+IF OBJECT_ID(N'df_finops.provider_route_revision', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.provider_route_revision (
+        tenant_ref NVARCHAR(160) NOT NULL,
+        revision_id NVARCHAR(80) NOT NULL,
+        workspace_id NVARCHAR(160) NOT NULL,
+        revision INT NOT NULL,
+        route_payload NVARCHAR(MAX) NOT NULL,
+        created_by_ref NVARCHAR(160) NOT NULL,
+        created_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_provider_route_created DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_finops_provider_route_revision PRIMARY KEY (tenant_ref, revision_id),
+        CONSTRAINT CK_finops_provider_route_revision CHECK (revision >= 1),
+        CONSTRAINT CK_finops_provider_route_payload CHECK (
+            ISJSON(route_payload) = 1
+        )
+    );
+    CREATE UNIQUE INDEX UQ_finops_provider_route_workspace_revision
+        ON df_finops.provider_route_revision (tenant_ref, workspace_id, revision);
+END;
+
+IF OBJECT_ID(N'df_finops.entra_group_mapping', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.entra_group_mapping (
+        tenant_ref NVARCHAR(160) NOT NULL,
+        mapping_id NVARCHAR(80) NOT NULL,
+        group_ref NVARCHAR(160) NOT NULL,
+        display_name NVARCHAR(200) NOT NULL,
+        role_name NVARCHAR(16) NOT NULL,
+        workspace_scope_json NVARCHAR(MAX) NOT NULL,
+        mapping_priority INT NOT NULL,
+        enabled BIT NOT NULL
+            CONSTRAINT DF_finops_entra_mapping_enabled DEFAULT 1,
+        revision INT NOT NULL,
+        created_by_ref NVARCHAR(160) NOT NULL,
+        updated_by_ref NVARCHAR(160) NOT NULL,
+        created_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_entra_mapping_created DEFAULT SYSUTCDATETIME(),
+        updated_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_entra_mapping_updated DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_finops_entra_group_mapping PRIMARY KEY (tenant_ref, mapping_id),
+        CONSTRAINT CK_finops_entra_mapping_role CHECK (
+            role_name IN (N'admin', N'editor', N'viewer')
+        ),
+        CONSTRAINT CK_finops_entra_mapping_scope CHECK (
+            ISJSON(workspace_scope_json) = 1
+        ),
+        CONSTRAINT CK_finops_entra_mapping_priority CHECK (
+            mapping_priority BETWEEN 0 AND 1000
+        ),
+        CONSTRAINT CK_finops_entra_mapping_revision CHECK (revision >= 1)
+    );
+    CREATE INDEX IX_finops_entra_mapping_group
+        ON df_finops.entra_group_mapping (
+            tenant_ref, group_ref, enabled, mapping_priority DESC
+        );
+END;
+
 IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
     WHERE object_id = OBJECT_ID(N'df_finops.request_event')

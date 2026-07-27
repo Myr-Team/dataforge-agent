@@ -192,3 +192,25 @@ az containerapp revision list --name ca-dataforge-web --resource-group rg-datafo
 - APIM 非零样本计数  
 - 回滚 revision  
 - 人工批准人与时间  
+
+---
+
+## 11. External provider schema gate（2026-07-27 补充）
+
+启用模型提供商或 Entra 组映射前，必须使用受控部署身份连续执行两次
+additive FinOps migration，并确认以下表存在：
+
+- `df_finops.model_provider`
+- `df_finops.model_provider_model`
+- `df_finops.provider_route_revision`
+- `df_finops.entra_group_mapping`
+
+执行入口：
+
+```powershell
+python -m backend.finops.migrate
+```
+
+两次执行均须成功。`finops_schema_migration_failed`、SQL 权限错误或任一
+表缺失都阻断候选部署。不得为 Container Apps 运行时身份授予宽泛 DDL
+权限；继续使用受控部署身份，并在验证后立即删除临时 SQL 防火墙规则。
