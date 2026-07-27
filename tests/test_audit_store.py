@@ -23,6 +23,30 @@ def _resource(resource_id: str = "file-1") -> dict[str, str]:
     return {"workspace_id": "ws-audit", "resource_type": "file", "resource_id": resource_id}
 
 
+@pytest.mark.parametrize(
+    ("action", "resource_type"),
+    [
+        ("model_routing.write", "model_routing_policy"),
+        ("model_price_card.write", "model_price_card"),
+        ("roi.scenario.write", "roi_scenario"),
+    ],
+)
+def test_control_plane_configuration_mutations_are_auditable(action: str, resource_type: str) -> None:
+    event = audit_store.record_audit_event(
+        _actor(),
+        action,
+        {
+            "workspace_id": "ws-audit",
+            "resource_type": resource_type,
+            "resource_id": "revision-1",
+        },
+        {"result": "allowed", "reason_code": "authorized"},
+    )
+
+    assert event["action"] == action
+    assert event["resource_type"] == resource_type
+
+
 @pytest.fixture(autouse=True)
 def _local_audit_store(tmp_path, monkeypatch):
     monkeypatch.setattr(audit_store, "AUDIT_DIR", tmp_path / "audit")
