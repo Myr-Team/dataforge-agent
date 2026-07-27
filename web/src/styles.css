@@ -4837,6 +4837,18 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-trust-grid small { color: #667085; font-size: 9.5px; }
 .finops-trust-grid article > div { height: 4px; overflow: hidden; border-radius: 999px; background: #eef2f7; }
 .finops-trust-grid article > div i { display: block; height: 100%; border-radius: inherit; background: #2e90fa; transition: width 220ms ease; }
+.finops-trust-stack { display: grid; gap: 0; }
+.finops-gateway-evidence { border-top: 1px solid #edf0f5; padding: 13px 15px; display: grid; gap: 9px; background: #fbfcfe; }
+.finops-gateway-evidence > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.finops-gateway-evidence-title { display: inline-flex; align-items: center; gap: 5px; color: #344054; font-size: 11px; font-weight: 650; }
+.finops-scope-tag { display: inline-flex; align-items: center; border-radius: 999px; background: #eef2f7; color: #475467; font-size: 9.5px; font-weight: 650; padding: 2px 8px; }
+.finops-gateway-evidence-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0; }
+.finops-gateway-evidence-grid div { display: grid; gap: 3px; min-width: 0; }
+.finops-gateway-evidence-grid dt { color: #667085; font-size: 9.5px; font-weight: 600; }
+.finops-gateway-evidence-grid dd { margin: 0; color: #101828; font-size: 16px; font-weight: 650; letter-spacing: -.01em; display: flex; flex-direction: column; gap: 2px; }
+.finops-gateway-evidence-grid dd small { color: #667085; font-size: 9.5px; font-weight: 500; }
+.finops-gateway-evidence-note { margin: 0; color: #667085; font-size: 9.5px; line-height: 1.5; }
+@media (max-width: 640px) { .finops-gateway-evidence-grid { grid-template-columns: 1fr; } }
 .finops-insights, .finops-anomaly-list, .finops-recommendations { display: grid; }
 .finops-insights > div, .finops-recommendations > div { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: start; gap: 9px; border-bottom: 1px solid #edf0f5; padding: 12px 14px; color: #f79009; }
 .finops-insights > div > button { grid-column: 2 / -1; width: fit-content; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9.5px; font-weight: 650; }

@@ -207,13 +207,19 @@ export function App() {
   );
   const preloadFinOps = useCallback(() => {
     if (!finopsScope) return Promise.resolve(null);
+    // Hover/focus/touch intent handlers must not leave an unhandled rejection.
     return prefetchFinOpsBootstrap(
       finopsScope.key,
       ({ signal }) => loadFinOpsBootstrap(
         { workspaceId: finopsScope.workspaceId },
         { signal },
       ),
-    );
+    ).catch((error) => {
+      if (error?.name !== "AbortError") {
+        console.warn("FinOps bootstrap preload failed", error);
+      }
+      return null;
+    });
   }, [finopsScope]);
 
   useEffect(() => {

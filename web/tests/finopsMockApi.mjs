@@ -38,9 +38,22 @@ export const bootstrapPayload = {
       apim: {
         app_observed_requests: 60,
         apim_governed_requests: 58,
-        unmatched_metric_records: 2,
+        unmatched_metric_records: 4,
         coverage_pct: 96.67,
         state: "reconciliation_pending",
+        gateway_unmatched: {
+          scope: "unattributed",
+          window: { from: "2026-06-24T00:00:00Z", to: "2026-07-24T23:59:59Z" },
+          linked_requests: 58,
+          unmatched_gateway_errors: {
+            total: 4,
+            client_error_4xx: 3,
+            server_error_5xx: 1,
+          },
+          data_source: "apim_gateway_logs",
+          updated_at: "2026-07-24T05:58:00Z",
+          note: "网关侧未关联到任何应用运行的 4xx/5xx 聚合证据；无法可靠归属租户或工作区，按 unattributed/system 范围统计，不计入请求账本、错误率或成本。",
+        },
       },
     },
     metrics: {
@@ -219,7 +232,8 @@ export const bootstrapPayload = {
 };
 
 
-export async function installFinOpsMockApi(page, calls = []) {
+export async function installFinOpsMockApi(page, calls = [], options = {}) {
+  const control = { failBootstrap: Boolean(options.failBootstrap) };
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -227,6 +241,15 @@ export async function installFinOpsMockApi(page, calls = []) {
     calls.push({ method: request.method(), path });
     let body = {};
     let status = 200;
+
+    if (path === "/api/finops/bootstrap" && control.failBootstrap) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "FinOps evidence service is unavailable" }),
+      });
+      return;
+    }
 
     if (path === "/api/workspaces/demo-corpus/access") {
       body = { allowed: true, role: "owner", workspace_id: "demo-corpus" };
@@ -564,4 +587,5 @@ export async function installFinOpsMockApi(page, calls = []) {
       body: JSON.stringify(body),
     });
   });
+  return control;
 }
