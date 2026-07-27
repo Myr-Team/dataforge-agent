@@ -396,15 +396,15 @@ class RouteSelection(BaseModel):
     price_mapping_revision: int | None
 ```
 
-- [ ] **Step 1: Write RED route compatibility tests**
+- [x] **Step 1: Write RED route compatibility tests**
 
 Assert provider/model/capability compatibility, disabled provider rejection, stale route revision 409, and tenant/workspace scoping.
 
-- [ ] **Step 2: Extend route serialization and storage**
+- [x] **Step 2: Extend route serialization and storage**
 
 Keep existing Azure route IDs valid. Add provider identity without rewriting old policies. Reject unknown provider/model combinations server-side.
 
-- [ ] **Step 3: Write RED fallback state-machine tests**
+- [x] **Step 3: Write RED fallback state-machine tests**
 
 Expected decision:
 
@@ -423,7 +423,7 @@ Explicitly test no fallback for 400, 401, 402, 422, content policy, emitted stre
 
 MAF passes normalized messages/tools to one gateway. The gateway selects a typed adapter, records each attempt independently, and returns the existing Agent-facing result shape. Do not change Agent prompts, responsibilities, or graph edges.
 
-- [ ] **Step 5: Implement the typed APIM bridge**
+- [x] **Step 5: Implement the typed APIM bridge**
 
 `provider_apim.py` accepts only server-owned provider data and renders a server-owned template. No endpoint accepts XML, policy fragments, resource IDs, or scripts.
 

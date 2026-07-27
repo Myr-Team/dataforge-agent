@@ -9,6 +9,7 @@ from .provider_client import (
     ProviderHttpResponse,
     ProviderInvocation,
     ProviderResult,
+    ProviderTransportError,
 )
 from .provider_usage import ProviderUsage, normalize_deepseek_usage
 
@@ -62,14 +63,21 @@ class DeepSeekProvider:
         base_url: str,
     ) -> ProviderResult:
         started = self._clock()
-        response = self._transport.post_json(
-            provider_type="deepseek",
-            base_url=base_url,
-            path="/chat/completions",
-            api_key=api_key,
-            payload=_request_payload(invocation),
-            timeout_seconds=self._timeout_seconds,
-        )
+        try:
+            response = self._transport.post_json(
+                provider_type="deepseek",
+                base_url=base_url,
+                path="/chat/completions",
+                api_key=api_key,
+                payload=_request_payload(invocation),
+                timeout_seconds=self._timeout_seconds,
+            )
+        except ProviderTransportError as exc:
+            if exc.code == "provider_timeout":
+                raise ProviderFailure("provider_timeout", retryable=True) from None
+            if exc.code == "provider_transport_unavailable":
+                raise ProviderFailure("provider_unavailable", retryable=True) from None
+            raise ProviderFailure(exc.code, retryable=False) from None
         if response.status_code != 200:
             category, retryable = _error_category(response.status_code)
             raise ProviderFailure(

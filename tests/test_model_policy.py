@@ -5,7 +5,17 @@ import json
 import backend.foundry_client as foundry_client
 import backend.orchestrator as orchestrator
 import backend.run_store as run_store
-from backend.model_policy import current_text_route, model_route_scope, public_model_route_snapshot, select_text_route, select_text_route_record, workspace_model_policy_scope
+from backend.model_policy import (
+    ModelPolicyError,
+    current_text_route,
+    list_allowed_model_routes,
+    model_route_scope,
+    public_model_route_snapshot,
+    select_text_route,
+    select_text_route_record,
+    workspace_model_policy_scope,
+)
+import pytest
 
 
 def test_chat_model_uses_only_the_server_allowlist(monkeypatch) -> None:
@@ -25,6 +35,120 @@ def test_chat_model_uses_only_the_server_allowlist(monkeypatch) -> None:
     monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "primary-analysis")
 
     assert getattr(foundry_client, "_chat_model", lambda: "")() == "gpt-5.1"
+
+
+def test_legacy_azure_route_gets_provider_neutral_defaults(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "primary-analysis",
+                    "deployment": "gpt-5.1",
+                    "label": "Primary analysis",
+                    "capabilities": ["chat", "analysis"],
+                }
+            ]
+        ),
+    )
+
+    route = list_allowed_model_routes()[0]
+
+    assert route.provider_type == "azure_foundry"
+    assert route.provider_id is None
+    assert route.model_id == "gpt-5.1"
+    assert route.deployment == "gpt-5.1"
+
+
+def test_governed_deepseek_route_is_provider_aware(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "deepseek-analysis",
+                    "provider_type": "deepseek",
+                    "provider_id": "provider-deepseek",
+                    "model_id": "deepseek-v4-pro",
+                    "label": "DeepSeek V4 Pro",
+                    "capabilities": ["chat", "analysis"],
+                    "connection_state": "connected",
+                    "governance_state": "governed",
+                }
+            ]
+        ),
+    )
+
+    route = list_allowed_model_routes()[0]
+
+    assert route.provider_type == "deepseek"
+    assert route.provider_id == "provider-deepseek"
+    assert route.model_id == "deepseek-v4-pro"
+    assert route.deployment == "deepseek-v4-pro"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("enabled", False),
+        ("connection_state", "degraded"),
+        ("governance_state", "unmanaged"),
+    ],
+)
+def test_external_route_rejects_disabled_or_ungoverned_provider(
+    monkeypatch,
+    field_name: str,
+    field_value: object,
+) -> None:
+    item = {
+        "id": "deepseek-analysis",
+        "provider_type": "deepseek",
+        "provider_id": "provider-deepseek",
+        "model_id": "deepseek-v4-pro",
+        "label": "DeepSeek V4 Pro",
+        "capabilities": ["analysis"],
+        "connection_state": "connected",
+        "governance_state": "governed",
+        field_name: field_value,
+    }
+    monkeypatch.setenv("DF_MODEL_ROUTE_ALLOWLIST", json.dumps([item]))
+
+    with pytest.raises(ModelPolicyError):
+        list_allowed_model_routes()
+
+
+def test_external_route_is_not_selected_while_runtime_flag_is_off(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        json.dumps(
+            [
+                {
+                    "id": "deepseek-analysis",
+                    "provider_type": "deepseek",
+                    "provider_id": "provider-deepseek",
+                    "model_id": "deepseek-v4-pro",
+                    "label": "DeepSeek V4 Pro",
+                    "capabilities": ["chat", "analysis"],
+                    "connection_state": "connected",
+                    "governance_state": "governed",
+                },
+                {
+                    "id": "azure-analysis",
+                    "deployment": "gpt-5.1",
+                    "label": "Azure Analysis",
+                    "capabilities": ["chat", "analysis"],
+                },
+            ]
+        ),
+    )
+    monkeypatch.setenv("DF_EXTERNAL_PROVIDER_ROUTING_ENABLED", "0")
+    monkeypatch.setenv("DF_DEFAULT_MODEL_ROUTE", "deepseek-analysis")
+
+    selected = select_text_route_record("full_analysis")
+
+    assert selected.route.route_id == "azure-analysis"
 
 
 def test_workspace_policy_and_manual_override_select_allowlisted_routes(monkeypatch) -> None:
@@ -281,6 +405,9 @@ def test_response_metadata_records_effective_route_and_deployment(monkeypatch) -
         "usage": {"input_tokens": 8, "output_tokens": 3, "total_tokens": 11},
         "route": "primary-analysis",
         "deployment": "gpt-5.1",
+        "provider_type": "azure_foundry",
+        "provider_id": None,
+        "model_id": "gpt-5.1",
         "selection": "policy",
         "fallback_reason": None,
         "execution_kind": "direct_reply",
@@ -301,6 +428,9 @@ def test_response_metadata_preserves_unknown_allowlisted_usage_fields(monkeypatc
                 {
                     "id": "primary-analysis",
                     "deployment": "gpt-5.1",
+                    "model_id": "gpt-5.1",
+                    "provider_id": None,
+                    "provider_type": "azure_foundry",
                     "label": "Primary analysis",
                     "capabilities": ["chat", "analysis"],
                 }
@@ -697,6 +827,9 @@ def test_public_model_route_snapshot_exposes_only_allowlisted_routes(monkeypatch
             {
                 "id": "primary-analysis",
                 "deployment": "gpt-5.1",
+                "model_id": "gpt-5.1",
+                "provider_id": None,
+                "provider_type": "azure_foundry",
                 "label": "Primary analysis",
                 "capabilities": ["analysis", "chat"],
             }

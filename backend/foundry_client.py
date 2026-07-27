@@ -583,7 +583,11 @@ def _gateway_request_headers() -> dict[str, str]:
     except ImportError:
         from tracing import gateway_request_headers
     headers = gateway_request_headers()
-    headers["x-dataforge-model-route"] = current_text_route().route.route_id
+    route = current_text_route().route
+    headers["x-dataforge-model-route"] = route.route_id
+    headers["x-dataforge-provider-type"] = route.provider_type
+    if route.provider_id:
+        headers["x-dataforge-provider"] = route.provider_id
     return headers
 
 
@@ -810,6 +814,9 @@ def _response_meta(response: Any, mode: str) -> dict[str, Any]:
         "usage": usage,
         "route": selected.route.route_id,
         "deployment": selected.route.deployment,
+        "provider_type": selected.route.provider_type,
+        "provider_id": selected.route.provider_id,
+        "model_id": selected.route.model_id,
         "selection": selected.selection,
         "fallback_reason": safe_fallback_reason(fallback_reason),
         "execution_kind": selected.execution_kind,

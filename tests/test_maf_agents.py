@@ -260,6 +260,7 @@ def test_maf_uses_apim_managed_identity_when_gateway_is_enabled(monkeypatch):
                 "x-dataforge-workspace-hash": "w" * 64,
                 "x-dataforge-correlation-id": "c" * 32,
                 "x-dataforge-model-route": "default",
+                "x-dataforge-provider-type": "azure_foundry",
             },
         }
     ]
