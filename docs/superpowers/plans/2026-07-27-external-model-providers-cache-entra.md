@@ -619,23 +619,23 @@ def resolve_access(owner, explicit_member, group_matches):
     return highest.role if highest else None
 ```
 
-- [ ] **Step 1: Write RED precedence and fail-closed tests**
+- [x] **Step 1: Write RED precedence and fail-closed tests**
 
 Cover protected Owner, explicit membership, one mapping, equal-priority conflict, disabled mapping, workspace scope, tenant isolation, and prohibition on group-granted Owner.
 
-- [ ] **Step 2: Detect group claims and overage safely**
+- [x] **Step 2: Detect group claims and overage safely**
 
 Use trusted Easy Auth claims. When the token indicates overage, call only the service-constructed Graph transitive-membership endpoint for the signed-in user. Use a short-lived privacy-safe Redis cache.
 
-- [ ] **Step 3: Enforce least-privileged Graph behavior**
+- [x] **Step 3: Enforce least-privileged Graph behavior**
 
 Expose permission state for `User.ReadBasic.All` and `GroupMember.Read.All`. If membership resolution fails, ignore group grants and fall back to explicit membership only; do not retain stale elevation.
 
-- [ ] **Step 4: Add audited, revisioned management APIs**
+- [x] **Step 4: Add audited, revisioned management APIs**
 
 Only Owner/Admin may manage mappings; Owner cannot be a mapping target. Stale base revisions return 409 and durable audit is required before success.
 
-- [ ] **Step 5: Pass tests and commit**
+- [x] **Step 5: Pass tests and commit**
 
 ```powershell
 python -m pytest -q tests/test_entra_group_mapping.py tests/test_entra_membership.py tests/test_workspace_authz.py tests/test_entra_group_api.py

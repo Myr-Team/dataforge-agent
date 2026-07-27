@@ -53,6 +53,7 @@ ALLOWED_ACTIONS = frozenset(
         "outcome.verify", "invitation.create", "invitation.send", "invitation.revoke", "invitation.fail",
         "member.update", "member.remove", "experiment.promote", "model_routing.write", "model_price_card.write",
         "model_provider.manage",
+        "entra_group_mapping.manage",
         "roi.scenario.write",
     }
 )
@@ -60,6 +61,7 @@ ALLOWED_RESOURCE_TYPES = frozenset(
     {
         "workspace", "file", "connector", "analysis", "message", "task", "artifact", "outcome", "invitation",
         "member", "experiment", "model_routing_policy", "model_price_card", "roi_scenario", "model_provider",
+        "entra_group_mapping",
     }
 )
 ALLOWED_RESULTS = frozenset({"allowed", "denied", "failed"})
