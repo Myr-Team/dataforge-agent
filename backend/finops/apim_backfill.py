@@ -22,6 +22,7 @@ def run_apim_backfill(
     to_value: str,
     hmac_secret: str,
     price_mapping_repository: Any | None = None,
+    gateway_unmatched_repository: Any | None = None,
 ) -> dict[str, Any]:
     """Reconcile one APIM evidence window across all opaque SQL ledger scopes."""
 
@@ -66,6 +67,13 @@ def run_apim_backfill(
         - totals["rejected_observations"],
     )
     totals["gateway_only_errors"] = summarize_gateway_only_errors(gateway_only_rows)
+    if gateway_unmatched_repository is not None:
+        # Persist once for the whole window: the gateway error set is
+        # tenant-independent, so it is recorded as unattributed system evidence
+        # rather than duplicated per scope.
+        totals["gateway_only_persisted_buckets"] = int(
+            gateway_unmatched_repository.record_gateway_errors(gateway_only_rows)
+        )
     totals["window"] = {"from": from_value, "to": to_value}
     return totals
 
@@ -94,6 +102,7 @@ def main() -> int:
             to_value=to_value,
             hmac_secret=secret,
             price_mapping_repository=_price_mapping_repository(),
+            gateway_unmatched_repository=_gateway_unmatched_repository(),
         )
     except Exception as exc:
         print(
@@ -123,6 +132,18 @@ def _price_mapping_repository() -> Any:
     from .sql_pricing import SqlPriceMappingRepository
 
     return SqlPriceMappingRepository(
+        connection_factory=build_lineage_sql_connection_factory()
+    )
+
+
+def _gateway_unmatched_repository() -> Any:
+    try:
+        from ..lineage_sql import build_lineage_sql_connection_factory
+    except ImportError:
+        from lineage_sql import build_lineage_sql_connection_factory
+    from .gateway_unmatched import SqlGatewayUnmatchedRepository
+
+    return SqlGatewayUnmatchedRepository(
         connection_factory=build_lineage_sql_connection_factory()
     )
 

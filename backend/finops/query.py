@@ -40,8 +40,37 @@ class FinOpsQuery(BaseModel):
 
 
 class FinOpsQueryService:
-    def __init__(self, repository: Any) -> None:
+    def __init__(
+        self,
+        repository: Any,
+        *,
+        gateway_unmatched_repository: Any | None = None,
+    ) -> None:
         self._repository = repository
+        self._gateway_unmatched_repository = gateway_unmatched_repository
+
+    def _gateway_unmatched(
+        self,
+        query: FinOpsQuery,
+        rows: list[FinOpsRequestEvent],
+    ) -> dict[str, Any] | None:
+        """Read the unattributed gateway 4xx/5xx aggregate for the window.
+
+        The evidence is system scoped, never tenant attributed. It is exposed as
+        a clearly labelled block and only enriches ``unmatched_metric_records``;
+        it is never folded into request counts, error rate or cost.
+        """
+        repo = self._gateway_unmatched_repository
+        if repo is None:
+            return None
+        summary = repo.summarize(query.from_value, query.to_value)
+        if not isinstance(summary, dict):
+            return None
+        summary = dict(summary)
+        summary["linked_requests"] = sum(
+            row.gateway_coverage == "apim_governed" for row in rows
+        )
+        return summary
 
     def requests(self, query: FinOpsQuery) -> dict[str, Any]:
         rows = self._rows(query)
@@ -93,7 +122,7 @@ class FinOpsQueryService:
                 ),
                 "departments": departments,
                 "filters": filters["filters"],
-                "trust": _trust(rows),
+                "trust": _trust(rows, self._gateway_unmatched(query, rows)),
             }
         )
         return payload
@@ -158,7 +187,7 @@ class FinOpsQueryService:
             "apim_coverage_pct": round((governed / len(rows)) * 100, 2) if rows else None,
         }
         payload["insights"] = []
-        payload["trust"] = _trust(rows)
+        payload["trust"] = _trust(rows, self._gateway_unmatched(query, rows))
         return payload
 
     def breakdowns(self, query: FinOpsQuery, group_by: str) -> dict[str, Any]:
@@ -472,7 +501,10 @@ def _coverage_state(
     return "complete" if known == total else "partial"
 
 
-def _trust(rows: list[FinOpsRequestEvent]) -> dict[str, Any]:
+def _trust(
+    rows: list[FinOpsRequestEvent],
+    gateway_unmatched: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     total = len(rows)
     priced = sum(
         row.estimated_cost.amount is not None
@@ -486,6 +518,12 @@ def _trust(rows: list[FinOpsRequestEvent]) -> dict[str, Any]:
 
     def coverage(known: int) -> float | None:
         return round(known / total * 100, 4) if total else None
+
+    unmatched_metric_records: int | None = None
+    if isinstance(gateway_unmatched, dict):
+        errors = gateway_unmatched.get("unmatched_gateway_errors")
+        if isinstance(errors, dict) and errors.get("total") is not None:
+            unmatched_metric_records = int(errors["total"])
 
     return {
         "pricing": {
@@ -507,7 +545,7 @@ def _trust(rows: list[FinOpsRequestEvent]) -> dict[str, Any]:
         "apim": {
             "app_observed_requests": total,
             "apim_governed_requests": governed,
-            "unmatched_metric_records": None,
+            "unmatched_metric_records": unmatched_metric_records,
             "coverage_pct": coverage(governed),
             "state": (
                 "no_samples"
@@ -518,6 +556,7 @@ def _trust(rows: list[FinOpsRequestEvent]) -> dict[str, Any]:
                     else "reconciliation_pending"
                 )
             ),
+            "gateway_unmatched": gateway_unmatched,
         },
     }
 

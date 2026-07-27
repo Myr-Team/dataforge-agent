@@ -417,6 +417,36 @@ BEGIN
     );
 END;
 
+IF OBJECT_ID(N'df_finops.gateway_unmatched_rollup', N'U') IS NULL
+BEGIN
+    -- Additive, aggregate-only evidence for gateway observations that never
+    -- correlate to an application run. It intentionally stores NO correlation
+    -- id, body, identity or error body, and is scoped as unattributed/system
+    -- so it is never presented as a specific tenant's ledger, error rate or cost.
+    CREATE TABLE df_finops.gateway_unmatched_rollup (
+        scope NVARCHAR(24) NOT NULL
+            CONSTRAINT DF_finops_gateway_unmatched_scope DEFAULT N'unattributed',
+        bucket_at DATETIME2(0) NOT NULL,
+        status_class NVARCHAR(24) NOT NULL,
+        request_count BIGINT NOT NULL,
+        data_source NVARCHAR(64) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_gateway_unmatched_updated DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_finops_gateway_unmatched_rollup PRIMARY KEY (
+            scope, bucket_at, status_class
+        ),
+        CONSTRAINT CK_finops_gateway_unmatched_scope CHECK (
+            scope IN (N'unattributed')
+        ),
+        CONSTRAINT CK_finops_gateway_unmatched_class CHECK (
+            status_class IN (N'client_error_4xx', N'server_error_5xx')
+        ),
+        CONSTRAINT CK_finops_gateway_unmatched_count CHECK (request_count >= 0)
+    );
+    CREATE INDEX IX_finops_gateway_unmatched_window
+        ON df_finops.gateway_unmatched_rollup (scope, bucket_at);
+END;
+
 IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
     WHERE object_id = OBJECT_ID(N'df_finops.request_event')

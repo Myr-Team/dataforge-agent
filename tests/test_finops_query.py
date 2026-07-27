@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+from backend.finops.gateway_unmatched import InMemoryGatewayUnmatchedRepository
 from backend.finops.models import FinOpsRequestEvent, TokenUsage
 from backend.finops.query import FinOpsQuery, FinOpsQueryService
 from backend.finops.repository import InMemoryFinOpsRepository
@@ -290,6 +291,74 @@ def test_trends_selects_metric_and_preserves_exact_value() -> None:
     assert cost["metric"] == "estimated_cost"
     assert cost["unit"] == "USD"
     assert cost["items"][0]["value"] == 0.01
+
+
+def test_overview_pipes_unattributed_gateway_evidence_into_apim_trust() -> None:
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events(
+        [
+            _event("req_aaaaaaaaaaaa", total=100, cost=0.01).model_copy(
+                update={"gateway_coverage": "apim_governed"}
+            )
+        ]
+    )
+    gateway = InMemoryGatewayUnmatchedRepository()
+    gateway.record_gateway_errors(
+        [
+            {"occurred_at": "2026-07-24T02:10:00Z", "status_code": 401},
+            {"occurred_at": "2026-07-24T02:20:00Z", "status_code": 503},
+        ]
+    )
+    service = FinOpsQueryService(repository, gateway_unmatched_repository=gateway)
+    query = FinOpsQuery(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    apim = service.overview(query)["trust"]["apim"]
+
+    assert apim["unmatched_metric_records"] == 2
+    assert apim["gateway_unmatched"]["scope"] == "unattributed"
+    assert apim["gateway_unmatched"]["unmatched_gateway_errors"] == {
+        "total": 2,
+        "client_error_4xx": 1,
+        "server_error_5xx": 1,
+    }
+    assert apim["gateway_unmatched"]["linked_requests"] == 1
+
+
+def test_gateway_evidence_is_system_scoped_and_identical_across_tenants() -> None:
+    gateway = InMemoryGatewayUnmatchedRepository()
+    gateway.record_gateway_errors(
+        [{"occurred_at": "2026-07-24T02:10:00Z", "status_code": 500}]
+    )
+
+    def apim_for(tenant: str) -> dict:
+        repository = InMemoryFinOpsRepository()
+        repository.upsert_events([_event("req_aaaaaaaaaaaa", tenant=tenant)])
+        service = FinOpsQueryService(
+            repository, gateway_unmatched_repository=gateway
+        )
+        query = FinOpsQuery(
+            tenant_ref=tenant,
+            authorized_workspace_ids=("ws-a",),
+            from_value="2026-07-01T00:00:00Z",
+            to_value="2026-07-25T00:00:00Z",
+        )
+        return service.overview(query)["trust"]["apim"]
+
+    tenant_a = apim_for("tenant-a")
+    tenant_b = apim_for("tenant-b")
+
+    # Unattributed system evidence is never presented as one tenant's own data;
+    # it is identical and explicitly scope-labelled for every tenant.
+    assert tenant_a["gateway_unmatched"]["scope"] == "unattributed"
+    assert (
+        tenant_a["gateway_unmatched"]["unmatched_gateway_errors"]
+        == tenant_b["gateway_unmatched"]["unmatched_gateway_errors"]
+    )
 
 
 def test_trends_reports_observed_zero_as_zero_not_null() -> None:

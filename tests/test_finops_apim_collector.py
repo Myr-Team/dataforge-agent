@@ -180,6 +180,47 @@ def test_apim_backfill_surfaces_gateway_only_errors_once() -> None:
     assert result["gateway_only_errors"]["server_error_5xx"] == 1
 
 
+def test_apim_backfill_persists_gateway_evidence_once_across_tenants() -> None:
+    from backend.finops.gateway_unmatched import InMemoryGatewayUnmatchedRepository
+
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events([_app_event()])
+    gateway = InMemoryGatewayUnmatchedRepository()
+    rows = [
+        {
+            "occurred_at": "2026-07-24T02:00:02Z",
+            "correlation_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "status_code": 401,
+            "record_kind": "gateway_error",
+        },
+        {
+            "occurred_at": "2026-07-24T02:00:03Z",
+            "correlation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "status_code": 500,
+            "record_kind": "gateway_error",
+        },
+    ]
+
+    kwargs = dict(
+        repository=repository,
+        scopes={"tenant-safe": ("ws-a",), "tenant-other": ("ws-b",)},
+        query_rows=lambda _query: rows,
+        from_value="2026-07-24T01:55:00Z",
+        to_value="2026-07-24T02:05:00Z",
+        hmac_secret="test-secret",
+        gateway_unmatched_repository=gateway,
+    )
+    run_apim_backfill(**kwargs)
+    # Idempotent: a second identical run must not inflate the aggregate.
+    run_apim_backfill(**kwargs)
+
+    summary = gateway.summarize("2026-07-24T00:00:00Z", "2026-07-25T00:00:00Z")
+    assert summary["scope"] == "unattributed"
+    assert summary["unmatched_gateway_errors"]["total"] == 2
+    assert summary["unmatched_gateway_errors"]["client_error_4xx"] == 1
+    assert summary["unmatched_gateway_errors"]["server_error_5xx"] == 1
+
+
 def test_apim_collection_counts_only_observations_matched_in_current_window() -> None:
     secret = "test-secret"
     matched_id = "4f8b0f37b5824af5a2ac7ed9129ee70b"

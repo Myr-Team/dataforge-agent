@@ -81,6 +81,7 @@ from .sql_pricing import (
     PriceMappingConflict,
     SqlPriceMappingRepository,
 )
+from .gateway_unmatched import SqlGatewayUnmatchedRepository
 from .query import FinOpsQuery, FinOpsQueryService
 from .models import FinOpsRequestEvent
 from .query_cache import CachedFinOpsQueryService
@@ -142,6 +143,7 @@ _SAVED_VIEW_REPOSITORY = InMemorySavedViewRepository()
 _SQL_PLANNING_REPOSITORY: SqlFinOpsPlanningRepository | None = None
 _PRICE_MAPPING_REPOSITORY = InMemoryPriceMappingRepository()
 _SQL_PRICE_MAPPING_REPOSITORY: SqlPriceMappingRepository | None = None
+_SQL_GATEWAY_UNMATCHED_REPOSITORY: SqlGatewayUnmatchedRepository | None = None
 _ASSISTANT_STORE = InMemoryAssistantConversationStore()
 _SQL_ASSISTANT_STORE: SqlAssistantConversationStore | None = None
 
@@ -182,11 +184,19 @@ def get_finops_query_service() -> Any:
     if not secret:
         raise RuntimeError("FinOps HMAC is unavailable")
     if _enabled("DF_FINOPS_SQL_ENABLED"):
+        global _SQL_GATEWAY_UNMATCHED_REPOSITORY
         if _SQL_REPOSITORY is None:
             _SQL_REPOSITORY = SqlFinOpsRepository(
                 connection_factory=build_lineage_sql_connection_factory()
             )
-        delegate = FinOpsQueryService(_SQL_REPOSITORY)
+        if _SQL_GATEWAY_UNMATCHED_REPOSITORY is None:
+            _SQL_GATEWAY_UNMATCHED_REPOSITORY = SqlGatewayUnmatchedRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        delegate = FinOpsQueryService(
+            _SQL_REPOSITORY,
+            gateway_unmatched_repository=_SQL_GATEWAY_UNMATCHED_REPOSITORY,
+        )
     else:
         delegate = FinOpsQueryService(
             RunStoreFinOpsRepository(
@@ -543,6 +553,19 @@ def _common(
         cursor=cursor,
         limit=limit,
     )
+
+
+def _redact_unattributed_gateway_evidence(payload: dict[str, Any]) -> None:
+    """Hide the Owner-only unattributed gateway evidence from lower roles.
+
+    Members must never see the system-scoped aggregate, so both the labelled
+    block and the piped ``unmatched_metric_records`` counter are removed.
+    """
+    trust = payload.get("trust") if isinstance(payload, dict) else None
+    apim = trust.get("apim") if isinstance(trust, dict) else None
+    if isinstance(apim, dict):
+        apim.pop("gateway_unmatched", None)
+        apim["unmatched_metric_records"] = None
 
 
 @router.get("/bootstrap")
@@ -1114,8 +1137,11 @@ async def overview(
     actor_ref: str | None = Query(default=None, max_length=128),
     model: str | None = Query(default=None, max_length=160),
 ) -> dict[str, Any]:
-    service, query, _ = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
-    return service.overview(query)
+    service, query, roles = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
+    payload = service.overview(query)
+    if not all(role in {"owner", "admin"} for role in roles.values()):
+        _redact_unattributed_gateway_evidence(payload)
+    return payload
 
 
 @router.get("/breakdowns")
