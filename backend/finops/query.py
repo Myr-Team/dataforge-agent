@@ -137,12 +137,25 @@ class FinOpsQueryService:
         latencies = sorted(row.latency_ms for row in rows if row.latency_ms is not None)
         failures = sum(row.status == "failed" for row in rows)
         succeeded = sum(row.status == "succeeded" for row in rows)
-        cache_eligible = [row for row in rows if row.cache.eligible is True]
-        cache_hits = sum(row.cache.state == "hit" for row in cache_eligible)
+        cache_eligible = [row for row in rows if row.result_cache.eligible is True]
+        cache_hits = sum(row.result_cache.state == "hit" for row in cache_eligible)
         cache_counts = {
-            state: sum(row.cache.state == state for row in rows)
+            state: sum(row.result_cache.state == state for row in rows)
             for state in ("hit", "miss", "bypassed", "unavailable")
         }
+        provider_cache_rows = [
+            row
+            for row in rows
+            if row.provider_cache.hit_tokens is not None
+            and row.provider_cache.miss_tokens is not None
+        ]
+        provider_hit_tokens = sum(
+            row.provider_cache.hit_tokens or 0 for row in provider_cache_rows
+        )
+        provider_miss_tokens = sum(
+            row.provider_cache.miss_tokens or 0 for row in provider_cache_rows
+        )
+        provider_denominator = provider_hit_tokens + provider_miss_tokens
         governed = sum(row.gateway_coverage == "apim_governed" for row in rows)
         priced = len(cost_values)
 
@@ -184,6 +197,28 @@ class FinOpsQueryService:
                 **cache_counts,
             },
             "cache_hit_rate_pct": round((cache_hits / len(cache_eligible)) * 100, 2) if cache_eligible else None,
+            "result_cache": {
+                "eligible_requests": len(cache_eligible),
+                **cache_counts,
+                "hit_rate_pct": (
+                    round((cache_hits / len(cache_eligible)) * 100, 2)
+                    if cache_eligible
+                    else None
+                ),
+            },
+            "provider_cache": {
+                "known_requests": len(provider_cache_rows),
+                "hit_tokens": provider_hit_tokens if provider_cache_rows else None,
+                "miss_tokens": provider_miss_tokens if provider_cache_rows else None,
+                "hit_rate_pct": (
+                    round(provider_hit_tokens / provider_denominator * 100, 2)
+                    if provider_denominator
+                    else None
+                ),
+                "data_status": (
+                    "available" if provider_cache_rows else "unavailable"
+                ),
+            },
             "apim_coverage_pct": round((governed / len(rows)) * 100, 2) if rows else None,
         }
         payload["insights"] = []

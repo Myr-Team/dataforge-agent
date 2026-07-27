@@ -82,6 +82,8 @@ class FinOpsRequestDetailService:
                     "tokens": event.tokens.model_dump(mode="json"),
                     "estimated_cost": event.estimated_cost.model_dump(mode="json"),
                     "cache": event.cache.model_dump(mode="json"),
+                    "result_cache": event.result_cache.model_dump(mode="json"),
+                    "provider_cache": event.provider_cache.model_dump(mode="json"),
                     "gateway_coverage": event.gateway_coverage,
                     "evidence_state": event.evidence_state,
                     "error_category": event.error_category,

@@ -3718,6 +3718,18 @@ def _sanitize_model_response_event_data(data: dict[str, Any]) -> dict[str, Any]:
             sanitized["cache"] = cache
         else:
             sanitized.pop("cache", None)
+    if "result_cache" in data:
+        result_cache = normalize_cache_meter(data.get("result_cache"))
+        if result_cache:
+            sanitized["result_cache"] = result_cache
+        else:
+            sanitized.pop("result_cache", None)
+    if "provider_cache" in data:
+        provider_cache = normalize_provider_cache_meter(data.get("provider_cache"))
+        if provider_cache:
+            sanitized["provider_cache"] = provider_cache
+        else:
+            sanitized.pop("provider_cache", None)
     return sanitized
 
 
@@ -3733,6 +3745,31 @@ def normalize_cache_meter(value: Any) -> dict[str, Any]:
     safe = {"state": state, "provider": provider}
     if isinstance(data.get("eligible"), bool):
         safe["eligible"] = data["eligible"]
+    allowed_reasons = {
+        "eligible",
+        "disabled",
+        "live_data",
+        "side_effecting_tools",
+        "unstable_conversation",
+        "data_revision_missing",
+        "lookup_unavailable",
+        "not_recorded",
+    }
+    reason = str(data.get("reason") or "").strip().lower()
+    if reason in allowed_reasons:
+        safe["reason"] = reason
+    policy_revision = data.get("policy_revision")
+    if (
+        isinstance(policy_revision, int)
+        and not isinstance(policy_revision, bool)
+        and policy_revision >= 0
+    ):
+        safe["policy_revision"] = policy_revision
+    source_result_version = str(
+        data.get("source_result_version") or ""
+    ).strip()
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", source_result_version):
+        safe["source_result_version"] = source_result_version
     elapsed_ms = data.get("elapsed_ms")
     if isinstance(elapsed_ms, (int, float)) and not isinstance(elapsed_ms, bool):
         try:
@@ -3750,6 +3787,32 @@ def normalize_cache_meter(value: Any) -> dict[str, Any]:
             source_cost.pop("formula", None)
             safe["source_cost_estimate"] = source_cost
     return safe
+
+
+def normalize_provider_cache_meter(value: Any) -> dict[str, Any]:
+    data = dict(value) if isinstance(value, dict) else {}
+    state = str(data.get("state") or "").strip().lower()
+    if state not in {"hit", "partial_hit", "miss", "unavailable"}:
+        return {}
+    hit = data.get("hit_tokens")
+    miss = data.get("miss_tokens")
+    hit = hit if isinstance(hit, int) and not isinstance(hit, bool) and hit >= 0 else None
+    miss = miss if isinstance(miss, int) and not isinstance(miss, bool) and miss >= 0 else None
+    evidence_state = (
+        "observed"
+        if hit is not None and miss is not None
+        else "partial"
+        if hit is not None or miss is not None
+        else "unavailable"
+    )
+    denominator = (hit or 0) + (miss or 0) if hit is not None and miss is not None else 0
+    return {
+        "state": state if hit is not None and miss is not None else "unavailable",
+        "hit_tokens": hit,
+        "miss_tokens": miss,
+        "hit_rate_pct": round((hit or 0) / denominator * 100, 2) if denominator else None,
+        "evidence_state": evidence_state,
+    }
 
 
 def _safe_cost_estimate(value: Any) -> dict[str, Any]:

@@ -784,6 +784,38 @@ def _usage_dict(usage: Any) -> dict[str, Any]:
     }
 
 
+def _provider_cache_dict(usage: Any) -> dict[str, Any]:
+    hit = _usage_value(
+        usage,
+        "provider_cache_hit_tokens",
+        "prompt_cache_hit_tokens",
+    )
+    miss = _usage_value(
+        usage,
+        "provider_cache_miss_tokens",
+        "prompt_cache_miss_tokens",
+    )
+    if hit is None or miss is None:
+        return {
+            "state": "unavailable",
+            "hit_tokens": hit,
+            "miss_tokens": miss,
+            "hit_rate_pct": None,
+            "evidence_state": (
+                "unavailable" if hit is None and miss is None else "partial"
+            ),
+        }
+    denominator = hit + miss
+    rate = round(hit / denominator * 100, 2) if denominator else None
+    return {
+        "state": "partial_hit" if hit and miss else "hit" if hit else "miss",
+        "hit_tokens": hit,
+        "miss_tokens": miss,
+        "hit_rate_pct": rate,
+        "evidence_state": "observed",
+    }
+
+
 def _usage_observed(usage: dict[str, Any]) -> bool:
     return any(
         key in usage and isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool)
@@ -803,7 +835,8 @@ def _stream_delta(event: Any) -> str:
 
 def _response_meta(response: Any, mode: str) -> dict[str, Any]:
     selected = current_text_route()
-    usage = _usage_dict(getattr(response, "usage", None))
+    raw_usage = getattr(response, "usage", None)
+    usage = _usage_dict(raw_usage)
     price_card = current_model_price_card()
     fallback_reason = selected.fallback_reason
     if not _usage_observed(usage):
@@ -834,6 +867,8 @@ def _response_meta(response: Any, mode: str) -> dict[str, Any]:
     retry_attempts = getattr(response, "_dataforge_retry_attempts", 0)
     if retry_attempts:
         meta["retry_attempts"] = retry_attempts
+    if selected.route.provider_type != "azure_foundry":
+        meta["provider_cache"] = _provider_cache_dict(raw_usage)
     return meta
 
 

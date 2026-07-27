@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 CallClass = Literal["model", "tool", "embedding", "image", "speech", "mcp"]
 CacheState = Literal["hit", "miss", "bypassed", "unavailable"]
+ProviderCacheState = Literal["hit", "partial_hit", "miss", "unavailable"]
 GatewayCoverage = Literal["apim_governed", "app_observed", "unmanaged", "unknown"]
 EvidenceState = Literal["observed", "estimated", "partial", "unavailable"]
 UsageSource = Literal["provider", "application", "apim", "unknown"]
@@ -47,6 +48,51 @@ class CacheEvidence(BaseModel):
     state: CacheState = "unavailable"
     eligible: bool | None = None
     avoided_tokens: int | None = Field(default=None, ge=0)
+
+
+class ResultCacheEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    eligible: bool = False
+    state: CacheState = "unavailable"
+    reason: Literal[
+        "eligible",
+        "disabled",
+        "live_data",
+        "side_effecting_tools",
+        "unstable_conversation",
+        "data_revision_missing",
+        "lookup_unavailable",
+        "not_recorded",
+    ] = "not_recorded"
+    lookup_latency_ms: int | None = Field(default=None, ge=0)
+    policy_revision: int = Field(default=0, ge=0)
+    source_result_version: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+    )
+
+
+class ProviderCacheEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: ProviderCacheState = "unavailable"
+    hit_tokens: int | None = Field(default=None, ge=0)
+    miss_tokens: int | None = Field(default=None, ge=0)
+    hit_rate_pct: float | None = Field(default=None, ge=0, le=100)
+    evidence_state: Literal["observed", "partial", "unavailable"] = "unavailable"
+
+    @model_validator(mode="after")
+    def validate_populations(self) -> "ProviderCacheEvidence":
+        if self.hit_tokens is None or self.miss_tokens is None:
+            if self.hit_rate_pct is not None:
+                raise ValueError("provider cache rate requires both token populations")
+            return self
+        denominator = self.hit_tokens + self.miss_tokens
+        expected = round(self.hit_tokens / denominator * 100, 2) if denominator else None
+        if self.hit_rate_pct != expected:
+            raise ValueError("provider cache rate does not match token populations")
+        return self
 
 
 class EstimatedCost(BaseModel):
@@ -95,6 +141,8 @@ class FinOpsRequestEvent(BaseModel):
     latency_ms: int | None = Field(default=None, ge=0)
     tokens: TokenUsage = Field(default_factory=TokenUsage)
     cache: CacheEvidence = Field(default_factory=CacheEvidence)
+    result_cache: ResultCacheEvidence = Field(default_factory=ResultCacheEvidence)
+    provider_cache: ProviderCacheEvidence = Field(default_factory=ProviderCacheEvidence)
     gateway_coverage: GatewayCoverage = "unknown"
     estimated_cost: EstimatedCost = Field(default_factory=EstimatedCost)
     evidence_state: EvidenceState = "unavailable"
@@ -103,6 +151,39 @@ class FinOpsRequestEvent(BaseModel):
     usage_source: UsageSource = "unknown"
     streaming: bool | None = None
     internal_correlation_key: str | None = Field(default=None, exclude=True, repr=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def preserve_legacy_cache(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        legacy = payload.get("cache")
+        result_cache = payload.get("result_cache")
+        result_cache_is_default = (
+            isinstance(result_cache, dict)
+            and str(result_cache.get("state") or "unavailable") == "unavailable"
+            and str(result_cache.get("reason") or "not_recorded") == "not_recorded"
+            and result_cache.get("source_result_version") in {None, ""}
+        )
+        if (result_cache is None or result_cache_is_default) and isinstance(legacy, dict):
+            state = str(legacy.get("state") or "unavailable").strip().lower()
+            payload["result_cache"] = {
+                "eligible": legacy.get("eligible") is True,
+                "state": state if state in {"hit", "miss", "bypassed", "unavailable"} else "unavailable",
+                "reason": (
+                    "eligible"
+                    if state in {"hit", "miss"}
+                    else "not_recorded"
+                ),
+                "policy_revision": 0,
+            }
+        elif legacy is None and isinstance(result_cache, dict):
+            payload["cache"] = {
+                "eligible": result_cache.get("eligible"),
+                "state": result_cache.get("state"),
+            }
+        return payload
 
     @field_validator(
         "tenant_ref",

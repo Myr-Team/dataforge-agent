@@ -480,17 +480,17 @@ class ProviderCacheEvidence(BaseModel):
     evidence_state: Literal["observed", "partial", "unavailable"]
 ```
 
-- [ ] **Step 1: Write RED eligibility and cache-key tests**
+- [x] **Step 1: Write RED eligibility and cache-key tests**
 
 The key must include tenant, workspace, authorized data revision, execution kind, Agent, provider/model route, prompt template, tool/schema revision, material generation parameters, and cache-policy revision.
 
 Test bypass reasons for live data, side-effecting tools, unstable conversation state, missing data revision, changed route/config, and explicit disable.
 
-- [ ] **Step 2: Implement fail-open Redis lookup**
+- [x] **Step 2: Implement fail-open Redis lookup**
 
 Redis failure records `unavailable` and continues to the provider. A hit returns the exact stored result version and skips DeepSeek, so provider cache evidence for that request is unavailable.
 
-- [ ] **Step 3: Normalize provider cache evidence**
+- [x] **Step 3: Normalize provider cache evidence**
 
 Compute provider hit rate only when both populations are known:
 
@@ -501,11 +501,11 @@ hit_rate_pct = round(hit_tokens / denominator * 100, 2) if denominator else None
 
 Do not mix Redis request hit rate with provider token hit rate.
 
-- [ ] **Step 4: Preserve run and request evidence**
+- [x] **Step 4: Preserve run and request evidence**
 
 Store only safe cache reasons, versions, token counts, provider/model, and revisions. Do not place result bodies in FinOps request facts.
 
-- [ ] **Step 5: Verify real miss-to-hit behavior locally and commit**
+- [x] **Step 5: Verify real miss-to-hit behavior locally and commit**
 
 ```powershell
 python -m pytest -q tests/test_result_cache_policy.py tests/test_orchestrator_cache.py tests/test_finops_normalization.py tests/test_finops_query.py

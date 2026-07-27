@@ -180,6 +180,59 @@ def test_overview_exposes_recorded_token_and_cache_composition() -> None:
     }
 
 
+def test_overview_separates_result_cache_requests_from_provider_cache_tokens() -> None:
+    raw_events = []
+    for request_ref, result_cache, provider_cache in (
+        (
+            "req_aaaaaaaaaaaa",
+            {"state": "hit", "eligible": True, "reason": "eligible", "policy_revision": 2},
+            {
+                "state": "partial_hit",
+                "hit_tokens": 80,
+                "miss_tokens": 20,
+                "hit_rate_pct": 80,
+                "evidence_state": "observed",
+            },
+        ),
+        (
+            "req_bbbbbbbbbbbb",
+            {"state": "miss", "eligible": True, "reason": "eligible", "policy_revision": 2},
+            {
+                "state": "miss",
+                "hit_tokens": 0,
+                "miss_tokens": 100,
+                "hit_rate_pct": 0,
+                "evidence_state": "observed",
+            },
+        ),
+    ):
+        payload = _event(request_ref).model_dump(mode="python")
+        payload["result_cache"] = result_cache
+        payload["cache"] = {"state": result_cache["state"], "eligible": True}
+        payload["provider_cache"] = provider_cache
+        raw_events.append(FinOpsRequestEvent.model_validate(payload))
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events(raw_events)
+
+    response = FinOpsQueryService(repository).overview(
+        FinOpsQuery(
+            tenant_ref="tenant-a",
+            authorized_workspace_ids=("ws-a",),
+            from_value="2026-07-01T00:00:00Z",
+            to_value="2026-07-25T00:00:00Z",
+        )
+    )
+
+    assert response["metrics"]["result_cache"]["hit_rate_pct"] == 50
+    assert response["metrics"]["provider_cache"] == {
+        "known_requests": 2,
+        "hit_tokens": 80,
+        "miss_tokens": 120,
+        "hit_rate_pct": 40.0,
+        "data_status": "available",
+    }
+
+
 def test_bootstrap_reuses_query_metrics_and_bounds_department_summary() -> None:
     repository = InMemoryFinOpsRepository()
     repository.upsert_events(

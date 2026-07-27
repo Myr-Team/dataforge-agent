@@ -6,7 +6,14 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from .models import CacheEvidence, EstimatedCost, FinOpsRequestEvent, TokenUsage
+from .models import (
+    CacheEvidence,
+    EstimatedCost,
+    FinOpsRequestEvent,
+    ProviderCacheEvidence,
+    ResultCacheEvidence,
+    TokenUsage,
+)
 
 
 _APIM_CORRELATION = re.compile(
@@ -68,7 +75,11 @@ def normalize_run_event(
         error_category=_safe_error_category(run, model_event) if status == "failed" else None,
         latency_ms=_non_negative_int(model_event.get("latency_ms")),
         tokens=usage,
-        cache=_cache(model_event.get("cache")),
+        cache=_cache(model_event.get("cache") or model_event.get("result_cache")),
+        result_cache=_result_cache(
+            model_event.get("result_cache") or model_event.get("cache")
+        ),
+        provider_cache=_provider_cache(model_event.get("provider_cache")),
         gateway_coverage="app_observed",
         estimated_cost=cost,
         evidence_state="observed" if usage.observed else "partial",
@@ -109,6 +120,67 @@ def _cache(value: object) -> CacheEvidence:
         state=state,
         eligible=eligible,
         avoided_tokens=_non_negative_int(raw.get("avoided_tokens")),
+    )
+
+
+def _result_cache(value: object) -> ResultCacheEvidence:
+    raw = value if isinstance(value, Mapping) else {}
+    state = str(raw.get("state") or raw.get("status") or "").strip().lower()
+    if state not in {"hit", "miss", "bypassed", "unavailable"}:
+        state = "unavailable"
+    eligible = _optional_bool(raw.get("eligible"))
+    if eligible is None:
+        eligible = state in {"hit", "miss"}
+    allowed_reasons = {
+        "eligible",
+        "disabled",
+        "live_data",
+        "side_effecting_tools",
+        "unstable_conversation",
+        "data_revision_missing",
+        "lookup_unavailable",
+        "not_recorded",
+    }
+    reason = str(raw.get("reason") or "").strip().lower()
+    if reason not in allowed_reasons:
+        reason = "eligible" if state in {"hit", "miss"} else "not_recorded"
+    return ResultCacheEvidence(
+        eligible=eligible,
+        state=state,
+        reason=reason,
+        lookup_latency_ms=_non_negative_int(
+            raw.get("lookup_latency_ms")
+            if "lookup_latency_ms" in raw
+            else raw.get("elapsed_ms")
+        ),
+        policy_revision=_non_negative_int(raw.get("policy_revision")) or 0,
+        source_result_version=_text(raw.get("source_result_version"), 160),
+    )
+
+
+def _provider_cache(value: object) -> ProviderCacheEvidence:
+    raw = value if isinstance(value, Mapping) else {}
+    hit = _non_negative_int(raw.get("hit_tokens"))
+    miss = _non_negative_int(raw.get("miss_tokens"))
+    if hit is None or miss is None:
+        return ProviderCacheEvidence(
+            state="unavailable",
+            hit_tokens=hit,
+            miss_tokens=miss,
+            hit_rate_pct=None,
+            evidence_state=(
+                "unavailable" if hit is None and miss is None else "partial"
+            ),
+        )
+    denominator = hit + miss
+    rate = round(hit / denominator * 100, 2) if denominator else None
+    state = "partial_hit" if hit and miss else "hit" if hit else "miss"
+    return ProviderCacheEvidence(
+        state=state,
+        hit_tokens=hit,
+        miss_tokens=miss,
+        hit_rate_pct=rate,
+        evidence_state="observed",
     )
 
 
