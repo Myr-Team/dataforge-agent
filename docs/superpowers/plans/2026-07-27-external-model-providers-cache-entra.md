@@ -98,13 +98,13 @@ END;
 
 Add state checks, unique display-name rules per tenant, model rows, immutable routing revisions, mapping priority, enabled state, and workspace-scope JSON with bounded size.
 
-- [ ] **Step 4: Verify DDL authority before application deployment**
+- [x] **Step 4: Verify DDL authority before application deployment**
 
 Run the existing migration entry point against the candidate database identity.
 
 Expected: success and idempotent second execution. If permission is denied, stop here, record the exact missing database role/action without adding broad Owner credentials, and do not deploy application code that reads the new tables.
 
-- [ ] **Step 5: Commit the migration gate**
+- [x] **Step 5: Commit the migration gate**
 
 ```powershell
 git add backend/sql/finops_schema.sql backend/finops/migrate.py tests/test_finops_sql_migration.py tests/test_finops_sql_repositories.py docs/validation/2026-07-27-finops-remediation-candidate-runbook.md
