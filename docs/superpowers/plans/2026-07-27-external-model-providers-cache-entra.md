@@ -148,7 +148,7 @@ class ModelProviderRepository(Protocol):
     def update(self, tenant_ref: str, provider_id: str, base_revision: int, patch: ProviderPatch) -> ModelProviderRecord: ...
 ```
 
-- [ ] **Step 1: Write RED tests for tenant isolation, masking, and revision conflicts**
+- [x] **Step 1: Write RED tests for tenant isolation, masking, and revision conflicts**
 
 Assert:
 
@@ -164,11 +164,11 @@ Run:
 python -m pytest -q tests/test_model_providers.py tests/test_model_provider_repository.py
 ```
 
-- [ ] **Step 2: Add provider models and SQL repository**
+- [x] **Step 2: Add provider models and SQL repository**
 
 Follow the existing FinOps SQL repository connection pattern. Keep SQL errors behind `ModelProviderPersistenceError`; never include SQL or values in public error text.
 
-- [ ] **Step 3: Add a provider-specific Key Vault facade**
+- [x] **Step 3: Add a provider-specific Key Vault facade**
 
 Reuse the existing Key Vault client mechanics but derive a tenant/provider-scoped opaque secret name:
 
@@ -185,7 +185,7 @@ def provider_secret_name(tenant_ref: str, provider_id: str) -> str:
 
 Candidate/production construction must raise `provider_key_vault_required` if `DF_KEY_VAULT_URL` is absent. Do not silently fall back to session storage.
 
-- [ ] **Step 4: Write and pass secret redaction tests**
+- [x] **Step 4: Write and pass secret redaction tests**
 
 Simulate Key Vault set/get failures containing a marker key and assert the marker is absent from exceptions, logs, audit payloads, and API-shaped results.
 
@@ -195,7 +195,7 @@ Run:
 python -m pytest -q tests/test_model_provider_secrets.py
 ```
 
-- [ ] **Step 5: Commit the provider persistence layer**
+- [x] **Step 5: Commit the provider persistence layer**
 
 ```powershell
 git add backend/model_providers.py backend/model_provider_repository.py backend/model_provider_secrets.py backend/connector_secret_store.py backend/requirements.txt tests/test_model_providers.py tests/test_model_provider_repository.py tests/test_model_provider_secrets.py
@@ -246,7 +246,7 @@ class ProviderResult(BaseModel):
     safe_error_category: str | None
 ```
 
-- [ ] **Step 1: Write RED endpoint/SSRF tests**
+- [x] **Step 1: Write RED endpoint/SSRF tests**
 
 Cover HTTPS, exact allowlisted host, userinfo, query, fragment, port, loopback, RFC1918, link-local, metadata endpoints, DNS rebinding, redirects, and response-size limits.
 
@@ -256,7 +256,7 @@ with pytest.raises(ProviderEndpointError):
     validate_provider_endpoint("deepseek", "https://127.0.0.1")
 ```
 
-- [ ] **Step 2: Implement endpoint validation**
+- [x] **Step 2: Implement endpoint validation**
 
 The client owns the allowlist:
 
@@ -266,11 +266,11 @@ PROVIDER_HOSTS = {"deepseek": frozenset({"api.deepseek.com"})}
 
 Resolve and validate every address before connect and every redirect target before carrying the Authorization header. Use fixed connect/read timeouts and a bounded response reader.
 
-- [ ] **Step 3: Write RED adapter and usage tests**
+- [x] **Step 3: Write RED adapter and usage tests**
 
 Test normal text, tool calls, thinking fields, non-streaming usage, SSE comments, streaming start, malformed JSON, and safe mappings for 400/401/402/422/429/timeout/5xx/503.
 
-- [ ] **Step 4: Implement the DeepSeek Chat Completions adapter**
+- [x] **Step 4: Implement the DeepSeek Chat Completions adapter**
 
 Use the official OpenAI-compatible endpoint, set Authorization only after endpoint validation, and normalize:
 
@@ -288,7 +288,7 @@ ProviderUsage(
 
 Unknown or absent fields remain `None`; do not infer hit tokens from total input.
 
-- [ ] **Step 5: Pass focused tests and commit**
+- [x] **Step 5: Pass focused tests and commit**
 
 ```powershell
 python -m pytest -q tests/test_provider_endpoint.py tests/test_deepseek_provider.py tests/test_provider_usage.py
