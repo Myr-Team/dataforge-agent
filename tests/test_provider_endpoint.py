@@ -50,4 +50,3 @@ def test_deepseek_endpoint_rejects_private_dns_resolution() -> None:
         )
 
     assert captured.value.code == "provider_endpoint_private_address"
-

@@ -75,4 +75,3 @@ def test_repository_never_accepts_api_key_material() -> None:
 
     with pytest.raises(TypeError):
         repository.create(_record(), api_key="forbidden-key-material")  # type: ignore[call-arg]
-

@@ -52,4 +52,3 @@ def test_deepseek_usage_rejects_negative_or_boolean_token_values() -> None:
     assert usage.output_tokens is None
     assert usage.provider_cache_hit_tokens is None
     assert usage.provider_cache_miss_tokens == 5
-
