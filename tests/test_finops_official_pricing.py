@@ -108,3 +108,20 @@ def test_bundled_catalog_contains_verified_gpt_5_1_global_standard() -> None:
     assert entry.output_per_million == Decimal("10.0")
     assert entry.cached_input_per_million == Decimal("0.125")
     assert str(entry.source_url).startswith("https://prices.azure.com/")
+
+
+def test_bundled_catalog_contains_verified_gpt_5_6_global_standard_tiers() -> None:
+    catalog = load_official_price_catalog()
+
+    expected = {
+        "azure-openai:gpt-5.6-sol:global-standard:global": ("5.0", "30.0", "0.5"),
+        "azure-openai:gpt-5.6-terra:global-standard:global": ("2.5", "15.0", "0.25"),
+        "azure-openai:gpt-5.6-luna:global-standard:global": ("1.0", "6.0", "0.1"),
+    }
+    for price_key, prices in expected.items():
+        entry = catalog.get(price_key)
+        assert entry is not None
+        assert entry.input_per_million == Decimal(prices[0])
+        assert entry.output_per_million == Decimal(prices[1])
+        assert entry.cached_input_per_million == Decimal(prices[2])
+        assert str(entry.source_url).startswith("https://prices.azure.com/")

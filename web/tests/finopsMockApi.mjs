@@ -297,17 +297,47 @@ export async function installFinOpsMockApi(page, calls = []) {
       };
     } else if (path === "/api/finops/pricing/catalog") {
       body = {
-        revision: "azure-retail-2026-07-26",
+        revision: "azure-retail-2026-07-27",
         currency: "USD",
-        items: [{
-          price_key: "azure-openai:gpt-5.1:global-standard:global",
-          official_model: "gpt-5.1",
-          display_name: "GPT-5.1 Global Standard",
-          input_per_million: 1.25,
-          output_per_million: 10,
-          source_url: "https://prices.azure.com/api/retail/prices",
-        }],
-        count: 1,
+        items: [
+          {
+            price_key: "azure-openai:gpt-5.1:global-standard:global",
+            official_model: "gpt-5.1",
+            display_name: "GPT-5.1 Global Standard",
+            input_per_million: 1.25,
+            output_per_million: 10,
+            cached_input_per_million: 0.125,
+            source_url: "https://prices.azure.com/api/retail/prices",
+          },
+          {
+            price_key: "azure-openai:gpt-5.6-sol:global-standard:global",
+            official_model: "gpt-5.6-sol",
+            display_name: "GPT-5.6 Sol Global Standard",
+            input_per_million: 5,
+            output_per_million: 30,
+            cached_input_per_million: 0.5,
+            source_url: "https://prices.azure.com/api/retail/prices",
+          },
+          {
+            price_key: "azure-openai:gpt-5.6-terra:global-standard:global",
+            official_model: "gpt-5.6-terra",
+            display_name: "GPT-5.6 Terra Global Standard",
+            input_per_million: 2.5,
+            output_per_million: 15,
+            cached_input_per_million: 0.25,
+            source_url: "https://prices.azure.com/api/retail/prices",
+          },
+          {
+            price_key: "azure-openai:gpt-5.6-luna:global-standard:global",
+            official_model: "gpt-5.6-luna",
+            display_name: "GPT-5.6 Luna Global Standard",
+            input_per_million: 1,
+            output_per_million: 6,
+            cached_input_per_million: 0.1,
+            source_url: "https://prices.azure.com/api/retail/prices",
+          },
+        ],
+        count: 4,
       };
     } else if (path === "/api/finops/pricing/mappings") {
       body = {

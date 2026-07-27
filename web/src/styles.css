@@ -4737,15 +4737,23 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-metrics:has(.finops-metric:focus-within) .finops-metric:not(:focus-within) { opacity: .72; }
 .finops-metric:hover,
 .finops-metric:focus-within { z-index: 4; box-shadow: 0 12px 28px rgba(16, 24, 40, .12); transform: translateY(-2px); }
-.finops-metric > div:first-child { display: flex; min-height: 18px; align-items: center; justify-content: space-between; gap: 6px; color: #667085; font-size: 10.5px; }
+.finops-metric-header { display: flex; min-height: 22px; align-items: center; justify-content: space-between; gap: 8px; color: #667085; font-size: 10.5px; }
+.finops-metric-label,
+.finops-metric-meta { display: inline-flex; min-width: 0; align-items: center; gap: 4px; }
+.finops-metric-label > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.finops-metric-meta { flex: none; }
+.finops-help-trigger { display: inline-grid; width: 18px; height: 18px; flex: none; border: 0; border-radius: 5px; place-items: center; background: transparent; padding: 0; color: #98a2b3; cursor: help; }
+.finops-help-trigger:hover { background: #f2f4f7; color: #175cd3; }
+.finops-help-trigger:focus-visible { outline: 2px solid rgba(23, 92, 211, .28); outline-offset: 1px; background: #eef4ff; color: #175cd3; }
 .finops-metric > strong { display: block; overflow: hidden; margin: 8px 0 5px; color: #101828; font-size: 23px; font-weight: 720; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
 .finops-metric > small { display: block; overflow: hidden; color: #98a2b3; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .finops-metric-actions { display: flex; min-height: 18px; align-items: center; gap: 10px; margin-top: 9px; }
 .finops-metric-actions button { border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9.5px; font-weight: 650; }
 .finops-metric-actions button:hover { text-decoration: underline; }
 .finops-metric-tooltip { position: absolute; z-index: 8; top: calc(100% - 3px); left: 12px; display: grid; width: min(280px, calc(100vw - 52px)); gap: 9px; border: 1px solid #d7e2f0; border-radius: 10px; background: rgba(255, 255, 255, .98); box-shadow: 0 18px 42px rgba(16, 24, 40, .16); padding: 12px; opacity: 0; pointer-events: none; transform: translateY(-5px); transition: opacity 150ms ease, transform 150ms ease; }
-.finops-metric:hover .finops-metric-tooltip,
-.finops-metric:focus-within .finops-metric-tooltip { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.finops-metric:has(.finops-help-trigger:hover) .finops-metric-tooltip,
+.finops-metric:has(.finops-help-trigger:focus) .finops-metric-tooltip,
+.finops-metric:has(.finops-metric-tooltip:hover) .finops-metric-tooltip { opacity: 1; pointer-events: auto; transform: translateY(0); }
 .finops-page:has(.finops-ai-popover) .finops-metric-tooltip { opacity: 0; pointer-events: none; }
 .finops-metric-tooltip > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .finops-metric-tooltip > header b { color: #1d2939; font-size: 11px; }
@@ -4814,14 +4822,12 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-trend-column:focus .finops-trend-stack { filter: saturate(1.16); transform: scaleX(1.08); }
 .finops-trend-stack i { display: block; width: 100%; flex: none; }
 .finops-trend-comparison { position: absolute; right: 8%; bottom: 24px; width: 84%; max-width: 42px; border-top: 2px dashed #98a2b3; opacity: .72; pointer-events: none; }
-.finops-trend-event { position: absolute; z-index: 3; top: 5px; left: 50%; width: 7px; height: 7px; border: 2px solid #fff; border-radius: 50%; background: #f79009; box-shadow: 0 0 0 1px #fdb022; transform: translateX(-50%); }
 .finops-trend-tooltip { position: absolute; z-index: 7; bottom: calc(100% - 24px); left: 50%; display: grid; width: 180px; gap: 5px; border: 1px solid #d7e2f0; border-radius: 9px; background: #fff; box-shadow: 0 14px 34px rgba(16, 24, 40, .16); padding: 10px; opacity: 0; pointer-events: none; transform: translate(-50%, 5px); transition: opacity 150ms ease, transform 150ms ease; }
 .finops-trend-column:hover .finops-trend-tooltip,
 .finops-trend-column:focus .finops-trend-tooltip { opacity: 1; transform: translate(-50%, 0); }
 .finops-trend-tooltip b { color: #1d2939; font-size: 10px; }
 .finops-trend-tooltip span { display: flex; justify-content: space-between; gap: 10px; color: #667085; font-size: 9.5px; }
 .finops-trend-tooltip strong { color: #344054; }
-.finops-help-icon { flex: none; color: #98a2b3; }
 .finops-trust-grid { display: grid; gap: 0; }
 .finops-trust-grid article { display: grid; gap: 7px; border-bottom: 1px solid #edf0f5; padding: 13px 15px; }
 .finops-trust-grid article:last-child { border-bottom: 0; }
@@ -4965,7 +4971,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-request-status.failed { background: #fff1f3; color: #b42318; }
 .finops-more { display: block; margin: 12px auto; border: 1px solid #d0d5dd; border-radius: 7px; background: #fff; padding: 7px 12px; color: #344054; font: inherit; font-size: 10.5px; cursor: pointer; }
 .finops-footnote { display: flex; max-width: 1500px; margin: 12px auto 0; align-items: center; gap: 7px; color: #98a2b3; font-size: 9.5px; }
-.finops-drawer-backdrop { position: fixed; z-index: 90; inset: 0; background: rgba(15, 23, 42, .28); }
+.finops-drawer-backdrop { position: fixed; z-index: 90; inset: 56px 0 0; background: rgba(15, 23, 42, .28); }
 .finops-drawer { position: absolute; top: 0; right: 0; display: grid; width: min(540px, 100%); height: 100%; grid-template-rows: auto minmax(0, 1fr); background: #fff; box-shadow: -18px 0 48px rgba(15, 23, 42, .15); }
 .finops-drawer > header { display: flex; min-height: 72px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e7ebf1; padding: 13px 17px; }
 .finops-drawer header span { color: #175cd3; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -5094,7 +5100,6 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-trend-column,
   .finops-trend-stack,
   .finops-trend-comparison,
-  .finops-trend-event,
   .finops-budget-track i,
   .finops-bar-row,
   .finops-ai-launcher,

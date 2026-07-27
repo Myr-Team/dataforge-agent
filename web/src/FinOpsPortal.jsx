@@ -172,31 +172,42 @@ function MetricCards({
       {finopsMetricCards(payload).map((card) => {
         const tooltip = metricTooltip(card.metric);
         const context = metricContext(card.metric, scope);
+        const tooltipId = `finops-metric-tooltip-${card.id}`;
         return (
           <article
             className={`finops-metric ${card.tone}`}
             key={card.id}
-            tabIndex={0}
             aria-label={`${card.label} ${card.value}`}
           >
-            <div>
-              <span>{card.label}</span>
-              <CircleHelp className="finops-help-icon" size={13} aria-hidden="true" />
-              <EvidenceBadge status={card.metric.evidenceState} />
-              {card.id === "cost" && onConfigurePricing ? (
+            <div className="finops-metric-header">
+              <span className="finops-metric-label">
+                <span>{card.label}</span>
                 <button
-                  className="finops-price-edit"
+                  className="finops-help-trigger"
                   type="button"
-                  title="关联官方模型价格"
-                  aria-label="关联官方模型价格"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onConfigurePricing();
-                  }}
+                  aria-label={`${card.label}说明`}
+                  aria-describedby={tooltipId}
                 >
-                  <Pencil size={12} />
+                  <CircleHelp size={13} aria-hidden="true" />
                 </button>
-              ) : null}
+              </span>
+              <span className="finops-metric-meta">
+                <EvidenceBadge status={card.metric.evidenceState} />
+                {card.id === "cost" && onConfigurePricing ? (
+                  <button
+                    className="finops-price-edit"
+                    type="button"
+                    title="关联官方模型价格"
+                    aria-label="关联官方模型价格"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onConfigurePricing();
+                    }}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                ) : null}
+              </span>
             </div>
             <strong>{card.value}</strong>
             <small>{card.meta}</small>
@@ -208,7 +219,7 @@ function MetricCards({
                 </button>
               ) : null}
             </div>
-            <div className="finops-metric-tooltip" role="tooltip">
+            <div className="finops-metric-tooltip" id={tooltipId} role="tooltip">
               <header><b>{tooltip.title}</b><EvidenceBadge status={tooltip.evidenceState} /></header>
               {tooltip.rows.length ? (
                 <dl>
@@ -350,9 +361,6 @@ function TrendBars({
                   title={`上一周期 ${formatValue(comparisonValue)}`}
                 />
               ) : null}
-              {rowEvents.length ? (
-                <i className="finops-trend-event" title={`${rowEvents.length} 条运营事件`} />
-              ) : null}
               <div className="finops-trend-plot">
                 <b className="finops-trend-value">{formatValue(rawValue)}</b>
                 <div className="finops-trend-bar-slot">
@@ -379,6 +387,7 @@ function TrendBars({
                     <span>合计 <strong>{formatFinOpsNumber(row.total)}</strong></span>
                   </>
                 )}
+                {rowEvents.length ? <span>运营事件 <strong>{rowEvents.length} 条</strong></span> : null}
               </div>
             </div>
           );

@@ -232,10 +232,12 @@ def test_completed_run_ingestion_uses_official_deployment_mapping(monkeypatch) -
         to_value="2026-07-25T00:00:00Z",
     )
 
+    from backend.finops.official_pricing import load_official_price_catalog
+
     assert event.estimated_cost.amount == 0.0000325
     assert (
         event.estimated_cost.price_card_revision
-        == "azure-retail-2026-07-26"
+        == load_official_price_catalog().revision
     )
     assert (
         event.estimated_cost.official_price_key

@@ -139,11 +139,12 @@ test("comparison window uses the immediately preceding equal duration", () => {
 });
 
 
-test("operations trends wire equal-period comparison and event annotations", async () => {
+test("operations trends keep event counts in hover detail without persistent markers", async () => {
   const source = await readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8");
 
   assert.match(source, /loadFinOpsTrends/);
   assert.match(source, /previousEqualWindow/);
   assert.match(source, /className="finops-trend-comparison"/);
-  assert.match(source, /className="finops-trend-event"/);
+  assert.doesNotMatch(source, /className="finops-trend-event"/);
+  assert.match(source, /rowEvents\.length \? <span>运营事件/);
 });

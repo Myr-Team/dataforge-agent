@@ -1,5 +1,5 @@
 {
-  "revision": "azure-retail-2026-07-26",
+  "revision": "azure-retail-2026-07-27",
   "entries": [
     {
       "price_key": "azure-openai:gpt-5.1:global-standard:global",
@@ -16,7 +16,58 @@
       "source_url": "https://prices.azure.com/api/retail/prices",
       "effective_at": "2025-11-01T00:00:00Z",
       "reviewed_at": "2026-07-26T09:00:00Z",
-      "revision": "azure-retail-2026-07-26"
+      "revision": "azure-retail-2026-07-27"
+    },
+    {
+      "price_key": "azure-openai:gpt-5.6-sol:global-standard:global",
+      "provider": "azure-openai",
+      "official_model": "gpt-5.6-sol",
+      "display_name": "GPT-5.6 Sol Global Standard",
+      "deployment_type": "GlobalStandard",
+      "region_class": "global",
+      "currency": "USD",
+      "input_per_million": "5.0",
+      "output_per_million": "30.0",
+      "cached_input_per_million": "0.5",
+      "reasoning_per_million": null,
+      "source_url": "https://prices.azure.com/api/retail/prices",
+      "effective_at": "2026-07-01T00:00:00Z",
+      "reviewed_at": "2026-07-27T09:00:00Z",
+      "revision": "azure-retail-2026-07-27"
+    },
+    {
+      "price_key": "azure-openai:gpt-5.6-terra:global-standard:global",
+      "provider": "azure-openai",
+      "official_model": "gpt-5.6-terra",
+      "display_name": "GPT-5.6 Terra Global Standard",
+      "deployment_type": "GlobalStandard",
+      "region_class": "global",
+      "currency": "USD",
+      "input_per_million": "2.5",
+      "output_per_million": "15.0",
+      "cached_input_per_million": "0.25",
+      "reasoning_per_million": null,
+      "source_url": "https://prices.azure.com/api/retail/prices",
+      "effective_at": "2026-07-01T00:00:00Z",
+      "reviewed_at": "2026-07-27T09:00:00Z",
+      "revision": "azure-retail-2026-07-27"
+    },
+    {
+      "price_key": "azure-openai:gpt-5.6-luna:global-standard:global",
+      "provider": "azure-openai",
+      "official_model": "gpt-5.6-luna",
+      "display_name": "GPT-5.6 Luna Global Standard",
+      "deployment_type": "GlobalStandard",
+      "region_class": "global",
+      "currency": "USD",
+      "input_per_million": "1.0",
+      "output_per_million": "6.0",
+      "cached_input_per_million": "0.1",
+      "reasoning_per_million": null,
+      "source_url": "https://prices.azure.com/api/retail/prices",
+      "effective_at": "2026-07-01T00:00:00Z",
+      "reviewed_at": "2026-07-27T09:00:00Z",
+      "revision": "azure-retail-2026-07-27"
     }
   ]
 }
