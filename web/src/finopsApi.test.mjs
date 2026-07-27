@@ -4,11 +4,20 @@ import test from "node:test";
 
 import {
   buildFinOpsQuery,
+  createIdentityGroupMapping,
+  createModelProvider,
   deleteFinOpsOfficialPriceMapping,
+  disableIdentityGroupMapping,
+  disableModelProvider,
   loadFinOpsBootstrap,
   loadFinOpsOfficialPriceCatalog,
   loadFinOpsOfficialPriceMappings,
+  loadIdentityGovernance,
+  loadModelProviders,
   queryFinOpsAssistant,
+  rotateModelProviderSecret,
+  searchIdentityGovernanceGroups,
+  updateIdentityGroupMapping,
   updateFinOpsOfficialPriceMapping,
   updateWorkspaceModelRouting,
   toUserFacingRequestError,
@@ -199,4 +208,65 @@ test("model routing save carries base_revision for optimistic concurrency", asyn
   assert.equal(captured.url, "/api/workspaces/ws-a/governance/model-routing");
   assert.equal(captured.options.method, "PUT");
   assert.equal(JSON.parse(captured.options.body).base_revision, 3);
+});
+
+test("provider management uses typed endpoints and revisioned writes", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    return { ok: true, json: async () => ({ items: [] }) };
+  };
+  try {
+    await loadModelProviders();
+    await createModelProvider({
+      provider_type: "deepseek",
+      display_name: "DeepSeek",
+      base_url: "https://api.deepseek.com",
+      api_key: "test-key-marker",
+    });
+    await rotateModelProviderSecret("provider/a", "rotated-key-marker", 4);
+    await disableModelProvider("provider/a", 5);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(calls.map((item) => item.url), [
+    "/api/model-providers",
+    "/api/model-providers",
+    "/api/model-providers/provider%2Fa/rotate-secret",
+    "/api/model-providers/provider%2Fa/disable",
+  ]);
+  assert.equal(JSON.parse(calls[2].options.body).base_revision, 4);
+  assert.equal(JSON.parse(calls[3].options.body).base_revision, 5);
+});
+
+test("identity governance encodes search and uses revisioned mapping actions", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    return { ok: true, json: async () => ({ mappings: [], groups: [] }) };
+  };
+  try {
+    await loadIdentityGovernance();
+    await searchIdentityGovernanceGroups("Finance & Ops", 8);
+    await createIdentityGroupMapping({
+      group_id: "group-marker",
+      display_name: "Finance",
+      role: "viewer",
+      workspace_ids: ["ws-a"],
+      priority: 100,
+    });
+    await updateIdentityGroupMapping("mapping/a", { base_revision: 2, role: "editor" });
+    await disableIdentityGroupMapping("mapping/a", 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls[0].url, "/api/identity-governance");
+  assert.equal(calls[1].url, "/api/identity-governance/groups?query=Finance+%26+Ops&limit=8");
+  assert.equal(calls[3].url, "/api/identity-governance/group-mappings/mapping%2Fa");
+  assert.equal(JSON.parse(calls[3].options.body).base_revision, 2);
+  assert.equal(JSON.parse(calls[4].options.body).base_revision, 3);
 });

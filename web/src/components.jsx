@@ -20,7 +20,7 @@ import { monitoringSnapshotViewModel } from "./monitoringViewModel.js";
 import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, createWorkspaceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
 import { GovernanceCenter } from "./GovernanceCenter.jsx";
 import { finopsIntentHandlers } from "./finopsNavigation.js";
-import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
+import { ModelGovernanceSettings } from "./ModelGovernanceSettings.jsx";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 const FinOpsPortal = lazy(() => import("./FinOpsPortal.jsx").then((m) => ({ default: m.FinOpsPortal })));
 import {
@@ -3810,7 +3810,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
         wide={settingsDrawer === "models"}
       >
         {settingsDrawer === "models"
-          ? <ModelRoutingPage workspaceId={workspaceId} embedded />
+          ? <ModelGovernanceSettings workspaceId={workspaceId} />
           : (
             <div className="settings-info-drawer">
               {(settingsDrawerCopy[settingsDrawer]?.body || []).map((line, index) => <p key={index}>{line}</p>)}

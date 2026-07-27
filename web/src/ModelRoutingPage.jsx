@@ -27,6 +27,10 @@ function routeOptions(routes, capability) {
   return routes.filter((route) => route.capabilities.includes(capability));
 }
 
+function routeOptionLabel(route) {
+  return `${route.label} · ${route.providerLabel || "Azure Foundry"}`;
+}
+
 function assignmentPayload(assignments, agentAssignments, defaultRouteId) {
   const normalized = {};
   for (const kind of MODEL_EXECUTION_KINDS) {
@@ -290,7 +294,7 @@ export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
                 <span>默认模型</span>
                 <select value={defaultRouteId} onChange={(event) => setDefaultRouteId(event.target.value)}>
                   <option value="">使用服务端默认</option>
-                  {chatRoutes.map((route) => <option value={route.id} key={route.id}>{route.label}</option>)}
+                  {chatRoutes.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
                 </select>
               </label>
             </section>
@@ -305,7 +309,7 @@ export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
                   <span>一键应用到全部</span>
                   <select value="" onChange={(event) => event.target.value && applyAllAgents(event.target.value)}>
                     <option value="">选择模型</option>
-                    {analysisRoutes.map((route) => <option value={route.id} key={route.id}>{route.label}</option>)}
+                    {analysisRoutes.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
                   </select>
                 </label>
               </header>
@@ -318,11 +322,11 @@ export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
                       <div><b>{agent.label}</b><small>{agent.description}</small></div>
                       <select aria-label={`${agent.label}主要模型`} value={current.primaryRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "primaryRouteId", event.target.value)}>
                         <option value="">继承工作区默认</option>
-                        {analysisRoutes.map((route) => <option value={route.id} key={route.id}>{route.label}</option>)}
+                        {analysisRoutes.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
                       </select>
                       <select aria-label={`${agent.label}备用模型`} value={current.fallbackRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "fallbackRouteId", event.target.value)}>
                         <option value="">不设置备用</option>
-                        {analysisRoutes.map((route) => <option value={route.id} key={route.id}>{route.label}</option>)}
+                        {analysisRoutes.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
                       </select>
                     </div>
                   );
@@ -343,11 +347,11 @@ export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
                       <div><b>{kind.label}</b><small>{kind.description}</small></div>
                       <select aria-label={`${kind.label}主要模型`} value={current.primaryRouteId || ""} onChange={(event) => updateAssignment(kind.id, "primaryRouteId", event.target.value)}>
                         <option value="">继承工作区默认</option>
-                        {eligible.map((route) => <option value={route.id} key={route.id}>{route.label}</option>)}
+                        {eligible.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
                       </select>
                       <select aria-label={`${kind.label}备用模型`} value={current.fallbackRouteId || ""} onChange={(event) => updateAssignment(kind.id, "fallbackRouteId", event.target.value)}>
                         <option value="">不设置备用</option>
-                        {eligible.map((route) => <option value={route.id} key={route.id}>{route.label}</option>)}
+                        {eligible.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
                       </select>
                     </div>
                   );
@@ -371,7 +375,7 @@ export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
                   const busy = saving === `mapping:${route.deployment}`;
                   return (
                     <div className="routing-official-price-row" key={route.id}>
-                      <div><b>{route.label}</b><small>{route.deployment || "deployment 未记录"}</small></div>
+                      <div><b>{route.label}</b><small>{route.providerLabel || "Azure Foundry"} · {route.deployment || "deployment 未记录"}</small></div>
                       <span className={`routing-price-status ${mapping ? "mapped" : "unpriced"}`}>{mapping ? "已计价" : "未计价"}</span>
                       <div className="routing-price-picker">
                         <select value={mappingDraft[route.deployment] || ""} onChange={(event) => setMappingDraft((current) => ({ ...current, [route.deployment]: event.target.value }))} aria-label={`${route.label}官方价格记录`}>

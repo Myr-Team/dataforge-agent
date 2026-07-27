@@ -583,6 +583,80 @@ export async function updateEnterpriseIdentityPolicy(workspaceId, trustedEmailDo
   });
 }
 
+export async function loadModelProviders() {
+  return request("/api/model-providers");
+}
+
+export async function createModelProvider(payload) {
+  return request("/api/model-providers", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function testModelProvider(providerId) {
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}/test`, {
+    method: "POST",
+  });
+}
+
+export async function rotateModelProviderSecret(providerId, apiKey, baseRevision) {
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}/rotate-secret`, {
+    method: "POST",
+    body: JSON.stringify({
+      api_key: String(apiKey || ""),
+      base_revision: Number(baseRevision || 0),
+    }),
+  });
+}
+
+export async function updateModelProvider(providerId, payload) {
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function disableModelProvider(providerId, baseRevision) {
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}/disable`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: Number(baseRevision || 0) }),
+  });
+}
+
+export async function loadIdentityGovernance() {
+  return request("/api/identity-governance");
+}
+
+export async function searchIdentityGovernanceGroups(query, limit = 8) {
+  const params = new URLSearchParams({
+    query: String(query || ""),
+    limit: String(limit),
+  });
+  return request(`/api/identity-governance/groups?${params.toString()}`);
+}
+
+export async function createIdentityGroupMapping(payload) {
+  return request("/api/identity-governance/group-mappings", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateIdentityGroupMapping(mappingId, payload) {
+  return request(`/api/identity-governance/group-mappings/${encodeURIComponent(mappingId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function disableIdentityGroupMapping(mappingId, baseRevision) {
+  return request(`/api/identity-governance/group-mappings/${encodeURIComponent(mappingId)}/disable`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: Number(baseRevision || 0) }),
+  });
+}
+
 export async function loadWorkspaceModelRouting(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/model-routing`);
 }
