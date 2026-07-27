@@ -329,11 +329,11 @@ Creation accepts:
 
 Public responses include masked secret status but never `api_key` or `secret_ref`.
 
-- [ ] **Step 1: Write RED API authorization and contract tests**
+- [x] **Step 1: Write RED API authorization and contract tests**
 
 Cover trusted-tenant derivation, Owner/Admin write access, Viewer denial, cross-tenant provider IDs, masked responses, 409 revision drift, disabled route behavior, and feature flag off.
 
-- [ ] **Step 2: Implement the service transaction order**
+- [x] **Step 2: Implement the service transaction order**
 
 For create:
 
@@ -347,11 +347,11 @@ For create:
 
 If persistence or audit fails, delete the newly written secret version/reference where recoverable and return a safe failure. Never report success before durable audit.
 
-- [ ] **Step 3: Add API routes and exception mappings**
+- [x] **Step 3: Add API routes and exception mappings**
 
 Use `DF_PROVIDER_CONNECTORS_ENABLED`. Map invalid endpoint to 400, forbidden to 403, missing to 404, revision conflict to 409, Key Vault/audit/provider persistence failure to 503.
 
-- [ ] **Step 4: Pass tests and commit**
+- [x] **Step 4: Pass tests and commit**
 
 ```powershell
 python -m pytest -q tests/test_model_provider_api.py tests/test_model_provider_audit.py

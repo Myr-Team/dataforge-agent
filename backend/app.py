@@ -48,6 +48,7 @@ try:
     from .finops.router import router as finops_router
     from .finops.sql_repository import FinOpsPersistenceError
     from .lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
+    from .model_provider_router import router as model_provider_router
     from .observability import observability_snapshot
     from .orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from .rag import search
@@ -102,6 +103,7 @@ except ImportError:
     from finops.router import router as finops_router
     from finops.sql_repository import FinOpsPersistenceError
     from lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
+    from model_provider_router import router as model_provider_router
     from observability import observability_snapshot
     from orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from rag import search
@@ -165,6 +167,7 @@ app.add_middleware(
 app.include_router(data_workbench_router)
 app.include_router(control_plane_router)
 app.include_router(finops_router)
+app.include_router(model_provider_router)
 
 _LINEAGE_CONNECTION_FACTORY = build_lineage_sql_connection_factory()
 _LINEAGE_REPOSITORY = LineageRepository(connection_factory=_LINEAGE_CONNECTION_FACTORY)
