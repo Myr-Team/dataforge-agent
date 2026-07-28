@@ -120,7 +120,7 @@ class SqlModelProviderRepository:
             rows = cursor.execute(
                 """/* providers:list */
                 SELECT provider_id, tenant_ref, provider_type, display_name,
-                    base_url, secret_ref, connection_state, governance_state,
+                    base_url, region, secret_ref, connection_state, governance_state,
                     available_models_json, last_tested_at, last_success_at,
                     safe_error_category, revision, created_by_ref,
                     updated_by_ref, created_at, updated_at
@@ -136,7 +136,7 @@ class SqlModelProviderRepository:
             row = cursor.execute(
                 """/* providers:get */
                 SELECT provider_id, tenant_ref, provider_type, display_name,
-                    base_url, secret_ref, connection_state, governance_state,
+                    base_url, region, secret_ref, connection_state, governance_state,
                     available_models_json, last_tested_at, last_success_at,
                     safe_error_category, revision, created_by_ref,
                     updated_by_ref, created_at, updated_at
@@ -155,11 +155,11 @@ class SqlModelProviderRepository:
                 """/* providers:create */
                 INSERT INTO df_finops.model_provider (
                     tenant_ref, provider_id, provider_type, display_name,
-                    base_url, secret_ref, connection_state, governance_state,
+                    base_url, region, secret_ref, connection_state, governance_state,
                     available_models_json, last_tested_at, last_success_at,
                     safe_error_category, revision, created_by_ref,
                     updated_by_ref, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 *_record_parameters(value),
             )
         return value.model_copy(deep=True)
@@ -189,7 +189,7 @@ class SqlModelProviderRepository:
             cursor.execute(
                 """/* providers:update */
                 UPDATE df_finops.model_provider SET
-                    display_name = ?, base_url = ?, connection_state = ?,
+                    display_name = ?, base_url = ?, region = ?, connection_state = ?,
                     governance_state = ?, available_models_json = ?,
                     last_tested_at = ?, last_success_at = ?,
                     safe_error_category = ?, revision = ?,
@@ -197,6 +197,7 @@ class SqlModelProviderRepository:
                 WHERE tenant_ref = ? AND provider_id = ? AND revision = ?""",
                 updated.display_name,
                 updated.base_url,
+                updated.region,
                 updated.connection_state,
                 updated.governance_state,
                 _models_json(updated.available_models),
@@ -261,6 +262,7 @@ def _record_parameters(value: ModelProviderRecord) -> tuple[Any, ...]:
         value.provider_type,
         value.display_name,
         value.base_url,
+        value.region,
         value.secret_ref,
         value.connection_state,
         value.governance_state,
@@ -278,25 +280,26 @@ def _record_parameters(value: ModelProviderRecord) -> tuple[Any, ...]:
 
 def _record_from_row(row: Any) -> ModelProviderRecord:
     values = list(row)
-    raw_models = json.loads(str(values[8] or "[]"))
+    raw_models = json.loads(str(values[9] or "[]"))
     return ModelProviderRecord(
         provider_id=str(values[0]),
         tenant_ref=str(values[1]),
         provider_type=str(values[2]),
         display_name=str(values[3]),
         base_url=str(values[4]),
-        secret_ref=str(values[5]),
-        connection_state=str(values[6]),
-        governance_state=str(values[7]),
+        region=str(values[5]) if values[5] is not None else None,
+        secret_ref=str(values[6]),
+        connection_state=str(values[7]),
+        governance_state=str(values[8]),
         available_models=raw_models,
-        last_tested_at=values[9],
-        last_success_at=values[10],
-        safe_error_category=str(values[11]) if values[11] is not None else None,
-        revision=int(values[12]),
-        created_by_ref=str(values[13]),
-        updated_by_ref=str(values[14]),
-        created_at=values[15],
-        updated_at=values[16],
+        last_tested_at=values[10],
+        last_success_at=values[11],
+        safe_error_category=str(values[12]) if values[12] is not None else None,
+        revision=int(values[13]),
+        created_by_ref=str(values[14]),
+        updated_by_ref=str(values[15]),
+        created_at=values[16],
+        updated_at=values[17],
     )
 
 

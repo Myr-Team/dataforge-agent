@@ -65,6 +65,21 @@ def test_provider_type_and_endpoint_are_server_bounded() -> None:
         ProviderPatch(base_revision=1, base_url="http://api.deepseek.com")
 
 
+def test_provider_accepts_bedrock_type_and_optional_region() -> None:
+    record = _record().model_copy(
+        update={
+            "provider_type": "aws_bedrock",
+            "display_name": "AWS Bedrock",
+            "base_url": "https://bedrock.ap-southeast-1.amazonaws.com",
+            "region": "ap-southeast-1",
+        }
+    )
+
+    assert record.provider_type == "aws_bedrock"
+    assert record.public_payload()["region"] == "ap-southeast-1"
+    assert ProviderPatch(base_revision=1, region="ap-southeast-1").region == "ap-southeast-1"
+
+
 def test_provider_patch_requires_a_positive_base_revision() -> None:
     with pytest.raises(ValidationError):
         ProviderPatch(base_revision=0, display_name="New name")

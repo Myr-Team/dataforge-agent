@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-ProviderType = Literal["deepseek"]
+ProviderType = Literal["deepseek", "aws_bedrock"]
 ConnectionState = Literal[
     "testing",
     "connected",
@@ -49,6 +49,7 @@ class ModelProviderRecord(BaseModel):
     provider_type: ProviderType
     display_name: str = Field(min_length=1, max_length=120)
     base_url: str = Field(min_length=1, max_length=320)
+    region: str | None = Field(default=None, max_length=32)
     secret_ref: str = Field(min_length=1, max_length=240, exclude=True, repr=False)
     connection_state: ConnectionState
     governance_state: GovernanceState
@@ -87,6 +88,7 @@ class ProviderPatch(BaseModel):
     base_revision: int = Field(ge=1)
     display_name: str | None = Field(default=None, min_length=1, max_length=120)
     base_url: str | None = Field(default=None, min_length=1, max_length=320)
+    region: str | None = Field(default=None, max_length=32)
     connection_state: ConnectionState | None = None
     governance_state: GovernanceState | None = None
     available_models: list[ProviderModel] | None = Field(default=None, max_length=64)

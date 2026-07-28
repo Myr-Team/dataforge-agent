@@ -8,6 +8,7 @@ from backend.model_provider_repository import (
     InMemoryModelProviderRepository,
     ModelProviderConflictError,
     ModelProviderNotFoundError,
+    SqlModelProviderRepository,
 )
 from backend.model_providers import ModelProviderRecord, ProviderPatch
 
@@ -75,3 +76,96 @@ def test_repository_never_accepts_api_key_material() -> None:
 
     with pytest.raises(TypeError):
         repository.create(_record(), api_key="forbidden-key-material")  # type: ignore[call-arg]
+
+
+def test_repository_persists_and_updates_provider_region() -> None:
+    repository = InMemoryModelProviderRepository()
+    repository.create(_record().model_copy(update={"region": "ap-southeast-1"}))
+
+    saved = repository.update(
+        "tenant-a",
+        "provider_01",
+        ProviderPatch(base_revision=1, region="us-west-2"),
+        actor_ref="actor-b",
+    )
+
+    assert saved.region == "us-west-2"
+    assert repository.get("tenant-a", "provider_01").region == "us-west-2"
+
+
+class _SqlCursor:
+    def __init__(self, row: tuple[object, ...]) -> None:
+        self.operations: list[tuple[str, tuple[object, ...]]] = []
+        self.row = row
+        self.rowcount = 1
+
+    def execute(self, operation: str, *parameters: object) -> "_SqlCursor":
+        self.operations.append((operation, parameters))
+        return self
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return [self.row]
+
+    def fetchone(self) -> tuple[object, ...]:
+        return self.row
+
+
+class _SqlConnection:
+    autocommit = False
+
+    def __init__(self, cursor: _SqlCursor) -> None:
+        self._cursor = cursor
+
+    def cursor(self) -> _SqlCursor:
+        return self._cursor
+
+    def commit(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def test_sql_repository_round_trips_and_updates_provider_region() -> None:
+    value = _record().model_copy(update={"region": "ap-southeast-1"})
+    row = (
+        value.provider_id,
+        value.tenant_ref,
+        value.provider_type,
+        value.display_name,
+        value.base_url,
+        value.region,
+        value.secret_ref,
+        value.connection_state,
+        value.governance_state,
+        "[]",
+        value.last_tested_at,
+        value.last_success_at,
+        value.safe_error_category,
+        value.revision,
+        value.created_by_ref,
+        value.updated_by_ref,
+        value.created_at,
+        value.updated_at,
+    )
+    cursor = _SqlCursor(row)
+    repository = SqlModelProviderRepository(
+        connection_factory=lambda: _SqlConnection(cursor)
+    )
+
+    repository.create(value)
+    loaded = repository.get("tenant-a", "provider_01")
+    repository.update(
+        "tenant-a",
+        "provider_01",
+        ProviderPatch(base_revision=1, region="us-west-2"),
+        actor_ref="actor-b",
+    )
+
+    assert loaded.region == "ap-southeast-1"
+    create_operation, create_parameters = cursor.operations[0]
+    assert "region" in create_operation
+    assert create_parameters[5] == "ap-southeast-1"
+    update_operation, update_parameters = cursor.operations[-1]
+    assert "region = ?" in update_operation
+    assert update_parameters[2] == "us-west-2"

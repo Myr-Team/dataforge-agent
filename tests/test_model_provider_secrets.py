@@ -9,6 +9,7 @@ from backend.model_provider_secrets import (
     model_provider_secret_store_from_environment,
     provider_secret_name,
 )
+from backend.aws_bedrock_provider import AwsBedrockCredential
 
 
 class _Secret:
@@ -50,6 +51,30 @@ def test_key_vault_provider_store_returns_only_a_reference() -> None:
     assert reference.startswith("kv:df-model-provider-")
     assert store.get("tenant-a", "provider_01", reference) == "secret-marker"
     assert "secret-marker" not in reference
+
+
+def test_provider_store_round_trips_one_bedrock_credential_bundle() -> None:
+    client = _SecretClient()
+    store = KeyVaultModelProviderSecretStore(client=client)
+    bundle = AwsBedrockCredential(
+        access_key_id="AKIAEXAMPLE",
+        secret_access_key="secret-marker-123",
+    ).to_secret_value()
+
+    reference = store.put("tenant-a", "provider_01", bundle)
+
+    assert AwsBedrockCredential.from_secret_value(
+        store.get("tenant-a", "provider_01", reference)
+    ).secret_access_key == "secret-marker-123"
+
+
+def test_provider_store_preserves_opaque_legacy_key_starting_with_brace() -> None:
+    store = KeyVaultModelProviderSecretStore(client=_SecretClient())
+    legacy_key = '{"not":"bedrock"}'
+
+    reference = store.put("tenant-a", "provider_01", legacy_key)
+
+    assert store.get("tenant-a", "provider_01", reference) == legacy_key
 
 
 def test_provider_store_redacts_key_from_failure() -> None:

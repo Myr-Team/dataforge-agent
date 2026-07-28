@@ -37,6 +37,16 @@ def test_provider_and_entra_schema_is_additive_tenant_scoped_and_revisioned() ->
     assert "truncate table" not in lowered
 
 
+def test_finops_schema_allows_bedrock_and_adds_region() -> None:
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+
+    assert "region NVARCHAR(32) NULL" in sql
+    assert "N'aws_bedrock'" in sql
+    assert "DROP CONSTRAINT CK_finops_model_provider_type" in sql
+    assert "definition" in sql
+    assert "IF NOT EXISTS" in sql
+
+
 def test_provider_schema_constrains_public_states_roles_and_json() -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
 

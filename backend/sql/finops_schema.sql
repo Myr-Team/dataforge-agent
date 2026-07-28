@@ -455,6 +455,7 @@ BEGIN
         provider_type NVARCHAR(40) NOT NULL,
         display_name NVARCHAR(120) NOT NULL,
         base_url NVARCHAR(320) NOT NULL,
+        region NVARCHAR(32) NULL,
         secret_ref NVARCHAR(240) NOT NULL,
         connection_state NVARCHAR(32) NOT NULL,
         governance_state NVARCHAR(32) NOT NULL,
@@ -472,7 +473,7 @@ BEGIN
             CONSTRAINT DF_finops_model_provider_updated DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_finops_model_provider PRIMARY KEY (tenant_ref, provider_id),
         CONSTRAINT CK_finops_model_provider_type CHECK (
-            provider_type IN (N'deepseek')
+            provider_type IN (N'deepseek', N'aws_bedrock')
         ),
         CONSTRAINT CK_finops_model_provider_connection CHECK (
             connection_state IN (
@@ -491,6 +492,35 @@ BEGIN
     );
     CREATE UNIQUE INDEX UQ_finops_model_provider_name
         ON df_finops.model_provider (tenant_ref, display_name);
+END;
+
+IF COL_LENGTH(N'df_finops.model_provider', N'region') IS NULL
+BEGIN
+    ALTER TABLE df_finops.model_provider ADD region NVARCHAR(32) NULL;
+END;
+
+IF EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = N'CK_finops_model_provider_type'
+        AND parent_object_id = OBJECT_ID(N'df_finops.model_provider')
+        AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+            LOWER(definition), N' ', N''), CHAR(9), N''), CHAR(10), N''),
+            CHAR(13), N''), N'[', N''), N']', N'')
+            <> N'(provider_typein(n''deepseek'',n''aws_bedrock''))'
+)
+BEGIN
+    ALTER TABLE df_finops.model_provider
+        DROP CONSTRAINT CK_finops_model_provider_type;
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = N'CK_finops_model_provider_type'
+        AND parent_object_id = OBJECT_ID(N'df_finops.model_provider')
+)
+BEGIN
+    ALTER TABLE df_finops.model_provider ADD CONSTRAINT CK_finops_model_provider_type
+        CHECK (provider_type IN (N'deepseek', N'aws_bedrock'));
 END;
 
 IF OBJECT_ID(N'df_finops.model_provider_model', N'U') IS NULL

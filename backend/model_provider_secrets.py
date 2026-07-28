@@ -4,6 +4,7 @@ import hashlib
 import os
 from typing import Any, Mapping, Protocol
 
+from .aws_bedrock_provider import AwsBedrockCredential
 from .connector_secret_store import validate_key_vault_url
 
 try:
@@ -59,7 +60,7 @@ class KeyVaultModelProviderSecretStore:
             raise ModelProviderSecretError("provider_key_vault_unavailable") from None
 
     def put(self, tenant_ref: str, provider_id: str, api_key: str) -> str:
-        key = _validated_api_key(api_key)
+        key = _validated_secret_value(api_key)
         name = provider_secret_name(tenant_ref, provider_id)
         try:
             self._client.set_secret(name, key)
@@ -78,7 +79,7 @@ class KeyVaultModelProviderSecretStore:
             value = str(self._client.get_secret(name).value or "")
         except Exception:
             raise ModelProviderSecretError("provider_secret_get_failed") from None
-        return _validated_api_key(value)
+        return _validated_secret_value(value)
 
     def rotate(self, tenant_ref: str, provider_id: str, api_key: str) -> str:
         return self.put(tenant_ref, provider_id, api_key)
@@ -119,6 +120,16 @@ def _validated_api_key(value: str) -> str:
     if len(key) < 8 or len(key) > 512 or any(char.isspace() for char in key):
         raise ModelProviderSecretError("provider_api_key_invalid")
     return key
+
+
+def _validated_secret_value(value: str) -> str:
+    secret_value = str(value or "").strip()
+    if secret_value.startswith("{"):
+        try:
+            return AwsBedrockCredential.from_secret_value(secret_value).to_secret_value()
+        except Exception:
+            return _validated_api_key(secret_value)
+    return _validated_api_key(secret_value)
 
 
 __all__ = [
