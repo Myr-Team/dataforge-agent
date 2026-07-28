@@ -7,10 +7,10 @@ from typing import Any, Mapping, Protocol
 from .connector_secret_store import validate_key_vault_url
 
 try:
-    from azure.identity import DefaultAzureCredential
+    from azure.identity import ManagedIdentityCredential
     from azure.keyvault.secrets import SecretClient
 except ImportError:
-    DefaultAzureCredential = None  # type: ignore[assignment]
+    ManagedIdentityCredential = None  # type: ignore[assignment]
     SecretClient = None  # type: ignore[assignment]
 
 
@@ -48,12 +48,12 @@ class KeyVaultModelProviderSecretStore:
             return
         if not vault_url:
             raise ModelProviderSecretError("provider_key_vault_required")
-        if DefaultAzureCredential is None or SecretClient is None:
+        if ManagedIdentityCredential is None or SecretClient is None:
             raise ModelProviderSecretError("provider_key_vault_unavailable")
         try:
             self._client = SecretClient(
                 vault_url=validate_key_vault_url(vault_url),
-                credential=DefaultAzureCredential(),
+                credential=ManagedIdentityCredential(),
             )
         except Exception:
             raise ModelProviderSecretError("provider_key_vault_unavailable") from None

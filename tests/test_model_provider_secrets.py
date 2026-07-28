@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import backend.model_provider_secrets as provider_secrets
 from backend.model_provider_secrets import (
     KeyVaultModelProviderSecretStore,
     ModelProviderSecretError,
@@ -67,3 +68,45 @@ def test_candidate_provider_store_requires_key_vault_configuration() -> None:
         model_provider_secret_store_from_environment({})
 
     assert captured.value.code == "provider_key_vault_required"
+
+
+def test_provider_store_uses_system_identity_when_azure_client_id_is_unrelated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _SystemManagedIdentity:
+        def __init__(self, *, client_id: str | None = None) -> None:
+            captured["managed_identity_client_id"] = client_id
+
+    class _CapturingSecretClient:
+        def __init__(self, *, vault_url: str, credential: object) -> None:
+            captured["vault_url"] = vault_url
+            captured["credential"] = credential
+
+    monkeypatch.setenv("AZURE_CLIENT_ID", "unrelated-foundry-client")
+    monkeypatch.setattr(
+        provider_secrets,
+        "DefaultAzureCredential",
+        lambda: (_ for _ in ()).throw(AssertionError("default credential selected")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        provider_secrets,
+        "ManagedIdentityCredential",
+        _SystemManagedIdentity,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        provider_secrets,
+        "SecretClient",
+        _CapturingSecretClient,
+    )
+
+    store = model_provider_secret_store_from_environment(
+        {"DF_KEY_VAULT_URL": "https://example.vault.azure.net/"}
+    )
+
+    assert isinstance(store, KeyVaultModelProviderSecretStore)
+    assert captured["managed_identity_client_id"] is None
+    assert captured["vault_url"] == "https://example.vault.azure.net"
