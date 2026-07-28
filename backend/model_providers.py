@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .aws_bedrock_provider import bedrock_control_endpoint
+
 
 ProviderType = Literal["deepseek", "aws_bedrock"]
 ConnectionState = Literal[
@@ -68,6 +70,19 @@ class ModelProviderRecord(BaseModel):
     def _base_url(cls, value: str) -> str:
         return _https_endpoint(value)
 
+    @model_validator(mode="after")
+    def _bedrock_control_endpoint(self) -> "ModelProviderRecord":
+        if self.provider_type != "aws_bedrock":
+            return self
+        try:
+            endpoint = bedrock_control_endpoint(self.region or "")
+        except ValueError:
+            raise ValueError("bedrock_region_unsupported") from None
+        if self.base_url != endpoint:
+            raise ValueError("bedrock_control_endpoint_mismatch")
+        self.region = str(self.region or "").strip().lower()
+        return self
+
     def public_payload(self) -> dict[str, Any]:
         payload = self.model_dump(
             mode="json",
@@ -106,6 +121,13 @@ class ProviderPatch(BaseModel):
         values = self.model_dump(exclude={"base_revision"}, exclude_none=True)
         if not values:
             raise ValueError("provider patch has no changes")
+        if self.region is not None:
+            try:
+                endpoint = bedrock_control_endpoint(self.region)
+            except ValueError:
+                raise ValueError("bedrock_region_unsupported") from None
+            if self.base_url is not None and self.base_url != endpoint:
+                raise ValueError("bedrock_control_endpoint_mismatch")
         return self
 
 

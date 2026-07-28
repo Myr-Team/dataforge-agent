@@ -41,6 +41,20 @@ def _record() -> ModelProviderRecord:
     )
 
 
+def _bedrock_payload(**updates: object) -> dict[str, object]:
+    payload = dict(_record().__dict__)
+    payload.update(
+        {
+            "provider_type": "aws_bedrock",
+            "display_name": "AWS Bedrock",
+            "base_url": "https://bedrock.ap-southeast-1.amazonaws.com",
+            "region": "ap-southeast-1",
+        }
+    )
+    payload.update(updates)
+    return payload
+
+
 def test_provider_public_serialization_masks_internal_identity_and_secret() -> None:
     record = _record()
 
@@ -66,18 +80,52 @@ def test_provider_type_and_endpoint_are_server_bounded() -> None:
 
 
 def test_provider_accepts_bedrock_type_and_optional_region() -> None:
-    record = _record().model_copy(
-        update={
-            "provider_type": "aws_bedrock",
-            "display_name": "AWS Bedrock",
-            "base_url": "https://bedrock.ap-southeast-1.amazonaws.com",
-            "region": "ap-southeast-1",
-        }
-    )
+    record = ModelProviderRecord.model_validate(_bedrock_payload())
 
     assert record.provider_type == "aws_bedrock"
     assert record.public_payload()["region"] == "ap-southeast-1"
-    assert ProviderPatch(base_revision=1, region="ap-southeast-1").region == "ap-southeast-1"
+    assert (
+        ProviderPatch(
+            base_revision=1,
+            region="ap-southeast-1",
+            base_url="https://bedrock.ap-southeast-1.amazonaws.com",
+        ).region
+        == "ap-southeast-1"
+    )
+
+
+def test_bedrock_record_rejects_untrusted_or_mismatched_control_endpoint() -> None:
+    with pytest.raises(ValidationError, match="bedrock_control_endpoint_mismatch"):
+        ModelProviderRecord.model_validate(
+            _bedrock_payload(base_url="https://evil.example")
+        )
+
+    with pytest.raises(ValidationError, match="bedrock_region_unsupported"):
+        ModelProviderRecord.model_validate(
+            _bedrock_payload(
+                region="moon-1",
+                base_url="https://bedrock.moon-1.amazonaws.com",
+            )
+        )
+
+    with pytest.raises(ValidationError, match="bedrock_control_endpoint_mismatch"):
+        ModelProviderRecord.model_validate(
+            _bedrock_payload(base_url="https://bedrock.us-west-2.amazonaws.com")
+        )
+
+    with pytest.raises(ValidationError, match="bedrock_control_endpoint_mismatch"):
+        ProviderPatch(
+            base_revision=1,
+            region="ap-southeast-1",
+            base_url="https://bedrock.us-west-2.amazonaws.com",
+        )
+
+
+def test_deepseek_record_remains_unaffected_by_bedrock_control_validation() -> None:
+    record = ModelProviderRecord.model_validate(dict(_record().__dict__))
+
+    assert record.provider_type == "deepseek"
+    assert record.base_url == "https://api.deepseek.com"
 
 
 def test_provider_patch_requires_a_positive_base_revision() -> None:
