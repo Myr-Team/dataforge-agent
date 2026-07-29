@@ -5,7 +5,10 @@ from fastapi.testclient import TestClient
 import backend.model_provider_router as provider_router
 from backend.app import app
 from backend.deepseek_provider import ProviderHttpResponse
+from backend.aws_bedrock_provider import AwsBedrockCredential
 from backend.model_provider_repository import InMemoryModelProviderRepository
+from backend.model_provider_service import ModelProviderService
+from backend.model_providers import ProviderModel
 from auth_fixtures import trusted_headers
 
 
@@ -40,6 +43,27 @@ class _Transport:
                 },
             },
         )
+
+
+class _BedrockControlPlane:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, AwsBedrockCredential]] = []
+
+    def list_models(
+        self,
+        region: str,
+        credential: AwsBedrockCredential,
+    ) -> list[ProviderModel]:
+        self.calls.append((region, credential))
+        return [
+            ProviderModel(
+                model_id="anthropic.claude-sonnet-4-20250514-v1:0",
+                display_name="Claude Sonnet 4",
+                capabilities=["text", "streaming"],
+                support_state="unsupported",
+                price_key=None,
+            )
+        ]
 
 
 def _client(monkeypatch, *, roles: dict[str, str] | None = None):
@@ -201,3 +225,42 @@ def test_invalid_provider_endpoint_is_rejected_before_secret_write(
 
     assert response.status_code == 422
     assert secrets.values == {}
+
+
+def test_service_dispatches_bedrock_connection_test_as_unmanaged_discovery() -> None:
+    repository = InMemoryModelProviderRepository()
+    secrets = _Secrets()
+    bedrock = _BedrockControlPlane()
+    service = ModelProviderService(
+        repository=repository,
+        secret_store=secrets,
+        transport=_Transport(),
+        bedrock_control_plane=bedrock,
+    )
+    credential = AwsBedrockCredential(
+        access_key_id="AKIAEXAMPLE",
+        secret_access_key="secret-marker-value",
+    )
+
+    result = service.create(
+        tenant_ref="tenant-safe",
+        actor_ref="actor-safe",
+        provider_type="aws_bedrock",
+        display_name="AWS Bedrock",
+        base_url="https://bedrock.us-east-1.amazonaws.com",
+        region="us-east-1",
+        secret_value=credential.to_secret_value(),
+        provider_id="provider_bedrock",
+    )
+
+    assert result["connection_state"] == "connected"
+    assert result["governance_state"] == "unmanaged"
+    assert result["available_models"] == [{
+        "model_id": "anthropic.claude-sonnet-4-20250514-v1:0",
+        "display_name": "Claude Sonnet 4",
+        "capabilities": ["text", "streaming"],
+        "support_state": "unsupported",
+        "price_key": None,
+    }]
+    assert bedrock.calls == [("us-east-1", credential)]
+    assert list(secrets.values.values()) == [credential.to_secret_value()]
