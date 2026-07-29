@@ -7,22 +7,22 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-def run_sweep(evaluator: Any, tenant_refs: tuple[str, ...]) -> int:
-    infrastructure_failed = False
+def run_sweep(evaluator: Any, tenant_refs: tuple[str, ...], workspace_scopes: Any | None = None) -> int:
     for tenant_ref in tenant_refs:
         try:
-            evaluator.evaluate_tenant(tenant_ref, now=datetime.now(timezone.utc))
+            scope = tuple(workspace_scopes(tenant_ref)) if workspace_scopes else ()
+            evaluator.evaluate_tenant(tenant_ref, now=datetime.now(timezone.utc), workspace_ids=scope)
         except Exception:
             # Per-tenant email/evaluation failures are isolated. Callers that
             # cannot enumerate/connect infrastructure should pass no evaluator.
             continue
-    return 1 if infrastructure_failed else 0
+    return 0
 
 
 def main() -> int:
-    # No implicit production wiring: a deployment must explicitly provide the
-    # SQL-backed evaluator and tenant enumerator.
-    return 0
+    # Fail closed: production construction is explicitly injected by the job
+    # runner; a bare invocation must never pretend a sweep succeeded.
+    return 1
 
 
 if __name__ == "__main__":

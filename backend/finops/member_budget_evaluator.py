@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any, Callable
 from uuid import NAMESPACE_URL, uuid5
 
-from .acs_email import AcsEmailError, EmailMessage
+from .acs_email import AcsEmailError, EmailMessage, render_template
 from .member_budgets import BudgetAlert, MemberCostSummary
 
 
@@ -39,7 +39,7 @@ class MemberBudgetEvaluator:
         created = sent = skipped = failed = 0
         for budget in budgets:
             cost = costs.get(budget.member_ref)
-            if budget.member_ref not in active or not cost or cost.estimated_spend_usd is None or cost.data_status != "complete" or not cost.pricing_coverage_pct:
+            if budget.member_ref not in active or not cost or cost.estimated_spend_usd is None or cost.data_status not in {"complete", "partial"} or not cost.pricing_coverage_pct:
                 skipped += 1; continue
             usage = Decimal(cost.estimated_spend_usd) / budget.amount_usd * 100
             crossed = [t for t in budget.thresholds_pct if usage >= t]
@@ -52,17 +52,28 @@ class MemberBudgetEvaluator:
                     if threshold == highest:
                         outcome = self._deliver(alert, notification, self._active_admins(tenant_ref, workspace_ids)[notification.recipient_actor_ref], now)
                         sent += outcome == "sent"; failed += outcome == "failed"
+        # Reclaim failed/pending and lease-expired sending alerts. A successful
+        # CAS is the only ownership proof, so concurrent workers fail closed.
+        recipient = self._active_admins(tenant_ref, workspace_ids).get(notification.recipient_actor_ref)
+        if recipient:
+            for alert in self._repository.list_alerts(tenant_ref, offset=0, limit=101):
+                if alert.delivery_state == "sent" or alert.attempt_count >= 3:
+                    continue
+                stale = alert.delivery_state == "sending" and (now - alert.updated_at).total_seconds() >= 15 * 60
+                if alert.delivery_state in {"pending", "failed"} or stale:
+                    outcome = self._deliver(alert, notification, recipient, now)
+                    sent += outcome == "sent"; failed += outcome == "failed"
         return EvaluationSummary(created, sent, skipped, failed)
 
     def _deliver(self, alert: BudgetAlert, notification: Any, recipient: str, now: datetime) -> str:
         sending = alert.model_copy(update={"delivery_state":"sending", "attempt_count":alert.attempt_count+1, "updated_at":now})
-        if not self._repository.transition_alert(alert.tenant_ref, alert.alert_id, expected_state="pending", value=sending): return "skipped"
+        if not self._repository.transition_alert(alert.tenant_ref, alert.alert_id, expected_state=alert.delivery_state, value=sending): return "skipped"
         try:
             operation_id = str(uuid5(NAMESPACE_URL, f"dataforge-budget-alert:{alert.alert_id}"))
-            result = self._sender.send(EmailMessage(recipient=recipient, sender_display_name=notification.sender_display_name, subject=notification.subject_template, plain_text=notification.body_template), operation_id)
+            values = {"member_name":"Member", "budget_amount":str(alert.budget_amount_usd), "estimated_spend":str(alert.estimated_spend_usd), "usage_percent":str(round(alert.estimated_spend_usd / alert.budget_amount_usd * 100, 2)), "threshold_percent":str(alert.threshold_pct), "period_label":alert.period_key, "pricing_coverage":str(alert.pricing_coverage_pct), "portal_url":"-"}
+            result = self._sender.send(EmailMessage(recipient=recipient, sender_display_name=notification.sender_display_name, subject=render_template(notification.subject_template, values), plain_text=render_template(notification.body_template, values)), operation_id)
             final = sending.model_copy(update={"delivery_state":"sent", "sent_at":result.sent_at, "updated_at":now})
-            self._repository.transition_alert(alert.tenant_ref, alert.alert_id, expected_state="sending", value=final)
-            return "sent"
+            return "sent" if self._repository.transition_alert(alert.tenant_ref, alert.alert_id, expected_state="sending", value=final) else "skipped"
         except Exception as exc:
             category = exc.category if isinstance(exc, AcsEmailError) else "service_unavailable"
             final = sending.model_copy(update={"delivery_state":"failed", "safe_error_category":category, "updated_at":now})

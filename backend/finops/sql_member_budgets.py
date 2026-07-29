@@ -37,6 +37,11 @@ class SqlMemberBudgetRepository:
             ).fetchone()
         return _budget_from_row(row) if row is not None else None
 
+    def list_enabled_tenants(self) -> tuple[str, ...]:
+        with self._transaction() as cursor:
+            rows = cursor.execute("SELECT DISTINCT tenant_ref FROM df_finops.member_budget WHERE enabled = 1").fetchall()
+        return tuple(sorted(str(_value(row, 0)) for row in rows))
+
     def list_budgets(self, tenant_ref: str, *, include_disabled: bool = False) -> tuple[MemberBudget, ...]:
         where_enabled = "" if include_disabled else " AND enabled = 1"
         with self._transaction() as cursor:
