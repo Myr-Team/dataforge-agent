@@ -96,6 +96,11 @@ class BudgetAlert(BaseModel):
     triggered_at: datetime
     sent_at: datetime | None = None
     updated_at: datetime
+    lease_token: str | None = Field(
+        default=None, min_length=8, max_length=64, repr=False, exclude=True
+    )
+    lease_expires_at: datetime | None = Field(default=None, exclude=True)
+    next_attempt_at: datetime | None = Field(default=None, exclude=True)
 
 
 class NotificationSetting(BaseModel):

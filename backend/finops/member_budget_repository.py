@@ -24,7 +24,22 @@ class MemberBudgetRepository(Protocol):
         self, tenant_ref: str, value: NotificationSetting, *, base_revision: int
     ) -> NotificationSetting: ...
     def claim_alert(self, value: BudgetAlert) -> bool: ...
-    def transition_alert(self, tenant_ref: str, alert_id: str, *, expected_state: str, value: BudgetAlert) -> bool: ...
+    def acquire_due_alert(
+        self,
+        tenant_ref: str,
+        *,
+        now: datetime,
+        lease_token: str,
+        lease_expires_at: datetime,
+    ) -> BudgetAlert | None: ...
+    def finalize_alert(
+        self,
+        tenant_ref: str,
+        alert_id: str,
+        *,
+        lease_token: str,
+        value: BudgetAlert,
+    ) -> bool: ...
     def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None, offset: int = 0, limit: int = 100) -> tuple[BudgetAlert, ...]: ...
 
 
@@ -113,12 +128,94 @@ class InMemoryMemberBudgetRepository:
             self._alerts_by_id[(value.tenant_ref, value.alert_id)] = value
             return True
 
-    def transition_alert(self, tenant_ref: str, alert_id: str, *, expected_state: str, value: BudgetAlert) -> bool:
+    def acquire_due_alert(
+        self,
+        tenant_ref: str,
+        *,
+        now: datetime,
+        lease_token: str,
+        lease_expires_at: datetime,
+    ) -> BudgetAlert | None:
+        if (
+            now.tzinfo is None
+            or lease_expires_at.tzinfo is None
+            or lease_expires_at <= now
+            or not 8 <= len(lease_token) <= 64
+        ):
+            raise ValueError("invalid budget alert lease")
+        with self._lock:
+            candidates = [
+                alert
+                for (tenant, _alert_id), alert in self._alerts_by_id.items()
+                if tenant == tenant_ref
+                and alert.attempt_count < 3
+                and (
+                    (
+                        alert.delivery_state in {"pending", "failed"}
+                        and (
+                            alert.next_attempt_at is None
+                            or alert.next_attempt_at <= now
+                        )
+                    )
+                    or (
+                        alert.delivery_state == "sending"
+                        and alert.lease_expires_at is not None
+                        and alert.lease_expires_at <= now
+                    )
+                )
+            ]
+            if not candidates:
+                return None
+            current = min(
+                candidates,
+                key=lambda alert: (
+                    alert.next_attempt_at or alert.lease_expires_at or alert.triggered_at,
+                    alert.triggered_at,
+                    alert.alert_id,
+                ),
+            )
+            acquired = current.model_copy(
+                update={
+                    "delivery_state": "sending",
+                    "attempt_count": current.attempt_count + 1,
+                    "lease_token": lease_token,
+                    "lease_expires_at": lease_expires_at,
+                    "next_attempt_at": None,
+                    "updated_at": now,
+                }
+            )
+            key = (
+                tenant_ref,
+                current.budget_id,
+                current.period_key,
+                current.threshold_pct,
+            )
+            self._alerts[key] = acquired
+            self._alerts_by_id[(tenant_ref, current.alert_id)] = acquired
+            return acquired
+
+    def finalize_alert(
+        self,
+        tenant_ref: str,
+        alert_id: str,
+        *,
+        lease_token: str,
+        value: BudgetAlert,
+    ) -> bool:
         with self._lock:
             current = self._alerts_by_id.get((tenant_ref, alert_id))
-            if current is None or current.delivery_state != expected_state:
+            if (
+                current is None
+                or current.delivery_state != "sending"
+                or current.lease_token != lease_token
+            ):
                 return False
-            key = (tenant_ref, current.budget_id, current.period_key, current.threshold_pct)
+            key = (
+                tenant_ref,
+                current.budget_id,
+                current.period_key,
+                current.threshold_pct,
+            )
             self._alerts[key] = value
             self._alerts_by_id[(tenant_ref, alert_id)] = value
             return True

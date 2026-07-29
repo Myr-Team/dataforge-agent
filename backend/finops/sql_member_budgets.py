@@ -114,6 +114,23 @@ class SqlMemberBudgetRepository:
             for row in amount_rows
         }
 
+    def summarize_month(
+        self,
+        tenant_ref: str,
+        from_value: datetime,
+        to_value: datetime,
+        workspace_ids: tuple[str, ...],
+    ) -> dict[str, MemberCostSummary]:
+        """Evaluator adapter over the same reconciled request-event ledger."""
+        if from_value.tzinfo is None or to_value.tzinfo is None:
+            raise ValueError("member cost window must be UTC")
+        return self.summarize_member_costs(
+            tenant_ref=tenant_ref,
+            from_value=_iso_utc(from_value),
+            to_value=_iso_utc(to_value),
+            workspace_ids=workspace_ids,
+        )
+
     def save_budget(self, tenant_ref: str, value: MemberBudget, *, base_revision: int) -> MemberBudget:
         thresholds_json = json.dumps(value.thresholds_pct, separators=(",", ":"))
         try:
@@ -280,7 +297,8 @@ class SqlMemberBudgetRepository:
                 SELECT alert_id, budget_id, actor_ref, period_key, threshold_pct,
                        budget_amount_usd, estimated_spend_usd, pricing_coverage_pct,
                        budget_revision, notification_revision, delivery_state,
-                       safe_error_category, attempt_count, triggered_at, sent_at, updated_at
+                       safe_error_category, attempt_count, triggered_at, sent_at, updated_at,
+                       lease_token, lease_expires_at, next_attempt_at
                 FROM df_finops.budget_alert
                 WHERE tenant_ref = ?{budget_filter}
                 ORDER BY triggered_at, alert_id
@@ -299,8 +317,9 @@ class SqlMemberBudgetRepository:
                         tenant_ref, alert_id, budget_id, actor_ref, period_key, threshold_pct,
                         budget_amount_usd, estimated_spend_usd, pricing_coverage_pct,
                         budget_revision, notification_revision, delivery_state,
-                        safe_error_category, attempt_count, triggered_at, sent_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+                        safe_error_category, attempt_count, triggered_at, sent_at, updated_at,
+                        lease_token, lease_expires_at, next_attempt_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
                     value.tenant_ref,
                     value.alert_id,
                     value.budget_id,
@@ -318,6 +337,9 @@ class SqlMemberBudgetRepository:
                     value.triggered_at,
                     value.sent_at,
                     value.updated_at,
+                    value.lease_token,
+                    value.lease_expires_at,
+                    value.next_attempt_at,
                 )
             return True
         except FinOpsPersistenceError as exc:
@@ -327,16 +349,101 @@ class SqlMemberBudgetRepository:
                 return False
             raise MemberBudgetConflictError("budget alert id conflict") from None
 
-    def transition_alert(self, tenant_ref: str, alert_id: str, *, expected_state: str, value: BudgetAlert) -> bool:
-        """CAS transition prevents concurrent workers from sending the same claim."""
+    def acquire_due_alert(
+        self,
+        tenant_ref: str,
+        *,
+        now: datetime,
+        lease_token: str,
+        lease_expires_at: datetime,
+    ) -> BudgetAlert | None:
+        """Atomically acquire the oldest due or expired alert under an owner token."""
+        if (
+            now.tzinfo is None
+            or lease_expires_at.tzinfo is None
+            or lease_expires_at <= now
+            or not 8 <= len(lease_token) <= 64
+        ):
+            raise ValueError("invalid budget alert lease")
+        with self._transaction() as cursor:
+            row = cursor.execute(
+                """/* finops:acquire-due-budget-alert */
+                ;WITH candidate AS (
+                    SELECT TOP (1) *
+                    FROM df_finops.budget_alert WITH (UPDLOCK, READPAST, ROWLOCK)
+                    WHERE tenant_ref = ?
+                      AND attempt_count < 3
+                      AND (
+                        (
+                          delivery_state IN (N'pending', N'failed')
+                          AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                        )
+                        OR
+                        (
+                          delivery_state = N'sending'
+                          AND lease_expires_at <= ?
+                        )
+                      )
+                    ORDER BY
+                      CASE
+                        WHEN delivery_state = N'sending' THEN lease_expires_at
+                        ELSE COALESCE(next_attempt_at, triggered_at)
+                      END,
+                      triggered_at,
+                      alert_id
+                )
+                UPDATE candidate
+                SET delivery_state = N'sending',
+                    attempt_count = attempt_count + 1,
+                    lease_token = ?,
+                    lease_expires_at = ?,
+                    next_attempt_at = NULL,
+                    updated_at = ?
+                OUTPUT inserted.alert_id, inserted.budget_id, inserted.actor_ref,
+                       inserted.period_key, inserted.threshold_pct,
+                       inserted.budget_amount_usd, inserted.estimated_spend_usd,
+                       inserted.pricing_coverage_pct, inserted.budget_revision,
+                       inserted.notification_revision, inserted.delivery_state,
+                       inserted.safe_error_category, inserted.attempt_count,
+                       inserted.triggered_at, inserted.sent_at, inserted.updated_at,
+                       inserted.lease_token, inserted.lease_expires_at,
+                       inserted.next_attempt_at;""",
+                tenant_ref,
+                now,
+                now,
+                lease_token,
+                lease_expires_at,
+                now,
+            ).fetchone()
+        return _alert_from_row(tenant_ref, row) if row is not None else None
+
+    def finalize_alert(
+        self,
+        tenant_ref: str,
+        alert_id: str,
+        *,
+        lease_token: str,
+        value: BudgetAlert,
+    ) -> bool:
+        """Finalize only the lease owner; a stale worker cannot mutate the row."""
         with self._transaction() as cursor:
             cursor.execute(
-                """/* finops:transition-budget-alert */
-                UPDATE df_finops.budget_alert SET delivery_state = ?, safe_error_category = ?,
-                    attempt_count = ?, sent_at = ?, updated_at = ?
-                WHERE tenant_ref = ? AND alert_id = ? AND delivery_state = ?""",
-                value.delivery_state, value.safe_error_category, value.attempt_count, value.sent_at,
-                value.updated_at, tenant_ref, alert_id, expected_state,
+                """/* finops:finalize-budget-alert */
+                UPDATE df_finops.budget_alert
+                SET delivery_state = ?, safe_error_category = ?, attempt_count = ?,
+                    sent_at = ?, updated_at = ?, lease_token = NULL,
+                    lease_expires_at = NULL, next_attempt_at = ?
+                WHERE tenant_ref = ? AND alert_id = ?
+                  AND delivery_state = N'sending' AND lease_token = ?""",
+                value.delivery_state,
+                value.safe_error_category,
+                value.attempt_count,
+                value.sent_at,
+                value.updated_at,
+                value.next_attempt_at,
+                tenant_ref,
+                alert_id,
+                lease_token,
             )
             return int(getattr(cursor, "rowcount", 0) or 0) == 1
 
@@ -446,10 +553,23 @@ def _alert_from_row(tenant_ref: str, row: Any) -> BudgetAlert:
         delivery_state=_value(row, 10),
         safe_error_category=_value(row, 11),
         attempt_count=_value(row, 12),
-        triggered_at=_value(row, 13),
-        sent_at=_value(row, 14),
-        updated_at=_value(row, 15),
+        triggered_at=_utc_datetime(_value(row, 13)),
+        sent_at=_utc_datetime(_value(row, 14)),
+        updated_at=_utc_datetime(_value(row, 15)),
+        lease_token=_value(row, 16),
+        lease_expires_at=_utc_datetime(_value(row, 17)),
+        next_attempt_at=_utc_datetime(_value(row, 18)),
     )
+
+
+def _utc_datetime(value: Any) -> Any:
+    if value is None or not isinstance(value, datetime):
+        return value
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _iso_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _is_unique_violation(exc: BaseException) -> bool:

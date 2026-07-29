@@ -107,3 +107,32 @@ def test_rollup_refresh_processes_scopes_without_returning_scope_identifiers() -
     assert result == {"scope_count": 1, "event_count": 1, "hourly_rows": 1, "daily_rows": 1}
     assert len(sink.calls) == 1
     assert "tenant-a" not in str(result)
+
+
+def test_rollup_refresh_invokes_budget_hook_only_after_success_and_isolates_failure() -> None:
+    events = InMemoryFinOpsRepository()
+    events.upsert_events(
+        [_event("req_aaaaaaaaaaaa", 1, status="succeeded", total_tokens=10, cost=0.001, latency_ms=100)]
+    )
+
+    class RollupSink:
+        def replace(self, **_kwargs: object) -> None:
+            calls.append("rollup")
+
+    class Evaluator:
+        def evaluate_tenant(self, tenant_ref: str, **_kwargs: object) -> None:
+            calls.append(f"budget:{tenant_ref}")
+            raise RuntimeError("email delivery is isolated")
+
+    calls: list[str] = []
+    result = refresh_rollups(
+        event_repository=events,
+        rollup_repository=RollupSink(),
+        scopes={"tenant-a": ("ws-a",)},
+        from_value="2026-07-24T02:00:00Z",
+        to_value="2026-07-24T03:00:00Z",
+        budget_evaluator=Evaluator(),
+    )
+
+    assert calls == ["rollup", "budget:tenant-a"]
+    assert result["scope_count"] == 1

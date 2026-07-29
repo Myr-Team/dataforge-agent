@@ -18,12 +18,14 @@ class _RecordingCursor:
         self.responses = list(responses)
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self._response: Any = None
+        self.rowcount = 0
 
     def execute(self, operation: str, *parameters: Any) -> "_RecordingCursor":
         self.calls.append((operation, parameters))
         self._response = self.responses.pop(0) if self.responses else None
         if isinstance(self._response, BaseException):
             raise self._response
+        self.rowcount = 1 if self._response == "ROWCOUNT_ONE" else 0
         return self
 
     def fetchone(self) -> Any:
@@ -184,7 +186,8 @@ def test_sql_repository_decodes_alert_nulls_and_uses_tenant_scoped_alert_query()
     now = datetime(2026, 7, 29, tzinfo=timezone.utc)
     connection = _RecordingConnection([[
         ("alert_safe", "budget_safe", "actor_safe", "2026-07", 80, Decimal("200"),
-         Decimal("190"), None, 1, 1, "pending", None, 0, now, None, now)
+         Decimal("190"), None, 1, 1, "pending", None, 0, now, None, now,
+         None, None, None)
     ]])
     repository = _repository(connection)
 
@@ -201,7 +204,7 @@ def test_sql_repository_returns_false_only_for_existing_threshold_claim() -> Non
     repository = _repository(insert_connection, lookup_connection)
 
     assert repository.claim_alert(_alert()) is False
-    assert len(insert_connection.cursor_value.calls[0][1]) == 17
+    assert len(insert_connection.cursor_value.calls[0][1]) == 20
     assert insert_connection.cursor_value.calls[0][1][:6] == (
         "tenant_safe", "alert_safe", "budget_safe", "actor_safe", "2026-07", 80
     )
@@ -330,3 +333,76 @@ def test_sql_member_costs_empty_authorized_scope_returns_empty_without_opening_c
         to_value="2026-08-01T00:00:00Z",
         workspace_ids=(),
     ) == {}
+
+
+def test_sql_month_adapter_uses_utc_exclusive_window_and_workspace_scope() -> None:
+    connection = _RecordingConnection([[], []])
+    repository = _repository(connection)
+
+    assert repository.summarize_month(
+        "tenant-safe",
+        datetime(2026, 7, 1, tzinfo=timezone.utc),
+        datetime(2026, 8, 1, tzinfo=timezone.utc),
+        ("ws-a",),
+    ) == {}
+    parameters = connection.cursor_value.calls[0][1]
+    assert parameters == (
+        "tenant-safe",
+        "ws-a",
+        "2026-07-01T00:00:00Z",
+        "2026-08-01T00:00:00Z",
+    )
+
+
+def test_sql_acquire_due_alert_uses_one_atomic_token_owned_statement() -> None:
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    expires = now.replace(minute=15)
+    row = (
+        "alert_safe", "budget_safe", "actor_safe", "2026-07", 80,
+        Decimal("200"), Decimal("190"), 95.0, 1, 1, "sending", None, 1,
+        now, None, now, "worker-token", expires, None,
+    )
+    connection = _RecordingConnection([row])
+    repository = _repository(connection)
+
+    acquired = repository.acquire_due_alert(
+        "tenant_safe",
+        now=now,
+        lease_token="worker-token",
+        lease_expires_at=expires,
+    )
+
+    assert acquired is not None
+    assert acquired.delivery_state == "sending"
+    assert acquired.lease_token == "worker-token"
+    operation, parameters = connection.cursor_value.calls[0]
+    assert "finops:acquire-due-budget-alert" in operation
+    assert "UPDLOCK, READPAST, ROWLOCK" in operation
+    assert parameters == (
+        "tenant_safe", now, now, "worker-token", expires, now
+    )
+
+
+def test_sql_finalize_alert_requires_matching_lease_token_and_clears_lease() -> None:
+    connection = _RecordingConnection(["ROWCOUNT_ONE"])
+    repository = _repository(connection)
+    value = _alert().model_copy(
+        update={
+            "delivery_state": "sent",
+            "attempt_count": 1,
+            "sent_at": datetime(2026, 7, 29, tzinfo=timezone.utc),
+            "lease_token": None,
+            "lease_expires_at": None,
+        }
+    )
+
+    assert repository.finalize_alert(
+        "tenant_safe",
+        "alert_safe",
+        lease_token="worker-token",
+        value=value,
+    )
+    operation, parameters = connection.cursor_value.calls[0]
+    assert "finops:finalize-budget-alert" in operation
+    assert "lease_token = ?" in operation
+    assert parameters[-3:] == ("tenant_safe", "alert_safe", "worker-token")

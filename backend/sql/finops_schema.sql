@@ -705,6 +705,9 @@ BEGIN
         triggered_at DATETIME2(7) NOT NULL,
         sent_at DATETIME2(7) NULL,
         updated_at DATETIME2(7) NOT NULL,
+        lease_token NVARCHAR(64) NULL,
+        lease_expires_at DATETIME2(7) NULL,
+        next_attempt_at DATETIME2(7) NULL,
         CONSTRAINT PK_finops_budget_alert PRIMARY KEY (tenant_ref, alert_id),
         CONSTRAINT UQ_finops_budget_alert_threshold UNIQUE (
             tenant_ref, budget_id, period_key, threshold_pct
@@ -721,8 +724,67 @@ BEGIN
         ),
         CONSTRAINT CK_finops_budget_alert_threshold CHECK (
             threshold_pct BETWEEN 1 AND 100
+        ),
+        CONSTRAINT CK_finops_budget_alert_lease CHECK (
+            (delivery_state = N'sending' AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+            OR
+            (delivery_state <> N'sending' AND lease_token IS NULL AND lease_expires_at IS NULL)
         )
     );
+END;
+
+IF COL_LENGTH(N'df_finops.budget_alert', N'lease_token') IS NULL
+BEGIN
+    ALTER TABLE df_finops.budget_alert ADD lease_token NVARCHAR(64) NULL;
+END;
+
+IF COL_LENGTH(N'df_finops.budget_alert', N'lease_expires_at') IS NULL
+BEGIN
+    ALTER TABLE df_finops.budget_alert ADD lease_expires_at DATETIME2(7) NULL;
+END;
+
+IF COL_LENGTH(N'df_finops.budget_alert', N'next_attempt_at') IS NULL
+BEGIN
+    ALTER TABLE df_finops.budget_alert ADD next_attempt_at DATETIME2(7) NULL;
+END;
+
+-- A pre-lease worker cannot prove ownership. Recover those rows as due failed
+-- claims before installing the invariant; the stable operation ID still
+-- protects provider-side retries.
+UPDATE df_finops.budget_alert
+SET delivery_state = N'failed',
+    safe_error_category = COALESCE(safe_error_category, N'service_unavailable'),
+    next_attempt_at = COALESCE(next_attempt_at, SYSUTCDATETIME()),
+    updated_at = SYSUTCDATETIME()
+WHERE delivery_state = N'sending'
+  AND (lease_token IS NULL OR lease_expires_at IS NULL);
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = N'CK_finops_budget_alert_lease'
+      AND parent_object_id = OBJECT_ID(N'df_finops.budget_alert')
+)
+BEGIN
+    ALTER TABLE df_finops.budget_alert
+        ADD CONSTRAINT CK_finops_budget_alert_lease CHECK (
+            (delivery_state = N'sending' AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+            OR
+            (delivery_state <> N'sending' AND lease_token IS NULL AND lease_expires_at IS NULL)
+        );
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID(N'df_finops.budget_alert')
+      AND name = N'IX_finops_budget_alert_due'
+)
+BEGIN
+    CREATE INDEX IX_finops_budget_alert_due
+        ON df_finops.budget_alert (
+            tenant_ref, delivery_state, next_attempt_at, lease_expires_at,
+            triggered_at, alert_id
+        )
+        INCLUDE (attempt_count);
 END;
 
 IF NOT EXISTS (

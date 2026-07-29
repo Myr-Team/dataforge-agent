@@ -74,3 +74,30 @@ def test_member_budget_actor_cost_query_is_tenant_scoped_and_uses_reconciled_req
     assert "occurred_at >= ?" in source
     assert "occurred_at < ?" in source
     assert "row_number() over (partition by actor_ref" in source
+
+
+def test_budget_alert_schema_adds_replay_safe_exclusive_lease_and_due_index() -> None:
+    schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
+    for column in ("lease_token", "lease_expires_at", "next_attempt_at"):
+        assert f"col_length(n'df_finops.budget_alert', n'{column}')" in schema
+        assert f"alter table df_finops.budget_alert add {column}" in schema
+    assert "ix_finops_budget_alert_due" in schema
+    assert "ck_finops_budget_alert_lease" in schema
+    assert "from sys.check_constraints" in schema
+
+
+def test_sql_alert_acquire_is_atomic_due_only_token_owned_and_keyset_ordered() -> None:
+    source = (
+        SCHEMA_PATH.parents[2] / "backend" / "finops" / "sql_member_budgets.py"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "finops:acquire-due-budget-alert" in source
+    assert "with (updlock, readpast, rowlock)" in source
+    assert "top (1)" in source
+    assert "attempt_count < 3" in source
+    assert "next_attempt_at <= ?" in source
+    assert "lease_expires_at <= ?" in source
+    assert "order by" in source
+    assert "output inserted.alert_id" in source
+    assert "lease_token = ?" in source
+    assert "finops:finalize-budget-alert" in source
