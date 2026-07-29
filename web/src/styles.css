@@ -5203,6 +5203,14 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .provider-create-grid { display: grid; grid-template-columns: minmax(150px,.6fr) minmax(220px,1fr) minmax(220px,1fr) auto; gap: 9px; align-items: end; }
 .provider-create-grid input[readonly] { background: #f7f8fa; color: #667085; }
 .provider-create-grid .primary-button { min-height: 34px; justify-content: center; gap: 6px; }
+.bedrock-credential-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; align-items: end; }
+.bedrock-credential-grid label { display: grid; min-width: 0; gap: 4px; color: #667085; font-size: 9.5px; font-weight: 700; }
+.bedrock-credential-grid input,
+.bedrock-credential-grid select { width: 100%; min-width: 0; height: 34px; padding: 0 9px; border: 1px solid #cfd7e4; border-radius: 7px; background: #fff; color: #1d2939; font-size: 11.5px; }
+.bedrock-credential-grid .primary-button { min-height: 34px; justify-content: center; white-space: nowrap; }
+.bedrock-provider-status { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0 0 49px; }
+.provider-card > .bedrock-connection-form { padding: 12px 0 0 49px; border: 0; border-top: 1px solid #edf1f5; border-radius: 0; }
+.provider-card > .bedrock-connection-form > header { display: none; }
 .identity-trust-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid #dfe5ee; border-radius: 9px; background: #fff; overflow: hidden; }
 .identity-trust-strip > div { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 9px; align-items: center; padding: 12px 13px; border-right: 1px solid #e8edf4; }
 .identity-trust-strip > div:last-child { border-right: 0; }
@@ -5262,8 +5270,11 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .identity-trust-strip > div:last-child { border-bottom: 0; }
   .provider-actions,
   .provider-create-grid,
+  .bedrock-credential-grid,
   .identity-mapping-row,
   .identity-mapping-form { grid-template-columns: 1fr; align-items: stretch; }
+  .bedrock-provider-status,
+  .provider-card > .bedrock-connection-form { padding-left: 0; }
   .identity-group-mark { display: none; }
   .provider-actions .ghost-button,
   .provider-actions .secondary-button { justify-content: center; }

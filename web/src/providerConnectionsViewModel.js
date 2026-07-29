@@ -45,7 +45,13 @@ export function providerConnectionsViewModel(payload = {}) {
       return {
         providerId: text(item.provider_id),
         providerType: text(item.provider_type),
-        providerLabel: text(item.provider_type) === "deepseek" ? "DeepSeek 原厂" : text(item.provider_type),
+        providerLabel: text(item.provider_type) === "deepseek"
+          ? "DeepSeek 原厂"
+          : text(item.provider_type) === "aws_bedrock"
+            ? "AWS Bedrock"
+            : text(item.provider_type),
+        region: text(item.region),
+        isBedrock: text(item.provider_type) === "aws_bedrock",
         name: text(item.display_name) || "未命名提供商",
         baseUrl: text(item.base_url),
         connectionState,

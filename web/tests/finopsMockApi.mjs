@@ -233,7 +233,10 @@ export const bootstrapPayload = {
 
 
 export async function installFinOpsMockApi(page, calls = [], options = {}) {
-  const control = { failBootstrap: Boolean(options.failBootstrap) };
+  const control = {
+    failBootstrap: Boolean(options.failBootstrap),
+    providerItems: Array.isArray(options.providerItems) ? [...options.providerItems] : [],
+  };
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -287,6 +290,45 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       body = {};
     } else if (path === "/api/finops/bootstrap") {
       body = bootstrapPayload;
+    } else if (path === "/api/model-providers" && request.method() === "GET") {
+      body = { items: control.providerItems };
+    } else if (path === "/api/model-providers" && request.method() === "POST") {
+      const submitted = request.postDataJSON();
+      if (submitted.provider_type === "aws_bedrock") {
+        const provider = {
+          provider_id: "provider_bedrock",
+          provider_type: "aws_bedrock",
+          display_name: submitted.display_name || "AWS Bedrock",
+          region: submitted.region,
+          base_url: `https://bedrock.${submitted.region}.amazonaws.com`,
+          connection_state: "connected",
+          governance_state: "unmanaged",
+          secret_status: "stored",
+          revision: 1,
+          available_models: [{
+            model_id: "anthropic.claude-sonnet-4-20250514-v1:0",
+            display_name: "Claude Sonnet 4",
+            capabilities: ["text", "streaming"],
+            support_state: "unsupported",
+            price_key: null,
+          }],
+        };
+        control.providerItems = [
+          ...control.providerItems.filter((item) => item.provider_id !== provider.provider_id),
+          provider,
+        ];
+        status = 201;
+        body = { provider_id: provider.provider_id };
+      } else {
+        status = 201;
+        body = { provider_id: "provider_deepseek" };
+      }
+    } else if (path === "/api/model-providers/provider_bedrock/rotate-secret") {
+      const existing = control.providerItems.find((item) => item.provider_id === "provider_bedrock");
+      if (existing) {
+        existing.revision += 1;
+      }
+      body = { provider_id: "provider_bedrock" };
     } else if (path === "/api/workspaces/demo-corpus/governance/model-routing") {
       body = {
         workspace_id: "demo-corpus",

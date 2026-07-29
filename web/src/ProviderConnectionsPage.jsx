@@ -18,6 +18,7 @@ import {
   rotateModelProviderSecret,
   testModelProvider,
 } from "./api.js";
+import { AwsBedrockConnectionForm } from "./AwsBedrockConnectionForm.jsx";
 import { providerConnectionsViewModel } from "./providerConnectionsViewModel.js";
 
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com";
@@ -50,6 +51,13 @@ function ProviderState({ item }) {
   );
 }
 
+function safeConnectionMessage(error) {
+  if (error?.status === 409) {
+    return "配置已被其他管理员更新，已重新加载最新版本，请复核后再试。";
+  }
+  return "无法完成连接操作，请检查配置后重试。";
+}
+
 export function ProviderConnectionsPage() {
   const [state, setState] = useState({ loading: true, error: "", payload: null });
   const [draft, setDraft] = useState({
@@ -69,7 +77,7 @@ export function ProviderConnectionsPage() {
     } catch (error) {
       setState({
         loading: false,
-        error: error instanceof Error ? error.message : "模型提供商读取失败",
+        error: "无法读取模型提供商配置，请重试。",
         payload: null,
       });
     }
@@ -86,13 +94,15 @@ export function ProviderConnectionsPage() {
       await action();
       setNotice(successMessage);
       await load();
+      return true;
     } catch (error) {
       if (error?.status === 409) {
-        setActionError("配置已被其他管理员更新，已重新加载最新版本，请复核后再试。");
+        setActionError(safeConnectionMessage(error));
         await load();
       } else {
-        setActionError(error instanceof Error ? error.message : "操作失败，请稍后重试");
+        setActionError(safeConnectionMessage(error));
       }
+      return false;
     } finally {
       setBusy("");
     }
@@ -118,12 +128,18 @@ export function ProviderConnectionsPage() {
       setNotice("DeepSeek 已保存到安全凭据存储，并完成首次连通性检测。");
       await load();
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "DeepSeek 接入失败");
+      setActionError(safeConnectionMessage(error));
     } finally {
       setDraft((current) => ({ ...current, apiKey: "" }));
       setBusy("");
     }
   };
+
+  const submitBedrockProvider = (payload) => runAction(
+    "create-bedrock",
+    () => createModelProvider(payload),
+    "AWS Bedrock 凭据已安全保存，配置测试可用。",
+  );
 
   const rotateSecret = async (item) => {
     const apiKey = String(rotateDraft[item.providerId] || "").trim();
@@ -138,6 +154,12 @@ export function ProviderConnectionsPage() {
     );
     setRotateDraft((current) => ({ ...current, [item.providerId]: "" }));
   };
+
+  const rotateBedrockCredentials = (item, payload) => runAction(
+    `rotate:${item.providerId}`,
+    () => rotateModelProviderSecret(item.providerId, payload, item.revision),
+    "AWS Bedrock 凭据已安全更新，配置测试可用。",
+  );
 
   return (
     <section className="provider-connections" data-testid="provider-connections-page">
@@ -175,30 +197,60 @@ export function ProviderConnectionsPage() {
           {view.items.map((item) => (
             <article className="provider-card" key={item.providerId}>
               <div className="provider-card-main">
-                <div className="provider-mark" aria-hidden="true">DS</div>
+                <div className="provider-mark" aria-hidden="true">{item.isBedrock ? "AWS" : "DS"}</div>
                 <div>
                   <div className="provider-title-line">
                     <h3>{item.name}</h3>
                     <ProviderState item={item} />
                   </div>
-                  <p>{item.providerLabel} · {item.baseUrl}</p>
-                  <small>最近检测：{formatTime(item.lastTestedAt)} · 凭据：{item.secretStored ? "已安全保存" : "未保存"}</small>
+                  {item.isBedrock ? (
+                    <>
+                      <p>{item.providerLabel} · 区域：{item.region || "由服务端管理"}</p>
+                      <small>凭据：{item.secretStored ? "仅安全保存" : "未保存"}</small>
+                    </>
+                  ) : (
+                    <>
+                      <p>{item.providerLabel} · {item.baseUrl}</p>
+                      <small>最近检测：{formatTime(item.lastTestedAt)} · 凭据：{item.secretStored ? "已安全保存" : "未保存"}</small>
+                    </>
+                  )}
                 </div>
               </div>
               {item.safeErrorCategory ? (
                 <div className="provider-safe-error"><CircleAlert size={14} />连接分类：{item.safeErrorCategory}</div>
               ) : null}
-              <div className="provider-model-grid">
-                {item.models.map((model) => (
-                  <div key={model.id}>
-                    <b>{model.name}</b>
-                    <span>{model.capabilities.join(" · ")}</span>
-                    <em className={model.priceKey ? "priced" : "unpriced"}>{model.pricingLabel}</em>
+              {item.isBedrock ? (
+                <>
+                  <div className="bedrock-provider-status">
+                    <span className={`governance-status ${item.connectionState === "connected" ? "success" : "warning"}`}>
+                      {item.connectionState === "connected" ? <CheckCircle2 size={13} /> : <CircleAlert size={13} />}
+                      {item.connectionState === "connected" ? "配置测试可用" : item.connectionLabel}
+                    </span>
+                    <span className="governance-status neutral">尚未进入 Agent 路由</span>
                   </div>
-                ))}
-                {item.models.length === 0 ? <p>完成有效连接检测后显示可用模型。</p> : null}
-              </div>
-              <div className="provider-actions">
+                  <AwsBedrockConnectionForm
+                    busy={Boolean(busy)}
+                    displayName={item.name}
+                    region={item.region || "ap-southeast-1"}
+                    title="更新 AWS Bedrock 凭据"
+                    description="更新后会重新进行配置测试；凭据仅安全保存。"
+                    submitLabel="更新并测试连接"
+                    onSubmit={(payload) => rotateBedrockCredentials(item, payload)}
+                  />
+                </>
+              ) : (
+                <>
+                  <div className="provider-model-grid">
+                    {item.models.map((model) => (
+                      <div key={model.id}>
+                        <b>{model.name}</b>
+                        <span>{model.capabilities.join(" · ")}</span>
+                        <em className={model.priceKey ? "priced" : "unpriced"}>{model.pricingLabel}</em>
+                      </div>
+                    ))}
+                    {item.models.length === 0 ? <p>完成有效连接检测后显示可用模型。</p> : null}
+                  </div>
+                  <div className="provider-actions">
                 <button
                   type="button"
                   className="secondary-button"
@@ -245,7 +297,9 @@ export function ProviderConnectionsPage() {
                   {busy === `disable:${item.providerId}` ? <Loader2 className="spin" size={14} /> : <Power size={14} />}
                   停用
                 </button>
-              </div>
+                  </div>
+                </>
+              )}
             </article>
           ))}
         </div>
@@ -286,6 +340,8 @@ export function ProviderConnectionsPage() {
           </button>
         </div>
       </form>
+
+      <AwsBedrockConnectionForm busy={Boolean(busy)} onSubmit={submitBedrockProvider} />
 
       {notice ? <p className="governance-notice" role="status">{notice}</p> : null}
       {actionError ? <p className="governance-error" role="alert">{actionError}</p> : null}

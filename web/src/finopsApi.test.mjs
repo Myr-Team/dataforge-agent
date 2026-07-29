@@ -241,6 +241,34 @@ test("provider management uses typed endpoints and revisioned writes", async () 
   assert.equal(JSON.parse(calls[3].options.body).base_revision, 5);
 });
 
+test("Bedrock create sends credentials once", async () => {
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (_url, options) => {
+    captured = JSON.parse(options.body);
+    return new Response(JSON.stringify({ provider_id: "provider_bedrock" }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    await createModelProvider({
+      provider_type: "aws_bedrock",
+      display_name: "AWS Bedrock",
+      region: "ap-southeast-1",
+      access_key_id: "AKIAEXAMPLE",
+      secret_access_key: "secret-marker-value",
+      session_token: null,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.region, "ap-southeast-1");
+  assert.equal(captured.secret_access_key, "secret-marker-value");
+});
+
 test("identity governance encodes search and uses revisioned mapping actions", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];

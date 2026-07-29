@@ -47,3 +47,30 @@ test("degraded provider remains visible but cannot be assigned", () => {
   assert.equal(view.items[0].canAssign, false);
   assert.equal(view.summary.actionRequired, 1);
 });
+
+test("Bedrock discovery is connected but never assignable", () => {
+  const view = providerConnectionsViewModel({
+    items: [{
+      provider_id: "provider_bedrock",
+      provider_type: "aws_bedrock",
+      display_name: "AWS Bedrock",
+      region: "ap-southeast-1",
+      base_url: "https://bedrock.ap-southeast-1.amazonaws.com",
+      connection_state: "connected",
+      governance_state: "unmanaged",
+      secret_status: "stored",
+      revision: 1,
+      available_models: [{
+        model_id: "anthropic.claude-sonnet-4-20250514-v1:0",
+        display_name: "Claude Sonnet 4",
+        capabilities: ["text", "streaming"],
+        support_state: "unsupported",
+        price_key: null,
+      }],
+    }],
+  });
+
+  assert.equal(view.items[0].providerLabel, "AWS Bedrock");
+  assert.equal(view.items[0].region, "ap-southeast-1");
+  assert.equal(view.items[0].canAssign, false);
+});

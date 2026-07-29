@@ -600,13 +600,13 @@ export async function testModelProvider(providerId) {
   });
 }
 
-export async function rotateModelProviderSecret(providerId, apiKey, baseRevision) {
+export async function rotateModelProviderSecret(providerId, credentials, baseRevision) {
+  const body = typeof credentials === "string"
+    ? { api_key: credentials, base_revision: Number(baseRevision || 0) }
+    : { ...credentials, base_revision: Number(baseRevision || 0) };
   return request(`/api/model-providers/${encodeURIComponent(providerId)}/rotate-secret`, {
     method: "POST",
-    body: JSON.stringify({
-      api_key: String(apiKey || ""),
-      base_revision: Number(baseRevision || 0),
-    }),
+    body: JSON.stringify(body),
   });
 }
 

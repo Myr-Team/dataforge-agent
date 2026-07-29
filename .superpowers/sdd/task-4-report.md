@@ -86,3 +86,30 @@
 - The bundled fixture cases are sanitized placeholders for deterministic offline
   evaluation coverage. They are intentionally not wired to a live Foundry
   evaluator in the unit-test path.
+
+---
+
+## Bedrock provider UI delivery
+
+### Scope delivered
+
+- Added an isolated, ephemeral AWS Bedrock credential form with a server-supported region selector and save-and-test action.
+- Added typed Bedrock view-model fields and revisioned credential rotation while retaining the DeepSeek path.
+- Bedrock cards disclose only region, secure-storage status, configuration-test state, and that they are outside Agent routing.
+- Sanitized provider load/action errors, including 409 conflicts; no backend error body is rendered.
+
+### Verification evidence
+
+- Node red: `node --test src/providerConnectionsViewModel.test.mjs src/finopsApi.test.mjs` failed as expected because `aws_bedrock` lacked the friendly label.
+- Node green: `node --test` — `140` passed.
+- Build: `npm run build` — Vite completed successfully (the existing >500 kB chunk advisory remains).
+- Browser: `npx playwright test tests/finops-pricing-routing-remediation.spec.mjs` — `4` passed, covering desktop create/clear/reload/routing exclusion and mobile 409 sanitization.
+
+### Visual review
+
+- `output/playwright/bedrock-provider-desktop-connected.png`: reviewed; all Bedrock fields fit the existing wide settings panel.
+- `output/playwright/bedrock-provider-mobile-conflict.png`: reviewed; fields stack without overflow, inputs are blank, and the safe conflict message is visible.
+
+### Residual risks
+
+- Browser acceptance uses inert markers only; it exercises the mock contract, not live AWS connectivity.
