@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AlertCircle,
@@ -25,6 +25,7 @@ import {
   loadMemberBudgetMembers,
   loadMemberBudgets,
   loadMemberBudgetNotification,
+  disableMemberBudget,
   saveMemberBudget,
   saveMemberBudgetNotification,
   sendMemberBudgetTestEmail,
@@ -46,22 +47,38 @@ async function loadBudgetView() {
     loadMemberBudgetNotification(),
     loadMemberBudgetAlerts(),
   ]);
-  if (budgetsResult.status === "rejected") {
-    return { state: safeFailureState(budgetsResult.reason), view: EMPTY_VIEW };
-  }
+  const budgetsState = budgetsResult.status === "fulfilled"
+    ? ["complete", "partial", "unavailable"].includes(budgetsResult.value?.data_status)
+      ? budgetsResult.value.data_status
+      : "partial"
+    : "unavailable";
   const notificationState = notificationResult.status === "rejected"
     ? safeFailureState(notificationResult.reason)
-    : "configured";
+    : notificationResult.value?.data_status === "unavailable"
+      ? "unavailable"
+      : "configured";
+  const alertsState = alertsResult.status === "fulfilled" && alertsResult.value?.data_status !== "unavailable"
+    ? "available"
+    : "unavailable";
   const view = memberBudgetViewModel({
-    budgets: budgetsResult.value,
+    budgets: budgetsResult.status === "fulfilled" ? budgetsResult.value : {},
+    budgetsState,
     members: membersResult.status === "fulfilled" ? membersResult.value : {},
     notification: notificationResult.status === "fulfilled" ? notificationResult.value : null,
     notificationState,
     alerts: alertsResult.status === "fulfilled" ? alertsResult.value : {},
-    alertsState: alertsResult.status === "fulfilled" ? "available" : "unavailable",
+    alertsState,
   });
   return {
-    state: membersResult.status === "rejected" || alertsResult.status === "rejected" ? "partial" : view.rows.length ? "available" : "empty",
+    state: budgetsState === "unavailable"
+      ? safeFailureState(budgetsResult.reason)
+      : membersResult.status === "rejected"
+        || ["unavailable", "permission_required"].includes(notificationState)
+        || alertsState === "unavailable"
+        ? "partial"
+        : view.rows.length
+          ? "available"
+          : "empty",
     view,
   };
 }
@@ -79,17 +96,57 @@ function MetricHelp({ label, children }) {
 }
 
 function CompactModal({ title, description, onClose, children }) {
+  const dialogRef = useRef(null);
+  const restoreFocusRef = useRef(typeof document === "undefined" ? null : document.activeElement);
+
   useEffect(() => {
+    const root = document.getElementById("root");
+    const previousAriaHidden = root?.getAttribute("aria-hidden");
+    root?.setAttribute("inert", "");
+    root?.setAttribute("aria-hidden", "true");
+
+    const focusable = () => [...(dialogRef.current?.querySelectorAll(
+      "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+    ) || [])];
+    const initialFocus = () => dialogRef.current?.querySelector("[data-modal-initial-focus]") || focusable()[0];
+    const focusFrame = window.requestAnimationFrame(() => initialFocus()?.focus());
     const onKeyDown = (event) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) {
+        event.preventDefault();
+        return;
+      }
+      const first = initialFocus();
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", onKeyDown);
+      root?.removeAttribute("inert");
+      if (previousAriaHidden === null) root?.removeAttribute("aria-hidden");
+      else root?.setAttribute("aria-hidden", previousAriaHidden);
+      restoreFocusRef.current?.focus?.();
+    };
   }, [onClose]);
 
   return createPortal(
     <div className="member-budget-modal-overlay" role="presentation" onMouseDown={onClose}>
       <section
+        ref={dialogRef}
         className="member-budget-modal"
         role="dialog"
         aria-modal="true"
@@ -141,12 +198,13 @@ function BudgetProgress({ row }) {
   );
 }
 
-function BudgetForm({ row, members, busy, error, onClose, onSave }) {
+function BudgetForm({ row, members, busy, error, onClose, onSave, onDisable }) {
   const [memberRef, setMemberRef] = useState(row?.memberRef || members.find((item) => item.identityState === "active")?.memberRef || "");
   const [amount, setAmount] = useState(row?.budgetAmount === null || row?.budgetAmount === undefined ? "" : String(row.budgetAmount));
   const [thresholds, setThresholds] = useState(row?.thresholdsPct?.join(", ") || "80, 95, 100");
   const [enabled, setEnabled] = useState(row ? row.enabled : true);
   const [validation, setValidation] = useState("");
+  const [confirmDisable, setConfirmDisable] = useState(false);
 
   const submit = (event) => {
     event.preventDefault();
@@ -178,7 +236,7 @@ function BudgetForm({ row, members, busy, error, onClose, onSave }) {
     <form className="member-budget-form" onSubmit={submit}>
       <label>
         <span>Entra 成员</span>
-        <select aria-label="Entra 成员" value={memberRef} onChange={(event) => setMemberRef(event.target.value)} disabled={Boolean(row)}>
+        <select data-modal-initial-focus={!row ? "" : undefined} aria-label="Entra 成员" value={memberRef} onChange={(event) => setMemberRef(event.target.value)} disabled={Boolean(row)}>
           {members.filter((item) => item.identityState === "active").map((item) => (
             <option value={item.memberRef} key={item.memberRef}>{item.memberLabel} · {item.roleLabel}</option>
           ))}
@@ -186,7 +244,7 @@ function BudgetForm({ row, members, busy, error, onClose, onSave }) {
       </label>
       <label>
         <span>月度预算（USD）</span>
-        <input aria-label="月度预算（USD）" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} autoFocus />
+        <input data-modal-initial-focus={row ? "" : undefined} aria-label="月度预算（USD）" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} />
       </label>
       <label>
         <span>提醒阈值</span>
@@ -194,11 +252,24 @@ function BudgetForm({ row, members, busy, error, onClose, onSave }) {
         <small>使用英文逗号分隔，例如 80, 95, 100。</small>
       </label>
       <label className="member-budget-checkbox">
-        <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+        <input aria-label="启用本月预算" type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
         <span>启用本月预算</span>
       </label>
       {validation || error ? <div className="member-budget-inline-error">{validation || error}</div> : null}
       <footer>
+        {row?.canDisable ? (
+          <button
+            type="button"
+            className="member-budget-danger-button"
+            disabled={busy}
+            onClick={() => {
+              if (confirmDisable) onDisable(row);
+              else setConfirmDisable(true);
+            }}
+          >
+            {confirmDisable ? "确认停用" : "停用预算"}
+          </button>
+        ) : null}
         <button type="button" className="member-budget-secondary-button" onClick={onClose}>取消</button>
         <button type="submit" className="member-budget-primary-button" disabled={busy || !memberRef}>
           {busy ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}保存预算
@@ -233,7 +304,7 @@ function MailForm({ notification, members, busy, error, onClose, onSave }) {
       <div className="member-budget-mail-safety"><ShieldCheck size={14} />收件地址由 Entra 管理，浏览器不保存或显示邮箱明文。</div>
       <label>
         <span>管理员</span>
-        <select aria-label="管理员" value={recipientMemberRef} onChange={(event) => setRecipientMemberRef(event.target.value)}>
+        <select data-modal-initial-focus="" aria-label="管理员" value={recipientMemberRef} onChange={(event) => setRecipientMemberRef(event.target.value)}>
           {admins.map((item) => <option value={item.memberRef} key={item.memberRef}>{item.memberLabel} · {item.roleLabel}</option>)}
         </select>
       </label>
@@ -264,7 +335,7 @@ function MailForm({ notification, members, busy, error, onClose, onSave }) {
   );
 }
 
-export function MemberBudgetSettingsPage({ onBack = () => {} }) {
+export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => {} }) {
   const [state, setState] = useState("loading");
   const [view, setView] = useState(EMPTY_VIEW);
   const [query, setQuery] = useState("");
@@ -314,6 +385,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {} }) {
       await saveMemberBudget(payload);
       setBudgetModal(null);
       setNotice({ tone: "success", text: "预算已保存" });
+      onChanged();
       await reload({ preserveNotice: true });
     } catch (error) {
       if (error?.status === 409) {
@@ -330,6 +402,30 @@ export function MemberBudgetSettingsPage({ onBack = () => {} }) {
     }
   };
 
+  const disableBudget = async (row) => {
+    setBusy("budget");
+    setFormError("");
+    try {
+      await disableMemberBudget(row.budgetId, row.revision);
+      setBudgetModal(null);
+      setNotice({ tone: "success", text: "预算已停用" });
+      onChanged();
+      await reload({ preserveNotice: true });
+    } catch (error) {
+      if (error?.status === 409) {
+        setBudgetModal(null);
+        setNotice({ tone: "warning", text: "配置已更新，正在重新载入" });
+        await reload({ preserveNotice: true });
+      } else if (error?.status === 403) {
+        setFormError("当前账户没有停用预算的权限");
+      } else {
+        setFormError("预算暂时无法停用，请稍后重试");
+      }
+    } finally {
+      setBusy("");
+    }
+  };
+
   const saveMail = async (payload) => {
     setBusy("mail");
     setFormError("");
@@ -337,6 +433,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {} }) {
       await saveMemberBudgetNotification(payload);
       setMailModal(false);
       setNotice({ tone: "success", text: "邮件设置已保存" });
+      onChanged();
       await reload({ preserveNotice: true });
     } catch (error) {
       if (error?.status === 409) {
@@ -386,7 +483,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {} }) {
           <button type="button" className="member-budget-secondary-button" onClick={() => { setFormError(""); setMailModal(true); }}>
             <Settings2 size={14} />配置邮件
           </button>
-          <button type="button" className="member-budget-primary-button" onClick={() => { setFormError(""); setBudgetModal({}); }} disabled={!view.eligibleMembers.some((item) => item.identityState === "active")}>
+          <button type="button" className="member-budget-primary-button" onClick={() => { setFormError(""); setBudgetModal({}); }} disabled={!view.createMembers.length}>
             <Plus size={14} />设置成员预算
           </button>
         </div>
@@ -403,8 +500,8 @@ export function MemberBudgetSettingsPage({ onBack = () => {} }) {
         {skeleton ? Array.from({ length: 4 }, (_, index) => <div className="member-budget-summary-skeleton" key={index} />) : (
           <>
             <SummaryCard icon={CircleDollarSign} label="本月估算成本" help="仅汇总有可靠价目表匹配的请求；未计价请求不会被当作 0。" value={view.summary.estimatedSpendLabel} note={view.summary.dataStatus === "partial" ? "部分请求尚未计价" : "请求级估算 · USD"} />
-            <SummaryCard icon={Users} label="已配置成员" help="当前组织中已保存预算的 Entra 成员数量，含已停用预算。" value={String(view.summary.configuredCount)} note="UTC 自然月预算" />
-            <SummaryCard icon={BellRing} label="接近预算" help="实际预算进度已达到该成员最低提醒阈值的数量。" value={String(view.summary.nearBudgetCount)} note="按真实进度计算" tone={view.summary.nearBudgetCount ? "warning" : ""} />
+            <SummaryCard icon={Users} label="已配置成员" help="当前组织中已保存预算的 Entra 成员数量，含已停用预算。" value={view.summary.configuredCount === null ? "不可用" : String(view.summary.configuredCount)} note="UTC 自然月预算" />
+            <SummaryCard icon={BellRing} label="接近预算" help="实际预算进度已达到该成员最低提醒阈值的数量。" value={view.summary.nearBudgetCount === null ? "不可用" : String(view.summary.nearBudgetCount)} note="按真实进度计算" tone={view.summary.nearBudgetCount ? "warning" : ""} />
             <SummaryCard icon={Mail} label="已发送提醒" help="当前保留窗口内状态为已发送的阈值提醒数量。" value={view.summary.sentAlertCount === null ? "不可用" : String(view.summary.sentAlertCount)} note="自动发送默认关闭" />
           </>
         )}
@@ -465,7 +562,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {} }) {
                           <td>
                             <div className="member-budget-member-cell">
                               <span>{row.memberInitial}</span>
-                              <div><b>{row.memberLabel}</b><small>{row.identityLabel} · {row.departmentLabel}</small></div>
+                              <div><b>{row.memberLabel}</b><small>{row.identityLabel} · {row.lifecycleLabel} · {row.departmentLabel}</small></div>
                             </div>
                           </td>
                           <td><b>{row.spendLabel}</b><small className={row.dataStatus === "partial" ? "partial" : ""}>{row.coverageLabel}</small></td>
@@ -494,7 +591,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {} }) {
                       <header>
                         <div className="member-budget-member-cell">
                           <span>{row.memberInitial}</span>
-                          <div><b>{row.memberLabel}</b><small>{row.identityLabel}</small></div>
+                          <div><b>{row.memberLabel}</b><small>{row.identityLabel} · {row.lifecycleLabel}</small></div>
                         </div>
                         <button type="button" className="member-budget-icon-button" aria-label={`编辑 ${row.memberLabel} 预算`} disabled={!row.canEdit} onClick={() => { setFormError(""); setBudgetModal(row); }}><Pencil size={14} /></button>
                       </header>
@@ -515,8 +612,22 @@ export function MemberBudgetSettingsPage({ onBack = () => {} }) {
             <div className="member-budget-mail-icon"><Mail size={17} /></div>
             <div>
               <span>管理员邮件提醒</span>
-              <strong>{view.notification.configured ? `${view.notification.recipientLabel} · 已安全保存` : "尚未配置"}</strong>
-              <small>{view.notification.configured ? "收件地址由 Entra 目录解析，不在页面中显示。" : "配置后可发送一封测试邮件；自动阈值提醒仍由独立开关控制。"}</small>
+              <strong>
+                {view.notification.configured
+                  ? `${view.notification.recipientLabel} · 已安全保存`
+                  : view.notification.state === "permission_required"
+                    ? "需要邮件服务权限"
+                    : view.notification.state === "unavailable"
+                      ? "邮件状态不可用"
+                      : "尚未配置"}
+              </strong>
+              <small>
+                {view.notification.configured
+                  ? "收件地址由 Entra 目录解析，不在页面中显示。"
+                  : view.notification.state === "unavailable"
+                    ? "预算数据仍可查看；邮件服务恢复后可继续配置。"
+                    : "配置后可发送一封测试邮件；自动阈值提醒仍由独立开关控制。"}
+              </small>
             </div>
             <div className="member-budget-mail-actions">
               <button type="button" className="member-budget-secondary-button" onClick={sendTest} disabled={busy === "test" || !view.notification.configured}>
@@ -531,7 +642,9 @@ export function MemberBudgetSettingsPage({ onBack = () => {} }) {
               <div><h2>最近提醒</h2><p>只显示安全投递状态，不显示邮箱、服务请求 ID 或错误正文。</p></div>
               <span>{view.alerts.length} 条</span>
             </div>
-            {view.alerts.length ? (
+            {view.alertsState === "unavailable" ? (
+              <div className="member-budget-empty compact"><AlertCircle size={19} /><strong>提醒记录暂时不可用</strong></div>
+            ) : view.alerts.length ? (
               <div className="member-budget-alert-list">
                 {view.alerts.map((alert, index) => (
                   <article key={`${alert.memberLabel}-${alert.thresholdLabel}-${index}`}>
@@ -550,7 +663,15 @@ export function MemberBudgetSettingsPage({ onBack = () => {} }) {
 
       {budgetModal ? (
         <CompactModal title={budgetModal.budgetId ? "编辑成员预算" : "设置成员预算"} description="预算按 UTC 自然月计算，币种固定为 USD。" onClose={() => setBudgetModal(null)}>
-          <BudgetForm row={budgetModal.budgetId ? budgetModal : null} members={view.eligibleMembers} busy={busy === "budget"} error={formError} onClose={() => setBudgetModal(null)} onSave={saveBudget} />
+          <BudgetForm
+            row={budgetModal.budgetId ? budgetModal : null}
+            members={budgetModal.budgetId ? view.eligibleMembers : view.createMembers}
+            busy={busy === "budget"}
+            error={formError}
+            onClose={() => setBudgetModal(null)}
+            onSave={saveBudget}
+            onDisable={disableBudget}
+          />
         </CompactModal>
       ) : null}
       {mailModal ? (

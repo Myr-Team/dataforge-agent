@@ -139,8 +139,9 @@ test("settings exposes a compact budget entry and dedicated desktop page", async
   await expect(page.getByRole("heading", { name: "成员成本预算" })).toBeVisible();
   await expect(page.getByText("本月估算成本")).toBeVisible();
   await expect(page.getByText("$190.00").first()).toBeVisible();
+  await expect(page.locator(".member-budget-summary-card").filter({ hasText: "已配置成员" }).locator("strong")).toHaveText("2");
   await expect(page.getByText("90% 已计价").first()).toBeVisible();
-  await expect(page.locator(".member-budget-table").getByText("身份已停用 · 未归属部门")).toBeVisible();
+  await expect(page.locator(".member-budget-table").getByText("身份已停用 · 预算已停用 · 未归属部门")).toBeVisible();
 
   const body = await page.locator("body").innerText();
   expect(body).not.toContain("member-safe");
@@ -254,6 +255,7 @@ test("member budget failure and empty states stay truthful", async ({ page }) =>
   await openMemberBudgets(page);
 
   await expect(page.getByText("成员预算暂时不可用")).toBeVisible();
+  await expect(page.locator(".member-budget-summary-card strong")).toHaveText(["不可用", "不可用", "不可用", "不可用"]);
   await expect(page.locator("body")).not.toContainText("Failed to fetch");
 
   control.memberBudgetFailure = false;
@@ -261,4 +263,111 @@ test("member budget failure and empty states stay truthful", async ({ page }) =>
   await page.getByRole("button", { name: "重试" }).click();
   await expect(page.getByText("尚未设置成员预算")).toBeVisible();
   await expect(page.getByText("$0.00")).toHaveCount(0);
+});
+
+
+test("disabled active budgets disable, edit and re-enable without duplicate create choices", async ({ page }) => {
+  const calls = [];
+  await installFinOpsMockApi(page, calls, { memberBudgetActiveDisabled: true });
+  await page.goto("/");
+  await openMemberBudgets(page);
+
+  await page.getByRole("button", { name: "设置成员预算" }).click();
+  const createDialog = page.getByRole("dialog", { name: "设置成员预算" });
+  await expect(createDialog.getByLabel("Entra 成员").getByRole("option")).toHaveText(["IT Operator · 成员"]);
+  await createDialog.getByRole("button", { name: "关闭" }).click();
+
+  const financeEdit = page.getByRole("button", { name: "编辑 Finance Admin 预算" });
+  await financeEdit.click();
+  const editDialog = page.getByRole("dialog", { name: "编辑成员预算" });
+  await editDialog.getByRole("button", { name: "停用预算" }).click();
+  await editDialog.getByRole("button", { name: "确认停用" }).click();
+  await expect(page.getByText("预算已停用", { exact: true }).first()).toBeVisible();
+  expect(calls.some((call) => call.method === "POST" && call.path === "/api/finops/member-budgets/budget-safe/disable")).toBe(true);
+
+  await page.getByRole("button", { name: "编辑 Finance Admin 预算" }).click();
+  const reenableDialog = page.getByRole("dialog", { name: "编辑成员预算" });
+  await expect(reenableDialog.getByLabel("启用本月预算")).not.toBeChecked();
+  await reenableDialog.getByLabel("启用本月预算").check();
+  await reenableDialog.getByRole("button", { name: "保存预算" }).click();
+  await expect(page.getByText("预算已保存")).toBeVisible();
+  const lastPatch = calls.filter((call) => call.method === "PATCH" && call.path === "/api/finops/member-budgets/budget-safe").at(-1);
+  expect(JSON.parse(lastPatch.body).enabled).toBe(true);
+});
+
+
+test("settings home budget badges refresh after child mail mutation and return", async ({ page }) => {
+  await installFinOpsMockApi(page, [], { memberBudgetNotificationState: "not_configured" });
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await expect(page.locator(".member-budget-entry")).toContainText("邮件未配置");
+  await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
+
+  await page.getByRole("button", { name: "配置邮件" }).click();
+  await page.getByRole("dialog", { name: "邮件提醒设置" }).getByRole("button", { name: "保存邮件设置" }).click();
+  await expect(page.getByText("邮件设置已保存")).toBeVisible();
+  await page.getByRole("button", { name: "返回设置" }).click();
+
+  await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
+  await expect(page.locator(".member-budget-entry")).toContainText("邮件已配置");
+});
+
+
+test("notification and alert service availability stay independent in the page", async ({ page }) => {
+  await installFinOpsMockApi(page, [], {
+    memberBudgetNotificationState: "unavailable",
+    memberBudgetAlertsState: "unavailable",
+  });
+  await page.goto("/");
+  await openMemberBudgets(page);
+
+  await expect(page.locator(".member-budget-mail-strip")).toContainText("邮件状态不可用");
+  await expect(page.locator(".member-budget-mail-strip")).not.toContainText("尚未配置");
+  await expect(page.locator(".member-budget-alerts")).toContainText("提醒记录暂时不可用");
+  await expect(page.locator(".member-budget-summary-card").filter({ hasText: "已发送提醒" }).locator("strong")).toHaveText("不可用");
+});
+
+
+test("member budget modal traps focus, makes background inert and restores the trigger", async ({ page }) => {
+  await installFinOpsMockApi(page);
+  await page.goto("/");
+  await openMemberBudgets(page);
+
+  const trigger = page.getByRole("button", { name: "编辑 Finance Admin 预算" });
+  await trigger.focus();
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "编辑成员预算" });
+  const amount = dialog.getByLabel("月度预算（USD）");
+  await expect(amount).toBeFocused();
+  await expect(page.locator("#root")).toHaveAttribute("inert", "");
+
+  await page.keyboard.press("Shift+Tab");
+  await expect(dialog.getByRole("button", { name: "确认停用" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "保存预算" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(amount).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await expect(page.locator("#root")).not.toHaveAttribute("inert", "");
+});
+
+
+test("mobile metric help tooltips stay inside the viewport for odd and even cards", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installFinOpsMockApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).last().click();
+  await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
+
+  const helps = page.locator(".member-budget-summary-card .member-budget-help");
+  for (const index of [0, 1]) {
+    await helps.nth(index).focus();
+    const tooltip = helps.nth(index).locator(".member-budget-tooltip");
+    await expect(tooltip).toBeVisible();
+    const box = await tooltip.boundingBox();
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(390);
+  }
 });

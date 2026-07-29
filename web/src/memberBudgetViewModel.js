@@ -53,13 +53,18 @@ function normalizedThresholds(value) {
   return [...new Set(items)].sort((left, right) => left - right);
 }
 
-function rowAlert(alerts, budgetId) {
+function currentUtcPeriodKey() {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function rowAlert(alerts, budgetId, periodKey) {
   return alerts
-    .filter((item) => item && text(item.budget_id) === budgetId)
+    .filter((item) => item && text(item.budget_id) === budgetId && text(item.period_key) === periodKey)
     .sort((left, right) => Number(right.threshold_pct || 0) - Number(left.threshold_pct || 0))[0] || null;
 }
 
-function rowModel(item, alerts) {
+function rowModel(item, alerts, periodKey) {
   const member = item?.member && typeof item.member === "object" ? item.member : {};
   const progress = item?.progress && typeof item.progress === "object" ? item.progress : {};
   const budgetId = text(item?.budget_id);
@@ -69,11 +74,17 @@ function rowModel(item, alerts) {
     ? spend / budgetAmount * 100
     : null;
   const progressWidth = percentage(usage);
-  const matchedAlert = rowAlert(alerts, budgetId);
+  const matchedAlert = rowAlert(alerts, budgetId, periodKey);
   const identityState = text(member.identity_state) || "inactive";
   const enabled = item?.enabled === true;
   const coverage = finite(progress.pricing_coverage_pct);
-  const severity = usage !== null && usage >= 100 ? "critical" : usage !== null && usage >= 80 ? "warning" : "normal";
+  const thresholdsPct = normalizedThresholds(item?.thresholds_pct);
+  const firstThreshold = thresholdsPct[0] ?? null;
+  const severity = usage !== null && usage >= 100
+    ? "critical"
+    : usage !== null && firstThreshold !== null && usage >= firstThreshold
+      ? "warning"
+      : "normal";
   const statusLabel = usage === null
     ? "进度不可用"
     : `${Math.round(usage)}%${matchedAlert?.delivery_state === "sent" ? " · 已提醒" : severity === "normal" ? "" : " · 接近预算"}`;
@@ -103,9 +114,12 @@ function rowModel(item, alerts) {
     coveragePct: coverage,
     coverageLabel: coverage === null ? "估算覆盖不可用" : `${Math.round(coverage)}% 已计价`,
     primaryModel: text(progress.primary_model) || "未记录",
-    thresholdsPct: normalizedThresholds(item?.thresholds_pct),
+    thresholdsPct,
     enabled,
-    canEdit: enabled && identityState === "active",
+    canEdit: identityState === "active",
+    canDisable: enabled && identityState === "active",
+    lifecycleLabel: enabled ? "预算已启用" : "预算已停用",
+    currentAlertState: text(matchedAlert?.delivery_state),
     dataStatus: ["complete", "partial", "unavailable"].includes(text(item?.data_status))
       ? text(item.data_status)
       : "unavailable",
@@ -126,16 +140,18 @@ function eligibleMemberModel(item) {
 
 export function memberBudgetViewModel({
   budgets = {},
+  budgetsState = "",
   members = {},
   notification = null,
   notificationState = "",
   alerts = {},
   alertsState = "available",
+  periodKey = currentUtcPeriodKey(),
 } = {}) {
   const rawAlerts = Array.isArray(alerts?.items) ? alerts.items : [];
   const rows = (Array.isArray(budgets?.items) ? budgets.items : [])
     .filter((item) => item && typeof item === "object" && text(item.budget_id))
-    .map((item) => rowModel(item, rawAlerts));
+    .map((item) => rowModel(item, rawAlerts, periodKey));
   const eligibleMembers = (Array.isArray(members?.items) ? members.items : [])
     .filter((item) => item && typeof item === "object" && text(item.member_ref))
     .map(eligibleMemberModel);
@@ -167,18 +183,32 @@ export function memberBudgetViewModel({
   const knownSpend = rows.map((row) => row.spendValue).filter((value) => value !== null);
   const estimatedSpend = knownSpend.length ? knownSpend.reduce((sum, value) => sum + value, 0) : null;
   const sentAlerts = alertsView.filter((item) => item.deliveryState === "sent").length;
+  const resolvedBudgetState = ["complete", "partial", "unavailable"].includes(text(budgetsState))
+    ? text(budgetsState)
+    : ["complete", "partial", "unavailable"].includes(text(budgets?.data_status))
+      ? text(budgets.data_status)
+      : rows.length
+        ? "partial"
+        : "complete";
+  const budgetsUnavailable = resolvedBudgetState === "unavailable";
+  const existingMemberRefs = new Set(rows.map((row) => row.memberRef));
+  const createMembers = eligibleMembers.filter((member) => member.identityState === "active" && !existingMemberRefs.has(member.memberRef));
 
   return {
     rows,
     eligibleMembers,
+    createMembers,
     alerts: alertsView,
+    alertsState,
     summary: {
       estimatedSpend,
-      estimatedSpendLabel: money(estimatedSpend) || "不可用",
-      configuredCount: rows.filter((row) => row.enabled).length,
-      nearBudgetCount: rows.filter((row) => row.enabled && row.usagePct !== null && row.usagePct >= (row.thresholdsPct[0] || 80)).length,
-      sentAlertCount: alertsState === "unavailable" ? null : sentAlerts,
-      dataStatus: text(budgets?.data_status) || (rows.length ? "partial" : "empty"),
+      estimatedSpendLabel: budgetsUnavailable ? "不可用" : money(estimatedSpend) || "不可用",
+      configuredCount: budgetsUnavailable ? null : rows.length,
+      nearBudgetCount: budgetsUnavailable
+        ? null
+        : rows.filter((row) => row.enabled && row.usagePct !== null && row.thresholdsPct.length > 0 && row.usagePct >= row.thresholdsPct[0]).length,
+      sentAlertCount: resolvedBudgetState === "unavailable" || alertsState === "unavailable" ? null : sentAlerts,
+      dataStatus: resolvedBudgetState,
     },
     notification: {
       state: notificationItem
@@ -201,15 +231,21 @@ export function memberBudgetViewModel({
 }
 
 export function memberBudgetHomeSummaryViewModel(value = {}) {
-  if (value?.status === "unavailable") {
+  const view = value?.status === "unavailable"
+    ? memberBudgetViewModel({ budgetsState: "unavailable", notificationState: "unavailable", alertsState: "unavailable" })
+    : memberBudgetViewModel(value);
+  if (value?.status === "unavailable" || view.summary.dataStatus === "unavailable") {
     return {
       state: "unavailable",
       stateLabel: "状态不可用",
       nearBudgetLabel: "接近预算不可用",
-      mailLabel: "邮件状态不可用",
+      mailLabel: view.notification.configured
+        ? "邮件已配置"
+        : view.notification.state === "not_configured"
+          ? "邮件未配置"
+          : "邮件状态不可用",
     };
   }
-  const view = memberBudgetViewModel(value);
   return {
     state: view.rows.length ? view.summary.dataStatus : "empty",
     stateLabel: view.rows.length ? (view.summary.dataStatus === "partial" ? "部分计价" : "已记录") : "尚未设置",

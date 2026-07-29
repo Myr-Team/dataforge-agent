@@ -7,6 +7,7 @@ import {
   createIdentityGroupMapping,
   createModelProvider,
   deleteFinOpsOfficialPriceMapping,
+  disableMemberBudget,
   disableIdentityGroupMapping,
   disableModelProvider,
   loadFinOpsBootstrap,
@@ -300,6 +301,27 @@ test("member budget writes send only typed fields and base revision", async () =
     url: "/api/finops/notification-settings/test-email",
     method: "POST",
     body: {},
+  });
+});
+
+test("disabling a member budget uses the typed revisioned endpoint", async () => {
+  const originalFetch = globalThis.fetch;
+  let captured = null;
+  globalThis.fetch = async (url, options = {}) => {
+    captured = { url: String(url), method: options.method, body: JSON.parse(options.body || "{}") };
+    return { ok: true, json: async () => ({ item: { enabled: false, revision: 4 } }) };
+  };
+
+  try {
+    await disableMemberBudget("budget/a", 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(captured, {
+    url: "/api/finops/member-budgets/budget%2Fa/disable",
+    method: "POST",
+    body: { base_revision: 3 },
   });
 });
 

@@ -3168,6 +3168,8 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     nearBudgetLabel: "预算状态读取中",
     mailLabel: "邮件状态读取中",
   });
+  const [memberBudgetRevision, setMemberBudgetRevision] = useState(0);
+  const memberBudgetHomeRequestVersion = useRef(0);
   const applyMemberPayload = (data, sourceWorkspaceId = workspaceId) => {
     setMemberRows(Array.isArray(data?.members) ? data.members : []);
     setMemberMeta(data || null);
@@ -3182,6 +3184,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     : { workspaceId, loading: Boolean(workspaceId), data: null, error: "" };
   useEffect(() => {
     if (governanceOnly) return undefined;
+    const requestVersion = ++memberBudgetHomeRequestVersion.current;
     let cancelled = false;
     setMemberBudgetHome({
       state: "loading",
@@ -3194,27 +3197,36 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
       loadMemberBudgetNotification(),
       loadMemberBudgetAlerts(),
     ]).then(([budgetsResult, notificationResult, alertsResult]) => {
-      if (cancelled) return;
+      if (cancelled || requestVersion !== memberBudgetHomeRequestVersion.current) return;
       if (budgetsResult.status === "rejected") {
         setMemberBudgetHome(memberBudgetHomeSummaryViewModel({ status: "unavailable" }));
         return;
       }
+      const budgetsState = ["complete", "partial", "unavailable"].includes(budgetsResult.value?.data_status)
+        ? budgetsResult.value.data_status
+        : "partial";
+      const alertsState = alertsResult.status === "fulfilled" && alertsResult.value?.data_status !== "unavailable"
+        ? "available"
+        : "unavailable";
       setMemberBudgetHome(memberBudgetHomeSummaryViewModel({
         budgets: budgetsResult.value,
+        budgetsState,
         notification: notificationResult.status === "fulfilled" ? notificationResult.value : null,
-        notificationState: notificationResult.status === "rejected" && notificationResult.reason?.status === 404
-          ? "not_configured"
-          : notificationResult.status === "rejected"
+        notificationState: notificationResult.status === "fulfilled"
+          ? notificationResult.value?.data_status === "unavailable"
             ? "unavailable"
-            : "configured",
+            : "configured"
+          : notificationResult.reason?.status === 404
+            ? "not_configured"
+            : "unavailable",
         alerts: alertsResult.status === "fulfilled" ? alertsResult.value : {},
-        alertsState: alertsResult.status === "fulfilled" ? "available" : "unavailable",
+        alertsState,
       }));
     });
     return () => {
       cancelled = true;
     };
-  }, [governanceOnly]);
+  }, [governanceOnly, memberBudgetRevision]);
   const memberPermissionReason = !permissionsReady ? (memberLoadError || "正在读取服务端操作权限") : memberPermissions.reasons["member.manage"];
   const loadMembersContract = async () => {
     if (!workspaceId) return;
@@ -3655,7 +3667,15 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     );
   }
   if (settingsPage === "member-budgets") {
-    return <MemberBudgetSettingsPage onBack={() => setSettingsPage("home")} />;
+    return (
+      <MemberBudgetSettingsPage
+        onChanged={() => setMemberBudgetRevision((revision) => revision + 1)}
+        onBack={() => {
+          setMemberBudgetRevision((revision) => revision + 1);
+          setSettingsPage("home");
+        }}
+      />
+    );
   }
   return (
     <main className="agent-studio settings-stage">

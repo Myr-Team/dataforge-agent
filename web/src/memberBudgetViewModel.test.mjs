@@ -8,9 +8,11 @@ import {
 } from "./memberBudgetViewModel.js";
 
 const payload = {
+  periodKey: "2026-07",
   budgets: {
     items: [{
       budget_id: "budget-safe",
+      period_key: "2026-07",
       revision: 3,
       member_ref: "member-safe",
       member: {
@@ -60,6 +62,7 @@ const payload = {
       tenant_ref: "tenant-raw-must-not-survive",
       actor_ref: "actor-raw-must-not-survive",
       budget_id: "budget-safe",
+      period_key: "2026-07",
       threshold_pct: 95,
       budget_amount_usd: 200,
       estimated_spend_usd: 190,
@@ -140,6 +143,7 @@ test("zero spend remains an observed zero and former member stays visible", () =
   assert.equal(view.rows[0].spendLabel, "$0.00");
   assert.equal(view.rows[0].budgetLabel, "$200.50");
   assert.equal(view.rows[0].identityLabel, "身份已停用");
+  assert.equal(view.rows[0].lifecycleLabel, "预算已停用");
   assert.equal(view.rows[0].progressWidth, 0);
   assert.equal(view.rows[0].canEdit, false);
 });
@@ -214,4 +218,128 @@ test("settings home distinguishes unavailable mail from not configured mail", ()
   });
 
   assert.equal(unavailable.mailLabel, "邮件状态不可用");
+});
+
+test("unavailable budget evidence makes every summary unavailable instead of zero", () => {
+  const view = memberBudgetViewModel({
+    budgetsState: "unavailable",
+    alertsState: "unavailable",
+    notificationState: "unavailable",
+  });
+
+  assert.equal(view.summary.estimatedSpendLabel, "不可用");
+  assert.equal(view.summary.configuredCount, null);
+  assert.equal(view.summary.nearBudgetCount, null);
+  assert.equal(view.summary.sentAlertCount, null);
+  assert.equal(view.summary.dataStatus, "unavailable");
+});
+
+test("configured member count includes persisted disabled budgets", () => {
+  const view = memberBudgetViewModel({
+    budgets: {
+      data_status: "complete",
+      items: [
+        {
+          budget_id: "budget-enabled",
+          revision: 1,
+          member: { member_ref: "member-enabled", display_name: "Enabled", identity_state: "active" },
+          amount_usd: 100,
+          thresholds_pct: [80, 95, 100],
+          enabled: true,
+          progress: { estimated_spend_usd: 10, pricing_coverage_pct: 100 },
+        },
+        {
+          budget_id: "budget-disabled",
+          revision: 2,
+          member: { member_ref: "member-disabled", display_name: "Disabled", identity_state: "active" },
+          amount_usd: 100,
+          thresholds_pct: [80, 95, 100],
+          enabled: false,
+          progress: { estimated_spend_usd: 10, pricing_coverage_pct: 100 },
+        },
+      ],
+    },
+  });
+
+  assert.equal(view.summary.configuredCount, 2);
+  assert.equal(view.rows[1].canEdit, true);
+  assert.equal(view.rows[1].canDisable, false);
+  assert.equal(view.rows[1].lifecycleLabel, "预算已停用");
+});
+
+test("severity follows each budget thresholds and prior-month alerts do not mark current period", () => {
+  const view = memberBudgetViewModel({
+    periodKey: "2026-07",
+    budgets: {
+      items: [{
+        budget_id: "budget-threshold",
+        revision: 1,
+        member: { member_ref: "member-threshold", display_name: "Threshold Member", identity_state: "active" },
+        amount_usd: 100,
+        thresholds_pct: [95, 100],
+        enabled: true,
+        progress: { estimated_spend_usd: 85, pricing_coverage_pct: 100 },
+      }],
+    },
+    alerts: {
+      items: [{
+        budget_id: "budget-threshold",
+        period_key: "2026-06",
+        threshold_pct: 95,
+        delivery_state: "sent",
+      }],
+    },
+  });
+
+  assert.equal(view.rows[0].severity, "normal");
+  assert.equal(view.rows[0].statusLabel, "85%");
+  assert.equal(view.rows[0].currentAlertState, "");
+});
+
+test("create choices exclude every member with an existing enabled or disabled budget", () => {
+  const view = memberBudgetViewModel({
+    budgets: {
+      items: [
+        {
+          budget_id: "budget-a",
+          revision: 1,
+          member: { member_ref: "member-a", display_name: "A", identity_state: "active" },
+          amount_usd: 100,
+          enabled: true,
+          thresholds_pct: [80],
+          progress: {},
+        },
+        {
+          budget_id: "budget-b",
+          revision: 1,
+          member: { member_ref: "member-b", display_name: "B", identity_state: "active" },
+          amount_usd: 100,
+          enabled: false,
+          thresholds_pct: [80],
+          progress: {},
+        },
+      ],
+    },
+    members: {
+      items: [
+        { member_ref: "member-a", display_name: "A", identity_state: "active" },
+        { member_ref: "member-b", display_name: "B", identity_state: "active" },
+        { member_ref: "member-c", display_name: "C", identity_state: "active" },
+      ],
+    },
+  });
+
+  assert.deepEqual(view.createMembers.map((item) => item.memberRef), ["member-c"]);
+});
+
+test("notification and alert availability remain independent", () => {
+  const view = memberBudgetViewModel({
+    budgets: { items: [], data_status: "complete" },
+    notificationState: "unavailable",
+    alertsState: "unavailable",
+  });
+
+  assert.equal(view.notification.state, "unavailable");
+  assert.equal(view.alertsState, "unavailable");
+  assert.equal(view.summary.sentAlertCount, null);
 });

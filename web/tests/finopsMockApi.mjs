@@ -241,6 +241,10 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     memberBudgetEmpty: Boolean(options.memberBudgetEmpty),
     memberBudgetConflictOnce: Boolean(options.memberBudgetConflictOnce),
     memberBudgetEmailState: options.memberBudgetEmailState || "sent",
+    memberBudgetActiveDisabled: Boolean(options.memberBudgetActiveDisabled),
+    memberBudgetNotificationState: options.memberBudgetNotificationState || "configured",
+    memberBudgetAlertsState: options.memberBudgetAlertsState || "available",
+    memberBudgetDisabled: false,
   };
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -307,7 +311,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
               member_ref: "member-safe",
               amount_usd: 200,
               thresholds_pct: [80, 95, 100],
-              enabled: true,
+              enabled: !control.memberBudgetDisabled,
               revision: 3,
               member: {
                 member_ref: "member-safe",
@@ -339,9 +343,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
                 member_ref: "member-former",
                 display_name: "Former member",
                 role: "viewer",
-                identity_state: "inactive",
-                workspace_ids: [],
-                department_labels: [],
+                identity_state: control.memberBudgetActiveDisabled ? "active" : "inactive",
+                workspace_ids: control.memberBudgetActiveDisabled ? ["demo-corpus"] : [],
+                department_labels: control.memberBudgetActiveDisabled ? ["IT"] : [],
               },
               progress: {
                 estimated_spend_usd: 0,
@@ -381,26 +385,43 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
             workspace_ids: ["demo-corpus"],
             department_labels: ["IT"],
           },
+          ...(control.memberBudgetActiveDisabled ? [{
+            member_ref: "member-former",
+            display_name: "Former member",
+            role: "viewer",
+            identity_state: "active",
+            workspace_ids: ["demo-corpus"],
+            department_labels: ["IT"],
+          }] : []),
         ],
         cursor: { next: null, limit: 100 },
         data_status: "complete",
       };
     } else if (path === "/api/finops/notification-settings" && request.method() === "GET") {
-      body = {
-        item: {
-          recipient_actor_ref: "member-safe",
-          sender_display_name: "DataForge",
-          subject_template: "{{member_name}} 预算提醒",
-          body_template: "{{estimated_spend}} / {{budget_amount}}",
-          enabled: true,
-          revision: 2,
-        },
-        freshness: "recorded",
-        coverage: "request_estimated_cost",
-        data_status: "complete",
-        currency: "USD",
-      };
+      if (control.memberBudgetNotificationState === "not_configured") {
+        status = 404;
+        body = { detail: "Not found" };
+      } else if (control.memberBudgetNotificationState === "unavailable") {
+        status = 503;
+        body = { detail: "internal-notification-body-must-not-surface" };
+      } else {
+        body = {
+          item: {
+            recipient_actor_ref: "member-safe",
+            sender_display_name: "DataForge",
+            subject_template: "{{member_name}} 预算提醒",
+            body_template: "{{estimated_spend}} / {{budget_amount}}",
+            enabled: true,
+            revision: 2,
+          },
+          freshness: "recorded",
+          coverage: "request_estimated_cost",
+          data_status: "complete",
+          currency: "USD",
+        };
+      }
     } else if (path === "/api/finops/notification-settings" && request.method() === "PUT") {
+      control.memberBudgetNotificationState = "configured";
       body = {
         item: {
           recipient_actor_ref: "member-safe",
@@ -426,7 +447,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         };
     } else if (path === "/api/finops/budget-alerts" && request.method() === "GET") {
       body = {
-        items: control.memberBudgetEmpty ? [] : [{
+        items: control.memberBudgetEmpty || control.memberBudgetAlertsState === "unavailable" ? [] : [{
           alert_id: "alert-safe",
           tenant_ref: "tenant-raw-must-not-surface",
           actor_ref: "actor-raw-must-not-surface",
@@ -443,6 +464,15 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           updated_at: NOW,
         }],
         cursor: { next: null, limit: 50 },
+        data_status: control.memberBudgetAlertsState === "unavailable" ? "unavailable" : "partial",
+        currency: "USD",
+      };
+    } else if (path === "/api/finops/member-budgets/budget-safe/disable" && request.method() === "POST") {
+      control.memberBudgetDisabled = true;
+      body = {
+        item: { budget_id: "budget-safe", enabled: false, revision: 4 },
+        freshness: "recorded",
+        coverage: "request_estimated_cost",
         data_status: "partial",
         currency: "USD",
       };
@@ -452,6 +482,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         status = 409;
         body = { detail: "revision conflict internal body" };
       } else {
+        if (request.postDataJSON()?.enabled === true) control.memberBudgetDisabled = false;
         body = {
           item: { budget_id: "budget-safe", revision: 4 },
           freshness: "recorded",
@@ -460,6 +491,14 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           currency: "USD",
         };
       }
+    } else if (path === "/api/finops/member-budgets/budget-former" && request.method() === "PATCH") {
+      body = {
+        item: { budget_id: "budget-former", revision: 3 },
+        freshness: "recorded",
+        coverage: "request_estimated_cost",
+        data_status: "complete",
+        currency: "USD",
+      };
     } else if (path === "/api/finops/member-budgets" && request.method() === "POST") {
       status = 200;
       body = {
