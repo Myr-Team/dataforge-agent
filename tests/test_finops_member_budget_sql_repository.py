@@ -285,3 +285,48 @@ def test_sql_repository_wraps_infrastructure_errors_without_leaking_details() ->
     assert str(captured.value) == "Member budget SQL operation failed"
     assert "tenant-secret" not in repr(captured.value)
     assert connection.rolled_back and connection.closed
+
+
+def test_sql_member_costs_bound_both_queries_to_authorized_workspaces_and_preserve_zero_vs_absent() -> None:
+    connection = _RecordingConnection([[
+        ("actor-partial", Decimal("190"), 19, 20),
+        ("actor-unpriced", None, 0, 1),
+        ("actor-zero", Decimal("0"), 1, 1),
+    ], [
+        ("actor-partial", "gpt-5.6-terra"),
+        ("actor-zero", "gpt-5.6-terra"),
+    ]])
+    repository = _repository(connection)
+
+    values = repository.summarize_member_costs(
+        tenant_ref="tenant-safe",
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-08-01T00:00:00Z",
+        workspace_ids=("ws-a", "ws-a", "ws-b"),
+    )
+
+    assert values["actor-partial"].estimated_spend_usd == Decimal("190")
+    assert values["actor-partial"].pricing_coverage_pct == 95
+    assert values["actor-partial"].data_status == "partial"
+    assert values["actor-unpriced"].estimated_spend_usd is None
+    assert values["actor-unpriced"].data_status == "unavailable"
+    assert values["actor-zero"].estimated_spend_usd == Decimal("0")
+    assert values["actor-zero"].data_status == "complete"
+    calls = connection.cursor_value.calls
+    assert len(calls) == 2
+    assert all("workspace_id IN (?, ?)" in operation for operation, _parameters in calls)
+    assert calls[0][1] == ("tenant-safe", "ws-a", "ws-b", "2026-07-01T00:00:00Z", "2026-08-01T00:00:00Z")
+    assert calls[1][1] == calls[0][1]
+
+
+def test_sql_member_costs_empty_authorized_scope_returns_empty_without_opening_connection() -> None:
+    repository = SqlMemberBudgetRepository(
+        connection_factory=lambda: (_ for _ in ()).throw(AssertionError("must not query all tenant facts"))
+    )
+
+    assert repository.summarize_member_costs(
+        tenant_ref="tenant-safe",
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-08-01T00:00:00Z",
+        workspace_ids=(),
+    ) == {}

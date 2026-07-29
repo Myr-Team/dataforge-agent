@@ -52,32 +52,37 @@ class SqlMemberBudgetRepository:
         return tuple(_budget_from_row(row) for row in rows)
 
     def summarize_member_costs(
-        self, *, tenant_ref: str, from_value: str, to_value: str
+        self, *, tenant_ref: str, from_value: str, to_value: str, workspace_ids: tuple[str, ...]
     ) -> dict[str, MemberCostSummary]:
         """Aggregate reconciled request facts for an inclusive/exclusive UTC window."""
+        authorized_workspaces = _bounded_workspace_ids(workspace_ids)
+        if not authorized_workspaces:
+            return {}
+        placeholders = ", ".join("?" for _ in authorized_workspaces)
+        parameters = (tenant_ref, *authorized_workspaces, from_value, to_value)
         with self._transaction() as cursor:
             amount_rows = cursor.execute(
-                """/* finops:summarize-member-costs */
+                f"""/* finops:summarize-member-costs */
                 SELECT actor_ref,
                        SUM(CASE WHEN cost_amount IS NOT NULL THEN cost_amount END) AS estimated_spend,
                        SUM(CASE WHEN cost_amount IS NOT NULL THEN 1 ELSE 0 END) AS priced_requests,
                        COUNT_BIG(*) AS total_requests
                 FROM df_finops.request_event
                 WHERE tenant_ref = ?
+                  AND workspace_id IN ({placeholders})
                   AND actor_ref IS NOT NULL
                   AND occurred_at >= ?
                   AND occurred_at < ?
                 GROUP BY actor_ref""",
-                tenant_ref,
-                from_value,
-                to_value,
+                *parameters,
             ).fetchall()
             model_rows = cursor.execute(
-                """/* finops:summarize-member-primary-model */
+                f"""/* finops:summarize-member-primary-model */
                 WITH model_counts AS (
                     SELECT actor_ref, model_deployment, COUNT_BIG(*) AS request_count
                     FROM df_finops.request_event
                     WHERE tenant_ref = ?
+                      AND workspace_id IN ({placeholders})
                       AND actor_ref IS NOT NULL
                       AND occurred_at >= ?
                       AND occurred_at < ?
@@ -90,9 +95,7 @@ class SqlMemberBudgetRepository:
                 )
                 SELECT actor_ref, model_deployment
                 FROM ranked_models WHERE model_rank = 1""",
-                tenant_ref,
-                from_value,
-                to_value,
+                *parameters,
             ).fetchall()
         primary_models = {str(_value(row, 0)): _value(row, 1) for row in model_rows}
         return {
@@ -362,6 +365,13 @@ def _value(row: Any, index: int) -> Any:
         return row[index]
     except (KeyError, TypeError):
         return tuple(row)[index]
+
+
+def _bounded_workspace_ids(values: tuple[str, ...]) -> tuple[str, ...]:
+    unique = tuple(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
+    if len(unique) > 100:
+        raise ValueError("authorized workspace scope exceeds limit")
+    return unique
 
 
 def _budget_from_row(row: Any) -> MemberBudget:

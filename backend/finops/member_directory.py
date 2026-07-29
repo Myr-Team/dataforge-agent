@@ -21,7 +21,7 @@ class FinOpsMember(BaseModel):
 
     member_ref: str = Field(min_length=8, max_length=128)
     display_name: str = Field(min_length=1, max_length=160)
-    email: str = Field(min_length=3, max_length=320, repr=False)
+    email: str = Field(default="", max_length=320, repr=False)
     role: Literal["owner", "admin", "editor", "viewer"]
     identity_state: Literal["active", "inactive"]
     workspace_ids: tuple[str, ...]
@@ -79,7 +79,7 @@ class MemberDirectory:
             for raw in self._identity_loader(workspace_id):
                 tenant_id = _text(raw.get("tenant_id"))
                 actor_id = _text(raw.get("actor_id"))
-                if not tenant_id or not actor_id:
+                if not tenant_id or not actor_id or tenant_id != tenant_ref:
                     continue
                 key = (tenant_id, actor_id)
                 row = members.setdefault(
@@ -124,7 +124,11 @@ class MemberCostReader:
         self._repository = repository
 
     def summarize_month(
-        self, tenant_ref: str, month_start: datetime, month_end: datetime
+        self,
+        tenant_ref: str,
+        month_start: datetime,
+        month_end: datetime,
+        workspace_ids: tuple[str, ...],
     ) -> dict[str, MemberMonthlyCost]:
         start = _month_start(month_start)
         if start.month == 12:
@@ -133,10 +137,14 @@ class MemberCostReader:
             end = start.replace(month=start.month + 1)
         if _as_utc(month_start) != start or _as_utc(month_end) != end:
             raise ValueError("month bounds must be one UTC calendar month")
+        authorized_workspaces = _bounded_workspace_ids(workspace_ids)
+        if not authorized_workspaces:
+            return {}
         summaries = self._repository.summarize_member_costs(
             tenant_ref=tenant_ref,
             from_value=_utc_value(start),
             to_value=_utc_value(end),
+            workspace_ids=authorized_workspaces,
         )
         return {
             actor_ref: MemberMonthlyCost(
@@ -178,6 +186,13 @@ def _role(value: object) -> Literal["owner", "admin", "editor", "viewer"]:
 
 def _identity_state(value: object) -> Literal["active", "inactive"]:
     return "active" if _text(value).lower() == "active" else "inactive"
+
+
+def _bounded_workspace_ids(values: tuple[str, ...]) -> tuple[str, ...]:
+    unique = tuple(dict.fromkeys(_text(value) for value in values if _text(value)))
+    if len(unique) > 100:
+        raise ValueError("authorized workspace scope exceeds limit")
+    return unique
 
 
 __all__ = ["FinOpsMember", "MemberCostReader", "MemberDirectory", "MemberMonthlyCost"]

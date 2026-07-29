@@ -2812,8 +2812,14 @@ def _workspace_members_by_key(workspace_id: str) -> dict[str, dict[str, Any]]:
 
 def workspace_finops_member_identities(workspace_id: str) -> list[dict[str, str]]:
     """Internal-only trusted identities; never return directly from an API."""
+    try:
+        meta = _load_workspace_meta(workspace_id)
+    except FileNotFoundError:
+        return []
+    accepted_by_invitation = _accepted_invitation_identities(meta)
     result: list[dict[str, str]] = []
     for member in _workspace_members_by_key(workspace_id).values():
+        member = _trusted_finops_member(member, accepted_by_invitation)
         actor_id = _clean_text(member.get("actor_id"))
         tenant_id = _clean_text(member.get("tenant_id"))
         if not actor_id or not tenant_id or not is_trusted_tenant_identity(member):
@@ -2829,6 +2835,50 @@ def workspace_finops_member_identities(workspace_id: str) -> list[dict[str, str]
             }
         )
     return result
+
+
+def _accepted_invitation_identities(meta: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Return the final trusted identity only for currently accepted invitations."""
+    latest: dict[str, dict[str, Any]] = {}
+    for event in meta.get("workspace_invitation_events") or []:
+        if not isinstance(event, dict) or str(event.get("event_type") or "state") != "state":
+            continue
+        invitation_id = _clean_text(event.get("invitation_id"))
+        if invitation_id:
+            latest[invitation_id] = event
+    accepted: dict[str, dict[str, str]] = {}
+    for invitation_id, event in latest.items():
+        if _clean_text(event.get("state")).lower() != "accepted":
+            continue
+        identity = event.get("accepted_identity") if isinstance(event.get("accepted_identity"), dict) else {}
+        actor_id = _clean_text(identity.get("actor_id"))
+        tenant_id = _clean_text(identity.get("tenant_id"))
+        if actor_id and tenant_id:
+            accepted[invitation_id] = {"actor_id": actor_id, "tenant_id": tenant_id}
+    return accepted
+
+
+def _trusted_finops_member(
+    member: dict[str, Any], accepted_by_invitation: dict[str, dict[str, str]]
+) -> dict[str, Any]:
+    if is_trusted_tenant_identity(member):
+        return member
+    invitation_id = _clean_text(member.get("invitation_id"))
+    accepted = accepted_by_invitation.get(invitation_id)
+    if accepted is None:
+        return member
+    if (
+        _clean_text(member.get("actor_id")) != accepted["actor_id"]
+        or _clean_text(member.get("tenant_id")) != accepted["tenant_id"]
+    ):
+        return member
+    return {
+        **member,
+        "name": "",
+        "user": "",
+        "email": "",
+        "source": "easy_auth",
+    }
 
 
 def _public_actor_reference(
