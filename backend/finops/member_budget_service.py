@@ -33,32 +33,25 @@ class MemberBudgetService:
         members = {item.member_ref: item for item in self._directory.list_members(identity_tenant_id or tenant_ref, workspace_ids)}
         now = datetime.now(timezone.utc)
         costs = self._costs.summarize_month(tenant_ref, _month_start(now), _next_month(now), workspace_ids)
-        rows = self._repository.list_budgets(tenant_ref, include_disabled=True)
+        rows = tuple(
+            budget
+            for budget in self._repository.list_budgets(tenant_ref, include_disabled=True)
+            if budget.member_ref in members
+        )
         start = _cursor_offset(cursor)
         selected = rows[start : start + limit]
         items: list[dict[str, Any]] = []
         for budget in selected:
-            member = members.get(budget.member_ref)
+            member = members[budget.member_ref]
             progress = costs.get(budget.member_ref)
-            safe_member = (
-                {
-                    "member_ref": member.member_ref,
-                    "display_name": member.display_name,
-                    "role": member.role,
-                    "identity_state": member.identity_state,
-                    "workspace_ids": member.workspace_ids,
-                    "department_labels": member.department_labels,
-                }
-                if member
-                else {
-                    "member_ref": budget.member_ref,
-                    "display_name": "Former member",
-                    "role": "viewer",
-                    "identity_state": "inactive",
-                    "workspace_ids": (),
-                    "department_labels": (),
-                }
-            )
+            safe_member = {
+                "member_ref": member.member_ref,
+                "display_name": member.display_name,
+                "role": member.role,
+                "identity_state": member.identity_state,
+                "workspace_ids": member.workspace_ids,
+                "department_labels": member.department_labels,
+            }
             safe_progress = _safe_progress(progress) if progress else _unavailable_progress()
             items.append(
                 {
@@ -107,6 +100,22 @@ class MemberBudgetService:
 
     def is_eligible_member(self, *, member_ref: str, identity_tenant_id: str, workspace_ids: tuple[str, ...]) -> bool:
         return any(item.member_ref == member_ref and item.identity_state == "active" for item in self._directory.list_members(identity_tenant_id, workspace_ids))
+
+    def is_budget_member_authorized(
+        self,
+        *,
+        tenant_ref: str,
+        budget_id: str,
+        identity_tenant_id: str,
+        workspace_ids: tuple[str, ...],
+    ) -> bool:
+        budget = self._repository.get_budget(tenant_ref, budget_id)
+        if budget is None:
+            return False
+        return any(
+            item.member_ref == budget.member_ref
+            for item in self._directory.list_members(identity_tenant_id, workspace_ids)
+        )
 
     def save_budget(
         self, *, tenant_ref: str, actor_ref: str, payload: dict[str, Any], budget_id: str | None = None

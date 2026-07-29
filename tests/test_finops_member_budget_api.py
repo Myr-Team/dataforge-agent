@@ -29,6 +29,9 @@ class _Service:
     def is_eligible_member(self, **_kwargs: Any) -> bool:
         return True
 
+    def is_budget_member_authorized(self, **_kwargs: Any) -> bool:
+        return True
+
     def save_budget(self, **_kwargs: Any) -> dict[str, Any]:
         self.writes += 1
         return {"budget_id": "budget-safe", "revision": 1}
@@ -56,6 +59,7 @@ class _Service:
 
 def _client(monkeypatch, *, roles: tuple[str, ...] = ("owner",), trusted: bool = True) -> tuple[TestClient, _Service]:
     monkeypatch.setenv("DF_FINOPS_MEMBER_BUDGETS_ENABLED", "1")
+    monkeypatch.setenv("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED", "1")
     monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "test-secret")
     service = _Service()
     monkeypatch.setattr(budget_router, "get_member_budget_service", lambda: service)
@@ -128,6 +132,26 @@ def test_unknown_member_is_rejected_before_audit_or_mutation(monkeypatch) -> Non
     response = client.post("/api/finops/member-budgets", json={"member_ref": "actor-unknown", "amount_usd": 200, "thresholds_pct": [80, 95, 100], "enabled": True, "base_revision": 0})
     assert response.status_code == 404
     assert not events
+    assert service.writes == 0
+
+
+def test_out_of_scope_budget_mutations_are_hidden_before_audit_or_mutation(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    audits: list[object] = []
+    monkeypatch.setattr(service, "is_budget_member_authorized", lambda **_kwargs: False)
+    monkeypatch.setattr(budget_router, "record_audit_event", lambda *_args, **_kwargs: audits.append(object()))
+
+    updated = client.patch(
+        "/api/finops/member-budgets/budget-outside",
+        json={"amount_usd": 300, "enabled": True, "base_revision": 1},
+    )
+    disabled = client.post(
+        "/api/finops/member-budgets/budget-outside/disable",
+        json={"base_revision": 1},
+    )
+
+    assert [updated.status_code, disabled.status_code] == [404, 404]
+    assert not audits
     assert service.writes == 0
 
 
@@ -258,6 +282,37 @@ def test_test_email_has_its_own_disabled_gate(monkeypatch) -> None:
     assert client.post("/api/finops/notification-settings/test-email").status_code == 404
 
 
+def test_email_configuration_gate_hides_read_and_write_before_service_or_audit(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    monkeypatch.delenv("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED", raising=False)
+    monkeypatch.setenv("DF_FINOPS_EMAIL_ALERTS_ENABLED", "1")
+    audits: list[object] = []
+    monkeypatch.setattr(
+        service,
+        "get_notification",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("disabled read reached service")),
+    )
+    monkeypatch.setattr(
+        service,
+        "save_notification",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("disabled write reached service")),
+    )
+    monkeypatch.setattr(budget_router, "record_audit_event", lambda *_args, **_kwargs: audits.append(object()))
+
+    read = client.get("/api/finops/notification-settings")
+    write = client.put(
+        "/api/finops/notification-settings",
+        json={"recipient_actor_ref": "actor-safe", "base_revision": 0},
+    )
+
+    assert [read.status_code, write.status_code] == [404, 404]
+    assert [response.json()["detail"] for response in (read, write)] == [
+        "email_configuration_disabled",
+        "email_configuration_disabled",
+    ]
+    assert not audits
+
+
 def test_test_email_works_with_alerts_disabled_and_redacts_delivery(monkeypatch) -> None:
     client, service = _client(monkeypatch)
     monkeypatch.setenv("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED", "1")
@@ -338,3 +393,86 @@ def test_owner_lists_friendly_member_budget_with_partial_coverage() -> None:
     assert item["progress"]["pricing_coverage_pct"] == 95
     assert item["data_status"] == "partial"
     assert "oid-" not in str(value)
+
+
+def test_owner_list_omits_budgets_for_members_outside_authorized_workspaces() -> None:
+    now = datetime.now(timezone.utc)
+    repository = InMemoryMemberBudgetRepository()
+    repository.save_budget(
+        "tenant-safe",
+        MemberBudget(
+            member_ref="actor-safe",
+            amount_usd=Decimal("200"),
+            thresholds_pct=(80, 95, 100),
+            enabled=True,
+            budget_id="budget-safe",
+            revision=1,
+            created_by_ref="actor-owner",
+            updated_by_ref="actor-owner",
+            created_at=now,
+            updated_at=now,
+        ),
+        base_revision=0,
+    )
+    repository.save_budget(
+        "tenant-safe",
+        MemberBudget(
+            member_ref="actor-outside",
+            amount_usd=Decimal("999"),
+            thresholds_pct=(80, 95, 100),
+            enabled=True,
+            budget_id="budget-outside",
+            revision=1,
+            created_by_ref="actor-other",
+            updated_by_ref="actor-other",
+            created_at=now,
+            updated_at=now,
+        ),
+        base_revision=0,
+    )
+
+    class _Directory:
+        def list_members(self, _tenant_id: str, _workspace_ids: tuple[str, ...]):
+            return (
+                FinOpsMember(
+                    member_ref="actor-safe",
+                    display_name="Finance Admin",
+                    email="finance@example.test",
+                    role="admin",
+                    identity_state="active",
+                    workspace_ids=("ws-safe",),
+                    department_labels=("finance",),
+                ),
+            )
+
+    class _Costs:
+        def summarize_month(self, *_args: Any):
+            return {}
+
+    service = MemberBudgetService(repository, _Directory(), _Costs())
+    value = service.list_budgets(
+        tenant_ref="tenant-safe",
+        identity_tenant_id="tenant-raw",
+        workspace_ids=("ws-safe",),
+        cursor=None,
+        limit=1,
+    )
+
+    assert [item["budget_id"] for item in value["items"]] == ["budget-safe"]
+    assert value["cursor"]["next"] is None
+    assert "budget-outside" not in str(value)
+    assert "actor-outside" not in str(value)
+    assert "999" not in str(value)
+    assert "Former member" not in str(value)
+    assert service.is_budget_member_authorized(
+        tenant_ref="tenant-safe",
+        budget_id="budget-safe",
+        identity_tenant_id="tenant-raw",
+        workspace_ids=("ws-safe",),
+    )
+    assert not service.is_budget_member_authorized(
+        tenant_ref="tenant-safe",
+        budget_id="budget-outside",
+        identity_tenant_id="tenant-raw",
+        workspace_ids=("ws-safe",),
+    )

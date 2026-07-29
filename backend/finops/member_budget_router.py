@@ -64,6 +64,13 @@ def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, 
     )
 
 
+def _email_configuration_context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, Any]]:
+    context = _context(request)
+    if not _enabled("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED"):
+        raise HTTPException(status_code=404, detail="email_configuration_disabled")
+    return context
+
+
 def get_member_budget_service() -> MemberBudgetService:
     """Return durable production storage; tests override this dependency explicitly."""
     global _service
@@ -241,33 +248,49 @@ async def create_member_budget(request: Request) -> dict[str, Any]:
 
 @router.patch("/member-budgets/{budget_id}")
 async def update_member_budget(budget_id: str, request: Request) -> dict[str, Any]:
-    tenant_ref, actor_ref, workspace_ids, _actor = _context(request)
+    tenant_ref, actor_ref, workspace_ids, actor = _context(request)
     payload = _payload(await _object_body(request), {"member_ref", "amount_usd", "thresholds_pct", "enabled", "base_revision"})
     _strict_budget_payload(payload, create=False)
-    _audit_required(request, workspace_ids[0], budget_id)
     try:
-        return _item_envelope(get_member_budget_service().save_budget(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload, budget_id=budget_id))
+        service = get_member_budget_service()
+        if not service.is_budget_member_authorized(
+            tenant_ref=tenant_ref,
+            budget_id=budget_id,
+            identity_tenant_id=str(actor["tenant_id"]),
+            workspace_ids=workspace_ids,
+        ):
+            raise KeyError(budget_id)
+        _audit_required(request, workspace_ids[0], budget_id)
+        return _item_envelope(service.save_budget(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload, budget_id=budget_id))
     except Exception as exc:
         raise _map_error(exc) from exc
 
 
 @router.post("/member-budgets/{budget_id}/disable")
 async def disable_member_budget(budget_id: str, request: Request) -> dict[str, Any]:
-    tenant_ref, actor_ref, workspace_ids, _actor = _context(request)
+    tenant_ref, actor_ref, workspace_ids, actor = _context(request)
     body = await _object_body(request)
     if set(body) != {"base_revision"}:
         raise HTTPException(status_code=422, detail="base_revision is required")
     _strict_revision(body["base_revision"])
-    _audit_required(request, workspace_ids[0], budget_id)
     try:
-        return _item_envelope(get_member_budget_service().disable_budget(tenant_ref=tenant_ref, actor_ref=actor_ref, budget_id=budget_id, base_revision=body["base_revision"]))
+        service = get_member_budget_service()
+        if not service.is_budget_member_authorized(
+            tenant_ref=tenant_ref,
+            budget_id=budget_id,
+            identity_tenant_id=str(actor["tenant_id"]),
+            workspace_ids=workspace_ids,
+        ):
+            raise KeyError(budget_id)
+        _audit_required(request, workspace_ids[0], budget_id)
+        return _item_envelope(service.disable_budget(tenant_ref=tenant_ref, actor_ref=actor_ref, budget_id=budget_id, base_revision=body["base_revision"]))
     except Exception as exc:
         raise _map_error(exc) from exc
 
 
 @router.get("/notification-settings")
 async def get_notification_settings(request: Request) -> dict[str, Any]:
-    tenant_ref, _actor_ref, _workspace_ids, _actor = _context(request)
+    tenant_ref, _actor_ref, _workspace_ids, _actor = _email_configuration_context(request)
     try:
         value = get_member_budget_service().get_notification(tenant_ref=tenant_ref)
     except Exception as exc:
@@ -279,7 +302,7 @@ async def get_notification_settings(request: Request) -> dict[str, Any]:
 
 @router.put("/notification-settings")
 async def put_notification_settings(request: Request) -> dict[str, Any]:
-    tenant_ref, actor_ref, workspace_ids, actor = _context(request)
+    tenant_ref, actor_ref, workspace_ids, actor = _email_configuration_context(request)
     payload = _payload(await _object_body(request), {"recipient_actor_ref", "sender_display_name", "subject_template", "body_template", "enabled", "base_revision"})
     _strict_notification_payload(payload)
     _validate_notification_templates(payload)
@@ -292,9 +315,7 @@ async def put_notification_settings(request: Request) -> dict[str, Any]:
 
 @router.post("/notification-settings/test-email")
 async def test_notification_email(request: Request) -> dict[str, Any]:
-    tenant_ref, _actor_ref, workspace_ids, actor = _context(request)
-    if not _enabled("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED"):
-        raise HTTPException(status_code=404, detail="Not found")
+    tenant_ref, _actor_ref, workspace_ids, actor = _email_configuration_context(request)
     _audit_required(request, workspace_ids[0], "member-budget-test-email")
     try:
         result = get_member_budget_service().send_test_email(

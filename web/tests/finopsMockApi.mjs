@@ -398,7 +398,10 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         data_status: "complete",
       };
     } else if (path === "/api/finops/notification-settings" && request.method() === "GET") {
-      if (control.memberBudgetNotificationState === "not_configured") {
+      if (control.memberBudgetNotificationState === "disabled") {
+        status = 404;
+        body = { detail: "email_configuration_disabled" };
+      } else if (control.memberBudgetNotificationState === "not_configured") {
         status = 404;
         body = { detail: "Not found" };
       } else if (control.memberBudgetNotificationState === "unavailable") {

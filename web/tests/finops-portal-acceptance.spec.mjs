@@ -333,6 +333,21 @@ test("notification and alert service availability stay independent in the page",
 });
 
 
+test("disabled email configuration is honest and cannot open configuration actions", async ({ page }) => {
+  await installFinOpsMockApi(page, [], {
+    memberBudgetNotificationState: "disabled",
+  });
+  await page.goto("/");
+  await openMemberBudgets(page);
+
+  await expect(page.locator(".member-budget-mail-strip")).toContainText("邮件配置未启用");
+  await expect(page.getByRole("button", { name: "配置邮件" })).toBeDisabled();
+  await expect(page.locator(".member-budget-mail-strip").getByRole("button", { name: "配置" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "发送测试邮件" })).toBeDisabled();
+  await expect(page.getByRole("dialog", { name: "邮件提醒配置" })).toHaveCount(0);
+});
+
+
 test("member budget modal traps focus, makes background inert and restores the trigger", async ({ page }) => {
   await installFinOpsMockApi(page);
   await page.goto("/");

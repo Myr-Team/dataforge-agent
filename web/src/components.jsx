@@ -3217,8 +3217,11 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
             ? "unavailable"
             : "configured"
           : notificationResult.reason?.status === 404
-            ? "not_configured"
-            : "unavailable",
+              && notificationResult.reason?.message === "email_configuration_disabled"
+            ? "disabled"
+            : notificationResult.reason?.status === 404
+              ? "not_configured"
+              : "unavailable",
         alerts: alertsResult.status === "fulfilled" ? alertsResult.value : {},
         alertsState,
       }));

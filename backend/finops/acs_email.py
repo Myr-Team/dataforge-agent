@@ -90,8 +90,8 @@ def acs_email_sender_from_environment() -> AcsEmailSender:
         raise AcsEmailError("not_configured")
     try:
         from azure.communication.email import EmailClient
-        from azure.identity import DefaultAzureCredential
-        return AcsEmailSender(client=EmailClient(endpoint, DefaultAzureCredential()), sender_address=sender_address)
+        from azure.identity import ManagedIdentityCredential
+        return AcsEmailSender(client=EmailClient(endpoint, ManagedIdentityCredential()), sender_address=sender_address)
     except AcsEmailError:
         raise
     except Exception as exc:

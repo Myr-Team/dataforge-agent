@@ -36,6 +36,7 @@ const EMPTY_VIEW = memberBudgetViewModel();
 
 function safeFailureState(error) {
   if (error?.status === 403) return "permission_required";
+  if (error?.status === 404 && error?.message === "email_configuration_disabled") return "disabled";
   if (error?.status === 404) return "not_configured";
   return "unavailable";
 }
@@ -383,6 +384,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
       && (!department || row.departmentLabel === department)
     ));
   }, [department, query, view.rows]);
+  const emailConfigurationDisabled = view.notification.state === "disabled";
 
   const saveBudget = async (payload) => {
     setBusy("budget");
@@ -486,7 +488,13 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
           <p>按 Entra 成员查看本月请求级估算成本与计价覆盖，并为管理员配置阈值邮件提醒。</p>
         </div>
         <div className="member-budget-page-actions">
-          <button type="button" className="member-budget-secondary-button" onClick={() => { setFormError(""); setMailModal(true); }}>
+          <button
+            type="button"
+            className="member-budget-secondary-button"
+            onClick={() => { setFormError(""); setMailModal(true); }}
+            disabled={emailConfigurationDisabled}
+            title={emailConfigurationDisabled ? "邮件配置功能未启用" : undefined}
+          >
             <Settings2 size={14} />配置邮件
           </button>
           <button type="button" className="member-budget-primary-button" onClick={() => { setFormError(""); setBudgetModal({}); }} disabled={!view.createMembers.length}>
@@ -625,27 +633,37 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
             <div>
               <span>管理员邮件提醒</span>
               <strong>
-                {view.notification.configured
-                  ? `${view.notification.recipientLabel} · 已安全保存`
-                  : view.notification.state === "permission_required"
-                    ? "需要邮件服务权限"
-                    : view.notification.state === "unavailable"
-                      ? "邮件状态不可用"
-                      : "尚未配置"}
+                {emailConfigurationDisabled
+                  ? "邮件配置未启用"
+                  : view.notification.configured
+                    ? `${view.notification.recipientLabel} · 已安全保存`
+                    : view.notification.state === "permission_required"
+                      ? "需要邮件服务权限"
+                      : view.notification.state === "unavailable"
+                        ? "邮件状态不可用"
+                        : "尚未配置"}
               </strong>
               <small>
-                {view.notification.configured
-                  ? "收件地址由 Entra 目录解析，不在页面中显示。"
-                  : view.notification.state === "unavailable"
-                    ? "预算数据仍可查看；邮件服务恢复后可继续配置。"
-                    : "配置后可发送一封测试邮件；自动阈值提醒仍由独立开关控制。"}
+                {emailConfigurationDisabled
+                  ? "成员预算仍可查看；邮件配置入口由独立功能开关控制。"
+                  : view.notification.configured
+                    ? "收件地址由 Entra 目录解析，不在页面中显示。"
+                    : view.notification.state === "unavailable"
+                      ? "预算数据仍可查看；邮件服务恢复后可继续配置。"
+                      : "配置后可发送一封测试邮件；自动阈值提醒仍由独立开关控制。"}
               </small>
             </div>
             <div className="member-budget-mail-actions">
               <button type="button" className="member-budget-secondary-button" onClick={sendTest} disabled={busy === "test" || !view.notification.configured}>
                 {busy === "test" ? <Loader2 size={14} className="spin" /> : <Mail size={14} />}发送测试邮件
               </button>
-              <button type="button" className="member-budget-config-button" onClick={() => { setFormError(""); setMailModal(true); }}><Settings2 size={13} />配置</button>
+              <button
+                type="button"
+                className="member-budget-config-button"
+                onClick={() => { setFormError(""); setMailModal(true); }}
+                disabled={emailConfigurationDisabled}
+                title={emailConfigurationDisabled ? "邮件配置功能未启用" : undefined}
+              ><Settings2 size={13} />配置</button>
             </div>
           </section>
 

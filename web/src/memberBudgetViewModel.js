@@ -213,11 +213,13 @@ export function memberBudgetViewModel({
     notification: {
       state: notificationItem
         ? "configured"
-        : notificationState === "permission_required"
-          ? "permission_required"
-          : notificationState === "unavailable"
-            ? "unavailable"
-            : "not_configured",
+        : notificationState === "disabled"
+          ? "disabled"
+          : notificationState === "permission_required"
+            ? "permission_required"
+            : notificationState === "unavailable"
+              ? "unavailable"
+              : "not_configured",
       configured: Boolean(notificationItem),
       recipientMemberRef,
       recipientLabel: membersByRef.get(recipientMemberRef) || (notificationItem ? "管理员" : "尚未选择"),
@@ -252,9 +254,11 @@ export function memberBudgetHomeSummaryViewModel(value = {}) {
     nearBudgetLabel: view.rows.length ? `${view.summary.nearBudgetCount} 位接近预算` : "暂无预算",
     mailLabel: view.notification.configured
       ? "邮件已配置"
-      : view.notification.state === "unavailable" || view.notification.state === "permission_required"
-        ? "邮件状态不可用"
-        : "邮件未配置",
+      : view.notification.state === "disabled"
+        ? "邮件配置未启用"
+        : view.notification.state === "unavailable" || view.notification.state === "permission_required"
+          ? "邮件状态不可用"
+          : "邮件未配置",
   };
 }
 

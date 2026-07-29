@@ -177,6 +177,24 @@ test("settings home summary is truthful for configured, unavailable and empty st
   assert.equal(empty.mailLabel, "邮件未配置");
 });
 
+test("disabled email configuration stays distinct from an unconfigured recipient", () => {
+  const view = memberBudgetViewModel({
+    budgets: { items: [], data_status: "complete" },
+    notification: null,
+    notificationState: "disabled",
+  });
+  const home = memberBudgetHomeSummaryViewModel({
+    budgets: { items: [], data_status: "complete" },
+    notification: null,
+    notificationState: "disabled",
+  });
+
+  assert.equal(view.notification.state, "disabled");
+  assert.equal(view.notification.configured, false);
+  assert.equal(home.mailLabel, "邮件配置未启用");
+});
+
+
 test("test email response accepts only safe public categories", () => {
   assert.deepEqual(
     safeTestEmailResult({ state: "sent", sent_at: "2026-07-29T01:00:00Z", safe_error_category: null }),

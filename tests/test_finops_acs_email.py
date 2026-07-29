@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 from datetime import datetime, timezone
+import sys
+from types import ModuleType
 
 from backend.finops.acs_email import (
     AcsEmailError,
@@ -64,6 +66,51 @@ def test_sender_requires_endpoint_and_sender(monkeypatch) -> None:
     monkeypatch.delenv("DF_ACS_EMAIL_SENDER_ADDRESS", raising=False)
     with pytest.raises(AcsEmailError, match="^not_configured$"):
         acs_email_sender_from_environment()
+
+
+def test_environment_sender_uses_only_system_assigned_managed_identity(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+    managed_credential = object()
+    captured: dict[str, object] = {}
+
+    def managed_identity(*args, **kwargs):
+        calls.append(("managed_identity", args, kwargs))
+        return managed_credential
+
+    def default_credential(*args, **kwargs):
+        calls.append(("default", args, kwargs))
+        return object()
+
+    class _Client:
+        @classmethod
+        def from_endpoint(cls, *_args, **_kwargs):
+            raise AssertionError("connection-string credential path must not be used")
+
+    def email_client(endpoint, credential):
+        captured.update(endpoint=endpoint, credential=credential)
+        return _Client()
+
+    monkeypatch.setenv("DF_ACS_EMAIL_ENDPOINT", "https://email-safe.communication.azure.com")
+    monkeypatch.setenv("DF_ACS_EMAIL_SENDER_ADDRESS", "sender@example.test")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "developer-or-user-assigned-marker")
+    communication_module = ModuleType("azure.communication")
+    email_module = ModuleType("azure.communication.email")
+    email_module.EmailClient = email_client
+    identity_module = ModuleType("azure.identity")
+    identity_module.ManagedIdentityCredential = managed_identity
+    identity_module.DefaultAzureCredential = default_credential
+    monkeypatch.setitem(sys.modules, "azure.communication", communication_module)
+    monkeypatch.setitem(sys.modules, "azure.communication.email", email_module)
+    monkeypatch.setitem(sys.modules, "azure.identity", identity_module)
+
+    sender = acs_email_sender_from_environment()
+
+    assert isinstance(sender, AcsEmailSender)
+    assert calls == [("managed_identity", (), {})]
+    assert captured == {
+        "endpoint": "https://email-safe.communication.azure.com",
+        "credential": managed_credential,
+    }
 
 
 def test_sender_handles_sdk_shaped_timeout_auth_and_incomplete_lro() -> None:
