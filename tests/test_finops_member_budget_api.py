@@ -12,6 +12,7 @@ from backend.finops.member_budget_repository import InMemoryMemberBudgetReposito
 from backend.finops.member_budget_service import MemberBudgetService
 from backend.finops.member_budgets import MemberBudget
 from backend.finops.member_directory import FinOpsMember, MemberMonthlyCost
+from backend.finops.acs_email import AcsEmailError, EmailDeliveryResult
 import backend.finops.member_budget_router as budget_router
 
 
@@ -47,6 +48,10 @@ class _Service:
 
     def list_alerts(self, **_kwargs: Any) -> dict[str, Any]:
         return {"items": [], "cursor": {"next": None, "limit": _kwargs.get("limit", 50)}, "currency": "USD", "freshness": "recorded", "coverage": "request_estimated_cost", "data_status": "unavailable"}
+
+    def send_test_email(self, **_kwargs: Any) -> EmailDeliveryResult:
+        self.writes += 1
+        return EmailDeliveryResult(state="sent", sent_at=None, safe_error_category=None)
 
 
 def _client(monkeypatch, *, roles: tuple[str, ...] = ("owner",), trusted: bool = True) -> tuple[TestClient, _Service]:
@@ -174,6 +179,55 @@ def test_response_envelopes_include_budget_metadata_and_bounded_alert_cursor(mon
         assert {"freshness", "coverage", "data_status", "currency"}.issubset(response.json())
         assert response.json()["currency"] == "USD"
     assert alert_response.json()["cursor"] == {"next": None, "limit": 2}
+
+
+def test_test_email_has_its_own_disabled_gate(monkeypatch) -> None:
+    client, _service = _client(monkeypatch)
+    monkeypatch.delenv("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED", raising=False)
+    monkeypatch.setenv("DF_FINOPS_EMAIL_ALERTS_ENABLED", "0")
+    assert client.post("/api/finops/notification-settings/test-email").status_code == 404
+
+
+def test_test_email_works_with_alerts_disabled_and_redacts_delivery(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    monkeypatch.setenv("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED", "1")
+    monkeypatch.setenv("DF_FINOPS_EMAIL_ALERTS_ENABLED", "0")
+    monkeypatch.setattr(budget_router, "acs_email_sender_from_environment", lambda: object())
+    response = client.post("/api/finops/notification-settings/test-email")
+    assert response.status_code == 200
+    assert response.json()["state"] == "sent"
+    assert response.json()["safe_error_category"] is None
+    assert "admin@example.test" not in response.text
+    assert service.writes == 1
+
+
+def test_test_email_reports_only_safe_adapter_categories(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    monkeypatch.setenv("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED", "1")
+    monkeypatch.setattr(budget_router, "acs_email_sender_from_environment", lambda: (_ for _ in ()).throw(AcsEmailError("not_configured")))
+    response = client.post("/api/finops/notification-settings/test-email")
+    assert response.status_code == 200
+    assert response.json()["safe_error_category"] == "not_configured"
+    assert service.writes == 0
+
+
+def test_test_email_rejects_missing_or_inactive_recipient_without_send(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    monkeypatch.setenv("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED", "1")
+    monkeypatch.setattr(budget_router, "acs_email_sender_from_environment", lambda: object())
+    monkeypatch.setattr(service, "send_test_email", lambda **_kwargs: (_ for _ in ()).throw(PermissionError("recipient must be an active tenant administrator")))
+    response = client.post("/api/finops/notification-settings/test-email")
+    assert response.status_code == 403
+    assert service.writes == 0
+
+
+def test_test_email_requires_persisted_notification_settings(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    monkeypatch.setenv("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED", "1")
+    monkeypatch.setattr(budget_router, "acs_email_sender_from_environment", lambda: object())
+    monkeypatch.setattr(service, "send_test_email", lambda **_kwargs: (_ for _ in ()).throw(KeyError("notification_setting")))
+    assert client.post("/api/finops/notification-settings/test-email").status_code == 404
+    assert service.writes == 0
 
 
 def test_removed_member_is_visible_but_has_no_alert_recipient(monkeypatch) -> None:

@@ -12,6 +12,7 @@ from ..identity import actor_from_request, is_trusted_tenant_identity
 from ..lineage_sql import build_lineage_sql_connection_factory
 from ..workspace_authz import active_workspace_role
 from ..workspace_store import list_workspaces
+from .acs_email import AcsEmailError, acs_email_sender_from_environment
 from .member_budget_repository import MemberBudgetConflictError, MemberBudgetRepository
 from .member_budget_service import MemberBudgetService
 from .member_directory import MemberDirectory
@@ -174,6 +175,10 @@ def _item_envelope(item: Any, *, data_status: str = "unavailable") -> dict[str, 
     return {"item": item, "freshness": "recorded", "coverage": "request_estimated_cost", "data_status": data_status, "currency": "USD"}
 
 
+def _test_email_response(*, state: str, sent_at: Any, safe_error_category: str | None) -> dict[str, Any]:
+    return {"state": state, "sent_at": sent_at, "safe_error_category": safe_error_category, "freshness": "recorded", "coverage": "notification_configuration", "data_status": "unavailable", "currency": "USD"}
+
+
 def _list_envelope(value: Mapping[str, Any], *, limit: int) -> dict[str, Any]:
     result = dict(value)
     result.setdefault("items", [])
@@ -266,6 +271,25 @@ async def put_notification_settings(request: Request) -> dict[str, Any]:
     _audit_required(request, workspace_ids[0], "member-budget-notification")
     try:
         return _item_envelope(get_member_budget_service().save_notification(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload, active_admins=_active_admins(str(actor["tenant_id"]), workspace_ids)))
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+
+@router.post("/notification-settings/test-email")
+async def test_notification_email(request: Request) -> dict[str, Any]:
+    tenant_ref, _actor_ref, workspace_ids, actor = _context(request)
+    if not _enabled("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED"):
+        raise HTTPException(status_code=404, detail="Not found")
+    _audit_required(request, workspace_ids[0], "member-budget-test-email")
+    try:
+        result = get_member_budget_service().send_test_email(
+            tenant_ref=tenant_ref,
+            active_admins=_active_admins(str(actor["tenant_id"]), workspace_ids),
+            sender=acs_email_sender_from_environment(),
+        )
+        return _test_email_response(state=result.state, sent_at=result.sent_at, safe_error_category=result.safe_error_category)
+    except AcsEmailError as exc:
+        return _test_email_response(state="failed", sent_at=None, safe_error_category=exc.category)
     except Exception as exc:
         raise _map_error(exc) from exc
 

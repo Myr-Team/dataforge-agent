@@ -4,8 +4,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import math
 from typing import Any, Protocol
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from .acs_email import AcsEmailSender, EmailDeliveryResult, EmailMessage, render_template
 from .member_budget_repository import MemberBudgetRepository
 from .member_budgets import MemberBudget, MemberBudgetDraft, NotificationSetting
 from .member_directory import MemberDirectory, MemberMonthlyCost
@@ -209,6 +210,27 @@ class MemberBudgetService:
         rows = self._repository.list_alerts(tenant_ref, budget_id=budget_id, offset=start, limit=limit + 1)
         selected = rows[:limit]
         return {"items": [item.model_dump(mode="json") for item in selected], "cursor": {"next": str(start + limit) if len(rows) > limit else None, "limit": limit}, "currency": "USD", "freshness": "recorded", "coverage": "request_estimated_cost", "data_status": "unavailable"}
+
+    def send_test_email(self, *, tenant_ref: str, active_admins: dict[str, str], sender: AcsEmailSender) -> EmailDeliveryResult:
+        """Send a configuration probe only; it never creates a budget alert."""
+        setting = self._repository.get_notification_setting(tenant_ref)
+        if setting is None:
+            raise KeyError("notification_setting")
+        recipient = active_admins.get(setting.recipient_actor_ref)
+        if not recipient or recipient != setting.recipient_email:
+            raise PermissionError("recipient must be an active tenant administrator")
+        values = {
+            "member_name": "Member", "budget_amount": "-", "estimated_spend": "-", "usage_percent": "-",
+            "threshold_percent": "-", "period_label": "-", "pricing_coverage": "-", "portal_url": "-",
+        }
+        message = EmailMessage(
+            recipient=recipient,
+            sender_display_name=setting.sender_display_name,
+            subject=f"[测试] {render_template(setting.subject_template, values)}",
+            plain_text=render_template(setting.body_template, values),
+        )
+        operation_id = str(uuid5(NAMESPACE_URL, f"dataforge-finops-test-email:{tenant_ref}:{setting.revision}"))
+        return sender.send(message, operation_id=operation_id)
 
 
 def _safe_notification(value: NotificationSetting) -> dict[str, Any]:
