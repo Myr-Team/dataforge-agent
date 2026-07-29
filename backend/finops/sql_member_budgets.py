@@ -322,6 +322,19 @@ class SqlMemberBudgetRepository:
                 return False
             raise MemberBudgetConflictError("budget alert id conflict") from None
 
+    def transition_alert(self, tenant_ref: str, alert_id: str, *, expected_state: str, value: BudgetAlert) -> bool:
+        """CAS transition prevents concurrent workers from sending the same claim."""
+        with self._transaction() as cursor:
+            cursor.execute(
+                """/* finops:transition-budget-alert */
+                UPDATE df_finops.budget_alert SET delivery_state = ?, safe_error_category = ?,
+                    attempt_count = ?, sent_at = ?, updated_at = ?
+                WHERE tenant_ref = ? AND alert_id = ? AND delivery_state = ?""",
+                value.delivery_state, value.safe_error_category, value.attempt_count, value.sent_at,
+                value.updated_at, tenant_ref, alert_id, expected_state,
+            )
+            return int(getattr(cursor, "rowcount", 0) or 0) == 1
+
     def _alert_threshold_exists(self, value: BudgetAlert) -> bool:
         with self._transaction() as cursor:
             row = cursor.execute(

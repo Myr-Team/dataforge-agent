@@ -24,6 +24,7 @@ class MemberBudgetRepository(Protocol):
         self, tenant_ref: str, value: NotificationSetting, *, base_revision: int
     ) -> NotificationSetting: ...
     def claim_alert(self, value: BudgetAlert) -> bool: ...
+    def transition_alert(self, tenant_ref: str, alert_id: str, *, expected_state: str, value: BudgetAlert) -> bool: ...
     def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None, offset: int = 0, limit: int = 100) -> tuple[BudgetAlert, ...]: ...
 
 
@@ -110,6 +111,16 @@ class InMemoryMemberBudgetRepository:
                 raise MemberBudgetConflictError("budget alert id conflict")
             self._alerts[key] = value
             self._alerts_by_id[(value.tenant_ref, value.alert_id)] = value
+            return True
+
+    def transition_alert(self, tenant_ref: str, alert_id: str, *, expected_state: str, value: BudgetAlert) -> bool:
+        with self._lock:
+            current = self._alerts_by_id.get((tenant_ref, alert_id))
+            if current is None or current.delivery_state != expected_state:
+                return False
+            key = (tenant_ref, current.budget_id, current.period_key, current.threshold_pct)
+            self._alerts[key] = value
+            self._alerts_by_id[(tenant_ref, alert_id)] = value
             return True
 
     def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None, offset: int = 0, limit: int = 100) -> tuple[BudgetAlert, ...]:
