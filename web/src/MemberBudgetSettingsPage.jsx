@@ -386,7 +386,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
   }, [department, query, view.rows]);
   const emailConfigurationDisabled = ["disabled", "permission_required"].includes(view.notification.state);
   const emailConfigurationDisabledReason = view.notification.state === "permission_required"
-    ? "需要租户邮件管理员角色"
+    ? "需要租户 FinOps 管理员角色"
     : "邮件配置功能未启用";
 
   const saveBudget = async (payload) => {
@@ -490,7 +490,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
           <h1>成员成本预算</h1>
           <p>按 Entra 成员查看本月请求级估算成本与计价覆盖，并为管理员配置阈值邮件提醒。</p>
         </div>
-        <div className="member-budget-page-actions">
+        {state !== "permission_required" ? <div className="member-budget-page-actions">
           <button
             type="button"
             className="member-budget-secondary-button"
@@ -503,7 +503,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
           <button type="button" className="member-budget-primary-button" onClick={() => { setFormError(""); setBudgetModal({}); }} disabled={!view.createMembers.length}>
             <Plus size={14} />设置成员预算
           </button>
-        </div>
+        </div> : null}
       </header>
 
       {notice ? (
@@ -513,7 +513,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
         </div>
       ) : null}
 
-      <section className="member-budget-summary" aria-label="预算摘要">
+      {state !== "permission_required" ? <section className="member-budget-summary" aria-label="预算摘要">
         {skeleton ? Array.from({ length: 4 }, (_, index) => <div className="member-budget-summary-skeleton" key={index} />) : (
           <>
             <SummaryCard icon={CircleDollarSign} label="本月估算成本" help="仅汇总有可靠价目表匹配的请求；未计价请求不会被当作 0。" value={view.summary.estimatedSpendLabel} note={view.summary.dataStatus === "partial" ? "部分请求尚未计价" : "请求级估算 · USD"} />
@@ -522,13 +522,15 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
             <SummaryCard icon={Mail} label="已发送提醒" help="当前保留窗口内状态为已发送的阈值提醒数量。" value={view.summary.sentAlertCount === null ? "不可用" : String(view.summary.sentAlertCount)} note="自动发送默认关闭" />
           </>
         )}
-      </section>
+      </section> : null}
 
       {state === "unavailable" || state === "permission_required" || state === "not_configured" ? (
         <section className="member-budget-state">
           <AlertCircle size={20} />
-          <strong>{state === "permission_required" ? "需要管理员权限" : state === "not_configured" ? "成员预算尚未启用" : "成员预算暂时不可用"}</strong>
-          <p>没有使用示例金额填充当前状态。请检查服务配置后重试。</p>
+          <strong>{state === "permission_required" ? "需要租户 FinOps 管理员角色" : state === "not_configured" ? "成员预算尚未启用" : "成员预算暂时不可用"}</strong>
+          <p>{state === "permission_required"
+            ? "成员成本预算按租户汇总。请联系租户管理员分配应用角色后重新登录。"
+            : "没有使用示例金额填充当前状态。请检查服务配置后重试。"}</p>
           <button type="button" className="member-budget-secondary-button" onClick={() => reload()}><RefreshCw size={14} />重试</button>
         </section>
       ) : (
@@ -641,7 +643,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
                   : view.notification.configured
                     ? `${view.notification.recipientLabel} · 已安全保存`
                     : view.notification.state === "permission_required"
-                      ? "需要租户邮件管理员角色"
+                      ? "需要租户 FinOps 管理员角色"
                       : view.notification.state === "unavailable"
                         ? "邮件状态不可用"
                         : "尚未配置"}
@@ -652,7 +654,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
                   : view.notification.configured
                     ? "收件地址由 Entra 目录解析，不在页面中显示。"
                     : view.notification.state === "permission_required"
-                      ? "预算仍可管理；请由具备租户邮件管理应用角色的管理员配置提醒。"
+                      ? "请由具备租户 FinOps 管理员应用角色的管理员配置提醒。"
                       : view.notification.state === "unavailable"
                       ? "预算数据仍可查看；邮件服务恢复后可继续配置。"
                       : "配置后可发送一封测试邮件；自动阈值提醒仍由独立开关控制。"}

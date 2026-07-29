@@ -177,6 +177,21 @@ test("settings home summary is truthful for configured, unavailable and empty st
   assert.equal(empty.mailLabel, "邮件未配置");
 });
 
+
+test("settings home exposes tenant FinOps permission without unavailable evidence", () => {
+  assert.deepEqual(
+    memberBudgetHomeSummaryViewModel({ status: "permission_required" }),
+    {
+      state: "permission_required",
+      stateLabel: "需要权限",
+      nearBudgetLabel: "需要租户 FinOps 管理员角色",
+      mailLabel: "预算与提醒已受限",
+      actionLabel: "查看权限说明",
+    },
+  );
+});
+
+
 test("disabled email configuration stays distinct from an unconfigured recipient", () => {
   const view = memberBudgetViewModel({
     budgets: { items: [], data_status: "complete" },
@@ -195,7 +210,7 @@ test("disabled email configuration stays distinct from an unconfigured recipient
 });
 
 
-test("settings home preserves the tenant email administrator permission state", () => {
+test("settings home uses the shared tenant FinOps role for notification authorization", () => {
   const home = memberBudgetHomeSummaryViewModel({
     budgets: payload.budgets,
     budgetsState: "partial",
@@ -207,7 +222,7 @@ test("settings home preserves the tenant email administrator permission state", 
 
   assert.equal(home.state, "partial");
   assert.equal(home.nearBudgetLabel, "1 位接近预算");
-  assert.equal(home.mailLabel, "需要租户邮件管理员角色");
+  assert.equal(home.mailLabel, "需要租户 FinOps 管理员角色");
 });
 
 

@@ -82,8 +82,18 @@ def _client(
     )
     monkeypatch.setattr(budget_router, "is_trusted_tenant_identity", lambda _actor: trusted)
     monkeypatch.setattr(budget_router, "list_workspaces", lambda: [{"workspace_id": f"ws-{index}"} for index, _role in enumerate(roles)])
-    role_by_workspace = {f"ws-{index}": role for index, role in enumerate(roles)}
-    monkeypatch.setattr(budget_router, "active_workspace_role", lambda workspace_id, _actor: role_by_workspace[workspace_id])
+    monkeypatch.setattr(
+        budget_router,
+        "workspace_finops_member_identities",
+        lambda workspace_id: [{
+            "tenant_id": "tenant-a",
+            "actor_id": f"member-{workspace_id}",
+            "name": f"Member {workspace_id}",
+            "email": "",
+            "role": "viewer",
+            "status": "active",
+        }],
+    )
     monkeypatch.setattr(budget_router, "record_audit_event", lambda *_args, **_kwargs: {"event_id": "audit-safe"})
     monkeypatch.setattr(budget_router, "_active_admins", lambda *_args: {"actor-safe": "admin@example.test"})
     return TestClient(app), service
@@ -102,16 +112,191 @@ def test_disabled_feature_hides_query_and_body_validation(monkeypatch) -> None:
     assert client.put("/api/finops/notification-settings", json=["not", "an", "object"]).status_code == 404
 
 
-def test_member_budget_rejects_member_role(monkeypatch) -> None:
+def test_tenant_finops_role_holder_is_not_restricted_by_workspace_role(monkeypatch) -> None:
     client, _service = _client(monkeypatch, roles=("viewer",))
-    assert client.get("/api/finops/member-budgets").status_code == 403
+    assert client.get("/api/finops/member-budgets").status_code == 200
 
 
-def test_member_budget_rejects_mixed_roles_and_untrusted_tenant(monkeypatch) -> None:
+def test_tenant_finops_role_holder_is_not_restricted_by_mixed_workspace_roles(monkeypatch) -> None:
     client, _service = _client(monkeypatch, roles=("owner", "editor"))
-    assert client.get("/api/finops/member-budgets").status_code == 403
+    assert client.get("/api/finops/member-budgets").status_code == 200
+
+
+def test_member_budget_rejects_untrusted_tenant(monkeypatch) -> None:
     client, _service = _client(monkeypatch, trusted=False)
     assert client.get("/api/finops/member-budgets").status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("GET", "/api/finops/member-budgets?limit=invalid", None),
+        ("GET", "/api/finops/member-budget-members?limit=invalid", None),
+        ("POST", "/api/finops/member-budgets", ["invalid"]),
+        ("PATCH", "/api/finops/member-budgets/budget-safe", ["invalid"]),
+        ("POST", "/api/finops/member-budgets/budget-safe/disable", ["invalid"]),
+        ("GET", "/api/finops/budget-alerts?limit=invalid", None),
+    ],
+)
+def test_member_budget_routes_require_tenant_finops_role_before_scope_service_audit_or_validation(
+    monkeypatch,
+    method: str,
+    path: str,
+    body: object,
+) -> None:
+    client, service = _client(monkeypatch, app_roles=())
+    monkeypatch.setattr(
+        budget_router,
+        "list_workspaces",
+        lambda: (_ for _ in ()).throw(AssertionError("unauthorized route discovered workspaces")),
+    )
+    monkeypatch.setattr(
+        budget_router,
+        "record_audit_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unauthorized route reached audit")),
+    )
+    for name in (
+        "list_budgets",
+        "list_eligible_members",
+        "is_eligible_member",
+        "is_budget_member_authorized",
+        "save_budget",
+        "disable_budget",
+        "list_alerts",
+    ):
+        monkeypatch.setattr(
+            service,
+            name,
+            lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unauthorized route reached service")),
+        )
+
+    response = client.request(method, path, json=body)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Tenant FinOps administrator role required"
+
+
+@pytest.mark.parametrize(
+    ("app_roles", "trusted"),
+    [
+        (("DataForge.FinOpsAdmin.Evil",), True),
+        (("DataForge.FinOpsAdmin",), False),
+    ],
+)
+def test_member_budget_routes_reject_near_match_and_untrusted_client_roles(
+    monkeypatch,
+    app_roles: tuple[str, ...],
+    trusted: bool,
+) -> None:
+    client, service = _client(monkeypatch, app_roles=app_roles, trusted=trusted)
+    monkeypatch.setattr(
+        service,
+        "list_budgets",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unauthorized read reached service")),
+    )
+
+    assert client.get("/api/finops/member-budgets").status_code == 403
+
+
+def test_tenant_finops_scope_uses_only_same_tenant_trusted_identity_workspaces(monkeypatch) -> None:
+    client, service = _client(monkeypatch, roles=("viewer",))
+    monkeypatch.setattr(
+        budget_router,
+        "list_workspaces",
+        lambda: [
+            {"workspace_id": "ws-tenant-b"},
+            {"workspace_id": "ws-empty"},
+            {"workspace_id": "ws-tenant-a-z"},
+            {"workspace_id": "ws-tenant-a-a"},
+        ],
+    )
+    identities = {
+        "ws-tenant-b": [{"tenant_id": "tenant-b", "actor_id": "actor-b"}],
+        "ws-empty": [],
+        "ws-tenant-a-z": [{"tenant_id": "TENANT-A", "actor_id": "actor-z"}],
+        "ws-tenant-a-a": [{"tenant_id": "tenant-a", "actor_id": "actor-a"}],
+    }
+    monkeypatch.setattr(
+        budget_router,
+        "workspace_finops_member_identities",
+        lambda workspace_id: identities[workspace_id],
+    )
+    captured: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        service,
+        "list_budgets",
+        lambda **kwargs: (
+            captured.append(kwargs["workspace_ids"])
+            or {
+                "items": [],
+                "cursor": {"next": None, "limit": kwargs["limit"]},
+                "freshness": "recorded",
+                "coverage": "request_estimated_cost",
+                "data_status": "complete",
+                "currency": "USD",
+            }
+        ),
+    )
+
+    response = client.get("/api/finops/member-budgets")
+
+    assert response.status_code == 200
+    assert captured == [("ws-tenant-a-a", "ws-tenant-a-z")]
+
+
+def test_tenant_finops_scope_fails_closed_without_same_tenant_workspace(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    monkeypatch.setattr(
+        budget_router,
+        "workspace_finops_member_identities",
+        lambda _workspace_id: [{"tenant_id": "tenant-other", "actor_id": "actor-other"}],
+    )
+    monkeypatch.setattr(
+        service,
+        "list_budgets",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("empty tenant scope reached service")),
+    )
+
+    response = client.get("/api/finops/member-budgets")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Tenant FinOps workspace scope required"
+
+
+def test_tenant_finops_role_env_precedence_and_deprecated_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FINOPS_TENANT_ADMIN_ROLE", "DataForge.BudgetOperator")
+    monkeypatch.setenv("DF_FINOPS_EMAIL_ADMIN_ROLE", "DataForge.LegacyOperator")
+    denied, _service = _client(monkeypatch, app_roles=("DataForge.LegacyOperator",))
+    assert denied.get("/api/finops/member-budgets").status_code == 403
+    allowed, _service = _client(monkeypatch, app_roles=("dataforge.budgetoperator",))
+    assert allowed.get("/api/finops/member-budgets").status_code == 200
+
+    monkeypatch.delenv("DF_FINOPS_TENANT_ADMIN_ROLE")
+    fallback, _service = _client(monkeypatch, app_roles=("dataforge.legacyoperator",))
+    assert fallback.get("/api/finops/member-budgets").status_code == 200
+
+
+def test_tenant_finops_mutation_uses_deterministic_same_tenant_audit_scope(monkeypatch) -> None:
+    client, _service = _client(monkeypatch)
+    monkeypatch.setattr(
+        budget_router,
+        "list_workspaces",
+        lambda: [{"workspace_id": "ws-z"}, {"workspace_id": "ws-a"}],
+    )
+    audit_scopes: list[str] = []
+    monkeypatch.setattr(
+        budget_router,
+        "record_audit_event",
+        lambda _actor, _action, details, **_kwargs: audit_scopes.append(details["workspace_id"]),
+    )
+
+    response = client.post(
+        "/api/finops/member-budgets",
+        json={"member_ref": "actor-safe", "amount_usd": 200, "base_revision": 0},
+    )
+
+    assert response.status_code == 200
+    assert audit_scopes == ["ws-a"]
 
 
 def test_notification_settings_require_tenant_email_admin_role_before_service_or_audit(monkeypatch) -> None:
@@ -175,7 +360,8 @@ def test_notification_settings_reject_near_match_and_untrusted_client_roles(
     assert client.get("/api/finops/notification-settings").status_code == 403
 
 
-def test_notification_settings_honor_explicit_tenant_role_override(monkeypatch) -> None:
+def test_notification_settings_honor_deprecated_tenant_role_fallback(monkeypatch) -> None:
+    monkeypatch.delenv("DF_FINOPS_TENANT_ADMIN_ROLE", raising=False)
     monkeypatch.setenv("DF_FINOPS_EMAIL_ADMIN_ROLE", "DataForge.EmailOperator")
     denied, _service = _client(monkeypatch, app_roles=("DataForge.FinOpsAdmin",))
     assert denied.get("/api/finops/notification-settings").status_code == 403
@@ -277,10 +463,23 @@ def test_enabled_feature_requires_sql_unless_test_service_is_overridden(monkeypa
     monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "test-secret")
     monkeypatch.setenv("DF_FINOPS_SQL_ENABLED", "0")
     monkeypatch.setattr(budget_router, "_service", None)
-    monkeypatch.setattr(budget_router, "actor_from_request", lambda *_args, **_kwargs: {"tenant_id": "tenant-a", "actor_id": "actor-a"})
+    monkeypatch.setattr(
+        budget_router,
+        "actor_from_request",
+        lambda *_args, **_kwargs: {
+            "tenant_id": "tenant-a",
+            "actor_id": "actor-a",
+            "roles": ["DataForge.FinOpsAdmin"],
+            "source": "easy_auth",
+        },
+    )
     monkeypatch.setattr(budget_router, "is_trusted_tenant_identity", lambda _actor: True)
     monkeypatch.setattr(budget_router, "list_workspaces", lambda: [{"workspace_id": "ws-safe"}])
-    monkeypatch.setattr(budget_router, "active_workspace_role", lambda *_args: "owner")
+    monkeypatch.setattr(
+        budget_router,
+        "workspace_finops_member_identities",
+        lambda _workspace_id: [{"tenant_id": "tenant-a", "actor_id": "actor-a"}],
+    )
     assert TestClient(app).get("/api/finops/member-budgets").status_code == 503
 
 

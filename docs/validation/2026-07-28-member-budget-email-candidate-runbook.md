@@ -41,7 +41,7 @@ $ApprovedJob = '<approved-member-budget-job-name>'
 $ApprovedSenderAddress = '<approved-AzureManagedDomain-sender-address>'
 $ApprovedAdminRecipient = '<approved-active-owner-or-admin-email>'
 $ApprovedAcsEmailRoleDefinitionId = '<approved-minimum-ACS-email-send-role-definition-id>'
-$ApprovedTenantEmailAdminRole = 'DataForge.FinOpsAdmin'
+$ApprovedTenantFinOpsAdminRole = 'DataForge.FinOpsAdmin'
 $ApprovedSqlServer = '<approved-sql-server-name>'
 $ApprovedSqlDatabase = '<approved-sql-database-name>'
 $ApprovedPortalUrl = '<approved-https-member-budget-page-url>'
@@ -87,11 +87,12 @@ either build.
 ### 0.1 Entra application-role prerequisite
 
 Before candidate creation, the application registration used by the backend
-Easy Auth boundary must expose `$ApprovedTenantEmailAdminRole`, and the
-approved tenant email administrator must receive that application-role
-assignment through the organization's controlled Entra workflow. Workspace
-Owner/Admin membership by itself does not authorize tenant-singleton email
-configuration.
+Easy Auth boundary must expose `$ApprovedTenantFinOpsAdminRole`, and every
+approved member-budget administrator must receive that application-role
+assignment through the organization's controlled Entra workflow. The role
+protects all member-budget, eligible-member, budget-alert, and email
+configuration read/write routes. Workspace Owner/Admin membership is neither
+sufficient nor required.
 
 Acceptance must use a newly issued authenticated session and verify that the
 trusted Easy Auth principal contains an exact, case-normalized match in its
@@ -101,11 +102,18 @@ role value, HTTP result, and UTC time; do not retain the token or raw claims.
 
 Required candidate checks:
 
-- approved workspace Owner/Admin with the application role: notification
-  settings read is allowed;
-- approved workspace Owner/Admin without the application role: notification
-  settings read/write/test return `403`, while member budgets remain available;
-- a near-match role and an untrusted client actor role both return `403`;
+- an authenticated caller with the application role can read the tenant-wide
+  budget, eligible-member, budget-alert, and notification-setting surfaces
+  regardless of its local workspace role;
+- an authenticated workspace Owner/Admin without the application role receives
+  `403` from every budget, eligible-member, alert, and email read/write route;
+- a near-match role, a role with a suffix, and an untrusted client actor role
+  all return `403`;
+- the tenant scope contains only workspaces whose trusted identity snapshot
+  matches the caller's canonical tenant, and an empty tenant scope fails
+  closed;
+- mutations persist their audit record against the lexicographically first
+  tenant workspace while evaluation remains tenant-wide;
 - when `DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=0`, all three email endpoints
   return `404` before identity, workspace, service, audit, or body processing.
 
@@ -656,7 +664,7 @@ az containerapp revision copy `
     DF_FINOPS_MEMBER_BUDGETS_ENABLED=0 `
     DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=0 `
     DF_FINOPS_EMAIL_ALERTS_ENABLED=0 `
-    DF_FINOPS_EMAIL_ADMIN_ROLE=$ApprovedTenantEmailAdminRole `
+    DF_FINOPS_TENANT_ADMIN_ROLE=$ApprovedTenantFinOpsAdminRole `
     DF_FINOPS_ACTIONS_ENABLED=0 `
     DF_ACS_EMAIL_ENDPOINT=$AcsEndpoint `
     DF_ACS_EMAIL_SENDER_ADDRESS=$ApprovedSenderAddress `
@@ -987,7 +995,7 @@ az containerapp revision copy `
     DF_FINOPS_MEMBER_BUDGETS_ENABLED=1 `
     DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=1 `
     DF_FINOPS_EMAIL_ALERTS_ENABLED=0 `
-    DF_FINOPS_EMAIL_ADMIN_ROLE=$ApprovedTenantEmailAdminRole `
+    DF_FINOPS_TENANT_ADMIN_ROLE=$ApprovedTenantFinOpsAdminRole `
     DF_FINOPS_ACTIONS_ENABLED=0 `
     DF_ACS_EMAIL_ENDPOINT=$AcsEndpoint `
     DF_ACS_EMAIL_SENDER_ADDRESS=$ApprovedSenderAddress `
@@ -1024,8 +1032,10 @@ candidate-only routing path.
 | --- | --- |
 | `GET /api/health` | `200` |
 | Unauthenticated budget API | `401` |
-| Active Owner/Admin budget APIs | `200` |
-| Active member budget API | `403` |
+| Trusted tenant FinOps administrator budget/member/alert/email APIs | `200` |
+| Workspace Owner/Admin without the tenant FinOps application role | `403` on every budget/member/alert/email route |
+| Trusted near-match or suffixed role | `403` |
+| Tenant FinOps administrator with no matching trusted tenant workspace | `403` |
 | Cross-tenant member reference | rejected |
 | Save approved active administrator recipient | success |
 | Save another member or external recipient | rejected |

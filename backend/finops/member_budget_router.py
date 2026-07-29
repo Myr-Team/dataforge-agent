@@ -10,23 +10,76 @@ from ..audit_store import record_audit_event
 from ..control_plane import workspace_finops_member_identities
 from ..identity import actor_from_request, is_trusted_tenant_identity
 from ..lineage_sql import build_lineage_sql_connection_factory
-from ..workspace_authz import active_workspace_role
 from ..workspace_store import list_workspaces
 from .acs_email import AcsEmailError, acs_email_sender_from_environment, validate_template
 from .member_budget_repository import MemberBudgetConflictError, MemberBudgetRepository
 from .member_budget_service import MemberBudgetService
 from .member_directory import MemberDirectory
-from .normalization import canonical_actor_ref, canonical_tenant_ref
+from .normalization import canonical_actor_ref, canonical_tenant_id, canonical_tenant_ref
 from .sql_member_budgets import SqlMemberBudgetRepository
 from .sql_repository import FinOpsPersistenceError
 
 router = APIRouter(prefix="/api/finops", tags=["finops-member-budgets"])
 _service: MemberBudgetService | None = None
-_DEFAULT_EMAIL_ADMIN_ROLE = "DataForge.FinOpsAdmin"
+_DEFAULT_TENANT_ADMIN_ROLE = "DataForge.FinOpsAdmin"
 
 
 def _enabled(name: str = "DF_FINOPS_MEMBER_BUDGETS_ENABLED") -> bool:
     return str(os.environ.get(name) or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _required_tenant_admin_role() -> str:
+    return (
+        str(os.environ.get("DF_FINOPS_TENANT_ADMIN_ROLE") or "").strip()
+        or str(os.environ.get("DF_FINOPS_EMAIL_ADMIN_ROLE") or "").strip()
+        or _DEFAULT_TENANT_ADMIN_ROLE
+    )
+
+
+def _has_tenant_admin_role(actor: Mapping[str, Any]) -> bool:
+    roles = actor.get("roles")
+    trusted_roles = roles if isinstance(roles, (list, tuple, set, frozenset)) else ()
+    required_role = _required_tenant_admin_role().casefold()
+    return (
+        str(actor.get("source") or "").strip().casefold() == "easy_auth"
+        and required_role
+        in {
+            role.strip().casefold()
+            for role in trusted_roles
+            if isinstance(role, str) and role.strip()
+        }
+    )
+
+
+def _tenant_workspace_ids(identity_tenant_id: str) -> tuple[str, ...]:
+    tenant_id = canonical_tenant_id(identity_tenant_id)
+    workspace_ids: set[str] = set()
+    for item in list_workspaces():
+        if not isinstance(item, dict):
+            continue
+        workspace_id = str(item.get("workspace_id") or "").strip()
+        if not workspace_id:
+            continue
+        try:
+            identities = workspace_finops_member_identities(workspace_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Tenant FinOps workspace scope is unavailable",
+            ) from exc
+        for identity in identities:
+            if not isinstance(identity, Mapping):
+                continue
+            try:
+                identity_tenant_id = canonical_tenant_id(identity.get("tenant_id"))
+            except ValueError:
+                continue
+            if identity_tenant_id == tenant_id:
+                workspace_ids.add(workspace_id)
+                break
+    if not workspace_ids:
+        raise HTTPException(status_code=403, detail="Tenant FinOps workspace scope required")
+    return tuple(sorted(workspace_ids))
 
 
 def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, Any]]:
@@ -38,29 +91,17 @@ def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, 
     actor = actor_from_request(request, fallback=False)
     if not is_trusted_tenant_identity(actor):
         raise HTTPException(status_code=403, detail="Trusted tenant identity required")
-    roles: dict[str, str] = {}
-    for item in list_workspaces():
-        if not isinstance(item, dict):
-            continue
-        workspace_id = str(item.get("workspace_id") or "").strip()
-        if not workspace_id:
-            continue
-        try:
-            role = active_workspace_role(workspace_id, actor)
-        except FileNotFoundError:
-            continue
-        if role:
-            roles[workspace_id] = role
-    if not roles or any(role not in {"owner", "admin"} for role in roles.values()):
-        raise HTTPException(status_code=403, detail="Member budgets require admin or owner")
+    if not _has_tenant_admin_role(actor):
+        raise HTTPException(status_code=403, detail="Tenant FinOps administrator role required")
     secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
     tenant_id, actor_id = str(actor.get("tenant_id") or "").strip(), str(actor.get("actor_id") or "").strip()
     if not secret or not tenant_id or not actor_id:
         raise HTTPException(status_code=503, detail="FinOps scope is unavailable")
+    workspace_ids = _tenant_workspace_ids(tenant_id)
     return (
         canonical_tenant_ref(tenant_id, secret=secret),
         canonical_actor_ref(tenant_id, actor_id, secret=secret),
-        tuple(sorted(roles)),
+        workspace_ids,
         actor,
     )
 
@@ -68,25 +109,7 @@ def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, 
 def _email_configuration_context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, Any]]:
     if not _enabled("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED"):
         raise HTTPException(status_code=404, detail="email_configuration_disabled")
-    context = _context(request)
-    actor = context[3]
-    required_role = (
-        str(os.environ.get("DF_FINOPS_EMAIL_ADMIN_ROLE") or "").strip()
-        or _DEFAULT_EMAIL_ADMIN_ROLE
-    )
-    roles = actor.get("roles")
-    trusted_roles = roles if isinstance(roles, (list, tuple, set, frozenset)) else ()
-    if (
-        str(actor.get("source") or "").strip().casefold() != "easy_auth"
-        or required_role.casefold()
-        not in {
-            str(role).strip().casefold()
-            for role in trusted_roles
-            if isinstance(role, str) and role.strip()
-        }
-    ):
-        raise HTTPException(status_code=403, detail="Tenant email administrator role required")
-    return context
+    return _context(request)
 
 
 def get_member_budget_service() -> MemberBudgetService:

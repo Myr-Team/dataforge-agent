@@ -3199,7 +3199,9 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     ]).then(([budgetsResult, notificationResult, alertsResult]) => {
       if (cancelled || requestVersion !== memberBudgetHomeRequestVersion.current) return;
       if (budgetsResult.status === "rejected") {
-        setMemberBudgetHome(memberBudgetHomeSummaryViewModel({ status: "unavailable" }));
+        setMemberBudgetHome(memberBudgetHomeSummaryViewModel({
+          status: budgetsResult.reason?.status === 403 ? "permission_required" : "unavailable",
+        }));
         return;
       }
       const budgetsState = ["complete", "partial", "unavailable"].includes(budgetsResult.value?.data_status)
@@ -3713,7 +3715,14 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
           <span className={memberBudgetHome.state === "unavailable" ? "unavailable" : ""}>{memberBudgetHome.nearBudgetLabel}</span>
           <span className={memberBudgetHome.mailLabel.includes("不可用") ? "unavailable" : ""}>{memberBudgetHome.mailLabel}</span>
         </div>
-        <button type="button" className="settings-config-button" aria-label="配置成本预算与提醒" onClick={() => setSettingsPage("member-budgets")}><Settings2 size={13} />配置</button>
+        <button
+          type="button"
+          className="settings-config-button"
+          aria-label={memberBudgetHome.state === "permission_required" ? "查看成本预算权限说明" : "配置成本预算与提醒"}
+          onClick={() => setSettingsPage("member-budgets")}
+        >
+          <Settings2 size={13} />{memberBudgetHome.actionLabel || "配置"}
+        </button>
       </section>
 
       <div className="set-bottom">

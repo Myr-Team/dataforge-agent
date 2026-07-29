@@ -161,6 +161,31 @@ test("settings exposes a compact budget entry and dedicated desktop page", async
 });
 
 
+test("tenant FinOps permission state is explicit and hides budget evidence", async ({ page }) => {
+  await installFinOpsMockApi(page, [], {
+    memberBudgetAccessState: "permission_required",
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+
+  const entry = page.locator(".member-budget-entry");
+  await expect(entry).toContainText("需要租户 FinOps 管理员角色");
+  await expect(entry).toContainText("预算与提醒已受限");
+  await expect(entry).not.toContainText("不可用");
+  const permissionAction = entry.getByRole("button", { name: "查看成本预算权限说明" });
+  await expect(permissionAction).toBeEnabled();
+  await permissionAction.click();
+
+  await expect(page.getByRole("heading", { name: "成员成本预算" })).toBeVisible();
+  await expect(page.getByText("需要租户 FinOps 管理员角色")).toBeVisible();
+  await expect(page.getByText("请联系租户管理员分配应用角色后重新登录。")).toBeVisible();
+  await expect(page.locator(".member-budget-table")).toHaveCount(0);
+  await expect(page.locator(".member-budget-summary-card")).toHaveCount(0);
+  await expect(page.getByText("$190.00")).toHaveCount(0);
+  await expect(page.getByText("成员预算暂时不可用")).toHaveCount(0);
+});
+
+
 test("member budget edit preserves decimal amount, thresholds and conflict reload", async ({ page }) => {
   const calls = [];
   const control = await installFinOpsMockApi(page, calls, { memberBudgetConflictOnce: true });
@@ -318,7 +343,7 @@ test("settings home budget badges refresh after child mail mutation and return",
 });
 
 
-test("settings home keeps tenant email permission separate from budget availability", async ({ page }) => {
+test("settings home uses the shared tenant FinOps role for a notification authorization failure", async ({ page }) => {
   await installFinOpsMockApi(page, [], {
     memberBudgetNotificationState: "permission_required",
   });
@@ -327,7 +352,7 @@ test("settings home keeps tenant email permission separate from budget availabil
 
   const entry = page.locator(".member-budget-entry");
   await expect(entry).toContainText("1 位接近预算");
-  await expect(entry).toContainText("需要租户邮件管理员角色");
+  await expect(entry).toContainText("需要租户 FinOps 管理员角色");
   await expect(entry).not.toContainText("邮件状态不可用");
   await expect(page.getByRole("button", { name: "配置成本预算与提醒" })).toBeEnabled();
 });
@@ -363,14 +388,14 @@ test("disabled email configuration is honest and cannot open configuration actio
 });
 
 
-test("tenant email permission state disables only email controls", async ({ page }) => {
+test("notification authorization failure names the shared tenant FinOps role", async ({ page }) => {
   await installFinOpsMockApi(page, [], {
     memberBudgetNotificationState: "permission_required",
   });
   await page.goto("/");
   await openMemberBudgets(page);
 
-  await expect(page.locator(".member-budget-mail-strip")).toContainText("需要租户邮件管理员角色");
+  await expect(page.locator(".member-budget-mail-strip")).toContainText("需要租户 FinOps 管理员角色");
   await expect(page.getByRole("button", { name: "配置邮件" })).toBeDisabled();
   await expect(page.locator(".member-budget-mail-strip").getByRole("button", { name: "配置" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "发送测试邮件" })).toBeDisabled();

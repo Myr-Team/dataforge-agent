@@ -233,6 +233,15 @@ export function memberBudgetViewModel({
 }
 
 export function memberBudgetHomeSummaryViewModel(value = {}) {
+  if (value?.status === "permission_required") {
+    return {
+      state: "permission_required",
+      stateLabel: "需要权限",
+      nearBudgetLabel: "需要租户 FinOps 管理员角色",
+      mailLabel: "预算与提醒已受限",
+      actionLabel: "查看权限说明",
+    };
+  }
   const view = value?.status === "unavailable"
     ? memberBudgetViewModel({ budgetsState: "unavailable", notificationState: "unavailable", alertsState: "unavailable" })
     : memberBudgetViewModel(value);
@@ -257,10 +266,11 @@ export function memberBudgetHomeSummaryViewModel(value = {}) {
         : view.notification.state === "disabled"
           ? "邮件配置未启用"
           : view.notification.state === "permission_required"
-            ? "需要租户邮件管理员角色"
+            ? "需要租户 FinOps 管理员角色"
             : view.notification.state === "unavailable"
               ? "邮件状态不可用"
               : "邮件未配置",
+    actionLabel: "配置",
   };
 }
 

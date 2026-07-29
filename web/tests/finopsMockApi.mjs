@@ -238,6 +238,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     bedrockConnectionState: options.bedrockConnectionState || "connected",
     providerItems: Array.isArray(options.providerItems) ? [...options.providerItems] : [],
     memberBudgetFailure: Boolean(options.memberBudgetFailure),
+    memberBudgetAccessState: options.memberBudgetAccessState || "allowed",
     memberBudgetEmpty: Boolean(options.memberBudgetEmpty),
     memberBudgetConflictOnce: Boolean(options.memberBudgetConflictOnce),
     memberBudgetEmailState: options.memberBudgetEmailState || "sent",
@@ -299,6 +300,18 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       body = {};
     } else if (path === "/api/finops/bootstrap") {
       body = bootstrapPayload;
+    } else if (
+      control.memberBudgetAccessState === "permission_required"
+      && request.method() === "GET"
+      && [
+        "/api/finops/member-budgets",
+        "/api/finops/member-budget-members",
+        "/api/finops/notification-settings",
+        "/api/finops/budget-alerts",
+      ].includes(path)
+    ) {
+      status = 403;
+      body = { detail: "Tenant FinOps administrator role required" };
     } else if (path === "/api/finops/member-budgets" && request.method() === "GET") {
       if (control.memberBudgetFailure) {
         status = 503;
@@ -409,7 +422,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         body = { detail: "internal-notification-body-must-not-surface" };
       } else if (control.memberBudgetNotificationState === "permission_required") {
         status = 403;
-        body = { detail: "Tenant email administrator role required" };
+        body = { detail: "Tenant FinOps administrator role required" };
       } else {
         body = {
           item: {

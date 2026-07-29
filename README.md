@@ -242,15 +242,20 @@ traffic change.
 
 ### Entra member budgets and ACS Email reminders
 
-The member-budget feature is an administrator-only FinOps control surface. It
+The member-budget feature is a tenant FinOps administrator control surface. It
 joins trusted Easy Auth / Entra member attribution to request-level estimated
 cost in the SQL ledger, then reports each member's UTC calendar-month USD
 budget, estimated spend, and pricing coverage. Unpriced requests remain
 unpriced; they reduce coverage and are never counted as zero-cost usage.
-Budget administration follows authorized workspace scope. Tenant-singleton
-email configuration additionally requires the exact Entra application role
-`DataForge.FinOpsAdmin` in the trusted Easy Auth `roles` claim; being a local
-workspace Owner/Admin alone is not sufficient.
+Every member-budget, eligible-member, budget-alert, and email-configuration
+read/write route requires the exact Entra application role
+`DataForge.FinOpsAdmin` in the trusted Easy Auth `roles` claim. A local
+workspace Owner/Admin role is neither sufficient nor required. The service
+discovers the caller tenant's workspaces from trusted identity snapshots,
+aggregates spend across that tenant scope, and fails closed when no matching
+workspace can be established. Mutations use the lexicographically first
+tenant workspace only as a deterministic internal audit-persistence scope; it
+does not narrow the tenant-wide evaluation.
 
 The feature has four intentionally separate layers:
 
@@ -273,7 +278,7 @@ All related switches default to off:
 DF_FINOPS_MEMBER_BUDGETS_ENABLED=0
 DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=0
 DF_FINOPS_EMAIL_ALERTS_ENABLED=0
-DF_FINOPS_EMAIL_ADMIN_ROLE=DataForge.FinOpsAdmin
+DF_FINOPS_TENANT_ADMIN_ROLE=DataForge.FinOpsAdmin
 DF_FINOPS_ACTIONS_ENABLED=0
 ```
 
@@ -281,9 +286,11 @@ DF_FINOPS_ACTIONS_ENABLED=0
 configuration, not values entered by a portal administrator. Automatic email
 must remain off until a zero-traffic candidate has passed the controlled
 delivery and deduplication checks and a human has explicitly approved enabling
-it. `DF_FINOPS_EMAIL_ADMIN_ROLE` may override the application-role value for a
-tenant deployment, but matching is exact after case normalization and only
-trusted Easy Auth roles are accepted.
+it. `DF_FINOPS_TENANT_ADMIN_ROLE` may override the application-role value for a
+tenant deployment. The deprecated `DF_FINOPS_EMAIL_ADMIN_ROLE` is used only as
+a fallback when the new setting is absent or blank; the new setting always
+wins. Matching is exact after trimming and case normalization, and only trusted
+Easy Auth roles are accepted.
 
 Run the complete local gate from a clean checkout:
 
