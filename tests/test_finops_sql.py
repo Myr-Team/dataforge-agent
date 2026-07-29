@@ -113,6 +113,11 @@ def test_sql_repository_initializes_schema_and_upserts_only_public_event_payload
     schema_call, merge_call = connection.cursor_value.calls
     assert "finops:schema" in schema_call[0]
     assert "finops:upsert-request-event" in merge_call[0]
+    normalized_merge = " ".join(merge_call[0].split())
+    assert (
+        "ON target.tenant_ref = source.tenant_ref "
+        "AND target.request_ref = source.request_ref"
+    ) in normalized_merge
     serialized = str(merge_call[1])
     assert "must-not-persist" not in serialized
     assert "tenant-safe" in serialized

@@ -1,6 +1,42 @@
 from __future__ import annotations
 
-from backend.finops.normalization import normalize_run_event
+from backend.finops.normalization import canonical_actor_ref, normalize_run_event
+
+
+def test_canonical_actor_ref_normalizes_raw_entra_identifier_case_and_whitespace() -> None:
+    expected = canonical_actor_ref(
+        "tenant-a",
+        "member-a",
+        secret="secret-safe",
+    )
+
+    assert canonical_actor_ref(
+        "  TENANT-A  ",
+        "  MEMBER-A  ",
+        secret="secret-safe",
+    ) == expected
+
+
+def test_normalization_never_uses_email_as_actor_ref_fallback() -> None:
+    event = normalize_run_event(
+        {
+            "run_id": "run-safe",
+            "workspace_id": "workspace-safe",
+            "status": "completed",
+            "started_at": "2026-07-28T01:00:00Z",
+            "actor": {
+                "tenant_id": "tenant-a",
+                "email": "member-a@example.test",
+            },
+            "models": [{"model": "deepseek-v4-pro"}],
+        },
+        model_index=0,
+        tenant_id="tenant-safe",
+        raw_tenant_id="tenant-a",
+        hmac_secret="secret-safe",
+    )
+
+    assert event.actor_ref is None
 
 
 def test_normalization_keeps_redis_and_provider_cache_evidence_separate() -> None:

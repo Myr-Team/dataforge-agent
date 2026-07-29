@@ -37,8 +37,8 @@ def canonical_actor_ref(
     secret: str,
 ) -> str:
     """Derive the sole FinOps member key from trusted raw Entra identifiers."""
-    tenant_id = str(raw_tenant_id or "").strip()
-    actor_id = str(raw_actor_id or "").strip()
+    tenant_id = str(raw_tenant_id or "").strip().lower()
+    actor_id = str(raw_actor_id or "").strip().lower()
     if not tenant_id or not actor_id:
         raise ValueError("raw tenant and actor identifiers are required")
     return opaque_ref("actor", tenant_id, actor_id, secret=secret)
@@ -61,7 +61,7 @@ def normalize_run_event(
         raise ValueError("run_id, workspace_id, and tenant_id are required")
 
     actor = run.get("actor") if isinstance(run.get("actor"), Mapping) else {}
-    raw_actor = actor.get("actor_id") or actor.get("email")
+    raw_actor = actor.get("actor_id")
     raw_correlation = _correlation_value(run, model_event)
     usage = _usage(model_event.get("usage"))
     cost = _cost(model_event.get("cost_estimate"))

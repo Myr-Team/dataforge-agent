@@ -360,6 +360,109 @@ Verify the following objects through the controlled deployment connection:
 
 Retain tables on rollback. Do not drop FinOps evidence.
 
+### 2.1 Repair retained actor attribution before enabling member budgets
+
+This is a mandatory pre-cutover gate for deployments that previously derived
+FinOps actor attribution from a non-canonical Entra identifier. Keep all
+member-budget, email-alert, action, and external-routing switches disabled
+throughout the repair:
+
+```powershell
+$env:DF_FINOPS_MEMBER_BUDGETS_ENABLED = '0'
+$env:DF_FINOPS_EMAIL_CONFIGURATION_ENABLED = '0'
+$env:DF_FINOPS_EMAIL_ALERTS_ENABLED = '0'
+$env:DF_FINOPS_ACTIONS_ENABLED = '0'
+$env:DF_EXTERNAL_PROVIDER_ROUTING_ENABLED = '0'
+```
+
+Choose an explicit UTC window that is fully covered by the retained completed
+run ledger and is no longer than 90 days. Start with exactly one bounded
+dry-run page:
+
+```powershell
+$RepairFrom = '<approved-UTC-start>'
+$RepairTo = '<approved-UTC-end>'
+$RepairCursor = $null
+
+$DryRunArgs = @(
+  '-m', 'backend.finops.actor_ref_repair',
+  '--from', $RepairFrom,
+  '--to', $RepairTo,
+  '--page-size', '100',
+  '--max-pages', '1'
+)
+if ($RepairCursor) {
+  $DryRunArgs += @('--cursor', $RepairCursor)
+}
+& python @DryRunArgs
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: canonical actor attribution dry-run failed'
+}
+```
+
+The command is dry-run by default. Its JSON must contain aggregate counts and
+an opaque `offset_########` cursor only. Stop if output contains a run ID,
+tenant ID, Entra object ID, email address, request reference, or exception
+body. Record the approved window, page size, aggregate planned count, skip
+categories, and `next_cursor`; never record source identities.
+
+Before apply, manually reconcile the planned count with the retained-run
+coverage for that same immutable window. Any `detail_unavailable`,
+`invalid_record`, `tenant_unavailable`, `model_limit`, or other unexpected skip
+must be investigated. Do not introduce a legacy-key lookup or email fallback.
+
+Apply only the reviewed page, using the same window, cursor, page size, and
+source snapshot. The SQL connection and HMAC secret must be supplied through
+the approved secret-injection path and must never be printed:
+
+```powershell
+$ApplyArgs = @(
+  '-m', 'backend.finops.actor_ref_repair',
+  '--from', $RepairFrom,
+  '--to', $RepairTo,
+  '--page-size', '100',
+  '--max-pages', '1',
+  '--apply',
+  '--confirm', 'APPLY_CANONICAL_ACTOR_REF_REPAIR'
+)
+if ($RepairCursor) {
+  $ApplyArgs += @('--cursor', $RepairCursor)
+}
+& python @ApplyArgs
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: canonical actor attribution apply failed'
+}
+```
+
+The existing request-event MERGE is keyed by `(tenant_ref, request_ref)`.
+Repeat the same approved page once and verify that the distinct key count does
+not increase. For each page:
+
+- `events_applied` must equal the reviewed eligible event count;
+- `write_failed` must be zero;
+- missing Entra object IDs must remain `actor_ref IS NULL` and must not be
+  derived from email;
+- aggregate request-event totals must remain unchanged after the second apply;
+- one controlled member's estimated cost must join to the canonical Entra
+  directory member without displaying either raw identifier;
+- candidate logs and captured output must pass a raw-ID and email scan.
+
+Advance only with the returned `next_cursor`, repeating dry-run review before
+each apply. Finish when `has_more` is false, then repeat the final dry-run and
+ledger checks for the complete approved window. If the retained source changes
+between pages, a count differs, or any join is ambiguous, stop the release.
+
+Member-budget and email-alert flags may be enabled in the zero-traffic
+candidate only after the repair is complete, all focused/full tests pass, the
+duplicate-key check is clean, and a human reviewer accepts the aggregate
+evidence. Rollback returns to the prior immutable application revision and
+keeps the feature flags disabled; it does not restore legacy actor references
+or delete additive FinOps evidence.
+
+No repair, candidate validation, Azure mutation, or production cutover was
+executed while writing this runbook. All live evidence remains **PENDING —
+NOT ACCEPTED**.
+
 ## 3. Build immutable images
 
 Build from the exact approved commit and record both digests. Before either

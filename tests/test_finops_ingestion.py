@@ -410,3 +410,39 @@ def test_ingested_run_and_entra_member_share_actor_ref_for_budget_evaluation(
     )
 
     assert (event.actor_ref, summary.created) == (member.member_ref, 1)
+
+
+def test_ingested_run_and_entra_member_share_actor_ref_across_identifier_casing(
+    monkeypatch,
+) -> None:
+    run = _run()
+    run["actor"] = {
+        "actor_id": "  RAW-MEMBER-ID  ",
+        "tenant_id": "  RAW-TENANT-ID  ",
+        "email": "must-not-persist@example.com",
+    }
+    facts = InMemoryFinOpsRepository()
+    monkeypatch.setenv("DF_FINOPS_SQL_ENABLED", "1")
+
+    result = ingest_completed_run(run, repository=facts, hmac_secret="secret")
+    [event] = facts.list_events(
+        tenant_ref=str(result["tenant_ref"]),
+        workspace_ids=("ws-a",),
+        from_value="2026-07-24T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+    [member] = MemberDirectory(
+        identity_loader=lambda _workspace_id: [
+            {
+                "tenant_id": "raw-tenant-id",
+                "actor_id": "raw-member-id",
+                "name": "Finance Admin",
+                "email": "finance@example.test",
+                "role": "admin",
+                "status": "active",
+            }
+        ],
+        hmac_secret="secret",
+    ).list_members("raw-tenant-id", ("ws-a",))
+
+    assert event.actor_ref == member.member_ref
