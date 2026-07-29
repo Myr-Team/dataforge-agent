@@ -27,10 +27,12 @@ SMTP credential is accepted.
 
 ## Local automated regression
 
-The full local gate was run once against exact tested commit
-`83ee9e4ffd8aa0cea54cb6fd82ad7b2882240175`. This candidate record and the
-evidence manifest are a provenance-only follow-up: no implementation or
-candidate-runbook behavior changed after the tested commit.
+The full local product gate was run once against exact tested commit
+`83ee9e4ffd8aa0cea54cb6fd82ad7b2882240175`. A later runbook-only remediation
+was tested at `f8e5c066f562e542370b2167493060b9c7fa63ae`: it changes the
+fail-closed `linkedDomains` shape check and adds its focused test, but does not
+change executable product code. The earlier full product gate was not rerun;
+the focused runbook gate is recorded separately below and in the manifest.
 
 | Check | Result | Evidence |
 | --- | --- | --- |
@@ -39,6 +41,7 @@ candidate-runbook behavior changed after the tested commit.
 | `npm run build` in `web` | PASS — 1780 modules transformed | [Vite output](evidence/2026-07-28-member-budget-email/vite-build.log); the existing chunk-size advisory remains. |
 | `npx playwright test` in `web` | PASS — 26 passed | [Playwright output](evidence/2026-07-28-member-budget-email/playwright.log) |
 | `git diff --check` | PASS — clean | Recorded in the [evidence manifest](evidence/2026-07-28-member-budget-email/manifest.json). |
+| Runbook `linkedDomains` validation | PASS — 10 focused tests; 14 PowerShell blocks parsed with 0 syntax errors | [Runbook validation](evidence/2026-07-28-member-budget-email/runbook-validation.log). |
 | Local desktop/mobile screenshot review | PASS — legible, aligned, and no visible mobile horizontal overflow | Local-only paths listed below; not live-candidate evidence. |
 
 The manifest records exact commands, UTC intervals, tool versions, exit codes,
@@ -46,7 +49,7 @@ sanitization, and SHA-256 hashes. Local PASS proves only the software regression
 gate; it does not promote any live Azure row below.
 
 Evidence manifest SHA-256:
-`AADE587FF2538356266738FE3F320CB0F70EB3393DA7758365021F5F2201A8CC`.
+`BDDB3CDFC9D6776F7F0B3314044FE77698880BBB04E446F4720DC9035EE7D684`.
 
 Expected local screenshot paths:
 

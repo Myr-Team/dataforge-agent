@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "tested_commit": "83ee9e4ffd8aa0cea54cb6fd82ad7b2882240175",
-  "provenance_commit_scope": "This manifest, four sanitized local logs, and the candidate record PASS table only. No implementation or runbook behavior changed after the tested commit.",
+  "provenance_commit_scope": "The full product regression remains tied to tested_commit. A later runbook-only remediation is recorded separately in runbook_remediation with its own exact commit and focused validation; no executable product code changed.",
   "evidence_scope": "Local automated regression only. No Azure inventory, ACS resource, managed identity, RBAC, SQL migration, deployment, Container Apps Job, email, second-device, or traffic acceptance.",
   "decision": {
     "local_automated_gate": "PASS",
@@ -91,6 +91,34 @@
       "evidence": []
     }
   ],
+  "runbook_remediation": {
+    "tested_commit": "f8e5c066f562e542370b2167493060b9c7fa63ae",
+    "scope": "Runbook fail-closed linkedDomains JSON-array validation and its focused repository test only. The earlier Python, Node, Vite, and Playwright product gate was not rerun because no executable product code changed.",
+    "utc_started": "2026-07-29T11:40:57.7003118Z",
+    "utc_ended": "2026-07-29T11:41:08.1626308Z",
+    "commands": [
+      {
+        "command": "python -m pytest -q tests/test_member_budget_candidate_runbook.py",
+        "exit_code": 0,
+        "count": "10 passed",
+        "coverage": "null and scalar linkedDomains rejected; empty, one-string, and multi-string arrays accepted; null, numeric, empty-string, and whitespace-string elements rejected"
+      },
+      {
+        "command": "Parse every fenced PowerShell block with System.Management.Automation.Language.Parser",
+        "exit_code": 0,
+        "count": "14 blocks parsed, 0 syntax errors"
+      },
+      {
+        "command": "git diff --check",
+        "exit_code": 0,
+        "count": "clean"
+      }
+    ],
+    "evidence": {
+      "filename": "runbook-validation.log",
+      "sha256": "8AE249775A6B6CDF1BD40CC1C033211D5C213550B2E65F733E94C1D317FCD9E1"
+    }
+  },
   "local_screenshot_paths": [
     "output/playwright/task6-member-budget-entry-desktop.png",
     "output/playwright/task6-member-budget-page-desktop.png",
