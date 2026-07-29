@@ -15,7 +15,7 @@ dist/assets/DataWorkbench-BND--ke2.js   56.16 kB │ gzip:  15.72 kB
 dist/assets/FinOpsPortal-CCS3YmyW.js    58.24 kB │ gzip:  17.03 kB
 dist/assets/index-B_FTQ2Wg.js          549.86 kB │ gzip: 165.69 kB
 
-✓ built in 805ms
+✓ built in 785ms
 node.exe : [plugin builtin:vite-reporter]
 At line:1 char:1
 + & "[LOCAL_TOOL]\nodejs/node.exe" "[LOCAL_TOOL]\nodejs/node_mo ...
