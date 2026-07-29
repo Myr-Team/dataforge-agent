@@ -726,6 +726,19 @@ BEGIN
 END;
 
 IF NOT EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = N'CK_finops_budget_alert_period'
+      AND parent_object_id = OBJECT_ID(N'df_finops.budget_alert')
+)
+BEGIN
+    ALTER TABLE df_finops.budget_alert
+        ADD CONSTRAINT CK_finops_budget_alert_period CHECK (
+            period_key LIKE '[0-9][0-9][0-9][0-9]-[0-1][0-9]'
+            AND SUBSTRING(period_key, 6, 2) BETWEEN '01' AND '12'
+        );
+END;
+
+IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
     WHERE object_id = OBJECT_ID(N'df_finops.request_event')
       AND name = N'IX_finops_request_actor_window'

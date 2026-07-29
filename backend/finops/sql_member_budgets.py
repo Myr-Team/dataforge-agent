@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterator
@@ -366,15 +367,27 @@ def _alert_from_row(tenant_ref: str, row: Any) -> BudgetAlert:
 
 
 def _is_unique_violation(exc: BaseException) -> bool:
-    values: list[BaseException | None] = [exc]
+    """Recognize only native SQL Server duplicate-key diagnostics.
+
+    pyodbc can nest the SQLSTATE/native-code message in ``args`` or an exception
+    cause/context chain, so inspect those values without treating broad prose
+    such as "duplicate" as a persistence conflict.
+    """
+    values: list[object] = [exc]
+    seen: set[int] = set()
     while values:
         current = values.pop()
-        if current is None:
+        if current is None or id(current) in seen:
             continue
-        text = str(current).lower()
-        if "2627" in text or "2601" in text or "unique" in text or "duplicate" in text:
+        seen.add(id(current))
+        if isinstance(current, BaseException):
+            values.extend((current.__cause__, current.__context__, *current.args))
+            continue
+        if isinstance(current, (tuple, list)):
+            values.extend(current)
+            continue
+        if re.search(r"(?<!\d)(?:2601|2627)(?!\d)", str(current)):
             return True
-        values.append(current.__cause__)
     return False
 
 

@@ -9,6 +9,7 @@ import pytest
 from backend.finops.member_budget_repository import MemberBudgetConflictError
 from backend.finops.member_budgets import BudgetAlert, MemberBudget, NotificationSetting
 from backend.finops.sql_member_budgets import SqlMemberBudgetRepository
+from backend.finops.sql_member_budgets import _is_unique_violation
 from backend.finops.sql_repository import FinOpsPersistenceError
 
 
@@ -235,6 +236,43 @@ def test_sql_repository_turns_stale_or_racing_budget_writes_into_typed_conflicts
 
     with pytest.raises(MemberBudgetConflictError):
         repository.save_budget("tenant_safe", value, base_revision=base_revision)
+    assert connection.rolled_back and connection.closed
+
+
+def test_sql_repository_stops_before_merge_when_another_active_member_budget_exists() -> None:
+    connection = _RecordingConnection([(1,), ("other_budget",)])
+    repository = _repository(connection)
+
+    with pytest.raises(MemberBudgetConflictError, match="active member budget"):
+        repository.save_budget("tenant_safe", _budget(revision=2), base_revision=1)
+    assert len(connection.cursor_value.calls) == 2
+    assert "save-member-budget" not in connection.cursor_value.calls[-1][0]
+    assert not connection.committed
+    assert connection.rolled_back and connection.closed
+
+
+@pytest.mark.parametrize(
+    "driver_error",
+    (
+        RuntimeError("23000", "[Microsoft][ODBC Driver 18 for SQL Server][SQL Server] (2601)"),
+        RuntimeError(("23000", "[SQL Server]Violation of PRIMARY KEY constraint (2627)")),
+    ),
+)
+def test_unique_violation_recognizes_only_sql_server_native_codes(driver_error: RuntimeError) -> None:
+    wrapper = RuntimeError("database operation failed")
+    wrapper.__cause__ = driver_error
+    assert _is_unique_violation(wrapper) is True
+
+
+@pytest.mark.parametrize("message", ("duplicate transport packet", "unique network failure"))
+def test_sql_repository_does_not_treat_generic_duplicate_words_as_conflicts(message: str) -> None:
+    connection = _RecordingConnection([None, None, RuntimeError(message)])
+    repository = _repository(connection)
+
+    with pytest.raises(FinOpsPersistenceError) as captured:
+        repository.save_budget("tenant_safe", _budget(), base_revision=0)
+    assert not isinstance(captured.value, MemberBudgetConflictError)
+    assert str(captured.value) == "Member budget SQL operation failed"
     assert connection.rolled_back and connection.closed
 
 

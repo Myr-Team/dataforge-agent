@@ -50,3 +50,15 @@ def test_member_budget_sql_rejects_non_calendar_month_period_keys() -> None:
     assert "ck_finops_budget_alert_period" in schema
     assert "period_key like '[0-9][0-9][0-9][0-9]-[0-1][0-9]'" in schema
     assert "substring(period_key, 6, 2) between '01' and '12'" in schema
+
+
+def test_member_budget_period_constraint_is_added_for_existing_alert_tables() -> None:
+    schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
+    table_end = schema.index("end;", schema.index("create table df_finops.budget_alert"))
+    guarded_upgrade = schema[table_end + len("end;") :]
+
+    assert "if not exists" in guarded_upgrade
+    assert "from sys.check_constraints" in guarded_upgrade
+    assert "ck_finops_budget_alert_period" in guarded_upgrade
+    assert "alter table df_finops.budget_alert" in guarded_upgrade
+    assert "add constraint ck_finops_budget_alert_period" in guarded_upgrade

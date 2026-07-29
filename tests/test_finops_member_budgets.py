@@ -86,6 +86,28 @@ def test_budget_alert_requires_a_real_utc_calendar_month(period_key: str) -> Non
         )
 
 
+@pytest.mark.parametrize("period_key", ("2026-01", "2026-12"))
+def test_budget_alert_accepts_utc_calendar_month_boundaries(period_key: str) -> None:
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    value = BudgetAlert(
+        alert_id="alert_safe",
+        tenant_ref="tenant_safe",
+        budget_id="budget_safe",
+        actor_ref="actor_safe",
+        period_key=period_key,
+        threshold_pct=80,
+        budget_amount_usd=Decimal("200"),
+        estimated_spend_usd=Decimal("190"),
+        pricing_coverage_pct=95,
+        budget_revision=1,
+        notification_revision=1,
+        delivery_state="pending",
+        triggered_at=now,
+        updated_at=now,
+    )
+    assert value.period_key == period_key
+
+
 def test_repository_isolates_member_budgets_and_rejects_stale_revisions() -> None:
     repository = InMemoryMemberBudgetRepository()
     created = repository.save_budget("tenant_a", _budget(revision=1), base_revision=0)

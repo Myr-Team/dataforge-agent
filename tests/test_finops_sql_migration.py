@@ -59,6 +59,17 @@ def test_member_budget_schema_is_additive_and_uses_no_destructive_rewrite() -> N
     assert "ck_finops_budget_alert_period" in schema
 
 
+def test_member_budget_period_check_has_a_guarded_existing_table_upgrade() -> None:
+    schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
+    table_end = schema.index("end;", schema.index("create table df_finops.budget_alert"))
+    upgrade = schema[table_end + len("end;") :]
+
+    assert "from sys.check_constraints" in upgrade
+    assert "parent_object_id = object_id(n'df_finops.budget_alert')" in upgrade
+    assert "alter table df_finops.budget_alert" in upgrade
+    assert "add constraint ck_finops_budget_alert_period" in upgrade
+
+
 def test_provider_schema_constrains_public_states_roles_and_json() -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
 
