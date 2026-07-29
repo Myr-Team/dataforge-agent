@@ -16,6 +16,8 @@ from fastapi import Form
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi import UploadFile
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
@@ -149,6 +151,19 @@ except ImportError:
 
 
 app = FastAPI(title="DataForge Tool Backend", version="0.10.0")
+
+
+@app.exception_handler(RequestValidationError)
+async def model_provider_validation_error_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    if request.url.path.startswith("/api/model-providers"):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "invalid_model_provider_request"},
+        )
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.exception_handler(FinOpsPersistenceError)

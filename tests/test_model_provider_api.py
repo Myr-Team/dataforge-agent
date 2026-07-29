@@ -138,6 +138,191 @@ def test_owner_creates_tests_and_lists_masked_deepseek_provider(monkeypatch) -> 
     assert "secret-marker" not in str(audits)
 
 
+def test_owner_creates_masked_bedrock_provider(monkeypatch) -> None:
+    client, _repository, secrets, audits = _client(monkeypatch)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "1")
+    monkeypatch.setattr(
+        "backend.aws_bedrock_provider.Boto3BedrockControlPlane.list_models",
+        lambda _self, _region, _credential: [],
+    )
+
+    response = client.post(
+        "/api/model-providers",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "provider_type": "aws_bedrock",
+            "display_name": "AWS Bedrock",
+            "region": "ap-southeast-1",
+            "access_key_id": "AKIAEXAMPLE",
+            "secret_access_key": "secret-marker-value",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["region"] == "ap-southeast-1"
+    assert "access_key" not in response.text.lower()
+    assert "secret-marker" not in response.text
+    assert "secret-marker" not in str(audits)
+    assert "secret-marker" in next(iter(secrets.values.values()))
+
+
+def test_bedrock_create_is_hidden_when_specific_flag_is_off(monkeypatch) -> None:
+    client, _repository, secrets, audits = _client(monkeypatch)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "0")
+
+    response = client.post(
+        "/api/model-providers",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "provider_type": "aws_bedrock",
+            "display_name": "AWS Bedrock",
+            "region": "ap-southeast-1",
+            "access_key_id": "AKIAEXAMPLE",
+            "secret_access_key": "secret-marker-value",
+        },
+    )
+
+    assert response.status_code == 404
+    assert secrets.values == {}
+    assert audits == []
+
+
+def test_invalid_bedrock_request_does_not_echo_secret_values(monkeypatch) -> None:
+    client, _repository, _secrets, _audits = _client(monkeypatch)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "1")
+
+    response = client.post(
+        "/api/model-providers",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "provider_type": "aws_bedrock",
+            "display_name": "AWS Bedrock",
+            "region": "ap-southeast-1",
+            "access_key_id": "AKIAEXAMPLE",
+            "secret_access_key": "secret-marker-too-short",
+            "session_token": "session-marker-value",
+            "unexpected": "value",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "secret-marker" not in response.text
+    assert "session-marker" not in response.text
+    assert "AKIAEXAMPLE" not in response.text
+
+
+def test_bedrock_test_and_rotation_are_hidden_when_specific_flag_is_off(
+    monkeypatch,
+) -> None:
+    client, _repository, secrets, audits = _client(monkeypatch)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "1")
+    monkeypatch.setattr(
+        "backend.aws_bedrock_provider.Boto3BedrockControlPlane.list_models",
+        lambda _self, _region, _credential: [],
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "aws_bedrock",
+            "display_name": "AWS Bedrock",
+            "region": "ap-southeast-1",
+            "access_key_id": "AKIAEXAMPLE",
+            "secret_access_key": "secret-marker-value",
+        },
+    ).json()
+    secret_before = next(iter(secrets.values.values()))
+    audit_count = len(audits)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "0")
+
+    tested = client.post(
+        f"/api/model-providers/{created['provider_id']}/test",
+        headers=headers,
+    )
+    rotated = client.post(
+        f"/api/model-providers/{created['provider_id']}/rotate-secret",
+        headers=headers,
+        json={
+            "provider_type": "aws_bedrock",
+            "access_key_id": "AKIAREPLACED",
+            "secret_access_key": "replacement-secret-marker",
+            "base_revision": created["revision"],
+        },
+    )
+
+    assert tested.status_code == 404
+    assert rotated.status_code == 404
+    assert next(iter(secrets.values.values())) == secret_before
+    assert len(audits) == audit_count
+
+
+def test_owner_rotates_masked_bedrock_provider(monkeypatch) -> None:
+    client, _repository, secrets, audits = _client(monkeypatch)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "1")
+    monkeypatch.setattr(
+        "backend.aws_bedrock_provider.Boto3BedrockControlPlane.list_models",
+        lambda _self, _region, _credential: [],
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "aws_bedrock",
+            "display_name": "AWS Bedrock",
+            "region": "ap-southeast-1",
+            "access_key_id": "AKIAEXAMPLE",
+            "secret_access_key": "secret-marker-value",
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/model-providers/{created['provider_id']}/rotate-secret",
+        headers=headers,
+        json={
+            "provider_type": "aws_bedrock",
+            "access_key_id": "AKIAREPLACED",
+            "secret_access_key": "replacement-secret-marker",
+            "base_revision": created["revision"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["region"] == "ap-southeast-1"
+    assert "access_key" not in response.text.lower()
+    assert "replacement-secret" not in response.text
+    assert "replacement-secret" not in str(audits)
+    assert "replacement-secret" in next(iter(secrets.values.values()))
+
+
+def test_stale_deepseek_rotation_does_not_write_audit_or_secret(monkeypatch) -> None:
+    client, _repository, secrets, audits = _client(monkeypatch)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "deepseek",
+            "display_name": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "secret-marker",
+        },
+    ).json()
+    audit_count = len(audits)
+    secret_before = next(iter(secrets.values.values()))
+
+    response = client.post(
+        f"/api/model-providers/{created['provider_id']}/rotate-secret",
+        headers=headers,
+        json={"api_key": "replacement-marker", "base_revision": 1},
+    )
+
+    assert response.status_code == 409
+    assert len(audits) == audit_count
+    assert next(iter(secrets.values.values())) == secret_before
+
+
 def test_provider_management_requires_owner_or_admin_across_workspaces(
     monkeypatch,
 ) -> None:

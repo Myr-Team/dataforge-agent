@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import Any, Mapping
+from typing import Annotated, Any, Literal, Mapping
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    field_validator,
+    model_validator,
+)
 
 from .audit_store import record_audit_event
+from .aws_bedrock_provider import AwsBedrockCredential, bedrock_control_endpoint
 from .finops.normalization import opaque_ref
 from .identity import actor_from_request, is_trusted_tenant_identity
 from .lineage_sql import build_lineage_sql_connection_factory
@@ -36,10 +44,10 @@ router = APIRouter(prefix="/api/model-providers", tags=["model-providers"])
 _IN_MEMORY_REPOSITORY = InMemoryModelProviderRepository()
 
 
-class ProviderCreateBody(BaseModel):
+class DeepSeekProviderCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    provider_type: str = Field(pattern="^deepseek$")
+    provider_type: Literal["deepseek"]
     display_name: str = Field(min_length=1, max_length=120)
     base_url: str = Field(min_length=1, max_length=320)
     api_key: str = Field(min_length=8, max_length=512, exclude=True, repr=False)
@@ -62,11 +70,81 @@ class ProviderCreateBody(BaseModel):
         return "https://api.deepseek.com"
 
 
-class ProviderRotateBody(BaseModel):
+class BedrockProviderCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    provider_type: Literal["aws_bedrock"]
+    display_name: str = Field(min_length=1, max_length=120)
+    region: str = Field(min_length=1, max_length=32)
+    access_key_id: str = Field(min_length=8, max_length=128, exclude=True, repr=False)
+    secret_access_key: str = Field(
+        min_length=16,
+        max_length=256,
+        exclude=True,
+        repr=False,
+    )
+    session_token: str | None = Field(
+        default=None,
+        max_length=4096,
+        exclude=True,
+        repr=False,
+    )
+
+    @field_validator("region")
+    @classmethod
+    def _region(cls, value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        bedrock_control_endpoint(normalized)
+        return normalized
+
+
+ProviderCreateBody = Annotated[
+    DeepSeekProviderCreate | BedrockProviderCreate,
+    Field(discriminator="provider_type"),
+]
+
+
+class DeepSeekProviderRotate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_type: Literal["deepseek"]
     api_key: str = Field(min_length=8, max_length=512, exclude=True, repr=False)
     base_revision: int = Field(ge=1)
+
+
+class BedrockProviderRotate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_type: Literal["aws_bedrock"]
+    access_key_id: str = Field(min_length=8, max_length=128, exclude=True, repr=False)
+    secret_access_key: str = Field(
+        min_length=16,
+        max_length=256,
+        exclude=True,
+        repr=False,
+    )
+    session_token: str | None = Field(
+        default=None,
+        max_length=4096,
+        exclude=True,
+        repr=False,
+    )
+    base_revision: int = Field(ge=1)
+
+
+ProviderRotateBody = Annotated[
+    DeepSeekProviderRotate | BedrockProviderRotate,
+    Field(discriminator="provider_type"),
+]
+
+
+class ProviderRotateRequest(RootModel[ProviderRotateBody]):
+    @model_validator(mode="before")
+    @classmethod
+    def _preserve_deepseek_contract(cls, value: object) -> object:
+        if isinstance(value, dict) and "provider_type" not in value:
+            return {"provider_type": "deepseek", **value}
+        return value
 
 
 class ProviderDisableBody(BaseModel):
@@ -110,11 +188,27 @@ async def create_model_provider(
 ) -> dict[str, object]:
     tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
     provider_id = _new_provider_id()
+    if isinstance(body, BedrockProviderCreate):
+        _bedrock_enabled()
+        secret_value = AwsBedrockCredential(
+            access_key_id=body.access_key_id,
+            secret_access_key=body.secret_access_key,
+            session_token=body.session_token,
+        ).to_secret_value()
+        base_url = bedrock_control_endpoint(body.region)
+        region = body.region
+    else:
+        secret_value = body.api_key
+        base_url = body.base_url
+        region = None
     _audit_required(
         request,
         audit_workspace,
         provider_id,
         reason_code="authorized",
+        provider_type=body.provider_type,
+        display_name=body.display_name,
+        region=region,
     )
     try:
         return _service().create(
@@ -122,8 +216,9 @@ async def create_model_provider(
             actor_ref=actor_ref,
             provider_type=body.provider_type,
             display_name=body.display_name,
-            base_url=body.base_url,
-            api_key=body.api_key,
+            base_url=base_url,
+            region=region,
+            secret_value=secret_value,
             provider_id=provider_id,
         )
     except Exception as exc:
@@ -136,7 +231,18 @@ async def test_model_provider(
     request: Request,
 ) -> dict[str, object]:
     tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
-    _audit_required(request, audit_workspace, provider_id, reason_code="authorized")
+    provider = _provider_for_mutation(tenant_ref, provider_id)
+    if provider.provider_type == "aws_bedrock":
+        _bedrock_enabled()
+    _audit_required(
+        request,
+        audit_workspace,
+        provider_id,
+        reason_code="authorized",
+        provider_type=provider.provider_type,
+        display_name=provider.display_name,
+        region=provider.region,
+    )
     try:
         return _service().test(
             tenant_ref=tenant_ref,
@@ -150,17 +256,42 @@ async def test_model_provider(
 @router.post("/{provider_id}/rotate-secret")
 async def rotate_model_provider_secret(
     provider_id: str,
-    body: ProviderRotateBody,
+    body: ProviderRotateRequest,
     request: Request,
 ) -> dict[str, object]:
     tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
-    _audit_required(request, audit_workspace, provider_id, reason_code="authorized")
+    rotate_body = body.root
+    provider = _provider_for_mutation(
+        tenant_ref,
+        provider_id,
+        base_revision=rotate_body.base_revision,
+    )
+    if rotate_body.provider_type != provider.provider_type:
+        raise HTTPException(status_code=409, detail="provider_type_mismatch")
+    if isinstance(rotate_body, BedrockProviderRotate):
+        _bedrock_enabled()
+        secret_value = AwsBedrockCredential(
+            access_key_id=rotate_body.access_key_id,
+            secret_access_key=rotate_body.secret_access_key,
+            session_token=rotate_body.session_token,
+        ).to_secret_value()
+    else:
+        secret_value = rotate_body.api_key
+    _audit_required(
+        request,
+        audit_workspace,
+        provider_id,
+        reason_code="authorized",
+        provider_type=provider.provider_type,
+        display_name=provider.display_name,
+        region=provider.region,
+    )
     try:
         return _service().rotate(
             tenant_ref=tenant_ref,
             provider_id=provider_id,
-            api_key=body.api_key,
-            base_revision=body.base_revision,
+            secret_value=secret_value,
+            base_revision=rotate_body.base_revision,
             actor_ref=actor_ref,
         )
     except Exception as exc:
@@ -174,7 +305,20 @@ async def update_model_provider(
     request: Request,
 ) -> dict[str, object]:
     tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
-    _audit_required(request, audit_workspace, provider_id, reason_code="authorized")
+    provider = _provider_for_mutation(
+        tenant_ref,
+        provider_id,
+        base_revision=body.base_revision,
+    )
+    _audit_required(
+        request,
+        audit_workspace,
+        provider_id,
+        reason_code="authorized",
+        provider_type=provider.provider_type,
+        display_name=provider.display_name,
+        region=provider.region,
+    )
     try:
         return _service().update(
             tenant_ref=tenant_ref,
@@ -193,7 +337,20 @@ async def disable_model_provider(
     request: Request,
 ) -> dict[str, object]:
     tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
-    _audit_required(request, audit_workspace, provider_id, reason_code="authorized")
+    provider = _provider_for_mutation(
+        tenant_ref,
+        provider_id,
+        base_revision=body.base_revision,
+    )
+    _audit_required(
+        request,
+        audit_workspace,
+        provider_id,
+        reason_code="authorized",
+        provider_type=provider.provider_type,
+        display_name=provider.display_name,
+        region=provider.region,
+    )
     try:
         return _service().disable(
             tenant_ref=tenant_ref,
@@ -272,16 +429,26 @@ def _audit_required(
     provider_id: str,
     *,
     reason_code: str,
+    provider_type: str | None = None,
+    display_name: str | None = None,
+    region: str | None = None,
 ) -> None:
     try:
+        resource: dict[str, str] = {
+            "workspace_id": workspace_id,
+            "resource_type": "model_provider",
+            "resource_id": provider_id,
+        }
+        if provider_type:
+            resource["provider_type"] = provider_type
+        if display_name:
+            resource["display_name"] = display_name
+        if region:
+            resource["region"] = region
         record_audit_event(
             actor_from_request(request, fallback=False),
             "model_provider.manage",
-            {
-                "workspace_id": workspace_id,
-                "resource_type": "model_provider",
-                "resource_id": provider_id,
-            },
+            resource,
             result="allowed",
             reason_code=reason_code,
         )
@@ -290,6 +457,29 @@ def _audit_required(
             status_code=503,
             detail="Audit persistence is required",
         ) from None
+
+
+def _provider_for_mutation(
+    tenant_ref: str,
+    provider_id: str,
+    *,
+    base_revision: int | None = None,
+) -> Any:
+    try:
+        provider = get_model_provider_repository().get(tenant_ref, provider_id)
+    except Exception as exc:
+        raise _provider_error(exc)
+    if base_revision is not None and provider.revision != base_revision:
+        raise HTTPException(status_code=409, detail="provider_revision_conflict")
+    return provider
+
+
+def _bedrock_enabled() -> None:
+    if not _enabled("DF_AWS_BEDROCK_CONNECTOR_ENABLED"):
+        raise HTTPException(
+            status_code=404,
+            detail="Model provider capability is disabled",
+        )
 
 
 def _provider_error(exc: Exception) -> HTTPException:
