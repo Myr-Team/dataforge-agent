@@ -247,6 +247,10 @@ joins trusted Easy Auth / Entra member attribution to request-level estimated
 cost in the SQL ledger, then reports each member's UTC calendar-month USD
 budget, estimated spend, and pricing coverage. Unpriced requests remain
 unpriced; they reduce coverage and are never counted as zero-cost usage.
+Budget administration follows authorized workspace scope. Tenant-singleton
+email configuration additionally requires the exact Entra application role
+`DataForge.FinOpsAdmin` in the trusted Easy Auth `roles` claim; being a local
+workspace Owner/Admin alone is not sufficient.
 
 The feature has four intentionally separate layers:
 
@@ -269,6 +273,7 @@ All related switches default to off:
 DF_FINOPS_MEMBER_BUDGETS_ENABLED=0
 DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=0
 DF_FINOPS_EMAIL_ALERTS_ENABLED=0
+DF_FINOPS_EMAIL_ADMIN_ROLE=DataForge.FinOpsAdmin
 DF_FINOPS_ACTIONS_ENABLED=0
 ```
 
@@ -276,7 +281,9 @@ DF_FINOPS_ACTIONS_ENABLED=0
 configuration, not values entered by a portal administrator. Automatic email
 must remain off until a zero-traffic candidate has passed the controlled
 delivery and deduplication checks and a human has explicitly approved enabling
-it.
+it. `DF_FINOPS_EMAIL_ADMIN_ROLE` may override the application-role value for a
+tenant deployment, but matching is exact after case normalization and only
+trusted Easy Auth roles are accepted.
 
 Run the complete local gate from a clean checkout:
 

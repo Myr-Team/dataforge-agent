@@ -40,7 +40,15 @@ class MemberBudgetRepository(Protocol):
         lease_token: str,
         value: BudgetAlert,
     ) -> bool: ...
-    def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None, offset: int = 0, limit: int = 100) -> tuple[BudgetAlert, ...]: ...
+    def list_alerts(
+        self,
+        tenant_ref: str,
+        *,
+        budget_id: str | None = None,
+        actor_refs: tuple[str, ...] | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> tuple[BudgetAlert, ...]: ...
 
 
 class InMemoryMemberBudgetRepository:
@@ -220,13 +228,24 @@ class InMemoryMemberBudgetRepository:
             self._alerts_by_id[(tenant_ref, alert_id)] = value
             return True
 
-    def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None, offset: int = 0, limit: int = 100) -> tuple[BudgetAlert, ...]:
+    def list_alerts(
+        self,
+        tenant_ref: str,
+        *,
+        budget_id: str | None = None,
+        actor_refs: tuple[str, ...] | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> tuple[BudgetAlert, ...]:
         if type(offset) is not int or type(limit) is not int or offset < 0 or not 1 <= limit <= 101:
             raise ValueError("invalid budget alert page")
+        authorized_actors = None if actor_refs is None else frozenset(actor_refs)
         with self._lock:
             rows = [
                 alert for (tenant, _budget, _period, _threshold), alert in self._alerts.items()
-                if tenant == tenant_ref and (budget_id is None or alert.budget_id == budget_id)
+                if tenant == tenant_ref
+                and (budget_id is None or alert.budget_id == budget_id)
+                and (authorized_actors is None or alert.actor_ref in authorized_actors)
             ]
         return tuple(sorted(rows, key=lambda alert: (alert.triggered_at, alert.alert_id))[offset : offset + limit])
 

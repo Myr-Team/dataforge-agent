@@ -22,6 +22,7 @@ from .sql_repository import FinOpsPersistenceError
 
 router = APIRouter(prefix="/api/finops", tags=["finops-member-budgets"])
 _service: MemberBudgetService | None = None
+_DEFAULT_EMAIL_ADMIN_ROLE = "DataForge.FinOpsAdmin"
 
 
 def _enabled(name: str = "DF_FINOPS_MEMBER_BUDGETS_ENABLED") -> bool:
@@ -65,9 +66,26 @@ def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, 
 
 
 def _email_configuration_context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, Any]]:
-    context = _context(request)
     if not _enabled("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED"):
         raise HTTPException(status_code=404, detail="email_configuration_disabled")
+    context = _context(request)
+    actor = context[3]
+    required_role = (
+        str(os.environ.get("DF_FINOPS_EMAIL_ADMIN_ROLE") or "").strip()
+        or _DEFAULT_EMAIL_ADMIN_ROLE
+    )
+    roles = actor.get("roles")
+    trusted_roles = roles if isinstance(roles, (list, tuple, set, frozenset)) else ()
+    if (
+        str(actor.get("source") or "").strip().casefold() != "easy_auth"
+        or required_role.casefold()
+        not in {
+            str(role).strip().casefold()
+            for role in trusted_roles
+            if isinstance(role, str) and role.strip()
+        }
+    ):
+        raise HTTPException(status_code=403, detail="Tenant email administrator role required")
     return context
 
 
@@ -332,12 +350,22 @@ async def test_notification_email(request: Request) -> dict[str, Any]:
 
 @router.get("/budget-alerts")
 async def list_budget_alerts(request: Request) -> dict[str, Any]:
-    tenant_ref, _actor_ref, _workspace_ids, _actor = _context(request)
+    tenant_ref, _actor_ref, workspace_ids, actor = _context(request)
     budget_id = request.query_params.get("budget_id")
     if budget_id is not None and not budget_id:
         raise HTTPException(status_code=422, detail="budget_id is invalid")
     limit = _limit(request)
     try:
-        return _list_envelope(get_member_budget_service().list_alerts(tenant_ref=tenant_ref, budget_id=budget_id, cursor=_cursor(request), limit=limit), limit=limit)
+        return _list_envelope(
+            get_member_budget_service().list_alerts(
+                tenant_ref=tenant_ref,
+                identity_tenant_id=str(actor["tenant_id"]),
+                workspace_ids=workspace_ids,
+                budget_id=budget_id,
+                cursor=_cursor(request),
+                limit=limit,
+            ),
+            limit=limit,
+        )
     except Exception as exc:
         raise _map_error(exc) from exc

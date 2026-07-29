@@ -216,9 +216,36 @@ class MemberBudgetService:
         )
         return _safe_notification(self._repository.save_notification_setting(tenant_ref, value, base_revision=base_revision))
 
-    def list_alerts(self, *, tenant_ref: str, budget_id: str | None = None, cursor: str | None, limit: int) -> dict[str, Any]:
+    def list_alerts(
+        self,
+        *,
+        tenant_ref: str,
+        identity_tenant_id: str,
+        workspace_ids: tuple[str, ...],
+        budget_id: str | None = None,
+        cursor: str | None,
+        limit: int,
+    ) -> dict[str, Any]:
+        authorized_actor_refs = tuple(
+            sorted(
+                {
+                    item.member_ref
+                    for item in self._directory.list_members(identity_tenant_id, workspace_ids)
+                }
+            )
+        )
+        if budget_id is not None:
+            budget = self._repository.get_budget(tenant_ref, budget_id)
+            if budget is None or budget.member_ref not in authorized_actor_refs:
+                raise KeyError(budget_id)
         start = _cursor_offset(cursor)
-        rows = self._repository.list_alerts(tenant_ref, budget_id=budget_id, offset=start, limit=limit + 1)
+        rows = self._repository.list_alerts(
+            tenant_ref,
+            budget_id=budget_id,
+            actor_refs=authorized_actor_refs,
+            offset=start,
+            limit=limit + 1,
+        )
         selected = rows[:limit]
         data_status = "complete" if all(item.pricing_coverage_pct == 100 for item in selected) else "partial"
         return {

@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi.testclient import TestClient
+import pytest
 
 from backend.app import app
 from backend.finops.member_budget_repository import MemberBudgetConflictError
@@ -57,13 +58,28 @@ class _Service:
         return EmailDeliveryResult(state="sent", sent_at=None, safe_error_category=None)
 
 
-def _client(monkeypatch, *, roles: tuple[str, ...] = ("owner",), trusted: bool = True) -> tuple[TestClient, _Service]:
+def _client(
+    monkeypatch,
+    *,
+    roles: tuple[str, ...] = ("owner",),
+    trusted: bool = True,
+    app_roles: tuple[str, ...] = ("DataForge.FinOpsAdmin",),
+) -> tuple[TestClient, _Service]:
     monkeypatch.setenv("DF_FINOPS_MEMBER_BUDGETS_ENABLED", "1")
     monkeypatch.setenv("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED", "1")
     monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "test-secret")
     service = _Service()
     monkeypatch.setattr(budget_router, "get_member_budget_service", lambda: service)
-    monkeypatch.setattr(budget_router, "actor_from_request", lambda *_args, **_kwargs: {"tenant_id": "tenant-a", "actor_id": "actor-a"})
+    monkeypatch.setattr(
+        budget_router,
+        "actor_from_request",
+        lambda *_args, **_kwargs: {
+            "tenant_id": "tenant-a",
+            "actor_id": "actor-a",
+            "roles": list(app_roles),
+            "source": "easy_auth" if trusted else "ui_context",
+        },
+    )
     monkeypatch.setattr(budget_router, "is_trusted_tenant_identity", lambda _actor: trusted)
     monkeypatch.setattr(budget_router, "list_workspaces", lambda: [{"workspace_id": f"ws-{index}"} for index, _role in enumerate(roles)])
     role_by_workspace = {f"ws-{index}": role for index, role in enumerate(roles)}
@@ -96,6 +112,81 @@ def test_member_budget_rejects_mixed_roles_and_untrusted_tenant(monkeypatch) -> 
     assert client.get("/api/finops/member-budgets").status_code == 403
     client, _service = _client(monkeypatch, trusted=False)
     assert client.get("/api/finops/member-budgets").status_code == 403
+
+
+def test_notification_settings_require_tenant_email_admin_role_before_service_or_audit(monkeypatch) -> None:
+    client, service = _client(monkeypatch, app_roles=())
+    calls: list[str] = []
+    monkeypatch.setattr(service, "get_notification", lambda **_kwargs: calls.append("read"))
+    monkeypatch.setattr(service, "save_notification", lambda **_kwargs: calls.append("write"))
+    monkeypatch.setattr(service, "send_test_email", lambda **_kwargs: calls.append("test"))
+    monkeypatch.setattr(
+        budget_router,
+        "record_audit_event",
+        lambda *_args, **_kwargs: calls.append("audit"),
+    )
+
+    responses = (
+        client.get("/api/finops/notification-settings"),
+        client.put(
+            "/api/finops/notification-settings",
+            json={"recipient_actor_ref": "actor-safe", "base_revision": 0},
+        ),
+        client.post("/api/finops/notification-settings/test-email"),
+    )
+
+    assert [response.status_code for response in responses] == [403, 403, 403]
+    assert calls == []
+
+
+def test_notification_settings_accept_exact_case_normalized_tenant_role(monkeypatch) -> None:
+    client, service = _client(monkeypatch, app_roles=("  dataforge.finopsadmin  ",))
+    monkeypatch.setattr(
+        service,
+        "get_notification",
+        lambda **_kwargs: {"recipient_actor_ref": "actor-safe", "revision": 1},
+    )
+
+    response = client.get("/api/finops/notification-settings")
+
+    assert response.status_code == 200
+    assert response.json()["item"]["revision"] == 1
+
+
+@pytest.mark.parametrize(
+    ("app_roles", "trusted"),
+    [
+        (("DataForge.FinOpsAdmin.Evil",), True),
+        (("DataForge.FinOpsAdmin",), False),
+    ],
+)
+def test_notification_settings_reject_near_match_and_untrusted_client_roles(
+    monkeypatch,
+    app_roles: tuple[str, ...],
+    trusted: bool,
+) -> None:
+    client, service = _client(monkeypatch, app_roles=app_roles, trusted=trusted)
+    monkeypatch.setattr(
+        service,
+        "get_notification",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unauthorized read reached service")),
+    )
+
+    assert client.get("/api/finops/notification-settings").status_code == 403
+
+
+def test_notification_settings_honor_explicit_tenant_role_override(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FINOPS_EMAIL_ADMIN_ROLE", "DataForge.EmailOperator")
+    denied, _service = _client(monkeypatch, app_roles=("DataForge.FinOpsAdmin",))
+    assert denied.get("/api/finops/notification-settings").status_code == 403
+
+    allowed, service = _client(monkeypatch, app_roles=("dataforge.emailoperator",))
+    monkeypatch.setattr(
+        service,
+        "get_notification",
+        lambda **_kwargs: {"recipient_actor_ref": "actor-safe", "revision": 1},
+    )
+    assert allowed.get("/api/finops/notification-settings").status_code == 200
 
 
 def test_stale_member_budget_write_returns_409_without_mutation(monkeypatch) -> None:
@@ -206,17 +297,25 @@ def test_response_envelopes_include_budget_metadata_and_bounded_alert_cursor(mon
     assert alert_response.json()["data_status"] == "complete"
 
 
-def _budget_alert(*, alert_id: str, pricing_coverage_pct: float | None) -> BudgetAlert:
+def _budget_alert(
+    *,
+    alert_id: str,
+    pricing_coverage_pct: float | None,
+    budget_id: str = "budget-safe",
+    actor_ref: str = "actor-safe",
+    budget_amount_usd: Decimal = Decimal("200"),
+    estimated_spend_usd: Decimal = Decimal("190"),
+) -> BudgetAlert:
     now = datetime(2026, 7, 29, tzinfo=timezone.utc)
     return BudgetAlert(
         alert_id=alert_id,
         tenant_ref="tenant-safe",
-        budget_id="budget-safe",
-        actor_ref="actor-safe",
+        budget_id=budget_id,
+        actor_ref=actor_ref,
         period_key="2026-07",
         threshold_pct=95,
-        budget_amount_usd=Decimal("200"),
-        estimated_spend_usd=Decimal("190"),
+        budget_amount_usd=budget_amount_usd,
+        estimated_spend_usd=estimated_spend_usd,
         pricing_coverage_pct=pricing_coverage_pct,
         budget_revision=1,
         notification_revision=1,
@@ -227,9 +326,26 @@ def _budget_alert(*, alert_id: str, pricing_coverage_pct: float | None) -> Budge
     )
 
 
+class _SafeAlertDirectory:
+    def list_members(self, _tenant_id: str, _workspace_ids: tuple[str, ...]):
+        return (
+            FinOpsMember(
+                member_ref="actor-safe",
+                display_name="Finance Admin",
+                email="finance@example.test",
+                role="admin",
+                identity_state="active",
+                workspace_ids=("ws-safe",),
+                department_labels=("finance",),
+            ),
+        )
+
+
 def test_alert_service_marks_successful_empty_ledger_complete() -> None:
-    value = MemberBudgetService(InMemoryMemberBudgetRepository(), None, None).list_alerts(
+    value = MemberBudgetService(InMemoryMemberBudgetRepository(), _SafeAlertDirectory(), None).list_alerts(
         tenant_ref="tenant-safe",
+        identity_tenant_id="tenant-raw",
+        workspace_ids=("ws-safe",),
         cursor=None,
         limit=50,
     )
@@ -243,8 +359,10 @@ def test_alert_service_marks_full_pricing_coverage_complete_and_keeps_rows() -> 
     alert = _budget_alert(alert_id="alert-complete", pricing_coverage_pct=100)
     assert repository.claim_alert(alert) is True
 
-    value = MemberBudgetService(repository, None, None).list_alerts(
+    value = MemberBudgetService(repository, _SafeAlertDirectory(), None).list_alerts(
         tenant_ref="tenant-safe",
+        identity_tenant_id="tenant-raw",
+        workspace_ids=("ws-safe",),
         cursor=None,
         limit=50,
     )
@@ -257,8 +375,10 @@ def test_alert_service_marks_partial_pricing_coverage_partial_and_api_preserves_
     repository = InMemoryMemberBudgetRepository()
     alert = _budget_alert(alert_id="alert-partial", pricing_coverage_pct=90)
     assert repository.claim_alert(alert) is True
-    service_value = MemberBudgetService(repository, None, None).list_alerts(
+    service_value = MemberBudgetService(repository, _SafeAlertDirectory(), None).list_alerts(
         tenant_ref="tenant-safe",
+        identity_tenant_id="tenant-raw",
+        workspace_ids=("ws-safe",),
         cursor=None,
         limit=50,
     )
@@ -273,6 +393,123 @@ def test_alert_service_marks_partial_pricing_coverage_partial_and_api_preserves_
     assert response.status_code == 200
     assert response.json()["data_status"] == "partial"
     assert [item["alert_id"] for item in response.json()["items"]] == ["alert-partial"]
+
+
+def test_alert_api_hides_unknown_and_out_of_scope_budget_targets(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    monkeypatch.setattr(
+        service,
+        "list_alerts",
+        lambda **kwargs: (_ for _ in ()).throw(KeyError(kwargs.get("budget_id"))),
+    )
+
+    for budget_id in ("budget-outside", "budget-unknown"):
+        response = client.get(f"/api/finops/budget-alerts?budget_id={budget_id}")
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Not found"}
+        assert budget_id not in response.text
+
+
+def test_alert_list_filters_authorized_members_before_pagination() -> None:
+    now = datetime.now(timezone.utc)
+    repository = InMemoryMemberBudgetRepository()
+    for budget_id, member_ref, amount in (
+        ("budget-outside", "actor-outside", Decimal("999")),
+        ("budget-safe", "actor-safe", Decimal("200")),
+    ):
+        repository.save_budget(
+            "tenant-safe",
+            MemberBudget(
+                member_ref=member_ref,
+                amount_usd=amount,
+                thresholds_pct=(80, 95, 100),
+                enabled=True,
+                budget_id=budget_id,
+                revision=1,
+                created_by_ref="actor-owner",
+                updated_by_ref="actor-owner",
+                created_at=now,
+                updated_at=now,
+            ),
+            base_revision=0,
+        )
+    repository.claim_alert(
+        _budget_alert(
+            alert_id="alert-a-outside",
+            budget_id="budget-outside",
+            actor_ref="actor-outside",
+            budget_amount_usd=Decimal("999"),
+            estimated_spend_usd=Decimal("998"),
+            pricing_coverage_pct=100,
+        )
+    )
+    repository.claim_alert(
+        _budget_alert(
+            alert_id="alert-b-safe",
+            pricing_coverage_pct=100,
+        )
+    )
+
+    value = MemberBudgetService(repository, _SafeAlertDirectory(), None).list_alerts(
+        tenant_ref="tenant-safe",
+        identity_tenant_id="tenant-raw",
+        workspace_ids=("ws-safe",),
+        cursor=None,
+        limit=1,
+    )
+
+    assert [item["alert_id"] for item in value["items"]] == ["alert-b-safe"]
+    assert value["cursor"] == {"next": None, "limit": 1}
+    assert "budget-outside" not in str(value)
+    assert "actor-outside" not in str(value)
+    assert "999" not in str(value)
+
+
+def test_alert_budget_filter_hides_unknown_and_out_of_scope_targets() -> None:
+    now = datetime.now(timezone.utc)
+    repository = InMemoryMemberBudgetRepository()
+    repository.save_budget(
+        "tenant-safe",
+        MemberBudget(
+            member_ref="actor-outside",
+            amount_usd=Decimal("999"),
+            thresholds_pct=(80, 95, 100),
+            enabled=True,
+            budget_id="budget-outside",
+            revision=1,
+            created_by_ref="actor-other",
+            updated_by_ref="actor-other",
+            created_at=now,
+            updated_at=now,
+        ),
+        base_revision=0,
+    )
+    repository.claim_alert(
+        _budget_alert(
+            alert_id="alert-outside",
+            budget_id="budget-outside",
+            actor_ref="actor-outside",
+            budget_amount_usd=Decimal("999"),
+            estimated_spend_usd=Decimal("998"),
+            pricing_coverage_pct=100,
+        )
+    )
+
+    class _Directory:
+        def list_members(self, _tenant_id: str, _workspace_ids: tuple[str, ...]):
+            return ()
+
+    service = MemberBudgetService(repository, _Directory(), None)
+    for budget_id in ("budget-outside", "budget-unknown"):
+        with pytest.raises(KeyError, match=budget_id):
+            service.list_alerts(
+                tenant_ref="tenant-safe",
+                identity_tenant_id="tenant-raw",
+                workspace_ids=("ws-safe",),
+                budget_id=budget_id,
+                cursor=None,
+                limit=50,
+            )
 
 
 def test_test_email_has_its_own_disabled_gate(monkeypatch) -> None:
@@ -297,6 +534,16 @@ def test_email_configuration_gate_hides_read_and_write_before_service_or_audit(m
         "save_notification",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("disabled write reached service")),
     )
+    monkeypatch.setattr(
+        service,
+        "send_test_email",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("disabled test reached service")),
+    )
+    monkeypatch.setattr(
+        budget_router,
+        "actor_from_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("disabled route resolved identity")),
+    )
     monkeypatch.setattr(budget_router, "record_audit_event", lambda *_args, **_kwargs: audits.append(object()))
 
     read = client.get("/api/finops/notification-settings")
@@ -304,13 +551,43 @@ def test_email_configuration_gate_hides_read_and_write_before_service_or_audit(m
         "/api/finops/notification-settings",
         json={"recipient_actor_ref": "actor-safe", "base_revision": 0},
     )
+    test_email = client.post("/api/finops/notification-settings/test-email")
 
-    assert [read.status_code, write.status_code] == [404, 404]
-    assert [response.json()["detail"] for response in (read, write)] == [
+    assert [read.status_code, write.status_code, test_email.status_code] == [404, 404, 404]
+    assert [response.json()["detail"] for response in (read, write, test_email)] == [
+        "email_configuration_disabled",
         "email_configuration_disabled",
         "email_configuration_disabled",
     ]
     assert not audits
+
+
+def test_member_budget_gate_precedes_identity_workspace_service_and_body_validation(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    monkeypatch.delenv("DF_FINOPS_MEMBER_BUDGETS_ENABLED", raising=False)
+    monkeypatch.setattr(
+        budget_router,
+        "actor_from_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("disabled route resolved identity")),
+    )
+    monkeypatch.setattr(
+        budget_router,
+        "list_workspaces",
+        lambda: (_ for _ in ()).throw(AssertionError("disabled route listed workspaces")),
+    )
+    monkeypatch.setattr(
+        service,
+        "list_budgets",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("disabled route reached service")),
+    )
+    monkeypatch.setattr(
+        budget_router,
+        "record_audit_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("disabled route reached audit")),
+    )
+
+    assert client.get("/api/finops/member-budgets?limit=invalid").status_code == 404
+    assert client.post("/api/finops/member-budgets", json=["invalid"]).status_code == 404
 
 
 def test_test_email_works_with_alerts_disabled_and_redacts_delivery(monkeypatch) -> None:

@@ -348,6 +348,22 @@ test("disabled email configuration is honest and cannot open configuration actio
 });
 
 
+test("tenant email permission state disables only email controls", async ({ page }) => {
+  await installFinOpsMockApi(page, [], {
+    memberBudgetNotificationState: "permission_required",
+  });
+  await page.goto("/");
+  await openMemberBudgets(page);
+
+  await expect(page.locator(".member-budget-mail-strip")).toContainText("需要租户邮件管理员角色");
+  await expect(page.getByRole("button", { name: "配置邮件" })).toBeDisabled();
+  await expect(page.locator(".member-budget-mail-strip").getByRole("button", { name: "配置" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "发送测试邮件" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "设置成员预算" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "编辑 Finance Admin 预算" })).toBeEnabled();
+});
+
+
 test("member budget modal traps focus, makes background inert and restores the trigger", async ({ page }) => {
   await installFinOpsMockApi(page);
   await page.goto("/");

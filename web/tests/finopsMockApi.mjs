@@ -407,6 +407,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       } else if (control.memberBudgetNotificationState === "unavailable") {
         status = 503;
         body = { detail: "internal-notification-body-must-not-surface" };
+      } else if (control.memberBudgetNotificationState === "permission_required") {
+        status = 403;
+        body = { detail: "Tenant email administrator role required" };
       } else {
         body = {
           item: {

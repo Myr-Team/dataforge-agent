@@ -41,6 +41,7 @@ $ApprovedJob = '<approved-member-budget-job-name>'
 $ApprovedSenderAddress = '<approved-AzureManagedDomain-sender-address>'
 $ApprovedAdminRecipient = '<approved-active-owner-or-admin-email>'
 $ApprovedAcsEmailRoleDefinitionId = '<approved-minimum-ACS-email-send-role-definition-id>'
+$ApprovedTenantEmailAdminRole = 'DataForge.FinOpsAdmin'
 $ApprovedSqlServer = '<approved-sql-server-name>'
 $ApprovedSqlDatabase = '<approved-sql-database-name>'
 $ApprovedPortalUrl = '<approved-https-member-budget-page-url>'
@@ -82,6 +83,31 @@ The commit output must exactly equal `$ReleaseCommit`, and the isolated release
 checkout must contain no tracked modification and no untracked file. Ignored
 files are checked separately by the filesystem-level sensitive-file scan before
 either build.
+
+### 0.1 Entra application-role prerequisite
+
+Before candidate creation, the application registration used by the backend
+Easy Auth boundary must expose `$ApprovedTenantEmailAdminRole`, and the
+approved tenant email administrator must receive that application-role
+assignment through the organization's controlled Entra workflow. Workspace
+Owner/Admin membership by itself does not authorize tenant-singleton email
+configuration.
+
+Acceptance must use a newly issued authenticated session and verify that the
+trusted Easy Auth principal contains an exact, case-normalized match in its
+`roles` claim. A client-supplied actor object, workspace role, group display
+name, substring match, or role with a suffix is not accepted. Record only the
+role value, HTTP result, and UTC time; do not retain the token or raw claims.
+
+Required candidate checks:
+
+- approved workspace Owner/Admin with the application role: notification
+  settings read is allowed;
+- approved workspace Owner/Admin without the application role: notification
+  settings read/write/test return `403`, while member budgets remain available;
+- a near-match role and an untrusted client actor role both return `403`;
+- when `DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=0`, all three email endpoints
+  return `404` before identity, workspace, service, audit, or body processing.
 
 ## 1. Create ACS Email resources with managed identity only
 
@@ -728,6 +754,7 @@ az containerapp revision copy `
     DF_FINOPS_MEMBER_BUDGETS_ENABLED=1 `
     DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=1 `
     DF_FINOPS_EMAIL_ALERTS_ENABLED=0 `
+    DF_FINOPS_EMAIL_ADMIN_ROLE=$ApprovedTenantEmailAdminRole `
     DF_FINOPS_ACTIONS_ENABLED=0 `
     DF_ACS_EMAIL_ENDPOINT=$AcsEndpoint `
     DF_ACS_EMAIL_SENDER_ADDRESS=$ApprovedSenderAddress `

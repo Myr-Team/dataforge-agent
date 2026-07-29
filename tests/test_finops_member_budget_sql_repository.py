@@ -198,6 +198,27 @@ def test_sql_repository_decodes_alert_nulls_and_uses_tenant_scoped_alert_query()
     assert connection.cursor_value.calls[0][1] == ("tenant_safe", 0, 100)
 
 
+def test_sql_repository_filters_alert_actor_refs_before_offset_pagination() -> None:
+    connection = _RecordingConnection([[]])
+    repository = _repository(connection)
+
+    assert repository.list_alerts(
+        "tenant_safe",
+        actor_refs=("actor_safe", "actor_second"),
+        offset=2,
+        limit=3,
+    ) == ()
+
+    statement, parameters = connection.cursor_value.calls[0]
+    assert "actor_ref IN (SELECT [value] FROM OPENJSON(?))" in statement
+    assert parameters == (
+        "tenant_safe",
+        '["actor_safe","actor_second"]',
+        2,
+        3,
+    )
+
+
 def test_sql_repository_returns_false_only_for_existing_threshold_claim() -> None:
     insert_connection = _RecordingConnection([RuntimeError("[23000] 2627 duplicate")])
     lookup_connection = _RecordingConnection([("different_alert",)])
