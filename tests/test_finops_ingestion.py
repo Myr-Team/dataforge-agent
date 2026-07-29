@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from decimal import Decimal
+
 from backend.finops.ingestion import ingest_completed_run
 from backend.finops.evidence_repository import InMemoryEvidenceAliasRepository
 from backend.finops.management import FinOpsManagementService, InMemoryManagementRepository
+from backend.finops.member_budget_evaluator import MemberBudgetEvaluator
+from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
+from backend.finops.member_budgets import (
+    MemberBudget,
+    MemberCostSummary,
+    NotificationSetting,
+)
+from backend.finops.member_directory import MemberDirectory
 from backend.finops.repository import InMemoryFinOpsRepository
 from backend.finops.sql_pricing import (
     DeploymentPriceMapping,
@@ -297,3 +308,105 @@ def test_duplicate_ingestion_preserves_recorded_price_revision(monkeypatch) -> N
 
     assert event.estimated_cost.amount == 0.0000325
     assert event.estimated_cost.mapping_revision == 1
+
+
+def test_ingested_run_and_entra_member_share_actor_ref_for_budget_evaluation(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 7, 24, 2, tzinfo=timezone.utc)
+    run = _run()
+    run["models"][0]["cost_estimate"] = {  # type: ignore[index]
+        "amount": 190,
+        "status": "estimated",
+        "price_card_revision": "test-revision",
+    }
+    facts = InMemoryFinOpsRepository()
+    monkeypatch.setenv("DF_FINOPS_SQL_ENABLED", "1")
+    result = ingest_completed_run(run, repository=facts, hmac_secret="secret")
+    [event] = facts.list_events(
+        tenant_ref=str(result["tenant_ref"]),
+        workspace_ids=("ws-a",),
+        from_value="2026-07-24T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+    [member] = MemberDirectory(
+        identity_loader=lambda _workspace_id: [
+            {
+                "tenant_id": "raw-tenant-id",
+                "actor_id": "raw-member-id",
+                "name": "Finance Admin",
+                "email": "finance@example.test",
+                "role": "admin",
+                "status": "active",
+            }
+        ],
+        hmac_secret="secret",
+    ).list_members("raw-tenant-id", ("ws-a",))
+
+    budgets = InMemoryMemberBudgetRepository()
+    budgets.save_budget(
+        str(result["tenant_ref"]),
+        MemberBudget(
+            member_ref=member.member_ref,
+            amount_usd=Decimal("200"),
+            thresholds_pct=(95,),
+            enabled=True,
+            budget_id="budget-member",
+            revision=1,
+            created_by_ref=member.member_ref,
+            updated_by_ref=member.member_ref,
+            created_at=now,
+            updated_at=now,
+        ),
+        base_revision=0,
+    )
+    budgets.save_notification_setting(
+        str(result["tenant_ref"]),
+        NotificationSetting(
+            recipient_actor_ref=member.member_ref,
+            recipient_email="finance@example.test",
+            sender_display_name="DataForge",
+            subject_template="{{member_name}}",
+            body_template="{{estimated_spend}}",
+            enabled=True,
+            revision=1,
+            created_by_ref=member.member_ref,
+            updated_by_ref=member.member_ref,
+            created_at=now,
+            updated_at=now,
+        ),
+        base_revision=0,
+    )
+
+    class _RecordedFacts:
+        def summarize_month(self, *_args):
+            return {
+                event.actor_ref: MemberCostSummary(
+                    actor_ref=str(event.actor_ref),
+                    estimated_spend_usd=Decimal(str(event.estimated_cost.amount)),
+                    priced_requests=1,
+                    total_requests=1,
+                )
+            }
+
+    class _Sender:
+        def send(self, _message, _operation_id):
+            return type("Result", (), {"sent_at": now})()
+
+    summary = MemberBudgetEvaluator(
+        repository=budgets,
+        costs=_RecordedFacts(),
+        active_member_refs=lambda *_args: {member.member_ref},
+        active_admins=lambda *_args: {
+            member.member_ref: "finance@example.test"
+        },
+        member_names=lambda *_args: {member.member_ref: member.display_name},
+        sender=_Sender(),
+        automatic_enabled=lambda: True,
+    ).evaluate_tenant(
+        str(result["tenant_ref"]),
+        now=now,
+        workspace_ids=("ws-a",),
+    )
+
+    assert (event.actor_ref, summary.created) == (member.member_ref, 1)

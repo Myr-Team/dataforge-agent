@@ -30,6 +30,20 @@ def opaque_ref(prefix: str, *parts: object, secret: str) -> str:
     return f"{prefix}_{digest}"
 
 
+def canonical_actor_ref(
+    raw_tenant_id: object,
+    raw_actor_id: object,
+    *,
+    secret: str,
+) -> str:
+    """Derive the sole FinOps member key from trusted raw Entra identifiers."""
+    tenant_id = str(raw_tenant_id or "").strip()
+    actor_id = str(raw_actor_id or "").strip()
+    if not tenant_id or not actor_id:
+        raise ValueError("raw tenant and actor identifiers are required")
+    return opaque_ref("actor", tenant_id, actor_id, secret=secret)
+
+
 def normalize_run_event(
     run: Mapping[str, Any],
     *,
@@ -37,6 +51,7 @@ def normalize_run_event(
     tenant_id: str,
     hmac_secret: str,
     department_id: str | None = None,
+    raw_tenant_id: str | None = None,
 ) -> FinOpsRequestEvent:
     models = run.get("models") if isinstance(run.get("models"), list) else []
     model_event = models[model_index] if 0 <= model_index < len(models) and isinstance(models[model_index], Mapping) else {}
@@ -64,7 +79,15 @@ def normalize_run_event(
         tenant_ref=tenant_id,
         department_id=department_id,
         workspace_id=workspace_id,
-        actor_ref=opaque_ref("actor", tenant_id, raw_actor, secret=hmac_secret) if raw_actor else None,
+        actor_ref=(
+            canonical_actor_ref(
+                raw_tenant_id or tenant_id,
+                raw_actor,
+                secret=hmac_secret,
+            )
+            if raw_actor
+            else None
+        ),
         run_id=run_id,
         agent_id=_text(model_event.get("agent"), 128),
         model=_text(model_event.get("model") or model_event.get("deployment"), 160),

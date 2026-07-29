@@ -75,6 +75,7 @@ def ingest_completed_run(
                 tenant_id=tenant_ref,
                 hmac_secret=secret,
                 department_id=department_id,
+                raw_tenant_id=tenant_id,
             )
             recorded = _recorded_event(target, event)
             if recorded is not None and recorded.estimated_cost.amount is not None:

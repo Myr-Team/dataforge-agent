@@ -62,7 +62,7 @@ def _workspace_identities(workspace_id: str) -> list[dict[str, str]]:
 
 
 def _server_directory(*, secret: str) -> ServerDirectory:
-    from .normalization import opaque_ref
+    from .normalization import canonical_actor_ref, opaque_ref
 
     workspace_ids = sorted(
         {
@@ -108,8 +108,10 @@ def _server_directory(*, secret: str) -> ServerDirectory:
             if str(item.get("status") or "").strip().lower() != "active":
                 continue
             raw_actor = str(item.get("actor_id") or "").strip()
-            actor_ref = opaque_ref(
-                "actor", raw_tenant, raw_actor, secret=secret
+            actor_ref = canonical_actor_ref(
+                raw_tenant,
+                raw_actor,
+                secret=secret,
             )
             members[tenant_ref].add(actor_ref)
             display_name = str(item.get("name") or "").strip()

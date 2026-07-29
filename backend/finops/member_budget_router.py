@@ -16,7 +16,7 @@ from .acs_email import AcsEmailError, acs_email_sender_from_environment, validat
 from .member_budget_repository import MemberBudgetConflictError, MemberBudgetRepository
 from .member_budget_service import MemberBudgetService
 from .member_directory import MemberDirectory
-from .normalization import opaque_ref
+from .normalization import canonical_actor_ref, opaque_ref
 from .sql_member_budgets import SqlMemberBudgetRepository
 from .sql_repository import FinOpsPersistenceError
 
@@ -56,7 +56,12 @@ def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, 
     tenant_id, actor_id = str(actor.get("tenant_id") or "").strip(), str(actor.get("actor_id") or "").strip()
     if not secret or not tenant_id or not actor_id:
         raise HTTPException(status_code=503, detail="FinOps scope is unavailable")
-    return opaque_ref("tenant", tenant_id, secret=secret), opaque_ref("actor", tenant_id, actor_id, secret=secret), tuple(sorted(roles)), actor
+    return (
+        opaque_ref("tenant", tenant_id, secret=secret),
+        canonical_actor_ref(tenant_id, actor_id, secret=secret),
+        tuple(sorted(roles)),
+        actor,
+    )
 
 
 def get_member_budget_service() -> MemberBudgetService:

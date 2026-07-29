@@ -89,6 +89,8 @@ class RunStoreFinOpsRepository:
             for run in runs or []:
                 if not isinstance(run, dict) or str(run.get("workspace_id") or workspace_id) != workspace_id:
                     continue
+                actor = run.get("actor") if isinstance(run.get("actor"), dict) else {}
+                raw_tenant_id = str(actor.get("tenant_id") or "").strip()
                 models = run.get("models") if isinstance(run.get("models"), list) else []
                 for index in range(len(models)):
                     try:
@@ -98,6 +100,7 @@ class RunStoreFinOpsRepository:
                             tenant_id=tenant_ref,
                             hmac_secret=self._hmac_secret,
                             department_id=self._department_resolver(tenant_ref, workspace_id),
+                            raw_tenant_id=raw_tenant_id or None,
                         )
                     except (TypeError, ValueError):
                         continue

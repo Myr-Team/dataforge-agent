@@ -7,7 +7,7 @@ from typing import Callable, Literal, Mapping, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from .member_budgets import MemberCostSummary
-from .normalization import opaque_ref
+from .normalization import canonical_actor_ref
 
 
 class FinOpsMember(BaseModel):
@@ -90,7 +90,11 @@ class MemberDirectory:
                 row = members.setdefault(
                     key,
                     {
-                        "member_ref": opaque_ref("actor", tenant_id, actor_id, secret=self._hmac_secret),
+                        "member_ref": canonical_actor_ref(
+                            tenant_id,
+                            actor_id,
+                            secret=self._hmac_secret,
+                        ),
                         "display_name": _text(raw.get("name")) or "Former member",
                         "email": _text(raw.get("email")),
                         "role": _role(raw.get("role")),
