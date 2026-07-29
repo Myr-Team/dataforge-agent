@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import math
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -124,7 +125,7 @@ class MemberBudgetService:
         amount = payload.get("amount_usd", current.amount_usd if current else None)
         if isinstance(amount, bool) or not isinstance(amount, (int, float, Decimal)):
             raise ValueError("amount_usd must be a number")
-        if isinstance(amount, float) and not amount.is_finite():
+        if isinstance(amount, float) and not math.isfinite(amount):
             raise ValueError("amount_usd must be finite")
         enabled = payload.get("enabled", current.enabled if current else True)
         if type(enabled) is not bool:

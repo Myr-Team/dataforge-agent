@@ -146,8 +146,13 @@ def _strict_budget_payload(payload: dict[str, Any], *, create: bool) -> None:
         raise HTTPException(status_code=422, detail="member_ref is required")
     if create and "amount_usd" not in payload:
         raise HTTPException(status_code=422, detail="amount_usd is required")
-    if "amount_usd" in payload and (type(payload["amount_usd"]) not in {int, float} or isinstance(payload["amount_usd"], bool) or (isinstance(payload["amount_usd"], float) and not math.isfinite(payload["amount_usd"]))):
-        raise HTTPException(status_code=422, detail="amount_usd must be a finite number")
+    if "amount_usd" in payload and (
+        type(payload["amount_usd"]) not in {int, float}
+        or isinstance(payload["amount_usd"], bool)
+        or not math.isfinite(payload["amount_usd"])
+        or payload["amount_usd"] <= 0
+    ):
+        raise HTTPException(status_code=422, detail="amount_usd must be a positive finite number")
     if "enabled" in payload and type(payload["enabled"]) is not bool:
         raise HTTPException(status_code=422, detail="enabled must be a boolean")
     if "thresholds_pct" in payload and (type(payload["thresholds_pct"]) is not list or any(type(item) is not int for item in payload["thresholds_pct"])):

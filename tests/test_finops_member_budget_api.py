@@ -135,6 +135,23 @@ def test_strict_revision_and_boolean_types_reject_coercion(monkeypatch) -> None:
     assert service.writes == 0
 
 
+def test_decimal_amounts_are_accepted_while_invalid_values_stop_before_audit(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    audits: list[object] = []
+    monkeypatch.setattr(budget_router, "record_audit_event", lambda *_args, **_kwargs: audits.append(object()))
+    created = client.post("/api/finops/member-budgets", json={"member_ref": "actor-safe", "amount_usd": 200.5, "base_revision": 0})
+    updated = client.patch("/api/finops/member-budgets/budget-safe", json={"amount_usd": 200.5, "base_revision": 1})
+    assert [response.status_code for response in (created, updated)] == [200, 200]
+    assert service.writes == 2
+    assert len(audits) == 2
+
+    non_finite = client.post("/api/finops/member-budgets", content='{"member_ref":"actor-safe","amount_usd":NaN,"base_revision":0}', headers={"content-type": "application/json"})
+    non_positive = client.post("/api/finops/member-budgets", json={"member_ref": "actor-safe", "amount_usd": 0, "base_revision": 0})
+    assert [response.status_code for response in (non_finite, non_positive)] == [422, 422]
+    assert service.writes == 2
+    assert len(audits) == 2
+
+
 def test_enabled_feature_requires_sql_unless_test_service_is_overridden(monkeypatch) -> None:
     monkeypatch.setenv("DF_FINOPS_MEMBER_BUDGETS_ENABLED", "1")
     monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "test-secret")
