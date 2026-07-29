@@ -106,6 +106,7 @@ def normalize_run_event(
         model=_text(model_event.get("model") or model_event.get("deployment"), 160),
         deployment=_text(model_event.get("deployment") or model_event.get("model"), 160),
         route=_text(model_event.get("route") or model_event.get("model_route"), 128),
+        routing_policy_revision=_non_negative_int(model_event.get("policy_revision")),
         execution_kind=_text(model_event.get("execution_kind"), 64),
         status=status,
         error_category=_safe_error_category(run, model_event) if status == "failed" else None,

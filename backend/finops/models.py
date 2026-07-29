@@ -135,6 +135,7 @@ class FinOpsRequestEvent(BaseModel):
     model: str | None = Field(default=None, max_length=160)
     deployment: str | None = Field(default=None, max_length=160)
     route: str | None = Field(default=None, max_length=128)
+    routing_policy_revision: int | None = Field(default=None, ge=0)
     execution_kind: str | None = Field(default=None, max_length=64)
     status: Literal["succeeded", "failed", "cancelled", "unknown"]
     error_category: str | None = Field(default=None, max_length=64)

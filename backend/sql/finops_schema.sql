@@ -17,6 +17,7 @@ BEGIN
         agent_id NVARCHAR(128) NULL,
         model_deployment NVARCHAR(160) NULL,
         route NVARCHAR(128) NULL,
+        routing_policy_revision INT NULL,
         execution_kind NVARCHAR(64) NULL,
         request_status NVARCHAR(16) NOT NULL,
         error_category NVARCHAR(64) NULL,
@@ -809,4 +810,10 @@ BEGIN
     CREATE INDEX IX_finops_request_actor_window
         ON df_finops.request_event (tenant_ref, actor_ref, occurred_at)
         INCLUDE (cost_amount, evidence_state);
+END;
+
+IF COL_LENGTH(N'df_finops.request_event', N'routing_policy_revision') IS NULL
+BEGIN
+    ALTER TABLE df_finops.request_event
+        ADD routing_policy_revision INT NULL;
 END;

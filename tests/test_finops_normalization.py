@@ -63,6 +63,7 @@ def test_normalization_keeps_redis_and_provider_cache_evidence_separate() -> Non
                 {
                     "agent": "df-feasibility-analyst",
                     "model": "deepseek-v4-pro",
+                    "policy_revision": 11,
                     "result_cache": {
                         "eligible": True,
                         "state": "hit",
@@ -87,6 +88,8 @@ def test_normalization_keeps_redis_and_provider_cache_evidence_separate() -> Non
     )
 
     assert event.result_cache.state == "hit"
+    assert event.routing_policy_revision == 11
+    assert event.routing_policy_revision != event.result_cache.policy_revision
     assert event.result_cache.source_result_version == "result-v3"
     assert event.provider_cache.state == "partial_hit"
     assert event.provider_cache.hit_tokens == 80
@@ -110,3 +113,4 @@ def test_provider_cache_unknown_populations_remain_unavailable() -> None:
 
     assert event.provider_cache.state == "unavailable"
     assert event.provider_cache.hit_rate_pct is None
+    assert event.routing_policy_revision is None

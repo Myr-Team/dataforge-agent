@@ -245,18 +245,19 @@ def _upsert_event(cursor: _Cursor, event: FinOpsRequestEvent) -> None:
         WHEN MATCHED THEN UPDATE SET
             occurred_at = ?, call_class = ?, department_id = ?, workspace_id = ?,
             actor_ref = ?, run_id = ?, agent_id = ?, model_deployment = ?,
-            route = ?, execution_kind = ?, request_status = ?, error_category = ?,
+            route = ?, routing_policy_revision = ?, execution_kind = ?,
+            request_status = ?, error_category = ?,
             latency_ms = ?, total_tokens = ?, cost_amount = ?,
             price_card_revision = ?, gateway_coverage = ?, evidence_state = ?,
             correlation_ref = ?, event_payload = ?, updated_at = SYSUTCDATETIME()
         WHEN NOT MATCHED THEN INSERT (
             tenant_ref, request_ref, occurred_at, call_class, department_id,
             workspace_id, actor_ref, run_id, agent_id, model_deployment, route,
-            execution_kind, request_status, error_category, latency_ms, total_tokens,
-            cost_amount, price_card_revision, gateway_coverage, evidence_state,
-            correlation_ref, event_payload
+            routing_policy_revision, execution_kind, request_status, error_category,
+            latency_ms, total_tokens, cost_amount, price_card_revision,
+            gateway_coverage, evidence_state, correlation_ref, event_payload
         ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         );""",
         event.tenant_ref,
         event.request_ref,
@@ -269,6 +270,7 @@ def _upsert_event(cursor: _Cursor, event: FinOpsRequestEvent) -> None:
         event.agent_id,
         event.deployment or event.model,
         event.route,
+        event.routing_policy_revision,
         event.execution_kind,
         event.status,
         event.error_category,
@@ -291,6 +293,7 @@ def _upsert_event(cursor: _Cursor, event: FinOpsRequestEvent) -> None:
         event.agent_id,
         event.deployment or event.model,
         event.route,
+        event.routing_policy_revision,
         event.execution_kind,
         event.status,
         event.error_category,

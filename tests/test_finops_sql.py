@@ -58,6 +58,7 @@ def _event() -> FinOpsRequestEvent:
             "call_class": "model",
             "tenant_ref": "tenant-safe",
             "workspace_id": "ws-a",
+            "routing_policy_revision": 7,
             "status": "succeeded",
             "tokens": TokenUsage(input=10, output=2, total=12),
             "gateway_coverage": "app_observed",
@@ -122,10 +123,34 @@ def test_sql_repository_initializes_schema_and_upserts_only_public_event_payload
         "ON target.tenant_ref = source.tenant_ref "
         "AND target.request_ref = source.request_ref"
     ) in normalized_merge
+    assert "routing_policy_revision = ?" in normalized_merge
+    assert (
+        "route, routing_policy_revision, execution_kind"
+        in normalized_merge
+    )
     serialized = str(merge_call[1])
     assert "must-not-persist" not in serialized
     assert "tenant-safe" in serialized
     assert "req_aaaaaaaaaaaa" in serialized
+
+
+def test_sql_repository_reads_historical_payload_without_routing_revision_as_null() -> None:
+    connection = RecordingConnection()
+    payload = _event().model_dump(mode="json")
+    payload.pop("routing_policy_revision")
+    connection.cursor_value.rows = [
+        (json.dumps(payload, separators=(",", ":")),)
+    ]
+    repository = SqlFinOpsRepository(connection_factory=lambda: connection)
+
+    [event] = repository.list_events(
+        tenant_ref="tenant-safe",
+        workspace_ids=("ws-a",),
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-08-01T00:00:00Z",
+    )
+
+    assert event.routing_policy_revision is None
 
 
 def test_sql_event_rekey_uses_one_locked_transaction_and_deletes_legacy_key() -> None:

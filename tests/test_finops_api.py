@@ -44,6 +44,7 @@ def repository() -> InMemoryFinOpsRepository:
                     "agent_id": "df-coordinator",
                     "deployment": "gpt-5-mini",
                     "route": "analysis",
+                    "routing_policy_revision": 7,
                     "status": "succeeded",
                     "tokens": TokenUsage(input=10, output=2, total=12),
                     "gateway_coverage": "apim_governed",
@@ -509,7 +510,9 @@ def test_finops_read_contract_and_request_detail_are_privacy_bounded(client: Tes
     assert overview.json()["metrics"]["requests"] == 1
     assert requests.status_code == 200
     assert requests.json()["items"][0]["request_ref"] == "req_aaaaaaaaaaaa"
+    assert requests.json()["items"][0]["routing_policy_revision"] == 7
     assert detail.status_code == 200
+    assert detail.json()["metrics"]["routing_policy_revision"] == 7
     serialized = detail.text
     assert "join-secret" not in serialized
     assert "corr-safe" not in serialized

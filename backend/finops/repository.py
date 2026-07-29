@@ -117,6 +117,11 @@ def resolve_event_key_repair(
         canonical.estimated_cost if canonical is not None else None,
         expected.estimated_cost,
     )
+    routing_policy_revision = _preserved_routing_policy_revision(
+        legacy,
+        canonical,
+        expected,
+    )
     source = canonical or legacy or expected
     return source.model_copy(
         update={
@@ -127,6 +132,7 @@ def resolve_event_key_repair(
             "apim_correlation_id": expected.apim_correlation_id,
             "internal_correlation_key": expected.internal_correlation_key,
             "estimated_cost": cost,
+            "routing_policy_revision": routing_policy_revision,
         }
     )
 
@@ -151,6 +157,26 @@ def _preserved_cost(*values: Any) -> Any:
     return values[2]
 
 
+def _preserved_routing_policy_revision(
+    legacy: FinOpsRequestEvent | None,
+    canonical: FinOpsRequestEvent | None,
+    expected: FinOpsRequestEvent,
+) -> int | None:
+    existing = [event for event in (legacy, canonical) if event is not None]
+    observed = {
+        event.routing_policy_revision
+        for event in existing
+        if event.routing_policy_revision is not None
+    }
+    if len(observed) > 1:
+        raise FinOpsEventRepairConflict("routing_policy_evidence_conflict")
+    if observed:
+        return next(iter(observed))
+    if existing:
+        return None
+    return expected.routing_policy_revision
+
+
 def _logical_event(event: FinOpsRequestEvent) -> dict[str, object]:
     value = event.model_dump(mode="json", exclude_none=False)
     for key in (
@@ -160,6 +186,7 @@ def _logical_event(event: FinOpsRequestEvent) -> dict[str, object]:
         "correlation_ref",
         "estimated_cost",
         "internal_correlation_key",
+        "routing_policy_revision",
     ):
         value.pop(key, None)
     return value

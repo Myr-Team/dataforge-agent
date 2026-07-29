@@ -87,6 +87,7 @@ class FinOpsRequestDetailService:
                     "gateway_coverage": event.gateway_coverage,
                     "evidence_state": event.evidence_state,
                     "error_category": event.error_category,
+                    "routing_policy_revision": event.routing_policy_revision,
                 },
                 "business_request": _business_request(run),
                 "business_response": _business_response(run, event),

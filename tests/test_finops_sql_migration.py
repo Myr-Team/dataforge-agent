@@ -70,6 +70,19 @@ def test_member_budget_period_check_has_a_guarded_existing_table_upgrade() -> No
     assert "add constraint ck_finops_budget_alert_period" in upgrade
 
 
+def test_request_event_routing_policy_revision_is_additive_and_nullable() -> None:
+    schema = SCHEMA_PATH.read_text(encoding="utf-8")
+    lowered = schema.lower()
+
+    assert "routing_policy_revision int null" in lowered
+    assert (
+        "col_length(n'df_finops.request_event', "
+        "n'routing_policy_revision') is null"
+    ) in lowered
+    assert "alter table df_finops.request_event" in lowered
+    assert "add routing_policy_revision int null" in lowered
+
+
 def test_provider_schema_constrains_public_states_roles_and_json() -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
 

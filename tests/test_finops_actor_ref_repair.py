@@ -533,6 +533,33 @@ def test_legacy_tenant_keys_are_atomically_rekeyed_without_repricing() -> None:
     assert repository.repair_event_keys(plans) == 0
 
 
+def test_rekey_preserves_historical_null_routing_revision_without_synthesis() -> None:
+    run = _run("run-private-routing", "2026-07-10T01:00:00Z")
+    run["actor"]["tenant_id"] = "TENANT-A"  # type: ignore[index]
+    run["models"][0]["policy_revision"] = 12  # type: ignore[index]
+    [plan] = build_event_key_repairs(run, hmac_secret="repair-secret")
+    assert plan.canonical_event.routing_policy_revision == 12
+    legacy = plan.canonical_event.model_copy(
+        update={
+            "tenant_ref": plan.legacy_tenant_ref,
+            "request_ref": plan.legacy_request_ref,
+            "routing_policy_revision": None,
+        }
+    )
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events([legacy])
+
+    assert repository.repair_event_keys([plan]) == 1
+    repaired = repository.get_event(
+        tenant_ref=plan.canonical_event.tenant_ref,
+        workspace_ids=("workspace-a",),
+        request_ref=plan.canonical_event.request_ref,
+    )
+
+    assert repaired is not None
+    assert repaired.routing_policy_revision is None
+
+
 def test_conflicting_canonical_price_evidence_rolls_back_entire_rekey_batch() -> None:
     first = _run("run-private-first", "2026-07-10T01:00:00Z")
     second = _run("run-private-second", "2026-07-10T02:00:00Z")

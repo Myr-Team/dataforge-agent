@@ -28,6 +28,7 @@ def _app_event() -> FinOpsRequestEvent:
             "tenant_ref": "tenant-safe",
             "workspace_id": "ws-a",
             "run_id": "run-a",
+            "routing_policy_revision": 7,
             "status": "succeeded",
             "tokens": TokenUsage(input=10, output=2, total=12),
             "gateway_coverage": "app_observed",
@@ -81,6 +82,7 @@ def test_apim_streaming_tokens_are_estimated_and_reconciled_without_summing() ->
     assert rows[0].gateway_coverage == "apim_governed"
     assert rows[0].usage_source == "provider"
     assert rows[0].apim_correlation_id == observation.correlation_id
+    assert rows[0].routing_policy_revision == 7
 
 
 def test_apim_usage_fills_missing_application_usage_as_estimated() -> None:
