@@ -1,0 +1,11 @@
+Tested commit: f8e5c066f562e542370b2167493060b9c7fa63ae
+UTC started: 2026-07-29T11:40:57.7003118Z
+UTC ended: 2026-07-29T11:41:08.1626308Z
+Command: python -m pytest -q tests/test_member_budget_candidate_runbook.py
+Exit code: 0
+..........                                                               [100%]
+10 passed in 7.04s
+PowerShell blocks parsed: 14
+PowerShell syntax errors: 0
+git diff --check exit code: 0
+Scope: local runbook validation only; no Azure, network, SQL, deployment, email, environment, or traffic mutation.
