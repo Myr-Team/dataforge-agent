@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from .member_budget_repository import MemberBudgetConflictError
-from .member_budgets import BudgetAlert, MemberBudget, NotificationSetting
+from .member_budgets import BudgetAlert, MemberBudget, MemberCostSummary, NotificationSetting
 from .sql_repository import ConnectionFactory, FinOpsPersistenceError
 
 
@@ -50,6 +50,61 @@ class SqlMemberBudgetRepository:
                 tenant_ref,
             ).fetchall()
         return tuple(_budget_from_row(row) for row in rows)
+
+    def summarize_member_costs(
+        self, *, tenant_ref: str, from_value: str, to_value: str
+    ) -> dict[str, MemberCostSummary]:
+        """Aggregate reconciled request facts for an inclusive/exclusive UTC window."""
+        with self._transaction() as cursor:
+            amount_rows = cursor.execute(
+                """/* finops:summarize-member-costs */
+                SELECT actor_ref,
+                       SUM(CASE WHEN cost_amount IS NOT NULL THEN cost_amount END) AS estimated_spend,
+                       SUM(CASE WHEN cost_amount IS NOT NULL THEN 1 ELSE 0 END) AS priced_requests,
+                       COUNT_BIG(*) AS total_requests
+                FROM df_finops.request_event
+                WHERE tenant_ref = ?
+                  AND actor_ref IS NOT NULL
+                  AND occurred_at >= ?
+                  AND occurred_at < ?
+                GROUP BY actor_ref""",
+                tenant_ref,
+                from_value,
+                to_value,
+            ).fetchall()
+            model_rows = cursor.execute(
+                """/* finops:summarize-member-primary-model */
+                WITH model_counts AS (
+                    SELECT actor_ref, model_deployment, COUNT_BIG(*) AS request_count
+                    FROM df_finops.request_event
+                    WHERE tenant_ref = ?
+                      AND actor_ref IS NOT NULL
+                      AND occurred_at >= ?
+                      AND occurred_at < ?
+                      AND model_deployment IS NOT NULL
+                    GROUP BY actor_ref, model_deployment
+                ), ranked_models AS (
+                    SELECT actor_ref, model_deployment,
+                           ROW_NUMBER() OVER (PARTITION BY actor_ref ORDER BY request_count DESC, model_deployment) AS model_rank
+                    FROM model_counts
+                )
+                SELECT actor_ref, model_deployment
+                FROM ranked_models WHERE model_rank = 1""",
+                tenant_ref,
+                from_value,
+                to_value,
+            ).fetchall()
+        primary_models = {str(_value(row, 0)): _value(row, 1) for row in model_rows}
+        return {
+            str(_value(row, 0)): MemberCostSummary(
+                actor_ref=str(_value(row, 0)),
+                estimated_spend_usd=_value(row, 1),
+                priced_requests=int(_value(row, 2) or 0),
+                total_requests=int(_value(row, 3) or 0),
+                primary_model=primary_models.get(str(_value(row, 0))),
+            )
+            for row in amount_rows
+        }
 
     def save_budget(self, tenant_ref: str, value: MemberBudget, *, base_revision: int) -> MemberBudget:
         thresholds_json = json.dumps(value.thresholds_pct, separators=(",", ":"))

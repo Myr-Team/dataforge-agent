@@ -62,3 +62,15 @@ def test_member_budget_period_constraint_is_added_for_existing_alert_tables() ->
     assert "ck_finops_budget_alert_period" in guarded_upgrade
     assert "alter table df_finops.budget_alert" in guarded_upgrade
     assert "add constraint ck_finops_budget_alert_period" in guarded_upgrade
+
+
+def test_member_budget_actor_cost_query_is_tenant_scoped_and_uses_reconciled_request_rows() -> None:
+    source = (SCHEMA_PATH.parents[2] / "backend" / "finops" / "sql_member_budgets.py").read_text(encoding="utf-8").lower()
+
+    assert "finops:summarize-member-costs" in source
+    assert "from df_finops.request_event" in source
+    assert "where tenant_ref = ?" in source
+    assert "actor_ref is not null" in source
+    assert "occurred_at >= ?" in source
+    assert "occurred_at < ?" in source
+    assert "row_number() over (partition by actor_ref" in source

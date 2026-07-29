@@ -123,3 +123,22 @@ def test_production_api_uses_authenticated_same_origin_proxy() -> None:
     assert "proxy_pass ${DF_BACKEND_UPSTREAM};" in nginx_source
     assert "X-DataForge-Proxy-Secret" in nginx_source
     assert "X-MS-CLIENT-PRINCIPAL" in nginx_source
+
+
+def test_member_directory_is_internal_only_and_contains_no_graph_lookup() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "backend" / "finops" / "member_directory.py").read_text(encoding="utf-8").lower()
+    control_plane = (root / "backend" / "control_plane.py").read_text(encoding="utf-8").lower()
+
+    assert "@router" not in source
+    assert "graph.microsoft.com" not in source
+    assert "workspace_finops_member_identities" in control_plane
+
+
+def test_member_cost_truthfulness_preserves_unpriced_counts_and_never_defaults_missing_amounts() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "backend" / "finops" / "sql_member_budgets.py").read_text(encoding="utf-8").lower()
+
+    assert "sum(case when cost_amount is not null then cost_amount end)" in source
+    assert "count_big(*) as total_requests" in source
+    assert "coalesce(cost_amount" not in source

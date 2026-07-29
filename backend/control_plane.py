@@ -2810,6 +2810,27 @@ def _workspace_members_by_key(workspace_id: str) -> dict[str, dict[str, Any]]:
     return members
 
 
+def workspace_finops_member_identities(workspace_id: str) -> list[dict[str, str]]:
+    """Internal-only trusted identities; never return directly from an API."""
+    result: list[dict[str, str]] = []
+    for member in _workspace_members_by_key(workspace_id).values():
+        actor_id = _clean_text(member.get("actor_id"))
+        tenant_id = _clean_text(member.get("tenant_id"))
+        if not actor_id or not tenant_id or not is_trusted_tenant_identity(member):
+            continue
+        result.append(
+            {
+                "actor_id": actor_id,
+                "tenant_id": tenant_id,
+                "name": _clean_text(member.get("user") or member.get("name")),
+                "email": _member_email(member.get("email")) or "",
+                "role": _clean_text(member.get("role") or "viewer").lower(),
+                "status": _clean_text(member.get("status") or "active").lower(),
+            }
+        )
+    return result
+
+
 def _public_actor_reference(
     workspace_id: str,
     actor: dict[str, Any],
