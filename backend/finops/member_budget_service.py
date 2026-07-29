@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import math
 from typing import Any, Protocol
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
-from .acs_email import AcsEmailSender, EmailDeliveryResult, EmailMessage, render_template
+from .acs_email import AcsEmailSender, EmailDeliveryResult, EmailMessage, render_template, validate_template
 from .member_budget_repository import MemberBudgetRepository
 from .member_budgets import MemberBudget, MemberBudgetDraft, NotificationSetting
 from .member_directory import MemberDirectory, MemberMonthlyCost
@@ -190,6 +190,8 @@ class MemberBudgetService:
         body_template = payload.get("body_template", current.body_template if current else "Budget threshold reached")
         if any(type(value) is not str for value in (sender_display_name, subject_template, body_template)):
             raise ValueError("notification template fields must be strings")
+        validate_template(subject_template)
+        validate_template(body_template)
         value = NotificationSetting(
             recipient_actor_ref=recipient,
             recipient_email=email,
@@ -229,7 +231,7 @@ class MemberBudgetService:
             subject=f"[测试] {render_template(setting.subject_template, values)}",
             plain_text=render_template(setting.body_template, values),
         )
-        operation_id = str(uuid5(NAMESPACE_URL, f"dataforge-finops-test-email:{tenant_ref}:{setting.revision}"))
+        operation_id = str(uuid4())
         return sender.send(message, operation_id=operation_id)
 
 

@@ -68,17 +68,18 @@ class AcsEmailSender:
                 operation_id=operation_id,
             )
             result = poller.result(timeout=self._poll_timeout_seconds)
+            done = getattr(poller, "done", None)
+            if callable(done) and not done():
+                raise AcsEmailError("timeout")
             if _delivery_state(result) != "succeeded":
                 raise AcsEmailError("service_unavailable")
             return EmailDeliveryResult(state="sent", sent_at=datetime.now(timezone.utc), safe_error_category=None)
         except AcsEmailError:
             raise
-        except TimeoutError as exc:
-            raise AcsEmailError("timeout") from exc
         except PermissionError as exc:
             raise AcsEmailError("permission_required") from exc
         except Exception as exc:
-            category = "permission_required" if _looks_like_permission_error(exc) else "service_unavailable"
+            category = "timeout" if _looks_like_timeout(exc) else "permission_required" if _looks_like_permission_error(exc) else "service_unavailable"
             raise AcsEmailError(category) from exc
 
 
@@ -112,6 +113,11 @@ def render_template(template: str, values: Mapping[str, str]) -> str:
     return rendered
 
 
+def validate_template(template: str) -> None:
+    """Validate placeholder syntax without retaining any caller-provided content."""
+    render_template(template, {name: "" for name in ALLOWED_TEMPLATE_VARIABLES})
+
+
 def _delivery_state(result: Any) -> str:
     if isinstance(result, Mapping):
         value = result.get("status") or result.get("state")
@@ -121,7 +127,14 @@ def _delivery_state(result: Any) -> str:
 
 
 def _looks_like_permission_error(exc: Exception) -> bool:
-    return any(marker in type(exc).__name__.lower() for marker in ("authentication", "authorization", "forbidden", "permission"))
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    status = status if status is not None else getattr(response, "status_code", None)
+    return status in {401, 403} or any(marker in type(exc).__name__.lower() for marker in ("authentication", "authorization", "forbidden", "permission", "credential"))
 
 
-__all__ = ["ALLOWED_TEMPLATE_VARIABLES", "AcsEmailError", "AcsEmailSender", "EmailDeliveryResult", "EmailMessage", "acs_email_sender_from_environment", "render_template"]
+def _looks_like_timeout(exc: Exception) -> bool:
+    return isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()
+
+
+__all__ = ["ALLOWED_TEMPLATE_VARIABLES", "AcsEmailError", "AcsEmailSender", "EmailDeliveryResult", "EmailMessage", "acs_email_sender_from_environment", "render_template", "validate_template"]

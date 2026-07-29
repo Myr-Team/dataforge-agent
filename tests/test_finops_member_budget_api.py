@@ -197,6 +197,7 @@ def test_test_email_works_with_alerts_disabled_and_redacts_delivery(monkeypatch)
     assert response.status_code == 200
     assert response.json()["state"] == "sent"
     assert response.json()["safe_error_category"] is None
+    assert set(response.json()) == {"state", "sent_at", "safe_error_category"}
     assert "admin@example.test" not in response.text
     assert service.writes == 1
 
@@ -227,6 +228,16 @@ def test_test_email_requires_persisted_notification_settings(monkeypatch) -> Non
     monkeypatch.setattr(budget_router, "acs_email_sender_from_environment", lambda: object())
     monkeypatch.setattr(service, "send_test_email", lambda **_kwargs: (_ for _ in ()).throw(KeyError("notification_setting")))
     assert client.post("/api/finops/notification-settings/test-email").status_code == 404
+    assert service.writes == 0
+
+
+def test_notification_template_is_rejected_before_audit_or_persistence(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    audits: list[object] = []
+    monkeypatch.setattr(budget_router, "record_audit_event", lambda *_args, **_kwargs: audits.append(object()))
+    response = client.put("/api/finops/notification-settings", json={"recipient_actor_ref": "actor-safe", "subject_template": "{{member_name.__class__}}", "body_template": "ok", "enabled": True, "base_revision": 0})
+    assert response.status_code == 422
+    assert not audits
     assert service.writes == 0
 
 

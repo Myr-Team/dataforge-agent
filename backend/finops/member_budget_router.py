@@ -12,7 +12,7 @@ from ..identity import actor_from_request, is_trusted_tenant_identity
 from ..lineage_sql import build_lineage_sql_connection_factory
 from ..workspace_authz import active_workspace_role
 from ..workspace_store import list_workspaces
-from .acs_email import AcsEmailError, acs_email_sender_from_environment
+from .acs_email import AcsEmailError, acs_email_sender_from_environment, validate_template
 from .member_budget_repository import MemberBudgetConflictError, MemberBudgetRepository
 from .member_budget_service import MemberBudgetService
 from .member_directory import MemberDirectory
@@ -176,7 +176,16 @@ def _item_envelope(item: Any, *, data_status: str = "unavailable") -> dict[str, 
 
 
 def _test_email_response(*, state: str, sent_at: Any, safe_error_category: str | None) -> dict[str, Any]:
-    return {"state": state, "sent_at": sent_at, "safe_error_category": safe_error_category, "freshness": "recorded", "coverage": "notification_configuration", "data_status": "unavailable", "currency": "USD"}
+    return {"state": state, "sent_at": sent_at, "safe_error_category": safe_error_category}
+
+
+def _validate_notification_templates(payload: Mapping[str, Any]) -> None:
+    try:
+        for field in ("subject_template", "body_template"):
+            if field in payload:
+                validate_template(payload[field])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="template_variable_not_allowed") from exc
 
 
 def _list_envelope(value: Mapping[str, Any], *, limit: int) -> dict[str, Any]:
@@ -268,6 +277,7 @@ async def put_notification_settings(request: Request) -> dict[str, Any]:
     tenant_ref, actor_ref, workspace_ids, actor = _context(request)
     payload = _payload(await _object_body(request), {"recipient_actor_ref", "sender_display_name", "subject_template", "body_template", "enabled", "base_revision"})
     _strict_notification_payload(payload)
+    _validate_notification_templates(payload)
     _audit_required(request, workspace_ids[0], "member-budget-notification")
     try:
         return _item_envelope(get_member_budget_service().save_notification(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload, active_admins=_active_admins(str(actor["tenant_id"]), workspace_ids)))
