@@ -6,7 +6,14 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from .models import CacheEvidence, EstimatedCost, FinOpsRequestEvent, TokenUsage
+from .models import (
+    CacheEvidence,
+    EstimatedCost,
+    FinOpsRequestEvent,
+    ProviderCacheEvidence,
+    ResultCacheEvidence,
+    TokenUsage,
+)
 
 
 _APIM_CORRELATION = re.compile(
@@ -23,6 +30,33 @@ def opaque_ref(prefix: str, *parts: object, secret: str) -> str:
     return f"{prefix}_{digest}"
 
 
+def canonical_tenant_id(raw_tenant_id: object) -> str:
+    tenant_id = str(raw_tenant_id or "").strip().lower()
+    if not tenant_id:
+        raise ValueError("raw tenant identifier is required")
+    return tenant_id
+
+
+def canonical_tenant_ref(raw_tenant_id: object, *, secret: str) -> str:
+    """Derive the sole FinOps tenant scope from a raw Entra tenant ID."""
+    tenant_id = canonical_tenant_id(raw_tenant_id)
+    return opaque_ref("tenant", tenant_id, secret=secret)
+
+
+def canonical_actor_ref(
+    raw_tenant_id: object,
+    raw_actor_id: object,
+    *,
+    secret: str,
+) -> str:
+    """Derive the sole FinOps member key from trusted raw Entra identifiers."""
+    tenant_id = canonical_tenant_id(raw_tenant_id)
+    actor_id = str(raw_actor_id or "").strip().lower()
+    if not actor_id:
+        raise ValueError("raw tenant and actor identifiers are required")
+    return opaque_ref("actor", tenant_id, actor_id, secret=secret)
+
+
 def normalize_run_event(
     run: Mapping[str, Any],
     *,
@@ -30,6 +64,7 @@ def normalize_run_event(
     tenant_id: str,
     hmac_secret: str,
     department_id: str | None = None,
+    raw_tenant_id: str | None = None,
 ) -> FinOpsRequestEvent:
     models = run.get("models") if isinstance(run.get("models"), list) else []
     model_event = models[model_index] if 0 <= model_index < len(models) and isinstance(models[model_index], Mapping) else {}
@@ -39,7 +74,7 @@ def normalize_run_event(
         raise ValueError("run_id, workspace_id, and tenant_id are required")
 
     actor = run.get("actor") if isinstance(run.get("actor"), Mapping) else {}
-    raw_actor = actor.get("actor_id") or actor.get("email")
+    raw_actor = actor.get("actor_id")
     raw_correlation = _correlation_value(run, model_event)
     usage = _usage(model_event.get("usage"))
     cost = _cost(model_event.get("cost_estimate"))
@@ -57,18 +92,31 @@ def normalize_run_event(
         tenant_ref=tenant_id,
         department_id=department_id,
         workspace_id=workspace_id,
-        actor_ref=opaque_ref("actor", tenant_id, raw_actor, secret=hmac_secret) if raw_actor else None,
+        actor_ref=(
+            canonical_actor_ref(
+                raw_tenant_id or tenant_id,
+                raw_actor,
+                secret=hmac_secret,
+            )
+            if raw_actor
+            else None
+        ),
         run_id=run_id,
         agent_id=_text(model_event.get("agent"), 128),
         model=_text(model_event.get("model") or model_event.get("deployment"), 160),
         deployment=_text(model_event.get("deployment") or model_event.get("model"), 160),
         route=_text(model_event.get("route") or model_event.get("model_route"), 128),
+        routing_policy_revision=_non_negative_int(model_event.get("policy_revision")),
         execution_kind=_text(model_event.get("execution_kind"), 64),
         status=status,
         error_category=_safe_error_category(run, model_event) if status == "failed" else None,
         latency_ms=_non_negative_int(model_event.get("latency_ms")),
         tokens=usage,
-        cache=_cache(model_event.get("cache")),
+        cache=_cache(model_event.get("cache") or model_event.get("result_cache")),
+        result_cache=_result_cache(
+            model_event.get("result_cache") or model_event.get("cache")
+        ),
+        provider_cache=_provider_cache(model_event.get("provider_cache")),
         gateway_coverage="app_observed",
         estimated_cost=cost,
         evidence_state="observed" if usage.observed else "partial",
@@ -109,6 +157,67 @@ def _cache(value: object) -> CacheEvidence:
         state=state,
         eligible=eligible,
         avoided_tokens=_non_negative_int(raw.get("avoided_tokens")),
+    )
+
+
+def _result_cache(value: object) -> ResultCacheEvidence:
+    raw = value if isinstance(value, Mapping) else {}
+    state = str(raw.get("state") or raw.get("status") or "").strip().lower()
+    if state not in {"hit", "miss", "bypassed", "unavailable"}:
+        state = "unavailable"
+    eligible = _optional_bool(raw.get("eligible"))
+    if eligible is None:
+        eligible = state in {"hit", "miss"}
+    allowed_reasons = {
+        "eligible",
+        "disabled",
+        "live_data",
+        "side_effecting_tools",
+        "unstable_conversation",
+        "data_revision_missing",
+        "lookup_unavailable",
+        "not_recorded",
+    }
+    reason = str(raw.get("reason") or "").strip().lower()
+    if reason not in allowed_reasons:
+        reason = "eligible" if state in {"hit", "miss"} else "not_recorded"
+    return ResultCacheEvidence(
+        eligible=eligible,
+        state=state,
+        reason=reason,
+        lookup_latency_ms=_non_negative_int(
+            raw.get("lookup_latency_ms")
+            if "lookup_latency_ms" in raw
+            else raw.get("elapsed_ms")
+        ),
+        policy_revision=_non_negative_int(raw.get("policy_revision")) or 0,
+        source_result_version=_text(raw.get("source_result_version"), 160),
+    )
+
+
+def _provider_cache(value: object) -> ProviderCacheEvidence:
+    raw = value if isinstance(value, Mapping) else {}
+    hit = _non_negative_int(raw.get("hit_tokens"))
+    miss = _non_negative_int(raw.get("miss_tokens"))
+    if hit is None or miss is None:
+        return ProviderCacheEvidence(
+            state="unavailable",
+            hit_tokens=hit,
+            miss_tokens=miss,
+            hit_rate_pct=None,
+            evidence_state=(
+                "unavailable" if hit is None and miss is None else "partial"
+            ),
+        )
+    denominator = hit + miss
+    rate = round(hit / denominator * 100, 2) if denominator else None
+    state = "partial_hit" if hit and miss else "hit" if hit else "miss"
+    return ProviderCacheEvidence(
+        state=state,
+        hit_tokens=hit,
+        miss_tokens=miss,
+        hit_rate_pct=rate,
+        evidence_state="observed",
     )
 
 

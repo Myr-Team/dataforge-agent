@@ -17,6 +17,11 @@ test("owner drills from operations metric into friendly request evidence", async
   await page.getByRole("button", { name: "查看证据" }).first().click();
   const dialog = page.getByRole("dialog", { name: /Commerce · 分析运行/ });
   await expect(dialog).toBeVisible();
+  const [topbarBounds, dialogBounds] = await Promise.all([
+    page.locator(".topbar").boundingBox(),
+    dialog.boundingBox(),
+  ]);
+  expect(dialogBounds.y).toBeGreaterThanOrEqual(topbarBounds.y + topbarBounds.height - 1);
   await expect(dialog.getByText("分析本月销售异常")).toBeVisible();
   await expect(dialog.getByText("已定位主要变化来自华东区域。")).toBeVisible();
   await expect(dialog.getByRole("heading", { name: /req_/ })).toHaveCount(0);

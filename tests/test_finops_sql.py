@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from backend.finops.models import FinOpsRequestEvent, TokenUsage
 from backend.finops.anomaly_store import ManagedAnomaly
 from backend.finops.sql_anomalies import SqlFinOpsAnomalyRepository
-from backend.finops.sql_repository import SqlFinOpsRepository
+from backend.finops.repository import FinOpsEventKeyRepair
+from backend.finops.sql_repository import FinOpsPersistenceError, SqlFinOpsRepository
 
 
 class RecordingCursor:
@@ -54,6 +58,7 @@ def _event() -> FinOpsRequestEvent:
             "call_class": "model",
             "tenant_ref": "tenant-safe",
             "workspace_id": "ws-a",
+            "routing_policy_revision": 7,
             "status": "succeeded",
             "tokens": TokenUsage(input=10, output=2, total=12),
             "gateway_coverage": "app_observed",
@@ -109,14 +114,156 @@ def test_sql_repository_initializes_schema_and_upserts_only_public_event_payload
     repository.initialize_schema()
     repository.upsert_events([_event()])
 
-    assert connection.commits == 2
-    schema_call, merge_call = connection.cursor_value.calls
-    assert "finops:schema" in schema_call[0]
+    *schema_calls, merge_call = connection.cursor_value.calls
+    assert schema_calls
+    assert connection.commits == len(schema_calls) + 1
+    assert all("finops:schema" in call[0] for call in schema_calls)
     assert "finops:upsert-request-event" in merge_call[0]
+    normalized_merge = " ".join(merge_call[0].split())
+    assert (
+        "ON target.tenant_ref = source.tenant_ref "
+        "AND target.request_ref = source.request_ref"
+    ) in normalized_merge
+    assert "routing_policy_revision = ?" in normalized_merge
+    assert (
+        "route, routing_policy_revision, execution_kind"
+        in normalized_merge
+    )
     serialized = str(merge_call[1])
     assert "must-not-persist" not in serialized
     assert "tenant-safe" in serialized
     assert "req_aaaaaaaaaaaa" in serialized
+
+
+def test_sql_repository_executes_go_delimited_schema_batches_separately(
+    tmp_path: Path,
+) -> None:
+    schema_path = tmp_path / "schema.sql"
+    schema_path.write_text(
+        "CREATE TABLE df_finops.example (id INT NOT NULL);\n"
+        "GO\n"
+        "ALTER TABLE df_finops.example ADD label NVARCHAR(32) NULL;\n",
+        encoding="utf-8",
+    )
+    connection = RecordingConnection()
+    repository = SqlFinOpsRepository(
+        connection_factory=lambda: connection,
+        schema_path=schema_path,
+    )
+
+    repository.initialize_schema()
+
+    operations = [operation for operation, _ in connection.cursor_value.calls]
+    assert len(operations) == 2
+    assert "CREATE TABLE df_finops.example" in operations[0]
+    assert "ALTER TABLE df_finops.example" in operations[1]
+    assert all("\nGO\n" not in operation.upper() for operation in operations)
+    assert connection.commits == 2
+
+
+def test_sql_repository_reads_historical_payload_without_routing_revision_as_null() -> None:
+    connection = RecordingConnection()
+    payload = _event().model_dump(mode="json")
+    payload.pop("routing_policy_revision")
+    connection.cursor_value.rows = [
+        (json.dumps(payload, separators=(",", ":")),)
+    ]
+    repository = SqlFinOpsRepository(connection_factory=lambda: connection)
+
+    [event] = repository.list_events(
+        tenant_ref="tenant-safe",
+        workspace_ids=("ws-a",),
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-08-01T00:00:00Z",
+    )
+
+    assert event.routing_policy_revision is None
+
+
+def test_sql_event_rekey_uses_one_locked_transaction_and_deletes_legacy_key() -> None:
+    connection = RecordingConnection()
+    repository = SqlFinOpsRepository(connection_factory=lambda: connection)
+    canonical = _event().model_copy(
+        update={
+            "tenant_ref": "tenant-canonical",
+            "request_ref": "req_canonicalaaaa",
+            "actor_ref": "actor_canonicalaaa",
+        }
+    )
+    legacy = canonical.model_copy(
+        update={
+            "tenant_ref": "tenant-legacy",
+            "request_ref": "req_legacyaaaaaa",
+            "actor_ref": "actor_legacyyyyyy",
+        }
+    )
+    connection.cursor_value.rows = [
+        (
+            legacy.tenant_ref,
+            legacy.request_ref,
+            json.dumps(legacy.model_dump(mode="json"), separators=(",", ":")),
+        )
+    ]
+
+    changed = repository.repair_event_keys(
+        [
+            FinOpsEventKeyRepair(
+                legacy_tenant_ref="tenant-legacy",
+                legacy_request_ref="req_legacyaaaaaa",
+                canonical_event=canonical,
+            )
+        ]
+    )
+
+    operations = [call[0] for call in connection.cursor_value.calls]
+    assert changed == 1
+    assert connection.commits == 1
+    assert connection.rollbacks == 0
+    assert "WITH (UPDLOCK, HOLDLOCK)" in operations[0]
+    assert "finops:upsert-request-event" in operations[1]
+    assert "finops:delete-legacy-request-event" in operations[2]
+
+
+def test_sql_event_rekey_rolls_back_when_atomic_delete_fails() -> None:
+    class FailingCursor(RecordingCursor):
+        def execute(self, operation: str, *parameters: object) -> "RecordingCursor":
+            result = super().execute(operation, *parameters)
+            if "finops:delete-legacy-request-event" in operation:
+                raise RuntimeError("database detail must not escape")
+            return result
+
+    connection = RecordingConnection()
+    connection.cursor_value = FailingCursor()
+    repository = SqlFinOpsRepository(connection_factory=lambda: connection)
+    canonical = _event()
+    legacy = canonical.model_copy(
+        update={
+            "tenant_ref": "tenant-legacy",
+            "request_ref": "req_legacyaaaaaa",
+        }
+    )
+    connection.cursor_value.rows = [
+        (
+            legacy.tenant_ref,
+            legacy.request_ref,
+            json.dumps(legacy.model_dump(mode="json"), separators=(",", ":")),
+        )
+    ]
+
+    with pytest.raises(FinOpsPersistenceError) as error:
+        repository.repair_event_keys(
+            [
+                FinOpsEventKeyRepair(
+                    legacy_tenant_ref="tenant-legacy",
+                    legacy_request_ref="req_legacyaaaaaa",
+                    canonical_event=canonical,
+                )
+            ]
+        )
+
+    assert str(error.value) == "FinOps SQL operation failed"
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
 
 
 def test_sql_anomaly_repository_upserts_lifecycle_state_without_raw_evidence() -> None:

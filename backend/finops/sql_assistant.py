@@ -71,6 +71,7 @@ class SqlAssistantConversationStore:
                 SELECT 1 FROM df_finops.assistant_conversation
                 WHERE tenant_ref = ? AND actor_ref = ? AND workspace_id = ?
                   AND conversation_ref = ?
+                  AND expires_at > SYSUTCDATETIME()
             )""",
             scope.tenant_ref,
             scope.actor_ref,
@@ -121,11 +122,18 @@ class SqlAssistantConversationStore:
     ) -> tuple[AssistantMessage, ...]:
         rows = self._query(
             """/* finops:list-assistant-messages */
-            SELECT role, content, metric_context_payload, created_at
-            FROM df_finops.assistant_message
-            WHERE tenant_ref = ? AND actor_ref = ? AND workspace_id = ?
-              AND conversation_ref = ?
-            ORDER BY message_id""",
+            SELECT m.role, m.content, m.metric_context_payload, m.created_at
+            FROM df_finops.assistant_message AS m
+            WHERE m.tenant_ref = ? AND m.actor_ref = ? AND m.workspace_id = ?
+              AND m.conversation_ref = ?
+              AND EXISTS (
+                SELECT 1 FROM df_finops.assistant_conversation AS c
+                WHERE c.tenant_ref = m.tenant_ref AND c.actor_ref = m.actor_ref
+                  AND c.workspace_id = m.workspace_id
+                  AND c.conversation_ref = m.conversation_ref
+                  AND c.expires_at > SYSUTCDATETIME()
+              )
+            ORDER BY m.message_id""",
             scope.tenant_ref,
             scope.actor_ref,
             scope.workspace_id,

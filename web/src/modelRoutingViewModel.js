@@ -32,6 +32,10 @@ export function modelRoutingViewModel(payload = {}) {
     .map((route) => ({
       id: text(route.id),
       deployment: text(route.deployment),
+      modelId: text(route.model_id) || text(route.deployment),
+      providerId: text(route.provider_id) || "azure-foundry",
+      providerType: text(route.provider_type) || "azure_foundry",
+      providerLabel: text(route.provider_type) === "deepseek" ? "DeepSeek" : "Azure Foundry",
       label: text(route.label) || text(route.id),
       capabilities: Array.isArray(route.capabilities) ? route.capabilities.map(text).filter(Boolean) : [],
     }));

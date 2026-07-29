@@ -216,6 +216,107 @@ terraform init && terraform apply
 
 Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_AUTH_MODE` (`auto`, `api_key`, or `managed_identity`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search), `DF_WORKSPACE_RBAC_ENFORCED` (workspace role enforcement), `DF_WEB_PROXY_SECRET` (shared secret for the Web-to-backend identity proxy), `DF_ARTIFACT_JOB_STALE_SECONDS` (interrupted-job recovery window), `DF_SEPARATE_ANALYSIS_CONVERSATIONS` (candidate-gated separation of autonomous analysis runs from human message history; default `0`, enable `1` only with the matching frontend revision), `DF_MODEL_ROUTE_ALLOWLIST` / `DF_DEFAULT_MODEL_ROUTE` (server-owned text-route allowlist and default route), and `DF_CONTEXT_EVALUATION_SUMMARY_PATH` / `DF_CONTEXT_EVALUATION_STALE_DAYS` (offline evaluation gate inputs for candidate follow-up routing).
 
+### AWS Bedrock connector: configuration-only boundary
+
+The Bedrock connector is an authenticated, administrator-only configuration
+surface. Its credentials are entered only through the write-only settings UI;
+they must never be copied into a runbook, browser storage, logs, screenshots,
+or source control.
+
+Keep the configuration-only flags at the following values during local and
+candidate validation:
+
+```text
+DF_PROVIDER_CONNECTORS_ENABLED=1
+DF_AWS_BEDROCK_CONNECTOR_ENABLED=1
+DF_EXTERNAL_PROVIDER_ROUTING_ENABLED=0
+DF_EXTERNAL_PROVIDER_APIM_PROVISIONING_ENABLED=0
+DF_FINOPS_ACTIONS_ENABLED=0
+```
+
+Saving and testing a Bedrock connection validates only that configuration. It
+does not add Bedrock models to Agent routing, provision APIM, enable external
+provider runtime traffic, or enable FinOps actions. A separate zero-traffic
+candidate acceptance and explicit approval are required before any production
+traffic change.
+
+### Entra member budgets and ACS Email reminders
+
+The member-budget feature is a tenant FinOps administrator control surface. It
+joins trusted Easy Auth / Entra member attribution to request-level estimated
+cost in the SQL ledger, then reports each member's UTC calendar-month USD
+budget, estimated spend, and pricing coverage. Unpriced requests remain
+unpriced; they reduce coverage and are never counted as zero-cost usage.
+Every member-budget, eligible-member, budget-alert, and email-configuration
+read/write route requires the exact Entra application role
+`DataForge.FinOpsAdmin` in the trusted Easy Auth `roles` claim. A local
+workspace Owner/Admin role is neither sufficient nor required. The service
+discovers the caller tenant's workspaces from trusted identity snapshots,
+aggregates spend across that tenant scope, and fails closed when no matching
+workspace can be established. Mutations use the lexicographically first
+tenant workspace only as a deterministic internal audit-persistence scope; it
+does not narrow the tenant-wide evaluation.
+
+The feature has four intentionally separate layers:
+
+1. `member_directory` resolves tenant-scoped, workspace-authorized Entra
+   members into opaque actor references and safe display fields.
+2. `member_budget_repository` and `sql_member_budgets` persist budgets,
+   notification settings, and idempotent alert state in Azure SQL. Redis is
+   never the source of truth.
+3. `member_budget_evaluator` evaluates the completed FinOps ledger after
+   rollup/reconciliation and coalesces crossed thresholds. It does not block
+   requests, change model routing, or perform FinOps actions.
+4. `acs_email` sends plain-text test or threshold mail through Azure
+   Communication Services Email using the backend system-assigned managed
+   identity. Connection strings, SMTP credentials, service keys, HTML,
+   attachments, and arbitrary template variables are not accepted.
+
+All related switches default to off:
+
+```text
+DF_FINOPS_MEMBER_BUDGETS_ENABLED=0
+DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=0
+DF_FINOPS_EMAIL_ALERTS_ENABLED=0
+DF_FINOPS_TENANT_ADMIN_ROLE=DataForge.FinOpsAdmin
+DF_FINOPS_ACTIONS_ENABLED=0
+```
+
+`DF_ACS_EMAIL_ENDPOINT` and `DF_ACS_EMAIL_SENDER_ADDRESS` are deployment
+configuration, not values entered by a portal administrator. Automatic email
+must remain off until a zero-traffic candidate has passed the controlled
+delivery and deduplication checks and a human has explicitly approved enabling
+it. `DF_FINOPS_TENANT_ADMIN_ROLE` may override the application-role value for a
+tenant deployment. The deprecated `DF_FINOPS_EMAIL_ADMIN_ROLE` is used only as
+a fallback when the new setting is absent or blank; the new setting always
+wins. Matching is exact after trimming and case normalization, and only trusted
+Easy Auth roles are accepted.
+
+Run the complete local gate from a clean checkout:
+
+```powershell
+python -m pytest -q
+Set-Location web
+node --test
+npm run build
+npx playwright test
+Set-Location ..
+git diff --check
+```
+
+Candidate setup, redacted evidence requirements, rollback, and the production
+approval boundary are documented in the
+[member-budget and ACS Email candidate runbook](docs/validation/2026-07-28-member-budget-email-candidate-runbook.md).
+The corresponding
+[candidate acceptance record](docs/validation/2026-07-28-member-budget-email-candidate.md)
+distinguishes local PASS evidence from live Azure checks that are still pending.
+The runbook also requires a filesystem-level sensitive-file scan before either
+Docker build; `.dockerignore` is defense in depth and must not be treated as
+permission to leave a local `.env`, private key, or credential artifact in the
+build workspace. Release images must be built from a clean isolated worktree or
+detached checkout at the exact approved commit; any tracked modification or
+untracked file stops the release before scanning or building.
+
 ## Monitoring and model routing
 
 - `Monitor` is an owner-only surface. Backend authorization decides access for both navigation and API reads; the frontend only reflects that server-backed permission.

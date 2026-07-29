@@ -40,8 +40,37 @@ class FinOpsQuery(BaseModel):
 
 
 class FinOpsQueryService:
-    def __init__(self, repository: Any) -> None:
+    def __init__(
+        self,
+        repository: Any,
+        *,
+        gateway_unmatched_repository: Any | None = None,
+    ) -> None:
         self._repository = repository
+        self._gateway_unmatched_repository = gateway_unmatched_repository
+
+    def _gateway_unmatched(
+        self,
+        query: FinOpsQuery,
+        rows: list[FinOpsRequestEvent],
+    ) -> dict[str, Any] | None:
+        """Read the unattributed gateway 4xx/5xx aggregate for the window.
+
+        The evidence is system scoped, never tenant attributed. It is exposed as
+        a clearly labelled block and only enriches ``unmatched_metric_records``;
+        it is never folded into request counts, error rate or cost.
+        """
+        repo = self._gateway_unmatched_repository
+        if repo is None:
+            return None
+        summary = repo.summarize(query.from_value, query.to_value)
+        if not isinstance(summary, dict):
+            return None
+        summary = dict(summary)
+        summary["linked_requests"] = sum(
+            row.gateway_coverage == "apim_governed" for row in rows
+        )
+        return summary
 
     def requests(self, query: FinOpsQuery) -> dict[str, Any]:
         rows = self._rows(query)
@@ -93,7 +122,7 @@ class FinOpsQueryService:
                 ),
                 "departments": departments,
                 "filters": filters["filters"],
-                "trust": _trust(rows),
+                "trust": _trust(rows, self._gateway_unmatched(query, rows)),
             }
         )
         return payload
@@ -108,12 +137,25 @@ class FinOpsQueryService:
         latencies = sorted(row.latency_ms for row in rows if row.latency_ms is not None)
         failures = sum(row.status == "failed" for row in rows)
         succeeded = sum(row.status == "succeeded" for row in rows)
-        cache_eligible = [row for row in rows if row.cache.eligible is True]
-        cache_hits = sum(row.cache.state == "hit" for row in cache_eligible)
+        cache_eligible = [row for row in rows if row.result_cache.eligible is True]
+        cache_hits = sum(row.result_cache.state == "hit" for row in cache_eligible)
         cache_counts = {
-            state: sum(row.cache.state == state for row in rows)
+            state: sum(row.result_cache.state == state for row in rows)
             for state in ("hit", "miss", "bypassed", "unavailable")
         }
+        provider_cache_rows = [
+            row
+            for row in rows
+            if row.provider_cache.hit_tokens is not None
+            and row.provider_cache.miss_tokens is not None
+        ]
+        provider_hit_tokens = sum(
+            row.provider_cache.hit_tokens or 0 for row in provider_cache_rows
+        )
+        provider_miss_tokens = sum(
+            row.provider_cache.miss_tokens or 0 for row in provider_cache_rows
+        )
+        provider_denominator = provider_hit_tokens + provider_miss_tokens
         governed = sum(row.gateway_coverage == "apim_governed" for row in rows)
         priced = len(cost_values)
 
@@ -155,10 +197,32 @@ class FinOpsQueryService:
                 **cache_counts,
             },
             "cache_hit_rate_pct": round((cache_hits / len(cache_eligible)) * 100, 2) if cache_eligible else None,
+            "result_cache": {
+                "eligible_requests": len(cache_eligible),
+                **cache_counts,
+                "hit_rate_pct": (
+                    round((cache_hits / len(cache_eligible)) * 100, 2)
+                    if cache_eligible
+                    else None
+                ),
+            },
+            "provider_cache": {
+                "known_requests": len(provider_cache_rows),
+                "hit_tokens": provider_hit_tokens if provider_cache_rows else None,
+                "miss_tokens": provider_miss_tokens if provider_cache_rows else None,
+                "hit_rate_pct": (
+                    round(provider_hit_tokens / provider_denominator * 100, 2)
+                    if provider_denominator
+                    else None
+                ),
+                "data_status": (
+                    "available" if provider_cache_rows else "unavailable"
+                ),
+            },
             "apim_coverage_pct": round((governed / len(rows)) * 100, 2) if rows else None,
         }
         payload["insights"] = []
-        payload["trust"] = _trust(rows)
+        payload["trust"] = _trust(rows, self._gateway_unmatched(query, rows))
         return payload
 
     def breakdowns(self, query: FinOpsQuery, group_by: str) -> dict[str, Any]:
@@ -240,19 +304,27 @@ class FinOpsQueryService:
         items = []
         for key, rows in sorted(grouped.items()):
             totals = Counter()
+            known: Counter = Counter()
             for row in rows:
                 for name in ("input", "output", "cached_input", "reasoning", "total"):
                     value = getattr(row.tokens, name)
                     if value is not None:
                         totals[name] += value
+                        known[name] += 1
             costs = [row.estimated_cost.amount for row in rows if row.estimated_cost.amount is not None]
             latencies = sorted(
                 row.latency_ms
                 for row in rows
                 if row.latency_ms is not None
             )
+            # Distinguish an observed zero from a missing observation: only
+            # collapse to None when no row contributed a known value.
+            token_totals = {
+                name: (totals[name] if known[name] else None)
+                for name in ("input", "output", "cached_input", "reasoning", "total")
+            }
             metric_values = {
-                "tokens": totals["total"] if totals["total"] else None,
+                "tokens": token_totals["total"],
                 "requests": len(rows),
                 "estimated_cost": (
                     round(sum(costs), 8) if costs else None
@@ -263,11 +335,11 @@ class FinOpsQueryService:
                 {
                     "bucket": key,
                     "requests": len(rows),
-                    "tokens": {name: totals[name] if totals[name] else None for name in ("input", "output", "cached_input", "reasoning", "total")},
+                    "tokens": token_totals,
                     "estimated_cost": round(sum(costs), 8) if costs else None,
                     "p95_latency_ms": _percentile(latencies, 0.95),
                     "value": metric_values[metric],
-                    "data_status": _data_status(rows),
+                    "data_status": _metric_data_status(rows, metric),
                 }
             )
         payload = self._envelope(query, rows)
@@ -426,6 +498,30 @@ def _data_status(rows: list[FinOpsRequestEvent]) -> str:
     return "available"
 
 
+def _metric_data_status(rows: list[FinOpsRequestEvent], metric: str) -> str:
+    """Report completeness for the selected metric only.
+
+    Request counts are always exact, so token/cost/latency gaps must not
+    degrade a request-count trend. Other metrics reflect how many rows carry
+    the observation backing that specific metric.
+    """
+    if not rows:
+        return "unavailable"
+    if metric == "requests":
+        return "available"
+    if metric == "tokens":
+        known = sum(row.tokens.total is not None for row in rows)
+    elif metric == "estimated_cost":
+        known = sum(row.estimated_cost.amount is not None for row in rows)
+    elif metric == "p95_latency_ms":
+        known = sum(row.latency_ms is not None for row in rows)
+    else:
+        return _data_status(rows)
+    if known == 0:
+        return "unavailable"
+    return "available" if known == len(rows) else "partial"
+
+
 def _coverage_state(
     total: int,
     known: int,
@@ -440,7 +536,10 @@ def _coverage_state(
     return "complete" if known == total else "partial"
 
 
-def _trust(rows: list[FinOpsRequestEvent]) -> dict[str, Any]:
+def _trust(
+    rows: list[FinOpsRequestEvent],
+    gateway_unmatched: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     total = len(rows)
     priced = sum(
         row.estimated_cost.amount is not None
@@ -454,6 +553,12 @@ def _trust(rows: list[FinOpsRequestEvent]) -> dict[str, Any]:
 
     def coverage(known: int) -> float | None:
         return round(known / total * 100, 4) if total else None
+
+    unmatched_metric_records: int | None = None
+    if isinstance(gateway_unmatched, dict):
+        errors = gateway_unmatched.get("unmatched_gateway_errors")
+        if isinstance(errors, dict) and errors.get("total") is not None:
+            unmatched_metric_records = int(errors["total"])
 
     return {
         "pricing": {
@@ -475,7 +580,7 @@ def _trust(rows: list[FinOpsRequestEvent]) -> dict[str, Any]:
         "apim": {
             "app_observed_requests": total,
             "apim_governed_requests": governed,
-            "unmatched_metric_records": None,
+            "unmatched_metric_records": unmatched_metric_records,
             "coverage_pct": coverage(governed),
             "state": (
                 "no_samples"
@@ -486,6 +591,7 @@ def _trust(rows: list[FinOpsRequestEvent]) -> dict[str, Any]:
                     else "reconciliation_pending"
                 )
             ),
+            "gateway_unmatched": gateway_unmatched,
         },
     }
 

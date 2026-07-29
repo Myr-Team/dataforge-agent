@@ -1,57 +1,96 @@
-## Task 5 Report
+## Task 5 — Bedrock documentation, full regression, and candidate boundary
 
-### Scope
+### Delivered scope
 
-- `.superpowers/sdd/task-5-report.md`
-- `web/src/App.jsx`
-- `web/src/MonitorPage.jsx`
-- `web/src/constants.js`
-- `web/src/constants.test.mjs`
-- `web/src/monitorDashboardViewModel.js`
-- `web/src/monitorDashboardViewModel.test.mjs`
-- `web/src/navigationContract.test.mjs`
+- Documented the configuration-only Bedrock boundary in `README.md`.
+- Added `docs/validation/2026-07-28-bedrock-connector-candidate.md` with the
+  automated gate, explicit non-goals, exact pending live acceptance items,
+  prerequisites, and the later safe execution sequence.
+- Corrected the mobile Bedrock conflict evidence capture in
+  `web/tests/finops-pricing-routing-remediation.spec.mjs`.
 
-### Red phase
+### Conflict screenshot correction
 
-1. `node --test web/src/constants.test.mjs`
-   - Failed because `constants.js` did not export `resolvePrimaryView`.
-   - Error: `SyntaxError: The requested module './constants.js' does not provide an export named 'resolvePrimaryView'`
-2. `node --test web/src/monitorDashboardViewModel.test.mjs`
-   - Failed because member display did not carry a stable zero-token label.
-   - Assertion: expected `'0'`, actual `undefined`.
+Root cause: the prior test captured
+`output/playwright/bedrock-provider-mobile-conflict.png` before it submitted
+the mocked `409` request. Therefore the image could not show the conflict
+alert even though the test asserted it afterwards.
 
-### Implementation
+The corrected test now:
 
-- Added `resolvePrimaryView(view, access)` so legacy `governance` and direct `monitor` deep links render as `workspaces` until owner access is positively confirmed.
-- Updated `App.jsx` to render navigation and `WorkbenchMain` from the resolved safe view, while still normalizing persisted legacy values.
-- Extended `monitorDashboardViewModel` to emit `memberRows[].totalTokensLabel`, preserving explicit zero totals as `"0"` instead of collapsing to `未记录`.
-- Updated `MonitorPage` to render the member token label directly from the view model.
-- Included the already-corrected `web/src/navigationContract.test.mjs` rename so the committed tree, not only the dirty worktree, reflects the owner-only `monitor` nav contract.
+1. enters inert retry markers and submits the mocked `409`;
+2. asserts the allowlisted Chinese conflict alert and asserts that the hostile
+   response detail is absent;
+3. asserts that the application retains the draft values after the conflict;
+4. scrolls the visible alert into the mobile dialog viewport and captures the
+   image only then; and
+5. masks Access Key ID, Secret Access Key, and optional Session Token input
+   regions white in the image.
 
-### Green phase
+Targeted verification:
 
-1. `node --test web/src/constants.test.mjs`
-   - Pass: 4/4
-2. `node --test web/src/monitorDashboardViewModel.test.mjs`
-   - Pass: 4/4
-3. `node --test web/src/constants.test.mjs web/src/monitorDashboardViewModel.test.mjs web/src/governanceViewModel.test.mjs web/src/navigationContract.test.mjs`
-   - Pass: 29/29
-4. `npm --prefix web run build`
-   - Pass: Vite build exited 0
-   - Output bundles included `dist/assets/MonitorPage-BbONBzzl.js` and updated `dist/assets/index-BZjjyjnF.js`
+```text
+npx playwright test tests/finops-pricing-routing-remediation.spec.mjs --grep "Bedrock provider layout remains usable on mobile"
+1 passed
+```
 
-### Changed files
+Visual inspection of
+`output/playwright/bedrock-provider-mobile-conflict.png`: the mobile dialog
+shows the AWS Bedrock form, blank white-masked credential input regions, and
+the visible safe Chinese conflict alert. It does not show the mocked hostile
+detail or credential marker text.
 
-- `.superpowers/sdd/task-5-report.md`
-- `web/src/App.jsx`
-- `web/src/MonitorPage.jsx`
-- `web/src/constants.js`
-- `web/src/constants.test.mjs`
-- `web/src/monitorDashboardViewModel.js`
-- `web/src/monitorDashboardViewModel.test.mjs`
-- `web/src/navigationContract.test.mjs`
+### Full automated gate
 
-### Residual risks
+Regenerated at commit `0eee7a762ab4a20d83df5e060d56d8d576571082` with
+revision-scoped, sanitized generated evidence under
+`docs/validation/evidence/2026-07-28-bedrock/`. The manifest is
+`docs/validation/evidence/2026-07-28-bedrock/manifest.json`.
 
-- This task still relies on Task 6 browser smoke to validate that owner access resolves before the monitor view is ever chosen in a real signed-in session.
-- The worktree still contains unrelated generated `workspaces/*` directories, which were intentionally left untracked.
+| Command | Result | Evidence |
+| --- | --- | --- |
+| `python -m pytest -q` | PASS — `1370 passed, 1 skipped, 1 warning in 146.62s`. | `pytest-junit.xml`, `pytest-stdout.log` |
+| `node --test` (in `web`) | PASS — `142` passed, `0` failed. | `node-test.tap` |
+| `npm run build` (in `web`) | PASS — Vite `8.0.16`, `1778` modules transformed. Existing chunk-size advisory remained. | `vite-build.log` |
+| `.\node_modules\.bin\playwright.cmd test --reporter=json` (in `web`) | PASS — `15` expected, `0` unexpected. | `playwright.json` |
+| `git diff --check` | PASS — clean. | Recorded in `manifest.json`. |
+
+### Evidence remediation commands and validation
+
+1. `python -m pytest -q --junitxml="$rawJunit"` generated the native JUnit
+   report and stdout at the tested commit. The committed JUnit preserves native
+   aggregate status but mechanically anonymizes all testcase identifiers and
+   local paths because test fixtures contain secret-like sample strings.
+2. `node --test` generated `node-test.tap`; `npm run build` generated
+   `vite-build.log`; and `.\node_modules\.bin\playwright.cmd test
+   --reporter=json` generated `playwright.json`.
+3. The final scan found no credential markers, AWS access-key IDs, ARNs,
+   bearer/JWT tokens, API keys, connection strings, raw AWS request IDs,
+   account/subscription IDs, provider response bodies, or absolute local
+   paths. JUnit XML and Playwright JSON parse successfully.
+4. The manifest records each evidence filename, SHA-256, exact command, UTC
+   bounds, exit code, version, and result count. `git diff --check` completed
+   cleanly and is also recorded there.
+
+### Candidate acceptance boundary
+
+Status: **Automated gate complete; unified candidate release gate PENDING —
+NOT ACCEPTED.**
+
+The automated gate covers local software behavior only. The following remain
+**PENDING / NOT RUN** and are not accepted:
+
+- unified zero-traffic candidate revision and recorded rollback targets;
+- real authenticated Bedrock connection save;
+- Key Vault secret-version existence check;
+- real `ListFoundationModels` success;
+- bad credential, denied permission, and unsupported-region live checks;
+- second authenticated browser/device-session refresh;
+- candidate Agent-routing exclusion observation; and
+- candidate bounded log query for critical signals and secret-like values.
+
+No deployment, traffic change, external runtime routing, APIM provisioning,
+FinOps action enablement, or external-resource creation was performed. Required
+flags remain `DF_EXTERNAL_PROVIDER_ROUTING_ENABLED=0`,
+`DF_EXTERNAL_PROVIDER_APIM_PROVISIONING_ENABLED=0`, and
+`DF_FINOPS_ACTIONS_ENABLED=0`.

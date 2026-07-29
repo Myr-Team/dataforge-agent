@@ -11,7 +11,15 @@ test("model routing view exposes allowlisted routes and owner-managed price-card
   const view = modelRoutingViewModel({
     default_route: "sol",
     routes: [
-      { id: "sol", deployment: "gpt-5.6-sol", label: "GPT-5.6 Sol", capabilities: ["chat", "analysis"] },
+      {
+        id: "sol",
+        deployment: "gpt-5.6-sol",
+        model_id: "gpt-5.6-sol",
+        provider_id: "azure-foundry",
+        provider_type: "azure_foundry",
+        label: "GPT-5.6 Sol",
+        capabilities: ["chat", "analysis"],
+      },
       { id: "luna", deployment: "gpt-5.6-luna", label: "GPT-5.6 Luna", capabilities: ["chat"] },
     ],
     policy: {
@@ -38,6 +46,8 @@ test("model routing view exposes allowlisted routes and owner-managed price-card
   assert.equal(view.agentAssignments["df-producer"].primaryRouteId, "");
   assert.equal(view.routes[0].id, "sol");
   assert.equal(view.routes[0].deployment, "gpt-5.6-sol");
+  assert.equal(view.routes[0].providerLabel, "Azure Foundry");
+  assert.equal(view.routes[0].modelId, "gpt-5.6-sol");
   assert.equal(view.priceCard.statusLabel, "已配置估算参考");
   assert.equal(view.priceCard.configuredRouteCount, 1);
 });

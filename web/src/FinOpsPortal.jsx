@@ -67,6 +67,7 @@ import {
   formatFinOpsNumber,
   formatFinOpsPercent,
   formatRelativeUpdateTime,
+  gatewayUnmatchedEvidence,
 } from "./finopsViewModel.js";
 
 
@@ -172,31 +173,42 @@ function MetricCards({
       {finopsMetricCards(payload).map((card) => {
         const tooltip = metricTooltip(card.metric);
         const context = metricContext(card.metric, scope);
+        const tooltipId = `finops-metric-tooltip-${card.id}`;
         return (
           <article
             className={`finops-metric ${card.tone}`}
             key={card.id}
-            tabIndex={0}
             aria-label={`${card.label} ${card.value}`}
           >
-            <div>
-              <span>{card.label}</span>
-              <CircleHelp className="finops-help-icon" size={13} aria-hidden="true" />
-              <EvidenceBadge status={card.metric.evidenceState} />
-              {card.id === "cost" && onConfigurePricing ? (
+            <div className="finops-metric-header">
+              <span className="finops-metric-label">
+                <span>{card.label}</span>
                 <button
-                  className="finops-price-edit"
+                  className="finops-help-trigger"
                   type="button"
-                  title="关联官方模型价格"
-                  aria-label="关联官方模型价格"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onConfigurePricing();
-                  }}
+                  aria-label={`${card.label}说明`}
+                  aria-describedby={tooltipId}
                 >
-                  <Pencil size={12} />
+                  <CircleHelp size={13} aria-hidden="true" />
                 </button>
-              ) : null}
+              </span>
+              <span className="finops-metric-meta">
+                <EvidenceBadge status={card.metric.evidenceState} />
+                {card.id === "cost" && onConfigurePricing ? (
+                  <button
+                    className="finops-price-edit"
+                    type="button"
+                    title="关联官方模型价格"
+                    aria-label="关联官方模型价格"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onConfigurePricing();
+                    }}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                ) : null}
+              </span>
             </div>
             <strong>{card.value}</strong>
             <small>{card.meta}</small>
@@ -208,7 +220,7 @@ function MetricCards({
                 </button>
               ) : null}
             </div>
-            <div className="finops-metric-tooltip" role="tooltip">
+            <div className="finops-metric-tooltip" id={tooltipId} role="tooltip">
               <header><b>{tooltip.title}</b><EvidenceBadge status={tooltip.evidenceState} /></header>
               {tooltip.rows.length ? (
                 <dl>
@@ -350,9 +362,6 @@ function TrendBars({
                   title={`上一周期 ${formatValue(comparisonValue)}`}
                 />
               ) : null}
-              {rowEvents.length ? (
-                <i className="finops-trend-event" title={`${rowEvents.length} 条运营事件`} />
-              ) : null}
               <div className="finops-trend-plot">
                 <b className="finops-trend-value">{formatValue(rawValue)}</b>
                 <div className="finops-trend-bar-slot">
@@ -379,6 +388,7 @@ function TrendBars({
                     <span>合计 <strong>{formatFinOpsNumber(row.total)}</strong></span>
                   </>
                 )}
+                {rowEvents.length ? <span>运营事件 <strong>{rowEvents.length} 条</strong></span> : null}
               </div>
             </div>
           );
@@ -481,20 +491,64 @@ function DataTrust({ trust = {} }) {
       state: trust.apim?.state,
     },
   ];
+  const gateway = gatewayUnmatchedEvidence(trust);
   return (
-    <div className="finops-trust-grid">
-      {items.map((item) => (
-        <article key={item.id}>
-          <header>
-            <span>{item.label}</span>
-            <EvidenceBadge status={item.state} />
-          </header>
-          <strong>{formatFinOpsPercent(item.value, "暂无样本")}</strong>
-          <small>{item.meta}</small>
-          <div aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, Number(item.value || 0)))}%` }} /></div>
-        </article>
-      ))}
+    <div className="finops-trust-stack">
+      <div className="finops-trust-grid">
+        {items.map((item) => (
+          <article key={item.id}>
+            <header>
+              <span>{item.label}</span>
+              <EvidenceBadge status={item.state} />
+            </header>
+            <strong>{formatFinOpsPercent(item.value, "暂无样本")}</strong>
+            <small>{item.meta}</small>
+            <div aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, Number(item.value || 0)))}%` }} /></div>
+          </article>
+        ))}
+      </div>
+      {gateway ? <GatewayUnmatchedEvidence evidence={gateway} /> : null}
     </div>
+  );
+}
+
+
+function GatewayUnmatchedEvidence({ evidence }) {
+  return (
+    <section className="finops-gateway-evidence" aria-label="未归属网关证据">
+      <header>
+        <span className="finops-gateway-evidence-title">
+          <ShieldCheck size={14} aria-hidden="true" />
+          未归属网关证据
+        </span>
+        <span className="finops-scope-tag" title="无法可靠归属租户或工作区，按系统范围统计">
+          scope={evidence.scope}/system
+        </span>
+      </header>
+      <dl className="finops-gateway-evidence-grid">
+        <div>
+          <dt>已关联请求</dt>
+          <dd>{formatFinOpsNumber(evidence.linkedRequests, "0")}</dd>
+        </div>
+        <div>
+          <dt>未关联网关错误</dt>
+          <dd>
+            {formatFinOpsNumber(evidence.unmatchedTotal, "0")}
+            <small>
+              {`4xx ${formatFinOpsNumber(evidence.clientErrors, "0")} · 5xx ${formatFinOpsNumber(evidence.serverErrors, "0")}`}
+            </small>
+          </dd>
+        </div>
+        <div>
+          <dt>数据更新时间</dt>
+          <dd>{formatRelativeUpdateTime(evidence.updatedAt)}</dd>
+        </div>
+      </dl>
+      <p className="finops-gateway-evidence-note">
+        {evidence.note
+          || "网关侧未关联到任何应用运行的 4xx/5xx 聚合证据，不计入请求账本、错误率或成本。"}
+      </p>
+    </section>
   );
 }
 
@@ -1245,7 +1299,8 @@ export function FinOpsPortal({
       if (error?.name === "AbortError" || current !== overviewSequence.current) return;
       setOverviewState((state) => ({
         ...state,
-        loading: !state.data?.overview?.metrics,
+        // Stop the skeleton on hard failure so the retry surface is visible.
+        loading: false,
         updating: false,
         error: error instanceof Error ? error.message : "运营数据更新失败",
       }));

@@ -17,6 +17,7 @@ def refresh_rollups(
     scopes: Mapping[str, tuple[str, ...]],
     from_value: str,
     to_value: str,
+    budget_evaluator: Any | None = None,
 ) -> dict[str, int]:
     totals = {
         "scope_count": 0,
@@ -45,6 +46,12 @@ def refresh_rollups(
         totals["event_count"] += len(events)
         totals["hourly_rows"] += len(hourly)
         totals["daily_rows"] += len(daily)
+        if budget_evaluator is not None:
+            try:
+                budget_evaluator.evaluate_tenant(tenant_ref, now=datetime.now(timezone.utc), workspace_ids=tuple(workspace_ids))
+            except Exception:
+                # Alert processing is explicitly isolated from truthful rollups.
+                pass
     return totals
 
 

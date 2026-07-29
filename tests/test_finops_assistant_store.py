@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from backend.finops.assistant_store import (
+    AssistantConversationExpired,
     AssistantMessage,
     AssistantScope,
     InMemoryAssistantConversationStore,
@@ -80,3 +81,31 @@ def test_assistant_clear_and_expiry_are_scope_safe() -> None:
     old = store.create(_scope(), title="旧会话", retention_days=1)
     assert store.purge_expired(now + timedelta(days=2)) == 1
     assert store.get_messages(_scope(), old.conversation_ref) == ()
+
+
+def test_expired_conversation_is_not_readable_or_listed_before_purge() -> None:
+    clock = [datetime(2026, 7, 26, tzinfo=timezone.utc)]
+    store = InMemoryAssistantConversationStore(now=lambda: clock[0])
+    conversation = store.create(_scope(), title="即将过期", retention_days=1)
+
+    # Advance past retention but before any scheduled purge runs.
+    clock[0] = clock[0] + timedelta(days=2)
+
+    assert store.get_messages(_scope(), conversation.conversation_ref) == ()
+    assert store.list_conversations(_scope()) == ()
+
+
+def test_append_to_expired_conversation_raises_instead_of_reviving() -> None:
+    clock = [datetime(2026, 7, 26, tzinfo=timezone.utc)]
+    store = InMemoryAssistantConversationStore(now=lambda: clock[0])
+    conversation = store.create(_scope(), title="即将过期", retention_days=1)
+    clock[0] = clock[0] + timedelta(days=2)
+
+    with pytest.raises(AssistantConversationExpired):
+        store.append(
+            _scope(),
+            conversation.conversation_ref,
+            AssistantMessage(role="user", content="过期后追加"),
+        )
+    # The expired conversation is not silently revived.
+    assert store.list_conversations(_scope()) == ()

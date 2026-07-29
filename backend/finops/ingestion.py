@@ -12,10 +12,9 @@ except ImportError:
 
 from .evidence import build_evidence_alias, operation_code_for_event
 from .evidence_repository import SqlEvidenceAliasRepository
-from .normalization import normalize_run_event, opaque_ref
-from .management import FinOpsManagementService, estimate_request_cost
-from .models import EstimatedCost
-from .official_pricing import load_official_price_catalog
+from .normalization import canonical_tenant_ref, normalize_run_event
+from .management import FinOpsManagementService
+from .official_pricing import estimate_official_cost
 from .sql_pricing import SqlPriceMappingRepository
 from .sql_management import SqlFinOpsManagementRepository
 from .sql_repository import SqlFinOpsRepository
@@ -39,10 +38,10 @@ def ingest_completed_run(
         actor.get("tenant_id")
         or os.environ.get("DF_WORKSPACE_OWNER_TENANT_ID")
         or ""
-    ).strip()
+    ).strip().lower()
     if not secret or not tenant_id:
         return {"status": "unavailable", "events": 0}
-    tenant_ref = opaque_ref("tenant", tenant_id, secret=secret)
+    tenant_ref = canonical_tenant_ref(tenant_id, secret=secret)
     if repository is None:
         factory = build_lineage_sql_connection_factory()
         target = SqlFinOpsRepository(connection_factory=factory)
@@ -66,16 +65,6 @@ def ingest_completed_run(
         if manager is not None and workspace_id
         else None
     )
-    active_price_card = None
-    if manager is not None:
-        active_price_card = next(
-            (
-                revision
-                for revision in manager.list_price_cards(tenant_ref=tenant_ref)
-                if revision.status == "active"
-            ),
-            None,
-        )
     models = run.get("models") if isinstance(run.get("models"), list) else []
     events = []
     for index in range(len(models)):
@@ -86,8 +75,17 @@ def ingest_completed_run(
                 tenant_id=tenant_ref,
                 hmac_secret=secret,
                 department_id=department_id,
+                raw_tenant_id=tenant_id,
             )
-            if event.estimated_cost.amount is None and event.tokens.observed:
+            recorded = _recorded_event(target, event)
+            if recorded is not None and recorded.estimated_cost.amount is not None:
+                # Historical request estimates remain tied to the revision that
+                # priced them. A duplicate ingest must never reprice under a
+                # newer mapping or overwrite the recorded price version.
+                event = event.model_copy(
+                    update={"estimated_cost": recorded.estimated_cost}
+                )
+            elif event.estimated_cost.amount is None and event.tokens.observed:
                 deployment = event.deployment or event.model
                 mapping = (
                     price_mappings.get(tenant_ref, deployment)
@@ -95,43 +93,14 @@ def ingest_completed_run(
                     else None
                 )
                 if mapping is not None:
-                    estimate = load_official_price_catalog().estimate(
+                    estimate = estimate_official_cost(
                         mapping.official_price_key,
+                        mapping.mapping_revision,
                         event.tokens,
-                    )
-                    estimate = estimate.model_copy(
-                        update={
-                            "official_price_key": mapping.official_price_key,
-                            "mapping_revision": mapping.mapping_revision,
-                        }
                     )
                     event = event.model_copy(
                         update={"estimated_cost": estimate}
                     )
-            if (
-                event.estimated_cost.amount is None
-                and event.estimated_cost.status != "partial"
-                and event.tokens.observed
-                and active_price_card is not None
-            ):
-                deployment = event.deployment or event.model
-                price = next(
-                    (item for item in active_price_card.items if item.deployment == deployment),
-                    None,
-                )
-                if price is not None:
-                    amount = estimate_request_cost(event.tokens, price)
-                    if amount is not None:
-                        event = event.model_copy(
-                            update={
-                                "estimated_cost": EstimatedCost(
-                                    amount=amount,
-                                    currency=active_price_card.currency,
-                                    status="estimated",
-                                    price_card_revision=active_price_card.revision_id,
-                                )
-                            }
-                        )
             events.append(event)
         except (TypeError, ValueError):
             continue
@@ -170,6 +139,20 @@ def ingest_completed_run(
         "events": len(events),
         "tenant_ref": tenant_ref,
     }
+
+
+def _recorded_event(target: Any, event: Any) -> Any | None:
+    getter = getattr(target, "get_event", None)
+    if getter is None:
+        return None
+    try:
+        return getter(
+            tenant_ref=event.tenant_ref,
+            workspace_ids=(event.workspace_id,),
+            request_ref=event.request_ref,
+        )
+    except Exception:
+        return None
 
 
 def _enabled(name: str) -> bool:

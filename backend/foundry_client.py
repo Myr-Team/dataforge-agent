@@ -583,7 +583,11 @@ def _gateway_request_headers() -> dict[str, str]:
     except ImportError:
         from tracing import gateway_request_headers
     headers = gateway_request_headers()
-    headers["x-dataforge-model-route"] = current_text_route().route.route_id
+    route = current_text_route().route
+    headers["x-dataforge-model-route"] = route.route_id
+    headers["x-dataforge-provider-type"] = route.provider_type
+    if route.provider_id:
+        headers["x-dataforge-provider"] = route.provider_id
     return headers
 
 
@@ -773,10 +777,51 @@ def _usage_has_known_keys(usage: Any) -> bool:
 def _usage_dict(usage: Any) -> dict[str, Any]:
     if not _usage_has_known_keys(usage):
         return {}
-    return {
+    normalized = {
         "input_tokens": _usage_value(usage, "input_tokens", "prompt_tokens", "prompt"),
         "output_tokens": _usage_value(usage, "output_tokens", "completion_tokens", "completion"),
         "total_tokens": _usage_value(usage, "total_tokens", "total"),
+    }
+    cached_input = _usage_value(
+        usage,
+        "cached_input",
+        "provider_cache_hit_tokens",
+        "prompt_cache_hit_tokens",
+    )
+    if cached_input is not None:
+        normalized["cached_input"] = cached_input
+    return normalized
+
+
+def _provider_cache_dict(usage: Any) -> dict[str, Any]:
+    hit = _usage_value(
+        usage,
+        "provider_cache_hit_tokens",
+        "prompt_cache_hit_tokens",
+    )
+    miss = _usage_value(
+        usage,
+        "provider_cache_miss_tokens",
+        "prompt_cache_miss_tokens",
+    )
+    if hit is None or miss is None:
+        return {
+            "state": "unavailable",
+            "hit_tokens": hit,
+            "miss_tokens": miss,
+            "hit_rate_pct": None,
+            "evidence_state": (
+                "unavailable" if hit is None and miss is None else "partial"
+            ),
+        }
+    denominator = hit + miss
+    rate = round(hit / denominator * 100, 2) if denominator else None
+    return {
+        "state": "partial_hit" if hit and miss else "hit" if hit else "miss",
+        "hit_tokens": hit,
+        "miss_tokens": miss,
+        "hit_rate_pct": rate,
+        "evidence_state": "observed",
     }
 
 
@@ -799,7 +844,8 @@ def _stream_delta(event: Any) -> str:
 
 def _response_meta(response: Any, mode: str) -> dict[str, Any]:
     selected = current_text_route()
-    usage = _usage_dict(getattr(response, "usage", None))
+    raw_usage = getattr(response, "usage", None)
+    usage = _usage_dict(raw_usage)
     price_card = current_model_price_card()
     fallback_reason = selected.fallback_reason
     if not _usage_observed(usage):
@@ -810,6 +856,9 @@ def _response_meta(response: Any, mode: str) -> dict[str, Any]:
         "usage": usage,
         "route": selected.route.route_id,
         "deployment": selected.route.deployment,
+        "provider_type": selected.route.provider_type,
+        "provider_id": selected.route.provider_id,
+        "model_id": selected.route.model_id,
         "selection": selected.selection,
         "fallback_reason": safe_fallback_reason(fallback_reason),
         "execution_kind": selected.execution_kind,
@@ -827,6 +876,8 @@ def _response_meta(response: Any, mode: str) -> dict[str, Any]:
     retry_attempts = getattr(response, "_dataforge_retry_attempts", 0)
     if retry_attempts:
         meta["retry_attempts"] = retry_attempts
+    if selected.route.provider_type != "azure_foundry":
+        meta["provider_cache"] = _provider_cache_dict(raw_usage)
     return meta
 
 

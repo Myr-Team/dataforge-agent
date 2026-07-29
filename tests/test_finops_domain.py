@@ -63,6 +63,29 @@ def test_finops_event_rejects_raw_provider_and_content_fields() -> None:
         FinOpsRequestEvent.model_validate(payload)
 
 
+def test_routing_policy_revision_is_distinct_and_historical_absence_stays_null() -> None:
+    event = _event(
+        routing_policy_revision=7,
+        result_cache={
+            "eligible": True,
+            "state": "hit",
+            "reason": "eligible",
+            "policy_revision": 3,
+        },
+    )
+
+    assert event.routing_policy_revision == 7
+    assert event.result_cache.policy_revision == 3
+    historical = event.model_dump(mode="json")
+    historical.pop("routing_policy_revision")
+    assert (
+        FinOpsRequestEvent.model_validate(historical).routing_policy_revision
+        is None
+    )
+    with pytest.raises(ValidationError):
+        _event(routing_policy_revision=-1)
+
+
 def test_normalize_run_event_hashes_identity_and_preserves_unknown_token_categories() -> None:
     event = normalize_run_event(
         {
@@ -104,8 +127,9 @@ def test_normalize_run_event_hashes_identity_and_preserves_unknown_token_categor
 
 
 def test_reconciliation_prefers_observed_provider_usage_and_never_sums_apim_usage() -> None:
-    app_event = _event()
+    app_event = _event(routing_policy_revision=7)
     apim_event = _event(
+        routing_policy_revision=99,
         tokens=TokenUsage(input=90, output=30, total=120),
         gateway_coverage="apim_governed",
         evidence_state="estimated",
@@ -119,6 +143,7 @@ def test_reconciliation_prefers_observed_provider_usage_and_never_sums_apim_usag
     assert result.tokens.input == 80
     assert result.gateway_coverage == "apim_governed"
     assert result.usage_source == "provider"
+    assert result.routing_policy_revision == 7
 
 
 def test_reconciliation_uses_estimated_apim_streaming_usage_only_when_provider_usage_missing() -> None:

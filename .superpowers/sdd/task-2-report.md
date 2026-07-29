@@ -403,3 +403,50 @@ TDD evidence:
    returned `18 passed in 4.20s` after the fallback was removed.
 3. `python -m compileall -q backend/monitoring_dashboard.py` and
    `git diff --check` exited `0` before commit.
+
+---
+
+## Task 2: Read-Only Bedrock Connection Test (2026-07-29)
+
+### Implementation
+
+- Added injectable `AwsBedrockControlPlane` / `Boto3BedrockControlPlane` with a
+  read-only `bedrock.list_foundation_models` call, 5-second connect timeout,
+  10-second read timeout, and two standard retries.
+- Discovered models are bounded to 64 and persisted only as non-routable
+  `unsupported` records with no price key.
+- Added safe `BedrockConnectionFailure` categories. Original botocore details,
+  including provider bodies, request IDs, ARNs, account IDs, and credentials,
+  are suppressed.
+- `ModelProviderService` now dispatches Bedrock connection tests through that
+  control plane using the persisted one-secret credential JSON bundle. A
+  successful list is `connected` and `unmanaged`; auth/access/configuration
+  failures are `invalid`; timeout/throttling/provider availability is
+  `degraded`. No runtime routing, APIM, pricing, or FinOps invocation metrics
+  were added.
+
+### TDD and verification
+
+- RED: `python -m pytest tests/test_aws_bedrock_provider.py -q` initially
+  failed because the missing adapter types could not be imported. It then
+  exposed the test double's mismatch with boto3's positional service-name
+  argument; the double was corrected to mirror the real client factory.
+- Dependency resolution verified official PyPI wheels:
+  `boto3==1.43.51`, `botocore==1.43.51`, `jmespath==1.0.1`, and
+  `s3transfer==0.19.0`. Local check: `boto3=1.43.51 botocore=1.43.51`.
+- GREEN: `python -m pytest tests/test_aws_bedrock_provider.py tests/test_model_provider_api.py -q`
+  returned `14 passed in 6.09s`.
+- Self-review: `git diff --check` was clean before staging. The adapter is
+  control-plane-only and its tests assert the raw provider marker does not
+  appear in the public exception.
+
+### Scoped files and concern
+
+- `backend/aws_bedrock_provider.py`
+- `backend/model_provider_service.py`
+- `tests/test_aws_bedrock_provider.py`
+- `tests/test_model_provider_api.py`
+- This appended report section
+
+No remaining task-specific concerns. Existing unrelated worktree artifacts
+were neither changed nor staged.

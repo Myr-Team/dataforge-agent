@@ -218,6 +218,17 @@ def effective_invitation_state(meta: Mapping[str, Any], invitation_id: str) -> s
     return str(event.get("state")) if event else None
 
 
+def accepted_invitation_identity(
+    meta: Mapping[str, Any], workspace_id: str, invitation_id: str
+) -> dict[str, str]:
+    """Return an accepted identity only after canonical journal validation."""
+    value = _read(workspace_id, meta)
+    event = _latest_events(value).get(_clean(invitation_id))
+    if event is None or event.get("state") != "accepted":
+        return {}
+    return _identity_fields(event.get("accepted_identity"))
+
+
 def list_invitation_history(
     meta: Mapping[str, Any],
     workspace_id: str,

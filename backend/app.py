@@ -16,6 +16,8 @@ from fastapi import Form
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi import UploadFile
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
@@ -46,8 +48,11 @@ try:
     from .dependency_health import health_dependencies, health_dependency_details
     from .identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
     from .finops.router import router as finops_router
+    from .finops.member_budget_router import router as member_budget_router
     from .finops.sql_repository import FinOpsPersistenceError
     from .lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
+    from .model_provider_router import router as model_provider_router
+    from .entra_group_router import router as entra_group_router
     from .observability import observability_snapshot
     from .orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from .rag import search
@@ -100,8 +105,11 @@ except ImportError:
     from dependency_health import health_dependencies, health_dependency_details
     from identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
     from finops.router import router as finops_router
+    from finops.member_budget_router import router as member_budget_router
     from finops.sql_repository import FinOpsPersistenceError
     from lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
+    from model_provider_router import router as model_provider_router
+    from entra_group_router import router as entra_group_router
     from observability import observability_snapshot
     from orchestrator import extract_plan_metrics, generate_data_overview, generate_playbook_detail, orchestrate_chat, produce_from_existing_report
     from rag import search
@@ -147,6 +155,19 @@ except ImportError:
 app = FastAPI(title="DataForge Tool Backend", version="0.10.0")
 
 
+@app.exception_handler(RequestValidationError)
+async def model_provider_validation_error_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    if request.url.path.startswith("/api/model-providers"):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "invalid_model_provider_request"},
+        )
+    return await request_validation_exception_handler(request, exc)
+
+
 @app.exception_handler(FinOpsPersistenceError)
 async def finops_persistence_error_handler(
     _request: Request,
@@ -165,6 +186,9 @@ app.add_middleware(
 app.include_router(data_workbench_router)
 app.include_router(control_plane_router)
 app.include_router(finops_router)
+app.include_router(member_budget_router)
+app.include_router(model_provider_router)
+app.include_router(entra_group_router)
 
 _LINEAGE_CONNECTION_FACTORY = build_lineage_sql_connection_factory()
 _LINEAGE_REPOSITORY = LineageRepository(connection_factory=_LINEAGE_CONNECTION_FACTORY)

@@ -277,12 +277,20 @@ def _create_maf_chat_client(selected_route: SelectedTextRoute | None = None) -> 
 
     selected = selected_route or current_text_route()
     model = selected.route.deployment
+    external_route = selected.route.provider_type != "azure_foundry"
+    external_routing_enabled = str(
+        os.environ.get("DF_EXTERNAL_PROVIDER_ROUTING_ENABLED") or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if external_route and not external_routing_enabled:
+        raise RuntimeError("external provider routing is disabled")
     gateway_enabled = str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
+    if external_route and not gateway_enabled:
+        raise RuntimeError("external provider routing requires APIM")
     if gateway_enabled:
         gateway_url = str(os.environ.get("DF_APIM_GATEWAY_URL") or "").strip().rstrip("/")
         audience = str(os.environ.get("DF_APIM_AUDIENCE") or "").strip().rstrip("/")
@@ -292,6 +300,9 @@ def _create_maf_chat_client(selected_route: SelectedTextRoute | None = None) -> 
             )
         gateway_headers = gateway_request_headers()
         gateway_headers["x-dataforge-model-route"] = selected.route.route_id
+        gateway_headers["x-dataforge-provider-type"] = selected.route.provider_type
+        if selected.route.provider_id:
+            gateway_headers["x-dataforge-provider"] = selected.route.provider_id
         return OpenAIChatClient(
             model=model,
             credential=get_bearer_token_provider(

@@ -40,6 +40,26 @@ export function formatRelativeUpdateTime(value, now = Date.now()) {
   return `${Math.max(1, Math.floor(ageMs / 60_000))} 分钟前更新`;
 }
 
+export function gatewayUnmatchedEvidence(trust = {}) {
+  const apim = (trust && typeof trust === "object" && trust.apim) || {};
+  const gateway = apim.gateway_unmatched;
+  if (!gateway || typeof gateway !== "object") return null;
+  const errors = gateway.unmatched_gateway_errors || {};
+  const linked = Number(gateway.linked_requests);
+  return {
+    scope: gateway.scope || "unattributed",
+    linkedRequests: Number.isFinite(linked)
+      ? linked
+      : Number(apim.apim_governed_requests || 0),
+    unmatchedTotal: Number(errors.total || 0),
+    clientErrors: Number(errors.client_error_4xx || 0),
+    serverErrors: Number(errors.server_error_5xx || 0),
+    updatedAt: gateway.updated_at || null,
+    dataSource: gateway.data_source || "",
+    note: gateway.note || "",
+  };
+}
+
 export function finopsBootstrapViewData(payload = {}) {
   return {
     overview: payload.overview || {},

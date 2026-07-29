@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+from backend.finops.gateway_unmatched import InMemoryGatewayUnmatchedRepository
 from backend.finops.models import FinOpsRequestEvent, TokenUsage
 from backend.finops.query import FinOpsQuery, FinOpsQueryService
 from backend.finops.repository import InMemoryFinOpsRepository
@@ -179,6 +180,59 @@ def test_overview_exposes_recorded_token_and_cache_composition() -> None:
     }
 
 
+def test_overview_separates_result_cache_requests_from_provider_cache_tokens() -> None:
+    raw_events = []
+    for request_ref, result_cache, provider_cache in (
+        (
+            "req_aaaaaaaaaaaa",
+            {"state": "hit", "eligible": True, "reason": "eligible", "policy_revision": 2},
+            {
+                "state": "partial_hit",
+                "hit_tokens": 80,
+                "miss_tokens": 20,
+                "hit_rate_pct": 80,
+                "evidence_state": "observed",
+            },
+        ),
+        (
+            "req_bbbbbbbbbbbb",
+            {"state": "miss", "eligible": True, "reason": "eligible", "policy_revision": 2},
+            {
+                "state": "miss",
+                "hit_tokens": 0,
+                "miss_tokens": 100,
+                "hit_rate_pct": 0,
+                "evidence_state": "observed",
+            },
+        ),
+    ):
+        payload = _event(request_ref).model_dump(mode="python")
+        payload["result_cache"] = result_cache
+        payload["cache"] = {"state": result_cache["state"], "eligible": True}
+        payload["provider_cache"] = provider_cache
+        raw_events.append(FinOpsRequestEvent.model_validate(payload))
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events(raw_events)
+
+    response = FinOpsQueryService(repository).overview(
+        FinOpsQuery(
+            tenant_ref="tenant-a",
+            authorized_workspace_ids=("ws-a",),
+            from_value="2026-07-01T00:00:00Z",
+            to_value="2026-07-25T00:00:00Z",
+        )
+    )
+
+    assert response["metrics"]["result_cache"]["hit_rate_pct"] == 50
+    assert response["metrics"]["provider_cache"] == {
+        "known_requests": 2,
+        "hit_tokens": 80,
+        "miss_tokens": 120,
+        "hit_rate_pct": 40.0,
+        "data_status": "available",
+    }
+
+
 def test_bootstrap_reuses_query_metrics_and_bounds_department_summary() -> None:
     repository = InMemoryFinOpsRepository()
     repository.upsert_events(
@@ -290,3 +344,121 @@ def test_trends_selects_metric_and_preserves_exact_value() -> None:
     assert cost["metric"] == "estimated_cost"
     assert cost["unit"] == "USD"
     assert cost["items"][0]["value"] == 0.01
+
+
+def test_overview_pipes_unattributed_gateway_evidence_into_apim_trust() -> None:
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events(
+        [
+            _event("req_aaaaaaaaaaaa", total=100, cost=0.01).model_copy(
+                update={"gateway_coverage": "apim_governed"}
+            )
+        ]
+    )
+    gateway = InMemoryGatewayUnmatchedRepository()
+    gateway.record_gateway_errors(
+        [
+            {"occurred_at": "2026-07-24T02:10:00Z", "status_code": 401},
+            {"occurred_at": "2026-07-24T02:20:00Z", "status_code": 503},
+        ]
+    )
+    service = FinOpsQueryService(repository, gateway_unmatched_repository=gateway)
+    query = FinOpsQuery(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    apim = service.overview(query)["trust"]["apim"]
+
+    assert apim["unmatched_metric_records"] == 2
+    assert apim["gateway_unmatched"]["scope"] == "unattributed"
+    assert apim["gateway_unmatched"]["unmatched_gateway_errors"] == {
+        "total": 2,
+        "client_error_4xx": 1,
+        "server_error_5xx": 1,
+    }
+    assert apim["gateway_unmatched"]["linked_requests"] == 1
+
+
+def test_gateway_evidence_is_system_scoped_and_identical_across_tenants() -> None:
+    gateway = InMemoryGatewayUnmatchedRepository()
+    gateway.record_gateway_errors(
+        [{"occurred_at": "2026-07-24T02:10:00Z", "status_code": 500}]
+    )
+
+    def apim_for(tenant: str) -> dict:
+        repository = InMemoryFinOpsRepository()
+        repository.upsert_events([_event("req_aaaaaaaaaaaa", tenant=tenant)])
+        service = FinOpsQueryService(
+            repository, gateway_unmatched_repository=gateway
+        )
+        query = FinOpsQuery(
+            tenant_ref=tenant,
+            authorized_workspace_ids=("ws-a",),
+            from_value="2026-07-01T00:00:00Z",
+            to_value="2026-07-25T00:00:00Z",
+        )
+        return service.overview(query)["trust"]["apim"]
+
+    tenant_a = apim_for("tenant-a")
+    tenant_b = apim_for("tenant-b")
+
+    # Unattributed system evidence is never presented as one tenant's own data;
+    # it is identical and explicitly scope-labelled for every tenant.
+    assert tenant_a["gateway_unmatched"]["scope"] == "unattributed"
+    assert (
+        tenant_a["gateway_unmatched"]["unmatched_gateway_errors"]
+        == tenant_b["gateway_unmatched"]["unmatched_gateway_errors"]
+    )
+
+
+def test_trends_reports_observed_zero_as_zero_not_null() -> None:
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events([_event("req_aaaaaaaaaaaa", total=0, cost=0.0)])
+    service = FinOpsQueryService(repository)
+    query = FinOpsQuery(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    tokens = service.trends(query, "day", metric="tokens")
+    cost = service.trends(query, "day", metric="estimated_cost")
+
+    # A genuine observed zero must not collapse into a missing/null gap.
+    assert tokens["items"][0]["value"] == 0
+    assert tokens["items"][0]["tokens"]["total"] == 0
+    assert tokens["items"][0]["data_status"] == "available"
+    assert cost["items"][0]["value"] == 0.0
+    assert cost["items"][0]["data_status"] == "available"
+
+
+def test_trends_data_status_is_scoped_to_selected_metric() -> None:
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events(
+        [
+            _event("req_aaaaaaaaaaaa", total=100, cost=0.01),
+            _event("req_bbbbbbbbbbbb", total=None, cost=None),
+        ]
+    )
+    service = FinOpsQueryService(repository)
+    query = FinOpsQuery(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    requests = service.trends(query, "day", metric="requests")
+    tokens = service.trends(query, "day", metric="tokens")
+    cost = service.trends(query, "day", metric="estimated_cost")
+
+    # Request counts are always exact regardless of token/cost gaps.
+    assert requests["items"][0]["data_status"] == "available"
+    assert requests["items"][0]["value"] == 2
+    # Tokens and cost are only partially observed in this bucket.
+    assert tokens["items"][0]["data_status"] == "partial"
+    assert cost["items"][0]["data_status"] == "partial"

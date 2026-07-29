@@ -28,7 +28,7 @@ except ImportError:
     from workspace_authz import active_workspace_role
     from workspace_store import list_workspaces
 
-from .normalization import opaque_ref
+from .normalization import canonical_actor_ref, canonical_tenant_ref
 from .evidence import build_evidence_alias, operation_code_for_event
 from .evidence_repository import (
     InMemoryEvidenceAliasRepository,
@@ -39,6 +39,7 @@ from .agent_inputs import build_finops_agent_input, build_roi_agent_input
 from .analysis_agents import FinOpsAnalysisAgent
 from .assistant import AssistantRequest, AssistantTurn, FinOpsAssistantService
 from .assistant_store import (
+    AssistantConversationExpired,
     AssistantMessage,
     AssistantScope,
     InMemoryAssistantConversationStore,
@@ -70,13 +71,17 @@ from .executors import (
 )
 from .management import FinOpsManagementService, InMemoryManagementRepository
 from .price_card_client import ManagementPriceCardClient, price_card_version
-from .official_pricing import load_official_price_catalog
+from .official_pricing import (
+    load_official_price_catalog,
+    official_price_supports_call_classes,
+)
 from .sql_pricing import (
     DeploymentPriceMapping,
     InMemoryPriceMappingRepository,
     PriceMappingConflict,
     SqlPriceMappingRepository,
 )
+from .gateway_unmatched import SqlGatewayUnmatchedRepository
 from .query import FinOpsQuery, FinOpsQueryService
 from .models import FinOpsRequestEvent
 from .query_cache import CachedFinOpsQueryService
@@ -138,6 +143,7 @@ _SAVED_VIEW_REPOSITORY = InMemorySavedViewRepository()
 _SQL_PLANNING_REPOSITORY: SqlFinOpsPlanningRepository | None = None
 _PRICE_MAPPING_REPOSITORY = InMemoryPriceMappingRepository()
 _SQL_PRICE_MAPPING_REPOSITORY: SqlPriceMappingRepository | None = None
+_SQL_GATEWAY_UNMATCHED_REPOSITORY: SqlGatewayUnmatchedRepository | None = None
 _ASSISTANT_STORE = InMemoryAssistantConversationStore()
 _SQL_ASSISTANT_STORE: SqlAssistantConversationStore | None = None
 
@@ -178,11 +184,19 @@ def get_finops_query_service() -> Any:
     if not secret:
         raise RuntimeError("FinOps HMAC is unavailable")
     if _enabled("DF_FINOPS_SQL_ENABLED"):
+        global _SQL_GATEWAY_UNMATCHED_REPOSITORY
         if _SQL_REPOSITORY is None:
             _SQL_REPOSITORY = SqlFinOpsRepository(
                 connection_factory=build_lineage_sql_connection_factory()
             )
-        delegate = FinOpsQueryService(_SQL_REPOSITORY)
+        if _SQL_GATEWAY_UNMATCHED_REPOSITORY is None:
+            _SQL_GATEWAY_UNMATCHED_REPOSITORY = SqlGatewayUnmatchedRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        delegate = FinOpsQueryService(
+            _SQL_REPOSITORY,
+            gateway_unmatched_repository=_SQL_GATEWAY_UNMATCHED_REPOSITORY,
+        )
     else:
         delegate = FinOpsQueryService(
             RunStoreFinOpsRepository(
@@ -415,7 +429,7 @@ def _tenant_ref(actor: Mapping[str, Any]) -> str:
     secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
     if not tenant_id or not secret:
         raise RuntimeError("FinOps tenant scope is unavailable")
-    return opaque_ref("tenant", tenant_id, secret=secret)
+    return canonical_tenant_ref(tenant_id, secret=secret)
 
 
 def _actor_ref(actor: Mapping[str, Any]) -> str:
@@ -424,7 +438,7 @@ def _actor_ref(actor: Mapping[str, Any]) -> str:
     secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
     if not actor_id or not tenant_id or not secret:
         raise RuntimeError("FinOps actor scope is unavailable")
-    return opaque_ref("actor", tenant_id, actor_id, secret=secret)
+    return canonical_actor_ref(tenant_id, actor_id, secret=secret)
 
 
 def _authorized_workspace_roles(actor: Mapping[str, Any]) -> dict[str, str]:
@@ -539,6 +553,19 @@ def _common(
         cursor=cursor,
         limit=limit,
     )
+
+
+def _redact_unattributed_gateway_evidence(payload: dict[str, Any]) -> None:
+    """Hide the Owner-only unattributed gateway evidence from lower roles.
+
+    Members must never see the system-scoped aggregate, so both the labelled
+    block and the piped ``unmatched_metric_records`` counter are removed.
+    """
+    trust = payload.get("trust") if isinstance(payload, dict) else None
+    apim = trust.get("apim") if isinstance(trust, dict) else None
+    if isinstance(apim, dict):
+        apim.pop("gateway_unmatched", None)
+        apim["unmatched_metric_records"] = None
 
 
 @router.get("/bootstrap")
@@ -810,18 +837,24 @@ async def assistant_query(
                 ]
             }
         )
-        store.append(
-            scope,
-            conversation_ref,
-            AssistantMessage(
-                role="user",
-                content=body.question,
-                metric_context_payload=body.metric_context.model_dump(
-                    mode="json",
-                    by_alias=True,
+        try:
+            store.append(
+                scope,
+                conversation_ref,
+                AssistantMessage(
+                    role="user",
+                    content=body.question,
+                    metric_context_payload=body.metric_context.model_dump(
+                        mode="json",
+                        by_alias=True,
+                    ),
                 ),
-            ),
-        )
+            )
+        except AssistantConversationExpired as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Operations AI conversation expired",
+            ) from exc
     evidence_payload = build_finops_agent_input(
         query,
         query_service,
@@ -832,14 +865,17 @@ async def assistant_query(
         evidence_payload=evidence_payload,
     )
     if store is not None and conversation_ref:
-        store.append(
-            scope,
-            conversation_ref,
-            AssistantMessage(
-                role="assistant",
-                content=response.answer,
-            ),
-        )
+        try:
+            store.append(
+                scope,
+                conversation_ref,
+                AssistantMessage(
+                    role="assistant",
+                    content=response.answer,
+                ),
+            )
+        except AssistantConversationExpired:
+            pass
     return {
         **response.model_dump(mode="json"),
         "conversation_ref": conversation_ref,
@@ -1101,8 +1137,11 @@ async def overview(
     actor_ref: str | None = Query(default=None, max_length=128),
     model: str | None = Query(default=None, max_length=160),
 ) -> dict[str, Any]:
-    service, query, _ = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
-    return service.overview(query)
+    service, query, roles = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
+    payload = service.overview(query)
+    if not all(role in {"owner", "admin"} for role in roles.values()):
+        _redact_unattributed_gateway_evidence(payload)
+    return payload
 
 
 @router.get("/breakdowns")
@@ -1722,6 +1761,24 @@ def _require_admin_scope(
         raise HTTPException(status_code=403, detail="workspace access denied for finops.write")
 
 
+def _require_tenant_owner(roles: Mapping[str, str]) -> None:
+    """Tenant-level pricing writes require Owner across every authorized workspace."""
+    if not roles or not all(role == "owner" for role in roles.values()):
+        raise HTTPException(
+            status_code=403,
+            detail="official price mapping requires owner",
+        )
+
+
+def _require_tenant_admin(roles: Mapping[str, str]) -> None:
+    """Tenant-level policy writes require Owner/Admin across every workspace."""
+    if not roles or not all(role in {"owner", "admin"} for role in roles.values()):
+        raise HTTPException(
+            status_code=403,
+            detail="FinOps policy management requires admin or owner across all workspaces",
+        )
+
+
 def _action_response(action: Any) -> dict[str, Any]:
     return {
         "action": action.model_dump(mode="json"),
@@ -1998,6 +2055,34 @@ async def assign_workspace_department(workspace_id: str, body: dict[str, Any], r
     return {"assignment": assignment}
 
 
+def _observed_deployment_call_classes(
+    tenant_ref: str,
+    authorized_workspace_ids: tuple[str, ...],
+    deployment: str,
+) -> set[str]:
+    """Collect the call classes observed for a deployment in the ledger.
+
+    Used to validate that an official (text-model) price entry is compatible
+    with the deployment before an Owner maps it. Failures are treated as no
+    observation so a new, unobserved deployment can still be pre-mapped.
+    """
+    if not authorized_workspace_ids:
+        return set()
+    try:
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        query = FinOpsQuery(
+            tenant_ref=tenant_ref,
+            authorized_workspace_ids=authorized_workspace_ids,
+            from_value=_iso(now - timedelta(days=90)),
+            to_value=_iso(now),
+            model=deployment,
+        )
+        events = get_finops_query_service().events(query)
+    except Exception:
+        return set()
+    return {event.call_class for event in events}
+
+
 @router.get("/pricing/catalog")
 async def official_pricing_catalog(request: Request) -> dict[str, Any]:
     _pricing_read_context(request)
@@ -2030,16 +2115,21 @@ async def update_official_pricing_mapping(
     request: Request,
 ) -> dict[str, Any]:
     tenant_ref, actor_ref, roles = _pricing_read_context(request)
-    if not any(role == "owner" for role in roles.values()):
-        raise HTTPException(
-            status_code=403,
-            detail="official price mapping requires owner",
-        )
+    _require_tenant_owner(roles)
     catalog = load_official_price_catalog()
-    if catalog.get(body.official_price_key) is None:
+    price = catalog.get(body.official_price_key)
+    if price is None:
         raise HTTPException(
             status_code=422,
             detail="official price key is not in the server catalog",
+        )
+    if not official_price_supports_call_classes(
+        price,
+        _observed_deployment_call_classes(tenant_ref, tuple(sorted(roles)), deployment),
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="deployment usage is not compatible with the official price entry",
         )
     mapping = DeploymentPriceMapping(
         tenant_ref=tenant_ref,
@@ -2056,6 +2146,22 @@ async def update_official_pricing_mapping(
     except PriceMappingConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"mapping": saved.model_dump(mode="json")}
+
+
+@router.delete("/pricing/mappings/{deployment}", status_code=204)
+async def delete_official_pricing_mapping(
+    deployment: str,
+    request: Request,
+) -> Response:
+    tenant_ref, _, roles = _pricing_read_context(request)
+    _require_tenant_owner(roles)
+    deleted = get_finops_price_mapping_repository().delete(tenant_ref, deployment)
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail="official price mapping not found",
+        )
+    return Response(status_code=204)
 
 
 @router.get("/price-cards")
@@ -2119,7 +2225,8 @@ async def list_policies(request: Request) -> dict[str, Any]:
 
 @router.post("/policies", status_code=201)
 async def create_policy(body: dict[str, Any], request: Request) -> dict[str, Any]:
-    tenant_ref, actor_ref, _ = _write_context(request)
+    tenant_ref, actor_ref, roles = _write_context(request)
+    _require_tenant_admin(roles)
     raw = body if isinstance(body, dict) else {}
     configuration = raw.get("configuration") if isinstance(raw.get("configuration"), dict) else {}
     try:
@@ -2136,7 +2243,8 @@ async def create_policy(body: dict[str, Any], request: Request) -> dict[str, Any
 
 @router.patch("/policies/{policy_id}")
 async def update_policy(policy_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
-    tenant_ref, actor_ref, _ = _write_context(request)
+    tenant_ref, actor_ref, roles = _write_context(request)
+    _require_tenant_admin(roles)
     raw = body if isinstance(body, dict) else {}
     configuration = raw.get("configuration") if isinstance(raw.get("configuration"), dict) else {}
     try:
@@ -2155,7 +2263,8 @@ async def update_policy(policy_id: str, body: dict[str, Any], request: Request) 
 
 @router.delete("/policies/{policy_id}")
 async def disable_policy(policy_id: str, request: Request) -> dict[str, Any]:
-    tenant_ref, actor_ref, _ = _write_context(request)
+    tenant_ref, actor_ref, roles = _write_context(request)
+    _require_tenant_admin(roles)
     service = get_finops_management_service()
     current = next(
         (

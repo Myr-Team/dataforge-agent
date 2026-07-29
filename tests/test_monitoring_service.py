@@ -85,12 +85,15 @@ def test_governance_summary_exposes_truthful_monitoring_snapshot(monkeypatch) ->
             "state": "available",
             "default_route": "default",
             "routes": [
-                {
-                    "id": "default",
-                    "deployment": "gpt-5.1",
-                    "label": "gpt-5.1",
-                    "capabilities": ["analysis", "chat", "research"],
-                }
+                    {
+                        "id": "default",
+                        "deployment": "gpt-5.1",
+                        "model_id": "gpt-5.1",
+                        "provider_id": None,
+                        "provider_type": "azure_foundry",
+                        "label": "gpt-5.1",
+                        "capabilities": ["analysis", "chat", "research"],
+                    }
             ],
         },
     }

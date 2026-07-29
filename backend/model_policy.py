@@ -18,7 +18,10 @@ except ImportError:
 
 
 _ROUTE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_PROVIDER_ID = re.compile(r"^[a-z][a-z0-9-]{0,79}$")
 _DEPLOYMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_PROVIDER_TYPES = frozenset({"azure_foundry", "deepseek"})
+_DEEPSEEK_MODELS = frozenset({"deepseek-v4-flash", "deepseek-v4-pro"})
 _EXECUTION_KIND_CAPABILITY = {
     "full_analysis": "analysis",
     "audit_repair": "analysis",
@@ -45,6 +48,12 @@ class ModelRoute:
     deployment: str
     label: str
     capabilities: frozenset[str]
+    provider_id: str | None = None
+    provider_type: str = "azure_foundry"
+    model_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "model_id", self.model_id or self.deployment)
 
 
 @dataclass(frozen=True)
@@ -83,7 +92,10 @@ def list_allowed_model_routes() -> list[ModelRoute]:
         if not isinstance(item, dict):
             raise ModelPolicyError("Model route entries must be objects")
         route_id = str(item.get("id") or "").strip().lower()
-        deployment = str(item.get("deployment") or "").strip()
+        provider_type = str(item.get("provider_type") or "azure_foundry").strip().lower()
+        provider_id = str(item.get("provider_id") or "").strip().lower() or None
+        model_id = str(item.get("model_id") or item.get("deployment") or "").strip()
+        deployment = str(item.get("deployment") or model_id).strip()
         label = str(item.get("label") or deployment).strip()
         capabilities = frozenset(str(value).strip().lower() for value in item.get("capabilities", []) if str(value).strip())
         if not _ROUTE_ID.fullmatch(route_id) or route_id in seen:
@@ -92,14 +104,44 @@ def list_allowed_model_routes() -> list[ModelRoute]:
             raise ModelPolicyError("Model route deployment is invalid")
         if not label or len(label) > 100 or not capabilities:
             raise ModelPolicyError("Model route label or capabilities are invalid")
+        if provider_type not in _PROVIDER_TYPES:
+            raise ModelPolicyError("Model route provider type is invalid")
+        if not isinstance(item.get("enabled", True), bool) or item.get("enabled", True) is not True:
+            raise ModelPolicyError("Model route provider is disabled")
+        if provider_type == "azure_foundry":
+            if provider_id is not None:
+                raise ModelPolicyError("Azure Foundry route must not declare provider id")
+        else:
+            if provider_id is None or not _PROVIDER_ID.fullmatch(provider_id):
+                raise ModelPolicyError("External model route provider id is invalid")
+            if model_id not in _DEEPSEEK_MODELS:
+                raise ModelPolicyError("External model route model is unsupported")
+            if str(item.get("connection_state") or "").strip().lower() != "connected":
+                raise ModelPolicyError("External model route provider is not connected")
+            if str(item.get("governance_state") or "").strip().lower() != "governed":
+                raise ModelPolicyError("External model route provider is not governed")
         seen.add(route_id)
-        routes.append(ModelRoute(route_id, deployment, label, capabilities))
+        routes.append(
+            ModelRoute(
+                route_id,
+                deployment,
+                label,
+                capabilities,
+                provider_id=provider_id,
+                provider_type=provider_type,
+                model_id=model_id,
+            )
+        )
     return routes
 
 
 def resolve_text_route(*, capability: str = "chat") -> ModelRoute:
     required = str(capability or "chat").strip().lower()
-    routes = [route for route in list_allowed_model_routes() if required in route.capabilities]
+    routes = [
+        route
+        for route in list_allowed_model_routes()
+        if required in route.capabilities and _runtime_route_enabled(route)
+    ]
     if not routes:
         raise ModelPolicyError(f"No allowlisted route supports {required}")
     configured = str(os.environ.get("DF_DEFAULT_MODEL_ROUTE") or "").strip().lower()
@@ -117,7 +159,11 @@ def resolve_text_deployment(*, capability: str = "chat") -> str:
 
 def _routes_for_capability(capability: str) -> list[ModelRoute]:
     required = str(capability or "chat").strip().lower()
-    return [route for route in list_allowed_model_routes() if required in route.capabilities]
+    return [
+        route
+        for route in list_allowed_model_routes()
+        if required in route.capabilities and _runtime_route_enabled(route)
+    ]
 
 
 def _pick_route(
@@ -147,7 +193,11 @@ def _pick_route(
 def _allowlisted_route(route_id: str, *, capability: str) -> ModelRoute | None:
     normalized = str(route_id or "").strip().lower()
     for route in list_allowed_model_routes():
-        if route.route_id == normalized and str(capability or "").strip().lower() in route.capabilities:
+        if (
+            route.route_id == normalized
+            and str(capability or "").strip().lower() in route.capabilities
+            and _runtime_route_enabled(route)
+        ):
             return route
     return None
 
@@ -400,12 +450,26 @@ def public_model_route_snapshot() -> dict[str, object]:
             {
                 "id": route.route_id,
                 "deployment": route.deployment,
+                "model_id": route.model_id,
+                "provider_id": route.provider_id,
+                "provider_type": route.provider_type,
                 "label": route.label,
                 "capabilities": sorted(route.capabilities),
             }
             for route in routes
         ],
     }
+
+
+def _environment_flag(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _runtime_route_enabled(route: ModelRoute) -> bool:
+    return (
+        route.provider_type == "azure_foundry"
+        or _environment_flag("DF_EXTERNAL_PROVIDER_ROUTING_ENABLED")
+    )
 
 
 def context_optimization_gate(route_id: str = "followup") -> dict[str, object]:

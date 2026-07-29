@@ -34,7 +34,7 @@ try:
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
     from .foundry_roi import public_foundry_integration
     from .identity import actor_from_request, canonical_actor_identity, default_actor, email_domain, is_trusted_tenant_identity, member_from_actor, normalized_email_domains, public_actor
-    from .invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from .invitation_store import InvitationPersistenceError, accept_provider_invitation, accepted_invitation_identity, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from .model_policy import list_allowed_model_routes, public_model_route_snapshot
     from .monitoring_dashboard import build_monitor_dashboard
     from .monitoring_service import build_monitoring_snapshot
@@ -62,7 +62,7 @@ except ImportError:
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
     from foundry_roi import public_foundry_integration
     from identity import actor_from_request, canonical_actor_identity, default_actor, email_domain, is_trusted_tenant_identity, member_from_actor, normalized_email_domains, public_actor
-    from invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from invitation_store import InvitationPersistenceError, accept_provider_invitation, accepted_invitation_identity, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from model_policy import list_allowed_model_routes, public_model_route_snapshot
     from monitoring_dashboard import build_monitor_dashboard
     from monitoring_service import build_monitoring_snapshot
@@ -1269,9 +1269,11 @@ def update_workspace_model_routing(
     _require_workspace_owner(workspace_id, request, "model_routing.write")
     meta = _load_workspace_meta(workspace_id)
     existing_policy, price_card = public_workspace_model_config(meta)
+    raw_body = body if isinstance(body, dict) else {}
+    _require_matching_config_revision(existing_policy, raw_body, "model routing policy")
     routes = _available_model_routes()
     policy = validate_workspace_routing_policy(
-        body if isinstance(body, dict) else {},
+        {key: value for key, value in raw_body.items() if key != "base_revision"},
         routes,
         revision=_next_model_config_revision(existing_policy),
         updated_at=_model_config_timestamp(),
@@ -1305,8 +1307,10 @@ def update_workspace_model_price_card(
     _require_workspace_owner(workspace_id, request, "model_price_card.write")
     meta = _load_workspace_meta(workspace_id)
     existing_policy, existing_price_card = public_workspace_model_config(meta)
+    raw_body = body if isinstance(body, dict) else {}
+    _require_matching_config_revision(existing_price_card, raw_body, "model price card")
     price_card = normalize_workspace_price_card(
-        body if isinstance(body, dict) else {},
+        {key: value for key, value in raw_body.items() if key != "base_revision"},
         _available_model_routes(),
         revision=_next_model_config_revision(existing_price_card),
         updated_at=_model_config_timestamp(),
@@ -1343,9 +1347,38 @@ def _available_model_routes() -> list[Any]:
     return list_allowed_model_routes()
 
 
-def _next_model_config_revision(config: dict[str, Any]) -> int:
+def _current_model_config_revision(config: dict[str, Any]) -> int:
     value = config.get("revision") if isinstance(config, dict) else 0
-    return int(value) + 1 if isinstance(value, int) and value >= 0 else 1
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _next_model_config_revision(config: dict[str, Any]) -> int:
+    return _current_model_config_revision(config) + 1
+
+
+def _require_matching_config_revision(
+    existing: dict[str, Any],
+    body: dict[str, Any],
+    label: str,
+) -> None:
+    """Enforce optimistic concurrency so stale writers cannot clobber updates."""
+    current = _current_model_config_revision(existing)
+    raw = body.get("base_revision") if isinstance(body, dict) else None
+    if raw is None:
+        # Backward compatible: only safe to omit before any revision exists.
+        if current == 0:
+            return
+        raise HTTPException(
+            status_code=409,
+            detail=f"{label} revision conflict: expected base_revision {current}",
+        )
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise ValueError(f"{label} base_revision is invalid")
+    if raw != current:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{label} revision conflict: expected base_revision {current}",
+        )
 
 
 def _public_price_card_state(price_card: dict[str, Any]) -> dict[str, Any]:
@@ -2775,6 +2808,75 @@ def _workspace_members_by_key(workspace_id: str) -> dict[str, dict[str, Any]]:
         if key and key not in members:
             members[key] = member
     return members
+
+
+def workspace_finops_member_identities(workspace_id: str) -> list[dict[str, str]]:
+    """Internal-only trusted identities; never return directly from an API."""
+    try:
+        meta = _load_workspace_meta(workspace_id)
+    except FileNotFoundError:
+        return []
+    accepted_by_invitation = _accepted_invitation_identities(meta, workspace_id)
+    result: list[dict[str, str]] = []
+    for member in _workspace_members_by_key(workspace_id).values():
+        member = _trusted_finops_member(member, accepted_by_invitation)
+        actor_id = _clean_text(member.get("actor_id"))
+        tenant_id = _clean_text(member.get("tenant_id"))
+        if not actor_id or not tenant_id or not is_trusted_tenant_identity(member):
+            continue
+        result.append(
+            {
+                "actor_id": actor_id,
+                "tenant_id": tenant_id,
+                "name": _clean_text(member.get("user") or member.get("name")),
+                "email": _member_email(member.get("email")) or "",
+                "role": _clean_text(member.get("role") or "viewer").lower(),
+                "status": _clean_text(member.get("status") or "active").lower(),
+            }
+        )
+    return result
+
+
+def _accepted_invitation_identities(
+    meta: dict[str, Any], workspace_id: str
+) -> dict[str, dict[str, str]]:
+    """Resolve accepted identities through the validated canonical journal only."""
+    invitation_ids = {
+        _clean_text(member.get("invitation_id"))
+        for member in meta.get("workspace_members") or []
+        if isinstance(member, dict) and _clean_text(member.get("invitation_id"))
+    }
+    try:
+        return {
+            invitation_id: identity
+            for invitation_id in invitation_ids
+            if (identity := accepted_invitation_identity(meta, workspace_id, invitation_id))
+        }
+    except InvitationPersistenceError:
+        return {}
+
+
+def _trusted_finops_member(
+    member: dict[str, Any], accepted_by_invitation: dict[str, dict[str, str]]
+) -> dict[str, Any]:
+    if is_trusted_tenant_identity(member):
+        return member
+    invitation_id = _clean_text(member.get("invitation_id"))
+    accepted = accepted_by_invitation.get(invitation_id)
+    if accepted is None:
+        return member
+    if (
+        _clean_text(member.get("actor_id")) != accepted["actor_id"]
+        or _clean_text(member.get("tenant_id")) != accepted["tenant_id"]
+    ):
+        return member
+    return {
+        **member,
+        "name": "",
+        "user": "",
+        "email": "",
+        "source": "easy_auth",
+    }
 
 
 def _public_actor_reference(

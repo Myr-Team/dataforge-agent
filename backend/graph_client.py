@@ -13,6 +13,7 @@ TOKEN_HEADER_CANDIDATES = (
     "x-ms-token-aad-access-token",
     "x-ms-token-aad-id-token",
 )
+DELEGATED_ACCESS_TOKEN_HEADER = "x-ms-token-aad-access-token"
 
 _APP_TOKEN_CACHE: dict[str, Any] = {"token": "", "expires_at": 0.0}
 
@@ -53,6 +54,102 @@ def graph_token_context(request: Any | None = None) -> dict[str, str]:
         tenant = str(os.environ.get("GRAPH_TENANT_ID") or os.environ.get("AZURE_TENANT_ID") or "").strip()
         return {"source": "app_only", "resource_tenant_id": tenant} if tenant else {"source": "app_only"}
     return {"source": "unavailable"}
+
+
+def delegated_graph_token_from_request(request: Any | None = None) -> str:
+    headers = getattr(request, "headers", None)
+    return _header(headers, DELEGATED_ACCESS_TOKEN_HEADER)
+
+
+def list_signed_in_transitive_groups(
+    request: Any | None = None,
+) -> list[dict[str, str]]:
+    """Resolve overage only for the signed-in user through a fixed Graph path."""
+    token = delegated_graph_token_from_request(request)
+    if not token:
+        raise GraphClientError(
+            "graph_delegated_token_missing",
+            "Microsoft Graph delegated token is unavailable.",
+            status=503,
+        )
+    payload = graph_request(
+        "GET",
+        "/me/transitiveMemberOf/microsoft.graph.group",
+        token,
+        params={
+            "$select": "id,displayName",
+            "$top": "999",
+        },
+    )
+    return [
+        {
+            "id": str(item.get("id") or "").strip(),
+            "display_name": str(item.get("displayName") or "").strip(),
+        }
+        for item in payload.get("value") or []
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
+
+
+def search_entra_groups(
+    query: str,
+    request: Any | None = None,
+    *,
+    limit: int = 8,
+) -> dict[str, Any]:
+    token = graph_token_from_request(request)
+    if not token:
+        return {
+            "connected": False,
+            "source": "microsoft_graph",
+            "groups": [],
+            "permission_state": "unavailable",
+        }
+    safe_limit = max(1, min(int(limit or 8), 20))
+    text = str(query or "").strip()
+    params = {
+        "$select": "id,displayName,mail,securityEnabled,groupTypes",
+        "$top": str(safe_limit),
+    }
+    if text:
+        params["$filter"] = (
+            "startswith(displayName,'"
+            + text.replace("'", "''")
+            + "')"
+        )
+    try:
+        payload = graph_request("GET", "/groups", token, params=params)
+    except GraphClientError as exc:
+        return {
+            "connected": False,
+            "source": "microsoft_graph",
+            "groups": [],
+            "permission_state": (
+                "denied"
+                if exc.code == "graph_permission_denied"
+                else "unavailable"
+            ),
+        }
+    return {
+        "connected": True,
+        "source": "microsoft_graph",
+        "permission_state": "granted",
+        "groups": [
+            {
+                "id": str(item.get("id") or "").strip(),
+                "display_name": str(item.get("displayName") or "").strip(),
+                "mail": str(item.get("mail") or "").strip() or None,
+                "security_enabled": bool(item.get("securityEnabled")),
+                "group_type": (
+                    "microsoft_365"
+                    if "Unified" in (item.get("groupTypes") or [])
+                    else "security"
+                ),
+            }
+            for item in payload.get("value") or []
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        ],
+    }
 
 
 def search_entra_users(query: str, request: Any | None = None, *, limit: int = 8) -> dict[str, Any]:

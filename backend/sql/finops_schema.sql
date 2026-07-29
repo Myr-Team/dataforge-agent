@@ -2,6 +2,7 @@ IF SCHEMA_ID(N'df_finops') IS NULL
 BEGIN
     EXEC(N'CREATE SCHEMA df_finops AUTHORIZATION dbo');
 END;
+GO
 
 IF OBJECT_ID(N'df_finops.request_event', N'U') IS NULL
 BEGIN
@@ -17,6 +18,7 @@ BEGIN
         agent_id NVARCHAR(128) NULL,
         model_deployment NVARCHAR(160) NULL,
         route NVARCHAR(128) NULL,
+        routing_policy_revision INT NULL,
         execution_kind NVARCHAR(64) NULL,
         request_status NVARCHAR(16) NOT NULL,
         error_category NVARCHAR(64) NULL,
@@ -40,6 +42,7 @@ BEGIN
         CONSTRAINT CK_finops_event_json CHECK (ISJSON(event_payload) = 1)
     );
 END;
+GO
 
 IF OBJECT_ID(N'df_finops.request_rollup_hour', N'U') IS NULL
 BEGIN
@@ -107,12 +110,13 @@ BEGIN
         CONSTRAINT CK_finops_department_status CHECK (status IN (N'active', N'archived'))
     );
 END;
+GO
 
 IF COL_LENGTH(N'df_finops.department', N'updated_by') IS NULL
 BEGIN
-    ALTER TABLE df_finops.department
+    EXEC(N'ALTER TABLE df_finops.department
         ADD updated_by NVARCHAR(128) NOT NULL
-            CONSTRAINT DF_finops_department_updated_by DEFAULT N'system';
+            CONSTRAINT DF_finops_department_updated_by DEFAULT N''system''');
 END;
 
 IF OBJECT_ID(N'df_finops.workspace_department', N'U') IS NULL
@@ -417,6 +421,196 @@ BEGIN
     );
 END;
 
+IF OBJECT_ID(N'df_finops.gateway_unmatched_rollup', N'U') IS NULL
+BEGIN
+    -- Additive, aggregate-only evidence for gateway observations that never
+    -- correlate to an application run. It intentionally stores NO correlation
+    -- id, body, identity or error body, and is scoped as unattributed/system
+    -- so it is never presented as a specific tenant's ledger, error rate or cost.
+    CREATE TABLE df_finops.gateway_unmatched_rollup (
+        scope NVARCHAR(24) NOT NULL
+            CONSTRAINT DF_finops_gateway_unmatched_scope DEFAULT N'unattributed',
+        bucket_at DATETIME2(0) NOT NULL,
+        status_class NVARCHAR(24) NOT NULL,
+        request_count BIGINT NOT NULL,
+        data_source NVARCHAR(64) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_gateway_unmatched_updated DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_finops_gateway_unmatched_rollup PRIMARY KEY (
+            scope, bucket_at, status_class
+        ),
+        CONSTRAINT CK_finops_gateway_unmatched_scope CHECK (
+            scope IN (N'unattributed')
+        ),
+        CONSTRAINT CK_finops_gateway_unmatched_class CHECK (
+            status_class IN (N'client_error_4xx', N'server_error_5xx')
+        ),
+        CONSTRAINT CK_finops_gateway_unmatched_count CHECK (request_count >= 0)
+    );
+    CREATE INDEX IX_finops_gateway_unmatched_window
+        ON df_finops.gateway_unmatched_rollup (scope, bucket_at);
+END;
+
+IF OBJECT_ID(N'df_finops.model_provider', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.model_provider (
+        tenant_ref NVARCHAR(160) NOT NULL,
+        provider_id NVARCHAR(80) NOT NULL,
+        provider_type NVARCHAR(40) NOT NULL,
+        display_name NVARCHAR(120) NOT NULL,
+        base_url NVARCHAR(320) NOT NULL,
+        region NVARCHAR(32) NULL,
+        secret_ref NVARCHAR(240) NOT NULL,
+        connection_state NVARCHAR(32) NOT NULL,
+        governance_state NVARCHAR(32) NOT NULL,
+        available_models_json NVARCHAR(MAX) NOT NULL
+            CONSTRAINT DF_finops_model_provider_models DEFAULT N'[]',
+        last_tested_at DATETIME2(7) NULL,
+        last_success_at DATETIME2(7) NULL,
+        safe_error_category NVARCHAR(64) NULL,
+        revision INT NOT NULL,
+        created_by_ref NVARCHAR(160) NOT NULL,
+        updated_by_ref NVARCHAR(160) NOT NULL,
+        created_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_model_provider_created DEFAULT SYSUTCDATETIME(),
+        updated_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_model_provider_updated DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_finops_model_provider PRIMARY KEY (tenant_ref, provider_id),
+        CONSTRAINT CK_finops_model_provider_type CHECK (
+            provider_type IN (N'deepseek', N'aws_bedrock')
+        ),
+        CONSTRAINT CK_finops_model_provider_connection CHECK (
+            connection_state IN (
+                N'testing', N'connected', N'degraded', N'invalid', N'disabled'
+            )
+        ),
+        CONSTRAINT CK_finops_model_provider_governance CHECK (
+            governance_state IN (
+                N'pending', N'governed', N'degraded', N'unmanaged'
+            )
+        ),
+        CONSTRAINT CK_finops_model_provider_models CHECK (
+            ISJSON(available_models_json) = 1
+        ),
+        CONSTRAINT CK_finops_model_provider_revision CHECK (revision >= 1)
+    );
+    CREATE UNIQUE INDEX UQ_finops_model_provider_name
+        ON df_finops.model_provider (tenant_ref, display_name);
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.model_provider', N'region') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.model_provider ADD region NVARCHAR(32) NULL');
+END;
+
+IF EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = N'CK_finops_model_provider_type'
+        AND parent_object_id = OBJECT_ID(N'df_finops.model_provider')
+        AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+            LOWER(definition), N' ', N''), CHAR(9), N''), CHAR(10), N''),
+            CHAR(13), N''), N'[', N''), N']', N'')
+            <> N'(provider_typein(n''deepseek'',n''aws_bedrock''))'
+)
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.model_provider
+        DROP CONSTRAINT CK_finops_model_provider_type');
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = N'CK_finops_model_provider_type'
+        AND parent_object_id = OBJECT_ID(N'df_finops.model_provider')
+)
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.model_provider
+        ADD CONSTRAINT CK_finops_model_provider_type
+        CHECK (provider_type IN (N''deepseek'', N''aws_bedrock''))');
+END;
+
+IF OBJECT_ID(N'df_finops.model_provider_model', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.model_provider_model (
+        tenant_ref NVARCHAR(160) NOT NULL,
+        provider_id NVARCHAR(80) NOT NULL,
+        model_id NVARCHAR(160) NOT NULL,
+        display_name NVARCHAR(200) NOT NULL,
+        capability_payload NVARCHAR(MAX) NOT NULL,
+        support_state NVARCHAR(32) NOT NULL,
+        price_key NVARCHAR(240) NULL,
+        observed_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_model_provider_model PRIMARY KEY (tenant_ref, provider_id, model_id),
+        CONSTRAINT FK_finops_model_provider_model_provider FOREIGN KEY (
+            tenant_ref, provider_id
+        ) REFERENCES df_finops.model_provider (tenant_ref, provider_id),
+        CONSTRAINT CK_finops_model_provider_capability CHECK (
+            ISJSON(capability_payload) = 1
+        ),
+        CONSTRAINT CK_finops_model_provider_support CHECK (
+            support_state IN (N'supported', N'unsupported', N'unpriced')
+        )
+    );
+END;
+
+IF OBJECT_ID(N'df_finops.provider_route_revision', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.provider_route_revision (
+        tenant_ref NVARCHAR(160) NOT NULL,
+        revision_id NVARCHAR(80) NOT NULL,
+        workspace_id NVARCHAR(160) NOT NULL,
+        revision INT NOT NULL,
+        route_payload NVARCHAR(MAX) NOT NULL,
+        created_by_ref NVARCHAR(160) NOT NULL,
+        created_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_provider_route_created DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_finops_provider_route_revision PRIMARY KEY (tenant_ref, revision_id),
+        CONSTRAINT CK_finops_provider_route_revision CHECK (revision >= 1),
+        CONSTRAINT CK_finops_provider_route_payload CHECK (
+            ISJSON(route_payload) = 1
+        )
+    );
+    CREATE UNIQUE INDEX UQ_finops_provider_route_workspace_revision
+        ON df_finops.provider_route_revision (tenant_ref, workspace_id, revision);
+END;
+
+IF OBJECT_ID(N'df_finops.entra_group_mapping', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.entra_group_mapping (
+        tenant_ref NVARCHAR(160) NOT NULL,
+        mapping_id NVARCHAR(80) NOT NULL,
+        group_ref NVARCHAR(160) NOT NULL,
+        display_name NVARCHAR(200) NOT NULL,
+        role_name NVARCHAR(16) NOT NULL,
+        workspace_scope_json NVARCHAR(MAX) NOT NULL,
+        mapping_priority INT NOT NULL,
+        enabled BIT NOT NULL
+            CONSTRAINT DF_finops_entra_mapping_enabled DEFAULT 1,
+        revision INT NOT NULL,
+        created_by_ref NVARCHAR(160) NOT NULL,
+        updated_by_ref NVARCHAR(160) NOT NULL,
+        created_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_entra_mapping_created DEFAULT SYSUTCDATETIME(),
+        updated_at DATETIME2(7) NOT NULL
+            CONSTRAINT DF_finops_entra_mapping_updated DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_finops_entra_group_mapping PRIMARY KEY (tenant_ref, mapping_id),
+        CONSTRAINT CK_finops_entra_mapping_role CHECK (
+            role_name IN (N'admin', N'editor', N'viewer')
+        ),
+        CONSTRAINT CK_finops_entra_mapping_scope CHECK (
+            ISJSON(workspace_scope_json) = 1
+        ),
+        CONSTRAINT CK_finops_entra_mapping_priority CHECK (
+            mapping_priority BETWEEN 0 AND 1000
+        ),
+        CONSTRAINT CK_finops_entra_mapping_revision CHECK (revision >= 1)
+    );
+    CREATE INDEX IX_finops_entra_mapping_group
+        ON df_finops.entra_group_mapping (
+            tenant_ref, group_ref, enabled, mapping_priority DESC
+        );
+END;
+
 IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
     WHERE object_id = OBJECT_ID(N'df_finops.request_event')
@@ -437,4 +631,196 @@ BEGIN
     CREATE INDEX IX_finops_request_correlation
         ON df_finops.request_event (tenant_ref, correlation_ref)
         WHERE correlation_ref IS NOT NULL;
+END;
+
+IF OBJECT_ID(N'df_finops.member_budget', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.member_budget (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        budget_id NVARCHAR(64) NOT NULL,
+        actor_ref NVARCHAR(128) NOT NULL,
+        period_type NVARCHAR(32) NOT NULL,
+        amount_usd DECIMAL(19,8) NOT NULL,
+        thresholds_json NVARCHAR(256) NOT NULL,
+        enabled BIT NOT NULL,
+        revision INT NOT NULL,
+        created_by_ref NVARCHAR(128) NOT NULL,
+        updated_by_ref NVARCHAR(128) NOT NULL,
+        created_at DATETIME2(7) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_member_budget PRIMARY KEY (tenant_ref, budget_id),
+        CONSTRAINT CK_finops_member_budget_period CHECK (
+            period_type = N'calendar_month_utc'
+        ),
+        CONSTRAINT CK_finops_member_budget_amount CHECK (amount_usd > 0),
+        CONSTRAINT CK_finops_member_budget_thresholds CHECK (
+            ISJSON(thresholds_json) = 1
+        ),
+        CONSTRAINT CK_finops_member_budget_revision CHECK (revision >= 1)
+    );
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID(N'df_finops.member_budget')
+      AND name = N'UQ_finops_member_budget_active'
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_finops_member_budget_active
+        ON df_finops.member_budget (tenant_ref, actor_ref)
+        WHERE enabled = 1;
+END;
+
+IF OBJECT_ID(N'df_finops.notification_setting', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.notification_setting (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        recipient_actor_ref NVARCHAR(128) NOT NULL,
+        recipient_email NVARCHAR(320) NOT NULL,
+        sender_display_name NVARCHAR(120) NOT NULL,
+        subject_template NVARCHAR(200) NOT NULL,
+        body_template NVARCHAR(4000) NOT NULL,
+        enabled BIT NOT NULL,
+        revision INT NOT NULL,
+        created_by_ref NVARCHAR(128) NOT NULL,
+        updated_by_ref NVARCHAR(128) NOT NULL,
+        created_at DATETIME2(7) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_notification_setting PRIMARY KEY (tenant_ref),
+        CONSTRAINT CK_finops_notification_revision CHECK (revision >= 1)
+    );
+END;
+
+IF OBJECT_ID(N'df_finops.budget_alert', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.budget_alert (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        alert_id NVARCHAR(64) NOT NULL,
+        budget_id NVARCHAR(64) NOT NULL,
+        actor_ref NVARCHAR(128) NOT NULL,
+        period_key CHAR(7) NOT NULL,
+        threshold_pct INT NOT NULL,
+        budget_amount_usd DECIMAL(19,8) NOT NULL,
+        estimated_spend_usd DECIMAL(19,8) NOT NULL,
+        pricing_coverage_pct DECIMAL(8,4) NULL,
+        budget_revision INT NOT NULL,
+        notification_revision INT NOT NULL,
+        delivery_state NVARCHAR(16) NOT NULL,
+        safe_error_category NVARCHAR(64) NULL,
+        attempt_count INT NOT NULL,
+        triggered_at DATETIME2(7) NOT NULL,
+        sent_at DATETIME2(7) NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        lease_token NVARCHAR(64) NULL,
+        lease_expires_at DATETIME2(7) NULL,
+        next_attempt_at DATETIME2(7) NULL,
+        CONSTRAINT PK_finops_budget_alert PRIMARY KEY (tenant_ref, alert_id),
+        CONSTRAINT UQ_finops_budget_alert_threshold UNIQUE (
+            tenant_ref, budget_id, period_key, threshold_pct
+        ),
+        CONSTRAINT CK_finops_budget_alert_state CHECK (
+            delivery_state IN (N'pending', N'sending', N'sent', N'failed', N'suppressed')
+        ),
+        CONSTRAINT CK_finops_budget_alert_attempt CHECK (
+            attempt_count BETWEEN 0 AND 3
+        ),
+        CONSTRAINT CK_finops_budget_alert_period CHECK (
+            period_key LIKE '[0-9][0-9][0-9][0-9]-[0-1][0-9]'
+            AND SUBSTRING(period_key, 6, 2) BETWEEN '01' AND '12'
+        ),
+        CONSTRAINT CK_finops_budget_alert_threshold CHECK (
+            threshold_pct BETWEEN 1 AND 100
+        ),
+        CONSTRAINT CK_finops_budget_alert_lease CHECK (
+            (delivery_state = N'sending' AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+            OR
+            (delivery_state <> N'sending' AND lease_token IS NULL AND lease_expires_at IS NULL)
+        )
+    );
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.budget_alert', N'lease_token') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.budget_alert ADD lease_token NVARCHAR(64) NULL');
+END;
+
+IF COL_LENGTH(N'df_finops.budget_alert', N'lease_expires_at') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.budget_alert ADD lease_expires_at DATETIME2(7) NULL');
+END;
+
+IF COL_LENGTH(N'df_finops.budget_alert', N'next_attempt_at') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.budget_alert ADD next_attempt_at DATETIME2(7) NULL');
+END;
+
+-- A pre-lease worker cannot prove ownership. Recover those rows as due failed
+-- claims before installing the invariant; the stable operation ID still
+-- protects provider-side retries.
+UPDATE df_finops.budget_alert
+SET delivery_state = N'failed',
+    safe_error_category = COALESCE(safe_error_category, N'service_unavailable'),
+    next_attempt_at = COALESCE(next_attempt_at, SYSUTCDATETIME()),
+    updated_at = SYSUTCDATETIME()
+WHERE delivery_state = N'sending'
+  AND (lease_token IS NULL OR lease_expires_at IS NULL);
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = N'CK_finops_budget_alert_lease'
+      AND parent_object_id = OBJECT_ID(N'df_finops.budget_alert')
+)
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.budget_alert
+        ADD CONSTRAINT CK_finops_budget_alert_lease CHECK (
+            (delivery_state = N''sending'' AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+            OR
+            (delivery_state <> N''sending'' AND lease_token IS NULL AND lease_expires_at IS NULL)
+        )');
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID(N'df_finops.budget_alert')
+      AND name = N'IX_finops_budget_alert_due'
+)
+BEGIN
+    CREATE INDEX IX_finops_budget_alert_due
+        ON df_finops.budget_alert (
+            tenant_ref, delivery_state, next_attempt_at, lease_expires_at,
+            triggered_at, alert_id
+        )
+        INCLUDE (attempt_count);
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = N'CK_finops_budget_alert_period'
+      AND parent_object_id = OBJECT_ID(N'df_finops.budget_alert')
+)
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.budget_alert
+        ADD CONSTRAINT CK_finops_budget_alert_period CHECK (
+            period_key LIKE ''[0-9][0-9][0-9][0-9]-[0-1][0-9]''
+            AND SUBSTRING(period_key, 6, 2) BETWEEN ''01'' AND ''12''
+        )');
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID(N'df_finops.request_event')
+      AND name = N'IX_finops_request_actor_window'
+)
+BEGIN
+    CREATE INDEX IX_finops_request_actor_window
+        ON df_finops.request_event (tenant_ref, actor_ref, occurred_at)
+        INCLUDE (cost_amount, evidence_state);
+END;
+
+IF COL_LENGTH(N'df_finops.request_event', N'routing_policy_revision') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.request_event
+        ADD routing_policy_revision INT NULL');
 END;

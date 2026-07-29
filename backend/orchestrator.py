@@ -89,6 +89,7 @@ try:
     from .model_policy import SelectedTextRoute, current_model_price_card, current_text_route, model_route_scope, select_text_route_record, workspace_model_policy_scope
     from .pm_skills import playbook_suggestion
     from .rag import search
+    from .result_cache_policy import ResultCacheContext, evaluate_result_cache
     from .router import deterministic_route
     from .run_store import (
         complete_run,
@@ -185,6 +186,7 @@ except ImportError:
     from model_policy import SelectedTextRoute, current_model_price_card, current_text_route, model_route_scope, select_text_route_record, workspace_model_policy_scope
     from pm_skills import playbook_suggestion
     from rag import search
+    from result_cache_policy import ResultCacheContext, evaluate_result_cache
     from router import deterministic_route
     from run_store import (
         complete_run,
@@ -1934,6 +1936,11 @@ def _model_meta(result: dict[str, Any]) -> dict[str, Any]:
         "latency_ms",
         "model_route",
         "model_deployment",
+        "provider_type",
+        "provider_id",
+        "model_id",
+        "provider_cache",
+        "cost_estimate",
     ):
         if result.get(key) is not None:
             meta[key] = result[key]
@@ -2078,32 +2085,89 @@ def _corpus_fingerprint(artifact: dict[str, Any]) -> tuple[str, str]:
 
 
 def _feasibility_cache_key(req: ChatRequest, artifact: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    decision, metadata, _selected = _feasibility_cache_decision(
+        req,
+        artifact,
+        cache_enabled=True,
+        conversation_stable=True,
+    )
+    return str(decision.cache_key or ""), metadata
+
+
+def _feasibility_cache_decision(
+    req: ChatRequest,
+    artifact: dict[str, Any],
+    *,
+    cache_enabled: bool,
+    conversation_stable: bool,
+) -> tuple[Any, dict[str, Any], SelectedTextRoute]:
     fingerprint, retrieval_mode = _corpus_fingerprint(artifact)
     active_rubric_version = rubric_version()
-    query_hash = hashlib.sha256(req.message.encode("utf-8")).hexdigest()[:16]
     ui_context = getattr(req, "ui_context", {}) or {}
-    cache_bust = str(ui_context.get("cache_bust") or "").strip() if isinstance(ui_context, dict) else ""
-    cache_bust_hash = hashlib.sha256(cache_bust.encode("utf-8")).hexdigest()[:10] if cache_bust else ""
-    key = (
-        "dataforge:analysis:v1"
-        f":workspace={req.workspace_id}"
-        f":fingerprint={fingerprint}"
-        f":prompt={_FEASIBILITY_PROMPT_VERSION}"
-        f":rubric={active_rubric_version}"
-        f":retrieval={retrieval_mode}"
-        f":query={query_hash}"
+    actor = actor_from_ui_context(
+        ui_context if isinstance(ui_context, dict) else {},
+        fallback=False,
     )
-    if cache_bust_hash:
-        key = f"{key}:run={cache_bust_hash}"
-    return key, {
+    tenant_ref = str(actor.get("tenant_id") or "local-tenant").strip().lower()
+    selected = select_text_route_record(
+        "full_analysis",
+        agent_id="df-feasibility-analyst",
+    )
+    try:
+        cache_policy = load_workspace_finops_cache_policy(req.workspace_id)
+    except Exception:
+        cache_policy = {}
+    raw_policy_revision = cache_policy.get("version")
+    policy_revision = (
+        int(raw_policy_revision)
+        if isinstance(raw_policy_revision, int)
+        and not isinstance(raw_policy_revision, bool)
+        and raw_policy_revision >= 0
+        else 0
+    )
+    query_revision = hashlib.sha256(req.message.encode("utf-8")).hexdigest()
+    data_revision = f"{fingerprint}:{retrieval_mode}:{query_revision}"
+    decision = evaluate_result_cache(
+        ResultCacheContext(
+            tenant_ref=tenant_ref,
+            workspace_id=req.workspace_id,
+            data_revision=data_revision,
+            execution_kind="full_analysis",
+            agent_id="df-feasibility-analyst",
+            provider_type=selected.route.provider_type,
+            provider_id=selected.route.provider_id,
+            model_id=str(selected.route.model_id or selected.route.deployment),
+            route_revision=selected.policy_revision or 0,
+            prompt_revision=_FEASIBILITY_PROMPT_VERSION,
+            tool_schema_revision="maf-tools-v1",
+            generation_parameters={
+                "max_output_tokens": 2800,
+                "response_schema_revision": f"feasibility:{active_rubric_version}",
+            },
+            policy_revision=policy_revision,
+            enabled=cache_enabled,
+            live_data=bool(
+                isinstance(ui_context, dict)
+                and ui_context.get("live_data") is True
+            ),
+            side_effecting_tools=False,
+            conversation_stable=conversation_stable,
+        )
+    )
+    return decision, {
         "workspace_id": req.workspace_id,
-        "chunk_fingerprint": fingerprint,
+        "data_revision": data_revision,
         "prompt_version": _FEASIBILITY_PROMPT_VERSION,
         "rubric_version": active_rubric_version,
         "retrieval_mode": retrieval_mode,
-        "query_hash": query_hash,
-        "cache_bust_hash": cache_bust_hash or None,
-    }
+        "agent_id": "df-feasibility-analyst",
+        "provider_type": selected.route.provider_type,
+        "provider_id": selected.route.provider_id,
+        "model_id": selected.route.model_id,
+        "route_revision": selected.policy_revision or 0,
+        "cache_policy_revision": policy_revision,
+        "cache_reason": decision.evidence.reason,
+    }, selected
 
 
 def _run_feasibility_analyst(
@@ -2124,18 +2188,55 @@ def _run_feasibility_analyst(
         data = apply_pre_audit_guardrails(report.model_dump(), catalog, req.message)
         data["_llm"] = {"mode": "empty_evidence_deterministic", "response_id": None, "usage": {}}
         return data
-    cache_key, _ = _feasibility_cache_key(req, artifact)
     cache_enabled, cache_ttl_seconds = _workspace_finops_cache_settings(req.workspace_id)
-    get_meta: dict[str, Any] = {"provider": "redis", "status": "bypassed"}
-    if not audit_feedback and cache_enabled:
-        cached, get_meta = cache_store.get_json(cache_key)
+    cache_decision, _cache_context, selected_route = _feasibility_cache_decision(
+        req,
+        artifact,
+        cache_enabled=cache_enabled,
+        conversation_stable=not bool(audit_feedback),
+    )
+    cache_key = cache_decision.cache_key
+    get_meta: dict[str, Any] = {
+        "provider": "redis",
+        "status": cache_decision.evidence.state,
+        "reason": cache_decision.evidence.reason,
+        "policy_revision": cache_decision.evidence.policy_revision,
+    }
+    if cache_key:
+        try:
+            cached, get_meta = cache_store.get_json(cache_key)
+        except Exception:
+            cached = None
+            get_meta = {
+                "provider": "redis",
+                "status": "unavailable",
+                "reason": "lookup_unavailable",
+                "policy_revision": cache_decision.evidence.policy_revision,
+            }
         if cached:
             cached_result = cached.get("result") if isinstance(cached.get("result"), dict) else cached
             meter = cached.get("meter") if isinstance(cached.get("meter"), dict) else {}
+            source_result_version = str(
+                cached.get("source_result_version") or ""
+            ).strip() or None
             cached_result = dict(cached_result)
+            result_cache = _cache_meter(
+                get_meta,
+                meter,
+                policy_revision=cache_decision.evidence.policy_revision,
+                source_result_version=source_result_version,
+            )
             cached_result["_llm"] = {
                 "mode": "redis_cached_feasibility",
-                "cache": _cache_meter(get_meta, meter),
+                "cache": result_cache,
+                "result_cache": result_cache,
+                "provider_cache": {
+                    "state": "unavailable",
+                    "hit_tokens": None,
+                    "miss_tokens": None,
+                    "hit_rate_pct": None,
+                    "evidence_state": "unavailable",
+                },
                 "response_id": None,
                 "usage": {},
             }
@@ -2161,7 +2262,7 @@ def _run_feasibility_analyst(
             "metrics": iteration_inputs,
         }
     try:
-        with model_route_scope(route=select_text_route_record("full_analysis")):
+        with model_route_scope(route=selected_route):
             result = run_agent(
                 "df-feasibility-analyst",
                 json.dumps(payload, ensure_ascii=False, indent=2),
@@ -2176,7 +2277,7 @@ def _run_feasibility_analyst(
         data = apply_pre_audit_guardrails(report.model_dump(), catalog, req.message)
         data["_llm"] = _model_meta(result)
         data["_llm"]["evidence_warnings"] = evidence_warnings
-        if not audit_feedback and cache_enabled:
+        if cache_key:
             source_meter = normalize_cache_meter(
                 {
                     "state": "hit",
@@ -2187,6 +2288,7 @@ def _run_feasibility_analyst(
             )
             cached_payload = {
                 "result": {key: value for key, value in data.items() if key != "_llm"},
+                "source_result_version": _safe_result_version(data),
                 "meter": {
                     key: source_meter[key]
                     for key in ("source_usage", "source_cost_estimate")
@@ -2202,23 +2304,62 @@ def _run_feasibility_analyst(
             except TypeError:
                 # Compatibility for narrow cache adapters used by existing callers.
                 cache_store.set_json(cache_key, cached_payload)
-            data["_llm"]["cache"] = _cache_meter(get_meta)
+            result_cache = _cache_meter(
+                get_meta,
+                policy_revision=cache_decision.evidence.policy_revision,
+            )
+            data["_llm"]["cache"] = result_cache
+            data["_llm"]["result_cache"] = result_cache
+        else:
+            result_cache = _cache_meter(
+                get_meta,
+                policy_revision=cache_decision.evidence.policy_revision,
+            )
+            data["_llm"]["cache"] = result_cache
+            data["_llm"]["result_cache"] = result_cache
         return data
     except Exception as exc:
         return _fallback_feasibility(req, artifact, catalog, str(exc))
 
 
-def _cache_meter(cache_meta: Mapping[str, Any], source_meter: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _cache_meter(
+    cache_meta: Mapping[str, Any],
+    source_meter: Mapping[str, Any] | None = None,
+    *,
+    policy_revision: int = 0,
+    source_result_version: str | None = None,
+) -> dict[str, Any]:
     source = source_meter or {}
     return normalize_cache_meter(
         {
             "state": cache_meta.get("status"),
             "provider": cache_meta.get("provider"),
             "elapsed_ms": cache_meta.get("elapsed_ms"),
+            "lookup_latency_ms": cache_meta.get("elapsed_ms"),
+            "eligible": cache_meta.get("status") in {"hit", "miss"},
+            "reason": cache_meta.get("reason")
+            or (
+                "lookup_unavailable"
+                if cache_meta.get("status") in {"unavailable", "unconfigured"}
+                else "eligible"
+            ),
+            "policy_revision": cache_meta.get("policy_revision", policy_revision),
+            "source_result_version": source_result_version,
             "source_usage": source.get("source_usage"),
             "source_cost_estimate": source.get("source_cost_estimate"),
         }
     )
+
+
+def _safe_result_version(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        dict(value),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return f"result-{hashlib.sha256(encoded).hexdigest()[:24]}"
 
 
 def _has_model_response_data(metadata: Mapping[str, Any]) -> bool:

@@ -55,6 +55,85 @@ def test_owner_saves_model_routing_policy_and_price_card(client: TestClient, mon
     assert "gpt-5.6-sol" not in json.dumps(policy.json()["policy"])
 
 
+def _routing_env(monkeypatch: pytest.MonkeyPatch, meta: dict[str, object], saved: dict[str, object]) -> None:
+    routes = [
+        {"id": "sol", "deployment": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "capabilities": ["chat", "analysis"]},
+        {"id": "luna", "deployment": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "capabilities": ["chat", "analysis"]},
+    ]
+    route_objects = [
+        ModelRoute("sol", "gpt-5.6-sol", "GPT-5.6 Sol", frozenset({"chat", "analysis"})),
+        ModelRoute("luna", "gpt-5.6-luna", "GPT-5.6 Luna", frozenset({"chat", "analysis"})),
+    ]
+    monkeypatch.setattr(control_plane, "_require_workspace_owner", lambda *_args: "owner")
+    monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _id: dict(meta))
+    monkeypatch.setattr(control_plane, "_save_workspace_meta", lambda _id, value: saved.update(value))
+    monkeypatch.setattr(control_plane, "public_model_route_snapshot", lambda: {"state": "available", "default_route": "sol", "routes": routes})
+    monkeypatch.setattr(control_plane, "list_allowed_model_routes", lambda: route_objects)
+    monkeypatch.setattr(control_plane, "record_audit_event", lambda *_args, **_kwargs: {"event_id": "audit-1"})
+
+
+def test_model_routing_rejects_stale_base_revision(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    saved: dict[str, object] = {}
+    meta = {
+        "workspace_id": "ws-model",
+        "model_routing_policy": {"revision": 3, "assignments": {}, "agent_assignments": {}},
+    }
+    _routing_env(monkeypatch, meta, saved)
+
+    response = client.put(
+        "/api/workspaces/ws-model/governance/model-routing",
+        json={
+            "base_revision": 1,
+            "assignments": {"full_analysis": {"primary_route_id": "sol", "fallback_route_id": "luna"}},
+        },
+    )
+
+    assert response.status_code == 409
+    # A stale write must not overwrite the current policy.
+    assert "model_routing_policy" not in saved
+
+
+def test_model_routing_accepts_matching_base_revision(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    saved: dict[str, object] = {}
+    meta = {
+        "workspace_id": "ws-model",
+        "model_routing_policy": {"revision": 3, "assignments": {}, "agent_assignments": {}},
+    }
+    _routing_env(monkeypatch, meta, saved)
+
+    response = client.put(
+        "/api/workspaces/ws-model/governance/model-routing",
+        json={
+            "base_revision": 3,
+            "assignments": {"full_analysis": {"primary_route_id": "sol", "fallback_route_id": "luna"}},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["policy"]["revision"] == 4
+
+
+def test_model_price_card_rejects_stale_base_revision(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    saved: dict[str, object] = {}
+    meta = {
+        "workspace_id": "ws-model",
+        "model_price_card": {"revision": 2, "currency": "USD", "entries": []},
+    }
+    _routing_env(monkeypatch, meta, saved)
+
+    response = client.put(
+        "/api/workspaces/ws-model/governance/model-price-card",
+        json={
+            "base_revision": 0,
+            "currency": "USD",
+            "entries": [{"route_id": "sol", "input_per_million": 2, "output_per_million": 8, "source_label": "Owner-maintained pricing reference"}],
+        },
+    )
+
+    assert response.status_code == 409
+    assert "model_price_card" not in saved
+
+
 def test_model_routing_endpoint_denies_non_owner(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         control_plane,

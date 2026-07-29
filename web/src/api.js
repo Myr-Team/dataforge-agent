@@ -71,6 +71,9 @@ async function request(path, options = {}) {
     error.status = response.status;
     throw error;
   }
+  if (response.status === 204) {
+    return {};
+  }
   return response.json();
 }
 
@@ -580,6 +583,88 @@ export async function updateEnterpriseIdentityPolicy(workspaceId, trustedEmailDo
   });
 }
 
+export async function loadModelProviders() {
+  return request("/api/model-providers");
+}
+
+export async function createModelProvider(payload) {
+  return request("/api/model-providers", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function testModelProvider(providerId) {
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}/test`, {
+    method: "POST",
+  });
+}
+
+export async function rotateModelProviderSecret(providerId, credentials, baseRevision) {
+  const body = typeof credentials === "string"
+    ? { api_key: credentials, base_revision: Number(baseRevision || 0) }
+    : credentials?.provider_type === "aws_bedrock"
+      ? {
+        provider_type: "aws_bedrock",
+        access_key_id: String(credentials.access_key_id || ""),
+        secret_access_key: String(credentials.secret_access_key || ""),
+        session_token: credentials.session_token || null,
+        base_revision: Number(baseRevision || 0),
+      }
+      : { ...credentials, base_revision: Number(baseRevision || 0) };
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}/rotate-secret`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateModelProvider(providerId, payload) {
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function disableModelProvider(providerId, baseRevision) {
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}/disable`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: Number(baseRevision || 0) }),
+  });
+}
+
+export async function loadIdentityGovernance() {
+  return request("/api/identity-governance");
+}
+
+export async function searchIdentityGovernanceGroups(query, limit = 8) {
+  const params = new URLSearchParams({
+    query: String(query || ""),
+    limit: String(limit),
+  });
+  return request(`/api/identity-governance/groups?${params.toString()}`);
+}
+
+export async function createIdentityGroupMapping(payload) {
+  return request("/api/identity-governance/group-mappings", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateIdentityGroupMapping(mappingId, payload) {
+  return request(`/api/identity-governance/group-mappings/${encodeURIComponent(mappingId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function disableIdentityGroupMapping(mappingId, baseRevision) {
+  return request(`/api/identity-governance/group-mappings/${encodeURIComponent(mappingId)}/disable`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: Number(baseRevision || 0) }),
+  });
+}
+
 export async function loadWorkspaceModelRouting(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/model-routing`);
 }
@@ -620,6 +705,92 @@ export async function updateFinOpsOfficialPriceMapping(
       official_price_key: String(officialPriceKey || ""),
       base_revision: Number.isInteger(baseRevision) ? baseRevision : 0,
     }),
+  });
+}
+
+export async function deleteFinOpsOfficialPriceMapping(deployment) {
+  return request(`/api/finops/pricing/mappings/${encodeURIComponent(deployment)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function loadMemberBudgets() {
+  return request("/api/finops/member-budgets?limit=100");
+}
+
+export async function loadMemberBudgetMembers() {
+  return request("/api/finops/member-budget-members?limit=100");
+}
+
+export async function loadMemberBudgetNotification() {
+  return request("/api/finops/notification-settings");
+}
+
+export async function loadMemberBudgetAlerts() {
+  return request("/api/finops/budget-alerts?limit=50");
+}
+
+export async function saveMemberBudget({
+  budgetId = "",
+  memberRef = "",
+  amountUsd,
+  thresholdsPct = [80, 95, 100],
+  enabled = true,
+  baseRevision = 0,
+} = {}) {
+  const editing = Boolean(String(budgetId || "").trim());
+  const body = {
+    ...(editing ? {} : { member_ref: String(memberRef || "").trim() }),
+    amount_usd: Number(amountUsd),
+    thresholds_pct: Array.isArray(thresholdsPct) ? thresholdsPct.map(Number) : [],
+    enabled: enabled === true,
+    base_revision: Number.isInteger(baseRevision) ? baseRevision : 0,
+  };
+  return request(
+    editing
+      ? `/api/finops/member-budgets/${encodeURIComponent(budgetId)}`
+      : "/api/finops/member-budgets",
+    {
+      method: editing ? "PATCH" : "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function disableMemberBudget(budgetId, baseRevision) {
+  return request(`/api/finops/member-budgets/${encodeURIComponent(budgetId)}/disable`, {
+    method: "POST",
+    body: JSON.stringify({
+      base_revision: Number.isInteger(baseRevision) ? baseRevision : 0,
+    }),
+  });
+}
+
+export async function saveMemberBudgetNotification({
+  recipientMemberRef = "",
+  senderDisplayName = "DataForge",
+  subjectTemplate = "",
+  bodyTemplate = "",
+  enabled = false,
+  baseRevision = 0,
+} = {}) {
+  return request("/api/finops/notification-settings", {
+    method: "PUT",
+    body: JSON.stringify({
+      recipient_actor_ref: String(recipientMemberRef || "").trim(),
+      sender_display_name: String(senderDisplayName || "").trim(),
+      subject_template: String(subjectTemplate || ""),
+      body_template: String(bodyTemplate || ""),
+      enabled: enabled === true,
+      base_revision: Number.isInteger(baseRevision) ? baseRevision : 0,
+    }),
+  });
+}
+
+export async function sendMemberBudgetTestEmail() {
+  return request("/api/finops/notification-settings/test-email", {
+    method: "POST",
+    body: JSON.stringify({}),
   });
 }
 

@@ -10,8 +10,9 @@ def test_feasibility_cache_hit_restores_only_safe_source_meter(monkeypatch) -> N
         orchestrator.cache_store,
         "get_json",
         lambda _key: (
-            {
-                "result": {"opportunity_id": "safe-result", "dimensions": []},
+                {
+                    "result": {"opportunity_id": "safe-result", "dimensions": []},
+                    "source_result_version": "result-safe-v1",
                 "meter": {
                     "source_usage": {"prompt": 10, "completion": 2, "total": 12, "raw_usage": "drop"},
                     "source_cost_estimate": {
@@ -37,7 +38,11 @@ def test_feasibility_cache_hit_restores_only_safe_source_meter(monkeypatch) -> N
     assert result["_llm"]["cache"] == {
         "state": "hit",
         "provider": "redis",
-        "elapsed_ms": 3,
+            "elapsed_ms": 3,
+            "eligible": True,
+            "reason": "eligible",
+            "policy_revision": 0,
+            "source_result_version": "result-safe-v1",
         "source_usage": {"prompt": 10, "completion": 2, "total": 12},
         "source_cost_estimate": {
             "status": "estimated",
@@ -97,7 +102,8 @@ def test_feasibility_cache_miss_stores_only_safe_result_and_source_meter(monkeyp
 
     cached = stored["value"]
     assert isinstance(cached, dict)
-    assert set(cached) == {"result", "meter"}
+    assert set(cached) == {"result", "meter", "source_result_version"}
+    assert str(cached["source_result_version"]).startswith("result-")
     assert cached["result"] == {key: value for key, value in result.items() if key != "_llm"}
     assert "_llm" not in cached["result"]
     assert cached["meter"] == {

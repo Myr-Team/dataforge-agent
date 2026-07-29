@@ -12,7 +12,34 @@ import {
   finopsRoiEconomicsView,
   finopsOpportunityRows,
   formatRelativeUpdateTime,
+  gatewayUnmatchedEvidence,
 } from "./finopsViewModel.js";
+
+
+test("gateway unmatched evidence is scope-labelled and never invented", () => {
+  assert.equal(gatewayUnmatchedEvidence({ apim: {} }), null);
+  assert.equal(gatewayUnmatchedEvidence({ apim: { gateway_unmatched: null } }), null);
+
+  const evidence = gatewayUnmatchedEvidence({
+    apim: {
+      apim_governed_requests: 7,
+      gateway_unmatched: {
+        scope: "unattributed",
+        linked_requests: 7,
+        unmatched_gateway_errors: { total: 5, client_error_4xx: 3, server_error_5xx: 2 },
+        updated_at: "2026-07-24T03:00:00Z",
+        data_source: "apim_gateway_logs",
+        note: "范围说明",
+      },
+    },
+  });
+  assert.equal(evidence.scope, "unattributed");
+  assert.equal(evidence.linkedRequests, 7);
+  assert.equal(evidence.unmatchedTotal, 5);
+  assert.equal(evidence.clientErrors, 3);
+  assert.equal(evidence.serverErrors, 2);
+  assert.equal(evidence.updatedAt, "2026-07-24T03:00:00Z");
+});
 
 
 test("finops metric cards preserve unavailable and partial evidence", () => {

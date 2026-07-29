@@ -21,7 +21,33 @@ PLACEHOLDER_EMAILS = {
 
 def actor_from_request(request: Any | None, *, fallback: bool = True) -> dict[str, Any]:
     headers = getattr(request, "headers", None)
-    return actor_from_headers(headers, fallback=fallback)
+    actor = actor_from_headers(headers, fallback=fallback)
+    if (
+        _environment_flag("DF_ENTRA_GROUP_GOVERNANCE_ENABLED")
+        and is_trusted_tenant_identity(actor)
+    ):
+        try:
+            from .entra_membership import resolve_actor_group_membership
+
+            membership = resolve_actor_group_membership(actor, request=request)
+        except Exception:
+            membership = {
+                "state": "unavailable",
+                "group_refs": [],
+                "source": "membership",
+                "permission_state": "unavailable",
+            }
+        actor = _sanitize_actor(
+            {
+                **actor,
+                "group_refs": membership.get("group_refs") or [],
+                "group_resolution_state": membership.get("state"),
+                "group_source": membership.get("source"),
+                "group_permission_state": membership.get("permission_state"),
+            },
+            fallback=fallback,
+        )
+    return actor
 
 
 def actor_from_headers(headers: Mapping[str, Any] | None, *, fallback: bool = True) -> dict[str, Any]:
@@ -64,6 +90,7 @@ def actor_from_headers(headers: Mapping[str, Any] | None, *, fallback: bool = Tr
             tenant_id = supplied_tenant
     roles = _claim_values(claims, "roles", "role")
     groups = _claim_values(claims, "groups", "group")
+    group_overage = _group_overage(claims, principal)
     has_easy_auth_actor = bool(principal or actor_id or email)
     if not has_easy_auth_actor:
         client_actor = _decoded_client_actor(_header(headers, "x-dataforge-actor"))
@@ -79,6 +106,7 @@ def actor_from_headers(headers: Mapping[str, Any] | None, *, fallback: bool = Tr
             "tenant_id": tenant_id,
             "roles": roles,
             "groups": groups,
+            "group_overage": group_overage,
             "source": source,
         },
         fallback=fallback,
@@ -117,7 +145,20 @@ def default_actor() -> dict[str, Any]:
 
 def public_actor(actor: dict[str, Any] | None) -> dict[str, Any]:
     clean = _sanitize_actor(actor or {}, fallback=False)
-    allowed = ("name", "email", "actor_id", "tenant_id", "source", "roles", "groups")
+    allowed = (
+        "name",
+        "email",
+        "actor_id",
+        "tenant_id",
+        "source",
+        "roles",
+        "groups",
+        "group_overage",
+        "group_refs",
+        "group_resolution_state",
+        "group_source",
+        "group_permission_state",
+    )
     return {key: clean[key] for key in allowed if clean.get(key) not in (None, "", [], {})}
 
 
@@ -195,6 +236,32 @@ def _sanitize_actor(actor: dict[str, Any] | None, *, fallback: bool) -> dict[str
     tenant_id = _clean(source.get("tenant_id") or source.get("tid"))
     roles = _string_list(source.get("roles"))
     groups = _string_list(source.get("groups"))
+    group_refs = [
+        item
+        for item in _string_list(source.get("group_refs"))
+        if re.fullmatch(r"group_[0-9a-f]{24}", item)
+    ]
+    group_overage = source.get("group_overage") is True
+    group_resolution_state = _clean(source.get("group_resolution_state")).lower()
+    if group_resolution_state not in {"observed", "unavailable"}:
+        group_resolution_state = ""
+    group_source = _clean(source.get("group_source")).lower()
+    if group_source not in {
+        "easy_auth_claims",
+        "microsoft_graph",
+        "microsoft_graph_cache",
+        "membership",
+        "claims",
+    }:
+        group_source = ""
+    group_permission_state = _clean(source.get("group_permission_state")).lower()
+    if group_permission_state not in {
+        "granted",
+        "denied",
+        "not_required",
+        "unavailable",
+    }:
+        group_permission_state = ""
     source_name = _clean(source.get("source")) or ("ui_context" if source else "")
 
     placeholder = email.lower() in PLACEHOLDER_EMAILS
@@ -218,9 +285,38 @@ def _sanitize_actor(actor: dict[str, Any] | None, *, fallback: bool) -> dict[str
         "tenant_id": tenant_id,
         "roles": roles,
         "groups": groups,
+        "group_overage": group_overage,
+        "group_refs": group_refs,
+        "group_resolution_state": group_resolution_state,
+        "group_source": group_source,
+        "group_permission_state": group_permission_state,
         "source": source_name or "workspace_default",
     }
     return {key: value for key, value in result.items() if value not in (None, "", [], {})}
+
+
+def _group_overage(
+    claims: list[dict[str, Any]],
+    principal: Mapping[str, Any],
+) -> bool:
+    for claim in claims:
+        name = str(claim.get("typ") or claim.get("type") or "").strip().lower()
+        value = str(claim.get("val") or claim.get("value") or "").strip().lower()
+        if name.endswith("hasgroups") and value in {"1", "true", "yes"}:
+            return True
+        if name in {"_claim_names", "claim_names"} and "groups" in value:
+            return True
+    names = principal.get("_claim_names")
+    return isinstance(names, Mapping) and "groups" in names
+
+
+def _environment_flag(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _decoded_easy_auth_principal(raw: str | None) -> dict[str, Any]:

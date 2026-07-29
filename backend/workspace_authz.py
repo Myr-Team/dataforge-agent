@@ -11,12 +11,14 @@ try:
     from .audit_store import AuditPersistenceError, _active_key as _audit_active_key, _actor_hash as _audit_actor_hash
     from .blob_store import upload_blob_json
     from .identity import canonical_actor_identity, is_trusted_tenant_identity, public_actor
+    from .entra_group_mapping import resolve_actor_group_role
     from .invitation_store import InvitationPersistenceError, InvitationTransitionError, consume_accepted_invitation, current_invited_member_role
     from .workspace_store import WORKSPACES, _load_workspace_bundle
 except ImportError:
     from audit_store import AuditPersistenceError, _active_key as _audit_active_key, _actor_hash as _audit_actor_hash
     from blob_store import upload_blob_json
     from identity import canonical_actor_identity, is_trusted_tenant_identity, public_actor
+    from entra_group_mapping import resolve_actor_group_role
     from invitation_store import InvitationPersistenceError, InvitationTransitionError, consume_accepted_invitation, current_invited_member_role
     from workspace_store import WORKSPACES, _load_workspace_bundle
 
@@ -237,7 +239,10 @@ def _member_access_decision(
     activated_role = _activate_accepted_invitation(workspace_id, meta, actor)
     if activated_role:
         return WorkspaceAccessDecision(True, activated_role, "member_match")
-    return WorkspaceAccessDecision(False, None, "membership_missing")
+    group_role, reason = resolve_actor_group_role(workspace_id, actor)
+    if group_role:
+        return WorkspaceAccessDecision(True, group_role, "group_match")
+    return WorkspaceAccessDecision(False, None, reason)
 
 
 def _normalize_owner_member(workspace_id: str, meta: dict[str, Any], actor: Mapping[str, Any]) -> None:

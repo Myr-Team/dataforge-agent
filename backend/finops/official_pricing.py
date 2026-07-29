@@ -4,7 +4,7 @@ import json
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -17,6 +17,7 @@ _OFFICIAL_HOSTS = {
     "azure.microsoft.com",
     "learn.microsoft.com",
     "prices.azure.com",
+    "api-docs.deepseek.com",
 }
 
 
@@ -24,7 +25,7 @@ class OfficialPrice(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     price_key: str = Field(min_length=3, max_length=240)
-    provider: Literal["azure-openai", "openai"]
+    provider: Literal["azure-openai", "openai", "deepseek"]
     official_model: str = Field(min_length=1, max_length=160)
     display_name: str = Field(min_length=1, max_length=200)
     deployment_type: str = Field(min_length=1, max_length=80)
@@ -44,7 +45,7 @@ class OfficialPrice(BaseModel):
     def validate_official_source(cls, value: str) -> str:
         parsed = urlparse(value)
         if parsed.scheme != "https" or (parsed.hostname or "").lower() not in _OFFICIAL_HOSTS:
-            raise ValueError("price source must be an official Microsoft HTTPS URL")
+            raise ValueError("price source must be an approved official HTTPS URL")
         return value
 
 
@@ -96,14 +97,112 @@ class OfficialPriceCatalog(BaseModel):
         )
 
 
+class AttemptPriceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt: int = Field(ge=1)
+    official_price_key: str = Field(min_length=3, max_length=240)
+    mapping_revision: int | None = Field(default=None, ge=1)
+    tokens: TokenUsage
+
+
+def estimate_attempt_costs(
+    attempts: list[AttemptPriceInput],
+) -> dict[str, Any]:
+    """Price every actual provider attempt without hiding partial fallback cost."""
+    catalog = load_official_price_catalog()
+    items: list[dict[str, Any]] = []
+    amounts: list[Decimal] = []
+    priced = 0
+    for attempt in attempts:
+        estimate = catalog.estimate(attempt.official_price_key, attempt.tokens)
+        estimate = estimate.model_copy(
+            update={
+                "official_price_key": attempt.official_price_key,
+                "mapping_revision": attempt.mapping_revision,
+            }
+        )
+        if estimate.amount is not None:
+            priced += 1
+            amounts.append(Decimal(str(estimate.amount)))
+        items.append(
+            {
+                "attempt": attempt.attempt,
+                "official_price_key": attempt.official_price_key,
+                "estimate": estimate.model_dump(mode="json"),
+            }
+        )
+    total = sum(amounts, Decimal("0")) if amounts else None
+    return {
+        "currency": "USD",
+        "amount": float(total) if total is not None else None,
+        "status": (
+            "unavailable"
+            if not attempts or priced == 0
+            else "partial"
+            if priced < len(attempts)
+            else "estimated"
+        ),
+        "priced_attempts": priced,
+        "unpriced_attempts": len(attempts) - priced,
+        "attempts": items,
+    }
+
+
 @lru_cache(maxsize=1)
 def load_official_price_catalog() -> OfficialPriceCatalog:
     payload = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
     return OfficialPriceCatalog.model_validate(payload)
 
 
+# The official catalog only publishes text-model token prices. A deployment
+# alias may only be mapped to such an entry when it is actually observed making
+# model (LLM) calls; image, speech, and embedding deployments are incompatible.
+_MODEL_CALL_CLASSES = frozenset({"model"})
+
+
+def official_price_supports_call_classes(
+    price: "OfficialPrice",
+    call_classes: "set[str] | frozenset[str] | tuple[str, ...]",
+) -> bool:
+    """Return True when a deployment's observed usage is compatible with a price.
+
+    An unobserved deployment (empty ``call_classes``) is allowed because the
+    owner is pre-mapping the unpriced queue. A deployment that has been observed
+    but never as a model call is incompatible with a text-model price entry.
+    """
+    observed = {str(value) for value in call_classes if value}
+    if not observed:
+        return True
+    return bool(observed & _MODEL_CALL_CLASSES)
+
+
+def estimate_official_cost(
+    official_price_key: str,
+    mapping_revision: int | None,
+    tokens: TokenUsage,
+) -> EstimatedCost:
+    """Estimate a request cost from the official catalog for a mapped key.
+
+    The returned estimate always records the official price key and mapping
+    revision so historical requests remain tied to the revision that priced
+    them. When the catalog cannot price the usage, the amount stays ``None``.
+    """
+    estimate = load_official_price_catalog().estimate(official_price_key, tokens)
+    return estimate.model_copy(
+        update={
+            "official_price_key": official_price_key,
+            "mapping_revision": mapping_revision,
+        }
+    )
+
+
 __all__ = [
     "OfficialPrice",
     "OfficialPriceCatalog",
+    "AttemptPriceInput",
+    "estimate_attempt_costs",
+    "estimate_official_cost",
     "load_official_price_catalog",
+    "official_price_supports_call_classes",
 ]
