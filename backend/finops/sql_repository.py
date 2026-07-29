@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Protocol, Sequence
 
 from .models import FinOpsRequestEvent
+from .repository import (
+    FinOpsEventKeyRepair,
+    resolve_event_key_repair,
+)
 
 
 _SCHEMA_PATH = Path(__file__).resolve().parents[1] / "sql" / "finops_schema.sql"
@@ -52,79 +56,63 @@ class SqlFinOpsRepository:
     def upsert_events(self, events: Iterable[FinOpsRequestEvent]) -> None:
         with self._transaction() as cursor:
             for event in events:
-                payload = json.dumps(
-                    event.model_dump(mode="json", exclude_none=False),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
+                _upsert_event(cursor, event)
+
+    def repair_event_keys(
+        self,
+        plans: Iterable[FinOpsEventKeyRepair],
+    ) -> int:
+        changed = 0
+        with self._transaction() as cursor:
+            for plan in plans:
+                canonical = plan.canonical_event
+                rows = cursor.execute(
+                    """/* finops:lock-event-key-repair */
+                    SELECT tenant_ref, request_ref, event_payload
+                    FROM df_finops.request_event WITH (UPDLOCK, HOLDLOCK)
+                    WHERE (tenant_ref = ? AND request_ref = ?)
+                       OR (tenant_ref = ? AND request_ref = ?)""",
+                    plan.legacy_tenant_ref,
+                    plan.legacy_request_ref,
+                    canonical.tenant_ref,
+                    canonical.request_ref,
+                ).fetchall()
+                existing: dict[tuple[str, str], FinOpsRequestEvent] = {}
+                for row in rows:
+                    key = (
+                        str(_row_value(row, 0)),
+                        str(_row_value(row, 1)),
+                    )
+                    existing[key] = _event_from_payload(_row_value(row, 2))
+                legacy_key = (
+                    plan.legacy_tenant_ref,
+                    plan.legacy_request_ref,
                 )
-                cursor.execute(
-                    """/* finops:upsert-request-event */
-                    MERGE df_finops.request_event WITH (HOLDLOCK) AS target
-                    USING (SELECT ? AS tenant_ref, ? AS request_ref) AS source
-                    ON target.tenant_ref = source.tenant_ref
-                       AND target.request_ref = source.request_ref
-                    WHEN MATCHED THEN UPDATE SET
-                        occurred_at = ?, call_class = ?, department_id = ?, workspace_id = ?,
-                        actor_ref = ?, run_id = ?, agent_id = ?, model_deployment = ?,
-                        route = ?, execution_kind = ?, request_status = ?, error_category = ?,
-                        latency_ms = ?, total_tokens = ?, cost_amount = ?,
-                        price_card_revision = ?, gateway_coverage = ?, evidence_state = ?,
-                        correlation_ref = ?, event_payload = ?, updated_at = SYSUTCDATETIME()
-                    WHEN NOT MATCHED THEN INSERT (
-                        tenant_ref, request_ref, occurred_at, call_class, department_id,
-                        workspace_id, actor_ref, run_id, agent_id, model_deployment, route,
-                        execution_kind, request_status, error_category, latency_ms, total_tokens,
-                        cost_amount, price_card_revision, gateway_coverage, evidence_state,
-                        correlation_ref, event_payload
-                    ) VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                    );""",
-                    event.tenant_ref,
-                    event.request_ref,
-                    event.occurred_at,
-                    event.call_class,
-                    event.department_id,
-                    event.workspace_id,
-                    event.actor_ref,
-                    event.run_id,
-                    event.agent_id,
-                    event.deployment or event.model,
-                    event.route,
-                    event.execution_kind,
-                    event.status,
-                    event.error_category,
-                    event.latency_ms,
-                    event.tokens.total,
-                    event.estimated_cost.amount,
-                    event.estimated_cost.price_card_revision,
-                    event.gateway_coverage,
-                    event.evidence_state,
-                    event.correlation_ref,
-                    payload,
-                    event.tenant_ref,
-                    event.request_ref,
-                    event.occurred_at,
-                    event.call_class,
-                    event.department_id,
-                    event.workspace_id,
-                    event.actor_ref,
-                    event.run_id,
-                    event.agent_id,
-                    event.deployment or event.model,
-                    event.route,
-                    event.execution_kind,
-                    event.status,
-                    event.error_category,
-                    event.latency_ms,
-                    event.tokens.total,
-                    event.estimated_cost.amount,
-                    event.estimated_cost.price_card_revision,
-                    event.gateway_coverage,
-                    event.evidence_state,
-                    event.correlation_ref,
-                    payload,
+                canonical_key = (
+                    canonical.tenant_ref,
+                    canonical.request_ref,
                 )
+                legacy = existing.get(legacy_key)
+                recorded = existing.get(canonical_key)
+                resolved = resolve_event_key_repair(
+                    plan,
+                    legacy=legacy,
+                    canonical=recorded,
+                )
+                if recorded != resolved:
+                    _upsert_event(cursor, resolved)
+                    changed += 1
+                if legacy_key != canonical_key and legacy is not None:
+                    cursor.execute(
+                        """/* finops:delete-legacy-request-event */
+                        DELETE FROM df_finops.request_event
+                        WHERE tenant_ref = ? AND request_ref = ?""",
+                        plan.legacy_tenant_ref,
+                        plan.legacy_request_ref,
+                    )
+                    if recorded == resolved:
+                        changed += 1
+        return changed
 
     def list_events(
         self,
@@ -239,6 +227,82 @@ class SqlFinOpsRepository:
                     connection.close()
                 except Exception:
                     pass
+
+
+def _upsert_event(cursor: _Cursor, event: FinOpsRequestEvent) -> None:
+    payload = json.dumps(
+        event.model_dump(mode="json", exclude_none=False),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    cursor.execute(
+        """/* finops:upsert-request-event */
+        MERGE df_finops.request_event WITH (HOLDLOCK) AS target
+        USING (SELECT ? AS tenant_ref, ? AS request_ref) AS source
+        ON target.tenant_ref = source.tenant_ref
+           AND target.request_ref = source.request_ref
+        WHEN MATCHED THEN UPDATE SET
+            occurred_at = ?, call_class = ?, department_id = ?, workspace_id = ?,
+            actor_ref = ?, run_id = ?, agent_id = ?, model_deployment = ?,
+            route = ?, execution_kind = ?, request_status = ?, error_category = ?,
+            latency_ms = ?, total_tokens = ?, cost_amount = ?,
+            price_card_revision = ?, gateway_coverage = ?, evidence_state = ?,
+            correlation_ref = ?, event_payload = ?, updated_at = SYSUTCDATETIME()
+        WHEN NOT MATCHED THEN INSERT (
+            tenant_ref, request_ref, occurred_at, call_class, department_id,
+            workspace_id, actor_ref, run_id, agent_id, model_deployment, route,
+            execution_kind, request_status, error_category, latency_ms, total_tokens,
+            cost_amount, price_card_revision, gateway_coverage, evidence_state,
+            correlation_ref, event_payload
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        );""",
+        event.tenant_ref,
+        event.request_ref,
+        event.occurred_at,
+        event.call_class,
+        event.department_id,
+        event.workspace_id,
+        event.actor_ref,
+        event.run_id,
+        event.agent_id,
+        event.deployment or event.model,
+        event.route,
+        event.execution_kind,
+        event.status,
+        event.error_category,
+        event.latency_ms,
+        event.tokens.total,
+        event.estimated_cost.amount,
+        event.estimated_cost.price_card_revision,
+        event.gateway_coverage,
+        event.evidence_state,
+        event.correlation_ref,
+        payload,
+        event.tenant_ref,
+        event.request_ref,
+        event.occurred_at,
+        event.call_class,
+        event.department_id,
+        event.workspace_id,
+        event.actor_ref,
+        event.run_id,
+        event.agent_id,
+        event.deployment or event.model,
+        event.route,
+        event.execution_kind,
+        event.status,
+        event.error_category,
+        event.latency_ms,
+        event.tokens.total,
+        event.estimated_cost.amount,
+        event.estimated_cost.price_card_revision,
+        event.gateway_coverage,
+        event.evidence_state,
+        event.correlation_ref,
+        payload,
+    )
 
 
 def _row_value(row: Any, index: int) -> Any:

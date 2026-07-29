@@ -7,7 +7,7 @@ from typing import Callable, Literal, Mapping, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from .member_budgets import MemberCostSummary
-from .normalization import canonical_actor_ref
+from .normalization import canonical_actor_ref, canonical_tenant_id
 
 
 class FinOpsMember(BaseModel):
@@ -79,12 +79,18 @@ class MemberDirectory:
 
     def list_members(self, tenant_ref: str, workspace_ids: tuple[str, ...]) -> tuple[FinOpsMember, ...]:
         """Merge authorized workspaces by stable tenant + actor identity."""
+        tenant_scope = canonical_tenant_id(tenant_ref)
         members: dict[tuple[str, str], dict[str, object]] = {}
         for workspace_id in dict.fromkeys(workspace_ids):
             for raw in self._identity_loader(workspace_id):
-                tenant_id = _text(raw.get("tenant_id"))
-                actor_id = _text(raw.get("actor_id"))
-                if not tenant_id or not actor_id or tenant_id != tenant_ref:
+                raw_tenant_id = _text(raw.get("tenant_id"))
+                tenant_id = (
+                    canonical_tenant_id(raw_tenant_id)
+                    if raw_tenant_id
+                    else ""
+                )
+                actor_id = _text(raw.get("actor_id")).lower()
+                if not tenant_id or not actor_id or tenant_id != tenant_scope:
                     continue
                 key = (tenant_id, actor_id)
                 row = members.setdefault(

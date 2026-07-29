@@ -12,7 +12,7 @@ except ImportError:
 
 from .evidence import build_evidence_alias, operation_code_for_event
 from .evidence_repository import SqlEvidenceAliasRepository
-from .normalization import normalize_run_event, opaque_ref
+from .normalization import canonical_tenant_ref, normalize_run_event
 from .management import FinOpsManagementService
 from .official_pricing import estimate_official_cost
 from .sql_pricing import SqlPriceMappingRepository
@@ -38,10 +38,10 @@ def ingest_completed_run(
         actor.get("tenant_id")
         or os.environ.get("DF_WORKSPACE_OWNER_TENANT_ID")
         or ""
-    ).strip()
+    ).strip().lower()
     if not secret or not tenant_id:
         return {"status": "unavailable", "events": 0}
-    tenant_ref = opaque_ref("tenant", tenant_id, secret=secret)
+    tenant_ref = canonical_tenant_ref(tenant_id, secret=secret)
     if repository is None:
         factory = build_lineage_sql_connection_factory()
         target = SqlFinOpsRepository(connection_factory=factory)

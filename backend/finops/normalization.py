@@ -30,6 +30,19 @@ def opaque_ref(prefix: str, *parts: object, secret: str) -> str:
     return f"{prefix}_{digest}"
 
 
+def canonical_tenant_id(raw_tenant_id: object) -> str:
+    tenant_id = str(raw_tenant_id or "").strip().lower()
+    if not tenant_id:
+        raise ValueError("raw tenant identifier is required")
+    return tenant_id
+
+
+def canonical_tenant_ref(raw_tenant_id: object, *, secret: str) -> str:
+    """Derive the sole FinOps tenant scope from a raw Entra tenant ID."""
+    tenant_id = canonical_tenant_id(raw_tenant_id)
+    return opaque_ref("tenant", tenant_id, secret=secret)
+
+
 def canonical_actor_ref(
     raw_tenant_id: object,
     raw_actor_id: object,
@@ -37,9 +50,9 @@ def canonical_actor_ref(
     secret: str,
 ) -> str:
     """Derive the sole FinOps member key from trusted raw Entra identifiers."""
-    tenant_id = str(raw_tenant_id or "").strip().lower()
+    tenant_id = canonical_tenant_id(raw_tenant_id)
     actor_id = str(raw_actor_id or "").strip().lower()
-    if not tenant_id or not actor_id:
+    if not actor_id:
         raise ValueError("raw tenant and actor identifiers are required")
     return opaque_ref("actor", tenant_id, actor_id, secret=secret)
 

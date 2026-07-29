@@ -9,7 +9,11 @@ from typing import Any, Iterable, Literal, Mapping, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .finops.normalization import opaque_ref
+from .finops.normalization import (
+    canonical_tenant_id,
+    canonical_tenant_ref,
+    opaque_ref,
+)
 from .lineage_sql import build_lineage_sql_connection_factory
 
 
@@ -320,7 +324,12 @@ def get_entra_group_mapping_repository() -> EntraGroupMappingRepository:
 
 
 def group_ref_for(tenant_id: str, group_id: str, *, secret: str) -> str:
-    return opaque_ref("group", tenant_id, group_id, secret=secret)
+    return opaque_ref(
+        "group",
+        canonical_tenant_id(tenant_id),
+        str(group_id or "").strip().lower(),
+        secret=secret,
+    )
 
 
 def resolve_actor_group_role(
@@ -349,7 +358,7 @@ def resolve_actor_group_role(
         }
     if not refs:
         return None, "membership_missing"
-    tenant_ref = opaque_ref("tenant", tenant_id, secret=secret)
+    tenant_ref = canonical_tenant_ref(tenant_id, secret=secret)
     try:
         resolution = resolve_group_access(
             get_entra_group_mapping_repository().list(tenant_ref),

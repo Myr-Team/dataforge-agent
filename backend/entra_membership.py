@@ -5,7 +5,7 @@ from typing import Any, Callable, Mapping
 
 from . import cache_store
 from .entra_group_mapping import group_ref_for
-from .finops.normalization import opaque_ref
+from .finops.normalization import canonical_tenant_id, opaque_ref
 from .graph_client import list_signed_in_transitive_groups
 
 
@@ -39,7 +39,12 @@ def resolve_actor_group_membership(
 
     cache_key = (
         "dataforge:entra-membership:v1:"
-        + opaque_ref("membership", tenant_id, actor_id, secret=secret)
+        + opaque_ref(
+            "membership",
+            canonical_tenant_id(tenant_id),
+            actor_id.lower(),
+            secret=secret,
+        )
     )
     try:
         cached, meta = cache.get_json(cache_key)

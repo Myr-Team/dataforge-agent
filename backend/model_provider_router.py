@@ -17,7 +17,7 @@ from pydantic import (
 
 from .audit_store import record_audit_event
 from .aws_bedrock_provider import AwsBedrockCredential, bedrock_control_endpoint
-from .finops.normalization import opaque_ref
+from .finops.normalization import canonical_actor_ref, canonical_tenant_ref
 from .identity import actor_from_request, is_trusted_tenant_identity
 from .lineage_sql import build_lineage_sql_connection_factory
 from .model_provider_repository import (
@@ -426,8 +426,8 @@ def _context(
             detail="Model provider scope is unavailable",
         )
     return (
-        opaque_ref("tenant", tenant_id, secret=secret),
-        opaque_ref("actor", tenant_id, actor_id, secret=secret),
+        canonical_tenant_ref(tenant_id, secret=secret),
+        canonical_actor_ref(tenant_id, actor_id, secret=secret),
         roles,
         sorted(roles)[0],
     )

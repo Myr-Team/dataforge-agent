@@ -1,6 +1,19 @@
 from __future__ import annotations
 
-from backend.finops.normalization import canonical_actor_ref, normalize_run_event
+from backend.finops.normalization import (
+    canonical_actor_ref,
+    canonical_tenant_ref,
+    normalize_run_event,
+)
+
+
+def test_canonical_tenant_ref_normalizes_raw_entra_tenant_case_and_whitespace() -> None:
+    expected = canonical_tenant_ref("tenant-a", secret="secret-safe")
+
+    assert canonical_tenant_ref(
+        "  TENANT-A  ",
+        secret="secret-safe",
+    ) == expected
 
 
 def test_canonical_actor_ref_normalizes_raw_entra_identifier_case_and_whitespace() -> None:

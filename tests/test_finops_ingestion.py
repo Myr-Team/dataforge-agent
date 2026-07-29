@@ -14,6 +14,7 @@ from backend.finops.member_budgets import (
     NotificationSetting,
 )
 from backend.finops.member_directory import MemberDirectory
+from backend.finops.normalization import canonical_tenant_ref
 from backend.finops.repository import InMemoryFinOpsRepository
 from backend.finops.sql_pricing import (
     DeploymentPriceMapping,
@@ -446,3 +447,31 @@ def test_ingested_run_and_entra_member_share_actor_ref_across_identifier_casing(
     ).list_members("raw-tenant-id", ("ws-a",))
 
     assert event.actor_ref == member.member_ref
+
+
+def test_ingestion_and_api_scope_share_canonical_tenant_ref_across_casing(
+    monkeypatch,
+) -> None:
+    from backend.finops.router import _tenant_ref
+
+    run = _run()
+    run["actor"] = {
+        "actor_id": "member-a",
+        "tenant_id": "  RAW-TENANT-ID  ",
+    }
+    monkeypatch.setenv("DF_FINOPS_SQL_ENABLED", "1")
+    monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "secret")
+
+    result = ingest_completed_run(
+        run,
+        repository=InMemoryFinOpsRepository(),
+        hmac_secret="secret",
+    )
+
+    assert result["tenant_ref"] == canonical_tenant_ref(
+        "raw-tenant-id",
+        secret="secret",
+    )
+    assert result["tenant_ref"] == _tenant_ref(
+        {"tenant_id": "raw-tenant-id"}
+    )

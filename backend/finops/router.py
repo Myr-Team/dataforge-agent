@@ -28,7 +28,7 @@ except ImportError:
     from workspace_authz import active_workspace_role
     from workspace_store import list_workspaces
 
-from .normalization import canonical_actor_ref, opaque_ref
+from .normalization import canonical_actor_ref, canonical_tenant_ref
 from .evidence import build_evidence_alias, operation_code_for_event
 from .evidence_repository import (
     InMemoryEvidenceAliasRepository,
@@ -429,7 +429,7 @@ def _tenant_ref(actor: Mapping[str, Any]) -> str:
     secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
     if not tenant_id or not secret:
         raise RuntimeError("FinOps tenant scope is unavailable")
-    return opaque_ref("tenant", tenant_id, secret=secret)
+    return canonical_tenant_ref(tenant_id, secret=secret)
 
 
 def _actor_ref(actor: Mapping[str, Any]) -> str:

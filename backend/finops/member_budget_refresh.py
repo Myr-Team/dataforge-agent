@@ -62,7 +62,11 @@ def _workspace_identities(workspace_id: str) -> list[dict[str, str]]:
 
 
 def _server_directory(*, secret: str) -> ServerDirectory:
-    from .normalization import canonical_actor_ref, opaque_ref
+    from .normalization import (
+        canonical_actor_ref,
+        canonical_tenant_id,
+        canonical_tenant_ref,
+    )
 
     workspace_ids = sorted(
         {
@@ -82,7 +86,7 @@ def _server_directory(*, secret: str) -> ServerDirectory:
     for workspace_id in workspace_ids:
         identities = _workspace_identities(workspace_id)
         raw_tenants = {
-            str(item.get("tenant_id") or "").strip()
+            canonical_tenant_id(item.get("tenant_id"))
             for item in identities
             if isinstance(item, dict)
             and str(item.get("tenant_id") or "").strip()
@@ -92,13 +96,14 @@ def _server_directory(*, secret: str) -> ServerDirectory:
         raw_tenant = next(iter(raw_tenants))
         if any(
             not isinstance(item, dict)
-            or str(item.get("tenant_id") or "").strip() != raw_tenant
+            or not str(item.get("tenant_id") or "").strip()
+            or canonical_tenant_id(item.get("tenant_id")) != raw_tenant
             or not str(item.get("actor_id") or "").strip()
             for item in identities
         ):
             raise RuntimeError("workspace tenant mapping unavailable")
 
-        tenant_ref = opaque_ref("tenant", raw_tenant, secret=secret)
+        tenant_ref = canonical_tenant_ref(raw_tenant, secret=secret)
         scopes.setdefault(tenant_ref, []).append(workspace_id)
         members.setdefault(tenant_ref, set())
         admins.setdefault(tenant_ref, {})

@@ -17,7 +17,7 @@ from .entra_group_mapping import (
     get_entra_group_mapping_repository,
     group_ref_for,
 )
-from .finops.normalization import opaque_ref
+from .finops.normalization import canonical_actor_ref, canonical_tenant_ref
 from .graph_client import graph_token_context, search_entra_groups
 from .identity import actor_from_request, is_trusted_tenant_identity
 from .workspace_authz import active_workspace_role
@@ -222,8 +222,8 @@ def _context(
             detail="Identity governance scope is unavailable",
         )
     return (
-        opaque_ref("tenant", tenant_id, secret=secret),
-        opaque_ref("actor", tenant_id, actor_id, secret=secret),
+        canonical_tenant_ref(tenant_id, secret=secret),
+        canonical_actor_ref(tenant_id, actor_id, secret=secret),
         roles,
         sorted(roles)[0],
     )

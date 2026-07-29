@@ -386,108 +386,10 @@ Verify the following objects through the controlled deployment connection:
 
 Retain tables on rollback. Do not drop FinOps evidence.
 
-### 2.1 Repair retained actor attribution before enabling member budgets
-
-This is a mandatory pre-cutover gate for deployments that previously derived
-FinOps actor attribution from a non-canonical Entra identifier. Keep all
-member-budget, email-alert, action, and external-routing switches disabled
-throughout the repair:
-
-```powershell
-$env:DF_FINOPS_MEMBER_BUDGETS_ENABLED = '0'
-$env:DF_FINOPS_EMAIL_CONFIGURATION_ENABLED = '0'
-$env:DF_FINOPS_EMAIL_ALERTS_ENABLED = '0'
-$env:DF_FINOPS_ACTIONS_ENABLED = '0'
-$env:DF_EXTERNAL_PROVIDER_ROUTING_ENABLED = '0'
-```
-
-Choose an explicit UTC window that is fully covered by the retained completed
-run ledger and is no longer than 90 days. Start with exactly one bounded
-dry-run page:
-
-```powershell
-$RepairFrom = '<approved-UTC-start>'
-$RepairTo = '<approved-UTC-end>'
-$RepairCursor = $null
-
-$DryRunArgs = @(
-  '-m', 'backend.finops.actor_ref_repair',
-  '--from', $RepairFrom,
-  '--to', $RepairTo,
-  '--page-size', '100',
-  '--max-pages', '1'
-)
-if ($RepairCursor) {
-  $DryRunArgs += @('--cursor', $RepairCursor)
-}
-& python @DryRunArgs
-if ($LASTEXITCODE -ne 0) {
-  throw 'STOP: canonical actor attribution dry-run failed'
-}
-```
-
-The command is dry-run by default. Its JSON must contain aggregate counts and
-an opaque `offset_########` cursor only. Stop if output contains a run ID,
-tenant ID, Entra object ID, email address, request reference, or exception
-body. Record the approved window, page size, aggregate planned count, skip
-categories, and `next_cursor`; never record source identities.
-
-Before apply, manually reconcile the planned count with the retained-run
-coverage for that same immutable window. Any `detail_unavailable`,
-`invalid_record`, `tenant_unavailable`, `model_limit`, or other unexpected skip
-must be investigated. Do not introduce a legacy-key lookup or email fallback.
-
-Apply only the reviewed page, using the same window, cursor, page size, and
-source snapshot. The SQL connection and HMAC secret must be supplied through
-the approved secret-injection path and must never be printed:
-
-```powershell
-$ApplyArgs = @(
-  '-m', 'backend.finops.actor_ref_repair',
-  '--from', $RepairFrom,
-  '--to', $RepairTo,
-  '--page-size', '100',
-  '--max-pages', '1',
-  '--apply',
-  '--confirm', 'APPLY_CANONICAL_ACTOR_REF_REPAIR'
-)
-if ($RepairCursor) {
-  $ApplyArgs += @('--cursor', $RepairCursor)
-}
-& python @ApplyArgs
-if ($LASTEXITCODE -ne 0) {
-  throw 'STOP: canonical actor attribution apply failed'
-}
-```
-
-The existing request-event MERGE is keyed by `(tenant_ref, request_ref)`.
-Repeat the same approved page once and verify that the distinct key count does
-not increase. For each page:
-
-- `events_applied` must equal the reviewed eligible event count;
-- `write_failed` must be zero;
-- missing Entra object IDs must remain `actor_ref IS NULL` and must not be
-  derived from email;
-- aggregate request-event totals must remain unchanged after the second apply;
-- one controlled member's estimated cost must join to the canonical Entra
-  directory member without displaying either raw identifier;
-- candidate logs and captured output must pass a raw-ID and email scan.
-
-Advance only with the returned `next_cursor`, repeating dry-run review before
-each apply. Finish when `has_more` is false, then repeat the final dry-run and
-ledger checks for the complete approved window. If the retained source changes
-between pages, a count differs, or any join is ambiguous, stop the release.
-
-Member-budget and email-alert flags may be enabled in the zero-traffic
-candidate only after the repair is complete, all focused/full tests pass, the
-duplicate-key check is clean, and a human reviewer accepts the aggregate
-evidence. Rollback returns to the prior immutable application revision and
-keeps the feature flags disabled; it does not restore legacy actor references
-or delete additive FinOps evidence.
-
-No repair, candidate validation, Azure mutation, or production cutover was
-executed while writing this runbook. All live evidence remains **PENDING —
-NOT ACCEPTED**.
+Do not run an identity repair immediately after the schema migration. The
+canonical backend writer must first pass zero-traffic validation and take
+stable traffic with member budgets and all email surfaces disabled. Section
+4.1 defines the mandatory cutover boundary and only safe repair ordering.
 
 ## 3. Build immutable images
 
@@ -751,8 +653,8 @@ az containerapp revision copy `
   --revision-suffix $BackendSuffix `
   --image $BackendImage `
   --set-env-vars `
-    DF_FINOPS_MEMBER_BUDGETS_ENABLED=1 `
-    DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=1 `
+    DF_FINOPS_MEMBER_BUDGETS_ENABLED=0 `
+    DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=0 `
     DF_FINOPS_EMAIL_ALERTS_ENABLED=0 `
     DF_FINOPS_EMAIL_ADMIN_ROLE=$ApprovedTenantEmailAdminRole `
     DF_FINOPS_ACTIONS_ENABLED=0 `
@@ -833,6 +735,9 @@ if ($LASTEXITCODE -ne 0 -or $BackendCandidateHealth -cne 'Healthy') {
 }
 ```
 
+At this stage all member-budget and email endpoints must remain `404`. A `200`
+from either surface is a stop condition because repair has not run.
+
 Record the backend gate result, then obtain a separate explicit confirmation
 before creating the web candidate:
 
@@ -881,6 +786,234 @@ if ($LASTEXITCODE -ne 0 -or $WebCandidateHealth -cne 'Healthy') {
 ```
 
 Do not start health/API acceptance until both post-create assertions pass.
+
+### 4.1 Put the canonical writer on stable traffic before historical repair
+
+The backend candidate created above is a writer-only compatibility release:
+member budgets, email configuration, automatic email, FinOps actions, and
+external provider routing are all still off. Validate its revision-specific
+health and one controlled request-fact write without changing traffic. Confirm
+that the new row uses the same canonical tenant scope as the authenticated API
+request. Do not query or record a raw tenant/object ID.
+
+Moving this backend revision to stable traffic is a production change and
+requires a separate human approval. The following remains unexecuted until the
+approver enters the exact token:
+
+```powershell
+$ApprovedCanonicalWriterCutover = Read-Host (
+  'Type PROMOTE_CANONICAL_WRITER_WITH_FEATURES_OFF to continue'
+)
+if (
+  $ApprovedCanonicalWriterCutover -cne
+  'PROMOTE_CANONICAL_WRITER_WITH_FEATURES_OFF'
+) {
+  throw 'STOP: canonical writer cutover was not explicitly approved'
+}
+
+$LegacyBackendRevision = $PreviousBackendRevision
+$CanonicalBackendRevision = $BackendCandidateRevision
+az containerapp ingress traffic set `
+  --name $ApprovedBackendApp `
+  --resource-group $ApprovedResourceGroup `
+  --revision-weight `
+    "$LegacyBackendRevision=0" `
+    "$CanonicalBackendRevision=100"
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: canonical writer traffic cutover failed'
+}
+Assert-ExplicitStableTraffic `
+  -AppName $ApprovedBackendApp `
+  -StableRevision $CanonicalBackendRevision
+
+$CanonicalWriterCutoverUtc = (
+  Get-Date
+).ToUniversalTime().ToString('o')
+$PreviousBackendRevision = $CanonicalBackendRevision
+```
+
+Record the immutable backend digest, canonical revision name, the UTC cutover
+boundary, health result, and the fact that every feature flag above remained
+off. Do not proceed if any positive traffic still reaches the legacy writer.
+Requests immediately before the recorded boundary are included in the
+historical window; requests at or after it are included in the catch-up window.
+
+### 4.2 Repair the pre-cutover ledger, then verify post-cutover catch-up
+
+Choose an explicit historical UTC start within retained run coverage and no
+more than 90 days before `$CanonicalWriterCutoverUtc`. The source window and
+retained-run snapshot must not change between dry-run and apply. Every page
+uses a non-reversible `snap_v1_...` content token; continuation uses a signed
+`cur_v1_...` keyset cursor bound to the window and full candidate catalog.
+Naked offsets are not accepted.
+
+```powershell
+$RepairFrom = '<approved-UTC-start-within-90-days>'
+$RepairTo = $CanonicalWriterCutoverUtc
+$RepairCursor = $null
+
+do {
+  $DryRunArgs = @(
+    '-m', 'backend.finops.actor_ref_repair',
+    '--from', $RepairFrom,
+    '--to', $RepairTo,
+    '--page-size', '100',
+    '--max-pages', '1'
+  )
+  if ($RepairCursor) {
+    $DryRunArgs += @('--cursor', $RepairCursor)
+  }
+  $DryRunRaw = & python @DryRunArgs
+  if ($LASTEXITCODE -ne 0) {
+    throw 'STOP: canonical repair dry-run failed'
+  }
+  $DryRun = $DryRunRaw | ConvertFrom-Json
+  if (
+    $DryRun.status -cne 'completed' -or
+    $DryRun.mode -cne 'dry_run' -or
+    -not ([string]$DryRun.snapshot_token).StartsWith('snap_v1_')
+  ) {
+    throw 'STOP: canonical repair dry-run evidence is invalid'
+  }
+
+  # Manually reconcile the aggregate page counts before apply. Never print the
+  # HMAC secret, snapshot token, raw identity, run ID, request reference, or
+  # event payload.
+  $ApplyArgs = @(
+    '-m', 'backend.finops.actor_ref_repair',
+    '--from', $RepairFrom,
+    '--to', $RepairTo,
+    '--page-size', '100',
+    '--max-pages', '1',
+    '--snapshot-token', [string]$DryRun.snapshot_token,
+    '--apply',
+    '--confirm', 'APPLY_CANONICAL_ACTOR_REF_REPAIR'
+  )
+  if ($RepairCursor) {
+    $ApplyArgs += @('--cursor', $RepairCursor)
+  }
+  $ApplyRaw = & python @ApplyArgs
+  if ($LASTEXITCODE -ne 0) {
+    throw 'STOP: canonical repair apply failed'
+  }
+  $Apply = $ApplyRaw | ConvertFrom-Json
+  if (
+    $Apply.status -cne 'completed' -or
+    $Apply.mode -cne 'apply' -or
+    $Apply.skipped.write_failed
+  ) {
+    throw 'STOP: canonical repair apply evidence is incomplete'
+  }
+
+  $RepeatRaw = & python @ApplyArgs
+  if ($LASTEXITCODE -ne 0) {
+    throw 'STOP: canonical repair idempotency check failed'
+  }
+  $Repeat = $RepeatRaw | ConvertFrom-Json
+  if (
+    $Repeat.status -cne 'completed' -or
+    [int]$Repeat.events_applied -ne 0
+  ) {
+    throw 'STOP: canonical repair page is not repeat-safe'
+  }
+
+  $RepairCursor = [string]$DryRun.next_cursor
+} while ($DryRun.has_more)
+```
+
+Apply operates in a SQL transaction: it locks the legacy and canonical
+`(tenant_ref, request_ref)` keys, preserves the already-recorded complete cost
+evidence, writes the canonical row, and deletes the legacy row. If both rows
+contain conflicting price evidence or refer to different logical events, the
+page fails and the transaction rolls back. Missing Entra object IDs remain
+`actor_ref IS NULL`; email is never an identity fallback.
+
+If a retained detail or the candidate catalog changes, the snapshot/cursor
+check fails closed. Investigate the source change and restart the same bounded
+window from a fresh dry-run; prior pages are safe to repeat. Never bypass this
+with a legacy-key lookup.
+
+After the historical window completes, freeze a catch-up end boundary and run
+the identical dry-run/apply/repeat loop for the post-cutover interval:
+
+```powershell
+$CatchupFrom = $CanonicalWriterCutoverUtc
+$CatchupTo = (Get-Date).ToUniversalTime().ToString('o')
+$RepairFrom = $CatchupFrom
+$RepairTo = $CatchupTo
+$RepairCursor = $null
+# Re-run the complete dry-run/apply/repeat loop above until has_more is false.
+```
+
+The catch-up is expected to be repeat-safe because the canonical writer was
+already stable. Before any feature-enablement request, verify:
+
+- distinct request-event count did not increase from key duplication;
+- no retained eligible legacy key remains in either window;
+- complete price evidence is byte-for-byte unchanged for a controlled priced
+  event, including revision, official price key, and mapping revision;
+- canonical tenant scope joins the authenticated API scope across casing;
+- one controlled member cost joins its canonical actor reference;
+- all raw-ID/email/output scans are zero;
+- member-budget and all email endpoints are still `404`.
+
+All live cutover, repair, catch-up, and verification evidence remains
+**PENDING — NOT ACCEPTED** until performed and approved manually.
+
+### 4.3 Create the feature-enablement candidate only after repair acceptance
+
+Only after a reviewer accepts Sections 4.1 and 4.2 may a separate, zero-traffic
+feature revision be requested. Automatic alerts and FinOps actions remain off:
+
+```powershell
+$ApprovedFeatureCandidate = Read-Host (
+  'Type CREATE_FEATURE_CANDIDATE_AFTER_CANONICAL_REPAIR to continue'
+)
+if (
+  $ApprovedFeatureCandidate -cne
+  'CREATE_FEATURE_CANDIDATE_AFTER_CANONICAL_REPAIR'
+) {
+  throw 'STOP: feature candidate was not explicitly approved'
+}
+
+$FeatureBackendSuffix = "mb-feature-$ShortSha"
+$FeatureBackendRevision = "$ApprovedBackendApp--$FeatureBackendSuffix"
+az containerapp revision copy `
+  --name $ApprovedBackendApp `
+  --resource-group $ApprovedResourceGroup `
+  --revision-suffix $FeatureBackendSuffix `
+  --image $BackendImage `
+  --set-env-vars `
+    DF_FINOPS_MEMBER_BUDGETS_ENABLED=1 `
+    DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=1 `
+    DF_FINOPS_EMAIL_ALERTS_ENABLED=0 `
+    DF_FINOPS_EMAIL_ADMIN_ROLE=$ApprovedTenantEmailAdminRole `
+    DF_FINOPS_ACTIONS_ENABLED=0 `
+    DF_ACS_EMAIL_ENDPOINT=$AcsEndpoint `
+    DF_ACS_EMAIL_SENDER_ADDRESS=$ApprovedSenderAddress `
+    DF_FINOPS_PORTAL_URL=$ApprovedPortalUrl
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: post-repair feature candidate creation failed'
+}
+az containerapp ingress traffic set `
+  --name $ApprovedBackendApp `
+  --resource-group $ApprovedResourceGroup `
+  --revision-weight `
+    "$CanonicalBackendRevision=100" `
+    "$FeatureBackendRevision=0"
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: post-repair feature candidate traffic assignment failed'
+}
+Assert-CandidateZeroTraffic `
+  -AppName $ApprovedBackendApp `
+  -StableRevision $CanonicalBackendRevision `
+  -CandidateRevision $FeatureBackendRevision
+
+$BackendCandidateRevision = $FeatureBackendRevision
+```
+
+Sections 5 through 9 apply only to this post-repair feature candidate and the
+already-created zero-traffic web candidate.
 
 ## 5. Validate health, authorization, and UI with automatic sending off
 
