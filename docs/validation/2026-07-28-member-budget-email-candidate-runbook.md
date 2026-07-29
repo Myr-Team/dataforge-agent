@@ -159,9 +159,19 @@ function Get-ValidatedCommunicationState {
   ) {
     throw 'STOP: ACS pre-read response is missing properties.linkedDomains'
   }
+  $linkedDomains = $state.properties.linkedDomains
+  if (
+    $null -eq $linkedDomains -or
+    $linkedDomains -isnot [System.Array]
+  ) {
+    throw 'STOP: ACS pre-read linkedDomains must be a JSON array'
+  }
   $invalidLinks = @(
-    @($state.properties.linkedDomains) |
-      Where-Object { $null -ne $_ -and $_ -isnot [string] }
+    @($linkedDomains) |
+      Where-Object {
+        $_ -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($_)
+      }
   )
   if ($invalidLinks.Count -ne 0) {
     throw 'STOP: ACS pre-read linkedDomains has an invalid shape'
