@@ -1,233 +1,129 @@
-# Task 3 Report: Bounded Context Packs with Safe Legacy Fallback
+# Task 3: Bedrock API Contract, Audit, and Feature Gate
 
-## Scope
+## Scope delivered
 
-Implemented only the Task 3 backend surfaces:
+- Added discriminated `deepseek` / `aws_bedrock` create and rotate contracts.
+- Bedrock derives its control-plane endpoint server-side and serializes its
+  credential bundle only as `secret_value` for the provider service.
+- Bedrock create, test, and rotate require both provider connector flags;
+  normal provider operations still require the global connector flag.
+- Provider validation responses are generic so AWS credential values are never
+  returned in validation details. Audit resources contain only provider ID,
+  type, display name, and region.
+- Mutation handlers perform a read-only revision preflight before writing an
+  audit event, so deterministic stale-revision 409s do not change audit,
+  registry, or secret state. Successful mutations retain audit-before-mutation.
+- DeepSeek rotation remains compatible with its existing body that omits
+  `provider_type`.
 
-- `backend/context_pack.py`
-- `backend/conversation_store.py`
-- `backend/orchestrator.py`
-- `backend/run_store.py`
-- `tests/test_context_pack.py`
-- `tests/test_context_pack_integration.py`
+## TDD evidence
 
-No auth, frontend, deployment, or generated workspace data changes were made.
-`progress.md` and the untracked `workspaces/ws-*` directories were left alone.
+- RED: `python -m pytest tests/test_model_provider_api.py tests/test_model_provider_audit.py -q`
+  produced `3 failed, 8 passed`: Bedrock requests were rejected as DeepSeek-only
+  validation errors. A separate credential-redaction test failed because the
+  previous FastAPI validation response echoed the request body.
+- GREEN: the same focused command passed `15 passed` after implementation.
 
-## Implementation
+## Verification
 
-- Added `backend/context_pack.py` with a pure `build_context_pack(...)` builder.
-  - Scope is always `workspace_id + conversation_id`.
-  - Only allowlisted durable fact kinds are admitted:
-    - `verified_constraint`
-    - `selected_metric`
-    - `accepted_scope`
-    - `evidence_revision`
-  - Pack content is bounded:
-    - max 6 durable facts
-    - max 8 evidence refs
-    - max 6 workspace facts
-    - max 6 audit constraints
-  - Fingerprints are derived only from:
-    - workspace/conversation scope
-    - profile revision
-    - analysis revision
-    - evidence refs
-    - durable fact IDs and kinds
-  - Raw user message and raw durable-fact text are excluded from telemetry.
-- Extended `backend/conversation_store.py` with:
-  - `record_durable_fact(...)`
-  - `conversation_durable_facts(...)`
-  - durable facts persisted under the conversation document, filtered by exact
-    workspace/conversation scope, and validated against the allowlist.
-- Extended `backend/orchestrator.py` so only lightweight follow-up execution
-  attempts Context Pack optimization.
-  - Full analysis, audit repair, market research, and other evidence-heavy
-    routes still use the existing context path.
-  - When pack build succeeds:
-    - `run_followup_assessment(...)` receives `context_pack`
-    - `conversation_history` is emptied
-  - When pack build or durable-fact lookup fails:
-    - the reply still proceeds
-    - legacy compact history is used
-    - only safe fallback metadata is recorded
-    - no raw exception details are exposed through `context_pack`
-- Extended `backend/run_store.py` with `record_context_pack(...)`.
-  - Persists only safe/public metadata:
-    - `status`
-    - `version`
-    - `scope`
-    - `fingerprint`
-    - `durable_fact_ids`
-    - `durable_fact_kinds`
-    - counts
-    - allowlisted fallback reasons
-  - Drops arbitrary debug text or raw fact bodies.
-  - Mirrors the metadata into one `context_pack` step event for traceability.
+- `python -m pytest tests/test_aws_bedrock_provider.py tests/test_model_provider_api.py tests/test_model_provider_audit.py tests/test_model_provider_repository.py tests/test_model_provider_secrets.py tests/test_model_providers.py -q`
+  -> `40 passed`.
+- `python -m compileall -q backend` -> exit 0.
+- `git diff --check` -> exit 0.
 
-## TDD Evidence
+## Scope retained
 
-### Red
+- Runtime provider routing, APIM provisioning, and FinOps actions remain
+  disabled; the environment example keeps their relevant flags off.
 
-1. `python -m pytest tests/test_context_pack.py::test_context_pack_is_scoped_bounded_and_invalidated_by_evidence_revision -q`
-   - failed with `ModuleNotFoundError: No module named 'backend.context_pack'`
-2. `python -m pytest tests/test_context_pack_integration.py::test_followup_uses_context_pack_and_falls_back_to_legacy_history_when_pack_build_fails -q`
-   - after fixing one bad test import, failed because `backend.orchestrator`
-     had no `build_context_pack` integration point
-
-### Green
-
-Focused Task 3 suites:
-
-- `python -m pytest tests/test_context_pack.py -q`
-  - `4 passed`
-- `python -m pytest tests/test_context_pack_integration.py -q`
-  - `3 passed`
-- `python -m pytest tests/test_conversation_execution_linkage.py -q`
-  - `3 passed`
-- `python -m pytest tests/test_context_pack.py tests/test_context_pack_integration.py tests/test_conversation_execution_linkage.py -q`
-  - `10 passed`
-
-Follow-up regression coverage:
-
-- `python -m pytest tests/test_followup_provisional_choice.py -q`
-  - `23 passed`
-- `python -m pytest tests/test_followup_plan_version.py -q`
-  - `8 passed`
-
-## Behavior verified
-
-- Context Packs are scoped strictly to one workspace and one conversation.
-- Cross-scope durable facts are excluded.
-- Disallowed fact kinds are rejected.
-- Pack fingerprint changes when evidence/analysis revision changes.
-- Pack fingerprint does not change when only durable-fact wording changes.
-- Lightweight follow-up falls back cleanly to legacy compact history when pack
-  construction fails.
-- The fallback still returns a usable reply.
-- Persisted `context_pack` run metadata excludes raw fact text and arbitrary
-  debug payloads.
-
-## Residual risks
-
-- Task 3 does not yet decide whether Context Pack routing is eligible by offline
-  evaluation evidence. That gate remains Task 4.
-- Generic lightweight follow-up currently sends both `context_pack` and the
-  structured `last_analysis` summary. This is intentional for continuity and
-  safety, but it means some legacy structured context still coexists with the
-  new bounded pack.
-- Durable facts are only stored when an explicit structured caller records
-  them. This task intentionally does not infer facts from raw user text.
-
-## Commit
-
-- `718a22d` - `feat: add bounded followup context packs`
-
-## Correction pass
-
-Review feedback identified one real persistence leak and one missing regression.
-This correction pass changed only:
-
-- `backend/run_store.py`
-- `tests/test_context_pack_integration.py`
+## Blocking review remediation
 
 ### Root cause
 
-- `record_context_pack(...)` already sanitized top-level run metadata, but
-  `complete_run(..., artifact=...)` persisted `artifact["context_pack"]`
-  through `_sanitize_artifact(...)` without applying the explicit Context Pack
-  allowlist.
-- Lightweight follow-up already had a durable-fact lookup fallback path, but no
-  integration test locked that behavior in.
+- Revision preflight, durable audit, and the service mutation were separate
+  critical sections. The repository CAS protected only the registry row, so a
+  competing request could advance the revision after preflight while the first
+  request had already appended audit or written a replacement secret.
+- The Bedrock-specific connector check was present on create, test, and rotate,
+  but PATCH and disable performed provider writes after checking only the global
+  provider connector flag.
 
-### Red
+### Design and implementation
 
-Focused red run:
+- Added a provider-scoped `mutation_guard(tenant_ref, provider_id)` repository
+  contract.
+- The SQL repository obtains a SQL Server session-owned exclusive application
+  lock on a deterministic SHA-256-derived provider key. The dedicated
+  connection remains open across preflight, feature-gate evaluation, durable
+  audit, and the complete service mutation, then releases the lock and closes
+  the session.
+- The in-memory repository uses a process-wide keyed `RLock` registry shared
+  across repository instances. Entries are reference-counted and removed after
+  the final holder exits.
+- Create, test, rotate, PATCH, and disable now use the same repository instance
+  and guard for their full mutation critical section. Revisioned losers acquire
+  the guard after the winner, fail the fresh preflight with HTTP 409, and do not
+  append audit, rotate a secret, or update the registry.
+- PATCH and disable now apply the Bedrock-specific gate after the guarded
+  provider lookup and before audit or mutation. The existing global gate remains
+  enforced by request context.
 
-- `python -m pytest tests/test_context_pack_integration.py -k "nested_artifact_context_pack_metadata or durable_fact_lookup_fails" -q`
-  - failed first on
-    `test_run_store_sanitizes_nested_artifact_context_pack_metadata`
-  - persisted artifact still contained:
-    - `profile_revision`
-    - `analysis_revision`
-    - `evidence_refs`
-    - `debug_text`
+### TDD evidence
 
-### Green
-
-After fixing the run-store boundary to re-sanitize nested
-`artifact["context_pack"]` with `_sanitize_context_pack_metadata(...)`:
-
-- `python -m pytest tests/test_context_pack_integration.py -k "nested_artifact_context_pack_metadata or durable_fact_lookup_fails" -q`
-  - `2 passed`
-
-Full focused Context Pack suite:
-
-- `python -m pytest tests/test_context_pack.py tests/test_context_pack_integration.py tests/test_conversation_execution_linkage.py tests/test_followup_provisional_choice.py tests/test_followup_plan_version.py -q`
-  - `43 passed in 6.62s`
-
-### Behavior now locked
-
-- Nested `artifact.context_pack` persists only the public allowlisted metadata:
-  - `status`
-  - `version`
-  - `scope`
-  - `fingerprint`
-  - `durable_fact_ids`
-  - `durable_fact_kinds`
-  - `fact_count`
-  - `workspace_fact_count`
-  - `audit_constraint_count`
-  - allowlisted fallback reasons when present
-- Follow-up still succeeds when durable fact lookup raises.
-- That fallback uses legacy compact history and records only
-  `conversation_fact_lookup_failed`.
-- Raw exception text does not leak into the returned follow-up payload.
-
-## Response-path correction
-
-The independent re-review found one more real gap: the successful lightweight
-follow-up path returned `json.loads(pack.serialized_for_telemetry)` directly as
-`result["context_pack"]`, so the final SSE payload still exposed internal-only
-fields such as:
-
-- `profile_revision`
-- `analysis_revision`
-- `evidence_refs`
-
-That was not a persisted-run leak anymore, but it still violated the Task 3
-contract that follow-up integrations should carry only public Context Pack
-metadata.
-
-### Fix
-
-- Added `public_context_pack_metadata(...)` to `backend/context_pack.py` as the
-  single explicit allowlist for public Context Pack metadata.
-- Updated `backend/orchestrator.py` to project successful follow-up
-  `context_pack` metadata through that helper before attaching it to the reply
-  result and final payload.
-- Updated `backend/run_store.py` to reuse the same helper, so top-level run,
-  steps, nested artifacts, and reply-path metadata now share one allowlist
-  instead of two drifting implementations.
-- Extended
-  `tests/test_context_pack_integration.py::test_followup_uses_context_pack_projection_when_available`
-  to assert that the returned reply metadata contains only the public keys.
+- RED:
+  `python -m pytest tests/test_model_provider_api.py -k "bedrock_patch_is_hidden or bedrock_disable_is_hidden or competing_revisioned_rotations" tests/test_model_provider_repository.py -k "mutation_guard or bedrock_patch_is_hidden or bedrock_disable_is_hidden or competing_revisioned_rotations" -q`
+  -> `6 failed, 18 deselected`.
+  - Bedrock PATCH and disable returned HTTP 200 while the specific flag was off.
+  - The competing rotation did not observe a guard.
+  - Neither repository implementation exposed `mutation_guard`.
+- GREEN: the same focused command -> `6 passed, 18 deselected`.
+- The deterministic competing-rotation test blocks the first request in durable
+  audit while the second attempts the same provider guard. After release, the
+  first succeeds and the second returns HTTP 409; assertions prove exactly one
+  new audit event, one secret rotation, and only the successful writer's two
+  expected registry updates.
+- Repository tests prove same-provider in-memory guards serialize across
+  repository instances, and the SQL guard holds the same session application
+  lock resource until release/connection close while rejecting failed lock
+  acquisition.
 
 ### Verification
 
-- `python -m pytest tests/test_context_pack_integration.py::test_followup_uses_context_pack_projection_when_available -q`
-  - `1 passed`
-- `python -m pytest tests/test_context_pack.py tests/test_context_pack_integration.py tests/test_conversation_execution_linkage.py tests/test_followup_provisional_choice.py tests/test_followup_plan_version.py -q`
-  - `43 passed in 7.81s`
+- Required minimum:
+  `python -m pytest tests/test_model_provider_api.py tests/test_model_provider_audit.py tests/test_model_provider_repository.py tests/test_model_provider_secrets.py -q`
+  -> `33 passed in 5.27s`.
+- Broader Bedrock/provider suite:
+  `python -m pytest tests/test_aws_bedrock_provider.py tests/test_model_provider_api.py tests/test_model_provider_audit.py tests/test_model_provider_repository.py tests/test_model_provider_secrets.py tests/test_model_providers.py -q`
+  -> `46 passed in 5.06s`.
+- `python -m compileall -q backend` -> exit 0.
+- `git diff --check eed7e4b20ff1df2801d3d4687d2e973052ea1d50..HEAD`
+  -> exit 0.
 
-Direct repro after the fix now returns only:
+### Changed files
 
-- `status`
-- `version`
-- `fingerprint`
-- `scope`
-- `durable_fact_ids`
-- `durable_fact_kinds`
-- `fact_count`
-- `workspace_fact_count`
-- `audit_constraint_count`
+- `backend/model_provider_repository.py`
+- `backend/model_provider_router.py`
+- `tests/test_model_provider_repository.py`
+- `tests/test_model_provider_api.py`
+- `.superpowers/sdd/task-3-report.md`
+
+### Self-review
+
+- All five provider mutation handlers acquire the repository guard before any
+  provider preflight or audit and hold it through the service mutation.
+- Audit remains before mutation for successful requests; stale revision
+  conflicts are detected before audit.
+- Every Bedrock write requires both the global provider flag and the
+  Bedrock-specific flag. DeepSeek request compatibility is unchanged.
+- No credential fields were added to API responses, logs, audit metadata, or
+  repository records.
+- Runtime routing, APIM, pricing, FinOps metrics/actions, auth, and environment
+  defaults were not changed.
+- Pre-existing unrelated dirty and untracked workspace files were left
+  untouched and are excluded from the remediation commit.
+
+### Validation boundary
+
+- SQL application-lock acquisition and session lifetime are covered with a
+  pyodbc-style connection test double; this remediation did not run a live
+  two-session Azure SQL contention test.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from threading import Event
 
 import pytest
 
@@ -8,6 +10,7 @@ from backend.model_provider_repository import (
     InMemoryModelProviderRepository,
     ModelProviderConflictError,
     ModelProviderNotFoundError,
+    ModelProviderRepositoryError,
     SqlModelProviderRepository,
 )
 from backend.model_providers import ModelProviderRecord, ProviderPatch
@@ -78,6 +81,27 @@ def test_repository_never_accepts_api_key_material() -> None:
         repository.create(_record(), api_key="forbidden-key-material")  # type: ignore[call-arg]
 
 
+def test_in_memory_mutation_guard_is_keyed_across_repository_instances() -> None:
+    first_repository = InMemoryModelProviderRepository()
+    second_repository = InMemoryModelProviderRepository()
+    attempted = Event()
+    order: list[str] = []
+
+    def competing_writer() -> None:
+        attempted.set()
+        with second_repository.mutation_guard("tenant-a", "provider_01"):
+            order.append("competing")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with first_repository.mutation_guard("tenant-a", "provider_01"):
+            future = pool.submit(competing_writer)
+            assert attempted.wait(timeout=2)
+            order.append("holding")
+        future.result(timeout=2)
+
+    assert order == ["holding", "competing"]
+
+
 def test_repository_persists_and_updates_provider_region() -> None:
     repository = InMemoryModelProviderRepository()
     repository.create(_record().model_copy(update={"region": "ap-southeast-1"}))
@@ -124,6 +148,68 @@ class _SqlConnection:
 
     def close(self) -> None:
         pass
+
+
+class _GuardCursor:
+    def __init__(self, acquire_result: int = 0) -> None:
+        self.acquire_result = acquire_result
+        self.operations: list[tuple[str, tuple[object, ...]]] = []
+        self.rowcount = 1
+
+    def execute(self, operation: str, *parameters: object) -> "_GuardCursor":
+        self.operations.append((operation, parameters))
+        return self
+
+    def fetchone(self) -> tuple[int]:
+        return (self.acquire_result,)
+
+
+class _GuardConnection:
+    autocommit = False
+
+    def __init__(self, cursor: _GuardCursor) -> None:
+        self._cursor = cursor
+        self.closed = False
+
+    def cursor(self) -> _GuardCursor:
+        return self._cursor
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_sql_mutation_guard_holds_session_application_lock_until_exit() -> None:
+    cursor = _GuardCursor()
+    connection = _GuardConnection(cursor)
+    repository = SqlModelProviderRepository(connection_factory=lambda: connection)
+
+    with repository.mutation_guard("tenant-a", "provider_01"):
+        assert not connection.closed
+        assert connection.autocommit is True
+        assert len(cursor.operations) == 1
+        assert "sp_getapplock" in cursor.operations[0][0]
+        assert "@LockOwner = N'Session'" in cursor.operations[0][0]
+
+    assert connection.closed
+    assert len(cursor.operations) == 2
+    assert "sp_releaseapplock" in cursor.operations[1][0]
+    assert "@LockOwner = N'Session'" in cursor.operations[1][0]
+    assert cursor.operations[0][1][0] == cursor.operations[1][1][0]
+
+
+def test_sql_mutation_guard_rejects_failed_application_lock() -> None:
+    cursor = _GuardCursor(acquire_result=-1)
+    connection = _GuardConnection(cursor)
+    repository = SqlModelProviderRepository(connection_factory=lambda: connection)
+
+    with pytest.raises(
+        ModelProviderRepositoryError,
+        match="model_provider_mutation_guard_unavailable",
+    ):
+        with repository.mutation_guard("tenant-a", "provider_01"):
+            raise AssertionError("unreachable")
+
+    assert connection.closed
 
 
 def test_sql_repository_round_trips_and_updates_provider_region() -> None:

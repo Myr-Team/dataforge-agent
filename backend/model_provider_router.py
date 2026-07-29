@@ -188,8 +188,8 @@ async def create_model_provider(
 ) -> dict[str, object]:
     tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
     provider_id = _new_provider_id()
+    repository = get_model_provider_repository()
     if isinstance(body, BedrockProviderCreate):
-        _bedrock_enabled()
         secret_value = AwsBedrockCredential(
             access_key_id=body.access_key_id,
             secret_access_key=body.secret_access_key,
@@ -201,26 +201,29 @@ async def create_model_provider(
         secret_value = body.api_key
         base_url = body.base_url
         region = None
-    _audit_required(
-        request,
-        audit_workspace,
-        provider_id,
-        reason_code="authorized",
-        provider_type=body.provider_type,
-        display_name=body.display_name,
-        region=region,
-    )
     try:
-        return _service().create(
-            tenant_ref=tenant_ref,
-            actor_ref=actor_ref,
-            provider_type=body.provider_type,
-            display_name=body.display_name,
-            base_url=base_url,
-            region=region,
-            secret_value=secret_value,
-            provider_id=provider_id,
-        )
+        with repository.mutation_guard(tenant_ref, provider_id):
+            if isinstance(body, BedrockProviderCreate):
+                _bedrock_enabled()
+            _audit_required(
+                request,
+                audit_workspace,
+                provider_id,
+                reason_code="authorized",
+                provider_type=body.provider_type,
+                display_name=body.display_name,
+                region=region,
+            )
+            return _service(repository).create(
+                tenant_ref=tenant_ref,
+                actor_ref=actor_ref,
+                provider_type=body.provider_type,
+                display_name=body.display_name,
+                base_url=base_url,
+                region=region,
+                secret_value=secret_value,
+                provider_id=provider_id,
+            )
     except Exception as exc:
         raise _provider_error(exc)
 
@@ -231,24 +234,30 @@ async def test_model_provider(
     request: Request,
 ) -> dict[str, object]:
     tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
-    provider = _provider_for_mutation(tenant_ref, provider_id)
-    if provider.provider_type == "aws_bedrock":
-        _bedrock_enabled()
-    _audit_required(
-        request,
-        audit_workspace,
-        provider_id,
-        reason_code="authorized",
-        provider_type=provider.provider_type,
-        display_name=provider.display_name,
-        region=provider.region,
-    )
+    repository = get_model_provider_repository()
     try:
-        return _service().test(
-            tenant_ref=tenant_ref,
-            provider_id=provider_id,
-            actor_ref=actor_ref,
-        )
+        with repository.mutation_guard(tenant_ref, provider_id):
+            provider = _provider_for_mutation(
+                repository,
+                tenant_ref,
+                provider_id,
+            )
+            if provider.provider_type == "aws_bedrock":
+                _bedrock_enabled()
+            _audit_required(
+                request,
+                audit_workspace,
+                provider_id,
+                reason_code="authorized",
+                provider_type=provider.provider_type,
+                display_name=provider.display_name,
+                region=provider.region,
+            )
+            return _service(repository).test(
+                tenant_ref=tenant_ref,
+                provider_id=provider_id,
+                actor_ref=actor_ref,
+            )
     except Exception as exc:
         raise _provider_error(exc)
 
@@ -261,15 +270,8 @@ async def rotate_model_provider_secret(
 ) -> dict[str, object]:
     tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
     rotate_body = body.root
-    provider = _provider_for_mutation(
-        tenant_ref,
-        provider_id,
-        base_revision=rotate_body.base_revision,
-    )
-    if rotate_body.provider_type != provider.provider_type:
-        raise HTTPException(status_code=409, detail="provider_type_mismatch")
+    repository = get_model_provider_repository()
     if isinstance(rotate_body, BedrockProviderRotate):
-        _bedrock_enabled()
         secret_value = AwsBedrockCredential(
             access_key_id=rotate_body.access_key_id,
             secret_access_key=rotate_body.secret_access_key,
@@ -277,23 +279,34 @@ async def rotate_model_provider_secret(
         ).to_secret_value()
     else:
         secret_value = rotate_body.api_key
-    _audit_required(
-        request,
-        audit_workspace,
-        provider_id,
-        reason_code="authorized",
-        provider_type=provider.provider_type,
-        display_name=provider.display_name,
-        region=provider.region,
-    )
     try:
-        return _service().rotate(
-            tenant_ref=tenant_ref,
-            provider_id=provider_id,
-            secret_value=secret_value,
-            base_revision=rotate_body.base_revision,
-            actor_ref=actor_ref,
-        )
+        with repository.mutation_guard(tenant_ref, provider_id):
+            provider = _provider_for_mutation(
+                repository,
+                tenant_ref,
+                provider_id,
+                base_revision=rotate_body.base_revision,
+            )
+            if rotate_body.provider_type != provider.provider_type:
+                raise HTTPException(status_code=409, detail="provider_type_mismatch")
+            if isinstance(rotate_body, BedrockProviderRotate):
+                _bedrock_enabled()
+            _audit_required(
+                request,
+                audit_workspace,
+                provider_id,
+                reason_code="authorized",
+                provider_type=provider.provider_type,
+                display_name=provider.display_name,
+                region=provider.region,
+            )
+            return _service(repository).rotate(
+                tenant_ref=tenant_ref,
+                provider_id=provider_id,
+                secret_value=secret_value,
+                base_revision=rotate_body.base_revision,
+                actor_ref=actor_ref,
+            )
     except Exception as exc:
         raise _provider_error(exc)
 
@@ -305,27 +318,32 @@ async def update_model_provider(
     request: Request,
 ) -> dict[str, object]:
     tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
-    provider = _provider_for_mutation(
-        tenant_ref,
-        provider_id,
-        base_revision=body.base_revision,
-    )
-    _audit_required(
-        request,
-        audit_workspace,
-        provider_id,
-        reason_code="authorized",
-        provider_type=provider.provider_type,
-        display_name=provider.display_name,
-        region=provider.region,
-    )
+    repository = get_model_provider_repository()
     try:
-        return _service().update(
-            tenant_ref=tenant_ref,
-            provider_id=provider_id,
-            patch=body,
-            actor_ref=actor_ref,
-        )
+        with repository.mutation_guard(tenant_ref, provider_id):
+            provider = _provider_for_mutation(
+                repository,
+                tenant_ref,
+                provider_id,
+                base_revision=body.base_revision,
+            )
+            if provider.provider_type == "aws_bedrock":
+                _bedrock_enabled()
+            _audit_required(
+                request,
+                audit_workspace,
+                provider_id,
+                reason_code="authorized",
+                provider_type=provider.provider_type,
+                display_name=provider.display_name,
+                region=provider.region,
+            )
+            return _service(repository).update(
+                tenant_ref=tenant_ref,
+                provider_id=provider_id,
+                patch=body,
+                actor_ref=actor_ref,
+            )
     except Exception as exc:
         raise _provider_error(exc)
 
@@ -337,34 +355,41 @@ async def disable_model_provider(
     request: Request,
 ) -> dict[str, object]:
     tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
-    provider = _provider_for_mutation(
-        tenant_ref,
-        provider_id,
-        base_revision=body.base_revision,
-    )
-    _audit_required(
-        request,
-        audit_workspace,
-        provider_id,
-        reason_code="authorized",
-        provider_type=provider.provider_type,
-        display_name=provider.display_name,
-        region=provider.region,
-    )
+    repository = get_model_provider_repository()
     try:
-        return _service().disable(
-            tenant_ref=tenant_ref,
-            provider_id=provider_id,
-            base_revision=body.base_revision,
-            actor_ref=actor_ref,
-        )
+        with repository.mutation_guard(tenant_ref, provider_id):
+            provider = _provider_for_mutation(
+                repository,
+                tenant_ref,
+                provider_id,
+                base_revision=body.base_revision,
+            )
+            if provider.provider_type == "aws_bedrock":
+                _bedrock_enabled()
+            _audit_required(
+                request,
+                audit_workspace,
+                provider_id,
+                reason_code="authorized",
+                provider_type=provider.provider_type,
+                display_name=provider.display_name,
+                region=provider.region,
+            )
+            return _service(repository).disable(
+                tenant_ref=tenant_ref,
+                provider_id=provider_id,
+                base_revision=body.base_revision,
+                actor_ref=actor_ref,
+            )
     except Exception as exc:
         raise _provider_error(exc)
 
 
-def _service() -> ModelProviderService:
+def _service(
+    repository: ModelProviderRepository | None = None,
+) -> ModelProviderService:
     return ModelProviderService(
-        repository=get_model_provider_repository(),
+        repository=repository or get_model_provider_repository(),
         secret_store=get_model_provider_secret_store(),
         transport=get_provider_transport(),
     )
@@ -460,13 +485,14 @@ def _audit_required(
 
 
 def _provider_for_mutation(
+    repository: ModelProviderRepository,
     tenant_ref: str,
     provider_id: str,
     *,
     base_revision: int | None = None,
 ) -> Any:
     try:
-        provider = get_model_provider_repository().get(tenant_ref, provider_id)
+        provider = repository.get(tenant_ref, provider_id)
     except Exception as exc:
         raise _provider_error(exc)
     if base_revision is not None and provider.revision != base_revision:

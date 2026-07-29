@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from threading import RLock
-from typing import Any, Iterator, Protocol, Sequence
+from threading import Lock, RLock
+from typing import Any, ContextManager, Iterator, Protocol, Sequence
 
 from .finops.sql_repository import ConnectionFactory
 from .model_providers import ModelProviderRecord, ProviderModel, ProviderPatch
@@ -28,6 +29,12 @@ class ModelProviderNotFoundError(ModelProviderRepositoryError):
 
 
 class ModelProviderRepository(Protocol):
+    def mutation_guard(
+        self,
+        tenant_ref: str,
+        provider_id: str,
+    ) -> ContextManager[None]: ...
+
     def list(self, tenant_ref: str) -> list[ModelProviderRecord]: ...
 
     def get(self, tenant_ref: str, provider_id: str) -> ModelProviderRecord: ...
@@ -44,10 +51,45 @@ class ModelProviderRepository(Protocol):
     ) -> ModelProviderRecord: ...
 
 
+class _KeyedMutationGuards:
+    def __init__(self) -> None:
+        self._entries: dict[tuple[str, str], tuple[RLock, int]] = {}
+        self._registry_lock = Lock()
+
+    @contextmanager
+    def hold(self, tenant_ref: str, provider_id: str) -> Iterator[None]:
+        key = (tenant_ref, provider_id)
+        with self._registry_lock:
+            guard, users = self._entries.get(key, (RLock(), 0))
+            self._entries[key] = (guard, users + 1)
+        guard.acquire()
+        try:
+            yield
+        finally:
+            guard.release()
+            with self._registry_lock:
+                current_guard, current_users = self._entries[key]
+                if current_users == 1:
+                    del self._entries[key]
+                else:
+                    self._entries[key] = (current_guard, current_users - 1)
+
+
+_IN_MEMORY_MUTATION_GUARDS = _KeyedMutationGuards()
+_MUTATION_LOCK_TIMEOUT_MS = 30_000
+
+
 class InMemoryModelProviderRepository:
     def __init__(self) -> None:
         self._values: dict[tuple[str, str], ModelProviderRecord] = {}
         self._lock = RLock()
+
+    def mutation_guard(
+        self,
+        tenant_ref: str,
+        provider_id: str,
+    ) -> ContextManager[None]:
+        return _IN_MEMORY_MUTATION_GUARDS.hold(tenant_ref, provider_id)
 
     def list(self, tenant_ref: str) -> list[ModelProviderRecord]:
         with self._lock:
@@ -114,6 +156,63 @@ class _Cursor(Protocol):
 class SqlModelProviderRepository:
     def __init__(self, *, connection_factory: ConnectionFactory) -> None:
         self._connection_factory = connection_factory
+
+    @contextmanager
+    def mutation_guard(
+        self,
+        tenant_ref: str,
+        provider_id: str,
+    ) -> Iterator[None]:
+        resource = _mutation_lock_resource(tenant_ref, provider_id)
+        connection = None
+        cursor = None
+        try:
+            connection = self._connection_factory()
+            connection.autocommit = True
+            cursor = connection.cursor()
+            row = cursor.execute(
+                """/* providers:mutation-guard-acquire */
+                SET NOCOUNT ON;
+                DECLARE @lock_result int;
+                EXEC @lock_result = sys.sp_getapplock
+                    @Resource = ?,
+                    @LockMode = N'Exclusive',
+                    @LockOwner = N'Session',
+                    @LockTimeout = ?,
+                    @DbPrincipal = N'public';
+                SELECT @lock_result;""",
+                resource,
+                _MUTATION_LOCK_TIMEOUT_MS,
+            ).fetchone()
+            if row is None or int(_row_value(row, 0)) < 0:
+                raise ModelProviderRepositoryError(
+                    "model_provider_mutation_guard_unavailable"
+                )
+        except ModelProviderRepositoryError:
+            _close_quietly(connection)
+            raise
+        except Exception:
+            _close_quietly(connection)
+            raise ModelProviderRepositoryError(
+                "model_provider_mutation_guard_unavailable"
+            ) from None
+
+        try:
+            yield
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.execute(
+                        """/* providers:mutation-guard-release */
+                        EXEC sys.sp_releaseapplock
+                            @Resource = ?,
+                            @LockOwner = N'Session',
+                            @DbPrincipal = N'public';""",
+                        resource,
+                    )
+                except Exception:
+                    pass
+            _close_quietly(connection)
 
     def list(self, tenant_ref: str) -> list[ModelProviderRecord]:
         with self._transaction() as cursor:
@@ -253,6 +352,31 @@ def _models_json(value: list[ProviderModel]) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def _mutation_lock_resource(tenant_ref: str, provider_id: str) -> str:
+    digest = hashlib.sha256(
+        f"{tenant_ref}\0{provider_id}".encode("utf-8")
+    ).hexdigest()
+    return f"df:model-provider:{digest}"
+
+
+def _row_value(row: Any, index: int) -> Any:
+    if isinstance(row, (tuple, list)):
+        return row[index]
+    try:
+        return row[index]
+    except (KeyError, TypeError):
+        return getattr(row, "lock_result")
+
+
+def _close_quietly(connection: Any | None) -> None:
+    if connection is None:
+        return
+    try:
+        connection.close()
+    except Exception:
+        pass
 
 
 def _record_parameters(value: ModelProviderRecord) -> tuple[Any, ...]:

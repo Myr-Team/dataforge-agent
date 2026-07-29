@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
+from threading import Event, Lock
+
 from fastapi.testclient import TestClient
 
 import backend.model_provider_router as provider_router
@@ -15,8 +19,11 @@ from auth_fixtures import trusted_headers
 class _Secrets:
     def __init__(self) -> None:
         self.values: dict[tuple[str, str], str] = {}
+        self.put_calls = 0
+        self.rotate_calls = 0
 
     def put(self, tenant_ref: str, provider_id: str, api_key: str) -> str:
+        self.put_calls += 1
         self.values[(tenant_ref, provider_id)] = api_key
         return f"kv:provider-{provider_id}"
 
@@ -24,6 +31,7 @@ class _Secrets:
         return self.values[(tenant_ref, provider_id)]
 
     def rotate(self, tenant_ref: str, provider_id: str, api_key: str) -> str:
+        self.rotate_calls += 1
         return self.put(tenant_ref, provider_id, api_key)
 
 
@@ -66,8 +74,13 @@ class _BedrockControlPlane:
         ]
 
 
-def _client(monkeypatch, *, roles: dict[str, str] | None = None):
-    repository = InMemoryModelProviderRepository()
+def _client(
+    monkeypatch,
+    *,
+    roles: dict[str, str] | None = None,
+    repository: InMemoryModelProviderRepository | None = None,
+):
+    repository = repository or InMemoryModelProviderRepository()
     secrets = _Secrets()
     audits: list[dict[str, object]] = []
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
@@ -257,6 +270,85 @@ def test_bedrock_test_and_rotation_are_hidden_when_specific_flag_is_off(
     assert len(audits) == audit_count
 
 
+def test_bedrock_patch_is_hidden_when_specific_flag_is_off(monkeypatch) -> None:
+    client, repository, secrets, audits = _client(monkeypatch)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "1")
+    monkeypatch.setattr(
+        "backend.aws_bedrock_provider.Boto3BedrockControlPlane.list_models",
+        lambda _self, _region, _credential: [],
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "aws_bedrock",
+            "display_name": "AWS Bedrock",
+            "region": "ap-southeast-1",
+            "access_key_id": "AKIAEXAMPLE",
+            "secret_access_key": "secret-marker-value",
+        },
+    ).json()
+    audit_count = len(audits)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "0")
+
+    response = client.patch(
+        f"/api/model-providers/{created['provider_id']}",
+        headers=headers,
+        json={
+            "base_revision": created["revision"],
+            "display_name": "Blocked Bedrock update",
+        },
+    )
+
+    current = repository.get(
+        next(iter(secrets.values))[0],
+        created["provider_id"],
+    )
+    assert response.status_code == 404
+    assert current.revision == created["revision"]
+    assert current.display_name == created["display_name"]
+    assert len(audits) == audit_count
+
+
+def test_bedrock_disable_is_hidden_when_specific_flag_is_off(monkeypatch) -> None:
+    client, repository, secrets, audits = _client(monkeypatch)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "1")
+    monkeypatch.setattr(
+        "backend.aws_bedrock_provider.Boto3BedrockControlPlane.list_models",
+        lambda _self, _region, _credential: [],
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "aws_bedrock",
+            "display_name": "AWS Bedrock",
+            "region": "ap-southeast-1",
+            "access_key_id": "AKIAEXAMPLE",
+            "secret_access_key": "secret-marker-value",
+        },
+    ).json()
+    audit_count = len(audits)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "0")
+
+    response = client.post(
+        f"/api/model-providers/{created['provider_id']}/disable",
+        headers=headers,
+        json={"base_revision": created["revision"]},
+    )
+
+    current = repository.get(
+        next(iter(secrets.values))[0],
+        created["provider_id"],
+    )
+    assert response.status_code == 404
+    assert current.revision == created["revision"]
+    assert current.connection_state == created["connection_state"]
+    assert len(audits) == audit_count
+
+
 def test_owner_rotates_masked_bedrock_provider(monkeypatch) -> None:
     client, _repository, secrets, audits = _client(monkeypatch)
     monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "1")
@@ -321,6 +413,117 @@ def test_stale_deepseek_rotation_does_not_write_audit_or_secret(monkeypatch) -> 
     assert response.status_code == 409
     assert len(audits) == audit_count
     assert next(iter(secrets.values.values())) == secret_before
+
+
+def test_competing_revisioned_rotations_serialize_before_audit_and_secret(
+    monkeypatch,
+) -> None:
+    class _CountingRepository(InMemoryModelProviderRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.update_calls = 0
+
+        def update(self, *args: object, **kwargs: object):
+            self.update_calls += 1
+            return super().update(*args, **kwargs)
+
+    repository = _CountingRepository()
+    client, _repository, secrets, audits = _client(
+        monkeypatch,
+        repository=repository,
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "deepseek",
+            "display_name": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "secret-marker",
+        },
+    ).json()
+    audit_count = len(audits)
+    rotate_count = secrets.rotate_calls
+    update_count = repository.update_calls
+    first_audit_entered = Event()
+    release_first_audit = Event()
+    competing_guard_attempted = Event()
+    guard_count = 0
+    guard_count_lock = Lock()
+    base_guard = getattr(repository, "mutation_guard", None)
+
+    @contextmanager
+    def coordinated_guard(tenant_ref: str, provider_id: str):
+        nonlocal guard_count
+        with guard_count_lock:
+            guard_count += 1
+            guard_index = guard_count
+        if guard_index == 2:
+            competing_guard_attempted.set()
+        guard = (
+            base_guard(tenant_ref, provider_id)
+            if base_guard is not None
+            else nullcontext()
+        )
+        with guard:
+            yield
+
+    repository.mutation_guard = coordinated_guard  # type: ignore[attr-defined]
+    audit_call_count = 0
+    audit_call_lock = Lock()
+
+    def blocking_audit(actor, action, resource, **metadata):
+        nonlocal audit_call_count
+        with audit_call_lock:
+            audit_call_count += 1
+            call_index = audit_call_count
+        if call_index == 1:
+            first_audit_entered.set()
+            assert release_first_audit.wait(timeout=5)
+        audits.append(
+            {
+                "actor": actor,
+                "action": action,
+                "resource": resource,
+                "metadata": metadata,
+            }
+        )
+        return {"event_id": "event-safe"}
+
+    monkeypatch.setattr(provider_router, "record_audit_event", blocking_audit)
+    url = f"/api/model-providers/{created['provider_id']}/rotate-secret"
+
+    def rotate(api_key: str):
+        return client.post(
+            url,
+            headers=headers,
+            json={
+                "api_key": api_key,
+                "base_revision": created["revision"],
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(rotate, "winner-marker")
+        assert first_audit_entered.wait(timeout=5)
+        second = pool.submit(rotate, "loser-marker")
+        guard_observed = competing_guard_attempted.wait(timeout=2)
+        release_first_audit.set()
+        first_response = first.result(timeout=10)
+        second_response = second.result(timeout=10)
+
+    current = repository.get(
+        next(iter(secrets.values))[0],
+        created["provider_id"],
+    )
+    assert guard_observed
+    assert first_response.status_code == 200
+    assert second_response.status_code == 409
+    assert len(audits) == audit_count + 1
+    assert secrets.rotate_calls == rotate_count + 1
+    assert repository.update_calls == update_count + 2
+    assert current.revision == created["revision"] + 2
 
 
 def test_provider_management_requires_owner_or_admin_across_workspaces(
