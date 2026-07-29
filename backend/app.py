@@ -48,6 +48,7 @@ try:
     from .dependency_health import health_dependencies, health_dependency_details
     from .identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
     from .finops.router import router as finops_router
+    from .finops.member_budget_router import router as member_budget_router
     from .finops.sql_repository import FinOpsPersistenceError
     from .lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
     from .model_provider_router import router as model_provider_router
@@ -104,6 +105,7 @@ except ImportError:
     from dependency_health import health_dependencies, health_dependency_details
     from identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
     from finops.router import router as finops_router
+    from finops.member_budget_router import router as member_budget_router
     from finops.sql_repository import FinOpsPersistenceError
     from lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
     from model_provider_router import router as model_provider_router
@@ -184,6 +186,7 @@ app.add_middleware(
 app.include_router(data_workbench_router)
 app.include_router(control_plane_router)
 app.include_router(finops_router)
+app.include_router(member_budget_router)
 app.include_router(model_provider_router)
 app.include_router(entra_group_router)
 
