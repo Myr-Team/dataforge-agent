@@ -161,13 +161,6 @@ test("Bedrock provider layout remains usable on mobile and safely presents confl
   await openProviderSettings(page);
 
   const createForm = page.locator(".provider-connections > .bedrock-connection-form");
-  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
-  await mkdir(outputDir, { recursive: true });
-  await createForm.scrollIntoViewIfNeeded();
-  await page.screenshot({
-    path: path.join(outputDir, "bedrock-provider-mobile-conflict.png"),
-    fullPage: true,
-  });
   await createForm.getByLabel("Access Key ID").fill("retry-access-marker");
   await createForm.getByLabel("Secret Access Key").fill("retry-secret-marker");
   await createForm.getByRole("button", { name: "保存并测试连接" }).click();
@@ -176,6 +169,19 @@ test("Bedrock provider layout remains usable on mobile and safely presents confl
   await expect(page.getByRole("alert")).not.toContainText("do not expose");
   await expect(createForm.getByLabel("Access Key ID")).toHaveValue("retry-access-marker");
   await expect(createForm.getByLabel("Secret Access Key")).toHaveValue("retry-secret-marker");
+  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+  await mkdir(outputDir, { recursive: true });
+  await page.getByRole("alert").scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: path.join(outputDir, "bedrock-provider-mobile-conflict.png"),
+    fullPage: false,
+    mask: [
+      createForm.getByLabel("Access Key ID"),
+      createForm.getByLabel("Secret Access Key"),
+      createForm.getByLabel("Session Token（可选）"),
+    ],
+    maskColor: "#ffffff",
+  });
 });
 
 test("Bedrock save copy remains neutral until the refreshed record is connected", async ({ page }) => {

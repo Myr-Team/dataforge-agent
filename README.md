@@ -216,6 +216,30 @@ terraform init && terraform apply
 
 Key feature flags: `DF_MAF_RUNTIME` (`off`, `audit`, or `full`), `DF_MAF_AUTH_MODE` (`auto`, `api_key`, or `managed_identity`), `DF_MAF_TRAFFIC_PERCENT` (stable canary percentage), `DF_USE_MAF` (legacy compatibility mapping to `audit`), `DF_MAF_MAX_REVISIONS` (revision cap), `DF_AUDIT_STRICT_GATE` (legacy conservative gate), `DF_WEB_MARKET` (Foundry web search), `DF_WORKSPACE_RBAC_ENFORCED` (workspace role enforcement), `DF_WEB_PROXY_SECRET` (shared secret for the Web-to-backend identity proxy), `DF_ARTIFACT_JOB_STALE_SECONDS` (interrupted-job recovery window), `DF_SEPARATE_ANALYSIS_CONVERSATIONS` (candidate-gated separation of autonomous analysis runs from human message history; default `0`, enable `1` only with the matching frontend revision), `DF_MODEL_ROUTE_ALLOWLIST` / `DF_DEFAULT_MODEL_ROUTE` (server-owned text-route allowlist and default route), and `DF_CONTEXT_EVALUATION_SUMMARY_PATH` / `DF_CONTEXT_EVALUATION_STALE_DAYS` (offline evaluation gate inputs for candidate follow-up routing).
 
+### AWS Bedrock connector: configuration-only boundary
+
+The Bedrock connector is an authenticated, administrator-only configuration
+surface. Its credentials are entered only through the write-only settings UI;
+they must never be copied into a runbook, browser storage, logs, screenshots,
+or source control.
+
+Keep the configuration-only flags at the following values during local and
+candidate validation:
+
+```text
+DF_PROVIDER_CONNECTORS_ENABLED=1
+DF_AWS_BEDROCK_CONNECTOR_ENABLED=1
+DF_EXTERNAL_PROVIDER_ROUTING_ENABLED=0
+DF_EXTERNAL_PROVIDER_APIM_PROVISIONING_ENABLED=0
+DF_FINOPS_ACTIONS_ENABLED=0
+```
+
+Saving and testing a Bedrock connection validates only that configuration. It
+does not add Bedrock models to Agent routing, provision APIM, enable external
+provider runtime traffic, or enable FinOps actions. A separate zero-traffic
+candidate acceptance and explicit approval are required before any production
+traffic change.
+
 ## Monitoring and model routing
 
 - `Monitor` is an owner-only surface. Backend authorization decides access for both navigation and API reads; the frontend only reflects that server-backed permission.
