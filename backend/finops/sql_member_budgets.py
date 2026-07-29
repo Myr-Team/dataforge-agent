@@ -52,64 +52,69 @@ class SqlMemberBudgetRepository:
 
     def save_budget(self, tenant_ref: str, value: MemberBudget, *, base_revision: int) -> MemberBudget:
         thresholds_json = json.dumps(value.thresholds_pct, separators=(",", ":"))
-        with self._transaction() as cursor:
-            current = cursor.execute(
-                """/* finops:lock-member-budget-revision */
-                SELECT revision FROM df_finops.member_budget WITH (UPDLOCK, HOLDLOCK)
-                WHERE tenant_ref = ? AND budget_id = ?""",
-                tenant_ref,
-                value.budget_id,
-            ).fetchone()
-            current_revision = int(_value(current, 0)) if current is not None else 0
-            if current_revision != base_revision or value.revision != base_revision + 1:
-                raise MemberBudgetConflictError("member budget revision conflict")
-            if value.enabled:
-                active = cursor.execute(
-                    """/* finops:lock-active-member-budget */
-                    SELECT TOP 1 budget_id
-                    FROM df_finops.member_budget WITH (UPDLOCK, HOLDLOCK)
-                    WHERE tenant_ref = ? AND actor_ref = ? AND enabled = 1 AND budget_id <> ?""",
+        try:
+            with self._transaction() as cursor:
+                current = cursor.execute(
+                    """/* finops:lock-member-budget-revision */
+                    SELECT revision FROM df_finops.member_budget WITH (UPDLOCK, HOLDLOCK)
+                    WHERE tenant_ref = ? AND budget_id = ?""",
                     tenant_ref,
-                    value.member_ref,
                     value.budget_id,
                 ).fetchone()
-                if active is not None:
-                    raise MemberBudgetConflictError("active member budget already exists")
-            cursor.execute(
-                """/* finops:save-member-budget */
-                MERGE df_finops.member_budget WITH (HOLDLOCK) AS target
-                USING (SELECT ? AS tenant_ref, ? AS budget_id) AS source
-                ON target.tenant_ref = source.tenant_ref AND target.budget_id = source.budget_id
-                WHEN MATCHED THEN UPDATE SET
-                    actor_ref = ?, period_type = ?, amount_usd = ?, thresholds_json = ?, enabled = ?,
-                    revision = ?, updated_by_ref = ?, updated_at = ?
-                WHEN NOT MATCHED THEN INSERT (
-                    tenant_ref, budget_id, actor_ref, period_type, amount_usd, thresholds_json, enabled,
-                    revision, created_by_ref, updated_by_ref, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
-                tenant_ref,
-                value.budget_id,
-                value.member_ref,
-                value.period_type,
-                value.amount_usd,
-                thresholds_json,
-                value.enabled,
-                value.revision,
-                value.updated_by_ref,
-                value.updated_at,
-                tenant_ref,
-                value.budget_id,
-                value.member_ref,
-                value.period_type,
-                value.amount_usd,
-                thresholds_json,
-                value.enabled,
-                value.revision,
-                value.created_by_ref,
-                value.updated_by_ref,
-                value.created_at,
-                value.updated_at,
-            )
+                current_revision = int(_value(current, 0)) if current is not None else 0
+                if current_revision != base_revision or value.revision != base_revision + 1:
+                    raise MemberBudgetConflictError("member budget revision conflict")
+                if value.enabled:
+                    active = cursor.execute(
+                        """/* finops:lock-active-member-budget */
+                        SELECT TOP 1 budget_id
+                        FROM df_finops.member_budget WITH (UPDLOCK, HOLDLOCK)
+                        WHERE tenant_ref = ? AND actor_ref = ? AND enabled = 1 AND budget_id <> ?""",
+                        tenant_ref,
+                        value.member_ref,
+                        value.budget_id,
+                    ).fetchone()
+                    if active is not None:
+                        raise MemberBudgetConflictError("active member budget already exists")
+                cursor.execute(
+                    """/* finops:save-member-budget */
+                    MERGE df_finops.member_budget WITH (HOLDLOCK) AS target
+                    USING (SELECT ? AS tenant_ref, ? AS budget_id) AS source
+                    ON target.tenant_ref = source.tenant_ref AND target.budget_id = source.budget_id
+                    WHEN MATCHED THEN UPDATE SET
+                        actor_ref = ?, period_type = ?, amount_usd = ?, thresholds_json = ?, enabled = ?,
+                        revision = ?, updated_by_ref = ?, updated_at = ?
+                    WHEN NOT MATCHED THEN INSERT (
+                        tenant_ref, budget_id, actor_ref, period_type, amount_usd, thresholds_json, enabled,
+                        revision, created_by_ref, updated_by_ref, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+                    tenant_ref,
+                    value.budget_id,
+                    value.member_ref,
+                    value.period_type,
+                    value.amount_usd,
+                    thresholds_json,
+                    value.enabled,
+                    value.revision,
+                    value.updated_by_ref,
+                    value.updated_at,
+                    tenant_ref,
+                    value.budget_id,
+                    value.member_ref,
+                    value.period_type,
+                    value.amount_usd,
+                    thresholds_json,
+                    value.enabled,
+                    value.revision,
+                    value.created_by_ref,
+                    value.updated_by_ref,
+                    value.created_at,
+                    value.updated_at,
+                )
+        except FinOpsPersistenceError as exc:
+            if _is_unique_violation(exc):
+                raise MemberBudgetConflictError("member budget revision conflict") from None
+            raise
         return value
 
     def disable_budget(
@@ -146,54 +151,76 @@ class SqlMemberBudgetRepository:
     def save_notification_setting(
         self, tenant_ref: str, value: NotificationSetting, *, base_revision: int
     ) -> NotificationSetting:
-        with self._transaction() as cursor:
-            current = cursor.execute(
-                """/* finops:lock-notification-setting-revision */
-                SELECT revision FROM df_finops.notification_setting WITH (UPDLOCK, HOLDLOCK)
-                WHERE tenant_ref = ?""",
-                tenant_ref,
-            ).fetchone()
-            current_revision = int(_value(current, 0)) if current is not None else 0
-            if current_revision != base_revision or value.revision != base_revision + 1:
-                raise MemberBudgetConflictError("notification setting revision conflict")
-            cursor.execute(
-                """/* finops:save-notification-setting */
-                MERGE df_finops.notification_setting WITH (HOLDLOCK) AS target
-                USING (SELECT ? AS tenant_ref) AS source
-                ON target.tenant_ref = source.tenant_ref
-                WHEN MATCHED THEN UPDATE SET
-                    recipient_actor_ref = ?, recipient_email = ?, sender_display_name = ?,
-                    subject_template = ?, body_template = ?, enabled = ?, revision = ?,
-                    updated_by_ref = ?, updated_at = ?
-                WHEN NOT MATCHED THEN INSERT (
-                    tenant_ref, recipient_actor_ref, recipient_email, sender_display_name,
-                    subject_template, body_template, enabled, revision, created_by_ref,
-                    updated_by_ref, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
-                tenant_ref,
-                value.recipient_actor_ref,
-                value.recipient_email,
-                value.sender_display_name,
-                value.subject_template,
-                value.body_template,
-                value.enabled,
-                value.revision,
-                value.updated_by_ref,
-                value.updated_at,
-                tenant_ref,
-                value.recipient_actor_ref,
-                value.recipient_email,
-                value.sender_display_name,
-                value.subject_template,
-                value.body_template,
-                value.enabled,
-                value.revision,
-                value.created_by_ref,
-                value.updated_by_ref,
-                value.created_at,
-                value.updated_at,
-            )
+        try:
+            with self._transaction() as cursor:
+                current = cursor.execute(
+                    """/* finops:lock-notification-setting-revision */
+                    SELECT revision FROM df_finops.notification_setting WITH (UPDLOCK, HOLDLOCK)
+                    WHERE tenant_ref = ?""",
+                    tenant_ref,
+                ).fetchone()
+                current_revision = int(_value(current, 0)) if current is not None else 0
+                if current_revision != base_revision or value.revision != base_revision + 1:
+                    raise MemberBudgetConflictError("notification setting revision conflict")
+                cursor.execute(
+                    """/* finops:save-notification-setting */
+                    MERGE df_finops.notification_setting WITH (HOLDLOCK) AS target
+                    USING (SELECT ? AS tenant_ref) AS source
+                    ON target.tenant_ref = source.tenant_ref
+                    WHEN MATCHED THEN UPDATE SET
+                        recipient_actor_ref = ?, recipient_email = ?, sender_display_name = ?,
+                        subject_template = ?, body_template = ?, enabled = ?, revision = ?,
+                        updated_by_ref = ?, updated_at = ?
+                    WHEN NOT MATCHED THEN INSERT (
+                        tenant_ref, recipient_actor_ref, recipient_email, sender_display_name,
+                        subject_template, body_template, enabled, revision, created_by_ref,
+                        updated_by_ref, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+                    tenant_ref,
+                    value.recipient_actor_ref,
+                    value.recipient_email,
+                    value.sender_display_name,
+                    value.subject_template,
+                    value.body_template,
+                    value.enabled,
+                    value.revision,
+                    value.updated_by_ref,
+                    value.updated_at,
+                    tenant_ref,
+                    value.recipient_actor_ref,
+                    value.recipient_email,
+                    value.sender_display_name,
+                    value.subject_template,
+                    value.body_template,
+                    value.enabled,
+                    value.revision,
+                    value.created_by_ref,
+                    value.updated_by_ref,
+                    value.created_at,
+                    value.updated_at,
+                )
+        except FinOpsPersistenceError as exc:
+            if _is_unique_violation(exc):
+                raise MemberBudgetConflictError("notification setting revision conflict") from None
+            raise
         return value
+
+    def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None) -> tuple[BudgetAlert, ...]:
+        budget_filter = "" if budget_id is None else " AND budget_id = ?"
+        parameters: tuple[Any, ...] = (tenant_ref,) if budget_id is None else (tenant_ref, budget_id)
+        with self._transaction() as cursor:
+            rows = cursor.execute(
+                f"""/* finops:list-budget-alerts */
+                SELECT alert_id, budget_id, actor_ref, period_key, threshold_pct,
+                       budget_amount_usd, estimated_spend_usd, pricing_coverage_pct,
+                       budget_revision, notification_revision, delivery_state,
+                       safe_error_category, attempt_count, triggered_at, sent_at, updated_at
+                FROM df_finops.budget_alert
+                WHERE tenant_ref = ?{budget_filter}
+                ORDER BY triggered_at, alert_id""",
+                *parameters,
+            ).fetchall()
+        return tuple(_alert_from_row(tenant_ref, row) for row in rows)
 
     def claim_alert(self, value: BudgetAlert) -> bool:
         """Insert the durable threshold claim; a unique-key collision means claimed."""
@@ -227,11 +254,24 @@ class SqlMemberBudgetRepository:
                 )
             return True
         except FinOpsPersistenceError as exc:
-            cause = exc.__cause__
-            text = str(cause or "").lower()
-            if "2627" in text or "2601" in text or "unique" in text or "duplicate" in text:
+            if not _is_unique_violation(exc):
+                raise
+            if self._alert_threshold_exists(value):
                 return False
-            raise
+            raise MemberBudgetConflictError("budget alert id conflict") from None
+
+    def _alert_threshold_exists(self, value: BudgetAlert) -> bool:
+        with self._transaction() as cursor:
+            row = cursor.execute(
+                """/* finops:get-budget-alert-threshold */
+                SELECT TOP 1 alert_id FROM df_finops.budget_alert
+                WHERE tenant_ref = ? AND budget_id = ? AND period_key = ? AND threshold_pct = ?""",
+                value.tenant_ref,
+                value.budget_id,
+                value.period_key,
+                value.threshold_pct,
+            ).fetchone()
+        return row is not None
 
     @contextmanager
     def _transaction(self) -> Iterator[Any]:
@@ -301,6 +341,41 @@ def _notification_from_row(row: Any) -> NotificationSetting:
         created_at=_value(row, 9),
         updated_at=_value(row, 10),
     )
+
+
+def _alert_from_row(tenant_ref: str, row: Any) -> BudgetAlert:
+    return BudgetAlert(
+        alert_id=_value(row, 0),
+        tenant_ref=tenant_ref,
+        budget_id=_value(row, 1),
+        actor_ref=_value(row, 2),
+        period_key=_value(row, 3),
+        threshold_pct=_value(row, 4),
+        budget_amount_usd=_value(row, 5),
+        estimated_spend_usd=_value(row, 6),
+        pricing_coverage_pct=_value(row, 7),
+        budget_revision=_value(row, 8),
+        notification_revision=_value(row, 9),
+        delivery_state=_value(row, 10),
+        safe_error_category=_value(row, 11),
+        attempt_count=_value(row, 12),
+        triggered_at=_value(row, 13),
+        sent_at=_value(row, 14),
+        updated_at=_value(row, 15),
+    )
+
+
+def _is_unique_violation(exc: BaseException) -> bool:
+    values: list[BaseException | None] = [exc]
+    while values:
+        current = values.pop()
+        if current is None:
+            continue
+        text = str(current).lower()
+        if "2627" in text or "2601" in text or "unique" in text or "duplicate" in text:
+            return True
+        values.append(current.__cause__)
+    return False
 
 
 __all__ = ["SqlMemberBudgetRepository"]

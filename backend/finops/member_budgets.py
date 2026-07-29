@@ -83,7 +83,7 @@ class BudgetAlert(BaseModel):
     tenant_ref: str = Field(min_length=1, max_length=128, exclude=True, repr=False)
     budget_id: str = Field(min_length=1, max_length=64)
     actor_ref: str = Field(min_length=1, max_length=128)
-    period_key: str = Field(pattern=r"^\d{4}-\d{2}$")
+    period_key: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
     threshold_pct: int = Field(ge=1, le=100)
     budget_amount_usd: Decimal = Field(gt=0, max_digits=19, decimal_places=8)
     estimated_spend_usd: Decimal = Field(ge=0, max_digits=19, decimal_places=8)

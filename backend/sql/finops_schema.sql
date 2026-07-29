@@ -715,6 +715,10 @@ BEGIN
         CONSTRAINT CK_finops_budget_alert_attempt CHECK (
             attempt_count BETWEEN 0 AND 3
         ),
+        CONSTRAINT CK_finops_budget_alert_period CHECK (
+            period_key LIKE '[0-9][0-9][0-9][0-9]-[0-1][0-9]'
+            AND SUBSTRING(period_key, 6, 2) BETWEEN '01' AND '12'
+        ),
         CONSTRAINT CK_finops_budget_alert_threshold CHECK (
             threshold_pct BETWEEN 1 AND 100
         )

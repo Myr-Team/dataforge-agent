@@ -24,6 +24,7 @@ class MemberBudgetRepository(Protocol):
         self, tenant_ref: str, value: NotificationSetting, *, base_revision: int
     ) -> NotificationSetting: ...
     def claim_alert(self, value: BudgetAlert) -> bool: ...
+    def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None) -> tuple[BudgetAlert, ...]: ...
 
 
 class InMemoryMemberBudgetRepository:
@@ -34,6 +35,7 @@ class InMemoryMemberBudgetRepository:
         self._budgets: dict[tuple[str, str], MemberBudget] = {}
         self._notifications: dict[str, NotificationSetting] = {}
         self._alerts: dict[tuple[str, str, str, int], BudgetAlert] = {}
+        self._alerts_by_id: dict[tuple[str, str], BudgetAlert] = {}
 
     def get_budget(self, tenant_ref: str, budget_id: str) -> MemberBudget | None:
         with self._lock:
@@ -104,8 +106,19 @@ class InMemoryMemberBudgetRepository:
         with self._lock:
             if key in self._alerts:
                 return False
+            if (value.tenant_ref, value.alert_id) in self._alerts_by_id:
+                raise MemberBudgetConflictError("budget alert id conflict")
             self._alerts[key] = value
+            self._alerts_by_id[(value.tenant_ref, value.alert_id)] = value
             return True
+
+    def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None) -> tuple[BudgetAlert, ...]:
+        with self._lock:
+            rows = [
+                alert for (tenant, _budget, _period, _threshold), alert in self._alerts.items()
+                if tenant == tenant_ref and (budget_id is None or alert.budget_id == budget_id)
+            ]
+        return tuple(sorted(rows, key=lambda alert: (alert.triggered_at, alert.alert_id)))
 
 
 __all__ = [

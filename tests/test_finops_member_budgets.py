@@ -10,6 +10,7 @@ from backend.finops.member_budget_repository import (
     MemberBudgetConflictError,
 )
 from backend.finops.member_budgets import (
+    BudgetAlert,
     MemberBudget,
     MemberBudgetDraft,
     MemberCostSummary,
@@ -63,6 +64,28 @@ def test_member_cost_summary_preserves_unpriced_coverage() -> None:
     assert value.data_status == "partial"
 
 
+@pytest.mark.parametrize("period_key", ("2026-00", "2026-13", "2026-1", "2026-001"))
+def test_budget_alert_requires_a_real_utc_calendar_month(period_key: str) -> None:
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="period_key"):
+        BudgetAlert(
+            alert_id="alert_safe",
+            tenant_ref="tenant_safe",
+            budget_id="budget_safe",
+            actor_ref="actor_safe",
+            period_key=period_key,
+            threshold_pct=80,
+            budget_amount_usd=Decimal("200"),
+            estimated_spend_usd=Decimal("190"),
+            pricing_coverage_pct=95,
+            budget_revision=1,
+            notification_revision=1,
+            delivery_state="pending",
+            triggered_at=now,
+            updated_at=now,
+        )
+
+
 def test_repository_isolates_member_budgets_and_rejects_stale_revisions() -> None:
     repository = InMemoryMemberBudgetRepository()
     created = repository.save_budget("tenant_a", _budget(revision=1), base_revision=0)
@@ -88,3 +111,41 @@ def test_repository_retains_disabled_budget_history_and_enforces_one_active_memb
     )
     assert replacement.enabled is True
     assert len(repository.list_budgets("tenant_a", include_disabled=True)) == 2
+
+
+def test_repository_rejects_second_enabled_budget_for_the_same_member() -> None:
+    repository = InMemoryMemberBudgetRepository()
+    repository.save_budget("tenant_a", _budget(revision=1), base_revision=0)
+
+    with pytest.raises(MemberBudgetConflictError, match="active member budget"):
+        repository.save_budget(
+            "tenant_a",
+            _budget(revision=1, budget_id="second_budget"),
+            base_revision=0,
+        )
+
+
+def test_repository_treats_only_matching_alert_threshold_as_idempotent() -> None:
+    repository = InMemoryMemberBudgetRepository()
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    first = BudgetAlert(
+        alert_id="alert_safe",
+        tenant_ref="tenant_safe",
+        budget_id="budget_safe",
+        actor_ref="actor_safe",
+        period_key="2026-07",
+        threshold_pct=80,
+        budget_amount_usd=Decimal("200"),
+        estimated_spend_usd=Decimal("190"),
+        pricing_coverage_pct=95,
+        budget_revision=1,
+        notification_revision=1,
+        delivery_state="pending",
+        triggered_at=now,
+        updated_at=now,
+    )
+    assert repository.claim_alert(first) is True
+    assert repository.claim_alert(first.model_copy(update={"alert_id": "other_alert"})) is False
+
+    with pytest.raises(MemberBudgetConflictError, match="alert id"):
+        repository.claim_alert(first.model_copy(update={"threshold_pct": 95}))

@@ -43,3 +43,10 @@ def test_member_budget_sql_uses_json_thresholds_and_request_actor_window_index()
     assert "ix_finops_request_actor_window" in schema
     assert "on df_finops.request_event (tenant_ref, actor_ref, occurred_at)" in schema
     assert "include (cost_amount, evidence_state)" in schema
+
+
+def test_member_budget_sql_rejects_non_calendar_month_period_keys() -> None:
+    schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
+    assert "ck_finops_budget_alert_period" in schema
+    assert "period_key like '[0-9][0-9][0-9][0-9]-[0-1][0-9]'" in schema
+    assert "substring(period_key, 6, 2) between '01' and '12'" in schema

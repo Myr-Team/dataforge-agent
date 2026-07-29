@@ -56,6 +56,7 @@ def test_member_budget_schema_is_additive_and_uses_no_destructive_rewrite() -> N
 
     assert "drop table df_finops.member_budget" not in schema
     assert "truncate table df_finops.member_budget" not in schema
+    assert "ck_finops_budget_alert_period" in schema
 
 
 def test_provider_schema_constrains_public_states_roles_and_json() -> None:
