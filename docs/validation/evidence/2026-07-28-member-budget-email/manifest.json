@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "tested_commit": "2e9801b1eb51a9766f4065724bc1ebe4e71acee4",
+  "provenance_commit_scope": "This manifest, four sanitized local logs, and the candidate record PASS table only. No implementation or runbook behavior changed after the tested commit.",
+  "evidence_scope": "Local automated regression only. No Azure inventory, ACS resource, managed identity, RBAC, SQL migration, deployment, Container Apps Job, email, second-device, or traffic acceptance.",
+  "decision": {
+    "local_automated_gate": "PASS",
+    "live_candidate_gate": "PENDING — NOT ACCEPTED",
+    "production_release": "PENDING — NOT ACCEPTED"
+  },
+  "sanitization": {
+    "environment_dump_included": false,
+    "method": "Native command output was captured once, then absolute worktree and executable paths were replaced with [WORKTREE], ANSI control sequences were removed, and trailing whitespace was normalized.",
+    "scan": "No AWS access-key ID, bearer token, password/secret assignment, connection string, subscription/principal ID label, email address, absolute user path, or Program Files path was found in the committed evidence files.",
+    "not_included": "No request/response body, raw Entra identity, member email, ACS message ID, resource ID, credential, endpoint value, or deployment environment dump."
+  },
+  "commands": [
+    {
+      "name": "pytest",
+      "working_directory": "repository root",
+      "command": "python -m pytest -q",
+      "utc_started": "2026-07-29T10:42:41.5090802Z",
+      "utc_ended": "2026-07-29T10:44:44.9894637Z",
+      "exit_code": 0,
+      "tool_version": "Python 3.14.4; pytest 9.1.1",
+      "count": "1484 passed, 1 skipped, 1 warning",
+      "evidence": [
+        {
+          "filename": "pytest-stdout.log",
+          "sha256": "8D1E08753DB0E74C432214280D6E4B6E209B2A61D700FFB07AAD475148F30CFF"
+        }
+      ]
+    },
+    {
+      "name": "node-test",
+      "working_directory": "web",
+      "command": "node --test",
+      "utc_started": "2026-07-29T10:44:44.9914663Z",
+      "utc_ended": "2026-07-29T10:44:47.2886628Z",
+      "exit_code": 0,
+      "tool_version": "Node v24.14.1",
+      "count": "158 passed, 0 failed, 0 skipped",
+      "evidence": [
+        {
+          "filename": "node-test.tap",
+          "sha256": "CC5D1EFAB7EB4BCF1089A8CF4E6F05F55987D57E4C3D803FFB12B14A1A982FB9"
+        }
+      ]
+    },
+    {
+      "name": "vite-build",
+      "working_directory": "web",
+      "command": "npm run build",
+      "utc_started": "2026-07-29T10:44:47.2896621Z",
+      "utc_ended": "2026-07-29T10:44:49.0850471Z",
+      "exit_code": 0,
+      "tool_version": "npm 11.11.0; vite 8.0.16; Node v24.14.1",
+      "count": "1780 modules transformed; build completed with existing chunk-size advisory",
+      "evidence": [
+        {
+          "filename": "vite-build.log",
+          "sha256": "8CC53E47D0DD972EFEA6C031CE1D3997BC5EED0FCC758764ED001BE21D38A588"
+        }
+      ]
+    },
+    {
+      "name": "playwright",
+      "working_directory": "web",
+      "command": "npx playwright test",
+      "utc_started": "2026-07-29T10:44:49.0860456Z",
+      "utc_ended": "2026-07-29T10:45:33.5296208Z",
+      "exit_code": 0,
+      "tool_version": "Playwright 1.62.0",
+      "count": "26 passed",
+      "evidence": [
+        {
+          "filename": "playwright.log",
+          "sha256": "4955914B51FB25520EBEA0693A5E3435C8C53028D234187DCB2268E735F16011"
+        }
+      ]
+    },
+    {
+      "name": "git-diff-check",
+      "working_directory": "repository root",
+      "command": "git diff --check",
+      "utc_started": "2026-07-29T10:45:33.5318700Z",
+      "utc_ended": "2026-07-29T10:45:33.6291861Z",
+      "exit_code": 0,
+      "tool_version": "git version 2.53.0.windows.2",
+      "count": "clean",
+      "evidence": []
+    }
+  ],
+  "local_screenshot_paths": [
+    "output/playwright/task6-member-budget-entry-desktop.png",
+    "output/playwright/task6-member-budget-page-desktop.png",
+    "output/playwright/task6-member-budget-page-mobile.png"
+  ],
+  "screenshot_evidence_boundary": "Local Playwright UI artifacts only; not committed and not evidence of live Azure identity, ACS delivery, authorization, cross-device persistence, or production behavior."
+}

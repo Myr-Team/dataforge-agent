@@ -5,7 +5,7 @@
 This record separates local automated evidence from live Azure and email
 acceptance. It is not production approval.
 
-**Current decision: local gate awaiting execution; live candidate release gate
+**Current decision: local automated gate PASS; live candidate release gate
 `PENDING — NOT ACCEPTED`.**
 
 No Azure inventory, resource creation, SQL migration, managed-identity/RBAC
@@ -27,16 +27,23 @@ SMTP credential is accepted.
 
 ## Local automated regression
 
-The exact tested commit and evidence hashes will be added in a provenance-only
-follow-up commit after the documentation commit has been tested unchanged.
+The full local gate was run once against exact tested commit
+`2e9801b1eb51a9766f4065724bc1ebe4e71acee4`. This candidate record and the
+evidence manifest are a provenance-only follow-up: no implementation or
+candidate-runbook behavior changed after the tested commit.
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| `python -m pytest -q` | NOT RUN | Pending local full gate. |
-| `node --test` in `web` | NOT RUN | Pending local full gate. |
-| `npm run build` in `web` | NOT RUN | Pending local full gate. |
-| `npx playwright test` in `web` | NOT RUN | Pending local full gate. |
-| `git diff --check` | NOT RUN | Pending local full gate. |
+| `python -m pytest -q` | PASS — 1484 passed, 1 skipped, 1 warning | [Pytest output](evidence/2026-07-28-member-budget-email/pytest-stdout.log) |
+| `node --test` in `web` | PASS — 158 passed | [Node TAP output](evidence/2026-07-28-member-budget-email/node-test.tap) |
+| `npm run build` in `web` | PASS — 1780 modules transformed | [Vite output](evidence/2026-07-28-member-budget-email/vite-build.log); the existing chunk-size advisory remains. |
+| `npx playwright test` in `web` | PASS — 26 passed | [Playwright output](evidence/2026-07-28-member-budget-email/playwright.log) |
+| `git diff --check` | PASS — clean | Recorded in the [evidence manifest](evidence/2026-07-28-member-budget-email/manifest.json). |
+| Local desktop/mobile screenshot review | PASS — legible, aligned, and no visible mobile horizontal overflow | Local-only paths listed below; not live-candidate evidence. |
+
+The manifest records exact commands, UTC intervals, tool versions, exit codes,
+sanitization, and SHA-256 hashes. Local PASS proves only the software regression
+gate; it does not promote any live Azure row below.
 
 Expected local screenshot paths:
 
