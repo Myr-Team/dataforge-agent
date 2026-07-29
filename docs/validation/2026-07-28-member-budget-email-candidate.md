@@ -64,10 +64,12 @@ and minimum role assignment have not been explicitly approved for execution.
 | Acceptance item | Status | Required redacted evidence |
 | --- | --- | --- |
 | Approved RG, region/data location, ACS names, managed domain, sender, and administrator recipient | PENDING — NOT ACCEPTED | Human approval, names, and UTC timestamp only. |
-| Email Communication Services, Azure Managed Domain, linked Communication Services resource | PENDING — NOT ACCEPTED | Resource names and link outcome only; no IDs. |
+| Email Communication Services, Azure Managed Domain, linked Communication Services resource | PENDING — NOT ACCEPTED | Resource names, pre/post link counts, preservation result, protected rollback-record reference, and outcome only; no IDs. |
 | Backend system-assigned managed identity has minimum ACS Email send role | PENDING — NOT ACCEPTED | Role name/definition and assignment outcome only; no principal/resource IDs. |
 | Additive SQL migration completes twice and required objects exist | PENDING — NOT ACCEPTED | UTC timestamps, exit status, and object/constraint/index names. |
+| Filesystem-level pre-build scan finds no local environment/private credential artifact | PENDING — NOT ACCEPTED | Exit status and zero count only; no file names or contents. |
 | Immutable backend and web images built from the tested release commit | PENDING — NOT ACCEPTED | Commit, immutable digests, and build timestamps. |
+| Before any candidate creation, both apps are `Multiple`, explicitly route named stable revision at 100%, and have no `latestRevision` route | PENDING — NOT ACCEPTED | Safe app/revision names, mode, and traffic summary. |
 | Backend and web candidate revisions are Healthy at 0% traffic | PENDING — NOT ACCEPTED | Revision names, health, traffic, and rollback targets. |
 | Health and authentication checks | PENDING — NOT ACCEPTED | HTTP status categories for health, unauthenticated, Owner/Admin, and member. |
 | Active administrator recipient can be saved; member/external recipient is denied | PENDING — NOT ACCEPTED | Safe outcome categories only; do not record email addresses. |

@@ -296,6 +296,10 @@ approval boundary are documented in the
 The corresponding
 [candidate acceptance record](docs/validation/2026-07-28-member-budget-email-candidate.md)
 distinguishes local PASS evidence from live Azure checks that are still pending.
+The runbook also requires a filesystem-level sensitive-file scan before either
+Docker build; `.dockerignore` is defense in depth and must not be treated as
+permission to leave a local `.env`, private key, or credential artifact in the
+build workspace.
 
 ## Monitoring and model routing
 

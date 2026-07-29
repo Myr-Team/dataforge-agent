@@ -18,3 +18,32 @@ workspaces/ws-*/
 *.log
 *.pyc
 __pycache__/
+
+# Never place local environment files or private credential artifacts in any
+# Docker build context. Safe templates are documentation, not runtime inputs.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.pfx
+**/*.p12
+**/*.ppk
+**/*.jks
+**/*.keystore
+**/id_rsa
+**/id_rsa.*
+**/id_ed25519
+**/id_ed25519.*
+**/credentials
+**/credentials.*
+**/*credentials*.json
+**/*service-account*.json
+**/*service_account*.json
+**/azureProfile.json
+**/accessTokens.json
+**/*.tfvars
+**/*.tfstate
+**/*.tfstate.*
+**/.aws/
+**/.azure/
+**/.ssh/

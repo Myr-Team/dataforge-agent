@@ -33,6 +33,7 @@ $ApprovedEmailService = '<approved-email-service-name>'
 $ApprovedCommunicationService = '<approved-communication-service-name>'
 $ApprovedBackendApp = '<approved-backend-container-app>'
 $ApprovedWebApp = '<approved-web-container-app>'
+$ApprovedContainerAppsEnvironment = '<approved-container-app-environment>'
 $ApprovedRegistry = '<approved-acr-name>'
 $ApprovedJob = '<approved-member-budget-job-name>'
 $ApprovedSenderAddress = '<approved-AzureManagedDomain-sender-address>'
@@ -57,8 +58,20 @@ if ($variables | Where-Object { -not $_ -or $_ -match '^<.*>$' }) {
   throw 'STOP: approved candidate inputs are incomplete'
 }
 az account set --subscription $ApprovedSubscription
-git rev-parse HEAD
-git status --short
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: approved subscription selection failed'
+}
+$ObservedReleaseCommit = (git rev-parse HEAD).Trim()
+if (
+  $LASTEXITCODE -ne 0 -or
+  $ObservedReleaseCommit -cne $ReleaseCommit
+) {
+  throw 'STOP: checkout does not match the approved release commit'
+}
+$TrackedReleaseChanges = @(git status --porcelain --untracked-files=no)
+if ($LASTEXITCODE -ne 0 -or $TrackedReleaseChanges.Count -ne 0) {
+  throw 'STOP: release checkout contains unreviewed tracked changes'
+}
 ```
 
 The commit output must exactly equal `$ReleaseCommit`, and the release worktree
@@ -108,20 +121,74 @@ if (-not $EmailDomainId -or -not $CommunicationServiceId) {
 }
 ```
 
-Link the Azure Managed Domain to the Communication Services resource. Confirm
-the API version in the approved tenant before execution; do not proceed if the
-provider rejects it.
+Link the Azure Managed Domain to the Communication Services resource without
+blindly replacing an existing link. Confirm the API version in the approved
+tenant before execution; do not proceed if the provider rejects it. Keep the
+pre-change list only in the protected operator record so it can be used for
+rollback; resource IDs must not be copied into Git evidence.
 
 ```powershell
 $CommunicationApiVersion = '2023-04-01'
-$linkBody = @{ properties = @{ linkedDomains = @($EmailDomainId) } } |
-  ConvertTo-Json -Depth 5 -Compress
-az rest `
-  --method patch `
-  --uri "$CommunicationServiceId?api-version=$CommunicationApiVersion" `
-  --body $linkBody `
-  --headers 'Content-Type=application/json'
+$CommunicationUri = "$CommunicationServiceId?api-version=$CommunicationApiVersion"
+$CommunicationBefore = az rest --method get --uri $CommunicationUri -o json |
+  ConvertFrom-Json
+$LinkedDomainsBeforeChange = @(
+  $CommunicationBefore.properties.linkedDomains |
+    Where-Object { $_ } |
+    ForEach-Object { [string]$_ }
+)
+$LinkedDomainsRollbackJson = $LinkedDomainsBeforeChange |
+  ConvertTo-Json -Compress
+# Save $LinkedDomainsRollbackJson in the protected operator change record only.
+
+$MergedLinkedDomains = @(
+  $LinkedDomainsBeforeChange + $EmailDomainId |
+    Sort-Object -Unique
+)
+$WouldRemoveDomain = @(
+  $LinkedDomainsBeforeChange |
+    Where-Object { $_ -notin $MergedLinkedDomains }
+)
+if ($WouldRemoveDomain.Count -ne 0) {
+  throw 'STOP: domain replacement/removal needs separate explicit approval'
+}
+
+if ($EmailDomainId -notin $LinkedDomainsBeforeChange) {
+  $linkBody = @{ properties = @{ linkedDomains = $MergedLinkedDomains } } |
+    ConvertTo-Json -Depth 5 -Compress
+  az rest `
+    --method patch `
+    --uri $CommunicationUri `
+    --body $linkBody `
+    --headers 'Content-Type=application/json'
+  if ($LASTEXITCODE -ne 0) {
+    throw 'STOP: ACS domain merge failed; do not replace an existing domain'
+  }
+}
+
+$CommunicationAfter = az rest --method get --uri $CommunicationUri -o json |
+  ConvertFrom-Json
+$LinkedDomainsAfterChange = @(
+  $CommunicationAfter.properties.linkedDomains |
+    Where-Object { $_ } |
+    ForEach-Object { [string]$_ }
+)
+$MissingAfterMerge = @(
+  $MergedLinkedDomains |
+    Where-Object { $_ -notin $LinkedDomainsAfterChange }
+)
+if (
+  $MissingAfterMerge.Count -ne 0 -or
+  $EmailDomainId -notin $LinkedDomainsAfterChange
+) {
+  throw 'STOP: linked domain verification failed; use the protected rollback value'
+}
 ```
+
+This procedure only adds the approved domain while preserving every existing
+link. If the service requires replacing or removing any link, stop and obtain a
+separate human-approved change and rollback plan; do not adapt this merge
+command into a replacement.
 
 Enable the existing backend system-assigned identity and grant only the
 separately approved ACS Email data-plane role. Do not grant Owner, Contributor,
@@ -159,10 +226,20 @@ identity.
 ```powershell
 $env:DF_FINOPS_SQL_SERVER = $ApprovedSqlServer
 $env:DF_FINOPS_SQL_DATABASE = $ApprovedSqlDatabase
-python -m backend.finops.migrate
-python -m backend.finops.migrate
-if ($LASTEXITCODE -ne 0) {
-  throw 'STOP: additive migration did not complete twice'
+$Migration1StartedAt = (Get-Date).ToUniversalTime().ToString('o')
+& python -m backend.finops.migrate
+$Migration1ExitCode = $LASTEXITCODE
+$Migration1EndedAt = (Get-Date).ToUniversalTime().ToString('o')
+if ($Migration1ExitCode -ne 0) {
+  throw 'STOP: first additive migration failed; second run was not attempted'
+}
+
+$Migration2StartedAt = (Get-Date).ToUniversalTime().ToString('o')
+& python -m backend.finops.migrate
+$Migration2ExitCode = $LASTEXITCODE
+$Migration2EndedAt = (Get-Date).ToUniversalTime().ToString('o')
+if ($Migration2ExitCode -ne 0) {
+  throw 'STOP: second additive migration failed'
 }
 ```
 
@@ -178,18 +255,74 @@ Retain tables on rollback. Do not drop FinOps evidence.
 
 ## 3. Build immutable images
 
-Build from the exact approved commit and record both digests.
+Build from the exact approved commit and record both digests. Before either
+build, scan the filesystem rather than Git's tracked-file view: an ignored
+`backend/.env` must still stop the release. The scan reports only a count and
+never prints file names or contents. The two explicitly allowed files below are
+committed non-secret templates/development defaults and remain excluded from
+the Docker contexts.
 
 ```powershell
+$RepositoryRoot = (Resolve-Path '.').Path
+$AllowedNonSecretEnvFiles = @(
+  [IO.Path]::GetFullPath((Join-Path $RepositoryRoot 'backend\.env.example')),
+  [IO.Path]::GetFullPath((Join-Path $RepositoryRoot 'web\.env.development'))
+)
+$ExcludedScanSegments = @(
+  '\.git\',
+  '\node_modules\',
+  '\.venv\',
+  '\dist\',
+  '\output\',
+  '\test-results\',
+  '\.playwright-cli\'
+)
+$SensitiveNamePattern = (
+  '^(?:\.env(?:\..+)?|id_rsa(?:\..+)?|id_ed25519(?:\..+)?|' +
+  'credentials(?:\..+)?|azureProfile\.json|accessTokens\.json)$|' +
+  '\.(?:pem|key|pfx|p12|ppk|jks|keystore|tfvars|tfstate(?:\..+)?)$|' +
+  '(?:credentials|service[-_]account).*\.json$'
+)
+$SensitiveBuildFiles = @(
+  Get-ChildItem -LiteralPath $RepositoryRoot -Force -File -Recurse -ErrorAction Stop |
+    Where-Object {
+      $fullName = $_.FullName
+      $excluded = $false
+      foreach ($segment in $ExcludedScanSegments) {
+        if ($fullName -like "*$segment*") {
+          $excluded = $true
+          break
+        }
+      }
+      -not $excluded -and
+        $AllowedNonSecretEnvFiles -notcontains $fullName -and
+        $_.Name -match $SensitiveNamePattern
+    }
+)
+if ($SensitiveBuildFiles.Count -ne 0) {
+  $SensitiveFileMessage = (
+    "STOP: found {0} sensitive file(s) in the release workspace; " +
+    'names and contents are intentionally suppressed'
+  ) -f $SensitiveBuildFiles.Count
+  Write-Error $SensitiveFileMessage
+  throw 'Remove sensitive files before any Docker build'
+}
+
 $ShortSha = git rev-parse --short=12 $ReleaseCommit
 az acr build `
   --registry $ApprovedRegistry `
   --image "dataforge-backend:member-budget-$ShortSha" `
   --file backend/Dockerfile .
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: backend immutable image build failed'
+}
 az acr build `
   --registry $ApprovedRegistry `
   --image "dataforge-web:member-budget-$ShortSha" `
-  --file web/Dockerfile .
+  --file Dockerfile web
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: web immutable image build failed'
+}
 ```
 
 Resolve immutable digests through the approved registry workflow. Do not deploy
@@ -202,10 +335,63 @@ $BackendSuffix = "mb-$ShortSha"
 $WebSuffix = "mb-$ShortSha"
 ```
 
-## 4. Create backend and web zero-traffic candidates
+## 4. Prove safe revision mode and create zero-traffic candidates
 
-The backend candidate is created first. It uses ACS endpoint and sender
-configuration only; no connection string or key is accepted.
+Before creating either revision, prove both apps already use `Multiple` revision
+mode and route exactly 100% to the explicitly named stable revision. A
+`latestRevision` route is not accepted. If either precondition fails, stop:
+changing revision mode or production traffic is a separate approved operation,
+not part of candidate creation.
+
+```powershell
+function Assert-ExplicitStableTraffic {
+  param(
+    [Parameter(Mandatory)][string]$AppName,
+    [Parameter(Mandatory)][string]$StableRevision
+  )
+
+  $activeMode = az containerapp show `
+    --name $AppName `
+    --resource-group $ApprovedResourceGroup `
+    --query properties.configuration.activeRevisionsMode -o tsv
+  if ($LASTEXITCODE -ne 0 -or $activeMode -cne 'Multiple') {
+    throw "STOP: $AppName is not explicitly in Multiple revision mode"
+  }
+
+  $traffic = @(
+    az containerapp ingress traffic show `
+      --name $AppName `
+      --resource-group $ApprovedResourceGroup -o json |
+      ConvertFrom-Json
+  )
+  if (
+    $LASTEXITCODE -ne 0 -or
+    $traffic.Count -eq 0 -or
+    @($traffic | Where-Object { $_.latestRevision -eq $true }).Count -ne 0
+  ) {
+    throw "STOP: $AppName has missing or latestRevision traffic"
+  }
+  $positiveTraffic = @($traffic | Where-Object { [int]$_.weight -gt 0 })
+  if (
+    $positiveTraffic.Count -ne 1 -or
+    [string]$positiveTraffic[0].revisionName -cne $StableRevision -or
+    [int]$positiveTraffic[0].weight -ne 100
+  ) {
+    throw "STOP: $AppName is not explicitly stable=100 before candidate creation"
+  }
+}
+
+Assert-ExplicitStableTraffic `
+  -AppName $ApprovedBackendApp `
+  -StableRevision $PreviousBackendRevision
+Assert-ExplicitStableTraffic `
+  -AppName $ApprovedWebApp `
+  -StableRevision $PreviousWebRevision
+```
+
+Only after both assertions pass may the backend candidate be created. It uses
+ACS endpoint and sender configuration only; no connection string or key is
+accepted.
 
 ```powershell
 $AcsEndpoint = az communication show `
@@ -216,6 +402,8 @@ if (-not $AcsEndpoint) {
   throw 'STOP: ACS endpoint unavailable'
 }
 $AcsEndpoint = "https://$AcsEndpoint"
+$BackendCandidateRevision = "$ApprovedBackendApp--$BackendSuffix"
+$WebCandidateRevision = "$ApprovedWebApp--$WebSuffix"
 
 az containerapp revision copy `
   --name $ApprovedBackendApp `
@@ -230,37 +418,124 @@ az containerapp revision copy `
     DF_ACS_EMAIL_ENDPOINT=$AcsEndpoint `
     DF_ACS_EMAIL_SENDER_ADDRESS=$ApprovedSenderAddress `
     DF_FINOPS_PORTAL_URL=$ApprovedPortalUrl
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: backend candidate creation failed'
+}
+
+az containerapp ingress traffic set `
+  --name $ApprovedBackendApp `
+  --resource-group $ApprovedResourceGroup `
+  --revision-weight "$PreviousBackendRevision=100" "$BackendCandidateRevision=0"
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: backend zero-traffic assignment failed'
+}
+
+function Assert-CandidateZeroTraffic {
+  param(
+    [Parameter(Mandatory)][string]$AppName,
+    [Parameter(Mandatory)][string]$StableRevision,
+    [Parameter(Mandatory)][string]$CandidateRevision
+  )
+  $traffic = @(
+    az containerapp ingress traffic show `
+      --name $AppName `
+      --resource-group $ApprovedResourceGroup -o json |
+      ConvertFrom-Json
+  )
+  if (
+    $LASTEXITCODE -ne 0 -or
+    @($traffic | Where-Object { $_.latestRevision -eq $true }).Count -ne 0
+  ) {
+    throw "STOP: $AppName traffic is missing or uses latestRevision"
+  }
+  $stable = @(
+    $traffic |
+      Where-Object {
+        [string]$_.revisionName -ceq $StableRevision -and
+        [int]$_.weight -eq 100
+      }
+  )
+  $candidate = @(
+    $traffic |
+      Where-Object {
+        [string]$_.revisionName -ceq $CandidateRevision -and
+        [int]$_.weight -eq 0
+      }
+  )
+  $unexpectedPositive = @(
+    $traffic |
+      Where-Object {
+        [int]$_.weight -gt 0 -and
+        [string]$_.revisionName -cne $StableRevision
+      }
+  )
+  if (
+    $stable.Count -ne 1 -or
+    $candidate.Count -ne 1 -or
+    $unexpectedPositive.Count -ne 0
+  ) {
+    throw "STOP: $AppName candidate is not candidate=0/stable=100"
+  }
+}
+
+Assert-CandidateZeroTraffic `
+  -AppName $ApprovedBackendApp `
+  -StableRevision $PreviousBackendRevision `
+  -CandidateRevision $BackendCandidateRevision
+$BackendCandidateHealth = az containerapp revision show `
+  --name $ApprovedBackendApp `
+  --resource-group $ApprovedResourceGroup `
+  --revision $BackendCandidateRevision `
+  --query properties.healthState -o tsv
+if ($LASTEXITCODE -ne 0 -or $BackendCandidateHealth -cne 'Healthy') {
+  throw 'STOP: backend candidate is not Healthy at verified zero traffic'
+}
+```
+
+Record the backend gate result, then obtain a separate explicit confirmation
+before creating the web candidate:
+
+```powershell
+$ApprovedProceedWithWebCandidate = Read-Host (
+  'Type CREATE_WEB_AFTER_BACKEND_ZERO_TRAFFIC to continue'
+)
+if (
+  $ApprovedProceedWithWebCandidate -cne
+  'CREATE_WEB_AFTER_BACKEND_ZERO_TRAFFIC'
+) {
+  throw 'STOP: web candidate was not explicitly approved'
+}
 
 az containerapp revision copy `
   --name $ApprovedWebApp `
   --resource-group $ApprovedResourceGroup `
   --revision-suffix $WebSuffix `
   --image $WebImage
-```
-
-Explicitly set and verify zero traffic before any signed-in validation:
-
-```powershell
-az containerapp ingress traffic set `
-  --name $ApprovedBackendApp `
-  --resource-group $ApprovedResourceGroup `
-  --revision-weight "$PreviousBackendRevision=100" "$ApprovedBackendApp--$BackendSuffix=0"
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: web candidate creation failed'
+}
 az containerapp ingress traffic set `
   --name $ApprovedWebApp `
   --resource-group $ApprovedResourceGroup `
-  --revision-weight "$PreviousWebRevision=100" "$ApprovedWebApp--$WebSuffix=0"
-
-az containerapp revision list `
-  --name $ApprovedBackendApp `
-  --resource-group $ApprovedResourceGroup `
-  --query "[].{name:name,health:properties.healthState,traffic:properties.trafficWeight}" -o table
-az containerapp revision list `
+  --revision-weight "$PreviousWebRevision=100" "$WebCandidateRevision=0"
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: web zero-traffic assignment failed'
+}
+Assert-CandidateZeroTraffic `
+  -AppName $ApprovedWebApp `
+  -StableRevision $PreviousWebRevision `
+  -CandidateRevision $WebCandidateRevision
+$WebCandidateHealth = az containerapp revision show `
   --name $ApprovedWebApp `
   --resource-group $ApprovedResourceGroup `
-  --query "[].{name:name,health:properties.healthState,traffic:properties.trafficWeight}" -o table
+  --revision $WebCandidateRevision `
+  --query properties.healthState -o tsv
+if ($LASTEXITCODE -ne 0 -or $WebCandidateHealth -cne 'Healthy') {
+  throw 'STOP: web candidate is not Healthy at verified zero traffic'
+}
 ```
 
-Stop if either candidate is not `Healthy` or has non-zero production traffic.
+Do not start health/API acceptance until both post-create assertions pass.
 
 ## 5. Validate health, authorization, and UI with automatic sending off
 
@@ -326,7 +601,7 @@ alerts disabled at creation time.
 az containerapp job create `
   --name $ApprovedJob `
   --resource-group $ApprovedResourceGroup `
-  --environment '<approved-container-app-environment>' `
+  --environment $ApprovedContainerAppsEnvironment `
   --trigger-type Schedule `
   --cron-expression '*/15 * * * *' `
   --replica-timeout 900 `
@@ -421,3 +696,11 @@ Rollback order:
 Production promotion requires explicit human approval after every candidate
 item is PASS. Promote backend before web, recheck health and critical logs, and
 enable the scheduled job last. `DF_FINOPS_ACTIONS_ENABLED` remains `0`.
+
+After the production approver authorizes promotion, move backend traffic first
+and stop unless health, authorization, and the bounded critical-log query pass.
+Only then request the separate confirmation token
+`PROMOTE_WEB_AFTER_BACKEND_HEALTHY`; without that exact confirmation, web
+traffic remains on `$PreviousWebRevision`. After web promotion, repeat the same
+checks before enabling the scheduled job. Automatic alerts remain a separate
+approval even when the job exists.
