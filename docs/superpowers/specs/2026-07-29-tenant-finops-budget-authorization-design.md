@@ -72,4 +72,3 @@ copy, hidden data, the non-misleading action label, and unchanged role-holder
 functionality. Documentation and the candidate runbook describe the Entra app
 role, environment-variable precedence, deterministic audit scope, and
 zero-traffic acceptance checks.
-

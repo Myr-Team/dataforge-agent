@@ -258,4 +258,3 @@ Stage only the Task 1-3 files and commit:
 ```powershell
 git commit -m "fix(finops): align budgets to tenant admin scope"
 ```
-
