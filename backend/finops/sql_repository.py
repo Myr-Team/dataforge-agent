@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Protocol, Sequence
@@ -13,6 +14,7 @@ from .repository import (
 
 
 _SCHEMA_PATH = Path(__file__).resolve().parents[1] / "sql" / "finops_schema.sql"
+_GO_BATCH_SEPARATOR = re.compile(r"(?im)^\s*GO\s*$")
 
 
 class FinOpsPersistenceError(RuntimeError):
@@ -51,7 +53,8 @@ class SqlFinOpsRepository:
     def initialize_schema(self) -> None:
         schema = self._schema_path.read_text(encoding="utf-8")
         with self._transaction() as cursor:
-            cursor.execute(f"/* finops:schema */\n{schema}")
+            for batch in _split_schema_batches(schema):
+                cursor.execute(f"/* finops:schema */\n{batch}")
 
     def upsert_events(self, events: Iterable[FinOpsRequestEvent]) -> None:
         with self._transaction() as cursor:
@@ -227,6 +230,14 @@ class SqlFinOpsRepository:
                     connection.close()
                 except Exception:
                     pass
+
+
+def _split_schema_batches(schema: str) -> tuple[str, ...]:
+    return tuple(
+        batch.strip()
+        for batch in _GO_BATCH_SEPARATOR.split(schema)
+        if batch.strip()
+    )
 
 
 def _upsert_event(cursor: _Cursor, event: FinOpsRequestEvent) -> None:

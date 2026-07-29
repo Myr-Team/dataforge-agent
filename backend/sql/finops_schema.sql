@@ -2,6 +2,7 @@ IF SCHEMA_ID(N'df_finops') IS NULL
 BEGIN
     EXEC(N'CREATE SCHEMA df_finops AUTHORIZATION dbo');
 END;
+GO
 
 IF OBJECT_ID(N'df_finops.request_event', N'U') IS NULL
 BEGIN
@@ -41,6 +42,7 @@ BEGIN
         CONSTRAINT CK_finops_event_json CHECK (ISJSON(event_payload) = 1)
     );
 END;
+GO
 
 IF OBJECT_ID(N'df_finops.request_rollup_hour', N'U') IS NULL
 BEGIN
@@ -108,6 +110,7 @@ BEGIN
         CONSTRAINT CK_finops_department_status CHECK (status IN (N'active', N'archived'))
     );
 END;
+GO
 
 IF COL_LENGTH(N'df_finops.department', N'updated_by') IS NULL
 BEGIN
@@ -494,6 +497,7 @@ BEGIN
     CREATE UNIQUE INDEX UQ_finops_model_provider_name
         ON df_finops.model_provider (tenant_ref, display_name);
 END;
+GO
 
 IF COL_LENGTH(N'df_finops.model_provider', N'region') IS NULL
 BEGIN
@@ -654,6 +658,7 @@ BEGIN
         CONSTRAINT CK_finops_member_budget_revision CHECK (revision >= 1)
     );
 END;
+GO
 
 IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
@@ -733,6 +738,7 @@ BEGIN
         )
     );
 END;
+GO
 
 IF COL_LENGTH(N'df_finops.budget_alert', N'lease_token') IS NULL
 BEGIN

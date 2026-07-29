@@ -115,8 +115,9 @@ def test_sql_repository_initializes_schema_and_upserts_only_public_event_payload
     repository.upsert_events([_event()])
 
     assert connection.commits == 2
-    schema_call, merge_call = connection.cursor_value.calls
-    assert "finops:schema" in schema_call[0]
+    *schema_calls, merge_call = connection.cursor_value.calls
+    assert schema_calls
+    assert all("finops:schema" in call[0] for call in schema_calls)
     assert "finops:upsert-request-event" in merge_call[0]
     normalized_merge = " ".join(merge_call[0].split())
     assert (
@@ -132,6 +133,32 @@ def test_sql_repository_initializes_schema_and_upserts_only_public_event_payload
     assert "must-not-persist" not in serialized
     assert "tenant-safe" in serialized
     assert "req_aaaaaaaaaaaa" in serialized
+
+
+def test_sql_repository_executes_go_delimited_schema_batches_separately(
+    tmp_path: Path,
+) -> None:
+    schema_path = tmp_path / "schema.sql"
+    schema_path.write_text(
+        "CREATE TABLE df_finops.example (id INT NOT NULL);\n"
+        "GO\n"
+        "ALTER TABLE df_finops.example ADD label NVARCHAR(32) NULL;\n",
+        encoding="utf-8",
+    )
+    connection = RecordingConnection()
+    repository = SqlFinOpsRepository(
+        connection_factory=lambda: connection,
+        schema_path=schema_path,
+    )
+
+    repository.initialize_schema()
+
+    operations = [operation for operation, _ in connection.cursor_value.calls]
+    assert len(operations) == 2
+    assert "CREATE TABLE df_finops.example" in operations[0]
+    assert "ALTER TABLE df_finops.example" in operations[1]
+    assert all("\nGO\n" not in operation.upper() for operation in operations)
+    assert connection.commits == 1
 
 
 def test_sql_repository_reads_historical_payload_without_routing_revision_as_null() -> None:

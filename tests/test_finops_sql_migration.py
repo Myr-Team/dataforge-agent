@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,37 @@ def test_finops_schema_allows_bedrock_and_adds_region() -> None:
     assert "DROP CONSTRAINT CK_finops_model_provider_type" in sql
     assert "definition" in sql
     assert "IF NOT EXISTS" in sql
+
+
+@pytest.mark.parametrize(
+    ("table", "upgrade"),
+    (
+        ("request_event", "ALTER TABLE df_finops.request_event"),
+        ("department", "ALTER TABLE df_finops.department"),
+        ("model_provider", "ALTER TABLE df_finops.model_provider"),
+        ("budget_alert", "ALTER TABLE df_finops.budget_alert"),
+    ),
+)
+def test_conditional_table_creation_precedes_upgrade_in_an_earlier_batch(
+    table: str,
+    upgrade: str,
+) -> None:
+    batches = re.split(
+        r"(?im)^\s*GO\s*$",
+        SCHEMA_PATH.read_text(encoding="utf-8"),
+    )
+    create_batch = next(
+        index
+        for index, batch in enumerate(batches)
+        if f"CREATE TABLE df_finops.{table}" in batch
+    )
+    upgrade_batch = next(
+        index
+        for index, batch in enumerate(batches)
+        if upgrade in batch
+    )
+
+    assert create_batch < upgrade_batch
 
 
 def test_member_budget_schema_is_additive_and_uses_no_destructive_rewrite() -> None:
