@@ -377,7 +377,8 @@ def test_sql_acquire_due_alert_uses_one_atomic_token_owned_statement() -> None:
     assert acquired.lease_token == "worker-token"
     operation, parameters = connection.cursor_value.calls[0]
     assert "finops:acquire-due-budget-alert" in operation
-    assert "UPDLOCK, READPAST, ROWLOCK" in operation
+    assert "UPDLOCK, READPAST, ROWLOCK, READCOMMITTEDLOCK" in operation
+    assert "READCOMMITTED," not in operation
     assert parameters == (
         "tenant_safe", now, now, "worker-token", expires, now
     )

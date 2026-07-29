@@ -370,7 +370,7 @@ class SqlMemberBudgetRepository:
                 """/* finops:acquire-due-budget-alert */
                 ;WITH candidate AS (
                     SELECT TOP (1) *
-                    FROM df_finops.budget_alert WITH (UPDLOCK, READPAST, ROWLOCK)
+                    FROM df_finops.budget_alert WITH (UPDLOCK, READPAST, ROWLOCK, READCOMMITTEDLOCK)
                     WHERE tenant_ref = ?
                       AND attempt_count < 3
                       AND (

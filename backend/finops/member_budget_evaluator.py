@@ -195,10 +195,9 @@ class MemberBudgetEvaluator:
             )
             return "skipped"
 
-        notification, recipient, member_name, cost = eligibility
+        notification, recipient, member_name = eligibility
         values = _template_values(
             alert,
-            cost=cost,
             member_name=member_name,
             portal_url=self._portal_url,
         )
@@ -269,7 +268,7 @@ class MemberBudgetEvaluator:
         workspace_ids: tuple[str, ...],
         costs: dict[str, MemberCostSummary],
         period_key: str,
-    ) -> tuple[Any, str, str, MemberCostSummary] | None:
+    ) -> tuple[Any, str, str] | None:
         if not self._automatic_enabled() or alert.period_key != period_key:
             return None
         budget: MemberBudget | None = self._repository.get_budget(
@@ -300,15 +299,15 @@ class MemberBudgetEvaluator:
         if recipient is None:
             return None
         cost = costs.get(alert.actor_ref)
-        if not _eligible_cost(cost):
-            return None
-        assert cost is not None and cost.estimated_spend_usd is not None
-        usage_pct = Decimal(cost.estimated_spend_usd) / budget.amount_usd * 100
-        if usage_pct < alert.threshold_pct:
+        if (
+            not _eligible_cost(cost)
+            or alert.pricing_coverage_pct is None
+            or alert.pricing_coverage_pct <= 0
+        ):
             return None
         names = self._member_names(alert.tenant_ref, workspace_ids)
         member_name = _friendly_member_name(names.get(alert.actor_ref))
-        return notification, recipient, member_name, cost
+        return notification, recipient, member_name
 
 
 def _active_recipient(
@@ -359,20 +358,18 @@ def _final_value(
 def _template_values(
     alert: BudgetAlert,
     *,
-    cost: MemberCostSummary,
     member_name: str,
     portal_url: str,
 ) -> dict[str, str]:
-    assert cost.estimated_spend_usd is not None
-    usage = Decimal(cost.estimated_spend_usd) / alert.budget_amount_usd * 100
+    usage = alert.estimated_spend_usd / alert.budget_amount_usd * 100
     return {
         "member_name": member_name,
         "budget_amount": _decimal_text(alert.budget_amount_usd),
-        "estimated_spend": _decimal_text(cost.estimated_spend_usd),
+        "estimated_spend": _decimal_text(alert.estimated_spend_usd),
         "usage_percent": _decimal_text(usage.quantize(Decimal("0.01"))),
         "threshold_percent": str(alert.threshold_pct),
         "period_label": alert.period_key,
-        "pricing_coverage": str(float(cost.pricing_coverage_pct or 0)),
+        "pricing_coverage": str(float(alert.pricing_coverage_pct or 0)),
         "portal_url": portal_url,
     }
 

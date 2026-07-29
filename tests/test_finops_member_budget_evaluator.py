@@ -22,11 +22,12 @@ def _budget(
     amount: str = "200",
     revision: int = 1,
     enabled: bool = True,
+    thresholds: tuple[int, ...] = (80, 95, 100),
 ) -> MemberBudget:
     return MemberBudget(
         member_ref=member_ref,
         amount_usd=Decimal(amount),
-        thresholds_pct=(80, 95, 100),
+        thresholds_pct=thresholds,
         enabled=enabled,
         budget_id=f"budget-{member_ref}",
         revision=revision,
@@ -95,9 +96,12 @@ def _scenario(
     member_names: Any = None,
     automatic_enabled: Any = None,
     portal_url: str = "https://dataforge.example.test/operations/member-budgets",
+    thresholds: tuple[int, ...] = (80, 95, 100),
 ) -> tuple[InMemoryMemberBudgetRepository, _Costs, _Sender, MemberBudgetEvaluator]:
     repository = InMemoryMemberBudgetRepository()
-    repository.save_budget("tenant-safe", _budget(), base_revision=0)
+    repository.save_budget(
+        "tenant-safe", _budget(thresholds=thresholds), base_revision=0
+    )
     repository.save_notification_setting("tenant-safe", _notification(), base_revision=0)
     summaries = {
         "actor-safe": MemberCostSummary(
@@ -421,6 +425,56 @@ def test_prior_month_due_alert_is_suppressed_without_send() -> None:
 
     assert sender.operation_ids == []
     assert repository.list_alerts("tenant-safe")[0].delivery_state == "suppressed"
+
+
+def test_retry_email_uses_trigger_snapshot_when_current_spend_and_coverage_increase() -> None:
+    repository, _costs, sender, evaluator = _scenario(
+        spend="210", priced=20, total=20, thresholds=(95,)
+    )
+    assert repository.claim_alert(
+        _alert(
+            delivery_state="failed",
+            attempt_count=1,
+            next_attempt_at=NOW,
+            estimated_spend_usd=Decimal("190"),
+            pricing_coverage_pct=95,
+        )
+    )
+
+    summary = evaluator.evaluate_tenant("tenant-safe", now=NOW)
+
+    assert summary.sent == 1
+    assert len(sender.messages) == 1
+    assert sender.messages[0].subject == "Lin Finance 95% / 2026-07"
+    assert sender.messages[0].plain_text == (
+        "200|190|95|95.0|"
+        "https://dataforge.example.test/operations/member-budgets"
+    )
+
+
+def test_downward_reconciliation_does_not_cancel_due_snapshot_or_create_new_alert() -> None:
+    repository, _costs, sender, evaluator = _scenario(
+        spend="100", priced=10, total=10, thresholds=(95,)
+    )
+    assert repository.claim_alert(
+        _alert(
+            delivery_state="failed",
+            attempt_count=1,
+            next_attempt_at=NOW,
+            estimated_spend_usd=Decimal("190"),
+            pricing_coverage_pct=95,
+        )
+    )
+
+    summary = evaluator.evaluate_tenant("tenant-safe", now=NOW)
+
+    alerts = repository.list_alerts("tenant-safe")
+    assert summary.created == 0
+    assert summary.sent == 1
+    assert len(alerts) == 1
+    assert alerts[0].delivery_state == "sent"
+    assert len(sender.messages) == 1
+    assert sender.messages[0].plain_text.startswith("200|190|95|95.0|")
 
 
 def test_due_alert_after_more_than_101_sent_rows_is_not_starved() -> None:

@@ -92,7 +92,8 @@ def test_sql_alert_acquire_is_atomic_due_only_token_owned_and_keyset_ordered() -
     ).read_text(encoding="utf-8").lower()
 
     assert "finops:acquire-due-budget-alert" in source
-    assert "with (updlock, readpast, rowlock)" in source
+    assert "with (updlock, readpast, rowlock, readcommittedlock)" in source
+    assert "readcommitted," not in source
     assert "top (1)" in source
     assert "attempt_count < 3" in source
     assert "next_attempt_at <= ?" in source
