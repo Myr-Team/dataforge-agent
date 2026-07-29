@@ -464,7 +464,11 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           updated_at: NOW,
         }],
         cursor: { next: null, limit: 50 },
-        data_status: control.memberBudgetAlertsState === "unavailable" ? "unavailable" : "partial",
+        data_status: control.memberBudgetAlertsState === "unavailable"
+          ? "unavailable"
+          : control.memberBudgetEmpty
+            ? "complete"
+            : "partial",
         currency: "USD",
       };
     } else if (path === "/api/finops/member-budgets/budget-safe/disable" && request.method() === "POST") {

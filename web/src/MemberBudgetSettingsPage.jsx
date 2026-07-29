@@ -122,7 +122,7 @@ function CompactModal({ title, description, onClose, children }) {
         event.preventDefault();
         return;
       }
-      const first = initialFocus();
+      const first = items[0];
       const last = items[items.length - 1];
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
@@ -180,6 +180,12 @@ function SummaryCard({ icon: Icon, label, help, value, note, tone = "" }) {
       </div>
     </article>
   );
+}
+
+function memberSubtitle(row, { includeDepartment = true } = {}) {
+  return [row.identityLabel, row.lifecycleLabel, includeDepartment ? row.departmentLabel : ""]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function BudgetProgress({ row }) {
@@ -562,7 +568,10 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
                           <td>
                             <div className="member-budget-member-cell">
                               <span>{row.memberInitial}</span>
-                              <div><b>{row.memberLabel}</b><small>{row.identityLabel} · {row.lifecycleLabel} · {row.departmentLabel}</small></div>
+                              <div>
+                                <b>{row.memberLabel}</b>
+                                <small title={memberSubtitle(row)} aria-label={memberSubtitle(row)}>{memberSubtitle(row)}</small>
+                              </div>
                             </div>
                           </td>
                           <td><b>{row.spendLabel}</b><small className={row.dataStatus === "partial" ? "partial" : ""}>{row.coverageLabel}</small></td>
@@ -591,7 +600,10 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
                       <header>
                         <div className="member-budget-member-cell">
                           <span>{row.memberInitial}</span>
-                          <div><b>{row.memberLabel}</b><small>{row.identityLabel} · {row.lifecycleLabel}</small></div>
+                          <div>
+                            <b>{row.memberLabel}</b>
+                            <small title={memberSubtitle(row)} aria-label={memberSubtitle(row)}>{memberSubtitle(row, { includeDepartment: false })}</small>
+                          </div>
                         </div>
                         <button type="button" className="member-budget-icon-button" aria-label={`编辑 ${row.memberLabel} 预算`} disabled={!row.canEdit} onClick={() => { setFormError(""); setBudgetModal(row); }}><Pencil size={14} /></button>
                       </header>

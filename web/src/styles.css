@@ -1242,7 +1242,7 @@ svg { flex-shrink: 0; }
   top: calc(100% + 7px);
   left: -9px;
   display: none;
-  width: min(250px, 70vw);
+  width: min(250px, calc(100vw - 28px));
   padding: 8px 10px;
   border: 1px solid #d9e2ef;
   border-radius: 7px;
@@ -1537,6 +1537,8 @@ tr:hover .member-budget-progress-track > span,
   .member-budget-summary-card { min-height: 100px; padding: 12px; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; }
   .member-budget-summary-icon { width: 28px; height: 28px; }
   .member-budget-summary-card strong { font-size: 18px; }
+  .member-budget-summary-card:nth-child(odd) .member-budget-tooltip { right: auto; left: -4px; }
+  .member-budget-summary-card:nth-child(even) .member-budget-tooltip { right: -4px; left: auto; }
   .member-budget-filters { grid-template-columns: 1fr; }
   .member-budget-table-wrap { display: none; }
   .member-budget-mobile-list { display: grid; gap: 8px; padding: 10px; }
@@ -1572,8 +1574,6 @@ tr:hover .member-budget-progress-track > span,
   .member-budget-summary { grid-template-columns: 1fr 1fr; }
   .member-budget-summary-card { grid-template-columns: 1fr; min-height: 110px; }
   .member-budget-label { align-items: flex-start; }
-  .member-budget-summary-card:nth-child(odd) .member-budget-tooltip { right: auto; left: -4px; }
-  .member-budget-summary-card:nth-child(even) .member-budget-tooltip { right: -4px; left: auto; }
   .member-budget-entry { grid-template-columns: 34px minmax(0, 1fr); }
   .member-budget-entry > .settings-config-button { grid-column: 1 / -1; width: 100%; }
   .member-budget-modal-overlay { padding: 10px; }

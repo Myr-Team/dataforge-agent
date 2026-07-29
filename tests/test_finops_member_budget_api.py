@@ -10,7 +10,7 @@ from backend.app import app
 from backend.finops.member_budget_repository import MemberBudgetConflictError
 from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
 from backend.finops.member_budget_service import MemberBudgetService
-from backend.finops.member_budgets import MemberBudget
+from backend.finops.member_budgets import BudgetAlert, MemberBudget
 from backend.finops.member_directory import FinOpsMember, MemberMonthlyCost
 from backend.finops.acs_email import AcsEmailError, EmailDeliveryResult
 import backend.finops.member_budget_router as budget_router
@@ -47,7 +47,7 @@ class _Service:
         return {"recipient_actor_ref": "actor-safe", "revision": 1}
 
     def list_alerts(self, **_kwargs: Any) -> dict[str, Any]:
-        return {"items": [], "cursor": {"next": None, "limit": _kwargs.get("limit", 50)}, "currency": "USD", "freshness": "recorded", "coverage": "request_estimated_cost", "data_status": "unavailable"}
+        return {"items": [], "cursor": {"next": None, "limit": _kwargs.get("limit", 50)}, "currency": "USD", "freshness": "recorded", "coverage": "request_estimated_cost", "data_status": "complete"}
 
     def send_test_email(self, **_kwargs: Any) -> EmailDeliveryResult:
         self.writes += 1
@@ -179,6 +179,76 @@ def test_response_envelopes_include_budget_metadata_and_bounded_alert_cursor(mon
         assert {"freshness", "coverage", "data_status", "currency"}.issubset(response.json())
         assert response.json()["currency"] == "USD"
     assert alert_response.json()["cursor"] == {"next": None, "limit": 2}
+    assert alert_response.json()["data_status"] == "complete"
+
+
+def _budget_alert(*, alert_id: str, pricing_coverage_pct: float | None) -> BudgetAlert:
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    return BudgetAlert(
+        alert_id=alert_id,
+        tenant_ref="tenant-safe",
+        budget_id="budget-safe",
+        actor_ref="actor-safe",
+        period_key="2026-07",
+        threshold_pct=95,
+        budget_amount_usd=Decimal("200"),
+        estimated_spend_usd=Decimal("190"),
+        pricing_coverage_pct=pricing_coverage_pct,
+        budget_revision=1,
+        notification_revision=1,
+        delivery_state="sent",
+        triggered_at=now,
+        sent_at=now,
+        updated_at=now,
+    )
+
+
+def test_alert_service_marks_successful_empty_ledger_complete() -> None:
+    value = MemberBudgetService(InMemoryMemberBudgetRepository(), None, None).list_alerts(
+        tenant_ref="tenant-safe",
+        cursor=None,
+        limit=50,
+    )
+
+    assert value["items"] == []
+    assert value["data_status"] == "complete"
+
+
+def test_alert_service_marks_full_pricing_coverage_complete_and_keeps_rows() -> None:
+    repository = InMemoryMemberBudgetRepository()
+    alert = _budget_alert(alert_id="alert-complete", pricing_coverage_pct=100)
+    assert repository.claim_alert(alert) is True
+
+    value = MemberBudgetService(repository, None, None).list_alerts(
+        tenant_ref="tenant-safe",
+        cursor=None,
+        limit=50,
+    )
+
+    assert value["data_status"] == "complete"
+    assert [item["alert_id"] for item in value["items"]] == ["alert-complete"]
+
+
+def test_alert_service_marks_partial_pricing_coverage_partial_and_api_preserves_it(monkeypatch) -> None:
+    repository = InMemoryMemberBudgetRepository()
+    alert = _budget_alert(alert_id="alert-partial", pricing_coverage_pct=90)
+    assert repository.claim_alert(alert) is True
+    service_value = MemberBudgetService(repository, None, None).list_alerts(
+        tenant_ref="tenant-safe",
+        cursor=None,
+        limit=50,
+    )
+
+    assert service_value["data_status"] == "partial"
+    assert [item["alert_id"] for item in service_value["items"]] == ["alert-partial"]
+
+    client, service = _client(monkeypatch)
+    monkeypatch.setattr(service, "list_alerts", lambda **_kwargs: service_value)
+    response = client.get("/api/finops/budget-alerts?limit=50")
+
+    assert response.status_code == 200
+    assert response.json()["data_status"] == "partial"
+    assert [item["alert_id"] for item in response.json()["items"]] == ["alert-partial"]
 
 
 def test_test_email_has_its_own_disabled_gate(monkeypatch) -> None:

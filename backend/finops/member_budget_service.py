@@ -211,7 +211,18 @@ class MemberBudgetService:
         start = _cursor_offset(cursor)
         rows = self._repository.list_alerts(tenant_ref, budget_id=budget_id, offset=start, limit=limit + 1)
         selected = rows[:limit]
-        return {"items": [item.model_dump(mode="json") for item in selected], "cursor": {"next": str(start + limit) if len(rows) > limit else None, "limit": limit}, "currency": "USD", "freshness": "recorded", "coverage": "request_estimated_cost", "data_status": "unavailable"}
+        data_status = "complete" if all(item.pricing_coverage_pct == 100 for item in selected) else "partial"
+        return {
+            "items": [item.model_dump(mode="json") for item in selected],
+            "cursor": {
+                "next": str(start + limit) if len(rows) > limit else None,
+                "limit": limit,
+            },
+            "currency": "USD",
+            "freshness": "recorded",
+            "coverage": "request_estimated_cost",
+            "data_status": data_status,
+        }
 
     def send_test_email(self, *, tenant_ref: str, active_admins: dict[str, str], sender: AcsEmailSender) -> EmailDeliveryResult:
         """Send a configuration probe only; it never creates a budget alert."""

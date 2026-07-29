@@ -141,7 +141,10 @@ test("settings exposes a compact budget entry and dedicated desktop page", async
   await expect(page.getByText("$190.00").first()).toBeVisible();
   await expect(page.locator(".member-budget-summary-card").filter({ hasText: "已配置成员" }).locator("strong")).toHaveText("2");
   await expect(page.getByText("90% 已计价").first()).toBeVisible();
-  await expect(page.locator(".member-budget-table").getByText("身份已停用 · 预算已停用 · 未归属部门")).toBeVisible();
+  const formerSubtitle = page.locator(".member-budget-table").getByText("身份已停用 · 预算已停用 · 未归属部门");
+  await expect(formerSubtitle).toBeVisible();
+  await expect(formerSubtitle).toHaveAttribute("title", "身份已停用 · 预算已停用 · 未归属部门");
+  await expect(formerSubtitle).toHaveAttribute("aria-label", "身份已停用 · 预算已停用 · 未归属部门");
 
   const body = await page.locator("body").innerText();
   expect(body).not.toContain("member-safe");
@@ -263,6 +266,8 @@ test("member budget failure and empty states stay truthful", async ({ page }) =>
   await page.getByRole("button", { name: "重试" }).click();
   await expect(page.getByText("尚未设置成员预算")).toBeVisible();
   await expect(page.getByText("$0.00")).toHaveCount(0);
+  await expect(page.locator(".member-budget-alerts")).toContainText("暂无提醒记录");
+  await expect(page.locator(".member-budget-alerts")).not.toContainText("提醒记录暂时不可用");
 });
 
 
@@ -342,8 +347,11 @@ test("member budget modal traps focus, makes background inert and restores the t
   await expect(page.locator("#root")).toHaveAttribute("inert", "");
 
   await page.keyboard.press("Shift+Tab");
-  await expect(dialog.getByRole("button", { name: "确认停用" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "关闭" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
   await expect(dialog.getByRole("button", { name: "保存预算" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "关闭" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(amount).toBeFocused();
 
@@ -354,20 +362,23 @@ test("member budget modal traps focus, makes background inert and restores the t
 });
 
 
-test("mobile metric help tooltips stay inside the viewport for odd and even cards", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+test("two-column metric help tooltips stay inside intermediate mobile viewports", async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 900 });
   await installFinOpsMockApi(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "设置" }).last().click();
-  await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
+  await openMemberBudgets(page);
 
-  const helps = page.locator(".member-budget-summary-card .member-budget-help");
-  for (const index of [0, 1]) {
-    await helps.nth(index).focus();
-    const tooltip = helps.nth(index).locator(".member-budget-tooltip");
-    await expect(tooltip).toBeVisible();
-    const box = await tooltip.boundingBox();
-    expect(box.x).toBeGreaterThanOrEqual(0);
-    expect(box.x + box.width).toBeLessThanOrEqual(390);
+  for (const width of [390, 431, 500, 600, 720]) {
+    await page.setViewportSize({ width, height: 900 });
+    const helps = page.locator(".member-budget-summary-card .member-budget-help");
+    await expect(helps).toHaveCount(4);
+    for (let index = 0; index < 4; index += 1) {
+      await helps.nth(index).focus();
+      const tooltip = helps.nth(index).locator(".member-budget-tooltip");
+      await expect(tooltip).toBeVisible();
+      const box = await tooltip.boundingBox();
+      expect(box.x, `tooltip ${index + 1} at ${width}px starts inside viewport`).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, `tooltip ${index + 1} at ${width}px ends inside viewport`).toBeLessThanOrEqual(width);
+    }
   }
 });
