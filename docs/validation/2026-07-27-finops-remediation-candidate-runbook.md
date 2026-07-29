@@ -1,12 +1,12 @@
 # 候选部署与生产推广操作手册
 
-> 本文档仅供人工执行。Cursor / Agent **不得**自行部署 Azure、切换生产流量或合并 `main`。  
+> 本文档仅供人工执行。Cursor / Agent **不得**自行部署 Azure、切换生产流量或合并 `main`。
 > 资源名、命令与顺序均摘自仓库既有脚本与验收文档，未发明新的 Azure 资源。
 
-**代码基线**：推送后的 `cursor/finops-remediation` 最终 HEAD（以 `git rev-parse HEAD` 为准）。  
-**目标资源组**：`rg-dataforge-dev`（`eastus2`）。  
-**注册表**：`acrdataforgedev`。  
-**应用**：`ca-dataforge-backend`、`ca-dataforge-web`。  
+**代码基线**：推送后的 `cursor/finops-remediation` 最终 HEAD（以 `git rev-parse HEAD` 为准）。
+**目标资源组**：`rg-dataforge-dev`（`eastus2`）。
+**注册表**：`acrdataforgedev`。
+**应用**：`ca-dataforge-backend`、`ca-dataforge-web`。
 **APIM 作业**：`job-dataforge-finops-apim`（仅在配置与托管身份确认不变后更新镜像 digest）。
 
 参考来源：
@@ -55,8 +55,8 @@ az acr build --registry acrdataforgedev --image dataforge-web:finops-remediation
 
 本轮新增表（幂等 `IF OBJECT_ID ... IS NULL`）：
 
-- `df_finops.gateway_unmatched_rollup`  
-  字段：`scope`（仅 `unattributed`）、`bucket_at`、`status_class`（`client_error_4xx` / `server_error_5xx`）、`request_count`、`data_source`、`updated_at`  
+- `df_finops.gateway_unmatched_rollup`
+  字段：`scope`（仅 `unattributed`）、`bucket_at`、`status_class`（`client_error_4xx` / `server_error_5xx`）、`request_count`、`data_source`、`updated_at`
   **不** 存 correlation ID、正文、身份、错误正文。
 
 执行方式（与既有 FinOps migration 一致）：
@@ -160,7 +160,7 @@ az containerapp revision list --name ca-dataforge-web --resource-group rg-datafo
 | Backend production（切换前） | `ca-dataforge-backend--<current>` |
 | Web production（切换前） | `ca-dataforge-web--<current>` |
 
-回滚：将流量切回上述 revision（保留候选 revision，不要删除）。  
+回滚：将流量切回上述 revision（保留候选 revision，不要删除）。
 触发回滚条件：health 失败、鉴权失败、证据完整性破坏、前端验收失败、或 APIM 作业异常。
 
 数据库：不 DROP `gateway_unmatched_rollup`；应用回滚后该表可保留为空或历史聚合。
@@ -183,15 +183,15 @@ az containerapp revision list --name ca-dataforge-web --resource-group rg-datafo
 
 在 `docs/validation/` 新建当日 candidate / production 证据文件，并更新 `docs/monitoring-azure-state.md`，至少包含：
 
-- 最终 HEAD / short SHA  
-- 镜像 digest  
-- candidate / production revision 名与流量  
-- SQL migration 结果  
-- 测试 totals  
-- 桌面/移动截图路径  
-- APIM 非零样本计数  
-- 回滚 revision  
-- 人工批准人与时间  
+- 最终 HEAD / short SHA
+- 镜像 digest
+- candidate / production revision 名与流量
+- SQL migration 结果
+- 测试 totals
+- 桌面/移动截图路径
+- APIM 非零样本计数
+- 回滚 revision
+- 人工批准人与时间
 
 ---
 
