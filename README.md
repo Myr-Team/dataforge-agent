@@ -299,7 +299,9 @@ distinguishes local PASS evidence from live Azure checks that are still pending.
 The runbook also requires a filesystem-level sensitive-file scan before either
 Docker build; `.dockerignore` is defense in depth and must not be treated as
 permission to leave a local `.env`, private key, or credential artifact in the
-build workspace.
+build workspace. Release images must be built from a clean isolated worktree or
+detached checkout at the exact approved commit; any tracked modification or
+untracked file stops the release before scanning or building.
 
 ## Monitoring and model routing
 

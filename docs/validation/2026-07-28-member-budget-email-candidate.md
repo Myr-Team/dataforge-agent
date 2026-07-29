@@ -67,10 +67,11 @@ and minimum role assignment have not been explicitly approved for execution.
 | Acceptance item | Status | Required redacted evidence |
 | --- | --- | --- |
 | Approved RG, region/data location, ACS names, managed domain, sender, and administrator recipient | PENDING — NOT ACCEPTED | Human approval, names, and UTC timestamp only. |
-| Email Communication Services, Azure Managed Domain, linked Communication Services resource | PENDING — NOT ACCEPTED | Resource names, pre/post link counts, preservation result, protected rollback-record reference, and outcome only; no IDs. |
+| Email Communication Services, Azure Managed Domain, linked Communication Services resource | PENDING — NOT ACCEPTED | Validated pre/post reads, resource names, link counts, preservation result, protected rollback-record reference, separately approved exact-set restore result, and outcome only; no IDs. |
 | Backend system-assigned managed identity has minimum ACS Email send role | PENDING — NOT ACCEPTED | Role name/definition and assignment outcome only; no principal/resource IDs. |
 | Additive SQL migration completes twice and required objects exist | PENDING — NOT ACCEPTED | UTC timestamps, exit status, and object/constraint/index names. |
-| Filesystem-level pre-build scan finds no local environment/private credential artifact | PENDING — NOT ACCEPTED | Exit status and zero count only; no file names or contents. |
+| Exact approved commit is checked out in an isolated workspace with zero tracked modifications and zero untracked files | PENDING — NOT ACCEPTED | Commit match and clean-status result only. |
+| Docker exclusions are verified and filesystem-level pre-build scan finds no local environment/private credential artifact | PENDING — NOT ACCEPTED | Exclusion check, scan exit status, and zero count only; no file names or contents. |
 | Immutable backend and web images built from the tested release commit | PENDING — NOT ACCEPTED | Commit, immutable digests, and build timestamps. |
 | Before any candidate creation, both apps are `Multiple`, explicitly route named stable revision at 100%, and have no `latestRevision` route | PENDING — NOT ACCEPTED | Safe app/revision names, mode, and traffic summary. |
 | Backend and web candidate revisions are Healthy at 0% traffic | PENDING — NOT ACCEPTED | Revision names, health, traffic, and rollback targets. |

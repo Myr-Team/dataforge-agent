@@ -19,10 +19,12 @@ It does not provide billing reconciliation, user blocking, automatic model
 changes, APIM policy changes, or arbitrary recipients. Keep
 `DF_FINOPS_ACTIONS_ENABLED=0`.
 
-Before running any command, a human approver must fill and approve every value
-below. Do not infer them from an existing subscription. Do not put an email
-address, subscription ID, principal ID, token, secret, connection string, or
-resource ID in Git evidence.
+Before running any command, create a clean isolated worktree or detached
+checkout at the approved release commit. Build both contexts only from that
+checkout. A human approver must fill and approve every value below. Do not infer
+them from an existing subscription. Do not put an email address, subscription
+ID, principal ID, token, secret, connection string, or resource ID in Git
+evidence.
 
 ```powershell
 $ApprovedSubscription = '<approved-subscription-name-or-id>'
@@ -68,14 +70,18 @@ if (
 ) {
   throw 'STOP: checkout does not match the approved release commit'
 }
-$TrackedReleaseChanges = @(git status --porcelain --untracked-files=no)
-if ($LASTEXITCODE -ne 0 -or $TrackedReleaseChanges.Count -ne 0) {
-  throw 'STOP: release checkout contains unreviewed tracked changes'
+$ReleaseWorkspaceChanges = @(
+  git status --porcelain --untracked-files=all
+)
+if ($LASTEXITCODE -ne 0 -or $ReleaseWorkspaceChanges.Count -ne 0) {
+  throw 'STOP: release checkout contains tracked or untracked changes'
 }
 ```
 
-The commit output must exactly equal `$ReleaseCommit`, and the release worktree
-must contain no unreviewed tracked changes.
+The commit output must exactly equal `$ReleaseCommit`, and the isolated release
+checkout must contain no tracked modification and no untracked file. Ignored
+files are checked separately by the filesystem-level sensitive-file scan before
+either build.
 
 ## 1. Create ACS Email resources with managed identity only
 
@@ -128,17 +134,52 @@ pre-change list only in the protected operator record so it can be used for
 rollback; resource IDs must not be copied into Git evidence.
 
 ```powershell
+function Get-ValidatedCommunicationState {
+  param([Parameter(Mandatory)][string]$Uri)
+
+  $rawState = & az rest --method get --uri $Uri -o json
+  $readExitCode = $LASTEXITCODE
+  $rawStateText = ($rawState | Out-String)
+  if (
+    $readExitCode -ne 0 -or
+    [string]::IsNullOrWhiteSpace($rawStateText)
+  ) {
+    throw 'STOP: ACS pre-read failed or returned an empty response'
+  }
+  try {
+    $state = $rawStateText | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    throw 'STOP: ACS pre-read returned invalid JSON'
+  }
+  if (
+    $null -eq $state -or
+    $null -eq $state.PSObject.Properties['properties'] -or
+    $null -eq $state.properties -or
+    $null -eq $state.properties.PSObject.Properties['linkedDomains']
+  ) {
+    throw 'STOP: ACS pre-read response is missing properties.linkedDomains'
+  }
+  $invalidLinks = @(
+    @($state.properties.linkedDomains) |
+      Where-Object { $null -ne $_ -and $_ -isnot [string] }
+  )
+  if ($invalidLinks.Count -ne 0) {
+    throw 'STOP: ACS pre-read linkedDomains has an invalid shape'
+  }
+  return $state
+}
+
 $CommunicationApiVersion = '2023-04-01'
 $CommunicationUri = "$CommunicationServiceId?api-version=$CommunicationApiVersion"
-$CommunicationBefore = az rest --method get --uri $CommunicationUri -o json |
-  ConvertFrom-Json
+$CommunicationBefore = Get-ValidatedCommunicationState -Uri $CommunicationUri
 $LinkedDomainsBeforeChange = @(
   $CommunicationBefore.properties.linkedDomains |
     Where-Object { $_ } |
     ForEach-Object { [string]$_ }
 )
-$LinkedDomainsRollbackJson = $LinkedDomainsBeforeChange |
-  ConvertTo-Json -Compress
+$LinkedDomainsRollbackJson = ConvertTo-Json `
+  -InputObject @($LinkedDomainsBeforeChange) `
+  -Compress
 # Save $LinkedDomainsRollbackJson in the protected operator change record only.
 
 $MergedLinkedDomains = @(
@@ -166,8 +207,7 @@ if ($EmailDomainId -notin $LinkedDomainsBeforeChange) {
   }
 }
 
-$CommunicationAfter = az rest --method get --uri $CommunicationUri -o json |
-  ConvertFrom-Json
+$CommunicationAfter = Get-ValidatedCommunicationState -Uri $CommunicationUri
 $LinkedDomainsAfterChange = @(
   $CommunicationAfter.properties.linkedDomains |
     Where-Object { $_ } |
@@ -189,6 +229,63 @@ This procedure only adds the approved domain while preserving every existing
 link. If the service requires replacing or removing any link, stop and obtain a
 separate human-approved change and rollback plan; do not adapt this merge
 command into a replacement.
+
+The following restore block is for a separately approved rollback in the same
+protected operator session. It PATCHes the exact pre-change array, checks the
+write, performs another validated GET, and requires an exact set match. Do not
+run it during normal candidate setup.
+
+```powershell
+$ApprovedRestoreLinkedDomains = Read-Host (
+  'Type RESTORE_EXACT_LINKED_DOMAINS_AFTER_APPROVED_ROLLBACK to continue'
+)
+if (
+  $ApprovedRestoreLinkedDomains -cne
+  'RESTORE_EXACT_LINKED_DOMAINS_AFTER_APPROVED_ROLLBACK'
+) {
+  throw 'STOP: linked-domain restore was not explicitly approved'
+}
+if ($null -eq $LinkedDomainsBeforeChange) {
+  throw 'STOP: protected pre-change linkedDomains array is unavailable'
+}
+
+$RollbackLinkedDomains = @($LinkedDomainsBeforeChange)
+$rollbackBody = @{
+  properties = @{
+    linkedDomains = $RollbackLinkedDomains
+  }
+} | ConvertTo-Json -Depth 5 -Compress
+az rest `
+  --method patch `
+  --uri $CommunicationUri `
+  --body $rollbackBody `
+  --headers 'Content-Type=application/json'
+if ($LASTEXITCODE -ne 0) {
+  throw 'STOP: linked-domain restore PATCH failed'
+}
+
+$RollbackState = Get-ValidatedCommunicationState -Uri $CommunicationUri
+$RollbackReadback = @(
+  $RollbackState.properties.linkedDomains |
+    Where-Object { $_ } |
+    ForEach-Object { [string]$_ }
+)
+$RollbackMissing = @(
+  $RollbackLinkedDomains |
+    Where-Object { $_ -notin $RollbackReadback }
+)
+$RollbackUnexpected = @(
+  $RollbackReadback |
+    Where-Object { $_ -notin $RollbackLinkedDomains }
+)
+if (
+  $RollbackReadback.Count -ne $RollbackLinkedDomains.Count -or
+  $RollbackMissing.Count -ne 0 -or
+  $RollbackUnexpected.Count -ne 0
+) {
+  throw 'STOP: linked-domain restore readback does not match the exact prior set'
+}
+```
 
 Enable the existing backend system-assigned identity and grant only the
 separately approved ACS Email data-plane role. Do not grant Owner, Contributor,
@@ -264,6 +361,101 @@ the Docker contexts.
 
 ```powershell
 $RepositoryRoot = (Resolve-Path '.').Path
+$RequiredRootDockerIgnore = @(
+  '.git/',
+  '**/.git/',
+  'node_modules/',
+  '**/node_modules/',
+  '.playwright-cli/',
+  '**/.playwright-cli/',
+  '.superpowers/',
+  '**/.superpowers/',
+  'output/',
+  '**/output/',
+  'test-results/',
+  '**/test-results/',
+  '.venv/',
+  '**/.venv/',
+  'venv/',
+  '**/venv/',
+  'dist/',
+  '**/dist/',
+  '__pycache__/',
+  '**/__pycache__/',
+  '.pytest_cache/',
+  '**/.pytest_cache/',
+  '.mypy_cache/',
+  '**/.mypy_cache/',
+  '.ruff_cache/',
+  '**/.ruff_cache/',
+  '.tox/',
+  '**/.tox/',
+  '.nox/',
+  '**/.nox/',
+  'coverage/',
+  '**/coverage/',
+  'htmlcov/',
+  '**/htmlcov/'
+)
+$RequiredWebDockerIgnore = @(
+  '.git',
+  '**/.git',
+  'node_modules',
+  '**/node_modules',
+  '.playwright-cli',
+  '**/.playwright-cli',
+  '.superpowers',
+  '**/.superpowers',
+  'output',
+  '**/output',
+  'test-results',
+  '**/test-results',
+  '.venv',
+  '**/.venv',
+  'venv',
+  '**/venv',
+  'dist',
+  '**/dist',
+  '__pycache__',
+  '**/__pycache__',
+  '.pytest_cache',
+  '**/.pytest_cache',
+  '.mypy_cache',
+  '**/.mypy_cache',
+  '.ruff_cache',
+  '**/.ruff_cache',
+  '.tox',
+  '**/.tox',
+  '.nox',
+  '**/.nox',
+  'coverage',
+  '**/coverage',
+  'htmlcov',
+  '**/htmlcov'
+)
+$RootDockerIgnoreLines = @(
+  Get-Content -LiteralPath (Join-Path $RepositoryRoot '.dockerignore') |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -and -not $_.StartsWith('#') }
+)
+$WebDockerIgnoreLines = @(
+  Get-Content -LiteralPath (Join-Path $RepositoryRoot 'web\.dockerignore') |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -and -not $_.StartsWith('#') }
+)
+if (
+  @(
+    $RequiredRootDockerIgnore |
+      Where-Object { $_ -cnotin $RootDockerIgnoreLines }
+  ).Count -ne 0 -or
+  @(
+    $RequiredWebDockerIgnore |
+      Where-Object { $_ -cnotin $WebDockerIgnoreLines }
+  ).Count -ne 0
+) {
+  throw 'STOP: required Docker build-context exclusions are missing'
+}
+
 $AllowedNonSecretEnvFiles = @(
   [IO.Path]::GetFullPath((Join-Path $RepositoryRoot 'backend\.env.example')),
   [IO.Path]::GetFullPath((Join-Path $RepositoryRoot 'web\.env.development'))
@@ -272,10 +464,19 @@ $ExcludedScanSegments = @(
   '\.git\',
   '\node_modules\',
   '\.venv\',
+  '\venv\',
   '\dist\',
   '\output\',
   '\test-results\',
-  '\.playwright-cli\'
+  '\.playwright-cli\',
+  '\.superpowers\',
+  '\.pytest_cache\',
+  '\.mypy_cache\',
+  '\.ruff_cache\',
+  '\.tox\',
+  '\.nox\',
+  '\coverage\',
+  '\htmlcov\'
 )
 $SensitiveNamePattern = (
   '^(?:\.env(?:\..+)?|id_rsa(?:\..+)?|id_ed25519(?:\..+)?|' +
@@ -505,6 +706,10 @@ if (
 ) {
   throw 'STOP: web candidate was not explicitly approved'
 }
+
+Assert-ExplicitStableTraffic `
+  -AppName $ApprovedWebApp `
+  -StableRevision $PreviousWebRevision
 
 az containerapp revision copy `
   --name $ApprovedWebApp `
