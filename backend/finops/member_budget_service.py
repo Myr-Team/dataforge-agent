@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from .member_budget_repository import MemberBudgetRepository
 from .member_budgets import MemberBudget, MemberBudgetDraft, NotificationSetting
-from .member_directory import MemberCostReader, MemberDirectory, MemberMonthlyCost
+from .member_directory import MemberDirectory, MemberMonthlyCost
 
 
 class _MemberCostReader(Protocol):
@@ -73,8 +73,38 @@ class MemberBudgetService:
             "cursor": {"next": str(start + limit) if start + limit < len(rows) else None, "limit": limit},
             "freshness": "recorded",
             "coverage": "request_estimated_cost",
+            "data_status": _aggregate_status(items),
             "currency": "USD",
         }
+
+    def list_eligible_members(
+        self, *, tenant_ref: str, identity_tenant_id: str, workspace_ids: tuple[str, ...], cursor: str | None, limit: int
+    ) -> dict[str, Any]:
+        rows = [item for item in self._directory.list_members(identity_tenant_id, workspace_ids) if item.identity_state == "active"]
+        start = _cursor_offset(cursor)
+        selected = rows[start : start + limit]
+        items = [
+            {
+                "member_ref": item.member_ref,
+                "display_name": item.display_name,
+                "role": item.role,
+                "identity_state": item.identity_state,
+                "workspace_ids": item.workspace_ids,
+                "department_labels": item.department_labels,
+            }
+            for item in selected
+        ]
+        return {
+            "items": items,
+            "cursor": {"next": str(start + limit) if start + limit < len(rows) else None, "limit": limit},
+            "freshness": "recorded",
+            "coverage": "trusted_member_directory",
+            "data_status": "complete",
+            "currency": "USD",
+        }
+
+    def is_eligible_member(self, *, member_ref: str, identity_tenant_id: str, workspace_ids: tuple[str, ...]) -> bool:
+        return any(item.member_ref == member_ref and item.identity_state == "active" for item in self._directory.list_members(identity_tenant_id, workspace_ids))
 
     def save_budget(
         self, *, tenant_ref: str, actor_ref: str, payload: dict[str, Any], budget_id: str | None = None
@@ -85,14 +115,28 @@ class MemberBudgetService:
         current = self._repository.get_budget(tenant_ref, budget_id) if budget_id else None
         if budget_id and current is None:
             raise KeyError(budget_id)
-        if "base_revision" not in payload or isinstance(payload["base_revision"], bool):
-            raise ValueError("base_revision is required")
-        base_revision = int(payload["base_revision"])
+        if type(payload.get("base_revision")) is not int or payload["base_revision"] < 0:
+            raise ValueError("base_revision must be a non-negative integer")
+        base_revision = payload["base_revision"]
+        member_ref = payload.get("member_ref", current.member_ref if current else "")
+        if type(member_ref) is not str:
+            raise ValueError("member_ref must be a string")
+        amount = payload.get("amount_usd", current.amount_usd if current else None)
+        if isinstance(amount, bool) or not isinstance(amount, (int, float, Decimal)):
+            raise ValueError("amount_usd must be a number")
+        if isinstance(amount, float) and not amount.is_finite():
+            raise ValueError("amount_usd must be finite")
+        enabled = payload.get("enabled", current.enabled if current else True)
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be a boolean")
+        thresholds = payload.get("thresholds_pct", current.thresholds_pct if current else (80, 95, 100))
+        if not isinstance(thresholds, (tuple, list)) or any(type(value) is not int for value in thresholds):
+            raise ValueError("thresholds_pct must be an integer array")
         draft = MemberBudgetDraft(
-            member_ref=str(payload.get("member_ref", current.member_ref if current else "")),
-            amount_usd=Decimal(str(payload.get("amount_usd", current.amount_usd if current else ""))),
-            thresholds_pct=tuple(payload.get("thresholds_pct", current.thresholds_pct if current else (80, 95, 100))),
-            enabled=bool(payload.get("enabled", current.enabled if current else True)),
+            member_ref=member_ref,
+            amount_usd=Decimal(str(amount)),
+            thresholds_pct=tuple(thresholds),
+            enabled=enabled,
         )
         if current and draft.member_ref != current.member_ref:
             raise ValueError("member_ref cannot change")
@@ -125,22 +169,32 @@ class MemberBudgetService:
         allowed = {"recipient_actor_ref", "sender_display_name", "subject_template", "body_template", "enabled", "base_revision"}
         if not isinstance(payload, dict) or set(payload) - allowed:
             raise ValueError("unsupported notification fields")
-        recipient = str(payload.get("recipient_actor_ref") or "")
+        recipient = payload.get("recipient_actor_ref")
+        if type(recipient) is not str or not recipient:
+            raise ValueError("recipient_actor_ref must be a string")
         email = active_admins.get(recipient)
         if not email:
             raise PermissionError("recipient must be an active tenant administrator")
-        if "base_revision" not in payload or isinstance(payload["base_revision"], bool):
-            raise ValueError("base_revision is required")
+        if type(payload.get("base_revision")) is not int or payload["base_revision"] < 0:
+            raise ValueError("base_revision must be a non-negative integer")
         current = self._repository.get_notification_setting(tenant_ref)
-        base_revision = int(payload["base_revision"])
+        base_revision = payload["base_revision"]
         now = datetime.now(timezone.utc)
+        enabled = payload.get("enabled", current.enabled if current else False)
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be a boolean")
+        sender_display_name = payload.get("sender_display_name", current.sender_display_name if current else "DataForge")
+        subject_template = payload.get("subject_template", current.subject_template if current else "Member budget alert")
+        body_template = payload.get("body_template", current.body_template if current else "Budget threshold reached")
+        if any(type(value) is not str for value in (sender_display_name, subject_template, body_template)):
+            raise ValueError("notification template fields must be strings")
         value = NotificationSetting(
             recipient_actor_ref=recipient,
             recipient_email=email,
-            sender_display_name=str(payload.get("sender_display_name", current.sender_display_name if current else "DataForge")),
-            subject_template=str(payload.get("subject_template", current.subject_template if current else "Member budget alert")),
-            body_template=str(payload.get("body_template", current.body_template if current else "Budget threshold reached")),
-            enabled=bool(payload.get("enabled", current.enabled if current else False)),
+            sender_display_name=sender_display_name,
+            subject_template=subject_template,
+            body_template=body_template,
+            enabled=enabled,
             revision=base_revision + 1,
             created_by_ref=current.created_by_ref if current else actor_ref,
             updated_by_ref=actor_ref,
@@ -149,8 +203,11 @@ class MemberBudgetService:
         )
         return _safe_notification(self._repository.save_notification_setting(tenant_ref, value, base_revision=base_revision))
 
-    def list_alerts(self, *, tenant_ref: str, budget_id: str | None = None) -> dict[str, Any]:
-        return {"items": [item.model_dump(mode="json") for item in self._repository.list_alerts(tenant_ref, budget_id=budget_id)], "currency": "USD", "freshness": "recorded"}
+    def list_alerts(self, *, tenant_ref: str, budget_id: str | None = None, cursor: str | None, limit: int) -> dict[str, Any]:
+        start = _cursor_offset(cursor)
+        rows = self._repository.list_alerts(tenant_ref, budget_id=budget_id, offset=start, limit=limit + 1)
+        selected = rows[:limit]
+        return {"items": [item.model_dump(mode="json") for item in selected], "cursor": {"next": str(start + limit) if len(rows) > limit else None, "limit": limit}, "currency": "USD", "freshness": "recorded", "coverage": "request_estimated_cost", "data_status": "unavailable"}
 
 
 def _safe_notification(value: NotificationSetting) -> dict[str, Any]:
@@ -172,6 +229,13 @@ def _safe_progress(value: MemberMonthlyCost) -> dict[str, Any]:
 
 def _unavailable_progress() -> dict[str, Any]:
     return {"estimated_spend_usd": None, "priced_requests": 0, "total_requests": 0, "unpriced_requests": 0, "pricing_coverage_pct": None, "currency": "USD", "data_status": "unavailable", "freshness": "recorded"}
+
+
+def _aggregate_status(items: list[dict[str, Any]]) -> str:
+    statuses = {str(item["data_status"]) for item in items}
+    if not statuses or statuses == {"unavailable"}:
+        return "unavailable"
+    return "complete" if statuses == {"complete"} else "partial"
 
 
 def _cursor_offset(value: str | None) -> int:

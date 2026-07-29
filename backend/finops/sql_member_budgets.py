@@ -264,9 +264,11 @@ class SqlMemberBudgetRepository:
             raise
         return value
 
-    def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None) -> tuple[BudgetAlert, ...]:
+    def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None, offset: int = 0, limit: int = 100) -> tuple[BudgetAlert, ...]:
+        if type(offset) is not int or type(limit) is not int or offset < 0 or not 1 <= limit <= 101:
+            raise ValueError("invalid budget alert page")
         budget_filter = "" if budget_id is None else " AND budget_id = ?"
-        parameters: tuple[Any, ...] = (tenant_ref,) if budget_id is None else (tenant_ref, budget_id)
+        parameters: tuple[Any, ...] = (tenant_ref, offset, limit) if budget_id is None else (tenant_ref, budget_id, offset, limit)
         with self._transaction() as cursor:
             rows = cursor.execute(
                 f"""/* finops:list-budget-alerts */
@@ -276,7 +278,8 @@ class SqlMemberBudgetRepository:
                        safe_error_category, attempt_count, triggered_at, sent_at, updated_at
                 FROM df_finops.budget_alert
                 WHERE tenant_ref = ?{budget_filter}
-                ORDER BY triggered_at, alert_id""",
+                ORDER BY triggered_at, alert_id
+                OFFSET ? ROWS FETCH NEXT ? ROWS ONLY""",
                 *parameters,
             ).fetchall()
         return tuple(_alert_from_row(tenant_ref, row) for row in rows)

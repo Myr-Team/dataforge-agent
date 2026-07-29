@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Mapping
 
@@ -11,7 +12,7 @@ from ..identity import actor_from_request, is_trusted_tenant_identity
 from ..lineage_sql import build_lineage_sql_connection_factory
 from ..workspace_authz import active_workspace_role
 from ..workspace_store import list_workspaces
-from .member_budget_repository import InMemoryMemberBudgetRepository, MemberBudgetConflictError, MemberBudgetRepository
+from .member_budget_repository import MemberBudgetConflictError, MemberBudgetRepository
 from .member_budget_service import MemberBudgetService
 from .member_directory import MemberDirectory
 from .normalization import opaque_ref
@@ -27,6 +28,9 @@ def _enabled(name: str = "DF_FINOPS_MEMBER_BUDGETS_ENABLED") -> bool:
 
 
 def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, Any]]:
+    # This is deliberately the first operation in every handler.  Handlers
+    # take only Request so FastAPI cannot expose validation behaviour while the
+    # feature is disabled.
     if not _enabled():
         raise HTTPException(status_code=404, detail="Not found")
     actor = actor_from_request(request, fallback=False)
@@ -51,45 +55,27 @@ def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, 
     tenant_id, actor_id = str(actor.get("tenant_id") or "").strip(), str(actor.get("actor_id") or "").strip()
     if not secret or not tenant_id or not actor_id:
         raise HTTPException(status_code=503, detail="FinOps scope is unavailable")
-    return (
-        opaque_ref("tenant", tenant_id, secret=secret),
-        opaque_ref("actor", tenant_id, actor_id, secret=secret),
-        tuple(sorted(roles)),
-        actor,
-    )
-
-
-class _EmptyMemberCostReader:
-    def summarize_month(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {}
+    return opaque_ref("tenant", tenant_id, secret=secret), opaque_ref("actor", tenant_id, actor_id, secret=secret), tuple(sorted(roles)), actor
 
 
 def get_member_budget_service() -> MemberBudgetService:
+    """Return durable production storage; tests override this dependency explicitly."""
     global _service
+    if not _enabled("DF_FINOPS_SQL_ENABLED"):
+        raise FinOpsPersistenceError("durable FinOps SQL is required")
     if _service is None:
         secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
         if not secret:
-            raise RuntimeError("FinOps HMAC is unavailable")
+            raise FinOpsPersistenceError("FinOps HMAC is unavailable")
+        repository: MemberBudgetRepository = SqlMemberBudgetRepository(connection_factory=build_lineage_sql_connection_factory())
         directory = MemberDirectory(identity_loader=workspace_finops_member_identities, hmac_secret=secret)
-        if _enabled("DF_FINOPS_SQL_ENABLED"):
-            repository: MemberBudgetRepository = SqlMemberBudgetRepository(connection_factory=build_lineage_sql_connection_factory())
-            costs: Any = repository
-        else:
-            repository = InMemoryMemberBudgetRepository()
-            costs = _EmptyMemberCostReader()
-        _service = MemberBudgetService(repository, directory, costs)
+        _service = MemberBudgetService(repository, directory, repository)
     return _service
 
 
 def _audit_required(request: Request, workspace_id: str, resource_id: str) -> None:
     try:
-        record_audit_event(
-            actor_from_request(request, fallback=False),
-            "member.manage",
-            {"workspace_id": workspace_id, "resource_type": "member", "resource_id": resource_id[:199] or "pending"},
-            result="allowed",
-            reason_code="authorized",
-        )
+        record_audit_event(actor_from_request(request, fallback=False), "member.manage", {"workspace_id": workspace_id, "resource_type": "member", "resource_id": resource_id[:199] or "pending"}, result="allowed", reason_code="authorized")
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Audit persistence is required") from exc
 
@@ -115,57 +101,148 @@ def _map_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail="Budget persistence is unavailable")
 
 
-def _allowed_payload(body: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
-    if not isinstance(body, dict) or set(body) - allowed:
+async def _object_body(request: Request) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="JSON object body is required") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON object body is required")
+    return body
+
+
+def _limit(request: Request) -> int:
+    value = request.query_params.get("limit")
+    if value is None:
+        return 50
+    if not value.isdecimal() or not 1 <= int(value) <= 100:
+        raise HTTPException(status_code=422, detail="limit must be an integer from 1 to 100")
+    return int(value)
+
+
+def _cursor(request: Request) -> str | None:
+    value = request.query_params.get("cursor")
+    if value is not None and not value.isdecimal():
+        raise HTTPException(status_code=422, detail="invalid cursor")
+    return value
+
+
+def _payload(body: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
+    if set(body) - allowed:
         raise HTTPException(status_code=422, detail="unsupported request fields")
     return {key: body[key] for key in allowed if key in body}
 
 
+def _strict_revision(value: object) -> None:
+    if type(value) is not int or value < 0:
+        raise HTTPException(status_code=422, detail="base_revision must be a non-negative integer")
+
+
+def _strict_budget_payload(payload: dict[str, Any], *, create: bool) -> None:
+    if "base_revision" not in payload:
+        raise HTTPException(status_code=422, detail="base_revision is required")
+    _strict_revision(payload["base_revision"])
+    if create and (type(payload.get("member_ref")) is not str or not payload["member_ref"]):
+        raise HTTPException(status_code=422, detail="member_ref is required")
+    if create and "amount_usd" not in payload:
+        raise HTTPException(status_code=422, detail="amount_usd is required")
+    if "amount_usd" in payload and (type(payload["amount_usd"]) not in {int, float} or isinstance(payload["amount_usd"], bool) or (isinstance(payload["amount_usd"], float) and not math.isfinite(payload["amount_usd"]))):
+        raise HTTPException(status_code=422, detail="amount_usd must be a finite number")
+    if "enabled" in payload and type(payload["enabled"]) is not bool:
+        raise HTTPException(status_code=422, detail="enabled must be a boolean")
+    if "thresholds_pct" in payload and (type(payload["thresholds_pct"]) is not list or any(type(item) is not int for item in payload["thresholds_pct"])):
+        raise HTTPException(status_code=422, detail="thresholds_pct must be an integer array")
+
+
+def _strict_notification_payload(payload: dict[str, Any]) -> None:
+    if "base_revision" not in payload:
+        raise HTTPException(status_code=422, detail="base_revision is required")
+    _strict_revision(payload["base_revision"])
+    if "enabled" in payload and type(payload["enabled"]) is not bool:
+        raise HTTPException(status_code=422, detail="enabled must be a boolean")
+    for key in {"recipient_actor_ref", "sender_display_name", "subject_template", "body_template"} & set(payload):
+        if type(payload[key]) is not str:
+            raise HTTPException(status_code=422, detail=f"{key} must be a string")
+
+
+def _item_envelope(item: Any, *, data_status: str = "unavailable") -> dict[str, Any]:
+    return {"item": item, "freshness": "recorded", "coverage": "request_estimated_cost", "data_status": data_status, "currency": "USD"}
+
+
+def _list_envelope(value: Mapping[str, Any], *, limit: int) -> dict[str, Any]:
+    result = dict(value)
+    result.setdefault("items", [])
+    result.setdefault("cursor", {"next": None, "limit": limit})
+    result.setdefault("freshness", "recorded")
+    result.setdefault("coverage", "request_estimated_cost")
+    result.setdefault("data_status", "unavailable")
+    result.setdefault("currency", "USD")
+    return result
+
+
 @router.get("/member-budgets")
-async def list_member_budgets(request: Request, cursor: str | None = None, limit: int = 50) -> dict[str, Any]:
+async def list_member_budgets(request: Request) -> dict[str, Any]:
     tenant_ref, _actor_ref, workspace_ids, actor = _context(request)
+    limit = _limit(request)
     try:
-        return get_member_budget_service().list_budgets(tenant_ref=tenant_ref, workspace_ids=workspace_ids, cursor=cursor, limit=min(max(limit, 1), 100), identity_tenant_id=str(actor["tenant_id"]))
+        return _list_envelope(get_member_budget_service().list_budgets(tenant_ref=tenant_ref, workspace_ids=workspace_ids, cursor=_cursor(request), limit=limit, identity_tenant_id=str(actor["tenant_id"])), limit=limit)
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+
+@router.get("/member-budget-members")
+async def list_eligible_member_budgets(request: Request) -> dict[str, Any]:
+    tenant_ref, _actor_ref, workspace_ids, actor = _context(request)
+    limit = _limit(request)
+    try:
+        return _list_envelope(get_member_budget_service().list_eligible_members(tenant_ref=tenant_ref, identity_tenant_id=str(actor["tenant_id"]), workspace_ids=workspace_ids, cursor=_cursor(request), limit=limit), limit=limit)
     except Exception as exc:
         raise _map_error(exc) from exc
 
 
 @router.post("/member-budgets")
-async def create_member_budget(body: dict[str, Any], request: Request) -> Any:
+async def create_member_budget(request: Request) -> dict[str, Any]:
     tenant_ref, actor_ref, workspace_ids, actor = _context(request)
-    payload = _allowed_payload(body, {"member_ref", "amount_usd", "thresholds_pct", "enabled", "base_revision"})
-    _audit_required(request, workspace_ids[0], "member-budget-create")
+    payload = _payload(await _object_body(request), {"member_ref", "amount_usd", "thresholds_pct", "enabled", "base_revision"})
+    _strict_budget_payload(payload, create=True)
     try:
-        return get_member_budget_service().save_budget(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload)
+        service = get_member_budget_service()
+        if not service.is_eligible_member(member_ref=payload["member_ref"], identity_tenant_id=str(actor["tenant_id"]), workspace_ids=workspace_ids):
+            raise KeyError(payload["member_ref"])
+        _audit_required(request, workspace_ids[0], "member-budget-create")
+        return _item_envelope(service.save_budget(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload))
     except Exception as exc:
         raise _map_error(exc) from exc
 
 
 @router.patch("/member-budgets/{budget_id}")
-async def update_member_budget(budget_id: str, body: dict[str, Any], request: Request) -> Any:
+async def update_member_budget(budget_id: str, request: Request) -> dict[str, Any]:
     tenant_ref, actor_ref, workspace_ids, _actor = _context(request)
-    payload = _allowed_payload(body, {"member_ref", "amount_usd", "thresholds_pct", "enabled", "base_revision"})
+    payload = _payload(await _object_body(request), {"member_ref", "amount_usd", "thresholds_pct", "enabled", "base_revision"})
+    _strict_budget_payload(payload, create=False)
     _audit_required(request, workspace_ids[0], budget_id)
     try:
-        return get_member_budget_service().save_budget(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload, budget_id=budget_id)
+        return _item_envelope(get_member_budget_service().save_budget(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload, budget_id=budget_id))
     except Exception as exc:
         raise _map_error(exc) from exc
 
 
 @router.post("/member-budgets/{budget_id}/disable")
-async def disable_member_budget(budget_id: str, body: dict[str, Any], request: Request) -> Any:
+async def disable_member_budget(budget_id: str, request: Request) -> dict[str, Any]:
     tenant_ref, actor_ref, workspace_ids, _actor = _context(request)
-    if set(body) != {"base_revision"} or isinstance(body.get("base_revision"), bool):
+    body = await _object_body(request)
+    if set(body) != {"base_revision"}:
         raise HTTPException(status_code=422, detail="base_revision is required")
+    _strict_revision(body["base_revision"])
     _audit_required(request, workspace_ids[0], budget_id)
     try:
-        return get_member_budget_service().disable_budget(tenant_ref=tenant_ref, actor_ref=actor_ref, budget_id=budget_id, base_revision=int(body["base_revision"]))
+        return _item_envelope(get_member_budget_service().disable_budget(tenant_ref=tenant_ref, actor_ref=actor_ref, budget_id=budget_id, base_revision=body["base_revision"]))
     except Exception as exc:
         raise _map_error(exc) from exc
 
 
 @router.get("/notification-settings")
-async def get_notification_settings(request: Request) -> Any:
+async def get_notification_settings(request: Request) -> dict[str, Any]:
     tenant_ref, _actor_ref, _workspace_ids, _actor = _context(request)
     try:
         value = get_member_budget_service().get_notification(tenant_ref=tenant_ref)
@@ -173,24 +250,29 @@ async def get_notification_settings(request: Request) -> Any:
         raise _map_error(exc) from exc
     if value is None:
         raise HTTPException(status_code=404, detail="Not found")
-    return value
+    return _item_envelope(value)
 
 
 @router.put("/notification-settings")
-async def put_notification_settings(body: dict[str, Any], request: Request) -> Any:
+async def put_notification_settings(request: Request) -> dict[str, Any]:
     tenant_ref, actor_ref, workspace_ids, actor = _context(request)
-    payload = _allowed_payload(body, {"recipient_actor_ref", "sender_display_name", "subject_template", "body_template", "enabled", "base_revision"})
+    payload = _payload(await _object_body(request), {"recipient_actor_ref", "sender_display_name", "subject_template", "body_template", "enabled", "base_revision"})
+    _strict_notification_payload(payload)
     _audit_required(request, workspace_ids[0], "member-budget-notification")
     try:
-        return get_member_budget_service().save_notification(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload, active_admins=_active_admins(str(actor["tenant_id"]), workspace_ids))
+        return _item_envelope(get_member_budget_service().save_notification(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload, active_admins=_active_admins(str(actor["tenant_id"]), workspace_ids)))
     except Exception as exc:
         raise _map_error(exc) from exc
 
 
 @router.get("/budget-alerts")
-async def list_budget_alerts(request: Request, budget_id: str | None = None) -> dict[str, Any]:
+async def list_budget_alerts(request: Request) -> dict[str, Any]:
     tenant_ref, _actor_ref, _workspace_ids, _actor = _context(request)
+    budget_id = request.query_params.get("budget_id")
+    if budget_id is not None and not budget_id:
+        raise HTTPException(status_code=422, detail="budget_id is invalid")
+    limit = _limit(request)
     try:
-        return get_member_budget_service().list_alerts(tenant_ref=tenant_ref, budget_id=budget_id)
+        return _list_envelope(get_member_budget_service().list_alerts(tenant_ref=tenant_ref, budget_id=budget_id, cursor=_cursor(request), limit=limit), limit=limit)
     except Exception as exc:
         raise _map_error(exc) from exc

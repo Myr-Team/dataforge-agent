@@ -192,7 +192,7 @@ def test_sql_repository_decodes_alert_nulls_and_uses_tenant_scoped_alert_query()
     assert value.pricing_coverage_pct is None
     assert value.safe_error_category is None
     assert value.sent_at is None
-    assert connection.cursor_value.calls[0][1] == ("tenant_safe",)
+    assert connection.cursor_value.calls[0][1] == ("tenant_safe", 0, 100)
 
 
 def test_sql_repository_returns_false_only_for_existing_threshold_claim() -> None:

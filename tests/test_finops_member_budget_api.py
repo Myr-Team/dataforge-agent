@@ -20,7 +20,13 @@ class _Service:
         self.writes = 0
 
     def list_budgets(self, **_kwargs: Any) -> dict[str, Any]:
-        return {"items": [], "cursor": {"next": None, "limit": 50}, "freshness": "recorded", "coverage": "request_estimated_cost", "currency": "USD"}
+        return {"items": [], "cursor": {"next": None, "limit": _kwargs.get("limit", 50)}, "freshness": "recorded", "coverage": "request_estimated_cost", "data_status": "unavailable", "currency": "USD"}
+
+    def list_eligible_members(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"items": [{"member_ref": "actor-safe", "display_name": "Finance Admin", "identity_state": "active"}], "cursor": {"next": None, "limit": 50}, "freshness": "recorded", "coverage": "trusted_member_directory", "data_status": "complete", "currency": "USD"}
+
+    def is_eligible_member(self, **_kwargs: Any) -> bool:
+        return True
 
     def save_budget(self, **_kwargs: Any) -> dict[str, Any]:
         self.writes += 1
@@ -40,7 +46,7 @@ class _Service:
         return {"recipient_actor_ref": "actor-safe", "revision": 1}
 
     def list_alerts(self, **_kwargs: Any) -> dict[str, Any]:
-        return {"items": [], "currency": "USD", "freshness": "recorded"}
+        return {"items": [], "cursor": {"next": None, "limit": _kwargs.get("limit", 50)}, "currency": "USD", "freshness": "recorded", "coverage": "request_estimated_cost", "data_status": "unavailable"}
 
 
 def _client(monkeypatch, *, roles: tuple[str, ...] = ("owner",), trusted: bool = True) -> tuple[TestClient, _Service]:
@@ -61,6 +67,14 @@ def _client(monkeypatch, *, roles: tuple[str, ...] = ("owner",), trusted: bool =
 def test_member_budget_routes_are_default_disabled(monkeypatch) -> None:
     monkeypatch.delenv("DF_FINOPS_MEMBER_BUDGETS_ENABLED", raising=False)
     assert TestClient(app).get("/api/finops/member-budgets").status_code == 404
+
+
+def test_disabled_feature_hides_query_and_body_validation(monkeypatch) -> None:
+    monkeypatch.delenv("DF_FINOPS_MEMBER_BUDGETS_ENABLED", raising=False)
+    client = TestClient(app)
+    assert client.get("/api/finops/member-budgets?limit=not-an-integer").status_code == 404
+    assert client.post("/api/finops/member-budgets").status_code == 404
+    assert client.put("/api/finops/notification-settings", json=["not", "an", "object"]).status_code == 404
 
 
 def test_member_budget_rejects_member_role(monkeypatch) -> None:
@@ -99,6 +113,50 @@ def test_notification_rejects_arbitrary_recipient_and_hostile_payload(monkeypatc
     hostile = client.post("/api/finops/member-budgets", json={"member_ref": "actor-safe", "amount_usd": 200, "base_revision": 0, "tenant_ref": "tenant-other"})
     assert hostile.status_code == 422
     assert service.writes == 0
+
+
+def test_unknown_member_is_rejected_before_audit_or_mutation(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    events: list[object] = []
+    monkeypatch.setattr(service, "is_eligible_member", lambda **_kwargs: False)
+    monkeypatch.setattr(budget_router, "record_audit_event", lambda *_args, **_kwargs: events.append(object()))
+    response = client.post("/api/finops/member-budgets", json={"member_ref": "actor-unknown", "amount_usd": 200, "thresholds_pct": [80, 95, 100], "enabled": True, "base_revision": 0})
+    assert response.status_code == 404
+    assert not events
+    assert service.writes == 0
+
+
+def test_strict_revision_and_boolean_types_reject_coercion(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    fractional_revision = client.post("/api/finops/member-budgets", json={"member_ref": "actor-safe", "amount_usd": 200, "base_revision": 0.9})
+    string_boolean = client.post("/api/finops/member-budgets", json={"member_ref": "actor-safe", "amount_usd": 200, "enabled": "false", "base_revision": 0})
+    disable_fraction = client.post("/api/finops/member-budgets/budget-safe/disable", json={"base_revision": 1.9})
+    assert [response.status_code for response in (fractional_revision, string_boolean, disable_fraction)] == [422, 422, 422]
+    assert service.writes == 0
+
+
+def test_enabled_feature_requires_sql_unless_test_service_is_overridden(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FINOPS_MEMBER_BUDGETS_ENABLED", "1")
+    monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "test-secret")
+    monkeypatch.setenv("DF_FINOPS_SQL_ENABLED", "0")
+    monkeypatch.setattr(budget_router, "_service", None)
+    monkeypatch.setattr(budget_router, "actor_from_request", lambda *_args, **_kwargs: {"tenant_id": "tenant-a", "actor_id": "actor-a"})
+    monkeypatch.setattr(budget_router, "is_trusted_tenant_identity", lambda _actor: True)
+    monkeypatch.setattr(budget_router, "list_workspaces", lambda: [{"workspace_id": "ws-safe"}])
+    monkeypatch.setattr(budget_router, "active_workspace_role", lambda *_args: "owner")
+    assert TestClient(app).get("/api/finops/member-budgets").status_code == 503
+
+
+def test_response_envelopes_include_budget_metadata_and_bounded_alert_cursor(monkeypatch) -> None:
+    client, _service = _client(monkeypatch)
+    budget_response = client.get("/api/finops/member-budgets?limit=2")
+    alert_response = client.get("/api/finops/budget-alerts?limit=2")
+    mutation_response = client.post("/api/finops/member-budgets", json={"member_ref": "actor-safe", "amount_usd": 200, "base_revision": 0})
+    for response in (budget_response, alert_response, mutation_response):
+        assert response.status_code == 200
+        assert {"freshness", "coverage", "data_status", "currency"}.issubset(response.json())
+        assert response.json()["currency"] == "USD"
+    assert alert_response.json()["cursor"] == {"next": None, "limit": 2}
 
 
 def test_removed_member_is_visible_but_has_no_alert_recipient(monkeypatch) -> None:

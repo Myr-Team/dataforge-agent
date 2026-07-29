@@ -24,7 +24,7 @@ class MemberBudgetRepository(Protocol):
         self, tenant_ref: str, value: NotificationSetting, *, base_revision: int
     ) -> NotificationSetting: ...
     def claim_alert(self, value: BudgetAlert) -> bool: ...
-    def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None) -> tuple[BudgetAlert, ...]: ...
+    def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None, offset: int = 0, limit: int = 100) -> tuple[BudgetAlert, ...]: ...
 
 
 class InMemoryMemberBudgetRepository:
@@ -112,13 +112,15 @@ class InMemoryMemberBudgetRepository:
             self._alerts_by_id[(value.tenant_ref, value.alert_id)] = value
             return True
 
-    def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None) -> tuple[BudgetAlert, ...]:
+    def list_alerts(self, tenant_ref: str, *, budget_id: str | None = None, offset: int = 0, limit: int = 100) -> tuple[BudgetAlert, ...]:
+        if type(offset) is not int or type(limit) is not int or offset < 0 or not 1 <= limit <= 101:
+            raise ValueError("invalid budget alert page")
         with self._lock:
             rows = [
                 alert for (tenant, _budget, _period, _threshold), alert in self._alerts.items()
                 if tenant == tenant_ref and (budget_id is None or alert.budget_id == budget_id)
             ]
-        return tuple(sorted(rows, key=lambda alert: (alert.triggered_at, alert.alert_id)))
+        return tuple(sorted(rows, key=lambda alert: (alert.triggered_at, alert.alert_id))[offset : offset + limit])
 
 
 __all__ = [
