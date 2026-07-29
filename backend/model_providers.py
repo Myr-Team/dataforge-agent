@@ -19,6 +19,7 @@ ConnectionState = Literal[
 ]
 GovernanceState = Literal["pending", "governed", "degraded", "unmanaged"]
 ProviderSupportState = Literal["supported", "unsupported", "unpriced"]
+DEEPSEEK_API_ENDPOINT = "https://api.deepseek.com"
 
 
 class ProviderModel(BaseModel):
@@ -137,6 +138,26 @@ class ProviderPatch(BaseModel):
         return self
 
 
+def deepseek_api_endpoint(value: str) -> str:
+    parsed = urlparse(str(value or "").strip())
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("deepseek_endpoint_unsupported") from None
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "api.deepseek.com"
+        or parsed.username
+        or parsed.password
+        or port not in (None, 443)
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("deepseek_endpoint_unsupported")
+    return DEEPSEEK_API_ENDPOINT
+
+
 def _https_endpoint(value: str) -> str:
     parsed = urlparse(str(value or "").strip())
     if (
@@ -154,10 +175,12 @@ def _https_endpoint(value: str) -> str:
 
 __all__ = [
     "ConnectionState",
+    "DEEPSEEK_API_ENDPOINT",
     "GovernanceState",
     "ModelProviderRecord",
     "ProviderModel",
     "ProviderPatch",
     "ProviderSupportState",
     "ProviderType",
+    "deepseek_api_endpoint",
 ]

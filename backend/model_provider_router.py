@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from typing import Annotated, Any, Literal, Mapping
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import (
@@ -33,8 +32,11 @@ from .model_provider_secrets import (
     ModelProviderSecretStore,
     model_provider_secret_store_from_environment,
 )
-from .model_provider_service import ModelProviderService
-from .model_providers import ProviderPatch
+from .model_provider_service import (
+    ModelProviderService,
+    ProviderConfigurationError,
+)
+from .model_providers import ProviderPatch, deepseek_api_endpoint
 from .provider_client import RequestsProviderTransport
 from .workspace_authz import active_workspace_role
 from .workspace_store import list_workspaces
@@ -55,19 +57,10 @@ class DeepSeekProviderCreate(BaseModel):
     @field_validator("base_url")
     @classmethod
     def _base_url(cls, value: str) -> str:
-        parsed = urlparse(str(value or "").strip())
-        if (
-            parsed.scheme != "https"
-            or parsed.hostname != "api.deepseek.com"
-            or parsed.username
-            or parsed.password
-            or parsed.port not in (None, 443)
-            or parsed.path not in ("", "/")
-            or parsed.query
-            or parsed.fragment
-        ):
+        try:
+            return deepseek_api_endpoint(value)
+        except ValueError:
             raise ValueError("invalid provider endpoint")
-        return "https://api.deepseek.com"
 
 
 class BedrockProviderCreate(BaseModel):
@@ -352,6 +345,11 @@ async def update_model_provider(
                 provider_id,
                 base_revision=body.base_revision,
             )
+            service = _service(repository)
+            patch = service.prepare_configuration_patch(
+                provider,
+                body.to_internal_patch(),
+            )
             if provider.provider_type == "aws_bedrock":
                 _bedrock_enabled()
             _audit_required(
@@ -363,12 +361,12 @@ async def update_model_provider(
                 display_name=provider.display_name,
                 region=provider.region,
             )
-            return _service(repository).update(
-                tenant_ref=tenant_ref,
-                provider_id=provider_id,
-                patch=body.to_internal_patch(),
+            return repository.update(
+                tenant_ref,
+                provider_id,
+                patch,
                 actor_ref=actor_ref,
-            )
+            ).public_payload()
     except Exception as exc:
         raise _provider_error(exc)
 
@@ -542,6 +540,8 @@ def _provider_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail=exc.code)
     if isinstance(exc, ModelProviderSecretError):
         return HTTPException(status_code=503, detail=exc.code)
+    if isinstance(exc, ProviderConfigurationError):
+        return HTTPException(status_code=422, detail=exc.code)
     if isinstance(exc, ModelProviderRepositoryError):
         return HTTPException(status_code=503, detail=exc.code)
     return HTTPException(status_code=503, detail="model_provider_operation_failed")

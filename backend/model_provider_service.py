@@ -9,6 +9,7 @@ from .aws_bedrock_provider import (
     AwsBedrockCredential,
     BedrockConnectionFailure,
     Boto3BedrockControlPlane,
+    bedrock_control_endpoint,
 )
 from .deepseek_provider import DeepSeekProvider, ProviderFailure, ProviderTransport
 from .model_provider_repository import ModelProviderRepository
@@ -17,8 +18,23 @@ from .model_providers import (
     ModelProviderRecord,
     ProviderModel,
     ProviderPatch,
+    deepseek_api_endpoint,
 )
 from .provider_client import ProviderInvocation, ProviderMessage
+
+
+class ProviderConfigurationError(ValueError):
+    code = "provider_configuration_invalid"
+
+
+_SERVER_OWNED_PATCH_FIELDS = frozenset({
+    "connection_state",
+    "governance_state",
+    "available_models",
+    "last_tested_at",
+    "last_success_at",
+    "safe_error_category",
+})
 
 
 class ModelProviderService:
@@ -94,12 +110,51 @@ class ModelProviderService:
         patch: ProviderPatch,
         actor_ref: str,
     ) -> dict[str, object]:
+        value = self._repository.get(tenant_ref, provider_id)
+        prepared = self.prepare_configuration_patch(value, patch)
         return self._repository.update(
             tenant_ref,
             provider_id,
-            patch,
+            prepared,
             actor_ref=actor_ref,
         ).public_payload()
+
+    def prepare_configuration_patch(
+        self,
+        value: ModelProviderRecord,
+        patch: ProviderPatch,
+    ) -> ProviderPatch:
+        if patch.model_fields_set & _SERVER_OWNED_PATCH_FIELDS:
+            raise ProviderConfigurationError()
+        changes = patch.model_dump(
+            exclude={"base_revision"},
+            exclude_none=True,
+        )
+        if value.provider_type == "deepseek":
+            if patch.region is not None:
+                raise ProviderConfigurationError()
+            if patch.base_url is not None:
+                try:
+                    changes["base_url"] = deepseek_api_endpoint(patch.base_url)
+                except ValueError:
+                    raise ProviderConfigurationError() from None
+        elif value.provider_type == "aws_bedrock":
+            if patch.base_url is not None:
+                raise ProviderConfigurationError()
+            if patch.region is not None:
+                try:
+                    normalized_region = str(patch.region).strip().lower()
+                    changes["base_url"] = bedrock_control_endpoint(
+                        normalized_region
+                    )
+                except ValueError:
+                    raise ProviderConfigurationError() from None
+                changes["region"] = normalized_region
+        else:
+            raise ProviderConfigurationError()
+        return ProviderPatch.model_validate(
+            {"base_revision": patch.base_revision, **changes}
+        )
 
     def test(
         self,
@@ -200,6 +255,13 @@ class ModelProviderService:
                 models = self._bedrock.list_models(value.region or "", credential)
                 governance_state = "unmanaged"
             elif value.provider_type == "deepseek":
+                try:
+                    base_url = deepseek_api_endpoint(value.base_url)
+                except ValueError:
+                    raise ProviderFailure(
+                        "configuration_conflict",
+                        retryable=False,
+                    ) from None
                 DeepSeekProvider(transport=self._transport).invoke(
                     ProviderInvocation(
                         request_ref=f"test_{uuid.uuid4().hex[:24]}",
@@ -214,7 +276,7 @@ class ModelProviderService:
                         max_tokens=1,
                     ),
                     api_key=secret_value,
-                    base_url=value.base_url,
+                    base_url=base_url,
                 )
                 models = _deepseek_models()
                 governance_state = value.governance_state
@@ -286,4 +348,4 @@ def _secret_value(secret_value: str | None, api_key: str | None) -> str:
     raise ValueError("secret_value is required")
 
 
-__all__ = ["ModelProviderService"]
+__all__ = ["ModelProviderService", "ProviderConfigurationError"]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
+from datetime import datetime, timezone
 from threading import Event, Lock
 
 import pytest
@@ -13,7 +14,7 @@ from backend.deepseek_provider import ProviderHttpResponse
 from backend.aws_bedrock_provider import AwsBedrockCredential
 from backend.model_provider_repository import InMemoryModelProviderRepository
 from backend.model_provider_service import ModelProviderService
-from backend.model_providers import ProviderModel
+from backend.model_providers import ModelProviderRecord, ProviderModel
 from auth_fixtures import trusted_headers
 
 
@@ -54,6 +55,15 @@ class _Transport:
         )
 
 
+class _CapturingTransport(_Transport):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def post_json(self, **values: object) -> ProviderHttpResponse:
+        self.calls.append(dict(values))
+        return super().post_json(**values)
+
+
 class _BedrockControlPlane:
     def __init__(self) -> None:
         self.calls: list[tuple[str, AwsBedrockCredential]] = []
@@ -80,6 +90,7 @@ def _client(
     *,
     roles: dict[str, str] | None = None,
     repository: InMemoryModelProviderRepository | None = None,
+    transport: _Transport | None = None,
 ):
     repository = repository or InMemoryModelProviderRepository()
     secrets = _Secrets()
@@ -100,7 +111,7 @@ def _client(
     monkeypatch.setattr(
         provider_router,
         "get_provider_transport",
-        lambda: _Transport(),
+        lambda: transport or _Transport(),
     )
     monkeypatch.setattr(
         provider_router,
@@ -692,6 +703,180 @@ def test_provider_patch_preserves_server_observations_when_editing_configuration
     assert len(audits) == audit_count + 1
 
 
+def test_deepseek_patch_cannot_redirect_stored_secret_to_another_host(
+    monkeypatch,
+) -> None:
+    transport = _CapturingTransport()
+    client, repository, secrets, audits = _client(
+        monkeypatch,
+        transport=transport,
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "deepseek",
+            "display_name": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "secret-marker",
+        },
+    ).json()
+    tenant_ref = next(iter(secrets.values))[0]
+    before = repository.get(tenant_ref, created["provider_id"])
+    audit_count = len(audits)
+    transport.calls.clear()
+
+    response = client.patch(
+        f"/api/model-providers/{created['provider_id']}",
+        headers=headers,
+        json={
+            "base_revision": before.revision,
+            "base_url": "https://attacker.example",
+        },
+    )
+    if response.status_code == 200:
+        client.post(
+            f"/api/model-providers/{created['provider_id']}/test",
+            headers=headers,
+        )
+
+    assert {
+        "status_code": response.status_code,
+        "repository_mutated": (
+            repository.get(tenant_ref, created["provider_id"]) != before
+        ),
+        "audit_written": len(audits) != audit_count,
+        "transport_calls": [
+            {
+                "base_url": call.get("base_url"),
+                "api_key": call.get("api_key"),
+            }
+            for call in transport.calls
+        ],
+    } == {
+        "status_code": 422,
+        "repository_mutated": False,
+        "audit_written": False,
+        "transport_calls": [],
+    }
+
+
+def test_deepseek_patch_rejects_irrelevant_region_before_audit(
+    monkeypatch,
+) -> None:
+    client, repository, secrets, audits = _client(monkeypatch)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "deepseek",
+            "display_name": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "secret-marker",
+        },
+    ).json()
+    tenant_ref = next(iter(secrets.values))[0]
+    before = repository.get(tenant_ref, created["provider_id"])
+    audit_count = len(audits)
+
+    response = client.patch(
+        f"/api/model-providers/{created['provider_id']}",
+        headers=headers,
+        json={
+            "base_revision": before.revision,
+            "region": "us-east-1",
+        },
+    )
+
+    assert response.status_code == 422
+    assert repository.get(tenant_ref, created["provider_id"]) == before
+    assert len(audits) == audit_count
+
+
+def test_bedrock_patch_rejects_user_supplied_base_url_before_audit(
+    monkeypatch,
+) -> None:
+    client, repository, secrets, audits = _client(monkeypatch)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "1")
+    monkeypatch.setattr(
+        "backend.aws_bedrock_provider.Boto3BedrockControlPlane.list_models",
+        lambda _self, _region, _credential: [],
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "aws_bedrock",
+            "display_name": "AWS Bedrock",
+            "region": "ap-southeast-1",
+            "access_key_id": "AKIAEXAMPLE",
+            "secret_access_key": "secret-marker-value",
+        },
+    ).json()
+    tenant_ref = next(iter(secrets.values))[0]
+    before = repository.get(tenant_ref, created["provider_id"])
+    audit_count = len(audits)
+
+    response = client.patch(
+        f"/api/model-providers/{created['provider_id']}",
+        headers=headers,
+        json={
+            "base_revision": before.revision,
+            "base_url": "https://attacker.example",
+        },
+    )
+
+    assert response.status_code == 422
+    assert repository.get(tenant_ref, created["provider_id"]) == before
+    assert len(audits) == audit_count
+    assert "secret-marker" not in response.text
+
+
+def test_bedrock_patch_derives_endpoint_from_valid_region(monkeypatch) -> None:
+    client, repository, secrets, audits = _client(monkeypatch)
+    monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "1")
+    monkeypatch.setattr(
+        "backend.aws_bedrock_provider.Boto3BedrockControlPlane.list_models",
+        lambda _self, _region, _credential: [],
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "aws_bedrock",
+            "display_name": "AWS Bedrock",
+            "region": "ap-southeast-1",
+            "access_key_id": "AKIAEXAMPLE",
+            "secret_access_key": "secret-marker-value",
+        },
+    ).json()
+    tenant_ref = next(iter(secrets.values))[0]
+    before = repository.get(tenant_ref, created["provider_id"])
+    audit_count = len(audits)
+
+    response = client.patch(
+        f"/api/model-providers/{created['provider_id']}",
+        headers=headers,
+        json={
+            "base_revision": before.revision,
+            "region": "us-west-2",
+        },
+    )
+
+    after = repository.get(tenant_ref, created["provider_id"])
+    assert response.status_code == 200
+    assert after.region == "us-west-2"
+    assert after.base_url == "https://bedrock.us-west-2.amazonaws.com"
+    assert after.connection_state == before.connection_state
+    assert after.available_models == before.available_models
+    assert after.revision == before.revision + 1
+    assert len(audits) == audit_count + 1
+
+
 def test_provider_api_is_hidden_when_feature_is_disabled(monkeypatch) -> None:
     client, _repository, _secrets, _audits = _client(monkeypatch)
     monkeypatch.setenv("DF_PROVIDER_CONNECTORS_ENABLED", "0")
@@ -761,3 +946,44 @@ def test_service_dispatches_bedrock_connection_test_as_unmanaged_discovery() -> 
     }]
     assert bedrock.calls == [("us-east-1", credential)]
     assert list(secrets.values.values()) == [credential.to_secret_value()]
+
+
+def test_service_never_sends_secret_to_non_official_deepseek_endpoint() -> None:
+    repository = InMemoryModelProviderRepository()
+    secrets = _Secrets()
+    transport = _CapturingTransport()
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    provider = ModelProviderRecord(
+        provider_id="provider_deepseek",
+        tenant_ref="tenant-safe",
+        provider_type="deepseek",
+        display_name="DeepSeek",
+        base_url="https://attacker.example",
+        secret_ref="kv:provider-provider_deepseek",
+        connection_state="connected",
+        governance_state="pending",
+        available_models=[],
+        revision=1,
+        created_by_ref="actor-safe",
+        updated_by_ref="actor-safe",
+        created_at=now,
+        updated_at=now,
+    )
+    repository.create(provider)
+    secrets.values[("tenant-safe", "provider_deepseek")] = "secret-marker"
+    service = ModelProviderService(
+        repository=repository,
+        secret_store=secrets,
+        transport=transport,
+        clock=lambda: now,
+    )
+
+    result = service.test(
+        tenant_ref="tenant-safe",
+        provider_id="provider_deepseek",
+        actor_ref="actor-safe",
+    )
+
+    assert result["connection_state"] == "invalid"
+    assert result["safe_error_category"] == "configuration_conflict"
+    assert transport.calls == []
