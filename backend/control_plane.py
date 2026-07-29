@@ -34,7 +34,7 @@ try:
     from .experiment_store import compare_experiment_versions, sync_experiment_ledger
     from .foundry_roi import public_foundry_integration
     from .identity import actor_from_request, canonical_actor_identity, default_actor, email_domain, is_trusted_tenant_identity, member_from_actor, normalized_email_domains, public_actor
-    from .invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from .invitation_store import InvitationPersistenceError, accept_provider_invitation, accepted_invitation_identity, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from .model_policy import list_allowed_model_routes, public_model_route_snapshot
     from .monitoring_dashboard import build_monitor_dashboard
     from .monitoring_service import build_monitoring_snapshot
@@ -62,7 +62,7 @@ except ImportError:
     from experiment_store import compare_experiment_versions, sync_experiment_ledger
     from foundry_roi import public_foundry_integration
     from identity import actor_from_request, canonical_actor_identity, default_actor, email_domain, is_trusted_tenant_identity, member_from_actor, normalized_email_domains, public_actor
-    from invitation_store import InvitationPersistenceError, accept_provider_invitation, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
+    from invitation_store import InvitationPersistenceError, accept_provider_invitation, accepted_invitation_identity, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from model_policy import list_allowed_model_routes, public_model_route_snapshot
     from monitoring_dashboard import build_monitor_dashboard
     from monitoring_service import build_monitoring_snapshot
@@ -2816,7 +2816,7 @@ def workspace_finops_member_identities(workspace_id: str) -> list[dict[str, str]
         meta = _load_workspace_meta(workspace_id)
     except FileNotFoundError:
         return []
-    accepted_by_invitation = _accepted_invitation_identities(meta)
+    accepted_by_invitation = _accepted_invitation_identities(meta, workspace_id)
     result: list[dict[str, str]] = []
     for member in _workspace_members_by_key(workspace_id).values():
         member = _trusted_finops_member(member, accepted_by_invitation)
@@ -2837,25 +2837,23 @@ def workspace_finops_member_identities(workspace_id: str) -> list[dict[str, str]
     return result
 
 
-def _accepted_invitation_identities(meta: dict[str, Any]) -> dict[str, dict[str, str]]:
-    """Return the final trusted identity only for currently accepted invitations."""
-    latest: dict[str, dict[str, Any]] = {}
-    for event in meta.get("workspace_invitation_events") or []:
-        if not isinstance(event, dict) or str(event.get("event_type") or "state") != "state":
-            continue
-        invitation_id = _clean_text(event.get("invitation_id"))
-        if invitation_id:
-            latest[invitation_id] = event
-    accepted: dict[str, dict[str, str]] = {}
-    for invitation_id, event in latest.items():
-        if _clean_text(event.get("state")).lower() != "accepted":
-            continue
-        identity = event.get("accepted_identity") if isinstance(event.get("accepted_identity"), dict) else {}
-        actor_id = _clean_text(identity.get("actor_id"))
-        tenant_id = _clean_text(identity.get("tenant_id"))
-        if actor_id and tenant_id:
-            accepted[invitation_id] = {"actor_id": actor_id, "tenant_id": tenant_id}
-    return accepted
+def _accepted_invitation_identities(
+    meta: dict[str, Any], workspace_id: str
+) -> dict[str, dict[str, str]]:
+    """Resolve accepted identities through the validated canonical journal only."""
+    invitation_ids = {
+        _clean_text(member.get("invitation_id"))
+        for member in meta.get("workspace_members") or []
+        if isinstance(member, dict) and _clean_text(member.get("invitation_id"))
+    }
+    try:
+        return {
+            invitation_id: identity
+            for invitation_id in invitation_ids
+            if (identity := accepted_invitation_identity(meta, workspace_id, invitation_id))
+        }
+    except InvitationPersistenceError:
+        return {}
 
 
 def _trusted_finops_member(

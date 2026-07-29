@@ -37,3 +37,11 @@
 
 - Changed: `backend/finops/member_directory.py`, `backend/finops/sql_member_budgets.py`, `backend/control_plane.py`, `tests/test_finops_member_directory.py`, `tests/test_finops_member_budget_sql_repository.py`, and this report.
 - Reviewed for: no route/Graph addition, no tenant-wide fallback on empty scope, both SQL queries carry workspace scope, raw IDs never enter public member records, and unrelated worktree changes remain unstaged.
+
+## Canonical invitation-journal remediation
+
+- Root cause: the production loader walked raw `workspace_invitation_events` in array order, bypassing the invitation-store validation that rejects illegal state sequences. A stale accepted event after revoke could therefore be trusted.
+- Design: `invitation_store.accepted_invitation_identity()` now reads the canonical validated journal and returns an identity only when the effective state is accepted. The control-plane loader invokes it for stored invitation IDs and returns no invited identities when validation raises `InvitationPersistenceError`.
+- RED: `python -m pytest tests/test_finops_member_directory.py -q` -> `2 failed, 7 passed`; stale post-revoke acceptance was projected and the repository Protocol lacked `workspace_ids`.
+- GREEN: `python -m pytest tests/test_finops_member_directory.py tests/test_finops_member_budget_sql.py tests/test_ui_truthfulness_contract.py -q` -> `30 passed`; `python -m pytest tests/test_finops_member_budget_sql_repository.py -q` -> `17 passed`; `python -m compileall -q backend` -> exit 0; `git diff --check` and `git diff --check b40fbf88177e439f842f17f2b46c782c8f986209..HEAD` -> clean.
+- Added behavioral coverage for accepted-to-revoked, stale/out-of-order accepted after revoke, malformed journal, pending/unaccepted invitation, and the protocol signature.

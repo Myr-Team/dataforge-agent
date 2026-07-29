@@ -47,7 +47,12 @@ class MemberMonthlyCost(BaseModel):
 
 class _MemberCostRepository(Protocol):
     def summarize_member_costs(
-        self, *, tenant_ref: str, from_value: str, to_value: str
+        self,
+        *,
+        tenant_ref: str,
+        from_value: str,
+        to_value: str,
+        workspace_ids: tuple[str, ...],
     ) -> dict[str, MemberCostSummary]: ...
 
 

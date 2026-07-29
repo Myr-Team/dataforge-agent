@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import inspect
 
 import backend.control_plane as control_plane
 from backend.finops.member_directory import MemberCostReader, MemberDirectory
+import backend.finops.member_directory as member_directory
 from backend.finops.member_budgets import MemberCostSummary
 from backend.finops.normalization import opaque_ref
 
@@ -140,11 +142,7 @@ def test_real_loader_projects_only_owner_and_accepted_invited_identities(monkeyp
                 {"actor_id": "disabled-raw", "tenant_id": "tenant-a", "name": "Disabled", "email": "disabled@example.test", "role": "viewer", "status": "disabled", "invitation_id": "invite-disabled"},
                 {"actor_id": "pending-raw", "tenant_id": "tenant-a", "name": "Pending", "email": "pending@example.test", "role": "admin", "status": "active", "invitation_id": "invite-pending"},
             ],
-            "workspace_invitation_events": [
-                {"event_type": "state", "invitation_id": "invite-accepted", "state": "accepted", "accepted_identity": {"actor_id": "accepted-raw", "tenant_id": "tenant-a"}},
-                {"event_type": "state", "invitation_id": "invite-disabled", "state": "accepted", "accepted_identity": {"actor_id": "disabled-raw", "tenant_id": "tenant-a"}},
-                {"event_type": "state", "invitation_id": "invite-pending", "state": "pending", "accepted_identity": {}},
-            ],
+            "workspace_invitation_events": _invitation_events(),
         },
     )
     directory = MemberDirectory(
@@ -163,3 +161,91 @@ def test_real_loader_projects_only_owner_and_accepted_invited_identities(monkeyp
     assert "pending@example.test" not in serialized
     assert "accepted@example.test" not in serialized
     assert "disabled@example.test" not in serialized
+
+
+def test_real_loader_rejects_accepted_then_revoked_invitation(monkeypatch) -> None:
+    meta = _invitation_meta([
+        _state("invite-revoked", "pending", "revoked@example.test", "viewer"),
+        _state("invite-revoked", "accepted", "revoked@example.test", "viewer", "revoked-raw"),
+        _state("invite-revoked", "revoked", "revoked@example.test", "viewer"),
+    ])
+    monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: meta)
+
+    values = MemberDirectory(
+        identity_loader=control_plane.workspace_finops_member_identities,
+        hmac_secret="test-secret",
+    ).list_members("tenant-a", ("ws-a",))
+
+    assert [(item.display_name, item.identity_state) for item in values] == [("Owner", "active")]
+
+
+def test_real_loader_fails_closed_for_stale_out_of_order_accepted_after_revoke(monkeypatch) -> None:
+    meta = _invitation_meta([
+        _state("invite-stale", "pending", "stale@example.test", "viewer"),
+        _state("invite-stale", "revoked", "stale@example.test", "viewer"),
+        _state("invite-stale", "accepted", "stale@example.test", "viewer", "stale-raw"),
+    ])
+    monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: meta)
+    directory = MemberDirectory(identity_loader=control_plane.workspace_finops_member_identities, hmac_secret="test-secret")
+
+    assert [item.display_name for item in directory.list_members("tenant-a", ("ws-a",))] == ["Owner"]
+
+
+def test_real_loader_fails_closed_for_malformed_invitation_journal(monkeypatch) -> None:
+    malformed = _invitation_meta("not-a-journal")
+    monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: malformed)
+    directory = MemberDirectory(identity_loader=control_plane.workspace_finops_member_identities, hmac_secret="test-secret")
+
+    assert [item.display_name for item in directory.list_members("tenant-a", ("ws-a",))] == ["Owner"]
+
+
+
+def test_real_loader_rejects_pending_unaccepted_invitation(monkeypatch) -> None:
+    pending = _invitation_meta([_state("invite-pending", "pending", "pending@example.test", "viewer")])
+    monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: pending)
+    directory = MemberDirectory(identity_loader=control_plane.workspace_finops_member_identities, hmac_secret="test-secret")
+
+    assert [item.display_name for item in directory.list_members("tenant-a", ("ws-a",))] == ["Owner"]
+
+
+def test_member_cost_repository_protocol_requires_authorized_workspace_ids() -> None:
+    assert "workspace_ids" in inspect.signature(member_directory._MemberCostRepository.summarize_member_costs).parameters
+
+
+def _state(
+    invitation_id: str,
+    state: str,
+    email: str,
+    role: str,
+    actor_id: str | None = None,
+) -> dict[str, object]:
+    event: dict[str, object] = {
+        "event_type": "state",
+        "invitation_id": invitation_id,
+        "state": state,
+        "email": email,
+        "role": role,
+    }
+    if actor_id:
+        event["accepted_identity"] = {"actor_id": actor_id, "tenant_id": "tenant-a"}
+    return event
+
+
+def _invitation_events() -> list[dict[str, object]]:
+    return (
+        [_state("invite-accepted", "pending", "accepted@example.test", "editor"), _state("invite-accepted", "accepted", "accepted@example.test", "editor", "accepted-raw")]
+        + [_state("invite-disabled", "pending", "disabled@example.test", "viewer"), _state("invite-disabled", "accepted", "disabled@example.test", "viewer", "disabled-raw")]
+        + [_state("invite-pending", "pending", "pending@example.test", "admin")]
+    )
+
+
+def _invitation_meta(events: object) -> dict[str, object]:
+    return {
+        "workspace_owner": {"actor_id": "owner-raw", "tenant_id": "tenant-a", "name": "Owner", "email": "owner@example.test", "source": "easy_auth"},
+        "workspace_members": [
+            {"actor_id": "revoked-raw", "tenant_id": "tenant-a", "name": "Revoked", "email": "revoked@example.test", "role": "viewer", "status": "active", "invitation_id": "invite-revoked"},
+            {"actor_id": "stale-raw", "tenant_id": "tenant-a", "name": "Stale", "email": "stale@example.test", "role": "viewer", "status": "active", "invitation_id": "invite-stale"},
+            {"actor_id": "pending-raw", "tenant_id": "tenant-a", "name": "Pending", "email": "pending@example.test", "role": "viewer", "status": "active", "invitation_id": "invite-pending"},
+        ],
+        "workspace_invitation_events": events,
+    }
