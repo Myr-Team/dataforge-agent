@@ -58,6 +58,15 @@ function safeConnectionMessage(error) {
   return "无法完成连接操作，请检查配置后重试。";
 }
 
+function bedrockRefreshNotice(payload, verb, providerId = "") {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  const record = items.find((item) => item?.provider_id === providerId)
+    || items.find((item) => item?.provider_type === "aws_bedrock");
+  return record?.connection_state === "connected"
+    ? `AWS Bedrock 凭据${verb}，配置测试可用。`
+    : `AWS Bedrock 凭据${verb}，测试结果已刷新。`;
+}
+
 export function ProviderConnectionsPage() {
   const [state, setState] = useState({ loading: true, error: "", payload: null });
   const [draft, setDraft] = useState({
@@ -74,12 +83,14 @@ export function ProviderConnectionsPage() {
     try {
       const payload = await loadModelProviders();
       setState({ loading: false, error: "", payload });
+      return payload;
     } catch (error) {
       setState({
         loading: false,
         error: "无法读取模型提供商配置，请重试。",
         payload: null,
       });
+      return null;
     }
   }, []);
 
@@ -92,8 +103,8 @@ export function ProviderConnectionsPage() {
     setNotice("");
     try {
       await action();
-      setNotice(successMessage);
-      await load();
+      const refreshed = await load();
+      setNotice(typeof successMessage === "function" ? successMessage(refreshed) : successMessage);
       return true;
     } catch (error) {
       if (error?.status === 409) {
@@ -138,7 +149,7 @@ export function ProviderConnectionsPage() {
   const submitBedrockProvider = (payload) => runAction(
     "create-bedrock",
     () => createModelProvider(payload),
-    "AWS Bedrock 凭据已安全保存，配置测试可用。",
+    (refreshed) => bedrockRefreshNotice(refreshed, "已安全保存"),
   );
 
   const rotateSecret = async (item) => {
@@ -158,7 +169,7 @@ export function ProviderConnectionsPage() {
   const rotateBedrockCredentials = (item, payload) => runAction(
     `rotate:${item.providerId}`,
     () => rotateModelProviderSecret(item.providerId, payload, item.revision),
-    "AWS Bedrock 凭据已安全更新，配置测试可用。",
+    (refreshed) => bedrockRefreshNotice(refreshed, "已安全更新", item.providerId),
   );
 
   return (
@@ -216,8 +227,8 @@ export function ProviderConnectionsPage() {
                   )}
                 </div>
               </div>
-              {item.safeErrorCategory ? (
-                <div className="provider-safe-error"><CircleAlert size={14} />连接分类：{item.safeErrorCategory}</div>
+              {item.safeErrorLabel ? (
+                <div className="provider-safe-error"><CircleAlert size={14} />{item.safeErrorLabel}</div>
               ) : null}
               {item.isBedrock ? (
                 <>
@@ -235,6 +246,7 @@ export function ProviderConnectionsPage() {
                     title="更新 AWS Bedrock 凭据"
                     description="更新后会重新进行配置测试；凭据仅安全保存。"
                     submitLabel="更新并测试连接"
+                    mode="rotate"
                     onSubmit={(payload) => rotateBedrockCredentials(item, payload)}
                   />
                 </>

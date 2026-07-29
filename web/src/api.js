@@ -603,7 +603,15 @@ export async function testModelProvider(providerId) {
 export async function rotateModelProviderSecret(providerId, credentials, baseRevision) {
   const body = typeof credentials === "string"
     ? { api_key: credentials, base_revision: Number(baseRevision || 0) }
-    : { ...credentials, base_revision: Number(baseRevision || 0) };
+    : credentials?.provider_type === "aws_bedrock"
+      ? {
+        provider_type: "aws_bedrock",
+        access_key_id: String(credentials.access_key_id || ""),
+        secret_access_key: String(credentials.secret_access_key || ""),
+        session_token: credentials.session_token || null,
+        base_revision: Number(baseRevision || 0),
+      }
+      : { ...credentials, base_revision: Number(baseRevision || 0) };
   return request(`/api/model-providers/${encodeURIComponent(providerId)}/rotate-secret`, {
     method: "POST",
     body: JSON.stringify(body),

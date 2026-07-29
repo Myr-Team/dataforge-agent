@@ -74,3 +74,26 @@ test("Bedrock discovery is connected but never assignable", () => {
   assert.equal(view.items[0].region, "ap-southeast-1");
   assert.equal(view.items[0].canAssign, false);
 });
+
+test("Bedrock remains outside Agent assignment and never exposes unknown error categories", () => {
+  const view = providerConnectionsViewModel({
+    items: [{
+      provider_id: "provider_bedrock_hostile",
+      provider_type: "aws_bedrock",
+      display_name: "AWS Bedrock",
+      connection_state: "connected",
+      governance_state: "governed",
+      safe_error_category: "untrusted-marker-category",
+      revision: 1,
+      available_models: [{
+        model_id: "supported-model",
+        support_state: "supported",
+        price_key: "must-not-matter",
+      }],
+    }],
+  });
+
+  assert.equal(view.items[0].canAssign, false);
+  assert.equal(view.items[0].safeErrorLabel, "连接状态异常，请检查配置后重试。");
+  assert.equal(JSON.stringify(view).includes("untrusted-marker-category"), false);
+});

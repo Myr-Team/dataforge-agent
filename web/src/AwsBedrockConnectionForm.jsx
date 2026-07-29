@@ -14,6 +14,7 @@ export function AwsBedrockConnectionForm({
   submitLabel = "保存并测试连接",
   title = "接入 AWS Bedrock",
   description = "凭据仅写入后端安全存储，页面不会保存或再次展示。",
+  mode = "create",
   onSubmit,
 }) {
   const [draft, setDraft] = useState({
@@ -31,21 +32,28 @@ export function AwsBedrockConnectionForm({
 
   async function submit(event) {
     event.preventDefault();
-    const payload = {
+    const credentials = {
       provider_type: "aws_bedrock",
-      display_name: draft.displayName.trim() || "AWS Bedrock",
-      region: draft.region,
       access_key_id: draft.accessKeyId.trim(),
       secret_access_key: draft.secretAccessKey,
       session_token: draft.sessionToken || null,
     };
-    setDraft((current) => ({
-      ...current,
-      accessKeyId: "",
-      secretAccessKey: "",
-      sessionToken: "",
-    }));
-    await onSubmit(payload);
+    const payload = mode === "rotate"
+      ? credentials
+      : {
+        ...credentials,
+        display_name: draft.displayName.trim() || "AWS Bedrock",
+        region: draft.region,
+      };
+    const succeeded = await onSubmit(payload);
+    if (succeeded) {
+      setDraft((current) => ({
+        ...current,
+        accessKeyId: "",
+        secretAccessKey: "",
+        sessionToken: "",
+      }));
+    }
   }
 
   return (
@@ -60,21 +68,21 @@ export function AwsBedrockConnectionForm({
       <div className="bedrock-credential-grid">
         <label>
           <span>显示名称</span>
-          <input value={draft.displayName} maxLength={120} onChange={update("displayName")} />
+          <input value={draft.displayName} maxLength={120} readOnly={mode === "rotate"} onChange={update("displayName")} />
         </label>
         <label>
           <span>区域</span>
-          <select value={draft.region} onChange={update("region")}>
+          <select value={draft.region} disabled={mode === "rotate"} onChange={update("region")}>
             {BEDROCK_REGIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </label>
         <label>
           <span>Access Key ID</span>
-          <input type="password" autoComplete="new-password" value={draft.accessKeyId} onChange={update("accessKeyId")} required />
+          <input type="password" autoComplete="new-password" minLength={8} value={draft.accessKeyId} onChange={update("accessKeyId")} required />
         </label>
         <label>
           <span>Secret Access Key</span>
-          <input type="password" autoComplete="new-password" value={draft.secretAccessKey} onChange={update("secretAccessKey")} required />
+          <input type="password" autoComplete="new-password" minLength={16} value={draft.secretAccessKey} onChange={update("secretAccessKey")} required />
         </label>
         <label>
           <span>Session Token（可选）</span>

@@ -13,6 +13,21 @@ const GOVERNANCE_LABELS = {
   unmanaged: "未纳管",
 };
 
+const SAFE_ERROR_LABELS = {
+  authentication_failed: "凭据验证未通过，请更新后重试。",
+  access_denied: "当前凭据没有所需访问权限。",
+  configuration_conflict: "配置不兼容，请复核后重试。",
+  insufficient_balance: "服务暂时不可用，请检查服务状态。",
+  invalid_request: "配置请求无效，请复核后重试。",
+  invalid_parameters: "配置参数无效，请复核后重试。",
+  provider_unavailable: "服务暂时不可用，请稍后重试。",
+  rate_limited: "服务暂时繁忙，请稍后重试。",
+  throttled: "服务暂时繁忙，请稍后重试。",
+  timeout: "连接超时，请稍后重试。",
+};
+
+const GENERIC_SAFE_ERROR = "连接状态异常，请检查配置后重试。";
+
 function text(value) {
   return String(value || "").trim();
 }
@@ -62,9 +77,12 @@ export function providerConnectionsViewModel(payload = {}) {
         revision: Number.isInteger(item.revision) ? item.revision : 0,
         lastTestedAt: text(item.last_tested_at),
         lastSuccessAt: text(item.last_success_at),
-        safeErrorCategory: text(item.safe_error_category),
+        safeErrorLabel: text(item.safe_error_category)
+          ? SAFE_ERROR_LABELS[text(item.safe_error_category)] || GENERIC_SAFE_ERROR
+          : "",
         models,
-        canAssign: connectionState === "connected"
+        canAssign: text(item.provider_type) !== "aws_bedrock"
+          && connectionState === "connected"
           && governanceState === "governed"
           && models.some((model) => model.supportState === "supported"),
       };

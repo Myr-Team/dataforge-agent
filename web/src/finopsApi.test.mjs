@@ -269,6 +269,39 @@ test("Bedrock create sends credentials once", async () => {
   assert.equal(captured.secret_access_key, "secret-marker-value");
 });
 
+test("Bedrock rotate sends only the credential bundle and revision", async () => {
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (_url, options) => {
+    captured = JSON.parse(options.body);
+    return new Response(JSON.stringify({ provider_id: "provider_bedrock" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    await rotateModelProviderSecret("provider_bedrock", {
+      provider_type: "aws_bedrock",
+      display_name: "must-not-send",
+      region: "must-not-send",
+      access_key_id: "rotate-key",
+      secret_access_key: "rotate-secret-marker",
+      session_token: null,
+    }, 7);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(captured, {
+    provider_type: "aws_bedrock",
+    access_key_id: "rotate-key",
+    secret_access_key: "rotate-secret-marker",
+    session_token: null,
+    base_revision: 7,
+  });
+});
+
 test("identity governance encodes search and uses revisioned mapping actions", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];

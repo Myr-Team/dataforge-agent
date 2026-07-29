@@ -235,13 +235,14 @@ export const bootstrapPayload = {
 export async function installFinOpsMockApi(page, calls = [], options = {}) {
   const control = {
     failBootstrap: Boolean(options.failBootstrap),
+    bedrockConnectionState: options.bedrockConnectionState || "connected",
     providerItems: Array.isArray(options.providerItems) ? [...options.providerItems] : [],
   };
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
-    calls.push({ method: request.method(), path });
+    calls.push({ method: request.method(), path, body: request.postData() || "" });
     let body = {};
     let status = 200;
 
@@ -295,13 +296,18 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     } else if (path === "/api/model-providers" && request.method() === "POST") {
       const submitted = request.postDataJSON();
       if (submitted.provider_type === "aws_bedrock") {
+        const expectedKeys = ["access_key_id", "display_name", "provider_type", "region", "secret_access_key", "session_token"];
+        if (Object.keys(submitted).sort().join(",") !== expectedKeys.join(",")) {
+          await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ detail: "invalid provider request" }) });
+          return;
+        }
         const provider = {
           provider_id: "provider_bedrock",
           provider_type: "aws_bedrock",
           display_name: submitted.display_name || "AWS Bedrock",
           region: submitted.region,
           base_url: `https://bedrock.${submitted.region}.amazonaws.com`,
-          connection_state: "connected",
+          connection_state: control.bedrockConnectionState,
           governance_state: "unmanaged",
           secret_status: "stored",
           revision: 1,
@@ -324,6 +330,12 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         body = { provider_id: "provider_deepseek" };
       }
     } else if (path === "/api/model-providers/provider_bedrock/rotate-secret") {
+      const submitted = request.postDataJSON();
+      const expectedKeys = ["access_key_id", "base_revision", "provider_type", "secret_access_key", "session_token"];
+      if (Object.keys(submitted).sort().join(",") !== expectedKeys.join(",")) {
+        await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ detail: "invalid rotation request" }) });
+        return;
+      }
       const existing = control.providerItems.find((item) => item.provider_id === "provider_bedrock");
       if (existing) {
         existing.revision += 1;

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
@@ -86,21 +87,50 @@ test("removing a wrong price mapping restores the unpriced state", async ({ page
 });
 
 test("Bedrock credentials clear after safe save and discovery remains outside Agent routing", async ({ page }) => {
-  await installFinOpsMockApi(page);
+  const calls = [];
+  const control = await installFinOpsMockApi(page, calls);
   await openProviderSettings(page);
 
   const createForm = page.locator(".provider-connections > .bedrock-connection-form");
   await expect(createForm).toBeVisible();
-  await createForm.getByLabel("Access Key ID").fill("not-a-real-access-key");
-  await createForm.getByLabel("Secret Access Key").fill("not-a-real-secret");
-  await createForm.getByLabel("Session Token（可选）").fill("not-a-real-session-token");
+  await createForm.getByLabel("Access Key ID").fill("create-access-marker");
+  await createForm.getByLabel("Secret Access Key").fill("create-secret-marker");
+  await createForm.getByLabel("Session Token（可选）").fill("create-session-marker");
   await createForm.getByRole("button", { name: "保存并测试连接" }).click();
 
+  assert.deepEqual(JSON.parse(calls.find((call) => call.method === "POST" && call.path === "/api/model-providers").body), {
+    provider_type: "aws_bedrock",
+    display_name: "AWS Bedrock",
+    region: "ap-southeast-1",
+    access_key_id: "create-access-marker",
+    secret_access_key: "create-secret-marker",
+    session_token: "create-session-marker",
+  });
   await expect(createForm.getByLabel("Access Key ID")).toHaveValue("");
   await expect(createForm.getByLabel("Secret Access Key")).toHaveValue("");
   await expect(createForm.getByLabel("Session Token（可选）")).toHaveValue("");
   await expect(page.getByText("配置测试可用", { exact: true })).toBeVisible();
   await expect(page.getByText("尚未进入 Agent 路由", { exact: true })).toBeVisible();
+
+  const rotateForm = page.locator(".provider-card .bedrock-connection-form");
+  await rotateForm.getByLabel("Access Key ID").fill("rotate-access-marker");
+  await rotateForm.getByLabel("Secret Access Key").fill("rotate-secret-marker");
+  await rotateForm.getByLabel("Session Token（可选）").fill("rotate-session-marker");
+  await rotateForm.getByRole("button", { name: "更新并测试连接" }).click();
+  assert.deepEqual(JSON.parse(calls.find((call) => call.method === "POST" && call.path.endsWith("/rotate-secret")).body), {
+    provider_type: "aws_bedrock",
+    access_key_id: "rotate-access-marker",
+    secret_access_key: "rotate-secret-marker",
+    session_token: "rotate-session-marker",
+    base_revision: 1,
+  });
+  await expect(rotateForm.getByLabel("Access Key ID")).toHaveValue("");
+  await expect(rotateForm.getByLabel("Secret Access Key")).toHaveValue("");
+  await expect(rotateForm.getByLabel("Session Token（可选）")).toHaveValue("");
+  expect(JSON.stringify(control.providerItems)).not.toMatch(/(?:create|rotate)-(?:access|secret|session)-marker/);
+
+  const storage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
+  expect(storage).not.toMatch(/(?:create|rotate)-(?:access|secret|session)-marker/);
 
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
   await mkdir(outputDir, { recursive: true });
@@ -109,6 +139,11 @@ test("Bedrock credentials clear after safe save and discovery remains outside Ag
     fullPage: true,
   });
 
+  await page.reload();
+  await openProviderSettings(page);
+  await expect(page.getByText("AWS Bedrock", { exact: true })).toBeVisible();
+  const reloadedDom = await page.locator("body").innerText();
+  expect(reloadedDom).not.toMatch(/(?:create|rotate)-(?:access|secret|session)-marker/);
   await page.getByRole("button", { name: "Agent 模型" }).click();
   await expect(page.getByText("AWS Bedrock", { exact: true })).toHaveCount(0);
 });
@@ -126,19 +161,31 @@ test("Bedrock provider layout remains usable on mobile and safely presents confl
   await openProviderSettings(page);
 
   const createForm = page.locator(".provider-connections > .bedrock-connection-form");
-  await createForm.getByLabel("Access Key ID").fill("not-a-real-access-key");
-  await createForm.getByLabel("Secret Access Key").fill("not-a-real-secret");
-  await createForm.getByRole("button", { name: "保存并测试连接" }).click();
-
-  await expect(page.getByRole("alert")).toContainText("已被其他管理员更新");
-  await expect(page.getByRole("alert")).not.toContainText("do not expose");
-  await expect(createForm.getByLabel("Access Key ID")).toHaveValue("");
-  await expect(createForm.getByLabel("Secret Access Key")).toHaveValue("");
-  await page.getByRole("alert").scrollIntoViewIfNeeded();
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
   await mkdir(outputDir, { recursive: true });
+  await createForm.scrollIntoViewIfNeeded();
   await page.screenshot({
     path: path.join(outputDir, "bedrock-provider-mobile-conflict.png"),
     fullPage: true,
   });
+  await createForm.getByLabel("Access Key ID").fill("retry-access-marker");
+  await createForm.getByLabel("Secret Access Key").fill("retry-secret-marker");
+  await createForm.getByRole("button", { name: "保存并测试连接" }).click();
+
+  await expect(page.getByRole("alert")).toContainText("已被其他管理员更新");
+  await expect(page.getByRole("alert")).not.toContainText("do not expose");
+  await expect(createForm.getByLabel("Access Key ID")).toHaveValue("retry-access-marker");
+  await expect(createForm.getByLabel("Secret Access Key")).toHaveValue("retry-secret-marker");
+});
+
+test("Bedrock save copy remains neutral until the refreshed record is connected", async ({ page }) => {
+  await installFinOpsMockApi(page, [], { bedrockConnectionState: "degraded" });
+  await openProviderSettings(page);
+  const createForm = page.locator(".provider-connections > .bedrock-connection-form");
+  await createForm.getByLabel("Access Key ID").fill("neutral-access-marker");
+  await createForm.getByLabel("Secret Access Key").fill("neutral-secret-marker");
+  await createForm.getByRole("button", { name: "保存并测试连接" }).click();
+
+  await expect(page.getByRole("status")).toContainText("测试结果已刷新");
+  await expect(page.getByRole("status")).not.toContainText("配置测试可用");
 });
