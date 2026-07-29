@@ -42,17 +42,40 @@ detail or credential marker text.
 
 ### Full automated gate
 
-| Command | Result |
-| --- | --- |
-| `python -m pytest -q` | PASS — `1370 passed, 1 skipped, 1 warning in 147.98s`; the warning is the existing MAF experimental warning. |
-| `node --test` (in `web`) | PASS — `142` passed, `0` failed. |
-| `npm run build` (in `web`) | PASS — Vite `8.0.16`, `1778` modules transformed. The existing chunk-size advisory remained. |
-| `npx playwright test` (in `web`) | PASS — `15` passed. |
-| `git diff --check` | PASS — completed after final report/document edits. |
+Regenerated at commit `0eee7a762ab4a20d83df5e060d56d8d576571082` with
+revision-scoped, sanitized generated evidence under
+`docs/validation/evidence/2026-07-28-bedrock/`. The manifest is
+`docs/validation/evidence/2026-07-28-bedrock/manifest.json`.
+
+| Command | Result | Evidence |
+| --- | --- | --- |
+| `python -m pytest -q` | PASS — `1370 passed, 1 skipped, 1 warning in 146.62s`. | `pytest-junit.xml`, `pytest-stdout.log` |
+| `node --test` (in `web`) | PASS — `142` passed, `0` failed. | `node-test.tap` |
+| `npm run build` (in `web`) | PASS — Vite `8.0.16`, `1778` modules transformed. Existing chunk-size advisory remained. | `vite-build.log` |
+| `.\node_modules\.bin\playwright.cmd test --reporter=json` (in `web`) | PASS — `15` expected, `0` unexpected. | `playwright.json` |
+| `git diff --check` | PASS — clean. | Recorded in `manifest.json`. |
+
+### Evidence remediation commands and validation
+
+1. `python -m pytest -q --junitxml="$rawJunit"` generated the native JUnit
+   report and stdout at the tested commit. The committed JUnit preserves native
+   aggregate status but mechanically anonymizes all testcase identifiers and
+   local paths because test fixtures contain secret-like sample strings.
+2. `node --test` generated `node-test.tap`; `npm run build` generated
+   `vite-build.log`; and `.\node_modules\.bin\playwright.cmd test
+   --reporter=json` generated `playwright.json`.
+3. The final scan found no credential markers, AWS access-key IDs, ARNs,
+   bearer/JWT tokens, API keys, connection strings, raw AWS request IDs,
+   account/subscription IDs, provider response bodies, or absolute local
+   paths. JUnit XML and Playwright JSON parse successfully.
+4. The manifest records each evidence filename, SHA-256, exact command, UTC
+   bounds, exit code, version, and result count. `git diff --check` completed
+   cleanly and is also recorded there.
 
 ### Candidate acceptance boundary
 
-Status: **DONE_WITH_CONCERNS**.
+Status: **Automated gate complete; unified candidate release gate PENDING —
+NOT ACCEPTED.**
 
 The automated gate covers local software behavior only. The following remain
 **PENDING / NOT RUN** and are not accepted:

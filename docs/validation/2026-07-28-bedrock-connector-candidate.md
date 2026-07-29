@@ -25,13 +25,18 @@ bodies, or secret values.
 
 ## Automated regression gate
 
-| Check | Result | Evidence boundary |
+This gate is bound to commit `0eee7a762ab4a20d83df5e060d56d8d576571082`.
+The generated-output commands, UTC intervals, exit codes, versions, counts,
+sanitization notes, and SHA-256 values are in the
+[evidence manifest](evidence/2026-07-28-bedrock/manifest.json).
+
+| Check | Result | Revision-scoped evidence |
 | --- | --- | --- |
-| `python -m pytest -q` | PASS — 1370 passed, 1 skipped | Completed locally; one existing experimental MAF warning remained. |
-| `node --test` in `web` | PASS — 142 passed | Completed locally. |
-| `npm run build` in `web` | PASS — 1778 modules transformed | Completed locally; the existing chunk-size advisory remained. |
-| `npx playwright test` in `web` | PASS — 15 passed | Completed locally, including the mobile safe-conflict capture. |
-| `git diff --check` | PASS | Completed after the final documentation and evidence changes. |
+| `python -m pytest -q` | PASS — 1370 passed, 1 skipped, 1 warning | [JUnit XML](evidence/2026-07-28-bedrock/pytest-junit.xml) and [stdout](evidence/2026-07-28-bedrock/pytest-stdout.log); JUnit testcase identifiers were mechanically redacted. |
+| `node --test` in `web` | PASS — 142 passed | [Native Node output](evidence/2026-07-28-bedrock/node-test.tap). |
+| `npm run build` in `web` | PASS — 1778 modules transformed | [Native Vite stdout/stderr](evidence/2026-07-28-bedrock/vite-build.log); existing chunk-size advisory remained. |
+| `npx playwright test` in `web` | PASS — 15 expected | [Playwright JSON](evidence/2026-07-28-bedrock/playwright.json); local paths were mechanically redacted and no traces/screenshots are committed. |
+| `git diff --check` | PASS | Clean after the evidence/report changes; recorded in the evidence manifest. |
 
 The mobile mock-regression image is local automated evidence only. It is not
 AWS connectivity, Key Vault, candidate-revision, or production evidence.
@@ -90,7 +95,7 @@ created or exercised, and no real AWS test credentials have been provided.
 
 ## Candidate decision
 
-**PENDING — NOT ACCEPTED.** Automated local regression may demonstrate
-software behavior, but it cannot substitute for the missing zero-traffic live
-candidate, AWS, Key Vault, second-session, routing, and log acceptance
-evidence.
+**Automated gate complete; unified candidate release gate PENDING — NOT
+ACCEPTED.** Automated local regression may demonstrate software behavior, but
+it cannot substitute for the missing zero-traffic live candidate, AWS, Key
+Vault, second-session, routing, and log acceptance evidence.
