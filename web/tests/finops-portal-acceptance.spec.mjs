@@ -318,6 +318,21 @@ test("settings home budget badges refresh after child mail mutation and return",
 });
 
 
+test("settings home keeps tenant email permission separate from budget availability", async ({ page }) => {
+  await installFinOpsMockApi(page, [], {
+    memberBudgetNotificationState: "permission_required",
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+
+  const entry = page.locator(".member-budget-entry");
+  await expect(entry).toContainText("1 位接近预算");
+  await expect(entry).toContainText("需要租户邮件管理员角色");
+  await expect(entry).not.toContainText("邮件状态不可用");
+  await expect(page.getByRole("button", { name: "配置成本预算与提醒" })).toBeEnabled();
+});
+
+
 test("notification and alert service availability stay independent in the page", async ({ page }) => {
   await installFinOpsMockApi(page, [], {
     memberBudgetNotificationState: "unavailable",

@@ -3221,6 +3221,8 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
             ? "disabled"
             : notificationResult.reason?.status === 404
               ? "not_configured"
+              : notificationResult.reason?.status === 403
+                ? "permission_required"
               : "unavailable",
         alerts: alertsResult.status === "fulfilled" ? alertsResult.value : {},
         alertsState,

@@ -254,11 +254,13 @@ export function memberBudgetHomeSummaryViewModel(value = {}) {
     nearBudgetLabel: view.rows.length ? `${view.summary.nearBudgetCount} 位接近预算` : "暂无预算",
     mailLabel: view.notification.configured
       ? "邮件已配置"
-      : view.notification.state === "disabled"
-        ? "邮件配置未启用"
-        : view.notification.state === "unavailable" || view.notification.state === "permission_required"
-          ? "邮件状态不可用"
-          : "邮件未配置",
+        : view.notification.state === "disabled"
+          ? "邮件配置未启用"
+          : view.notification.state === "permission_required"
+            ? "需要租户邮件管理员角色"
+            : view.notification.state === "unavailable"
+              ? "邮件状态不可用"
+              : "邮件未配置",
   };
 }
 

@@ -195,6 +195,22 @@ test("disabled email configuration stays distinct from an unconfigured recipient
 });
 
 
+test("settings home preserves the tenant email administrator permission state", () => {
+  const home = memberBudgetHomeSummaryViewModel({
+    budgets: payload.budgets,
+    budgetsState: "partial",
+    notification: null,
+    notificationState: "permission_required",
+    alerts: payload.alerts,
+    alertsState: "available",
+  });
+
+  assert.equal(home.state, "partial");
+  assert.equal(home.nearBudgetLabel, "1 位接近预算");
+  assert.equal(home.mailLabel, "需要租户邮件管理员角色");
+});
+
+
 test("test email response accepts only safe public categories", () => {
   assert.deepEqual(
     safeTestEmailResult({ state: "sent", sent_at: "2026-07-29T01:00:00Z", safe_error_category: null }),
