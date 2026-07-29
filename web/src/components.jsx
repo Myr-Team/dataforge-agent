@@ -21,6 +21,8 @@ import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, creat
 import { GovernanceCenter } from "./GovernanceCenter.jsx";
 import { finopsIntentHandlers } from "./finopsNavigation.js";
 import { ModelGovernanceSettings } from "./ModelGovernanceSettings.jsx";
+import { MemberBudgetSettingsPage } from "./MemberBudgetSettingsPage.jsx";
+import { memberBudgetHomeSummaryViewModel } from "./memberBudgetViewModel.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 const FinOpsPortal = lazy(() => import("./FinOpsPortal.jsx").then((m) => ({ default: m.FinOpsPortal })));
 import {
@@ -76,6 +78,7 @@ import {
   Route,
   Search,
   Send,
+  Settings2,
   ShieldCheck,
   Sparkles,
   Star,
@@ -84,7 +87,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance, loadWorkspaceTraceStatus, loadWorkspaceTraceMetrics, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory } from "./api.js";
+import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance, loadWorkspaceTraceStatus, loadWorkspaceTraceMetrics, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory, loadMemberBudgets, loadMemberBudgetNotification, loadMemberBudgetAlerts } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -3158,6 +3161,13 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
   const invitationRequestVersion = useRef(0);
   const [workspaceSettings, setWorkspaceSettings] = useState(null);
   const [settingsDrawer, setSettingsDrawer] = useState(null);
+  const [settingsPage, setSettingsPage] = useState("home");
+  const [memberBudgetHome, setMemberBudgetHome] = useState({
+    state: "loading",
+    stateLabel: "正在读取",
+    nearBudgetLabel: "预算状态读取中",
+    mailLabel: "邮件状态读取中",
+  });
   const applyMemberPayload = (data, sourceWorkspaceId = workspaceId) => {
     setMemberRows(Array.isArray(data?.members) ? data.members : []);
     setMemberMeta(data || null);
@@ -3170,6 +3180,41 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
   const currentInvitationState = invitationState.workspaceId === workspaceId
     ? invitationState
     : { workspaceId, loading: Boolean(workspaceId), data: null, error: "" };
+  useEffect(() => {
+    if (governanceOnly) return undefined;
+    let cancelled = false;
+    setMemberBudgetHome({
+      state: "loading",
+      stateLabel: "正在读取",
+      nearBudgetLabel: "预算状态读取中",
+      mailLabel: "邮件状态读取中",
+    });
+    Promise.allSettled([
+      loadMemberBudgets(),
+      loadMemberBudgetNotification(),
+      loadMemberBudgetAlerts(),
+    ]).then(([budgetsResult, notificationResult, alertsResult]) => {
+      if (cancelled) return;
+      if (budgetsResult.status === "rejected") {
+        setMemberBudgetHome(memberBudgetHomeSummaryViewModel({ status: "unavailable" }));
+        return;
+      }
+      setMemberBudgetHome(memberBudgetHomeSummaryViewModel({
+        budgets: budgetsResult.value,
+        notification: notificationResult.status === "fulfilled" ? notificationResult.value : null,
+        notificationState: notificationResult.status === "rejected" && notificationResult.reason?.status === 404
+          ? "not_configured"
+          : notificationResult.status === "rejected"
+            ? "unavailable"
+            : "configured",
+        alerts: alertsResult.status === "fulfilled" ? alertsResult.value : {},
+        alertsState: alertsResult.status === "fulfilled" ? "available" : "unavailable",
+      }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [governanceOnly]);
   const memberPermissionReason = !permissionsReady ? (memberLoadError || "正在读取服务端操作权限") : memberPermissions.reasons["member.manage"];
   const loadMembersContract = async () => {
     if (!workspaceId) return;
@@ -3575,7 +3620,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
       <div className="set-cfg-h">
         {icon}
         <strong>{title}</strong>
-        <button type="button" className="lnk lnk-btn" onClick={() => openSettingsHelp(manageKind)}>管理</button>
+        <button type="button" className="settings-config-button" aria-label={`配置${title}`} onClick={() => openSettingsHelp(manageKind)}><Settings2 size={13} />配置</button>
       </div>
       <div className="set-cfg-rows">{rows.map(([k, v]) => kv(k, v))}</div>
       <p className="set-cfg-desc">{desc}</p>
@@ -3609,6 +3654,9 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
       </main>
     );
   }
+  if (settingsPage === "member-budgets") {
+    return <MemberBudgetSettingsPage onBack={() => setSettingsPage("home")} />;
+  }
   return (
     <main className="agent-studio settings-stage">
       <header className="conv-head">
@@ -3629,6 +3677,19 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
         {cfgCard(<ShieldCheck size={16} />, "数据与合规", [["内容安全（RAI）", contentSafetyLabel], ["身份认证", "Microsoft Entra ID · Easy Auth"], ["数据驻留", "Azure · East US 2"], ["分布式追踪", tracingLabel], ["审计日志保留", "180 天"]], "保障数据安全、合规与可观测性。", "compliance")}
         {cfgCard(<Cpu size={16} />, "工作区偏好", [["界面语言", "简体中文"], ["主题", "浅色（深色即将支持）"], ["时区", "跟随系统"], ["数据持久化", "Azure Blob（工作区/会话/产物）"], ["默认时区显示", "跟随系统"]], "自定义界面语言、主题、时区与数据持久化偏好。", "preferences")}
       </div>
+
+      <section className="card member-budget-entry">
+        <div className="member-budget-entry-icon"><Coins size={18} /></div>
+        <div className="member-budget-entry-copy">
+          <strong>成本预算与提醒</strong>
+          <p>Entra 成员预算、请求级估算成本与管理员邮件提醒</p>
+        </div>
+        <div className="member-budget-entry-states" aria-label="成本预算状态">
+          <span className={memberBudgetHome.state === "unavailable" ? "unavailable" : ""}>{memberBudgetHome.nearBudgetLabel}</span>
+          <span className={memberBudgetHome.mailLabel.includes("不可用") ? "unavailable" : ""}>{memberBudgetHome.mailLabel}</span>
+        </div>
+        <button type="button" className="settings-config-button" aria-label="配置成本预算与提醒" onClick={() => setSettingsPage("member-budgets")}><Settings2 size={13} />配置</button>
+      </section>
 
       <div className="set-bottom">
         <section className="card set-conn">

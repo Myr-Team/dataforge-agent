@@ -19,7 +19,7 @@ async function openProviderSettings(page) {
   await page.goto("/");
   await page.getByRole("button", { name: "设置" }).click();
   await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
-  await page.locator(".set-cfg").filter({ hasText: "模型与生成" }).getByRole("button", { name: "管理" }).click();
+  await page.locator(".set-cfg").filter({ hasText: "模型与生成" }).getByRole("button", { name: "配置模型与生成" }).click();
   await page.getByRole("button", { name: "模型提供商" }).click();
   await expect(page.getByTestId("provider-connections-page")).toBeVisible();
 }

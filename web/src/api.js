@@ -714,6 +714,86 @@ export async function deleteFinOpsOfficialPriceMapping(deployment) {
   });
 }
 
+export async function loadMemberBudgets() {
+  return request("/api/finops/member-budgets?limit=100");
+}
+
+export async function loadMemberBudgetMembers() {
+  return request("/api/finops/member-budget-members?limit=100");
+}
+
+export async function loadMemberBudgetNotification() {
+  return request("/api/finops/notification-settings");
+}
+
+export async function loadMemberBudgetAlerts() {
+  return request("/api/finops/budget-alerts?limit=50");
+}
+
+export async function saveMemberBudget({
+  budgetId = "",
+  memberRef = "",
+  amountUsd,
+  thresholdsPct = [80, 95, 100],
+  enabled = true,
+  baseRevision = 0,
+} = {}) {
+  const editing = Boolean(String(budgetId || "").trim());
+  const body = {
+    ...(editing ? {} : { member_ref: String(memberRef || "").trim() }),
+    amount_usd: Number(amountUsd),
+    thresholds_pct: Array.isArray(thresholdsPct) ? thresholdsPct.map(Number) : [],
+    enabled: enabled === true,
+    base_revision: Number.isInteger(baseRevision) ? baseRevision : 0,
+  };
+  return request(
+    editing
+      ? `/api/finops/member-budgets/${encodeURIComponent(budgetId)}`
+      : "/api/finops/member-budgets",
+    {
+      method: editing ? "PATCH" : "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function disableMemberBudget(budgetId, baseRevision) {
+  return request(`/api/finops/member-budgets/${encodeURIComponent(budgetId)}/disable`, {
+    method: "POST",
+    body: JSON.stringify({
+      base_revision: Number.isInteger(baseRevision) ? baseRevision : 0,
+    }),
+  });
+}
+
+export async function saveMemberBudgetNotification({
+  recipientMemberRef = "",
+  senderDisplayName = "DataForge",
+  subjectTemplate = "",
+  bodyTemplate = "",
+  enabled = false,
+  baseRevision = 0,
+} = {}) {
+  return request("/api/finops/notification-settings", {
+    method: "PUT",
+    body: JSON.stringify({
+      recipient_actor_ref: String(recipientMemberRef || "").trim(),
+      sender_display_name: String(senderDisplayName || "").trim(),
+      subject_template: String(subjectTemplate || ""),
+      body_template: String(bodyTemplate || ""),
+      enabled: enabled === true,
+      base_revision: Number.isInteger(baseRevision) ? baseRevision : 0,
+    }),
+  });
+}
+
+export async function sendMemberBudgetTestEmail() {
+  return request("/api/finops/notification-settings/test-email", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function loadMonitoringDashboard({ scope = "current", workspaceId, from, to, signal } = {}) {
   const params = new URLSearchParams({
     scope: String(scope || "current"),

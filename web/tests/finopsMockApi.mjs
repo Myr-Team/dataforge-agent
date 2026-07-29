@@ -237,6 +237,10 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     failBootstrap: Boolean(options.failBootstrap),
     bedrockConnectionState: options.bedrockConnectionState || "connected",
     providerItems: Array.isArray(options.providerItems) ? [...options.providerItems] : [],
+    memberBudgetFailure: Boolean(options.memberBudgetFailure),
+    memberBudgetEmpty: Boolean(options.memberBudgetEmpty),
+    memberBudgetConflictOnce: Boolean(options.memberBudgetConflictOnce),
+    memberBudgetEmailState: options.memberBudgetEmailState || "sent",
   };
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -291,6 +295,180 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       body = {};
     } else if (path === "/api/finops/bootstrap") {
       body = bootstrapPayload;
+    } else if (path === "/api/finops/member-budgets" && request.method() === "GET") {
+      if (control.memberBudgetFailure) {
+        status = 503;
+        body = { detail: "internal-sql-body-must-not-surface" };
+      } else {
+        body = {
+          items: control.memberBudgetEmpty ? [] : [
+            {
+              budget_id: "budget-safe",
+              member_ref: "member-safe",
+              amount_usd: 200,
+              thresholds_pct: [80, 95, 100],
+              enabled: true,
+              revision: 3,
+              member: {
+                member_ref: "member-safe",
+                display_name: "Finance Admin",
+                role: "admin",
+                identity_state: "active",
+                workspace_ids: ["demo-corpus"],
+                department_labels: ["Finance"],
+              },
+              progress: {
+                estimated_spend_usd: 190,
+                priced_requests: 18,
+                total_requests: 20,
+                unpriced_requests: 2,
+                pricing_coverage_pct: 90,
+                primary_model: "gpt-5.6-terra",
+              },
+              data_status: "partial",
+              currency: "USD",
+            },
+            {
+              budget_id: "budget-former",
+              member_ref: "member-former",
+              amount_usd: 200.5,
+              thresholds_pct: [80, 95, 100],
+              enabled: false,
+              revision: 2,
+              member: {
+                member_ref: "member-former",
+                display_name: "Former member",
+                role: "viewer",
+                identity_state: "inactive",
+                workspace_ids: [],
+                department_labels: [],
+              },
+              progress: {
+                estimated_spend_usd: 0,
+                priced_requests: 1,
+                total_requests: 1,
+                unpriced_requests: 0,
+                pricing_coverage_pct: 100,
+                primary_model: null,
+              },
+              data_status: "complete",
+              currency: "USD",
+            },
+          ],
+          cursor: { next: null, limit: 100 },
+          freshness: "recorded",
+          coverage: "request_estimated_cost",
+          data_status: control.memberBudgetEmpty ? "complete" : "partial",
+          currency: "USD",
+        };
+      }
+    } else if (path === "/api/finops/member-budget-members" && request.method() === "GET") {
+      body = {
+        items: [
+          {
+            member_ref: "member-safe",
+            display_name: "Finance Admin",
+            role: "admin",
+            identity_state: "active",
+            workspace_ids: ["demo-corpus"],
+            department_labels: ["Finance"],
+          },
+          {
+            member_ref: "member-operator",
+            display_name: "IT Operator",
+            role: "viewer",
+            identity_state: "active",
+            workspace_ids: ["demo-corpus"],
+            department_labels: ["IT"],
+          },
+        ],
+        cursor: { next: null, limit: 100 },
+        data_status: "complete",
+      };
+    } else if (path === "/api/finops/notification-settings" && request.method() === "GET") {
+      body = {
+        item: {
+          recipient_actor_ref: "member-safe",
+          sender_display_name: "DataForge",
+          subject_template: "{{member_name}} 预算提醒",
+          body_template: "{{estimated_spend}} / {{budget_amount}}",
+          enabled: true,
+          revision: 2,
+        },
+        freshness: "recorded",
+        coverage: "request_estimated_cost",
+        data_status: "complete",
+        currency: "USD",
+      };
+    } else if (path === "/api/finops/notification-settings" && request.method() === "PUT") {
+      body = {
+        item: {
+          recipient_actor_ref: "member-safe",
+          sender_display_name: "DataForge",
+          subject_template: "{{member_name}} 预算提醒",
+          body_template: "{{estimated_spend}} / {{budget_amount}}",
+          enabled: true,
+          revision: 3,
+        },
+        freshness: "recorded",
+        coverage: "request_estimated_cost",
+        data_status: "complete",
+        currency: "USD",
+      };
+    } else if (path === "/api/finops/notification-settings/test-email" && request.method() === "POST") {
+      body = control.memberBudgetEmailState === "sent"
+        ? { state: "sent", sent_at: NOW, safe_error_category: null }
+        : {
+          state: "failed",
+          sent_at: null,
+          safe_error_category: control.memberBudgetEmailState,
+          operation_id: "must-not-surface",
+        };
+    } else if (path === "/api/finops/budget-alerts" && request.method() === "GET") {
+      body = {
+        items: control.memberBudgetEmpty ? [] : [{
+          alert_id: "alert-safe",
+          tenant_ref: "tenant-raw-must-not-surface",
+          actor_ref: "actor-raw-must-not-surface",
+          budget_id: "budget-safe",
+          period_key: "2026-07",
+          threshold_pct: 95,
+          budget_amount_usd: 200,
+          estimated_spend_usd: 190,
+          pricing_coverage_pct: 90,
+          delivery_state: "sent",
+          attempt_count: 1,
+          triggered_at: NOW,
+          sent_at: NOW,
+          updated_at: NOW,
+        }],
+        cursor: { next: null, limit: 50 },
+        data_status: "partial",
+        currency: "USD",
+      };
+    } else if (path === "/api/finops/member-budgets/budget-safe" && request.method() === "PATCH") {
+      if (control.memberBudgetConflictOnce) {
+        control.memberBudgetConflictOnce = false;
+        status = 409;
+        body = { detail: "revision conflict internal body" };
+      } else {
+        body = {
+          item: { budget_id: "budget-safe", revision: 4 },
+          freshness: "recorded",
+          coverage: "request_estimated_cost",
+          data_status: "partial",
+          currency: "USD",
+        };
+      }
+    } else if (path === "/api/finops/member-budgets" && request.method() === "POST") {
+      status = 200;
+      body = {
+        item: { budget_id: "budget-created", revision: 1 },
+        freshness: "recorded",
+        coverage: "request_estimated_cost",
+        data_status: "unavailable",
+        currency: "USD",
+      };
     } else if (path === "/api/model-providers" && request.method() === "GET") {
       body = { items: control.providerItems };
     } else if (path === "/api/model-providers" && request.method() === "POST") {

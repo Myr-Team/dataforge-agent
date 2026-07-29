@@ -105,7 +105,7 @@ test("settings opens the same persisted Agent model configuration", async ({ pag
   await page.getByRole("button", { name: "设置" }).click();
   await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
   const modelCard = page.locator(".set-cfg").filter({ hasText: "模型与生成" });
-  await modelCard.getByRole("button", { name: "管理" }).click();
+  await modelCard.getByRole("button", { name: "配置模型与生成" }).click();
   await expect(page.getByText("Agent 模型分配")).toBeVisible();
   await expect(page.getByLabel("审计 Agent主要模型")).toHaveValue("terra");
   await expect(page.locator(".side-drawer.wide")).toBeVisible();

@@ -11,6 +11,13 @@ async function openOperations(page) {
   await expect(page.getByRole("heading", { name: "运营管理" })).toBeVisible();
 }
 
+async function openMemberBudgets(page) {
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
+  await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
+  await expect(page.getByRole("heading", { name: "成员成本预算" })).toBeVisible();
+}
+
 
 test("trend chart switches metric, unit and tooltip in sync", async ({ page }) => {
   await installFinOpsMockApi(page);
@@ -105,4 +112,153 @@ test("mobile operations layout has no horizontal overflow", async ({ page }) => 
   await expect(page.getByRole("button", { name: "成本分析" }).first()).toBeVisible();
   await page.getByRole("button", { name: "成本分析" }).first().click();
   await expect(page.getByText("成本趋势")).toBeVisible();
+});
+
+
+test("settings exposes a compact budget entry and dedicated desktop page", async ({ page }) => {
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(String(error)));
+  await installFinOpsMockApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+
+  const entry = page.locator(".member-budget-entry");
+  await expect(entry).toContainText("成本预算与提醒");
+  await expect(entry).toContainText("1 位接近预算");
+  await expect(entry).toContainText("邮件已配置");
+  await expect(entry.getByRole("button", { name: "配置成本预算与提醒" })).toBeVisible();
+
+  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+  await mkdir(outputDir, { recursive: true });
+  await page.screenshot({
+    path: path.join(outputDir, "task6-member-budget-entry-desktop.png"),
+    fullPage: true,
+  });
+
+  await entry.getByRole("button", { name: "配置成本预算与提醒" }).click();
+  await expect(page.getByRole("heading", { name: "成员成本预算" })).toBeVisible();
+  await expect(page.getByText("本月估算成本")).toBeVisible();
+  await expect(page.getByText("$190.00").first()).toBeVisible();
+  await expect(page.getByText("90% 已计价").first()).toBeVisible();
+  await expect(page.locator(".member-budget-table").getByText("身份已停用 · 未归属部门")).toBeVisible();
+
+  const body = await page.locator("body").innerText();
+  expect(body).not.toContain("member-safe");
+  expect(body).not.toContain("tenant-raw");
+  expect(body).not.toContain("actor-raw");
+  expect(body).not.toContain("operation_id");
+  expect(body).not.toMatch(/endpoint=|access[_ -]?key|secret[_ -]?access/i);
+  expect(pageErrors).toEqual([]);
+
+  await page.screenshot({
+    path: path.join(outputDir, "task6-member-budget-page-desktop.png"),
+    fullPage: true,
+  });
+});
+
+
+test("member budget edit preserves decimal amount, thresholds and conflict reload", async ({ page }) => {
+  const calls = [];
+  const control = await installFinOpsMockApi(page, calls, { memberBudgetConflictOnce: true });
+  await page.goto("/");
+  await openMemberBudgets(page);
+
+  await page.getByRole("button", { name: "编辑 Finance Admin 预算" }).click();
+  const dialog = page.getByRole("dialog", { name: "编辑成员预算" });
+  await expect(dialog.getByLabel("月度预算（USD）")).toHaveValue("200");
+  await dialog.getByLabel("月度预算（USD）").fill("200.50");
+  await expect(dialog.getByLabel("提醒阈值")).toHaveValue("80, 95, 100");
+  await dialog.getByRole("button", { name: "保存预算" }).click();
+
+  await expect(page.getByText("配置已更新，正在重新载入")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "成员成本预算" })).toBeVisible();
+  expect(control.memberBudgetConflictOnce).toBe(false);
+
+  await page.getByRole("button", { name: "编辑 Finance Admin 预算" }).click();
+  await page.getByRole("dialog", { name: "编辑成员预算" }).getByLabel("月度预算（USD）").fill("200.50");
+  await page.getByRole("dialog", { name: "编辑成员预算" }).getByRole("button", { name: "保存预算" }).click();
+  await expect(page.getByText("预算已保存")).toBeVisible();
+
+  const writes = calls.filter((call) => call.path === "/api/finops/member-budgets/budget-safe" && call.method === "PATCH");
+  expect(JSON.parse(writes.at(-1).body)).toEqual({
+    amount_usd: 200.5,
+    thresholds_pct: [80, 95, 100],
+    enabled: true,
+    base_revision: 3,
+  });
+});
+
+
+test("mail settings configure and test use safe states", async ({ page }) => {
+  const calls = [];
+  await installFinOpsMockApi(page, calls);
+  await page.goto("/");
+  await openMemberBudgets(page);
+
+  await page.getByRole("button", { name: "配置邮件" }).click();
+  const dialog = page.getByRole("dialog", { name: "邮件提醒设置" });
+  await expect(dialog.getByText("收件地址由 Entra 管理")).toBeVisible();
+  await dialog.getByLabel("管理员").selectOption("member-safe");
+  await dialog.getByRole("button", { name: "保存邮件设置" }).click();
+  await expect(page.getByText("邮件设置已保存")).toBeVisible();
+
+  await page.getByRole("button", { name: "发送测试邮件" }).click();
+  await expect(page.getByText("测试邮件已发送")).toBeVisible();
+  const testCall = calls.find((call) => call.path === "/api/finops/notification-settings/test-email");
+  expect(testCall).toBeTruthy();
+  expect(testCall.body).toBe("{}");
+});
+
+
+test("test email maps not configured and permission failures to safe guidance", async ({ page }) => {
+  const control = await installFinOpsMockApi(page);
+  await page.goto("/");
+  await openMemberBudgets(page);
+
+  control.memberBudgetEmailState = "not_configured";
+  await page.getByRole("button", { name: "发送测试邮件" }).click();
+  await expect(page.getByText("邮件服务尚未配置")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("must-not-surface");
+
+  control.memberBudgetEmailState = "permission_required";
+  await page.getByRole("button", { name: "发送测试邮件" }).click();
+  await expect(page.getByText("托管身份缺少邮件发送权限")).toBeVisible();
+  await expect(page.getByText("自动发送默认关闭")).toBeVisible();
+});
+
+
+test("member budget mobile layout keeps actions first and has no overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installFinOpsMockApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).last().click();
+  await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
+
+  await expect(page.locator(".member-budget-page-actions")).toBeVisible();
+  await expect(page.locator(".member-budget-mobile-list")).toBeVisible();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(1);
+
+  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+  await mkdir(outputDir, { recursive: true });
+  await page.screenshot({
+    path: path.join(outputDir, "task6-member-budget-page-mobile.png"),
+    fullPage: true,
+  });
+});
+
+
+test("member budget failure and empty states stay truthful", async ({ page }) => {
+  const control = await installFinOpsMockApi(page, [], { memberBudgetFailure: true });
+  await page.goto("/");
+  await openMemberBudgets(page);
+
+  await expect(page.getByText("成员预算暂时不可用")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("Failed to fetch");
+
+  control.memberBudgetFailure = false;
+  control.memberBudgetEmpty = true;
+  await page.getByRole("button", { name: "重试" }).click();
+  await expect(page.getByText("尚未设置成员预算")).toBeVisible();
+  await expect(page.getByText("$0.00")).toHaveCount(0);
 });

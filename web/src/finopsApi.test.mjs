@@ -12,10 +12,17 @@ import {
   loadFinOpsBootstrap,
   loadFinOpsOfficialPriceCatalog,
   loadFinOpsOfficialPriceMappings,
+  loadMemberBudgetAlerts,
+  loadMemberBudgetMembers,
+  loadMemberBudgets,
+  loadMemberBudgetNotification,
   loadIdentityGovernance,
   loadModelProviders,
   queryFinOpsAssistant,
   rotateModelProviderSecret,
+  saveMemberBudget,
+  saveMemberBudgetNotification,
+  sendMemberBudgetTestEmail,
   searchIdentityGovernanceGroups,
   updateIdentityGroupMapping,
   updateFinOpsOfficialPriceMapping,
@@ -208,6 +215,92 @@ test("model routing save carries base_revision for optimistic concurrency", asyn
   assert.equal(captured.url, "/api/workspaces/ws-a/governance/model-routing");
   assert.equal(captured.options.method, "PUT");
   assert.equal(JSON.parse(captured.options.body).base_revision, 3);
+});
+
+test("member budget queries use bounded organization endpoints", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    return { ok: true, json: async () => ({ items: [] }) };
+  };
+
+  try {
+    await loadMemberBudgets();
+    await loadMemberBudgetMembers();
+    await loadMemberBudgetNotification();
+    await loadMemberBudgetAlerts();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(calls, [
+    "/api/finops/member-budgets?limit=100",
+    "/api/finops/member-budget-members?limit=100",
+    "/api/finops/notification-settings",
+    "/api/finops/budget-alerts?limit=50",
+  ]);
+});
+
+test("member budget writes send only typed fields and base revision", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), method: options.method, body: JSON.parse(options.body || "{}") });
+    return { ok: true, json: async () => ({ item: { revision: 4 } }) };
+  };
+
+  try {
+    await saveMemberBudget({
+      budgetId: "budget/a",
+      memberRef: "member-safe",
+      amountUsd: 200.5,
+      thresholdsPct: [80, 95, 100],
+      enabled: true,
+      baseRevision: 3,
+      ignored: "must-not-pass",
+    });
+    await saveMemberBudgetNotification({
+      recipientMemberRef: "member-safe",
+      senderDisplayName: "DataForge",
+      subjectTemplate: "{{member_name}} 预算提醒",
+      bodyTemplate: "{{estimated_spend}} / {{budget_amount}}",
+      enabled: true,
+      baseRevision: 2,
+      recipientEmail: "must-not-pass@example.test",
+    });
+    await sendMemberBudgetTestEmail();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(calls[0], {
+    url: "/api/finops/member-budgets/budget%2Fa",
+    method: "PATCH",
+    body: {
+      amount_usd: 200.5,
+      thresholds_pct: [80, 95, 100],
+      enabled: true,
+      base_revision: 3,
+    },
+  });
+  assert.deepEqual(calls[1], {
+    url: "/api/finops/notification-settings",
+    method: "PUT",
+    body: {
+      recipient_actor_ref: "member-safe",
+      sender_display_name: "DataForge",
+      subject_template: "{{member_name}} 预算提醒",
+      body_template: "{{estimated_spend}} / {{budget_amount}}",
+      enabled: true,
+      base_revision: 2,
+    },
+  });
+  assert.deepEqual(calls[2], {
+    url: "/api/finops/notification-settings/test-email",
+    method: "POST",
+    body: {},
+  });
 });
 
 test("provider management uses typed endpoints and revisioned writes", async () => {
