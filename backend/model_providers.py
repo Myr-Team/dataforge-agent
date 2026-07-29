@@ -98,6 +98,12 @@ class ModelProviderRecord(BaseModel):
 
 
 class ProviderPatch(BaseModel):
+    """Internal provider state/configuration transition.
+
+    API handlers must project their dedicated external DTO into this model
+    rather than exposing server-owned observation fields directly.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     base_revision: int = Field(ge=1)

@@ -153,6 +153,31 @@ class ProviderDisableBody(BaseModel):
     base_revision: int = Field(ge=1)
 
 
+class ProviderConfigurationPatchBody(BaseModel):
+    """Owner-editable provider configuration only.
+
+    Connection observations, discovered models, governance evidence, error
+    categories, and timestamps are intentionally absent and remain server-owned.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision: int = Field(ge=1)
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    base_url: str | None = Field(default=None, min_length=1, max_length=320)
+    region: str | None = Field(default=None, max_length=32)
+
+    @model_validator(mode="after")
+    def _valid_configuration_patch(self) -> "ProviderConfigurationPatchBody":
+        self.to_internal_patch()
+        return self
+
+    def to_internal_patch(self) -> ProviderPatch:
+        return ProviderPatch.model_validate(
+            self.model_dump(exclude_none=True)
+        )
+
+
 def get_model_provider_repository() -> ModelProviderRepository:
     if _enabled("DF_FINOPS_SQL_ENABLED"):
         return SqlModelProviderRepository(
@@ -314,7 +339,7 @@ async def rotate_model_provider_secret(
 @router.patch("/{provider_id}")
 async def update_model_provider(
     provider_id: str,
-    body: ProviderPatch,
+    body: ProviderConfigurationPatchBody,
     request: Request,
 ) -> dict[str, object]:
     tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
@@ -341,7 +366,7 @@ async def update_model_provider(
             return _service(repository).update(
                 tenant_ref=tenant_ref,
                 provider_id=provider_id,
-                patch=body,
+                patch=body.to_internal_patch(),
                 actor_ref=actor_ref,
             )
     except Exception as exc:

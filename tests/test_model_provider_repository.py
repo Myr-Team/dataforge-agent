@@ -13,7 +13,7 @@ from backend.model_provider_repository import (
     ModelProviderRepositoryError,
     SqlModelProviderRepository,
 )
-from backend.model_providers import ModelProviderRecord, ProviderPatch
+from backend.model_providers import ModelProviderRecord, ProviderModel, ProviderPatch
 
 
 def _record(*, tenant_ref: str = "tenant-a") -> ModelProviderRecord:
@@ -115,6 +115,41 @@ def test_repository_persists_and_updates_provider_region() -> None:
 
     assert saved.region == "us-west-2"
     assert repository.get("tenant-a", "provider_01").region == "us-west-2"
+
+
+def test_repository_internal_patch_updates_server_owned_observations() -> None:
+    repository = InMemoryModelProviderRepository()
+    repository.create(_record())
+    tested_at = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    discovered = ProviderModel(
+        model_id="deepseek-v4-flash",
+        display_name="DeepSeek V4 Flash",
+        capabilities=["chat", "tools"],
+        support_state="supported",
+        price_key="deepseek:deepseek-v4-flash:official",
+    )
+
+    saved = repository.update(
+        "tenant-a",
+        "provider_01",
+        ProviderPatch(
+            base_revision=1,
+            connection_state="connected",
+            governance_state="governed",
+            available_models=[discovered],
+            last_tested_at=tested_at,
+            last_success_at=tested_at,
+            safe_error_category=None,
+        ),
+        actor_ref="actor-service",
+    )
+
+    assert saved.connection_state == "connected"
+    assert saved.governance_state == "governed"
+    assert saved.available_models == [discovered]
+    assert saved.last_tested_at == tested_at
+    assert saved.last_success_at == tested_at
+    assert saved.safe_error_category is None
 
 
 class _SqlCursor:

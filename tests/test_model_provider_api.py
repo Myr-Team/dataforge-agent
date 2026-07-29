@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from threading import Event, Lock
 
+import pytest
 from fastapi.testclient import TestClient
 
 import backend.model_provider_router as provider_router
@@ -581,6 +582,114 @@ def test_provider_patch_rejects_stale_revision(monkeypatch) -> None:
         headers=headers,
         json={"base_revision": 1, "display_name": "stale"},
     ).status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("field_name", "forged_value"),
+    [
+        ("connection_state", "invalid"),
+        ("governance_state", "governed"),
+        (
+            "available_models",
+            [
+                {
+                    "model_id": "forged-model",
+                    "display_name": "Forged model",
+                    "capabilities": ["admin"],
+                    "support_state": "supported",
+                    "price_key": "forged:price",
+                }
+            ],
+        ),
+        ("models", []),
+        ("last_tested_at", "2026-07-29T01:00:00Z"),
+        ("last_success_at", "2026-07-29T01:00:00Z"),
+        ("safe_error_category", "forged_error"),
+        ("last_error_category", "forged_error"),
+        ("secret_ref", "forged-secret-reference"),
+    ],
+)
+def test_provider_patch_rejects_server_owned_state_without_mutation(
+    monkeypatch,
+    field_name: str,
+    forged_value: object,
+) -> None:
+    client, repository, secrets, audits = _client(monkeypatch)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "deepseek",
+            "display_name": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "secret-marker",
+        },
+    ).json()
+    tenant_ref = next(iter(secrets.values))[0]
+    before = repository.get(tenant_ref, created["provider_id"])
+    audit_count = len(audits)
+
+    response = client.patch(
+        f"/api/model-providers/{created['provider_id']}",
+        headers=headers,
+        json={
+            "base_revision": before.revision,
+            field_name: forged_value,
+        },
+    )
+
+    after = repository.get(tenant_ref, created["provider_id"])
+    assert {
+        "status_code": response.status_code,
+        "repository_mutated": after != before,
+        "audit_written": len(audits) != audit_count,
+    } == {
+        "status_code": 422,
+        "repository_mutated": False,
+        "audit_written": False,
+    }
+
+
+def test_provider_patch_preserves_server_observations_when_editing_configuration(
+    monkeypatch,
+) -> None:
+    client, repository, secrets, audits = _client(monkeypatch)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "deepseek",
+            "display_name": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "secret-marker",
+        },
+    ).json()
+    tenant_ref = next(iter(secrets.values))[0]
+    before = repository.get(tenant_ref, created["provider_id"])
+    audit_count = len(audits)
+
+    response = client.patch(
+        f"/api/model-providers/{created['provider_id']}",
+        headers=headers,
+        json={
+            "base_revision": before.revision,
+            "display_name": "DeepSeek primary",
+        },
+    )
+
+    after = repository.get(tenant_ref, created["provider_id"])
+    assert response.status_code == 200
+    assert after.display_name == "DeepSeek primary"
+    assert after.revision == before.revision + 1
+    assert after.connection_state == before.connection_state
+    assert after.governance_state == before.governance_state
+    assert after.available_models == before.available_models
+    assert after.last_tested_at == before.last_tested_at
+    assert after.last_success_at == before.last_success_at
+    assert after.safe_error_category == before.safe_error_category
+    assert len(audits) == audit_count + 1
 
 
 def test_provider_api_is_hidden_when_feature_is_disabled(monkeypatch) -> None:
