@@ -626,3 +626,108 @@ BEGIN
         ON df_finops.request_event (tenant_ref, correlation_ref)
         WHERE correlation_ref IS NOT NULL;
 END;
+
+IF OBJECT_ID(N'df_finops.member_budget', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.member_budget (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        budget_id NVARCHAR(64) NOT NULL,
+        actor_ref NVARCHAR(128) NOT NULL,
+        period_type NVARCHAR(32) NOT NULL,
+        amount_usd DECIMAL(19,8) NOT NULL,
+        thresholds_json NVARCHAR(256) NOT NULL,
+        enabled BIT NOT NULL,
+        revision INT NOT NULL,
+        created_by_ref NVARCHAR(128) NOT NULL,
+        updated_by_ref NVARCHAR(128) NOT NULL,
+        created_at DATETIME2(7) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_member_budget PRIMARY KEY (tenant_ref, budget_id),
+        CONSTRAINT CK_finops_member_budget_period CHECK (
+            period_type = N'calendar_month_utc'
+        ),
+        CONSTRAINT CK_finops_member_budget_amount CHECK (amount_usd > 0),
+        CONSTRAINT CK_finops_member_budget_thresholds CHECK (
+            ISJSON(thresholds_json) = 1
+        ),
+        CONSTRAINT CK_finops_member_budget_revision CHECK (revision >= 1)
+    );
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID(N'df_finops.member_budget')
+      AND name = N'UQ_finops_member_budget_active'
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_finops_member_budget_active
+        ON df_finops.member_budget (tenant_ref, actor_ref)
+        WHERE enabled = 1;
+END;
+
+IF OBJECT_ID(N'df_finops.notification_setting', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.notification_setting (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        recipient_actor_ref NVARCHAR(128) NOT NULL,
+        recipient_email NVARCHAR(320) NOT NULL,
+        sender_display_name NVARCHAR(120) NOT NULL,
+        subject_template NVARCHAR(200) NOT NULL,
+        body_template NVARCHAR(4000) NOT NULL,
+        enabled BIT NOT NULL,
+        revision INT NOT NULL,
+        created_by_ref NVARCHAR(128) NOT NULL,
+        updated_by_ref NVARCHAR(128) NOT NULL,
+        created_at DATETIME2(7) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_notification_setting PRIMARY KEY (tenant_ref),
+        CONSTRAINT CK_finops_notification_revision CHECK (revision >= 1)
+    );
+END;
+
+IF OBJECT_ID(N'df_finops.budget_alert', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.budget_alert (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        alert_id NVARCHAR(64) NOT NULL,
+        budget_id NVARCHAR(64) NOT NULL,
+        actor_ref NVARCHAR(128) NOT NULL,
+        period_key CHAR(7) NOT NULL,
+        threshold_pct INT NOT NULL,
+        budget_amount_usd DECIMAL(19,8) NOT NULL,
+        estimated_spend_usd DECIMAL(19,8) NOT NULL,
+        pricing_coverage_pct DECIMAL(8,4) NULL,
+        budget_revision INT NOT NULL,
+        notification_revision INT NOT NULL,
+        delivery_state NVARCHAR(16) NOT NULL,
+        safe_error_category NVARCHAR(64) NULL,
+        attempt_count INT NOT NULL,
+        triggered_at DATETIME2(7) NOT NULL,
+        sent_at DATETIME2(7) NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_budget_alert PRIMARY KEY (tenant_ref, alert_id),
+        CONSTRAINT UQ_finops_budget_alert_threshold UNIQUE (
+            tenant_ref, budget_id, period_key, threshold_pct
+        ),
+        CONSTRAINT CK_finops_budget_alert_state CHECK (
+            delivery_state IN (N'pending', N'sending', N'sent', N'failed', N'suppressed')
+        ),
+        CONSTRAINT CK_finops_budget_alert_attempt CHECK (
+            attempt_count BETWEEN 0 AND 3
+        ),
+        CONSTRAINT CK_finops_budget_alert_threshold CHECK (
+            threshold_pct BETWEEN 1 AND 100
+        )
+    );
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID(N'df_finops.request_event')
+      AND name = N'IX_finops_request_actor_window'
+)
+BEGIN
+    CREATE INDEX IX_finops_request_actor_window
+        ON df_finops.request_event (tenant_ref, actor_ref, occurred_at)
+        INCLUDE (cost_amount, evidence_state);
+END;

@@ -47,6 +47,17 @@ def test_finops_schema_allows_bedrock_and_adds_region() -> None:
     assert "IF NOT EXISTS" in sql
 
 
+def test_member_budget_schema_is_additive_and_uses_no_destructive_rewrite() -> None:
+    schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
+
+    for table in ("member_budget", "notification_setting", "budget_alert"):
+        assert f"if object_id(n'df_finops.{table}', n'u') is null" in schema
+        assert f"create table df_finops.{table}" in schema
+
+    assert "drop table df_finops.member_budget" not in schema
+    assert "truncate table df_finops.member_budget" not in schema
+
+
 def test_provider_schema_constrains_public_states_roles_and_json() -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
 
