@@ -114,9 +114,9 @@ def test_sql_repository_initializes_schema_and_upserts_only_public_event_payload
     repository.initialize_schema()
     repository.upsert_events([_event()])
 
-    assert connection.commits == 2
     *schema_calls, merge_call = connection.cursor_value.calls
     assert schema_calls
+    assert connection.commits == len(schema_calls) + 1
     assert all("finops:schema" in call[0] for call in schema_calls)
     assert "finops:upsert-request-event" in merge_call[0]
     normalized_merge = " ".join(merge_call[0].split())
@@ -158,7 +158,7 @@ def test_sql_repository_executes_go_delimited_schema_batches_separately(
     assert "CREATE TABLE df_finops.example" in operations[0]
     assert "ALTER TABLE df_finops.example" in operations[1]
     assert all("\nGO\n" not in operation.upper() for operation in operations)
-    assert connection.commits == 1
+    assert connection.commits == 2
 
 
 def test_sql_repository_reads_historical_payload_without_routing_revision_as_null() -> None:

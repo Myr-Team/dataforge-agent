@@ -52,9 +52,26 @@ class SqlFinOpsRepository:
 
     def initialize_schema(self) -> None:
         schema = self._schema_path.read_text(encoding="utf-8")
-        with self._transaction() as cursor:
+        connection: _Connection | None = None
+        try:
+            connection = self._connection_factory()
+            connection.autocommit = False
+            cursor = connection.cursor()
             for batch in _split_schema_batches(schema):
-                cursor.execute(f"/* finops:schema */\n{batch}")
+                try:
+                    cursor.execute(f"/* finops:schema */\n{batch}")
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+        except Exception as exc:
+            raise FinOpsPersistenceError("FinOps SQL operation failed") from exc
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
     def upsert_events(self, events: Iterable[FinOpsRequestEvent]) -> None:
         with self._transaction() as cursor:
