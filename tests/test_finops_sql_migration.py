@@ -79,6 +79,16 @@ def test_conditional_table_creation_precedes_upgrade_in_an_earlier_batch(
     assert create_batch < upgrade_batch
 
 
+@pytest.mark.parametrize(
+    "table",
+    ("request_event", "department", "model_provider", "budget_alert"),
+)
+def test_schema_upgrades_defer_alter_table_compilation(table: str) -> None:
+    schema = SCHEMA_PATH.read_text(encoding="utf-8")
+
+    assert f"EXEC(N'ALTER TABLE df_finops.{table}" in schema
+
+
 def test_member_budget_schema_is_additive_and_uses_no_destructive_rewrite() -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
 

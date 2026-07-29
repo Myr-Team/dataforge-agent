@@ -114,9 +114,9 @@ GO
 
 IF COL_LENGTH(N'df_finops.department', N'updated_by') IS NULL
 BEGIN
-    ALTER TABLE df_finops.department
+    EXEC(N'ALTER TABLE df_finops.department
         ADD updated_by NVARCHAR(128) NOT NULL
-            CONSTRAINT DF_finops_department_updated_by DEFAULT N'system';
+            CONSTRAINT DF_finops_department_updated_by DEFAULT N''system''');
 END;
 
 IF OBJECT_ID(N'df_finops.workspace_department', N'U') IS NULL
@@ -501,7 +501,7 @@ GO
 
 IF COL_LENGTH(N'df_finops.model_provider', N'region') IS NULL
 BEGIN
-    ALTER TABLE df_finops.model_provider ADD region NVARCHAR(32) NULL;
+    EXEC(N'ALTER TABLE df_finops.model_provider ADD region NVARCHAR(32) NULL');
 END;
 
 IF EXISTS (
@@ -514,8 +514,8 @@ IF EXISTS (
             <> N'(provider_typein(n''deepseek'',n''aws_bedrock''))'
 )
 BEGIN
-    ALTER TABLE df_finops.model_provider
-        DROP CONSTRAINT CK_finops_model_provider_type;
+    EXEC(N'ALTER TABLE df_finops.model_provider
+        DROP CONSTRAINT CK_finops_model_provider_type');
 END;
 
 IF NOT EXISTS (
@@ -524,8 +524,9 @@ IF NOT EXISTS (
         AND parent_object_id = OBJECT_ID(N'df_finops.model_provider')
 )
 BEGIN
-    ALTER TABLE df_finops.model_provider ADD CONSTRAINT CK_finops_model_provider_type
-        CHECK (provider_type IN (N'deepseek', N'aws_bedrock'));
+    EXEC(N'ALTER TABLE df_finops.model_provider
+        ADD CONSTRAINT CK_finops_model_provider_type
+        CHECK (provider_type IN (N''deepseek'', N''aws_bedrock''))');
 END;
 
 IF OBJECT_ID(N'df_finops.model_provider_model', N'U') IS NULL
@@ -742,17 +743,17 @@ GO
 
 IF COL_LENGTH(N'df_finops.budget_alert', N'lease_token') IS NULL
 BEGIN
-    ALTER TABLE df_finops.budget_alert ADD lease_token NVARCHAR(64) NULL;
+    EXEC(N'ALTER TABLE df_finops.budget_alert ADD lease_token NVARCHAR(64) NULL');
 END;
 
 IF COL_LENGTH(N'df_finops.budget_alert', N'lease_expires_at') IS NULL
 BEGIN
-    ALTER TABLE df_finops.budget_alert ADD lease_expires_at DATETIME2(7) NULL;
+    EXEC(N'ALTER TABLE df_finops.budget_alert ADD lease_expires_at DATETIME2(7) NULL');
 END;
 
 IF COL_LENGTH(N'df_finops.budget_alert', N'next_attempt_at') IS NULL
 BEGIN
-    ALTER TABLE df_finops.budget_alert ADD next_attempt_at DATETIME2(7) NULL;
+    EXEC(N'ALTER TABLE df_finops.budget_alert ADD next_attempt_at DATETIME2(7) NULL');
 END;
 
 -- A pre-lease worker cannot prove ownership. Recover those rows as due failed
@@ -772,12 +773,12 @@ IF NOT EXISTS (
       AND parent_object_id = OBJECT_ID(N'df_finops.budget_alert')
 )
 BEGIN
-    ALTER TABLE df_finops.budget_alert
+    EXEC(N'ALTER TABLE df_finops.budget_alert
         ADD CONSTRAINT CK_finops_budget_alert_lease CHECK (
-            (delivery_state = N'sending' AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+            (delivery_state = N''sending'' AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)
             OR
-            (delivery_state <> N'sending' AND lease_token IS NULL AND lease_expires_at IS NULL)
-        );
+            (delivery_state <> N''sending'' AND lease_token IS NULL AND lease_expires_at IS NULL)
+        )');
 END;
 
 IF NOT EXISTS (
@@ -800,11 +801,11 @@ IF NOT EXISTS (
       AND parent_object_id = OBJECT_ID(N'df_finops.budget_alert')
 )
 BEGIN
-    ALTER TABLE df_finops.budget_alert
+    EXEC(N'ALTER TABLE df_finops.budget_alert
         ADD CONSTRAINT CK_finops_budget_alert_period CHECK (
-            period_key LIKE '[0-9][0-9][0-9][0-9]-[0-1][0-9]'
-            AND SUBSTRING(period_key, 6, 2) BETWEEN '01' AND '12'
-        );
+            period_key LIKE ''[0-9][0-9][0-9][0-9]-[0-1][0-9]''
+            AND SUBSTRING(period_key, 6, 2) BETWEEN ''01'' AND ''12''
+        )');
 END;
 
 IF NOT EXISTS (
@@ -820,6 +821,6 @@ END;
 
 IF COL_LENGTH(N'df_finops.request_event', N'routing_policy_revision') IS NULL
 BEGIN
-    ALTER TABLE df_finops.request_event
-        ADD routing_policy_revision INT NULL;
+    EXEC(N'ALTER TABLE df_finops.request_event
+        ADD routing_policy_revision INT NULL');
 END;
