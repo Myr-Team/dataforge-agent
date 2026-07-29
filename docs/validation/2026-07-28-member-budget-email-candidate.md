@@ -28,7 +28,7 @@ SMTP credential is accepted.
 ## Local automated regression
 
 The full local gate was run once against exact tested commit
-`2e9801b1eb51a9766f4065724bc1ebe4e71acee4`. This candidate record and the
+`188a20f36312afc39816a94522130cf3069dcce2`. This candidate record and the
 evidence manifest are a provenance-only follow-up: no implementation or
 candidate-runbook behavior changed after the tested commit.
 
@@ -44,6 +44,9 @@ candidate-runbook behavior changed after the tested commit.
 The manifest records exact commands, UTC intervals, tool versions, exit codes,
 sanitization, and SHA-256 hashes. Local PASS proves only the software regression
 gate; it does not promote any live Azure row below.
+
+Evidence manifest SHA-256:
+`6BC42EF6DDB16459D8528D56ED0D5B6A4B019E1E63E604742B08A8732110915C`.
 
 Expected local screenshot paths:
 

@@ -24,4 +24,4 @@ tests/test_maf_evaluation_contract.py::test_deterministic_eval_measures_metrics_
   [WORKTREE]\backend\maf_team_runtime.py:1065: ExperimentalWarning: [FUNCTIONAL_WORKFLOWS] workflow is experimental and may change or be removed in future versions without notice.
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-1484 passed, 1 skipped, 1 warning in 118.75s (0:01:58)
+1484 passed, 1 skipped, 1 warning in 123.60s (0:02:03)
