@@ -240,6 +240,63 @@ provider runtime traffic, or enable FinOps actions. A separate zero-traffic
 candidate acceptance and explicit approval are required before any production
 traffic change.
 
+### Entra member budgets and ACS Email reminders
+
+The member-budget feature is an administrator-only FinOps control surface. It
+joins trusted Easy Auth / Entra member attribution to request-level estimated
+cost in the SQL ledger, then reports each member's UTC calendar-month USD
+budget, estimated spend, and pricing coverage. Unpriced requests remain
+unpriced; they reduce coverage and are never counted as zero-cost usage.
+
+The feature has four intentionally separate layers:
+
+1. `member_directory` resolves tenant-scoped, workspace-authorized Entra
+   members into opaque actor references and safe display fields.
+2. `member_budget_repository` and `sql_member_budgets` persist budgets,
+   notification settings, and idempotent alert state in Azure SQL. Redis is
+   never the source of truth.
+3. `member_budget_evaluator` evaluates the completed FinOps ledger after
+   rollup/reconciliation and coalesces crossed thresholds. It does not block
+   requests, change model routing, or perform FinOps actions.
+4. `acs_email` sends plain-text test or threshold mail through Azure
+   Communication Services Email using the backend system-assigned managed
+   identity. Connection strings, SMTP credentials, service keys, HTML,
+   attachments, and arbitrary template variables are not accepted.
+
+All related switches default to off:
+
+```text
+DF_FINOPS_MEMBER_BUDGETS_ENABLED=0
+DF_FINOPS_EMAIL_CONFIGURATION_ENABLED=0
+DF_FINOPS_EMAIL_ALERTS_ENABLED=0
+DF_FINOPS_ACTIONS_ENABLED=0
+```
+
+`DF_ACS_EMAIL_ENDPOINT` and `DF_ACS_EMAIL_SENDER_ADDRESS` are deployment
+configuration, not values entered by a portal administrator. Automatic email
+must remain off until a zero-traffic candidate has passed the controlled
+delivery and deduplication checks and a human has explicitly approved enabling
+it.
+
+Run the complete local gate from a clean checkout:
+
+```powershell
+python -m pytest -q
+Set-Location web
+node --test
+npm run build
+npx playwright test
+Set-Location ..
+git diff --check
+```
+
+Candidate setup, redacted evidence requirements, rollback, and the production
+approval boundary are documented in the
+[member-budget and ACS Email candidate runbook](docs/validation/2026-07-28-member-budget-email-candidate-runbook.md).
+The corresponding
+[candidate acceptance record](docs/validation/2026-07-28-member-budget-email-candidate.md)
+distinguishes local PASS evidence from live Azure checks that are still pending.
+
 ## Monitoring and model routing
 
 - `Monitor` is an owner-only surface. Backend authorization decides access for both navigation and API reads; the frontend only reflects that server-backed permission.
