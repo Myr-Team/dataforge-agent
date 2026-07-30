@@ -127,3 +127,70 @@ def test_detected_anomaly_identity_is_stable_when_observed_value_changes() -> No
 
     assert first_error.observed_value != second_error.observed_value
     assert first_error.anomaly_id == second_error.anomaly_id
+
+
+def test_detected_anomalies_attach_policy_specific_request_evidence() -> None:
+    def event(
+        index: int,
+        *,
+        failed: bool = False,
+        latency_ms: int = 500,
+        cache_state: str = "hit",
+        priced: bool = True,
+    ) -> FinOpsRequestEvent:
+        return FinOpsRequestEvent.model_validate({
+            "request_ref": f"req_policy_{index:012d}",
+            "occurred_at": datetime(
+                2026, 7, 24, 1, 0, index, tzinfo=timezone.utc
+            ),
+            "call_class": "model",
+            "tenant_ref": "tenant-a",
+            "workspace_id": "ws-a",
+            "status": "failed" if failed else "succeeded",
+            "latency_ms": latency_ms,
+            "tokens": {"total": 100 + index},
+            "cache": {
+                "state": cache_state,
+                "eligible": cache_state in {"hit", "miss"},
+            },
+            "gateway_coverage": "unmanaged" if index == 19 else "apim_governed",
+            "estimated_cost": {
+                "amount": 0.001 if priced else None,
+                "currency": "USD",
+                "status": "estimated" if priced else "unavailable",
+            },
+            "evidence_state": "observed" if priced else "partial",
+        })
+
+    events = [
+        event(
+            index,
+            failed=index in {17, 18, 19},
+            latency_ms=6000 if index == 16 else 500 + index,
+            cache_state="miss" if index in {14, 15} else "hit",
+            priced=index != 13,
+        )
+        for index in range(20)
+    ]
+    findings = evaluate_default_anomalies(
+        AnomalyEvaluationInput(
+            events=events,
+            apim_coverage_threshold_pct=100,
+            unpriced_threshold_pct=0,
+            cache_hit_rate_threshold_pct=95,
+        )
+    )
+    by_policy = {item.policy_type: item for item in findings}
+
+    assert by_policy["error_rate"].evidence_refs[0] == "req_policy_000000000019"
+    assert by_policy["p95_latency"].evidence_refs[0] == "req_policy_000000000016"
+    assert by_policy["unpriced_requests"].evidence_refs == [
+        "req_policy_000000000013"
+    ]
+    assert by_policy["cache_hit_rate"].evidence_refs == [
+        "req_policy_000000000015",
+        "req_policy_000000000014",
+    ]
+    assert by_policy["apim_coverage"].evidence_refs == [
+        "req_policy_000000000019"
+    ]

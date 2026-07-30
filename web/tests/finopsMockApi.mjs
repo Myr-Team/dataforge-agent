@@ -791,6 +791,93 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           foundry_trace: "https://ai.azure.com/trace/0123456789abcdef",
         },
       };
+    } else if (
+      path === "/api/finops/requests/req_slow_000001"
+      || path === "/api/finops/requests/req_cache_000001"
+      || path === "/api/finops/requests/req_unpriced_001"
+      || path === "/api/finops/requests/req_error_000001"
+    ) {
+      const requestRef = path.split("/").at(-1);
+      const profiles = {
+        req_slow_000001: {
+          operation: "批量分析",
+          request: "批量分析本周客户反馈并生成归因摘要",
+          response: "分析已完成，但模型响应阶段耗时偏高。",
+          status: "succeeded",
+          latency: 6200,
+          cache: "miss",
+          cost: 0.0142,
+          error: null,
+        },
+        req_cache_000001: {
+          operation: "重复分析",
+          request: "重新分析相同数据并复用上次结果",
+          response: "本次请求未命中结果缓存，已重新执行分析。",
+          status: "succeeded",
+          latency: 1850,
+          cache: "miss",
+          cost: 0.0084,
+          error: null,
+        },
+        req_unpriced_001: {
+          operation: "模型评审",
+          request: "使用新接入模型评审候选机会",
+          response: "评审已完成，当前模型尚未关联价目。",
+          status: "succeeded",
+          latency: 1700,
+          cache: "bypassed",
+          cost: null,
+          error: null,
+        },
+        req_error_000001: {
+          operation: "机会提取",
+          request: "提取高价值客户机会并生成摘要",
+          response: null,
+          status: "failed",
+          latency: 980,
+          cache: "bypassed",
+          cost: 0.0021,
+          error: "provider_5xx",
+        },
+      };
+      const profile = profiles[requestRef];
+      body = {
+        ...bootstrapPayload,
+        display: {
+          name: `Commerce · ${profile.operation} · 7月24日 14:10`,
+          operation: profile.operation,
+          occurred_at: "2026-07-24T06:10:00Z",
+        },
+        status: profile.status,
+        metrics: {
+          latency_ms: profile.latency,
+          tokens: { input: 1450, output: 320, total: 1770 },
+          cache: { state: profile.cache, eligible: profile.cache === "miss" },
+          estimated_cost: {
+            amount: profile.cost,
+            status: profile.cost == null ? "unavailable" : "estimated",
+            currency: "USD",
+          },
+          gateway_coverage: "apim_governed",
+          evidence_state: profile.cost == null ? "partial" : "observed",
+          error_category: profile.error,
+        },
+        business_request: { text: profile.request, status: "recorded" },
+        business_response: {
+          text: profile.response,
+          status: profile.response ? "recorded" : "unavailable",
+        },
+        timeline: [
+          { stage: "gateway", label: "统一入口", status: "observed" },
+          { stage: "orchestration", label: "DataForge 编排", status: "observed" },
+          { stage: "response", label: profile.status === "failed" ? "调用失败" : "完成返回", status: profile.status, latency_ms: profile.latency },
+        ],
+        technical_refs: {
+          request_ref: requestRef,
+          run_id: `run_${requestRef}`,
+        },
+        links: {},
+      };
     } else if (path === "/api/finops/breakdowns") {
       body = {
         ...bootstrapPayload,
@@ -852,17 +939,51 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         ...bootstrapPayload,
         items: [
           {
-            anomaly_id: "anom-a",
+            anomaly_id: "anom-latency",
             policy_type: "p95_latency",
             severity: "warning",
             status: "open",
             observed_value: 2100,
             threshold_value: 2000,
             sample_count: 60,
+            evidence_refs: ["req_slow_000001"],
             recommendation: "检查慢请求来源。",
           },
+          {
+            anomaly_id: "anom-cache",
+            policy_type: "cache_hit_rate",
+            severity: "warning",
+            status: "open",
+            observed_value: 18.5,
+            threshold_value: 60,
+            sample_count: 54,
+            recommendation: "检查重复分析的缓存键与失效窗口。",
+            evidence_refs: ["req_cache_000001"],
+          },
+          {
+            anomaly_id: "anom-unpriced",
+            policy_type: "unpriced_requests",
+            severity: "warning",
+            status: "acknowledged",
+            observed_value: 6.2,
+            threshold_value: 5,
+            sample_count: 60,
+            recommendation: "为新接入模型补齐官方价目映射。",
+            evidence_refs: ["req_unpriced_001"],
+          },
+          {
+            anomaly_id: "anom-error",
+            policy_type: "error_rate",
+            severity: "critical",
+            status: "open",
+            observed_value: 8.3,
+            threshold_value: 5,
+            sample_count: 24,
+            recommendation: "按错误类别定位失败调用来源。",
+            evidence_refs: ["req_error_000001"],
+          },
         ],
-        count: 1,
+        count: 4,
       };
     } else if (path === "/api/finops/recommendations") {
       body = { ...bootstrapPayload, items: [], count: 0 };
@@ -871,7 +992,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         ...bootstrapPayload,
         items: [{
           opportunity_id: "opp-latency",
-          anomaly_id: "anom-a",
+          anomaly_id: "anom-latency",
           policy_type: "p95_latency",
           title: "响应时延优化",
           recommendation: "定位慢请求与模型路由瓶颈。",
@@ -881,10 +1002,59 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           queue_state: "ready",
           sample_count: 60,
           evidence_state: "observed",
+          evidence_refs: ["req_slow_000001"],
+          estimated_savings: null,
+          action_status: "suggested",
+        },
+        {
+          opportunity_id: "opp-cache",
+          anomaly_id: "anom-cache",
+          policy_type: "cache_hit_rate",
+          title: "缓存效率优化",
+          recommendation: "检查重复分析的缓存资格与失效策略。",
+          impact: "medium",
+          confidence: "high",
+          effort: "medium",
+          queue_state: "ready",
+          sample_count: 54,
+          evidence_state: "observed",
+          evidence_refs: ["req_cache_000001"],
+          estimated_savings: 0.0048,
+          action_status: "suggested",
+        },
+        {
+          opportunity_id: "opp-unpriced",
+          anomaly_id: "anom-unpriced",
+          policy_type: "unpriced_requests",
+          title: "计价覆盖补齐",
+          recommendation: "为未计价模型关联官方价目。",
+          impact: "medium",
+          confidence: "high",
+          effort: "low",
+          queue_state: "ready",
+          sample_count: 60,
+          evidence_state: "partial",
+          evidence_refs: ["req_unpriced_001"],
+          estimated_savings: null,
+          action_status: "suggested",
+        },
+        {
+          opportunity_id: "opp-error",
+          anomaly_id: "anom-error",
+          policy_type: "error_rate",
+          title: "调用成功率改善",
+          recommendation: "按失败类别和调用来源修复错误。",
+          impact: "high",
+          confidence: "medium",
+          effort: "high",
+          queue_state: "ready",
+          sample_count: 24,
+          evidence_state: "observed",
+          evidence_refs: ["req_error_000001"],
           estimated_savings: null,
           action_status: "suggested",
         }],
-        count: 1,
+        count: 4,
       };
     } else if (path === "/api/finops/actions" && request.method() === "GET") {
       body = { ...bootstrapPayload, items: [], count: 0 };

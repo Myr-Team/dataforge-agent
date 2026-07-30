@@ -1602,6 +1602,7 @@ async def recommendations(
             "severity": item.severity,
             "policy_type": item.policy_type,
             "recommendation": item.recommendation,
+            "evidence_refs": item.evidence_refs,
             "execution_mode": "approval_required",
         }
         for item in findings

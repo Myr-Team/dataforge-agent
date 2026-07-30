@@ -56,3 +56,25 @@ def test_insufficient_sample_is_observing_and_unpriced_never_estimates_savings()
     assert queue[0]["queue_state"] == "observing"
     assert queue[0]["estimated_savings"] is None
     assert queue[0]["action_status"] == "suggested"
+
+
+def test_cache_opportunity_preserves_clicked_evidence_references() -> None:
+    queue = build_opportunity_queue(
+        anomalies=[{
+            "anomaly_id": "a-cache",
+            "policy_type": "cache_hit_rate",
+            "severity": "warning",
+            "sample_count": 30,
+            "status": "open",
+            "evidence_state": "observed",
+            "evidence_refs": ["req_miss_0001", "req_bypass_0002"],
+        }],
+        recommendations=[],
+        priced_cost=1.0,
+        priced_coverage_pct=100,
+    )
+
+    assert queue[0]["evidence_refs"] == [
+        "req_miss_0001",
+        "req_bypass_0002",
+    ]

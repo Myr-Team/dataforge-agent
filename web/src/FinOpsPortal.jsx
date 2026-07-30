@@ -58,6 +58,7 @@ import {
   finopsBudgetView,
   finopsBreakdownRows,
   finopsDoughnutSegments,
+  evidenceRequestRef,
   finopsMetricCards,
   finopsOpportunityRows,
   finopsRequestViewModel,
@@ -472,7 +473,11 @@ function AttentionList({ items, onEvidence = null }) {
           </span>
           <em>{item.severity}</em>
           {onEvidence ? (
-            <button type="button" onClick={() => onEvidence(item.title || "风险项")}>
+            <button type="button" onClick={() => onEvidence({
+              reason: item.title || "风险项",
+              evidenceRefs: item.evidence_refs || [],
+              policyType: item.policy_type || "",
+            })}>
               查看证据
             </button>
           ) : null}
@@ -981,7 +986,11 @@ function RiskPage({
                 <footer>
                   <span>{item.stateLabel}</span>
                   <b>{item.actionLabel}</b>
-                  {onEvidence ? <button type="button" onClick={() => onEvidence(item.title)}>查看证据</button> : null}
+                  {onEvidence ? <button type="button" onClick={() => onEvidence({
+                    reason: item.title,
+                    evidenceRefs: item.evidenceRefs,
+                    policyType: item.policy_type,
+                  })}>查看证据</button> : null}
                 </footer>
               </article>
             ))}
@@ -1000,9 +1009,17 @@ function RiskPage({
                   <footer>
                     {item.status === "open" ? <button type="button" disabled={busyId === item.anomaly_id} onClick={() => onAnomalyAction(item, "acknowledge")}>确认</button> : null}
                     <button type="button" disabled={busyId === item.anomaly_id} onClick={() => onAnomalyAction(item, "suppress")}>抑制</button>
-                    {onEvidence ? <button type="button" onClick={() => onEvidence(item.policy_type)}>查看证据</button> : null}
+                    {onEvidence ? <button type="button" onClick={() => onEvidence({
+                      reason: item.policy_type,
+                      evidenceRefs: item.evidence_refs || [],
+                      policyType: item.policy_type,
+                    })}>查看证据</button> : null}
                   </footer>
-                ) : onEvidence ? <footer><button type="button" onClick={() => onEvidence(item.policy_type)}>查看证据</button></footer> : null}
+                ) : onEvidence ? <footer><button type="button" onClick={() => onEvidence({
+                  reason: item.policy_type,
+                  evidenceRefs: item.evidence_refs || [],
+                  policyType: item.policy_type,
+                })}>查看证据</button></footer> : null}
               </article>
             ))}
           </div>
@@ -1326,31 +1343,47 @@ export function FinOpsPortal({
     });
   }, []);
 
-  const openEvidence = useCallback(async (reason) => {
+  const openEvidence = useCallback(async (selection) => {
     if (permissions["finops.request_detail.read"] === false) return;
+    const normalized = typeof selection === "string"
+      ? { reason: selection, evidenceRefs: [], policyType: "" }
+      : {
+        reason: String(selection?.reason || "运营证据"),
+        evidenceRefs: Array.isArray(selection?.evidenceRefs)
+          ? selection.evidenceRefs
+          : [],
+        policyType: String(selection?.policyType || ""),
+      };
     evidenceController.current?.abort();
     const controller = new AbortController();
     evidenceController.current = controller;
     evidenceTrigger.current = document.activeElement;
     setEvidenceState({
       open: true,
-      reason,
+      reason: normalized.reason,
       loading: true,
       error: "",
       detail: null,
     });
     try {
-      const list = await loadFinOpsRequests(
-        { ...query, limit: 20 },
-        { signal: controller.signal },
-      );
-      const items = Array.isArray(list?.items) ? list.items : [];
-      const selected = items[items.length - 1];
-      const requestRef = String(selected?.request_ref || "").trim();
+      let items = [];
+      let requestRef = evidenceRequestRef({
+        evidenceRefs: normalized.evidenceRefs,
+      });
+      if (!requestRef) {
+        const list = await loadFinOpsRequests(
+          { ...query, limit: 20 },
+          { signal: controller.signal },
+        );
+        items = Array.isArray(list?.items) ? list.items : [];
+        requestRef = evidenceRequestRef({
+          fallbackItems: [...items].reverse(),
+        });
+      }
       if (!requestRef) {
         setEvidenceState({
           open: true,
-          reason,
+          reason: normalized.reason,
           loading: false,
           error: "",
           detail: null,
@@ -1364,7 +1397,7 @@ export function FinOpsPortal({
       );
       setEvidenceState({
         open: true,
-        reason,
+        reason: normalized.reason,
         loading: false,
         error: "",
         detail,
@@ -1373,7 +1406,7 @@ export function FinOpsPortal({
       if (error?.name === "AbortError") return;
       setEvidenceState({
         open: true,
-        reason,
+        reason: normalized.reason,
         loading: false,
         error: error instanceof Error ? error.message : "请求证据读取失败",
         detail: null,

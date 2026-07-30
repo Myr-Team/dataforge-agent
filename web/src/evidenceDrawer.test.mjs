@@ -1,7 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { finopsRequestViewModel } from "./finopsViewModel.js";
+import {
+  evidenceRequestRef,
+  finopsRequestViewModel,
+} from "./finopsViewModel.js";
+
+
+test("evidence selection prefers the clicked finding reference", () => {
+  assert.equal(
+    evidenceRequestRef({
+      evidenceRefs: ["req_slow"],
+      fallbackItems: [{ request_ref: "req_latest" }],
+    }),
+    "req_slow",
+  );
+  assert.equal(
+    evidenceRequestRef({
+      evidenceRefs: [],
+      fallbackItems: [{ request_ref: "req_latest" }],
+    }),
+    "req_latest",
+  );
+});
 
 
 test("evidence drawer model uses business-first section order", () => {

@@ -429,6 +429,9 @@ export function finopsRoiEconomicsView(payload = {}) {
 export function finopsOpportunityRows(payload = {}) {
   return (Array.isArray(payload?.items) ? payload.items : []).map((item) => ({
     ...item,
+    evidenceRefs: (Array.isArray(item.evidence_refs) ? item.evidence_refs : [])
+      .filter((value) => typeof value === "string" && value.trim())
+      .slice(0, 5),
     stateLabel: item.queue_state === "ready" ? "可评估" : "观察中",
     savingsLabel: hasNumber(item.estimated_savings)
       ? formatFinOpsCost(item.estimated_savings, "estimated")
@@ -438,6 +441,21 @@ export function finopsOpportunityRows(payload = {}) {
     effortLabel: { high: "高", medium: "中", low: "低" }[item.effort] || "未记录",
     actionLabel: "建议 · 需人工审批",
   }));
+}
+
+export function evidenceRequestRef({
+  evidenceRefs = [],
+  fallbackItems = [],
+} = {}) {
+  const values = [
+    ...(Array.isArray(evidenceRefs) ? evidenceRefs : []),
+    ...(Array.isArray(fallbackItems)
+      ? fallbackItems.map((item) => item?.request_ref)
+      : []),
+  ];
+  return values
+    .map((value) => String(value || "").trim())
+    .find((value) => /^[A-Za-z][A-Za-z0-9_-]{7,127}$/.test(value)) || "";
 }
 
 export function finopsRequestViewModel(item = {}) {

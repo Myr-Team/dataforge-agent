@@ -64,3 +64,33 @@ test("evidence drawer is full-width and keyboard closable on mobile", async ({ p
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
 });
+
+
+test("risk cards open their own request evidence without a generic list lookup", async ({ page }) => {
+  const calls = [];
+  await installFinOpsMockApi(page, calls);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "运营管理" }).first().click();
+  await page.getByRole("button", { name: "风险与优化" }).click();
+
+  const opportunities = page.locator(".finops-opportunity-list");
+  const latencyCard = opportunities.locator("article").filter({ hasText: "响应时延优化" });
+  await latencyCard.getByRole("button", { name: "查看证据" }).click();
+  let dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("批量分析本周客户反馈并生成归因摘要")).toBeVisible();
+  await dialog.locator("details summary").click();
+  await expect(dialog.getByText("req_slow_000001", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  const cacheCard = opportunities.locator("article").filter({ hasText: "缓存效率优化" });
+  await cacheCard.getByRole("button", { name: "查看证据" }).click();
+  dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("重新分析相同数据并复用上次结果")).toBeVisible();
+  await dialog.locator("details summary").click();
+  await expect(dialog.getByText("req_cache_000001", { exact: true })).toBeVisible();
+
+  expect(calls.filter((call) => call.path === "/api/finops/requests/req_slow_000001")).toHaveLength(1);
+  expect(calls.filter((call) => call.path === "/api/finops/requests/req_cache_000001")).toHaveLength(1);
+  expect(calls.filter((call) => call.path === "/api/finops/requests")).toHaveLength(0);
+});

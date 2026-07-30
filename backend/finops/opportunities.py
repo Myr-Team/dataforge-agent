@@ -61,6 +61,11 @@ def build_opportunity_queue(
             else None
         )
         anomaly_id = str(anomaly.get("anomaly_id") or "")
+        evidence_refs = [
+            str(value).strip()
+            for value in anomaly.get("evidence_refs") or []
+            if str(value).strip()
+        ][:5]
         digest = hashlib.sha256(f"{anomaly_id}:{policy_type}".encode("utf-8")).hexdigest()[:16]
         result.append({
             "opportunity_id": f"opp_{digest}",
@@ -74,6 +79,7 @@ def build_opportunity_queue(
             "queue_state": "ready" if sample_count >= 20 else "observing",
             "sample_count": sample_count,
             "evidence_state": evidence_state,
+            "evidence_refs": evidence_refs,
             "estimated_savings": estimated_savings,
             "currency": "USD" if estimated_savings is not None else None,
             "action_status": "suggested",
