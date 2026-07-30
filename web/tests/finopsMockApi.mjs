@@ -284,6 +284,37 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     memberBudgetTested: true,
     memberBudgetNotificationEnabled: true,
     memberBudgetDisabled: false,
+    roiScenarioConflictOnce: Boolean(options.roiScenarioConflictOnce),
+    roiScenarios: [{
+      scenario_id: "roi_scenario_demo0001",
+      title: "运营自动化测算",
+      status: "estimated",
+      revision: 1,
+      previous_id: null,
+      inputs: {
+        currency: "USD",
+        hours_saved: 40,
+        hourly_value: 50,
+        avoided_loss_or_revenue: 1000,
+        implementation_cost: 6000,
+        monthly_fixed_cost: 200,
+        model_cost: 0.0269,
+        evaluation_months: 12,
+        evidence_revision: 1,
+      },
+      result: {
+        status: "estimated",
+        currency: "USD",
+        monthly_benefit: 3000,
+        implementation_amortization: 500,
+        monthly_total_cost: 700.0269,
+        monthly_net_benefit: 2299.9731,
+        roi_ratio: 3.285549,
+        payback_months: 2.142878,
+        formula_revision: "dataforge-roi-v1",
+      },
+      formula_revision: "dataforge-roi-v1",
+    }],
   };
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -893,8 +924,65 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         },
         verified_roi: { status: "not_recorded", value: null },
         evidence_gaps: ["独立验证的业务结果", "可计数的交付产物"],
-        scenarios: [],
+        scenarios: control.roiScenarios,
       };
+    } else if (
+      path === "/api/workspaces/demo-corpus/governance/scenarios"
+      && request.method() === "POST"
+    ) {
+      if (control.roiScenarioConflictOnce) {
+        control.roiScenarioConflictOnce = false;
+        status = 409;
+        body = { detail: "ROI scenario revision has changed" };
+      } else {
+        const submitted = request.postDataJSON();
+        const months = Number(submitted.evaluation_months);
+        const monthlyBenefit = (
+          Number(submitted.hours_saved) * Number(submitted.hourly_value)
+          + Number(submitted.avoided_loss_or_revenue)
+        );
+        const monthlyTotalCost = (
+          Number(submitted.implementation_cost) / months
+          + Number(submitted.monthly_fixed_cost)
+          + Number(submitted.model_cost)
+        );
+        const scenario = {
+          scenario_id: `roi_scenario_demo${String(control.roiScenarios.length + 1).padStart(4, "0")}`,
+          title: submitted.title,
+          status: "estimated",
+          revision: Number(submitted.base_revision || 0) + 1,
+          previous_id: submitted.previous_id || null,
+          inputs: {
+            currency: "USD",
+            hours_saved: submitted.hours_saved,
+            hourly_value: submitted.hourly_value,
+            avoided_loss_or_revenue: submitted.avoided_loss_or_revenue,
+            implementation_cost: submitted.implementation_cost,
+            monthly_fixed_cost: submitted.monthly_fixed_cost,
+            model_cost: submitted.model_cost,
+            evaluation_months: submitted.evaluation_months,
+            evidence_revision: submitted.evidence_revision,
+          },
+          result: {
+            status: "estimated",
+            currency: "USD",
+            monthly_benefit: monthlyBenefit,
+            implementation_amortization: Number(submitted.implementation_cost) / months,
+            monthly_total_cost: monthlyTotalCost,
+            monthly_net_benefit: monthlyBenefit - monthlyTotalCost,
+            roi_ratio: monthlyTotalCost > 0 ? (monthlyBenefit - monthlyTotalCost) / monthlyTotalCost : null,
+            payback_months: monthlyBenefit > Number(submitted.monthly_fixed_cost) + Number(submitted.model_cost)
+              ? Number(submitted.implementation_cost) / (
+                monthlyBenefit - Number(submitted.monthly_fixed_cost) - Number(submitted.model_cost)
+              )
+              : null,
+            formula_revision: "dataforge-roi-v1",
+          },
+          formula_revision: "dataforge-roi-v1",
+        };
+        control.roiScenarios = [...control.roiScenarios, scenario];
+        body = { workspace_id: "demo-corpus", scenario };
+      }
     } else if (path === "/api/workspaces/demo-corpus/governance/roi") {
       body = {
         workspace_id: "demo-corpus",
@@ -913,6 +1001,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         cost_evidence: { total: 0.0269, currency: "USD", status: "complete" },
         outcome_evidence: { status: "not_recorded", verified_outcome_event_ids: [] },
         realized_roi: { status: "not_recorded", roi_ratio: null },
+        scenarios: control.roiScenarios,
       };
     } else if (path === "/api/health") {
       body = { ok: true };

@@ -57,6 +57,41 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
 });
 
 
+test("ROI parameters create a new DataForge scenario revision", async ({ page }) => {
+  const calls = [];
+  await installFinOpsMockApi(page, calls);
+  await page.goto("/");
+  await openOperations(page);
+  await page.getByRole("button", { name: "效能与 ROI" }).click();
+
+  await expect(page.getByText("运营自动化测算")).toBeVisible();
+  await page.getByRole("button", { name: "调整测算参数" }).click();
+  const dialog = page.getByRole("dialog", { name: "调整 ROI 测算参数" });
+  await expect(dialog.getByText("当前模型成本 $0.0269 / 月")).toBeVisible();
+  await dialog.getByLabel("每月节省工时").fill("48");
+  await dialog.getByRole("button", { name: "保存新版本" }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText("版本 2 · dataforge-roi-v1")).toBeVisible();
+  const write = calls.find((call) => (
+    call.path === "/api/workspaces/demo-corpus/governance/scenarios"
+    && call.method === "POST"
+  ));
+  expect(write).toBeTruthy();
+  expect(JSON.parse(write.body)).toMatchObject({
+    hours_saved: 48,
+    hourly_value: 50,
+    avoided_loss_or_revenue: 1000,
+    implementation_cost: 6000,
+    monthly_fixed_cost: 200,
+    model_cost: 0.0269,
+    evaluation_months: 12,
+    previous_id: "roi_scenario_demo0001",
+    base_revision: 1,
+  });
+});
+
+
 test("APIM coverage surfaces unattributed gateway evidence with scope label", async ({ page }) => {
   await installFinOpsMockApi(page);
   await page.goto("/");

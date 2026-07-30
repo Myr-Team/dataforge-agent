@@ -264,12 +264,29 @@ test("ROI economics view keeps verified ROI separate from estimated scenarios", 
       cost_per_analysis: { label: "每次分析成本", value: 3, currency: "USD", status: "estimated" },
     },
     verified_roi: { status: "verified", value: 1.5, currency: "USD" },
-    scenarios: [{ scenario_id: "roi_scenario_a", status: "estimated", title: "扩容情景" }],
+    scenarios: [{
+      scenario_id: "roi_scenario_a",
+      status: "estimated",
+      title: "扩容情景",
+      revision: 2,
+      result: {
+        monthly_benefit: 3000,
+        monthly_total_cost: 800,
+        monthly_net_benefit: 2200,
+        roi_ratio: 2.75,
+        payback_months: 2.222222,
+        formula_revision: "dataforge-roi-v1",
+      },
+    }],
     evidence_gaps: [],
   });
 
   assert.equal(view.verifiedRoiLabel, "150%");
   assert.equal(view.scenarios[0].status, "estimated");
+  assert.equal(view.scenarios[0].monthlyBenefitLabel, "$3,000");
+  assert.equal(view.scenarios[0].roiLabel, "275%");
+  assert.equal(view.scenarios[0].paybackLabel, "2.2 个月");
+  assert.equal(view.scenarios[0].formulaRevision, "dataforge-roi-v1");
   assert.equal(finopsRoiEconomicsView({}).verifiedRoiLabel, "证据不足");
 });
 

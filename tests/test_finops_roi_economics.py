@@ -1,6 +1,27 @@
 from __future__ import annotations
 
-from backend.finops.roi_economics import build_roi_economics
+import pytest
+
+from backend.finops.roi_economics import build_roi_economics, calculate_roi
+
+
+def test_local_roi_formula_is_versioned_and_reproducible() -> None:
+    result = calculate_roi(
+        hours_saved=40,
+        hourly_value=50,
+        avoided_loss_or_revenue=1000,
+        implementation_cost=6000,
+        monthly_fixed_cost=200,
+        model_cost=100,
+        evaluation_months=12,
+    )
+
+    assert result.monthly_benefit == 3000
+    assert result.monthly_total_cost == 800
+    assert result.monthly_net_benefit == 2200
+    assert result.roi_ratio == pytest.approx(2.75)
+    assert result.payback_months == pytest.approx(6000 / 2700)
+    assert result.formula_revision == "dataforge-roi-v1"
 
 
 def test_unit_economics_and_verified_funnel_require_complete_evidence() -> None:

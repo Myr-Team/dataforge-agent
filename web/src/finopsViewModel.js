@@ -53,7 +53,10 @@ export function formatFinOpsNumber(value, fallback = "未记录") {
 export function formatFinOpsCost(value, status = "") {
   if (!hasNumber(value)) return ["unavailable", "unpriced"].includes(status) ? "未计价" : "未记录";
   const digits = value >= 1 ? 2 : value >= 0.01 ? 4 : 6;
-  return `$${value.toFixed(digits).replace(/0+$/, "").replace(/\.$/, "")}`;
+  return `$${value.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: digits,
+  })}`;
 }
 
 export function formatFinOpsDuration(value) {
@@ -402,7 +405,23 @@ export function finopsRoiEconomicsView(payload = {}) {
       : "证据不足",
     verifiedRoiStatus: verified.status || "not_recorded",
     scenarios: (Array.isArray(payload.scenarios) ? payload.scenarios : [])
-      .filter((item) => item.status === "estimated"),
+      .filter((item) => item.status === "estimated")
+      .map((item) => {
+        const result = item.result || {};
+        return {
+          ...item,
+          monthlyBenefitLabel: formatFinOpsCost(result.monthly_benefit),
+          monthlyCostLabel: formatFinOpsCost(result.monthly_total_cost),
+          monthlyNetBenefitLabel: formatFinOpsCost(result.monthly_net_benefit),
+          roiLabel: hasNumber(result.roi_ratio)
+            ? formatFinOpsPercent(result.roi_ratio * 100)
+            : "暂不可用",
+          paybackLabel: hasNumber(result.payback_months)
+            ? `${formatFinOpsNumber(result.payback_months)} 个月`
+            : "暂不可用",
+          formulaRevision: result.formula_revision || item.formula_revision || "",
+        };
+      }),
     evidenceGaps: Array.isArray(payload.evidence_gaps) ? payload.evidence_gaps : [],
   };
 }

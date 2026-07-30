@@ -41,7 +41,7 @@ try:
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, realized_roi_evidence, record_in_window, roi_cost_evidence, roi_outcome_evidence
-    from .roi_scenario_store import ScenarioPersistenceError, create_roi_scenario, list_roi_scenarios, scenario_projection
+    from .roi_scenario_store import ScenarioPersistenceError, ScenarioRevisionConflict, create_roi_scenario, list_roi_scenarios, scenario_projection
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
@@ -69,7 +69,7 @@ except ImportError:
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, realized_roi_evidence, record_in_window, roi_cost_evidence, roi_outcome_evidence
-    from roi_scenario_store import ScenarioPersistenceError, create_roi_scenario, list_roi_scenarios, scenario_projection
+    from roi_scenario_store import ScenarioPersistenceError, ScenarioRevisionConflict, create_roi_scenario, list_roi_scenarios, scenario_projection
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
@@ -380,6 +380,7 @@ async def workspace_roi_scenario_create(workspace_id: str, body: dict[str, Any],
     _require_workspace_owner(workspace_id, request, "roi.scenario.write")
     data = dict(body or {})
     previous_id = data.pop("previous_id", None)
+    base_revision = data.pop("base_revision", None)
     _audit_required(request, workspace_id, "roi.scenario.write", "roi_scenario", "pending")
     try:
         scenario = await _call(
@@ -388,6 +389,7 @@ async def workspace_roi_scenario_create(workspace_id: str, body: dict[str, Any],
             data,
             actor_from_request(request),
             previous_id=previous_id,
+            base_revision=base_revision,
         )
     except Exception:
         _audit_failed(request, workspace_id, "roi.scenario.write", "roi_scenario", "pending")
@@ -527,6 +529,8 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
         raise HTTPException(status_code=503, detail="Invitation persistence is unavailable") from exc
     except ScenarioPersistenceError as exc:
         raise HTTPException(status_code=503, detail="ROI scenario persistence is unavailable") from exc
+    except ScenarioRevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

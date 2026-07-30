@@ -20,6 +20,7 @@ import {
 import {
   acknowledgeFinOpsAnomaly,
   createFinOpsSavedView,
+  createWorkspaceRoiScenario,
   finOpsExportUrl,
   loadFinOpsActions,
   loadFinOpsAgents,
@@ -139,7 +140,7 @@ function EvidenceBadge({ status }) {
 }
 
 
-function Panel({ title, subtitle = "", children, className = "" }) {
+function Panel({ title, subtitle = "", children, className = "", action = null }) {
   return (
     <section className={`finops-panel ${className}`.trim()}>
       <header>
@@ -147,6 +148,7 @@ function Panel({ title, subtitle = "", children, className = "" }) {
           <h2>{title}</h2>
           {subtitle ? <p>{subtitle}</p> : null}
         </div>
+        {action ? <div className="finops-panel-action">{action}</div> : null}
       </header>
       <div className="finops-panel-body">{children}</div>
     </section>
@@ -737,7 +739,7 @@ function ValueCard({ label, value, meta, status }) {
 }
 
 
-function RoiEconomics({ payload }) {
+function RoiEconomics({ payload, onAdjust = null }) {
   const view = finopsRoiEconomicsView(payload);
   return (
     <>
@@ -772,12 +774,31 @@ function RoiEconomics({ payload }) {
           status={view.verifiedRoiStatus}
         />
       </section>
-      <Panel title="情景测算" subtitle="估算情景与已验证 ROI 严格分开" className="span-2">
+      <Panel
+        title="情景测算"
+        subtitle="估算情景与已验证 ROI 严格分开"
+        className="span-2"
+        action={onAdjust ? (
+          <button className="finops-secondary-action" type="button" onClick={onAdjust}>
+            调整测算参数
+          </button>
+        ) : null}
+      >
         {view.scenarios.length ? (
           <div className="finops-scenarios">
             {view.scenarios.map((item) => (
               <article key={item.scenario_id}>
-                <span><b>{item.title || "ROI 情景"}</b><small>版本 {item.revision || 1}</small></span>
+                <span>
+                  <b>{item.title || "ROI 情景"}</b>
+                  <small>版本 {item.revision || 1} · {item.formulaRevision || "历史口径"}</small>
+                </span>
+                <dl>
+                  <div><dt>月度收益</dt><dd>{item.monthlyBenefitLabel}</dd></div>
+                  <div><dt>月度成本</dt><dd>{item.monthlyCostLabel}</dd></div>
+                  <div><dt>月度净收益</dt><dd>{item.monthlyNetBenefitLabel}</dd></div>
+                  <div><dt>ROI</dt><dd>{item.roiLabel}</dd></div>
+                  <div><dt>回收期</dt><dd>{item.paybackLabel}</dd></div>
+                </dl>
                 <EvidenceBadge status="estimated" />
               </article>
             ))}
@@ -791,6 +812,7 @@ function RoiEconomics({ payload }) {
 
 function RoiPage({
   detail,
+  onAdjustScenario = null,
 }) {
   const roi = detail.roi || {};
   const costValue = detail.costValue || {};
@@ -809,7 +831,7 @@ function RoiPage({
     : `${formatFinOpsNumber(realized.roi_ratio * 100)}%`;
   return (
     <div className="finops-grid">
-      <RoiEconomics payload={detail.economics} />
+      <RoiEconomics payload={detail.economics} onAdjust={onAdjustScenario} />
       <section className="finops-value-grid span-2">
         <ValueCard label="已记录业务价值" value={businessValue} meta={`${verifiedCount} 个已验证结果`} status={business.status || "not_recorded"} />
         <ValueCard label="可复核 ROI" value={roiValue} meta="仅使用完整成本与已验证结果" status={realized.status || "not_recorded"} />
@@ -841,6 +863,87 @@ function RoiPage({
           </div>
         )}
       </Panel>
+    </div>
+  );
+}
+
+
+function RoiScenarioDialog({
+  latestScenario = null,
+  observedModelCost = 0,
+  busy = false,
+  error = "",
+  onClose,
+  onSave,
+}) {
+  const inputs = latestScenario?.inputs || {};
+  const defaults = {
+    hours_saved: inputs.hours_saved ?? 40,
+    hourly_value: inputs.hourly_value ?? 50,
+    avoided_loss_or_revenue: inputs.avoided_loss_or_revenue ?? 1000,
+    implementation_cost: inputs.implementation_cost ?? 6000,
+    monthly_fixed_cost: inputs.monthly_fixed_cost ?? 200,
+    evaluation_months: inputs.evaluation_months ?? 12,
+  };
+  const submit = (event) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const number = (name) => Number(values.get(name));
+    onSave({
+      title: String(values.get("title") || "").trim(),
+      currency: "USD",
+      hours_saved: number("hours_saved"),
+      hourly_value: number("hourly_value"),
+      avoided_loss_or_revenue: number("avoided_loss_or_revenue"),
+      implementation_cost: number("implementation_cost"),
+      monthly_fixed_cost: number("monthly_fixed_cost"),
+      model_cost: Number(observedModelCost || 0),
+      evaluation_months: number("evaluation_months"),
+      evidence_revision: Number(latestScenario?.revision || 0),
+      ...(latestScenario?.scenario_id ? {
+        previous_id: latestScenario.scenario_id,
+        base_revision: latestScenario.revision,
+      } : {}),
+    });
+  };
+  return (
+    <div className="finops-model-modal-backdrop" role="presentation" onMouseDown={() => !busy && onClose()}>
+      <section
+        className="finops-roi-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="finops-roi-modal-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <p>DATAFORGE ROI</p>
+            <h2 id="finops-roi-modal-title">调整 ROI 测算参数</h2>
+            <span>保存后形成新的不可变版本；估算结果不会替代已验证业务结果。</span>
+          </div>
+          <button className="icon-button" type="button" aria-label="关闭 ROI 测算" disabled={busy} onClick={onClose}>
+            <X size={17} />
+          </button>
+        </header>
+        <form className="finops-roi-form" onSubmit={submit}>
+          <label className="wide"><span>情景名称</span><input name="title" maxLength={160} required defaultValue={latestScenario?.title || "运营自动化测算"} /></label>
+          <label><span>每月节省工时</span><input name="hours_saved" type="number" min="0" step="0.1" required defaultValue={defaults.hours_saved} /></label>
+          <label><span>每小时价值（USD）</span><input name="hourly_value" type="number" min="0" step="0.01" required defaultValue={defaults.hourly_value} /></label>
+          <label><span>每月避免损失或新增价值</span><input name="avoided_loss_or_revenue" type="number" min="0" step="0.01" required defaultValue={defaults.avoided_loss_or_revenue} /></label>
+          <label><span>一次性实施成本</span><input name="implementation_cost" type="number" min="0" step="0.01" required defaultValue={defaults.implementation_cost} /></label>
+          <label><span>每月固定成本</span><input name="monthly_fixed_cost" type="number" min="0" step="0.01" required defaultValue={defaults.monthly_fixed_cost} /></label>
+          <label><span>评估周期（月）</span><input name="evaluation_months" type="number" min="1" max="120" step="1" required defaultValue={defaults.evaluation_months} /></label>
+          <div className="finops-roi-formula wide">
+            <b>当前模型成本 {formatFinOpsCost(Number(observedModelCost || 0), "estimated")} / 月</b>
+            <span>月度收益 = 节省工时 × 小时价值 + 避免损失；月度成本包含实施成本摊销、固定成本与当前模型成本。</span>
+          </div>
+          {error ? <p className="finops-roi-form-error wide" role="alert">{error}</p> : null}
+          <footer className="wide">
+            <button type="button" onClick={onClose} disabled={busy}>取消</button>
+            <button type="submit" disabled={busy}>{busy ? "保存中…" : "保存新版本"}</button>
+          </footer>
+        </form>
+      </section>
     </div>
   );
 }
@@ -1144,6 +1247,8 @@ export function FinOpsPortal({
     openRequest: 0,
   });
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
+  const [roiEditorOpen, setRoiEditorOpen] = useState(false);
+  const [roiSaveState, setRoiSaveState] = useState({ busy: false, error: "" });
   const [evidenceState, setEvidenceState] = useState({
     open: false,
     reason: "",
@@ -1199,6 +1304,16 @@ export function FinOpsPortal({
     agentId: filters.agentId,
     model: filters.model,
   }), [filters]);
+  const latestRoiScenario = useMemo(() => {
+    const scenarios = Array.isArray(detailState.data?.economics?.scenarios)
+      ? detailState.data.economics.scenarios
+      : [];
+    return scenarios.reduce((latest, item) => (
+      !latest || Number(item.revision || 0) > Number(latest.revision || 0)
+        ? item
+        : latest
+    ), null);
+  }, [detailState.data]);
   const closeEvidence = useCallback(() => {
     evidenceController.current?.abort();
     evidenceController.current = null;
@@ -1460,6 +1575,29 @@ export function FinOpsPortal({
     }
   };
 
+  const saveRoiScenario = async (payload) => {
+    setRoiSaveState({ busy: true, error: "" });
+    try {
+      await createWorkspaceRoiScenario(workspaceId, payload);
+      setRoiEditorOpen(false);
+      setRoiSaveState({ busy: false, error: "" });
+      refresh();
+    } catch (error) {
+      if (error?.status === 409) {
+        setRoiSaveState({
+          busy: false,
+          error: "情景已由其他会话更新，正在重新载入最新版本，请确认后再次保存。",
+        });
+        refresh();
+        return;
+      }
+      setRoiSaveState({
+        busy: false,
+        error: error instanceof Error ? error.message : "ROI 情景保存失败",
+      });
+    }
+  };
+
   const generatedAt = overviewState.generatedAt || overviewState.data?.overview?.freshness?.generated_at;
   const overviewDataStatus = overviewState.data?.overview?.data_status || "unavailable";
   const generalAssistantContext = useMemo(() => metricContext({
@@ -1579,7 +1717,10 @@ export function FinOpsPortal({
           ? <CostPage overviewData={overviewState.data} detail={detailState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} onSaveView={governance.busyId === "save-view" ? null : saveCurrentView} exportUrl={finOpsExportUrl("workspace", query)} onConfigurePricing={() => setModelSettingsOpen(true)} />
           : null}
         {!showDetailLoading && !detailState.error && tab === "roi"
-          ? <RoiPage detail={detailState.data} />
+          ? <RoiPage detail={detailState.data} onAdjustScenario={() => {
+            setRoiSaveState({ busy: false, error: "" });
+            setRoiEditorOpen(true);
+          }} />
           : null}
         {!showDetailLoading && !detailState.error && tab === "risk"
           ? <RiskPage data={detailState.data} busyId={governance.busyId} actionError={governance.error} onAnomalyAction={manageAnomaly} onActionTransition={transitionAction} onEvidence={canOpenEvidence ? openEvidence : null} />
@@ -1601,6 +1742,21 @@ export function FinOpsPortal({
         onClearContext={() => setAssistantState((state) => ({ ...state, context: null }))}
         onEvidence={canOpenEvidence ? openEvidence : null}
       />
+      {roiEditorOpen ? (
+        <RoiScenarioDialog
+          key={`${latestRoiScenario?.scenario_id || "new"}:${latestRoiScenario?.revision || 0}`}
+          latestScenario={latestRoiScenario}
+          observedModelCost={detailState.data?.costValue?.cost_evidence?.total || 0}
+          busy={roiSaveState.busy}
+          error={roiSaveState.error}
+          onClose={() => {
+            if (roiSaveState.busy) return;
+            setRoiEditorOpen(false);
+            setRoiSaveState({ busy: false, error: "" });
+          }}
+          onSave={saveRoiScenario}
+        />
+      ) : null}
       {modelSettingsOpen ? (
         <div className="finops-model-modal-backdrop" role="presentation" onMouseDown={() => setModelSettingsOpen(false)}>
           <section className="finops-model-modal" role="dialog" aria-modal="true" aria-labelledby="finops-model-modal-title" onMouseDown={(event) => event.stopPropagation()}>

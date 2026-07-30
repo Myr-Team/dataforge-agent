@@ -43,6 +43,8 @@ class DemoSeedResult:
     created: int
     updated: int
     events: tuple[FinOpsRequestEvent, ...]
+    roi_scenario: dict[str, Any]
+    outcome_events: tuple[dict[str, Any], ...]
 
 
 def seed_demo_workspace(
@@ -55,6 +57,8 @@ def seed_demo_workspace(
     batch: str = "operations-v1",
     budget_repository: Any | None = None,
     hmac_secret: str | None = None,
+    roi_scenario_writer: Any | None = None,
+    outcome_events_writer: Any | None = None,
     now: datetime | None = None,
 ) -> DemoSeedResult:
     clean_workspace_id = str(workspace_id or "").strip()
@@ -108,12 +112,28 @@ def seed_demo_workspace(
             batch=batch,
             now=anchor,
         )
+    roi_scenario = _roi_scenario_seed(batch)
+    outcome_events = _outcome_event_seeds(batch, anchor)
+    if roi_scenario_writer is not None:
+        roi_scenario_writer(
+            clean_workspace_id,
+            roi_scenario,
+            seed_key=batch,
+        )
+    if outcome_events_writer is not None:
+        outcome_events_writer(
+            clean_workspace_id,
+            outcome_events,
+            seed_key=batch,
+        )
     return DemoSeedResult(
         batch=batch,
         event_count=len(events),
         created=created,
         updated=updated,
         events=events,
+        roi_scenario=roi_scenario,
+        outcome_events=outcome_events,
     )
 
 
@@ -215,6 +235,50 @@ def _scenario_events(
             cost=0.0714 if cache_state == "miss" else 0.0068,
             priced=True,
         )
+
+
+def _roi_scenario_seed(batch: str) -> dict[str, Any]:
+    return {
+        "title": "运营自动化测算",
+        "currency": "USD",
+        "hours_saved": 40,
+        "hourly_value": 50,
+        "avoided_loss_or_revenue": 1000,
+        "implementation_cost": 6000,
+        "monthly_fixed_cost": 200,
+        "model_cost": 100,
+        "evaluation_months": 12,
+        "evidence_revision": 1,
+        "seed_batch": batch,
+    }
+
+
+def _outcome_event_seeds(
+    batch: str,
+    anchor: datetime,
+) -> tuple[dict[str, Any], ...]:
+    return (
+        {
+            "metric_name": "analysis_cycle_hours",
+            "unit": "hours",
+            "baseline_value": 16,
+            "observed_value": 11.5,
+            "observed_at": (anchor - timedelta(days=4)).isoformat(),
+            "provenance": "observed",
+            "verification_state": "unverified",
+            "seed_batch": batch,
+        },
+        {
+            "metric_name": "manual_review_hours",
+            "unit": "hours",
+            "baseline_value": 24,
+            "observed_value": 15,
+            "observed_at": (anchor - timedelta(days=2)).isoformat(),
+            "provenance": "observed",
+            "verification_state": "verified",
+            "seed_batch": batch,
+        },
+    )
 
 
 def _seed_budgets(

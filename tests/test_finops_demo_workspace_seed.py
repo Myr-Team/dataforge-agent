@@ -86,6 +86,35 @@ def test_seed_contains_a_repeat_analysis_miss_to_hit_chain() -> None:
     assert repeat_chain[1].run_id != repeat_chain[0].run_id
 
 
+def test_seed_emits_versioned_roi_scenario_and_distinct_outcome_evidence() -> None:
+    roi_writes: list[tuple[str, dict[str, object], str]] = []
+    outcome_writes: list[tuple[str, tuple[dict[str, object], ...], str]] = []
+
+    result = seed_demo_workspace(
+        InMemoryFinOpsRepository(),
+        InMemoryDemoSeedRepository(),
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        allowed_workspace_id="ws-demo",
+        roi_scenario_writer=lambda workspace_id, payload, *, seed_key: roi_writes.append(
+            (workspace_id, payload, seed_key)
+        ),
+        outcome_events_writer=lambda workspace_id, payload, *, seed_key: outcome_writes.append(
+            (workspace_id, payload, seed_key)
+        ),
+        now=NOW,
+    )
+
+    assert result.roi_scenario["evaluation_months"] == 12
+    assert result.roi_scenario["seed_batch"] == "operations-v1"
+    assert [item["verification_state"] for item in result.outcome_events] == [
+        "unverified",
+        "verified",
+    ]
+    assert len({item["metric_name"] for item in result.outcome_events}) == 2
+    assert roi_writes[0][0] == outcome_writes[0][0] == "ws-demo"
+
+
 def test_seed_adds_workspace_display_subjects_and_idempotent_budgets() -> None:
     budgets = InMemoryMemberBudgetRepository()
 

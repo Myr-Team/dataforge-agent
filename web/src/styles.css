@@ -5335,6 +5335,10 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-panel { min-width: 0; border: 1px solid #dfe5ee; border-radius: 10px; background: #fff; overflow: hidden; }
 .finops-panel.span-2 { grid-column: 1 / -1; }
 .finops-panel > header { display: flex; min-height: 58px; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #edf0f5; padding: 11px 15px; }
+.finops-panel-action { flex: none; }
+.finops-secondary-action { min-height: 30px; border: 1px solid #b8cff0; border-radius: 7px; background: #f7faff; padding: 0 10px; color: #175cd3; cursor: pointer; font: inherit; font-size: 10px; font-weight: 700; }
+.finops-secondary-action:hover { border-color: #84adf2; background: #eff6ff; }
+.finops-secondary-action:focus-visible { outline: 3px solid rgba(23, 92, 211, .16); outline-offset: 2px; }
 .finops-panel h2 { margin: 0; color: #1d2939; font-size: 13px; font-weight: 710; }
 .finops-panel header p { margin: 3px 0 0; color: #98a2b3; font-size: 10.5px; }
 .finops-panel-body { min-height: 210px; }
@@ -5476,11 +5480,32 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-roi-funnel article > b { color: #1d2939; font-size: 15px; }
 .finops-roi-funnel article > .finops-evidence { width: fit-content; }
 .finops-scenarios { display: grid; padding: 8px 14px; }
-.finops-scenarios article { display: flex; min-height: 48px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #edf0f5; }
+.finops-scenarios article { display: grid; min-height: 64px; grid-template-columns: minmax(150px, .8fr) minmax(420px, 2fr) auto; align-items: center; gap: 16px; border-bottom: 1px solid #edf0f5; padding: 9px 0; }
 .finops-scenarios article:last-child { border-bottom: 0; }
 .finops-scenarios article > span { display: grid; gap: 3px; }
 .finops-scenarios b { color: #344054; font-size: 10.5px; }
 .finops-scenarios small { color: #98a2b3; font-size: 9px; }
+.finops-scenarios dl { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; margin: 0; overflow: hidden; border: 1px solid #e8edf4; border-radius: 7px; background: #e8edf4; }
+.finops-scenarios dl > div { min-width: 0; background: #fff; padding: 6px 7px; }
+.finops-scenarios dt { overflow: hidden; color: #98a2b3; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.finops-scenarios dd { overflow: hidden; margin: 3px 0 0; color: #344054; font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.finops-roi-modal { width: min(720px, calc(100vw - 32px)); max-height: calc(100dvh - 44px); overflow: auto; border: 1px solid #d9e1ec; border-radius: 12px; background: #fff; box-shadow: 0 24px 70px rgba(15, 23, 42, .22); }
+.finops-roi-modal > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; border-bottom: 1px solid #e4e9f1; padding: 17px 20px; }
+.finops-roi-modal > header p { margin: 0 0 4px; color: #2563eb; font-size: 9.5px; font-weight: 800; letter-spacing: .12em; }
+.finops-roi-modal > header h2 { margin: 0; color: #172033; font-size: 18px; }
+.finops-roi-modal > header span { display: block; margin-top: 5px; color: #667085; font-size: 11px; }
+.finops-roi-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 18px 20px 20px; }
+.finops-roi-form .wide { grid-column: 1 / -1; }
+.finops-roi-form label { display: grid; min-width: 0; gap: 5px; color: #475467; font-size: 10px; font-weight: 650; }
+.finops-roi-form input { box-sizing: border-box; width: 100%; height: 35px; border: 1px solid #d0d5dd; border-radius: 7px; outline: 0; background: #fff; padding: 0 9px; color: #1d2939; font: inherit; font-size: 11.5px; }
+.finops-roi-form input:focus { border-color: #84adf2; box-shadow: 0 0 0 3px rgba(23, 92, 211, .08); }
+.finops-roi-formula { display: grid; gap: 4px; border: 1px solid #dbe7f8; border-radius: 8px; background: #f7faff; padding: 10px 11px; color: #667085; font-size: 10px; line-height: 1.5; }
+.finops-roi-formula b { color: #175cd3; font-size: 10.5px; }
+.finops-roi-form-error { margin: -2px 0 0; color: #b42318; font-size: 10.5px; }
+.finops-roi-form footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid #edf0f5; padding-top: 14px; }
+.finops-roi-form footer button { min-height: 32px; border: 1px solid #d0d5dd; border-radius: 7px; background: #fff; padding: 0 12px; color: #344054; cursor: pointer; font: inherit; font-size: 10.5px; font-weight: 700; }
+.finops-roi-form footer button[type="submit"] { border-color: #175cd3; background: #175cd3; color: #fff; }
+.finops-roi-form footer button:disabled { cursor: wait; opacity: .58; }
 .finops-opportunity-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; }
 .finops-opportunity-list article { display: grid; gap: 11px; border: 1px solid #dfe5ee; border-radius: 10px; background: #fff; padding: 13px; }
 .finops-opportunity-list article:only-child { grid-column: 1 / -1; }
@@ -5626,6 +5651,8 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-head { flex-direction: column; gap: 12px; }
   .finops-grid, .finops-grid-wide { grid-template-columns: 1fr; }
   .finops-grid > .span-2 { grid-column: auto; }
+  .finops-scenarios article { grid-template-columns: 1fr auto; }
+  .finops-scenarios article dl { grid-column: 1 / -1; }
 }
 @media (max-width: 640px) {
   .finops-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -5652,6 +5679,14 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-roi-funnel article { min-height: 88px; border-right: 1px solid #dbe7f8; border-bottom: 0; }
   .finops-roi-funnel article:first-child { border-radius: 10px 10px 0 0; }
   .finops-roi-funnel article:last-child { border-bottom: 1px solid #dbe7f8; border-radius: 0 0 10px 10px; }
+  .finops-panel > header { align-items: flex-start; }
+  .finops-panel-action { align-self: center; }
+  .finops-scenarios article { grid-template-columns: minmax(0, 1fr) auto; }
+  .finops-scenarios dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .finops-scenarios dl > div:last-child { grid-column: 1 / -1; }
+  .finops-roi-modal { width: 100vw; max-height: 100dvh; height: 100dvh; border: 0; border-radius: 0; }
+  .finops-roi-form { grid-template-columns: 1fr; padding: 16px; }
+  .finops-roi-form .wide { grid-column: auto; }
   .finops-opportunity-list { grid-template-columns: 1fr; }
   .finops-opportunity-list dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .finops-opportunity-list dl > div:nth-child(2) { border-right: 0; }
