@@ -1078,12 +1078,19 @@ function RiskPage({
               <div key={item.recommendation_id}>
                 <ShieldCheck size={16} />
                 <span><b>{finopsPolicyLabel(item.policy_type)}</b><small>{item.recommendation}</small></span>
+                {onEvidence && item.evidence_refs?.length ? (
+                  <button type="button" onClick={() => onEvidence({
+                    reason: finopsPolicyLabel(item.policy_type),
+                    evidenceRefs: item.evidence_refs,
+                    policyType: item.policy_type,
+                  })}>查看证据</button>
+                ) : null}
               </div>
             ))}
           </div>
         ) : <EmptyState>当前没有可复核的优化建议。</EmptyState>}
       </Panel>
-      <Panel title="治理动作" subtitle="生产执行默认关闭，仍需异人审批">
+      <Panel title="治理动作" subtitle="生产执行默认关闭，仍需异人审批" className="span-2">
         {actionError ? <div className="finops-inline-error">{actionError}</div> : null}
         {actions.length ? (
           <div className="finops-table-scroll">
@@ -1124,7 +1131,12 @@ function RiskPage({
               </tbody>
             </table>
           </div>
-        ) : <EmptyState>尚未创建治理草案。</EmptyState>}
+        ) : (
+          <div className="finops-governance-status">
+            <ShieldCheck size={18} />
+            <span><b>当前没有待审批的治理草案</b><small>优化建议仅供复核；创建草案后仍需异人审批、候选验证和可回滚检查。</small></span>
+          </div>
+        )}
       </Panel>
     </div>
   );

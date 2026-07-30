@@ -18,7 +18,7 @@ test("operations management is immediately discoverable and supports metric dril
   await expect(page.getByRole("heading", { name: "运营管理" })).toBeVisible();
   await expect(page.locator(".finops-live")).toContainText("更新");
 
-  const tokenMetric = page.locator(".finops-metric").filter({ hasText: "Token" });
+  const tokenMetric = page.getByRole("article", { name: /^Token / });
   await tokenMetric.focus();
   await expect(tokenMetric.locator(".finops-metric-tooltip")).toHaveCSS("opacity", "0");
   const tokenHelp = tokenMetric.locator(".finops-help-trigger");
@@ -61,14 +61,24 @@ test("operations management is immediately discoverable and supports metric dril
   await expect(page.getByText("成本趋势")).toBeVisible();
   await expect(page.getByText("Agent 成本结构")).toBeVisible();
   await expect(page.getByText("模型成本结构")).toBeVisible();
+  await page.screenshot({
+    path: path.join(outputDir, "operations-cost-analysis-desktop.png"),
+    fullPage: true,
+  });
 
   await page.getByRole("button", { name: "效能与 ROI" }).click();
   await expect(page.getByText("ROI 证据漏斗")).toBeVisible();
   await expect(page.getByText("证据不足").first()).toBeVisible();
+  await page.screenshot({
+    path: path.join(outputDir, "operations-roi-desktop.png"),
+    fullPage: true,
+  });
 
   await page.getByRole("button", { name: "风险与优化" }).click();
   await expect(page.getByText("优化机会队列")).toBeVisible();
-  await expect(page.getByText("建议 · 需人工审批")).toBeVisible();
+  await expect(page.getByText("建议 · 需人工审批")).toHaveCount(4);
+  await expect(page.getByText("AI 运营解读")).toBeVisible();
+  await expect(page.getByText("成本变化来自主分析流程")).toBeVisible();
 
   await page.screenshot({
     path: path.join(outputDir, "operations-management-desktop.png"),

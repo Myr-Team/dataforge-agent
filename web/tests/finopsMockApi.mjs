@@ -988,7 +988,40 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         count: 4,
       };
     } else if (path === "/api/finops/recommendations") {
-      body = { ...bootstrapPayload, items: [], count: 0 };
+      body = {
+        ...bootstrapPayload,
+        items: [
+          {
+            recommendation_id: "rec-latency",
+            policy_type: "p95_latency",
+            severity: "warning",
+            recommendation: "拆分大批量分析并复核高时延模型路由。",
+            evidence_refs: ["req_slow_000001"],
+          },
+          {
+            recommendation_id: "rec-cache",
+            policy_type: "cache_hit_rate",
+            severity: "warning",
+            recommendation: "统一重复分析的缓存键并复核有效期。",
+            evidence_refs: ["req_cache_000001"],
+          },
+          {
+            recommendation_id: "rec-unpriced",
+            policy_type: "unpriced_requests",
+            severity: "warning",
+            recommendation: "为新接入模型补齐官方价目映射。",
+            evidence_refs: ["req_unpriced_001"],
+          },
+          {
+            recommendation_id: "rec-error",
+            policy_type: "error_rate",
+            severity: "critical",
+            recommendation: "按失败类别和调用来源修复错误。",
+            evidence_refs: ["req_error_000001"],
+          },
+        ],
+        count: 4,
+      };
     } else if (path === "/api/finops/opportunities") {
       body = {
         ...bootstrapPayload,

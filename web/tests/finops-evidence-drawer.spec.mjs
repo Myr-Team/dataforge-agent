@@ -79,6 +79,12 @@ test("risk cards open their own request evidence without a generic list lookup",
   await latencyCard.getByRole("button", { name: "查看证据" }).click();
   let dialog = page.getByRole("dialog");
   await expect(dialog.getByText("批量分析本周客户反馈并生成归因摘要")).toBeVisible();
+  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+  await mkdir(outputDir, { recursive: true });
+  await page.screenshot({
+    path: path.join(outputDir, "risk-latency-evidence-desktop.png"),
+    fullPage: true,
+  });
   await dialog.locator("details summary").click();
   await expect(dialog.getByText("req_slow_000001", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
@@ -87,6 +93,10 @@ test("risk cards open their own request evidence without a generic list lookup",
   await cacheCard.getByRole("button", { name: "查看证据" }).click();
   dialog = page.getByRole("dialog");
   await expect(dialog.getByText("重新分析相同数据并复用上次结果")).toBeVisible();
+  await page.screenshot({
+    path: path.join(outputDir, "risk-cache-evidence-desktop.png"),
+    fullPage: true,
+  });
   await dialog.locator("details summary").click();
   await expect(dialog.getByText("req_cache_000001", { exact: true })).toBeVisible();
 

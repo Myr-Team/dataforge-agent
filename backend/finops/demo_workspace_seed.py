@@ -45,6 +45,7 @@ class DemoSeedResult:
     events: tuple[FinOpsRequestEvent, ...]
     roi_scenario: dict[str, Any]
     outcome_events: tuple[dict[str, Any], ...]
+    run_evidence: tuple[dict[str, Any], ...]
 
 
 def seed_demo_workspace(
@@ -59,6 +60,7 @@ def seed_demo_workspace(
     hmac_secret: str | None = None,
     roi_scenario_writer: Any | None = None,
     outcome_events_writer: Any | None = None,
+    run_evidence_writer: Any | None = None,
     now: datetime | None = None,
 ) -> DemoSeedResult:
     clean_workspace_id = str(workspace_id or "").strip()
@@ -114,6 +116,7 @@ def seed_demo_workspace(
         )
     roi_scenario = _roi_scenario_seed(batch)
     outcome_events = _outcome_event_seeds(batch, anchor)
+    run_evidence = _run_evidence_seeds(events, batch)
     if roi_scenario_writer is not None:
         roi_scenario_writer(
             clean_workspace_id,
@@ -126,6 +129,12 @@ def seed_demo_workspace(
             outcome_events,
             seed_key=batch,
         )
+    if run_evidence_writer is not None:
+        run_evidence_writer(
+            clean_workspace_id,
+            run_evidence,
+            seed_key=batch,
+        )
     return DemoSeedResult(
         batch=batch,
         event_count=len(events),
@@ -134,6 +143,7 @@ def seed_demo_workspace(
         events=events,
         roi_scenario=roi_scenario,
         outcome_events=outcome_events,
+        run_evidence=run_evidence,
     )
 
 
@@ -160,7 +170,7 @@ def _scenario_events(
         output_tokens = 80 + ((index * 71) % 1300)
         reasoning_tokens = 40 + ((index * 29) % 620) if index % 3 == 0 else 0
         total_tokens = input_tokens + output_tokens + reasoning_tokens
-        cache_state = ("miss", "hit", "bypassed", "hit", "miss")[index % 5]
+        cache_state = ("miss", "bypassed", "bypassed", "bypassed", "miss")[index % 5]
         eligible = cache_state in {"hit", "miss"}
         avoided_tokens = int(input_tokens * 0.72) if cache_state == "hit" else None
         failed = index in {17, 44, 73, 91, 106}
@@ -236,6 +246,97 @@ def _scenario_events(
             priced=True,
         )
 
+    recent_start = now - timedelta(minutes=12)
+    for offset in range(24):
+        ordinal = 122 + offset
+        actor_index = offset % len(actor_refs)
+        model_index = offset % len(_MODELS)
+        failed = offset in {4, 13, 21}
+        unpriced = offset < 8
+        cache_state = "miss" if offset < 20 else "unavailable"
+        input_tokens = 30_000 if offset == 20 else 7200 + offset * 190
+        output_tokens = 900 + (offset % 5) * 140
+        reasoning_tokens = 680 + (offset % 4) * 120
+        route = {
+            7: "model-price-review",
+            19: "cache-review",
+            20: "token-intensive-analysis",
+            21: "failed-opportunity-extraction",
+            22: "latency-diagnostic",
+            23: "entry-coverage-review",
+        }.get(
+            offset,
+            (
+                "batch-analysis",
+                "cache-review",
+                "model-evaluation",
+                "opportunity-extraction",
+            )[offset % 4],
+        )
+        yield _event(
+            tenant_ref=tenant_ref,
+            workspace_id=workspace_id,
+            batch=batch,
+            ordinal=ordinal,
+            occurred_at=recent_start + timedelta(seconds=offset * 30),
+            run_id=f"run_demo_recent_{offset:03d}",
+            route=route,
+            agent_id=_AGENTS[offset % len(_AGENTS)],
+            model=_MODELS[model_index],
+            actor_ref=actor_refs[actor_index],
+            department_id=_DEPARTMENTS[actor_index],
+            status="failed" if failed else "succeeded",
+            error_category="provider_5xx" if failed else None,
+            latency_ms=8100 if offset == 22 else 2600 + offset * 145,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            cached_input_tokens=None,
+            total_tokens=input_tokens + output_tokens + reasoning_tokens,
+            cache_state=cache_state,
+            eligible=cache_state == "miss",
+            avoided_tokens=None,
+            gateway_coverage=(
+                "apim_governed"
+                if offset < 18
+                else "app_observed"
+                if offset < 21
+                else "unmanaged"
+            ),
+            cost=None if unpriced else round(0.012 + offset * 0.0017, 8),
+            priced=not unpriced,
+        )
+
+    for day_offset in range(1, 8):
+        ordinal = 146 + day_offset
+        yield _event(
+            tenant_ref=tenant_ref,
+            workspace_id=workspace_id,
+            batch=batch,
+            ordinal=ordinal,
+            occurred_at=now - timedelta(days=day_offset, minutes=5),
+            run_id=f"run_demo_baseline_{day_offset:02d}",
+            route="scheduled-summary",
+            agent_id="Support Triage",
+            model="gpt-4.1-mini",
+            actor_ref=actor_refs[3],
+            department_id="Operations",
+            status="succeeded",
+            error_category=None,
+            latency_ms=780 + day_offset * 20,
+            input_tokens=900,
+            output_tokens=220,
+            reasoning_tokens=None,
+            cached_input_tokens=None,
+            total_tokens=1120,
+            cache_state="bypassed",
+            eligible=False,
+            avoided_tokens=None,
+            gateway_coverage="apim_governed",
+            cost=0.0014,
+            priced=True,
+        )
+
 
 def _roi_scenario_seed(batch: str) -> dict[str, Any]:
     return {
@@ -279,6 +380,76 @@ def _outcome_event_seeds(
             "seed_batch": batch,
         },
     )
+
+
+def _run_evidence_seeds(
+    events: tuple[FinOpsRequestEvent, ...],
+    batch: str,
+) -> tuple[dict[str, Any], ...]:
+    copy = {
+        "batch-analysis": (
+            "批量分析本周客户反馈并生成归因摘要",
+            "已完成反馈聚类，并将高频问题归纳为交付、价格和使用体验三类。",
+        ),
+        "cache-review": (
+            "重新分析相同数据并检查能否复用上次结果",
+            "已完成重复请求检查，本次未复用既有结果，建议复核缓存键与有效期。",
+        ),
+        "model-evaluation": (
+            "评估候选模型在机会识别任务中的质量和响应速度",
+            "候选模型已完成评估，质量达到要求，但响应时间仍有优化空间。",
+        ),
+        "opportunity-extraction": (
+            "提取高价值客户机会并生成下一步建议",
+            "已识别重点机会，并按影响范围和证据完整度给出后续建议。",
+        ),
+        "model-price-review": (
+            "使用新接入模型评审候选机会并核对成本",
+            "候选机会已完成评审，当前模型尚未关联价目。",
+        ),
+        "token-intensive-analysis": (
+            "合并多份调研材料并生成完整市场分析",
+            "已完成长上下文分析，建议复核输入材料范围与重复内容。",
+        ),
+        "failed-opportunity-extraction": (
+            "提取重点客户机会并生成行动摘要",
+            "本次调用未成功，尚未形成可用回答。",
+        ),
+        "latency-diagnostic": (
+            "批量分析本周客户反馈并检查响应耗时",
+            "分析已完成，但模型响应阶段耗时偏高。",
+        ),
+        "entry-coverage-review": (
+            "核对本周模型调用是否均由统一入口管理",
+            "已发现部分调用链未完成入口关联，需要继续复核来源。",
+        ),
+    }
+    rows = []
+    for event in events:
+        if not str(event.run_id or "").startswith("run_demo_recent_"):
+            continue
+        request_text, response_text = copy.get(
+            str(event.route or ""),
+            ("分析当前工作区的运营数据", "已完成运营数据分析。"),
+        )
+        rows.append(
+            {
+                "run_id": event.run_id,
+                "message": request_text,
+                "final_text": response_text if event.status == "succeeded" else None,
+                "status": (
+                    "completed"
+                    if event.status == "succeeded"
+                    else "failed"
+                ),
+                "trace_id": hashlib.sha256(
+                    f"{batch}:{event.run_id}:trace".encode("utf-8")
+                ).hexdigest()[:32],
+                "trace_agent_id": event.agent_id,
+                "seed_batch": batch,
+            }
+        )
+    return tuple(rows)
 
 
 def _seed_budgets(

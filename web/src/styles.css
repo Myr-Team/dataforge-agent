@@ -5329,7 +5329,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-evidence.available, .finops-evidence.observed, .finops-evidence.succeeded, .finops-evidence.resolved { background: #ecfdf3; color: #027a48; }
 .finops-evidence.partial, .finops-evidence.estimated, .finops-evidence.open, .finops-evidence.pending_approval, .finops-evidence.verifying { background: #fffaeb; color: #b54708; }
 .finops-evidence.unavailable, .finops-evidence.failed, .finops-evidence.critical { background: #fff1f3; color: #b42318; }
-.finops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.finops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 12px; }
 .finops-grid-wide { grid-template-columns: minmax(0, 1.6fr) minmax(320px, .7fr); }
 .finops-grid > .span-2 { grid-column: 1 / -1; }
 .finops-panel { min-width: 0; border: 1px solid #dfe5ee; border-radius: 10px; background: #fff; overflow: hidden; }
@@ -5341,7 +5341,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-secondary-action:focus-visible { outline: 3px solid rgba(23, 92, 211, .16); outline-offset: 2px; }
 .finops-panel h2 { margin: 0; color: #1d2939; font-size: 13px; font-weight: 710; }
 .finops-panel header p { margin: 3px 0 0; color: #98a2b3; font-size: 10.5px; }
-.finops-panel-body { min-height: 210px; }
+.finops-panel-body { min-height: 0; }
 .finops-state, .finops-empty { display: flex; min-height: 260px; align-items: center; justify-content: center; gap: 9px; color: #667085; font-size: 12px; }
 .finops-state-error { flex-direction: column; color: #b42318; }
 .finops-state button { border: 1px solid #d0d5dd; border-radius: 7px; background: #fff; padding: 6px 10px; color: #344054; cursor: pointer; }
@@ -5414,6 +5414,11 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-insights, .finops-anomaly-list, .finops-recommendations { display: grid; }
 .finops-insights > div, .finops-recommendations > div { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: start; gap: 9px; border-bottom: 1px solid #edf0f5; padding: 12px 14px; color: #f79009; }
 .finops-insights > div > button { grid-column: 2 / -1; width: fit-content; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9.5px; font-weight: 650; }
+.finops-recommendations > div > button { align-self: center; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9.5px; font-weight: 650; }
+.finops-governance-status { display: flex; align-items: center; gap: 11px; padding: 16px; color: #175cd3; }
+.finops-governance-status span { display: grid; gap: 4px; }
+.finops-governance-status b { color: #344054; font-size: 10.5px; }
+.finops-governance-status small { color: #667085; font-size: 9.5px; line-height: 1.5; }
 .finops-insights > div:last-child, .finops-recommendations > div:last-child { border-bottom: 0; }
 .finops-insights span, .finops-recommendations span { display: grid; gap: 3px; color: #344054; }
 .finops-insights b, .finops-recommendations b { font-size: 10.5px; }
@@ -5653,7 +5658,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-ai-input button:disabled,
 .finops-ai-suggestions button:disabled { cursor: wait; opacity: .55; }
 
-@media (max-width: 1280px) {
+@media (max-width: 1100px) {
   .finops-metrics { grid-template-columns: repeat(3, minmax(130px, 1fr)); }
   .finops-value-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
