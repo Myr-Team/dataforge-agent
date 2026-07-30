@@ -741,6 +741,20 @@ BEGIN
 END;
 GO
 
+IF OBJECT_ID(N'df_finops.demo_seed_event', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.demo_seed_event (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        workspace_id NVARCHAR(160) NOT NULL,
+        seed_batch NVARCHAR(64) NOT NULL,
+        request_ref NVARCHAR(128) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_demo_seed_event
+            PRIMARY KEY (tenant_ref, workspace_id, seed_batch, request_ref)
+    );
+END;
+GO
+
 IF COL_LENGTH(N'df_finops.budget_alert', N'lease_token') IS NULL
 BEGIN
     EXEC(N'ALTER TABLE df_finops.budget_alert ADD lease_token NVARCHAR(64) NULL');
