@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  CUSTOMER_INFRA_LABELS,
+  FINOPS_REFRESH_MS,
   FINOPS_TABS,
   finopsBootstrapViewData,
   finopsMetricCards,
@@ -11,11 +14,40 @@ import {
   finopsDoughnutSegments,
   finopsRoiEconomicsView,
   finopsOpportunityRows,
+  finopsPolicyLabel,
   finopsBarPercent,
   niceFinOpsAxis,
   formatRelativeUpdateTime,
   gatewayUnmatchedEvidence,
 } from "./finopsViewModel.js";
+
+
+test("operations customer labels hide infrastructure product names", () => {
+  const source = readFileSync(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8");
+  for (const forbidden of ["APIM", "Foundry Trace", "Azure Monitor"]) {
+    assert.equal(source.includes(forbidden), false);
+  }
+  assert.deepEqual(CUSTOMER_INFRA_LABELS, {
+    reconciliation: "请求对账",
+    gatewayCoverage: "统一入口覆盖率",
+    gateway: "统一入口",
+    gatewayCorrelation: "入口关联",
+    trace: "运行追踪",
+    monitor: "云端监控",
+  });
+});
+
+
+test("operations refresh interval is five minutes", () => {
+  assert.equal(FINOPS_REFRESH_MS, 300_000);
+});
+
+
+test("operations rules use business labels instead of infrastructure keys", () => {
+  assert.equal(finopsPolicyLabel("apim_coverage"), "统一入口覆盖");
+  assert.equal(finopsPolicyLabel("cache_hit_rate"), "缓存命中率");
+  assert.equal(finopsPolicyLabel("unknown"), "运营规则");
+});
 
 
 test("gateway unmatched evidence is scope-labelled and never invented", () => {

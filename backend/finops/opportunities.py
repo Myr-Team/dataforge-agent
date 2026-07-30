@@ -109,7 +109,7 @@ def _title(policy_type: str) -> str:
         "cache_hit_rate": "缓存效率优化",
         "token_spike": "Token 用量优化",
         "unpriced_requests": "计价覆盖补齐",
-        "apim_coverage": "APIM 治理覆盖",
+        "apim_coverage": "统一入口治理覆盖",
         "p95_latency": "响应时延优化",
         "error_rate": "调用成功率改善",
     }.get(policy_type, "运营指标优化")
@@ -121,7 +121,7 @@ def _recommendation(policy_type: str) -> str:
         "cache_hit_rate": "检查缓存资格、键策略与失效窗口。",
         "token_spike": "对比上一周期定位 Token 增长来源。",
         "unpriced_requests": "补齐模型价目表与价格版本。",
-        "apim_coverage": "核对未经过 APIM 的调用路径。",
+        "apim_coverage": "核对未经过统一入口的调用路径。",
         "p95_latency": "定位慢请求与模型路由瓶颈。",
         "error_rate": "按错误类别和模型定位失败来源。",
     }.get(policy_type, "结合证据复核运营指标。")

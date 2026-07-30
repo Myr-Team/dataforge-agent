@@ -495,7 +495,7 @@ class FinOpsQueryService:
             "freshness": {
                 "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "sources": ["dataforge_application"],
-                "refresh_after_seconds": 60,
+                "refresh_after_seconds": 300,
             },
             "coverage": {
                 "observed_requests": len(rows),

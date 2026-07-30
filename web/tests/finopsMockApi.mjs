@@ -10,7 +10,7 @@ export const bootstrapPayload = {
   freshness: {
     generated_at: NOW,
     sources: ["dataforge_application", "apim"],
-    refresh_after_seconds: 60,
+    refresh_after_seconds: 300,
   },
   coverage: {
     observed_requests: 60,
@@ -226,8 +226,10 @@ export const bootstrapPayload = {
           kind: "cost_driver",
           statement: "Commerce 工作区贡献本窗口主要估算成本。",
           evidence_count: 1,
+          evidence_refs: ["req_slow_000001"],
         },
       ],
+      evidence_refs: ["req_slow_000001"],
       evidence_state: "estimated",
       confidence: 0.82,
       generated_at: "2026-07-24T05:55:00Z",
@@ -777,7 +779,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         business_request: { text: "分析本月销售异常", status: "recorded" },
         business_response: { text: "已定位主要变化来自华东区域。", status: "recorded" },
         timeline: [
-          { stage: "gateway", label: "APIM 网关", status: "observed" },
+          { stage: "gateway", label: "统一入口", status: "observed" },
           { stage: "orchestration", label: "MAF 编排", status: "observed" },
           { stage: "execution", label: "df-coordinator · gpt-5-mini", status: "observed" },
           { stage: "response", label: "完成返回", status: "succeeded", latency_ms: 1300 },

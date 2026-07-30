@@ -111,7 +111,7 @@ def evaluate_default_anomalies(value: AnomalyEvaluationInput) -> list[DetectedAn
                 value.p95_latency_threshold_ms,
                 len(latencies),
                 workspace_ids,
-                "核对慢请求路由、缓存状态及 APIM 后端耗时。",
+                "核对慢请求路由、缓存状态及统一入口后端耗时。",
                 _event_refs(
                     [event for event in latency_events if event.latency_ms is not None],
                     key=lambda event: float(event.latency_ms or 0),

@@ -151,7 +151,7 @@ def _safe_text(value: Any) -> str | None:
 def _timeline(event: FinOpsRequestEvent) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     if event.gateway_coverage == "apim_governed":
-        items.append({"stage": "gateway", "label": "APIM 网关", "status": "observed"})
+        items.append({"stage": "gateway", "label": "统一入口", "status": "observed"})
     elif event.gateway_coverage == "app_observed":
         items.append({"stage": "gateway", "label": "应用直连", "status": "observed"})
     else:

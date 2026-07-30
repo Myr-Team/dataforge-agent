@@ -92,7 +92,7 @@ test("ROI parameters create a new DataForge scenario revision", async ({ page })
 });
 
 
-test("APIM coverage surfaces unattributed gateway evidence with scope label", async ({ page }) => {
+test("request reconciliation surfaces unattributed gateway evidence with scope label", async ({ page }) => {
   await installFinOpsMockApi(page);
   await page.goto("/");
   await openOperations(page);
@@ -113,6 +113,36 @@ test("APIM coverage surfaces unattributed gateway evidence with scope label", as
     path: path.join(outputDir, "operations-gateway-evidence-desktop.png"),
     fullPage: true,
   });
+});
+
+
+test("operations auto-refresh waits five minutes and pauses while hidden", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-07-30T08:00:00Z") });
+  const calls = [];
+  await installFinOpsMockApi(page, calls);
+  await page.goto("/");
+  await openOperations(page);
+
+  const bootstrapCount = () => calls.filter((call) => call.path === "/api/finops/bootstrap").length;
+  const initialCount = bootstrapCount();
+
+  await page.clock.runFor(299_000);
+  expect(bootstrapCount()).toBe(initialCount);
+  await page.clock.runFor(1_000);
+  await expect.poll(bootstrapCount).toBe(initialCount + 1);
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.clock.runFor(300_000);
+  expect(bootstrapCount()).toBe(initialCount + 1);
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(bootstrapCount).toBe(initialCount + 2);
 });
 
 

@@ -17,7 +17,7 @@ test("operations header isolates title copy from the synchronization control", a
 });
 
 
-test("overview uses six metrics, data trust, selectable trend and no budget forecast", async () => {
+test("overview uses operations metrics, data trust, selectable trend and no budget forecast", async () => {
   const component = await readFile(
     new URL("./FinOpsPortal.jsx", import.meta.url),
     "utf8",
@@ -27,7 +27,8 @@ test("overview uses six metrics, data trust, selectable trend and no budget fore
   assert.match(component, /title="数据可信度"/);
   assert.match(component, /计价覆盖/);
   assert.match(component, /Token 覆盖/);
-  assert.match(component, /APIM 对账/);
+  assert.match(component, /CUSTOMER_INFRA_LABELS\.reconciliation/);
+  assert.doesNotMatch(component, /APIM 对账/);
   assert.doesNotMatch(component, /title="预算消耗与期末预测"/);
 });
 

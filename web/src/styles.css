@@ -5524,6 +5524,17 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-opportunity-list article.observing footer > span { background: #f2f4f7; color: #667085; }
 .finops-opportunity-list footer > b { color: #667085; font-size: 9px; font-weight: 600; }
 .finops-opportunity-list footer > button { margin-left: auto; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9px; font-weight: 650; }
+.finops-agent-insights { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; }
+.finops-agent-insights article { display: grid; align-content: start; gap: 10px; border: 1px solid #dfe7f1; border-radius: 10px; background: linear-gradient(145deg, #fff 0%, #f8fbff 100%); padding: 13px; }
+.finops-agent-insights article > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.finops-agent-insights article > header span { display: grid; gap: 3px; }
+.finops-agent-insights article > header small { color: #175cd3; font-size: 8.5px; font-weight: 750; letter-spacing: .04em; }
+.finops-agent-insights article > header b { color: #1d2939; font-size: 11px; }
+.finops-agent-insights article > p { margin: 0; color: #475467; font-size: 10px; line-height: 1.55; }
+.finops-agent-insights article > small { color: #98a2b3; font-size: 9px; }
+.finops-agent-insights ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.finops-agent-insights li { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; border-top: 1px solid #eaf0f6; padding-top: 7px; color: #475467; font-size: 9.5px; line-height: 1.45; }
+.finops-agent-insights li button { flex: none; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-weight: 680; }
 .finops-evidence-summary { display: grid; padding: 8px 14px; }
 .finops-evidence-summary > div { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #edf0f5; color: #475467; font-size: 10.5px; }
 .finops-evidence-summary > div:last-child { border-bottom: 0; }
@@ -5688,6 +5699,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-roi-form { grid-template-columns: 1fr; padding: 16px; }
   .finops-roi-form .wide { grid-column: auto; }
   .finops-opportunity-list { grid-template-columns: 1fr; }
+  .finops-agent-insights { grid-template-columns: 1fr; }
   .finops-opportunity-list dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .finops-opportunity-list dl > div:nth-child(2) { border-right: 0; }
   .finops-opportunity-list dl > div:nth-child(-n + 2) { border-bottom: 1px solid #edf0f5; }

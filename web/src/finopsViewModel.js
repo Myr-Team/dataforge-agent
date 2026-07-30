@@ -1,11 +1,37 @@
 const numberFormat = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 });
 
+export const FINOPS_REFRESH_MS = 300_000;
+
+export const CUSTOMER_INFRA_LABELS = Object.freeze({
+  reconciliation: "请求对账",
+  gatewayCoverage: "统一入口覆盖率",
+  gateway: "统一入口",
+  gatewayCorrelation: "入口关联",
+  trace: "运行追踪",
+  monitor: "云端监控",
+});
+
 export const FINOPS_TABS = [
   { id: "overview", label: "运营总览" },
   { id: "cost", label: "成本分析" },
   { id: "roi", label: "效能与 ROI" },
   { id: "risk", label: "风险与优化" },
 ];
+
+const FINOPS_POLICY_LABELS = Object.freeze({
+  error_rate: "调用失败率",
+  p95_latency: "P95 响应时延",
+  daily_cost_budget: "日预算使用",
+  token_spike: "Token 异常增长",
+  apim_coverage: "统一入口覆盖",
+  unpriced_requests: "未计价调用",
+  cache_hit_rate: "缓存命中率",
+});
+
+export function finopsPolicyLabel(value) {
+  const key = String(value || "").trim();
+  return FINOPS_POLICY_LABELS[key] || "运营规则";
+}
 
 function hasNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
@@ -470,9 +496,9 @@ export function finopsRequestViewModel(item = {}) {
   const technicalLabels = {
     request_ref: "请求关联",
     run_id: "MAF 运行",
-    apim_correlation_id: "APIM 关联",
+    apim_correlation_id: CUSTOMER_INFRA_LABELS.gatewayCorrelation,
     price_card_revision: "价目表版本",
-    trace_id: "Foundry Trace",
+    trace_id: CUSTOMER_INFRA_LABELS.trace,
     agent_id: "Agent",
   };
   const technicalItems = Object.entries(technicalRefs)

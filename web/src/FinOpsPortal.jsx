@@ -53,6 +53,8 @@ import {
   previousEqualWindow,
 } from "./finopsInteraction.js";
 import {
+  CUSTOMER_INFRA_LABELS,
+  FINOPS_REFRESH_MS,
   FINOPS_TABS,
   finopsBootstrapViewData,
   finopsBudgetView,
@@ -61,6 +63,7 @@ import {
   evidenceRequestRef,
   finopsMetricCards,
   finopsOpportunityRows,
+  finopsPolicyLabel,
   finopsRequestViewModel,
   finopsRoiEconomicsView,
   finopsTrendViewModel,
@@ -506,9 +509,9 @@ function DataTrust({ trust = {} }) {
     },
     {
       id: "apim",
-      label: "APIM 对账",
+      label: CUSTOMER_INFRA_LABELS.reconciliation,
       value: trust.apim?.coverage_pct,
-      meta: `${formatFinOpsNumber(trust.apim?.apim_governed_requests, "0")} 已关联 · ${formatFinOpsNumber(trust.apim?.app_observed_requests, "0")} 应用观测`,
+      meta: `${formatFinOpsNumber(trust.apim?.apim_governed_requests, "0")} 入口关联 · ${formatFinOpsNumber(trust.apim?.app_observed_requests, "0")} 应用观测`,
       state: trust.apim?.state,
     },
   ];
@@ -610,7 +613,7 @@ function OverviewPage({
           </div>
           <TrendBars metric={trendMetric} payload={data.trends} comparisonPayload={comparison} events={anomalies} />
         </Panel>
-        <Panel title="数据可信度" subtitle="明确哪些数字已记录、已计价并完成网关对账">
+        <Panel title="数据可信度" subtitle="明确哪些数字已记录、已计价并完成请求对账">
           <DataTrust trust={data.overview?.trust || data.trust || {}} />
         </Panel>
         <Panel title="需要关注" subtitle="仅显示可下钻或可修正的事项">
@@ -705,7 +708,7 @@ function CostPage({
         {exportUrl ? <a href={exportUrl}><Download size={14} />导出 CSV</a> : null}
       </div>
       <div className="finops-grid">
-        <Panel title="成本趋势" subtitle="请求级价目表估算，不代表 Azure 实际账单" className="span-2">
+        <Panel title="成本趋势" subtitle="请求级价目表估算，不代表云平台实际账单" className="span-2">
           <TrendBars payload={overviewData.trends} metric="cost" comparisonPayload={comparison} events={overviewData.anomalies?.items || []} />
         </Panel>
         <Panel title="部门成本归因" subtitle="部门与专案按同一账本口径聚合">
@@ -956,6 +959,7 @@ function RoiScenarioDialog({
 
 function RiskPage({
   data,
+  insights,
   busyId,
   actionError,
   onAnomalyAction,
@@ -966,6 +970,10 @@ function RiskPage({
   const recommendations = Array.isArray(data.recommendations?.items) ? data.recommendations.items : [];
   const actions = Array.isArray(data.actions?.items) ? data.actions.items : [];
   const opportunities = finopsOpportunityRows(data.opportunities);
+  const agentInsights = [
+    ["finops", "FinOps 分析", insights?.finops],
+    ["roi", "ROI 分析", insights?.roi],
+  ].filter(([, , item]) => item);
   return (
     <div className="finops-grid">
       <Panel title="优化机会队列" subtitle="按影响、证据置信度与实施难度排序；不自动执行" className="span-2">
@@ -997,12 +1005,50 @@ function RiskPage({
           </div>
         ) : <EmptyState>当前没有达到证据门槛的优化机会。</EmptyState>}
       </Panel>
+      <Panel title="AI 运营解读" subtitle="基于现有证据解释指标，不自动执行治理动作" className="span-2">
+        {agentInsights.length ? (
+          <div className="finops-agent-insights">
+            {agentInsights.map(([kind, label, insight]) => (
+              <article key={kind}>
+                <header>
+                  <span><small>{label}</small><b>{insight.title || "分析结果"}</b></span>
+                  <EvidenceBadge status={insight.evidence_state || insight.status} />
+                </header>
+                <p>{insight.summary || "当前没有可展示的分析说明。"}</p>
+                {Array.isArray(insight.findings) && insight.findings.length ? (
+                  <ul>
+                    {insight.findings.slice(0, 3).map((finding, index) => {
+                      const evidenceRefs = Array.isArray(finding.evidence_refs)
+                        ? finding.evidence_refs
+                        : insight.evidence_refs || [];
+                      return (
+                        <li key={`${finding.kind || "finding"}:${index}`}>
+                          <span>{finding.statement}</span>
+                          {onEvidence && evidenceRefs.length ? (
+                            <button type="button" onClick={() => onEvidence({
+                              reason: finding.statement || insight.title,
+                              evidenceRefs,
+                              policyType: finding.kind || kind,
+                            })}>查看证据</button>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <small>{(insight.evidence_gaps || []).slice(0, 2).join(" · ") || "等待更多可复核证据"}</small>
+                )}
+              </article>
+            ))}
+          </div>
+        ) : <EmptyState>分析说明尚未生成；页面刷新不会自动发起分析。</EmptyState>}
+      </Panel>
       <Panel title="开放异常" subtitle="只显示达到样本门槛的规则">
         {anomalies.length ? (
           <div className="finops-anomaly-list">
             {anomalies.map((item) => (
               <article key={item.anomaly_id} className={item.severity}>
-                <div><AlertTriangle size={16} /><b>{item.policy_type}</b><EvidenceBadge status={item.status} /></div>
+                <div><AlertTriangle size={16} /><b>{finopsPolicyLabel(item.policy_type)}</b><EvidenceBadge status={item.status} /></div>
                 <p>{item.recommendation}</p>
                 <small>观测 {item.observed_value} · 阈值 {item.threshold_value} · 样本 {item.sample_count}</small>
                 {["open", "acknowledged"].includes(item.status) ? (
@@ -1010,13 +1056,13 @@ function RiskPage({
                     {item.status === "open" ? <button type="button" disabled={busyId === item.anomaly_id} onClick={() => onAnomalyAction(item, "acknowledge")}>确认</button> : null}
                     <button type="button" disabled={busyId === item.anomaly_id} onClick={() => onAnomalyAction(item, "suppress")}>抑制</button>
                     {onEvidence ? <button type="button" onClick={() => onEvidence({
-                      reason: item.policy_type,
+                      reason: finopsPolicyLabel(item.policy_type),
                       evidenceRefs: item.evidence_refs || [],
                       policyType: item.policy_type,
                     })}>查看证据</button> : null}
                   </footer>
                 ) : onEvidence ? <footer><button type="button" onClick={() => onEvidence({
-                  reason: item.policy_type,
+                  reason: finopsPolicyLabel(item.policy_type),
                   evidenceRefs: item.evidence_refs || [],
                   policyType: item.policy_type,
                 })}>查看证据</button></footer> : null}
@@ -1031,7 +1077,7 @@ function RiskPage({
             {recommendations.map((item) => (
               <div key={item.recommendation_id}>
                 <ShieldCheck size={16} />
-                <span><b>{item.policy_type}</b><small>{item.recommendation}</small></span>
+                <span><b>{finopsPolicyLabel(item.policy_type)}</b><small>{item.recommendation}</small></span>
               </div>
             ))}
           </div>
@@ -1062,7 +1108,12 @@ function RiskPage({
                   }[transition];
                   return (
                     <tr key={item.action_id}>
-                      <td><b>{item.action_type}</b></td>
+                      <td><b>{{
+                        apim_token_limit: "统一入口限额",
+                        model_route: "模型路由",
+                        cache_policy: "缓存策略",
+                        price_card_activation: "价目表启用",
+                      }[item.action_type] || "治理动作"}</b></td>
                       <td><EvidenceBadge status={item.status} /></td>
                       <td>{item.proposed_by}</td>
                       <td>{item.approved_by || "待批准"}</td>
@@ -1214,12 +1265,12 @@ function EvidenceDrawer({
               <div className="finops-evidence-links">
                 {detail.links.foundryTrace ? (
                   <a className="finops-monitor-link" href={detail.links.foundryTrace} target="_blank" rel="noreferrer">
-                    在 Foundry Trace 中查看 <ExternalLink size={14} />
+                    打开{CUSTOMER_INFRA_LABELS.trace} <ExternalLink size={14} />
                   </a>
                 ) : null}
                 {detail.links.azureMonitor ? (
                   <a className="finops-monitor-link" href={detail.links.azureMonitor} target="_blank" rel="noreferrer">
-                    在 Azure Monitor 中查看 <ExternalLink size={14} />
+                    打开{CUSTOMER_INFRA_LABELS.monitor} <ExternalLink size={14} />
                   </a>
                 ) : null}
               </div>
@@ -1544,8 +1595,21 @@ export function FinOpsPortal({
   }, [comparisonEnabled, query, refreshKey, workspaceId]);
 
   useEffect(() => {
-    const timer = window.setInterval(refresh, 60_000);
-    return () => window.clearInterval(timer);
+    let lastRefreshAt = Date.now();
+    const run = () => {
+      if (document.hidden) return;
+      lastRefreshAt = Date.now();
+      refresh();
+    };
+    const timer = window.setInterval(run, FINOPS_REFRESH_MS);
+    const onVisibilityChange = () => {
+      if (!document.hidden && Date.now() - lastRefreshAt >= FINOPS_REFRESH_MS) run();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [refresh]);
 
   useEffect(() => () => evidenceController.current?.abort(), []);
@@ -1756,13 +1820,13 @@ export function FinOpsPortal({
           }} />
           : null}
         {!showDetailLoading && !detailState.error && tab === "risk"
-          ? <RiskPage data={detailState.data} busyId={governance.busyId} actionError={governance.error} onAnomalyAction={manageAnomaly} onActionTransition={transitionAction} onEvidence={canOpenEvidence ? openEvidence : null} />
+          ? <RiskPage data={detailState.data} insights={overviewState.data.insights} busyId={governance.busyId} actionError={governance.error} onAnomalyAction={manageAnomaly} onActionTransition={transitionAction} onEvidence={canOpenEvidence ? openEvidence : null} />
           : null}
       </section>
 
       <footer className="finops-footnote">
         <WalletCards size={14} />
-        <span>成本为 DataForge 价目表估算，不代表 Azure 实际账单；缺失证据不会补造数据。</span>
+        <span>成本为 DataForge 价目表估算，不代表云平台实际账单；缺失证据不会补造数据。</span>
       </footer>
       <EvidenceDrawer
         state={evidenceState}

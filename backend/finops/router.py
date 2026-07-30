@@ -617,7 +617,7 @@ def _bootstrap_insights(query: FinOpsQuery) -> dict[str, Any]:
                 ),
                 agent_kind=kind,
             ),
-            include_evidence_refs=False,
+            include_evidence_refs=True,
         )
         for kind in ("finops", "roi")
     }

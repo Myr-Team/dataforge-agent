@@ -1,3 +1,5 @@
+import { CUSTOMER_INFRA_LABELS } from "./finopsViewModel.js";
+
 const FILTER_FIELDS = {
   departmentId: { api: "department_id", label: "部门" },
   workspaceId: { api: "workspace_id", label: "工作区" },
@@ -61,7 +63,7 @@ export function metricTooltip(metric = {}) {
     pushNumber(rows, "已使用", metric.usedAmount, "currency");
     pushNumber(rows, "使用比例", metric.usagePct, "percent");
   } else if (metric.kind === "coverage") {
-    pushNumber(rows, "APIM 覆盖率", metric.coveragePct, "percent");
+    pushNumber(rows, CUSTOMER_INFRA_LABELS.gatewayCoverage, metric.coveragePct, "percent");
     pushNumber(rows, "调用样本", metric.requests);
   } else if (metric.kind === "quality") {
     pushNumber(rows, "调用样本", metric.requests);

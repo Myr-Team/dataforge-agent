@@ -1277,7 +1277,7 @@ function WebSearchPanel({ trace, artifact }) {
     <section className="websearch-card">
       <div className="ws-head">
         <Globe size={15} />
-        <strong>联网检索 · Foundry Web Search</strong>
+        <strong>联网检索</strong>
         <span className="ws-tag">{sources.length} 条外部来源 · market_inferred{hit.restored_from_artifact ? " · 已保存" : ""}</span>
       </div>
       {sources.length ? (
@@ -2156,7 +2156,7 @@ function ObservabilityPanel({ observability }) {
         <article className="obsv-card">
           <div className="obsv-head"><Activity size={15} /><strong>分布式追踪 · Observability</strong></div>
           <div className="obsv-rows">
-            <div className={`obsv-row ${t.app_insights ? "ok" : "off"}`}><span>Azure Monitor / App Insights</span><b>{t.app_insights ? "已接入" : "未配置"}</b></div>
+            <div className={`obsv-row ${t.app_insights ? "ok" : "off"}`}><span>云端监控</span><b>{t.app_insights ? "已接入" : "未配置"}</b></div>
             <div className={`obsv-row ${t.otel_sdk ? "ok" : "off"}`}><span>OpenTelemetry SDK</span><b>{t.otel_sdk ? "已启用" : "缺失"}</b></div>
             <div className="obsv-row"><span>导出器</span><b>{t.exporter || "—"}</b></div>
             <div className="obsv-row"><span>服务名</span><b>{t.service_name || "—"}</b></div>
@@ -2478,7 +2478,7 @@ export function CostValuePanel({ data, loading, error, onRetry, onCreateScenario
           <div><dt>已观察成本</dt><dd>{view.cost.totalText}</dd><small>{view.cost.label}</small></div>
           <div><dt>结果证据</dt><dd>{view.outcomes.count ? `${view.outcomes.count} 条` : "未记录"}</dd><small>{view.outcomes.label}</small></div>
           <div><dt>已验证 ROI</dt><dd>{view.realized.roiText}</dd><small>{view.realized.valueText}</small></div>
-          <div><dt>Foundry 追踪来源</dt><dd>{view.foundry.label}</dd><small>{view.foundry.official ? "官方来源" : "未用于 ROI 结论"}</small></div>
+          <div><dt>云端追踪来源</dt><dd>{view.foundry.label}</dd><small>{view.foundry.official ? "官方来源" : "未用于 ROI 结论"}</small></div>
         </dl>
 
         <div className="cost-value-scenarios">
@@ -2599,7 +2599,7 @@ function GovernanceSummaryPanel({ data, invitationState, permissionsPayload, per
       </div>
 
       <section className="gov-section" aria-label="Azure 遥测送达">
-        <GovernanceSectionHead icon={Activity} title="Azure 遥测送达" description="区分配置、本地发出与远端确认；只有匹配的 Azure Monitor 证据才标记送达。" badge={traceBadge} />
+        <GovernanceSectionHead icon={Activity} title="云端遥测送达" description="区分配置、本地发出与远端确认；只有匹配的云端监控证据才标记送达。" badge={traceBadge} />
         <GovernanceInlineState loading={data.loading} error={errors.trace} onRetry={onRetry}>
           <dl className="gov-facts">
             <div><dt>配置状态</dt><dd>{trace.state === "not_configured" ? "未配置" : "已配置"}</dd></div>
@@ -2608,7 +2608,7 @@ function GovernanceSummaryPanel({ data, invitationState, permissionsPayload, per
             <div><dt>远端送达</dt><dd>{trace.deliveredAt ? formatTime(trace.deliveredAt) : "未确认"}</dd></div>
           </dl>
           {trace.errorType ? <p className="gov-evidence-note error">验证失败类型：{trace.errorType}</p> : null}
-          {trace.transactionUrl ? <a className="gov-external-link" href={trace.transactionUrl} target="_blank" rel="noreferrer">在 Azure Monitor 查看<ArrowUpRight size={13} /></a> : null}
+          {trace.transactionUrl ? <a className="gov-external-link" href={trace.transactionUrl} target="_blank" rel="noreferrer">在云端监控查看<ArrowUpRight size={13} /></a> : null}
         </GovernanceInlineState>
       </section>
 
@@ -2697,8 +2697,8 @@ function traceRequestFailure(error) {
 
 function traceIssueLabel(code) {
   return {
-    runtime_access_denied: "运行身份没有读取 Azure Monitor 的权限",
-    query_throttled: "Azure Monitor 查询正在限流，请稍后刷新",
+    runtime_access_denied: "运行身份没有读取云端监控的权限",
+    query_throttled: "云端监控查询正在限流，请稍后刷新",
     query_unavailable: "远端遥测查询暂不可用，请稍后刷新",
   }[code] || "";
 }
@@ -2766,10 +2766,10 @@ function TraceReference({ workspaceId, runId, reference, compact = false, showMe
         </button>
       </div>
       <div className={`trace-reference-status ${model.delivery.tone}`}>
-        <span><b>Azure Monitor</b> · {statusLabel}</span>
+        <span><b>云端监控</b> · {statusLabel}</span>
         <span className="trace-reference-actions">
           <button type="button" className="trace-reference-refresh" onClick={() => setRefreshSeed((value) => value + 1)}>刷新</button>
-          {model.transactionUrl ? <a href={model.transactionUrl} target="_blank" rel="noreferrer">Azure Monitor <ArrowUpRight size={13} /></a> : null}
+          {model.transactionUrl ? <a href={model.transactionUrl} target="_blank" rel="noreferrer">云端监控 <ArrowUpRight size={13} /></a> : null}
         </span>
       </div>
       {model.delivery.issueCode ? <p className="trace-reference-issue">{traceIssueLabel(model.delivery.issueCode)}</p> : null}
@@ -2784,12 +2784,12 @@ function TraceReference({ workspaceId, runId, reference, compact = false, showMe
             </>
           ) : (
             <span className={`trace-reference-metric-state ${metricModel.tone}`}>
-              {metrics ? (traceIssueLabel(metricModel.issueCode) || metricModel.label) : "正在读取 Azure Monitor 聚合指标"}
+              {metrics ? (traceIssueLabel(metricModel.issueCode) || metricModel.label) : "正在读取云端监控聚合指标"}
             </span>
           )}
         </div>
       ) : null}
-      {!compact ? <p>可在 Foundry 的 {model.agentId} 中按 Trace ID 搜索此运行。</p> : null}
+      {!compact ? <p>可在运行追踪中按 Trace ID 搜索 {model.agentId} 的本次运行。</p> : null}
     </section>
   );
 }
@@ -2891,7 +2891,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
         <section className="card obs2">
           <div className="obs2-head"><strong>可观测性集成</strong><span className={`dw-chip ${t.app_insights && t.otel_sdk ? "ok" : "warn"}`}>{t.app_insights && t.otel_sdk ? "已配置" : "未完整配置"}</span></div>
           <div className="obs2-items">
-            <div className="obs2-item"><ObsIcon name="monitor" /><div><b>Azure Monitor</b><em>{t.app_insights ? "已配置" : "未配置"}</em></div></div>
+            <div className="obs2-item"><ObsIcon name="monitor" /><div><b>云端监控</b><em>{t.app_insights ? "已配置" : "未配置"}</em></div></div>
             <div className="obs2-item"><ObsIcon name="appinsights" /><div><b>App Insights</b><em>{t.app_insights ? "已配置" : "未配置"}</em></div></div>
             <div className="obs2-item"><ObsIcon name="otel" /><div><b>OpenTelemetry</b><em>{t.otel_sdk ? "已启用" : "未配置"}</em></div></div>
           </div>
@@ -3580,7 +3580,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
   };
   const openSettingsHelp = (kind) => setSettingsDrawer(kind);
   const connectors = [
-    { src: "/icons/foundry.svg", name: "Azure AI Foundry Agent Service", desc: "Agent 执行与编排服务", ok: dependencyState("foundry") },
+    { src: "/icons/foundry.svg", name: "托管 Agent 服务", desc: "Agent 执行与编排服务", ok: dependencyState("foundry") },
     { src: "/icons/ai-search.svg", name: "Azure AI Search", desc: "向量检索与搜索服务", ok: dependencyState("search", health.search_endpoint) },
     { src: "/icons/azure-blob.svg", name: "Azure Blob Storage", desc: "数据与文件存储服务", ok: dependencyState("blob") },
     { icon: Server, name: "MCP Server", desc: "外部工具与能力连接器", ok: dependencyState("mcp") },
