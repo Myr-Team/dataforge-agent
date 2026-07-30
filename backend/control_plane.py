@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from urllib.parse import unquote, urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -1118,10 +1118,16 @@ def build_method_action_plan(workspace_id: str, body: dict[str, Any]) -> dict[st
     }
 
 
-def list_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
+def list_workspace_artifacts(
+    workspace_id: str,
+    *,
+    run_limit: int | None = 80,
+) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for summary in list_runs(workspace_id)[:80]:
+    summaries = list_runs(workspace_id)
+    scanned = summaries if run_limit is None else summaries[:run_limit]
+    for summary in scanned:
         run_id = str(summary.get("run_id") or "")
         if not run_id:
             continue
@@ -1152,6 +1158,7 @@ def list_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
         "artifacts": items,
         "jobs": list_artifact_jobs(workspace_id)[:20],
         "tasks": list_tasks(workspace_id)[:20],
+        "runs_truncated": run_limit is not None and len(summaries) > run_limit,
     }
 
 
@@ -2318,12 +2325,24 @@ def workspace_roi_snapshot(workspace_id: str, from_value: str, to_value: str) ->
 def workspace_cost_value_snapshot(workspace_id: str, from_value: str, to_value: str) -> dict[str, Any]:
     snapshot = workspace_roi_snapshot(workspace_id, from_value, to_value)
     scenarios = [scenario_projection(workspace_id, item) for item in list_roi_scenarios(workspace_id)]
+    window = parse_time_window(from_value, to_value)
+    artifacts = list_workspace_artifacts(
+        workspace_id,
+        run_limit=None,
+    ).get("artifacts") or []
+    artifact_count = sum(
+        1
+        for item in artifacts
+        if isinstance(item, Mapping)
+        and record_in_window(item, window, "task")
+    )
     return {
         "workspace_id": workspace_id,
         "window": snapshot["window"],
         "cost_evidence": snapshot["cost_evidence"],
         "outcome_evidence": snapshot["outcome_evidence"],
         "realized_roi": realized_roi_evidence(snapshot),
+        "artifact_count": artifact_count,
         "scenarios": scenarios,
         "foundry_integration": snapshot["foundry_integration"],
         "generated_at": snapshot["generated_at"],

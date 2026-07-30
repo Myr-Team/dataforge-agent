@@ -19,11 +19,13 @@ NOW = datetime(2026, 7, 30, 8, 0, tzinfo=timezone.utc)
 def test_initializer_is_bounded_to_one_opaque_tenant_and_workspace() -> None:
     result = initialize_demo_workspace(
         tenant_ref="tenant_demo_ref",
+        allowed_tenant_ref="tenant_demo_ref",
         workspace_id="ws-demo",
         allowed_workspace_id="ws-demo",
         ledger_repository=InMemoryFinOpsRepository(),
         seed_repository=InMemoryDemoSeedRepository(),
         budget_repository=InMemoryMemberBudgetRepository(),
+        hmac_secret="test-secret",
         now=NOW,
     )
     assert result.event_count >= 140
@@ -31,13 +33,63 @@ def test_initializer_is_bounded_to_one_opaque_tenant_and_workspace() -> None:
     with pytest.raises(PermissionError, match="allowlisted"):
         initialize_demo_workspace(
             tenant_ref="tenant_demo_ref",
+            allowed_tenant_ref="tenant_demo_ref",
             workspace_id="ws-other",
             allowed_workspace_id="ws-demo",
             ledger_repository=InMemoryFinOpsRepository(),
             seed_repository=InMemoryDemoSeedRepository(),
             budget_repository=InMemoryMemberBudgetRepository(),
+            hmac_secret="test-secret",
             now=NOW,
         )
+
+
+def test_initializer_rejects_a_different_tenant_and_missing_hmac_secret() -> None:
+    arguments = {
+        "workspace_id": "ws-demo",
+        "allowed_workspace_id": "ws-demo",
+        "ledger_repository": InMemoryFinOpsRepository(),
+        "seed_repository": InMemoryDemoSeedRepository(),
+        "budget_repository": InMemoryMemberBudgetRepository(),
+        "now": NOW,
+    }
+
+    with pytest.raises(PermissionError, match="tenant is not allowlisted"):
+        initialize_demo_workspace(
+            tenant_ref="tenant_other_ref",
+            allowed_tenant_ref="tenant_demo_ref",
+            hmac_secret="test-secret",
+            **arguments,
+        )
+
+    with pytest.raises(RuntimeError, match="HMAC"):
+        initialize_demo_workspace(
+            tenant_ref="tenant_demo_ref",
+            allowed_tenant_ref="tenant_demo_ref",
+            hmac_secret="",
+            **arguments,
+        )
+
+
+def test_initializer_persists_runs_before_source_linked_outcomes() -> None:
+    writes: list[str] = []
+
+    result = initialize_demo_workspace(
+        tenant_ref="tenant_demo_ref",
+        allowed_tenant_ref="tenant_demo_ref",
+        workspace_id="ws-demo",
+        allowed_workspace_id="ws-demo",
+        ledger_repository=InMemoryFinOpsRepository(),
+        seed_repository=InMemoryDemoSeedRepository(),
+        budget_repository=InMemoryMemberBudgetRepository(),
+        hmac_secret="test-secret",
+        run_writer=lambda *_args, **_kwargs: writes.append("runs"),
+        outcome_writer=lambda *_args, **_kwargs: writes.append("outcomes"),
+        now=NOW,
+    )
+
+    assert writes == ["runs", "outcomes"]
+    assert len(result.outcome_events) == 2
 
 
 def test_demo_run_writer_creates_once_and_reuses_owned_records() -> None:

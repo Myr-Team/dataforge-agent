@@ -237,6 +237,7 @@ test("request detail view model prefers friendly evidence and keeps technical re
   assert.equal(request.businessResponse.text, "已定位主要变化来自华东区域。");
   assert.equal(request.cost, "$0.0012");
   assert.equal(request.cache, "命中");
+  assert.equal(request.gatewayCoverage, "统一入口");
   assert.equal(request.technical.expanded, false);
   assert.equal(request.technical.items[0].value, "req_safe");
   assert.equal(request.links.foundryTrace, "https://ai.azure.com/trace/safe");

@@ -1,4 +1,4 @@
-const NOW = "2026-07-24T06:00:00Z";
+const NOW = new Date().toISOString();
 
 export const bootstrapPayload = {
   scope: { workspace_ids: ["demo-corpus"], workspace_count: 1 },
@@ -272,6 +272,7 @@ export const bootstrapPayload = {
 export async function installFinOpsMockApi(page, calls = [], options = {}) {
   const control = {
     failBootstrap: Boolean(options.failBootstrap),
+    failDetail: Boolean(options.failDetail),
     bedrockConnectionState: options.bedrockConnectionState || "connected",
     providerItems: Array.isArray(options.providerItems) ? [...options.providerItems] : [],
     memberBudgetFailure: Boolean(options.memberBudgetFailure),
@@ -331,6 +332,28 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         status: 503,
         contentType: "application/json",
         body: JSON.stringify({ detail: "FinOps evidence service is unavailable" }),
+      });
+      return;
+    }
+    if (
+      control.failDetail
+      && [
+        "/api/finops/breakdowns",
+        "/api/finops/agents",
+        "/api/finops/views",
+        "/api/finops/anomalies",
+        "/api/finops/recommendations",
+        "/api/finops/actions",
+        "/api/finops/opportunities",
+        "/api/finops/roi/economics",
+        "/api/workspaces/demo-corpus/governance/roi",
+        "/api/workspaces/demo-corpus/governance/cost-value",
+      ].includes(path)
+    ) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "FinOps detail service is unavailable" }),
       });
       return;
     }
@@ -493,7 +516,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         body = { detail: "internal-notification-body-must-not-surface" };
       } else if (control.memberBudgetNotificationState === "permission_required") {
         status = 403;
-        body = { detail: "Workspace administrator role required" };
+        body = { detail: "Tenant FinOps administrator role required" };
       } else {
         body = {
           item: {
@@ -1119,13 +1142,14 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         funnel: [
           { id: "investment", label: "投入", value: 0.0269, unit: "USD", status: "estimated" },
           { id: "usage", label: "使用", value: 60, unit: "次调用", status: "observed" },
-          { id: "output", label: "产出", value: null, unit: "个产物", status: "unavailable" },
+          { id: "output", label: "产出", value: 60, unit: "次分析", status: "observed" },
           { id: "outcome", label: "业务结果", value: null, unit: "项已验证结果", status: "not_recorded" },
         ],
         unit_economics: {
           cost_per_successful_request: { label: "每次成功调用成本", value: 0.00048, currency: "USD", status: "estimated" },
           cost_per_analysis: { label: "每次分析成本", value: 0.0269, currency: "USD", status: "estimated" },
           cost_per_artifact: { label: "每个产物成本", value: null, currency: null, status: "unavailable" },
+          cost_per_verified_outcome: { label: "每个已验证结果成本", value: null, currency: null, status: "unavailable" },
         },
         verified_roi: { status: "not_recorded", value: null },
         evidence_gaps: ["独立验证的业务结果", "可计数的交付产物"],

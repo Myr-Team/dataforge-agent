@@ -77,6 +77,79 @@ def test_client_cannot_create_verified_outcome(tmp_path: Path, monkeypatch: pyte
         outcome_store.record_outcome_event("ws-roi", payload, _actor())
 
 
+def test_cost_value_artifact_count_scans_the_complete_selected_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    summaries = [
+        {
+            "run_id": f"run-{index:03d}",
+            "workspace_id": "ws-roi",
+            "completed_at": (
+                "2026-06-12T02:00:00Z"
+                if index == 80
+                else "2026-07-12T02:00:00Z"
+            ),
+        }
+        for index in range(81)
+    ]
+
+    def get_run(run_id: str) -> dict[str, object]:
+        proposal = (
+            {
+                "artifact_urls": {"pdf": "/api/artifacts/roi-report.pdf"},
+                "artifact_generated_at": {"pdf": "2026-07-20T02:00:00Z"},
+            }
+            if run_id == "run-080"
+            else {}
+        )
+        return {
+            "run_id": run_id,
+            "workspace_id": "ws-roi",
+            "completed_at": (
+                "2026-06-12T02:00:00Z"
+                if run_id == "run-080"
+                else "2026-07-12T02:00:00Z"
+            ),
+            "artifact": {"proposal": proposal},
+        }
+
+    monkeypatch.setattr(control_plane, "list_runs", lambda _workspace_id: summaries)
+    monkeypatch.setattr(control_plane, "get_run", get_run)
+    monkeypatch.setattr(
+        control_plane,
+        "get_artifact",
+        lambda _name: {
+            "artifact_name": "roi-report.pdf",
+            "workspace_id": "ws-roi",
+            "kind": "pdf",
+            "status": "ready",
+            "content_type": "application/pdf",
+            "bytes": 128,
+        },
+    )
+    monkeypatch.setattr(control_plane, "list_artifact_jobs", lambda _workspace_id: [])
+    monkeypatch.setattr(control_plane, "list_tasks", lambda _workspace_id: [])
+    monkeypatch.setattr(
+        control_plane,
+        "workspace_roi_snapshot",
+        lambda *_args: {
+            "window": {"from": "2026-07-01T00:00:00Z", "to": "2026-07-31T23:59:59Z"},
+            "cost_evidence": {"status": "complete", "total": 1, "currency": "USD"},
+            "outcome_evidence": {"status": "not_recorded"},
+            "foundry_integration": {},
+            "generated_at": "2026-07-31T23:59:59Z",
+        },
+    )
+    monkeypatch.setattr(control_plane, "realized_roi_evidence", lambda _snapshot: {"status": "not_recorded"})
+    monkeypatch.setattr(control_plane, "list_roi_scenarios", lambda _workspace_id: [])
+
+    result = control_plane.workspace_cost_value_snapshot(
+        "ws-roi",
+        "2026-07-01T00:00:00Z",
+        "2026-07-31T23:59:59Z",
+    )
+
+    assert result["artifact_count"] == 1
+
+
 def test_outcome_verification_is_a_separate_reviewer_action(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -227,6 +300,56 @@ def test_synthetic_outcome_does_not_promote_roi_state() -> None:
 
     assert result["status"] == "estimated"
     assert result["outcomes"]["synthetic_count"] == 1
+
+
+def test_demo_outcomes_are_idempotent_source_linked_and_never_self_verified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_store(tmp_path, monkeypatch)
+    values = (
+        {
+            "metric_name": "analysis_cycle_hours",
+            "unit": "hours",
+            "baseline_value": 16,
+            "observed_value": 11.5,
+            "observed_at": "2026-07-26T02:00:00Z",
+            "provenance": "observed",
+            "verification_state": "verified",
+            "source": {"run_id": "run-demo-one"},
+        },
+        {
+            "metric_name": "manual_review_hours",
+            "unit": "hours",
+            "baseline_value": 24,
+            "observed_value": 15,
+            "observed_at": "2026-07-28T02:00:00Z",
+            "provenance": "observed",
+            "source": {"run_id": "run-demo-two"},
+        },
+    )
+
+    first = outcome_store.upsert_demo_outcome_events(
+        "ws-roi",
+        values,
+        seed_key="operations-v1",
+    )
+    second = outcome_store.upsert_demo_outcome_events(
+        "ws-roi",
+        values[:1],
+        seed_key="operations-v2",
+    )
+
+    assert first == {"created": 2, "updated": 0, "seed_batch": "operations-v1"}
+    assert second == {"created": 0, "updated": 1, "seed_batch": "operations-v2"}
+    [persisted] = outcome_store.list_outcome_events("ws-roi")
+    assert persisted["source"] == {"run_id": "run-demo-one"}
+    assert persisted["verification"] == {"status": "unverified"}
+    assert persisted["trusted_identity"] is False
+    assert persisted["demo_seed"] == {
+        "owner": "operations_demo",
+        "batch": "operations-v2",
+    }
 
 
 def test_outcome_api_persists_lists_and_verifies(

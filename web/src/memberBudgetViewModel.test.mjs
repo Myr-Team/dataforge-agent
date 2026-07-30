@@ -227,7 +227,7 @@ test("settings home uses the workspace administrator role for notification autho
 
   assert.equal(home.state, "partial");
   assert.equal(home.nearBudgetLabel, "1 位接近预算");
-  assert.equal(home.mailLabel, "需要工作区管理员权限");
+  assert.equal(home.mailLabel, "需要组织 FinOps 管理员权限");
 });
 
 

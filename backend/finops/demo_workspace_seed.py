@@ -98,13 +98,13 @@ def seed_demo_workspace(
             actor_refs=actor_refs,
         )
     )
-    created, updated = seed_repository.replace_batch(
+    created, updated = seed_repository.replace_batch_events(
         tenant_ref=clean_tenant_ref,
         workspace_id=clean_workspace_id,
         batch=batch,
-        request_refs=tuple(event.request_ref for event in events),
+        events=events,
+        event_repository=repository,
     )
-    repository.upsert_events(events)
     if budget_repository is not None:
         budget_repository.upsert_budget_subjects(clean_tenant_ref, subjects)
         _seed_budgets(
@@ -123,16 +123,16 @@ def seed_demo_workspace(
             roi_scenario,
             seed_key=batch,
         )
-    if outcome_events_writer is not None:
-        outcome_events_writer(
-            clean_workspace_id,
-            outcome_events,
-            seed_key=batch,
-        )
     if run_evidence_writer is not None:
         run_evidence_writer(
             clean_workspace_id,
             run_evidence,
+            seed_key=batch,
+        )
+    if outcome_events_writer is not None:
+        outcome_events_writer(
+            clean_workspace_id,
+            outcome_events,
             seed_key=batch,
         )
     return DemoSeedResult(
@@ -367,6 +367,7 @@ def _outcome_event_seeds(
             "observed_at": (anchor - timedelta(days=4)).isoformat(),
             "provenance": "observed",
             "verification_state": "unverified",
+            "source": {"run_id": "run_demo_recent_000"},
             "seed_batch": batch,
         },
         {
@@ -376,7 +377,8 @@ def _outcome_event_seeds(
             "observed_value": 15,
             "observed_at": (anchor - timedelta(days=2)).isoformat(),
             "provenance": "observed",
-            "verification_state": "verified",
+            "verification_state": "unverified",
+            "source": {"run_id": "run_demo_recent_001"},
             "seed_batch": batch,
         },
     )

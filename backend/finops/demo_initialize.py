@@ -9,10 +9,12 @@ from typing import Any, Callable, Mapping
 
 try:
     from ..lineage_sql import build_lineage_sql_connection_factory
+    from ..outcome_store import upsert_demo_outcome_events
     from ..roi_scenario_store import upsert_demo_roi_scenario
     from ..run_store import complete_run, get_run, start_run
 except ImportError:
     from lineage_sql import build_lineage_sql_connection_factory
+    from outcome_store import upsert_demo_outcome_events
     from roi_scenario_store import upsert_demo_roi_scenario
     from run_store import complete_run, get_run, start_run
 
@@ -33,12 +35,15 @@ def enabled(value: Any) -> bool:
 def initialize_demo_workspace(
     *,
     tenant_ref: str,
+    allowed_tenant_ref: str,
     workspace_id: str,
     allowed_workspace_id: str,
     ledger_repository: Any,
     seed_repository: Any,
     budget_repository: Any,
+    hmac_secret: str,
     roi_writer: Callable[..., Any] | None = None,
+    outcome_writer: Callable[..., Any] | None = None,
     run_writer: Callable[..., Any] | None = None,
     now: datetime | None = None,
 ) -> DemoSeedResult:
@@ -46,10 +51,15 @@ def initialize_demo_workspace(
     clean_workspace_id = str(workspace_id or "").strip()
     if not _OPAQUE_TENANT_REF.fullmatch(clean_tenant_ref):
         raise ValueError("tenant_ref must be an opaque DataForge tenant reference")
+    if clean_tenant_ref != str(allowed_tenant_ref or "").strip():
+        raise PermissionError("demo tenant is not allowlisted")
     if not _WORKSPACE_ID.fullmatch(clean_workspace_id):
         raise ValueError("workspace_id is invalid")
     if clean_workspace_id != str(allowed_workspace_id or "").strip():
         raise PermissionError("demo workspace is not allowlisted")
+    clean_hmac_secret = str(hmac_secret or "").strip()
+    if not clean_hmac_secret:
+        raise RuntimeError("FinOps HMAC secret is required")
     return seed_demo_workspace(
         ledger_repository,
         seed_repository,
@@ -57,8 +67,9 @@ def initialize_demo_workspace(
         workspace_id=clean_workspace_id,
         allowed_workspace_id=allowed_workspace_id,
         budget_repository=budget_repository,
-        hmac_secret=os.environ.get("DF_FINOPS_HMAC_SECRET") or clean_tenant_ref,
+        hmac_secret=clean_hmac_secret,
         roi_scenario_writer=roi_writer,
+        outcome_events_writer=outcome_writer,
         run_evidence_writer=run_writer,
         now=now,
     )
@@ -135,11 +146,20 @@ def main(argv: list[str] | None = None) -> int:
     allowed_workspace_id = str(
         os.environ.get("DF_FINOPS_DEMO_WORKSPACE_ID") or ""
     ).strip()
+    allowed_tenant_ref = str(
+        os.environ.get("DF_FINOPS_DEMO_TENANT_REF") or ""
+    ).strip()
     if arguments.workspace_id != allowed_workspace_id:
         raise PermissionError("demo workspace is not allowlisted")
+    if arguments.tenant_ref != allowed_tenant_ref:
+        raise PermissionError("demo tenant is not allowlisted")
+    hmac_secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
+    if not hmac_secret:
+        raise RuntimeError("FinOps HMAC secret is required")
 
     factory = build_lineage_sql_connection_factory()
     run_stats: dict[str, int] = {}
+    outcome_stats: dict[str, Any] = {}
 
     def write_runs(
         workspace_id: str,
@@ -157,17 +177,28 @@ def main(argv: list[str] | None = None) -> int:
 
     result = initialize_demo_workspace(
         tenant_ref=arguments.tenant_ref,
+        allowed_tenant_ref=allowed_tenant_ref,
         workspace_id=arguments.workspace_id,
         allowed_workspace_id=allowed_workspace_id,
         ledger_repository=SqlFinOpsRepository(connection_factory=factory),
         seed_repository=SqlDemoSeedRepository(connection_factory=factory),
         budget_repository=SqlMemberBudgetRepository(connection_factory=factory),
+        hmac_secret=hmac_secret,
         roi_writer=lambda workspace_id, payload, *, seed_key: (
             upsert_demo_roi_scenario(
                 workspace_id,
                 payload,
                 actor=None,
                 seed_key=seed_key,
+            )
+        ),
+        outcome_writer=lambda workspace_id, values, *, seed_key: (
+            outcome_stats.update(
+                upsert_demo_outcome_events(
+                    workspace_id,
+                    values,
+                    seed_key=seed_key,
+                )
             )
         ),
         run_writer=write_runs,
@@ -183,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
                 "created": result.created,
                 "updated": result.updated,
                 "run_evidence": run_stats,
+                "outcome_evidence": outcome_stats,
                 "roi_scenario": result.roi_scenario.get("title"),
             },
             ensure_ascii=False,

@@ -142,6 +142,17 @@ def test_only_one_worker_claims_task(tmp_path, monkeypatch: pytest.MonkeyPatch) 
     assert task_store.get_task(task["task_id"])["status"] == "running"
 
 
+def test_transient_permission_error_is_treated_as_lock_contention(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lock_path = tmp_path / "tasks" / "task_123.claim"
+
+    def deny_exclusive_create(*_args, **_kwargs):
+        raise PermissionError(13, "exclusive create is temporarily unavailable")
+
+    monkeypatch.setattr(task_store.os, "open", deny_exclusive_create)
+
+    assert task_store._try_acquire_local_task_lock(lock_path) is None
+
+
 def test_only_one_separate_process_claims_a_local_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_store(tmp_path, monkeypatch)
     task = task_store.create_task(_payload(), _actor())

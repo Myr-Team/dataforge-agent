@@ -1309,6 +1309,7 @@ export function FinOpsPortal({
   const [windowValue, setWindowValue] = useState(initialWindowRef.current);
   const [filters, setFilters] = useState({ departmentId: "", agentId: "", model: "" });
   const [overviewState, setOverviewState] = useState({
+    dataScopeKey: "",
     loading: !initialCacheRef.current.value,
     updating: Boolean(initialCacheRef.current.value),
     error: "",
@@ -1316,7 +1317,14 @@ export function FinOpsPortal({
     generatedAt: initialCacheRef.current.value?.freshness?.generated_at || "",
     data: initialView,
   });
-  const [detailState, setDetailState] = useState({ loading: false, error: "", data: {} });
+  const [detailState, setDetailState] = useState({
+    dataScopeKey: "",
+    tab: "",
+    loading: false,
+    updating: false,
+    error: "",
+    data: {},
+  });
   const [filterOptions, setFilterOptions] = useState(initialView.filterOptions);
   const [comparisonEnabled, setComparisonEnabled] = useState(false);
   const [comparisonState, setComparisonState] = useState({ loading: false, data: null });
@@ -1349,6 +1357,21 @@ export function FinOpsPortal({
     agentId: filters.agentId,
     model: filters.model,
   }), [filters, windowValue, workspaceId]);
+  const queryScopeKey = useMemo(() => JSON.stringify([
+    workspaceId,
+    query.from,
+    query.to,
+    query.departmentId,
+    query.agentId,
+    query.model,
+  ]), [
+    query.agentId,
+    query.departmentId,
+    query.from,
+    query.model,
+    query.to,
+    workspaceId,
+  ]);
   const defaultScope = (
     windowValue.from === initialWindowRef.current.from
     && windowValue.to === initialWindowRef.current.to
@@ -1487,6 +1510,7 @@ export function FinOpsPortal({
     if (cached.value) {
       const view = finopsBootstrapViewData(cached.value);
       setOverviewState({
+        dataScopeKey: queryScopeKey,
         loading: false,
         updating: true,
         error: "",
@@ -1498,9 +1522,11 @@ export function FinOpsPortal({
     } else {
       setOverviewState((state) => ({
         ...state,
-        loading: !state.data?.overview?.metrics,
-        updating: Boolean(state.data?.overview?.metrics),
+        dataScopeKey: state.dataScopeKey === queryScopeKey ? queryScopeKey : "",
+        loading: !(state.dataScopeKey === queryScopeKey && state.data?.overview?.metrics),
+        updating: Boolean(state.dataScopeKey === queryScopeKey && state.data?.overview?.metrics),
         error: "",
+        data: state.dataScopeKey === queryScopeKey ? state.data : {},
       }));
     }
 
@@ -1512,6 +1538,7 @@ export function FinOpsPortal({
       if (current !== overviewSequence.current) return;
       const view = finopsBootstrapViewData(payload);
       setOverviewState({
+        dataScopeKey: queryScopeKey,
         loading: false,
         updating: false,
         error: "",
@@ -1531,16 +1558,35 @@ export function FinOpsPortal({
       }));
     });
     return () => controller.abort();
-  }, [defaultScope, preloadScopeKey, query, refreshKey, workspaceId]);
+  }, [defaultScope, preloadScopeKey, query, queryScopeKey, refreshKey, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId || tab === "overview") {
-      setDetailState({ loading: false, error: "", data: {} });
+      setDetailState({
+        dataScopeKey: "",
+        tab: "",
+        loading: false,
+        updating: false,
+        error: "",
+        data: {},
+      });
       return undefined;
     }
     const current = ++detailSequence.current;
     const controller = new AbortController();
-    setDetailState((state) => ({ ...state, loading: true, error: "" }));
+    setDetailState((state) => {
+      const keepCurrent = state.tab === tab
+        && state.dataScopeKey === queryScopeKey
+        && Object.keys(state.data || {}).length > 0;
+      return {
+        dataScopeKey: keepCurrent ? queryScopeKey : "",
+        tab,
+        loading: !keepCurrent,
+        updating: keepCurrent,
+        error: "",
+        data: keepCurrent ? state.data : {},
+      };
+    });
     const requests = {
       cost: () => Promise.all([
         loadFinOpsBreakdowns("workspace", query, { signal: controller.signal }),
@@ -1569,18 +1615,32 @@ export function FinOpsPortal({
       })),
     };
     requests[tab]().then((data) => {
-      if (current === detailSequence.current) setDetailState({ loading: false, error: "", data });
+      if (current === detailSequence.current) {
+        setDetailState({
+          dataScopeKey: queryScopeKey,
+          tab,
+          loading: false,
+          updating: false,
+          error: "",
+          data,
+        });
+      }
     }).catch((error) => {
       if (error?.name !== "AbortError" && current === detailSequence.current) {
-        setDetailState({
+        setDetailState((state) => ({
+          ...state,
+          tab,
           loading: false,
+          updating: false,
           error: error instanceof Error ? error.message : "页面数据读取失败",
-          data: {},
-        });
+          data: state.tab === tab && state.dataScopeKey === queryScopeKey
+            ? state.data
+            : {},
+        }));
       }
     });
     return () => controller.abort();
-  }, [query, refreshKey, tab, workspaceId]);
+  }, [query, queryScopeKey, refreshKey, tab, workspaceId]);
 
   useEffect(() => {
     if (!comparisonEnabled || !workspaceId) {
@@ -1727,7 +1787,16 @@ export function FinOpsPortal({
     if (item.id === "roi") return permissions["finops.roi.read"] !== false;
     return true;
   });
-  const showDetailLoading = tab !== "overview" && detailState.loading;
+  const hasDetailData = (
+    tab !== "overview"
+    && detailState.tab === tab
+    && Object.keys(detailState.data || {}).length > 0
+  );
+  const showDetailLoading = (
+    tab !== "overview"
+    && detailState.loading
+    && !hasDetailData
+  );
   const canOpenEvidence = permissions["finops.request_detail.read"] !== false;
 
   return (
@@ -1742,7 +1811,7 @@ export function FinOpsPortal({
           <i />
           <span>
             {formatRelativeUpdateTime(generatedAt)}
-            {overviewState.updating ? " · 正在更新" : ""}
+            {overviewState.updating || detailState.updating ? " · 正在更新" : ""}
           </span>
           <button type="button" onClick={refresh} title="刷新"><RefreshCw size={15} /></button>
         </div>
@@ -1809,7 +1878,7 @@ export function FinOpsPortal({
         })}
       </nav>
 
-      <section className="finops-content" aria-busy={overviewState.loading || showDetailLoading ? "true" : "false"}>
+      <section className="finops-content" aria-busy={overviewState.loading || showDetailLoading || detailState.updating ? "true" : "false"}>
         {overviewState.loading ? <MetricSkeleton /> : null}
         {overviewState.error && overviewState.data?.overview?.metrics
           ? <div className="finops-inline-error">更新失败，已保留上次数据：{overviewState.error}</div>
@@ -1821,17 +1890,20 @@ export function FinOpsPortal({
           ? <OverviewPage data={overviewState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} onConfigurePricing={() => setModelSettingsOpen(true)} />
           : null}
         {showDetailLoading ? <div className="finops-section-loading"><Loader2 className="spin" size={18} />正在读取当前页面</div> : null}
-        {!showDetailLoading && detailState.error ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{detailState.error}</span><button type="button" onClick={refresh}>重试</button></div> : null}
-        {!showDetailLoading && !detailState.error && tab === "cost"
+        {!showDetailLoading && detailState.error && hasDetailData
+          ? <div className="finops-inline-error">更新失败，已保留上次数据：{detailState.error}</div>
+          : null}
+        {!showDetailLoading && detailState.error && !hasDetailData ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{detailState.error}</span><button type="button" onClick={refresh}>重试</button></div> : null}
+        {!showDetailLoading && hasDetailData && tab === "cost"
           ? <CostPage overviewData={overviewState.data} detail={detailState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} onSaveView={governance.busyId === "save-view" ? null : saveCurrentView} exportUrl={finOpsExportUrl("workspace", query)} onConfigurePricing={() => setModelSettingsOpen(true)} />
           : null}
-        {!showDetailLoading && !detailState.error && tab === "roi"
+        {!showDetailLoading && hasDetailData && tab === "roi"
           ? <RoiPage detail={detailState.data} onAdjustScenario={() => {
             setRoiSaveState({ busy: false, error: "" });
             setRoiEditorOpen(true);
           }} />
           : null}
-        {!showDetailLoading && !detailState.error && tab === "risk"
+        {!showDetailLoading && hasDetailData && tab === "risk"
           ? <RiskPage data={detailState.data} insights={overviewState.data.insights} busyId={governance.busyId} actionError={governance.error} onAnomalyAction={manageAnomaly} onActionTransition={transitionAction} onEvidence={canOpenEvidence ? openEvidence : null} />
           : null}
       </section>

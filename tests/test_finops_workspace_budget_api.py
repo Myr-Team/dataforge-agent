@@ -34,7 +34,12 @@ class _WorkspaceBudgetService:
         }
 
 
-def _client(monkeypatch, *, workspace_role: str | None) -> tuple[TestClient, _WorkspaceBudgetService]:
+def _client(
+    monkeypatch,
+    *,
+    workspace_role: str | None,
+    app_roles: tuple[str, ...] = ("DataForge.FinOpsAdmin",),
+) -> tuple[TestClient, _WorkspaceBudgetService]:
     monkeypatch.setenv("DF_FINOPS_MEMBER_BUDGETS_ENABLED", "1")
     monkeypatch.setenv("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED", "1")
     monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "test-secret")
@@ -46,7 +51,7 @@ def _client(monkeypatch, *, workspace_role: str | None) -> tuple[TestClient, _Wo
         lambda *_args, **_kwargs: {
             "tenant_id": "tenant-a",
             "actor_id": "owner-a",
-            "roles": [],
+            "roles": list(app_roles),
             "source": "easy_auth",
         },
     )
@@ -111,3 +116,32 @@ def test_notification_configuration_accepts_a_direct_admin_email(monkeypatch) ->
     assert response.json()["item"]["recipient_email"] == "demo-admin@example.test"
     assert service.notification_payload is not None
     assert service.notification_payload["recipient_email"] == "demo-admin@example.test"
+
+
+def test_workspace_admin_without_tenant_finops_role_cannot_read_or_replace_notification(
+    monkeypatch,
+) -> None:
+    client, service = _client(
+        monkeypatch,
+        workspace_role="admin",
+        app_roles=(),
+    )
+
+    read = client.get(
+        "/api/finops/notification-settings?workspace_id=ws-demo"
+    )
+    write = client.put(
+        "/api/finops/notification-settings?workspace_id=ws-demo",
+        json={
+            "recipient_email": "attacker@example.test",
+            "sender_display_name": "DataForge",
+            "subject_template": "Budget alert",
+            "body_template": "Budget threshold reached",
+            "enabled": False,
+            "base_revision": 0,
+        },
+    )
+
+    assert read.status_code == 403
+    assert write.status_code == 403
+    assert service.notification_payload is None

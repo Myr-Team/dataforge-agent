@@ -1045,7 +1045,7 @@ async def roi_economics(
         requests=requests,
         successful_requests=successful_requests,
         analyses=int(usage.get("runs") or 0),
-        artifacts=0,
+        artifacts=int(cost_value.get("artifact_count") or 0),
         scenarios=list(cost_value.get("scenarios") or []),
     )
     payload.update({

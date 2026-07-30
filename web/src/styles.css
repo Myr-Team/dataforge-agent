@@ -5470,7 +5470,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-agent-card > footer button { border: 1px solid #d0d5dd; border-radius: 7px; background: #fff; padding: 5px 8px; color: #344054; cursor: pointer; font: inherit; font-size: 9.5px; }
 .finops-agent-card > footer button:disabled { cursor: wait; opacity: .6; }
 .finops-agent-message { display: block; margin-top: 7px; color: #175cd3; font-size: 9px; font-style: normal; }
-.finops-value-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.finops-value-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 10px; }
 .finops-value-card { position: relative; min-width: 0; border: 1px solid #dfe5ee; border-radius: 10px; background: #fff; padding: 14px; }
 .finops-value-card > span { color: #667085; font-size: 10px; }
 .finops-value-card > strong { display: block; margin: 9px 0 5px; overflow: hidden; color: #101828; font-size: 22px; text-overflow: ellipsis; white-space: nowrap; }

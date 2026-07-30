@@ -49,11 +49,25 @@ def test_unit_economics_and_verified_funnel_require_complete_evidence() -> None:
     assert payload["unit_economics"]["cost_per_successful_request"]["value"] == 1.5
     assert payload["unit_economics"]["cost_per_analysis"]["value"] == 3
     assert payload["unit_economics"]["cost_per_artifact"]["value"] == 4
+    assert payload["unit_economics"]["cost_per_verified_outcome"]["value"] == 12
     assert [stage["id"] for stage in payload["funnel"]] == [
         "investment", "usage", "output", "outcome",
     ]
     assert payload["funnel"][-1]["status"] == "verified"
     assert payload["scenarios"][0]["status"] == "estimated"
+
+    analysis_only = build_roi_economics(
+        cost_evidence={"status": "complete", "total": 12, "currency": "USD"},
+        outcome_evidence={"status": "not_recorded", "outcome_event_ids": []},
+        realized_roi={"status": "not_recorded", "roi_ratio": None},
+        requests=10,
+        successful_requests=8,
+        analyses=4,
+        artifacts=0,
+        scenarios=[],
+    )
+    assert analysis_only["funnel"][2]["value"] == 4
+    assert analysis_only["funnel"][2]["unit"] == "次分析"
 
 
 def test_partial_cost_and_zero_denominators_never_emit_unsupported_values() -> None:

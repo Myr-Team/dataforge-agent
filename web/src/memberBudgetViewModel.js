@@ -275,7 +275,7 @@ export function memberBudgetHomeSummaryViewModel(value = {}) {
         : view.notification.state === "disabled"
           ? "邮件配置未启用"
           : view.notification.state === "permission_required"
-            ? "需要工作区管理员权限"
+            ? "需要组织 FinOps 管理员权限"
             : view.notification.state === "unavailable"
               ? "邮件状态不可用"
               : "邮件未配置",

@@ -146,6 +146,39 @@ test("operations auto-refresh waits five minutes and pauses while hidden", async
 });
 
 
+test("detail refresh failure preserves the last successful page", async ({ page }) => {
+  const control = await installFinOpsMockApi(page);
+  await page.goto("/");
+  await openOperations(page);
+  await page.getByRole("button", { name: "成本分析" }).click();
+  await expect(page.getByText("成本趋势")).toBeVisible();
+
+  control.failDetail = true;
+  await page.locator(".finops-live").getByRole("button", { name: "刷新" }).click();
+
+  await expect(page.getByText("成本趋势")).toBeVisible();
+  await expect(page.locator(".finops-inline-error")).toContainText(
+    "更新失败，已保留上次数据",
+  );
+});
+
+
+test("detail failure after a range change never labels old data as the new range", async ({ page }) => {
+  const control = await installFinOpsMockApi(page);
+  await page.goto("/");
+  await openOperations(page);
+  await page.getByRole("button", { name: "成本分析" }).click();
+  await expect(page.getByText("成本趋势")).toBeVisible();
+
+  control.failDetail = true;
+  await page.locator(".finops-date-range input").first().fill("2026-06-01");
+
+  await expect(page.locator(".finops-state-error")).toBeVisible();
+  await expect(page.getByText("成本趋势")).toHaveCount(0);
+  await expect(page.locator(".finops-inline-error")).toHaveCount(0);
+});
+
+
 test("bootstrap failure shows a friendly error and recovers on retry", async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(String(error)));
@@ -422,7 +455,7 @@ test("settings home budget badges refresh after child mail mutation and return",
 });
 
 
-test("settings home uses workspace permission for a notification authorization failure", async ({ page }) => {
+test("settings home names tenant FinOps permission for a notification authorization failure", async ({ page }) => {
   await installFinOpsMockApi(page, [], {
     memberBudgetNotificationState: "permission_required",
   });
@@ -431,7 +464,7 @@ test("settings home uses workspace permission for a notification authorization f
 
   const entry = page.locator(".member-budget-entry");
   await expect(entry).toContainText("1 位接近预算");
-  await expect(entry).toContainText("需要工作区管理员权限");
+  await expect(entry).toContainText("需要组织 FinOps 管理员权限");
   await expect(entry).not.toContainText("邮件状态不可用");
   await expect(page.getByRole("button", { name: "配置成本预算与提醒" })).toBeEnabled();
 });
@@ -467,14 +500,14 @@ test("disabled email configuration is honest and cannot open configuration actio
 });
 
 
-test("notification authorization failure names workspace administrator permission", async ({ page }) => {
+test("notification authorization failure names tenant FinOps administrator permission", async ({ page }) => {
   await installFinOpsMockApi(page, [], {
     memberBudgetNotificationState: "permission_required",
   });
   await page.goto("/");
   await openMemberBudgets(page);
 
-  await expect(page.locator(".member-budget-mail-strip")).toContainText("需要工作区管理员权限");
+  await expect(page.locator(".member-budget-mail-strip")).toContainText("需要组织 FinOps 管理员权限");
   await expect(page.getByRole("button", { name: "配置邮件" })).toBeDisabled();
   await expect(page.locator(".member-budget-mail-strip").getByRole("button", { name: "配置" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "发送测试邮件" })).toBeDisabled();

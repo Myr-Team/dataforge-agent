@@ -414,7 +414,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
   }, [department, query, view.rows]);
   const emailConfigurationDisabled = ["disabled", "permission_required"].includes(view.notification.state);
   const emailConfigurationDisabledReason = view.notification.state === "permission_required"
-    ? "需要工作区管理员权限"
+    ? "需要组织 FinOps 管理员权限"
     : "邮件配置功能未启用";
 
   const saveBudget = async (payload) => {
@@ -674,7 +674,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
                   : view.notification.configured
                     ? `${view.notification.recipientLabel} · 已保存`
                     : view.notification.state === "permission_required"
-                      ? "需要工作区管理员权限"
+                      ? "需要组织 FinOps 管理员权限"
                       : view.notification.state === "unavailable"
                         ? "邮件状态不可用"
                         : "尚未配置"}
@@ -687,7 +687,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
                       ? "测试邮件已通过，可按需开启自动提醒。"
                       : "请先发送测试邮件，成功后可开启自动提醒。"
                     : view.notification.state === "permission_required"
-                      ? "请由当前工作区的 Owner 或 Admin 配置提醒。"
+                      ? "请由组织 FinOps 管理员配置提醒。"
                       : view.notification.state === "unavailable"
                       ? "预算数据仍可查看；邮件服务恢复后可继续配置。"
                       : "配置后可发送一封测试邮件；自动阈值提醒仍由独立开关控制。"}

@@ -190,6 +190,112 @@ def list_verification_events(workspace_id: str) -> list[dict[str, Any]]:
     return _state_items(normalized_workspace, "verification_events")
 
 
+def upsert_demo_outcome_events(
+    workspace_id: str,
+    values: tuple[Mapping[str, Any], ...],
+    *,
+    seed_key: str,
+) -> dict[str, Any]:
+    """Replace internally-owned demo outcomes without fabricating verification."""
+    normalized_workspace = _required_text(
+        workspace_id, "workspace_id", 160
+    )
+    normalized_seed = _required_text(seed_key, "seed_key", 64)
+    now = _now()
+    prepared: list[dict[str, Any]] = []
+    for value in values:
+        metric_name = _required_text(
+            value.get("metric_name"), "metric_name", 120
+        )
+        unit = _required_text(value.get("unit"), "unit", 40)
+        source = _normalize_source(value.get("source"))
+        observed_value = _optional_number(
+            value.get("observed_value"), "observed_value"
+        )
+        observed_at = _required_text(
+            value.get("observed_at"), "observed_at", 64
+        )
+        if (
+            str(value.get("provenance") or "").strip() != "observed"
+            or observed_value is None
+            or not source
+            or not source_is_valid(normalized_workspace, source)
+        ):
+            raise ValueError(
+                "demo outcomes require source-linked observed evidence"
+            )
+        digest = hashlib.sha256(
+            (
+                f"{normalized_workspace}\0operations_demo\0"
+                f"{metric_name}\0{unit}"
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        prepared.append(
+            {
+                "event_id": f"outcome_demo_{digest}",
+                "workspace_id": normalized_workspace,
+                "metric_name": metric_name,
+                "unit": unit,
+                "baseline_value": _optional_number(
+                    value.get("baseline_value"), "baseline_value"
+                ),
+                "target_value": _optional_number(
+                    value.get("target_value"), "target_value"
+                ),
+                "observed_value": observed_value,
+                "observed_at": observed_at,
+                "attribution_window_days": _optional_nonnegative_int(
+                    value.get("attribution_window_days"),
+                    "attribution_window_days",
+                    maximum=3650,
+                ),
+                "provenance": "observed",
+                "source": source,
+                "actor": {},
+                "trusted_identity": False,
+                "verification": {"status": "unverified"},
+                "created_at": now,
+                "updated_at": now,
+                "demo_seed": {
+                    "owner": "operations_demo",
+                    "batch": normalized_seed,
+                },
+            }
+        )
+    prepared = [
+        {key: item for key, item in value.items() if item is not None}
+        for value in prepared
+    ]
+    with _LOCK:
+        current = list_outcome_events(normalized_workspace)
+        existing = {
+            str(item.get("event_id") or ""): item
+            for item in current
+            if isinstance(item.get("demo_seed"), Mapping)
+            and item["demo_seed"].get("owner") == "operations_demo"
+        }
+        preserved = [
+            item
+            for item in current
+            if str(item.get("event_id") or "") not in existing
+        ]
+        for item in prepared:
+            previous = existing.get(item["event_id"])
+            if previous is not None:
+                item["created_at"] = previous.get("created_at") or now
+        _persist(
+            normalized_workspace,
+            [*preserved, *prepared],
+            list_verification_events(normalized_workspace),
+        )
+    identifiers = {item["event_id"] for item in prepared}
+    return {
+        "created": len(identifiers - set(existing)),
+        "updated": len(identifiers & set(existing)),
+        "seed_batch": normalized_seed,
+    }
+
+
 def outcome_is_authoritative(workspace_id: str, candidate: Mapping[str, Any]) -> bool:
     """Return whether an outcome has persisted, independently verified server authority."""
     try:
@@ -408,5 +514,6 @@ __all__ = [
     "outcome_is_authoritative",
     "record_outcome_event",
     "source_is_valid",
+    "upsert_demo_outcome_events",
     "verify_outcome_event",
 ]

@@ -33,6 +33,15 @@ export function finopsPolicyLabel(value) {
   return FINOPS_POLICY_LABELS[key] || "运营规则";
 }
 
+export function finopsGatewayCoverageLabel(value) {
+  return {
+    apim_governed: "统一入口",
+    app_observed: "应用观测",
+    unmanaged: "未经过统一入口",
+    unknown: "未记录",
+  }[String(value || "").trim()] || "未记录";
+}
+
 function hasNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -523,7 +532,7 @@ export function finopsRequestViewModel(item = {}) {
     costStatus: metrics?.estimated_cost?.status || "unavailable",
     latency: formatFinOpsDuration(metrics.latency_ms),
     errorCategory: metrics.error_category || "无",
-    gatewayCoverage: metrics.gateway_coverage || "unknown",
+    gatewayCoverage: finopsGatewayCoverageLabel(metrics.gateway_coverage),
     evidenceState: metrics.evidence_state || "unavailable",
     businessRequest: {
       text: item?.business_request?.text || "未记录",

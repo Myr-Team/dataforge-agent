@@ -65,6 +65,48 @@ def test_seed_is_workspace_bounded_and_idempotent() -> None:
     assert len(persisted) == first.event_count
 
 
+def test_seed_batch_upgrade_removes_retired_owned_request_facts() -> None:
+    ledger = InMemoryFinOpsRepository()
+    seeds = InMemoryDemoSeedRepository()
+    result = seed_demo_workspace(
+        ledger,
+        seeds,
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        allowed_workspace_id="ws-demo",
+        now=NOW,
+    )
+
+    retained = result.events[0]
+    seeds.replace_batch_events(
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        batch="operations-v2",
+        events=(retained,),
+        event_repository=ledger,
+    )
+
+    persisted = ledger.list_events(
+        tenant_ref="tenant_demo",
+        workspace_ids=("ws-demo",),
+        from_value="2026-06-01T00:00:00Z",
+        to_value="2026-08-01T00:00:00Z",
+    )
+    assert [event.request_ref for event in persisted] == [
+        retained.request_ref
+    ]
+    assert seeds.list_request_refs(
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        batch="operations-v1",
+    ) == ()
+    assert seeds.list_request_refs(
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        batch="operations-v2",
+    ) == (retained.request_ref,)
+
+
 def test_seed_contains_a_repeat_analysis_miss_to_hit_chain() -> None:
     result = seed_demo_workspace(
         InMemoryFinOpsRepository(),
@@ -158,7 +200,7 @@ def test_seed_emits_versioned_roi_scenario_and_distinct_outcome_evidence() -> No
     assert result.roi_scenario["seed_batch"] == "operations-v1"
     assert [item["verification_state"] for item in result.outcome_events] == [
         "unverified",
-        "verified",
+        "unverified",
     ]
     assert len({item["metric_name"] for item in result.outcome_events}) == 2
     assert roi_writes[0][0] == outcome_writes[0][0] == "ws-demo"

@@ -59,7 +59,20 @@ def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, 
 def _email_configuration_context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, Any]]:
     if not _enabled("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED"):
         raise HTTPException(status_code=404, detail="email_configuration_disabled")
-    return _context(request)
+    context = _context(request)
+    actor = context[3]
+    roles = actor.get("roles")
+    if (
+        not isinstance(roles, (list, tuple, set))
+        or "DataForge.FinOpsAdmin" not in {
+            str(role).strip() for role in roles if str(role).strip()
+        }
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant FinOps administrator role required",
+        )
+    return context
 
 
 def get_member_budget_service() -> MemberBudgetService:

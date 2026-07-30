@@ -167,9 +167,8 @@ def build_roi_economics(
             {
                 "id": "output",
                 "label": "产出",
-                "value": max(0, artifacts),
-                "unit": "个产物",
-                "secondary_value": max(0, analyses),
+                "value": max(0, artifacts) if artifacts > 0 else max(0, analyses),
+                "unit": "个产物" if artifacts > 0 else "次分析",
                 "status": "observed" if artifacts > 0 or analyses > 0 else "unavailable",
             },
             {
@@ -184,6 +183,10 @@ def build_roi_economics(
             "cost_per_successful_request": unit(successful_requests, "每次成功调用成本"),
             "cost_per_analysis": unit(analyses, "每次分析成本"),
             "cost_per_artifact": unit(artifacts, "每个产物成本"),
+            "cost_per_verified_outcome": unit(
+                len(verified_outcomes) if verified else 0,
+                "每个已验证结果成本",
+            ),
         },
         "verified_roi": {
             "status": realized_status,

@@ -315,6 +315,7 @@ def test_finops_roi_economics_is_workspace_bounded_and_evidence_safe(
             "cost_evidence": {"status": "complete", "total": 0.001, "currency": "USD"},
             "outcome_evidence": {"status": "not_recorded", "outcome_event_ids": []},
             "realized_roi": {"status": "not_recorded", "roi_ratio": None},
+            "artifact_count": 2,
             "scenarios": [{"scenario_id": "roi_scenario_aaaaaaaaaaaaaaaa", "status": "estimated"}],
         },
     )
@@ -330,6 +331,7 @@ def test_finops_roi_economics_is_workspace_bounded_and_evidence_safe(
 
     assert response.status_code == 200
     assert response.json()["verified_roi"]["value"] is None
+    assert response.json()["funnel"][2]["value"] == 2
     assert response.json()["scenarios"][0]["status"] == "estimated"
     assert denied.status_code == 403
 

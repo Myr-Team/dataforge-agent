@@ -4,6 +4,10 @@ from pathlib import Path
 from typing import Any
 
 from backend.finops.sql_demo_seed import SqlDemoSeedRepository
+from backend.finops.demo_seed_repository import InMemoryDemoSeedRepository
+from backend.finops.demo_workspace_seed import seed_demo_workspace
+from backend.finops.repository import InMemoryFinOpsRepository
+from datetime import datetime, timezone
 
 
 class RecordingCursor:
@@ -78,3 +82,36 @@ def test_sql_seed_repository_replaces_one_bounded_batch() -> None:
     assert connection.commits == 1
     assert connection.rollbacks == 0
     assert connection.closed is True
+
+
+def test_sql_seed_event_replacement_updates_facts_and_ownership_atomically() -> None:
+    generated = seed_demo_workspace(
+        InMemoryFinOpsRepository(),
+        InMemoryDemoSeedRepository(),
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        allowed_workspace_id="ws-demo",
+        now=datetime(2026, 7, 30, 8, tzinfo=timezone.utc),
+    )
+    connection = RecordingConnection(
+        rows=[("operations-v0", "req_retired")]
+    )
+    repository = SqlDemoSeedRepository(connection_factory=lambda: connection)
+
+    repository.replace_batch_events(
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        batch="operations-v1",
+        events=(generated.events[0],),
+        event_repository=object(),
+    )
+
+    operations = "\n".join(
+        operation for operation, _ in connection.cursor_value.calls
+    )
+    assert "finops:list-demo-seed-workspace" in operations
+    assert "finops:upsert-request-event" in operations
+    assert "finops:delete-stale-demo-request-event" in operations
+    assert "finops:delete-retired-demo-seed-ownership" in operations
+    assert connection.commits == 1
+    assert connection.rollbacks == 0

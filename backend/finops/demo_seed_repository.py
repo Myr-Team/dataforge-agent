@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 from threading import RLock
-from typing import Protocol
+from typing import Any, Protocol
+
+from .models import FinOpsRequestEvent
 
 
 class DemoSeedRepository(Protocol):
+    def replace_batch_events(
+        self,
+        *,
+        tenant_ref: str,
+        workspace_id: str,
+        batch: str,
+        events: tuple[FinOpsRequestEvent, ...],
+        event_repository: Any,
+    ) -> tuple[int, int]: ...
+
     def replace_batch(
         self,
         *,
@@ -43,6 +55,45 @@ class InMemoryDemoSeedRepository:
         with self._lock:
             previous = set(self._batches.get(key, ()))
             current = set(normalized)
+            self._batches[key] = normalized
+        return len(current - previous), len(current & previous)
+
+    def replace_batch_events(
+        self,
+        *,
+        tenant_ref: str,
+        workspace_id: str,
+        batch: str,
+        events: tuple[FinOpsRequestEvent, ...],
+        event_repository: Any,
+    ) -> tuple[int, int]:
+        key = _key(tenant_ref, workspace_id, batch)
+        normalized = _request_refs(tuple(event.request_ref for event in events))
+        if any(
+            event.tenant_ref != key[0] or event.workspace_id != key[1]
+            for event in events
+        ):
+            raise ValueError("demo seed event scope mismatch")
+        with self._lock:
+            owned_keys = [
+                owned_key
+                for owned_key in self._batches
+                if owned_key[:2] == key[:2]
+            ]
+            previous = {
+                request_ref
+                for owned_key in owned_keys
+                for request_ref in self._batches[owned_key]
+            }
+            current = set(normalized)
+            event_repository.upsert_events(events)
+            event_repository.delete_events(
+                tenant_ref=key[0],
+                workspace_id=key[1],
+                request_refs=previous - current,
+            )
+            for owned_key in owned_keys:
+                del self._batches[owned_key]
             self._batches[key] = normalized
         return len(current - previous), len(current & previous)
 
