@@ -3193,9 +3193,9 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
       mailLabel: "邮件状态读取中",
     });
     Promise.allSettled([
-      loadMemberBudgets(),
-      loadMemberBudgetNotification(),
-      loadMemberBudgetAlerts(),
+      loadMemberBudgets(workspaceId),
+      loadMemberBudgetNotification(workspaceId),
+      loadMemberBudgetAlerts(workspaceId),
     ]).then(([budgetsResult, notificationResult, alertsResult]) => {
       if (cancelled || requestVersion !== memberBudgetHomeRequestVersion.current) return;
       if (budgetsResult.status === "rejected") {
@@ -3233,7 +3233,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
     return () => {
       cancelled = true;
     };
-  }, [governanceOnly, memberBudgetRevision]);
+  }, [governanceOnly, memberBudgetRevision, workspaceId]);
   const memberPermissionReason = !permissionsReady ? (memberLoadError || "正在读取服务端操作权限") : memberPermissions.reasons["member.manage"];
   const loadMembersContract = async () => {
     if (!workspaceId) return;
@@ -3676,6 +3676,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
   if (settingsPage === "member-budgets") {
     return (
       <MemberBudgetSettingsPage
+        workspaceId={workspaceId}
         onChanged={() => setMemberBudgetRevision((revision) => revision + 1)}
         onBack={() => {
           setMemberBudgetRevision((revision) => revision + 1);
@@ -3709,7 +3710,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
         <div className="member-budget-entry-icon"><Coins size={18} /></div>
         <div className="member-budget-entry-copy">
           <strong>成本预算与提醒</strong>
-          <p>Entra 成员预算、请求级估算成本与管理员邮件提醒</p>
+          <p>工作区成员预算、请求级估算成本与管理员邮件提醒</p>
         </div>
         <div className="member-budget-entry-states" aria-label="成本预算状态">
           <span className={memberBudgetHome.state === "unavailable" ? "unavailable" : ""}>{memberBudgetHome.nearBudgetLabel}</span>

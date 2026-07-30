@@ -227,19 +227,19 @@ test("member budget queries use bounded organization endpoints", async () => {
   };
 
   try {
-    await loadMemberBudgets();
-    await loadMemberBudgetMembers();
-    await loadMemberBudgetNotification();
-    await loadMemberBudgetAlerts();
+    await loadMemberBudgets("ws-a");
+    await loadMemberBudgetMembers("ws-a");
+    await loadMemberBudgetNotification("ws-a");
+    await loadMemberBudgetAlerts("ws-a");
   } finally {
     globalThis.fetch = originalFetch;
   }
 
   assert.deepEqual(calls, [
-    "/api/finops/member-budgets?limit=100",
-    "/api/finops/member-budget-members?limit=100",
-    "/api/finops/notification-settings",
-    "/api/finops/budget-alerts?limit=50",
+    "/api/finops/member-budgets?workspace_id=ws-a&limit=100",
+    "/api/finops/member-budget-members?workspace_id=ws-a&limit=100",
+    "/api/finops/notification-settings?workspace_id=ws-a",
+    "/api/finops/budget-alerts?workspace_id=ws-a&limit=50",
   ]);
 });
 
@@ -253,6 +253,7 @@ test("member budget writes send only typed fields and base revision", async () =
 
   try {
     await saveMemberBudget({
+      workspaceId: "ws-a",
       budgetId: "budget/a",
       memberRef: "member-safe",
       amountUsd: 200.5,
@@ -262,21 +263,21 @@ test("member budget writes send only typed fields and base revision", async () =
       ignored: "must-not-pass",
     });
     await saveMemberBudgetNotification({
-      recipientMemberRef: "member-safe",
+      workspaceId: "ws-a",
+      recipientEmail: "demo-admin@example.test",
       senderDisplayName: "DataForge",
       subjectTemplate: "{{member_name}} 预算提醒",
       bodyTemplate: "{{estimated_spend}} / {{budget_amount}}",
       enabled: true,
       baseRevision: 2,
-      recipientEmail: "must-not-pass@example.test",
     });
-    await sendMemberBudgetTestEmail();
+    await sendMemberBudgetTestEmail("ws-a");
   } finally {
     globalThis.fetch = originalFetch;
   }
 
   assert.deepEqual(calls[0], {
-    url: "/api/finops/member-budgets/budget%2Fa",
+    url: "/api/finops/member-budgets/budget%2Fa?workspace_id=ws-a",
     method: "PATCH",
     body: {
       amount_usd: 200.5,
@@ -286,10 +287,10 @@ test("member budget writes send only typed fields and base revision", async () =
     },
   });
   assert.deepEqual(calls[1], {
-    url: "/api/finops/notification-settings",
+    url: "/api/finops/notification-settings?workspace_id=ws-a",
     method: "PUT",
     body: {
-      recipient_actor_ref: "member-safe",
+      recipient_email: "demo-admin@example.test",
       sender_display_name: "DataForge",
       subject_template: "{{member_name}} 预算提醒",
       body_template: "{{estimated_spend}} / {{budget_amount}}",
@@ -298,7 +299,7 @@ test("member budget writes send only typed fields and base revision", async () =
     },
   });
   assert.deepEqual(calls[2], {
-    url: "/api/finops/notification-settings/test-email",
+    url: "/api/finops/notification-settings/test-email?workspace_id=ws-a",
     method: "POST",
     body: {},
   });
@@ -313,13 +314,13 @@ test("disabling a member budget uses the typed revisioned endpoint", async () =>
   };
 
   try {
-    await disableMemberBudget("budget/a", 3);
+    await disableMemberBudget("ws-a", "budget/a", 3);
   } finally {
     globalThis.fetch = originalFetch;
   }
 
   assert.deepEqual(captured, {
-    url: "/api/finops/member-budgets/budget%2Fa/disable",
+    url: "/api/finops/member-budgets/budget%2Fa/disable?workspace_id=ws-a",
     method: "POST",
     body: { base_revision: 3 },
   });

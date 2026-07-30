@@ -6,6 +6,7 @@ import pytest
 
 from backend.finops.demo_seed_repository import InMemoryDemoSeedRepository
 from backend.finops.demo_workspace_seed import seed_demo_workspace
+from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
 from backend.finops.repository import InMemoryFinOpsRepository
 
 
@@ -83,6 +84,53 @@ def test_seed_contains_a_repeat_analysis_miss_to_hit_chain() -> None:
     assert repeat_chain[1].cache.avoided_tokens
     assert repeat_chain[1].estimated_cost.amount < repeat_chain[0].estimated_cost.amount
     assert repeat_chain[1].run_id != repeat_chain[0].run_id
+
+
+def test_seed_adds_workspace_display_subjects_and_idempotent_budgets() -> None:
+    budgets = InMemoryMemberBudgetRepository()
+
+    first = seed_demo_workspace(
+        InMemoryFinOpsRepository(),
+        InMemoryDemoSeedRepository(),
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        allowed_workspace_id="ws-demo",
+        budget_repository=budgets,
+        hmac_secret="test-secret",
+        now=NOW,
+    )
+    second = seed_demo_workspace(
+        InMemoryFinOpsRepository(),
+        InMemoryDemoSeedRepository(),
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        allowed_workspace_id="ws-demo",
+        budget_repository=budgets,
+        hmac_secret="test-secret",
+        now=NOW,
+    )
+
+    subjects = budgets.list_budget_subjects("tenant_demo", "ws-demo")
+    rows = budgets.list_budgets("tenant_demo")
+    assert len(subjects) == 4
+    assert {subject.display_name for subject in subjects} == {
+        "林晓 · 财务负责人",
+        "陈屿 · 产品负责人",
+        "周宁 · 交付负责人",
+        "苏禾 · 运营负责人",
+    }
+    assert len(rows) == 3
+    assert any(
+        row.amount_usd == 200 and row.thresholds_pct == (80, 95)
+        for row in rows
+    )
+    assert {event.actor_ref for event in first.events} <= {
+        subject.subject_ref for subject in subjects
+    }
+    assert [row.revision for row in rows] == [
+        row.revision for row in budgets.list_budgets("tenant_demo")
+    ]
+    assert first.event_count == second.event_count
 
 
 def test_seed_rejects_non_allowlisted_workspace_without_writes() -> None:

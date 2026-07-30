@@ -79,7 +79,8 @@ class MemberBudgetEvaluator:
         can_claim = (
             notification is not None
             and notification.enabled
-            and _active_recipient(notification, active_admins) is not None
+            and notification.test_email_succeeded_at is not None
+            and _active_recipient(notification) is not None
         )
 
         created = skipped = 0
@@ -286,6 +287,7 @@ class MemberBudgetEvaluator:
         if (
             notification is None
             or not notification.enabled
+            or notification.test_email_succeeded_at is None
             or notification.revision != alert.notification_revision
         ):
             return None
@@ -294,8 +296,7 @@ class MemberBudgetEvaluator:
         )
         if alert.actor_ref not in active_members:
             return None
-        active_admins = self._active_admins(alert.tenant_ref, workspace_ids)
-        recipient = _active_recipient(notification, active_admins)
+        recipient = _active_recipient(notification)
         if recipient is None:
             return None
         cost = costs.get(alert.actor_ref)
@@ -310,17 +311,9 @@ class MemberBudgetEvaluator:
         return notification, recipient, member_name
 
 
-def _active_recipient(
-    notification: Any, active_admins: dict[str, str]
-) -> str | None:
-    email = active_admins.get(notification.recipient_actor_ref)
-    if (
-        not email
-        or email.strip().casefold()
-        != str(notification.recipient_email or "").strip().casefold()
-    ):
-        return None
-    return email.strip()
+def _active_recipient(notification: Any) -> str | None:
+    email = str(notification.recipient_email or "").strip()
+    return email or None
 
 
 def _eligible_cost(cost: MemberCostSummary | None) -> bool:

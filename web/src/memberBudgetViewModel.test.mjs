@@ -49,10 +49,12 @@ const payload = {
   notification: {
     item: {
       recipient_actor_ref: "member-safe",
+      recipient_email: "demo-admin@example.test",
       sender_display_name: "DataForge",
       subject_template: "{{member_name}} 预算提醒",
       body_template: "{{estimated_spend}} / {{budget_amount}}",
       enabled: true,
+      test_email_succeeded_at: "2026-07-29T00:30:00Z",
       revision: 2,
     },
   },
@@ -84,6 +86,9 @@ test("member budget view preserves partial coverage and actual 95 percent progre
   assert.equal(view.rows[0].primaryModel, "gpt-5.6-terra");
   assert.equal(view.summary.estimatedSpendLabel, "$190.00");
   assert.equal(view.summary.nearBudgetCount, 1);
+  assert.equal(view.notification.recipientEmail, "demo-admin@example.test");
+  assert.equal(view.notification.recipientLabel, "d***@example.test");
+  assert.equal(view.notification.testEmailReady, true);
 });
 
 test("missing spend stays unavailable instead of becoming zero", () => {
@@ -142,7 +147,7 @@ test("zero spend remains an observed zero and former member stays visible", () =
 
   assert.equal(view.rows[0].spendLabel, "$0.00");
   assert.equal(view.rows[0].budgetLabel, "$200.50");
-  assert.equal(view.rows[0].identityLabel, "身份已停用");
+  assert.equal(view.rows[0].identityLabel, "预算主体已停用");
   assert.equal(view.rows[0].lifecycleLabel, "预算已停用");
   assert.equal(view.rows[0].progressWidth, 0);
   assert.equal(view.rows[0].canEdit, false);
@@ -178,13 +183,13 @@ test("settings home summary is truthful for configured, unavailable and empty st
 });
 
 
-test("settings home exposes tenant FinOps permission without unavailable evidence", () => {
+test("settings home exposes workspace administrator permission without unavailable evidence", () => {
   assert.deepEqual(
     memberBudgetHomeSummaryViewModel({ status: "permission_required" }),
     {
       state: "permission_required",
       stateLabel: "需要权限",
-      nearBudgetLabel: "需要租户 FinOps 管理员角色",
+      nearBudgetLabel: "需要工作区管理员权限",
       mailLabel: "预算与提醒已受限",
       actionLabel: "查看权限说明",
     },
@@ -210,7 +215,7 @@ test("disabled email configuration stays distinct from an unconfigured recipient
 });
 
 
-test("settings home uses the shared tenant FinOps role for notification authorization", () => {
+test("settings home uses the workspace administrator role for notification authorization", () => {
   const home = memberBudgetHomeSummaryViewModel({
     budgets: payload.budgets,
     budgetsState: "partial",
@@ -222,7 +227,7 @@ test("settings home uses the shared tenant FinOps role for notification authoriz
 
   assert.equal(home.state, "partial");
   assert.equal(home.nearBudgetLabel, "1 位接近预算");
-  assert.equal(home.mailLabel, "需要租户 FinOps 管理员角色");
+  assert.equal(home.mailLabel, "需要工作区管理员权限");
 });
 
 

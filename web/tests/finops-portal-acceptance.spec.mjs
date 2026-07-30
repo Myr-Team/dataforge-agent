@@ -141,10 +141,10 @@ test("settings exposes a compact budget entry and dedicated desktop page", async
   await expect(page.getByText("$190.00").first()).toBeVisible();
   await expect(page.locator(".member-budget-summary-card").filter({ hasText: "已配置成员" }).locator("strong")).toHaveText("2");
   await expect(page.getByText("90% 已计价").first()).toBeVisible();
-  const formerSubtitle = page.locator(".member-budget-table").getByText("身份已停用 · 预算已停用 · 未归属部门");
+  const formerSubtitle = page.locator(".member-budget-table").getByText("预算主体已停用 · 预算已停用 · 未归属部门");
   await expect(formerSubtitle).toBeVisible();
-  await expect(formerSubtitle).toHaveAttribute("title", "身份已停用 · 预算已停用 · 未归属部门");
-  await expect(formerSubtitle).toHaveAttribute("aria-label", "身份已停用 · 预算已停用 · 未归属部门");
+  await expect(formerSubtitle).toHaveAttribute("title", "预算主体已停用 · 预算已停用 · 未归属部门");
+  await expect(formerSubtitle).toHaveAttribute("aria-label", "预算主体已停用 · 预算已停用 · 未归属部门");
 
   const body = await page.locator("body").innerText();
   expect(body).not.toContain("member-safe");
@@ -161,7 +161,7 @@ test("settings exposes a compact budget entry and dedicated desktop page", async
 });
 
 
-test("tenant FinOps permission state is explicit and hides budget evidence", async ({ page }) => {
+test("workspace administrator permission state is explicit and hides budget evidence", async ({ page }) => {
   await installFinOpsMockApi(page, [], {
     memberBudgetAccessState: "permission_required",
   });
@@ -169,7 +169,7 @@ test("tenant FinOps permission state is explicit and hides budget evidence", asy
   await page.getByRole("button", { name: "设置" }).first().click();
 
   const entry = page.locator(".member-budget-entry");
-  await expect(entry).toContainText("需要租户 FinOps 管理员角色");
+  await expect(entry).toContainText("需要工作区管理员权限");
   await expect(entry).toContainText("预算与提醒已受限");
   await expect(entry).not.toContainText("不可用");
   const permissionAction = entry.getByRole("button", { name: "查看成本预算权限说明" });
@@ -177,8 +177,8 @@ test("tenant FinOps permission state is explicit and hides budget evidence", asy
   await permissionAction.click();
 
   await expect(page.getByRole("heading", { name: "成员成本预算" })).toBeVisible();
-  await expect(page.getByText("需要租户 FinOps 管理员角色")).toBeVisible();
-  await expect(page.getByText("请联系租户管理员分配应用角色后重新登录。")).toBeVisible();
+  await expect(page.getByText("需要工作区管理员权限")).toBeVisible();
+  await expect(page.getByText("请由当前工作区的 Owner 或 Admin 打开并配置成员预算。")).toBeVisible();
   await expect(page.locator(".member-budget-table")).toHaveCount(0);
   await expect(page.locator(".member-budget-summary-card")).toHaveCount(0);
   await expect(page.getByText("$190.00")).toHaveCount(0);
@@ -226,8 +226,8 @@ test("mail settings configure and test use safe states", async ({ page }) => {
 
   await page.getByRole("button", { name: "配置邮件" }).click();
   const dialog = page.getByRole("dialog", { name: "邮件提醒设置" });
-  await expect(dialog.getByText("收件地址由 Entra 管理")).toBeVisible();
-  await dialog.getByLabel("管理员").selectOption("member-safe");
+  await expect(dialog.getByText("收件地址保存在服务端配置中")).toBeVisible();
+  await dialog.getByLabel("管理员收件邮箱").fill("finance-owner@example.test");
   await dialog.getByRole("button", { name: "保存邮件设置" }).click();
   await expect(page.getByText("邮件设置已保存")).toBeVisible();
 
@@ -236,6 +236,8 @@ test("mail settings configure and test use safe states", async ({ page }) => {
   const testCall = calls.find((call) => call.path === "/api/finops/notification-settings/test-email");
   expect(testCall).toBeTruthy();
   expect(testCall.body).toBe("{}");
+  const saveCall = calls.find((call) => call.path === "/api/finops/notification-settings" && call.method === "PUT");
+  expect(JSON.parse(saveCall.body).recipient_email).toBe("finance-owner@example.test");
 });
 
 
@@ -304,7 +306,7 @@ test("disabled active budgets disable, edit and re-enable without duplicate crea
 
   await page.getByRole("button", { name: "设置成员预算" }).click();
   const createDialog = page.getByRole("dialog", { name: "设置成员预算" });
-  await expect(createDialog.getByLabel("Entra 成员").getByRole("option")).toHaveText(["IT Operator · 成员"]);
+  await expect(createDialog.getByLabel("预算成员").getByRole("option")).toHaveText(["IT Operator · 成员"]);
   await createDialog.getByRole("button", { name: "关闭" }).click();
 
   const financeEdit = page.getByRole("button", { name: "编辑 Finance Admin 预算" });
@@ -334,7 +336,9 @@ test("settings home budget badges refresh after child mail mutation and return",
   await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
 
   await page.getByRole("button", { name: "配置邮件" }).click();
-  await page.getByRole("dialog", { name: "邮件提醒设置" }).getByRole("button", { name: "保存邮件设置" }).click();
+  const mailDialog = page.getByRole("dialog", { name: "邮件提醒设置" });
+  await mailDialog.getByLabel("管理员收件邮箱").fill("admin@example.test");
+  await mailDialog.getByRole("button", { name: "保存邮件设置" }).click();
   await expect(page.getByText("邮件设置已保存")).toBeVisible();
   await page.getByRole("button", { name: "返回设置" }).click();
 
@@ -343,7 +347,7 @@ test("settings home budget badges refresh after child mail mutation and return",
 });
 
 
-test("settings home uses the shared tenant FinOps role for a notification authorization failure", async ({ page }) => {
+test("settings home uses workspace permission for a notification authorization failure", async ({ page }) => {
   await installFinOpsMockApi(page, [], {
     memberBudgetNotificationState: "permission_required",
   });
@@ -352,7 +356,7 @@ test("settings home uses the shared tenant FinOps role for a notification author
 
   const entry = page.locator(".member-budget-entry");
   await expect(entry).toContainText("1 位接近预算");
-  await expect(entry).toContainText("需要租户 FinOps 管理员角色");
+  await expect(entry).toContainText("需要工作区管理员权限");
   await expect(entry).not.toContainText("邮件状态不可用");
   await expect(page.getByRole("button", { name: "配置成本预算与提醒" })).toBeEnabled();
 });
@@ -388,14 +392,14 @@ test("disabled email configuration is honest and cannot open configuration actio
 });
 
 
-test("notification authorization failure names the shared tenant FinOps role", async ({ page }) => {
+test("notification authorization failure names workspace administrator permission", async ({ page }) => {
   await installFinOpsMockApi(page, [], {
     memberBudgetNotificationState: "permission_required",
   });
   await page.goto("/");
   await openMemberBudgets(page);
 
-  await expect(page.locator(".member-budget-mail-strip")).toContainText("需要租户 FinOps 管理员角色");
+  await expect(page.locator(".member-budget-mail-strip")).toContainText("需要工作区管理员权限");
   await expect(page.getByRole("button", { name: "配置邮件" })).toBeDisabled();
   await expect(page.locator(".member-budget-mail-strip").getByRole("button", { name: "配置" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "发送测试邮件" })).toBeDisabled();

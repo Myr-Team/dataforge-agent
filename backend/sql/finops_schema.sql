@@ -661,6 +661,25 @@ BEGIN
 END;
 GO
 
+IF OBJECT_ID(N'df_finops.budget_subject', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.budget_subject (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        workspace_id NVARCHAR(160) NOT NULL,
+        subject_ref NVARCHAR(128) NOT NULL,
+        display_name NVARCHAR(120) NOT NULL,
+        department_label NVARCHAR(120) NULL,
+        primary_model NVARCHAR(160) NULL,
+        enabled BIT NOT NULL,
+        revision INT NOT NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_budget_subject
+            PRIMARY KEY (tenant_ref, workspace_id, subject_ref),
+        CONSTRAINT CK_finops_budget_subject_revision CHECK (revision >= 1)
+    );
+END;
+GO
+
 IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
     WHERE object_id = OBJECT_ID(N'df_finops.member_budget')
@@ -682,6 +701,7 @@ BEGIN
         subject_template NVARCHAR(200) NOT NULL,
         body_template NVARCHAR(4000) NOT NULL,
         enabled BIT NOT NULL,
+        test_email_succeeded_at DATETIME2(7) NULL,
         revision INT NOT NULL,
         created_by_ref NVARCHAR(128) NOT NULL,
         updated_by_ref NVARCHAR(128) NOT NULL,
@@ -691,6 +711,14 @@ BEGIN
         CONSTRAINT CK_finops_notification_revision CHECK (revision >= 1)
     );
 END;
+GO
+
+IF COL_LENGTH(N'df_finops.notification_setting', N'test_email_succeeded_at') IS NULL
+BEGIN
+    ALTER TABLE df_finops.notification_setting
+        ADD test_email_succeeded_at DATETIME2(7) NULL;
+END;
+GO
 
 IF OBJECT_ID(N'df_finops.budget_alert', N'U') IS NULL
 BEGIN

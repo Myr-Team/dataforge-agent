@@ -245,6 +245,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     memberBudgetActiveDisabled: Boolean(options.memberBudgetActiveDisabled),
     memberBudgetNotificationState: options.memberBudgetNotificationState || "configured",
     memberBudgetAlertsState: options.memberBudgetAlertsState || "available",
+    memberBudgetRecipientEmail: "demo-admin@example.test",
+    memberBudgetTested: true,
+    memberBudgetNotificationEnabled: true,
     memberBudgetDisabled: false,
   };
   await page.route("**/api/**", async (route) => {
@@ -311,7 +314,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       ].includes(path)
     ) {
       status = 403;
-      body = { detail: "Tenant FinOps administrator role required" };
+      body = { detail: "Workspace administrator role required" };
     } else if (path === "/api/finops/member-budgets" && request.method() === "GET") {
       if (control.memberBudgetFailure) {
         status = 503;
@@ -422,15 +425,17 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         body = { detail: "internal-notification-body-must-not-surface" };
       } else if (control.memberBudgetNotificationState === "permission_required") {
         status = 403;
-        body = { detail: "Tenant FinOps administrator role required" };
+        body = { detail: "Workspace administrator role required" };
       } else {
         body = {
           item: {
             recipient_actor_ref: "member-safe",
+            recipient_email: control.memberBudgetRecipientEmail,
             sender_display_name: "DataForge",
             subject_template: "{{member_name}} 预算提醒",
             body_template: "{{estimated_spend}} / {{budget_amount}}",
-            enabled: true,
+            enabled: control.memberBudgetNotificationEnabled,
+            test_email_succeeded_at: control.memberBudgetTested ? NOW : null,
             revision: 2,
           },
           freshness: "recorded",
@@ -440,14 +445,20 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         };
       }
     } else if (path === "/api/finops/notification-settings" && request.method() === "PUT") {
+      const payload = request.postDataJSON();
       control.memberBudgetNotificationState = "configured";
+      control.memberBudgetRecipientEmail = payload.recipient_email;
+      control.memberBudgetNotificationEnabled = payload.enabled === true;
+      control.memberBudgetTested = false;
       body = {
         item: {
           recipient_actor_ref: "member-safe",
+          recipient_email: control.memberBudgetRecipientEmail,
           sender_display_name: "DataForge",
           subject_template: "{{member_name}} 预算提醒",
           body_template: "{{estimated_spend}} / {{budget_amount}}",
-          enabled: true,
+          enabled: control.memberBudgetNotificationEnabled,
+          test_email_succeeded_at: null,
           revision: 3,
         },
         freshness: "recorded",
@@ -456,6 +467,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         currency: "USD",
       };
     } else if (path === "/api/finops/notification-settings/test-email" && request.method() === "POST") {
+      if (control.memberBudgetEmailState === "sent") control.memberBudgetTested = true;
       body = control.memberBudgetEmailState === "sent"
         ? { state: "sent", sent_at: NOW, safe_error_category: null }
         : {

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
+from .budget_subjects import BudgetSubject
 from .member_budget_repository import MemberBudgetConflictError
 from .member_budgets import BudgetAlert, MemberBudget, MemberCostSummary, NotificationSetting
 from .sql_repository import ConnectionFactory, FinOpsPersistenceError
@@ -36,6 +37,66 @@ class SqlMemberBudgetRepository:
                 budget_id,
             ).fetchone()
         return _budget_from_row(row) if row is not None else None
+
+    def list_budget_subjects(
+        self, tenant_ref: str, workspace_id: str, *, include_disabled: bool = False
+    ) -> tuple[BudgetSubject, ...]:
+        where_enabled = "" if include_disabled else " AND enabled = 1"
+        with self._transaction() as cursor:
+            rows = cursor.execute(
+                f"""/* finops:list-budget-subjects */
+                SELECT subject_ref, workspace_id, display_name, department_label,
+                       primary_model, enabled, revision, updated_at
+                FROM df_finops.budget_subject
+                WHERE tenant_ref = ? AND workspace_id = ?{where_enabled}
+                ORDER BY display_name, subject_ref""",
+                tenant_ref,
+                workspace_id,
+            ).fetchall()
+        return tuple(_subject_from_row(row) for row in rows)
+
+    def upsert_budget_subjects(
+        self, tenant_ref: str, values: tuple[BudgetSubject, ...]
+    ) -> tuple[BudgetSubject, ...]:
+        with self._transaction() as cursor:
+            for value in values:
+                cursor.execute(
+                    """/* finops:upsert-budget-subject */
+                    MERGE df_finops.budget_subject WITH (HOLDLOCK) AS target
+                    USING (
+                        SELECT ? AS tenant_ref, ? AS workspace_id, ? AS subject_ref
+                    ) AS source
+                    ON target.tenant_ref = source.tenant_ref
+                       AND target.workspace_id = source.workspace_id
+                       AND target.subject_ref = source.subject_ref
+                    WHEN MATCHED AND target.revision <= ? THEN UPDATE SET
+                        display_name = ?, department_label = ?, primary_model = ?,
+                        enabled = ?, revision = ?, updated_at = ?
+                    WHEN NOT MATCHED THEN INSERT (
+                        tenant_ref, workspace_id, subject_ref, display_name,
+                        department_label, primary_model, enabled, revision, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+                    tenant_ref,
+                    value.workspace_id,
+                    value.subject_ref,
+                    value.revision,
+                    value.display_name,
+                    value.department_label,
+                    value.primary_model,
+                    value.enabled,
+                    value.revision,
+                    value.updated_at,
+                    tenant_ref,
+                    value.workspace_id,
+                    value.subject_ref,
+                    value.display_name,
+                    value.department_label,
+                    value.primary_model,
+                    value.enabled,
+                    value.revision,
+                    value.updated_at,
+                )
+        return values
 
     def list_enabled_tenants(self) -> tuple[str, ...]:
         with self._transaction() as cursor:
@@ -222,7 +283,7 @@ class SqlMemberBudgetRepository:
             row = cursor.execute(
                 """/* finops:get-notification-setting */
                 SELECT recipient_actor_ref, recipient_email, sender_display_name,
-                       subject_template, body_template, enabled, revision,
+                       subject_template, body_template, enabled, test_email_succeeded_at, revision,
                        created_by_ref, updated_by_ref, created_at, updated_at
                 FROM df_finops.notification_setting WHERE tenant_ref = ?""",
                 tenant_ref,
@@ -250,13 +311,15 @@ class SqlMemberBudgetRepository:
                     ON target.tenant_ref = source.tenant_ref
                     WHEN MATCHED THEN UPDATE SET
                         recipient_actor_ref = ?, recipient_email = ?, sender_display_name = ?,
-                        subject_template = ?, body_template = ?, enabled = ?, revision = ?,
+                        subject_template = ?, body_template = ?, enabled = ?,
+                        test_email_succeeded_at = ?, revision = ?,
                         updated_by_ref = ?, updated_at = ?
                     WHEN NOT MATCHED THEN INSERT (
                         tenant_ref, recipient_actor_ref, recipient_email, sender_display_name,
-                        subject_template, body_template, enabled, revision, created_by_ref,
+                        subject_template, body_template, enabled, test_email_succeeded_at,
+                        revision, created_by_ref,
                         updated_by_ref, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
                     tenant_ref,
                     value.recipient_actor_ref,
                     value.recipient_email,
@@ -264,6 +327,7 @@ class SqlMemberBudgetRepository:
                     value.subject_template,
                     value.body_template,
                     value.enabled,
+                    value.test_email_succeeded_at,
                     value.revision,
                     value.updated_by_ref,
                     value.updated_at,
@@ -274,6 +338,7 @@ class SqlMemberBudgetRepository:
                     value.subject_template,
                     value.body_template,
                     value.enabled,
+                    value.test_email_succeeded_at,
                     value.revision,
                     value.created_by_ref,
                     value.updated_by_ref,
@@ -285,6 +350,29 @@ class SqlMemberBudgetRepository:
                 raise MemberBudgetConflictError("notification setting revision conflict") from None
             raise
         return value
+
+    def mark_notification_tested(
+        self, tenant_ref: str, *, revision: int, sent_at: datetime
+    ) -> NotificationSetting:
+        with self._transaction() as cursor:
+            row = cursor.execute(
+                """/* finops:mark-notification-tested */
+                UPDATE df_finops.notification_setting
+                SET test_email_succeeded_at = ?
+                OUTPUT inserted.recipient_actor_ref, inserted.recipient_email,
+                       inserted.sender_display_name, inserted.subject_template,
+                       inserted.body_template, inserted.enabled,
+                       inserted.test_email_succeeded_at, inserted.revision,
+                       inserted.created_by_ref, inserted.updated_by_ref,
+                       inserted.created_at, inserted.updated_at
+                WHERE tenant_ref = ? AND revision = ?""",
+                sent_at,
+                tenant_ref,
+                revision,
+            ).fetchone()
+        if row is None:
+            raise MemberBudgetConflictError("notification setting revision conflict")
+        return _notification_from_row(row)
 
     def list_alerts(
         self,
@@ -536,6 +624,19 @@ def _budget_from_row(row: Any) -> MemberBudget:
     )
 
 
+def _subject_from_row(row: Any) -> BudgetSubject:
+    return BudgetSubject(
+        subject_ref=_value(row, 0),
+        workspace_id=_value(row, 1),
+        display_name=_value(row, 2),
+        department_label=_value(row, 3),
+        primary_model=_value(row, 4),
+        enabled=bool(_value(row, 5)),
+        revision=_value(row, 6),
+        updated_at=_utc_datetime(_value(row, 7)),
+    )
+
+
 def _notification_from_row(row: Any) -> NotificationSetting:
     return NotificationSetting(
         recipient_actor_ref=_value(row, 0),
@@ -544,11 +645,12 @@ def _notification_from_row(row: Any) -> NotificationSetting:
         subject_template=_value(row, 3),
         body_template=_value(row, 4),
         enabled=bool(_value(row, 5)),
-        revision=_value(row, 6),
-        created_by_ref=_value(row, 7),
-        updated_by_ref=_value(row, 8),
-        created_at=_value(row, 9),
-        updated_at=_value(row, 10),
+        test_email_succeeded_at=_utc_datetime(_value(row, 6)),
+        revision=_value(row, 7),
+        created_by_ref=_value(row, 8),
+        updated_by_ref=_value(row, 9),
+        created_at=_value(row, 10),
+        updated_at=_value(row, 11),
     )
 
 

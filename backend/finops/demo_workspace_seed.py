@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Iterable
 
+from .budget_subjects import BudgetSubject, budget_subject_ref
 from .demo_seed_repository import DemoSeedRepository
+from .member_budgets import MemberBudget
 from .models import FinOpsRequestEvent
 
 
@@ -23,11 +26,11 @@ _MODELS = (
     "deepseek-chat",
     "gpt-4.1-mini",
 )
-_ACTORS = (
-    "member_finance_admin",
-    "member_product_owner",
-    "member_delivery_lead",
-    "member_operations",
+_SUBJECTS = (
+    ("林晓 · 财务负责人", "财务", "gpt-5.6-terra"),
+    ("陈屿 · 产品负责人", "AI 平台", "gpt-5.1"),
+    ("周宁 · 交付负责人", "交付", "deepseek-chat"),
+    ("苏禾 · 运营负责人", "运营", "gpt-4.1-mini"),
 )
 _DEPARTMENTS = ("Finance", "AI Platform", "Delivery", "Operations")
 _PRICE_FACTORS = (0.0000025, 0.0000060, 0.0000016, 0.0000009)
@@ -50,6 +53,8 @@ def seed_demo_workspace(
     workspace_id: str,
     allowed_workspace_id: str,
     batch: str = "operations-v1",
+    budget_repository: Any | None = None,
+    hmac_secret: str | None = None,
     now: datetime | None = None,
 ) -> DemoSeedResult:
     clean_workspace_id = str(workspace_id or "").strip()
@@ -59,7 +64,34 @@ def seed_demo_workspace(
     if not clean_tenant_ref:
         raise ValueError("tenant_ref is required")
     anchor = _utc(now or datetime.now(timezone.utc))
-    events = tuple(_scenario_events(clean_tenant_ref, clean_workspace_id, batch, anchor))
+    subject_secret = str(hmac_secret or clean_tenant_ref).strip()
+    subjects = tuple(
+        BudgetSubject(
+            subject_ref=budget_subject_ref(
+                workspace_id=clean_workspace_id,
+                display_name=display_name,
+                secret=subject_secret,
+            ),
+            workspace_id=clean_workspace_id,
+            display_name=display_name,
+            department_label=department,
+            primary_model=primary_model,
+            enabled=True,
+            revision=1,
+            updated_at=anchor,
+        )
+        for display_name, department, primary_model in _SUBJECTS
+    )
+    actor_refs = tuple(subject.subject_ref for subject in subjects)
+    events = tuple(
+        _scenario_events(
+            clean_tenant_ref,
+            clean_workspace_id,
+            batch,
+            anchor,
+            actor_refs=actor_refs,
+        )
+    )
     created, updated = seed_repository.replace_batch(
         tenant_ref=clean_tenant_ref,
         workspace_id=clean_workspace_id,
@@ -67,6 +99,15 @@ def seed_demo_workspace(
         request_refs=tuple(event.request_ref for event in events),
     )
     repository.upsert_events(events)
+    if budget_repository is not None:
+        budget_repository.upsert_budget_subjects(clean_tenant_ref, subjects)
+        _seed_budgets(
+            budget_repository,
+            tenant_ref=clean_tenant_ref,
+            subjects=subjects,
+            batch=batch,
+            now=anchor,
+        )
     return DemoSeedResult(
         batch=batch,
         event_count=len(events),
@@ -81,6 +122,8 @@ def _scenario_events(
     workspace_id: str,
     batch: str,
     now: datetime,
+    *,
+    actor_refs: tuple[str, ...],
 ) -> Iterable[FinOpsRequestEvent]:
     for index in range(120):
         day_offset = 29 - index // 4
@@ -92,7 +135,7 @@ def _scenario_events(
         )
         agent_index = index % len(_AGENTS)
         model_index = (index + index // 5) % len(_MODELS)
-        actor_index = (index // 5) % len(_ACTORS)
+        actor_index = (index // 5) % len(actor_refs)
         input_tokens = 320 + ((index * 137) % 4200)
         output_tokens = 80 + ((index * 71) % 1300)
         reasoning_tokens = 40 + ((index * 29) % 620) if index % 3 == 0 else 0
@@ -122,7 +165,7 @@ def _scenario_events(
             route=("analysis", "conversation", "artifact", "review")[index % 4],
             agent_id=_AGENTS[agent_index],
             model=_MODELS[model_index],
-            actor_ref=_ACTORS[actor_index],
+            actor_ref=actor_refs[actor_index],
             department_id=_DEPARTMENTS[actor_index],
             status="failed" if failed else "succeeded",
             error_category=("provider_5xx" if index % 2 else "client_4xx") if failed else None,
@@ -155,7 +198,7 @@ def _scenario_events(
             route="repeat-analysis",
             agent_id="Product Architect",
             model="gpt-5.6-terra",
-            actor_ref="member_product_owner",
+            actor_ref=actor_refs[1],
             department_id="AI Platform",
             status="succeeded",
             error_category=None,
@@ -171,6 +214,51 @@ def _scenario_events(
             gateway_coverage="apim_governed",
             cost=0.0714 if cache_state == "miss" else 0.0068,
             priced=True,
+        )
+
+
+def _seed_budgets(
+    repository: Any,
+    *,
+    tenant_ref: str,
+    subjects: tuple[BudgetSubject, ...],
+    batch: str,
+    now: datetime,
+) -> None:
+    specs = (
+        (subjects[0], Decimal("200"), (80, 95)),
+        (subjects[1], Decimal("320"), (75, 90)),
+        (subjects[2], Decimal("150"), (80, 95)),
+    )
+    updated_by = f"seed_{batch}"[:128]
+    for index, (subject, amount, thresholds) in enumerate(specs, start=1):
+        budget_id = f"budget_demo_{index}"
+        current = repository.get_budget(tenant_ref, budget_id)
+        if (
+            current is not None
+            and current.member_ref == subject.subject_ref
+            and current.amount_usd == amount
+            and current.thresholds_pct == thresholds
+            and current.enabled
+        ):
+            continue
+        revision = current.revision + 1 if current else 1
+        value = MemberBudget(
+            member_ref=subject.subject_ref,
+            amount_usd=amount,
+            thresholds_pct=thresholds,
+            enabled=True,
+            budget_id=budget_id,
+            revision=revision,
+            created_by_ref=current.created_by_ref if current else updated_by,
+            updated_by_ref=updated_by,
+            created_at=current.created_at if current else now,
+            updated_at=now,
+        )
+        repository.save_budget(
+            tenant_ref,
+            value,
+            base_revision=current.revision if current else 0,
         )
 
 

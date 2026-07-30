@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Protocol
 
+from .budget_subjects import BudgetSubject
 from .member_budgets import BudgetAlert, MemberBudget, NotificationSetting
 from .sql_repository import FinOpsPersistenceError
 
@@ -13,6 +14,12 @@ class MemberBudgetConflictError(FinOpsPersistenceError):
 
 
 class MemberBudgetRepository(Protocol):
+    def list_budget_subjects(
+        self, tenant_ref: str, workspace_id: str, *, include_disabled: bool = False
+    ) -> tuple[BudgetSubject, ...]: ...
+    def upsert_budget_subjects(
+        self, tenant_ref: str, values: tuple[BudgetSubject, ...]
+    ) -> tuple[BudgetSubject, ...]: ...
     def get_budget(self, tenant_ref: str, budget_id: str) -> MemberBudget | None: ...
     def list_budgets(self, tenant_ref: str, *, include_disabled: bool = False) -> tuple[MemberBudget, ...]: ...
     def save_budget(self, tenant_ref: str, value: MemberBudget, *, base_revision: int) -> MemberBudget: ...
@@ -22,6 +29,9 @@ class MemberBudgetRepository(Protocol):
     def get_notification_setting(self, tenant_ref: str) -> NotificationSetting | None: ...
     def save_notification_setting(
         self, tenant_ref: str, value: NotificationSetting, *, base_revision: int
+    ) -> NotificationSetting: ...
+    def mark_notification_tested(
+        self, tenant_ref: str, *, revision: int, sent_at: datetime
     ) -> NotificationSetting: ...
     def claim_alert(self, value: BudgetAlert) -> bool: ...
     def acquire_due_alert(
@@ -57,9 +67,35 @@ class InMemoryMemberBudgetRepository:
     def __init__(self) -> None:
         self._lock = RLock()
         self._budgets: dict[tuple[str, str], MemberBudget] = {}
+        self._subjects: dict[tuple[str, str, str], BudgetSubject] = {}
         self._notifications: dict[str, NotificationSetting] = {}
         self._alerts: dict[tuple[str, str, str, int], BudgetAlert] = {}
         self._alerts_by_id: dict[tuple[str, str], BudgetAlert] = {}
+
+    def list_budget_subjects(
+        self, tenant_ref: str, workspace_id: str, *, include_disabled: bool = False
+    ) -> tuple[BudgetSubject, ...]:
+        with self._lock:
+            rows = [
+                value
+                for (tenant, workspace, _subject), value in self._subjects.items()
+                if tenant == tenant_ref
+                and workspace == workspace_id
+                and (include_disabled or value.enabled)
+            ]
+        return tuple(sorted(rows, key=lambda value: (value.display_name.casefold(), value.subject_ref)))
+
+    def upsert_budget_subjects(
+        self, tenant_ref: str, values: tuple[BudgetSubject, ...]
+    ) -> tuple[BudgetSubject, ...]:
+        with self._lock:
+            for value in values:
+                key = (tenant_ref, value.workspace_id, value.subject_ref)
+                current = self._subjects.get(key)
+                if current is not None and value.revision < current.revision:
+                    raise MemberBudgetConflictError("budget subject revision conflict")
+                self._subjects[key] = value
+        return values
 
     def get_budget(self, tenant_ref: str, budget_id: str) -> MemberBudget | None:
         with self._lock:
@@ -124,6 +160,19 @@ class InMemoryMemberBudgetRepository:
                 raise MemberBudgetConflictError("notification setting revision conflict")
             self._notifications[tenant_ref] = value
         return value
+
+    def mark_notification_tested(
+        self, tenant_ref: str, *, revision: int, sent_at: datetime
+    ) -> NotificationSetting:
+        with self._lock:
+            current = self._notifications.get(tenant_ref)
+            if current is None:
+                raise KeyError("notification_setting")
+            if current.revision != revision:
+                raise MemberBudgetConflictError("notification setting revision conflict")
+            tested = current.model_copy(update={"test_email_succeeded_at": sent_at})
+            self._notifications[tenant_ref] = tested
+        return tested
 
     def claim_alert(self, value: BudgetAlert) -> bool:
         key = (value.tenant_ref, value.budget_id, value.period_key, value.threshold_pct)

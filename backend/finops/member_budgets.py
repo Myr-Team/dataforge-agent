@@ -114,6 +114,7 @@ class NotificationSetting(BaseModel):
     subject_template: str = Field(min_length=1, max_length=200)
     body_template: str = Field(min_length=1, max_length=4000)
     enabled: bool
+    test_email_succeeded_at: datetime | None = None
     revision: int = Field(ge=1)
     created_by_ref: str = Field(min_length=1, max_length=128)
     updated_by_ref: str = Field(min_length=1, max_length=128)

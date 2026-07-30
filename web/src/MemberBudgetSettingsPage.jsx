@@ -41,12 +41,12 @@ function safeFailureState(error) {
   return "unavailable";
 }
 
-async function loadBudgetView() {
+async function loadBudgetView(workspaceId) {
   const [budgetsResult, membersResult, notificationResult, alertsResult] = await Promise.allSettled([
-    loadMemberBudgets(),
-    loadMemberBudgetMembers(),
-    loadMemberBudgetNotification(),
-    loadMemberBudgetAlerts(),
+    loadMemberBudgets(workspaceId),
+    loadMemberBudgetMembers(workspaceId),
+    loadMemberBudgetNotification(workspaceId),
+    loadMemberBudgetAlerts(workspaceId),
   ]);
   const budgetsState = budgetsResult.status === "fulfilled"
     ? ["complete", "partial", "unavailable"].includes(budgetsResult.value?.data_status)
@@ -242,8 +242,8 @@ function BudgetForm({ row, members, busy, error, onClose, onSave, onDisable }) {
   return (
     <form className="member-budget-form" onSubmit={submit}>
       <label>
-        <span>Entra 成员</span>
-        <select data-modal-initial-focus={!row ? "" : undefined} aria-label="Entra 成员" value={memberRef} onChange={(event) => setMemberRef(event.target.value)} disabled={Boolean(row)}>
+        <span>预算成员</span>
+        <select data-modal-initial-focus={!row ? "" : undefined} aria-label="预算成员" value={memberRef} onChange={(event) => setMemberRef(event.target.value)} disabled={Boolean(row)}>
           {members.filter((item) => item.identityState === "active").map((item) => (
             <option value={item.memberRef} key={item.memberRef}>{item.memberLabel} · {item.roleLabel}</option>
           ))}
@@ -286,18 +286,18 @@ function BudgetForm({ row, members, busy, error, onClose, onSave, onDisable }) {
   );
 }
 
-function MailForm({ notification, members, busy, error, onClose, onSave }) {
-  const admins = members.filter((item) => item.identityState === "active" && ["管理员", "所有者"].includes(item.roleLabel));
-  const [recipientMemberRef, setRecipientMemberRef] = useState(notification.recipientMemberRef || admins[0]?.memberRef || "");
+function MailForm({ notification, busy, error, onClose, onSave }) {
+  const [recipientEmail, setRecipientEmail] = useState(notification.recipientEmail || "");
   const [senderDisplayName, setSenderDisplayName] = useState(notification.senderDisplayName);
   const [subjectTemplate, setSubjectTemplate] = useState(notification.subjectTemplate);
   const [bodyTemplate, setBodyTemplate] = useState(notification.bodyTemplate);
-  const [enabled, setEnabled] = useState(notification.configured ? notification.enabled : true);
+  const [enabled, setEnabled] = useState(notification.configured ? notification.enabled : false);
+  const [requiresRetest, setRequiresRetest] = useState(!notification.testEmailReady);
 
   const submit = (event) => {
     event.preventDefault();
     onSave({
-      recipientMemberRef,
+      recipientEmail,
       senderDisplayName,
       subjectTemplate,
       bodyTemplate,
@@ -308,33 +308,57 @@ function MailForm({ notification, members, busy, error, onClose, onSave }) {
 
   return (
     <form className="member-budget-form mail" onSubmit={submit}>
-      <div className="member-budget-mail-safety"><ShieldCheck size={14} />收件地址由 Entra 管理，浏览器不保存或显示邮箱明文。</div>
+      <div className="member-budget-mail-safety"><ShieldCheck size={14} />收件地址保存在服务端配置中，可在其他设备继续使用。</div>
       <label>
-        <span>管理员</span>
-        <select data-modal-initial-focus="" aria-label="管理员" value={recipientMemberRef} onChange={(event) => setRecipientMemberRef(event.target.value)}>
-          {admins.map((item) => <option value={item.memberRef} key={item.memberRef}>{item.memberLabel} · {item.roleLabel}</option>)}
-        </select>
+        <span>管理员收件邮箱</span>
+        <input
+          data-modal-initial-focus=""
+          aria-label="管理员收件邮箱"
+          type="email"
+          autoComplete="email"
+          required
+          value={recipientEmail}
+          onChange={(event) => {
+            setRecipientEmail(event.target.value);
+            setEnabled(false);
+            setRequiresRetest(true);
+          }}
+          maxLength={320}
+        />
       </label>
       <label>
         <span>发件人显示名称</span>
-        <input value={senderDisplayName} onChange={(event) => setSenderDisplayName(event.target.value)} maxLength={120} />
+        <input value={senderDisplayName} onChange={(event) => {
+          setSenderDisplayName(event.target.value);
+          setEnabled(false);
+          setRequiresRetest(true);
+        }} maxLength={120} />
       </label>
       <label>
         <span>邮件主题</span>
-        <input value={subjectTemplate} onChange={(event) => setSubjectTemplate(event.target.value)} maxLength={200} />
+        <input value={subjectTemplate} onChange={(event) => {
+          setSubjectTemplate(event.target.value);
+          setEnabled(false);
+          setRequiresRetest(true);
+        }} maxLength={200} />
       </label>
       <label>
         <span>纯文本正文</span>
-        <textarea value={bodyTemplate} onChange={(event) => setBodyTemplate(event.target.value)} rows={5} maxLength={4000} />
+        <textarea value={bodyTemplate} onChange={(event) => {
+          setBodyTemplate(event.target.value);
+          setEnabled(false);
+          setRequiresRetest(true);
+        }} rows={5} maxLength={4000} />
       </label>
       <label className="member-budget-checkbox">
-        <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+        <input type="checkbox" checked={enabled} disabled={requiresRetest} onChange={(event) => setEnabled(event.target.checked)} />
         <span>启用阈值提醒</span>
       </label>
+      {requiresRetest ? <small>请先保存设置并发送测试邮件，成功后可开启自动提醒。</small> : null}
       {error ? <div className="member-budget-inline-error">{error}</div> : null}
       <footer>
         <button type="button" className="member-budget-secondary-button" onClick={onClose}>取消</button>
-        <button type="submit" className="member-budget-primary-button" disabled={busy || !recipientMemberRef}>
+        <button type="submit" className="member-budget-primary-button" disabled={busy || !recipientEmail}>
           {busy ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}保存邮件设置
         </button>
       </footer>
@@ -342,7 +366,7 @@ function MailForm({ notification, members, busy, error, onClose, onSave }) {
   );
 }
 
-export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => {} }) {
+export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, onChanged = () => {} }) {
   const [state, setState] = useState("loading");
   const [view, setView] = useState(EMPTY_VIEW);
   const [query, setQuery] = useState("");
@@ -356,14 +380,18 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
   const reload = async ({ preserveNotice = false } = {}) => {
     setState("loading");
     if (!preserveNotice) setNotice(null);
-    const loaded = await loadBudgetView();
+    const loaded = await loadBudgetView(workspaceId);
     setView(loaded.view);
     setState(loaded.state);
   };
 
   useEffect(() => {
     let cancelled = false;
-    loadBudgetView().then((loaded) => {
+    if (!workspaceId) {
+      setState("unavailable");
+      return undefined;
+    }
+    loadBudgetView(workspaceId).then((loaded) => {
       if (cancelled) return;
       setView(loaded.view);
       setState(loaded.state);
@@ -371,7 +399,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [workspaceId]);
 
   const departments = useMemo(
     () => [...new Set(view.rows.map((row) => row.departmentLabel).filter(Boolean))],
@@ -386,14 +414,14 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
   }, [department, query, view.rows]);
   const emailConfigurationDisabled = ["disabled", "permission_required"].includes(view.notification.state);
   const emailConfigurationDisabledReason = view.notification.state === "permission_required"
-    ? "需要租户 FinOps 管理员角色"
+    ? "需要工作区管理员权限"
     : "邮件配置功能未启用";
 
   const saveBudget = async (payload) => {
     setBusy("budget");
     setFormError("");
     try {
-      await saveMemberBudget(payload);
+      await saveMemberBudget({ ...payload, workspaceId });
       setBudgetModal(null);
       setNotice({ tone: "success", text: "预算已保存" });
       onChanged();
@@ -417,7 +445,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
     setBusy("budget");
     setFormError("");
     try {
-      await disableMemberBudget(row.budgetId, row.revision);
+      await disableMemberBudget(workspaceId, row.budgetId, row.revision);
       setBudgetModal(null);
       setNotice({ tone: "success", text: "预算已停用" });
       onChanged();
@@ -441,7 +469,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
     setBusy("mail");
     setFormError("");
     try {
-      await saveMemberBudgetNotification(payload);
+      await saveMemberBudgetNotification({ ...payload, workspaceId });
       setMailModal(false);
       setNotice({ tone: "success", text: "邮件设置已保存" });
       onChanged();
@@ -452,7 +480,9 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
         setNotice({ tone: "warning", text: "配置已更新，正在重新载入" });
         await reload({ preserveNotice: true });
       } else if (error?.status === 403) {
-        setFormError("请选择当前组织中启用的管理员");
+        setFormError("当前账户没有配置邮件提醒的权限");
+      } else if (error?.status === 422) {
+        setFormError(error?.message === "test_email_required" ? "请先发送测试邮件，再开启自动提醒" : "请检查邮箱和模板格式");
       } else {
         setFormError("邮件设置暂时无法保存，请稍后重试");
       }
@@ -465,8 +495,9 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
     setBusy("test");
     setNotice(null);
     try {
-      const result = safeTestEmailResult(await sendMemberBudgetTestEmail());
+      const result = safeTestEmailResult(await sendMemberBudgetTestEmail(workspaceId));
       setNotice({ tone: result.state === "sent" ? "success" : "warning", text: result.label });
+      if (result.state === "sent") await reload({ preserveNotice: true });
     } catch (error) {
       const stateValue = error?.status === 404
         ? { state: "failed", safe_error_category: "not_configured" }
@@ -486,9 +517,9 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
       <header className="member-budget-page-head">
         <div>
           <button type="button" className="member-budget-back" onClick={onBack}><ArrowLeft size={15} />返回设置</button>
-          <span className="eyeless-label">FinOps · Entra</span>
+          <span className="eyeless-label">成本治理</span>
           <h1>成员成本预算</h1>
-          <p>按 Entra 成员查看本月请求级估算成本与计价覆盖，并为管理员配置阈值邮件提醒。</p>
+          <p>按当前工作区的业务成员查看月度估算成本，并向管理员发送预算阈值提醒。</p>
         </div>
         {state !== "permission_required" ? <div className="member-budget-page-actions">
           <button
@@ -517,7 +548,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
         {skeleton ? Array.from({ length: 4 }, (_, index) => <div className="member-budget-summary-skeleton" key={index} />) : (
           <>
             <SummaryCard icon={CircleDollarSign} label="本月估算成本" help="仅汇总有可靠价目表匹配的请求；未计价请求不会被当作 0。" value={view.summary.estimatedSpendLabel} note={view.summary.dataStatus === "partial" ? "部分请求尚未计价" : "请求级估算 · USD"} />
-            <SummaryCard icon={Users} label="已配置成员" help="当前组织中已保存预算的 Entra 成员数量，含已停用预算。" value={view.summary.configuredCount === null ? "不可用" : String(view.summary.configuredCount)} note="UTC 自然月预算" />
+            <SummaryCard icon={Users} label="已配置成员" help="当前工作区已保存预算的业务成员数量，含已停用预算。" value={view.summary.configuredCount === null ? "不可用" : String(view.summary.configuredCount)} note="UTC 自然月预算" />
             <SummaryCard icon={BellRing} label="接近预算" help="实际预算进度已达到该成员最低提醒阈值的数量。" value={view.summary.nearBudgetCount === null ? "不可用" : String(view.summary.nearBudgetCount)} note="按真实进度计算" tone={view.summary.nearBudgetCount ? "warning" : ""} />
             <SummaryCard icon={Mail} label="已发送提醒" help="当前保留窗口内状态为已发送的阈值提醒数量。" value={view.summary.sentAlertCount === null ? "不可用" : String(view.summary.sentAlertCount)} note="自动发送默认关闭" />
           </>
@@ -527,9 +558,9 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
       {state === "unavailable" || state === "permission_required" || state === "not_configured" ? (
         <section className="member-budget-state">
           <AlertCircle size={20} />
-          <strong>{state === "permission_required" ? "需要租户 FinOps 管理员角色" : state === "not_configured" ? "成员预算尚未启用" : "成员预算暂时不可用"}</strong>
+          <strong>{state === "permission_required" ? "需要工作区管理员权限" : state === "not_configured" ? "成员预算尚未启用" : "成员预算暂时不可用"}</strong>
           <p>{state === "permission_required"
-            ? "成员成本预算按租户汇总。请联系租户管理员分配应用角色后重新登录。"
+            ? "请由当前工作区的 Owner 或 Admin 打开并配置成员预算。"
             : "没有使用示例金额填充当前状态。请检查服务配置后重试。"}</p>
           <button type="button" className="member-budget-secondary-button" onClick={() => reload()}><RefreshCw size={14} />重试</button>
         </section>
@@ -557,7 +588,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
               <div className="member-budget-empty">
                 <CircleDollarSign size={22} />
                 <strong>尚未设置成员预算</strong>
-                <p>选择一位启用中的 Entra 成员，为其设置 UTC 自然月预算。</p>
+                <p>选择当前工作区的一位业务成员，为其设置 UTC 自然月预算。</p>
               </div>
             ) : filteredRows.length === 0 ? (
               <div className="member-budget-empty compact"><Search size={20} /><strong>没有匹配的成员</strong></div>
@@ -567,7 +598,7 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
                   <table className="member-budget-table">
                     <thead>
                       <tr>
-                        <th>Entra 成员</th>
+                        <th>预算成员</th>
                         <th><MetricHelp label="当月成本">已可靠计价请求的估算成本；0 与缺失严格区分。</MetricHelp></th>
                         <th>预算</th>
                         <th><MetricHelp label="进度">柱长按真实估算成本除以预算计算，最高显示为 100%。</MetricHelp></th>
@@ -641,9 +672,9 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
                 {view.notification.state === "disabled"
                   ? "邮件配置未启用"
                   : view.notification.configured
-                    ? `${view.notification.recipientLabel} · 已安全保存`
+                    ? `${view.notification.recipientLabel} · 已保存`
                     : view.notification.state === "permission_required"
-                      ? "需要租户 FinOps 管理员角色"
+                      ? "需要工作区管理员权限"
                       : view.notification.state === "unavailable"
                         ? "邮件状态不可用"
                         : "尚未配置"}
@@ -652,9 +683,11 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
                 {view.notification.state === "disabled"
                   ? "成员预算仍可查看；邮件配置入口由独立功能开关控制。"
                   : view.notification.configured
-                    ? "收件地址由 Entra 目录解析，不在页面中显示。"
+                    ? view.notification.testEmailReady
+                      ? "测试邮件已通过，可按需开启自动提醒。"
+                      : "请先发送测试邮件，成功后可开启自动提醒。"
                     : view.notification.state === "permission_required"
-                      ? "请由具备租户 FinOps 管理员应用角色的管理员配置提醒。"
+                      ? "请由当前工作区的 Owner 或 Admin 配置提醒。"
                       : view.notification.state === "unavailable"
                       ? "预算数据仍可查看；邮件服务恢复后可继续配置。"
                       : "配置后可发送一封测试邮件；自动阈值提醒仍由独立开关控制。"}
@@ -712,8 +745,8 @@ export function MemberBudgetSettingsPage({ onBack = () => {}, onChanged = () => 
         </CompactModal>
       ) : null}
       {mailModal ? (
-        <CompactModal title="邮件提醒设置" description="第一版仅向一位启用中的 Owner / Admin 发送。" onClose={() => setMailModal(false)}>
-          <MailForm notification={view.notification} members={view.eligibleMembers} busy={busy === "mail"} error={formError} onClose={() => setMailModal(false)} onSave={saveMail} />
+        <CompactModal title="邮件提醒设置" description="当前配置仅向一位管理员邮箱发送。" onClose={() => setMailModal(false)}>
+          <MailForm notification={view.notification} busy={busy === "mail"} error={formError} onClose={() => setMailModal(false)} onSave={saveMail} />
         </CompactModal>
       ) : null}
     </main>

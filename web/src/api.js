@@ -714,23 +714,34 @@ export async function deleteFinOpsOfficialPriceMapping(deployment) {
   });
 }
 
-export async function loadMemberBudgets() {
-  return request("/api/finops/member-budgets?limit=100");
+function workspaceBudgetUrl(path, workspaceId, params = {}) {
+  const cleanWorkspaceId = String(workspaceId || "").trim();
+  if (!cleanWorkspaceId) throw new Error("workspaceId is required");
+  const query = new URLSearchParams({
+    workspace_id: cleanWorkspaceId,
+    ...params,
+  });
+  return `${path}?${query.toString()}`;
 }
 
-export async function loadMemberBudgetMembers() {
-  return request("/api/finops/member-budget-members?limit=100");
+export async function loadMemberBudgets(workspaceId) {
+  return request(workspaceBudgetUrl("/api/finops/member-budgets", workspaceId, { limit: "100" }));
 }
 
-export async function loadMemberBudgetNotification() {
-  return request("/api/finops/notification-settings");
+export async function loadMemberBudgetMembers(workspaceId) {
+  return request(workspaceBudgetUrl("/api/finops/member-budget-members", workspaceId, { limit: "100" }));
 }
 
-export async function loadMemberBudgetAlerts() {
-  return request("/api/finops/budget-alerts?limit=50");
+export async function loadMemberBudgetNotification(workspaceId) {
+  return request(workspaceBudgetUrl("/api/finops/notification-settings", workspaceId));
+}
+
+export async function loadMemberBudgetAlerts(workspaceId) {
+  return request(workspaceBudgetUrl("/api/finops/budget-alerts", workspaceId, { limit: "50" }));
 }
 
 export async function saveMemberBudget({
+  workspaceId = "",
   budgetId = "",
   memberRef = "",
   amountUsd,
@@ -748,8 +759,8 @@ export async function saveMemberBudget({
   };
   return request(
     editing
-      ? `/api/finops/member-budgets/${encodeURIComponent(budgetId)}`
-      : "/api/finops/member-budgets",
+      ? workspaceBudgetUrl(`/api/finops/member-budgets/${encodeURIComponent(budgetId)}`, workspaceId)
+      : workspaceBudgetUrl("/api/finops/member-budgets", workspaceId),
     {
       method: editing ? "PATCH" : "POST",
       body: JSON.stringify(body),
@@ -757,8 +768,8 @@ export async function saveMemberBudget({
   );
 }
 
-export async function disableMemberBudget(budgetId, baseRevision) {
-  return request(`/api/finops/member-budgets/${encodeURIComponent(budgetId)}/disable`, {
+export async function disableMemberBudget(workspaceId, budgetId, baseRevision) {
+  return request(workspaceBudgetUrl(`/api/finops/member-budgets/${encodeURIComponent(budgetId)}/disable`, workspaceId), {
     method: "POST",
     body: JSON.stringify({
       base_revision: Number.isInteger(baseRevision) ? baseRevision : 0,
@@ -767,17 +778,18 @@ export async function disableMemberBudget(budgetId, baseRevision) {
 }
 
 export async function saveMemberBudgetNotification({
-  recipientMemberRef = "",
+  workspaceId = "",
+  recipientEmail = "",
   senderDisplayName = "DataForge",
   subjectTemplate = "",
   bodyTemplate = "",
   enabled = false,
   baseRevision = 0,
 } = {}) {
-  return request("/api/finops/notification-settings", {
+  return request(workspaceBudgetUrl("/api/finops/notification-settings", workspaceId), {
     method: "PUT",
     body: JSON.stringify({
-      recipient_actor_ref: String(recipientMemberRef || "").trim(),
+      recipient_email: String(recipientEmail || "").trim(),
       sender_display_name: String(senderDisplayName || "").trim(),
       subject_template: String(subjectTemplate || ""),
       body_template: String(bodyTemplate || ""),
@@ -787,8 +799,8 @@ export async function saveMemberBudgetNotification({
   });
 }
 
-export async function sendMemberBudgetTestEmail() {
-  return request("/api/finops/notification-settings/test-email", {
+export async function sendMemberBudgetTestEmail(workspaceId) {
+  return request(workspaceBudgetUrl("/api/finops/notification-settings/test-email", workspaceId), {
     method: "POST",
     body: JSON.stringify({}),
   });
