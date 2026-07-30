@@ -11,6 +11,8 @@ import {
   finopsDoughnutSegments,
   finopsRoiEconomicsView,
   finopsOpportunityRows,
+  finopsBarPercent,
+  niceFinOpsAxis,
   formatRelativeUpdateTime,
   gatewayUnmatchedEvidence,
 } from "./finopsViewModel.js";
@@ -65,6 +67,8 @@ test("finops metric cards preserve unavailable and partial evidence", () => {
     "success",
     "p95",
     "cache",
+    "cache_avoided_tokens",
+    "cache_savings",
   ]);
   assert.equal(cards.find((item) => item.id === "cost").value, "未计价");
   assert.equal(cards.find((item) => item.id === "p95").value, "未记录");
@@ -72,6 +76,8 @@ test("finops metric cards preserve unavailable and partial evidence", () => {
   assert.equal(cards.find((item) => item.id === "cost").metric.kind, "cost");
   assert.equal(cards.find((item) => item.id === "success").metric.kind, "quality");
   assert.equal(cards.find((item) => item.id === "cache").metric.kind, "cache");
+  assert.equal(cards.find((item) => item.id === "cache_avoided_tokens").value, "未记录");
+  assert.equal(cards.find((item) => item.id === "cache_savings").value, "未记录");
 });
 
 
@@ -124,6 +130,48 @@ test("finops trend view model keeps token categories separate", () => {
     reasoning: null,
   });
   assert.equal(rows[0].status, "partial");
+});
+
+
+test("finops trend view model preserves cache economics", () => {
+  const rows = finopsTrendViewModel({
+    items: [{
+      bucket: "2026-07-24T00:00:00Z",
+      cache: {
+        eligible_requests: 5,
+        hit: 3,
+        miss: 2,
+        bypassed: 1,
+        unavailable: 0,
+        avoided_tokens: 840,
+        estimated_savings: 0.0097,
+        data_status: "available",
+      },
+    }],
+  });
+
+  assert.deepEqual(rows[0].cache, {
+    eligible: 5,
+    hit: 3,
+    miss: 2,
+    bypassed: 1,
+    unavailable: 0,
+    avoidedTokens: 840,
+    estimatedSavings: 0.0097,
+    status: "available",
+  });
+});
+
+
+test("finops chart axis is adaptive and bar proportions remain truthful", () => {
+  const axis = niceFinOpsAxis([0.0021, 0.0097], 4);
+
+  assert.equal(axis.ticks.at(-1), 0);
+  assert.ok(axis.max >= 0.0097);
+  assert.ok(axis.max < 0.02);
+  assert.equal(finopsBarPercent(0, axis.max), 0);
+  assert.ok(finopsBarPercent(0.0021, axis.max) < finopsBarPercent(0.0097, axis.max));
+  assert.ok(finopsBarPercent(0.0021, axis.max) < 50);
 });
 
 

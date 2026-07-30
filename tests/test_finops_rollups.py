@@ -60,6 +60,32 @@ def test_rollups_aggregate_hour_and_day_without_turning_unknowns_into_zero() -> 
     assert hourly[0].p95_latency_ms == 500
 
 
+def test_rollups_preserve_cache_counts_and_avoided_tokens() -> None:
+    payload = _event(
+        "req_aaaaaaaaaaaa",
+        1,
+        status="succeeded",
+        total_tokens=100,
+        cost=0.004,
+        latency_ms=100,
+    ).model_dump(mode="python")
+    payload["cache"] = {"state": "hit", "eligible": True, "avoided_tokens": 60}
+    payload["result_cache"] = {
+        "state": "hit",
+        "eligible": True,
+        "reason": "eligible",
+        "policy_revision": 1,
+    }
+    event = FinOpsRequestEvent.model_validate(payload)
+
+    hourly, _daily = aggregate_rollups([event])
+
+    assert hourly[0].cache_hit_count == 1
+    assert hourly[0].cache_miss_count == 0
+    assert hourly[0].cache_bypassed_count == 0
+    assert hourly[0].cache_avoided_tokens == 60
+
+
 def test_sql_rollup_repository_replaces_only_requested_tenant_window() -> None:
     connection = RecordingConnection()
     repository = SqlFinOpsRollupRepository(connection_factory=lambda: connection)

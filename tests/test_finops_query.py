@@ -177,6 +177,9 @@ def test_overview_exposes_recorded_token_and_cache_composition() -> None:
         "miss": 1,
         "bypassed": 1,
         "unavailable": 0,
+        "avoided_tokens": None,
+        "estimated_savings": None,
+        "data_status": "unavailable",
     }
 
 
@@ -344,6 +347,63 @@ def test_trends_selects_metric_and_preserves_exact_value() -> None:
     assert cost["metric"] == "estimated_cost"
     assert cost["unit"] == "USD"
     assert cost["items"][0]["value"] == 0.01
+
+
+def test_cache_economics_are_scoped_to_trends_and_breakdowns() -> None:
+    raw_events = []
+    for request_ref, state, avoided_tokens, cost, official_key in (
+        ("req_aaaaaaaaaaaa", "miss", None, 0.01, "gpt-5-mini:global"),
+        ("req_bbbbbbbbbbbb", "hit", 60, 0.004, "gpt-5-mini:global"),
+        ("req_cccccccccccc", "hit", 40, None, None),
+        ("req_dddddddddddd", "bypassed", None, 0.003, "gpt-5-mini:global"),
+    ):
+        payload = _event(
+            request_ref,
+            department="commerce",
+            total=100,
+            cost=cost,
+        ).model_dump(mode="python")
+        payload["cache"] = {
+            "state": state,
+            "eligible": state in {"hit", "miss"},
+            "avoided_tokens": avoided_tokens,
+        }
+        payload["result_cache"] = {
+            "state": state,
+            "eligible": state in {"hit", "miss"},
+            "reason": "eligible" if state in {"hit", "miss"} else "not_recorded",
+            "policy_revision": 1,
+        }
+        payload["estimated_cost"]["official_price_key"] = official_key
+        raw_events.append(FinOpsRequestEvent.model_validate(payload))
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events(raw_events)
+    service = FinOpsQueryService(repository)
+    query = FinOpsQuery(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    overview = service.overview(query)
+    trend = service.trends(query, "day", metric="tokens")
+    breakdown = service.breakdowns(query, "department")
+
+    expected = {
+        "eligible_requests": 3,
+        "hit": 2,
+        "miss": 1,
+        "bypassed": 1,
+        "unavailable": 0,
+        "avoided_tokens": 100,
+        "estimated_savings": 0.006,
+        "data_status": "partial",
+    }
+    assert overview["metrics"]["cache"] == expected
+    assert trend["items"][0]["cache"] == expected
+    assert breakdown["items"][0]["cache_hit_rate_pct"] == 66.67
+    assert breakdown["items"][0]["cache"] == expected
 
 
 def test_overview_pipes_unattributed_gateway_evidence_into_apim_trust() -> None:

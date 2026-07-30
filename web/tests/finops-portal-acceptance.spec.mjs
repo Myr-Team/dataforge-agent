@@ -33,6 +33,13 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
   await trendSwitch.getByRole("button", { name: "成本" }).click();
   await expect(legend).toContainText("估算成本");
   await expect(scale.locator("span").first()).toContainText("$");
+  const costBars = page.locator(".finops-trend-stack");
+  const firstCostBar = await costBars.nth(0).boundingBox();
+  const secondCostBar = await costBars.nth(1).boundingBox();
+  expect(firstCostBar).not.toBeNull();
+  expect(secondCostBar).not.toBeNull();
+  expect(secondCostBar.height).toBeGreaterThan(firstCostBar.height);
+  expect(secondCostBar.height - firstCostBar.height).toBeGreaterThan(5);
 
   await trendSwitch.getByRole("button", { name: "P95" }).click();
   await expect(legend).toContainText("P95 延迟");
@@ -44,6 +51,9 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
   await expect(column).toHaveAttribute("aria-label", /次/);
   await column.focus();
   await expect(column.locator(".finops-trend-tooltip")).toContainText("调用次数");
+  await expect(column.locator(".finops-trend-tooltip")).toContainText("缓存命中");
+  await expect(page.locator(".finops-metric").filter({ hasText: "缓存避免 Token" })).toBeVisible();
+  await expect(page.locator(".finops-metric").filter({ hasText: "缓存估算节省" })).toBeVisible();
 });
 
 

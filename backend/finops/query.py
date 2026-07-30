@@ -143,6 +143,7 @@ class FinOpsQueryService:
             state: sum(row.result_cache.state == state for row in rows)
             for state in ("hit", "miss", "bypassed", "unavailable")
         }
+        cache_economics = _cache_economics(rows)
         provider_cache_rows = [
             row
             for row in rows
@@ -195,6 +196,7 @@ class FinOpsQueryService:
             "cache": {
                 "eligible_requests": len(cache_eligible),
                 **cache_counts,
+                **cache_economics,
             },
             "cache_hit_rate_pct": round((cache_hits / len(cache_eligible)) * 100, 2) if cache_eligible else None,
             "result_cache": {
@@ -254,6 +256,12 @@ class FinOpsQueryService:
             tokens = [row.tokens.total for row in rows if row.tokens.total is not None]
             latencies = sorted(row.latency_ms for row in rows if row.latency_ms is not None)
             failures = sum(row.status == "failed" for row in rows)
+            cache_eligible = [row for row in rows if row.result_cache.eligible is True]
+            cache_counts = {
+                state: sum(row.result_cache.state == state for row in rows)
+                for state in ("hit", "miss", "bypassed", "unavailable")
+            }
+            cache_hits = cache_counts["hit"]
             items.append(
                 {
                     "key": key,
@@ -262,6 +270,16 @@ class FinOpsQueryService:
                     "estimated_cost": round(sum(costs), 8) if costs else None,
                     "error_rate_pct": round((failures / len(rows)) * 100, 2),
                     "p95_latency_ms": _percentile(latencies, 0.95),
+                    "cache_hit_rate_pct": (
+                        round(cache_hits / len(cache_eligible) * 100, 2)
+                        if cache_eligible
+                        else None
+                    ),
+                    "cache": {
+                        "eligible_requests": len(cache_eligible),
+                        **cache_counts,
+                        **_cache_economics(rows),
+                    },
                     "data_status": _data_status(rows),
                 }
             )
@@ -331,6 +349,11 @@ class FinOpsQueryService:
                 ),
                 "p95_latency_ms": _percentile(latencies, 0.95),
             }
+            cache_eligible = [row for row in rows if row.result_cache.eligible is True]
+            cache_counts = {
+                state: sum(row.result_cache.state == state for row in rows)
+                for state in ("hit", "miss", "bypassed", "unavailable")
+            }
             items.append(
                 {
                     "bucket": key,
@@ -338,6 +361,11 @@ class FinOpsQueryService:
                     "tokens": token_totals,
                     "estimated_cost": round(sum(costs), 8) if costs else None,
                     "p95_latency_ms": _percentile(latencies, 0.95),
+                    "cache": {
+                        "eligible_requests": len(cache_eligible),
+                        **cache_counts,
+                        **_cache_economics(rows),
+                    },
                     "value": metric_values[metric],
                     "data_status": _metric_data_status(rows, metric),
                 }
@@ -496,6 +524,54 @@ def _data_status(rows: list[FinOpsRequestEvent]) -> str:
     ):
         return "partial"
     return "available"
+
+
+def _cache_economics(rows: list[FinOpsRequestEvent]) -> dict[str, Any]:
+    """Summarize only explicit result-cache evidence.
+
+    Avoided cost is deliberately conservative: it is calculated only for a
+    cache hit with observed avoided tokens, total tokens, an estimated amount,
+    an official price key, and a price-card revision. Missing price evidence
+    leaves the total unreported rather than inventing a value.
+    """
+    hits = [row for row in rows if row.result_cache.state == "hit"]
+    avoided_rows = [
+        row for row in hits
+        if row.cache.avoided_tokens is not None
+    ]
+    avoided_tokens = (
+        sum(row.cache.avoided_tokens or 0 for row in avoided_rows)
+        if avoided_rows
+        else None
+    )
+    savings: list[float] = []
+    incomplete = len(avoided_rows) < len(hits)
+    for row in avoided_rows:
+        avoided = row.cache.avoided_tokens or 0
+        total = row.tokens.total
+        cost = row.estimated_cost
+        reliable = (
+            avoided > 0
+            and total is not None
+            and total > avoided
+            and cost.amount is not None
+            and bool(cost.official_price_key)
+            and bool(cost.price_card_revision)
+        )
+        if not reliable:
+            incomplete = True
+            continue
+        charged_equivalent = total - avoided
+        savings.append(cost.amount * avoided / charged_equivalent)
+    return {
+        "avoided_tokens": avoided_tokens,
+        "estimated_savings": round(sum(savings), 8) if savings else None,
+        "data_status": (
+            "unavailable"
+            if not avoided_rows
+            else ("partial" if incomplete else "available")
+        ),
+    }
 
 
 def _metric_data_status(rows: list[FinOpsRequestEvent], metric: str) -> str:

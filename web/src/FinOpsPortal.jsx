@@ -62,6 +62,8 @@ import {
   finopsRequestViewModel,
   finopsRoiEconomicsView,
   finopsTrendViewModel,
+  finopsBarPercent,
+  niceFinOpsAxis,
   formatFinOpsCost,
   formatFinOpsDuration,
   formatFinOpsNumber,
@@ -242,7 +244,7 @@ function MetricCards({
 function MetricSkeleton() {
   return (
     <section className="finops-metrics finops-metrics-skeleton" aria-label="正在加载运营指标">
-      {Array.from({ length: 6 }, (_, index) => (
+      {Array.from({ length: 8 }, (_, index) => (
         <article className="finops-metric" key={index}>
           <i />
           <b />
@@ -261,7 +263,7 @@ function HorizontalBars({
   dimension = "",
   onSelect = null,
 }) {
-  const maximum = Math.max(...rows.map((row) => Number(row[valueKey] || 0)), 1);
+  const axis = niceFinOpsAxis(rows.map((row) => Number(row[valueKey] || 0)), 4);
   if (!rows.length) return <EmptyState />;
   return (
     <div className="finops-bars">
@@ -276,7 +278,10 @@ function HorizontalBars({
         >
           <span title={row.key}>{row.key}</span>
           <div>
-            <i style={{ width: `${Math.max(2, (Number(row[valueKey] || 0) / maximum) * 100)}%` }} />
+            <i
+              className={Number(row[valueKey] || 0) > 0 ? "has-value" : ""}
+              style={{ width: `${finopsBarPercent(row[valueKey], axis.max)}%` }}
+            />
           </div>
           <b>{valueFormatter(row[valueKey])}</b>
         </button>
@@ -309,7 +314,8 @@ function TrendBars({
     ...rows.map((row) => Number(metricValue(row) || 0)),
     ...comparisonRows.map((row) => Number(metricValue(row) || 0)),
   ];
-  const maximum = Math.max(...values, 1);
+  const axis = niceFinOpsAxis(values, 4);
+  const maximum = axis.max;
   if (!rows.length) return <EmptyState />;
   return (
     <div className="finops-trend-chart">
@@ -326,20 +332,18 @@ function TrendBars({
         )}
       </div>
       <div className="finops-trend-scale" aria-hidden="true">
-        <span>{formatValue(maximum)}</span>
-        <span>{formatValue(maximum / 2)}</span>
-        <span>{formatValue(0)}</span>
+        {axis.ticks.map((tick) => <span key={tick}>{formatValue(tick)}</span>)}
       </div>
       <div className="finops-trend-columns">
         {rows.slice(-14).map((row, visibleIndex, visibleRows) => {
           const rawValue = metricValue(row);
           const value = Number(rawValue || 0);
-          const height = value > 0 ? Math.max(2, (value / maximum) * 100) : 0;
+          const height = finopsBarPercent(value, maximum);
           const comparisonOffset = Math.max(0, comparisonRows.length - visibleRows.length);
           const comparisonRow = comparisonRows[comparisonOffset + visibleIndex];
           const comparisonValue = Number(metricValue(comparisonRow) || 0);
           const comparisonHeight = comparisonRow
-            ? Math.max(2, (comparisonValue / maximum) * 100)
+            ? finopsBarPercent(comparisonValue, maximum)
             : 0;
           const rowDate = row.label.slice(0, 10);
           const rowEvents = events.filter((item) => String(item.observed_at || "").startsWith(rowDate));
@@ -365,7 +369,10 @@ function TrendBars({
               <div className="finops-trend-plot">
                 <b className="finops-trend-value">{formatValue(rawValue)}</b>
                 <div className="finops-trend-bar-slot">
-                  <div className="finops-trend-stack" style={{ height: `${height}%` }}>
+                  <div
+                    className={`finops-trend-stack ${value > 0 ? "has-value" : ""}`}
+                    style={{ height: `${height}%` }}
+                  >
                     {metric !== "total"
                       ? <i className="input" style={{ height: "100%" }} />
                       : parts.map((part) => part.value
@@ -388,6 +395,11 @@ function TrendBars({
                     <span>合计 <strong>{formatFinOpsNumber(row.total)}</strong></span>
                   </>
                 )}
+                <span>缓存命中 <strong>{formatFinOpsNumber(row.cache.hit, "0")}</strong></span>
+                <span>缓存未命中 <strong>{formatFinOpsNumber(row.cache.miss, "0")}</strong></span>
+                <span>绕过缓存 <strong>{formatFinOpsNumber(row.cache.bypassed, "0")}</strong></span>
+                <span>避免 Token <strong>{formatFinOpsNumber(row.cache.avoidedTokens)}</strong></span>
+                <span>估算节省 <strong>{formatFinOpsCost(row.cache.estimatedSavings, row.cache.status)}</strong></span>
                 {rowEvents.length ? <span>运营事件 <strong>{rowEvents.length} 条</strong></span> : null}
               </div>
             </div>
@@ -412,6 +424,7 @@ function BreakdownTable({ rows, dimension = "", onSelect = null }) {
             <th>估算成本</th>
             <th>错误率</th>
             <th>P95</th>
+            <th>缓存命中率</th>
           </tr>
         </thead>
         <tbody>
@@ -434,6 +447,7 @@ function BreakdownTable({ rows, dimension = "", onSelect = null }) {
               <td>{formatFinOpsCost(row.cost, row.cost == null ? "unavailable" : "estimated")}</td>
               <td>{formatFinOpsPercent(row.errorRate)}</td>
               <td>{formatFinOpsDuration(row.p95)}</td>
+              <td>{formatFinOpsPercent(row.cacheHitRate)}</td>
             </tr>
           ))}
         </tbody>

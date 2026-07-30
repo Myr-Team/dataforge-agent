@@ -27,6 +27,11 @@ class FinOpsRollup(BaseModel):
     p95_latency_ms: int | None
     apim_governed_count: int
     unpriced_count: int
+    cache_hit_count: int = 0
+    cache_miss_count: int = 0
+    cache_bypassed_count: int = 0
+    cache_unavailable_count: int = 0
+    cache_avoided_tokens: int | None = None
 
 
 def aggregate_rollups(
@@ -62,6 +67,12 @@ def _aggregate(
         tokens = [row.tokens.total for row in rows if row.tokens.total is not None]
         costs = [row.estimated_cost.amount for row in rows if row.estimated_cost.amount is not None]
         latencies = sorted(row.latency_ms for row in rows if row.latency_ms is not None)
+        avoided_tokens = [
+            row.cache.avoided_tokens
+            for row in rows
+            if row.result_cache.state == "hit"
+            and row.cache.avoided_tokens is not None
+        ]
         result.append(
             FinOpsRollup(
                 bucket_kind=bucket_kind,
@@ -79,6 +90,11 @@ def _aggregate(
                 p95_latency_ms=_nearest_rank(latencies, 0.95),
                 apim_governed_count=sum(row.gateway_coverage == "apim_governed" for row in rows),
                 unpriced_count=len(rows) - len(costs),
+                cache_hit_count=sum(row.result_cache.state == "hit" for row in rows),
+                cache_miss_count=sum(row.result_cache.state == "miss" for row in rows),
+                cache_bypassed_count=sum(row.result_cache.state == "bypassed" for row in rows),
+                cache_unavailable_count=sum(row.result_cache.state == "unavailable" for row in rows),
+                cache_avoided_tokens=sum(avoided_tokens) if avoided_tokens else None,
             )
         )
     return sorted(

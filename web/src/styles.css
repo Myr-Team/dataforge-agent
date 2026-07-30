@@ -5283,7 +5283,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-tabs button:hover { color: #344054; }
 .finops-tabs button.active { border-bottom-color: var(--finops-blue); color: var(--finops-blue); }
 .finops-content { max-width: 1500px; min-height: 360px; margin: 0 auto; }
-.finops-metrics { display: grid; grid-template-columns: repeat(6, minmax(118px, 1fr)); gap: 1px; margin-bottom: 12px; border: 1px solid #dfe5ee; border-radius: 10px; overflow: visible; background: #dfe5ee; }
+.finops-metrics { display: grid; grid-template-columns: repeat(4, minmax(118px, 1fr)); gap: 1px; margin-bottom: 12px; border: 1px solid #dfe5ee; border-radius: 10px; overflow: visible; background: #dfe5ee; }
 .finops-metric { position: relative; min-width: 0; outline: 0; background: #fff; padding: 14px 14px 13px; transition: opacity 160ms ease, transform 160ms ease, box-shadow 160ms ease; }
 .finops-metric:first-child { border-radius: 9px 0 0; }
 .finops-metric:nth-child(4) { border-radius: 0 9px 0 0; }
@@ -5351,6 +5351,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-bar-row > span { overflow: hidden; color: #475467; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .finops-bar-row > div { height: 8px; overflow: hidden; border-radius: 999px; background: #eef2f7; }
 .finops-bar-row i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #175cd3, #53b1fd); }
+.finops-bar-row i.has-value { box-shadow: inset -1px 0 #175cd3; }
 .finops-bar-row b { color: #344054; font-size: 10.5px; font-variant-numeric: tabular-nums; text-align: right; }
 .finops-trend-chart { position: relative; display: grid; min-height: 286px; grid-template-rows: auto minmax(0, 1fr); padding: 14px 16px 12px 62px; }
 .finops-trend-switch { display: flex; gap: 3px; border-bottom: 1px solid #edf0f5; padding: 10px 14px 0; }
@@ -5373,7 +5374,8 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-trend-column > span { align-self: center; overflow: hidden; color: #98a2b3; font-size: 8.5px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .finops-trend-plot { display: grid; width: 100%; height: 100%; min-height: 0; grid-template-rows: 18px minmax(0, 1fr); justify-items: stretch; }
 .finops-trend-bar-slot { display: flex; width: 100%; height: 100%; min-height: 0; align-items: flex-end; justify-content: center; }
-.finops-trend-stack { display: flex; width: min(34px, 78%); min-height: 4px; flex: none; overflow: hidden; flex-direction: column-reverse; border-radius: 4px 4px 0 0; background: #eef2f7; transition: filter 160ms ease, transform 160ms ease; transform-origin: bottom; }
+.finops-trend-stack { display: flex; width: min(34px, 78%); min-height: 0; flex: none; overflow: hidden; flex-direction: column-reverse; border-radius: 4px 4px 0 0; background: #eef2f7; transition: filter 160ms ease, transform 160ms ease; transform-origin: bottom; }
+.finops-trend-stack.has-value { box-shadow: inset 0 -1px #175cd3; }
 .finops-trend-column:hover .finops-trend-stack,
 .finops-trend-column:focus .finops-trend-stack { filter: saturate(1.16); transform: scaleX(1.08); }
 .finops-trend-stack i { display: block; width: 100%; flex: none; }

@@ -11,6 +11,41 @@ function hasNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+export function niceFinOpsAxis(values = [], tickCount = 4) {
+  const count = Math.max(2, Math.floor(Number(tickCount) || 4));
+  const observedMaximum = (Array.isArray(values) ? values : [])
+    .filter((value) => hasNumber(value) && value >= 0)
+    .reduce((maximum, value) => Math.max(maximum, value), 0);
+  if (observedMaximum <= 0) {
+    return {
+      max: 1,
+      ticks: Array.from({ length: count }, (_item, index) => (
+        (count - 1 - index) / (count - 1)
+      )),
+    };
+  }
+  const roughStep = observedMaximum / (count - 1);
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const normalized = roughStep / magnitude;
+  const niceFactor = [1, 2, 2.5, 5, 10].find((candidate) => candidate >= normalized) || 10;
+  const step = niceFactor * magnitude;
+  const max = step * (count - 1);
+  return {
+    max,
+    ticks: Array.from({ length: count }, (_item, index) => (
+      step * (count - 1 - index)
+    )),
+  };
+}
+
+export function finopsBarPercent(value, axisMaximum) {
+  const numericValue = Number(value);
+  const numericMaximum = Number(axisMaximum);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) return 0;
+  if (!Number.isFinite(numericMaximum) || numericMaximum <= 0) return 0;
+  return Math.min(100, (numericValue / numericMaximum) * 100);
+}
+
 export function formatFinOpsNumber(value, fallback = "未记录") {
   return hasNumber(value) ? numberFormat.format(value) : fallback;
 }
@@ -216,9 +251,64 @@ export function finopsMetricCards(payload = {}) {
           bypassed: cache.bypassed ?? null,
           unavailable: cache.unavailable ?? null,
           eligible: cache.eligible_requests ?? null,
+          avoidedTokens: cache.avoided_tokens ?? null,
+          estimatedSavings: cache.estimated_savings ?? null,
+          status: cache.data_status || "unavailable",
         },
         dataStatus,
         evidenceState: cache.eligible_requests ? "observed" : "unavailable",
+      },
+    },
+    {
+      id: "cache_avoided_tokens",
+      label: "缓存避免 Token",
+      value: formatFinOpsNumber(cache.avoided_tokens),
+      meta: cache.data_status === "partial" ? "部分命中缺少完整计量" : "来自已记录的结果复用",
+      tone: cache.data_status === "partial" ? "warning" : "neutral",
+      metric: {
+        id: "cache_avoided_tokens",
+        label: "缓存避免 Token",
+        value: cache.avoided_tokens ?? null,
+        unit: "Token",
+        kind: "cache",
+        cache: {
+          hit: cache.hit ?? null,
+          miss: cache.miss ?? null,
+          bypassed: cache.bypassed ?? null,
+          unavailable: cache.unavailable ?? null,
+          eligible: cache.eligible_requests ?? null,
+          avoidedTokens: cache.avoided_tokens ?? null,
+          estimatedSavings: cache.estimated_savings ?? null,
+          status: cache.data_status || "unavailable",
+        },
+        dataStatus,
+        evidenceState: cache.avoided_tokens == null ? "unavailable" : (cache.data_status || "observed"),
+      },
+    },
+    {
+      id: "cache_savings",
+      label: "缓存估算节省",
+      value: formatFinOpsCost(cache.estimated_savings),
+      meta: cache.data_status === "partial" ? "仅统计可可靠计价的命中" : "按当前价目映射估算",
+      tone: cache.data_status === "partial" ? "warning" : "neutral",
+      metric: {
+        id: "cache_estimated_savings",
+        label: "缓存估算节省",
+        value: cache.estimated_savings ?? null,
+        unit: "USD",
+        kind: "cache",
+        cache: {
+          hit: cache.hit ?? null,
+          miss: cache.miss ?? null,
+          bypassed: cache.bypassed ?? null,
+          unavailable: cache.unavailable ?? null,
+          eligible: cache.eligible_requests ?? null,
+          avoidedTokens: cache.avoided_tokens ?? null,
+          estimatedSavings: cache.estimated_savings ?? null,
+          status: cache.data_status || "unavailable",
+        },
+        dataStatus,
+        evidenceState: cache.estimated_savings == null ? "unavailable" : (cache.data_status || "estimated"),
       },
     },
   ];
@@ -237,6 +327,16 @@ export function finopsTrendViewModel(payload = {}) {
       output: item?.tokens?.output ?? null,
       cached: item?.tokens?.cached_input ?? null,
       reasoning: item?.tokens?.reasoning ?? null,
+    },
+    cache: {
+      eligible: item?.cache?.eligible_requests ?? null,
+      hit: item?.cache?.hit ?? null,
+      miss: item?.cache?.miss ?? null,
+      bypassed: item?.cache?.bypassed ?? null,
+      unavailable: item?.cache?.unavailable ?? null,
+      avoidedTokens: item?.cache?.avoided_tokens ?? null,
+      estimatedSavings: item?.cache?.estimated_savings ?? null,
+      status: item?.cache?.data_status || "unavailable",
     },
     status: item.data_status || "unavailable",
   }));
@@ -459,6 +559,16 @@ export function finopsBreakdownRows(payload = {}) {
     cost: item.estimated_cost,
     errorRate: item.error_rate_pct,
     p95: item.p95_latency_ms,
+    cacheHitRate: item.cache_hit_rate_pct,
+    cache: {
+      eligible: item?.cache?.eligible_requests ?? null,
+      hit: item?.cache?.hit ?? null,
+      miss: item?.cache?.miss ?? null,
+      bypassed: item?.cache?.bypassed ?? null,
+      avoidedTokens: item?.cache?.avoided_tokens ?? null,
+      estimatedSavings: item?.cache?.estimated_savings ?? null,
+      status: item?.cache?.data_status || "unavailable",
+    },
     status: item.data_status || "unavailable",
   }));
 }

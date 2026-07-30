@@ -47,6 +47,8 @@ export function metricTooltip(metric = {}) {
     pushNumber(rows, "绕过缓存", metric.cache?.bypassed);
     pushNumber(rows, "状态不可用", metric.cache?.unavailable);
     pushNumber(rows, "可缓存样本", metric.cache?.eligible);
+    pushNumber(rows, "避免 Token", metric.cache?.avoidedTokens);
+    pushNumber(rows, "估算节省", metric.cache?.estimatedSavings, "currency");
   } else if (metric.kind === "cost") {
     pushNumber(rows, "估算成本", metric.amount, "currency");
     pushNumber(rows, "已计价请求", metric.pricedRequests);
