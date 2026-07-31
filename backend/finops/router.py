@@ -60,6 +60,12 @@ from .governance import (
     FinOpsActionService,
     InMemoryActionRepository,
 )
+from .remediation import (
+    FinOpsRemediationService,
+    InMemoryRemediationDraftRepository,
+    RemediationConflict,
+    RemediationNotFound,
+)
 from .dataforge_clients import (
     DataForgeCachePolicyClient,
     DataForgeModelRouteClient,
@@ -109,6 +115,7 @@ from .repository import RunStoreFinOpsRepository
 from .sql_repository import SqlFinOpsRepository
 from .sql_management import SqlFinOpsManagementRepository
 from .sql_governance import SqlFinOpsActionRepository
+from .sql_remediation import SqlRemediationDraftRepository
 from .sql_anomalies import SqlFinOpsAnomalyRepository
 from .sql_repository import FinOpsPersistenceError
 from .sql_rollups import SqlFinOpsRollupRepository
@@ -130,6 +137,7 @@ _DATAFORGE_ACTION_EXECUTORS = {
     ),
 }
 _ACTION_REPOSITORY = InMemoryActionRepository()
+_REMEDIATION_REPOSITORY = InMemoryRemediationDraftRepository()
 _MANAGEMENT_REPOSITORY = InMemoryManagementRepository()
 _MANAGEMENT_SERVICE = FinOpsManagementService(_MANAGEMENT_REPOSITORY)
 _ANOMALY_REPOSITORY = InMemoryAnomalyRepository()
@@ -137,6 +145,7 @@ _ANOMALY_SERVICE = FinOpsAnomalyService(_ANOMALY_REPOSITORY)
 _SQL_REPOSITORY: SqlFinOpsRepository | None = None
 _SQL_MANAGEMENT_SERVICE: FinOpsManagementService | None = None
 _SQL_ACTION_REPOSITORY: SqlFinOpsActionRepository | None = None
+_SQL_REMEDIATION_REPOSITORY: SqlRemediationDraftRepository | None = None
 _SQL_ANOMALY_SERVICE: FinOpsAnomalyService | None = None
 _EVIDENCE_REPOSITORY = InMemoryEvidenceAliasRepository()
 _SQL_EVIDENCE_REPOSITORY: SqlEvidenceAliasRepository | None = None
@@ -177,6 +186,21 @@ class AssistantConversationCreate(BaseModel):
 
     workspace_id: str = Field(min_length=1, max_length=160)
     title: str = Field(default="新会话", min_length=1, max_length=120)
+
+
+class RemediationDraftCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(min_length=1, max_length=160)
+    source_opportunity_id: str = Field(min_length=1, max_length=128)
+    base_version: str = Field(min_length=1, max_length=128)
+
+
+class RemediationTransitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision: int = Field(ge=1)
+    reason: str | None = Field(default=None, max_length=512)
 
 
 def _enabled(name: str) -> bool:
@@ -254,6 +278,36 @@ def get_finops_action_service() -> FinOpsActionService:
     else:
         repository = _ACTION_REPOSITORY
     return FinOpsActionService(repository=repository, executors=executors)
+
+
+def current_remediation_base_version(
+    tenant_ref: str,
+    workspace_id: str,
+    action_kind: str,
+) -> str:
+    del tenant_ref
+    if action_kind != "cache_policy":
+        raise ValueError("typed remediation version resolver is unavailable")
+    return DataForgeCachePolicyClient(
+        store=_WORKSPACE_CONFIG_STORE
+    ).current_version(workspace_id)
+
+
+def get_finops_remediation_service() -> FinOpsRemediationService:
+    global _SQL_REMEDIATION_REPOSITORY
+    if _enabled("DF_FINOPS_SQL_ENABLED"):
+        if _SQL_REMEDIATION_REPOSITORY is None:
+            _SQL_REMEDIATION_REPOSITORY = SqlRemediationDraftRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        repository = _SQL_REMEDIATION_REPOSITORY
+    else:
+        repository = _REMEDIATION_REPOSITORY
+    return FinOpsRemediationService(
+        repository=repository,
+        action_service=get_finops_action_service(),
+        version_resolver=current_remediation_base_version,
+    )
 
 
 def get_finops_management_service() -> FinOpsManagementService:
@@ -1215,6 +1269,37 @@ def _decision_opportunities(
     )
 
 
+def _current_remediation_opportunity(
+    *,
+    tenant_ref: str,
+    workspace_id: str,
+    source_opportunity_id: str,
+) -> dict[str, object] | None:
+    start, end = _window(None, None)
+    query = FinOpsQuery(
+        tenant_ref=tenant_ref,
+        authorized_workspace_ids=(workspace_id,),
+        workspace_id=workspace_id,
+        from_value=start,
+        to_value=end,
+    )
+    service = get_finops_query_service()
+    events = service.events(query)
+    anomalies = _decision_anomalies_from_events(
+        events,
+        tenant_ref=tenant_ref,
+    )
+    opportunities = _decision_opportunities(service, query, anomalies)
+    return next(
+        (
+            dict(item)
+            for item in opportunities
+            if item.get("opportunity_id") == source_opportunity_id
+        ),
+        None,
+    )
+
+
 def _risk_evidence_summaries(
     events: list[FinOpsRequestEvent],
     opportunities: list[Mapping[str, Any]],
@@ -1254,9 +1339,9 @@ def _risk_evidence_summaries(
 def _governance_capability() -> dict[str, Any]:
     return {
         "read_enabled": True,
-        "draft_enabled": False,
+        "draft_enabled": True,
         "actions_enabled": False,
-        "typed_executors": [],
+        "typed_executors": ["cache_policy"],
     }
 
 
@@ -1272,12 +1357,22 @@ def _risk_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, 
         authorized_workspace_ids=(query.workspace_id,),
         agent_kind="finops",
     )
+    drafts = get_finops_remediation_service().list(
+        tenant_ref=query.tenant_ref,
+        authorized_workspace_ids=(query.workspace_id,),
+    )
     decision = build_risk_decision(
         anomalies=anomaly_items,
         opportunities=opportunity_items,
         evidence_summaries=evidence_summaries,
         insight=_public_insight(latest, include_evidence_refs=True) if latest else None,
-        drafts=[],
+        drafts=[
+            draft.model_dump(
+                mode="json",
+                exclude={"tenant_ref", "created_by", "reviewed_by"},
+            )
+            for draft in drafts
+        ],
         governance_capability=_governance_capability(),
     )
     return _decision_envelope(query_service, query, decision)
@@ -1317,7 +1412,13 @@ async def risk_decision(
     service, query, roles = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
     if roles.get(workspace_id) not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="risk decision requires admin or owner")
-    return _risk_decision_payload(service, query)
+    try:
+        return _risk_decision_payload(service, query)
+    except FinOpsPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="risk evidence service is unavailable",
+        ) from exc
 
 
 @router.post("/views", status_code=201)
@@ -1936,6 +2037,217 @@ async def opportunities(
         "window": {"from": query.from_value, "to": query.to_value},
         "currency": "USD",
         "data_status": "complete" if coverage == 100 else "partial" if requests else "unavailable",
+    }
+
+
+def _public_remediation_draft(draft: Any) -> dict[str, Any]:
+    return draft.model_dump(
+        mode="json",
+        exclude={"tenant_ref", "created_by", "reviewed_by"},
+    )
+
+
+def _public_remediation_action(action: Any) -> dict[str, Any]:
+    return {
+        "action_id": action.action_id,
+        "action_type": action.action_type,
+        "status": action.status,
+        "payload": action.payload,
+        "version": action.version,
+        "created_at": action.created_at,
+        "updated_at": action.updated_at,
+    }
+
+
+def _remediation_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException):
+        return exc
+    if isinstance(exc, RemediationNotFound):
+        return HTTPException(
+            status_code=404,
+            detail="remediation draft not found",
+        )
+    if isinstance(exc, (RemediationConflict, ActionConflict)):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, ActionPermissionDenied):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, ActionNotFound):
+        return HTTPException(
+            status_code=404,
+            detail="FinOps action not found",
+        )
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=422, detail=str(exc))
+    if isinstance(exc, FinOpsPersistenceError):
+        return HTTPException(
+            status_code=503,
+            detail="FinOps remediation service is unavailable",
+        )
+    return HTTPException(status_code=500, detail="FinOps remediation failed")
+
+
+def _remediation_draft_context(
+    request: Request,
+    draft_id: str,
+) -> tuple[str, str, dict[str, str], Any]:
+    tenant_ref, actor_ref, roles = _write_context(request)
+    try:
+        draft = get_finops_remediation_service().get(
+            tenant_ref=tenant_ref,
+            draft_id=draft_id,
+            authorized_workspace_ids=tuple(sorted(roles)),
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    _require_admin_scope(roles, [draft.workspace_id])
+    return tenant_ref, actor_ref, roles, draft
+
+
+@router.post("/remediation-drafts", status_code=201)
+async def create_remediation_draft(
+    body: RemediationDraftCreate,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_ref, actor_ref, _ = _write_context(
+        request,
+        workspace_id=body.workspace_id,
+    )
+    try:
+        opportunity = _current_remediation_opportunity(
+            tenant_ref=tenant_ref,
+            workspace_id=body.workspace_id,
+            source_opportunity_id=body.source_opportunity_id,
+        )
+        if opportunity is None:
+            raise HTTPException(
+                status_code=404,
+                detail="remediation opportunity not found",
+            )
+        draft = get_finops_remediation_service().create(
+            tenant_ref=tenant_ref,
+            workspace_id=body.workspace_id,
+            actor_ref=actor_ref,
+            opportunity=opportunity,
+            base_version=body.base_version,
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    return {"draft": _public_remediation_draft(draft)}
+
+
+@router.get("/remediation-drafts")
+async def list_remediation_drafts(
+    request: Request,
+    workspace_id: str | None = Query(default=None, max_length=160),
+) -> dict[str, Any]:
+    tenant_ref, _, roles = _write_context(
+        request,
+        workspace_id=workspace_id,
+    )
+    authorized_workspace_ids = tuple(
+        sorted(
+            candidate
+            for candidate, role in roles.items()
+            if role in {"owner", "admin"}
+            and (workspace_id is None or candidate == workspace_id)
+        )
+    )
+    try:
+        drafts = get_finops_remediation_service().list(
+            tenant_ref=tenant_ref,
+            authorized_workspace_ids=authorized_workspace_ids,
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    return {
+        "items": [_public_remediation_draft(draft) for draft in drafts],
+        "count": len(drafts),
+    }
+
+
+@router.get("/remediation-drafts/{draft_id}")
+async def get_remediation_draft(
+    draft_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    _, _, _, draft = _remediation_draft_context(request, draft_id)
+    return {"draft": _public_remediation_draft(draft)}
+
+
+@router.post("/remediation-drafts/{draft_id}/review")
+async def review_remediation_draft(
+    draft_id: str,
+    body: RemediationTransitionRequest,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_ref, actor_ref, roles, _ = _remediation_draft_context(
+        request,
+        draft_id,
+    )
+    try:
+        draft = get_finops_remediation_service().review(
+            tenant_ref=tenant_ref,
+            draft_id=draft_id,
+            actor_ref=actor_ref,
+            base_revision=body.base_revision,
+            authorized_workspace_ids=tuple(sorted(roles)),
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    return {"draft": _public_remediation_draft(draft)}
+
+
+@router.post("/remediation-drafts/{draft_id}/close")
+async def close_remediation_draft(
+    draft_id: str,
+    body: RemediationTransitionRequest,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_ref, actor_ref, roles, _ = _remediation_draft_context(
+        request,
+        draft_id,
+    )
+    try:
+        draft = get_finops_remediation_service().close(
+            tenant_ref=tenant_ref,
+            draft_id=draft_id,
+            actor_ref=actor_ref,
+            base_revision=body.base_revision,
+            authorized_workspace_ids=tuple(sorted(roles)),
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    return {"draft": _public_remediation_draft(draft)}
+
+
+@router.post("/remediation-drafts/{draft_id}/promote")
+async def promote_remediation_draft(
+    draft_id: str,
+    body: RemediationTransitionRequest,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_ref, actor_ref, roles, _ = _remediation_draft_context(
+        request,
+        draft_id,
+    )
+    try:
+        draft = get_finops_remediation_service().promote(
+            tenant_ref=tenant_ref,
+            draft_id=draft_id,
+            actor_ref=actor_ref,
+            base_revision=body.base_revision,
+            authorized_workspace_ids=tuple(sorted(roles)),
+        )
+        action = get_finops_action_service().get(
+            tenant_ref=tenant_ref,
+            action_id=str(draft.translated_action_id or ""),
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    return {
+        "draft": _public_remediation_draft(draft),
+        "action": _public_remediation_action(action),
+        "actions_enabled": _enabled("DF_FINOPS_ACTIONS_ENABLED"),
     }
 
 

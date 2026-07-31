@@ -118,6 +118,20 @@ def test_member_budget_period_check_has_a_guarded_existing_table_upgrade() -> No
     assert "add constraint ck_finops_budget_alert_period" in upgrade
 
 
+def test_finops_schema_contains_remediation_tables() -> None:
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+    lowered = sql.lower()
+
+    for table in ("remediation_draft", "remediation_transition"):
+        assert f"if object_id(n'df_finops.{table}', n'u') is null" in lowered
+        assert f"create table df_finops.{table}" in lowered
+
+    assert "CK_finops_remediation_scope_json" in sql
+    assert "CK_finops_remediation_status" in sql
+    assert "DROP TABLE df_finops.remediation_draft" not in sql
+    assert "TRUNCATE TABLE df_finops.remediation_draft" not in sql
+
+
 def test_request_event_routing_policy_revision_is_additive_and_nullable() -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     lowered = schema.lower()
