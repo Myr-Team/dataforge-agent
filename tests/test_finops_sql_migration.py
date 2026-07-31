@@ -81,7 +81,13 @@ def test_conditional_table_creation_precedes_upgrade_in_an_earlier_batch(
 
 @pytest.mark.parametrize(
     "table",
-    ("request_event", "department", "model_provider", "budget_alert"),
+    (
+        "request_event",
+        "department",
+        "model_provider",
+        "notification_setting",
+        "budget_alert",
+    ),
 )
 def test_schema_upgrades_defer_alter_table_compilation(table: str) -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")

@@ -715,8 +715,8 @@ GO
 
 IF COL_LENGTH(N'df_finops.notification_setting', N'test_email_succeeded_at') IS NULL
 BEGIN
-    ALTER TABLE df_finops.notification_setting
-        ADD test_email_succeeded_at DATETIME2(7) NULL;
+    EXEC(N'ALTER TABLE df_finops.notification_setting
+        ADD test_email_succeeded_at DATETIME2(7) NULL');
 END;
 GO
 
