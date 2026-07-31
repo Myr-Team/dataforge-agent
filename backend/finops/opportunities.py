@@ -18,19 +18,13 @@ _EFFORT = {
     "error_rate": "high",
     "token_spike": "medium",
 }
-_SAVINGS_RATE = {
-    "daily_cost_budget": 0.10,
-    "cache_hit_rate": 0.05,
-    "token_spike": 0.08,
-}
-
-
 def build_opportunity_queue(
     *,
     anomalies: list[Mapping[str, Any]],
     recommendations: list[Mapping[str, Any]],
     priced_cost: float | None,
     priced_coverage_pct: float | None,
+    impact_estimates: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     recommendations_by_policy = {
         str(item.get("policy_type") or ""): str(item.get("recommendation") or "")
@@ -54,10 +48,11 @@ def build_opportunity_queue(
             else "low"
         )
         impact = _SEVERITY_IMPACT.get(str(anomaly.get("severity") or ""), "low")
-        savings_rate = _SAVINGS_RATE.get(policy_type)
+        estimate = (impact_estimates or {}).get(policy_type) or {}
+        amount = estimate.get("amount")
         estimated_savings = (
-            round(float(priced_cost) * savings_rate, 8)
-            if cost_is_usable and savings_rate is not None
+            round(float(amount), 8)
+            if _finite_nonnegative(amount) and estimate.get("status") in {"estimated", "observed"}
             else None
         )
         anomaly_id = str(anomaly.get("anomaly_id") or "")
@@ -80,6 +75,11 @@ def build_opportunity_queue(
             "sample_count": sample_count,
             "evidence_state": evidence_state,
             "evidence_refs": evidence_refs,
+            "cost_coverage": {
+                "priced_cost": float(priced_cost) if _finite_nonnegative(priced_cost) else None,
+                "priced_coverage_pct": float(priced_coverage_pct) if _finite_nonnegative(priced_coverage_pct) else None,
+                "status": "complete" if cost_is_usable else "partial",
+            },
             "estimated_savings": estimated_savings,
             "currency": "USD" if estimated_savings is not None else None,
             "action_status": "suggested",

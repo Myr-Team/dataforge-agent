@@ -366,7 +366,7 @@ def test_finops_opportunity_queue_never_executes_actions(
     item = response.json()["items"][0]
     assert item["queue_state"] == "ready"
     assert item["action_status"] == "suggested"
-    assert item["estimated_savings"] == 0.0001
+    assert item["estimated_savings"] is None
 
 
 def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(

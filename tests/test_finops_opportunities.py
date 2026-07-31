@@ -34,7 +34,7 @@ def test_opportunities_rank_by_impact_confidence_and_effort() -> None:
     assert queue[0]["policy_type"] == "daily_cost_budget"
     assert queue[0]["impact"] == "high"
     assert queue[0]["confidence"] == "high"
-    assert queue[0]["estimated_savings"] is not None
+    assert queue[0]["estimated_savings"] is None
     assert queue[0]["action_status"] == "suggested"
 
 
@@ -78,3 +78,19 @@ def test_cache_opportunity_preserves_clicked_evidence_references() -> None:
         "req_miss_0001",
         "req_bypass_0002",
     ]
+
+
+def test_opportunity_does_not_invent_savings_from_a_fixed_rate() -> None:
+    items = build_opportunity_queue(
+        anomalies=[{
+            "anomaly_id": "anom_latency", "policy_type": "p95_latency", "severity": "warning",
+            "sample_count": 60, "evidence_state": "observed", "evidence_refs": ["req_slow_000001"],
+        }],
+        recommendations=[],
+        priced_cost=100,
+        priced_coverage_pct=100,
+        impact_estimates=None,
+    )
+
+    assert items[0]["estimated_savings"] is None
+    assert items[0]["currency"] is None
