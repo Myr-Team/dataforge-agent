@@ -19,6 +19,7 @@ try:
     from ..run_store import get_run, list_runs
     from ..workspace_authz import active_workspace_role
     from ..workspace_store import list_workspaces
+    from ..control_plane import workspace_cost_value_snapshot, workspace_roi_snapshot
 except ImportError:
     import cache_store
     from identity import actor_from_request, is_trusted_tenant_identity
@@ -27,6 +28,7 @@ except ImportError:
     from run_store import get_run, list_runs
     from workspace_authz import active_workspace_role
     from workspace_store import list_workspaces
+    from control_plane import workspace_cost_value_snapshot, workspace_roi_snapshot
 
 from .normalization import canonical_actor_ref, canonical_tenant_ref
 from .evidence import build_evidence_alias, operation_code_for_event
@@ -100,6 +102,7 @@ from .saved_views import (
 from .sql_planning import SqlFinOpsPlanningRepository
 from .roi_economics import build_roi_economics
 from .opportunities import build_opportunity_queue
+from .decision_service import build_risk_decision, build_roi_decision
 from .insight_repository import InMemoryInsightRepository, SqlInsightRepository
 from .insight_service import FinOpsInsightService
 from .repository import RunStoreFinOpsRepository
@@ -108,6 +111,7 @@ from .sql_management import SqlFinOpsManagementRepository
 from .sql_governance import SqlFinOpsActionRepository
 from .sql_anomalies import SqlFinOpsAnomalyRepository
 from .sql_repository import FinOpsPersistenceError
+from .sql_rollups import SqlFinOpsRollupRepository
 
 
 router = APIRouter(prefix="/api/finops", tags=["finops"])
@@ -144,6 +148,7 @@ _SQL_PLANNING_REPOSITORY: SqlFinOpsPlanningRepository | None = None
 _PRICE_MAPPING_REPOSITORY = InMemoryPriceMappingRepository()
 _SQL_PRICE_MAPPING_REPOSITORY: SqlPriceMappingRepository | None = None
 _SQL_GATEWAY_UNMATCHED_REPOSITORY: SqlGatewayUnmatchedRepository | None = None
+_SQL_ROLLUP_REPOSITORY: SqlFinOpsRollupRepository | None = None
 _ASSISTANT_STORE = InMemoryAssistantConversationStore()
 _SQL_ASSISTANT_STORE: SqlAssistantConversationStore | None = None
 
@@ -179,7 +184,7 @@ def _enabled(name: str) -> bool:
 
 
 def get_finops_query_service() -> Any:
-    global _SQL_REPOSITORY
+    global _SQL_REPOSITORY, _SQL_ROLLUP_REPOSITORY
     secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
     if not secret:
         raise RuntimeError("FinOps HMAC is unavailable")
@@ -196,6 +201,7 @@ def get_finops_query_service() -> Any:
         delegate = FinOpsQueryService(
             _SQL_REPOSITORY,
             gateway_unmatched_repository=_SQL_GATEWAY_UNMATCHED_REPOSITORY,
+            rollup_repository=get_finops_rollup_repository(),
         )
     else:
         delegate = FinOpsQueryService(
@@ -219,6 +225,18 @@ def get_finops_query_service() -> Any:
         cache=cache_store,
         ttl_seconds=ttl_seconds,
     )
+
+
+def get_finops_rollup_repository() -> SqlFinOpsRollupRepository:
+    """Return the SQL rollup reader only when SQL FinOps is enabled."""
+    global _SQL_ROLLUP_REPOSITORY
+    if not _enabled("DF_FINOPS_SQL_ENABLED"):
+        raise RuntimeError("FinOps SQL rollups are disabled")
+    if _SQL_ROLLUP_REPOSITORY is None:
+        _SQL_ROLLUP_REPOSITORY = SqlFinOpsRollupRepository(
+            connection_factory=build_lineage_sql_connection_factory()
+        )
+    return _SQL_ROLLUP_REPOSITORY
 
 
 def get_finops_action_service() -> FinOpsActionService:
@@ -1054,6 +1072,252 @@ async def roi_economics(
         "currency": "USD",
     })
     return payload
+
+
+def _roi_economics_payload(
+    query_service: Any,
+    query: FinOpsQuery,
+    roi: Mapping[str, Any],
+    cost_value: Mapping[str, Any],
+) -> dict[str, Any]:
+    metrics = query_service.overview(query).get("metrics") or {}
+    requests = int(metrics.get("requests") or 0)
+    success_rate = metrics.get("success_rate_pct")
+    successful_requests = (
+        round(requests * float(success_rate) / 100)
+        if success_rate is not None
+        else 0
+    )
+    usage = roi.get("usage") if isinstance(roi.get("usage"), Mapping) else {}
+    return build_roi_economics(
+        cost_evidence=cost_value.get("cost_evidence") or {},
+        outcome_evidence=cost_value.get("outcome_evidence") or {},
+        realized_roi=cost_value.get("realized_roi") or {},
+        requests=requests,
+        successful_requests=successful_requests,
+        analyses=int(usage.get("runs") or 0),
+        artifacts=int(cost_value.get("artifact_count") or 0),
+        scenarios=list(cost_value.get("scenarios") or []),
+    )
+
+
+def merge_output_trend(
+    unit_items: list[Mapping[str, Any]],
+    output_items: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Join daily aggregate cost facts with separately observed artifacts.
+
+    No aggregate is spread across days: a missing side stays unavailable for
+    that exact bucket rather than being inferred from a neighbouring period.
+    """
+    costs = {
+        str(item.get("bucket_at")): item
+        for item in unit_items
+        if str(item.get("bucket_at") or "")
+    }
+    outputs = {
+        str(item.get("bucket_at")): item
+        for item in output_items
+        if str(item.get("bucket_at") or "")
+    }
+    result = []
+    for bucket_at in sorted(set(costs) | set(outputs)):
+        cost = costs.get(bucket_at) or {}
+        output = outputs.get(bucket_at) or {}
+        cost_status = str(cost.get("data_status") or "unavailable")
+        output_count = output.get("effective_output_count")
+        output_status = str(output.get("data_status") or "unavailable")
+        result.append(
+            {
+                "bucket_at": bucket_at,
+                "successful_requests": cost.get("successful_requests"),
+                "estimated_cost": cost.get("estimated_cost"),
+                "cost_per_successful_request": cost.get("cost_per_successful_request"),
+                "cost_data_status": cost_status,
+                "effective_output_count": output_count,
+                "output_kind": output.get("output_kind") if output_count is not None else None,
+                "output_data_status": output_status,
+                # Task 1's decision projection accepts this concise display
+                # form; the complete row is restored after its safety schema.
+                "label": bucket_at,
+                "period": bucket_at,
+                "value": cost.get("cost_per_successful_request"),
+                "unit": "USD per successful request",
+                "currency": "USD" if cost.get("estimated_cost") is not None else None,
+                "status": "estimated" if cost_status == "available" else "unavailable",
+            }
+        )
+    return result
+
+
+def _decision_envelope(
+    query_service: Any,
+    query: FinOpsQuery,
+    decision: Mapping[str, Any],
+) -> dict[str, Any]:
+    envelope = query_service.overview(query)
+    return {
+        key: envelope.get(key)
+        for key in ("scope", "window", "freshness", "coverage", "currency", "data_status")
+    } | dict(decision)
+
+
+def _roi_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, Any]:
+    if not query.workspace_id:
+        raise ValueError("ROI decision requires one workspace")
+    roi = workspace_roi_snapshot(query.workspace_id, query.from_value, query.to_value)
+    cost_value = workspace_cost_value_snapshot(query.workspace_id, query.from_value, query.to_value)
+    economics = _roi_economics_payload(query_service, query, roi, cost_value)
+    unit_trend = merge_output_trend(
+        query_service.unit_economics_trend(query, "day").get("items") or [],
+        cost_value.get("output_trend") or [],
+    )
+    decision = build_roi_decision(
+        economics=economics,
+        roi_snapshot=roi,
+        cost_value=cost_value,
+        unit_trend=unit_trend,
+    )
+    # Keep Task 1's schema-safe display projection while returning the full
+    # bounded trend rows that this page needs for unavailable-data states.
+    decision["unit_economics_trend"] = unit_trend
+    return _decision_envelope(query_service, query, decision)
+
+
+def _decision_anomalies_from_events(
+    events: list[FinOpsRequestEvent],
+    *,
+    tenant_ref: str,
+) -> list[dict[str, Any]]:
+    return [
+        {**item.model_dump(mode="json"), "evidence_state": "observed"}
+        for item in evaluate_default_anomalies(
+            _anomaly_evaluation_input(events, tenant_ref=tenant_ref)
+        )
+    ]
+
+
+def _decision_opportunities(
+    query_service: Any,
+    query: FinOpsQuery,
+    anomalies: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    metrics = query_service.overview(query).get("metrics") or {}
+    cost = metrics.get("estimated_cost") if isinstance(metrics.get("estimated_cost"), Mapping) else {}
+    total = metrics.get("requests") or 0
+    priced = cost.get("priced_requests") if isinstance(cost, Mapping) else 0
+    coverage = round(float(priced) / float(total) * 100, 4) if total else None
+    return build_opportunity_queue(
+        anomalies=list(anomalies),
+        recommendations=list(anomalies),
+        priced_cost=cost.get("amount") if isinstance(cost, Mapping) else None,
+        priced_coverage_pct=coverage,
+    )
+
+
+def _risk_evidence_summaries(
+    events: list[FinOpsRequestEvent],
+    opportunities: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    by_ref = {event.request_ref: event for event in events}
+    selected: list[str] = []
+    for opportunity in opportunities:
+        for ref in opportunity.get("evidence_refs") or []:
+            ref = str(ref)
+            if ref in by_ref and ref not in selected:
+                selected.append(ref)
+            if len(selected) >= 10 or len([item for item in selected if item in set(opportunity.get("evidence_refs") or [])]) >= 2:
+                break
+        if len(selected) >= 10:
+            break
+    result = []
+    for request_ref in selected[:10]:
+        event = by_ref[request_ref]
+        result.append(
+            {
+                "request_ref": request_ref,
+                "request_name": f"Request {event.occurred_at.astimezone(timezone.utc):%Y-%m-%d %H:%M}",
+                "operation": operation_code_for_event(event),
+                "model_label": event.deployment or event.model or "unrecorded",
+                "signal": {"metric": "request", "value": 1, "unit": "request"},
+                "cache_state": event.result_cache.state,
+                "status": event.status,
+                "error_category": event.error_category,
+                "latency_ms": event.latency_ms,
+                "cost_status": event.estimated_cost.status,
+                "technical_refs": {"request_ref": request_ref},
+            }
+        )
+    return result
+
+
+def _governance_capability() -> dict[str, Any]:
+    return {
+        "read_enabled": True,
+        "draft_enabled": False,
+        "actions_enabled": False,
+        "typed_executors": [],
+    }
+
+
+def _risk_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, Any]:
+    if not query.workspace_id:
+        raise ValueError("risk decision requires one workspace")
+    events = query_service.events(query)
+    anomaly_items = _decision_anomalies_from_events(events, tenant_ref=query.tenant_ref)
+    opportunity_items = _decision_opportunities(query_service, query, anomaly_items)
+    evidence_summaries = _risk_evidence_summaries(events, opportunity_items)
+    latest = get_finops_insight_service().latest(
+        tenant_ref=query.tenant_ref,
+        authorized_workspace_ids=(query.workspace_id,),
+        agent_kind="finops",
+    )
+    decision = build_risk_decision(
+        anomalies=anomaly_items,
+        opportunities=opportunity_items,
+        evidence_summaries=evidence_summaries,
+        insight=_public_insight(latest, include_evidence_refs=True) if latest else None,
+        drafts=[],
+        governance_capability=_governance_capability(),
+    )
+    return _decision_envelope(query_service, query, decision)
+
+
+@router.get("/roi/decision")
+async def roi_decision(
+    request: Request,
+    from_value: str | None = Query(default=None, alias="from", max_length=64),
+    to_value: str | None = Query(default=None, alias="to", max_length=64),
+    department_id: str | None = Query(default=None, max_length=128),
+    workspace_id: str = Query(min_length=1, max_length=160),
+    agent_id: str | None = Query(default=None, max_length=128),
+    actor_ref: str | None = Query(default=None, max_length=128),
+    model: str | None = Query(default=None, max_length=160),
+) -> dict[str, Any]:
+    service, query, roles = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
+    if roles.get(workspace_id) not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="ROI decision requires admin or owner")
+    try:
+        return _roi_decision_payload(service, query)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="ROI evidence service is unavailable") from exc
+
+
+@router.get("/risk/decision")
+async def risk_decision(
+    request: Request,
+    from_value: str | None = Query(default=None, alias="from", max_length=64),
+    to_value: str | None = Query(default=None, alias="to", max_length=64),
+    department_id: str | None = Query(default=None, max_length=128),
+    workspace_id: str = Query(min_length=1, max_length=160),
+    agent_id: str | None = Query(default=None, max_length=128),
+    actor_ref: str | None = Query(default=None, max_length=128),
+    model: str | None = Query(default=None, max_length=160),
+) -> dict[str, Any]:
+    service, query, roles = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
+    if roles.get(workspace_id) not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="risk decision requires admin or owner")
+    return _risk_decision_payload(service, query)
 
 
 @router.post("/views", status_code=201)

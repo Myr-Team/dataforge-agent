@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import base64
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .models import FinOpsRequestEvent
+from .rollups import FinOpsRollup, aggregate_rollups
 
 
 class FinOpsQuery(BaseModel):
@@ -45,9 +46,11 @@ class FinOpsQueryService:
         repository: Any,
         *,
         gateway_unmatched_repository: Any | None = None,
+        rollup_repository: Any | None = None,
     ) -> None:
         self._repository = repository
         self._gateway_unmatched_repository = gateway_unmatched_repository
+        self._rollup_repository = rollup_repository
 
     def _gateway_unmatched(
         self,
@@ -90,6 +93,123 @@ class FinOpsQueryService:
     def events(self, query: FinOpsQuery) -> list[FinOpsRequestEvent]:
         """Return already tenant/workspace-scoped events for internal evaluators."""
         return self._rows(query)
+
+    def unit_economics_trend(
+        self,
+        query: FinOpsQuery,
+        bucket: Literal["hour", "day"] = "day",
+    ) -> dict[str, Any]:
+        rollups = self._unit_economics_rollups(query, bucket)
+        grouped: dict[str, list[FinOpsRollup]] = defaultdict(list)
+        for item in rollups:
+            grouped[item.bucket_at].append(item)
+        items = []
+        for bucket_at, rows in sorted(grouped.items()):
+            requests = sum(item.request_count for item in rows)
+            failures = min(requests, sum(item.failure_count for item in rows))
+            successful = requests - failures
+            known_costs = [item.estimated_cost for item in rows if item.estimated_cost is not None]
+            estimated_cost = round(sum(known_costs), 8) if known_costs else None
+            items.append({
+                "bucket_at": bucket_at,
+                "successful_requests": successful,
+                "estimated_cost": estimated_cost,
+                "cost_per_successful_request": (
+                    round(estimated_cost / successful, 8)
+                    if estimated_cost is not None and successful > 0
+                    else None
+                ),
+                "data_status": (
+                    "available"
+                    if estimated_cost is not None and successful > 0
+                    else "unavailable"
+                ),
+            })
+        return {"items": items, "count": len(items)}
+
+    def _unit_economics_rollups(
+        self,
+        query: FinOpsQuery,
+        bucket: Literal["hour", "day"],
+    ) -> list[FinOpsRollup]:
+        if self._rollup_repository is None:
+            hourly, daily = aggregate_rollups(self._rows(query))
+            return hourly if bucket == "hour" else daily
+        # Rollups have no actor dimension.  Actor-scoped views must derive from
+        # the already-authorized request facts for their complete query window.
+        if query.actor_ref:
+            hourly, daily = aggregate_rollups(self._rows(query))
+            return hourly if bucket == "hour" else daily
+
+        now = datetime.now(timezone.utc)
+        start = _parse_time(query.from_value)
+        end = _parse_time(query.to_value)
+        current_start = (
+            now.replace(minute=0, second=0, microsecond=0)
+            if bucket == "hour"
+            else now.replace(hour=0, minute=0, second=0, microsecond=0)
+        )
+        # A historical/closed query never reaches into request facts.  When
+        # the current bucket is included, use persisted rollups only through
+        # the previous closed boundary, then add facts for that one bucket.
+        if end <= current_start:
+            return self._closed_rollups(
+                self._rollup_repository.read(query, bucket),
+                query,
+                bucket,
+                start,
+                end,
+            )
+
+        rollups: list[FinOpsRollup] = []
+        closed_end = min(end, current_start)
+        if start < closed_end:
+            closed_query = query.model_copy(update={"to_value": _time_string(closed_end)})
+            rollups.extend(
+                self._closed_rollups(
+                    self._rollup_repository.read(closed_query, bucket),
+                    query,
+                    bucket,
+                    start,
+                    closed_end,
+                )
+            )
+        current_end = min(end, now)
+        current_begin = max(start, current_start)
+        if current_begin < current_end:
+            current_query = query.model_copy(
+                update={"from_value": _time_string(current_begin), "to_value": _time_string(current_end)}
+            )
+            hourly, daily = aggregate_rollups(self._rows(current_query))
+            rollups.extend(hourly if bucket == "hour" else daily)
+        return rollups
+
+    @staticmethod
+    def _closed_rollups(
+        rows: list[FinOpsRollup],
+        query: FinOpsQuery,
+        bucket: Literal["hour", "day"],
+        start: datetime,
+        end: datetime,
+    ) -> list[FinOpsRollup]:
+        selected = set(query.authorized_workspace_ids)
+        result = []
+        for item in rows:
+            try:
+                bucket_at = _parse_time(item.bucket_at)
+            except ValueError:
+                continue
+            if (
+                item.tenant_ref != query.tenant_ref
+                or item.workspace_id not in selected
+                or not start <= bucket_at < end
+                or (query.department_id and item.department_id != query.department_id)
+                or (query.agent_id and item.agent_id != query.agent_id)
+                or (query.model and item.model_deployment != query.model)
+            ):
+                continue
+            result.append(item)
+        return result
 
     def request_detail(self, query: FinOpsQuery, request_ref: str) -> dict[str, Any] | None:
         event = self._repository.get_event(
@@ -675,6 +795,10 @@ def _trust(
 def _parse_time(value: str) -> datetime:
     parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _time_string(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _percentile(values: list[int], fraction: float) -> int | None:

@@ -27,6 +27,14 @@ class _Delegate:
     def events(self, query: FinOpsQuery) -> list[object]:
         return []
 
+    def unit_economics_trend(self, query: FinOpsQuery, bucket: str) -> dict[str, object]:
+        self.calls += 1
+        return {
+            "freshness": {"generated_at": "2026-07-24T00:00:00Z"},
+            "items": [{"bucket_at": bucket, "calls": self.calls}],
+            "count": 1,
+        }
+
 
 class _MemoryCache:
     def __init__(self) -> None:
@@ -96,5 +104,21 @@ def test_bootstrap_cache_deduplicates_same_scope_and_isolates_tenants() -> None:
     assert second["freshness"]["query_cache"]["status"] == "hit"
     assert second["overview"]["metrics"]["requests"] == 1
     assert other_tenant["overview"]["metrics"]["requests"] == 2
+    assert cache.keys[0] == cache.keys[1]
+    assert cache.keys[0] != cache.keys[2]
+
+
+def test_unit_economics_cache_isolated_by_bucket() -> None:
+    delegate = _Delegate()
+    cache = _MemoryCache()
+    service = CachedFinOpsQueryService(delegate, cache=cache, ttl_seconds=60)
+
+    first = service.unit_economics_trend(_query("tenant-a"), "day")
+    second = service.unit_economics_trend(_query("tenant-a"), "day")
+    hourly = service.unit_economics_trend(_query("tenant-a"), "hour")
+
+    assert first["items"][0]["calls"] == 1
+    assert second["items"][0]["calls"] == 1
+    assert hourly["items"][0]["calls"] == 2
     assert cache.keys[0] == cache.keys[1]
     assert cache.keys[0] != cache.keys[2]

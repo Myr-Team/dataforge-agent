@@ -2336,6 +2336,18 @@ def workspace_cost_value_snapshot(workspace_id: str, from_value: str, to_value: 
         if isinstance(item, Mapping)
         and record_in_window(item, window, "task")
     )
+    output_by_day: dict[str, int] = {}
+    for item in artifacts:
+        if not isinstance(item, Mapping) or not record_in_window(item, window, "task"):
+            continue
+        timestamp = str(item.get("created_at") or item.get("updated_at") or item.get("time") or "")
+        if not timestamp:
+            continue
+        try:
+            day = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(timezone.utc).date().isoformat()
+        except ValueError:
+            continue
+        output_by_day[day] = output_by_day.get(day, 0) + 1
     return {
         "workspace_id": workspace_id,
         "window": snapshot["window"],
@@ -2343,6 +2355,15 @@ def workspace_cost_value_snapshot(workspace_id: str, from_value: str, to_value: 
         "outcome_evidence": snapshot["outcome_evidence"],
         "realized_roi": realized_roi_evidence(snapshot),
         "artifact_count": artifact_count,
+        "output_trend": [
+            {
+                "bucket_at": day,
+                "effective_output_count": count,
+                "output_kind": "artifact",
+                "data_status": "available",
+            }
+            for day, count in sorted(output_by_day.items())
+        ],
         "scenarios": scenarios,
         "foundry_integration": snapshot["foundry_integration"],
         "generated_at": snapshot["generated_at"],

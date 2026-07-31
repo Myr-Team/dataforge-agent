@@ -78,6 +78,14 @@ class CachedFinOpsQueryService:
         # Internal Pydantic objects are never serialized into the query cache.
         return self._delegate.events(query)
 
+    def unit_economics_trend(self, query: FinOpsQuery, bucket: str = "day") -> dict[str, Any]:
+        return self._cached(
+            "unit_economics_trend",
+            query,
+            lambda: self._delegate.unit_economics_trend(query, bucket),
+            extras={"bucket": bucket},
+        ) or {"items": [], "count": 0}
+
     def _cached(
         self,
         operation: str,
