@@ -174,6 +174,41 @@ def test_action_requires_different_human_approver_and_rejects_untyped_payload() 
         )
 
 
+def test_action_create_reuses_matching_caller_supplied_id_and_rejects_conflicts() -> None:
+    service = FinOpsActionService(repository=InMemoryActionRepository(), executors={})
+    payload = {
+        "workspace_id": "ws-a",
+        "enabled": True,
+        "ttl_seconds": 1800,
+        "base_version": "cache-v1",
+    }
+    first = service.create(
+        tenant_ref="tenant-a",
+        action_type="cache_policy",
+        payload=payload,
+        actor_ref="owner-a",
+        action_id="remediation_cache_opaque_123",
+    )
+    retry = service.create(
+        tenant_ref="tenant-a",
+        action_type="cache_policy",
+        payload=payload,
+        actor_ref="owner-a",
+        action_id="remediation_cache_opaque_123",
+    )
+
+    assert retry == first
+    assert len(service.list(tenant_ref="tenant-a")) == 1
+    with pytest.raises(ActionConflict, match="idempotency"):
+        service.create(
+            tenant_ref="tenant-a",
+            action_type="cache_policy",
+            payload={**payload, "ttl_seconds": 3600},
+            actor_ref="owner-a",
+            action_id="remediation_cache_opaque_123",
+        )
+
+
 def test_action_execute_detects_drift_and_supports_verify_and_rollback() -> None:
     executor = RecordingExecutor(current_version="v2")
     service = FinOpsActionService(

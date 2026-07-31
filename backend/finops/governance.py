@@ -164,6 +164,7 @@ class FinOpsActionService:
     ) -> None:
         self._repository = repository
         self._executors = dict(executors)
+        self._create_lock = RLock()
 
     def create(
         self,
@@ -173,30 +174,42 @@ class FinOpsActionService:
         payload: dict[str, Any],
         actor_ref: str,
         actor_kind: Literal["human", "agent"] = "human",
+        action_id: str | None = None,
     ) -> GovernanceAction:
         if actor_kind != "human":
             raise ActionPermissionDenied("agents may recommend actions but cannot create approval records")
         clean_payload = _validate_payload(action_type, payload)
-        now = _now()
-        action = GovernanceAction(
-            action_id=f"action_{uuid4().hex}",
-            tenant_ref=tenant_ref,
-            action_type=action_type,
-            status="draft",
-            payload=clean_payload,
-            proposed_by=actor_ref,
-            created_at=now,
-            updated_at=now,
-            transitions=[
-                ActionTransition(
-                    from_status=None,
-                    to_status="draft",
-                    actor_ref=actor_ref,
-                    occurred_at=now,
-                )
-            ],
-        )
-        return self._repository.save(action)
+        requested_action_id = action_id or f"action_{uuid4().hex}"
+        with self._create_lock:
+            existing = self._repository.get(tenant_ref, requested_action_id)
+            if existing is not None:
+                if (
+                    existing.action_type == action_type
+                    and existing.payload == clean_payload
+                    and existing.proposed_by == actor_ref
+                ):
+                    return existing
+                raise ActionConflict("idempotency action ID conflicts with an existing action")
+            now = _now()
+            action = GovernanceAction(
+                action_id=requested_action_id,
+                tenant_ref=tenant_ref,
+                action_type=action_type,
+                status="draft",
+                payload=clean_payload,
+                proposed_by=actor_ref,
+                created_at=now,
+                updated_at=now,
+                transitions=[
+                    ActionTransition(
+                        from_status=None,
+                        to_status="draft",
+                        actor_ref=actor_ref,
+                        occurred_at=now,
+                    )
+                ],
+            )
+            return self._repository.save(action)
 
     def submit(self, action_id: str, *, tenant_ref: str, actor_ref: str) -> GovernanceAction:
         action = self._require(tenant_ref, action_id)
