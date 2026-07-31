@@ -18,7 +18,15 @@ class SqlRemediationDraftRepository:
         draft: RemediationDraft,
         *,
         expected_revision: int,
+        actor_ref: str,
+        reason: str | None = None,
     ) -> RemediationDraft:
+        transition_actor_ref = str(actor_ref or "").strip()
+        if not transition_actor_ref or len(transition_actor_ref) > 160:
+            raise ValueError("remediation transition actor is invalid")
+        transition_reason = reason
+        if transition_reason is not None and len(transition_reason) > 512:
+            raise ValueError("remediation transition reason is invalid")
         scope_json = _json(draft.scope)
         evidence_refs_json = _json(draft.evidence_refs)
         proposed_changes_json = _json(
@@ -146,7 +154,6 @@ class SqlRemediationDraftRepository:
                 )
                 to_status = str(result[1])
                 if from_status != to_status:
-                    actor_ref = draft.reviewed_by or draft.created_by
                     occurred_at = (
                         draft.created_at if from_status is None else draft.updated_at
                     )
@@ -162,8 +169,8 @@ class SqlRemediationDraftRepository:
                         draft.draft_id,
                         from_status,
                         to_status,
-                        actor_ref,
-                        None,
+                        transition_actor_ref,
+                        transition_reason,
                         occurred_at,
                     )
         if result is None:

@@ -69,8 +69,9 @@ or `DF_FINOPS_ACTIONS_ENABLED` mutation was added.
 ## Self-review
 
 - SQL transaction/CAS: save is one locked MERGE plus same-transaction
-  transition append. A stale revision, missing expected row, or attempted
-  workspace move produces no MERGE output and maps to
+  transition append using the trusted actor and optional user-provided reason
+  supplied explicitly by the service. A stale revision, missing expected row,
+  or attempted workspace move produces no MERGE output and maps to
   `RemediationConflict`; database failures roll back and expose only the safe
   persistence error.
 - Tenant/workspace authorization: every repository read is tenant scoped;
@@ -101,3 +102,60 @@ or `DF_FINOPS_ACTIONS_ENABLED` mutation was added.
   Migration evidence is repository/static test evidence rather than a
   production database execution.
 - Existing unrelated untracked test/workspace artifacts were left untouched.
+
+## Independent review fix: explicit transition audit context
+
+An independent review found that the initial SQL repository inferred a
+transition actor from `reviewed_by` or `created_by` and always stored a null
+reason. The router accepted `reason`, but the service/repository interfaces did
+not carry it.
+
+The fix makes `actor_ref` an explicit repository-save requirement and carries
+the optional `reason` through router, remediation service, and repository.
+Create, review, close, and both promotion transitions now use the trusted
+request actor. The SQL transition insert remains in the same transaction as the
+draft CAS write. Actor and reason remain absent from public draft, action, and
+risk-decision responses.
+
+### Review-fix RED evidence
+
+- `python -m pytest tests/test_finops_remediation_sql.py
+  tests/test_finops_remediation_api.py::test_transition_actor_and_reason_flow_from_trusted_request_to_repository
+  -q` produced six expected failures:
+  - five SQL tests failed because `save` did not accept `actor_ref`;
+  - the API audit assertion showed every actor and reason arriving as null.
+
+### Review-fix GREEN evidence
+
+- New audit-chain plus remediation domain/SQL checks:
+  `19 passed in 10.57s`.
+- Focused remediation, SQL, API, migration, governance, and decision API run:
+  `63 passed in 7.32s`.
+- Full Python suite:
+  `1647 passed, 1 skipped, 1 warning in 162.31s`.
+- The warning remains the known Microsoft Agent Framework experimental
+  workflow warning.
+- `python -m py_compile backend/finops/remediation.py
+  backend/finops/sql_remediation.py backend/finops/router.py` passed.
+- `git diff --check` passed.
+
+### Review-fix coverage
+
+- Different creator, reviewer, closer, and promoter identities are asserted at
+  the repository boundary.
+- Review, close, pending-approval, and promoted transition reasons are
+  preserved.
+- A stale close does not call repository save or append an audit record.
+- A SQL transition-insert failure rolls back the draft CAS transaction.
+- Promotion remains draft-only and no deployment, auth, traffic, or action-gate
+  change was made.
+
+### Review-fix changed files
+
+- `backend/finops/remediation.py`
+- `backend/finops/sql_remediation.py`
+- `backend/finops/router.py`
+- `tests/test_finops_remediation.py`
+- `tests/test_finops_remediation_sql.py`
+- `tests/test_finops_remediation_api.py`
+- `.superpowers/sdd/operations-roi-risk-task-4-report.md`

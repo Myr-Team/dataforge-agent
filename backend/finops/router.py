@@ -2191,6 +2191,7 @@ async def review_remediation_draft(
             actor_ref=actor_ref,
             base_revision=body.base_revision,
             authorized_workspace_ids=tuple(sorted(roles)),
+            reason=body.reason,
         )
     except Exception as exc:
         raise _remediation_error(exc) from exc
@@ -2214,6 +2215,7 @@ async def close_remediation_draft(
             actor_ref=actor_ref,
             base_revision=body.base_revision,
             authorized_workspace_ids=tuple(sorted(roles)),
+            reason=body.reason,
         )
     except Exception as exc:
         raise _remediation_error(exc) from exc
@@ -2237,6 +2239,7 @@ async def promote_remediation_draft(
             actor_ref=actor_ref,
             base_revision=body.base_revision,
             authorized_workspace_ids=tuple(sorted(roles)),
+            reason=body.reason,
         )
         action = get_finops_action_service().get(
             tenant_ref=tenant_ref,

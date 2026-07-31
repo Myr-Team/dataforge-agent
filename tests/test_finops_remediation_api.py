@@ -15,6 +15,35 @@ from backend.finops.remediation import InMemoryRemediationDraftRepository
 from backend.finops.repository import InMemoryFinOpsRepository
 
 
+class _AuditRecordingRemediationRepository(
+    InMemoryRemediationDraftRepository
+):
+    def __init__(self) -> None:
+        super().__init__()
+        self.transition_writes: list[
+            tuple[str, str | None, str | None]
+        ] = []
+
+    def save(
+        self,
+        draft,
+        *,
+        expected_revision: int,
+        actor_ref: str | None = None,
+        reason: str | None = None,
+    ):
+        saved = super().save(
+            draft,
+            expected_revision=expected_revision,
+            actor_ref=actor_ref or "",
+            reason=reason,
+        )
+        self.transition_writes.append(
+            (draft.status, actor_ref, reason)
+        )
+        return saved
+
+
 @pytest.fixture
 def repository() -> InMemoryFinOpsRepository:
     value = InMemoryFinOpsRepository()
@@ -409,3 +438,82 @@ def test_saved_draft_appears_only_in_authorized_workspace_risk_decision(
     ]
     assert other_workspace.status_code == 200
     assert other_workspace.json()["drafts"] == []
+
+
+def test_transition_actor_and_reason_flow_from_trusted_request_to_repository(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    second_owner_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audit_repository = _AuditRecordingRemediationRepository()
+    monkeypatch.setattr(
+        finops_router,
+        "_REMEDIATION_REPOSITORY",
+        audit_repository,
+    )
+    closer_headers = trusted_headers(
+        actor_id="owner-c",
+        tenant_id="tenant-a",
+    )
+
+    closable = _create(client, owner_headers)
+    reviewed = client.post(
+        f"/api/finops/remediation-drafts/{closable['draft_id']}/review",
+        json={
+            "base_revision": closable["revision"],
+            "reason": "review evidence confirmed",
+        },
+        headers=second_owner_headers,
+    ).json()["draft"]
+    writes_before_stale = list(audit_repository.transition_writes)
+    stale = client.post(
+        f"/api/finops/remediation-drafts/{closable['draft_id']}/close",
+        json={
+            "base_revision": closable["revision"],
+            "reason": "must not be recorded",
+        },
+        headers=closer_headers,
+    )
+    closed = client.post(
+        f"/api/finops/remediation-drafts/{closable['draft_id']}/close",
+        json={
+            "base_revision": reviewed["revision"],
+            "reason": "duplicate investigation closed",
+        },
+        headers=closer_headers,
+    )
+
+    promotable = _create(client, owner_headers)
+    promotable_reviewed = client.post(
+        f"/api/finops/remediation-drafts/{promotable['draft_id']}/review",
+        json={
+            "base_revision": promotable["revision"],
+            "reason": "reviewed for promotion",
+        },
+        headers=second_owner_headers,
+    ).json()["draft"]
+    promoted = client.post(
+        f"/api/finops/remediation-drafts/{promotable['draft_id']}/promote",
+        json={
+            "base_revision": promotable_reviewed["revision"],
+            "reason": "translate approved draft",
+        },
+        headers=closer_headers,
+    )
+
+    assert stale.status_code == 409
+    assert writes_before_stale == audit_repository.transition_writes[:2]
+    assert closed.status_code == 200
+    assert promoted.status_code == 200
+    assert audit_repository.transition_writes == [
+        ("draft", "owner-a", None),
+        ("reviewed", "owner-b", "review evidence confirmed"),
+        ("closed", "owner-c", "duplicate investigation closed"),
+        ("draft", "owner-a", None),
+        ("reviewed", "owner-b", "reviewed for promotion"),
+        ("pending_approval", "owner-c", "translate approved draft"),
+        ("promoted", "owner-c", "translate approved draft"),
+    ]
+    assert "owner-c" not in promoted.text
+    assert "translate approved draft" not in promoted.text

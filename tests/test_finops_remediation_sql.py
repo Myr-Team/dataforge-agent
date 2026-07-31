@@ -167,7 +167,11 @@ def test_sql_remediation_repository_is_tenant_scoped() -> None:
         )
     )
 
-    saved = repository.save(draft, expected_revision=0)
+    saved = repository.save(
+        draft,
+        expected_revision=0,
+        actor_ref="actor-owner",
+    )
 
     assert repository.get("tenant-b", saved.draft_id) is None
     assert repository.get("tenant-a", saved.draft_id) == saved
@@ -181,7 +185,12 @@ def test_sql_remediation_save_uses_atomic_workspace_scoped_revision_cas() -> Non
     repository = SqlRemediationDraftRepository(connection_factory=lambda: connection)
     reviewed = _draft(revision=2, status="reviewed")
 
-    saved = repository.save(reviewed, expected_revision=1)
+    saved = repository.save(
+        reviewed,
+        expected_revision=1,
+        actor_ref="actor-reviewer",
+        reason="evidence confirmed",
+    )
 
     operation, parameters = connection.cursor_value.calls[0]
     normalized = " ".join(operation.split())
@@ -206,6 +215,10 @@ def test_sql_remediation_save_uses_atomic_workspace_scoped_revision_cas() -> Non
         "draft",
         "reviewed",
     )
+    assert transition_parameters[5:7] == (
+        "actor-reviewer",
+        "evidence confirmed",
+    )
     assert connection.commits == 1
 
 
@@ -214,7 +227,12 @@ def test_sql_remediation_save_rejects_stale_revision_without_insert() -> None:
     repository = SqlRemediationDraftRepository(connection_factory=lambda: connection)
 
     with pytest.raises(RemediationConflict, match="revision conflict"):
-        repository.save(_draft(revision=2, status="reviewed"), expected_revision=1)
+        repository.save(
+            _draft(revision=2, status="reviewed"),
+            expected_revision=1,
+            actor_ref="actor-reviewer",
+            reason="must not be appended",
+        )
 
     assert len(connection.cursor_value.calls) == 1
     assert connection.commits == 1
@@ -225,7 +243,11 @@ def test_sql_remediation_serializes_json_as_sorted_compact_utf8() -> None:
     connection = _Connection(rows=[(None, "draft", 1)])
     repository = SqlRemediationDraftRepository(connection_factory=lambda: connection)
 
-    repository.save(_draft(), expected_revision=0)
+    repository.save(
+        _draft(),
+        expected_revision=0,
+        actor_ref="actor-owner",
+    )
 
     serialized_parameters = "|".join(str(value) for value in connection.cursor_value.calls[0][1])
     assert "缓存策略复核" in serialized_parameters
@@ -247,5 +269,35 @@ def test_sql_remediation_wraps_database_failures_without_internal_details() -> N
 
     assert str(captured.value) == "FinOps remediation SQL operation failed"
     assert "password" not in str(captured.value)
+    assert connection.rollbacks == 1
+    assert connection.closed is True
+
+
+def test_sql_remediation_transition_failure_rolls_back_draft_and_audit() -> None:
+    class _FailingTransitionCursor(_Cursor):
+        def execute(self, operation: str, *parameters: object) -> "_Cursor":
+            result = super().execute(operation, *parameters)
+            if "finops:insert-remediation-transition" in operation:
+                raise RuntimeError("audit insert failed with internal detail")
+            return result
+
+    connection = _Connection(rows=[("draft", "reviewed", 2)])
+    connection.cursor_value = _FailingTransitionCursor(
+        [("draft", "reviewed", 2)]
+    )
+    repository = SqlRemediationDraftRepository(connection_factory=lambda: connection)
+
+    with pytest.raises(
+        FinOpsPersistenceError,
+        match="FinOps remediation SQL operation failed",
+    ):
+        repository.save(
+            _draft(revision=2, status="reviewed"),
+            expected_revision=1,
+            actor_ref="actor-reviewer",
+            reason="evidence confirmed",
+        )
+
+    assert connection.commits == 0
     assert connection.rollbacks == 1
     assert connection.closed is True

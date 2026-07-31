@@ -238,12 +238,20 @@ def test_repository_cas_rejects_a_concurrent_stale_transition() -> None:
     assert first is not None and second is not None
     first.status = "reviewed"
     first.revision = 2
-    repository.save(first, expected_revision=1)
+    repository.save(
+        first,
+        expected_revision=1,
+        actor_ref="reviewer-a",
+    )
     second.status = "closed"
     second.revision = 2
 
     with pytest.raises(RemediationConflict, match="revision"):
-        repository.save(second, expected_revision=1)
+        repository.save(
+            second,
+            expected_revision=1,
+            actor_ref="reviewer-b",
+        )
 
     assert repository.get("tenant-a", created.draft_id).status == "reviewed"
 
@@ -301,11 +309,23 @@ class _FailPromotedDraftSaveRepository(InMemoryRemediationDraftRepository):
         super().__init__()
         self._failed = False
 
-    def save(self, draft, *, expected_revision):
+    def save(
+        self,
+        draft,
+        *,
+        expected_revision,
+        actor_ref,
+        reason=None,
+    ):
         if draft.status == "promoted" and not self._failed:
             self._failed = True
             raise RuntimeError("simulated final draft persistence failure")
-        return super().save(draft, expected_revision=expected_revision)
+        return super().save(
+            draft,
+            expected_revision=expected_revision,
+            actor_ref=actor_ref,
+            reason=reason,
+        )
 
 
 def _reviewed_cache_draft(service: FinOpsRemediationService):

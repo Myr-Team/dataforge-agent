@@ -102,7 +102,14 @@ class RemediationDraft(BaseModel):
 
 
 class RemediationDraftRepository(Protocol):
-    def save(self, draft: RemediationDraft, *, expected_revision: int) -> RemediationDraft: ...
+    def save(
+        self,
+        draft: RemediationDraft,
+        *,
+        expected_revision: int,
+        actor_ref: str,
+        reason: str | None = None,
+    ) -> RemediationDraft: ...
     def get(self, tenant_ref: str, draft_id: str) -> RemediationDraft | None: ...
     def list(self, tenant_ref: str) -> list[RemediationDraft]: ...
 
@@ -112,7 +119,15 @@ class InMemoryRemediationDraftRepository:
         self._lock = RLock()
         self._drafts: dict[tuple[str, str], RemediationDraft] = {}
 
-    def save(self, draft: RemediationDraft, *, expected_revision: int) -> RemediationDraft:
+    def save(
+        self,
+        draft: RemediationDraft,
+        *,
+        expected_revision: int,
+        actor_ref: str,
+        reason: str | None = None,
+    ) -> RemediationDraft:
+        del actor_ref, reason
         with self._lock:
             existing = self._drafts.get((draft.tenant_ref, draft.draft_id))
             current_revision = existing.revision if existing is not None else 0
@@ -202,7 +217,11 @@ class FinOpsRemediationService:
             created_at=now,
             updated_at=now,
         )
-        return self._repository.save(draft, expected_revision=0)
+        return self._repository.save(
+            draft,
+            expected_revision=0,
+            actor_ref=actor_ref,
+        )
 
     def review(
         self,
@@ -212,6 +231,7 @@ class FinOpsRemediationService:
         actor_ref: str,
         base_revision: int,
         authorized_workspace_ids: tuple[str, ...],
+        reason: str | None = None,
     ) -> RemediationDraft:
         draft = self._require(tenant_ref, draft_id, authorized_workspace_ids)
         self._check_revision(draft, base_revision)
@@ -221,7 +241,12 @@ class FinOpsRemediationService:
         draft.reviewed_by = actor_ref
         draft.revision += 1
         draft.updated_at = _now()
-        return self._repository.save(draft, expected_revision=base_revision)
+        return self._repository.save(
+            draft,
+            expected_revision=base_revision,
+            actor_ref=actor_ref,
+            reason=reason,
+        )
 
     def close(
         self,
@@ -231,8 +256,8 @@ class FinOpsRemediationService:
         actor_ref: str,
         base_revision: int,
         authorized_workspace_ids: tuple[str, ...],
+        reason: str | None = None,
     ) -> RemediationDraft:
-        del actor_ref
         draft = self._require(tenant_ref, draft_id, authorized_workspace_ids)
         self._check_revision(draft, base_revision)
         if draft.status not in {"draft", "reviewed", "pending_approval"}:
@@ -240,7 +265,12 @@ class FinOpsRemediationService:
         draft.status = "closed"
         draft.revision += 1
         draft.updated_at = _now()
-        return self._repository.save(draft, expected_revision=base_revision)
+        return self._repository.save(
+            draft,
+            expected_revision=base_revision,
+            actor_ref=actor_ref,
+            reason=reason,
+        )
 
     def promote(
         self,
@@ -250,6 +280,7 @@ class FinOpsRemediationService:
         actor_ref: str,
         base_revision: int,
         authorized_workspace_ids: tuple[str, ...],
+        reason: str | None = None,
     ) -> RemediationDraft:
         draft = self._require(tenant_ref, draft_id, authorized_workspace_ids)
         self._check_revision(draft, base_revision)
@@ -259,7 +290,12 @@ class FinOpsRemediationService:
             draft.status = "pending_approval"
             draft.revision += 1
             draft.updated_at = _now()
-            draft = self._repository.save(draft, expected_revision=base_revision)
+            draft = self._repository.save(
+                draft,
+                expected_revision=base_revision,
+                actor_ref=actor_ref,
+                reason=reason,
+            )
         elif draft.status != "pending_approval":
             raise RemediationConflict("only reviewed remediation may be promoted")
 
@@ -281,7 +317,12 @@ class FinOpsRemediationService:
         draft.translated_action_id = action.action_id
         draft.revision += 1
         draft.updated_at = _now()
-        return self._repository.save(draft, expected_revision=pending_revision)
+        return self._repository.save(
+            draft,
+            expected_revision=pending_revision,
+            actor_ref=actor_ref,
+            reason=reason,
+        )
 
     def list(
         self,
