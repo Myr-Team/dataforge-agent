@@ -1,4 +1,4 @@
-import React, { useId, useMemo, useState } from "react";
+import React, { useEffect, useId, useMemo, useState } from "react";
 import { CircleHelp, Database } from "lucide-react";
 
 const SAFE_EVIDENCE_STATUSES = new Set([
@@ -15,6 +15,34 @@ const SAFE_EVIDENCE_STATUSES = new Set([
 
 function safeEvidenceStatus(value) {
   return SAFE_EVIDENCE_STATUSES.has(value) ? value : "unavailable";
+}
+
+
+function safeValueDirection(value) {
+  return ["negative", "positive", "zero", "unavailable"].includes(value)
+    ? value
+    : "unavailable";
+}
+
+
+function safeBarWidth(value) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(100, Math.max(0, value))
+    : 0;
+}
+
+
+export function resolveRiskPointSelection(selectedId, validIds) {
+  return typeof selectedId === "string" && Array.isArray(validIds) && validIds.includes(selectedId)
+    ? selectedId
+    : "";
+}
+
+
+export function toggleRiskPointSelection(currentId, pointId, validIds) {
+  const nextId = resolveRiskPointSelection(pointId, validIds);
+  if (!nextId) return "";
+  return resolveRiskPointSelection(currentId, validIds) === nextId ? "" : nextId;
 }
 
 
@@ -70,7 +98,7 @@ export function ValueBridge({
     <div className="finops-decision-value-bridge" aria-label={description || "价值构成"}>
       <div className="finops-decision-value-bars">
         {rows.map((item) => (
-          <div className="finops-decision-value-row" key={item.id}>
+          <div className="finops-decision-value-row finops-decision-tooltip-boundary" key={item.id}>
             <span>
               <b>{item.label}</b>
               {item.explanation ? (
@@ -78,13 +106,20 @@ export function ValueBridge({
               ) : null}
             </span>
             <div className="finops-decision-value-track">
+              <span className="finops-decision-zero-axis" aria-hidden="true" />
               <i
-                className={`finops-decision-value-${safeEvidenceStatus(item.status)}`}
+                className={`finops-decision-value-bar finops-decision-value-${safeEvidenceStatus(item.status)} finops-decision-direction-${safeValueDirection(item.direction)}`}
                 aria-hidden="true"
-                style={{ "--finops-decision-bar-width": `${item.barPct || 0}%` }}
+                style={{
+                  "--finops-decision-bar-width": `${safeBarWidth(item.barPct)}%`,
+                  "--finops-decision-bar-half-width": `${safeBarWidth(item.barPct) / 2}%`,
+                }}
               />
             </div>
-            <strong>{item.valueLabel}</strong>
+            <span className="finops-decision-value-result">
+              <strong>{item.valueLabel}</strong>
+              <small>{item.directionLabel || "方向不可用"}{item.unitLabel ? ` · ${item.unitLabel}` : ""}</small>
+            </span>
           </div>
         ))}
       </div>
@@ -92,13 +127,15 @@ export function ValueBridge({
         <table className="finops-decision-table-fallback">
           <caption>价值构成明细</caption>
           <thead>
-            <tr><th scope="col">项目</th><th scope="col">数值</th><th scope="col">证据状态</th></tr>
+            <tr><th scope="col">项目</th><th scope="col">数值</th><th scope="col">单位</th><th scope="col">方向</th><th scope="col">证据状态</th></tr>
           </thead>
           <tbody>
             {rows.map((item) => (
               <tr key={item.id}>
                 <th scope="row">{item.label}</th>
                 <td>{item.valueLabel}</td>
+                <td>{item.unitLabel || "未记录"}</td>
+                <td>{item.directionLabel || "方向不可用"}</td>
                 <td><EvidenceBadge status={item.status}>{item.badge}</EvidenceBadge></td>
               </tr>
             ))}
@@ -136,7 +173,7 @@ export function EvidenceMaturity({
       <ol className="finops-decision-maturity-stages">
         {rows.map((stage) => (
           <li
-            className={stage.complete ? "finops-decision-maturity-complete" : ""}
+            className={`finops-decision-tooltip-boundary ${stage.complete ? "finops-decision-maturity-complete" : ""}`}
             key={stage.id}
             aria-label={stage.description || `${stage.label}：${stage.valueLabel}；${stage.badge}`}
           >
@@ -177,13 +214,14 @@ function pointAlignment(point) {
 
 export function RiskMatrix({ points = [], selectedId = "", onSelect = null }) {
   const rows = Array.isArray(points) ? points.filter((point) => point?.id) : [];
-  const [tappedId, setTappedId] = useState("");
+  const [tappedId, setTappedId] = useState(null);
+  const validIds = useMemo(() => rows.map((point) => point.id), [rows]);
+  const validIdsKey = validIds.join("|");
+  useEffect(() => setTappedId(null), [selectedId, validIdsKey]);
   if (!rows.length) return <DecisionEmpty>当前没有可定位到矩阵的风险证据。</DecisionEmpty>;
-  const activeId = rows.some((point) => point.id === selectedId)
-    ? selectedId
-    : rows.some((point) => point.id === tappedId)
-      ? tappedId
-      : rows[0].id;
+  const activeId = tappedId === null
+    ? resolveRiskPointSelection(selectedId, validIds)
+    : resolveRiskPointSelection(tappedId, validIds);
   return (
     <div className="finops-decision-matrix" aria-label="风险矩阵：横轴为证据置信度，纵轴为业务影响">
       <span className="finops-decision-axis-y" aria-hidden="true">业务影响</span>
@@ -202,6 +240,8 @@ export function RiskMatrix({ points = [], selectedId = "", onSelect = null }) {
                 "--finops-decision-point-x": `${point.visualX}%`,
                 "--finops-decision-point-y": `${100 - point.visualY}%`,
                 "--finops-decision-point-size": `${point.radius * 2}px`,
+                "--finops-decision-point-radius": `${point.radius}px`,
+                "--finops-decision-point-offset": `${-point.radius}px`,
               }}
             >
               <button
@@ -210,8 +250,9 @@ export function RiskMatrix({ points = [], selectedId = "", onSelect = null }) {
                 aria-describedby={tooltipId}
                 aria-pressed={activeId === point.id}
                 onClick={() => {
-                  setTappedId((current) => current === point.id ? "" : point.id);
-                  onSelect?.(point.id);
+                  const nextId = toggleRiskPointSelection(activeId, point.id, validIds);
+                  setTappedId(nextId);
+                  onSelect?.(nextId || null);
                 }}
               />
               <span className="finops-decision-point-tooltip" id={tooltipId} role="tooltip">
@@ -274,6 +315,8 @@ export function OpportunityPortfolio({ data = {}, selectedId = "", onSelect = nu
                       "--finops-decision-point-x": `${point.visualX}%`,
                       "--finops-decision-point-y": `${100 - point.visualY}%`,
                       "--finops-decision-point-size": `${point.radius * 2}px`,
+                      "--finops-decision-point-radius": `${point.radius}px`,
+                      "--finops-decision-point-offset": `${-point.radius}px`,
                     }}
                   >
                     <button

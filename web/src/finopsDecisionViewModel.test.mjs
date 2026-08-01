@@ -70,6 +70,42 @@ test("zero is preserved while missing remains unavailable", () => {
 });
 
 
+test("value bridge scales only comparable units and exposes negative direction", () => {
+  const view = roiDecisionView({
+    metrics: [
+      { id: "monthly_benefit", label: "月度收益", value: 100, unit: "USD", status: "estimated" },
+      { id: "monthly_total_cost", label: "月度总成本", value: -50, unit: "USD", status: "estimated" },
+      { id: "monthly_net_benefit", label: "月度净收益", value: 25, unit: "USD", status: "estimated" },
+      { id: "roi_ratio", label: "ROI 比率", value: 2, unit: "ratio", status: "estimated" },
+    ],
+    value_bridge: { formula_revision: "formula-mixed-v1" },
+  });
+
+  assert.deepEqual(
+    view.valueBridge.items.map((item) => [item.id, item.value, item.unit, item.barPct]),
+    [
+      ["monthly_benefit", 100, "USD", 100],
+      ["monthly_total_cost", -50, "USD", 50],
+      ["monthly_net_benefit", 25, "USD", 25],
+      ["roi_ratio", 2, "ratio", 100],
+    ],
+  );
+  assert.equal(view.valueBridge.items[1].direction, "negative");
+  assert.equal(view.valueBridge.items[1].sign, -1);
+  assert.equal(view.valueBridge.items[1].directionLabel, "负值");
+  assert.equal(view.valueBridge.items[1].valueLabel, "-$50.00");
+  assert.equal(view.valueBridge.items[0].direction, "positive");
+  assert.equal(view.valueBridge.items[2].direction, "positive");
+  assert.equal(view.valueBridge.items[3].scaleGroup, "ratio");
+  assert.deepEqual(view.valueBridge.items.map((item) => item.id), [
+    "monthly_benefit",
+    "monthly_total_cost",
+    "monthly_net_benefit",
+    "roi_ratio",
+  ]);
+});
+
+
 test("risk bubbles preserve source coordinates and real size differences", () => {
   const view = riskDecisionView({
     risk_matrix: [
@@ -153,6 +189,40 @@ test("unknown states and malformed collections become neutral safe projections",
     color: "",
     status: "unavailable",
   });
+
+  const noTextCoercion = roiDecisionView({
+    decision: { title: 12345, summary: { text: "hidden" } },
+    capability_explanation: {
+      "平台自动确认": [12345, "可展示文本", { text: "hidden" }],
+    },
+  });
+  assert.equal(noTextCoercion.decision.title, "");
+  assert.equal(noTextCoercion.decision.summary, "");
+  assert.deepEqual(noTextCoercion.capability.platformConfirmed, ["可展示文本"]);
+});
+
+
+test("missing impact and unknown insight status stay unavailable", () => {
+  const view = riskDecisionView({
+    priorities: [{
+      id: "risk-no-status",
+      policy_type: "cache_hit_rate",
+      estimated_savings: 99,
+      currency: "USD",
+    }],
+    insight: {
+      title: "分析结论",
+      summary: "需要复核。",
+      status: "hostile-status-marker",
+    },
+  });
+
+  assert.equal(view.priorities[0].expectedImpact.value, null);
+  assert.equal(view.priorities[0].expectedImpact.status, "unavailable");
+  assert.equal(view.priorities[0].impactLabel, "待验证");
+  assert.equal(view.insight.status, "unavailable");
+  assert.equal(view.insight.badge, "状态待确认");
+  assert.doesNotMatch(JSON.stringify(view), /hostile-status-marker/);
 });
 
 
@@ -232,7 +302,8 @@ test("shared decision components declare accessible charts and bounded tooltips"
     assert.match(charts, new RegExp(`export function ${component}\\b`));
   }
   assert.match(charts, /type="button"/);
-  assert.match(charts, /onSelect\?\.\(point\.id\)/);
+  assert.match(charts, /toggleRiskPointSelection/);
+  assert.match(charts, /onSelect\?\.\(nextId \|\| null\)/);
   assert.match(charts, /aria-label=/);
   assert.match(charts, /role="tooltip"/);
   assert.match(charts, /<table/);
@@ -241,6 +312,13 @@ test("shared decision components declare accessible charts and bounded tooltips"
   assert.doesNotMatch(capability, /APIM|Azure API Management|Azure Cost Management/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(styles, /\.finops-decision-tooltip/);
+  assert.match(styles, /left:\s*clamp\(var\(--finops-decision-point-radius\)/);
+  assert.match(styles, /top:\s*clamp\(var\(--finops-decision-point-radius\)/);
+  assert.match(styles, /top:\s*var\(--finops-decision-point-offset\)/);
+  assert.doesNotMatch(styles, /--finops-decision-bar-width\)\s*\/\s*2/);
+  assert.match(styles, /\.finops-decision-value-bridge[^}]*overflow:\s*(?:hidden|clip)/s);
+  assert.match(styles, /\.finops-decision-maturity[^}]*overflow:\s*(?:hidden|clip)/s);
+  assert.match(styles, /\.finops-decision-matrix-plot[^}]*overflow:\s*(?:hidden|clip)/s);
 });
 
 
@@ -256,6 +334,8 @@ test("shared charts render proportional accessible structures through Vite SSR",
     OpportunityPortfolio,
     RiskMatrix,
     ValueBridge,
+    resolveRiskPointSelection,
+    toggleRiskPointSelection,
   } = await server.ssrLoadModule("/src/finops/DecisionCharts.jsx");
 
   const bridge = renderToStaticMarkup(React.createElement(ValueBridge, {
@@ -268,6 +348,9 @@ test("shared charts render proportional accessible structures through Vite SSR",
   assert.match(bridge, /<table/);
   assert.match(bridge, /--finops-decision-bar-width:20%/);
   assert.match(bridge, /--finops-decision-bar-width:100%/);
+  assert.match(bridge, /--finops-decision-bar-half-width:10%/);
+  assert.match(bridge, /--finops-decision-bar-half-width:50%/);
+  assert.match(bridge, /finops-decision-zero-axis/);
 
   const hostileBridge = renderToStaticMarkup(React.createElement(ValueBridge, {
     items: [{
@@ -316,6 +399,15 @@ test("shared charts render proportional accessible structures through Vite SSR",
   assert.match(matrix, /<button[^>]+type="button"/);
   assert.match(matrix, /响应时延；证据置信度 3/);
   assert.match(matrix, /role="tooltip"/);
+  assert.match(matrix, /--finops-decision-point-radius:20px/);
+  assert.match(matrix, /--finops-decision-point-offset:-20px/);
+  assert.doesNotMatch(matrix, /finops-decision-selected/);
+  assert.doesNotMatch(matrix, /aria-pressed="true"/);
+  assert.equal(resolveRiskPointSelection("missing", ["risk-a"]), "");
+  assert.equal(resolveRiskPointSelection("risk-a", ["risk-a"]), "risk-a");
+  assert.equal(toggleRiskPointSelection("", "risk-a", ["risk-a"]), "risk-a");
+  assert.equal(toggleRiskPointSelection("risk-a", "risk-a", ["risk-a"]), "");
+  assert.equal(toggleRiskPointSelection("risk-a", "missing", ["risk-a"]), "");
 
   const portfolio = renderToStaticMarkup(React.createElement(OpportunityPortfolio, {
     data: {

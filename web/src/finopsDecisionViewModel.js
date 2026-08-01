@@ -117,8 +117,8 @@ function records(value) {
 
 
 function boundedText(value, maximum = 160) {
-  if (typeof value !== "string" && typeof value !== "number") return "";
-  return String(value).trim().slice(0, maximum);
+  if (typeof value !== "string") return "";
+  return value.trim().slice(0, maximum);
 }
 
 
@@ -129,7 +129,7 @@ function boundedTexts(value, limit = 8, maximum = 200) {
   }
   if (!Array.isArray(value)) return [];
   return value
-    .filter((item) => typeof item === "string" || typeof item === "number")
+    .filter((item) => typeof item === "string")
     .map((item) => boundedText(item, maximum))
     .filter(Boolean)
     .slice(0, limit);
@@ -267,14 +267,33 @@ function visualPercent(value, minimum = 1, maximum = 3) {
 
 
 function proportionalItems(items) {
-  const numeric = items.filter((item) => item.value !== null);
-  const maximum = Math.max(0, ...numeric.map((item) => Math.abs(item.value)));
-  return items.map((item) => ({
-    ...item,
-    barPct: item.value === null || maximum === 0
-      ? 0
-      : Math.min(100, (Math.abs(item.value) / maximum) * 100),
-  }));
+  const groups = new Map();
+  for (const item of items) {
+    const scaleGroup = item.unit || `independent-${item.id}`;
+    const current = groups.get(scaleGroup) || 0;
+    groups.set(scaleGroup, item.value === null ? current : Math.max(current, Math.abs(item.value)));
+  }
+  return items.map((item) => {
+    const scaleGroup = item.unit || `independent-${item.id}`;
+    const maximum = groups.get(scaleGroup) || 0;
+    const sign = item.value === null ? null : Math.sign(item.value);
+    const direction = sign === null ? "unavailable" : sign < 0 ? "negative" : sign > 0 ? "positive" : "zero";
+    return {
+      ...item,
+      scaleGroup,
+      sign,
+      direction,
+      directionLabel: {
+        negative: "负值",
+        positive: "正值",
+        zero: "零值",
+        unavailable: "方向不可用",
+      }[direction],
+      barPct: item.value === null || maximum === 0
+        ? 0
+        : Math.min(100, (Math.abs(item.value) / maximum) * 100),
+    };
+  });
 }
 
 
@@ -298,7 +317,7 @@ function safeBridge(raw, metrics) {
     paybackMonths,
     paybackLabel: paybackMonths === null ? "暂不可用" : `${formatNumber(paybackMonths, 1)} 月`,
     description: items.length
-      ? `价值构成包含 ${items.length} 项服务端测算值；柱长按绝对值比例展示。`
+      ? `价值构成包含 ${items.length} 项服务端值；仅相同单位共享比例尺，负值在零轴左侧展示。`
       : "当前没有可展示的价值构成。",
   };
 }
@@ -546,9 +565,8 @@ function safeOpportunity(raw) {
   const impact = level(raw.impact);
   const effort = level(raw.effort);
   const expected = expectedImpact(raw.expected_impact ?? {
-    value: raw.estimated_savings,
-    currency: raw.currency,
-    status: raw.estimated_savings == null ? "unavailable" : "estimated",
+    value: null,
+    status: "unavailable",
   });
   return {
     id,
@@ -705,11 +723,15 @@ export function riskDecisionView(payload) {
       metadata: portfolioMetadata,
     },
     evidence: safeEvidenceSummaries(source.selected_evidence_summaries),
-    insight: isRecord(source.insight) ? {
-      title: boundedText(source.insight.title, 120),
-      summary: boundedText(source.insight.summary, 320),
-      status: boundedText(source.insight.status, 48),
-    } : null,
+    insight: isRecord(source.insight) ? (() => {
+      const status = evidenceState(source.insight.status);
+      return {
+        title: boundedText(source.insight.title, 120),
+        summary: boundedText(source.insight.summary, 320),
+        status: status.key,
+        badge: status.label,
+      };
+    })() : null,
     drafts: safeDraftSummaries(source.drafts),
     governance: safeGovernanceCapability(source.governance_capability),
   };
