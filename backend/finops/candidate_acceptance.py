@@ -259,8 +259,14 @@ def collect_candidate_payloads(workspace_id: str) -> dict[str, Any]:
 
     client = TestClient(app, headers=_principal_headers())
 
+    request_index = 0
+
     def get(path: str, **params: Any) -> dict[str, Any]:
+        nonlocal request_index
+        request_index += 1
+        print(f"candidate_acceptance:request:{request_index}:start", flush=True)
         response = client.get(path, params={"workspace_id": workspace_id, **params})
+        print(f"candidate_acceptance:request:{request_index}:done", flush=True)
         if response.status_code != 200:
             raise CandidateAcceptanceError(
                 f"{path} returned HTTP {response.status_code}"
