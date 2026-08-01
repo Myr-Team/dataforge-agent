@@ -113,8 +113,11 @@ test("decision loaders append only the bounded refresh query and preserve abort 
 
 test("remediation clients use encoded endpoints and send only strict server payloads", async () => {
   const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
   const calls = [];
+  const requestOptions = [];
   globalThis.fetch = async (url, options = {}) => {
+    requestOptions.push(options);
     calls.push({
       url: String(url),
       method: options.method || "GET",
@@ -124,38 +127,47 @@ test("remediation clients use encoded endpoints and send only strict server payl
   };
 
   try {
-    await loadFinOpsRemediationDrafts({ workspaceId: "ws/a", model: "must-not-pass" });
-    await loadFinOpsRemediationDraft("draft/a");
+    const safeOptions = {
+      signal: controller.signal,
+      refresh: true,
+      headers: { "X-Must-Not-Pass": "secret-marker" },
+      credentials: "include",
+    };
+    await loadFinOpsRemediationDrafts(
+      { workspaceId: "ws/a", model: "must-not-pass" },
+      safeOptions,
+    );
+    await loadFinOpsRemediationDraft("draft/a", safeOptions);
     await createFinOpsRemediationDraft({
       workspaceId: "ws/a",
       sourceOpportunityId: "opp/a",
       baseVersion: "cache-policy-v4",
       proposedChanges: [{ arbitrary: true }],
       tenantRef: "must-not-pass",
-    });
+    }, safeOptions);
     await reviewFinOpsRemediationDraft("draft/a", {
       baseRevision: 1,
       reason: "reviewed",
       actorRef: "must-not-pass",
-    });
+    }, safeOptions);
     await promoteFinOpsRemediationDraft("draft/a", {
       base_revision: 2,
       reason: "promote",
       execute: true,
-    });
+    }, safeOptions);
     await closeFinOpsRemediationDraft("draft/a", {
       baseRevision: 3,
       ignored: "must-not-pass",
-    });
+    }, safeOptions);
   } finally {
     globalThis.fetch = originalFetch;
   }
 
   assert.deepEqual(calls, [
-    { url: "/api/finops/remediation-drafts?workspace_id=ws%2Fa", method: "GET", body: null },
-    { url: "/api/finops/remediation-drafts/draft%2Fa", method: "GET", body: null },
+    { url: "/api/finops/remediation-drafts?workspace_id=ws%2Fa&refresh=1", method: "GET", body: null },
+    { url: "/api/finops/remediation-drafts/draft%2Fa?refresh=1", method: "GET", body: null },
     {
-      url: "/api/finops/remediation-drafts",
+      url: "/api/finops/remediation-drafts?refresh=1",
       method: "POST",
       body: {
         workspace_id: "ws/a",
@@ -164,21 +176,27 @@ test("remediation clients use encoded endpoints and send only strict server payl
       },
     },
     {
-      url: "/api/finops/remediation-drafts/draft%2Fa/review",
+      url: "/api/finops/remediation-drafts/draft%2Fa/review?refresh=1",
       method: "POST",
       body: { base_revision: 1, reason: "reviewed" },
     },
     {
-      url: "/api/finops/remediation-drafts/draft%2Fa/promote",
+      url: "/api/finops/remediation-drafts/draft%2Fa/promote?refresh=1",
       method: "POST",
       body: { base_revision: 2, reason: "promote" },
     },
     {
-      url: "/api/finops/remediation-drafts/draft%2Fa/close",
+      url: "/api/finops/remediation-drafts/draft%2Fa/close?refresh=1",
       method: "POST",
       body: { base_revision: 3 },
     },
   ]);
+  for (const options of requestOptions) {
+    assert.equal(options.signal, controller.signal);
+    assert.equal("refresh" in options, false);
+    assert.equal("credentials" in options, false);
+    assert.equal(options.headers["X-Must-Not-Pass"], undefined);
+  }
 });
 
 test("remediation clients preserve typed HTTP errors from request", async () => {

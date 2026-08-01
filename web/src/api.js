@@ -148,12 +148,24 @@ export function buildFinOpsQuery(filters = {}) {
   return params.toString();
 }
 
-function loadFinOpsResource(resource, filters = {}, options = {}) {
-  const params = new URLSearchParams(buildFinOpsQuery(filters));
+function requestFinOps(path, options = {}, requestOptions = {}) {
+  const separator = path.indexOf("?");
+  const pathname = separator >= 0 ? path.slice(0, separator) : path;
+  const params = new URLSearchParams(separator >= 0 ? path.slice(separator + 1) : "");
   if (options?.refresh === true) params.set("refresh", "1");
-  const requestOptions = options?.signal ? { signal: options.signal } : {};
   const query = params.toString();
-  return request(`/api/finops/${resource}${query ? `?${query}` : ""}`, requestOptions);
+  return request(`${pathname}${query ? `?${query}` : ""}`, {
+    ...(options?.signal ? { signal: options.signal } : {}),
+    ...requestOptions,
+  });
+}
+
+function loadFinOpsResource(resource, filters = {}, options = {}) {
+  const query = buildFinOpsQuery(filters);
+  return requestFinOps(
+    `/api/finops/${resource}${query ? `?${query}` : ""}`,
+    options,
+  );
 }
 
 export function loadFinOpsFilters(filters = {}, options = {}) {
@@ -271,10 +283,6 @@ export function loadFinOpsRiskDecision(filters = {}, options = {}) {
   return loadFinOpsResource("risk/decision", filters, options);
 }
 
-function remediationRequestOptions(options = {}) {
-  return options?.signal ? { signal: options.signal } : {};
-}
-
 function remediationTransitionBody(payload = {}) {
   const baseRevision = payload.baseRevision ?? payload.base_revision;
   const reason = payload.reason;
@@ -293,22 +301,21 @@ export function loadFinOpsRemediationDrafts(workspaceOrFilters = {}, options = {
     params.set("workspace_id", String(workspaceId));
   }
   const query = params.toString();
-  return request(
+  return requestFinOps(
     `/api/finops/remediation-drafts${query ? `?${query}` : ""}`,
-    remediationRequestOptions(options),
+    options,
   );
 }
 
 export function loadFinOpsRemediationDraft(draftId, options = {}) {
-  return request(
+  return requestFinOps(
     `/api/finops/remediation-drafts/${encodeURIComponent(draftId)}`,
-    remediationRequestOptions(options),
+    options,
   );
 }
 
 export function createFinOpsRemediationDraft(payload = {}, options = {}) {
-  return request("/api/finops/remediation-drafts", {
-    ...remediationRequestOptions(options),
+  return requestFinOps("/api/finops/remediation-drafts", options, {
     method: "POST",
     body: JSON.stringify({
       workspace_id: payload.workspaceId ?? payload.workspace_id,
@@ -319,10 +326,10 @@ export function createFinOpsRemediationDraft(payload = {}, options = {}) {
 }
 
 function transitionFinOpsRemediationDraft(draftId, transition, payload = {}, options = {}) {
-  return request(
+  return requestFinOps(
     `/api/finops/remediation-drafts/${encodeURIComponent(draftId)}/${transition}`,
+    options,
     {
-      ...remediationRequestOptions(options),
       method: "POST",
       body: JSON.stringify(remediationTransitionBody(payload)),
     },

@@ -1,6 +1,7 @@
 import {
   clearFinOpsData,
   finopsDataKey,
+  invalidateFinOpsData,
   loadFinOpsData,
   readFinOpsData,
 } from "./finopsDataStore.js";
@@ -38,5 +39,9 @@ export function prefetchFinOpsBootstrap(
 
 
 export function clearFinOpsBootstrap(key = null) {
-  clearFinOpsData(key);
+  if (key !== null && key !== undefined) {
+    clearFinOpsData(key);
+    return;
+  }
+  invalidateFinOpsData((entry) => entry.domain === "overview");
 }

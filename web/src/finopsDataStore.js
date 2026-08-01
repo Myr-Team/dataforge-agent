@@ -1,6 +1,7 @@
 const FRESH_MS = 300_000;
 const STALE_USABLE_MS = 1_800_000;
 const entries = new Map();
+const WORKSPACE_ROLES = new Set(["owner", "admin", "editor", "viewer"]);
 
 const SAFE_ACTOR_REF_KEYS = new Set(["actorref", "actor_ref"]);
 const SENSITIVE_KEY = /(?:actor|identity|email|user|principal|subject|\bupn\b|token|headers?|authorization|cookie|prompt|secret|credential|key$|api[_-]?key|provider[_-]?response|response[_-]?id)/i;
@@ -38,39 +39,32 @@ function stableValue(value, key = "") {
 
 function permissionEntries(permissionSummary) {
   if (!permissionSummary) return [];
-  let value = permissionSummary;
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) return [];
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-      try {
-        value = JSON.parse(trimmed);
-      } catch {
-        value = trimmed.split(/[|,;]/).map((item) => item.trim()).filter(Boolean);
-      }
-    } else {
-      value = trimmed.split(/[|,;]/).map((item) => item.trim()).filter(Boolean);
-    }
-  }
-  if (Array.isArray(value)) {
-    return value
+  let candidates = [];
+  if (Array.isArray(permissionSummary)) {
+    candidates = permissionSummary
       .map((item) => {
         if (item && typeof item === "object" && !Array.isArray(item)) {
           const workspaceId = item.workspaceId ?? item.workspace_id ?? "";
           const role = item.role ?? item.permission ?? "";
-          return `${String(workspaceId)}:${String(role)}`;
+          return [workspaceId, role];
         }
-        return String(item || "");
+        return null;
       })
-      .filter(Boolean)
-      .sort();
+      .filter(Boolean);
+  } else if (typeof permissionSummary === "object") {
+    candidates = Object.entries(permissionSummary);
   }
-  if (typeof value === "object") {
-    return Object.entries(value)
-      .map(([workspaceId, role]) => `${String(workspaceId)}:${String(role)}`)
-      .sort();
-  }
-  return [String(value)];
+  const normalized = candidates
+    .map(([workspaceValue, roleValue]) => {
+      if (typeof workspaceValue !== "string" || typeof roleValue !== "string") return null;
+      const workspaceId = workspaceValue.trim();
+      const role = roleValue.trim().toLowerCase();
+      if (!workspaceId || workspaceId.length > 160 || workspaceId.includes("@")) return null;
+      if (!WORKSPACE_ROLES.has(role)) return null;
+      return `${workspaceId}:${role}`;
+    })
+    .filter(Boolean);
+  return [...new Set(normalized)].sort();
 }
 
 

@@ -7,6 +7,10 @@ import {
   prefetchFinOpsBootstrap,
   readFinOpsBootstrap,
 } from "./finopsPreload.js";
+import {
+  loadFinOpsData,
+  readFinOpsData,
+} from "./finopsDataStore.js";
 
 
 function scopeKey(workspaceId = "ws-a") {
@@ -37,6 +41,39 @@ test("finopsScopeKey is stable across permission ordering and separates workspac
 
   assert.equal(first, reordered);
   assert.notEqual(first, scopeKey("ws-b"));
+});
+
+
+test("clearing bootstrap without a key removes only overview entries", async () => {
+  const overviewKey = scopeKey();
+  const roiKey = "tenant/ws-a/roi";
+  const riskKey = "tenant/ws-a/risk";
+  let overviewSignal;
+  const overview = prefetchFinOpsBootstrap(overviewKey, ({ signal }) => {
+    overviewSignal = signal;
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      });
+    });
+  });
+  await loadFinOpsData(roiKey, async () => ({ revision: 1 }), {
+    domain: "roi",
+    now: 1_000,
+  });
+  await loadFinOpsData(riskKey, async () => ({ revision: 1 }), {
+    domain: "risk",
+    now: 1_000,
+  });
+
+  clearFinOpsBootstrap();
+
+  await assert.rejects(overview, { name: "AbortError" });
+  assert.equal(overviewSignal.aborted, true);
+  assert.equal(readFinOpsData(roiKey, 1_000).status, "fresh");
+  assert.equal(readFinOpsData(riskKey, 1_000).status, "fresh");
 });
 
 

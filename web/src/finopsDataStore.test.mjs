@@ -92,6 +92,52 @@ test("finopsDataKey excludes raw identity and secret-bearing input", () => {
 });
 
 
+test("finopsDataKey accepts only allowlisted workspace-role permission entries", () => {
+  const safe = finopsDataKey({
+    tenantScope: "tenant-safe",
+    permissionSummary: [
+      { workspaceId: " ws-b ", role: "VIEWER" },
+      { workspace_id: "ws-a", role: "owner" },
+    ],
+    workspaceId: "ws-a",
+    domain: "risk",
+  });
+  const hostile = finopsDataKey({
+    tenantScope: "tenant-safe",
+    permissionSummary: [
+      { workspace_id: "ws-a", role: "owner" },
+      { workspaceId: "ws-email", role: "owner@example.test" },
+      { workspaceId: "ws-token", role: "ToKeN-secret-marker" },
+      { workspaceId: "ws-key", role: "api-Key-secret-marker" },
+      { workspaceId: "ws-prompt", role: "prompt-secret-marker" },
+      { workspaceId: "ws-provider", role: "provider-response-marker" },
+      { workspaceId: "ws-object", role: { value: "object-secret-marker" } },
+      { arbitrary: { email: "nested@example.test" } },
+      "raw-string-secret-marker",
+      { workspaceId: "ws-b", role: "viewer" },
+    ].reverse(),
+    workspaceId: "ws-a",
+    domain: "risk",
+  });
+
+  assert.equal(hostile, safe);
+  assert.match(safe, /ws-a:owner/);
+  assert.match(safe, /ws-b:viewer/);
+  for (const secret of [
+    "owner@example.test",
+    "token-secret-marker",
+    "key-secret-marker",
+    "prompt-secret-marker",
+    "provider-response-marker",
+    "object-secret-marker",
+    "nested@example.test",
+    "raw-string-secret-marker",
+  ]) {
+    assert.doesNotMatch(hostile.toLowerCase(), new RegExp(secret));
+  }
+});
+
+
 test("fresh entries render without another request", async () => {
   let calls = 0;
   const loader = async () => {
@@ -257,6 +303,55 @@ test("clear aborts in-flight loaders before deleting entries", async () => {
     value: null,
   });
 });
+
+
+for (const [label, remove] of [
+  ["clear", () => clearFinOpsData("tenant/ws/race")],
+  ["invalidation", () => invalidateFinOpsData((_entry, key) => key === "tenant/ws/race")],
+]) {
+  test(`late loader ignored abort cannot overwrite a replacement after ${label}`, async () => {
+    const key = "tenant/ws/race";
+    let resolveOld;
+    let rejectOld;
+    const old = loadFinOpsData(
+      key,
+      () => new Promise((resolve, reject) => {
+        resolveOld = resolve;
+        rejectOld = reject;
+      }),
+      { domain: "risk", now: 1_000 },
+    );
+    remove();
+
+    let resolveNew;
+    const replacement = loadFinOpsData(
+      key,
+      () => new Promise((resolve) => { resolveNew = resolve; }),
+      { domain: "risk", now: 2_000 },
+    );
+    if (label === "clear") {
+      resolveOld({ revision: 1 });
+      assert.equal((await old).revision, 1);
+    } else {
+      const lateError = new Error("late-secret-marker");
+      lateError.status = 503;
+      rejectOld(lateError);
+      await assert.rejects(old, /late-secret-marker/);
+    }
+
+    const duplicate = loadFinOpsData(
+      key,
+      () => { throw new Error("replacement in-flight was lost"); },
+      { domain: "risk", force: true, now: 2_100 },
+    );
+    assert.equal(duplicate, replacement);
+    resolveNew({ revision: 2 });
+    assert.equal((await replacement).revision, 2);
+    const current = readFinOpsData(key, 2_100);
+    assert.equal(current.value.revision, 2);
+    assert.equal(current.lastError, null);
+  });
+}
 
 
 test("the browser store does not use persistent browser storage", async () => {
