@@ -320,7 +320,11 @@ test("shared decision components declare accessible charts and bounded tooltips"
   assert.doesNotMatch(styles, /\.finops-decision-maturity\s*\{[^}]*overflow:\s*(?:hidden|clip)/s);
   assert.doesNotMatch(styles, /finops-decision-tooltip-boundary:(?:first|last)-child/);
   assert.match(styles, /\.finops-decision-tooltip-boundary\s*\{[^}]*width:\s*100%[^}]*overflow:\s*visible/s);
-  assert.match(styles, /\.finops-decision-tooltip\s*\{[^}]*top:\s*calc\(100% \+ 5px\)[^}]*inset-inline-start:\s*0[^}]*width:\s*min\(230px, 100%\)[^}]*max-width:\s*100%/s);
+  assert.match(styles, /\.finops-decision-tooltip\s*\{[^}]*position:\s*static[^}]*display:\s*none[^}]*width:\s*min\(230px, 100%\)[^}]*max-width:\s*100%/s);
+  assert.doesNotMatch(styles, /\.finops-decision-tooltip\s*\{[^}]*position:\s*(?:absolute|fixed)/s);
+  assert.match(styles, /\.finops-decision-help:hover \.finops-decision-tooltip,[\s\S]*\.finops-decision-help-open \.finops-decision-tooltip\s*\{[^}]*display:\s*block/s);
+  assert.match(styles, /\.finops-decision-value-label\s*\{[^}]*flex-wrap:\s*wrap/s);
+  assert.match(styles, /\.finops-decision-maturity-stages header\s*\{[^}]*flex-wrap:\s*wrap/s);
   assert.match(styles, /\.finops-decision-matrix-plot[^}]*overflow:\s*(?:hidden|clip)/s);
 });
 
@@ -341,13 +345,14 @@ test("shared charts render proportional accessible structures through Vite SSR",
     toggleRiskPointSelection,
   } = await server.ssrLoadModule("/src/finops/DecisionCharts.jsx");
 
-  const bridge = renderToStaticMarkup(React.createElement(ValueBridge, {
+  const bridge = renderToStaticMarkup(React.createElement("section", { className: "finops-panel" }, React.createElement(ValueBridge, {
     items: [
       { id: "small", label: "较小", value: 2, valueLabel: "$2.00", status: "estimated", badge: "情景测算", barPct: 20, explanation: "较小值说明" },
       { id: "large", label: "较大", value: 10, valueLabel: "$10.00", status: "estimated", badge: "情景测算", barPct: 100 },
     ],
     formulaRevision: "formula-v1",
-  }));
+  })));
+  assert.match(bridge, /^<section class="finops-panel">/);
   assert.match(bridge, /<table/);
   assert.match(bridge, /--finops-decision-bar-width:20%/);
   assert.match(bridge, /--finops-decision-bar-width:100%/);
@@ -369,7 +374,7 @@ test("shared charts render proportional accessible structures through Vite SSR",
   }));
   assert.doesNotMatch(hostileBridge, /hostile-class-marker/);
 
-  const maturity = renderToStaticMarkup(React.createElement(EvidenceMaturity, {
+  const maturity = renderToStaticMarkup(React.createElement("section", { className: "finops-panel" }, React.createElement(EvidenceMaturity, {
     stages: [{
       id: "investment",
       label: "投入",
@@ -380,7 +385,8 @@ test("shared charts render proportional accessible structures through Vite SSR",
       evidenceGap: "仍需补充业务证据",
     }],
     scoreLabel: "0%",
-  }));
+  })));
+  assert.match(maturity, /^<section class="finops-panel">/);
   assert.match(maturity, /投入/);
   assert.match(maturity, /\$0\.00/);
   assert.match(maturity, /aria-label="投入：\$0\.00；已观测"/);

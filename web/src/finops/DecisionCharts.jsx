@@ -99,7 +99,7 @@ export function ValueBridge({
       <div className="finops-decision-value-bars">
         {rows.map((item) => (
           <div className="finops-decision-value-row finops-decision-tooltip-boundary" key={item.id}>
-            <span>
+            <span className={`finops-decision-value-label ${item.explanation ? "finops-decision-value-label-help" : ""}`}>
               <b>{item.label}</b>
               {item.explanation ? (
                 <DecisionTooltip label={item.label}>{item.explanation}</DecisionTooltip>

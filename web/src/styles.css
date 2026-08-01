@@ -5741,16 +5741,16 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 
 /* FinOps decision BI primitives: calm, dense and evidence-first. */
 .finops-decision-empty { display: flex; min-height: 180px; align-items: center; justify-content: center; gap: 8px; padding: 20px; color: var(--faint); font-size: 11px; text-align: center; }
-.finops-decision-tooltip-boundary { position: relative; width: 100%; min-width: 0; overflow: visible; }
-.finops-decision-help { display: inline-grid; flex: none; place-items: center; }
+.finops-decision-tooltip-boundary { width: 100%; min-width: 0; overflow: visible; }
+.finops-decision-help { display: contents; }
 .finops-decision-help > button { display: inline-grid; width: 18px; height: 18px; border: 0; border-radius: 5px; place-items: center; background: transparent; padding: 0; color: var(--faint); cursor: help; }
 .finops-decision-help > button:hover,
 .finops-decision-help > button:focus-visible,
 .finops-decision-help-open > button { outline: 0; background: var(--blue-soft); color: var(--blue); box-shadow: 0 0 0 2px rgba(37, 99, 235, .12); }
-.finops-decision-tooltip { position: absolute; z-index: 12; top: calc(100% + 5px); inset-inline-start: 0; display: block; width: min(230px, 100%); max-width: 100%; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); box-shadow: 0 12px 28px rgba(16, 24, 40, .14); padding: 8px 9px; color: var(--muted); font-size: 10px; font-weight: 450; line-height: 1.5; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity 140ms ease, transform 140ms ease; }
+.finops-decision-tooltip { position: static; display: none; flex: 0 0 100%; width: min(230px, 100%); max-width: 100%; margin-top: 5px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); box-shadow: 0 4px 12px rgba(16, 24, 40, .08); padding: 8px 9px; color: var(--muted); font-size: 10px; font-weight: 450; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
 .finops-decision-help:hover .finops-decision-tooltip,
 .finops-decision-help:focus-within .finops-decision-tooltip,
-.finops-decision-help-open .finops-decision-tooltip { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.finops-decision-help-open .finops-decision-tooltip { display: block; }
 .finops-decision-badge { display: inline-flex; min-height: 19px; align-items: center; width: fit-content; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-soft); padding: 0 6px; color: var(--muted); font-size: 9px; font-weight: 700; white-space: nowrap; }
 .finops-decision-badge-observed,
 .finops-decision-badge-verified,
@@ -5764,8 +5764,9 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-decision-value-bridge { display: grid; min-width: 0; gap: 14px; overflow: visible; padding: 16px; }
 .finops-decision-value-bars { display: grid; gap: 10px; }
 .finops-decision-value-row { display: grid; grid-template-columns: minmax(105px, 155px) minmax(100px, 1fr) minmax(76px, auto); align-items: center; gap: 10px; }
-.finops-decision-value-row > span { display: inline-flex; min-width: 0; align-items: center; gap: 3px; }
-.finops-decision-value-row > span > b { overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.finops-decision-value-label { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 3px; }
+.finops-decision-value-label > b { overflow: hidden; max-width: 100%; color: var(--muted); font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.finops-decision-value-label-help > b { max-width: calc(100% - 21px); }
 .finops-decision-value-result { display: grid; justify-items: end; gap: 2px; min-width: 0; text-align: right; }
 .finops-decision-value-result > strong { color: var(--ink); font-size: 11px; white-space: nowrap; }
 .finops-decision-value-result > small { color: var(--faint); font-size: 8px; white-space: nowrap; }
@@ -5805,12 +5806,10 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-decision-maturity-stages > li > i { position: relative; z-index: 1; width: 15px; height: 15px; border: 4px solid var(--surface); border-radius: 50%; background: var(--line-strong); box-shadow: 0 0 0 1px var(--line-strong); }
 .finops-decision-maturity-stages > .finops-decision-maturity-complete > i { background: var(--mint); box-shadow: 0 0 0 1px var(--mint); }
 .finops-decision-maturity-stages > li > div { z-index: 2; display: grid; align-content: start; justify-items: start; gap: 5px; min-width: 0; background: var(--surface); }
-.finops-decision-maturity-stages header { display: inline-flex; min-width: 0; align-items: center; gap: 3px; }
+.finops-decision-maturity-stages header { display: flex; width: 100%; min-width: 0; align-items: center; flex-wrap: wrap; gap: 3px; }
 .finops-decision-maturity-stages header > span { overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .finops-decision-maturity-stages strong { color: var(--ink); font-size: 13px; }
 .finops-decision-maturity-stages small { color: var(--faint); font-size: 9px; }
-.finops-decision-tooltip-boundary:hover,
-.finops-decision-tooltip-boundary:focus-within { z-index: 20; }
 
 .finops-decision-matrix { display: grid; min-width: 0; grid-template-columns: 22px minmax(260px, 1fr); grid-template-rows: minmax(260px, 340px) 22px auto; gap: 5px; padding: 16px; }
 .finops-decision-axis-y { display: grid; align-items: center; justify-items: center; color: var(--faint); font-size: 9px; letter-spacing: .04em; writing-mode: vertical-rl; transform: rotate(180deg); }
