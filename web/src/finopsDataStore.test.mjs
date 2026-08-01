@@ -93,6 +93,21 @@ test("finopsDataKey excludes raw identity and secret-bearing input", () => {
 
 
 test("finopsDataKey accepts only allowlisted workspace-role permission entries", () => {
+  const long129 = `w${"s".repeat(128)}`;
+  const long160 = `w${"s".repeat(159)}`;
+  const validBusinessWorkspaces = [
+    { workspaceId: "identity-governance", role: "owner" },
+    { workspaceId: "provider-demo", role: "viewer" },
+    { workspaceId: "prompt-library", role: "owner" },
+    { workspaceId: "user-research", role: "viewer" },
+    { workspaceId: "actor-analysis", role: "owner" },
+    { workspaceId: "token-secret-marker", role: "viewer" },
+    { workspaceId: "email-workspace", role: "owner" },
+    { workspaceId: "provider-response-workspace", role: "viewer" },
+    { workspaceId: "region:finance", role: "owner" },
+    { workspaceId: long129, role: "viewer" },
+    { workspaceId: long160, role: "owner" },
+  ];
   const safe = finopsDataKey({
     tenantScope: "tenant-safe",
     permissionSummary: [
@@ -100,6 +115,7 @@ test("finopsDataKey accepts only allowlisted workspace-role permission entries",
       "finops.summary.read",
       { workspaceId: " ws-b ", role: "VIEWER" },
       { workspace_id: "ws-a", role: "owner" },
+      ...validBusinessWorkspaces,
     ],
     workspaceId: "ws-a",
     domain: "risk",
@@ -114,18 +130,22 @@ test("finopsDataKey accepts only allowlisted workspace-role permission entries",
       { workspaceId: "ws-prompt", role: "prompt-secret-marker" },
       { workspaceId: "ws-provider", role: "provider-response-marker" },
       { workspaceId: "ws-object", role: { value: "object-secret-marker" } },
-      { workspaceId: "token-secret-marker", role: "owner" },
-      { workspaceId: "email-workspace", role: "owner" },
       { workspaceId: "owner@example.test", role: "owner" },
-      { workspaceId: "provider-response-workspace", role: "owner" },
       { workspaceId: "ws/invalid", role: "owner" },
-      { workspaceId: `w${"s".repeat(128)}`, role: "owner" },
+      { workspaceId: "ws?query", role: "viewer" },
+      { workspaceId: "ws#fragment", role: "owner" },
+      { workspaceId: "ws\\path", role: "viewer" },
+      { workspaceId: "ws\ncontrol", role: "owner" },
+      { workspaceId: `w${"s".repeat(160)}`, role: "owner" },
+      { workspaceId: { value: "ws-object" }, role: "viewer" },
+      { workspaceId: 42, role: "owner" },
       { arbitrary: { email: "nested@example.test" } },
       "raw-string-secret-marker",
       "finops.summary.read",
       "finops.cost.read",
       "finops.unknown.read",
       { workspaceId: "ws-b", role: "viewer" },
+      ...validBusinessWorkspaces,
     ].reverse(),
     workspaceId: "ws-a",
     domain: "risk",
@@ -134,12 +154,25 @@ test("finopsDataKey accepts only allowlisted workspace-role permission entries",
   assert.equal(hostile, safe);
   assert.match(safe, /ws-a:owner/);
   assert.match(safe, /ws-b:viewer/);
+  for (const workspaceId of [
+    "identity-governance",
+    "provider-demo",
+    "prompt-library",
+    "user-research",
+    "actor-analysis",
+    "token-secret-marker",
+    "email-workspace",
+    "provider-response-workspace",
+    "region:finance",
+    long129,
+    long160,
+  ]) {
+    assert.match(safe, new RegExp(workspaceId));
+  }
   for (const secret of [
     "owner@example.test",
-    "token-secret-marker",
     "key-secret-marker",
     "prompt-secret-marker",
-    "provider-response-marker",
     "object-secret-marker",
     "nested@example.test",
     "raw-string-secret-marker",
@@ -147,6 +180,20 @@ test("finopsDataKey accepts only allowlisted workspace-role permission entries",
   ]) {
     assert.doesNotMatch(hostile.toLowerCase(), new RegExp(secret));
   }
+
+  const ownerKey = finopsDataKey({
+    tenantScope: "tenant-safe",
+    permissionSummary: [{ workspaceId: "identity-governance", role: "owner" }],
+    workspaceId: "identity-governance",
+    domain: "overview",
+  });
+  const viewerKey = finopsDataKey({
+    tenantScope: "tenant-safe",
+    permissionSummary: [{ workspaceId: "identity-governance", role: "viewer" }],
+    workspaceId: "identity-governance",
+    domain: "overview",
+  });
+  assert.notEqual(ownerKey, viewerKey);
 });
 
 
@@ -181,6 +228,7 @@ test("legacy capability keys are allowlisted distinct deduplicated and order sta
     permissionSummary: [
       "finops.summary.read",
       { workspace_id: "ws-a", role: "OWNER" },
+      { workspaceId: "token-secret-marker", role: "viewer" },
       "finops.cost.read",
     ],
     workspaceId: "ws-a",
@@ -191,7 +239,8 @@ test("legacy capability keys are allowlisted distinct deduplicated and order sta
   assert.equal(mixedReordered, mixedCanonical);
   assert.match(summaryAndCost, /finops\.summary\.read/);
   assert.match(summaryAndCost, /finops\.cost\.read/);
-  assert.doesNotMatch(mixedReordered, /finops\.arbitrary\.read|token-secret-marker/);
+  assert.doesNotMatch(mixedReordered, /finops\.arbitrary\.read/);
+  assert.match(mixedReordered, /token-secret-marker:viewer/);
 });
 
 

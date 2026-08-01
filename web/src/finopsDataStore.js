@@ -10,8 +10,7 @@ const FINOPS_CAPABILITIES = new Set([
   "finops.trace.read",
   "finops.action.draft",
 ]);
-const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
-const SENSITIVE_WORKSPACE_ID = /(?:actor|identity|email|user|principal|token|secret|prompt|provider|credential|authorization|api[_-]?key|(?:^|[._-])key(?:[._-]|$))/i;
+const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/;
 
 const SAFE_ACTOR_REF_KEYS = new Set(["actorref", "actor_ref"]);
 const SENSITIVE_KEY = /(?:actor|identity|email|user|principal|subject|\bupn\b|token|headers?|authorization|cookie|prompt|secret|credential|key$|api[_-]?key|provider[_-]?response|response[_-]?id)/i;
@@ -82,9 +81,7 @@ function permissionEntries(permissionSummary) {
       if (typeof workspaceValue !== "string" || typeof roleValue !== "string") return null;
       const workspaceId = workspaceValue.trim();
       const role = roleValue.trim().toLowerCase();
-      if (!WORKSPACE_ID_PATTERN.test(workspaceId) || SENSITIVE_WORKSPACE_ID.test(workspaceId)) {
-        return null;
-      }
+      if (!WORKSPACE_ID_PATTERN.test(workspaceId)) return null;
       if (!WORKSPACE_ROLES.has(role)) return null;
       return `${workspaceId}:${role}`;
     })
