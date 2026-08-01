@@ -163,6 +163,19 @@ def test_initializer_upgrades_legacy_batch_and_persists_repeatable_demo_findings
     seeds = InMemoryDemoSeedRepository()
     anomalies = InMemoryAnomalyRepository()
     insights = InMemoryInsightRepository()
+    daily_budget_writes: list[tuple[str, str, dict[str, object], str]] = []
+
+    def write_daily_budget(
+        tenant_ref: str,
+        workspace_id: str,
+        configuration: dict[str, object],
+        *,
+        seed_key: str,
+    ) -> None:
+        daily_budget_writes.append(
+            (tenant_ref, workspace_id, configuration, seed_key)
+        )
+
     legacy = seed_demo_workspace(
         ledger, seeds, tenant_ref="tenant_demo_ref", workspace_id="ws-demo",
         allowed_workspace_id="ws-demo", batch="operations-v1", now=NOW,
@@ -172,14 +185,15 @@ def test_initializer_upgrades_legacy_batch_and_persists_repeatable_demo_findings
         tenant_ref="tenant_demo_ref", allowed_tenant_ref="tenant_demo_ref",
         workspace_id="ws-demo", allowed_workspace_id="ws-demo", ledger_repository=ledger,
         seed_repository=seeds, budget_repository=InMemoryMemberBudgetRepository(),
-        hmac_secret="test-secret", anomaly_repository=anomalies, insight_repository=insights, now=NOW,
+        hmac_secret="test-secret", anomaly_repository=anomalies, insight_repository=insights,
+        daily_budget_writer=write_daily_budget, now=NOW,
     )
     second = initialize_demo_workspace(
         tenant_ref="tenant_demo_ref", allowed_tenant_ref="tenant_demo_ref",
         workspace_id="ws-demo", allowed_workspace_id="ws-demo", ledger_repository=ledger,
         seed_repository=seeds, budget_repository=InMemoryMemberBudgetRepository(),
         hmac_secret="test-secret", anomaly_repository=anomalies, insight_repository=insights,
-        now=NOW.replace(hour=9),
+        daily_budget_writer=write_daily_budget, now=NOW.replace(hour=9),
     )
 
     assert first.batch == second.batch == "operations-v2"
@@ -193,3 +207,13 @@ def test_initializer_upgrades_legacy_batch_and_persists_repeatable_demo_findings
     assert all(item.status == "ready" and item.expires_at > item.generated_at for item in stored)
     assert any("未验证" in item.summary for item in stored if item.agent_kind == "roi")
     assert all(item.evidence_refs for item in stored)
+    assert len(daily_budget_writes) == 2
+    assert {
+        (tenant_ref, workspace_id, seed_key)
+        for tenant_ref, workspace_id, _configuration, seed_key in daily_budget_writes
+    } == {("tenant_demo_ref", "ws-demo", "operations-v2")}
+    assert daily_budget_writes[-1][2] == {
+        "daily_budget_usd": 5.0,
+        "warning_pct": 80,
+        "critical_pct": 100,
+    }

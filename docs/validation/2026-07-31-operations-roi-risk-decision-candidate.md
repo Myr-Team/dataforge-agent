@@ -32,7 +32,7 @@ git diff --check
 
 | 门禁 | 实际结果 |
 |---|---|
-| Python | `1676 passed, 1 skipped, 1 warning`（144.63s；warning 为既有 MAF ExperimentalWarning） |
+| Python | `1678 passed, 1 skipped, 1 warning`（127.21s；warning 为既有 MAF ExperimentalWarning） |
 | Node | 原全量 `250 passed, 0 failed`；本轮相关模块 focused `33 passed, 0 failed`（2.02s） |
 | Vite | 本轮重新构建成功（1789 modules；保留既有 chunk size warning） |
 | Playwright | 本轮全量 `46 passed`（85.8s） |
