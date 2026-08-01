@@ -59,6 +59,7 @@ const UNIT_LABELS = Object.freeze({
   "小时": "小时",
   "小时/月": "小时/月",
   "月": "月",
+  "USD per successful request": "USD / 成功调用",
 });
 
 const REMEDIATION_STATUS_LABELS = Object.freeze({
@@ -446,6 +447,7 @@ function safeTrend(value) {
       period,
       value: number,
       unit,
+      unitLabel: UNIT_LABELS[unit] || "",
       valueLabel: formatValue(number, unit, status.key),
       status: status.key,
       badge: status.label,

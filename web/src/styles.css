@@ -5930,6 +5930,150 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-decision-portfolio-point > button:focus-visible,
   .finops-decision-portfolio-point.finops-decision-selected > button { transform: none; }
 }
+
+/* ROI operating decision: one page, one evidence-aware hierarchy. */
+.finops-decision-roi-shell { display: grid; min-width: 0; gap: 14px; }
+.finops-decision-roi-banner { display: grid; min-height: 148px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 22px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); padding: 20px 22px; box-shadow: var(--shadow); }
+.finops-decision-roi-banner-copy { display: grid; min-width: 0; gap: 7px; }
+.finops-decision-eyebrow,
+.finops-decision-roi-section-head > div > span,
+.finops-decision-roi-panel-head > div > span,
+.finops-decision-roi-capability > header > span { color: var(--blue); font-size: 9px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.finops-decision-roi-title-row { display: flex; min-height: 28px; align-items: center; gap: 8px; flex-wrap: wrap; }
+.finops-decision-roi-title-row h2 { margin: 0; color: var(--ink); font-size: clamp(17px, 2vw, 22px); font-weight: 690; letter-spacing: -.02em; line-height: 1.25; }
+.finops-decision-roi-banner-copy > p { max-width: 760px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.finops-decision-roi-banner-copy > small { color: var(--faint); font-size: 9.5px; }
+.finops-decision-roi-updating { display: inline-flex; min-width: 78px; min-height: 22px; align-items: center; gap: 5px; color: var(--muted); font-size: 9.5px; }
+.finops-decision-roi-banner-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
+.finops-decision-roi-banner-actions button,
+.finops-decision-roi-ai button,
+.finops-decision-page-warning button,
+.finops-decision-page-error button { display: inline-flex; min-height: 34px; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); padding: 0 11px; color: var(--muted); font-size: 10px; font-weight: 700; cursor: pointer; }
+.finops-decision-roi-banner-actions button:hover,
+.finops-decision-roi-banner-actions button:focus-visible,
+.finops-decision-roi-ai button:hover,
+.finops-decision-roi-ai button:focus-visible,
+.finops-decision-page-warning button:hover,
+.finops-decision-page-warning button:focus-visible,
+.finops-decision-page-error button:hover,
+.finops-decision-page-error button:focus-visible { outline: 0; border-color: #9db9e8; color: var(--blue); box-shadow: 0 0 0 3px rgba(37, 99, 235, .1); }
+.finops-decision-roi-banner-actions button.primary { border-color: var(--blue); background: var(--blue); color: #fff; }
+.finops-decision-status { display: inline-flex; min-height: 20px; align-items: center; width: fit-content; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-soft); padding: 0 6px; color: var(--muted); font-size: 8.5px; font-weight: 750; white-space: nowrap; }
+.finops-decision-status-observed,
+.finops-decision-status-verified,
+.finops-decision-status-complete,
+.finops-decision-status-available { border-color: #b7e3cf; background: var(--mint-soft); color: var(--mint); }
+.finops-decision-status-estimated,
+.finops-decision-status-partial { border-color: #f2d2a7; background: var(--amber-soft); color: var(--amber); }
+.finops-decision-roi-section,
+.finops-decision-roi-panel,
+.finops-decision-roi-wide,
+.finops-decision-roi-capability { min-width: 0; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: var(--shadow); }
+.finops-decision-roi-section-head,
+.finops-decision-roi-panel-head { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); padding: 11px 14px; }
+.finops-decision-roi-section-head > div,
+.finops-decision-roi-panel-head > div { display: grid; min-width: 0; gap: 3px; }
+.finops-decision-roi-section-head h2,
+.finops-decision-roi-panel-head h2,
+.finops-decision-roi-capability h2 { margin: 0; color: var(--ink); font-size: 13px; font-weight: 680; }
+.finops-decision-roi-section-head > small,
+.finops-decision-roi-panel-head > small { max-width: 310px; color: var(--faint); font-size: 9px; line-height: 1.45; text-align: right; }
+.finops-decision-roi-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.finops-decision-roi-metric { position: relative; display: grid; min-width: 0; min-height: 132px; align-content: start; gap: 8px; padding: 14px; }
+.finops-decision-roi-metric:not(:last-child) { border-right: 1px solid var(--line); }
+.finops-decision-roi-metric > header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 7px; }
+.finops-decision-roi-metric > header > span:first-child { overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.finops-decision-roi-metric > strong { color: var(--ink); font-size: clamp(18px, 2vw, 24px); font-weight: 680; letter-spacing: -.025em; }
+.finops-decision-roi-metric > p { min-height: 29px; margin: 0; color: var(--faint); font-size: 9px; line-height: 1.5; }
+.finops-decision-roi-metric > button { display: inline-flex; width: fit-content; align-items: center; gap: 4px; border: 0; background: transparent; padding: 0; color: var(--blue); font-size: 9px; font-weight: 700; cursor: pointer; }
+.finops-decision-roi-metric > button:hover,
+.finops-decision-roi-metric > button:focus-visible { outline: 0; text-decoration: underline; text-underline-offset: 3px; }
+.finops-decision-roi-columns { display: grid; min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.finops-decision-roi-evidence-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border-top: 1px solid var(--line); padding: 10px 14px; }
+.finops-decision-roi-evidence-actions > span { margin-right: 2px; color: var(--faint); font-size: 9px; font-weight: 650; }
+.finops-decision-roi-evidence-actions > button { min-height: 27px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); padding: 0 8px; color: var(--muted); font-size: 9px; cursor: pointer; }
+.finops-decision-roi-evidence-actions > button:hover,
+.finops-decision-roi-evidence-actions > button:focus-visible { outline: 0; border-color: #9db9e8; color: var(--blue); box-shadow: 0 0 0 2px rgba(37, 99, 235, .08); }
+.finops-decision-roi-trend-wrap { max-height: 310px; overflow: auto; }
+.finops-decision-roi-trend { width: 100%; min-width: 540px; border-collapse: collapse; font-size: 10px; }
+.finops-decision-roi-trend caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.finops-decision-roi-trend th,
+.finops-decision-roi-trend td { padding: 9px 14px; border-bottom: 1px solid #edf0f5; color: var(--muted); text-align: left; }
+.finops-decision-roi-trend thead th { position: sticky; top: 0; z-index: 1; background: #fafbfc; color: var(--faint); font-size: 9px; font-weight: 700; }
+.finops-decision-roi-trend tbody th { color: var(--ink); font-weight: 620; }
+.finops-decision-roi-trend tbody tr:last-child > * { border-bottom: 0; }
+.finops-decision-roi-capability { display: grid; grid-template-columns: minmax(180px, .32fr) minmax(0, 1fr); gap: 14px; padding: 13px; }
+.finops-decision-roi-capability > header { display: grid; align-content: center; gap: 4px; padding: 2px 4px; }
+.finops-decision-roi-capability > .finops-decision-capability { min-width: 0; }
+.finops-decision-roi-ai { display: grid; min-height: 64px; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 1px solid #cddaf0; border-radius: 9px; background: #f8faff; padding: 10px 12px; }
+.finops-decision-roi-ai > span { display: grid; width: 32px; height: 32px; border: 1px solid #cddaf0; border-radius: 7px; place-items: center; background: var(--surface); color: var(--blue); }
+.finops-decision-roi-ai > div { display: grid; min-width: 0; gap: 3px; }
+.finops-decision-roi-ai b { color: var(--ink); font-size: 10.5px; }
+.finops-decision-roi-ai small { color: var(--muted); font-size: 9.5px; line-height: 1.45; }
+.finops-decision-page-warning { display: flex; min-height: 40px; align-items: center; gap: 8px; border: 1px solid #f2d2a7; border-radius: 8px; background: var(--amber-soft); padding: 7px 10px; color: #9a5b08; font-size: 10px; }
+.finops-decision-page-warning > span { flex: 1; }
+.finops-decision-page-warning button { min-height: 27px; border-color: rgba(154, 91, 8, .25); background: transparent; color: #9a5b08; }
+.finops-decision-page-error { display: grid; min-height: 220px; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 1px solid #f1c0c0; border-radius: 9px; background: var(--surface); padding: 24px; color: var(--red); }
+.finops-decision-page-error > span { display: grid; gap: 4px; }
+.finops-decision-page-error b { color: var(--ink); font-size: 12px; }
+.finops-decision-page-error small { color: var(--muted); font-size: 10px; }
+.finops-decision-page-empty { display: flex; min-height: 150px; align-items: center; justify-content: center; gap: 7px; padding: 18px; color: var(--faint); font-size: 10px; text-align: center; }
+.finops-decision-roi-loading > section { pointer-events: none; }
+.finops-decision-roi-loading i,
+.finops-decision-roi-loading b,
+.finops-decision-roi-loading span { display: block; border-radius: 4px; background: #e9edf3; animation: finops-decision-roi-pulse 1.3s ease-in-out infinite alternate; }
+.finops-decision-roi-loading .finops-decision-roi-banner { grid-template-columns: 16px minmax(0, 1fr); }
+.finops-decision-roi-loading .finops-decision-roi-banner > i { width: 14px; height: 70px; }
+.finops-decision-roi-loading .finops-decision-roi-banner > span { display: grid; gap: 11px; background: transparent; }
+.finops-decision-roi-loading .finops-decision-roi-banner b { width: min(420px, 76%); height: 22px; }
+.finops-decision-roi-loading .finops-decision-roi-banner span > i { width: min(620px, 92%); height: 11px; }
+.finops-decision-roi-loading .finops-decision-roi-metrics { min-height: 132px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.finops-decision-roi-loading .finops-decision-roi-metrics article { display: grid; align-content: center; gap: 12px; padding: 14px; }
+.finops-decision-roi-loading .finops-decision-roi-metrics article:not(:last-child) { border-right: 1px solid var(--line); }
+.finops-decision-roi-loading .finops-decision-roi-metrics i { width: 52%; height: 8px; }
+.finops-decision-roi-loading .finops-decision-roi-metrics b { width: 72%; height: 24px; }
+.finops-decision-roi-loading .finops-decision-roi-columns > article,
+.finops-decision-roi-loading .finops-decision-roi-wide { display: grid; min-height: 230px; align-content: start; gap: 13px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 16px; }
+.finops-decision-roi-loading .finops-decision-roi-columns i,
+.finops-decision-roi-loading .finops-decision-roi-wide i { width: 26%; height: 8px; }
+.finops-decision-roi-loading .finops-decision-roi-columns b,
+.finops-decision-roi-loading .finops-decision-roi-wide b { width: 46%; height: 16px; }
+.finops-decision-roi-loading .finops-decision-roi-columns span,
+.finops-decision-roi-loading .finops-decision-roi-wide span { width: 100%; height: 110px; }
+@keyframes finops-decision-roi-pulse { from { opacity: .48; } to { opacity: .9; } }
+
+.finops-roi-form fieldset { display: contents; min-width: 0; margin: 0; border: 0; padding: 0; }
+.finops-roi-form-note { margin: -2px 0 0; color: var(--muted); font-size: 10.5px; }
+
+@media (max-width: 980px) {
+  .finops-decision-roi-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .finops-decision-roi-metric:nth-child(2) { border-right: 0; }
+  .finops-decision-roi-metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .finops-decision-roi-columns { grid-template-columns: 1fr; }
+  .finops-decision-roi-capability { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .finops-decision-roi-banner { min-height: 188px; grid-template-columns: 1fr; align-items: start; gap: 14px; padding: 16px; }
+  .finops-decision-roi-banner-actions { justify-content: flex-start; }
+  .finops-decision-roi-banner-actions button { flex: 1; }
+  .finops-decision-roi-section-head,
+  .finops-decision-roi-panel-head { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .finops-decision-roi-section-head > small,
+  .finops-decision-roi-panel-head > small { text-align: left; }
+  .finops-decision-roi-metrics { grid-template-columns: 1fr; }
+  .finops-decision-roi-metric:not(:last-child) { border-right: 0; border-bottom: 1px solid var(--line); }
+  .finops-decision-roi-ai { grid-template-columns: 30px minmax(0, 1fr); }
+  .finops-decision-roi-ai > button { grid-column: 1 / -1; }
+  .finops-decision-page-error { grid-template-columns: 22px minmax(0, 1fr); }
+  .finops-decision-page-error > button { grid-column: 1 / -1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .finops-decision-roi-loading i,
+  .finops-decision-roi-loading b,
+  .finops-decision-roi-loading span { animation: none !important; }
+}
 .provider-connections,
 .identity-access { display: grid; gap: 14px; padding: 2px; }
 .governance-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 2px 2px 4px; }

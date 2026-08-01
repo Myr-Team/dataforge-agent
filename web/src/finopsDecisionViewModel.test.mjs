@@ -70,6 +70,22 @@ test("zero is preserved while missing remains unavailable", () => {
 });
 
 
+test("unit economics trend preserves the server-owned per-successful-request unit", () => {
+  const view = roiDecisionView({
+    unit_economics_trend: [{
+      period: "2026-07-31",
+      label: "每次成功调用成本",
+      value: 0.025,
+      unit: "USD per successful request",
+      status: "estimated",
+    }],
+  });
+
+  assert.equal(view.unitEconomicsTrend[0].unitLabel, "USD / 成功调用");
+  assert.equal(view.unitEconomicsTrend[0].valueLabel, "0.03 USD / 成功调用");
+});
+
+
 test("value bridge scales only comparable units and exposes negative direction", () => {
   const view = roiDecisionView({
     metrics: [
@@ -339,7 +355,7 @@ test("shared charts render proportional accessible structures through Vite SSR",
   const server = await createServer({
     appType: "custom",
     logLevel: "silent",
-    server: { middlewareMode: true },
+    server: { middlewareMode: true, hmr: false, ws: false },
   });
   context.after(() => server.close());
   const {
