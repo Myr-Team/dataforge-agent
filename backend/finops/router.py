@@ -93,7 +93,7 @@ from .gateway_unmatched import SqlGatewayUnmatchedRepository
 from .query import FinOpsQuery, FinOpsQueryService
 from .models import FinOpsRequestEvent
 from .cache_namespace import FinOpsCacheNamespace
-from .query_cache import CachedFinOpsQueryService
+from .query_cache import CachedFinOpsQueryService, FinOpsCacheBusy
 from .request_detail import FinOpsRequestDetailService, build_foundry_trace_link
 from .planning import (
     BudgetDefinition,
@@ -590,6 +590,8 @@ def _context(
             limit=limit,
         )
         service = get_finops_query_service()
+    except FinOpsCacheBusy:
+        raise
     except (RuntimeError, ValueError) as exc:
         if "HMAC" in str(exc) or "scope is unavailable" in str(exc):
             raise HTTPException(status_code=503, detail="FinOps evidence service is unavailable") from exc
@@ -1439,6 +1441,8 @@ async def roi_decision(
             lambda: _roi_decision_payload(service, query),
             force_refresh=refresh,
         )
+    except FinOpsCacheBusy:
+        raise
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=503, detail="ROI evidence service is unavailable") from exc
 

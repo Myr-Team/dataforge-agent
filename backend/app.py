@@ -49,6 +49,7 @@ try:
     from .identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
     from .finops.router import router as finops_router
     from .finops.member_budget_router import router as member_budget_router
+    from .finops.query_cache import FinOpsCacheBusy
     from .finops.sql_repository import FinOpsPersistenceError
     from .lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
     from .model_provider_router import router as model_provider_router
@@ -106,6 +107,7 @@ except ImportError:
     from identity import actor_from_request, is_trusted_tenant_identity, merge_actor_into_ui_context
     from finops.router import router as finops_router
     from finops.member_budget_router import router as member_budget_router
+    from finops.query_cache import FinOpsCacheBusy
     from finops.sql_repository import FinOpsPersistenceError
     from lineage_sql import LineageConnectionOutcome, LineageRepository, build_lineage_sql_connection_factory
     from model_provider_router import router as model_provider_router
@@ -176,6 +178,18 @@ async def finops_persistence_error_handler(
     return JSONResponse(
         status_code=503,
         content={"detail": "FinOps persistence service is unavailable"},
+    )
+
+
+@app.exception_handler(FinOpsCacheBusy)
+async def finops_cache_busy_handler(
+    _request: Request,
+    _exc: FinOpsCacheBusy,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "FinOps query refresh is busy; retry shortly"},
+        headers={"Retry-After": "1"},
     )
 app.add_middleware(
     CORSMiddleware,

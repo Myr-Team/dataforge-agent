@@ -12,6 +12,7 @@ from auth_fixtures import trusted_headers
 from backend.app import app
 from backend.finops.models import FinOpsRequestEvent
 from backend.finops.query import FinOpsQueryService
+from backend.finops.query_cache import FinOpsCacheBusy
 from backend.finops.repository import InMemoryFinOpsRepository
 
 
@@ -202,6 +203,35 @@ def test_unauthorized_refresh_never_reaches_cache_or_compute(
 
     assert response.status_code == 403
     assert service.compose_calls == 0
+
+
+def test_cache_single_flight_timeout_returns_safe_retryable_503(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BusyService:
+        def compose(self, operation, query, compute, *, force_refresh=False):
+            raise FinOpsCacheBusy("internal cache key must not escape")
+
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_query_service",
+        _BusyService,
+    )
+
+    response = client.get(
+        "/api/finops/roi/decision",
+        params={"workspace_id": "ws-a"},
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "1"
+    assert response.json() == {
+        "detail": "FinOps query refresh is busy; retry shortly"
+    }
+    assert "internal cache key" not in response.text
 
 
 def test_roi_decision_uses_rollup_unit_economics_when_sql_is_enabled(

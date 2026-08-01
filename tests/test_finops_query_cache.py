@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from threading import Event, Lock
 
 from backend.finops.query import FinOpsQuery
 from backend.finops.query_cache import CachedFinOpsQueryService, _cache_key
@@ -50,6 +52,8 @@ class _MemoryCache:
         self.lock_busy = lock_busy
         self.lock_tokens: dict[str, str] = {}
         self.released: list[tuple[str, str]] = []
+        self.busy_observed = Event()
+        self._guard = Lock()
 
     def get_json(
         self,
@@ -58,7 +62,8 @@ class _MemoryCache:
         self.keys.append(key)
         if not self.available:
             return None, {"provider": "redis", "status": "unavailable"}
-        value = self.values.get(key, self.default_value)
+        with self._guard:
+            value = self.values.get(key, self.default_value)
         return value, {
             "provider": "redis",
             "status": "hit" if value is not None else "miss",
@@ -73,8 +78,9 @@ class _MemoryCache:
     ) -> dict[str, object]:
         if not self.available:
             return {"provider": "redis", "status": "unavailable"}
-        self.values[key] = value
-        self.default_value = None
+        with self._guard:
+            self.values[key] = value
+            self.default_value = None
         return {
             "provider": "redis",
             "status": "stored",
@@ -84,7 +90,9 @@ class _MemoryCache:
     def get_int(self, key: str) -> tuple[int | None, dict[str, object]]:
         if not self.available:
             return None, {"provider": "redis", "status": "unavailable"}
-        return self.revisions.get(key), {"provider": "redis", "status": "hit"}
+        with self._guard:
+            value = self.revisions.get(key)
+        return value, {"provider": "redis", "status": "hit"}
 
     def increment(
         self,
@@ -94,8 +102,10 @@ class _MemoryCache:
     ) -> tuple[int | None, dict[str, object]]:
         if not self.available:
             return None, {"provider": "redis", "status": "unavailable"}
-        self.revisions[key] = self.revisions.get(key, 0) + 1
-        return self.revisions[key], {"provider": "redis", "status": "incremented"}
+        with self._guard:
+            self.revisions[key] = self.revisions.get(key, 0) + 1
+            value = self.revisions[key]
+        return value, {"provider": "redis", "status": "incremented"}
 
     def acquire_lock(
         self,
@@ -106,9 +116,11 @@ class _MemoryCache:
     ) -> tuple[bool, dict[str, object]]:
         if not self.available:
             return False, {"provider": "redis", "status": "unavailable"}
-        if self.lock_busy or key in self.lock_tokens:
-            return False, {"provider": "redis", "status": "busy"}
-        self.lock_tokens[key] = token
+        with self._guard:
+            if self.lock_busy or key in self.lock_tokens:
+                self.busy_observed.set()
+                return False, {"provider": "redis", "status": "busy"}
+            self.lock_tokens[key] = token
         return True, {"provider": "redis", "status": "acquired"}
 
     def release_lock(
@@ -117,9 +129,10 @@ class _MemoryCache:
         token: str,
     ) -> tuple[bool, dict[str, object]]:
         self.released.append((key, token))
-        if self.lock_tokens.get(key) != token:
-            return False, {"provider": "redis", "status": "not_owner"}
-        del self.lock_tokens[key]
+        with self._guard:
+            if self.lock_tokens.get(key) != token:
+                return False, {"provider": "redis", "status": "not_owner"}
+            del self.lock_tokens[key]
         return True, {"provider": "redis", "status": "released"}
 
 
@@ -170,8 +183,14 @@ def _service(
     delegate: _Delegate,
     cache: _MemoryCache,
     now: str,
+    **kwargs: object,
 ) -> CachedFinOpsQueryService:
-    return CachedFinOpsQueryService(delegate, cache=cache, clock=_Clock(now))
+    return CachedFinOpsQueryService(
+        delegate,
+        cache=cache,
+        clock=_Clock(now),
+        **kwargs,
+    )
 
 
 def test_fresh_value_is_returned_without_recompute() -> None:
@@ -236,6 +255,140 @@ def test_busy_force_refresh_returns_stale_as_revalidating() -> None:
     assert result["freshness"]["query_cache"]["status"] == "revalidating"
     assert result["metrics"]["requests"] == 60
     assert delegate.calls == []
+
+
+def _assert_concurrent_single_flight(
+    cache: _MemoryCache,
+    *,
+    now: str,
+    force_refresh: bool,
+) -> tuple[dict[str, object], dict[str, object], int]:
+    service = _service(_Delegate(), cache, now)
+    compute_started = Event()
+    allow_compute = Event()
+    compute_guard = Lock()
+    compute_calls = 0
+
+    def compute() -> dict[str, object]:
+        nonlocal compute_calls
+        with compute_guard:
+            compute_calls += 1
+        compute_started.set()
+        assert allow_compute.wait(timeout=2)
+        return _payload(77)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        owner = executor.submit(
+            service.compose,
+            "roi_decision",
+            _query(),
+            compute,
+            force_refresh=force_refresh,
+        )
+        assert compute_started.wait(timeout=2)
+        waiter = executor.submit(
+            service.compose,
+            "roi_decision",
+            _query(),
+            compute,
+            force_refresh=force_refresh,
+        )
+        busy_observed = cache.busy_observed.wait(timeout=0.25)
+        allow_compute.set()
+        owner_result = owner.result(timeout=2)
+        waiter_result = waiter.result(timeout=2)
+        assert busy_observed
+    return owner_result, waiter_result, compute_calls
+
+
+def test_cold_miss_concurrent_requests_compute_once_and_waiter_reads_owner_value() -> None:
+    owner, waiter, compute_calls = _assert_concurrent_single_flight(
+        _MemoryCache(),
+        now="2026-07-31T00:00:00Z",
+        force_refresh=False,
+    )
+
+    assert compute_calls == 1
+    assert owner["freshness"]["query_cache"]["status"] == "miss"
+    assert waiter["freshness"]["query_cache"]["status"] == "hit_fresh"
+    assert waiter["metrics"]["requests"] == 77
+
+
+def test_expired_concurrent_requests_compute_once() -> None:
+    owner, waiter, compute_calls = _assert_concurrent_single_flight(
+        _MemoryCache(_envelope()),
+        now="2026-07-31T00:31:00Z",
+        force_refresh=False,
+    )
+
+    assert compute_calls == 1
+    assert owner["freshness"]["query_cache"]["status"] == "miss"
+    assert waiter["freshness"]["query_cache"]["status"] == "hit_fresh"
+
+
+def test_forced_cold_concurrent_requests_compute_once_and_waiter_reads_owner() -> None:
+    owner, waiter, compute_calls = _assert_concurrent_single_flight(
+        _MemoryCache(),
+        now="2026-07-31T00:00:00Z",
+        force_refresh=True,
+    )
+
+    assert compute_calls == 1
+    assert owner["freshness"]["query_cache"]["status"] == "revalidated"
+    assert waiter["freshness"]["query_cache"]["status"] == "hit_fresh"
+    assert waiter["metrics"]["requests"] == 77
+
+
+def test_busy_without_usable_value_times_out_without_compute_or_lock_release() -> None:
+    delegate = _Delegate()
+    cache = _MemoryCache(lock_busy=True)
+    service = _service(
+        delegate,
+        cache,
+        "2026-07-31T00:00:00Z",
+        wait_timeout_seconds=0.01,
+        wait_poll_seconds=0.001,
+    )
+
+    try:
+        service.overview(_query())
+    except RuntimeError as exc:
+        assert str(exc) == "FinOps query cache is temporarily busy"
+    else:
+        raise AssertionError("busy cache without a usable value must be retryable")
+
+    assert delegate.calls == []
+    assert cache.released == []
+
+
+def test_different_cache_keys_do_not_block_each_other() -> None:
+    cache = _MemoryCache()
+    service = _service(_Delegate(), cache, "2026-07-31T00:00:00Z")
+    first_started = Event()
+    release_first = Event()
+
+    def first_compute() -> dict[str, object]:
+        first_started.set()
+        assert release_first.wait(timeout=2)
+        return _payload(1)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            service.compose,
+            "roi_decision",
+            _query("tenant-a"),
+            first_compute,
+        )
+        assert first_started.wait(timeout=2)
+        second = executor.submit(
+            service.compose,
+            "roi_decision",
+            _query("tenant-b"),
+            lambda: _payload(2),
+        )
+        assert second.result(timeout=2)["metrics"]["requests"] == 2
+        release_first.set()
+        assert first.result(timeout=2)["metrics"]["requests"] == 1
 
 
 def test_redis_unavailable_falls_back_to_authorized_delegate() -> None:

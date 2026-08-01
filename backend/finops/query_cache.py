@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import time
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, Protocol
@@ -14,6 +15,15 @@ from .query import FinOpsQuery
 FRESH_SECONDS = 300
 STALE_SECONDS = 1800
 LOCK_SECONDS = 30
+WAIT_TIMEOUT_SECONDS = 2.0
+WAIT_POLL_SECONDS = 0.02
+
+
+class FinOpsCacheBusy(RuntimeError):
+    """Retryable contention when another request owns the recompute lock."""
+
+    def __init__(self, *_args: object) -> None:
+        super().__init__("FinOps query cache is temporarily busy")
 
 
 class JsonCache(Protocol):
@@ -57,11 +67,25 @@ class CachedFinOpsQueryService:
         cache: JsonCache,
         namespace: FinOpsCacheNamespace | None = None,
         clock: Callable[[], datetime] | None = None,
+        wait_timeout_seconds: float = WAIT_TIMEOUT_SECONDS,
+        wait_poll_seconds: float = WAIT_POLL_SECONDS,
+        monotonic: Callable[[], float] | None = None,
+        sleeper: Callable[[float], None] | None = None,
     ) -> None:
         self._delegate = delegate
         self._cache = cache
         self._namespace = namespace or FinOpsCacheNamespace(cache)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._wait_timeout_seconds = max(
+            0.001,
+            min(float(wait_timeout_seconds), float(LOCK_SECONDS)),
+        )
+        self._wait_poll_seconds = max(
+            0.001,
+            min(float(wait_poll_seconds), self._wait_timeout_seconds),
+        )
+        self._monotonic = monotonic or time.monotonic
+        self._sleep = sleeper or time.sleep
 
     def filters(
         self,
@@ -243,12 +267,6 @@ class CachedFinOpsQueryService:
                 return _with_cache_status(cached_payload, "hit_fresh", cached)
             if state == "stale":
                 return _with_cache_status(cached_payload, "hit_stale", cached)
-            return self._compute_and_store(
-                key,
-                compute,
-                now=now,
-                response_status="miss",
-            )
 
         lock_key = f"{key}:refresh-lock"
         token = secrets.token_urlsafe(24)
@@ -264,19 +282,42 @@ class CachedFinOpsQueryService:
             if state in {"fresh", "stale"}:
                 return _with_cache_status(
                     cached_payload,
-                    "revalidating",
+                    (
+                        "revalidating"
+                        if force_refresh
+                        else f"hit_{state}"
+                    ),
                     cached,
                 )
-            return _compute_without_cache(compute, status="unavailable")
+            return self._wait_for_owner(key, compute)
         try:
             return self._compute_and_store(
                 key,
                 compute,
                 now=now,
-                response_status="revalidated",
+                response_status=("revalidated" if force_refresh else "miss"),
             )
         finally:
             self._cache.release_lock(lock_key, token)
+
+    def _wait_for_owner(
+        self,
+        key: str,
+        compute: Callable[[], dict[str, Any] | None],
+    ) -> dict[str, Any] | None:
+        deadline = self._monotonic() + self._wait_timeout_seconds
+        while True:
+            cached, metadata = self._cache.get_json(key)
+            status = str(metadata.get("status") or "").strip().lower()
+            if status in {"unavailable", "unconfigured"}:
+                return _compute_without_cache(compute, status="unavailable")
+            payload, state = _read_envelope(cached, _utc(self._clock()))
+            if state in {"fresh", "stale"}:
+                return _with_cache_status(payload, f"hit_{state}", cached)
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise FinOpsCacheBusy()
+            self._sleep(min(self._wait_poll_seconds, remaining))
 
     def _compute_and_store(
         self,
