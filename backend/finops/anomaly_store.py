@@ -127,7 +127,11 @@ class FinOpsAnomalyService:
 
         scoped = set(scope_workspace_ids or ())
         for anomaly_id, current in existing.items():
-            is_in_scope = not scoped or bool(scoped.intersection(current.workspace_ids))
+            current_workspace_ids = set(current.workspace_ids)
+            is_in_scope = not scoped or (
+                bool(current_workspace_ids)
+                and current_workspace_ids.issubset(scoped)
+            )
             if is_in_scope and anomaly_id not in current_ids and current.status != "resolved":
                 self._repository.save(
                     current.model_copy(

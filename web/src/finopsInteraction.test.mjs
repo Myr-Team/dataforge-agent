@@ -242,6 +242,8 @@ test("portal risk integration uses one decision read and conflict-safe draft rel
   assert.match(source, /<RiskDecisionPage/);
   assert.match(source, /<RemediationDraftPanel/);
   assert.match(source, /orchestrateRemediationMutation/);
+  assert.match(source, /refreshOpportunity/);
+  assert.match(source, /loadFinOpsRiskDecision\(query, \{ refresh: true \}\)/);
   assert.match(source, /loadFinOpsRemediationDraft/);
   assert.match(source, /mutationError=\{riskMutation\.error\}/);
   assert.match(source, /busyId=\{riskMutation\.busyId\}/);

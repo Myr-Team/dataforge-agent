@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   REMEDIATION_CONFLICT_MESSAGE,
+  REMEDIATION_RESELECT_MESSAGE,
   orchestrateRemediationMutation,
 } from "./finops/remediationOrchestration.js";
 
@@ -107,6 +108,87 @@ test("remediation conflict reloads latest and never refreshes risk", async () =>
   });
   assert.deepEqual(calls.reload, [REMEDIATION_CONFLICT_MESSAGE]);
   assert.equal(calls.refresh, 0);
+});
+
+
+test("create conflict refreshes the opportunity without retrying and the next user action uses the new base", async () => {
+  const conflict = Object.assign(new Error("private conflict detail"), { status: 409 });
+  const calls = { create: [], refreshOpportunity: [], refreshRisk: 0 };
+  let currentOpportunity = { id: "opp-cache", baseVersion: "cache-policy-v1" };
+  let panel = { open: true, opportunity: currentOpportunity, error: "" };
+  const options = {
+    kind: "create",
+    workspaceId: "ws-a",
+    clients: {
+      async create(payload) {
+        calls.create.push(payload);
+        if (payload.baseVersion === "cache-policy-v1") throw conflict;
+        return { draft: { draft_id: "draft-created", base_version: payload.baseVersion } };
+      },
+    },
+    async refreshOpportunity({ opportunityId, message }) {
+      calls.refreshOpportunity.push([opportunityId, message]);
+      currentOpportunity = { id: opportunityId, baseVersion: "cache-policy-v2" };
+      panel = { open: true, opportunity: currentOpportunity, error: message };
+      return currentOpportunity;
+    },
+    refreshRisk() { calls.refreshRisk += 1; },
+  };
+
+  const conflicted = await orchestrateRemediationMutation({
+    ...options,
+    opportunity: currentOpportunity,
+  });
+
+  assert.equal(conflicted.status, "conflict");
+  assert.equal(conflicted.opportunity.baseVersion, "cache-policy-v2");
+  assert.deepEqual(calls.create, [{
+    workspaceId: "ws-a",
+    sourceOpportunityId: "opp-cache",
+    baseVersion: "cache-policy-v1",
+  }]);
+  assert.deepEqual(calls.refreshOpportunity, [["opp-cache", REMEDIATION_CONFLICT_MESSAGE]]);
+  assert.equal(calls.refreshRisk, 0);
+  assert.equal(panel.open, true);
+
+  const succeeded = await orchestrateRemediationMutation({
+    ...options,
+    opportunity: currentOpportunity,
+  });
+
+  assert.equal(succeeded.status, "succeeded");
+  assert.equal(calls.create.length, 2);
+  assert.equal(calls.create[1].baseVersion, "cache-policy-v2");
+  assert.equal(calls.refreshRisk, 1);
+});
+
+
+test("create conflict refresh failure keeps the panel open and requires reselection", async () => {
+  const conflict = Object.assign(new Error("private conflict detail"), { status: 409 });
+  let panel = { open: true, error: "" };
+  let refreshRisk = 0;
+  const result = await orchestrateRemediationMutation({
+    kind: "create",
+    workspaceId: "ws-a",
+    opportunity: { id: "opp-cache", baseVersion: "cache-policy-v1" },
+    clients: { async create() { throw conflict; } },
+    async refreshOpportunity() {
+      panel = { ...panel, open: true, error: REMEDIATION_RESELECT_MESSAGE };
+      throw new Error("private refresh failure");
+    },
+    refreshRisk() { refreshRisk += 1; },
+  });
+
+  assert.deepEqual(result, {
+    status: "conflict",
+    error: REMEDIATION_RESELECT_MESSAGE,
+    opportunity: null,
+    keepOpen: true,
+  });
+  assert.equal(panel.open, true);
+  assert.equal(panel.error, REMEDIATION_RESELECT_MESSAGE);
+  assert.equal(refreshRisk, 0);
+  assert.equal(JSON.stringify(result).includes("private refresh"), false);
 });
 
 

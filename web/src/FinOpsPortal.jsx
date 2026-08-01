@@ -49,8 +49,11 @@ import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
 import { RemediationDraftPanel } from "./finops/RemediationDraftPanel.jsx";
 import { RiskDecisionPage } from "./finops/RiskDecisionPage.jsx";
 import { RoiDecisionPage } from "./finops/RoiDecisionPage.jsx";
-import { orchestrateRemediationMutation } from "./finops/remediationOrchestration.js";
-import { remediationDraftView } from "./finopsDecisionViewModel.js";
+import {
+  REMEDIATION_RESELECT_MESSAGE,
+  orchestrateRemediationMutation,
+} from "./finops/remediationOrchestration.js";
+import { remediationDraftView, riskDecisionView } from "./finopsDecisionViewModel.js";
 import {
   applyDimensionFilter,
   filterChips,
@@ -1164,6 +1167,7 @@ export function FinOpsPortal({
   }), [filters]);
 
   useEffect(() => {
+    remediationSequence.current += 1;
     setSelectedRiskId(undefined);
     setRiskMutation({ busyId: "", error: "" });
     remediationOpportunityRef.current = null;
@@ -1531,6 +1535,78 @@ export function FinOpsPortal({
     loadCurrentRemediationDraft();
   }, [loadCurrentRemediationDraft]);
 
+  const refreshCurrentRemediationOpportunity = useCallback(async ({ opportunityId, message }) => {
+    const current = ++remediationSequence.current;
+    setDetailState((state) => (
+      state.tab === "risk" && state.dataScopeKey === queryScopeKey
+        ? { ...state, updating: true, error: "" }
+        : state
+    ));
+    try {
+      const payload = await loadFinOpsRiskDecision(query, { refresh: true });
+      if (current !== remediationSequence.current) return null;
+      const opportunity = riskDecisionView(payload).priorities.find((item) => (
+        item.id === opportunityId && item.baseVersion
+      ));
+      setDetailState({
+        dataScopeKey: queryScopeKey,
+        tab: "risk",
+        loading: false,
+        updating: false,
+        error: "",
+        data: payload,
+      });
+      if (!opportunity) {
+        remediationOpportunityRef.current = null;
+        setRemediationState((state) => ({
+          ...state,
+          open: true,
+          draft: {
+            workspace_id: workspaceId,
+            source_opportunity_id: opportunityId,
+            base_version: "",
+            title: state.opportunity?.label || "整改草案",
+          },
+          busy: false,
+          error: REMEDIATION_RESELECT_MESSAGE,
+        }));
+        return null;
+      }
+      const draft = {
+        workspace_id: workspaceId,
+        source_opportunity_id: opportunity.id,
+        base_version: opportunity.baseVersion,
+        title: opportunity.label,
+      };
+      remediationOpportunityRef.current = opportunity;
+      setRemediationState({
+        open: true,
+        opportunity,
+        draft,
+        busy: false,
+        error: message,
+      });
+      return opportunity;
+    } catch {
+      if (current !== remediationSequence.current) return null;
+      remediationOpportunityRef.current = null;
+      setDetailState((state) => ({ ...state, updating: false }));
+      setRemediationState((state) => ({
+        ...state,
+        open: true,
+        draft: {
+          workspace_id: workspaceId,
+          source_opportunity_id: opportunityId,
+          base_version: "",
+          title: state.opportunity?.label || "整改草案",
+        },
+        busy: false,
+        error: REMEDIATION_RESELECT_MESSAGE,
+      }));
+      return null;
+    }
+  }, [query, queryScopeKey, workspaceId]);
+
   const runRemediation = async (kind, payload = {}) => {
     const opportunity = remediationOpportunityRef.current;
     const view = remediationDraftView(remediationState.draft);
@@ -1547,6 +1623,7 @@ export function FinOpsPortal({
         promote: promoteFinOpsRemediationDraft,
       },
       reloadLatest: (message) => loadCurrentRemediationDraft({ conflictMessage: message }),
+      refreshOpportunity: refreshCurrentRemediationOpportunity,
       refreshRisk: refreshRiskOnly,
     });
     if (result.status === "succeeded") {

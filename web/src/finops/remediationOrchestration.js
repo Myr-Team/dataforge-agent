@@ -1,4 +1,5 @@
 export const REMEDIATION_CONFLICT_MESSAGE = "方案已更新，请重新复核";
+export const REMEDIATION_RESELECT_MESSAGE = "方案已更新，请重新选择风险机会";
 
 const SAFE_IDENTIFIER = /^[A-Za-z0-9_-]{1,128}$/;
 const SAFE_REVISION = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -62,6 +63,7 @@ export async function orchestrateRemediationMutation({
   reason = "",
   clients = {},
   reloadLatest = null,
+  refreshOpportunity = null,
   refreshRisk = null,
 }) {
   const request = mutationRequest({ kind, workspaceId, opportunity, draft, reason });
@@ -75,6 +77,34 @@ export async function orchestrateRemediationMutation({
     return { status: "succeeded", response };
   } catch (error) {
     if (error?.status === 409) {
+      if (kind === "create") {
+        let latestOpportunity = null;
+        try {
+          latestOpportunity = typeof refreshOpportunity === "function"
+            ? await refreshOpportunity({
+              opportunityId: identifier(opportunity?.id),
+              message: REMEDIATION_CONFLICT_MESSAGE,
+            })
+            : null;
+        } catch {
+          latestOpportunity = null;
+        }
+        const sameOpportunity = identifier(latestOpportunity?.id) === identifier(opportunity?.id);
+        if (!sameOpportunity || !revision(latestOpportunity?.baseVersion)) {
+          return {
+            status: "conflict",
+            error: REMEDIATION_RESELECT_MESSAGE,
+            opportunity: null,
+            keepOpen: true,
+          };
+        }
+        return {
+          status: "conflict",
+          error: REMEDIATION_CONFLICT_MESSAGE,
+          opportunity: latestOpportunity,
+          keepOpen: true,
+        };
+      }
       const latest = typeof reloadLatest === "function"
         ? await reloadLatest(REMEDIATION_CONFLICT_MESSAGE)
         : null;

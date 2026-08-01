@@ -91,6 +91,51 @@ def test_anomaly_reopens_after_resolution_when_condition_returns() -> None:
     assert reopened.resolved_at is None
 
 
+def test_scoped_reconcile_does_not_resolve_multi_workspace_anomaly_from_partial_scope() -> None:
+    service = FinOpsAnomalyService(InMemoryAnomalyRepository())
+    finding = _finding(anomaly_id="anomaly_error_ws-a-ws-b").model_copy(
+        update={"workspace_ids": ["ws-a", "ws-b"]}
+    )
+    service.reconcile(tenant_ref="tenant-a", findings=[finding])
+
+    reconciled = service.reconcile(
+        tenant_ref="tenant-a",
+        findings=[],
+        scope_workspace_ids=("ws-a",),
+    )
+
+    assert reconciled[0].status == "open"
+
+
+def test_scoped_reconcile_resolves_multi_workspace_anomaly_from_complete_scope() -> None:
+    service = FinOpsAnomalyService(InMemoryAnomalyRepository())
+    finding = _finding(anomaly_id="anomaly_error_ws-a-ws-b").model_copy(
+        update={"workspace_ids": ["ws-a", "ws-b"]}
+    )
+    service.reconcile(tenant_ref="tenant-a", findings=[finding])
+
+    reconciled = service.reconcile(
+        tenant_ref="tenant-a",
+        findings=[],
+        scope_workspace_ids=("ws-a", "ws-b"),
+    )
+
+    assert reconciled[0].status == "resolved"
+
+
+def test_scoped_reconcile_resolves_single_workspace_anomaly_from_matching_scope() -> None:
+    service = FinOpsAnomalyService(InMemoryAnomalyRepository())
+    service.reconcile(tenant_ref="tenant-a", findings=[_finding()])
+
+    reconciled = service.reconcile(
+        tenant_ref="tenant-a",
+        findings=[],
+        scope_workspace_ids=("ws-a",),
+    )
+
+    assert reconciled[0].status == "resolved"
+
+
 def test_detected_anomaly_identity_is_stable_when_observed_value_changes() -> None:
     def event(index: int, *, failed: bool) -> FinOpsRequestEvent:
         return FinOpsRequestEvent.model_validate(
