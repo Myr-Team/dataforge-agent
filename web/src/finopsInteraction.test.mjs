@@ -148,3 +148,67 @@ test("operations trends keep event counts in hover detail without persistent mar
   assert.doesNotMatch(source, /className="finops-trend-event"/);
   assert.match(source, /rowEvents\.length \? <span>运营事件/);
 });
+
+
+test("risk selection distinguishes initial selection from an explicit close", async () => {
+  const server = await import("vite").then(({ createServer }) => createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  }));
+  try {
+    const { resolveSelectedRisk } = await server.ssrLoadModule("/src/finops/RiskDecisionPage.jsx");
+    const priorities = [{ id: "risk-a" }, { id: "risk-b" }];
+    assert.equal(resolveSelectedRisk(undefined, priorities)?.id, "risk-a");
+    assert.equal(resolveSelectedRisk("risk-b", priorities)?.id, "risk-b");
+    assert.equal(resolveSelectedRisk(null, priorities), null);
+    assert.equal(resolveSelectedRisk("missing", priorities), null);
+  } finally {
+    await server.close();
+  }
+});
+
+
+test("risk refresh invalidates only the risk domain", async () => {
+  const server = await import("vite").then(({ createServer }) => createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  }));
+  try {
+    const { scheduleRiskOnlyRefresh } = await server.ssrLoadModule("/src/FinOpsPortal.jsx");
+    const forceRef = { current: false };
+    const evidence = { invalidated: [], bumps: 0 };
+    scheduleRiskOnlyRefresh({
+      invalidate(predicate) {
+        evidence.invalidated = [
+          predicate({ domain: "risk" }),
+          predicate({ domain: "roi" }),
+          predicate({ domain: "overview" }),
+        ];
+      },
+      forceRef,
+      bump() { evidence.bumps += 1; },
+    });
+    assert.deepEqual(evidence, { invalidated: [true, false, false], bumps: 1 });
+    assert.equal(forceRef.current, true);
+  } finally {
+    await server.close();
+  }
+});
+
+
+test("portal risk integration uses one decision read and conflict-safe draft reload", async () => {
+  const source = await readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8");
+
+  assert.match(source, /loadFinOpsRiskDecision/);
+  assert.match(source, /<RiskDecisionPage/);
+  assert.match(source, /<RemediationDraftPanel/);
+  assert.match(source, /方案已更新，请重新复核/);
+  assert.match(source, /loadFinOpsRemediationDraft/);
+  assert.match(source, /createFinOpsRemediationDraft\(\{/);
+  assert.match(source, /sourceOpportunityId:/);
+  assert.match(source, /baseVersion:/);
+  assert.doesNotMatch(source, /function RiskPage\(/);
+  assert.doesNotMatch(source, /risk:\s*\(\)\s*=>\s*Promise\.all/);
+});

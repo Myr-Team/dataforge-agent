@@ -6085,6 +6085,229 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-decision-roi-loading b,
   .finops-decision-roi-loading span { animation: none !important; }
 }
+
+/* Risk decisions and remediation: linked evidence, dense operating hierarchy. */
+.finops-decision-risk-shell { display: grid; min-width: 0; gap: 12px; }
+.finops-decision-risk-banner { display: grid; min-height: 124px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; border: 1px solid var(--line); border-left: 3px solid var(--red); border-radius: 9px; background: var(--surface); padding: 18px 20px; box-shadow: var(--shadow); }
+.finops-decision-risk-banner > div { display: grid; min-width: 0; gap: 7px; }
+.finops-decision-risk-title-row { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 8px; }
+.finops-decision-risk-title-row h2 { min-width: 0; margin: 0; color: var(--ink); font-size: 18px; line-height: 1.35; }
+.finops-decision-risk-banner p { max-width: 820px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.finops-decision-risk-banner small { color: var(--faint); font-size: 9.5px; }
+.finops-decision-risk-banner > button,
+.finops-decision-risk-evidence-head button,
+.finops-decision-risk-section-head button,
+.finops-decision-risk-insight > button { display: inline-flex; min-height: 32px; align-items: center; justify-content: center; gap: 6px; border: 1px solid #bfd0ed; border-radius: 6px; background: var(--surface); padding: 0 10px; color: var(--blue); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.finops-decision-risk-banner > button:hover,
+.finops-decision-risk-evidence-head button:hover,
+.finops-decision-risk-section-head button:hover,
+.finops-decision-risk-insight > button:hover { border-color: #8eafe4; background: var(--blue-soft); }
+.finops-decision-risk-updating { display: inline-flex; min-height: 19px; align-items: center; gap: 4px; color: var(--blue); font-size: 9px; }
+
+.finops-decision-risk-domains { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 9px; background: var(--surface); overflow: hidden; }
+.finops-decision-risk-domains > article { position: relative; display: grid; min-width: 0; gap: 4px; padding: 12px 14px 12px 18px; border-right: 1px solid var(--line); }
+.finops-decision-risk-domains > article:last-child { border-right: 0; }
+.finops-decision-risk-domains > article::before { position: absolute; top: 13px; bottom: 13px; left: 9px; width: 2px; border-radius: 1px; background: var(--line-strong); content: ""; }
+.finops-decision-risk-domains > .domain-cost::before { background: var(--amber); }
+.finops-decision-risk-domains > .domain-experience::before { background: var(--red); }
+.finops-decision-risk-domains > .domain-efficiency::before { background: var(--mint); }
+.finops-decision-risk-domains > .domain-governance::before { background: var(--blue); }
+.finops-decision-risk-domains span { color: var(--muted); font-size: 10px; font-weight: 650; }
+.finops-decision-risk-domains strong { color: var(--ink); font-size: 20px; line-height: 1; }
+.finops-decision-risk-domains small { color: var(--faint); font-size: 8.5px; }
+
+.finops-decision-risk-columns { display: grid; min-width: 0; grid-template-columns: minmax(0, 1.08fr) minmax(300px, .92fr); gap: 12px; }
+.finops-decision-risk-panel,
+.finops-decision-risk-wide,
+.finops-decision-risk-chain { min-width: 0; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: var(--shadow); }
+.finops-decision-risk-section-head { display: flex; min-height: 58px; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+.finops-decision-risk-section-head > div { display: grid; min-width: 0; gap: 2px; }
+.finops-decision-risk-section-head span { color: var(--blue); font-size: 8.5px; font-weight: 750; letter-spacing: .04em; }
+.finops-decision-risk-section-head h2 { margin: 0; color: var(--ink); font-size: 13px; }
+.finops-decision-risk-section-head > small { max-width: 260px; color: var(--faint); font-size: 9px; line-height: 1.4; text-align: right; }
+.finops-decision-risk-section-head button.quiet { color: var(--muted); border-color: var(--line-strong); }
+
+.finops-decision-risk-priorities { display: grid; align-content: start; gap: 0; min-height: 330px; margin: 0; padding: 7px 10px 10px; list-style: none; }
+.finops-decision-risk-priorities li { border-bottom: 1px solid #edf0f5; }
+.finops-decision-risk-priorities li:last-child { border-bottom: 0; }
+.finops-decision-risk-priorities button { display: grid; width: 100%; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; border: 0; border-left: 2px solid transparent; background: transparent; padding: 10px 8px; color: var(--muted); text-align: left; }
+.finops-decision-risk-priorities button:hover,
+.finops-decision-risk-priorities button:focus-visible,
+.finops-decision-risk-priorities .selected button { outline: 0; border-left-color: var(--blue); background: #f7faff; }
+.finops-decision-risk-priorities button > span:nth-child(2) { display: grid; min-width: 0; gap: 3px; }
+.finops-decision-risk-priorities b { overflow: hidden; color: var(--ink); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.finops-decision-risk-priorities small { overflow: hidden; color: var(--faint); font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
+.finops-decision-risk-priorities button > strong { color: var(--muted); font-size: 9.5px; white-space: nowrap; }
+
+.finops-decision-risk-chain { padding-bottom: 14px; }
+.finops-decision-risk-chain-stages { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; padding: 14px; list-style: none; }
+.finops-decision-risk-chain-stages > li { position: relative; display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 7px; min-width: 0; padding-right: 10px; }
+.finops-decision-risk-chain-stages > li:not(:last-child)::after { position: absolute; top: 10px; right: 0; left: 10px; z-index: 0; height: 1px; background: var(--line-strong); content: ""; }
+.finops-decision-risk-chain-stages > li > span { z-index: 1; display: grid; width: 20px; height: 20px; border: 1px solid #bdd0ef; border-radius: 50%; place-items: center; background: var(--surface); color: var(--blue); font-size: 8.5px; font-weight: 800; }
+.finops-decision-risk-chain-stages > li > div { z-index: 1; display: grid; min-width: 0; align-content: start; gap: 3px; background: var(--surface); }
+.finops-decision-risk-chain-stages small { color: var(--blue); font-size: 8px; font-weight: 700; }
+.finops-decision-risk-chain-stages b { overflow: hidden; color: var(--ink); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.finops-decision-risk-chain-stages p { margin: 0; color: var(--faint); font-size: 8.5px; line-height: 1.45; }
+.finops-decision-risk-evidence-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.finops-decision-risk-evidence-head > div:first-child { display: grid; gap: 2px; }
+.finops-decision-risk-evidence-head span { color: var(--blue); font-size: 8.5px; font-weight: 700; }
+.finops-decision-risk-evidence-head h3 { margin: 0; color: var(--ink); font-size: 12px; }
+.finops-decision-risk-evidence-head > div:last-child { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.finops-decision-risk-evidence-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 12px 14px 0; }
+.finops-decision-risk-evidence-card { display: grid; min-width: 0; gap: 9px; border: 1px solid var(--line); border-radius: 7px; padding: 11px; background: #fbfcfe; }
+.finops-decision-risk-evidence-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.finops-decision-risk-evidence-card > header > span { display: grid; min-width: 0; gap: 2px; }
+.finops-decision-risk-evidence-card header b { overflow: hidden; color: var(--ink); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.finops-decision-risk-evidence-card header small { color: var(--faint); font-size: 8.5px; }
+.finops-decision-risk-evidence-card > dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 10px; margin: 0; }
+.finops-decision-risk-evidence-card dl > div { display: flex; min-width: 0; justify-content: space-between; gap: 7px; }
+.finops-decision-risk-evidence-card dt { color: var(--faint); font-size: 8.5px; }
+.finops-decision-risk-evidence-card dd { overflow: hidden; margin: 0; color: var(--muted); font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
+.finops-decision-risk-visible-answer { margin: 0; border-left: 2px solid var(--mint); padding-left: 8px; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.finops-decision-risk-technical { border-top: 1px solid var(--line); padding-top: 7px; color: var(--faint); font-size: 8.5px; }
+.finops-decision-risk-technical summary { width: fit-content; cursor: pointer; }
+.finops-decision-risk-technical dl { display: grid; gap: 4px; margin: 7px 0 0; }
+.finops-decision-risk-technical dl > div { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 7px; }
+.finops-decision-risk-technical dd { overflow-wrap: anywhere; white-space: normal; }
+
+.finops-decision-risk-insight,
+.finops-decision-risk-governance { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 13px 14px; box-shadow: var(--shadow); }
+.finops-decision-risk-insight > span,
+.finops-decision-risk-governance > span { display: grid; width: 32px; height: 32px; border-radius: 7px; place-items: center; background: var(--blue-soft); color: var(--blue); }
+.finops-decision-risk-insight > div,
+.finops-decision-risk-governance > div { display: grid; min-width: 0; gap: 3px; }
+.finops-decision-risk-insight small,
+.finops-decision-risk-governance small { color: var(--blue); font-size: 8.5px; font-weight: 700; }
+.finops-decision-risk-insight h2,
+.finops-decision-risk-governance h2 { margin: 0; color: var(--ink); font-size: 12px; }
+.finops-decision-risk-insight p,
+.finops-decision-risk-governance p { margin: 0; color: var(--muted); font-size: 9.5px; line-height: 1.5; }
+.finops-decision-risk-governance-state { display: flex !important; align-items: center; flex-wrap: wrap; gap: 6px; }
+.finops-decision-risk-governance-state span { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 9px; }
+
+.finops-decision-risk-loading i,
+.finops-decision-risk-loading b,
+.finops-decision-risk-loading span { display: block; border-radius: 4px; background: #edf0f4; animation: finops-decision-risk-pulse 850ms ease-in-out infinite alternate; }
+.finops-decision-risk-loading .finops-decision-risk-banner > i { width: 34px; height: 34px; }
+.finops-decision-risk-loading .finops-decision-risk-banner > span { display: grid; gap: 11px; background: transparent; }
+.finops-decision-risk-loading .finops-decision-risk-banner b { width: 260px; height: 18px; }
+.finops-decision-risk-loading .finops-decision-risk-banner span > i { width: min(520px, 65vw); height: 9px; }
+.finops-decision-risk-loading .finops-decision-risk-domains article { display: grid; min-height: 72px; gap: 9px; }
+.finops-decision-risk-loading .finops-decision-risk-domains i { width: 44%; height: 8px; }
+.finops-decision-risk-loading .finops-decision-risk-domains b { width: 65%; height: 18px; }
+.finops-decision-risk-loading .finops-decision-risk-columns article,
+.finops-decision-risk-loading .finops-decision-risk-wide { display: grid; min-height: 230px; align-content: start; gap: 13px; padding: 16px; }
+.finops-decision-risk-loading .finops-decision-risk-columns i,
+.finops-decision-risk-loading .finops-decision-risk-wide i { width: 26%; height: 8px; }
+.finops-decision-risk-loading .finops-decision-risk-columns b,
+.finops-decision-risk-loading .finops-decision-risk-wide b { width: 46%; height: 16px; }
+.finops-decision-risk-loading .finops-decision-risk-columns span,
+.finops-decision-risk-loading .finops-decision-risk-wide span { width: 100%; height: 110px; }
+@keyframes finops-decision-risk-pulse { from { opacity: .48; } to { opacity: .9; } }
+
+.finops-remediation-layer { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; overflow: auto; background: rgba(17, 24, 39, .34); padding: 24px; }
+.finops-remediation-panel { width: min(980px, 100%); max-height: min(900px, calc(100dvh - 48px)); overflow: auto; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 22px 60px rgba(16, 24, 40, .22); }
+.finops-remediation-head { position: sticky; z-index: 3; top: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); background: var(--surface); padding: 14px 16px; }
+.finops-remediation-head > div { display: grid; min-width: 0; gap: 3px; }
+.finops-remediation-head span { color: var(--blue); font-size: 8.5px; font-weight: 750; letter-spacing: .05em; }
+.finops-remediation-head h2 { margin: 0; color: var(--ink); font-size: 16px; }
+.finops-remediation-head p { margin: 0; color: var(--muted); font-size: 9.5px; }
+.finops-remediation-head > button { display: grid; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 6px; place-items: center; background: var(--surface); color: var(--muted); }
+.finops-remediation-error { display: flex; align-items: center; gap: 8px; margin: 12px 16px 0; border: 1px solid #fecdca; border-radius: 7px; background: var(--red-soft); padding: 8px 10px; color: #b42318; font-size: 10px; }
+.finops-remediation-error > span { min-width: 0; flex: 1; }
+.finops-remediation-error button { display: inline-flex; min-height: 28px; align-items: center; gap: 4px; border: 1px solid #f3b5b1; border-radius: 5px; background: var(--surface); padding: 0 8px; color: #b42318; font-size: 9px; }
+.finops-remediation-create { display: grid; min-height: 280px; grid-template-columns: 42px minmax(0, 1fr) auto; align-content: center; align-items: center; gap: 10px 14px; padding: 28px; }
+.finops-remediation-create > span { display: grid; width: 42px; height: 42px; border-radius: 8px; place-items: center; background: var(--blue-soft); color: var(--blue); }
+.finops-remediation-create h3 { margin: 0; color: var(--ink); font-size: 14px; }
+.finops-remediation-create p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.finops-remediation-create small { grid-column: 2 / -1; color: var(--amber); font-size: 9px; }
+.finops-remediation-create button,
+.finops-remediation-actions button { display: inline-flex; min-height: 34px; align-items: center; justify-content: center; border: 1px solid #aac2e8; border-radius: 6px; background: var(--surface); padding: 0 11px; color: var(--blue); font-size: 10px; font-weight: 700; }
+.finops-remediation-actions button.primary { border-color: var(--blue); background: var(--blue); color: #fff; }
+.finops-remediation-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 14px 16px 10px; }
+.finops-remediation-summary > div { display: grid; min-width: 0; gap: 3px; }
+.finops-remediation-summary span { color: var(--blue); font-size: 8.5px; font-weight: 700; }
+.finops-remediation-summary h3 { margin: 0; color: var(--ink); font-size: 14px; }
+.finops-remediation-summary p { margin: 0; color: var(--muted); font-size: 9.5px; line-height: 1.5; }
+.finops-remediation-summary > strong { border: 1px solid var(--line); border-radius: 5px; background: var(--surface-soft); padding: 4px 7px; color: var(--muted); font-size: 9px; white-space: nowrap; }
+.finops-remediation-lifecycle { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0 16px 12px; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); list-style: none; }
+.finops-remediation-lifecycle li { position: relative; display: grid; justify-items: center; gap: 5px; color: var(--faint); }
+.finops-remediation-lifecycle li:not(:last-child)::after { position: absolute; top: 10px; right: -50%; left: 50%; height: 1px; background: var(--line-strong); content: ""; }
+.finops-remediation-lifecycle li > span { z-index: 1; display: grid; width: 20px; height: 20px; border: 1px solid var(--line-strong); border-radius: 50%; place-items: center; background: var(--surface); font-size: 8px; }
+.finops-remediation-lifecycle .reached > span { border-color: #a8d8c1; background: var(--mint-soft); color: var(--mint); }
+.finops-remediation-lifecycle .current > small { color: var(--ink); font-weight: 700; }
+.finops-remediation-lifecycle small { font-size: 8.5px; }
+.finops-remediation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 0 16px; }
+.finops-remediation-section { display: grid; align-content: start; gap: 8px; min-width: 0; border: 1px solid var(--line); border-radius: 7px; background: #fbfcfe; padding: 10px; }
+.finops-remediation-section.span-2 { grid-column: 1 / -1; }
+.finops-remediation-section > header { display: flex; align-items: center; gap: 6px; color: var(--blue); }
+.finops-remediation-section h3 { margin: 0; color: var(--ink); font-size: 10.5px; }
+.finops-remediation-section p,
+.finops-remediation-section li,
+.finops-remediation-section summary { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.finops-remediation-section ul { display: grid; gap: 4px; margin: 0; padding-left: 17px; }
+.finops-remediation-section dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 10px; margin: 0; }
+.finops-remediation-section dl > div { display: flex; min-width: 0; justify-content: space-between; gap: 7px; }
+.finops-remediation-section dt { color: var(--faint); font-size: 8.5px; }
+.finops-remediation-section dd { overflow: hidden; margin: 0; color: var(--muted); font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
+.finops-remediation-section details { border-top: 1px solid var(--line); padding-top: 6px; }
+.finops-remediation-section details li { overflow-wrap: anywhere; }
+.finops-remediation-changes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.finops-remediation-changes article { display: grid; gap: 4px; border-left: 2px solid #b8cbed; padding: 7px 9px; background: var(--surface); }
+.finops-remediation-changes b { color: var(--ink); font-size: 9.5px; }
+.finops-remediation-changes span { color: var(--muted); font-size: 9px; }
+.finops-remediation-changes span strong { color: var(--blue); }
+.finops-remediation-changes p { color: var(--faint); }
+.finops-remediation-reason { display: grid; gap: 5px; margin: 10px 16px 0; color: var(--muted); font-size: 9px; font-weight: 700; }
+.finops-remediation-reason textarea { min-height: 66px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 7px; padding: 8px 9px; color: var(--ink); font-size: 10px; line-height: 1.5; }
+.finops-remediation-actions { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 12px; border-top: 1px solid var(--line); background: var(--surface); padding: 11px 16px; }
+.finops-remediation-actions > div { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.finops-remediation-actions b { color: var(--ink); font-size: 9.5px; }
+.finops-remediation-actions small { color: var(--muted); font-size: 8.5px; }
+.finops-remediation-advisory { color: var(--muted); font-size: 9px; }
+
+@media (max-width: 980px) {
+  .finops-decision-risk-columns { grid-template-columns: 1fr; }
+  .finops-decision-risk-evidence-list { grid-template-columns: 1fr; }
+  .finops-decision-risk-chain-stages { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 0; }
+  .finops-decision-risk-chain-stages > li:not(:last-child)::after { display: none; }
+}
+
+@media (max-width: 640px) {
+  .finops-decision-risk-banner { grid-template-columns: 1fr; align-items: start; padding: 15px; }
+  .finops-decision-risk-banner > button { width: 100%; }
+  .finops-decision-risk-domains { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .finops-decision-risk-domains > article:nth-child(2) { border-right: 0; }
+  .finops-decision-risk-domains > article:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .finops-decision-risk-section-head,
+  .finops-decision-risk-evidence-head { align-items: flex-start; flex-direction: column; }
+  .finops-decision-risk-section-head > small { max-width: none; text-align: left; }
+  .finops-decision-risk-evidence-head > div:last-child { width: 100%; justify-content: flex-start; }
+  .finops-decision-risk-chain-stages { grid-template-columns: 1fr; gap: 8px; }
+  .finops-decision-risk-chain-stages > li { padding: 0; }
+  .finops-decision-risk-insight,
+  .finops-decision-risk-governance { grid-template-columns: 32px minmax(0, 1fr); align-items: start; }
+  .finops-decision-risk-insight > .finops-decision-status,
+  .finops-decision-risk-insight > button,
+  .finops-decision-risk-governance-state { grid-column: 1 / -1; }
+  .finops-remediation-layer { place-items: end stretch; padding: 0; }
+  .finops-remediation-panel { width: 100%; max-height: 100dvh; border-right: 0; border-bottom: 0; border-left: 0; border-radius: 10px 10px 0 0; }
+  .finops-remediation-create { grid-template-columns: 42px minmax(0, 1fr); padding: 20px 16px; }
+  .finops-remediation-create > button,
+  .finops-remediation-create > small { grid-column: 1 / -1; }
+  .finops-remediation-grid { grid-template-columns: 1fr; }
+  .finops-remediation-section.span-2 { grid-column: auto; }
+  .finops-remediation-changes { grid-template-columns: 1fr; }
+  .finops-remediation-actions { align-items: stretch; flex-direction: column; }
+  .finops-remediation-actions button { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .finops-decision-risk-loading i,
+  .finops-decision-risk-loading b,
+  .finops-decision-risk-loading span,
+  .finops-remediation-layer { animation: none !important; transition: none !important; }
+}
 .provider-connections,
 .identity-access { display: grid; gap: 14px; padding: 2px; }
 .governance-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 2px 2px 4px; }

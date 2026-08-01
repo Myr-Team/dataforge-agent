@@ -351,6 +351,72 @@ test("shared decision components declare accessible charts and bounded tooltips"
 });
 
 
+test("risk and remediation projections expose only bounded interaction fields", () => {
+  const risk = riskDecisionView({
+    priorities: [{
+      opportunity_id: "risk-cache",
+      policy_type: "cache_hit_rate",
+      risk_domain: "efficiency",
+      base_version: "cache-policy-v9",
+      anomaly_id: "anomaly-cache",
+      applicable_actions: ["acknowledge", "suppress", "execute", "<script>"],
+      evidence_refs: ["req_cache_001", "run-private"],
+      prompt: "must-not-render",
+    }],
+    selected_evidence_summaries: [{
+      request_ref: "req_cache_001",
+      request_name: "缓存复用检查",
+      operation: "分析数据",
+      model_label: "通用分析模型",
+      signal: { metric: "request", value: 1, unit: "requests" },
+      cache_state: "miss",
+      status: "succeeded",
+      visible_answer_summary: "已返回可见分析摘要",
+      technical_refs: {
+        request_ref: "req_cache_001",
+        run_id: "run-safe",
+        trace_id: "trace-safe",
+        correlation_id: "cor-safe",
+        provider_response_id: "provider-secret",
+      },
+      raw_identity: "person@example.test",
+      internal_error: "secret stack",
+    }],
+  });
+
+  assert.equal(risk.priorities[0].baseVersion, "cache-policy-v9");
+  assert.equal(risk.priorities[0].anomalyId, "anomaly-cache");
+  assert.deepEqual(risk.priorities[0].applicableActions, ["acknowledge", "suppress"]);
+  assert.equal(risk.evidence[0].visibleAnswerSummary, "已返回可见分析摘要");
+  assert.deepEqual(risk.evidence[0].technical, {
+    requestRef: "req_cache_001",
+    runId: "run-safe",
+    traceId: "trace-safe",
+    correlationId: "cor-safe",
+  });
+  assert.doesNotMatch(JSON.stringify(risk), /must-not-render|provider-secret|person@example|secret stack/);
+
+  const draft = remediationDraftView({
+    draft_id: "draft-safe",
+    workspace_id: "ws-a",
+    scope: {
+      workspace_id: "ws-a",
+      agent_id: "agent-safe",
+      model: "model-safe",
+      operation: "analysis",
+      resource_id: "must-not-render",
+    },
+  });
+  assert.deepEqual(draft.scope, {
+    workspaceId: "ws-a",
+    agentId: "agent-safe",
+    model: "model-safe",
+    operation: "analysis",
+  });
+  assert.doesNotMatch(JSON.stringify(draft), /resource_id|must-not-render/);
+});
+
+
 test("shared charts render proportional accessible structures through Vite SSR", async (context) => {
   const server = await createServer({
     appType: "custom",

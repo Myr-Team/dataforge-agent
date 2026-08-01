@@ -105,6 +105,7 @@ const OPERATOR_LABELS = Object.freeze({
 const SAFE_REFERENCE = /^(?:req_|run-|run_|outcome-|outcome_|event_)[A-Za-z0-9_-]{0,120}$/;
 const SAFE_IDENTIFIER = /^[A-Za-z0-9_-]{1,128}$/;
 const SAFE_REVISION = /^[A-Za-z0-9._:-]{1,128}$/;
+const APPLICABLE_ANOMALY_ACTIONS = new Set(["acknowledge", "suppress"]);
 
 
 function isRecord(value) {
@@ -570,6 +571,7 @@ function safeOpportunity(raw) {
     value: null,
     status: "unavailable",
   });
+  const anomalyStatus = boundedText(raw.anomaly_status, 32);
   return {
     id,
     label: boundedText(raw.title, 100) || POLICY_LABELS[policy],
@@ -588,6 +590,14 @@ function safeOpportunity(raw) {
     evidenceRefs: safeEvidenceRefs(raw.evidence_refs),
     expectedImpact: expected,
     impactLabel: expected.label,
+    baseVersion: safeRevision(raw.base_version),
+    anomalyId: safeIdentifier(raw.anomaly_id),
+    anomalyStatus: ["open", "acknowledged", "suppressed", "resolved"].includes(anomalyStatus)
+      ? anomalyStatus
+      : "",
+    applicableActions: Array.isArray(raw.applicable_actions)
+      ? [...new Set(raw.applicable_actions.filter((item) => APPLICABLE_ANOMALY_ACTIONS.has(item)))].slice(0, 2)
+      : [],
   };
 }
 
@@ -662,11 +672,14 @@ function safeEvidenceSummaries(value) {
     const requestRef = safeReference(item.request_ref);
     if (!requestRef) return [];
     const signal = isRecord(item.signal) ? item.signal : {};
+    const technical = isRecord(item.technical_refs) ? item.technical_refs : {};
     const signalValue = finiteNumber(signal.value);
     const unit = safeUnit(signal.unit);
     return [{
       requestRef,
       requestName: boundedText(item.request_name, 120),
+      operation: boundedText(item.operation, 80),
+      modelLabel: boundedText(item.model_label, 120),
       signal: {
         metric: boundedText(signal.metric, 80),
         value: signalValue,
@@ -679,8 +692,26 @@ function safeEvidenceSummaries(value) {
         : "unavailable",
       status: ["succeeded", "failed"].includes(item.status) ? item.status : "unavailable",
       errorCategory: boundedText(item.error_category, 64),
+      visibleAnswerSummary: boundedText(item.visible_answer_summary, 400),
+      technical: {
+        requestRef: safeReference(technical.request_ref),
+        runId: safeIdentifier(technical.run_id),
+        traceId: safeIdentifier(technical.trace_id),
+        correlationId: safeIdentifier(technical.correlation_id),
+      },
     }];
   }).slice(0, 30);
+}
+
+
+function safeDraftScope(raw) {
+  const source = isRecord(raw) ? raw : {};
+  return {
+    workspaceId: safeIdentifier(source.workspace_id),
+    agentId: safeIdentifier(source.agent_id),
+    model: boundedText(source.model, 120),
+    operation: boundedText(source.operation, 80),
+  };
 }
 
 
@@ -819,6 +850,7 @@ export function remediationDraftView(payload) {
     riskType: safePolicy(source.risk_type),
     title: boundedText(source.title, 140),
     summary: boundedText(source.summary, 360),
+    scope: safeDraftScope(source.scope),
     evidenceRefs: safeEvidenceRefs(source.evidence_refs),
     proposedChanges: safeProposedChanges(source.proposed_changes),
     expectedImpact: safeExpectedImpact(source.expected_impact),

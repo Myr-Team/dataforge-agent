@@ -19,24 +19,25 @@ import {
 
 import {
   acknowledgeFinOpsAnomaly,
+  createFinOpsRemediationDraft,
   createFinOpsSavedView,
   createWorkspaceRoiScenario,
   finOpsExportUrl,
-  loadFinOpsActions,
   loadFinOpsAgents,
-  loadFinOpsAnomalies,
   loadFinOpsBootstrap,
   loadFinOpsBreakdowns,
-  loadFinOpsOpportunities,
-  loadFinOpsRecommendations,
+  loadFinOpsRemediationDraft,
+  loadFinOpsRemediationDrafts,
   loadFinOpsRequest,
   loadFinOpsRequests,
+  loadFinOpsRiskDecision,
   loadFinOpsRoiDecision,
   loadFinOpsRoiEconomics,
   loadFinOpsSavedViews,
   loadFinOpsTrends,
+  promoteFinOpsRemediationDraft,
+  reviewFinOpsRemediationDraft,
   suppressFinOpsAnomaly,
-  transitionFinOpsAction,
 } from "./api.js";
 import {
   prefetchFinOpsBootstrap,
@@ -45,7 +46,10 @@ import {
 import { invalidateFinOpsData } from "./finopsDataStore.js";
 import { FinOpsAssistant } from "./FinOpsAssistant.jsx";
 import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
+import { RemediationDraftPanel } from "./finops/RemediationDraftPanel.jsx";
+import { RiskDecisionPage } from "./finops/RiskDecisionPage.jsx";
 import { RoiDecisionPage } from "./finops/RoiDecisionPage.jsx";
+import { remediationDraftView } from "./finopsDecisionViewModel.js";
 import {
   applyDimensionFilter,
   filterChips,
@@ -63,8 +67,6 @@ import {
   finopsDoughnutSegments,
   evidenceRequestRef,
   finopsMetricCards,
-  finopsOpportunityRows,
-  finopsPolicyLabel,
   finopsRequestViewModel,
   finopsTrendViewModel,
   finopsBarPercent,
@@ -837,7 +839,7 @@ export function finOpsPortalStatusVisibility({
   overviewError = "",
   hasOverviewMetrics = false,
 }) {
-  const showOverviewStatus = tab !== "roi";
+  const showOverviewStatus = !["roi", "risk"].includes(tab);
   return {
     showOverviewSkeleton: showOverviewStatus && overviewLoading,
     showOverviewStaleError: showOverviewStatus && Boolean(overviewError) && hasOverviewMetrics,
@@ -853,189 +855,10 @@ export function scheduleRoiOnlyRefresh({ invalidate, forceRef, bump }) {
 }
 
 
-function RiskPage({
-  data,
-  insights,
-  busyId,
-  actionError,
-  onAnomalyAction,
-  onActionTransition,
-  onEvidence,
-}) {
-  const anomalies = Array.isArray(data.anomalies?.items) ? data.anomalies.items : [];
-  const recommendations = Array.isArray(data.recommendations?.items) ? data.recommendations.items : [];
-  const actions = Array.isArray(data.actions?.items) ? data.actions.items : [];
-  const opportunities = finopsOpportunityRows(data.opportunities);
-  const agentInsights = [
-    ["finops", "FinOps 分析", insights?.finops],
-    ["roi", "ROI 分析", insights?.roi],
-  ].filter(([, , item]) => item);
-  return (
-    <div className="finops-grid">
-      <Panel title="优化机会队列" subtitle="按影响、证据置信度与实施难度排序；不自动执行" className="span-2">
-        {opportunities.length ? (
-          <div className="finops-opportunity-list">
-            {opportunities.map((item) => (
-              <article key={item.opportunity_id} className={item.queue_state}>
-                <div>
-                  <span><b>{item.title}</b><small>{item.recommendation}</small></span>
-                  <EvidenceBadge status={item.evidence_state} />
-                </div>
-                <dl>
-                  <div><dt>影响</dt><dd>{item.impactLabel}</dd></div>
-                  <div><dt>置信度</dt><dd>{item.confidenceLabel}</dd></div>
-                  <div><dt>实施难度</dt><dd>{item.effortLabel}</dd></div>
-                  <div><dt>潜在节省</dt><dd>{item.savingsLabel}</dd></div>
-                </dl>
-                <footer>
-                  <span>{item.stateLabel}</span>
-                  <b>{item.actionLabel}</b>
-                  {onEvidence ? <button type="button" onClick={() => onEvidence({
-                    reason: item.title,
-                    evidenceRefs: item.evidenceRefs,
-                    policyType: item.policy_type,
-                  })}>查看证据</button> : null}
-                </footer>
-              </article>
-            ))}
-          </div>
-        ) : <EmptyState>当前没有达到证据门槛的优化机会。</EmptyState>}
-      </Panel>
-      <Panel title="AI 运营解读" subtitle="基于现有证据解释指标，不自动执行治理动作" className="span-2">
-        {agentInsights.length ? (
-          <div className="finops-agent-insights">
-            {agentInsights.map(([kind, label, insight]) => (
-              <article key={kind}>
-                <header>
-                  <span><small>{label}</small><b>{insight.title || "分析结果"}</b></span>
-                  <EvidenceBadge status={insight.evidence_state || insight.status} />
-                </header>
-                <p>{insight.summary || "当前没有可展示的分析说明。"}</p>
-                {Array.isArray(insight.findings) && insight.findings.length ? (
-                  <ul>
-                    {insight.findings.slice(0, 3).map((finding, index) => {
-                      const evidenceRefs = Array.isArray(finding.evidence_refs)
-                        ? finding.evidence_refs
-                        : insight.evidence_refs || [];
-                      return (
-                        <li key={`${finding.kind || "finding"}:${index}`}>
-                          <span>{finding.statement}</span>
-                          {onEvidence && evidenceRefs.length ? (
-                            <button type="button" onClick={() => onEvidence({
-                              reason: finding.statement || insight.title,
-                              evidenceRefs,
-                              policyType: finding.kind || kind,
-                            })}>查看证据</button>
-                          ) : null}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                ) : (
-                  <small>{(insight.evidence_gaps || []).slice(0, 2).join(" · ") || "等待更多可复核证据"}</small>
-                )}
-              </article>
-            ))}
-          </div>
-        ) : <EmptyState>分析说明尚未生成；页面刷新不会自动发起分析。</EmptyState>}
-      </Panel>
-      <Panel title="开放异常" subtitle="只显示达到样本门槛的规则">
-        {anomalies.length ? (
-          <div className="finops-anomaly-list">
-            {anomalies.map((item) => (
-              <article key={item.anomaly_id} className={item.severity}>
-                <div><AlertTriangle size={16} /><b>{finopsPolicyLabel(item.policy_type)}</b><EvidenceBadge status={item.status} /></div>
-                <p>{item.recommendation}</p>
-                <small>观测 {item.observed_value} · 阈值 {item.threshold_value} · 样本 {item.sample_count}</small>
-                {["open", "acknowledged"].includes(item.status) ? (
-                  <footer>
-                    {item.status === "open" ? <button type="button" disabled={busyId === item.anomaly_id} onClick={() => onAnomalyAction(item, "acknowledge")}>确认</button> : null}
-                    <button type="button" disabled={busyId === item.anomaly_id} onClick={() => onAnomalyAction(item, "suppress")}>抑制</button>
-                    {onEvidence ? <button type="button" onClick={() => onEvidence({
-                      reason: finopsPolicyLabel(item.policy_type),
-                      evidenceRefs: item.evidence_refs || [],
-                      policyType: item.policy_type,
-                    })}>查看证据</button> : null}
-                  </footer>
-                ) : onEvidence ? <footer><button type="button" onClick={() => onEvidence({
-                  reason: finopsPolicyLabel(item.policy_type),
-                  evidenceRefs: item.evidence_refs || [],
-                  policyType: item.policy_type,
-                })}>查看证据</button></footer> : null}
-              </article>
-            ))}
-          </div>
-        ) : <EmptyState>没有达到样本门槛的异常。</EmptyState>}
-      </Panel>
-      <Panel title="优化建议" subtitle="每条建议都需要证据与人工判断">
-        {recommendations.length ? (
-          <div className="finops-recommendations">
-            {recommendations.map((item) => (
-              <div key={item.recommendation_id}>
-                <ShieldCheck size={16} />
-                <span><b>{finopsPolicyLabel(item.policy_type)}</b><small>{item.recommendation}</small></span>
-                {onEvidence && item.evidence_refs?.length ? (
-                  <button type="button" onClick={() => onEvidence({
-                    reason: finopsPolicyLabel(item.policy_type),
-                    evidenceRefs: item.evidence_refs,
-                    policyType: item.policy_type,
-                  })}>查看证据</button>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        ) : <EmptyState>当前没有可复核的优化建议。</EmptyState>}
-      </Panel>
-      <Panel title="治理动作" subtitle="生产执行默认关闭，仍需异人审批" className="span-2">
-        {actionError ? <div className="finops-inline-error">{actionError}</div> : null}
-        {actions.length ? (
-          <div className="finops-table-scroll">
-            <table className="finops-table">
-              <thead><tr><th>类型</th><th>状态</th><th>提出人</th><th>批准人</th><th>操作</th></tr></thead>
-              <tbody>
-                {actions.map((item) => {
-                  const transition = {
-                    draft: "submit",
-                    pending_approval: "approve",
-                    approved: "execute",
-                    verifying: "verify",
-                    succeeded: "rollback",
-                    failed: "rollback",
-                  }[item.status];
-                  const label = {
-                    submit: "提交审批",
-                    approve: "批准",
-                    execute: "候选执行",
-                    verify: "验证",
-                    rollback: "回滚",
-                  }[transition];
-                  return (
-                    <tr key={item.action_id}>
-                      <td><b>{{
-                        apim_token_limit: "统一入口限额",
-                        model_route: "模型路由",
-                        cache_policy: "缓存策略",
-                        price_card_activation: "价目表启用",
-                      }[item.action_type] || "治理动作"}</b></td>
-                      <td><EvidenceBadge status={item.status} /></td>
-                      <td>{item.proposed_by}</td>
-                      <td>{item.approved_by || "待批准"}</td>
-                      <td>{transition ? <button type="button" className="finops-table-action" disabled={busyId === item.action_id} onClick={() => onActionTransition(item, transition)}>{label}</button> : "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="finops-governance-status">
-            <ShieldCheck size={18} />
-            <span><b>当前没有待审批的治理草案</b><small>优化建议仅供复核；创建草案后仍需异人审批、候选验证和可回滚检查。</small></span>
-          </div>
-        )}
-      </Panel>
-    </div>
-  );
+export function scheduleRiskOnlyRefresh({ invalidate, forceRef, bump }) {
+  invalidate((entry) => entry?.domain === "risk");
+  forceRef.current = true;
+  bump();
 }
 
 
@@ -1226,6 +1049,15 @@ export function FinOpsPortal({
   const [comparisonState, setComparisonState] = useState({ loading: false, data: null });
   const [refreshKey, setRefreshKey] = useState(0);
   const [roiRefreshKey, setRoiRefreshKey] = useState(0);
+  const [riskRefreshKey, setRiskRefreshKey] = useState(0);
+  const [selectedRiskId, setSelectedRiskId] = useState(undefined);
+  const [remediationState, setRemediationState] = useState({
+    open: false,
+    opportunity: null,
+    draft: null,
+    busy: false,
+    error: "",
+  });
   const [governance, setGovernance] = useState({ busyId: "", error: "" });
   const [assistantState, setAssistantState] = useState({
     context: null,
@@ -1252,6 +1084,9 @@ export function FinOpsPortal({
   const evidenceTrigger = useRef(null);
   const roiDialogController = useRef(null);
   const roiForceRefresh = useRef(false);
+  const riskForceRefresh = useRef(false);
+  const remediationSequence = useRef(0);
+  const remediationOpportunityRef = useRef(null);
 
   const query = useMemo(() => ({
     from: toIso(windowValue.from),
@@ -1310,6 +1145,13 @@ export function FinOpsPortal({
       evidenceState: context?.evidenceState || context?.status || "unavailable",
     }, assistantScope));
   }, [assistantScope, openAssistant]);
+  const openRiskAssistant = useCallback((context) => {
+    openAssistant(metricContext({
+      ...context,
+      dataStatus: context?.dataStatus || context?.status || "unavailable",
+      evidenceState: context?.evidenceState || context?.status || "unavailable",
+    }, assistantScope));
+  }, [assistantScope, openAssistant]);
   const selectDimension = useCallback((selection) => {
     setFilters((value) => applyDimensionFilter(value, selection));
   }, []);
@@ -1318,6 +1160,12 @@ export function FinOpsPortal({
     agentId: filters.agentId,
     model: filters.model,
   }), [filters]);
+
+  useEffect(() => {
+    setSelectedRiskId(undefined);
+    remediationOpportunityRef.current = null;
+    setRemediationState({ open: false, opportunity: null, draft: null, busy: false, error: "" });
+  }, [queryScopeKey]);
   const loadRoiDialogData = useCallback(async () => {
     roiDialogController.current?.abort();
     const controller = new AbortController();
@@ -1540,17 +1388,14 @@ export function FinOpsPortal({
           { signal: controller.signal, refresh: force },
         );
       },
-      risk: () => Promise.all([
-        loadFinOpsAnomalies(query, { signal: controller.signal }),
-        loadFinOpsRecommendations(query, { signal: controller.signal }),
-        loadFinOpsActions(query, { signal: controller.signal }),
-        loadFinOpsOpportunities(query, { signal: controller.signal }),
-      ]).then(([anomalies, recommendations, actions, opportunities]) => ({
-        anomalies,
-        recommendations,
-        actions,
-        opportunities,
-      })),
+      risk: () => {
+        const force = riskForceRefresh.current;
+        riskForceRefresh.current = false;
+        return loadFinOpsRiskDecision(
+          query,
+          { signal: controller.signal, refresh: force },
+        );
+      },
     };
     requests[tab]().then((data) => {
       if (current === detailSequence.current) {
@@ -1578,7 +1423,7 @@ export function FinOpsPortal({
       }
     });
     return () => controller.abort();
-  }, [query, queryScopeKey, refreshKey, roiRefreshKey, tab, workspaceId]);
+  }, [query, queryScopeKey, refreshKey, riskRefreshKey, roiRefreshKey, tab, workspaceId]);
 
   useEffect(() => {
     if (!comparisonEnabled || !workspaceId) {
@@ -1627,37 +1472,136 @@ export function FinOpsPortal({
     roiDialogController.current?.abort();
   }, []);
 
+  const refreshRiskOnly = useCallback(() => {
+    scheduleRiskOnlyRefresh({
+      invalidate: invalidateFinOpsData,
+      forceRef: riskForceRefresh,
+      bump: () => setRiskRefreshKey((value) => value + 1),
+    });
+  }, []);
+
+  const loadCurrentRemediationDraft = useCallback(async ({ conflictMessage = "" } = {}) => {
+    const opportunity = remediationOpportunityRef.current;
+    if (!workspaceId || !opportunity?.id) return;
+    const current = ++remediationSequence.current;
+    setRemediationState((state) => ({ ...state, open: true, opportunity, busy: true, error: conflictMessage }));
+    try {
+      const list = await loadFinOpsRemediationDrafts({ workspaceId });
+      const candidates = Array.isArray(list?.items) ? list.items : [];
+      const stored = candidates.find((item) => (
+        item?.source_opportunity_id === opportunity.id
+        && item?.status !== "closed"
+      ));
+      const draft = stored?.draft_id
+        ? await loadFinOpsRemediationDraft(stored.draft_id)
+        : {
+          workspace_id: workspaceId,
+          source_opportunity_id: opportunity.id,
+          base_version: opportunity.baseVersion,
+          title: opportunity.label,
+        };
+      if (current !== remediationSequence.current) return;
+      setRemediationState({
+        open: true,
+        opportunity,
+        draft,
+        busy: false,
+        error: conflictMessage,
+      });
+    } catch (error) {
+      if (current !== remediationSequence.current) return;
+      setRemediationState((state) => ({
+        ...state,
+        open: true,
+        opportunity,
+        busy: false,
+        error: conflictMessage || (error instanceof Error ? error.message : "整改草案读取失败"),
+      }));
+    }
+  }, [workspaceId]);
+
+  const openRemediation = useCallback((opportunity) => {
+    remediationOpportunityRef.current = opportunity;
+    setRemediationState({ open: true, opportunity, draft: null, busy: true, error: "" });
+    loadCurrentRemediationDraft();
+  }, [loadCurrentRemediationDraft]);
+
+  const createRemediation = async () => {
+    const opportunity = remediationOpportunityRef.current;
+    if (!opportunity?.id || !opportunity?.baseVersion) return;
+    setRemediationState((state) => ({ ...state, busy: true, error: "" }));
+    try {
+      const response = await createFinOpsRemediationDraft({
+        workspaceId,
+        sourceOpportunityId: opportunity.id,
+        baseVersion: opportunity.baseVersion,
+      });
+      setRemediationState((state) => ({ ...state, open: true, draft: response, busy: false, error: "" }));
+      refreshRiskOnly();
+    } catch (error) {
+      if (error?.status === 409) {
+        await loadCurrentRemediationDraft({ conflictMessage: "方案已更新，请重新复核" });
+        return;
+      }
+      setRemediationState((state) => ({ ...state, busy: false, error: error instanceof Error ? error.message : "整改草案保存失败" }));
+    }
+  };
+
+  const reviewRemediation = async (payload) => {
+    const view = remediationDraftView(remediationState.draft);
+    if (!view.id || view.revision === null) return;
+    setRemediationState((state) => ({ ...state, busy: true, error: "" }));
+    try {
+      const response = await reviewFinOpsRemediationDraft(view.id, {
+        baseRevision: view.revision,
+        ...(payload?.reason ? { reason: payload.reason } : {}),
+      });
+      setRemediationState((state) => ({ ...state, draft: response, busy: false, error: "" }));
+      refreshRiskOnly();
+    } catch (error) {
+      if (error?.status === 409) {
+        await loadCurrentRemediationDraft({ conflictMessage: "方案已更新，请重新复核" });
+        return;
+      }
+      setRemediationState((state) => ({ ...state, busy: false, error: error instanceof Error ? error.message : "整改草案复核失败" }));
+    }
+  };
+
+  const promoteRemediation = async (payload) => {
+    const view = remediationDraftView(remediationState.draft);
+    if (!view.id || view.revision === null || view.executionCapability === "advisory_only") return;
+    setRemediationState((state) => ({ ...state, busy: true, error: "" }));
+    try {
+      const response = await promoteFinOpsRemediationDraft(view.id, {
+        baseRevision: view.revision,
+        ...(payload?.reason ? { reason: payload.reason } : {}),
+      });
+      setRemediationState((state) => ({ ...state, draft: response, busy: false, error: "" }));
+      refreshRiskOnly();
+    } catch (error) {
+      if (error?.status === 409) {
+        await loadCurrentRemediationDraft({ conflictMessage: "方案已更新，请重新复核" });
+        return;
+      }
+      setRemediationState((state) => ({ ...state, busy: false, error: error instanceof Error ? error.message : "审批动作草案创建失败" }));
+    }
+  };
+
   const manageAnomaly = async (item, operation) => {
+    if (!item?.anomalyId) return;
     let reason = "";
     if (operation === "suppress") {
       reason = window.prompt("请输入抑制原因（将写入治理审计）", "")?.trim() || "";
       if (!reason) return;
     }
-    setGovernance({ busyId: item.anomaly_id, error: "" });
+    setGovernance({ busyId: item.anomalyId, error: "" });
     try {
-      if (operation === "acknowledge") await acknowledgeFinOpsAnomaly(item.anomaly_id);
-      else await suppressFinOpsAnomaly(item.anomaly_id, reason);
-      refresh();
+      if (operation === "acknowledge") await acknowledgeFinOpsAnomaly(item.anomalyId);
+      else await suppressFinOpsAnomaly(item.anomalyId, reason);
+      refreshRiskOnly();
       setGovernance({ busyId: "", error: "" });
     } catch (error) {
       setGovernance({ busyId: "", error: error instanceof Error ? error.message : "异常治理操作失败" });
-    }
-  };
-
-  const transitionAction = async (item, transition) => {
-    let payload = null;
-    if (transition === "rollback") {
-      const reason = window.prompt("请输入紧急回滚原因（仅 Owner 可执行）", "")?.trim() || "";
-      if (!reason) return;
-      payload = { reason };
-    }
-    setGovernance({ busyId: item.action_id, error: "" });
-    try {
-      await transitionFinOpsAction(item.action_id, transition, payload);
-      refresh();
-      setGovernance({ busyId: "", error: "" });
-    } catch (error) {
-      setGovernance({ busyId: "", error: error instanceof Error ? error.message : "审批动作失败" });
     }
   };
 
@@ -1754,10 +1698,10 @@ export function FinOpsPortal({
     overviewError: overviewState.error,
     hasOverviewMetrics: Boolean(overviewState.data?.overview?.metrics),
   });
-  const pageGeneratedAt = tab === "roi"
+  const pageGeneratedAt = ["roi", "risk"].includes(tab)
     ? detailState.data?.freshness?.generated_at
     : generatedAt;
-  const pageUpdating = tab === "roi"
+  const pageUpdating = ["roi", "risk"].includes(tab)
     ? detailState.updating
     : overviewState.updating || detailState.updating;
   const canOpenEvidence = permissions["finops.request_detail.read"] !== false;
@@ -1852,11 +1796,11 @@ export function FinOpsPortal({
         {!overviewState.loading && overviewState.data?.overview?.metrics && tab === "overview"
           ? <OverviewPage data={overviewState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} onConfigurePricing={() => setModelSettingsOpen(true)} />
           : null}
-        {showDetailLoading && tab !== "roi" ? <div className="finops-section-loading"><Loader2 className="spin" size={18} />正在读取当前页面</div> : null}
-        {!showDetailLoading && tab !== "roi" && detailState.error && hasDetailData
+        {showDetailLoading && !["roi", "risk"].includes(tab) ? <div className="finops-section-loading"><Loader2 className="spin" size={18} />正在读取当前页面</div> : null}
+        {!showDetailLoading && !["roi", "risk"].includes(tab) && detailState.error && hasDetailData
           ? <div className="finops-inline-error">更新失败，已保留上次数据：{detailState.error}</div>
           : null}
-        {!showDetailLoading && tab !== "roi" && detailState.error && !hasDetailData ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{detailState.error}</span><button type="button" onClick={refresh}>重试</button></div> : null}
+        {!showDetailLoading && !["roi", "risk"].includes(tab) && detailState.error && !hasDetailData ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{detailState.error}</span><button type="button" onClick={refresh}>重试</button></div> : null}
         {!showDetailLoading && hasDetailData && tab === "cost"
           ? <CostPage overviewData={overviewState.data} detail={detailState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} onSaveView={governance.busyId === "save-view" ? null : saveCurrentView} exportUrl={finOpsExportUrl("workspace", query)} onConfigurePricing={() => setModelSettingsOpen(true)} />
           : null}
@@ -1875,9 +1819,25 @@ export function FinOpsPortal({
             onAsk={openRoiAssistant}
           />
         ) : null}
-        {!showDetailLoading && hasDetailData && tab === "risk"
-          ? <RiskPage data={detailState.data} insights={overviewState.data.insights} busyId={governance.busyId} actionError={governance.error} onAnomalyAction={manageAnomaly} onActionTransition={transitionAction} onEvidence={canOpenEvidence ? openEvidence : null} />
-          : null}
+        {tab === "risk" ? (
+          <RiskDecisionPage
+            payload={hasDetailData ? detailState.data : null}
+            loading={detailState.loading || (!hasDetailData && !detailState.error)}
+            updating={detailState.updating}
+            error={detailState.error || governance.error}
+            selectedRiskId={selectedRiskId}
+            onSelectRisk={setSelectedRiskId}
+            onRetry={() => {
+              riskForceRefresh.current = true;
+              setRiskRefreshKey((value) => value + 1);
+            }}
+            onEvidence={canOpenEvidence ? openEvidence : null}
+            onCreateDraft={openRemediation}
+            onAcknowledge={(item) => manageAnomaly(item, "acknowledge")}
+            onSuppress={(item) => manageAnomaly(item, "suppress")}
+            onAsk={openRiskAssistant}
+          />
+        ) : null}
       </section>
 
       <footer className="finops-footnote">
@@ -1895,6 +1855,22 @@ export function FinOpsPortal({
         onClearContext={() => setAssistantState((state) => ({ ...state, context: null }))}
         onEvidence={canOpenEvidence ? openEvidence : null}
       />
+      {remediationState.open ? (
+        <RemediationDraftPanel
+          draft={remediationState.draft}
+          busy={remediationState.busy}
+          error={remediationState.error}
+          actionsEnabled={Boolean(detailState.data?.governance_capability?.actions_enabled)}
+          onClose={() => {
+            remediationSequence.current += 1;
+            setRemediationState((state) => ({ ...state, open: false, busy: false }));
+          }}
+          onCreate={createRemediation}
+          onReload={() => loadCurrentRemediationDraft()}
+          onReview={reviewRemediation}
+          onPromote={promoteRemediation}
+        />
+      ) : null}
       {roiEditorOpen ? (
         <RoiScenarioDialog
           key={`${roiDialogState.latestScenario?.scenario_id || "new"}:${roiDialogState.latestScenario?.revision || 0}`}
