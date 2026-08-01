@@ -270,6 +270,87 @@ export const bootstrapPayload = {
 };
 
 
+function demoCompletenessBootstrapPayload() {
+  return {
+    ...bootstrapPayload,
+    overview: {
+      ...bootstrapPayload.overview,
+      trust: {
+        ...bootstrapPayload.overview.trust,
+        apim: {
+          ...bootstrapPayload.overview.trust.apim,
+          apim_governed_requests: 56,
+          coverage_pct: 93.33,
+        },
+      },
+    },
+    trend: {
+      ...bootstrapPayload.trend,
+      items: bootstrapPayload.trend.items.map((item, index) => ({
+        ...item,
+        tokens: {
+          ...item.tokens,
+          reasoning: item.tokens.reasoning ?? (index + 1) * 16,
+        },
+      })),
+    },
+    anomalies: {
+      count: 4,
+      items: [
+        {
+          policy_type: "p95_latency",
+          title: "响应时间偏高",
+          severity: "warning",
+          status: "open",
+          observed_value: 2100,
+          threshold_value: 2000,
+          sample_count: 60,
+          observed_at: NOW,
+          evidence_refs: ["req_slow_000001"],
+          evidence_state: "observed",
+        },
+        {
+          policy_type: "cache_hit_rate",
+          title: "缓存命中率偏低",
+          severity: "warning",
+          status: "open",
+          observed_value: 42,
+          threshold_value: 60,
+          sample_count: 50,
+          observed_at: NOW,
+          evidence_refs: ["req_cache_000001"],
+          evidence_state: "observed",
+        },
+        {
+          policy_type: "unpriced_requests",
+          title: "计价覆盖需要补齐",
+          severity: "warning",
+          status: "acknowledged",
+          observed_value: 6.2,
+          threshold_value: 5,
+          sample_count: 30,
+          observed_at: NOW,
+          evidence_refs: ["req_unpriced_001"],
+          evidence_state: "partial",
+        },
+        {
+          policy_type: "error_rate",
+          title: "调用成功率需要改善",
+          severity: "critical",
+          status: "open",
+          observed_value: 8.3,
+          threshold_value: 5,
+          sample_count: 24,
+          observed_at: NOW,
+          evidence_refs: ["req_error_000001"],
+          evidence_state: "observed",
+        },
+      ],
+    },
+  };
+}
+
+
 const roiDecisionPayload = {
   scope: { workspace_ids: ["demo-corpus"], workspace_count: 1 },
   window: bootstrapPayload.window,
@@ -469,6 +550,7 @@ function remediationDraft(revision = 1, status = "draft") {
 
 export async function installFinOpsMockApi(page, calls = [], options = {}) {
   const control = {
+    demoCompleteness: Boolean(options.demoCompleteness),
     failBootstrap: Boolean(options.failBootstrap),
     failDetail: Boolean(options.failDetail),
     bedrockConnectionState: options.bedrockConnectionState || "connected",
@@ -637,7 +719,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     } else if (path === "/api/observability") {
       body = {};
     } else if (path === "/api/finops/bootstrap") {
-      body = bootstrapPayload;
+      body = control.demoCompleteness ? demoCompletenessBootstrapPayload() : bootstrapPayload;
     } else if (
       control.memberBudgetAccessState === "permission_required"
       && request.method() === "GET"
@@ -1518,4 +1600,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     });
   });
   return control;
+}
+
+
+export function installFinOpsDemoCompletenessApi(page, calls = [], options = {}) {
+  return installFinOpsMockApi(page, calls, { ...options, demoCompleteness: true });
 }

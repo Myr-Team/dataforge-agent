@@ -163,7 +163,7 @@ function EvidenceChain({ priority, evidence, onEvidence, onCreateDraft, onAcknow
     <section className="finops-decision-risk-chain" aria-labelledby="finops-risk-chain-title">
       <header className="finops-decision-risk-section-head">
         <div><span>当前选择 · {priority.domainLabel}</span><h2 id="finops-risk-chain-title">{priority.label}</h2></div>
-        <button type="button" className="quiet" onClick={() => onCreateDraft?.(priority)} disabled={!draftEnabled}>查看整改方案</button>
+        <button type="button" className="quiet" data-finops-remediation-trigger onClick={() => onCreateDraft?.(priority)} disabled={!draftEnabled}>查看整改方案</button>
       </header>
       <ol className="finops-decision-risk-chain-stages">
         {stages.map(([label, value, note], index) => (

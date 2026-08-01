@@ -215,6 +215,57 @@ test("risk evidence is distinct and remediation 409 requires reload and a second
 });
 
 
+for (const viewport of [
+  { name: "1366", width: 1366, height: 900 },
+  { name: "mobile", width: 390, height: 844 },
+]) {
+  test(`remediation panel stays reachable scrollable and restores focus at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await installFinOpsMockApi(page);
+    await page.goto("/");
+    await openOperations(page);
+    await page.getByRole("button", { name: "风险与优化" }).click();
+    const priorities = page.getByRole("list", { name: "风险优先事项" });
+    await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
+    const trigger = page.getByRole("button", { name: "查看整改方案" });
+    await trigger.focus();
+    await trigger.click();
+
+    const panel = page.getByRole("dialog", { name: "整改草案" });
+    const close = panel.getByRole("button", { name: "关闭整改草案" });
+    await expect(panel).toBeVisible();
+    await expect(close).toBeEnabled();
+    await expect(close).toBeFocused();
+    await panel.getByRole("button", { name: "保存整改草案" }).click();
+    await expect(panel.locator(".finops-remediation-actions")).toBeVisible();
+    const [topbar, bounds] = await Promise.all([
+      page.locator(".topbar").boundingBox(),
+      panel.boundingBox(),
+    ]);
+    expect(bounds.y).toBeGreaterThanOrEqual(topbar.y + topbar.height - 1);
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+
+    const scroll = await panel.evaluate((node) => ({
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+    }));
+    expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight);
+    const bottom = await panel.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+      return node.scrollTop;
+    });
+    expect(bottom).toBeGreaterThan(0);
+    await expect(panel.locator(".finops-remediation-actions")).toBeInViewport();
+
+    await close.click();
+    await expect(panel).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  });
+}
+
+
 test("detail failure after a range change never labels old data as the new range", async ({ page }) => {
   const control = await installFinOpsMockApi(page);
   await page.goto("/");

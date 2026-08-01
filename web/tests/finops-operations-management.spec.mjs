@@ -3,7 +3,27 @@ import path from "node:path";
 
 import { expect, test } from "playwright/test";
 
-import { installFinOpsMockApi } from "./finopsMockApi.mjs";
+import { installFinOpsDemoCompletenessApi, installFinOpsMockApi } from "./finopsMockApi.mjs";
+
+
+const DEMO_FORBIDDEN_EMPTY = /未接入|暂不可用|Failed to fetch|待接入|未记录|当前范围没有可展示的记录/;
+
+
+async function expectDistinctGeometry(locator, dimension = "height") {
+  const values = await locator.evaluateAll((nodes, measuredDimension) => nodes
+    .map((node) => Math.round(node.getBoundingClientRect()[measuredDimension]))
+    .filter((value) => value > 0), dimension);
+  expect(values.length).toBeGreaterThan(1);
+  expect(new Set(values).size).toBeGreaterThan(1);
+}
+
+
+async function expectDemoSurfaceComplete(page) {
+  const content = page.locator(".finops-content");
+  const body = await content.innerText();
+  expect(body).not.toMatch(DEMO_FORBIDDEN_EMPTY);
+  await expect(content.locator(".finops-empty, .finops-decision-empty, .finops-decision-page-empty")).toHaveCount(0);
+}
 
 
 test("operations management is immediately discoverable and supports metric drilldown", async ({ page }) => {
@@ -161,40 +181,76 @@ for (const viewport of [
 }
 
 
-test("all four operating views show differentiated demo evidence without hollow placeholders", async ({ page }) => {
-  const control = await installFinOpsMockApi(page);
+test("demo completeness fixture fills every visible metric card chart table and queue across all four views", async ({ page }) => {
+  const control = await installFinOpsDemoCompletenessApi(page);
   await page.goto("/");
   await page.getByRole("button", { name: "运营管理" }).first().click();
 
-  const expectations = [
-    ["运营总览", ["缓存命中率", "缓存避免 Token", "Commerce"]],
-    ["成本分析", ["成本趋势", "Agent 成本结构", "模型成本结构", "缓存估算节省"]],
-    ["效能与 ROI", ["$3,000.00", "$700.03", "$2,299.97", "75%"]],
-    ["风险与优化", ["响应时延优化", "缓存效率优化", "计价覆盖补齐", "调用成功率改善"]],
-  ];
-  for (const [tab, texts] of expectations) {
-    await page.getByRole("button", { name: tab }).click();
-    for (const text of texts) await expect(page.getByText(text, { exact: false }).first()).toBeVisible();
-    const body = await page.locator(".finops-content").innerText();
-    expect(body).not.toMatch(/未接入|暂不可用|Failed to fetch/);
-    if (tab === "成本分析") {
-      const agentPanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "Agent 成本归因" }) });
-      const modelPanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "模型成本归因" }) });
-      await expect(agentPanel.locator(".finops-bar-row")).toHaveCount(3);
-      await expect(modelPanel.locator(".finops-bar-row")).toHaveCount(3);
-      const agentWidths = await agentPanel.locator(".finops-bar-row i").evaluateAll((bars) => bars.map((bar) => Math.round(bar.getBoundingClientRect().width)));
-      const modelWidths = await modelPanel.locator(".finops-bar-row i").evaluateAll((bars) => bars.map((bar) => Math.round(bar.getBoundingClientRect().width)));
-      expect(new Set(agentWidths).size).toBeGreaterThan(1);
-      expect(new Set(modelWidths).size).toBeGreaterThan(1);
-      await expect(page.getByRole("img", { name: /Agent 成本结构，分析协调 Agent/ })).toContainText("3");
-      await expect(page.getByRole("img", { name: /模型成本结构，gpt-5.6-terra/ })).toContainText("3");
-      const workspacePanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "专案成本归因" }) });
-      await expect(workspacePanel.getByRole("row")).toHaveCount(4);
-      await expect(workspacePanel).toContainText("Commerce Insights");
-      await expect(workspacePanel).toContainText("Finance Forecast");
-      await expect(workspacePanel).toContainText("IT Governance");
-    }
+  await page.getByRole("button", { name: "运营总览" }).click();
+  await expectDemoSurfaceComplete(page);
+  await expect(page.locator(".finops-metric")).toHaveCount(8);
+  const overviewMetricValues = await page.locator(".finops-metric > strong").allTextContents();
+  expect(new Set(overviewMetricValues).size).toBeGreaterThan(5);
+  await expect(page.locator(".finops-trend-column")).toHaveCount(3);
+  await expectDistinctGeometry(page.locator(".finops-trend-stack"), "height");
+  await expect(page.locator(".finops-trust-grid article")).toHaveCount(3);
+  expect(new Set(await page.locator(".finops-trust-grid article > strong").allTextContents()).size).toBe(3);
+  await expect(page.locator(".finops-insights > div")).toHaveCount(4);
+  await expect(page.locator(".finops-table tbody tr")).toHaveCount(2);
+  for (const panel of await page.locator(".finops-panel").all()) {
+    await expect(panel.locator(".finops-panel-body")).not.toBeEmpty();
   }
+
+  await page.getByRole("button", { name: "成本分析" }).click();
+  await expectDemoSurfaceComplete(page);
+  await expect(page.locator(".finops-metric")).toHaveCount(8);
+  await expect(page.locator(".finops-trend-column")).toHaveCount(3);
+  await expectDistinctGeometry(page.locator(".finops-trend-stack"), "height");
+  await expect(page.locator(".finops-table")).toHaveCount(2);
+  for (const table of await page.locator(".finops-table").all()) {
+    const rows = table.locator("tbody tr");
+    expect(await rows.count()).toBeGreaterThanOrEqual(2);
+    const dimensions = await rows.locator("td:first-child").allTextContents();
+    expect(new Set(dimensions).size).toBe(dimensions.length);
+  }
+  const workspacePanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "专案成本归因" }) });
+  await expect(workspacePanel.locator("tbody tr")).toHaveCount(3);
+  const agentPanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "Agent 成本归因" }) });
+  const modelPanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "模型成本归因" }) });
+  await expect(agentPanel.locator(".finops-bar-row")).toHaveCount(3);
+  await expect(modelPanel.locator(".finops-bar-row")).toHaveCount(3);
+  await expectDistinctGeometry(agentPanel.locator(".finops-bar-row i"), "width");
+  await expectDistinctGeometry(modelPanel.locator(".finops-bar-row i"), "width");
+  const doughnuts = page.getByRole("img", { name: /成本结构/ });
+  await expect(doughnuts).toHaveCount(2);
+  for (const doughnut of await doughnuts.all()) await expect(doughnut).toContainText("3");
+
+  await page.getByRole("button", { name: "效能与 ROI" }).click();
+  await expectDemoSurfaceComplete(page);
+  await expect(page.locator(".finops-decision-roi-metric")).toHaveCount(4);
+  const roiValues = await page.locator(".finops-decision-roi-metric > strong").allTextContents();
+  expect(new Set(roiValues).size).toBe(4);
+  await expect(page.locator(".finops-decision-value-row")).toHaveCount(3);
+  await expectDistinctGeometry(page.locator(".finops-decision-value-bar"), "width");
+  await expect(page.locator(".finops-decision-maturity-stages li")).toHaveCount(4);
+  await expect(page.locator(".finops-decision-roi-trend tbody tr")).toHaveCount(3);
+  expect(new Set(await page.locator(".finops-decision-roi-trend tbody td:nth-child(3)").allTextContents()).size).toBe(3);
+  await expect(page.locator(".finops-decision-roi-capability")).toBeVisible();
+
+  await page.getByRole("button", { name: "风险与优化" }).click();
+  await expectDemoSurfaceComplete(page);
+  await expect(page.locator(".finops-decision-risk-domains article")).toHaveCount(4);
+  await expect(page.locator(".finops-decision-matrix-point > button")).toHaveCount(4);
+  await expectDistinctGeometry(page.locator(".finops-decision-matrix-point > button"), "width");
+  await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(4);
+  await expect(page.locator(".finops-decision-portfolio-point > button")).toHaveCount(4);
+  await expectDistinctGeometry(page.locator(".finops-decision-portfolio-point > button"), "width");
+  await expect(page.getByRole("list", { name: "优化机会优先列表" }).getByRole("button")).toHaveCount(4);
+  await expect(page.locator(".finops-decision-risk-chain-stages li")).toHaveCount(5);
+  await expect(page.locator(".finops-decision-risk-evidence-card")).toHaveCount(1);
+  await expect(page.locator(".finops-decision-risk-insight")).not.toBeEmpty();
+  await expect(page.locator(".finops-decision-risk-governance")).not.toBeEmpty();
+
   expect(control.calls.bootstrap).toBeGreaterThan(0);
   expect(control.calls.roiDecision).toBe(1);
   expect(control.calls.riskDecision).toBe(1);

@@ -66,7 +66,7 @@ test("evidence drawer is full-width and keyboard closable on mobile", async ({ p
 });
 
 
-test("risk cards open their own request evidence without a generic list lookup", async ({ page }) => {
+test("all four risk priorities open only their own request_ref without a generic list lookup", async ({ page }) => {
   const calls = [];
   await installFinOpsMockApi(page, calls);
   await page.goto("/");
@@ -75,32 +75,27 @@ test("risk cards open their own request evidence without a generic list lookup",
   await page.getByRole("button", { name: "风险与优化" }).click();
 
   const priorities = page.getByRole("list", { name: "风险优先事项" });
-  await priorities.getByRole("button", { name: /响应时延优化/ }).click();
-  await page.getByRole("button", { name: "查看证据" }).click();
-  let dialog = page.getByRole("dialog");
-  await expect(dialog.getByText("批量分析本周客户反馈并生成归因摘要")).toBeVisible();
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
   await mkdir(outputDir, { recursive: true });
-  await page.screenshot({
-    path: path.join(outputDir, "risk-latency-evidence-desktop.png"),
-    fullPage: true,
-  });
-  await dialog.locator("details summary").click();
-  await expect(dialog.getByText("req_slow_000001", { exact: true })).toBeVisible();
-  await page.keyboard.press("Escape");
-
-  await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
-  await page.getByRole("button", { name: "查看证据" }).click();
-  dialog = page.getByRole("dialog");
-  await expect(dialog.getByText("重新分析相同数据并复用上次结果")).toBeVisible();
-  await page.screenshot({
-    path: path.join(outputDir, "risk-cache-evidence-desktop.png"),
-    fullPage: true,
-  });
-  await dialog.locator("details summary").click();
-  await expect(dialog.getByText("req_cache_000001", { exact: true })).toBeVisible();
-
-  expect(calls.filter((call) => call.path === "/api/finops/requests/req_slow_000001")).toHaveLength(1);
-  expect(calls.filter((call) => call.path === "/api/finops/requests/req_cache_000001")).toHaveLength(1);
+  const riskEvidence = [
+    [/响应时延优化/, "req_slow_000001", "批量分析本周客户反馈并生成归因摘要", "risk-latency-evidence-desktop.png"],
+    [/缓存效率优化/, "req_cache_000001", "重新分析相同数据并复用上次结果", "risk-cache-evidence-desktop.png"],
+    [/计价覆盖补齐/, "req_unpriced_001", "使用新接入模型评审候选机会", null],
+    [/调用成功率改善/, "req_error_000001", "提取高价值客户机会并生成摘要", null],
+  ];
+  for (const [priorityName, requestRef, requestText, screenshotName] of riskEvidence) {
+    await priorities.getByRole("button", { name: priorityName }).click();
+    await page.getByRole("button", { name: "查看证据" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText(requestText)).toBeVisible();
+    if (screenshotName) {
+      await page.screenshot({ path: path.join(outputDir, screenshotName), fullPage: true });
+    }
+    await dialog.locator("details summary").click();
+    await expect(dialog.getByText(requestRef, { exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).not.toBeVisible();
+    expect(calls.filter((call) => call.path === `/api/finops/requests/${requestRef}`)).toHaveLength(1);
+  }
   expect(calls.filter((call) => call.path === "/api/finops/requests")).toHaveLength(0);
 });

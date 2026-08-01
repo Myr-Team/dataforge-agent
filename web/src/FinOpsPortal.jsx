@@ -1080,6 +1080,7 @@ export function FinOpsPortal({
   const roiDialogController = useRef(null);
   const remediationSequence = useRef(0);
   const remediationOpportunityRef = useRef(null);
+  const remediationTrigger = useRef(null);
 
   const query = useMemo(() => ({
     from: toIso(windowValue.from),
@@ -1515,6 +1516,7 @@ export function FinOpsPortal({
   }, [workspaceId]);
 
   const openRemediation = useCallback((opportunity) => {
+    remediationTrigger.current = document.activeElement;
     remediationOpportunityRef.current = opportunity;
     setRemediationState({ open: true, opportunity, draft: null, busy: true, error: "" });
     loadCurrentRemediationDraft();
@@ -1930,6 +1932,7 @@ export function FinOpsPortal({
           busy={remediationState.busy}
           error={remediationState.error}
           actionsEnabled={Boolean(detailState.data?.governance_capability?.actions_enabled)}
+          restoreFocusRef={remediationTrigger}
           onClose={() => {
             remediationSequence.current += 1;
             setRemediationState((state) => ({ ...state, open: false, busy: false }));

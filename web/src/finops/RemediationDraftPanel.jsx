@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -55,6 +55,7 @@ export function RemediationDraftPanel({
   busy = false,
   error = "",
   actionsEnabled = false,
+  restoreFocusRef = null,
   onClose = null,
   onCreate = null,
   onReload = null,
@@ -63,6 +64,14 @@ export function RemediationDraftPanel({
 }) {
   const view = remediationDraftView(draft);
   const [reason, setReason] = useState("");
+  const panelRef = useRef(null);
+  const closeRef = useRef(null);
+  const localRestoreFocusRef = useRef(null);
+  const focusRestoreRef = restoreFocusRef || localRestoreFocusRef;
+  const onCloseRef = useRef(onClose);
+  const busyRef = useRef(busy);
+  onCloseRef.current = onClose;
+  busyRef.current = busy;
   const canCreate = !view.isAvailable && Boolean(view.workspaceId && view.sourceOpportunityId && view.baseVersion && onCreate);
   const canReview = view.isAvailable && view.status === "draft" && Boolean(onReview);
   const canPromote = view.isAvailable
@@ -71,12 +80,58 @@ export function RemediationDraftPanel({
     && Boolean(onPromote);
   const activeIndex = Math.max(0, LIFECYCLE.findIndex(([status]) => status === view.status));
 
+  useEffect(() => {
+    if (!focusRestoreRef.current) focusRestoreRef.current = document.activeElement;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape" && !busyRef.current) {
+        event.preventDefault();
+        onCloseRef.current?.();
+        return;
+      }
+      if (event.key !== "Tab" || !panelRef.current) return;
+      const focusable = Array.from(panelRef.current.querySelectorAll(
+        'a[href], button:not([disabled]), textarea:not([disabled]), details summary, [tabindex]:not([tabindex="-1"])',
+      ));
+      if (!focusable.length) {
+        event.preventDefault();
+        panelRef.current.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      window.requestAnimationFrame(() => {
+        const priorTarget = focusRestoreRef.current;
+        const target = priorTarget?.isConnected
+          ? priorTarget
+          : document.querySelector("[data-finops-remediation-trigger]");
+        target?.focus?.();
+      });
+    };
+  }, []);
+
+  useEffect(() => {
+    if (busy) return undefined;
+    closeRef.current?.focus();
+    return undefined;
+  }, [busy]);
+
   return (
     <div className="finops-remediation-layer" role="presentation">
-      <section className="finops-remediation-panel" role="dialog" aria-modal="true" aria-labelledby="finops-remediation-title">
+      <section ref={panelRef} className="finops-remediation-panel" role="dialog" aria-modal="true" aria-labelledby="finops-remediation-title" tabIndex={-1}>
         <header className="finops-remediation-head">
           <div><span>治理工作台</span><h2 id="finops-remediation-title">整改草案</h2><p>保存与复核候选方案，不会直接执行生产变更。</p></div>
-          <button type="button" aria-label="关闭整改草案" onClick={onClose} disabled={busy}><X size={17} /></button>
+          <button ref={closeRef} type="button" aria-label="关闭整改草案" onClick={onClose} disabled={busy}><X size={17} /></button>
         </header>
 
         {error ? <div className="finops-remediation-error" role="alert"><AlertTriangle size={14} /><span>{error}</span>{onReload ? <button type="button" onClick={onReload} disabled={busy}><RefreshCw size={12} />重新载入</button> : null}</div> : null}
