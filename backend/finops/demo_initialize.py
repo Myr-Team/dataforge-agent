@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 try:
@@ -19,9 +19,16 @@ except ImportError:
     from run_store import complete_run, get_run, start_run
 
 from .demo_workspace_seed import DemoSeedResult, seed_demo_workspace
+from .anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
+from .anomaly_store import FinOpsAnomalyService
+from .insights import AgentFinding, FinOpsInsight, InsightWindow, insight_fingerprint
 from .sql_demo_seed import SqlDemoSeedRepository
 from .sql_member_budgets import SqlMemberBudgetRepository
 from .sql_repository import SqlFinOpsRepository
+from .sql_anomalies import SqlFinOpsAnomalyRepository
+from .insight_repository import SqlInsightRepository
+from .sql_management import SqlFinOpsManagementRepository
+from .management import FinOpsPolicy
 
 
 _OPAQUE_TENANT_REF = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{7,127}$")
@@ -45,6 +52,9 @@ def initialize_demo_workspace(
     roi_writer: Callable[..., Any] | None = None,
     outcome_writer: Callable[..., Any] | None = None,
     run_writer: Callable[..., Any] | None = None,
+    anomaly_repository: Any | None = None,
+    insight_repository: Any | None = None,
+    daily_budget_writer: Callable[..., Any] | None = None,
     now: datetime | None = None,
 ) -> DemoSeedResult:
     clean_tenant_ref = str(tenant_ref or "").strip()
@@ -60,7 +70,7 @@ def initialize_demo_workspace(
     clean_hmac_secret = str(hmac_secret or "").strip()
     if not clean_hmac_secret:
         raise RuntimeError("FinOps HMAC secret is required")
-    return seed_demo_workspace(
+    result = seed_demo_workspace(
         ledger_repository,
         seed_repository,
         tenant_ref=clean_tenant_ref,
@@ -73,6 +83,42 @@ def initialize_demo_workspace(
         run_evidence_writer=run_writer,
         now=now,
     )
+    anchor = now or datetime.now(timezone.utc)
+    if anomaly_repository is not None:
+        FinOpsAnomalyService(anomaly_repository).reconcile(
+            tenant_ref=clean_tenant_ref,
+            findings=evaluate_default_anomalies(AnomalyEvaluationInput(events=list(result.events), trailing_token_median=1120)),
+            scope_workspace_ids=(clean_workspace_id,),
+        )
+    if insight_repository is not None:
+        _persist_demo_insights(insight_repository, tenant_ref=clean_tenant_ref, workspace_id=clean_workspace_id, result=result, now=anchor)
+    if daily_budget_writer is not None:
+        daily_budget_writer(clean_tenant_ref, clean_workspace_id, {"daily_budget_usd": 5.0, "warning_pct": 80, "critical_pct": 100}, seed_key=result.batch)
+    return result
+
+
+def _persist_demo_insights(repository: Any, *, tenant_ref: str, workspace_id: str, result: DemoSeedResult, now: datetime) -> None:
+    generated = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    expires = generated + timedelta(days=1)
+    findings = evaluate_default_anomalies(AnomalyEvaluationInput(events=list(result.events), trailing_token_median=1120))
+    refs = [ref for finding in findings for ref in finding.evidence_refs][:5]
+    outcome_refs = [str(item.get("source", {}).get("run_id")) for item in result.outcome_events if item.get("source", {}).get("run_id")]
+    specs = (("finops", "demo_finops", "成本、缓存、失败与入口覆盖均有可追溯运营证据。", refs), ("roi", "demo_roi", "ROI 为场景估算；业务结果仍为未验证观察，不能视为已验证 ROI。", outcome_refs))
+    for kind, trigger_type, summary, evidence_refs in specs:
+        fingerprint = insight_fingerprint(tenant_ref=tenant_ref, workspace_ids=[workspace_id], agent_kind=kind, trigger_type=trigger_type, trigger_ref=result.batch, source_revision=result.batch)
+        insight = FinOpsInsight(
+            insight_id=f"ins_{fingerprint[:24]}", agent_kind=kind, tenant_ref=tenant_ref, workspace_ids=[workspace_id],
+            window=InsightWindow(**{"from": generated - timedelta(days=30), "to": generated}), trigger_type=trigger_type,
+            trigger_ref=result.batch, trigger_fingerprint=fingerprint, title="FinOps 运营就绪" if kind == "finops" else "ROI 证据就绪",
+            summary=summary, findings=[AgentFinding(kind="risk" if kind == "finops" else "roi", statement=summary, evidence_refs=evidence_refs[:1])],
+            evidence_refs=evidence_refs, evidence_state="observed" if kind == "finops" else "estimated", confidence=0.8 if kind == "finops" else 0.6,
+            source_revisions={"demo_seed": result.batch}, evidence_gaps=["业务结果尚未独立验证"] if kind == "roi" else [], generated_at=generated, expires_at=expires, status="ready",
+        )
+        existing = repository.get_by_fingerprint(tenant_ref=tenant_ref, agent_kind=kind, trigger_fingerprint=fingerprint)
+        if existing is not None:
+            repository.replace(insight)
+        else:
+            repository.save(insight)
 
 
 def persist_demo_run_evidence(
@@ -160,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     factory = build_lineage_sql_connection_factory()
     run_stats: dict[str, int] = {}
     outcome_stats: dict[str, Any] = {}
+    management_repository = SqlFinOpsManagementRepository(connection_factory=factory)
 
     def write_runs(
         workspace_id: str,
@@ -174,6 +221,14 @@ def main(argv: list[str] | None = None) -> int:
                 seed_key=seed_key,
             )
         )
+
+    def write_daily_budget(tenant_ref: str, workspace_id: str, configuration: Mapping[str, Any], *, seed_key: str) -> None:
+        policy_id = f"demo_daily_budget_{workspace_id}"[:160]
+        current = management_repository.get_policy(tenant_ref, policy_id)
+        management_repository.save_policy(tenant_ref, FinOpsPolicy(
+            policy_id=policy_id, policy_type="daily_cost_budget", status="enabled", configuration=dict(configuration),
+            version=current.version if current else 1, updated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), updated_by=f"seed_{seed_key}"[:128],
+        ))
 
     result = initialize_demo_workspace(
         tenant_ref=arguments.tenant_ref,
@@ -202,6 +257,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         ),
         run_writer=write_runs,
+        anomaly_repository=SqlFinOpsAnomalyRepository(connection_factory=factory),
+        insight_repository=SqlInsightRepository(connection_factory=factory),
+        daily_budget_writer=write_daily_budget,
         now=datetime.now(timezone.utc),
     )
     print(

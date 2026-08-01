@@ -9,6 +9,9 @@ from backend.finops.demo_initialize import (
     persist_demo_run_evidence,
 )
 from backend.finops.demo_seed_repository import InMemoryDemoSeedRepository
+from backend.finops.anomaly_store import InMemoryAnomalyRepository
+from backend.finops.insight_repository import InMemoryInsightRepository
+from backend.finops.demo_workspace_seed import seed_demo_workspace
 from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
 from backend.finops.repository import InMemoryFinOpsRepository
 
@@ -153,3 +156,40 @@ def test_demo_run_writer_creates_once_and_reuses_owned_records() -> None:
         "seed_batch": "operations-v1",
     }
     assert starts == completes == ["run_demo_recent_001"]
+
+
+def test_initializer_upgrades_legacy_batch_and_persists_repeatable_demo_findings() -> None:
+    ledger = InMemoryFinOpsRepository()
+    seeds = InMemoryDemoSeedRepository()
+    anomalies = InMemoryAnomalyRepository()
+    insights = InMemoryInsightRepository()
+    legacy = seed_demo_workspace(
+        ledger, seeds, tenant_ref="tenant_demo_ref", workspace_id="ws-demo",
+        allowed_workspace_id="ws-demo", batch="operations-v1", now=NOW,
+    )
+
+    first = initialize_demo_workspace(
+        tenant_ref="tenant_demo_ref", allowed_tenant_ref="tenant_demo_ref",
+        workspace_id="ws-demo", allowed_workspace_id="ws-demo", ledger_repository=ledger,
+        seed_repository=seeds, budget_repository=InMemoryMemberBudgetRepository(),
+        hmac_secret="test-secret", anomaly_repository=anomalies, insight_repository=insights, now=NOW,
+    )
+    second = initialize_demo_workspace(
+        tenant_ref="tenant_demo_ref", allowed_tenant_ref="tenant_demo_ref",
+        workspace_id="ws-demo", allowed_workspace_id="ws-demo", ledger_repository=ledger,
+        seed_repository=seeds, budget_repository=InMemoryMemberBudgetRepository(),
+        hmac_secret="test-secret", anomaly_repository=anomalies, insight_repository=insights,
+        now=NOW.replace(hour=9),
+    )
+
+    assert first.batch == second.batch == "operations-v2"
+    assert seeds.list_request_refs(tenant_ref="tenant_demo_ref", workspace_id="ws-demo", batch="operations-v1") == ()
+    assert set(seeds.list_request_refs(tenant_ref="tenant_demo_ref", workspace_id="ws-demo", batch="operations-v2")) == {event.request_ref for event in second.events}
+    assert {event.request_ref for event in legacy.events}.isdisjoint({event.request_ref for event in first.events})
+    assert len(anomalies.list("tenant_demo_ref")) == 6
+    stored = insights.list(tenant_ref="tenant_demo_ref", authorized_workspace_ids=("ws-demo",), limit=10).items
+    assert len(stored) == 2
+    assert {item.agent_kind for item in stored} == {"finops", "roi"}
+    assert all(item.status == "ready" and item.expires_at > item.generated_at for item in stored)
+    assert any("未验证" in item.summary for item in stored if item.agent_kind == "roi")
+    assert all(item.evidence_refs for item in stored)

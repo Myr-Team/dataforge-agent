@@ -55,7 +55,7 @@ def seed_demo_workspace(
     tenant_ref: str,
     workspace_id: str,
     allowed_workspace_id: str,
-    batch: str = "operations-v1",
+    batch: str = "operations-v2",
     budget_repository: Any | None = None,
     hmac_secret: str | None = None,
     roi_scenario_writer: Any | None = None,

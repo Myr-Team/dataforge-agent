@@ -231,7 +231,7 @@ def test_seed_emits_versioned_roi_scenario_and_distinct_outcome_evidence() -> No
     )
 
     assert result.roi_scenario["evaluation_months"] == 12
-    assert result.roi_scenario["seed_batch"] == "operations-v1"
+    assert result.roi_scenario["seed_batch"] == "operations-v2"
     assert [item["verification_state"] for item in result.outcome_events] == [
         "unverified",
         "unverified",
