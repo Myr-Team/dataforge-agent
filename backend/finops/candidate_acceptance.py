@@ -38,16 +38,30 @@ def _items(value: Any, label: str, *, minimum: int = 1) -> list[Mapping[str, Any
     return items
 
 
-def _distinct_numeric(items: list[Mapping[str, Any]], path: tuple[str, ...], label: str) -> int:
+def _distinct_numeric(
+    items: list[Mapping[str, Any]],
+    path: tuple[str, ...],
+    label: str,
+    *,
+    allow_missing: bool = False,
+) -> dict[str, int]:
     values: set[float] = set()
+    known = 0
+    missing = 0
     for item in items:
         value: Any = item
         for key in path:
             value = value.get(key) if isinstance(value, Mapping) else None
-        values.add(_number(value, label))
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            missing += 1
+            continue
+        known += 1
+        values.add(float(value))
+    if missing and not allow_missing:
+        raise CandidateAcceptanceError(f"{label} contains a missing display value")
     if len(values) < 2:
         raise CandidateAcceptanceError(f"{label} chart geometry is not data-driven")
-    return len(values)
+    return {"distinct": len(values), "known": known, "missing": missing}
 
 
 def summarize_candidate_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
@@ -94,7 +108,16 @@ def summarize_candidate_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
 
     workspace_rows = _items(payloads.get("workspace_breakdown"), "workspace cost breakdown")
     agent_rows = _items(payloads.get("agents"), "agent cost breakdown", minimum=3)
-    _distinct_numeric(agent_rows, ("estimated_cost",), "agent cost bars")
+    for index, item in enumerate(agent_rows):
+        _number(item.get("requests"), f"agent[{index}] requests", positive=True)
+        _number(item.get("tokens"), f"agent[{index}] tokens", positive=True)
+        _number(item.get("p95_latency_ms"), f"agent[{index}] latency", positive=True)
+    agent_cost_geometry = _distinct_numeric(
+        agent_rows,
+        ("estimated_cost",),
+        "agent cost bars",
+        allow_missing=True,
+    )
 
     budgets = _items(payloads.get("budgets"), "budgets")
     progress = _mapping(budgets[0].get("progress"), "budget progress")
@@ -175,6 +198,7 @@ def summarize_candidate_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
         "department_rows": len(departments),
         "workspace_rows": len(workspace_rows),
         "agent_rows": len(agent_rows),
+        "agent_cost_values": agent_cost_geometry,
         "budget": budget_values,
         "roi": {
             "metric_count": len(roi_metrics),

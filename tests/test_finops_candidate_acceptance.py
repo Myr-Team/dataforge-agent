@@ -48,9 +48,9 @@ def _payloads() -> dict:
         "workspace_breakdown": {"items": [{"key": "demo", "estimated_cost": 1.87}]},
         "agents": {
             "items": [
-                {"key": "a", "estimated_cost": 0.91},
-                {"key": "b", "estimated_cost": 0.56},
-                {"key": "c", "estimated_cost": 0.40},
+                {"key": "a", "requests": 40, "tokens": 300_000, "estimated_cost": 0.91, "p95_latency_ms": 2200},
+                {"key": "b", "requests": 35, "tokens": 250_000, "estimated_cost": 0.56, "p95_latency_ms": 1800},
+                {"key": "c", "requests": 30, "tokens": 210_000, "estimated_cost": 0.40, "p95_latency_ms": 1500},
             ]
         },
         "budgets": {
@@ -120,7 +120,11 @@ def test_candidate_acceptance_requires_complete_numeric_display_data() -> None:
 
     assert summary["ok"] is True
     assert summary["overview"]["requests"] == 153
-    assert summary["trend_distinct_values"] == {"requests": 3, "tokens": 3, "cost": 3}
+    assert summary["trend_distinct_values"] == {
+        "requests": {"distinct": 3, "known": 3, "missing": 0},
+        "tokens": {"distinct": 3, "known": 3, "missing": 0},
+        "cost": {"distinct": 3, "known": 3, "missing": 0},
+    }
     assert summary["roi"]["metric_count"] == 4
     assert summary["risk"]["distinct_evidence"] == 4
     assert summary["request_detail_complete"] is True
