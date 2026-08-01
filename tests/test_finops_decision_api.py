@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -122,6 +124,84 @@ def test_member_cannot_read_admin_decision_scope(
     monkeypatch.setattr(finops_router, "_authorized_workspace_roles", lambda _actor: {"ws-a": "member"})
     response = client.get("/api/finops/risk/decision", params={"workspace_id": "ws-a"}, headers=member_headers)
     assert response.status_code == 403
+
+
+def test_refresh_is_forwarded_only_after_authorization_and_uses_role_scope(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ComposedService:
+        def __init__(self) -> None:
+            self.delegate = FinOpsQueryService(repository)
+            self.compose_calls: list[tuple[str, object, bool]] = []
+
+        def __getattr__(self, name: str):
+            return getattr(self.delegate, name)
+
+        def compose(self, operation, query, compute, *, force_refresh=False):
+            self.compose_calls.append((operation, query, force_refresh))
+            return compute()
+
+    service = _ComposedService()
+    monkeypatch.setattr(finops_router, "get_finops_query_service", lambda: service)
+
+    response = client.get(
+        "/api/finops/roi/decision",
+        params={"workspace_id": "ws-a", "refresh": "1"},
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 200
+    assert len(service.compose_calls) == 1
+    operation, query, force_refresh = service.compose_calls[0]
+    expected_scope = hashlib.sha256(
+        json.dumps(
+            [["ws-a", "owner"]],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    assert operation == "roi_decision"
+    assert force_refresh is True
+    assert query.permission_scope == expected_scope
+
+
+def test_unauthorized_refresh_never_reaches_cache_or_compute(
+    client: TestClient,
+    member_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _GuardedService:
+        def __init__(self) -> None:
+            self.delegate = FinOpsQueryService(repository)
+            self.compose_calls = 0
+
+        def __getattr__(self, name: str):
+            return getattr(self.delegate, name)
+
+        def compose(self, operation, query, compute, *, force_refresh=False):
+            self.compose_calls += 1
+            raise AssertionError("authorization must run before cache refresh")
+
+    service = _GuardedService()
+    monkeypatch.setattr(finops_router, "get_finops_query_service", lambda: service)
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "member"},
+    )
+
+    response = client.get(
+        "/api/finops/risk/decision",
+        params={"workspace_id": "ws-a", "refresh": "1"},
+        headers=member_headers,
+    )
+
+    assert response.status_code == 403
+    assert service.compose_calls == 0
 
 
 def test_roi_decision_uses_rollup_unit_economics_when_sql_is_enabled(

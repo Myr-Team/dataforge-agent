@@ -138,7 +138,9 @@ def client(
         tenant_ref: str,
         workspace_id: str,
         source_opportunity_id: str,
+        permission_scope: str = "",
     ) -> dict[str, object] | None:
+        assert permission_scope
         if (
             tenant_ref not in {"tenant-a", "tenant-b"}
             or workspace_id not in {"ws-a", "ws-b"}
@@ -266,6 +268,50 @@ def test_create_remediation_returns_409_for_stale_base_version(
     assert response.json()["detail"] == "base version changed"
 
 
+def test_remediation_write_bumps_risk_only_after_success(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Namespace:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, tuple[str, ...]]] = []
+
+        def bump(self, tenant_ref, workspace_id, domains):
+            self.calls.append((tenant_ref, workspace_id, tuple(domains)))
+
+    namespace = _Namespace()
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_cache_namespace",
+        lambda: namespace,
+        raising=False,
+    )
+
+    created = client.post(
+        "/api/finops/remediation-drafts",
+        json={
+            "workspace_id": "ws-a",
+            "source_opportunity_id": "opp-cache",
+            "base_version": "cache-policy-v1",
+        },
+        headers=owner_headers,
+    )
+    failed = client.post(
+        "/api/finops/remediation-drafts",
+        json={
+            "workspace_id": "ws-a",
+            "source_opportunity_id": "opp-cache",
+            "base_version": "stale-version",
+        },
+        headers=owner_headers,
+    )
+
+    assert created.status_code == 201
+    assert failed.status_code == 409
+    assert namespace.calls == [("tenant-a", "ws-a", ("risk",))]
+
+
 def test_create_remediation_reloads_current_authorized_server_opportunity(
     client: TestClient,
     owner_headers: dict[str, str],
@@ -278,7 +324,9 @@ def test_create_remediation_reloads_current_authorized_server_opportunity(
         tenant_ref: str,
         workspace_id: str,
         source_opportunity_id: str,
+        permission_scope: str = "",
     ) -> dict[str, object]:
+        assert permission_scope
         calls.append((tenant_ref, workspace_id, source_opportunity_id))
         return {
             "opportunity_id": source_opportunity_id,

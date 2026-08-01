@@ -92,6 +92,7 @@ from .sql_pricing import (
 from .gateway_unmatched import SqlGatewayUnmatchedRepository
 from .query import FinOpsQuery, FinOpsQueryService
 from .models import FinOpsRequestEvent
+from .cache_namespace import FinOpsCacheNamespace
 from .query_cache import CachedFinOpsQueryService
 from .request_detail import FinOpsRequestDetailService, build_foundry_trace_link
 from .planning import (
@@ -240,15 +241,33 @@ def get_finops_query_service() -> Any:
                 ),
             )
         )
-    try:
-        ttl_seconds = int(os.environ.get("DF_FINOPS_QUERY_CACHE_TTL_SECONDS", "60"))
-    except ValueError:
-        ttl_seconds = 60
     return CachedFinOpsQueryService(
         delegate,
         cache=cache_store,
-        ttl_seconds=ttl_seconds,
+        namespace=get_finops_cache_namespace(),
     )
+
+
+def get_finops_cache_namespace() -> FinOpsCacheNamespace:
+    return FinOpsCacheNamespace(cache_store)
+
+
+def _bump_finops_domains(
+    tenant_ref: str,
+    workspace_ids: tuple[str, ...] | list[str],
+    domains: tuple[str, ...],
+) -> None:
+    """Best-effort targeted invalidation after a successful durable write."""
+    namespace = get_finops_cache_namespace()
+    for workspace_id in sorted({str(item or "").strip() for item in workspace_ids}):
+        if not workspace_id:
+            continue
+        try:
+            namespace.bump(tenant_ref, workspace_id, domains)
+        except Exception:
+            # Redis is an acceleration layer; a durable write must remain
+            # successful when its namespace revision cannot be advanced.
+            continue
 
 
 def get_finops_rollup_repository() -> SqlFinOpsRollupRepository:
@@ -559,6 +578,7 @@ def _context(
         query = FinOpsQuery(
             tenant_ref=_tenant_ref(actor),
             authorized_workspace_ids=selected_ids,
+            permission_scope=_permission_scope(roles, selected_ids),
             from_value=start,
             to_value=end,
             department_id=department_id,
@@ -577,6 +597,22 @@ def _context(
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
     return service, query, roles
+
+
+def _permission_scope(
+    roles: Mapping[str, str],
+    workspace_ids: tuple[str, ...],
+) -> str:
+    pairs = [
+        [workspace_id, str(roles[workspace_id])]
+        for workspace_id in sorted(workspace_ids)
+    ]
+    material = json.dumps(
+        pairs,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()[:16]
 
 
 def _window(from_value: str | None, to_value: str | None) -> tuple[str, str]:
@@ -1274,11 +1310,13 @@ def _current_remediation_opportunity(
     tenant_ref: str,
     workspace_id: str,
     source_opportunity_id: str,
+    permission_scope: str = "",
 ) -> dict[str, object] | None:
     start, end = _window(None, None)
     query = FinOpsQuery(
         tenant_ref=tenant_ref,
         authorized_workspace_ids=(workspace_id,),
+        permission_scope=permission_scope,
         workspace_id=workspace_id,
         from_value=start,
         to_value=end,
@@ -1388,12 +1426,19 @@ async def roi_decision(
     agent_id: str | None = Query(default=None, max_length=128),
     actor_ref: str | None = Query(default=None, max_length=128),
     model: str | None = Query(default=None, max_length=160),
+    refresh: bool = Query(default=False),
 ) -> dict[str, Any]:
     service, query, roles = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
     if roles.get(workspace_id) not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="ROI decision requires admin or owner")
     try:
-        return _roi_decision_payload(service, query)
+        return _compose_decision(
+            service,
+            "roi_decision",
+            query,
+            lambda: _roi_decision_payload(service, query),
+            force_refresh=refresh,
+        )
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=503, detail="ROI evidence service is unavailable") from exc
 
@@ -1408,17 +1453,54 @@ async def risk_decision(
     agent_id: str | None = Query(default=None, max_length=128),
     actor_ref: str | None = Query(default=None, max_length=128),
     model: str | None = Query(default=None, max_length=160),
+    refresh: bool = Query(default=False),
 ) -> dict[str, Any]:
     service, query, roles = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
     if roles.get(workspace_id) not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="risk decision requires admin or owner")
     try:
-        return _risk_decision_payload(service, query)
+        return _compose_decision(
+            service,
+            "risk_decision",
+            query,
+            lambda: _risk_decision_payload(service, query),
+            force_refresh=refresh,
+        )
     except FinOpsPersistenceError as exc:
         raise HTTPException(
             status_code=503,
             detail="risk evidence service is unavailable",
         ) from exc
+
+
+def _compose_decision(
+    service: Any,
+    operation: Literal["roi_decision", "risk_decision"],
+    query: FinOpsQuery,
+    compute: Any,
+    *,
+    force_refresh: bool,
+) -> dict[str, Any]:
+    compose = getattr(service, "compose", None)
+    if callable(compose):
+        return compose(
+            operation,
+            query,
+            compute,
+            force_refresh=force_refresh,
+        )
+    # Focused tests and integrators may provide an uncached query service.
+    # Wrap it here rather than changing the authorized query or bypassing it.
+    return CachedFinOpsQueryService(
+        service,
+        cache=cache_store,
+        namespace=get_finops_cache_namespace(),
+    ).compose(
+        operation,
+        query,
+        compute,
+        force_refresh=force_refresh,
+    )
 
 
 @router.post("/views", status_code=201)
@@ -2108,7 +2190,7 @@ async def create_remediation_draft(
     body: RemediationDraftCreate,
     request: Request,
 ) -> dict[str, Any]:
-    tenant_ref, actor_ref, _ = _write_context(
+    tenant_ref, actor_ref, roles = _write_context(
         request,
         workspace_id=body.workspace_id,
     )
@@ -2117,6 +2199,7 @@ async def create_remediation_draft(
             tenant_ref=tenant_ref,
             workspace_id=body.workspace_id,
             source_opportunity_id=body.source_opportunity_id,
+            permission_scope=_permission_scope(roles, (body.workspace_id,)),
         )
         if opportunity is None:
             raise HTTPException(
@@ -2132,6 +2215,7 @@ async def create_remediation_draft(
         )
     except Exception as exc:
         raise _remediation_error(exc) from exc
+    _bump_finops_domains(tenant_ref, [draft.workspace_id], ("risk",))
     return {"draft": _public_remediation_draft(draft)}
 
 
@@ -2195,6 +2279,7 @@ async def review_remediation_draft(
         )
     except Exception as exc:
         raise _remediation_error(exc) from exc
+    _bump_finops_domains(tenant_ref, [draft.workspace_id], ("risk",))
     return {"draft": _public_remediation_draft(draft)}
 
 
@@ -2219,6 +2304,7 @@ async def close_remediation_draft(
         )
     except Exception as exc:
         raise _remediation_error(exc) from exc
+    _bump_finops_domains(tenant_ref, [draft.workspace_id], ("risk",))
     return {"draft": _public_remediation_draft(draft)}
 
 
@@ -2247,6 +2333,7 @@ async def promote_remediation_draft(
         )
     except Exception as exc:
         raise _remediation_error(exc) from exc
+    _bump_finops_domains(tenant_ref, [draft.workspace_id], ("risk",))
     return {
         "draft": _public_remediation_draft(draft),
         "action": _public_remediation_action(action),
@@ -2397,6 +2484,18 @@ def _action_write_context(
     return tenant_ref, actor_ref, roles, action
 
 
+def _bump_action_transition_domains(tenant_ref: str, action: Any) -> None:
+    if action.action_type not in {"cache_policy", "model_route"}:
+        return
+    workspace_id = str(action.payload.get("workspace_id") or "").strip()
+    if workspace_id:
+        _bump_finops_domains(
+            tenant_ref,
+            [workspace_id],
+            ("cost", "roi", "risk", "overview"),
+        )
+
+
 @router.post("/actions", status_code=201)
 async def create_action(body: dict[str, Any], request: Request) -> dict[str, Any]:
     raw = body if isinstance(body, dict) else {}
@@ -2423,6 +2522,7 @@ async def submit_action(action_id: str, request: Request) -> dict[str, Any]:
         action = get_finops_action_service().submit(action_id, tenant_ref=tenant_ref, actor_ref=actor_ref)
     except Exception as exc:
         raise _action_error(exc) from exc
+    _bump_action_transition_domains(tenant_ref, action)
     return _action_response(action)
 
 
@@ -2433,6 +2533,7 @@ async def approve_action(action_id: str, request: Request) -> dict[str, Any]:
         action = get_finops_action_service().approve(action_id, tenant_ref=tenant_ref, actor_ref=actor_ref)
     except Exception as exc:
         raise _action_error(exc) from exc
+    _bump_action_transition_domains(tenant_ref, action)
     return _action_response(action)
 
 
@@ -2448,6 +2549,7 @@ async def execute_action(action_id: str, request: Request) -> dict[str, Any]:
         )
     except Exception as exc:
         raise _action_error(exc) from exc
+    _bump_action_transition_domains(tenant_ref, action)
     return _action_response(action)
 
 
@@ -2458,6 +2560,7 @@ async def verify_action(action_id: str, request: Request) -> dict[str, Any]:
         action = get_finops_action_service().verify(action_id, tenant_ref=tenant_ref, actor_ref=actor_ref)
     except Exception as exc:
         raise _action_error(exc) from exc
+    _bump_action_transition_domains(tenant_ref, action)
     return _action_response(action)
 
 
@@ -2481,6 +2584,7 @@ async def rollback_action(action_id: str, body: dict[str, Any], request: Request
         )
     except Exception as exc:
         raise _action_error(exc) from exc
+    _bump_action_transition_domains(tenant_ref, action)
     return _action_response(action)
 
 
@@ -2532,6 +2636,7 @@ async def acknowledge_anomaly(anomaly_id: str, request: Request) -> dict[str, An
         )
     except Exception as exc:
         raise _anomaly_error(exc) from exc
+    _bump_finops_domains(tenant_ref, list(current.workspace_ids), ("risk",))
     return {"anomaly": anomaly.model_dump(mode="json", exclude={"tenant_ref"})}
 
 
@@ -2552,6 +2657,7 @@ async def suppress_anomaly(anomaly_id: str, body: dict[str, Any], request: Reque
         )
     except Exception as exc:
         raise _anomaly_error(exc) from exc
+    _bump_finops_domains(tenant_ref, list(current.workspace_ids), ("risk",))
     return {"anomaly": anomaly.model_dump(mode="json", exclude={"tenant_ref"})}
 
 
@@ -2725,6 +2831,11 @@ async def update_official_pricing_mapping(
         )
     except PriceMappingConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _bump_finops_domains(
+        tenant_ref,
+        tuple(sorted(roles)),
+        ("cost", "roi", "risk", "overview"),
+    )
     return {"mapping": saved.model_dump(mode="json")}
 
 
@@ -2741,6 +2852,11 @@ async def delete_official_pricing_mapping(
             status_code=404,
             detail="official price mapping not found",
         )
+    _bump_finops_domains(
+        tenant_ref,
+        tuple(sorted(roles)),
+        ("cost", "roi", "risk", "overview"),
+    )
     return Response(status_code=204)
 
 
@@ -2783,7 +2899,7 @@ async def review_price_card(revision_id: str, request: Request) -> dict[str, Any
 
 @router.post("/price-cards/{revision_id}/activate")
 async def activate_price_card(revision_id: str, request: Request) -> dict[str, Any]:
-    tenant_ref, actor_ref, _ = _write_context(request)
+    tenant_ref, actor_ref, roles = _write_context(request)
     try:
         revision = get_finops_management_service().activate_price_card(
             tenant_ref=tenant_ref,
@@ -2793,6 +2909,11 @@ async def activate_price_card(revision_id: str, request: Request) -> dict[str, A
         )
     except Exception as exc:
         raise _management_error(exc) from exc
+    _bump_finops_domains(
+        tenant_ref,
+        tuple(sorted(roles)),
+        ("cost", "roi", "risk", "overview"),
+    )
     return {"price_card": _price_card_response(revision)}
 
 

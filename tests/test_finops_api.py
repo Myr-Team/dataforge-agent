@@ -856,6 +856,13 @@ def test_finops_action_api_enforces_two_person_approval_and_execution_flag(
         executors={"cache_policy": RecordingExecutor(current_version="v1")},
     )
     monkeypatch.setattr(finops_router, "get_finops_action_service", lambda: service)
+    bumps: list[tuple[str, str, tuple[str, ...]]] = []
+
+    class _Namespace:
+        def bump(self, tenant_ref, workspace_id, domains):
+            bumps.append((tenant_ref, workspace_id, tuple(domains)))
+
+    monkeypatch.setattr(finops_router, "get_finops_cache_namespace", _Namespace)
     proposer = trusted_headers(actor_id="proposer", tenant_id="tenant-a")
     approver = trusted_headers(actor_id="approver", tenant_id="tenant-a")
     created = client.post(
@@ -882,6 +889,12 @@ def test_finops_action_api_enforces_two_person_approval_and_execution_flag(
     monkeypatch.setenv("DF_FINOPS_ACTIONS_ENABLED", "1")
     assert client.post(f"/api/finops/actions/{action_id}/execute", headers=approver).json()["action"]["status"] == "verifying"
     assert client.post(f"/api/finops/actions/{action_id}/verify", headers=approver).json()["action"]["status"] == "succeeded"
+    assert bumps == [
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview")),
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview")),
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview")),
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview")),
+    ]
 
 
 def test_finops_action_transition_rechecks_target_workspace_admin_scope(
@@ -932,6 +945,13 @@ def test_finops_anomaly_api_supports_admin_acknowledge_and_suppress(
 ) -> None:
     anomaly_service = FinOpsAnomalyService(InMemoryAnomalyRepository())
     monkeypatch.setattr(finops_router, "get_finops_anomaly_service", lambda: anomaly_service)
+    bumps: list[tuple[str, str, tuple[str, ...]]] = []
+
+    class _Namespace:
+        def bump(self, tenant_ref, workspace_id, domains):
+            bumps.append((tenant_ref, workspace_id, tuple(domains)))
+
+    monkeypatch.setattr(finops_router, "get_finops_cache_namespace", _Namespace)
     monkeypatch.setattr(
         finops_router,
         "evaluate_default_anomalies",
@@ -974,6 +994,10 @@ def test_finops_anomaly_api_supports_admin_acknowledge_and_suppress(
     )
     assert suppressed.status_code == 200
     assert suppressed.json()["anomaly"]["status"] == "suppressed"
+    assert bumps == [
+        ("tenantref-a", "ws-a", ("risk",)),
+        ("tenantref-a", "ws-a", ("risk",)),
+    ]
 
 
 def test_finops_anomaly_mutation_rechecks_all_target_workspace_scopes(

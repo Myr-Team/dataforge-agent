@@ -17,6 +17,7 @@ class FinOpsQuery(BaseModel):
 
     tenant_ref: str = Field(min_length=1, max_length=128)
     authorized_workspace_ids: tuple[str, ...]
+    permission_scope: str = Field(default="", max_length=64)
     from_value: str
     to_value: str
     department_id: str | None = None

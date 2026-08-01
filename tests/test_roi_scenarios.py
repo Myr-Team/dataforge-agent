@@ -179,12 +179,21 @@ def test_scenario_actions_allow_reader_reads_and_editor_writes() -> None:
 def test_scenario_routes_use_explicit_governance_actions(monkeypatch, tmp_path: Path) -> None:
     _configure_store(monkeypatch, tmp_path)
     actions: list[str] = []
+    invalidations: list[tuple[str, tuple[str, ...]]] = []
     monkeypatch.setattr(
         control_plane,
         "_require_workspace_owner",
         lambda _workspace_id, _request, action: actions.append(action) or "owner",
     )
     monkeypatch.setattr(control_plane, "_audit_required", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        control_plane,
+        "_bump_finops_workspace_domains",
+        lambda _request, workspace_id, domains: invalidations.append(
+            (workspace_id, tuple(domains))
+        ),
+        raising=False,
+    )
     monkeypatch.setattr(
         control_plane,
         "actor_from_request",
@@ -200,6 +209,7 @@ def test_scenario_routes_use_explicit_governance_actions(monkeypatch, tmp_path: 
     assert listed.status_code == 200, listed.text
     assert listed.json()["scenarios"][0]["scenario_id"] == created.json()["scenario"]["scenario_id"]
     assert actions == ["roi.scenario.write", "roi.scenario.read"]
+    assert invalidations == [("ws-1", ("roi", "overview"))]
 
 
 def test_scenario_route_returns_service_unavailable_when_durable_store_fails(monkeypatch, tmp_path: Path) -> None:

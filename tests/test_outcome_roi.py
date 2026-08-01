@@ -357,6 +357,15 @@ def test_outcome_api_persists_lists_and_verifies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_store(tmp_path, monkeypatch)
+    invalidations: list[tuple[str, tuple[str, ...]]] = []
+    monkeypatch.setattr(
+        control_plane,
+        "_bump_finops_workspace_domains",
+        lambda _request, workspace_id, domains: invalidations.append(
+            (workspace_id, tuple(domains))
+        ),
+        raising=False,
+    )
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     monkeypatch.setenv("DF_MEMBER_PSEUDONYM_SALT", "outcome-api-projection-salt")
     monkeypatch.setenv("DF_ENVIRONMENT", "test")
@@ -397,6 +406,7 @@ def test_outcome_api_persists_lists_and_verifies(
     assert relisted.json()["events"][0]["actor"] == {"subject_label": expected_owner_label}
     assert verified.json()["event"]["verification"]["reviewer"] == {"subject_label": expected_reviewer_label}
     assert verified.json()["event"]["verification"]["event"]["actor"] == {"subject_label": expected_reviewer_label}
+    assert invalidations == [("ws-roi", ("roi", "overview"))]
 
     forbidden = (
         "owner@contoso.com", "oid-owner", "Owner",

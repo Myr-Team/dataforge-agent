@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 try:
+    from . import cache_store
     from .audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from .artifact_jobs import list_artifact_jobs
     from .artifact_registry import ArtifactPersistenceError, get_artifact
@@ -47,7 +48,10 @@ try:
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
     from .workspace_model_config import normalize_workspace_price_card, public_workspace_model_config, validate_workspace_routing_policy
     from .workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
+    from .finops.cache_namespace import FinOpsCacheNamespace
+    from .finops.normalization import canonical_tenant_ref
 except ImportError:
+    import cache_store
     from audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from artifact_jobs import list_artifact_jobs
     from artifact_registry import ArtifactPersistenceError, get_artifact
@@ -75,6 +79,8 @@ except ImportError:
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
     from workspace_model_config import normalize_workspace_price_card, public_workspace_model_config, validate_workspace_routing_policy
     from workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
+    from finops.cache_namespace import FinOpsCacheNamespace
+    from finops.normalization import canonical_tenant_ref
 
 
 router = APIRouter(tags=["control-plane"])
@@ -89,6 +95,30 @@ _HEALTH_CACHE: dict[str, Any] = {"expires": 0.0, "value": None}
 _DIRECTORY_SELECTION_TTL_SECONDS = 300.0
 _DIRECTORY_SELECTION_LOCK = threading.RLock()
 _DIRECTORY_SELECTIONS: dict[str, dict[str, Any]] = {}
+
+
+def _bump_finops_workspace_domains(
+    request: Request,
+    workspace_id: str,
+    domains: tuple[str, ...],
+) -> None:
+    """Best-effort FinOps invalidation after an authorized workspace write."""
+    try:
+        actor = actor_from_request(request)
+        tenant_id = str(actor.get("tenant_id") or "").strip()
+        secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
+        if not tenant_id or not secret:
+            return
+        tenant_ref = canonical_tenant_ref(tenant_id, secret=secret)
+        FinOpsCacheNamespace(cache_store).bump(
+            tenant_ref,
+            workspace_id,
+            domains,
+        )
+    except Exception:
+        # Durable scenario/outcome writes are authoritative; Redis is only an
+        # acceleration layer and must not change the write result.
+        return
 
 
 @router.get("/api/workspaces/{workspace_id}/overview")
@@ -394,6 +424,12 @@ async def workspace_roi_scenario_create(workspace_id: str, body: dict[str, Any],
     except Exception:
         _audit_failed(request, workspace_id, "roi.scenario.write", "roi_scenario", "pending")
         raise
+    await _call(
+        _bump_finops_workspace_domains,
+        request,
+        workspace_id,
+        ("roi", "overview"),
+    )
     return {"workspace_id": workspace_id, "scenario": await _call(scenario_projection, workspace_id, scenario)}
 
 
@@ -447,6 +483,12 @@ async def workspace_outcome_verify(
     except Exception:
         _audit_failed(request, workspace_id, "outcome.verify", "outcome", event_id, correlation={"outcome_event_id": event_id})
         raise
+    await _call(
+        _bump_finops_workspace_domains,
+        request,
+        workspace_id,
+        ("roi", "overview"),
+    )
     return {"workspace_id": workspace_id, "event": await _call(_public_outcome_event, workspace_id, event)}
 
 
