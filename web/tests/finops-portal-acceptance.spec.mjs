@@ -59,12 +59,13 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
 
 test("ROI parameters create a new DataForge scenario revision", async ({ page }) => {
   const calls = [];
-  await installFinOpsMockApi(page, calls);
+  const control = await installFinOpsMockApi(page, calls);
   await page.goto("/");
   await openOperations(page);
   await page.getByRole("button", { name: "效能与 ROI" }).click();
 
-  await expect(page.getByText("运营自动化测算")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "测算显示具备投入价值，业务结果仍需验证" })).toBeVisible();
+  const initialDecisionCalls = control.calls.roiDecision;
   await page.getByRole("button", { name: "调整测算参数" }).click();
   const dialog = page.getByRole("dialog", { name: "调整 ROI 测算参数" });
   await expect(dialog.getByText("当前模型成本 $0.0269 / 月")).toBeVisible();
@@ -72,7 +73,8 @@ test("ROI parameters create a new DataForge scenario revision", async ({ page })
   await dialog.getByRole("button", { name: "保存新版本" }).click();
 
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByText("版本 2 · dataforge-roi-v1")).toBeVisible();
+  await expect.poll(() => control.calls.roiDecision).toBeGreaterThan(initialDecisionCalls);
+  await expect(page.getByRole("heading", { name: "测算显示具备投入价值，业务结果仍需验证" })).toBeVisible();
   const write = calls.find((call) => (
     call.path === "/api/workspaces/demo-corpus/governance/scenarios"
     && call.method === "POST"
@@ -116,33 +118,36 @@ test("request reconciliation surfaces unattributed gateway evidence with scope l
 });
 
 
-test("operations auto-refresh waits five minutes and pauses while hidden", async ({ page }) => {
+test("visible decision refresh waits ten minutes and pauses while hidden", async ({ page }) => {
   await page.clock.install({ time: new Date("2026-07-30T08:00:00Z") });
-  const calls = [];
-  await installFinOpsMockApi(page, calls);
+  const control = await installFinOpsMockApi(page);
   await page.goto("/");
   await openOperations(page);
+  await page.getByRole("button", { name: "效能与 ROI" }).click();
+  await expect(page.getByRole("heading", { name: "价值桥" })).toBeVisible();
 
-  const bootstrapCount = () => calls.filter((call) => call.path === "/api/finops/bootstrap").length;
-  const initialCount = bootstrapCount();
-
-  await page.clock.runFor(299_000);
-  expect(bootstrapCount()).toBe(initialCount);
-  await page.clock.runFor(1_000);
-  await expect.poll(bootstrapCount).toBe(initialCount + 1);
+  const initialCount = control.calls.roiDecision;
+  await page.clock.runFor(599_999);
+  expect(control.calls.roiDecision).toBe(initialCount);
+  await page.clock.runFor(1);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => control.calls.roiDecision).toBe(initialCount + 1);
 
   await page.evaluate(() => {
     Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
     document.dispatchEvent(new Event("visibilitychange"));
   });
-  await page.clock.runFor(300_000);
-  expect(bootstrapCount()).toBe(initialCount + 1);
+  await page.clock.runFor(600_000);
+  expect(control.calls.roiDecision).toBe(initialCount + 1);
 
   await page.evaluate(() => {
     Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
     document.dispatchEvent(new Event("visibilitychange"));
   });
-  await expect.poll(bootstrapCount).toBe(initialCount + 2);
+  await expect.poll(() => control.calls.roiDecision).toBe(initialCount + 2);
 });
 
 
@@ -160,6 +165,53 @@ test("detail refresh failure preserves the last successful page", async ({ page 
   await expect(page.locator(".finops-inline-error")).toContainText(
     "更新失败，已保留上次数据",
   );
+});
+
+
+test("risk evidence is distinct and remediation 409 requires reload and a second review", async ({ page }) => {
+  const control = await installFinOpsMockApi(page, [], { remediationReviewConflictOnce: true });
+  await page.goto("/");
+  await openOperations(page);
+  await page.getByRole("button", { name: "风险与优化" }).click();
+
+  const priorities = page.getByRole("list", { name: "风险优先事项" });
+  await priorities.getByRole("button", { name: /响应时延优化/ }).click();
+  await expect(page.getByText("6,200 ms")).toBeVisible();
+  await expect(page.getByText("分析已完成，但模型响应阶段耗时偏高。")).toBeVisible();
+  await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
+  await expect(page.getByText("缓存未命中", { exact: true })).toBeVisible();
+  await expect(page.getByText("本次请求未命中结果缓存，已重新执行分析。")).toBeVisible();
+  await priorities.getByRole("button", { name: /计价覆盖补齐/ }).click();
+  await expect(page.getByText("评审已完成，当前模型尚未关联价目。")).toBeVisible();
+  await priorities.getByRole("button", { name: /调用成功率改善/ }).click();
+  await expect(page.getByText("provider_5xx")).toBeVisible();
+
+  await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
+  await page.getByRole("button", { name: "查看整改方案" }).click();
+  const panel = page.getByRole("dialog", { name: "整改草案" });
+  await expect(panel.getByText("不会直接执行生产变更")).toBeVisible();
+  await panel.getByRole("button", { name: "保存整改草案" }).click();
+  await expect(panel.getByText("可转为审批动作草案").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "候选执行" })).toHaveCount(0);
+
+  await panel.getByRole("button", { name: "复核草案" }).click();
+  await expect(panel.getByText("方案已更新，请重新复核")).toBeVisible();
+  await panel.getByRole("button", { name: "复核草案" }).click();
+  await expect(panel.getByText("已复核", { exact: true }).first()).toBeVisible();
+  expect(control.calls.remediationCreate).toBe(1);
+  expect(control.calls.remediationReview).toBe(2);
+
+  const header = await page.locator(".topbar").boundingBox();
+  const surface = await panel.boundingBox();
+  expect(surface.y).toBeGreaterThanOrEqual(header.y + header.height);
+  expect(surface.x + surface.width).toBeLessThanOrEqual(await page.evaluate(() => window.innerWidth));
+
+  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+  await mkdir(outputDir, { recursive: true });
+  await page.screenshot({
+    path: path.join(outputDir, "operations-remediation-reviewed-desktop.png"),
+    fullPage: true,
+  });
 });
 
 

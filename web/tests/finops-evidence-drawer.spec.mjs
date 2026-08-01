@@ -74,9 +74,9 @@ test("risk cards open their own request evidence without a generic list lookup",
   await page.getByRole("button", { name: "运营管理" }).first().click();
   await page.getByRole("button", { name: "风险与优化" }).click();
 
-  const opportunities = page.locator(".finops-opportunity-list");
-  const latencyCard = opportunities.locator("article").filter({ hasText: "响应时延优化" });
-  await latencyCard.getByRole("button", { name: "查看证据" }).click();
+  const priorities = page.getByRole("list", { name: "风险优先事项" });
+  await priorities.getByRole("button", { name: /响应时延优化/ }).click();
+  await page.getByRole("button", { name: "查看证据" }).click();
   let dialog = page.getByRole("dialog");
   await expect(dialog.getByText("批量分析本周客户反馈并生成归因摘要")).toBeVisible();
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
@@ -89,8 +89,8 @@ test("risk cards open their own request evidence without a generic list lookup",
   await expect(dialog.getByText("req_slow_000001", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
 
-  const cacheCard = opportunities.locator("article").filter({ hasText: "缓存效率优化" });
-  await cacheCard.getByRole("button", { name: "查看证据" }).click();
+  await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
+  await page.getByRole("button", { name: "查看证据" }).click();
   dialog = page.getByRole("dialog");
   await expect(dialog.getByText("重新分析相同数据并复用上次结果")).toBeVisible();
   await page.screenshot({
