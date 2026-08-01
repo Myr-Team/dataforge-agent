@@ -147,6 +147,28 @@ def test_candidate_acceptance_rejects_missing_budget_spend() -> None:
         summarize_candidate_payloads(payloads)
 
 
+def test_candidate_acceptance_counts_an_explicitly_unpriced_agent_row() -> None:
+    payloads = _payloads()
+    payloads["agents"]["items"].append(
+        {
+            "key": "unpriced",
+            "requests": 2,
+            "tokens": None,
+            "estimated_cost": None,
+            "p95_latency_ms": None,
+        }
+    )
+
+    summary = summarize_candidate_payloads(payloads)
+
+    assert summary["agent_rows"] == 4
+    assert summary["agent_cost_values"] == {
+        "distinct": 3,
+        "known": 3,
+        "missing": 1,
+    }
+
+
 def test_candidate_acceptance_rejects_repeated_risk_evidence() -> None:
     payloads = _payloads()
     for item in payloads["risk"]["selected_evidence_summaries"]:

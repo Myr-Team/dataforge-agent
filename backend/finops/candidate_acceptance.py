@@ -110,8 +110,6 @@ def summarize_candidate_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
     agent_rows = _items(payloads.get("agents"), "agent cost breakdown", minimum=3)
     for index, item in enumerate(agent_rows):
         _number(item.get("requests"), f"agent[{index}] requests", positive=True)
-        _number(item.get("tokens"), f"agent[{index}] tokens", positive=True)
-        _number(item.get("p95_latency_ms"), f"agent[{index}] latency", positive=True)
     agent_cost_geometry = _distinct_numeric(
         agent_rows,
         ("estimated_cost",),
