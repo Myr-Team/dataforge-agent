@@ -238,7 +238,7 @@ export function RoiDecisionPage({
       </section>
 
       <section className="finops-decision-roi-wide">
-        <header className="finops-decision-roi-panel-head"><div><span>成本、使用与产出的共同变化</span><h2>单位效能趋势</h2></div><small>缺少样本或价格时保留不可用，不补零</small></header>
+        <header className="finops-decision-roi-panel-head"><div><span>成本、使用与产出的共同变化</span><h2>单位效能趋势</h2></div><small>按周期展示服务端返回的单位效能与证据状态</small></header>
         <UnitEconomicsTrend items={view.unitEconomicsTrend} />
       </section>
 

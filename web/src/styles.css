@@ -5426,6 +5426,27 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-insights em { color: #b54708; font-size: 9px; font-style: normal; font-weight: 700; text-transform: uppercase; }
 .finops-table-scroll { width: 100%; overflow: auto; }
 .finops-table { width: 100%; min-width: 720px; border-collapse: collapse; }
+.finops-table-scroll-compact .finops-table { min-width: 100%; table-layout: fixed; }
+.finops-table-scroll-compact .finops-table th,
+.finops-table-scroll-compact .finops-table td { padding: 10px 6px; font-size: 9px; white-space: nowrap; }
+.finops-table-scroll-compact .finops-table th:nth-child(1),
+.finops-table-scroll-compact .finops-table td:nth-child(1) { width: 26%; }
+.finops-table-scroll-compact .finops-table th:nth-child(2),
+.finops-table-scroll-compact .finops-table td:nth-child(2) { width: 9%; }
+.finops-table-scroll-compact .finops-table th:nth-child(3),
+.finops-table-scroll-compact .finops-table td:nth-child(3) { width: 11%; }
+.finops-table-scroll-compact .finops-table th:nth-child(4),
+.finops-table-scroll-compact .finops-table td:nth-child(4) { width: 15%; }
+.finops-table-scroll-compact .finops-table th:nth-child(5),
+.finops-table-scroll-compact .finops-table td:nth-child(5) { width: 12%; }
+.finops-table-scroll-compact .finops-table th:nth-child(6),
+.finops-table-scroll-compact .finops-table td:nth-child(6) { width: 11%; }
+.finops-table-scroll-compact .finops-table th:nth-child(7),
+.finops-table-scroll-compact .finops-table td:nth-child(7) { width: 16%; }
+.finops-table-scroll-compact .finops-table td:first-child { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .finops-table-scroll-compact .finops-table { min-width: 680px; }
+}
 .finops-table th, .finops-table td { border-bottom: 1px solid #edf0f5; padding: 11px 13px; color: #475467; font-size: 10.5px; text-align: left; vertical-align: middle; }
 .finops-table th { background: #fbfcfe; color: #98a2b3; font-size: 9px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
 .finops-table tbody tr:last-child td { border-bottom: 0; }
@@ -6205,8 +6226,8 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-decision-risk-loading .finops-decision-risk-wide span { width: 100%; height: 110px; }
 @keyframes finops-decision-risk-pulse { from { opacity: .48; } to { opacity: .9; } }
 
-.finops-remediation-layer { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; overflow: auto; background: rgba(17, 24, 39, .34); padding: 24px; }
-.finops-remediation-panel { width: min(980px, 100%); max-height: min(900px, calc(100dvh - 48px)); overflow: auto; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 22px 60px rgba(16, 24, 40, .22); }
+.finops-remediation-layer { position: fixed; z-index: 80; inset: 56px 0 0; display: grid; place-items: center; overflow: auto; background: rgba(17, 24, 39, .34); padding: 24px; }
+.finops-remediation-panel { width: min(980px, 100%); max-height: min(900px, calc(100dvh - 104px)); overflow: auto; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 22px 60px rgba(16, 24, 40, .22); }
 .finops-remediation-head { position: sticky; z-index: 3; top: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); background: var(--surface); padding: 14px 16px; }
 .finops-remediation-head > div { display: grid; min-width: 0; gap: 3px; }
 .finops-remediation-head span { color: var(--blue); font-size: 8.5px; font-weight: 750; letter-spacing: .05em; }
@@ -6291,7 +6312,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-decision-risk-insight > button,
   .finops-decision-risk-governance-state { grid-column: 1 / -1; }
   .finops-remediation-layer { place-items: end stretch; padding: 0; }
-  .finops-remediation-panel { width: 100%; max-height: 100dvh; border-right: 0; border-bottom: 0; border-left: 0; border-radius: 10px 10px 0 0; }
+  .finops-remediation-panel { width: 100%; max-height: calc(100dvh - 56px); border-right: 0; border-bottom: 0; border-left: 0; border-radius: 10px 10px 0 0; }
   .finops-remediation-create { grid-template-columns: 42px minmax(0, 1fr); padding: 20px 16px; }
   .finops-remediation-create > button,
   .finops-remediation-create > small { grid-column: 1 / -1; }

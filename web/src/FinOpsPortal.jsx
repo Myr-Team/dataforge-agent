@@ -435,10 +435,14 @@ function TrendBars({
 }
 
 
-function BreakdownTable({ rows, dimension = "", onSelect = null }) {
+function BreakdownTable({ rows, dimension = "", onSelect = null, compact = false }) {
   if (!rows.length) return <EmptyState />;
   return (
-    <div className="finops-table-scroll">
+    <div
+      className={`finops-table-scroll ${compact ? "finops-table-scroll-compact" : ""}`.trim()}
+      tabIndex={0}
+      aria-label="归因表格，可在窄屏横向滚动查看全部列"
+    >
       <table className="finops-table">
         <thead>
           <tr>
@@ -730,10 +734,10 @@ function CostPage({
           <TrendBars payload={overviewData.trends} metric="cost" comparisonPayload={comparison} events={overviewData.anomalies?.items || []} />
         </Panel>
         <Panel title="部门成本归因" subtitle="部门与专案按同一账本口径聚合">
-          <BreakdownTable rows={finopsBreakdownRows(overviewData.department)} dimension="department" onSelect={onDimensionSelect} />
+          <BreakdownTable rows={finopsBreakdownRows(overviewData.department)} dimension="department" onSelect={onDimensionSelect} compact />
         </Panel>
         <Panel title="专案成本归因" subtitle="每个 workspace 最多归属一个部门">
-          <BreakdownTable rows={finopsBreakdownRows(detail.workspace)} />
+          <BreakdownTable rows={finopsBreakdownRows(detail.workspace)} compact />
         </Panel>
         <Panel title="Agent 成本归因" subtitle="Agent 只作为下钻维度">
           <HorizontalBars rows={agents} valueKey="cost" dimension="agent" onSelect={onDimensionSelect} valueFormatter={(value) => formatFinOpsCost(value, value == null ? "unavailable" : "estimated")} />
@@ -1779,7 +1783,6 @@ export function FinOpsPortal({
           <span>让 IT 与财务在同一视图理解成本、效能、价值与风险。</span>
         </div>
         <div className="finops-live">
-          <i />
           <span>
             {formatRelativeUpdateTime(pageGeneratedAt)}
             {pageUpdating ? " · 正在更新" : ""}

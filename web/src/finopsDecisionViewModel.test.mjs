@@ -86,6 +86,21 @@ test("unit economics trend preserves the server-owned per-successful-request uni
 });
 
 
+test("small non-zero USD unit costs remain visibly distinct instead of rounding to zero", () => {
+  const view = roiDecisionView({
+    unit_economics_trend: [
+      { period: "7月22日", label: "每次成功调用成本", value: 0.00039, unit: "USD", status: "estimated" },
+      { period: "7月23日", label: "每次成功调用成本", value: 0.00046, unit: "USD", status: "estimated" },
+    ],
+  });
+
+  assert.deepEqual(
+    view.unitEconomicsTrend.map((item) => item.valueLabel),
+    ["$0.00039", "$0.00046"],
+  );
+});
+
+
 test("value bridge scales only comparable units and exposes negative direction", () => {
   const view = roiDecisionView({
     metrics: [
