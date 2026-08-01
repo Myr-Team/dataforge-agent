@@ -153,6 +153,7 @@ class InMemoryRemediationDraftRepository:
 
 VersionResolver = Callable[[str, str, ActionKind], str]
 _PayloadTranslator = Callable[[RemediationDraft], tuple[str, dict[str, Any]]]
+REMEDIATION_TEMPLATE_VERSION = "remediation-template-v1"
 
 
 class FinOpsRemediationService:
@@ -189,6 +190,11 @@ class FinOpsRemediationService:
             current_version = self._version_resolver(tenant_ref, workspace_id, action_kind)
             if base_version != current_version:
                 raise RemediationConflict("base version changed")
+        elif base_version != REMEDIATION_TEMPLATE_VERSION:
+            # Advisory drafts do not resolve mutable configuration, but their
+            # server-owned template revision still prevents browser-invented
+            # or stale draft shapes.
+            raise RemediationConflict("base version changed")
 
         now = _now()
         draft = RemediationDraft(

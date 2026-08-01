@@ -49,6 +49,7 @@ import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
 import { RemediationDraftPanel } from "./finops/RemediationDraftPanel.jsx";
 import { RiskDecisionPage } from "./finops/RiskDecisionPage.jsx";
 import { RoiDecisionPage } from "./finops/RoiDecisionPage.jsx";
+import { orchestrateRemediationMutation } from "./finops/remediationOrchestration.js";
 import { remediationDraftView } from "./finopsDecisionViewModel.js";
 import {
   applyDimensionFilter,
@@ -1059,6 +1060,7 @@ export function FinOpsPortal({
     error: "",
   });
   const [governance, setGovernance] = useState({ busyId: "", error: "" });
+  const [riskMutation, setRiskMutation] = useState({ busyId: "", error: "" });
   const [assistantState, setAssistantState] = useState({
     context: null,
     openRequest: 0,
@@ -1163,6 +1165,7 @@ export function FinOpsPortal({
 
   useEffect(() => {
     setSelectedRiskId(undefined);
+    setRiskMutation({ busyId: "", error: "" });
     remediationOpportunityRef.current = null;
     setRemediationState({ open: false, opportunity: null, draft: null, busy: false, error: "" });
   }, [queryScopeKey]);
@@ -1508,6 +1511,7 @@ export function FinOpsPortal({
         busy: false,
         error: conflictMessage,
       });
+      return draft;
     } catch (error) {
       if (current !== remediationSequence.current) return;
       setRemediationState((state) => ({
@@ -1517,6 +1521,7 @@ export function FinOpsPortal({
         busy: false,
         error: conflictMessage || (error instanceof Error ? error.message : "整改草案读取失败"),
       }));
+      return null;
     }
   }, [workspaceId]);
 
@@ -1526,82 +1531,50 @@ export function FinOpsPortal({
     loadCurrentRemediationDraft();
   }, [loadCurrentRemediationDraft]);
 
-  const createRemediation = async () => {
+  const runRemediation = async (kind, payload = {}) => {
     const opportunity = remediationOpportunityRef.current;
-    if (!opportunity?.id || !opportunity?.baseVersion) return;
+    const view = remediationDraftView(remediationState.draft);
     setRemediationState((state) => ({ ...state, busy: true, error: "" }));
-    try {
-      const response = await createFinOpsRemediationDraft({
-        workspaceId,
-        sourceOpportunityId: opportunity.id,
-        baseVersion: opportunity.baseVersion,
-      });
-      setRemediationState((state) => ({ ...state, open: true, draft: response, busy: false, error: "" }));
-      refreshRiskOnly();
-    } catch (error) {
-      if (error?.status === 409) {
-        await loadCurrentRemediationDraft({ conflictMessage: "方案已更新，请重新复核" });
-        return;
-      }
-      setRemediationState((state) => ({ ...state, busy: false, error: error instanceof Error ? error.message : "整改草案保存失败" }));
+    const result = await orchestrateRemediationMutation({
+      kind,
+      workspaceId,
+      opportunity,
+      draft: view,
+      reason: payload?.reason,
+      clients: {
+        create: createFinOpsRemediationDraft,
+        review: reviewFinOpsRemediationDraft,
+        promote: promoteFinOpsRemediationDraft,
+      },
+      reloadLatest: (message) => loadCurrentRemediationDraft({ conflictMessage: message }),
+      refreshRisk: refreshRiskOnly,
+    });
+    if (result.status === "succeeded") {
+      setRemediationState((state) => ({ ...state, open: true, draft: result.response, busy: false, error: "" }));
+    } else if (result.status === "failed") {
+      setRemediationState((state) => ({ ...state, busy: false, error: result.error }));
     }
   };
 
-  const reviewRemediation = async (payload) => {
-    const view = remediationDraftView(remediationState.draft);
-    if (!view.id || view.revision === null) return;
-    setRemediationState((state) => ({ ...state, busy: true, error: "" }));
-    try {
-      const response = await reviewFinOpsRemediationDraft(view.id, {
-        baseRevision: view.revision,
-        ...(payload?.reason ? { reason: payload.reason } : {}),
-      });
-      setRemediationState((state) => ({ ...state, draft: response, busy: false, error: "" }));
-      refreshRiskOnly();
-    } catch (error) {
-      if (error?.status === 409) {
-        await loadCurrentRemediationDraft({ conflictMessage: "方案已更新，请重新复核" });
-        return;
-      }
-      setRemediationState((state) => ({ ...state, busy: false, error: error instanceof Error ? error.message : "整改草案复核失败" }));
-    }
-  };
-
-  const promoteRemediation = async (payload) => {
-    const view = remediationDraftView(remediationState.draft);
-    if (!view.id || view.revision === null || view.executionCapability === "advisory_only") return;
-    setRemediationState((state) => ({ ...state, busy: true, error: "" }));
-    try {
-      const response = await promoteFinOpsRemediationDraft(view.id, {
-        baseRevision: view.revision,
-        ...(payload?.reason ? { reason: payload.reason } : {}),
-      });
-      setRemediationState((state) => ({ ...state, draft: response, busy: false, error: "" }));
-      refreshRiskOnly();
-    } catch (error) {
-      if (error?.status === 409) {
-        await loadCurrentRemediationDraft({ conflictMessage: "方案已更新，请重新复核" });
-        return;
-      }
-      setRemediationState((state) => ({ ...state, busy: false, error: error instanceof Error ? error.message : "审批动作草案创建失败" }));
-    }
-  };
+  const createRemediation = () => runRemediation("create");
+  const reviewRemediation = (payload) => runRemediation("review", payload);
+  const promoteRemediation = (payload) => runRemediation("promote", payload);
 
   const manageAnomaly = async (item, operation) => {
-    if (!item?.anomalyId) return;
+    if (!item?.anomalyId || riskMutation.busyId) return;
     let reason = "";
     if (operation === "suppress") {
       reason = window.prompt("请输入抑制原因（将写入治理审计）", "")?.trim() || "";
       if (!reason) return;
     }
-    setGovernance({ busyId: item.anomalyId, error: "" });
+    setRiskMutation({ busyId: item.anomalyId, error: "" });
     try {
       if (operation === "acknowledge") await acknowledgeFinOpsAnomaly(item.anomalyId);
       else await suppressFinOpsAnomaly(item.anomalyId, reason);
       refreshRiskOnly();
-      setGovernance({ busyId: "", error: "" });
+      setRiskMutation({ busyId: "", error: "" });
     } catch (error) {
-      setGovernance({ busyId: "", error: error instanceof Error ? error.message : "异常治理操作失败" });
+      setRiskMutation({ busyId: "", error: "异常治理操作失败" });
     }
   };
 
@@ -1824,7 +1797,9 @@ export function FinOpsPortal({
             payload={hasDetailData ? detailState.data : null}
             loading={detailState.loading || (!hasDetailData && !detailState.error)}
             updating={detailState.updating}
-            error={detailState.error || governance.error}
+            error={detailState.error}
+            mutationError={riskMutation.error}
+            busyId={riskMutation.busyId}
             selectedRiskId={selectedRiskId}
             onSelectRisk={setSelectedRiskId}
             onRetry={() => {

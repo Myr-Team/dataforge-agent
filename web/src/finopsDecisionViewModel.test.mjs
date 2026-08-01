@@ -359,7 +359,9 @@ test("risk and remediation projections expose only bounded interaction fields", 
       risk_domain: "efficiency",
       base_version: "cache-policy-v9",
       anomaly_id: "anomaly-cache",
+      anomaly_status: "open",
       applicable_actions: ["acknowledge", "suppress", "execute", "<script>"],
+      recommendation: "先复核缓存资格与失效窗口。",
       evidence_refs: ["req_cache_001", "run-private"],
       prompt: "must-not-render",
     }],
@@ -386,6 +388,7 @@ test("risk and remediation projections expose only bounded interaction fields", 
 
   assert.equal(risk.priorities[0].baseVersion, "cache-policy-v9");
   assert.equal(risk.priorities[0].anomalyId, "anomaly-cache");
+  assert.equal(risk.priorities[0].summary, "先复核缓存资格与失效窗口。");
   assert.deepEqual(risk.priorities[0].applicableActions, ["acknowledge", "suppress"]);
   assert.equal(risk.evidence[0].visibleAnswerSummary, "已返回可见分析摘要");
   assert.deepEqual(risk.evidence[0].technical, {

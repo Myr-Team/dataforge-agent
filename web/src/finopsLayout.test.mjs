@@ -357,6 +357,54 @@ test("risk page renders only selected request evidence and keeps technical IDs c
 });
 
 
+test("risk page shows local cache and mutation states without infrastructure wording", async (context) => {
+  const server = await createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  });
+  context.after(() => server.close());
+  const { RiskDecisionPage } = await server.ssrLoadModule("/src/finops/RiskDecisionPage.jsx");
+  const payload = {
+    freshness: { query_cache: { status: "hit_stale" } },
+    decision: { state: "prioritized", title: "风险判断", summary: "证据已排序", evidence_state: "observed" },
+    risk_domains: [],
+    risk_matrix: [],
+    priorities: [{
+      opportunity_id: "risk-cache",
+      anomaly_id: "anomaly-cache",
+      anomaly_status: "open",
+      applicable_actions: ["acknowledge", "suppress"],
+      policy_type: "cache_hit_rate",
+      risk_domain: "efficiency",
+      impact: "medium",
+      confidence: "high",
+      effort: "low",
+      sample_count: 20,
+      base_version: "cache-policy-v7",
+    }],
+    optimization_portfolio: [],
+    selected_evidence_summaries: [],
+    governance_capability: { draft_enabled: true },
+  };
+  const markup = renderToStaticMarkup(React.createElement(RiskDecisionPage, {
+    payload,
+    updating: true,
+    mutationError: "异常治理操作失败",
+    busyId: "anomaly-cache",
+    onAcknowledge() {},
+    onSuppress() {},
+  }));
+
+  assert.match(markup, /正在使用最近一次结果/);
+  assert.match(markup, /后台更新中/);
+  assert.match(markup, /异常治理操作失败/);
+  assert.match(markup, /<button type="button" disabled="">确认异常<\/button>/);
+  assert.match(markup, /<button type="button" disabled="">抑制异常<\/button>/);
+  assert.doesNotMatch(markup, /新鲜度|APIM|Azure API Management/);
+});
+
+
 test("remediation panel keeps draft governance visibly separate from execution", async (context) => {
   const server = await createServer({
     appType: "custom",

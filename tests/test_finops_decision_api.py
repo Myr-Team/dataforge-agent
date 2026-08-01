@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 import backend.finops.router as finops_router
 from auth_fixtures import trusted_headers
 from backend.app import app
+from backend.finops.anomalies import DetectedAnomaly
+from backend.finops.anomaly_store import FinOpsAnomalyService, InMemoryAnomalyRepository
 from backend.finops.models import FinOpsRequestEvent
 from backend.finops.query import FinOpsQueryService
 from backend.finops.query_cache import FinOpsCacheBusy
@@ -117,6 +119,127 @@ def test_risk_decision_does_not_trigger_agent(
     response = client.get("/api/finops/risk/decision", params={"workspace_id": "ws-a"}, headers=owner_headers)
     assert response.status_code == 200
     assert called is False
+
+
+def _managed_finding(
+    *,
+    anomaly_id: str,
+    workspace_id: str,
+    policy_type: str = "cache_hit_rate",
+) -> DetectedAnomaly:
+    return DetectedAnomaly(
+        anomaly_id=anomaly_id,
+        policy_type=policy_type,
+        severity="warning",
+        observed_value=10,
+        threshold_value=5,
+        sample_count=25,
+        workspace_ids=[workspace_id],
+        recommendation="Use the bounded server recommendation.",
+        evidence_refs=["req_aaaaaaaaaaaa"],
+    )
+
+
+def test_risk_decision_preserves_managed_anomaly_state_and_server_contract(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    anomaly_service = FinOpsAnomalyService(InMemoryAnomalyRepository())
+    anomaly_service.reconcile(
+        tenant_ref="tenant-b",
+        findings=[_managed_finding(anomaly_id="anomaly_other_tenant", workspace_id="ws-a")],
+        scope_workspace_ids=("ws-a",),
+    )
+    anomaly_service.reconcile(
+        tenant_ref="tenant-a",
+        findings=[_managed_finding(anomaly_id="anomaly_other_workspace", workspace_id="ws-b")],
+        scope_workspace_ids=("ws-b",),
+    )
+    anomaly_service.reconcile(
+        tenant_ref="tenant-a",
+        findings=[_managed_finding(anomaly_id="anomaly_unscoped", workspace_id="")],
+    )
+    monkeypatch.setattr(finops_router, "get_finops_anomaly_service", lambda: anomaly_service)
+    monkeypatch.setattr(
+        finops_router,
+        "evaluate_default_anomalies",
+        lambda _value: [_managed_finding(anomaly_id="anomaly_cache_ws_a", workspace_id="ws-a")],
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "current_remediation_base_version",
+        lambda tenant_ref, workspace_id, action_kind: "cache-policy-v7",
+    )
+
+    first = client.get(
+        "/api/finops/risk/decision",
+        params={"workspace_id": "ws-a", "refresh": "1"},
+        headers=owner_headers,
+    )
+    assert first.status_code == 200, first.text
+    first_priority = first.json()["priorities"][0]
+    assert first_priority["anomaly_id"] == "anomaly_cache_ws_a"
+    assert first_priority["anomaly_status"] == "open"
+    assert first_priority["applicable_actions"] == ["acknowledge", "suppress"]
+    assert first_priority["base_version"] == "cache-policy-v7"
+    assert first.json()["optimization_portfolio"][0]["x_effort"] in {1, 2, 3}
+    assert "anomaly_other_tenant" not in first.text
+    assert "anomaly_other_workspace" not in first.text
+    assert "anomaly_unscoped" not in first.text
+
+    anomaly_service.acknowledge(
+        tenant_ref="tenant-a",
+        anomaly_id="anomaly_cache_ws_a",
+        actor_ref="secret-actor",
+    )
+    acknowledged = client.get(
+        "/api/finops/risk/decision",
+        params={"workspace_id": "ws-a", "refresh": "1"},
+        headers=owner_headers,
+    )
+    assert acknowledged.status_code == 200, acknowledged.text
+    priority = acknowledged.json()["priorities"][0]
+    assert priority["anomaly_status"] == "acknowledged"
+    assert priority["applicable_actions"] == ["suppress"]
+    assert "secret-actor" not in acknowledged.text
+
+
+def test_risk_decision_degrades_only_failed_base_version_resolution(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    anomaly_service = FinOpsAnomalyService(InMemoryAnomalyRepository())
+    monkeypatch.setattr(finops_router, "get_finops_anomaly_service", lambda: anomaly_service)
+    monkeypatch.setattr(
+        finops_router,
+        "evaluate_default_anomalies",
+        lambda _value: [
+            _managed_finding(anomaly_id="anomaly_cache", workspace_id="ws-a"),
+            _managed_finding(
+                anomaly_id="anomaly_latency",
+                workspace_id="ws-a",
+                policy_type="p95_latency",
+            ),
+        ],
+    )
+
+    def unavailable(*_args: object) -> str:
+        raise RuntimeError("private resolver failure")
+
+    monkeypatch.setattr(finops_router, "current_remediation_base_version", unavailable)
+    response = client.get(
+        "/api/finops/risk/decision",
+        params={"workspace_id": "ws-a", "refresh": "1"},
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    by_policy = {item["policy_type"]: item for item in response.json()["priorities"]}
+    assert by_policy["cache_hit_rate"]["base_version"] is None
+    assert by_policy["p95_latency"]["base_version"] == "remediation-template-v1"
+    assert "private resolver failure" not in response.text
 
 
 def test_member_cannot_read_admin_decision_scope(

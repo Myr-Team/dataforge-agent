@@ -24,6 +24,12 @@ _CAPABILITY_EXPLANATION = {
 }
 _SAFE_REF_PREFIXES = ("req_", "run-", "outcome-", "outcome_", "event_")
 _SAFE_POLICIES = frozenset((*_DOMAIN, "cache_hit_rate", "error_rate", "token_spike", "daily_cost_budget", "unpriced_requests", "apim_coverage"))
+_ANOMALY_ACTIONS = {
+    "open": ["acknowledge", "suppress"],
+    "acknowledged": ["suppress"],
+    "suppressed": [],
+    "resolved": [],
+}
 _SCENARIO_RESULT_KEYS = (
     "monthly_benefit", "monthly_total_cost", "monthly_net_benefit", "roi_ratio", "payback_months", "formula_revision",
 )
@@ -60,11 +66,36 @@ def _safe_policy(value: Any) -> str:
     return policy if policy in _SAFE_POLICIES else "other"
 
 
+def _safe_identifier(value: Any, limit: int = 128) -> str | None:
+    clean = str(value or "").strip()
+    return clean[:limit] if clean and clean.replace("-", "").replace("_", "").isalnum() else None
+
+
+def _safe_revision(value: Any) -> str | None:
+    clean = str(value or "").strip()
+    if not clean or len(clean) > 128:
+        return None
+    return clean if all(character.isalnum() or character in "._:-" for character in clean) else None
+
+
+def _bounded_text(value: Any, limit: int) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
 def _safe_opportunity(item: Mapping[str, Any], *, domain: str, refs: list[str]) -> dict[str, Any]:
-    opportunity_id = str(item.get("opportunity_id") or "").strip()
+    opportunity_id = _safe_identifier(item.get("opportunity_id"), 80)
+    anomaly_id = _safe_identifier(item.get("anomaly_id"))
+    anomaly_status = str(item.get("anomaly_status") or "")
+    if anomaly_status not in _ANOMALY_ACTIONS:
+        anomaly_status = ""
     return {
-        "opportunity_id": opportunity_id[:80] if opportunity_id.replace("-", "").replace("_", "").isalnum() else None,
+        "opportunity_id": opportunity_id,
+        "anomaly_id": anomaly_id,
+        "anomaly_status": anomaly_status or None,
+        "applicable_actions": list(_ANOMALY_ACTIONS.get(anomaly_status, ())) if anomaly_id else [],
         "policy_type": _safe_policy(item.get("policy_type")),
+        "title": _bounded_text(item.get("title"), 120),
+        "recommendation": _bounded_text(item.get("recommendation"), 400),
         "impact": str(item.get("impact") or "unavailable") if str(item.get("impact") or "") in _LEVEL else "unavailable",
         "confidence": str(item.get("confidence") or "unavailable") if str(item.get("confidence") or "") in _LEVEL else "unavailable",
         "effort": str(item.get("effort") or "unavailable") if str(item.get("effort") or "") in _LEVEL else "unavailable",
@@ -73,6 +104,7 @@ def _safe_opportunity(item: Mapping[str, Any], *, domain: str, refs: list[str]) 
         "estimated_savings": item.get("estimated_savings"),
         "currency": item.get("currency"),
         "risk_domain": domain,
+        "base_version": _safe_revision(item.get("base_version")),
     }
 
 
@@ -166,7 +198,7 @@ def build_risk_decision(*, anomalies: Sequence[Mapping[str, Any]], opportunities
     domains = {name: 0 for name in ("cost", "experience", "efficiency", "governance")}
     for anomaly in anomalies:
         domains[_DOMAIN.get(str(anomaly.get("policy_type") or ""), "governance")] += 1
-    matrix, priorities = [], []
+    matrix, priorities, portfolio = [], [], []
     refs_needed: set[str] = set()
     for opportunity in opportunities:
         item = dict(opportunity); policy = _safe_policy(item.get("policy_type"))
@@ -174,13 +206,25 @@ def build_risk_decision(*, anomalies: Sequence[Mapping[str, Any]], opportunities
         refs = _refs(item.get("evidence_refs"), 20); refs_needed.update(refs)
         confidence = str(item.get("confidence") or "")
         impact = str(item.get("impact") or "")
-        base = {"opportunity_id": _safe_opportunity(item, domain=domain, refs=refs)["opportunity_id"], "policy_type": policy, "risk_domain": domain,
+        effort = str(item.get("effort") or "")
+        safe_item = _safe_opportunity(item, domain=domain, refs=refs)
+        base = {"opportunity_id": safe_item["opportunity_id"], "policy_type": policy, "risk_domain": domain,
+                "title": safe_item["title"],
                 "x_confidence": _LEVEL.get(confidence), "y_impact": _LEVEL.get(impact),
                 "x_confidence_state": "observed" if confidence in _LEVEL else "unavailable",
                 "y_impact_state": "observed" if impact in _LEVEL else "unavailable",
                 "bubble_size": max(0, int(item.get("sample_count") or 0)), "evidence_refs": refs}
         matrix.append(base)
-        priorities.append({**_safe_opportunity(item, domain=domain, refs=refs), "expected_impact": _expected_impact(item)})
+        priority = {**safe_item, "expected_impact": _expected_impact(item)}
+        priorities.append(priority)
+        portfolio.append({
+            **priority,
+            "x_effort": _LEVEL.get(effort),
+            "y_value_impact": _LEVEL.get(impact),
+            "bubble_size": max(0, int(item.get("sample_count") or 0)),
+            "x_effort_state": "observed" if effort in _LEVEL else "unavailable",
+            "y_value_impact_state": "observed" if impact in _LEVEL else "unavailable",
+        })
     selected = []
     for summary in evidence_summaries:
         if str(summary.get("request_ref") or "") not in refs_needed:
@@ -193,7 +237,7 @@ def build_risk_decision(*, anomalies: Sequence[Mapping[str, Any]], opportunities
             "error_category": summary.get("error_category"), "technical_refs": {"request_ref": str(technical.get("request_ref") or summary.get("request_ref") or "")} if str(technical.get("request_ref") or summary.get("request_ref") or "").startswith(_SAFE_REF_PREFIXES) else {}})
     statement = DecisionStatement(state="prioritized" if priorities else "no_current_risk", title="已按影响与证据确定优化优先级" if priorities else "当前没有可排序的风险证据", summary="风险以影响、置信度、影响范围和可追溯证据展示，不使用复合风险分数。", evidence_state="observed" if priorities else "unavailable")
     payload = {"decision": statement, "risk_domains": [{"id": key, "count": value} for key, value in domains.items()],
-        "risk_matrix": matrix, "priorities": priorities, "optimization_portfolio": [dict(item) for item in priorities],
+        "risk_matrix": matrix, "priorities": priorities, "optimization_portfolio": portfolio,
         "portfolio_metadata": {"x_axis": "effort", "y_axis": "value_impact", "size": "affected_scope", "color": "risk_domain"},
         "selected_evidence_summaries": selected, "insight": _safe_text_projection(insight) if insight else None,
         "drafts": [_safe_text_projection(item) for item in drafts], "governance_capability": {"read_enabled": bool(governance_capability.get("read_enabled")), "draft_enabled": bool(governance_capability.get("draft_enabled")), "actions_enabled": bool(governance_capability.get("actions_enabled")), "typed_executors": [value for value in (str(item).strip() for item in governance_capability.get("typed_executors") or []) if value in {"cache_policy", "budget_policy", "routing_policy", "pricing_policy"}]}}

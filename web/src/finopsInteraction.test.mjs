@@ -169,6 +169,43 @@ test("risk selection distinguishes initial selection from an explicit close", as
 });
 
 
+test("portfolio selection defaults only when the selectedId prop is omitted", async () => {
+  const server = await import("vite").then(({ createServer }) => createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  }));
+  try {
+    const {
+      OpportunityPortfolio,
+      resolvePortfolioSelection,
+    } = await server.ssrLoadModule("/src/finops/DecisionCharts.jsx");
+    const validIds = ["risk-a", "risk-b"];
+    assert.equal(resolvePortfolioSelection(undefined, "", validIds, false), "risk-a");
+    assert.equal(resolvePortfolioSelection("", "risk-a", validIds, true), "");
+    assert.equal(resolvePortfolioSelection(null, "risk-a", validIds, true), "");
+    assert.equal(resolvePortfolioSelection("risk-b", "", validIds, true), "risk-b");
+
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const data = {
+      items: [
+        { id: "risk-a", label: "风险 A", domainLabel: "成本", effortLabel: "低", impactLevelLabel: "高", impactLabel: "待验证" },
+        { id: "risk-b", label: "风险 B", domainLabel: "体验", effortLabel: "中", impactLevelLabel: "中", impactLabel: "待验证" },
+      ],
+      points: [],
+      metadata: {},
+    };
+    const omitted = renderToStaticMarkup(React.createElement(OpportunityPortfolio, { data }));
+    const closed = renderToStaticMarkup(React.createElement(OpportunityPortfolio, { data, selectedId: null }));
+    assert.match(omitted, /<li class="finops-decision-selected"/);
+    assert.doesNotMatch(closed, /<li class="finops-decision-selected"/);
+  } finally {
+    await server.close();
+  }
+});
+
+
 test("risk refresh invalidates only the risk domain", async () => {
   const server = await import("vite").then(({ createServer }) => createServer({
     appType: "custom",
@@ -204,11 +241,10 @@ test("portal risk integration uses one decision read and conflict-safe draft rel
   assert.match(source, /loadFinOpsRiskDecision/);
   assert.match(source, /<RiskDecisionPage/);
   assert.match(source, /<RemediationDraftPanel/);
-  assert.match(source, /方案已更新，请重新复核/);
+  assert.match(source, /orchestrateRemediationMutation/);
   assert.match(source, /loadFinOpsRemediationDraft/);
-  assert.match(source, /createFinOpsRemediationDraft\(\{/);
-  assert.match(source, /sourceOpportunityId:/);
-  assert.match(source, /baseVersion:/);
+  assert.match(source, /mutationError=\{riskMutation\.error\}/);
+  assert.match(source, /busyId=\{riskMutation\.busyId\}/);
   assert.doesNotMatch(source, /function RiskPage\(/);
   assert.doesNotMatch(source, /risk:\s*\(\)\s*=>\s*Promise\.all/);
 });

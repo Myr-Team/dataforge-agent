@@ -64,6 +64,23 @@ export function toggleRiskPointSelection(currentId, pointId, validIds) {
 }
 
 
+export function resolvePortfolioSelection(
+  selectedId,
+  tappedId,
+  validIds,
+  selectionProvided,
+) {
+  const ids = Array.isArray(validIds) ? validIds : [];
+  if (selectionProvided) {
+    return typeof selectedId === "string" && ids.includes(selectedId)
+      ? selectedId
+      : "";
+  }
+  if (typeof tappedId === "string" && ids.includes(tappedId)) return tappedId;
+  return ids[0] || "";
+}
+
+
 function DecisionEmpty({ children = "当前范围没有可展示的数据。" }) {
   return (
     <div className="finops-decision-empty" role="status">
@@ -299,16 +316,20 @@ export function RiskMatrix({ points = [], selectedId = "", onSelect = null }) {
 }
 
 
-export function OpportunityPortfolio({ data = {}, selectedId = "", onSelect = null }) {
+export function OpportunityPortfolio(props = {}) {
+  const { data = {}, onSelect = null } = props;
+  const selectionProvided = Object.hasOwn(props, "selectedId");
+  const selectedId = props.selectedId;
   const items = Array.isArray(data?.items) ? data.items.filter((item) => item?.id) : [];
   const points = Array.isArray(data?.points) ? data.points.filter((point) => point?.id) : [];
   const [tappedId, setTappedId] = useState("");
   const itemIds = useMemo(() => new Set(items.map((item) => item.id)), [items]);
-  const activeId = itemIds.has(selectedId)
-    ? selectedId
-    : itemIds.has(tappedId)
-      ? tappedId
-      : items[0]?.id || "";
+  const activeId = resolvePortfolioSelection(
+    selectedId,
+    tappedId,
+    [...itemIds],
+    selectionProvided,
+  );
   const xAxisLabel = data?.metadata?.xAxis || "横轴";
   const yAxisLabel = data?.metadata?.yAxis || "纵轴";
   const sizeLabel = data?.metadata?.size || "点大小";

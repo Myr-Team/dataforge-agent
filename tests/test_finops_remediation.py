@@ -6,6 +6,7 @@ from backend.finops.governance import FinOpsActionService, InMemoryActionReposit
 from backend.finops.remediation import (
     FinOpsRemediationService,
     InMemoryRemediationDraftRepository,
+    REMEDIATION_TEMPLATE_VERSION,
     RemediationConflict,
     RemediationNotFound,
 )
@@ -63,7 +64,7 @@ def test_investigation_draft_cannot_promote() -> None:
         workspace_id="ws-a",
         actor_ref="owner-a",
         opportunity=_opportunity("error_rate"),
-        base_version="investigation-v1",
+        base_version=REMEDIATION_TEMPLATE_VERSION,
     )
     reviewed = service.review(
         tenant_ref="tenant-a",
@@ -167,16 +168,16 @@ def test_promote_creates_only_a_human_proposed_draft_action() -> None:
 
 def test_price_mapping_and_budget_notifications_remain_advisory() -> None:
     service = _service()
-    for policy_type, base_version, action_kind in (
-        ("unpriced_requests", "evidence-price-v1", "price_mapping"),
-        ("daily_cost_budget", "evidence-budget-v1", "budget_notification"),
+    for policy_type, action_kind in (
+        ("unpriced_requests", "price_mapping"),
+        ("daily_cost_budget", "budget_notification"),
     ):
         draft = service.create(
             tenant_ref="tenant-a",
             workspace_id="ws-a",
             actor_ref="owner-a",
             opportunity=_opportunity(policy_type),
-            base_version=base_version,
+            base_version=REMEDIATION_TEMPLATE_VERSION,
         )
         assert draft.action_kind == action_kind
         assert draft.execution_capability == "advisory_only"
@@ -188,7 +189,7 @@ def test_latency_draft_uses_advisory_model_batch_comparison_criteria() -> None:
         workspace_id="ws-a",
         actor_ref="owner-a",
         opportunity=_opportunity("p95_latency"),
-        base_version="evidence-latency-v1",
+        base_version=REMEDIATION_TEMPLATE_VERSION,
     )
 
     assert draft.action_kind == "investigation"
@@ -204,7 +205,7 @@ def test_unit_cost_criteria_do_not_treat_unknown_cost_as_zero() -> None:
     service = _service()
     for policy_type, base_version in (
         ("cache_hit_rate", "cache-policy-v1"),
-        ("daily_cost_budget", "evidence-budget-v1"),
+        ("daily_cost_budget", REMEDIATION_TEMPLATE_VERSION),
     ):
         draft = service.create(
             tenant_ref="tenant-a",

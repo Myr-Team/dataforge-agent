@@ -268,6 +268,76 @@ def test_create_remediation_returns_409_for_stale_base_version(
     assert response.json()["detail"] == "base version changed"
 
 
+def test_advisory_remediation_uses_template_revision_without_configuration_cas(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        finops_router,
+        "_current_remediation_opportunity",
+        lambda **_kwargs: {
+            "opportunity_id": "opp-latency",
+            "anomaly_id": "anomaly-latency",
+            "policy_type": "p95_latency",
+            "evidence_refs": ["req_aaaaaaaaaaaa"],
+        },
+    )
+
+    def must_not_resolve(*_args: object) -> str:
+        raise AssertionError("advisory remediation must not resolve configuration CAS")
+
+    monkeypatch.setattr(finops_router, "current_remediation_base_version", must_not_resolve)
+    response = client.post(
+        "/api/finops/remediation-drafts",
+        json={
+            "workspace_id": "ws-a",
+            "source_opportunity_id": "opp-latency",
+            "base_version": "remediation-template-v1",
+        },
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 201, response.text
+    draft = response.json()["draft"]
+    assert draft["base_version"] == "remediation-template-v1"
+    assert draft["execution_capability"] == "advisory_only"
+
+
+def test_advisory_remediation_rejects_a_browser_invented_template_revision(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        finops_router,
+        "_current_remediation_opportunity",
+        lambda **_kwargs: {
+            "opportunity_id": "opp-latency",
+            "anomaly_id": "anomaly-latency",
+            "policy_type": "p95_latency",
+            "evidence_refs": ["req_aaaaaaaaaaaa"],
+        },
+    )
+
+    def must_not_resolve(*_args: object) -> str:
+        raise AssertionError("advisory remediation must not resolve configuration CAS")
+
+    monkeypatch.setattr(finops_router, "current_remediation_base_version", must_not_resolve)
+    response = client.post(
+        "/api/finops/remediation-drafts",
+        json={
+            "workspace_id": "ws-a",
+            "source_opportunity_id": "opp-latency",
+            "base_version": "browser-invented-v99",
+        },
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "base version changed"
+
+
 def test_remediation_write_bumps_risk_only_after_success(
     client: TestClient,
     owner_headers: dict[str, str],

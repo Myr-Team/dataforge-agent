@@ -575,7 +575,7 @@ function safeOpportunity(raw) {
   return {
     id,
     label: boundedText(raw.title, 100) || POLICY_LABELS[policy],
-    summary: boundedText(raw.summary, 260),
+    summary: boundedText(raw.recommendation ?? raw.summary, 260),
     policy,
     policyLabel: POLICY_LABELS[policy],
     domain,

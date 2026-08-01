@@ -25,6 +25,17 @@ const DOMAIN_ORDER = [
 const REQUEST_REFERENCE = /^req_[A-Za-z0-9_-]{1,124}$/;
 
 
+export function riskCacheNotice(payload, updating = false) {
+  const status = String(payload?.freshness?.query_cache?.status || "");
+  if (["hit_stale", "revalidating"].includes(status)) {
+    return updating || status === "revalidating"
+      ? "正在使用最近一次结果，后台更新中"
+      : "正在使用最近一次结果";
+  }
+  return updating ? "后台更新中" : "";
+}
+
+
 function StatusBadge({ status = "unavailable", children = "状态待确认" }) {
   return <span className={`finops-decision-status finops-decision-status-${status}`}>{children}</span>;
 }
@@ -134,7 +145,7 @@ function PriorityList({ items, selectedId, onSelect }) {
 }
 
 
-function EvidenceChain({ priority, evidence, onEvidence, onCreateDraft, onAcknowledge, onSuppress, draftEnabled }) {
+function EvidenceChain({ priority, evidence, onEvidence, onCreateDraft, onAcknowledge, onSuppress, draftEnabled, busyId }) {
   if (!priority) return <LocalEmpty>选择一个风险点后，这里会联动展示其证据与整改入口。</LocalEmpty>;
   const requestEvidenceRefs = requestRefsOf(priority);
   const evidenceByRef = new Set(requestEvidenceRefs);
@@ -167,8 +178,8 @@ function EvidenceChain({ priority, evidence, onEvidence, onCreateDraft, onAcknow
               <FileSearch size={13} />查看证据
             </button>
           ) : null}
-          {canAcknowledge ? <button type="button" onClick={() => onAcknowledge?.(priority)}>确认异常</button> : null}
-          {canSuppress ? <button type="button" onClick={() => onSuppress?.(priority)}>抑制异常</button> : null}
+          {canAcknowledge ? <button type="button" disabled={busyId === priority.anomalyId} onClick={() => onAcknowledge?.(priority)}>确认异常</button> : null}
+          {canSuppress ? <button type="button" disabled={busyId === priority.anomalyId} onClick={() => onSuppress?.(priority)}>抑制异常</button> : null}
         </div>
       </div>
       {selectedEvidence.length
@@ -184,6 +195,8 @@ export function RiskDecisionPage({
   loading = false,
   updating = false,
   error = "",
+  mutationError = "",
+  busyId = "",
   selectedRiskId = undefined,
   onSelectRisk = null,
   onRetry = null,
@@ -205,6 +218,7 @@ export function RiskDecisionPage({
   }
 
   const view = riskDecisionView(payload);
+  const cacheNotice = riskCacheNotice(payload, updating);
   const selected = resolveSelectedRisk(selectedRiskId, view.priorities);
   const selectedId = selected?.id || "";
   const decisionContext = {
@@ -226,6 +240,18 @@ export function RiskDecisionPage({
           {onRetry ? <button type="button" onClick={onRetry}>重新更新</button> : null}
         </div>
       ) : null}
+      {cacheNotice ? (
+        <div className="finops-decision-page-warning" role="status">
+          <RefreshCw className={updating ? "spin" : ""} size={14} aria-hidden="true" />
+          <span>{cacheNotice}</span>
+        </div>
+      ) : null}
+      {mutationError ? (
+        <div className="finops-decision-page-warning" role="alert">
+          <AlertTriangle size={14} aria-hidden="true" />
+          <span>{mutationError}</span>
+        </div>
+      ) : null}
 
       <section className="finops-decision-risk-banner" aria-labelledby="finops-risk-decision-title">
         <div>
@@ -233,7 +259,7 @@ export function RiskDecisionPage({
           <div className="finops-decision-risk-title-row">
             <h2 id="finops-risk-decision-title">{view.decision.title || "当前没有可排序的风险证据"}</h2>
             <StatusBadge status={view.decision.status}>{view.decision.badge}</StatusBadge>
-            <span className="finops-decision-risk-updating" aria-live="polite">{updating ? <><RefreshCw className="spin" size={12} />正在更新</> : null}</span>
+            <span className="finops-decision-risk-updating" aria-live="polite">{updating ? <><RefreshCw className="spin" size={12} />后台更新中</> : null}</span>
           </div>
           <p>{view.decision.description}</p>
           <small>风险按证据置信度、业务影响与真实影响范围展示，不生成无法解释的复合分数。</small>
@@ -272,6 +298,7 @@ export function RiskDecisionPage({
         onAcknowledge={onAcknowledge}
         onSuppress={onSuppress}
         draftEnabled={view.governance.draftEnabled}
+        busyId={busyId}
       />
 
       {view.insight ? (

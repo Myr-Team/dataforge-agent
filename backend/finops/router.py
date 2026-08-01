@@ -63,6 +63,7 @@ from .governance import (
 from .remediation import (
     FinOpsRemediationService,
     InMemoryRemediationDraftRepository,
+    REMEDIATION_TEMPLATE_VERSION,
     RemediationConflict,
     RemediationNotFound,
 )
@@ -1280,12 +1281,24 @@ def _decision_anomalies_from_events(
     events: list[FinOpsRequestEvent],
     *,
     tenant_ref: str,
+    scope_workspace_ids: tuple[str, ...],
 ) -> list[dict[str, Any]]:
+    findings = evaluate_default_anomalies(
+        _anomaly_evaluation_input(events, tenant_ref=tenant_ref)
+    )
+    managed = get_finops_anomaly_service().reconcile(
+        tenant_ref=tenant_ref,
+        findings=findings,
+        scope_workspace_ids=scope_workspace_ids,
+    )
+    selected = set(scope_workspace_ids)
     return [
-        {**item.model_dump(mode="json"), "evidence_state": "observed"}
-        for item in evaluate_default_anomalies(
-            _anomaly_evaluation_input(events, tenant_ref=tenant_ref)
-        )
+        {
+            **item.model_dump(mode="json", exclude={"tenant_ref"}),
+            "evidence_state": "observed",
+        }
+        for item in managed
+        if set(item.workspace_ids).issubset(selected)
     ]
 
 
@@ -1299,12 +1312,34 @@ def _decision_opportunities(
     total = metrics.get("requests") or 0
     priced = cost.get("priced_requests") if isinstance(cost, Mapping) else 0
     coverage = round(float(priced) / float(total) * 100, 4) if total else None
-    return build_opportunity_queue(
+    queue = build_opportunity_queue(
         anomalies=list(anomalies),
         recommendations=list(anomalies),
         priced_cost=cost.get("amount") if isinstance(cost, Mapping) else None,
         priced_coverage_pct=coverage,
     )
+    managed_by_id = {
+        str(item.get("anomaly_id") or ""): item
+        for item in anomalies
+        if item.get("anomaly_id")
+    }
+    for item in queue:
+        managed = managed_by_id.get(str(item.get("anomaly_id") or ""), {})
+        item["anomaly_status"] = str(managed.get("status") or "")
+        if item.get("policy_type") != "cache_hit_rate":
+            item["base_version"] = REMEDIATION_TEMPLATE_VERSION
+            continue
+        try:
+            item["base_version"] = current_remediation_base_version(
+                query.tenant_ref,
+                str(query.workspace_id or ""),
+                "cache_policy",
+            )
+        except Exception:
+            # A configuration read affects only this typed opportunity. The
+            # remaining risk decision remains safe and usable.
+            item["base_version"] = None
+    return queue
 
 
 def _current_remediation_opportunity(
@@ -1328,6 +1363,7 @@ def _current_remediation_opportunity(
     anomalies = _decision_anomalies_from_events(
         events,
         tenant_ref=tenant_ref,
+        scope_workspace_ids=(workspace_id,),
     )
     opportunities = _decision_opportunities(service, query, anomalies)
     return next(
@@ -1389,7 +1425,11 @@ def _risk_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, 
     if not query.workspace_id:
         raise ValueError("risk decision requires one workspace")
     events = query_service.events(query)
-    anomaly_items = _decision_anomalies_from_events(events, tenant_ref=query.tenant_ref)
+    anomaly_items = _decision_anomalies_from_events(
+        events,
+        tenant_ref=query.tenant_ref,
+        scope_workspace_ids=(query.workspace_id,),
+    )
     opportunity_items = _decision_opportunities(query_service, query, anomaly_items)
     evidence_summaries = _risk_evidence_summaries(events, opportunity_items)
     latest = get_finops_insight_service().latest(

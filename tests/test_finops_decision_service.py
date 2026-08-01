@@ -87,6 +87,81 @@ def test_risk_decision_uses_impact_and_evidence_without_composite_score() -> Non
     assert result["governance_capability"]["actions_enabled"] is False
 
 
+def test_risk_decision_projects_managed_actions_versions_and_portfolio_coordinates() -> None:
+    result = build_risk_decision(
+        anomalies=[{
+            "anomaly_id": "anomaly_cache",
+            "policy_type": "cache_hit_rate",
+            "status": "acknowledged",
+            "severity": "warning",
+            "sample_count": 25,
+        }],
+        opportunities=[{
+            "opportunity_id": "opp_cache",
+            "anomaly_id": "anomaly_cache",
+            "anomaly_status": "acknowledged",
+            "policy_type": "cache_hit_rate",
+            "title": "缓存效率优化",
+            "recommendation": "检查缓存资格与失效窗口。",
+            "impact": "medium",
+            "confidence": "medium",
+            "effort": "low",
+            "sample_count": 25,
+            "evidence_refs": ["req_cache_001"],
+            "base_version": "cache-policy-v7",
+            "actor_ref": "must-not-project",
+            "suppression_reason": "must-not-project",
+            "internal_error": "must-not-project",
+        }],
+        evidence_summaries=[],
+        insight=None,
+        drafts=[],
+        governance_capability={},
+    )
+
+    priority = result["priorities"][0]
+    assert priority["anomaly_id"] == "anomaly_cache"
+    assert priority["anomaly_status"] == "acknowledged"
+    assert priority["applicable_actions"] == ["suppress"]
+    assert priority["base_version"] == "cache-policy-v7"
+    assert priority["title"] == "缓存效率优化"
+    assert priority["recommendation"] == "检查缓存资格与失效窗口。"
+    portfolio = result["optimization_portfolio"][0]
+    assert portfolio["x_effort"] == 1
+    assert portfolio["y_value_impact"] == 2
+    assert portfolio["bubble_size"] == 25
+    assert portfolio["x_effort_state"] == "observed"
+    assert portfolio["y_value_impact_state"] == "observed"
+    assert "actor_ref" not in priority
+    assert "suppression_reason" not in priority
+    assert "internal_error" not in priority
+
+
+def test_risk_decision_server_owns_anomaly_action_allowlist() -> None:
+    def projected(status: str) -> list[str]:
+        result = build_risk_decision(
+            anomalies=[],
+            opportunities=[{
+                "opportunity_id": f"opp_{status}",
+                "anomaly_id": f"anomaly_{status}",
+                "anomaly_status": status,
+                "policy_type": "error_rate",
+                "impact": "high",
+                "confidence": "high",
+                "effort": "high",
+                "sample_count": 20,
+                "applicable_actions": ["execute", "approve"],
+            }],
+            evidence_summaries=[], insight=None, drafts=[], governance_capability={},
+        )
+        return result["priorities"][0]["applicable_actions"]
+
+    assert projected("open") == ["acknowledge", "suppress"]
+    assert projected("acknowledged") == ["suppress"]
+    assert projected("suppressed") == []
+    assert projected("resolved") == []
+
+
 def test_decision_projections_do_not_leak_upstream_sensitive_fields() -> None:
     poison = "PROMPT_SECRET provider-response provider-123 alice@example.com api-key internal-error Azure API Management"
     roi = build_roi_decision(
