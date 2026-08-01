@@ -170,7 +170,10 @@ def _scenario_events(
         output_tokens = 80 + ((index * 71) % 1300)
         reasoning_tokens = 40 + ((index * 29) % 620) if index % 3 == 0 else 0
         total_tokens = input_tokens + output_tokens + reasoning_tokens
-        cache_state = ("miss", "bypassed", "bypassed", "bypassed", "miss")[index % 5]
+        cache_state = (
+            "miss", "bypassed", "miss", "bypassed", "hit",
+            "miss", "bypassed", "miss", "bypassed", "unavailable",
+        )[index % 10]
         eligible = cache_state in {"hit", "miss"}
         avoided_tokens = int(input_tokens * 0.72) if cache_state == "hit" else None
         failed = index in {17, 44, 73, 91, 106}

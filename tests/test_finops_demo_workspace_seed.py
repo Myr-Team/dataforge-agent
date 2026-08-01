@@ -129,6 +129,40 @@ def test_seed_contains_a_repeat_analysis_miss_to_hit_chain() -> None:
     assert repeat_chain[1].run_id != repeat_chain[0].run_id
 
 
+def test_seed_has_distinct_cache_evidence_and_priced_operational_coverage() -> None:
+    result = seed_demo_workspace(
+        InMemoryFinOpsRepository(),
+        InMemoryDemoSeedRepository(),
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        allowed_workspace_id="ws-demo",
+        now=NOW,
+    )
+
+    cache_states = [event.cache.state for event in result.events]
+    eligible = [event for event in result.events if event.cache.eligible]
+    hit_count = cache_states.count("hit")
+    assert hit_count >= 8
+    assert cache_states.count("miss") >= 20
+    assert cache_states.count("bypassed") >= 20
+    assert cache_states.count("unavailable") >= 4
+    assert len(eligible) >= 30
+    assert hit_count / len(eligible) >= 0.15
+    assert sum(
+        1 for event in result.events
+        if event.estimated_cost.amount is not None
+    ) >= 120
+    assert any(
+        event.estimated_cost.amount is None
+        and event.estimated_cost.status == "unavailable"
+        for event in result.events
+    )
+    assert len({event.model for event in result.events}) == 4
+    assert len({event.agent_id for event in result.events}) == 6
+    assert len({event.department_id for event in result.events}) == 4
+    assert len({event.latency_ms for event in result.events}) >= 20
+
+
 def test_seed_drives_distinct_demo_risks_with_relevant_request_evidence() -> None:
     result = seed_demo_workspace(
         InMemoryFinOpsRepository(),
