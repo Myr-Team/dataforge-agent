@@ -5751,6 +5751,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-decision-help:hover .finops-decision-tooltip,
 .finops-decision-help:focus-within .finops-decision-tooltip,
 .finops-decision-help-open .finops-decision-tooltip { display: block; }
+.finops-decision-help.finops-decision-help-dismissed > .finops-decision-tooltip { display: none; }
 .finops-decision-badge { display: inline-flex; min-height: 19px; align-items: center; width: fit-content; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-soft); padding: 0 6px; color: var(--muted); font-size: 9px; font-weight: 700; white-space: nowrap; }
 .finops-decision-badge-observed,
 .finops-decision-badge-verified,

@@ -32,6 +32,24 @@ function safeBarWidth(value) {
 }
 
 
+export function decisionHelpInteraction(current = {}, action = "reset") {
+  const state = {
+    open: current?.open === true,
+    dismissed: current?.dismissed === true,
+  };
+  if (action === "toggle") {
+    return state.open
+      ? { open: false, dismissed: true }
+      : { open: true, dismissed: false };
+  }
+  if (action === "leave") {
+    return state.dismissed ? { open: false, dismissed: false } : state;
+  }
+  if (action === "reset") return { open: false, dismissed: false };
+  return state;
+}
+
+
 export function resolveRiskPointSelection(selectedId, validIds) {
   return typeof selectedId === "string" && Array.isArray(validIds) && validIds.includes(selectedId)
     ? selectedId
@@ -58,17 +76,20 @@ function DecisionEmpty({ children = "当前范围没有可展示的数据。" })
 
 function DecisionTooltip({ label, children }) {
   const tooltipId = useId();
-  const [open, setOpen] = useState(false);
+  const [interaction, setInteraction] = useState(() => decisionHelpInteraction());
   if (!children) return null;
   return (
-    <span className={`finops-decision-help ${open ? "finops-decision-help-open" : ""}`}>
+    <span
+      className={`finops-decision-help ${interaction.open ? "finops-decision-help-open" : ""} ${interaction.dismissed ? "finops-decision-help-dismissed" : ""}`.trim()}
+      onMouseLeave={() => setInteraction((current) => decisionHelpInteraction(current, "leave"))}
+    >
       <button
         type="button"
         aria-label={`${label}说明`}
         aria-describedby={tooltipId}
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-        onBlur={() => setOpen(false)}
+        aria-expanded={interaction.open}
+        onClick={() => setInteraction((current) => decisionHelpInteraction(current, "toggle"))}
+        onBlur={() => setInteraction((current) => decisionHelpInteraction(current, "reset"))}
       >
         <CircleHelp size={13} aria-hidden="true" />
       </button>

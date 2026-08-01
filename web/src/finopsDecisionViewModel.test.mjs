@@ -323,6 +323,12 @@ test("shared decision components declare accessible charts and bounded tooltips"
   assert.match(styles, /\.finops-decision-tooltip\s*\{[^}]*position:\s*static[^}]*display:\s*none[^}]*width:\s*min\(230px, 100%\)[^}]*max-width:\s*100%/s);
   assert.doesNotMatch(styles, /\.finops-decision-tooltip\s*\{[^}]*position:\s*(?:absolute|fixed)/s);
   assert.match(styles, /\.finops-decision-help:hover \.finops-decision-tooltip,[\s\S]*\.finops-decision-help-open \.finops-decision-tooltip\s*\{[^}]*display:\s*block/s);
+  assert.match(styles, /\.finops-decision-help\.finops-decision-help-dismissed\s*>\s*\.finops-decision-tooltip\s*\{[^}]*display:\s*none/s);
+  assert.ok(
+    styles.indexOf(".finops-decision-help.finops-decision-help-dismissed")
+      > styles.indexOf(".finops-decision-help-open .finops-decision-tooltip"),
+    "dismissed help rule must follow open/hover/focus visibility rules",
+  );
   assert.match(styles, /\.finops-decision-value-label\s*\{[^}]*flex-wrap:\s*wrap/s);
   assert.match(styles, /\.finops-decision-maturity-stages header\s*\{[^}]*flex-wrap:\s*wrap/s);
   assert.match(styles, /\.finops-decision-matrix-plot[^}]*overflow:\s*(?:hidden|clip)/s);
@@ -337,6 +343,7 @@ test("shared charts render proportional accessible structures through Vite SSR",
   });
   context.after(() => server.close());
   const {
+    decisionHelpInteraction,
     EvidenceMaturity,
     OpportunityPortfolio,
     RiskMatrix,
@@ -344,6 +351,16 @@ test("shared charts render proportional accessible structures through Vite SSR",
     resolveRiskPointSelection,
     toggleRiskPointSelection,
   } = await server.ssrLoadModule("/src/finops/DecisionCharts.jsx");
+
+  let helpState = { open: false, dismissed: false };
+  helpState = decisionHelpInteraction(helpState, "toggle");
+  assert.deepEqual(helpState, { open: true, dismissed: false });
+  helpState = decisionHelpInteraction(helpState, "leave");
+  assert.deepEqual(helpState, { open: true, dismissed: false });
+  helpState = decisionHelpInteraction(helpState, "toggle");
+  assert.deepEqual(helpState, { open: false, dismissed: true });
+  helpState = decisionHelpInteraction(helpState, "leave");
+  assert.deepEqual(helpState, { open: false, dismissed: false });
 
   const bridge = renderToStaticMarkup(React.createElement("section", { className: "finops-panel" }, React.createElement(ValueBridge, {
     items: [
@@ -353,6 +370,8 @@ test("shared charts render proportional accessible structures through Vite SSR",
     formulaRevision: "formula-v1",
   })));
   assert.match(bridge, /^<section class="finops-panel">/);
+  assert.match(bridge, /finops-decision-help"><button[^>]*aria-expanded="false"/);
+  assert.doesNotMatch(bridge, /finops-decision-help-(?:open|dismissed)/);
   assert.match(bridge, /<table/);
   assert.match(bridge, /--finops-decision-bar-width:20%/);
   assert.match(bridge, /--finops-decision-bar-width:100%/);
