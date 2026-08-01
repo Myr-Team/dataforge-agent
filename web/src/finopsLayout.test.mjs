@@ -155,3 +155,119 @@ test("ROI stage request actions exclude run and outcome references", async () =>
     await server.close();
   }
 });
+
+
+test("ROI verified result remains separate from estimated scenario metrics", async () => {
+  const server = await createServer({
+    server: { middlewareMode: true, hmr: false, ws: false },
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true },
+  });
+  try {
+    const { RoiDecisionPage } = await server.ssrLoadModule("/src/finops/RoiDecisionPage.jsx");
+    const estimatedMetric = {
+      id: "monthly_benefit",
+      label: "月度收益",
+      value: 800,
+      unit: "USD",
+      status: "estimated",
+    };
+    const verifiedMarkup = renderToStaticMarkup(React.createElement(RoiDecisionPage, {
+      payload: {
+        metrics: [estimatedMetric],
+        verified_roi: { value: 1.25, status: "verified" },
+      },
+    }));
+    const unverifiedMarkup = renderToStaticMarkup(React.createElement(RoiDecisionPage, {
+      payload: {
+        metrics: [estimatedMetric],
+        verified_roi: { value: 1.25, status: "observed" },
+      },
+    }));
+
+    assert.match(verifiedMarkup, /aria-label="已验证 ROI"/);
+    assert.match(verifiedMarkup, /125%/);
+    assert.match(verifiedMarkup, /已验证/);
+    assert.match(verifiedMarkup, /本期月度测算/);
+    assert.match(unverifiedMarkup, /aria-label="已验证 ROI"/);
+    assert.match(unverifiedMarkup, /证据不足/);
+    assert.match(unverifiedMarkup, /结果待验证/);
+    assert.doesNotMatch(unverifiedMarkup, /125%/);
+  } finally {
+    await server.close();
+  }
+});
+
+
+test("ROI portal status, scenario readiness, and refresh stay locally bounded", async () => {
+  const server = await createServer({
+    server: { middlewareMode: true, hmr: false, ws: false },
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true },
+  });
+  try {
+    const {
+      FinOpsPortal,
+      RoiScenarioDialog,
+      finOpsPortalStatusVisibility,
+      scheduleRoiOnlyRefresh,
+    } = await server.ssrLoadModule("/src/FinOpsPortal.jsx");
+    assert.equal(typeof FinOpsPortal, "function");
+
+    assert.deepEqual(finOpsPortalStatusVisibility({
+      tab: "roi",
+      overviewLoading: true,
+      overviewError: "overview failed",
+      hasOverviewMetrics: false,
+    }), {
+      showOverviewSkeleton: false,
+      showOverviewStaleError: false,
+      showOverviewHardError: false,
+    });
+    assert.equal(finOpsPortalStatusVisibility({
+      tab: "overview",
+      overviewLoading: true,
+      overviewError: "",
+      hasOverviewMetrics: false,
+    }).showOverviewSkeleton, true);
+
+    const loadingMarkup = renderToStaticMarkup(React.createElement(RoiScenarioDialog, {
+      loading: true,
+      onClose() {},
+      onSave() {},
+    }));
+    const readyMarkup = renderToStaticMarkup(React.createElement(RoiScenarioDialog, {
+      loading: false,
+      observedModelCost: 12.34,
+      onClose() {},
+      onSave() {},
+    }));
+    assert.doesNotMatch(loadingMarkup, /<form/);
+    assert.match(loadingMarkup, /正在读取最近一次情景参数/);
+    assert.match(readyMarkup, /<form/);
+    assert.match(readyMarkup, /name="model_cost"[^>]*value="12\.34"/);
+
+    const refreshEvidence = { invalidated: [], forced: false, bumps: 0 };
+    const forceRef = { current: false };
+    scheduleRoiOnlyRefresh({
+      invalidate(predicate) {
+        refreshEvidence.invalidated = [
+          predicate({ domain: "roi" }),
+          predicate({ domain: "overview" }),
+        ];
+      },
+      forceRef,
+      bump() {
+        refreshEvidence.bumps += 1;
+      },
+    });
+    refreshEvidence.forced = forceRef.current;
+    assert.deepEqual(refreshEvidence, {
+      invalidated: [true, false],
+      forced: true,
+      bumps: 1,
+    });
+  } finally {
+    await server.close();
+  }
+});

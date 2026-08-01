@@ -153,6 +153,8 @@ export function RoiDecisionPage({
     dataStatus: view.decision.status,
     evidenceState: view.decision.status,
   };
+  const hasVerifiedRoi = view.verifiedRoiStatus === "verified"
+    && view.verifiedRoiValue !== null;
 
   return (
     <div className="finops-decision-roi-shell">
@@ -177,17 +179,27 @@ export function RoiDecisionPage({
           <p>{view.decision.description}</p>
           <small>情景测算与已验证业务结果分开展示；估算值不代表已实现回报。</small>
         </div>
-        <div className="finops-decision-roi-banner-actions">
-          {onAdjustScenario ? (
-            <button type="button" onClick={onAdjustScenario}>
-              <SlidersHorizontal size={14} aria-hidden="true" />调整测算参数
-            </button>
-          ) : null}
-          {onAsk ? (
-            <button type="button" className="primary" onClick={() => onAsk(decisionContext)}>
-              <Sparkles size={14} aria-hidden="true" />咨询当前判断
-            </button>
-          ) : null}
+        <div className="finops-decision-roi-banner-side">
+          <aside className="finops-decision-roi-verified" aria-label="已验证 ROI">
+            <span>已验证 ROI</span>
+            <div>
+              <strong>{view.verifiedRoiLabel}</strong>
+              <DecisionBadge status={view.verifiedRoiStatus}>{view.verifiedRoiBadge}</DecisionBadge>
+            </div>
+            <small>{hasVerifiedRoi ? "仅计入已验证业务结果" : "估算情景不计入此结果"}</small>
+          </aside>
+          <div className="finops-decision-roi-banner-actions">
+            {onAdjustScenario ? (
+              <button type="button" onClick={onAdjustScenario}>
+                <SlidersHorizontal size={14} aria-hidden="true" />调整测算参数
+              </button>
+            ) : null}
+            {onAsk ? (
+              <button type="button" className="primary" onClick={() => onAsk(decisionContext)}>
+                <Sparkles size={14} aria-hidden="true" />咨询当前判断
+              </button>
+            ) : null}
+          </div>
         </div>
       </section>
 

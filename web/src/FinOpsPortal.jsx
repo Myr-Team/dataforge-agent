@@ -735,7 +735,7 @@ function CostPage({
 }
 
 
-function RoiScenarioDialog({
+export function RoiScenarioDialog({
   latestScenario = null,
   observedModelCost = null,
   loading = false,
@@ -797,31 +797,59 @@ function RoiScenarioDialog({
             <X size={17} />
           </button>
         </header>
-        <form className="finops-roi-form" onSubmit={submit}>
-          <fieldset disabled={busy || loading}>
-            <label className="wide"><span>情景名称</span><input name="title" maxLength={160} required defaultValue={latestScenario?.title || ""} placeholder="为本次测算命名" /></label>
-            <label><span>每月节省工时</span><input name="hours_saved" type="number" min="0" step="0.1" required defaultValue={defaults.hours_saved} /></label>
-            <label><span>每小时价值（USD）</span><input name="hourly_value" type="number" min="0" step="0.01" required defaultValue={defaults.hourly_value} /></label>
-            <label><span>每月避免损失或新增价值</span><input name="avoided_loss_or_revenue" type="number" min="0" step="0.01" required defaultValue={defaults.avoided_loss_or_revenue} /></label>
-            <label><span>一次性实施成本</span><input name="implementation_cost" type="number" min="0" step="0.01" required defaultValue={defaults.implementation_cost} /></label>
-            <label><span>每月固定成本</span><input name="monthly_fixed_cost" type="number" min="0" step="0.01" required defaultValue={defaults.monthly_fixed_cost} /></label>
-            <label><span>每月模型成本（USD）</span><input name="model_cost" type="number" min="0" step="0.0001" required defaultValue={defaults.model_cost} /></label>
-            <label><span>评估周期（月）</span><input name="evaluation_months" type="number" min="1" max="120" step="1" required defaultValue={defaults.evaluation_months} /></label>
-          </fieldset>
-          <div className="finops-roi-formula wide">
-            <b>{defaults.model_cost === "" ? "模型成本尚未记录，请补充后测算" : `当前模型成本 ${formatFinOpsCost(defaults.model_cost, "estimated")} / 月`}</b>
-            <span>月度收益 = 节省工时 × 小时价值 + 避免损失；月度成本包含实施成本摊销、固定成本与当前模型成本。</span>
+        {loading ? (
+          <div className="finops-roi-form-loading" role="status">
+            <Loader2 className="spin" size={18} aria-hidden="true" />
+            <span><b>正在读取最近一次情景参数…</b><small>读取完成后再填写，避免覆盖刚输入的内容。</small></span>
           </div>
-          {loading ? <p className="finops-roi-form-note wide" role="status">正在读取最近一次情景参数…</p> : null}
-          {error ? <p className="finops-roi-form-error wide" role="alert">{error}</p> : null}
-          <footer className="wide">
-            <button type="button" onClick={onClose} disabled={busy}>取消</button>
-            <button type="submit" disabled={busy || loading}>{busy ? "保存中…" : loading ? "读取中…" : "保存新版本"}</button>
-          </footer>
-        </form>
+        ) : (
+          <form className="finops-roi-form" onSubmit={submit}>
+            <fieldset disabled={busy}>
+              <label className="wide"><span>情景名称</span><input name="title" maxLength={160} required defaultValue={latestScenario?.title || ""} placeholder="为本次测算命名" /></label>
+              <label><span>每月节省工时</span><input name="hours_saved" type="number" min="0" step="0.1" required defaultValue={defaults.hours_saved} /></label>
+              <label><span>每小时价值（USD）</span><input name="hourly_value" type="number" min="0" step="0.01" required defaultValue={defaults.hourly_value} /></label>
+              <label><span>每月避免损失或新增价值</span><input name="avoided_loss_or_revenue" type="number" min="0" step="0.01" required defaultValue={defaults.avoided_loss_or_revenue} /></label>
+              <label><span>一次性实施成本</span><input name="implementation_cost" type="number" min="0" step="0.01" required defaultValue={defaults.implementation_cost} /></label>
+              <label><span>每月固定成本</span><input name="monthly_fixed_cost" type="number" min="0" step="0.01" required defaultValue={defaults.monthly_fixed_cost} /></label>
+              <label><span>每月模型成本（USD）</span><input name="model_cost" type="number" min="0" step="0.0001" required defaultValue={defaults.model_cost} /></label>
+              <label><span>评估周期（月）</span><input name="evaluation_months" type="number" min="1" max="120" step="1" required defaultValue={defaults.evaluation_months} /></label>
+            </fieldset>
+            <div className="finops-roi-formula wide">
+              <b>{defaults.model_cost === "" ? "模型成本尚未记录，请补充后测算" : `当前模型成本 ${formatFinOpsCost(defaults.model_cost, "estimated")} / 月`}</b>
+              <span>月度收益 = 节省工时 × 小时价值 + 避免损失；月度成本包含实施成本摊销、固定成本与当前模型成本。</span>
+            </div>
+            {error ? <p className="finops-roi-form-error wide" role="alert">{error}</p> : null}
+            <footer className="wide">
+              <button type="button" onClick={onClose} disabled={busy}>取消</button>
+              <button type="submit" disabled={busy}>{busy ? "保存中…" : "保存新版本"}</button>
+            </footer>
+          </form>
+        )}
       </section>
     </div>
   );
+}
+
+
+export function finOpsPortalStatusVisibility({
+  tab,
+  overviewLoading = false,
+  overviewError = "",
+  hasOverviewMetrics = false,
+}) {
+  const showOverviewStatus = tab !== "roi";
+  return {
+    showOverviewSkeleton: showOverviewStatus && overviewLoading,
+    showOverviewStaleError: showOverviewStatus && Boolean(overviewError) && hasOverviewMetrics,
+    showOverviewHardError: showOverviewStatus && Boolean(overviewError) && !hasOverviewMetrics,
+  };
+}
+
+
+export function scheduleRoiOnlyRefresh({ invalidate, forceRef, bump }) {
+  invalidate((entry) => entry?.domain === "roi");
+  forceRef.current = true;
+  bump();
 }
 
 
@@ -1664,18 +1692,22 @@ export function FinOpsPortal({
       setRoiEditorOpen(false);
       setRoiSaveState({ busy: false, error: "" });
       setRoiDialogState({ loading: false, latestScenario: null, observedModelCost: null });
-      invalidateFinOpsData((entry) => entry.domain === "roi");
-      roiForceRefresh.current = true;
-      setRoiRefreshKey((value) => value + 1);
+      scheduleRoiOnlyRefresh({
+        invalidate: invalidateFinOpsData,
+        forceRef: roiForceRefresh,
+        bump: () => setRoiRefreshKey((value) => value + 1),
+      });
     } catch (error) {
       if (error?.status === 409) {
         setRoiSaveState({
           busy: false,
           error: "情景已由其他会话更新，正在重新载入最新版本，请确认后再次保存。",
         });
-        invalidateFinOpsData((entry) => entry.domain === "roi");
-        roiForceRefresh.current = true;
-        setRoiRefreshKey((value) => value + 1);
+        scheduleRoiOnlyRefresh({
+          invalidate: invalidateFinOpsData,
+          forceRef: roiForceRefresh,
+          bump: () => setRoiRefreshKey((value) => value + 1),
+        });
         loadRoiDialogData();
         return;
       }
@@ -1716,6 +1748,18 @@ export function FinOpsPortal({
     && detailState.loading
     && !hasDetailData
   );
+  const portalStatusVisibility = finOpsPortalStatusVisibility({
+    tab,
+    overviewLoading: overviewState.loading,
+    overviewError: overviewState.error,
+    hasOverviewMetrics: Boolean(overviewState.data?.overview?.metrics),
+  });
+  const pageGeneratedAt = tab === "roi"
+    ? detailState.data?.freshness?.generated_at
+    : generatedAt;
+  const pageUpdating = tab === "roi"
+    ? detailState.updating
+    : overviewState.updating || detailState.updating;
   const canOpenEvidence = permissions["finops.request_detail.read"] !== false;
 
   return (
@@ -1729,8 +1773,8 @@ export function FinOpsPortal({
         <div className="finops-live">
           <i />
           <span>
-            {formatRelativeUpdateTime(generatedAt)}
-            {overviewState.updating || detailState.updating ? " · 正在更新" : ""}
+            {formatRelativeUpdateTime(pageGeneratedAt)}
+            {pageUpdating ? " · 正在更新" : ""}
           </span>
           <button type="button" onClick={refresh} title="刷新"><RefreshCw size={15} /></button>
         </div>
@@ -1797,12 +1841,12 @@ export function FinOpsPortal({
         })}
       </nav>
 
-      <section className="finops-content" aria-busy={overviewState.loading || showDetailLoading || detailState.updating ? "true" : "false"}>
-        {overviewState.loading ? <MetricSkeleton /> : null}
-        {overviewState.error && overviewState.data?.overview?.metrics
+      <section className="finops-content" aria-busy={portalStatusVisibility.showOverviewSkeleton || showDetailLoading || detailState.updating ? "true" : "false"}>
+        {portalStatusVisibility.showOverviewSkeleton ? <MetricSkeleton /> : null}
+        {portalStatusVisibility.showOverviewStaleError
           ? <div className="finops-inline-error">更新失败，已保留上次数据：{overviewState.error}</div>
           : null}
-        {overviewState.error && !overviewState.data?.overview?.metrics
+        {portalStatusVisibility.showOverviewHardError
           ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{overviewState.error}</span><button type="button" onClick={refresh}>重试</button></div>
           : null}
         {!overviewState.loading && overviewState.data?.overview?.metrics && tab === "overview"
