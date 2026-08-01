@@ -149,8 +149,11 @@ export function buildFinOpsQuery(filters = {}) {
 }
 
 function loadFinOpsResource(resource, filters = {}, options = {}) {
-  const query = buildFinOpsQuery(filters);
-  return request(`/api/finops/${resource}${query ? `?${query}` : ""}`, options);
+  const params = new URLSearchParams(buildFinOpsQuery(filters));
+  if (options?.refresh === true) params.set("refresh", "1");
+  const requestOptions = options?.signal ? { signal: options.signal } : {};
+  const query = params.toString();
+  return request(`/api/finops/${resource}${query ? `?${query}` : ""}`, requestOptions);
 }
 
 export function loadFinOpsFilters(filters = {}, options = {}) {
@@ -258,6 +261,84 @@ export function loadFinOpsBudgets(filters = {}, options = {}) {
 
 export function loadFinOpsRoiEconomics(filters = {}, options = {}) {
   return loadFinOpsResource("roi/economics", filters, options);
+}
+
+export function loadFinOpsRoiDecision(filters = {}, options = {}) {
+  return loadFinOpsResource("roi/decision", filters, options);
+}
+
+export function loadFinOpsRiskDecision(filters = {}, options = {}) {
+  return loadFinOpsResource("risk/decision", filters, options);
+}
+
+function remediationRequestOptions(options = {}) {
+  return options?.signal ? { signal: options.signal } : {};
+}
+
+function remediationTransitionBody(payload = {}) {
+  const baseRevision = payload.baseRevision ?? payload.base_revision;
+  const reason = payload.reason;
+  return {
+    base_revision: baseRevision,
+    ...(reason !== undefined && reason !== null && String(reason) !== "" ? { reason } : {}),
+  };
+}
+
+export function loadFinOpsRemediationDrafts(workspaceOrFilters = {}, options = {}) {
+  const workspaceId = typeof workspaceOrFilters === "string"
+    ? workspaceOrFilters
+    : workspaceOrFilters?.workspaceId ?? workspaceOrFilters?.workspace_id;
+  const params = new URLSearchParams();
+  if (workspaceId !== undefined && workspaceId !== null && String(workspaceId).trim() !== "") {
+    params.set("workspace_id", String(workspaceId));
+  }
+  const query = params.toString();
+  return request(
+    `/api/finops/remediation-drafts${query ? `?${query}` : ""}`,
+    remediationRequestOptions(options),
+  );
+}
+
+export function loadFinOpsRemediationDraft(draftId, options = {}) {
+  return request(
+    `/api/finops/remediation-drafts/${encodeURIComponent(draftId)}`,
+    remediationRequestOptions(options),
+  );
+}
+
+export function createFinOpsRemediationDraft(payload = {}, options = {}) {
+  return request("/api/finops/remediation-drafts", {
+    ...remediationRequestOptions(options),
+    method: "POST",
+    body: JSON.stringify({
+      workspace_id: payload.workspaceId ?? payload.workspace_id,
+      source_opportunity_id: payload.sourceOpportunityId ?? payload.source_opportunity_id,
+      base_version: payload.baseVersion ?? payload.base_version,
+    }),
+  });
+}
+
+function transitionFinOpsRemediationDraft(draftId, transition, payload = {}, options = {}) {
+  return request(
+    `/api/finops/remediation-drafts/${encodeURIComponent(draftId)}/${transition}`,
+    {
+      ...remediationRequestOptions(options),
+      method: "POST",
+      body: JSON.stringify(remediationTransitionBody(payload)),
+    },
+  );
+}
+
+export function reviewFinOpsRemediationDraft(draftId, payload = {}, options = {}) {
+  return transitionFinOpsRemediationDraft(draftId, "review", payload, options);
+}
+
+export function promoteFinOpsRemediationDraft(draftId, payload = {}, options = {}) {
+  return transitionFinOpsRemediationDraft(draftId, "promote", payload, options);
+}
+
+export function closeFinOpsRemediationDraft(draftId, payload = {}, options = {}) {
+  return transitionFinOpsRemediationDraft(draftId, "close", payload, options);
 }
 
 export function loadFinOpsSavedViews(filters = {}, options = {}) {

@@ -4,6 +4,8 @@ import test from "node:test";
 
 import {
   buildFinOpsQuery,
+  closeFinOpsRemediationDraft,
+  createFinOpsRemediationDraft,
   createIdentityGroupMapping,
   createModelProvider,
   deleteFinOpsOfficialPriceMapping,
@@ -11,6 +13,10 @@ import {
   disableIdentityGroupMapping,
   disableModelProvider,
   loadFinOpsBootstrap,
+  loadFinOpsRemediationDraft,
+  loadFinOpsRemediationDrafts,
+  loadFinOpsRiskDecision,
+  loadFinOpsRoiDecision,
   loadFinOpsOfficialPriceCatalog,
   loadFinOpsOfficialPriceMappings,
   loadMemberBudgetAlerts,
@@ -20,6 +26,8 @@ import {
   loadIdentityGovernance,
   loadModelProviders,
   queryFinOpsAssistant,
+  promoteFinOpsRemediationDraft,
+  reviewFinOpsRemediationDraft,
   rotateModelProviderSecret,
   saveMemberBudget,
   saveMemberBudgetNotification,
@@ -72,6 +80,124 @@ test("loadFinOpsBootstrap calls the bounded bootstrap endpoint", async () => {
 
   assert.match(requestedUrl, /^\/api\/finops\/bootstrap\?/);
   assert.match(requestedUrl, /workspace_id=ws-a/);
+});
+
+test("decision loaders append only the bounded refresh query and preserve abort signals", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    return { ok: true, json: async () => ({ decision: { state: "ready" } }) };
+  };
+
+  try {
+    await loadFinOpsRoiDecision(
+      { workspaceId: "ws-a", model: "gpt-safe", refresh: "must-not-pass" },
+      { signal: controller.signal, refresh: true },
+    );
+    await loadFinOpsRiskDecision(
+      { workspaceId: "ws-a" },
+      { signal: controller.signal, refresh: false },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls[0].url, "/api/finops/roi/decision?workspace_id=ws-a&model=gpt-safe&refresh=1");
+  assert.equal(calls[1].url, "/api/finops/risk/decision?workspace_id=ws-a");
+  assert.equal(calls[0].options.signal, controller.signal);
+  assert.equal("refresh" in calls[0].options, false);
+  assert.deepEqual(Object.keys(calls[0].options.headers).sort(), ["Accept"]);
+});
+
+test("remediation clients use encoded endpoints and send only strict server payloads", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({
+      url: String(url),
+      method: options.method || "GET",
+      body: options.body ? JSON.parse(options.body) : null,
+    });
+    return { ok: true, json: async () => ({ draft: { revision: 2 } }) };
+  };
+
+  try {
+    await loadFinOpsRemediationDrafts({ workspaceId: "ws/a", model: "must-not-pass" });
+    await loadFinOpsRemediationDraft("draft/a");
+    await createFinOpsRemediationDraft({
+      workspaceId: "ws/a",
+      sourceOpportunityId: "opp/a",
+      baseVersion: "cache-policy-v4",
+      proposedChanges: [{ arbitrary: true }],
+      tenantRef: "must-not-pass",
+    });
+    await reviewFinOpsRemediationDraft("draft/a", {
+      baseRevision: 1,
+      reason: "reviewed",
+      actorRef: "must-not-pass",
+    });
+    await promoteFinOpsRemediationDraft("draft/a", {
+      base_revision: 2,
+      reason: "promote",
+      execute: true,
+    });
+    await closeFinOpsRemediationDraft("draft/a", {
+      baseRevision: 3,
+      ignored: "must-not-pass",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(calls, [
+    { url: "/api/finops/remediation-drafts?workspace_id=ws%2Fa", method: "GET", body: null },
+    { url: "/api/finops/remediation-drafts/draft%2Fa", method: "GET", body: null },
+    {
+      url: "/api/finops/remediation-drafts",
+      method: "POST",
+      body: {
+        workspace_id: "ws/a",
+        source_opportunity_id: "opp/a",
+        base_version: "cache-policy-v4",
+      },
+    },
+    {
+      url: "/api/finops/remediation-drafts/draft%2Fa/review",
+      method: "POST",
+      body: { base_revision: 1, reason: "reviewed" },
+    },
+    {
+      url: "/api/finops/remediation-drafts/draft%2Fa/promote",
+      method: "POST",
+      body: { base_revision: 2, reason: "promote" },
+    },
+    {
+      url: "/api/finops/remediation-drafts/draft%2Fa/close",
+      method: "POST",
+      body: { base_revision: 3 },
+    },
+  ]);
+});
+
+test("remediation clients preserve typed HTTP errors from request", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 409,
+    statusText: "Conflict",
+    json: async () => ({ detail: "remediation revision conflict" }),
+  });
+
+  try {
+    await assert.rejects(
+      reviewFinOpsRemediationDraft("draft-a", { baseRevision: 1 }),
+      (error) => error.status === 409 && error.message === "remediation revision conflict",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("network failure reports an expired login only after an auth probe", async () => {

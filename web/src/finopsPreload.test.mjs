@@ -60,7 +60,7 @@ test("same scope shares one in-flight bootstrap request", async () => {
 });
 
 
-test("bootstrap cache distinguishes fresh stale and expired values", async () => {
+test("bootstrap compatibility uses the five and thirty minute store lifecycle", async () => {
   const key = scopeKey();
   await prefetchFinOpsBootstrap(
     key,
@@ -68,10 +68,10 @@ test("bootstrap cache distinguishes fresh stale and expired values", async () =>
     { now: 1_000 },
   );
 
-  assert.equal(readFinOpsBootstrap(key, 60_000).status, "fresh");
-  assert.equal(readFinOpsBootstrap(key, 61_001).status, "stale");
-  assert.equal(readFinOpsBootstrap(key, 301_001).status, "expired");
-  assert.equal(readFinOpsBootstrap(key, 301_001).value, null);
+  assert.equal(readFinOpsBootstrap(key, 301_000).status, "fresh");
+  assert.equal(readFinOpsBootstrap(key, 301_001).status, "stale");
+  assert.equal(readFinOpsBootstrap(key, 1_801_001).status, "expired");
+  assert.equal(readFinOpsBootstrap(key, 1_801_001).value, null);
 });
 
 
