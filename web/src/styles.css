@@ -5255,7 +5255,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-head-copy > span { display: block; margin-top: 6px; color: var(--finops-muted); font-size: 12.5px; }
 .finops-live { display: flex; min-height: 34px; align-items: center; gap: 8px; border: 1px solid #dfe5ee; border-radius: 999px; background: #fff; padding: 0 6px 0 11px; color: #475467; font-size: 11px; white-space: nowrap; }
 .finops-live > i { width: 7px; height: 7px; border-radius: 50%; background: #12b76a; box-shadow: 0 0 0 3px #ecfdf3; }
-.finops-live > span { display: inline-flex; min-height: 26px; align-items: center; margin: 0; line-height: 1; }
+.finops-live > span { display: inline-flex; min-width: 132px; min-height: 26px; align-items: center; justify-content: flex-end; margin: 0; line-height: 1; }
 .finops-live button { display: grid; width: 26px; height: 26px; border: 0; border-radius: 50%; place-items: center; background: transparent; color: #667085; cursor: pointer; }
 .finops-live button:hover { background: #f2f4f7; color: #175cd3; }
 .finops-toolbar { display: flex; max-width: 1500px; margin: 0 auto 12px; align-items: center; gap: 8px; flex-wrap: wrap; }

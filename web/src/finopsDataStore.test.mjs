@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  cancelFinOpsDataLoad,
   clearFinOpsData,
   finopsDataKey,
   invalidateFinOpsData,
@@ -408,6 +409,39 @@ test("clear aborts in-flight loaders before deleting entries", async () => {
     status: "missing",
     value: null,
   });
+});
+
+
+test("cancelling an obsolete tab request preserves its successful value and blocks a late overwrite", async () => {
+  const key = "tenant/ws/roi-obsolete";
+  await loadFinOpsData(key, async () => ({ revision: 1 }), {
+    domain: "roi",
+    now: 1_000,
+  });
+  let observedSignal;
+  let resolveLate;
+  const pending = loadFinOpsData(
+    key,
+    ({ signal }) => {
+      observedSignal = signal;
+      return new Promise((resolve) => { resolveLate = resolve; });
+    },
+    { domain: "roi", force: true, now: 2_000 },
+  );
+
+  assert.equal(cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key), 1);
+  assert.equal(observedSignal.aborted, true);
+  assert.equal(readFinOpsData(key, 2_000).value.revision, 1);
+
+  const replacement = loadFinOpsData(key, async () => ({ revision: 3 }), {
+    domain: "roi",
+    force: true,
+    now: 3_000,
+  });
+  resolveLate({ revision: 2 });
+  assert.equal((await pending).revision, 2);
+  assert.equal((await replacement).revision, 3);
+  assert.equal(readFinOpsData(key, 3_000).value.revision, 3);
 });
 
 

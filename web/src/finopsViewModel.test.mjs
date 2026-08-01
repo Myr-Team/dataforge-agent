@@ -38,8 +38,8 @@ test("operations customer labels hide infrastructure product names", () => {
 });
 
 
-test("operations refresh interval is five minutes", () => {
-  assert.equal(FINOPS_REFRESH_MS, 300_000);
+test("operations refresh interval is ten minutes", () => {
+  assert.equal(FINOPS_REFRESH_MS, 600_000);
 });
 
 

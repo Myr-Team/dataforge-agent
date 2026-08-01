@@ -206,32 +206,10 @@ test("portfolio selection defaults only when the selectedId prop is omitted", as
 });
 
 
-test("risk refresh invalidates only the risk domain", async () => {
-  const server = await import("vite").then(({ createServer }) => createServer({
-    appType: "custom",
-    logLevel: "silent",
-    server: { middlewareMode: true, hmr: false, ws: false },
-  }));
-  try {
-    const { scheduleRiskOnlyRefresh } = await server.ssrLoadModule("/src/FinOpsPortal.jsx");
-    const forceRef = { current: false };
-    const evidence = { invalidated: [], bumps: 0 };
-    scheduleRiskOnlyRefresh({
-      invalidate(predicate) {
-        evidence.invalidated = [
-          predicate({ domain: "risk" }),
-          predicate({ domain: "roi" }),
-          predicate({ domain: "overview" }),
-        ];
-      },
-      forceRef,
-      bump() { evidence.bumps += 1; },
-    });
-    assert.deepEqual(evidence, { invalidated: [true, false, false], bumps: 1 });
-    assert.equal(forceRef.current, true);
-  } finally {
-    await server.close();
-  }
+test("risk mutation refresh uses scoped invalidation without a forced server bypass", async () => {
+  const source = await readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8");
+  assert.match(source, /invalidateFinOpsMutation\("risk_draft", \{ workspaceId \}\)/);
+  assert.match(source, /requestTabRefresh\("risk", \{ force: false \}\)/);
 });
 
 
@@ -243,10 +221,41 @@ test("portal risk integration uses one decision read and conflict-safe draft rel
   assert.match(source, /<RemediationDraftPanel/);
   assert.match(source, /orchestrateRemediationMutation/);
   assert.match(source, /refreshOpportunity/);
-  assert.match(source, /loadFinOpsRiskDecision\(query, \{ refresh: true \}\)/);
+  assert.match(source, /loadFinOpsTab\(\{[\s\S]*tab:\s*"risk"[\s\S]*force:\s*true[\s\S]*\}\)\.promise/);
   assert.match(source, /loadFinOpsRemediationDraft/);
   assert.match(source, /mutationError=\{riskMutation\.error\}/);
   assert.match(source, /busyId=\{riskMutation\.busyId\}/);
   assert.doesNotMatch(source, /function RiskPage\(/);
   assert.doesNotMatch(source, /risk:\s*\(\)\s*=>\s*Promise\.all/);
+});
+
+
+test("model setting callbacks run only after a successful write", async () => {
+  const server = await import("vite").then(({ createServer }) => createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  }));
+  try {
+    const { persistModelSetting } = await server.ssrLoadModule("/src/ModelRoutingPage.jsx");
+    let changes = 0;
+    const saved = await persistModelSetting(
+      async () => ({ revision: 2 }),
+      () => { changes += 1; },
+      "model",
+    );
+    assert.deepEqual(saved, { revision: 2 });
+    assert.equal(changes, 1);
+    await assert.rejects(
+      persistModelSetting(
+        async () => { throw new Error("save failed"); },
+        () => { changes += 1; },
+        "price",
+      ),
+      /save failed/,
+    );
+    assert.equal(changes, 1);
+  } finally {
+    await server.close();
+  }
 });

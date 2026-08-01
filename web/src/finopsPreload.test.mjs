@@ -97,6 +97,27 @@ test("same scope shares one in-flight bootstrap request", async () => {
 });
 
 
+test("fresh bootstrap navigation does not request and stale bootstrap revalidates once", async () => {
+  const key = scopeKey();
+  let calls = 0;
+  const loader = async () => {
+    calls += 1;
+    return { overview: { metrics: { requests: calls } } };
+  };
+  await prefetchFinOpsBootstrap(key, loader, { now: 1_000 });
+
+  await prefetchFinOpsBootstrap(key, loader, { now: 300_000 });
+  assert.equal(calls, 1);
+
+  const first = prefetchFinOpsBootstrap(key, loader, { now: 400_000 });
+  const second = prefetchFinOpsBootstrap(key, loader, { now: 400_000 });
+  assert.equal(first, second);
+  assert.equal(readFinOpsBootstrap(key, 400_000).value.overview.metrics.requests, 1);
+  await first;
+  assert.equal(calls, 2);
+});
+
+
 test("bootstrap compatibility uses the five and thirty minute store lifecycle", async () => {
   const key = scopeKey();
   await prefetchFinOpsBootstrap(

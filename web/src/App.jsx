@@ -21,11 +21,13 @@ import {
   uploadWorkspace,
 } from "./api.js";
 import {
-  clearFinOpsBootstrap,
   prefetchFinOpsBootstrap,
 } from "./finopsPreload.js";
+import { clearFinOpsData } from "./finopsDataStore.js";
 import {
+  finopsAuthorizationBoundary,
   finopsPreloadScope,
+  reconcileFinOpsAuthorizationScope,
   scheduleFinOpsPreload,
 } from "./finopsNavigation.js";
 import { TaskCenter, expireTaskNotifications, isCurrentWorkspaceTaskResponse, stampTaskNotifications, taskViewModel, terminalTaskNotifications } from "./TaskCenter.jsx";
@@ -160,7 +162,11 @@ export function App() {
   const [uploadState, setUploadState] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [notice, setNotice] = useState(null);
-  const [user, setUser] = useState({ name: "Demo User", email: "local.demo@dataforge" });
+  const [user, setUser] = useState({
+    name: "Demo User",
+    email: "local.demo@dataforge",
+    tenantScope: "local-demo",
+  });
   const [authState, setAuthState] = useState("local");
   const [observability, setObservability] = useState(null);
   const activeViewRef = useRef(activeView);
@@ -196,15 +202,24 @@ export function App() {
   const workspaceIdRef = useRef(workspaceId);
   const taskRequestRef = useRef(0);
   const taskAbortRef = useRef(null);
+  const finopsAuthorizationRef = useRef("");
   const finopsScope = useMemo(
     () => finopsPreloadScope({
       authState,
       workspaceId,
       user,
       capabilities: governanceCapabilities,
+      workspaceAccess,
     }),
-    [authState, governanceCapabilities, user, workspaceId],
+    [authState, governanceCapabilities, user, workspaceAccess, workspaceId],
   );
+  const finopsAuthorizationKey = useMemo(() => finopsAuthorizationBoundary({
+    authState,
+    workspaceId,
+    user,
+    capabilities: governanceCapabilities,
+    workspaceAccess,
+  }), [authState, governanceCapabilities, user, workspaceAccess, workspaceId]);
   const preloadFinOps = useCallback(() => {
     if (!finopsScope) return Promise.resolve(null);
     // Hover/focus/touch intent handlers must not leave an unhandled rejection.
@@ -231,10 +246,15 @@ export function App() {
   }, [workspaceId]);
 
   useEffect(() => {
-    if (!finopsScope) {
-      clearFinOpsBootstrap();
-      return undefined;
-    }
+    finopsAuthorizationRef.current = reconcileFinOpsAuthorizationScope(
+      finopsAuthorizationRef.current,
+      finopsAuthorizationKey,
+      clearFinOpsData,
+    );
+  }, [finopsAuthorizationKey]);
+
+  useEffect(() => {
+    if (!finopsScope) return undefined;
     const cancelScheduled = scheduleFinOpsPreload(
       () => preloadFinOps().catch((error) => {
         if (error?.name !== "AbortError") {
@@ -243,10 +263,7 @@ export function App() {
       }),
       window,
     );
-    return () => {
-      cancelScheduled();
-      clearFinOpsBootstrap(finopsScope.key);
-    };
+    return cancelScheduled;
   }, [finopsScope, preloadFinOps]);
 
   const currentPlaybook = useMemo(
@@ -580,7 +597,7 @@ export function App() {
     const configuredEndpoint = import.meta.env.VITE_AUTH_ME || "";
     const isLocal = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
     if (!configuredEndpoint && isLocal) {
-      setUser({ name: "Demo User", email: "local.demo@dataforge" });
+      setUser({ name: "Demo User", email: "local.demo@dataforge", tenantScope: "local-demo" });
       setAuthState("local");
       return () => {
         cancelled = true;
@@ -605,6 +622,7 @@ export function App() {
         const next = {
           name: claim("name", "displayname", "given_name") || principal?.userDetails || principal?.user_name || "DataForge User",
           email: claim("emailaddress", "preferred_username", "upn", "email") || principal?.user_id || "",
+          tenantScope: claim("tenantid", "tid"),
         };
         if (!cancelled) {
           setUser(next);
@@ -613,7 +631,7 @@ export function App() {
       })
       .catch(() => {
         if (!cancelled) {
-          setUser({ name: "Demo User", email: "local.demo@dataforge" });
+          setUser({ name: "Demo User", email: "local.demo@dataforge", tenantScope: "local-demo" });
           setAuthState("local");
         }
       });

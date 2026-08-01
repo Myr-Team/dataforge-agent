@@ -40,10 +40,20 @@ import {
   suppressFinOpsAnomaly,
 } from "./api.js";
 import {
-  prefetchFinOpsBootstrap,
-  readFinOpsBootstrap,
-} from "./finopsPreload.js";
-import { invalidateFinOpsData } from "./finopsDataStore.js";
+  cancelFinOpsDataLoad,
+  finopsDataKey,
+  loadFinOpsData,
+  readFinOpsData,
+} from "./finopsDataStore.js";
+import {
+  createFinOpsRefreshTracker,
+  finopsTabDataKey,
+  finopsTabIntentHandlers,
+  invalidateFinOpsMutation,
+  loadFinOpsTab,
+  prefetchFinOpsTab,
+  scheduleFinOpsTabPreload,
+} from "./finopsNavigation.js";
 import { FinOpsAssistant } from "./FinOpsAssistant.jsx";
 import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
 import { RemediationDraftPanel } from "./finops/RemediationDraftPanel.jsx";
@@ -852,20 +862,6 @@ export function finOpsPortalStatusVisibility({
 }
 
 
-export function scheduleRoiOnlyRefresh({ invalidate, forceRef, bump }) {
-  invalidate((entry) => entry?.domain === "roi");
-  forceRef.current = true;
-  bump();
-}
-
-
-export function scheduleRiskOnlyRefresh({ invalidate, forceRef, bump }) {
-  invalidate((entry) => entry?.domain === "risk");
-  forceRef.current = true;
-  bump();
-}
-
-
 function EvidenceDrawer({
   state,
   onClose,
@@ -1021,11 +1017,12 @@ function EvidenceDrawer({
 export function FinOpsPortal({
   workspaceId = "",
   preloadScopeKey = "",
+  dataScope = {},
   permissions = {},
 }) {
   const initialWindowRef = useRef(initialWindow());
   const initialCacheRef = useRef(
-    preloadScopeKey ? readFinOpsBootstrap(preloadScopeKey) : { status: "missing", value: null },
+    preloadScopeKey ? readFinOpsData(preloadScopeKey) : { status: "missing", value: null },
   );
   const initialView = finopsBootstrapViewData(initialCacheRef.current.value || {});
   const [tab, setTab] = useState("overview");
@@ -1034,7 +1031,7 @@ export function FinOpsPortal({
   const [overviewState, setOverviewState] = useState({
     dataScopeKey: "",
     loading: !initialCacheRef.current.value,
-    updating: Boolean(initialCacheRef.current.value),
+    updating: initialCacheRef.current.status === "stale_usable",
     error: "",
     cacheStatus: initialCacheRef.current.status,
     generatedAt: initialCacheRef.current.value?.freshness?.generated_at || "",
@@ -1051,9 +1048,12 @@ export function FinOpsPortal({
   const [filterOptions, setFilterOptions] = useState(initialView.filterOptions);
   const [comparisonEnabled, setComparisonEnabled] = useState(false);
   const [comparisonState, setComparisonState] = useState({ loading: false, data: null });
-  const [refreshKey, setRefreshKey] = useState(0);
-  const [roiRefreshKey, setRoiRefreshKey] = useState(0);
-  const [riskRefreshKey, setRiskRefreshKey] = useState(0);
+  const [tabRefreshes, setTabRefreshes] = useState({
+    overview: { version: 0, force: false, scopeKey: "" },
+    cost: { version: 0, force: false, scopeKey: "" },
+    roi: { version: 0, force: false, scopeKey: "" },
+    risk: { version: 0, force: false, scopeKey: "" },
+  });
   const [selectedRiskId, setSelectedRiskId] = useState(undefined);
   const [remediationState, setRemediationState] = useState({
     open: false,
@@ -1085,11 +1085,10 @@ export function FinOpsPortal({
   });
   const overviewSequence = useRef(0);
   const detailSequence = useRef(0);
+  const refreshTracker = useRef(createFinOpsRefreshTracker());
   const evidenceController = useRef(null);
   const evidenceTrigger = useRef(null);
   const roiDialogController = useRef(null);
-  const roiForceRefresh = useRef(false);
-  const riskForceRefresh = useRef(false);
   const remediationSequence = useRef(0);
   const remediationOpportunityRef = useRef(null);
 
@@ -1135,8 +1134,50 @@ export function FinOpsPortal({
       model: filters.model,
     },
   }), [filters, query.from, query.to, workspaceId]);
-
-  const refresh = useCallback(() => setRefreshKey((value) => value + 1), []);
+  const tabKeys = useMemo(() => Object.fromEntries(
+    ["overview", "cost", "roi", "risk"].map((item) => [
+      item,
+      finopsTabDataKey(item, {
+        scope: dataScope,
+        query,
+        defaultScope: item === "overview" && defaultScope,
+      }),
+    ]),
+  ), [dataScope, defaultScope, query]);
+  const tabLoaders = useMemo(() => ({
+    overview: ({ signal, refresh: force }) => loadFinOpsBootstrap(
+      query,
+      { signal, refresh: force },
+    ),
+    cost: ({ signal, refresh: force }) => Promise.all([
+      loadFinOpsBreakdowns("workspace", query, { signal, refresh: force }),
+      loadFinOpsAgents(query, { signal, refresh: force }),
+      loadFinOpsSavedViews({ workspaceId }, { signal, refresh: force }),
+    ]).then(([workspace, agents, views]) => ({ workspace, agents, views })),
+    roi: ({ signal, refresh: force }) => loadFinOpsRoiDecision(
+      query,
+      { signal, refresh: force },
+    ),
+    risk: ({ signal, refresh: force }) => loadFinOpsRiskDecision(
+      query,
+      { signal, refresh: force },
+    ),
+  }), [query, workspaceId]);
+  const requestTabRefresh = useCallback((targetTab, { force = true } = {}) => {
+    if (!["overview", "cost", "roi", "risk"].includes(targetTab)) return;
+    setTabRefreshes((current) => ({
+      ...current,
+      [targetTab]: {
+        version: current[targetTab].version + 1,
+        force: Boolean(force),
+        scopeKey: queryScopeKey,
+      },
+    }));
+  }, [queryScopeKey]);
+  const refresh = useCallback(
+    () => requestTabRefresh(tab, { force: true }),
+    [requestTabRefresh, tab],
+  );
   const openAssistant = useCallback((context) => {
     setAssistantState((state) => ({
       context,
@@ -1290,43 +1331,57 @@ export function FinOpsPortal({
     }
   }, [permissions, query]);
 
+  const overviewRefresh = tabRefreshes.overview;
+  const detailRefresh = tabRefreshes[tab] || { version: 0, force: false, scopeKey: "" };
+
   useEffect(() => {
-    if (!workspaceId) return undefined;
+    const key = tabKeys.overview;
+    if (!workspaceId || !key) return undefined;
     const current = ++overviewSequence.current;
-    const controller = new AbortController();
-    const cached = defaultScope && preloadScopeKey
-      ? readFinOpsBootstrap(preloadScopeKey)
-      : { status: "missing", value: null };
+    const force = refreshTracker.current.consumeForce(
+      queryScopeKey,
+      "overview",
+      "main",
+      overviewRefresh,
+    );
+    const lifecycle = loadFinOpsTab({
+      tab: "overview",
+      key,
+      loader: tabLoaders.overview,
+      force,
+    });
+    const cached = lifecycle.cache;
     if (cached.value) {
       const view = finopsBootstrapViewData(cached.value);
       setOverviewState({
         dataScopeKey: queryScopeKey,
         loading: false,
-        updating: true,
-        error: "",
+        updating: lifecycle.requested,
+        error: cached.lastError ? "上次后台更新未完成，可稍后重试。" : "",
         cacheStatus: cached.status,
         generatedAt: cached.value?.freshness?.generated_at || "",
         data: view,
       });
       setFilterOptions(view.filterOptions);
+      if (cached.storedAt) {
+        refreshTracker.current.markSuccessful(queryScopeKey, "overview", cached.storedAt);
+      }
     } else {
-      setOverviewState((state) => ({
-        ...state,
-        dataScopeKey: state.dataScopeKey === queryScopeKey ? queryScopeKey : "",
-        loading: !(state.dataScopeKey === queryScopeKey && state.data?.overview?.metrics),
-        updating: Boolean(state.dataScopeKey === queryScopeKey && state.data?.overview?.metrics),
+      setOverviewState({
+        dataScopeKey: "",
+        loading: true,
+        updating: false,
         error: "",
-        data: state.dataScopeKey === queryScopeKey ? state.data : {},
-      }));
+        cacheStatus: cached.status,
+        generatedAt: "",
+        data: {},
+      });
     }
 
-    const load = ({ signal }) => loadFinOpsBootstrap(query, { signal });
-    const request = defaultScope && preloadScopeKey
-      ? prefetchFinOpsBootstrap(preloadScopeKey, load, { force: true })
-      : load({ signal: controller.signal });
-    request.then((payload) => {
+    lifecycle.promise.then((payload) => {
       if (current !== overviewSequence.current) return;
       const view = finopsBootstrapViewData(payload);
+      refreshTracker.current.markSuccessful(queryScopeKey, "overview");
       setOverviewState({
         dataScopeKey: queryScopeKey,
         loading: false,
@@ -1347,65 +1402,53 @@ export function FinOpsPortal({
         error: error instanceof Error ? error.message : "运营数据更新失败",
       }));
     });
-    return () => controller.abort();
-  }, [defaultScope, preloadScopeKey, query, queryScopeKey, refreshKey, workspaceId]);
+    return () => {
+      cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
+    };
+  }, [overviewRefresh.force, overviewRefresh.version, queryScopeKey, tabKeys, tabLoaders, workspaceId]);
 
   useEffect(() => {
-    if (!workspaceId || tab === "overview") {
+    if (!workspaceId || tab === "overview") return undefined;
+    const key = tabKeys[tab];
+    if (!key) return undefined;
+    const current = ++detailSequence.current;
+    const force = refreshTracker.current.consumeForce(
+      queryScopeKey,
+      tab,
+      "main",
+      detailRefresh,
+    );
+    const lifecycle = loadFinOpsTab({
+      tab,
+      key,
+      loader: tabLoaders[tab],
+      force,
+    });
+    if (lifecycle.cache.value) {
+      setDetailState({
+        dataScopeKey: queryScopeKey,
+        tab,
+        loading: false,
+        updating: lifecycle.requested,
+        error: lifecycle.cache.lastError ? "上次后台更新未完成，可稍后重试。" : "",
+        data: lifecycle.cache.value,
+      });
+      if (lifecycle.cache.storedAt) {
+        refreshTracker.current.markSuccessful(queryScopeKey, tab, lifecycle.cache.storedAt);
+      }
+    } else {
       setDetailState({
         dataScopeKey: "",
-        tab: "",
-        loading: false,
+        tab,
+        loading: true,
         updating: false,
         error: "",
         data: {},
       });
-      return undefined;
     }
-    const current = ++detailSequence.current;
-    const controller = new AbortController();
-    setDetailState((state) => {
-      const keepCurrent = state.tab === tab
-        && state.dataScopeKey === queryScopeKey
-        && Object.keys(state.data || {}).length > 0;
-      return {
-        dataScopeKey: keepCurrent ? queryScopeKey : "",
-        tab,
-        loading: !keepCurrent,
-        updating: keepCurrent,
-        error: "",
-        data: keepCurrent ? state.data : {},
-      };
-    });
-    const requests = {
-      cost: () => Promise.all([
-        loadFinOpsBreakdowns("workspace", query, { signal: controller.signal }),
-        loadFinOpsAgents(query, { signal: controller.signal }),
-        loadFinOpsSavedViews({ workspaceId }, { signal: controller.signal }),
-      ]).then(([workspace, agents, views]) => ({
-        workspace,
-        agents,
-        views,
-      })),
-      roi: () => {
-        const force = roiForceRefresh.current;
-        roiForceRefresh.current = false;
-        return loadFinOpsRoiDecision(
-          query,
-          { signal: controller.signal, refresh: force },
-        );
-      },
-      risk: () => {
-        const force = riskForceRefresh.current;
-        riskForceRefresh.current = false;
-        return loadFinOpsRiskDecision(
-          query,
-          { signal: controller.signal, refresh: force },
-        );
-      },
-    };
-    requests[tab]().then((data) => {
+    lifecycle.promise.then((data) => {
       if (current === detailSequence.current) {
+        refreshTracker.current.markSuccessful(queryScopeKey, tab);
         setDetailState({
           dataScopeKey: queryScopeKey,
           tab,
@@ -1429,11 +1472,13 @@ export function FinOpsPortal({
         }));
       }
     });
-    return () => controller.abort();
-  }, [query, queryScopeKey, refreshKey, riskRefreshKey, roiRefreshKey, tab, workspaceId]);
+    return () => {
+      cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
+    };
+  }, [detailRefresh.force, detailRefresh.version, queryScopeKey, tab, tabKeys, tabLoaders, workspaceId]);
 
   useEffect(() => {
-    if (!comparisonEnabled || !workspaceId) {
+    if (!comparisonEnabled || !workspaceId || !["overview", "cost"].includes(tab)) {
       setComparisonState({ loading: false, data: null });
       return undefined;
     }
@@ -1442,37 +1487,83 @@ export function FinOpsPortal({
       setComparisonState({ loading: false, data: null });
       return undefined;
     }
-    const controller = new AbortController();
-    setComparisonState((state) => ({ ...state, loading: true }));
-    loadFinOpsTrends("day", {
-      ...query,
-      from: comparisonWindow.from,
-      to: comparisonWindow.to,
-    }, { signal: controller.signal }).then((data) => {
+    const key = finopsDataKey({
+      tenantScope: dataScope.tenantScope,
+      permissionSummary: [
+        ...(dataScope.permissions || []),
+        ...(dataScope.authorizedWorkspaceScope || []),
+      ],
+      workspaceId,
+      domain: `${tab}:comparison`,
+      window: comparisonWindow,
+      filters: {
+        departmentId: query.departmentId,
+        agentId: query.agentId,
+        model: query.model,
+      },
+      schemaRevision: "finops-comparison-v1",
+    });
+    const cached = readFinOpsData(key);
+    setComparisonState({ loading: !cached.value, data: cached.value });
+    const refreshRequest = tab === "overview" ? overviewRefresh : detailRefresh;
+    const force = refreshTracker.current.consumeForce(
+      queryScopeKey,
+      tab,
+      "comparison",
+      refreshRequest,
+    );
+    const request = loadFinOpsData(
+      key,
+      ({ signal }) => loadFinOpsTrends("day", {
+        ...query,
+        from: comparisonWindow.from,
+        to: comparisonWindow.to,
+      }, { signal, refresh: force }),
+      { domain: `${tab}:comparison`, force },
+    );
+    request.then((data) => {
       setComparisonState({ loading: false, data });
     }).catch((error) => {
       if (error?.name !== "AbortError") setComparisonState({ loading: false, data: null });
     });
-    return () => controller.abort();
-  }, [comparisonEnabled, query, refreshKey, workspaceId]);
+    return () => {
+      cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
+    };
+  }, [comparisonEnabled, dataScope, detailRefresh.force, detailRefresh.version, overviewRefresh.force, overviewRefresh.version, query, tab, workspaceId]);
 
   useEffect(() => {
-    let lastRefreshAt = Date.now();
+    if (
+      !overviewState.data?.overview?.metrics
+      || overviewState.dataScopeKey !== queryScopeKey
+    ) {
+      return undefined;
+    }
+    return scheduleFinOpsTabPreload("roi", {
+      keys: tabKeys,
+      loaders: tabLoaders,
+      host: window,
+      onError: (error) => console.warn("ROI background preload failed", error),
+    });
+  }, [overviewState.data, overviewState.dataScopeKey, queryScopeKey, tabKeys, tabLoaders]);
+
+  useEffect(() => {
     const run = () => {
-      if (document.hidden) return;
-      lastRefreshAt = Date.now();
-      refresh();
+      if (refreshTracker.current.isDue(
+        queryScopeKey,
+        tab,
+        { hidden: document.hidden },
+      )) {
+        requestTabRefresh(tab, { force: true });
+      }
     };
     const timer = window.setInterval(run, FINOPS_REFRESH_MS);
-    const onVisibilityChange = () => {
-      if (!document.hidden && Date.now() - lastRefreshAt >= FINOPS_REFRESH_MS) run();
-    };
+    const onVisibilityChange = () => run();
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [refresh]);
+  }, [queryScopeKey, requestTabRefresh, tab]);
 
   useEffect(() => () => {
     evidenceController.current?.abort();
@@ -1480,12 +1571,9 @@ export function FinOpsPortal({
   }, []);
 
   const refreshRiskOnly = useCallback(() => {
-    scheduleRiskOnlyRefresh({
-      invalidate: invalidateFinOpsData,
-      forceRef: riskForceRefresh,
-      bump: () => setRiskRefreshKey((value) => value + 1),
-    });
-  }, []);
+    invalidateFinOpsMutation("risk_draft", { workspaceId });
+    requestTabRefresh("risk", { force: false });
+  }, [requestTabRefresh, workspaceId]);
 
   const loadCurrentRemediationDraft = useCallback(async ({ conflictMessage = "" } = {}) => {
     const opportunity = remediationOpportunityRef.current;
@@ -1543,8 +1631,14 @@ export function FinOpsPortal({
         : state
     ));
     try {
-      const payload = await loadFinOpsRiskDecision(query, { refresh: true });
+      const payload = await loadFinOpsTab({
+        tab: "risk",
+        key: tabKeys.risk,
+        loader: tabLoaders.risk,
+        force: true,
+      }).promise;
       if (current !== remediationSequence.current) return null;
+      refreshTracker.current.markSuccessful(queryScopeKey, "risk");
       const opportunity = riskDecisionView(payload).priorities.find((item) => (
         item.id === opportunityId && item.baseVersion
       ));
@@ -1605,7 +1699,7 @@ export function FinOpsPortal({
       }));
       return null;
     }
-  }, [query, queryScopeKey, workspaceId]);
+  }, [queryScopeKey, tabKeys, tabLoaders, workspaceId]);
 
   const runRemediation = async (kind, payload = {}) => {
     const opportunity = remediationOpportunityRef.current;
@@ -1669,7 +1763,8 @@ export function FinOpsPortal({
           ...(filters.model ? { model: filters.model } : {}),
         },
       });
-      refresh();
+      invalidateFinOpsMutation("saved_cost_view", { workspaceId });
+      requestTabRefresh("cost", { force: false });
       setGovernance({ busyId: "", error: "" });
     } catch (error) {
       setGovernance({
@@ -1686,22 +1781,15 @@ export function FinOpsPortal({
       setRoiEditorOpen(false);
       setRoiSaveState({ busy: false, error: "" });
       setRoiDialogState({ loading: false, latestScenario: null, observedModelCost: null });
-      scheduleRoiOnlyRefresh({
-        invalidate: invalidateFinOpsData,
-        forceRef: roiForceRefresh,
-        bump: () => setRoiRefreshKey((value) => value + 1),
-      });
+      invalidateFinOpsMutation("roi_scenario", { workspaceId });
+      requestTabRefresh("roi", { force: false });
     } catch (error) {
       if (error?.status === 409) {
         setRoiSaveState({
           busy: false,
           error: "情景已由其他会话更新，正在重新载入最新版本，请确认后再次保存。",
         });
-        scheduleRoiOnlyRefresh({
-          invalidate: invalidateFinOpsData,
-          forceRef: roiForceRefresh,
-          bump: () => setRoiRefreshKey((value) => value + 1),
-        });
+        requestTabRefresh("roi", { force: true });
         loadRoiDialogData();
         return;
       }
@@ -1711,6 +1799,39 @@ export function FinOpsPortal({
       });
     }
   };
+
+  const prefetchTab = useCallback((targetTab) => prefetchFinOpsTab(targetTab, {
+    keys: tabKeys,
+    loaders: tabLoaders,
+  }).catch((error) => {
+    if (error?.name !== "AbortError") console.warn("Operations tab preload failed", error);
+    return null;
+  }), [tabKeys, tabLoaders]);
+  const activateTab = useCallback((targetTab) => {
+    if (targetTab !== "overview") {
+      const cached = readFinOpsData(tabKeys[targetTab]);
+      if (cached.value) {
+        setDetailState({
+          dataScopeKey: queryScopeKey,
+          tab: targetTab,
+          loading: false,
+          updating: cached.status === "stale_usable",
+          error: cached.lastError ? "上次后台更新未完成，可稍后重试。" : "",
+          data: cached.value,
+        });
+        if (cached.storedAt) {
+          refreshTracker.current.markSuccessful(queryScopeKey, targetTab, cached.storedAt);
+        }
+      }
+    }
+    setTab(targetTab);
+  }, [queryScopeKey, tabKeys]);
+  const handleModelSettingsChanged = useCallback((kind) => {
+    invalidateFinOpsMutation(kind === "price" ? "price_setting" : "model_setting", {
+      workspaceId,
+    });
+    requestTabRefresh(tab, { force: false });
+  }, [requestTabRefresh, tab, workspaceId]);
 
   const generatedAt = overviewState.generatedAt || overviewState.data?.overview?.freshness?.generated_at;
   const overviewDataStatus = overviewState.data?.overview?.data_status || "unavailable";
@@ -1827,7 +1948,13 @@ export function FinOpsPortal({
         {visibleTabs.map((item) => {
           const Icon = TAB_ICONS[item.id];
           return (
-            <button key={item.id} type="button" className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>
+            <button
+              key={item.id}
+              type="button"
+              className={tab === item.id ? "active" : ""}
+              onClick={() => activateTab(item.id)}
+              {...finopsTabIntentHandlers(item.id, prefetchTab)}
+            >
               <Icon size={15} />
               {item.label}
             </button>
@@ -1860,10 +1987,7 @@ export function FinOpsPortal({
             loading={detailState.loading || (!hasDetailData && !detailState.error)}
             updating={detailState.updating}
             error={detailState.error}
-            onRetry={() => {
-              roiForceRefresh.current = true;
-              setRoiRefreshKey((value) => value + 1);
-            }}
+            onRetry={() => requestTabRefresh("roi", { force: true })}
             onAdjustScenario={openRoiEditor}
             onEvidence={canOpenEvidence ? openEvidence : null}
             onAsk={openRoiAssistant}
@@ -1879,10 +2003,7 @@ export function FinOpsPortal({
             busyId={riskMutation.busyId}
             selectedRiskId={selectedRiskId}
             onSelectRisk={setSelectedRiskId}
-            onRetry={() => {
-              riskForceRefresh.current = true;
-              setRiskRefreshKey((value) => value + 1);
-            }}
+            onRetry={() => requestTabRefresh("risk", { force: true })}
             onEvidence={canOpenEvidence ? openEvidence : null}
             onCreateDraft={openRemediation}
             onAcknowledge={(item) => manageAnomaly(item, "acknowledge")}
@@ -1952,7 +2073,11 @@ export function FinOpsPortal({
               </div>
               <button className="icon-button" type="button" aria-label="关闭模型配置" onClick={() => setModelSettingsOpen(false)}><X size={17} /></button>
             </header>
-            <ModelRoutingPage workspaceId={workspaceId} embedded />
+            <ModelRoutingPage
+              workspaceId={workspaceId}
+              embedded
+              onSettingsChanged={handleModelSettingsChanged}
+            />
           </section>
         </div>
       ) : null}

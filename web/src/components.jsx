@@ -658,6 +658,7 @@ function WorkbenchMainInner({
         <FinOpsPortal
           workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id || ""}
           preloadScopeKey={finopsPreloadScope?.key || ""}
+          dataScope={finopsPreloadScope || {}}
           permissions={governanceCapabilities?.sections?.finops?.permissions || {}}
         />
       </Suspense>

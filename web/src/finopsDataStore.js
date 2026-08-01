@@ -242,6 +242,31 @@ export function invalidateFinOpsData(predicate) {
 }
 
 
+export function cancelFinOpsDataLoad(predicate) {
+  if (typeof predicate !== "function") {
+    throw new TypeError("FinOps cancellation predicate is required");
+  }
+  let cancelled = 0;
+  for (const [key, entry] of entries) {
+    if (
+      !entry.inFlight
+      || !predicate(publicEntry(entry, readFinOpsData(key).status, entry.value), key)
+    ) {
+      continue;
+    }
+    const replacement = {
+      ...entry,
+      inFlight: null,
+      abortController: null,
+    };
+    entries.set(key, replacement);
+    entry.abortController?.abort();
+    cancelled += 1;
+  }
+  return cancelled;
+}
+
+
 export function clearFinOpsData(key = null) {
   if (key !== null && key !== undefined) {
     const entry = entries.get(key);

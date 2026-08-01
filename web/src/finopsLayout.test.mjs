@@ -17,6 +17,8 @@ test("operations header isolates title copy from the synchronization control", a
   assert.doesNotMatch(styles, /\.finops-head\s*>\s*div\s*>\s*span/);
   assert.match(styles, /\.finops-head-copy\s*>\s*span/);
   assert.match(styles, /\.finops-live\s*>\s*span/);
+  assert.match(styles, /\.finops-live\s*>\s*span\s*\{[^}]*min-width:/s);
+  assert.doesNotMatch(component, /新鲜度/);
 });
 
 
@@ -89,7 +91,7 @@ test("portal loads one ROI decision and removes duplicate legacy ROI bodies", as
 
   assert.match(source, /loadFinOpsRoiDecision/);
   assert.match(source, /<RoiDecisionPage/);
-  assert.match(source, /roiRefreshKey/);
+  assert.match(source, /requestTabRefresh\("roi"/);
   assert.match(source, /openRoiEditor/);
   assert.doesNotMatch(source, /loadWorkspaceCostValue/);
   assert.doesNotMatch(source, /loadWorkspaceRoi/);
@@ -210,7 +212,6 @@ test("ROI portal status, scenario readiness, and refresh stay locally bounded", 
       FinOpsPortal,
       RoiScenarioDialog,
       finOpsPortalStatusVisibility,
-      scheduleRoiOnlyRefresh,
     } = await server.ssrLoadModule("/src/FinOpsPortal.jsx");
     assert.equal(typeof FinOpsPortal, "function");
 
@@ -247,26 +248,6 @@ test("ROI portal status, scenario readiness, and refresh stay locally bounded", 
     assert.match(readyMarkup, /<form/);
     assert.match(readyMarkup, /name="model_cost"[^>]*value="12\.34"/);
 
-    const refreshEvidence = { invalidated: [], forced: false, bumps: 0 };
-    const forceRef = { current: false };
-    scheduleRoiOnlyRefresh({
-      invalidate(predicate) {
-        refreshEvidence.invalidated = [
-          predicate({ domain: "roi" }),
-          predicate({ domain: "overview" }),
-        ];
-      },
-      forceRef,
-      bump() {
-        refreshEvidence.bumps += 1;
-      },
-    });
-    refreshEvidence.forced = forceRef.current;
-    assert.deepEqual(refreshEvidence, {
-      invalidated: [true, false],
-      forced: true,
-      bumps: 1,
-    });
   } finally {
     await server.close();
   }

@@ -1,6 +1,8 @@
+import { FINOPS_REFRESH_MS } from "./finopsNavigation.js";
+
 const numberFormat = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 });
 
-export const FINOPS_REFRESH_MS = 300_000;
+export { FINOPS_REFRESH_MS };
 
 export const CUSTOMER_INFRA_LABELS = Object.freeze({
   reconciliation: "请求对账",
