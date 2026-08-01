@@ -96,6 +96,8 @@ test("finopsDataKey accepts only allowlisted workspace-role permission entries",
   const safe = finopsDataKey({
     tenantScope: "tenant-safe",
     permissionSummary: [
+      "finops.cost.read",
+      "finops.summary.read",
       { workspaceId: " ws-b ", role: "VIEWER" },
       { workspace_id: "ws-a", role: "owner" },
     ],
@@ -112,8 +114,17 @@ test("finopsDataKey accepts only allowlisted workspace-role permission entries",
       { workspaceId: "ws-prompt", role: "prompt-secret-marker" },
       { workspaceId: "ws-provider", role: "provider-response-marker" },
       { workspaceId: "ws-object", role: { value: "object-secret-marker" } },
+      { workspaceId: "token-secret-marker", role: "owner" },
+      { workspaceId: "email-workspace", role: "owner" },
+      { workspaceId: "owner@example.test", role: "owner" },
+      { workspaceId: "provider-response-workspace", role: "owner" },
+      { workspaceId: "ws/invalid", role: "owner" },
+      { workspaceId: `w${"s".repeat(128)}`, role: "owner" },
       { arbitrary: { email: "nested@example.test" } },
       "raw-string-secret-marker",
+      "finops.summary.read",
+      "finops.cost.read",
+      "finops.unknown.read",
       { workspaceId: "ws-b", role: "viewer" },
     ].reverse(),
     workspaceId: "ws-a",
@@ -132,9 +143,55 @@ test("finopsDataKey accepts only allowlisted workspace-role permission entries",
     "object-secret-marker",
     "nested@example.test",
     "raw-string-secret-marker",
+    "finops.unknown.read",
   ]) {
     assert.doesNotMatch(hostile.toLowerCase(), new RegExp(secret));
   }
+});
+
+
+test("legacy capability keys are allowlisted distinct deduplicated and order stable", () => {
+  const summaryOnly = finopsDataKey({
+    tenantScope: "tenant-safe",
+    permissionSummary: ["finops.summary.read"],
+    workspaceId: "ws-a",
+    domain: "overview",
+  });
+  const summaryAndCost = finopsDataKey({
+    tenantScope: "tenant-safe",
+    permissionSummary: ["finops.summary.read", "finops.cost.read"],
+    workspaceId: "ws-a",
+    domain: "overview",
+  });
+  const mixedReordered = finopsDataKey({
+    tenantScope: "tenant-safe",
+    permissionSummary: [
+      { workspaceId: "ws-a", role: "owner" },
+      "finops.cost.read",
+      "finops.summary.read",
+      "finops.cost.read",
+      "finops.arbitrary.read",
+      { workspaceId: "token-secret-marker", role: "viewer" },
+    ],
+    workspaceId: "ws-a",
+    domain: "overview",
+  });
+  const mixedCanonical = finopsDataKey({
+    tenantScope: "tenant-safe",
+    permissionSummary: [
+      "finops.summary.read",
+      { workspace_id: "ws-a", role: "OWNER" },
+      "finops.cost.read",
+    ],
+    workspaceId: "ws-a",
+    domain: "overview",
+  });
+
+  assert.notEqual(summaryOnly, summaryAndCost);
+  assert.equal(mixedReordered, mixedCanonical);
+  assert.match(summaryAndCost, /finops\.summary\.read/);
+  assert.match(summaryAndCost, /finops\.cost\.read/);
+  assert.doesNotMatch(mixedReordered, /finops\.arbitrary\.read|token-secret-marker/);
 });
 
 

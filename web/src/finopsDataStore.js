@@ -2,6 +2,16 @@ const FRESH_MS = 300_000;
 const STALE_USABLE_MS = 1_800_000;
 const entries = new Map();
 const WORKSPACE_ROLES = new Set(["owner", "admin", "editor", "viewer"]);
+const FINOPS_CAPABILITIES = new Set([
+  "finops.summary.read",
+  "finops.cost.read",
+  "finops.roi.read",
+  "finops.request_detail.read",
+  "finops.trace.read",
+  "finops.action.draft",
+]);
+const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+const SENSITIVE_WORKSPACE_ID = /(?:actor|identity|email|user|principal|token|secret|prompt|provider|credential|authorization|api[_-]?key|(?:^|[._-])key(?:[._-]|$))/i;
 
 const SAFE_ACTOR_REF_KEYS = new Set(["actorref", "actor_ref"]);
 const SENSITIVE_KEY = /(?:actor|identity|email|user|principal|subject|\bupn\b|token|headers?|authorization|cookie|prompt|secret|credential|key$|api[_-]?key|provider[_-]?response|response[_-]?id)/i;
@@ -38,33 +48,51 @@ function stableValue(value, key = "") {
 
 
 function permissionEntries(permissionSummary) {
-  if (!permissionSummary) return [];
-  let candidates = [];
+  if (!permissionSummary) return { capabilities: [], workspaceRoles: [] };
+  const capabilityCandidates = [];
+  let roleCandidates = [];
   if (Array.isArray(permissionSummary)) {
-    candidates = permissionSummary
-      .map((item) => {
-        if (item && typeof item === "object" && !Array.isArray(item)) {
-          const workspaceId = item.workspaceId ?? item.workspace_id ?? "";
-          const role = item.role ?? item.permission ?? "";
-          return [workspaceId, role];
-        }
-        return null;
-      })
-      .filter(Boolean);
+    for (const item of permissionSummary) {
+      if (typeof item === "string") {
+        capabilityCandidates.push(item);
+      } else if (item && typeof item === "object" && !Array.isArray(item)) {
+        roleCandidates.push([
+          item.workspaceId ?? item.workspace_id ?? "",
+          item.role ?? "",
+        ]);
+      }
+    }
+  } else if (typeof permissionSummary === "string") {
+    capabilityCandidates.push(permissionSummary);
   } else if (typeof permissionSummary === "object") {
-    candidates = Object.entries(permissionSummary);
+    if ("workspaceId" in permissionSummary || "workspace_id" in permissionSummary) {
+      roleCandidates = [[
+        permissionSummary.workspaceId ?? permissionSummary.workspace_id ?? "",
+        permissionSummary.role ?? "",
+      ]];
+    } else {
+      roleCandidates = Object.entries(permissionSummary);
+    }
   }
-  const normalized = candidates
+  const capabilities = capabilityCandidates
+    .map((value) => String(value).trim().toLowerCase())
+    .filter((value) => FINOPS_CAPABILITIES.has(value));
+  const workspaceRoles = roleCandidates
     .map(([workspaceValue, roleValue]) => {
       if (typeof workspaceValue !== "string" || typeof roleValue !== "string") return null;
       const workspaceId = workspaceValue.trim();
       const role = roleValue.trim().toLowerCase();
-      if (!workspaceId || workspaceId.length > 160 || workspaceId.includes("@")) return null;
+      if (!WORKSPACE_ID_PATTERN.test(workspaceId) || SENSITIVE_WORKSPACE_ID.test(workspaceId)) {
+        return null;
+      }
       if (!WORKSPACE_ROLES.has(role)) return null;
       return `${workspaceId}:${role}`;
     })
     .filter(Boolean);
-  return [...new Set(normalized)].sort();
+  return {
+    capabilities: [...new Set(capabilities)].sort(),
+    workspaceRoles: [...new Set(workspaceRoles)].sort(),
+  };
 }
 
 
