@@ -9,7 +9,12 @@ from backend.finops.demo_initialize import (
     persist_demo_run_evidence,
 )
 from backend.finops.demo_seed_repository import InMemoryDemoSeedRepository
-from backend.finops.anomaly_store import InMemoryAnomalyRepository
+from backend.finops.anomaly_store import FinOpsAnomalyService, InMemoryAnomalyRepository
+from backend.finops.anomalies import (
+    AnomalyEvaluationInput,
+    DetectedAnomaly,
+    evaluate_default_anomalies,
+)
 from backend.finops.insight_repository import InMemoryInsightRepository
 from backend.finops.demo_workspace_seed import seed_demo_workspace
 from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
@@ -163,18 +168,28 @@ def test_initializer_upgrades_legacy_batch_and_persists_repeatable_demo_findings
     seeds = InMemoryDemoSeedRepository()
     anomalies = InMemoryAnomalyRepository()
     insights = InMemoryInsightRepository()
-    daily_budget_writes: list[tuple[str, str, dict[str, object], str]] = []
-
-    def write_daily_budget(
-        tenant_ref: str,
-        workspace_id: str,
-        configuration: dict[str, object],
-        *,
-        seed_key: str,
-    ) -> None:
-        daily_budget_writes.append(
-            (tenant_ref, workspace_id, configuration, seed_key)
-        )
+    anomaly_service = FinOpsAnomalyService(anomalies)
+    anomaly_service.upsert_findings(
+        tenant_ref="tenant_demo_ref",
+        findings=[
+            DetectedAnomaly(
+                anomaly_id="anom-manual-review",
+                policy_type="error_rate",
+                severity="warning",
+                observed_value=7,
+                threshold_value=5,
+                sample_count=25,
+                workspace_ids=["ws-demo"],
+                recommendation="Keep this manually managed finding.",
+                evidence_refs=["req_manual_review_001"],
+            )
+        ],
+    )
+    anomaly_service.acknowledge(
+        tenant_ref="tenant_demo_ref",
+        anomaly_id="anom-manual-review",
+        actor_ref="actor-reviewer",
+    )
 
     legacy = seed_demo_workspace(
         ledger, seeds, tenant_ref="tenant_demo_ref", workspace_id="ws-demo",
@@ -186,34 +201,40 @@ def test_initializer_upgrades_legacy_batch_and_persists_repeatable_demo_findings
         workspace_id="ws-demo", allowed_workspace_id="ws-demo", ledger_repository=ledger,
         seed_repository=seeds, budget_repository=InMemoryMemberBudgetRepository(),
         hmac_secret="test-secret", anomaly_repository=anomalies, insight_repository=insights,
-        daily_budget_writer=write_daily_budget, now=NOW,
+        now=NOW,
     )
     second = initialize_demo_workspace(
         tenant_ref="tenant_demo_ref", allowed_tenant_ref="tenant_demo_ref",
         workspace_id="ws-demo", allowed_workspace_id="ws-demo", ledger_repository=ledger,
         seed_repository=seeds, budget_repository=InMemoryMemberBudgetRepository(),
         hmac_secret="test-secret", anomaly_repository=anomalies, insight_repository=insights,
-        daily_budget_writer=write_daily_budget, now=NOW.replace(hour=9),
+        now=NOW.replace(hour=9),
     )
 
     assert first.batch == second.batch == "operations-v2"
     assert seeds.list_request_refs(tenant_ref="tenant_demo_ref", workspace_id="ws-demo", batch="operations-v1") == ()
     assert set(seeds.list_request_refs(tenant_ref="tenant_demo_ref", workspace_id="ws-demo", batch="operations-v2")) == {event.request_ref for event in second.events}
     assert {event.request_ref for event in legacy.events}.isdisjoint({event.request_ref for event in first.events})
-    assert len(anomalies.list("tenant_demo_ref")) == 6
+    assert len(anomalies.list("tenant_demo_ref")) == 7
+    assert len({item.policy_type for item in anomalies.list("tenant_demo_ref")}) == 6
+    preserved = anomalies.get("tenant_demo_ref", "anom-manual-review")
+    assert preserved is not None
+    assert preserved.status == "acknowledged"
+    assert preserved.observed_value == 7
+    FinOpsAnomalyService(anomalies).reconcile(
+        tenant_ref="tenant_demo_ref",
+        findings=evaluate_default_anomalies(
+            AnomalyEvaluationInput(
+                events=list(second.events),
+                trailing_token_median=1120,
+            )
+        ),
+        scope_workspace_ids=("ws-demo",),
+    )
+    assert len(anomalies.list("tenant_demo_ref")) == 7
     stored = insights.list(tenant_ref="tenant_demo_ref", authorized_workspace_ids=("ws-demo",), limit=10).items
     assert len(stored) == 2
     assert {item.agent_kind for item in stored} == {"finops", "roi"}
     assert all(item.status == "ready" and item.expires_at > item.generated_at for item in stored)
     assert any("未验证" in item.summary for item in stored if item.agent_kind == "roi")
     assert all(item.evidence_refs for item in stored)
-    assert len(daily_budget_writes) == 2
-    assert {
-        (tenant_ref, workspace_id, seed_key)
-        for tenant_ref, workspace_id, _configuration, seed_key in daily_budget_writes
-    } == {("tenant_demo_ref", "ws-demo", "operations-v2")}
-    assert daily_budget_writes[-1][2] == {
-        "daily_budget_usd": 5.0,
-        "warning_pct": 80,
-        "critical_pct": 100,
-    }

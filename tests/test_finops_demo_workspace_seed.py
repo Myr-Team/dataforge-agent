@@ -8,6 +8,7 @@ from backend.finops.demo_seed_repository import InMemoryDemoSeedRepository
 from backend.finops.demo_workspace_seed import seed_demo_workspace
 from backend.finops.anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
 from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
+from backend.finops.member_budgets import MemberBudget
 from backend.finops.repository import InMemoryFinOpsRepository
 
 
@@ -295,6 +296,50 @@ def test_seed_adds_workspace_display_subjects_and_idempotent_budgets() -> None:
         row.revision for row in budgets.list_budgets("tenant_demo")
     ]
     assert first.event_count == second.event_count
+
+
+def test_seed_never_overwrites_an_administrator_modified_member_budget() -> None:
+    budgets = InMemoryMemberBudgetRepository()
+    seed_demo_workspace(
+        InMemoryFinOpsRepository(),
+        InMemoryDemoSeedRepository(),
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        allowed_workspace_id="ws-demo",
+        budget_repository=budgets,
+        hmac_secret="test-secret",
+        now=NOW,
+    )
+    current = budgets.get_budget("tenant_demo", "budget_demo_1")
+    assert current is not None
+    budgets.save_budget(
+        "tenant_demo",
+        MemberBudget(
+            **current.model_dump(exclude={"amount_usd", "revision", "updated_by_ref", "updated_at"}),
+            amount_usd=999,
+            revision=current.revision + 1,
+            updated_by_ref="actor-admin",
+            updated_at=NOW.replace(hour=9),
+        ),
+        base_revision=current.revision,
+    )
+
+    seed_demo_workspace(
+        InMemoryFinOpsRepository(),
+        InMemoryDemoSeedRepository(),
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        allowed_workspace_id="ws-demo",
+        budget_repository=budgets,
+        hmac_secret="test-secret",
+        now=NOW.replace(hour=10),
+    )
+
+    preserved = budgets.get_budget("tenant_demo", "budget_demo_1")
+    assert preserved is not None
+    assert preserved.amount_usd == 999
+    assert preserved.updated_by_ref == "actor-admin"
+    assert preserved.revision == current.revision + 1
 
 
 def test_seed_rejects_non_allowlisted_workspace_without_writes() -> None:

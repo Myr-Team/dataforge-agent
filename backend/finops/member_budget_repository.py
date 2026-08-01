@@ -5,7 +5,12 @@ from threading import RLock
 from typing import Protocol
 
 from .budget_subjects import BudgetSubject
-from .member_budgets import BudgetAlert, MemberBudget, NotificationSetting
+from .member_budgets import (
+    BudgetAlert,
+    MemberBudget,
+    MemberCostSummary,
+    NotificationSetting,
+)
 from .sql_repository import FinOpsPersistenceError
 
 
@@ -22,6 +27,13 @@ class MemberBudgetRepository(Protocol):
     ) -> tuple[BudgetSubject, ...]: ...
     def get_budget(self, tenant_ref: str, budget_id: str) -> MemberBudget | None: ...
     def list_budgets(self, tenant_ref: str, *, include_disabled: bool = False) -> tuple[MemberBudget, ...]: ...
+    def summarize_month(
+        self,
+        tenant_ref: str,
+        from_value: datetime,
+        to_value: datetime,
+        workspace_ids: tuple[str, ...],
+    ) -> dict[str, MemberCostSummary]: ...
     def save_budget(self, tenant_ref: str, value: MemberBudget, *, base_revision: int) -> MemberBudget: ...
     def disable_budget(
         self, tenant_ref: str, budget_id: str, *, base_revision: int, updated_by_ref: str
@@ -108,6 +120,18 @@ class InMemoryMemberBudgetRepository:
                 if tenant == tenant_ref and (include_disabled or value.enabled)
             ]
         return tuple(sorted(rows, key=lambda value: (value.member_ref, value.created_at, value.budget_id)))
+
+    def summarize_month(
+        self,
+        tenant_ref: str,
+        from_value: datetime,
+        to_value: datetime,
+        workspace_ids: tuple[str, ...],
+    ) -> dict[str, MemberCostSummary]:
+        del tenant_ref, from_value, to_value, workspace_ids
+        # The in-memory repository has no request ledger. Preserve the budget
+        # amount but report spend as unavailable instead of fabricating zero.
+        return {}
 
     def save_budget(self, tenant_ref: str, value: MemberBudget, *, base_revision: int) -> MemberBudget:
         key = (tenant_ref, value.budget_id)

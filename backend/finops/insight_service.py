@@ -1,15 +1,23 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from datetime import datetime, timezone
+from typing import Any, Callable, Mapping
 
 from .insight_repository import InsightPage
 from .insights import AgentKind, FinOpsInsight, insight_fingerprint
 
 
 class FinOpsInsightService:
-    def __init__(self, *, repository: Any, runner: Any) -> None:
+    def __init__(
+        self,
+        *,
+        repository: Any,
+        runner: Any,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
         self._repository = repository
         self._runner = runner
+        self._now = now or (lambda: datetime.now(timezone.utc))
 
     def analyze(
         self,
@@ -90,12 +98,25 @@ class FinOpsInsightService:
         cursor: str | None = None,
         limit: int = 20,
     ) -> InsightPage:
-        return self._repository.list(
+        page = self._repository.list(
             tenant_ref=tenant_ref,
             authorized_workspace_ids=authorized_workspace_ids,
             agent_kind=agent_kind,
             cursor=cursor,
             limit=limit,
+        )
+        point = self._now()
+        if point.tzinfo is None:
+            point = point.replace(tzinfo=timezone.utc)
+        return page.model_copy(
+            update={
+                "items": [
+                    item.model_copy(update={"status": "stale"})
+                    if item.status == "ready" and item.expires_at <= point
+                    else item
+                    for item in page.items
+                ]
+            }
         )
 
     def latest(

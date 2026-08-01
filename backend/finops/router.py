@@ -121,6 +121,8 @@ from .sql_remediation import SqlRemediationDraftRepository
 from .sql_anomalies import SqlFinOpsAnomalyRepository
 from .sql_repository import FinOpsPersistenceError
 from .sql_rollups import SqlFinOpsRollupRepository
+from .member_budget_repository import InMemoryMemberBudgetRepository
+from .sql_member_budgets import SqlMemberBudgetRepository
 
 
 router = APIRouter(prefix="/api/finops", tags=["finops"])
@@ -160,6 +162,8 @@ _PRICE_MAPPING_REPOSITORY = InMemoryPriceMappingRepository()
 _SQL_PRICE_MAPPING_REPOSITORY: SqlPriceMappingRepository | None = None
 _SQL_GATEWAY_UNMATCHED_REPOSITORY: SqlGatewayUnmatchedRepository | None = None
 _SQL_ROLLUP_REPOSITORY: SqlFinOpsRollupRepository | None = None
+_MEMBER_BUDGET_REPOSITORY = InMemoryMemberBudgetRepository()
+_SQL_MEMBER_BUDGET_REPOSITORY: SqlMemberBudgetRepository | None = None
 _ASSISTANT_STORE = InMemoryAssistantConversationStore()
 _SQL_ASSISTANT_STORE: SqlAssistantConversationStore | None = None
 
@@ -281,6 +285,17 @@ def get_finops_rollup_repository() -> SqlFinOpsRollupRepository:
             connection_factory=build_lineage_sql_connection_factory()
         )
     return _SQL_ROLLUP_REPOSITORY
+
+
+def get_finops_member_budget_repository() -> Any:
+    global _SQL_MEMBER_BUDGET_REPOSITORY
+    if _enabled("DF_FINOPS_SQL_ENABLED"):
+        if _SQL_MEMBER_BUDGET_REPOSITORY is None:
+            _SQL_MEMBER_BUDGET_REPOSITORY = SqlMemberBudgetRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        return _SQL_MEMBER_BUDGET_REPOSITORY
+    return _MEMBER_BUDGET_REPOSITORY
 
 
 def get_finops_action_service() -> FinOpsActionService:
@@ -738,6 +753,81 @@ def _bootstrap_budget(
     query: FinOpsQuery,
     metrics: Mapping[str, Any],
 ) -> dict[str, Any]:
+    cost = metrics.get("estimated_cost")
+    used_amount = cost.get("amount") if isinstance(cost, Mapping) else None
+    cost_status = str(cost.get("status") or "unavailable") if isinstance(cost, Mapping) else "unavailable"
+    if query.workspace_id:
+        repository = get_finops_member_budget_repository()
+        subjects = repository.list_budget_subjects(
+            query.tenant_ref,
+            query.workspace_id,
+            include_disabled=False,
+        )
+        member_refs = {item.subject_ref for item in subjects}
+        member_budgets = [
+            item
+            for item in repository.list_budgets(
+                query.tenant_ref,
+                include_disabled=False,
+            )
+            if item.member_ref in member_refs
+        ]
+        if member_budgets:
+            amount = round(sum(float(item.amount_usd) for item in member_budgets), 8)
+            month_start, month_end = _utc_month_window()
+            summaries = repository.summarize_month(
+                query.tenant_ref,
+                month_start,
+                month_end,
+                (query.workspace_id,),
+            )
+            selected = [summaries.get(item.member_ref) for item in member_budgets]
+            known = [
+                item for item in selected
+                if item is not None and item.estimated_spend_usd is not None
+            ]
+            used_amount = (
+                round(sum(float(item.estimated_spend_usd) for item in known), 8)
+                if known
+                else None
+            )
+            priced_requests = sum(item.priced_requests for item in selected if item is not None)
+            total_requests = sum(item.total_requests for item in selected if item is not None)
+            coverage_pct = (
+                round(priced_requests / total_requests * 100, 4)
+                if total_requests
+                else None
+            )
+            if not known:
+                budget_data_status = "unavailable"
+            elif (
+                len(known) == len(member_budgets)
+                and total_requests > 0
+                and priced_requests == total_requests
+            ):
+                budget_data_status = "complete"
+            else:
+                budget_data_status = "partial"
+            return {
+                "amount": amount,
+                "used_amount": used_amount,
+                "usage_pct": (
+                    round(float(used_amount) / amount * 100, 4)
+                    if used_amount is not None and amount > 0
+                    else None
+                ),
+                "status": "estimated" if used_amount is not None else "unavailable",
+                "source": "workspace_member_budgets",
+                "pricing_coverage_pct": coverage_pct,
+                "data_status": budget_data_status,
+                "priced_requests": priced_requests,
+                "total_requests": total_requests,
+                "period": {
+                    "type": "calendar_month_utc",
+                    "from": _iso(month_start),
+                    "to": _iso(month_end),
+                },
+            }
     budget_policy = next(
         (
             item
@@ -748,8 +838,6 @@ def _bootstrap_budget(
         ),
         None,
     )
-    cost = metrics.get("estimated_cost")
-    used_amount = cost.get("amount") if isinstance(cost, Mapping) else None
     if budget_policy is None:
         return {
             "amount": None,
@@ -769,7 +857,6 @@ def _bootstrap_budget(
         if used_amount is not None and amount > 0
         else None
     )
-    cost_status = str(cost.get("status") or "unavailable") if isinstance(cost, Mapping) else "unavailable"
     return {
         "amount": amount,
         "used_amount": used_amount,
@@ -777,6 +864,22 @@ def _bootstrap_budget(
         "status": cost_status,
         "source": "daily_cost_budget",
     }
+
+
+def _utc_month_window() -> tuple[datetime, datetime]:
+    start = datetime.now(timezone.utc).replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    end = (
+        start.replace(year=start.year + 1, month=1)
+        if start.month == 12
+        else start.replace(month=start.month + 1)
+    )
+    return start, end
 
 
 def _bootstrap_anomaly_summaries(query: FinOpsQuery) -> list[dict[str, Any]]:
@@ -1025,6 +1128,67 @@ async def list_budgets(
         payload = budget.model_dump(mode="json")
         payload["progress"] = progress.model_dump(mode="json")
         selected.append(payload)
+    if not selected and query.workspace_id:
+        member_budget = _bootstrap_budget(query, metrics)
+        if member_budget.get("source") == "workspace_member_budgets":
+            period = member_budget.get("period") or {}
+            amount = float(member_budget["amount"])
+            spent = member_budget.get("used_amount")
+            usage_pct = member_budget.get("usage_pct")
+            from_period = _parse_time(str(period["from"]))
+            to_period = _parse_time(str(period["to"]))
+            point = min(
+                max(datetime.now(timezone.utc), from_period),
+                to_period,
+            )
+            elapsed = (point - from_period).total_seconds()
+            duration = (to_period - from_period).total_seconds()
+            forecast = (
+                round(float(spent) * duration / elapsed, 4)
+                if spent is not None and elapsed > 0
+                else None
+            )
+            threshold_state = (
+                "unavailable"
+                if usage_pct is None
+                else "critical"
+                if float(usage_pct) >= 100
+                else "warning"
+                if float(usage_pct) >= 80
+                else "normal"
+            )
+            selected.append(
+                {
+                    "budget_id": "workspace_member_budgets",
+                    "name": "工作区成员月度预算",
+                    "scope_type": "workspace",
+                    "scope_id": query.workspace_id,
+                    "period_start": period["from"],
+                    "period_end": period["to"],
+                    "amount": amount,
+                    "currency": "USD",
+                    "warning_pct": 80,
+                    "critical_pct": 100,
+                    "version": 1,
+                    "created_by": "system_projection",
+                    "updated_at": _iso(point),
+                    "progress": {
+                        "budget_id": "workspace_member_budgets",
+                        "amount": amount,
+                        "spent_amount": spent,
+                        "usage_pct": usage_pct,
+                        "forecast_amount": forecast,
+                        "forecast_status": (
+                            "estimated" if forecast is not None else "unavailable"
+                        ),
+                        "confidence": member_budget.get("data_status", "unavailable"),
+                        "priced_requests": int(member_budget.get("priced_requests") or 0),
+                        "total_requests": int(member_budget.get("total_requests") or 0),
+                        "threshold_state": threshold_state,
+                        "currency": "USD",
+                    },
+                }
+            )
     return {
         "items": selected,
         "count": len(selected),
@@ -1294,7 +1458,7 @@ def _decision_anomalies_from_events(
     selected = set(scope_workspace_ids)
     return [
         {
-            **item.model_dump(mode="json", exclude={"tenant_ref"}),
+            **item.model_dump(mode="json", exclude={"tenant_ref", "origin"}),
             "evidence_state": "observed",
         }
         for item in managed
@@ -2062,7 +2226,10 @@ async def anomalies(
     payload.pop("items", None)
     payload.update(
         {
-            "items": [item.model_dump(mode="json", exclude={"tenant_ref"}) for item in managed],
+            "items": [
+                item.model_dump(mode="json", exclude={"tenant_ref", "origin"})
+                for item in managed
+            ],
             "count": len(managed),
             "next_cursor": None,
         }
@@ -2681,7 +2848,12 @@ async def acknowledge_anomaly(anomaly_id: str, request: Request) -> dict[str, An
     except Exception as exc:
         raise _anomaly_error(exc) from exc
     _bump_finops_domains(tenant_ref, list(current.workspace_ids), ("risk",))
-    return {"anomaly": anomaly.model_dump(mode="json", exclude={"tenant_ref"})}
+    return {
+        "anomaly": anomaly.model_dump(
+            mode="json",
+            exclude={"tenant_ref", "origin"},
+        )
+    }
 
 
 @router.post("/anomalies/{anomaly_id}/suppress")
@@ -2702,7 +2874,12 @@ async def suppress_anomaly(anomaly_id: str, body: dict[str, Any], request: Reque
     except Exception as exc:
         raise _anomaly_error(exc) from exc
     _bump_finops_domains(tenant_ref, list(current.workspace_ids), ("risk",))
-    return {"anomaly": anomaly.model_dump(mode="json", exclude={"tenant_ref"})}
+    return {
+        "anomaly": anomaly.model_dump(
+            mode="json",
+            exclude={"tenant_ref", "origin"},
+        )
+    }
 
 
 @router.get("/departments")

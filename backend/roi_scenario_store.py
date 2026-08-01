@@ -55,18 +55,20 @@ def upsert_demo_roi_scenario(
     scenario_id = (
         "roi_scenario_"
         + hashlib.sha256(
-            f"{workspace}:{clean_seed_key}".encode("utf-8")
+            f"{workspace}:operations-demo".encode("utf-8")
         ).hexdigest()[:16]
     )
     with _LOCK:
         scenarios = list_roi_scenarios(workspace)
+        demo_owned = [
+            item for item in scenarios if str(item.get("seed_batch") or "").strip()
+        ]
         existing = next(
             (
-                item
-                for item in scenarios
+                item for item in demo_owned
                 if item.get("scenario_id") == scenario_id
             ),
-            None,
+            demo_owned[0] if demo_owned else None,
         )
         now = _now()
         result = _scenario_result(inputs)
@@ -88,7 +90,7 @@ def upsert_demo_roi_scenario(
         scenarios = [
             item
             for item in scenarios
-            if item.get("scenario_id") != scenario_id
+            if not str(item.get("seed_batch") or "").strip()
         ]
         scenarios.append(scenario)
         _persist(workspace, scenarios)

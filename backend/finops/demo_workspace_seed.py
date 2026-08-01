@@ -474,6 +474,13 @@ def _seed_budgets(
     for index, (subject, amount, thresholds) in enumerate(specs, start=1):
         budget_id = f"budget_demo_{index}"
         current = repository.get_budget(tenant_ref, budget_id)
+        if current is not None and not (
+            str(current.created_by_ref).startswith("seed_operations-")
+            and str(current.updated_by_ref).startswith("seed_operations-")
+        ):
+            # The initializer no longer owns a budget after an administrator
+            # edits it. Preserve that revision on every future seed run.
+            continue
         if (
             current is not None
             and current.member_ref == subject.subject_ref

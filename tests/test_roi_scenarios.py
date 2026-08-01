@@ -135,6 +135,35 @@ def test_demo_roi_scenario_upsert_is_stable_and_keeps_internal_seed_batch(monkey
     assert len(roi_scenario_store.list_roi_scenarios("ws-1")) == 1
 
 
+def test_demo_roi_upgrade_replaces_only_demo_owned_scenario(monkeypatch, tmp_path: Path) -> None:
+    _configure_store(monkeypatch, tmp_path)
+    first = roi_scenario_store.upsert_demo_roi_scenario(
+        "ws-1",
+        _dataforge_payload(),
+        None,
+        seed_key="operations-v1",
+    )
+    user = roi_scenario_store.create_roi_scenario(
+        "ws-1",
+        _dataforge_payload(hours_saved=64),
+        {"actor_id": "owner-user"},
+    )
+    upgraded = roi_scenario_store.upsert_demo_roi_scenario(
+        "ws-1",
+        _dataforge_payload(hours_saved=48),
+        None,
+        seed_key="operations-v2",
+    )
+
+    rows = roi_scenario_store.list_roi_scenarios("ws-1")
+    demo_rows = [item for item in rows if item.get("seed_batch")]
+    assert first["scenario_id"] == upgraded["scenario_id"]
+    assert len(demo_rows) == 1
+    assert demo_rows[0]["seed_batch"] == "operations-v2"
+    assert demo_rows[0]["inputs"]["hours_saved"] == 48
+    assert any(item["scenario_id"] == user["scenario_id"] for item in rows)
+
+
 def test_scenario_projection_omits_email_and_rejects_nonfinite_or_foreign_revision(monkeypatch, tmp_path: Path) -> None:
     _configure_store(monkeypatch, tmp_path)
     actor = {"actor_id": "owner-1", "tenant_id": "tenant-1", "email": "owner@example.com", "source": "easy_auth"}

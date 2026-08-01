@@ -27,8 +27,6 @@ from .sql_member_budgets import SqlMemberBudgetRepository
 from .sql_repository import SqlFinOpsRepository
 from .sql_anomalies import SqlFinOpsAnomalyRepository
 from .insight_repository import SqlInsightRepository
-from .sql_management import SqlFinOpsManagementRepository
-from .management import FinOpsPolicy
 
 
 _OPAQUE_TENANT_REF = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{7,127}$")
@@ -54,7 +52,6 @@ def initialize_demo_workspace(
     run_writer: Callable[..., Any] | None = None,
     anomaly_repository: Any | None = None,
     insight_repository: Any | None = None,
-    daily_budget_writer: Callable[..., Any] | None = None,
     now: datetime | None = None,
 ) -> DemoSeedResult:
     clean_tenant_ref = str(tenant_ref or "").strip()
@@ -85,15 +82,18 @@ def initialize_demo_workspace(
     )
     anchor = now or datetime.now(timezone.utc)
     if anomaly_repository is not None:
-        FinOpsAnomalyService(anomaly_repository).reconcile(
+        FinOpsAnomalyService(anomaly_repository).upsert_findings(
             tenant_ref=clean_tenant_ref,
-            findings=evaluate_default_anomalies(AnomalyEvaluationInput(events=list(result.events), trailing_token_median=1120)),
-            scope_workspace_ids=(clean_workspace_id,),
+            findings=evaluate_default_anomalies(
+                AnomalyEvaluationInput(
+                    events=list(result.events),
+                    trailing_token_median=1120,
+                )
+            ),
+            origin="runtime",
         )
     if insight_repository is not None:
         _persist_demo_insights(insight_repository, tenant_ref=clean_tenant_ref, workspace_id=clean_workspace_id, result=result, now=anchor)
-    if daily_budget_writer is not None:
-        daily_budget_writer(clean_tenant_ref, clean_workspace_id, {"daily_budget_usd": 5.0, "warning_pct": 80, "critical_pct": 100}, seed_key=result.batch)
     return result
 
 
@@ -206,7 +206,6 @@ def main(argv: list[str] | None = None) -> int:
     factory = build_lineage_sql_connection_factory()
     run_stats: dict[str, int] = {}
     outcome_stats: dict[str, Any] = {}
-    management_repository = SqlFinOpsManagementRepository(connection_factory=factory)
 
     def write_runs(
         workspace_id: str,
@@ -221,14 +220,6 @@ def main(argv: list[str] | None = None) -> int:
                 seed_key=seed_key,
             )
         )
-
-    def write_daily_budget(tenant_ref: str, workspace_id: str, configuration: Mapping[str, Any], *, seed_key: str) -> None:
-        policy_id = f"demo_daily_budget_{workspace_id}"[:160]
-        current = management_repository.get_policy(tenant_ref, policy_id)
-        management_repository.save_policy(tenant_ref, FinOpsPolicy(
-            policy_id=policy_id, policy_type="daily_cost_budget", status="enabled", configuration=dict(configuration),
-            version=current.version if current else 1, updated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), updated_by=f"seed_{seed_key}"[:128],
-        ))
 
     result = initialize_demo_workspace(
         tenant_ref=arguments.tenant_ref,
@@ -259,7 +250,6 @@ def main(argv: list[str] | None = None) -> int:
         run_writer=write_runs,
         anomaly_repository=SqlFinOpsAnomalyRepository(connection_factory=factory),
         insight_repository=SqlInsightRepository(connection_factory=factory),
-        daily_budget_writer=write_daily_budget,
         now=datetime.now(timezone.utc),
     )
     print(

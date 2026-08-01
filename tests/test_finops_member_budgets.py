@@ -147,6 +147,17 @@ def test_repository_rejects_second_enabled_budget_for_the_same_member() -> None:
         )
 
 
+def test_inmemory_repository_reports_missing_monthly_ledger_as_unavailable() -> None:
+    repository = InMemoryMemberBudgetRepository()
+
+    assert repository.summarize_month(
+        "tenant_a",
+        datetime(2026, 7, 1, tzinfo=timezone.utc),
+        datetime(2026, 8, 1, tzinfo=timezone.utc),
+        ("ws-a",),
+    ) == {}
+
+
 def test_repository_treats_only_matching_alert_threshold_as_idempotent() -> None:
     repository = InMemoryMemberBudgetRepository()
     now = datetime(2026, 7, 29, tzinfo=timezone.utc)
