@@ -714,7 +714,7 @@ test("idle ROI cleanup does not abort shared store work after prefetch starts", 
 });
 
 
-test("App and Portal wire the production cache lifecycle instead of force-loading every mount", async () => {
+test("App and Portal import the shared production cache lifecycle", async () => {
   const { readFile } = await import("node:fs/promises");
   const [app, portal] = await Promise.all([
     readFile(new URL("./App.jsx", import.meta.url), "utf8"),
@@ -728,7 +728,9 @@ test("App and Portal wire the production cache lifecycle instead of force-loadin
   assert.match(portal, /loadFinOpsTab/);
   assert.match(portal, /prefetchFinOpsTab/);
   assert.match(portal, /finopsTabIntentHandlers/);
-  assert.match(portal, /createFinOpsRefreshTracker/);
-  assert.match(portal, /refreshTracker\.current\.reset\(\)/);
+  assert.match(portal, /useFinOpsRefreshLifecycle/);
+  assert.match(portal, /useFinOpsTabResource/);
+  assert.match(portal, /useFinOpsComparisonLifecycle/);
+  assert.match(portal, /useFinOpsIdlePreload/);
   assert.doesNotMatch(portal, /prefetchFinOpsBootstrap\([\s\S]{0,240}force:\s*true/);
 });

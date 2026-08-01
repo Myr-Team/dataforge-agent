@@ -42,20 +42,21 @@ import {
 import {
   cancelFinOpsDataLoad,
   finopsDataKey,
-  loadFinOpsData,
   readFinOpsData,
 } from "./finopsDataStore.js";
 import {
-  createFinOpsRequestGuard,
-  createFinOpsRefreshTracker,
   finopsTabDataKey,
   finopsTabIntentHandlers,
   invalidateFinOpsMutation,
   loadFinOpsTab,
   prefetchFinOpsTab,
-  scheduleFinOpsTabPreload,
-  settleFinOpsLoadFailure,
 } from "./finopsNavigation.js";
+import {
+  useFinOpsComparisonLifecycle,
+  useFinOpsIdlePreload,
+  useFinOpsRefreshLifecycle,
+  useFinOpsTabResource,
+} from "./finopsPortalLifecycle.js";
 import { FinOpsAssistant } from "./FinOpsAssistant.jsx";
 import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
 import { RemediationDraftPanel } from "./finops/RemediationDraftPanel.jsx";
@@ -75,7 +76,6 @@ import {
 } from "./finopsInteraction.js";
 import {
   CUSTOMER_INFRA_LABELS,
-  FINOPS_REFRESH_MS,
   FINOPS_TABS,
   finopsBootstrapViewData,
   finopsBudgetView,
@@ -1039,23 +1039,8 @@ export function FinOpsPortal({
     generatedAt: initialCacheRef.current.value?.freshness?.generated_at || "",
     data: initialView,
   });
-  const [detailState, setDetailState] = useState({
-    dataScopeKey: "",
-    tab: "",
-    loading: false,
-    updating: false,
-    error: "",
-    data: {},
-  });
   const [filterOptions, setFilterOptions] = useState(initialView.filterOptions);
   const [comparisonEnabled, setComparisonEnabled] = useState(false);
-  const [comparisonState, setComparisonState] = useState({ loading: false, error: "", data: null });
-  const [tabRefreshes, setTabRefreshes] = useState({
-    overview: { version: 0, force: false, scopeKey: "" },
-    cost: { version: 0, force: false, scopeKey: "" },
-    roi: { version: 0, force: false, scopeKey: "" },
-    risk: { version: 0, force: false, scopeKey: "" },
-  });
   const [selectedRiskId, setSelectedRiskId] = useState(undefined);
   const [remediationState, setRemediationState] = useState({
     open: false,
@@ -1086,9 +1071,6 @@ export function FinOpsPortal({
     detail: null,
   });
   const overviewSequence = useRef(0);
-  const detailSequence = useRef(0);
-  const comparisonGuard = useRef(createFinOpsRequestGuard());
-  const refreshTracker = useRef(createFinOpsRefreshTracker());
   const evidenceController = useRef(null);
   const evidenceTrigger = useRef(null);
   const roiDialogController = useRef(null);
@@ -1119,10 +1101,6 @@ export function FinOpsPortal({
     workspaceId,
   ]);
   const authorizationFingerprint = String(dataScope.authorizationFingerprint || "");
-  const refreshScopeKey = useMemo(
-    () => JSON.stringify([authorizationFingerprint, queryScopeKey]),
-    [authorizationFingerprint, queryScopeKey],
-  );
   const defaultScope = (
     windowValue.from === initialWindowRef.current.from
     && windowValue.to === initialWindowRef.current.to
@@ -1171,21 +1149,92 @@ export function FinOpsPortal({
       { signal, refresh: force },
     ),
   }), [query, workspaceId]);
-  const requestTabRefresh = useCallback((targetTab, { force = true } = {}) => {
-    if (!["overview", "cost", "roi", "risk"].includes(targetTab)) return;
-    setTabRefreshes((current) => ({
-      ...current,
-      [targetTab]: {
-        version: current[targetTab].version + 1,
-        force: Boolean(force),
-        scopeKey: refreshScopeKey,
-      },
-    }));
-  }, [refreshScopeKey]);
-  const refresh = useCallback(
-    () => requestTabRefresh(tab, { force: true }),
-    [requestTabRefresh, tab],
+  const {
+    consumeForce,
+    manualRefresh: refresh,
+    markSuccessful,
+    refreshRequests: tabRefreshes,
+    requestTabRefresh,
+  } = useFinOpsRefreshLifecycle({
+    authorizationFingerprint,
+    queryScopeKey,
+    currentTab: tab,
+  });
+  const overviewRefresh = tabRefreshes.overview;
+  const detailRefresh = tabRefreshes[tab] || { version: 0, force: false, scopeKey: "" };
+  const handleDetailSuccess = useCallback((_data, meta) => {
+    markSuccessful(tab, meta?.storedAt || undefined);
+  }, [markSuccessful, tab]);
+  const [detailState, setDetailState] = useFinOpsTabResource({
+    enabled: Boolean(workspaceId && tab !== "overview"),
+    tab,
+    cacheKey: tabKeys[tab],
+    loader: tabLoaders[tab],
+    scopeKey: queryScopeKey,
+    refreshRequest: detailRefresh,
+    consumeForce,
+    onSuccess: handleDetailSuccess,
+    initialState: {
+      dataScopeKey: "",
+      tab: "",
+      loading: false,
+      updating: false,
+      error: "",
+      data: {},
+    },
+  });
+  const comparisonWindow = useMemo(
+    () => previousEqualWindow({ from: query.from, to: query.to }),
+    [query.from, query.to],
   );
+  const comparisonEligible = Boolean(
+    comparisonEnabled
+    && workspaceId
+    && ["overview", "cost"].includes(tab)
+    && comparisonWindow,
+  );
+  const comparisonKey = useMemo(() => {
+    if (!comparisonEligible) return "";
+    return finopsDataKey({
+      tenantScope: dataScope.tenantScope,
+      permissionSummary: [
+        ...(dataScope.permissions || []),
+        ...(dataScope.authorizedWorkspaceScope || []),
+      ],
+      workspaceId,
+      domain: `${tab}:comparison`,
+      window: comparisonWindow,
+      filters: {
+        departmentId: query.departmentId,
+        agentId: query.agentId,
+        model: query.model,
+      },
+      schemaRevision: "finops-comparison-v1",
+    });
+  }, [comparisonEligible, comparisonWindow, dataScope, query.agentId, query.departmentId, query.model, tab, workspaceId]);
+  const comparisonLoader = useCallback(({ signal, refresh: force }) => loadFinOpsTrends("day", {
+    ...query,
+    from: comparisonWindow?.from,
+    to: comparisonWindow?.to,
+  }, { signal, refresh: force }), [comparisonWindow, query]);
+  const comparisonState = useFinOpsComparisonLifecycle({
+    enabled: comparisonEligible,
+    tab,
+    cacheKey: comparisonKey,
+    domain: `${tab}:comparison`,
+    loader: comparisonLoader,
+    refreshRequest: tab === "overview" ? overviewRefresh : detailRefresh,
+    consumeForce,
+  });
+  useFinOpsIdlePreload({
+    enabled: Boolean(
+      overviewState.data?.overview?.metrics
+      && overviewState.dataScopeKey === queryScopeKey
+    ),
+    tab: "roi",
+    keys: tabKeys,
+    loaders: tabLoaders,
+  });
   const openAssistant = useCallback((context) => {
     setAssistantState((state) => ({
       context,
@@ -1339,23 +1388,11 @@ export function FinOpsPortal({
     }
   }, [permissions, query]);
 
-  const overviewRefresh = tabRefreshes.overview;
-  const detailRefresh = tabRefreshes[tab] || { version: 0, force: false, scopeKey: "" };
-
-  useEffect(() => {
-    refreshTracker.current.reset();
-  }, [authorizationFingerprint]);
-
   useEffect(() => {
     const key = tabKeys.overview;
     if (!workspaceId || !key) return undefined;
     const current = ++overviewSequence.current;
-    const force = refreshTracker.current.consumeForce(
-      refreshScopeKey,
-      "overview",
-      "main",
-      overviewRefresh,
-    );
+    const force = consumeForce("overview", "main", overviewRefresh);
     const lifecycle = loadFinOpsTab({
       tab: "overview",
       key,
@@ -1376,7 +1413,7 @@ export function FinOpsPortal({
       });
       setFilterOptions(view.filterOptions);
       if (cached.storedAt) {
-        refreshTracker.current.markSuccessful(refreshScopeKey, "overview", cached.storedAt);
+        markSuccessful("overview", cached.storedAt);
       }
     } else {
       setOverviewState({
@@ -1393,7 +1430,7 @@ export function FinOpsPortal({
     lifecycle.promise.then((payload) => {
       if (current !== overviewSequence.current) return;
       const view = finopsBootstrapViewData(payload);
-      refreshTracker.current.markSuccessful(refreshScopeKey, "overview");
+      markSuccessful("overview");
       setOverviewState({
         dataScopeKey: queryScopeKey,
         loading: false,
@@ -1419,173 +1456,7 @@ export function FinOpsPortal({
         cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
       }
     };
-  }, [overviewRefresh.force, overviewRefresh.version, queryScopeKey, refreshScopeKey, tabKeys, tabLoaders, workspaceId]);
-
-  useEffect(() => {
-    if (!workspaceId || tab === "overview") return undefined;
-    const key = tabKeys[tab];
-    if (!key) return undefined;
-    const current = ++detailSequence.current;
-    const force = refreshTracker.current.consumeForce(
-      refreshScopeKey,
-      tab,
-      "main",
-      detailRefresh,
-    );
-    const lifecycle = loadFinOpsTab({
-      tab,
-      key,
-      loader: tabLoaders[tab],
-      force,
-    });
-    if (lifecycle.cache.value) {
-      setDetailState({
-        dataScopeKey: queryScopeKey,
-        tab,
-        loading: false,
-        updating: lifecycle.requested,
-        error: lifecycle.cache.lastError ? "上次后台更新未完成，可稍后重试。" : "",
-        data: lifecycle.cache.value,
-      });
-      if (lifecycle.cache.storedAt) {
-        refreshTracker.current.markSuccessful(refreshScopeKey, tab, lifecycle.cache.storedAt);
-      }
-    } else {
-      setDetailState({
-        dataScopeKey: "",
-        tab,
-        loading: true,
-        updating: false,
-        error: "",
-        data: {},
-      });
-    }
-    lifecycle.promise.then((data) => {
-      if (current === detailSequence.current) {
-        refreshTracker.current.markSuccessful(refreshScopeKey, tab);
-        setDetailState({
-          dataScopeKey: queryScopeKey,
-          tab,
-          loading: false,
-          updating: false,
-          error: "",
-          data,
-        });
-      }
-    }).catch((error) => {
-      if (current !== detailSequence.current) return;
-      setDetailState((state) => settleFinOpsLoadFailure({
-        ...state,
-        tab,
-        data: state.tab === tab && state.dataScopeKey === queryScopeKey
-          ? state.data
-          : {},
-      }, error));
-    });
-    return () => {
-      if (lifecycle.ownsRequest) {
-        cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
-      }
-    };
-  }, [detailRefresh.force, detailRefresh.version, queryScopeKey, refreshScopeKey, tab, tabKeys, tabLoaders, workspaceId]);
-
-  useEffect(() => {
-    if (!comparisonEnabled || !workspaceId || !["overview", "cost"].includes(tab)) {
-      comparisonGuard.current.deactivate();
-      setComparisonState({ loading: false, error: "", data: null });
-      return undefined;
-    }
-    const comparisonWindow = previousEqualWindow({ from: query.from, to: query.to });
-    if (!comparisonWindow) {
-      comparisonGuard.current.deactivate();
-      setComparisonState({ loading: false, error: "", data: null });
-      return undefined;
-    }
-    const key = finopsDataKey({
-      tenantScope: dataScope.tenantScope,
-      permissionSummary: [
-        ...(dataScope.permissions || []),
-        ...(dataScope.authorizedWorkspaceScope || []),
-      ],
-      workspaceId,
-      domain: `${tab}:comparison`,
-      window: comparisonWindow,
-      filters: {
-        departmentId: query.departmentId,
-        agentId: query.agentId,
-        model: query.model,
-      },
-      schemaRevision: "finops-comparison-v1",
-    });
-    const guardedRequest = comparisonGuard.current.begin(key);
-    const cached = readFinOpsData(key);
-    setComparisonState({ loading: !cached.value, error: "", data: cached.value });
-    const refreshRequest = tab === "overview" ? overviewRefresh : detailRefresh;
-    const force = refreshTracker.current.consumeForce(
-      refreshScopeKey,
-      tab,
-      "comparison",
-      refreshRequest,
-    );
-    const request = loadFinOpsData(
-      key,
-      ({ signal }) => loadFinOpsTrends("day", {
-        ...query,
-        from: comparisonWindow.from,
-        to: comparisonWindow.to,
-      }, { signal, refresh: force }),
-      { domain: `${tab}:comparison`, force },
-    );
-    request.then((data) => {
-      if (!comparisonGuard.current.isActive(guardedRequest)) return;
-      setComparisonState({ loading: false, error: "", data });
-    }).catch((error) => {
-      if (!comparisonGuard.current.isActive(guardedRequest)) return;
-      setComparisonState((state) => settleFinOpsLoadFailure(
-        state,
-        error,
-        { fallbackMessage: "对比数据读取失败" },
-      ));
-    });
-    return () => {
-      comparisonGuard.current.deactivate(guardedRequest);
-      cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
-    };
-  }, [comparisonEnabled, dataScope, detailRefresh.force, detailRefresh.version, overviewRefresh.force, overviewRefresh.version, query, refreshScopeKey, tab, workspaceId]);
-
-  useEffect(() => {
-    if (
-      !overviewState.data?.overview?.metrics
-      || overviewState.dataScopeKey !== queryScopeKey
-    ) {
-      return undefined;
-    }
-    return scheduleFinOpsTabPreload("roi", {
-      keys: tabKeys,
-      loaders: tabLoaders,
-      host: window,
-      onError: (error) => console.warn("ROI background preload failed", error),
-    });
-  }, [overviewState.data, overviewState.dataScopeKey, queryScopeKey, tabKeys, tabLoaders]);
-
-  useEffect(() => {
-    const run = () => {
-      if (refreshTracker.current.isDue(
-        refreshScopeKey,
-        tab,
-        { hidden: document.hidden },
-      )) {
-        requestTabRefresh(tab, { force: true });
-      }
-    };
-    const timer = window.setInterval(run, FINOPS_REFRESH_MS);
-    const onVisibilityChange = () => run();
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [refreshScopeKey, requestTabRefresh, tab]);
+  }, [consumeForce, defaultScope, markSuccessful, overviewRefresh, queryScopeKey, tabKeys, tabLoaders, workspaceId]);
 
   useEffect(() => () => {
     evidenceController.current?.abort();
@@ -1660,7 +1531,7 @@ export function FinOpsPortal({
         force: true,
       }).promise;
       if (current !== remediationSequence.current) return null;
-      refreshTracker.current.markSuccessful(refreshScopeKey, "risk");
+      markSuccessful("risk");
       const opportunity = riskDecisionView(payload).priorities.find((item) => (
         item.id === opportunityId && item.baseVersion
       ));
@@ -1721,7 +1592,7 @@ export function FinOpsPortal({
       }));
       return null;
     }
-  }, [queryScopeKey, refreshScopeKey, tabKeys, tabLoaders, workspaceId]);
+  }, [markSuccessful, queryScopeKey, tabKeys, tabLoaders, workspaceId]);
 
   const runRemediation = async (kind, payload = {}) => {
     const opportunity = remediationOpportunityRef.current;
@@ -1842,12 +1713,12 @@ export function FinOpsPortal({
           data: cached.value,
         });
         if (cached.storedAt) {
-          refreshTracker.current.markSuccessful(refreshScopeKey, targetTab, cached.storedAt);
+          markSuccessful(targetTab, cached.storedAt);
         }
       }
     }
     setTab(targetTab);
-  }, [queryScopeKey, refreshScopeKey, tabKeys]);
+  }, [markSuccessful, queryScopeKey, tabKeys]);
   const handleModelSettingsChanged = useCallback((kind) => {
     invalidateFinOpsMutation(kind === "price" ? "price_setting" : "model_setting", {
       workspaceId,
