@@ -220,6 +220,11 @@ export function App() {
     capabilities: governanceCapabilities,
     workspaceAccess,
   }), [authState, governanceCapabilities, user, workspaceAccess, workspaceId]);
+  const finopsPortalScope = useMemo(() => (
+    finopsScope && finopsAuthorizationKey
+      ? { ...finopsScope, authorizationFingerprint: finopsAuthorizationKey }
+      : null
+  ), [finopsAuthorizationKey, finopsScope]);
   const preloadFinOps = useCallback(() => {
     if (!finopsScope) return Promise.resolve(null);
     // Hover/focus/touch intent handlers must not leave an unhandled rejection.
@@ -1255,7 +1260,7 @@ export function App() {
             onOpenTaskCenter={() => setTaskDrawerOpen(true)}
             workspaceAccess={workspaceAccess}
             governanceCapabilities={governanceCapabilities}
-            finopsPreloadScope={finopsScope}
+            finopsPreloadScope={finopsPortalScope}
           />
         </div>
       </div>

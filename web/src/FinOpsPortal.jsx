@@ -46,6 +46,7 @@ import {
   readFinOpsData,
 } from "./finopsDataStore.js";
 import {
+  createFinOpsRequestGuard,
   createFinOpsRefreshTracker,
   finopsTabDataKey,
   finopsTabIntentHandlers,
@@ -53,6 +54,7 @@ import {
   loadFinOpsTab,
   prefetchFinOpsTab,
   scheduleFinOpsTabPreload,
+  settleFinOpsLoadFailure,
 } from "./finopsNavigation.js";
 import { FinOpsAssistant } from "./FinOpsAssistant.jsx";
 import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
@@ -1047,7 +1049,7 @@ export function FinOpsPortal({
   });
   const [filterOptions, setFilterOptions] = useState(initialView.filterOptions);
   const [comparisonEnabled, setComparisonEnabled] = useState(false);
-  const [comparisonState, setComparisonState] = useState({ loading: false, data: null });
+  const [comparisonState, setComparisonState] = useState({ loading: false, error: "", data: null });
   const [tabRefreshes, setTabRefreshes] = useState({
     overview: { version: 0, force: false, scopeKey: "" },
     cost: { version: 0, force: false, scopeKey: "" },
@@ -1085,6 +1087,7 @@ export function FinOpsPortal({
   });
   const overviewSequence = useRef(0);
   const detailSequence = useRef(0);
+  const comparisonGuard = useRef(createFinOpsRequestGuard());
   const refreshTracker = useRef(createFinOpsRefreshTracker());
   const evidenceController = useRef(null);
   const evidenceTrigger = useRef(null);
@@ -1115,6 +1118,11 @@ export function FinOpsPortal({
     query.to,
     workspaceId,
   ]);
+  const authorizationFingerprint = String(dataScope.authorizationFingerprint || "");
+  const refreshScopeKey = useMemo(
+    () => JSON.stringify([authorizationFingerprint, queryScopeKey]),
+    [authorizationFingerprint, queryScopeKey],
+  );
   const defaultScope = (
     windowValue.from === initialWindowRef.current.from
     && windowValue.to === initialWindowRef.current.to
@@ -1170,10 +1178,10 @@ export function FinOpsPortal({
       [targetTab]: {
         version: current[targetTab].version + 1,
         force: Boolean(force),
-        scopeKey: queryScopeKey,
+        scopeKey: refreshScopeKey,
       },
     }));
-  }, [queryScopeKey]);
+  }, [refreshScopeKey]);
   const refresh = useCallback(
     () => requestTabRefresh(tab, { force: true }),
     [requestTabRefresh, tab],
@@ -1335,11 +1343,15 @@ export function FinOpsPortal({
   const detailRefresh = tabRefreshes[tab] || { version: 0, force: false, scopeKey: "" };
 
   useEffect(() => {
+    refreshTracker.current.reset();
+  }, [authorizationFingerprint]);
+
+  useEffect(() => {
     const key = tabKeys.overview;
     if (!workspaceId || !key) return undefined;
     const current = ++overviewSequence.current;
     const force = refreshTracker.current.consumeForce(
-      queryScopeKey,
+      refreshScopeKey,
       "overview",
       "main",
       overviewRefresh,
@@ -1364,7 +1376,7 @@ export function FinOpsPortal({
       });
       setFilterOptions(view.filterOptions);
       if (cached.storedAt) {
-        refreshTracker.current.markSuccessful(queryScopeKey, "overview", cached.storedAt);
+        refreshTracker.current.markSuccessful(refreshScopeKey, "overview", cached.storedAt);
       }
     } else {
       setOverviewState({
@@ -1381,7 +1393,7 @@ export function FinOpsPortal({
     lifecycle.promise.then((payload) => {
       if (current !== overviewSequence.current) return;
       const view = finopsBootstrapViewData(payload);
-      refreshTracker.current.markSuccessful(queryScopeKey, "overview");
+      refreshTracker.current.markSuccessful(refreshScopeKey, "overview");
       setOverviewState({
         dataScopeKey: queryScopeKey,
         loading: false,
@@ -1403,9 +1415,11 @@ export function FinOpsPortal({
       }));
     });
     return () => {
-      cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
+      if (lifecycle.ownsRequest) {
+        cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
+      }
     };
-  }, [overviewRefresh.force, overviewRefresh.version, queryScopeKey, tabKeys, tabLoaders, workspaceId]);
+  }, [overviewRefresh.force, overviewRefresh.version, queryScopeKey, refreshScopeKey, tabKeys, tabLoaders, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId || tab === "overview") return undefined;
@@ -1413,7 +1427,7 @@ export function FinOpsPortal({
     if (!key) return undefined;
     const current = ++detailSequence.current;
     const force = refreshTracker.current.consumeForce(
-      queryScopeKey,
+      refreshScopeKey,
       tab,
       "main",
       detailRefresh,
@@ -1434,7 +1448,7 @@ export function FinOpsPortal({
         data: lifecycle.cache.value,
       });
       if (lifecycle.cache.storedAt) {
-        refreshTracker.current.markSuccessful(queryScopeKey, tab, lifecycle.cache.storedAt);
+        refreshTracker.current.markSuccessful(refreshScopeKey, tab, lifecycle.cache.storedAt);
       }
     } else {
       setDetailState({
@@ -1448,7 +1462,7 @@ export function FinOpsPortal({
     }
     lifecycle.promise.then((data) => {
       if (current === detailSequence.current) {
-        refreshTracker.current.markSuccessful(queryScopeKey, tab);
+        refreshTracker.current.markSuccessful(refreshScopeKey, tab);
         setDetailState({
           dataScopeKey: queryScopeKey,
           tab,
@@ -1459,32 +1473,32 @@ export function FinOpsPortal({
         });
       }
     }).catch((error) => {
-      if (error?.name !== "AbortError" && current === detailSequence.current) {
-        setDetailState((state) => ({
-          ...state,
-          tab,
-          loading: false,
-          updating: false,
-          error: error instanceof Error ? error.message : "页面数据读取失败",
-          data: state.tab === tab && state.dataScopeKey === queryScopeKey
-            ? state.data
-            : {},
-        }));
-      }
+      if (current !== detailSequence.current) return;
+      setDetailState((state) => settleFinOpsLoadFailure({
+        ...state,
+        tab,
+        data: state.tab === tab && state.dataScopeKey === queryScopeKey
+          ? state.data
+          : {},
+      }, error));
     });
     return () => {
-      cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
+      if (lifecycle.ownsRequest) {
+        cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
+      }
     };
-  }, [detailRefresh.force, detailRefresh.version, queryScopeKey, tab, tabKeys, tabLoaders, workspaceId]);
+  }, [detailRefresh.force, detailRefresh.version, queryScopeKey, refreshScopeKey, tab, tabKeys, tabLoaders, workspaceId]);
 
   useEffect(() => {
     if (!comparisonEnabled || !workspaceId || !["overview", "cost"].includes(tab)) {
-      setComparisonState({ loading: false, data: null });
+      comparisonGuard.current.deactivate();
+      setComparisonState({ loading: false, error: "", data: null });
       return undefined;
     }
     const comparisonWindow = previousEqualWindow({ from: query.from, to: query.to });
     if (!comparisonWindow) {
-      setComparisonState({ loading: false, data: null });
+      comparisonGuard.current.deactivate();
+      setComparisonState({ loading: false, error: "", data: null });
       return undefined;
     }
     const key = finopsDataKey({
@@ -1503,11 +1517,12 @@ export function FinOpsPortal({
       },
       schemaRevision: "finops-comparison-v1",
     });
+    const guardedRequest = comparisonGuard.current.begin(key);
     const cached = readFinOpsData(key);
-    setComparisonState({ loading: !cached.value, data: cached.value });
+    setComparisonState({ loading: !cached.value, error: "", data: cached.value });
     const refreshRequest = tab === "overview" ? overviewRefresh : detailRefresh;
     const force = refreshTracker.current.consumeForce(
-      queryScopeKey,
+      refreshScopeKey,
       tab,
       "comparison",
       refreshRequest,
@@ -1522,14 +1537,21 @@ export function FinOpsPortal({
       { domain: `${tab}:comparison`, force },
     );
     request.then((data) => {
-      setComparisonState({ loading: false, data });
+      if (!comparisonGuard.current.isActive(guardedRequest)) return;
+      setComparisonState({ loading: false, error: "", data });
     }).catch((error) => {
-      if (error?.name !== "AbortError") setComparisonState({ loading: false, data: null });
+      if (!comparisonGuard.current.isActive(guardedRequest)) return;
+      setComparisonState((state) => settleFinOpsLoadFailure(
+        state,
+        error,
+        { fallbackMessage: "对比数据读取失败" },
+      ));
     });
     return () => {
+      comparisonGuard.current.deactivate(guardedRequest);
       cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
     };
-  }, [comparisonEnabled, dataScope, detailRefresh.force, detailRefresh.version, overviewRefresh.force, overviewRefresh.version, query, tab, workspaceId]);
+  }, [comparisonEnabled, dataScope, detailRefresh.force, detailRefresh.version, overviewRefresh.force, overviewRefresh.version, query, refreshScopeKey, tab, workspaceId]);
 
   useEffect(() => {
     if (
@@ -1549,7 +1571,7 @@ export function FinOpsPortal({
   useEffect(() => {
     const run = () => {
       if (refreshTracker.current.isDue(
-        queryScopeKey,
+        refreshScopeKey,
         tab,
         { hidden: document.hidden },
       )) {
@@ -1563,7 +1585,7 @@ export function FinOpsPortal({
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [queryScopeKey, requestTabRefresh, tab]);
+  }, [refreshScopeKey, requestTabRefresh, tab]);
 
   useEffect(() => () => {
     evidenceController.current?.abort();
@@ -1638,7 +1660,7 @@ export function FinOpsPortal({
         force: true,
       }).promise;
       if (current !== remediationSequence.current) return null;
-      refreshTracker.current.markSuccessful(queryScopeKey, "risk");
+      refreshTracker.current.markSuccessful(refreshScopeKey, "risk");
       const opportunity = riskDecisionView(payload).priorities.find((item) => (
         item.id === opportunityId && item.baseVersion
       ));
@@ -1699,7 +1721,7 @@ export function FinOpsPortal({
       }));
       return null;
     }
-  }, [queryScopeKey, tabKeys, tabLoaders, workspaceId]);
+  }, [queryScopeKey, refreshScopeKey, tabKeys, tabLoaders, workspaceId]);
 
   const runRemediation = async (kind, payload = {}) => {
     const opportunity = remediationOpportunityRef.current;
@@ -1820,12 +1842,12 @@ export function FinOpsPortal({
           data: cached.value,
         });
         if (cached.storedAt) {
-          refreshTracker.current.markSuccessful(queryScopeKey, targetTab, cached.storedAt);
+          refreshTracker.current.markSuccessful(refreshScopeKey, targetTab, cached.storedAt);
         }
       }
     }
     setTab(targetTab);
-  }, [queryScopeKey, tabKeys]);
+  }, [queryScopeKey, refreshScopeKey, tabKeys]);
   const handleModelSettingsChanged = useCallback((kind) => {
     invalidateFinOpsMutation(kind === "price" ? "price_setting" : "model_setting", {
       workspaceId,

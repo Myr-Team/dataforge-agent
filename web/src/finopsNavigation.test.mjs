@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   FINOPS_REFRESH_MS,
+  createFinOpsRequestGuard,
   createFinOpsRefreshTracker,
   finopsAuthorizationBoundary,
   finopsAuthorizationScopeKey,
@@ -16,6 +17,7 @@ import {
   reconcileFinOpsAuthorizationScope,
   scheduleFinOpsPreload,
   scheduleFinOpsTabPreload,
+  settleFinOpsLoadFailure,
   shouldRefreshFinOpsTab,
 } from "./finopsNavigation.js";
 import {
@@ -291,6 +293,83 @@ test("refresh tracker consumes a force request once per scope tab and resource",
 });
 
 
+test("refresh tracker reset clears success and consumed-force state at an authorization boundary", () => {
+  const tracker = createFinOpsRefreshTracker();
+  const refresh = { version: 1, force: true, scopeKey: "auth-a:query-a" };
+  tracker.markSuccessful("auth-a:query-a", "roi", 1_000);
+  assert.equal(tracker.consumeForce("auth-a:query-a", "roi", "main", refresh), true);
+
+  tracker.reset();
+
+  assert.equal(tracker.lastSuccessfulAt("auth-a:query-a", "roi"), 0);
+  assert.equal(tracker.consumeForce("auth-a:query-a", "roi", "main", refresh), true);
+});
+
+
+test("request guard rejects late completion after key change or deactivation", () => {
+  const guard = createFinOpsRequestGuard();
+  const first = guard.begin("cost:scope-a");
+  assert.equal(guard.isActive(first), true);
+  const second = guard.begin("cost:scope-b");
+  assert.equal(guard.isActive(first), false);
+  assert.equal(guard.isActive(second), true);
+  guard.deactivate(second);
+  assert.equal(guard.isActive(second), false);
+});
+
+
+test("request guard blocks late success and error from a loader that ignores abort", async () => {
+  const guard = createFinOpsRequestGuard();
+  let visible = { key: "initial" };
+  let resolveOld;
+  const oldRequest = guard.begin("comparison:scope-a");
+  const ignoredAbortSuccess = new Promise((resolve) => { resolveOld = resolve; })
+    .then((value) => {
+      if (guard.isActive(oldRequest)) visible = value;
+    });
+
+  const controller = new AbortController();
+  controller.abort();
+  const currentRequest = guard.begin("comparison:scope-b");
+  visible = { key: "scope-b" };
+  resolveOld({ key: "scope-a-late" });
+  await ignoredAbortSuccess;
+  assert.deepEqual(visible, { key: "scope-b" });
+
+  let rejectLate;
+  const ignoredAbortError = new Promise((_resolve, reject) => { rejectLate = reject; })
+    .catch(() => {
+      if (guard.isActive(currentRequest)) visible = { key: "late-error" };
+    });
+  guard.deactivate(currentRequest);
+  rejectLate(new Error("late failure"));
+  await ignoredAbortError;
+  assert.deepEqual(visible, { key: "scope-b" });
+});
+
+
+test("load failure settlement preserves data and ends active AbortError loading", () => {
+  const cached = { revision: 7 };
+  const networkError = new Error("network unavailable");
+  const failed = settleFinOpsLoadFailure({
+    loading: true,
+    updating: true,
+    error: "",
+    data: cached,
+  }, networkError);
+  assert.equal(failed.loading, false);
+  assert.equal(failed.updating, false);
+  assert.equal(failed.data, cached);
+  assert.equal(failed.error, "network unavailable");
+
+  const abortError = new Error("aborted");
+  abortError.name = "AbortError";
+  const aborted = settleFinOpsLoadFailure({ loading: true, updating: false, error: "", data: null }, abortError);
+  assert.equal(aborted.loading, false);
+  assert.match(aborted.error, /重试/);
+});
+
+
 function navigationScope() {
   return finopsPreloadScope({
     authState: "authenticated",
@@ -382,6 +461,8 @@ test("tab lifecycle renders fresh without a request and stale while one revalida
   assert.equal(stale.cache.status, "stale_usable");
   assert.equal(stale.cache.value.revision, 1);
   assert.equal(stale.requested, true);
+  assert.equal(stale.ownsRequest, true);
+  assert.equal(duplicate.ownsRequest, false);
   assert.equal(stale.promise, duplicate.promise);
   assert.equal(calls, 1);
   resolve({ revision: 2 });
@@ -418,6 +499,52 @@ test("missing lifecycle requests once and force is the only path that asks the s
   });
   await forced.promise;
   assert.deepEqual(refreshHints, [false, true]);
+});
+
+
+test("force arriving during ordinary tab load queues one real refresh request", async () => {
+  const scope = navigationScope();
+  const key = finopsTabDataKey("risk", { scope, query: currentQuery() });
+  const refreshHints = [];
+  let resolveOrdinary;
+  let resolveForced;
+  const ordinary = loadFinOpsTab({
+    tab: "risk",
+    key,
+    now: 1_000,
+    loader: ({ refresh }) => {
+      refreshHints.push(refresh);
+      return new Promise((resolve) => { resolveOrdinary = resolve; });
+    },
+  });
+  const forced = loadFinOpsTab({
+    tab: "risk",
+    key,
+    force: true,
+    now: 2_000,
+    loader: ({ refresh }) => {
+      refreshHints.push(refresh);
+      return new Promise((resolve) => { resolveForced = resolve; });
+    },
+  });
+  const duplicateForced = loadFinOpsTab({
+    tab: "risk",
+    key,
+    force: true,
+    now: 2_000,
+    loader: () => { throw new Error("duplicate force should share pending work"); },
+  });
+
+  assert.equal(ordinary.ownsRequest, true);
+  assert.equal(forced.ownsRequest, false);
+  assert.equal(forced.promise, duplicateForced.promise);
+  assert.deepEqual(refreshHints, [false]);
+  resolveOrdinary({ revision: 1 });
+  await ordinary.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(refreshHints, [false, true]);
+  resolveForced({ revision: 2 });
+  assert.equal((await forced.promise).revision, 2);
 });
 
 
@@ -550,7 +677,7 @@ test("scheduleFinOpsPreload fallback is bounded and cancellable before it runs",
 });
 
 
-test("idle tab preload runs only the requested ROI resource and aborts it on cancellation", async () => {
+test("idle ROI cleanup does not abort shared store work after prefetch starts", async () => {
   const scope = navigationScope();
   const keys = Object.fromEntries(["overview", "cost", "roi", "risk"].map((tab) => [
     tab,
@@ -558,33 +685,32 @@ test("idle tab preload runs only the requested ROI resource and aborts it on can
   ]));
   const calls = [];
   let scheduled;
+  let cancelledIdle = false;
   let observedSignal;
+  let resolveShared;
   const host = {
     requestIdleCallback(callback) {
       scheduled = callback;
       return 12;
     },
-    cancelIdleCallback() {},
+    cancelIdleCallback() { cancelledIdle = true; },
   };
   const loaders = Object.fromEntries(Object.keys(keys).map((tab) => [tab, ({ signal }) => {
     calls.push(tab);
     observedSignal = signal;
-    return new Promise((_resolve, reject) => {
-      signal.addEventListener("abort", () => {
-        const error = new Error("aborted");
-        error.name = "AbortError";
-        reject(error);
-      });
-    });
+    return new Promise((resolve) => { resolveShared = resolve; });
   }]));
 
   const cancel = scheduleFinOpsTabPreload("roi", { keys, loaders, host });
   scheduled();
   assert.deepEqual(calls, ["roi"]);
+  assert.equal(readFinOpsData(keys.roi).inFlight, true);
   cancel();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(observedSignal.aborted, true);
-  assert.equal(readFinOpsData(keys.roi).status, "missing");
+  assert.equal(cancelledIdle, false);
+  assert.equal(observedSignal.aborted, false);
+  resolveShared({ tab: "roi" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(readFinOpsData(keys.roi).status, "fresh");
 });
 
 
@@ -597,10 +723,12 @@ test("App and Portal wire the production cache lifecycle instead of force-loadin
 
   assert.match(app, /reconcileFinOpsAuthorizationScope/);
   assert.match(app, /tenantScope:/);
+  assert.match(app, /authorizationFingerprint:\s*finopsAuthorizationKey/);
   assert.doesNotMatch(app, /clearFinOpsBootstrap\(finopsScope\.key\)/);
   assert.match(portal, /loadFinOpsTab/);
   assert.match(portal, /prefetchFinOpsTab/);
   assert.match(portal, /finopsTabIntentHandlers/);
   assert.match(portal, /createFinOpsRefreshTracker/);
+  assert.match(portal, /refreshTracker\.current\.reset\(\)/);
   assert.doesNotMatch(portal, /prefetchFinOpsBootstrap\([\s\S]{0,240}force:\s*true/);
 });

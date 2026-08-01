@@ -99,9 +99,16 @@ function publicEntry(entry, status, value) {
     value,
     domain: entry.domain,
     storedAt: entry.storedAt,
-    inFlight: Boolean(entry.inFlight),
+    inFlight: Boolean(entry.inFlight || entry.pendingForced),
     lastError: entry.lastError,
   };
+}
+
+
+function abortedFinOpsLoad() {
+  const error = new Error("FinOps data load was superseded");
+  error.name = "AbortError";
+  return error;
 }
 
 
@@ -152,7 +159,8 @@ export function finopsDataKey({
 
 export function readFinOpsData(key, now = Date.now()) {
   const entry = entries.get(key);
-  if (!entry?.value) return { status: "missing", value: null };
+  if (!entry) return { status: "missing", value: null };
+  if (!entry.value) return publicEntry(entry, "missing", null);
   const age = Math.max(0, Number(now) - entry.storedAt);
   if (age <= FRESH_MS) return publicEntry(entry, "fresh", entry.value);
   if (age <= STALE_USABLE_MS) {
@@ -177,15 +185,59 @@ export function loadFinOpsData(
     storedAt: 0,
     value: null,
     inFlight: null,
+    inFlightForce: false,
+    pendingForced: null,
     abortController: null,
     lastError: null,
   };
-  if (current.inFlight) return current.inFlight;
+  if (force && current.pendingForced) return current.pendingForced;
+  if (current.inFlight) {
+    if (!force || current.inFlightForce) return current.inFlight;
+    const ordinary = current.inFlight;
+    const queuedEntry = current;
+    let pendingForced;
+    pendingForced = ordinary
+      .catch(() => undefined)
+      .then(() => {
+        if (entries.get(key) !== queuedEntry) throw abortedFinOpsLoad();
+        return startFinOpsDataLoad(key, queuedEntry, loader, {
+          domain,
+          force: true,
+          now,
+        });
+      })
+      .finally(() => {
+        if (entries.get(key) === queuedEntry && queuedEntry.pendingForced === pendingForced) {
+          queuedEntry.pendingForced = null;
+        }
+      });
+    current.pendingForced = pendingForced;
+    return pendingForced;
+  }
   if (!force && readFinOpsData(key, now).status === "fresh") {
     return Promise.resolve(current.value);
   }
 
+  return startFinOpsDataLoad(key, current, loader, {
+    domain,
+    force,
+    now,
+  });
+}
+
+
+function startFinOpsDataLoad(
+  key,
+  current,
+  loader,
+  { domain = "", force = false, now = Date.now() } = {},
+) {
+  if (entries.get(key) && entries.get(key) !== current) {
+    return Promise.reject(abortedFinOpsLoad());
+  }
+
   current.domain = String(domain || current.domain || "");
+  current.inFlightForce = Boolean(force);
   const abortController = new AbortController();
   current.abortController = abortController;
   entries.set(key, current);
@@ -219,6 +271,7 @@ export function loadFinOpsData(
     .finally(() => {
       if (entries.get(key) === current && current.inFlight === inFlight) {
         current.inFlight = null;
+        current.inFlightForce = false;
         current.abortController = null;
       }
     });
@@ -249,7 +302,7 @@ export function cancelFinOpsDataLoad(predicate) {
   let cancelled = 0;
   for (const [key, entry] of entries) {
     if (
-      !entry.inFlight
+      (!entry.inFlight && !entry.pendingForced)
       || !predicate(publicEntry(entry, readFinOpsData(key).status, entry.value), key)
     ) {
       continue;
@@ -257,6 +310,8 @@ export function cancelFinOpsDataLoad(predicate) {
     const replacement = {
       ...entry,
       inFlight: null,
+      inFlightForce: false,
+      pendingForced: null,
       abortController: null,
     };
     entries.set(key, replacement);

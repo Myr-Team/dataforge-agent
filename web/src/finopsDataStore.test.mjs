@@ -264,31 +264,130 @@ test("fresh entries render without another request", async () => {
 });
 
 
-test("stale entries remain visible while one request revalidates", async () => {
+test("a forced refresh queues behind ordinary revalidation and force callers share it", async () => {
   await loadFinOpsData(
     "tenant/ws/risk",
     async () => ({ revision: 1 }),
     { domain: "risk", now: 0 },
   );
-  let resolve;
-  const pending = new Promise((done) => { resolve = done; });
+  const calls = [];
+  let resolveOrdinary;
+  let resolveForced;
   const first = loadFinOpsData(
     "tenant/ws/risk",
-    () => pending,
+    () => {
+      calls.push("ordinary");
+      return new Promise((done) => { resolveOrdinary = done; });
+    },
     { domain: "risk", now: 360_001 },
   );
-  const second = loadFinOpsData(
+  const forced = loadFinOpsData(
     "tenant/ws/risk",
-    () => { throw new Error("duplicate request"); },
+    () => {
+      calls.push("forced");
+      return new Promise((done) => { resolveForced = done; });
+    },
+    { domain: "risk", force: true, now: 360_001 },
+  );
+  const duplicateForced = loadFinOpsData(
+    "tenant/ws/risk",
+    () => { throw new Error("duplicate forced request"); },
     { domain: "risk", force: true, now: 360_001 },
   );
 
-  assert.equal(first, second);
+  assert.notEqual(first, forced);
+  assert.equal(forced, duplicateForced);
+  assert.deepEqual(calls, ["ordinary"]);
   assert.equal(readFinOpsData("tenant/ws/risk", 360_001).status, "stale_usable");
   assert.equal(readFinOpsData("tenant/ws/risk", 360_001).value.revision, 1);
-  resolve({ revision: 2 });
-  assert.deepEqual(await Promise.all([first, second]), [{ revision: 2 }, { revision: 2 }]);
-  assert.equal(readFinOpsData("tenant/ws/risk", 360_001).value.revision, 2);
+  resolveOrdinary({ revision: 2 });
+  assert.equal((await first).revision, 2);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["ordinary", "forced"]);
+  resolveForced({ revision: 3 });
+  assert.deepEqual(await Promise.all([forced, duplicateForced]), [{ revision: 3 }, { revision: 3 }]);
+  assert.equal(readFinOpsData("tenant/ws/risk", 360_001).value.revision, 3);
+});
+
+
+test("clearing a scope prevents a queued force loader from starting after ignored abort", async () => {
+  const key = "tenant/ws/queued-force";
+  let resolveOrdinary;
+  let forceCalls = 0;
+  const ordinary = loadFinOpsData(
+    key,
+    () => new Promise((resolve) => { resolveOrdinary = resolve; }),
+    { domain: "risk", now: 1_000 },
+  );
+  const forced = loadFinOpsData(
+    key,
+    async () => {
+      forceCalls += 1;
+      return { revision: 2 };
+    },
+    { domain: "risk", force: true, now: 2_000 },
+  );
+
+  clearFinOpsData(key);
+  resolveOrdinary({ revision: 1 });
+  assert.equal((await ordinary).revision, 1);
+  await assert.rejects(forced, { name: "AbortError" });
+  assert.equal(forceCalls, 0);
+  assert.equal(readFinOpsData(key).status, "missing");
+});
+
+
+test("force callers share an already forced in-flight request", async () => {
+  const key = "tenant/ws/direct-force";
+  let resolveForced;
+  let calls = 0;
+  const first = loadFinOpsData(
+    key,
+    () => {
+      calls += 1;
+      return new Promise((resolve) => { resolveForced = resolve; });
+    },
+    { domain: "cost", force: true, now: 1_000 },
+  );
+  const duplicate = loadFinOpsData(
+    key,
+    () => { throw new Error("duplicate direct force"); },
+    { domain: "cost", force: true, now: 1_000 },
+  );
+
+  assert.equal(first, duplicate);
+  assert.equal(calls, 1);
+  resolveForced({ revision: 1 });
+  assert.equal((await duplicate).revision, 1);
+});
+
+
+test("tab cancellation invalidates a queued force between ordinary settlement and force start", async () => {
+  const key = "tenant/ws/queued-cancel-window";
+  let resolveOrdinary;
+  let forceCalls = 0;
+  const ordinary = loadFinOpsData(
+    key,
+    () => new Promise((resolve) => { resolveOrdinary = resolve; }),
+    { domain: "risk", now: 1_000 },
+  );
+  const cancellation = ordinary.then(() => (
+    cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key)
+  ));
+  const forced = loadFinOpsData(
+    key,
+    async () => {
+      forceCalls += 1;
+      return { revision: 2 };
+    },
+    { domain: "risk", force: true, now: 2_000 },
+  );
+
+  resolveOrdinary({ revision: 1 });
+  await ordinary;
+  assert.equal(await cancellation, 1);
+  await assert.rejects(forced, { name: "AbortError" });
+  assert.equal(forceCalls, 0);
 });
 
 
@@ -482,7 +581,7 @@ for (const [label, remove] of [
     const duplicate = loadFinOpsData(
       key,
       () => { throw new Error("replacement in-flight was lost"); },
-      { domain: "risk", force: true, now: 2_100 },
+      { domain: "risk", force: false, now: 2_100 },
     );
     assert.equal(duplicate, replacement);
     resolveNew({ revision: 2 });

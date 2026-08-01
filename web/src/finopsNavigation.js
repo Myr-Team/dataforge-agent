@@ -1,6 +1,5 @@
 import { finopsScopeKey } from "./finopsPreload.js";
 import {
-  cancelFinOpsDataLoad,
   finopsDataKey,
   invalidateFinOpsData,
   loadFinOpsData,
@@ -233,6 +232,7 @@ export function loadFinOpsTab({
   const domain = normalizedTab(tab);
   const cache = readFinOpsData(key, now);
   const requested = Boolean(force) || cache.status !== "fresh";
+  const ownsRequest = requested && !cache.inFlight;
   const promise = requested
     ? loadFinOpsData(
       key,
@@ -240,7 +240,7 @@ export function loadFinOpsTab({
       { domain, force: Boolean(force), now },
     )
     : Promise.resolve(cache.value);
-  return { cache, requested, promise };
+  return { cache, requested, ownsRequest, promise };
 }
 
 
@@ -271,6 +271,57 @@ export function shouldRefreshFinOpsTab({
 } = {}) {
   if (hidden) return false;
   return Number(now) - Number(lastSuccessfulAt || 0) >= FINOPS_REFRESH_MS;
+}
+
+
+export function createFinOpsRequestGuard() {
+  let generation = 0;
+  let activeKey = "";
+  const isActive = (request) => Boolean(
+    request
+    && request.generation === generation
+    && request.key === activeKey
+    && activeKey,
+  );
+  return {
+    begin(key) {
+      generation += 1;
+      activeKey = String(key || "");
+      return Object.freeze({ generation, key: activeKey });
+    },
+    isActive,
+    deactivate(request = null) {
+      if (request && !isActive(request)) return false;
+      generation += 1;
+      activeKey = "";
+      return true;
+    },
+  };
+}
+
+
+export function settleFinOpsLoadFailure(
+  state,
+  error,
+  { fallbackMessage = "页面数据读取失败" } = {},
+) {
+  const data = state?.data;
+  const hasUsableData = Boolean(
+    data
+    && typeof data === "object"
+    && (!Array.isArray(data) || data.length)
+    && (Array.isArray(data) || Object.keys(data).length),
+  );
+  const message = error?.name === "AbortError"
+    ? (hasUsableData ? "" : "数据更新已中止，请重试。")
+    : (error instanceof Error ? error.message : fallbackMessage);
+  return {
+    ...state,
+    loading: false,
+    updating: false,
+    error: message,
+    data,
+  };
 }
 
 
@@ -307,6 +358,10 @@ export function createFinOpsRefreshTracker() {
       if ((consumedForces.get(resourceKey) || 0) >= version) return false;
       consumedForces.set(resourceKey, version);
       return true;
+    },
+    reset() {
+      successful.clear();
+      consumedForces.clear();
     },
   };
 }
@@ -345,7 +400,6 @@ export function scheduleFinOpsTabPreload(tab, {
   onError = () => {},
 } = {}) {
   const domain = normalizedTab(tab);
-  const key = keys[domain];
   let started = false;
   const cancelSchedule = scheduleFinOpsPreload(() => {
     started = true;
@@ -354,9 +408,6 @@ export function scheduleFinOpsTabPreload(tab, {
     });
   }, host);
   return () => {
-    cancelSchedule();
-    if (started && key) {
-      cancelFinOpsDataLoad((_entry, entryKey) => entryKey === key);
-    }
+    if (!started) cancelSchedule();
   };
 }
