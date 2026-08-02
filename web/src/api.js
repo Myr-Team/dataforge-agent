@@ -148,9 +148,24 @@ export function buildFinOpsQuery(filters = {}) {
   return params.toString();
 }
 
+function requestFinOps(path, options = {}, requestOptions = {}) {
+  const separator = path.indexOf("?");
+  const pathname = separator >= 0 ? path.slice(0, separator) : path;
+  const params = new URLSearchParams(separator >= 0 ? path.slice(separator + 1) : "");
+  if (options?.refresh === true) params.set("refresh", "1");
+  const query = params.toString();
+  return request(`${pathname}${query ? `?${query}` : ""}`, {
+    ...(options?.signal ? { signal: options.signal } : {}),
+    ...requestOptions,
+  });
+}
+
 function loadFinOpsResource(resource, filters = {}, options = {}) {
   const query = buildFinOpsQuery(filters);
-  return request(`/api/finops/${resource}${query ? `?${query}` : ""}`, options);
+  return requestFinOps(
+    `/api/finops/${resource}${query ? `?${query}` : ""}`,
+    options,
+  );
 }
 
 export function loadFinOpsFilters(filters = {}, options = {}) {
@@ -258,6 +273,79 @@ export function loadFinOpsBudgets(filters = {}, options = {}) {
 
 export function loadFinOpsRoiEconomics(filters = {}, options = {}) {
   return loadFinOpsResource("roi/economics", filters, options);
+}
+
+export function loadFinOpsRoiDecision(filters = {}, options = {}) {
+  return loadFinOpsResource("roi/decision", filters, options);
+}
+
+export function loadFinOpsRiskDecision(filters = {}, options = {}) {
+  return loadFinOpsResource("risk/decision", filters, options);
+}
+
+function remediationTransitionBody(payload = {}) {
+  const baseRevision = payload.baseRevision ?? payload.base_revision;
+  const reason = payload.reason;
+  return {
+    base_revision: baseRevision,
+    ...(reason !== undefined && reason !== null && String(reason) !== "" ? { reason } : {}),
+  };
+}
+
+export function loadFinOpsRemediationDrafts(workspaceOrFilters = {}, options = {}) {
+  const workspaceId = typeof workspaceOrFilters === "string"
+    ? workspaceOrFilters
+    : workspaceOrFilters?.workspaceId ?? workspaceOrFilters?.workspace_id;
+  const params = new URLSearchParams();
+  if (workspaceId !== undefined && workspaceId !== null && String(workspaceId).trim() !== "") {
+    params.set("workspace_id", String(workspaceId));
+  }
+  const query = params.toString();
+  return requestFinOps(
+    `/api/finops/remediation-drafts${query ? `?${query}` : ""}`,
+    options,
+  );
+}
+
+export function loadFinOpsRemediationDraft(draftId, options = {}) {
+  return requestFinOps(
+    `/api/finops/remediation-drafts/${encodeURIComponent(draftId)}`,
+    options,
+  );
+}
+
+export function createFinOpsRemediationDraft(payload = {}, options = {}) {
+  return requestFinOps("/api/finops/remediation-drafts", options, {
+    method: "POST",
+    body: JSON.stringify({
+      workspace_id: payload.workspaceId ?? payload.workspace_id,
+      source_opportunity_id: payload.sourceOpportunityId ?? payload.source_opportunity_id,
+      base_version: payload.baseVersion ?? payload.base_version,
+    }),
+  });
+}
+
+function transitionFinOpsRemediationDraft(draftId, transition, payload = {}, options = {}) {
+  return requestFinOps(
+    `/api/finops/remediation-drafts/${encodeURIComponent(draftId)}/${transition}`,
+    options,
+    {
+      method: "POST",
+      body: JSON.stringify(remediationTransitionBody(payload)),
+    },
+  );
+}
+
+export function reviewFinOpsRemediationDraft(draftId, payload = {}, options = {}) {
+  return transitionFinOpsRemediationDraft(draftId, "review", payload, options);
+}
+
+export function promoteFinOpsRemediationDraft(draftId, payload = {}, options = {}) {
+  return transitionFinOpsRemediationDraft(draftId, "promote", payload, options);
+}
+
+export function closeFinOpsRemediationDraft(draftId, payload = {}, options = {}) {
+  return transitionFinOpsRemediationDraft(draftId, "close", payload, options);
 }
 
 export function loadFinOpsSavedViews(filters = {}, options = {}) {
@@ -714,23 +802,34 @@ export async function deleteFinOpsOfficialPriceMapping(deployment) {
   });
 }
 
-export async function loadMemberBudgets() {
-  return request("/api/finops/member-budgets?limit=100");
+function workspaceBudgetUrl(path, workspaceId, params = {}) {
+  const cleanWorkspaceId = String(workspaceId || "").trim();
+  if (!cleanWorkspaceId) throw new Error("workspaceId is required");
+  const query = new URLSearchParams({
+    workspace_id: cleanWorkspaceId,
+    ...params,
+  });
+  return `${path}?${query.toString()}`;
 }
 
-export async function loadMemberBudgetMembers() {
-  return request("/api/finops/member-budget-members?limit=100");
+export async function loadMemberBudgets(workspaceId) {
+  return request(workspaceBudgetUrl("/api/finops/member-budgets", workspaceId, { limit: "100" }));
 }
 
-export async function loadMemberBudgetNotification() {
-  return request("/api/finops/notification-settings");
+export async function loadMemberBudgetMembers(workspaceId) {
+  return request(workspaceBudgetUrl("/api/finops/member-budget-members", workspaceId, { limit: "100" }));
 }
 
-export async function loadMemberBudgetAlerts() {
-  return request("/api/finops/budget-alerts?limit=50");
+export async function loadMemberBudgetNotification(workspaceId) {
+  return request(workspaceBudgetUrl("/api/finops/notification-settings", workspaceId));
+}
+
+export async function loadMemberBudgetAlerts(workspaceId) {
+  return request(workspaceBudgetUrl("/api/finops/budget-alerts", workspaceId, { limit: "50" }));
 }
 
 export async function saveMemberBudget({
+  workspaceId = "",
   budgetId = "",
   memberRef = "",
   amountUsd,
@@ -748,8 +847,8 @@ export async function saveMemberBudget({
   };
   return request(
     editing
-      ? `/api/finops/member-budgets/${encodeURIComponent(budgetId)}`
-      : "/api/finops/member-budgets",
+      ? workspaceBudgetUrl(`/api/finops/member-budgets/${encodeURIComponent(budgetId)}`, workspaceId)
+      : workspaceBudgetUrl("/api/finops/member-budgets", workspaceId),
     {
       method: editing ? "PATCH" : "POST",
       body: JSON.stringify(body),
@@ -757,8 +856,8 @@ export async function saveMemberBudget({
   );
 }
 
-export async function disableMemberBudget(budgetId, baseRevision) {
-  return request(`/api/finops/member-budgets/${encodeURIComponent(budgetId)}/disable`, {
+export async function disableMemberBudget(workspaceId, budgetId, baseRevision) {
+  return request(workspaceBudgetUrl(`/api/finops/member-budgets/${encodeURIComponent(budgetId)}/disable`, workspaceId), {
     method: "POST",
     body: JSON.stringify({
       base_revision: Number.isInteger(baseRevision) ? baseRevision : 0,
@@ -767,17 +866,18 @@ export async function disableMemberBudget(budgetId, baseRevision) {
 }
 
 export async function saveMemberBudgetNotification({
-  recipientMemberRef = "",
+  workspaceId = "",
+  recipientEmail = "",
   senderDisplayName = "DataForge",
   subjectTemplate = "",
   bodyTemplate = "",
   enabled = false,
   baseRevision = 0,
 } = {}) {
-  return request("/api/finops/notification-settings", {
+  return request(workspaceBudgetUrl("/api/finops/notification-settings", workspaceId), {
     method: "PUT",
     body: JSON.stringify({
-      recipient_actor_ref: String(recipientMemberRef || "").trim(),
+      recipient_email: String(recipientEmail || "").trim(),
       sender_display_name: String(senderDisplayName || "").trim(),
       subject_template: String(subjectTemplate || ""),
       body_template: String(bodyTemplate || ""),
@@ -787,8 +887,8 @@ export async function saveMemberBudgetNotification({
   });
 }
 
-export async function sendMemberBudgetTestEmail() {
-  return request("/api/finops/notification-settings/test-email", {
+export async function sendMemberBudgetTestEmail(workspaceId) {
+  return request(workspaceBudgetUrl("/api/finops/notification-settings/test-email", workspaceId), {
     method: "POST",
     body: JSON.stringify({}),
   });

@@ -28,11 +28,18 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
   const scale = page.locator(".finops-trend-scale");
   const trendSwitch = page.locator(".finops-trend-switch");
 
-  await expect(legend).toContainText("输入");
-
-  await trendSwitch.getByRole("button", { name: "成本" }).click();
   await expect(legend).toContainText("估算成本");
   await expect(scale.locator("span").first()).toContainText("$");
+  const costBars = page.locator(".finops-trend-stack");
+  const firstCostBar = await costBars.nth(0).boundingBox();
+  const secondCostBar = await costBars.nth(1).boundingBox();
+  expect(firstCostBar).not.toBeNull();
+  expect(secondCostBar).not.toBeNull();
+  expect(secondCostBar.height).toBeGreaterThan(firstCostBar.height);
+  expect(secondCostBar.height - firstCostBar.height).toBeGreaterThan(5);
+
+  await trendSwitch.getByRole("button", { name: "Token" }).click();
+  await expect(legend).toContainText("输入");
 
   await trendSwitch.getByRole("button", { name: "P95" }).click();
   await expect(legend).toContainText("P95 延迟");
@@ -43,31 +50,252 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
   const column = page.locator(".finops-trend-column").first();
   await expect(column).toHaveAttribute("aria-label", /次/);
   await column.focus();
-  await expect(column.locator(".finops-trend-tooltip")).toContainText("调用次数");
+  await expect(page.locator(".finops-trend-tooltip-content")).toContainText("调用次数");
+  await expect(page.locator(".finops-trend-tooltip-content")).toContainText("缓存命中");
+  await expect(page.locator(".finops-metric").filter({ hasText: "缓存收益" })).toContainText("命中率");
 });
 
 
-test("APIM coverage surfaces unattributed gateway evidence with scope label", async ({ page }) => {
+test("executive cost drilldown preserves the current filters and uses the compact cost page", async ({ page }) => {
   await installFinOpsMockApi(page);
   await page.goto("/");
   await openOperations(page);
 
-  const evidence = page.locator(".finops-gateway-evidence");
-  await expect(evidence).toBeVisible();
-  await expect(evidence).toContainText("未归属网关证据");
-  await expect(evidence.locator(".finops-scope-tag")).toContainText("unattributed");
-  await expect(evidence).toContainText("已关联请求");
-  await expect(evidence).toContainText("未关联网关错误");
-  await expect(evidence).toContainText("4xx 3");
-  await expect(evidence).toContainText("5xx 1");
-  await expect(evidence).toContainText("数据更新时间");
+  const overview = page.getByRole("region", { name: "运营决策概览" });
+  await page.getByLabel("部门筛选", { exact: true }).selectOption("Commerce");
+  await page.getByLabel("Agent 筛选", { exact: true }).selectOption("分析协调 Agent");
+  await overview.getByRole("button", { name: /成本分析.*成本来自哪里/ }).click();
+
+  await expect(page.getByRole("button", { name: "成本分析", exact: true })).toHaveClass(/active/);
+  await expect(page.getByLabel("部门筛选", { exact: true })).toHaveValue("Commerce");
+  await expect(page.getByLabel("Agent 筛选", { exact: true })).toHaveValue("分析协调 Agent");
+  await expect(page.locator(".finops-cost-summary")).toBeVisible();
+  await expect(page.locator(".finops-content > .finops-metrics")).toHaveCount(0);
+});
+
+
+test("ROI parameters create a new DataForge scenario revision", async ({ page }) => {
+  const calls = [];
+  const control = await installFinOpsMockApi(page, calls);
+  await page.goto("/");
+  await openOperations(page);
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "测算显示具备投入价值，业务结果仍需验证" })).toBeVisible();
+  const initialDecisionCalls = control.calls.roiDecision;
+  await page.getByRole("button", { name: "调整测算参数" }).click();
+  const dialog = page.getByRole("dialog", { name: "调整 ROI 测算参数" });
+  await expect(dialog.getByText("当前模型成本 $0.0269 / 月")).toBeVisible();
+  await dialog.getByLabel("每月节省工时").fill("48");
+  await dialog.getByRole("button", { name: "保存新版本" }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => control.calls.roiDecision).toBeGreaterThan(initialDecisionCalls);
+  await expect(page.getByRole("heading", { name: "测算显示具备投入价值，业务结果仍需验证" })).toBeVisible();
+  const write = calls.find((call) => (
+    call.path === "/api/workspaces/demo-corpus/governance/scenarios"
+    && call.method === "POST"
+  ));
+  expect(write).toBeTruthy();
+  expect(JSON.parse(write.body)).toMatchObject({
+    hours_saved: 48,
+    hourly_value: 50,
+    avoided_loss_or_revenue: 1000,
+    implementation_cost: 6000,
+    monthly_fixed_cost: 200,
+    model_cost: 0.0269,
+    evaluation_months: 12,
+    previous_id: "roi_scenario_demo0001",
+    base_revision: 1,
+  });
+});
+
+
+test("overview hides infrastructure reconciliation and keeps pricing coverage in cost analysis", async ({ page }) => {
+  await installFinOpsMockApi(page);
+  await page.goto("/");
+  await openOperations(page);
+
+  const overview = page.getByRole("region", { name: "运营决策概览" });
+  await expect(overview).not.toContainText("APIM");
+  await expect(overview).not.toContainText("网关");
+  await expect(overview).not.toContainText("unattributed");
+  await expect(overview.locator(".finops-metric")).toHaveCount(4);
+
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
+  await expect(page.locator(".finops-cost-summary")).toContainText("计价覆盖 96.7%");
+  await expect(page.locator(".finops-cost-summary")).toContainText("2 次未计价");
 
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
   await mkdir(outputDir, { recursive: true });
   await page.screenshot({
-    path: path.join(outputDir, "operations-gateway-evidence-desktop.png"),
+    path: path.join(outputDir, "operations-cost-pricing-coverage-desktop.png"),
     fullPage: true,
   });
+});
+
+
+test("visible decision refresh waits ten minutes and pauses while hidden", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-07-30T08:00:00Z") });
+  const control = await installFinOpsMockApi(page);
+  await page.goto("/");
+  await openOperations(page);
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "价值桥" })).toBeVisible();
+
+  const initialCount = control.calls.roiDecision;
+  await page.clock.runFor(599_999);
+  expect(control.calls.roiDecision).toBe(initialCount);
+  await page.clock.runFor(1);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => control.calls.roiDecision).toBe(initialCount + 1);
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.clock.runFor(600_000);
+  expect(control.calls.roiDecision).toBe(initialCount + 1);
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => control.calls.roiDecision).toBe(initialCount + 2);
+});
+
+
+test("detail refresh failure preserves the last successful page", async ({ page }) => {
+  const control = await installFinOpsMockApi(page);
+  await page.goto("/");
+  await openOperations(page);
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
+  await expect(page.getByText("成本趋势")).toBeVisible();
+
+  control.failDetail = true;
+  await page.locator(".finops-live").getByRole("button", { name: "刷新" }).click();
+
+  await expect(page.getByText("成本趋势")).toBeVisible();
+  await expect(page.locator(".finops-inline-error")).toContainText(
+    "更新失败，已保留上次数据",
+  );
+});
+
+
+test("risk evidence is distinct and remediation 409 requires reload and a second review", async ({ page }) => {
+  const control = await installFinOpsMockApi(page, [], { remediationReviewConflictOnce: true });
+  await page.goto("/");
+  await openOperations(page);
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
+
+  const priorities = page.getByRole("list", { name: "风险优先事项" });
+  await priorities.getByRole("button", { name: /响应时延优化/ }).click();
+  await expect(page.getByText("6,200 ms")).toBeVisible();
+  await expect(page.getByText("分析已完成，但模型响应阶段耗时偏高。")).toBeVisible();
+  await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
+  await expect(page.getByText("缓存未命中", { exact: true })).toBeVisible();
+  await expect(page.getByText("本次请求未命中结果缓存，已重新执行分析。")).toBeVisible();
+  await priorities.getByRole("button", { name: /计价覆盖补齐/ }).click();
+  await expect(page.getByText("评审已完成，当前模型尚未关联价目。")).toBeVisible();
+  await priorities.getByRole("button", { name: /调用成功率改善/ }).click();
+  await expect(page.getByText("provider_5xx")).toBeVisible();
+
+  await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
+  await page.getByRole("button", { name: "查看整改方案" }).click();
+  const panel = page.getByRole("dialog", { name: "整改草案" });
+  await expect(panel.getByText("不会直接执行生产变更")).toBeVisible();
+  await panel.getByRole("button", { name: "保存整改草案" }).click();
+  await expect(panel.getByText("可转为审批动作草案").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "候选执行" })).toHaveCount(0);
+
+  await panel.getByRole("button", { name: "复核草案" }).click();
+  await expect(panel.getByText("方案已更新，请重新复核")).toBeVisible();
+  await panel.getByRole("button", { name: "复核草案" }).click();
+  await expect(panel.getByText("已复核", { exact: true }).first()).toBeVisible();
+  expect(control.calls.remediationCreate).toBe(1);
+  expect(control.calls.remediationReview).toBe(2);
+
+  const header = await page.locator(".topbar").boundingBox();
+  const surface = await panel.boundingBox();
+  expect(surface.y).toBeGreaterThanOrEqual(header.y + header.height);
+  expect(surface.x + surface.width).toBeLessThanOrEqual(await page.evaluate(() => window.innerWidth));
+
+  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+  await mkdir(outputDir, { recursive: true });
+  await page.screenshot({
+    path: path.join(outputDir, "operations-remediation-reviewed-desktop.png"),
+    fullPage: true,
+  });
+});
+
+
+for (const viewport of [
+  { name: "1366", width: 1366, height: 900 },
+  { name: "mobile", width: 390, height: 844 },
+]) {
+  test(`remediation panel stays reachable scrollable and restores focus at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await installFinOpsMockApi(page);
+    await page.goto("/");
+    await openOperations(page);
+    await page.getByRole("button", { name: "风险与优化", exact: true }).click();
+    const priorities = page.getByRole("list", { name: "风险优先事项" });
+    await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
+    const trigger = page.getByRole("button", { name: "查看整改方案" });
+    await trigger.focus();
+    await trigger.click();
+
+    const panel = page.getByRole("dialog", { name: "整改草案" });
+    const close = panel.getByRole("button", { name: "关闭整改草案" });
+    await expect(panel).toBeVisible();
+    await expect(close).toBeEnabled();
+    await expect(close).toBeFocused();
+    await panel.getByRole("button", { name: "保存整改草案" }).click();
+    await expect(panel.locator(".finops-remediation-actions")).toBeVisible();
+    const [topbar, bounds] = await Promise.all([
+      page.locator(".topbar").boundingBox(),
+      panel.boundingBox(),
+    ]);
+    expect(bounds.y).toBeGreaterThanOrEqual(topbar.y + topbar.height - 1);
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+
+    const scroll = await panel.evaluate((node) => ({
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+    }));
+    expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight);
+    const bottom = await panel.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+      return node.scrollTop;
+    });
+    expect(bottom).toBeGreaterThan(0);
+    await expect(panel.locator(".finops-remediation-actions")).toBeInViewport();
+
+    await close.click();
+    await expect(panel).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  });
+}
+
+
+test("detail failure after a range change never labels old data as the new range", async ({ page }) => {
+  const control = await installFinOpsMockApi(page);
+  await page.goto("/");
+  await openOperations(page);
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
+  await expect(page.getByText("成本趋势")).toBeVisible();
+
+  control.failDetail = true;
+  await page.locator(".finops-date-range input").first().fill("2026-06-01");
+
+  await expect(page.locator(".finops-state-error")).toBeVisible();
+  await expect(page.getByText("成本趋势")).toHaveCount(0);
+  await expect(page.locator(".finops-inline-error")).toHaveCount(0);
 });
 
 
@@ -90,7 +318,7 @@ test("bootstrap failure shows a friendly error and recovers on retry", async ({ 
   control.failBootstrap = false;
   await errorState.getByRole("button", { name: "重试" }).click();
   await expect(page.locator(".finops-metric").first()).toBeVisible();
-  await expect(page.getByText("数据可信度")).toBeVisible();
+  await expect(page.getByRole("img", { name: "部门估算成本占比" })).toBeVisible();
 
   expect(pageErrors).toEqual([]);
 });
@@ -109,8 +337,8 @@ test("mobile operations layout has no horizontal overflow", async ({ page }) => 
   });
   expect(overflow).toBeLessThanOrEqual(1);
 
-  await expect(page.getByRole("button", { name: "成本分析" }).first()).toBeVisible();
-  await page.getByRole("button", { name: "成本分析" }).first().click();
+  await expect(page.getByRole("button", { name: "成本分析", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
   await expect(page.getByText("成本趋势")).toBeVisible();
 });
 
@@ -141,10 +369,10 @@ test("settings exposes a compact budget entry and dedicated desktop page", async
   await expect(page.getByText("$190.00").first()).toBeVisible();
   await expect(page.locator(".member-budget-summary-card").filter({ hasText: "已配置成员" }).locator("strong")).toHaveText("2");
   await expect(page.getByText("90% 已计价").first()).toBeVisible();
-  const formerSubtitle = page.locator(".member-budget-table").getByText("身份已停用 · 预算已停用 · 未归属部门");
+  const formerSubtitle = page.locator(".member-budget-table").getByText("预算主体已停用 · 预算已停用 · 未归属部门");
   await expect(formerSubtitle).toBeVisible();
-  await expect(formerSubtitle).toHaveAttribute("title", "身份已停用 · 预算已停用 · 未归属部门");
-  await expect(formerSubtitle).toHaveAttribute("aria-label", "身份已停用 · 预算已停用 · 未归属部门");
+  await expect(formerSubtitle).toHaveAttribute("title", "预算主体已停用 · 预算已停用 · 未归属部门");
+  await expect(formerSubtitle).toHaveAttribute("aria-label", "预算主体已停用 · 预算已停用 · 未归属部门");
 
   const body = await page.locator("body").innerText();
   expect(body).not.toContain("member-safe");
@@ -161,7 +389,7 @@ test("settings exposes a compact budget entry and dedicated desktop page", async
 });
 
 
-test("tenant FinOps permission state is explicit and hides budget evidence", async ({ page }) => {
+test("workspace administrator permission state is explicit and hides budget evidence", async ({ page }) => {
   await installFinOpsMockApi(page, [], {
     memberBudgetAccessState: "permission_required",
   });
@@ -169,7 +397,7 @@ test("tenant FinOps permission state is explicit and hides budget evidence", asy
   await page.getByRole("button", { name: "设置" }).first().click();
 
   const entry = page.locator(".member-budget-entry");
-  await expect(entry).toContainText("需要租户 FinOps 管理员角色");
+  await expect(entry).toContainText("需要工作区管理员权限");
   await expect(entry).toContainText("预算与提醒已受限");
   await expect(entry).not.toContainText("不可用");
   const permissionAction = entry.getByRole("button", { name: "查看成本预算权限说明" });
@@ -177,8 +405,8 @@ test("tenant FinOps permission state is explicit and hides budget evidence", asy
   await permissionAction.click();
 
   await expect(page.getByRole("heading", { name: "成员成本预算" })).toBeVisible();
-  await expect(page.getByText("需要租户 FinOps 管理员角色")).toBeVisible();
-  await expect(page.getByText("请联系租户管理员分配应用角色后重新登录。")).toBeVisible();
+  await expect(page.getByText("需要工作区管理员权限")).toBeVisible();
+  await expect(page.getByText("请由当前工作区的 Owner 或 Admin 打开并配置成员预算。")).toBeVisible();
   await expect(page.locator(".member-budget-table")).toHaveCount(0);
   await expect(page.locator(".member-budget-summary-card")).toHaveCount(0);
   await expect(page.getByText("$190.00")).toHaveCount(0);
@@ -226,8 +454,8 @@ test("mail settings configure and test use safe states", async ({ page }) => {
 
   await page.getByRole("button", { name: "配置邮件" }).click();
   const dialog = page.getByRole("dialog", { name: "邮件提醒设置" });
-  await expect(dialog.getByText("收件地址由 Entra 管理")).toBeVisible();
-  await dialog.getByLabel("管理员").selectOption("member-safe");
+  await expect(dialog.getByText("收件地址保存在服务端配置中")).toBeVisible();
+  await dialog.getByLabel("管理员收件邮箱").fill("finance-owner@example.test");
   await dialog.getByRole("button", { name: "保存邮件设置" }).click();
   await expect(page.getByText("邮件设置已保存")).toBeVisible();
 
@@ -236,6 +464,8 @@ test("mail settings configure and test use safe states", async ({ page }) => {
   const testCall = calls.find((call) => call.path === "/api/finops/notification-settings/test-email");
   expect(testCall).toBeTruthy();
   expect(testCall.body).toBe("{}");
+  const saveCall = calls.find((call) => call.path === "/api/finops/notification-settings" && call.method === "PUT");
+  expect(JSON.parse(saveCall.body).recipient_email).toBe("finance-owner@example.test");
 });
 
 
@@ -304,7 +534,7 @@ test("disabled active budgets disable, edit and re-enable without duplicate crea
 
   await page.getByRole("button", { name: "设置成员预算" }).click();
   const createDialog = page.getByRole("dialog", { name: "设置成员预算" });
-  await expect(createDialog.getByLabel("Entra 成员").getByRole("option")).toHaveText(["IT Operator · 成员"]);
+  await expect(createDialog.getByLabel("预算成员").getByRole("option")).toHaveText(["IT Operator · 成员"]);
   await createDialog.getByRole("button", { name: "关闭" }).click();
 
   const financeEdit = page.getByRole("button", { name: "编辑 Finance Admin 预算" });
@@ -334,7 +564,9 @@ test("settings home budget badges refresh after child mail mutation and return",
   await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
 
   await page.getByRole("button", { name: "配置邮件" }).click();
-  await page.getByRole("dialog", { name: "邮件提醒设置" }).getByRole("button", { name: "保存邮件设置" }).click();
+  const mailDialog = page.getByRole("dialog", { name: "邮件提醒设置" });
+  await mailDialog.getByLabel("管理员收件邮箱").fill("admin@example.test");
+  await mailDialog.getByRole("button", { name: "保存邮件设置" }).click();
   await expect(page.getByText("邮件设置已保存")).toBeVisible();
   await page.getByRole("button", { name: "返回设置" }).click();
 
@@ -343,7 +575,7 @@ test("settings home budget badges refresh after child mail mutation and return",
 });
 
 
-test("settings home uses the shared tenant FinOps role for a notification authorization failure", async ({ page }) => {
+test("settings home names tenant FinOps permission for a notification authorization failure", async ({ page }) => {
   await installFinOpsMockApi(page, [], {
     memberBudgetNotificationState: "permission_required",
   });
@@ -352,7 +584,7 @@ test("settings home uses the shared tenant FinOps role for a notification author
 
   const entry = page.locator(".member-budget-entry");
   await expect(entry).toContainText("1 位接近预算");
-  await expect(entry).toContainText("需要租户 FinOps 管理员角色");
+  await expect(entry).toContainText("需要组织 FinOps 管理员权限");
   await expect(entry).not.toContainText("邮件状态不可用");
   await expect(page.getByRole("button", { name: "配置成本预算与提醒" })).toBeEnabled();
 });
@@ -388,14 +620,14 @@ test("disabled email configuration is honest and cannot open configuration actio
 });
 
 
-test("notification authorization failure names the shared tenant FinOps role", async ({ page }) => {
+test("notification authorization failure names tenant FinOps administrator permission", async ({ page }) => {
   await installFinOpsMockApi(page, [], {
     memberBudgetNotificationState: "permission_required",
   });
   await page.goto("/");
   await openMemberBudgets(page);
 
-  await expect(page.locator(".member-budget-mail-strip")).toContainText("需要租户 FinOps 管理员角色");
+  await expect(page.locator(".member-budget-mail-strip")).toContainText("需要组织 FinOps 管理员权限");
   await expect(page.getByRole("button", { name: "配置邮件" })).toBeDisabled();
   await expect(page.locator(".member-budget-mail-strip").getByRole("button", { name: "配置" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "发送测试邮件" })).toBeDisabled();

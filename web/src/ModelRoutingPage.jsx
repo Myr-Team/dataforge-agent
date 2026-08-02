@@ -94,7 +94,19 @@ function StateMessage({ state, onRetry }) {
   return null;
 }
 
-export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
+
+export async function persistModelSetting(write, onSettingsChanged, kind) {
+  const result = await write();
+  onSettingsChanged?.(kind);
+  return result;
+}
+
+
+export function ModelRoutingPage({
+  workspaceId = "",
+  embedded = false,
+  onSettingsChanged = null,
+}) {
   const [state, setState] = useState({
     loading: true,
     error: "",
@@ -187,10 +199,14 @@ export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
     setSaveError("");
     setNotice("");
     try {
-      const payload = await updateWorkspaceModelRouting(workspaceId, {
-        ...assignmentPayload(assignments, agentAssignments, defaultRouteId),
-        base_revision: view.policyRevision,
-      });
+      const payload = await persistModelSetting(
+        () => updateWorkspaceModelRouting(workspaceId, {
+          ...assignmentPayload(assignments, agentAssignments, defaultRouteId),
+          base_revision: view.policyRevision,
+        }),
+        onSettingsChanged,
+        "model",
+      );
       setState((current) => ({
         ...current,
         payload: { ...(current.payload || {}), ...payload },
@@ -219,10 +235,14 @@ export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
     setNotice("");
     try {
       const current = mappings[deployment];
-      const result = await updateFinOpsOfficialPriceMapping(deployment, {
-        officialPriceKey,
-        baseRevision: Number(current?.mapping_revision || 0),
-      });
+      const result = await persistModelSetting(
+        () => updateFinOpsOfficialPriceMapping(deployment, {
+          officialPriceKey,
+          baseRevision: Number(current?.mapping_revision || 0),
+        }),
+        onSettingsChanged,
+        "price",
+      );
       const saved = result?.mapping;
       setState((value) => ({
         ...value,
@@ -244,7 +264,11 @@ export function ModelRoutingPage({ workspaceId = "", embedded = false }) {
     setSaveError("");
     setNotice("");
     try {
-      await deleteFinOpsOfficialPriceMapping(deployment);
+      await persistModelSetting(
+        () => deleteFinOpsOfficialPriceMapping(deployment),
+        onSettingsChanged,
+        "price",
+      );
       setState((value) => ({
         ...value,
         mappings: value.mappings.filter((item) => item.deployment !== deployment),

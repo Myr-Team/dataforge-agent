@@ -10,10 +10,14 @@ import {
 
 import {
   clearFinOpsAssistantConversation,
-  loadFinOpsAssistantConversations,
-  loadFinOpsAssistantMessages,
   queryFinOpsAssistant,
 } from "./api.js";
+import {
+  clearFinOpsAssistantHistoryCache,
+  peekFinOpsAssistantHistory,
+  prefetchFinOpsAssistantHistory,
+  writeFinOpsAssistantHistory,
+} from "./finopsAssistantHistory.js";
 
 
 const DEFAULT_QUESTIONS = [
@@ -43,9 +47,11 @@ export function FinOpsAssistant({
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [messages, setMessages] = useState([]);
   const [conversationRef, setConversationRef] = useState("");
   const inputRef = useRef(null);
+  const interactionVersionRef = useRef(0);
 
   useEffect(() => {
     if (open) inputRef.current?.focus();
@@ -58,25 +64,31 @@ export function FinOpsAssistant({
   const workspaceId = context?.filters?.workspace_id || "";
 
   useEffect(() => {
-    if (!open || !workspaceId) return undefined;
-    const controller = new AbortController();
-    loadFinOpsAssistantConversations(workspaceId, {
-      signal: controller.signal,
-    }).then(async (payload) => {
-      const latest = Array.isArray(payload?.items) ? payload.items[0] : null;
-      if (!latest?.conversation_ref) return;
-      const history = await loadFinOpsAssistantMessages(
-        latest.conversation_ref,
-        workspaceId,
-        { signal: controller.signal },
-      );
-      setConversationRef(latest.conversation_ref);
-      setMessages(Array.isArray(history?.items) ? history.items : []);
-    }).catch((error) => {
-      if (error?.name !== "AbortError") setMessages([]);
-    });
-    return () => controller.abort();
-  }, [open, workspaceId]);
+    interactionVersionRef.current = 0;
+    if (!workspaceId) {
+      setConversationRef("");
+      setMessages([]);
+      setHistoryLoading(false);
+      return undefined;
+    }
+    const cached = peekFinOpsAssistantHistory(workspaceId);
+    setConversationRef(cached?.conversationRef || "");
+    setMessages(cached?.messages || []);
+    setHistoryLoading(true);
+    let active = true;
+    const startVersion = interactionVersionRef.current;
+    prefetchFinOpsAssistantHistory(workspaceId, { force: Boolean(cached) })
+      .then((history) => {
+        if (!active || interactionVersionRef.current !== startVersion) return;
+        setConversationRef(history?.conversationRef || "");
+        setMessages(history?.messages || []);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setHistoryLoading(false);
+      });
+    return () => { active = false; };
+  }, [workspaceId]);
 
   const ask = async (rawQuestion) => {
     const question = String(rawQuestion || "").trim();
@@ -91,7 +103,12 @@ export function FinOpsAssistant({
             : String(item.content || "")
         ).slice(0, 600),
       }));
-    setMessages((items) => [...items, { role: "user", content: question }]);
+    interactionVersionRef.current += 1;
+    setMessages((items) => {
+      const next = [...items, { role: "user", content: question }];
+      writeFinOpsAssistantHistory(workspaceId, { conversationRef, messages: next });
+      return next;
+    });
     setInput("");
     setBusy(true);
     try {
@@ -101,12 +118,10 @@ export function FinOpsAssistant({
         history,
         ...(conversationRef ? { conversation_ref: conversationRef } : {}),
       });
-      if (response?.conversation_ref) {
-        setConversationRef(response.conversation_ref);
-      }
-      setMessages((items) => [
-        ...items,
-        {
+      const nextConversationRef = response?.conversation_ref || conversationRef;
+      if (nextConversationRef) setConversationRef(nextConversationRef);
+      setMessages((items) => {
+        const next = [...items, {
           role: "assistant",
           content: response?.answer || "当前分析暂不可用。",
           evidenceRefs: Array.isArray(response?.evidence_refs) ? response.evidence_refs : [],
@@ -117,19 +132,25 @@ export function FinOpsAssistant({
           suggestions: Array.isArray(response?.suggested_questions)
             ? response.suggested_questions
             : [],
-        },
-      ]);
+        }];
+        writeFinOpsAssistantHistory(workspaceId, {
+          conversationRef: nextConversationRef,
+          messages: next,
+        });
+        return next;
+      });
     } catch (error) {
-      setMessages((items) => [
-        ...items,
-        {
+      setMessages((items) => {
+        const next = [...items, {
           role: "assistant",
           content: error instanceof Error ? error.message : "当前分析暂不可用。",
           evidenceRefs: [],
           evidenceState: "unavailable",
           suggestions: [],
-        },
-      ]);
+        }];
+        writeFinOpsAssistantHistory(workspaceId, { conversationRef, messages: next });
+        return next;
+      });
     } finally {
       setBusy(false);
     }
@@ -149,6 +170,8 @@ export function FinOpsAssistant({
         conversationRef,
         workspaceId,
       );
+      interactionVersionRef.current += 1;
+      clearFinOpsAssistantHistoryCache(workspaceId);
       setConversationRef("");
       setMessages([]);
     } finally {
@@ -205,6 +228,7 @@ export function FinOpsAssistant({
             ) : null}
           </div>
           <div className="finops-ai-messages" aria-live="polite">
+            {historyLoading ? <div className="finops-ai-history-sync"><Loader2 className="spin" size={12} />正在同步历史</div> : null}
             {!messages.length ? (
               <p>可以直接询问当前指标的变化原因、异常判断、贡献来源和优化方向。</p>
             ) : null}

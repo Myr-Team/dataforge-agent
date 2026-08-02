@@ -81,7 +81,13 @@ def test_conditional_table_creation_precedes_upgrade_in_an_earlier_batch(
 
 @pytest.mark.parametrize(
     "table",
-    ("request_event", "department", "model_provider", "budget_alert"),
+    (
+        "request_event",
+        "department",
+        "model_provider",
+        "notification_setting",
+        "budget_alert",
+    ),
 )
 def test_schema_upgrades_defer_alter_table_compilation(table: str) -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
@@ -110,6 +116,20 @@ def test_member_budget_period_check_has_a_guarded_existing_table_upgrade() -> No
     assert "parent_object_id = object_id(n'df_finops.budget_alert')" in upgrade
     assert "alter table df_finops.budget_alert" in upgrade
     assert "add constraint ck_finops_budget_alert_period" in upgrade
+
+
+def test_finops_schema_contains_remediation_tables() -> None:
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+    lowered = sql.lower()
+
+    for table in ("remediation_draft", "remediation_transition"):
+        assert f"if object_id(n'df_finops.{table}', n'u') is null" in lowered
+        assert f"create table df_finops.{table}" in lowered
+
+    assert "CK_finops_remediation_scope_json" in sql
+    assert "CK_finops_remediation_status" in sql
+    assert "DROP TABLE df_finops.remediation_draft" not in sql
+    assert "TRUNCATE TABLE df_finops.remediation_draft" not in sql
 
 
 def test_request_event_routing_policy_revision_is_additive_and_nullable() -> None:

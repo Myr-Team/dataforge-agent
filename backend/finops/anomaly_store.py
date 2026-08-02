@@ -21,6 +21,7 @@ class ManagedAnomaly(DetectedAnomaly):
     model_config = ConfigDict(extra="forbid")
 
     tenant_ref: str
+    origin: Literal["runtime", "operations_demo"] = "runtime"
     first_detected_at: str
     updated_at: str
     acknowledged_by: str | None = None
@@ -80,10 +81,54 @@ class FinOpsAnomalyService:
         findings: list[DetectedAnomaly],
         scope_workspace_ids: tuple[str, ...] | None = None,
     ) -> list[ManagedAnomaly]:
-        now = _now()
-        current_ids = {finding.anomaly_id for finding in findings}
         existing = {item.anomaly_id: item for item in self._repository.list(tenant_ref)}
+        current_ids = {finding.anomaly_id for finding in findings}
+        self.upsert_findings(
+            tenant_ref=tenant_ref,
+            findings=findings,
+            origin="runtime",
+        )
+        now = _now()
 
+        scoped = set(scope_workspace_ids or ())
+        for anomaly_id, current in existing.items():
+            current_workspace_ids = set(current.workspace_ids)
+            is_in_scope = not scoped or (
+                bool(current_workspace_ids)
+                and current_workspace_ids.issubset(scoped)
+            )
+            if (
+                current.origin == "runtime"
+                and is_in_scope
+                and anomaly_id not in current_ids
+                and current.status != "resolved"
+            ):
+                self._repository.save(
+                    current.model_copy(
+                        update={
+                            "status": "resolved",
+                            "resolved_at": now,
+                            "updated_at": now,
+                        }
+                    )
+                )
+        return self._repository.list(tenant_ref)
+
+    def upsert_findings(
+        self,
+        *,
+        tenant_ref: str,
+        findings: list[DetectedAnomaly],
+        origin: Literal["runtime", "operations_demo"] = "runtime",
+    ) -> list[ManagedAnomaly]:
+        """Create or refresh only the supplied findings.
+
+        Unlike ``reconcile``, this method never resolves an absent finding. It
+        is used by bounded import/seed jobs that do not own every anomaly in a
+        workspace.
+        """
+        now = _now()
+        existing = {item.anomaly_id: item for item in self._repository.list(tenant_ref)}
         for finding in findings:
             current = existing.get(finding.anomaly_id)
             trigger_event: str | None = None
@@ -91,11 +136,14 @@ class FinOpsAnomalyService:
                 value = ManagedAnomaly(
                     **finding.model_dump(),
                     tenant_ref=tenant_ref,
+                    origin=origin,
                     first_detected_at=now,
                     updated_at=now,
                 )
                 trigger_event = "anomaly_created"
             else:
+                if current.origin != origin:
+                    raise AnomalyConflict("anomaly id belongs to another origin")
                 status = current.status
                 if status == "resolved" or (
                     status == "suppressed"
@@ -125,19 +173,6 @@ class FinOpsAnomalyService:
                 except Exception:
                     pass
 
-        scoped = set(scope_workspace_ids or ())
-        for anomaly_id, current in existing.items():
-            is_in_scope = not scoped or bool(scoped.intersection(current.workspace_ids))
-            if is_in_scope and anomaly_id not in current_ids and current.status != "resolved":
-                self._repository.save(
-                    current.model_copy(
-                        update={
-                            "status": "resolved",
-                            "resolved_at": now,
-                            "updated_at": now,
-                        }
-                    )
-                )
         return self._repository.list(tenant_ref)
 
     def acknowledge(

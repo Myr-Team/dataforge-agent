@@ -39,6 +39,108 @@ def set_json(key: str, value: dict[str, Any], *, ttl_seconds: int | None = None)
         return meta | {"status": "unavailable", "elapsed_ms": int((time.monotonic() - started) * 1000), "error": _err(exc)}
 
 
+def get_int(key: str) -> tuple[int | None, dict[str, Any]]:
+    client, meta = _client()
+    if client is None:
+        return None, meta
+    started = time.monotonic()
+    try:
+        raw = client.get(key)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if raw is None:
+            return None, meta | {"status": "miss", "elapsed_ms": elapsed_ms}
+        return int(raw), meta | {"status": "hit", "elapsed_ms": elapsed_ms}
+    except Exception as exc:
+        return None, meta | {
+            "status": "unavailable",
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "error": _err(exc),
+        }
+
+
+def increment(
+    key: str,
+    *,
+    ttl_seconds: int = 86400 * 30,
+) -> tuple[int | None, dict[str, Any]]:
+    client, meta = _client()
+    if client is None:
+        return None, meta
+    started = time.monotonic()
+    try:
+        value = client.eval(
+            "local value = redis.call('incr', KEYS[1]); "
+            "redis.call('expire', KEYS[1], ARGV[1]); return value",
+            1,
+            key,
+            max(1, int(ttl_seconds)),
+        )
+        return int(value), meta | {
+            "status": "incremented",
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        }
+    except Exception as exc:
+        return None, meta | {
+            "status": "unavailable",
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "error": _err(exc),
+        }
+
+
+def acquire_lock(
+    key: str,
+    token: str,
+    *,
+    ttl_seconds: int = 30,
+) -> tuple[bool, dict[str, Any]]:
+    client, meta = _client()
+    if client is None:
+        return False, meta
+    started = time.monotonic()
+    try:
+        acquired = bool(
+            client.set(
+                key,
+                token,
+                nx=True,
+                ex=max(1, int(ttl_seconds)),
+            )
+        )
+        return acquired, meta | {
+            "status": "acquired" if acquired else "busy",
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        }
+    except Exception as exc:
+        return False, meta | {
+            "status": "unavailable",
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "error": _err(exc),
+        }
+
+
+def release_lock(key: str, token: str) -> tuple[bool, dict[str, Any]]:
+    client, meta = _client()
+    if client is None:
+        return False, meta
+    started = time.monotonic()
+    script = (
+        "if redis.call('get', KEYS[1]) == ARGV[1] then "
+        "return redis.call('del', KEYS[1]) else return 0 end"
+    )
+    try:
+        released = bool(client.eval(script, 1, key, token))
+        return released, meta | {
+            "status": "released" if released else "not_owner",
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        }
+    except Exception as exc:
+        return False, meta | {
+            "status": "unavailable",
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "error": _err(exc),
+        }
+
+
 def delete_matching(pattern: str, *, scan_count: int = 500) -> dict[str, Any]:
     client, meta = _client()
     if client is None:

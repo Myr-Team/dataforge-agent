@@ -75,3 +75,43 @@ def test_cost_value_route_keeps_evidence_scenarios_and_integration_separate(monk
     assert body["scenarios"] == [{"scenario_id": "roi_scenario_1234567890abcdef", "status": "estimated"}]
     assert body["foundry_integration"]["state"] == "not_connected"
     assert actions == ["workspace.read"]
+
+
+def test_cost_value_snapshot_groups_only_timestamped_in_window_artifacts(monkeypatch) -> None:
+    monkeypatch.setattr(
+        control_plane,
+        "workspace_roi_snapshot",
+        lambda workspace_id, _from, _to: {
+            "workspace_id": workspace_id,
+            "window": WINDOW,
+            "generated_at": "2026-07-11T00:00:00Z",
+            "cost_evidence": {"status": "incomplete", "total": None, "currency": None},
+            "outcome_evidence": {"status": "not_recorded"},
+            "foundry_integration": {"state": "not_connected"},
+            "status": "estimated",
+        },
+    )
+    monkeypatch.setattr(control_plane, "list_roi_scenarios", lambda _workspace_id: [])
+    monkeypatch.setattr(
+        control_plane,
+        "list_workspace_artifacts",
+        lambda _workspace_id, run_limit=None: {
+            "artifacts": [
+                {"created_at": "2026-07-10T03:00:00Z"},
+                {"created_at": "2026-07-09T23:59:59Z"},
+                {"name": "no timestamp"},
+            ]
+        },
+    )
+
+    snapshot = control_plane.workspace_cost_value_snapshot(
+        "ws-1", WINDOW["from"], WINDOW["to"]
+    )
+
+    assert snapshot["artifact_count"] == 1
+    assert snapshot["output_trend"] == [{
+        "bucket_at": "2026-07-10",
+        "effective_output_count": 1,
+        "output_kind": "artifact",
+        "data_status": "available",
+    }]

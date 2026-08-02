@@ -106,6 +106,7 @@ def build_finops_agent_input(
                 "observed_value",
                 "threshold_value",
                 "sample_count",
+                "evidence_refs",
             )
             for item in list(anomalies)[:20]
             if isinstance(item, Mapping)

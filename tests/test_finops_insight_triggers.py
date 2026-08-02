@@ -164,6 +164,60 @@ def test_failed_refresh_keeps_previous_ready_insight_as_stale() -> None:
     assert latest.summary == "已有可复核结论。"
 
 
+def test_expired_ready_insight_is_projected_as_stale() -> None:
+    repository = InMemoryInsightRepository()
+    generated_at = datetime(2026, 7, 24, 2, 0, tzinfo=timezone.utc)
+    service = FinOpsInsightService(
+        repository=repository,
+        runner=FinOpsAnalysisAgent(
+            repository=repository,
+            model_runner=lambda *_args, **_kwargs: {
+                "structured": {
+                    "title": "Cost observation",
+                    "summary": "A request-backed observation.",
+                    "findings": [
+                        {
+                            "kind": "cost_driver",
+                            "statement": "The evidence is request-backed.",
+                            "evidence_refs": ["req_aaaaaaaaaaaa"],
+                        }
+                    ],
+                    "evidence_state": "observed",
+                    "confidence": 0.8,
+                    "draft_suggestions": [],
+                }
+            },
+            now=lambda: generated_at,
+        ),
+        now=lambda: datetime(2026, 7, 25, 3, 0, tzinfo=timezone.utc),
+    )
+    service.analyze(
+        agent_kind="finops",
+        tenant_ref="tenant-a",
+        workspace_ids=("ws-a",),
+        window={"from": "2026-07-23T00:00:00Z", "to": "2026-07-24T00:00:00Z"},
+        trigger_type="manual",
+        trigger_ref="manual-expiry",
+        source_revision="rev-expiry",
+        input_payload={"status": "ready", "evidence_refs": ["req_aaaaaaaaaaaa"]},
+    )
+
+    page = service.list(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        agent_kind="finops",
+    )
+    latest = service.latest(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        agent_kind="finops",
+    )
+
+    assert page.items[0].status == "stale"
+    assert latest is not None
+    assert latest.status == "stale"
+
+
 def test_verified_outcome_emits_non_blocking_roi_trigger(
     tmp_path,
     monkeypatch,

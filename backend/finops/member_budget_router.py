@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from typing import Any, Mapping
 
 from fastapi import APIRouter, HTTPException, Request
@@ -10,76 +11,21 @@ from ..audit_store import record_audit_event
 from ..control_plane import workspace_finops_member_identities
 from ..identity import actor_from_request, is_trusted_tenant_identity
 from ..lineage_sql import build_lineage_sql_connection_factory
-from ..workspace_store import list_workspaces
+from ..workspace_authz import active_workspace_role
 from .acs_email import AcsEmailError, acs_email_sender_from_environment, validate_template
 from .member_budget_repository import MemberBudgetConflictError, MemberBudgetRepository
 from .member_budget_service import MemberBudgetService
 from .member_directory import MemberDirectory
-from .normalization import canonical_actor_ref, canonical_tenant_id, canonical_tenant_ref
+from .normalization import canonical_actor_ref, canonical_tenant_ref
 from .sql_member_budgets import SqlMemberBudgetRepository
 from .sql_repository import FinOpsPersistenceError
 
 router = APIRouter(prefix="/api/finops", tags=["finops-member-budgets"])
 _service: MemberBudgetService | None = None
-_DEFAULT_TENANT_ADMIN_ROLE = "DataForge.FinOpsAdmin"
 
 
 def _enabled(name: str = "DF_FINOPS_MEMBER_BUDGETS_ENABLED") -> bool:
     return str(os.environ.get(name) or "0").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _required_tenant_admin_role() -> str:
-    return (
-        str(os.environ.get("DF_FINOPS_TENANT_ADMIN_ROLE") or "").strip()
-        or str(os.environ.get("DF_FINOPS_EMAIL_ADMIN_ROLE") or "").strip()
-        or _DEFAULT_TENANT_ADMIN_ROLE
-    )
-
-
-def _has_tenant_admin_role(actor: Mapping[str, Any]) -> bool:
-    roles = actor.get("roles")
-    trusted_roles = roles if isinstance(roles, (list, tuple, set, frozenset)) else ()
-    required_role = _required_tenant_admin_role().casefold()
-    return (
-        str(actor.get("source") or "").strip().casefold() == "easy_auth"
-        and required_role
-        in {
-            role.strip().casefold()
-            for role in trusted_roles
-            if isinstance(role, str) and role.strip()
-        }
-    )
-
-
-def _tenant_workspace_ids(identity_tenant_id: str) -> tuple[str, ...]:
-    tenant_id = canonical_tenant_id(identity_tenant_id)
-    workspace_ids: set[str] = set()
-    for item in list_workspaces():
-        if not isinstance(item, dict):
-            continue
-        workspace_id = str(item.get("workspace_id") or "").strip()
-        if not workspace_id:
-            continue
-        try:
-            identities = workspace_finops_member_identities(workspace_id)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail="Tenant FinOps workspace scope is unavailable",
-            ) from exc
-        for identity in identities:
-            if not isinstance(identity, Mapping):
-                continue
-            try:
-                identity_tenant_id = canonical_tenant_id(identity.get("tenant_id"))
-            except ValueError:
-                continue
-            if identity_tenant_id == tenant_id:
-                workspace_ids.add(workspace_id)
-                break
-    if not workspace_ids:
-        raise HTTPException(status_code=403, detail="Tenant FinOps workspace scope required")
-    return tuple(sorted(workspace_ids))
 
 
 def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, Any]]:
@@ -91,17 +37,21 @@ def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, 
     actor = actor_from_request(request, fallback=False)
     if not is_trusted_tenant_identity(actor):
         raise HTTPException(status_code=403, detail="Trusted tenant identity required")
-    if not _has_tenant_admin_role(actor):
-        raise HTTPException(status_code=403, detail="Tenant FinOps administrator role required")
+    workspace_id = str(request.query_params.get("workspace_id") or "").strip()
+    if not workspace_id:
+        raise HTTPException(status_code=422, detail="workspace_id is required")
+    if len(workspace_id) > 160 or re.fullmatch(r"[A-Za-z0-9._-]+", workspace_id) is None:
+        raise HTTPException(status_code=422, detail="workspace_id is invalid")
+    if active_workspace_role(workspace_id, actor) not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Workspace administrator role required")
     secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
     tenant_id, actor_id = str(actor.get("tenant_id") or "").strip(), str(actor.get("actor_id") or "").strip()
     if not secret or not tenant_id or not actor_id:
         raise HTTPException(status_code=503, detail="FinOps scope is unavailable")
-    workspace_ids = _tenant_workspace_ids(tenant_id)
     return (
         canonical_tenant_ref(tenant_id, secret=secret),
         canonical_actor_ref(tenant_id, actor_id, secret=secret),
-        workspace_ids,
+        (workspace_id,),
         actor,
     )
 
@@ -109,7 +59,20 @@ def _context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, 
 def _email_configuration_context(request: Request) -> tuple[str, str, tuple[str, ...], Mapping[str, Any]]:
     if not _enabled("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED"):
         raise HTTPException(status_code=404, detail="email_configuration_disabled")
-    return _context(request)
+    context = _context(request)
+    actor = context[3]
+    roles = actor.get("roles")
+    if (
+        not isinstance(roles, (list, tuple, set))
+        or "DataForge.FinOpsAdmin" not in {
+            str(role).strip() for role in roles if str(role).strip()
+        }
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant FinOps administrator role required",
+        )
+    return context
 
 
 def get_member_budget_service() -> MemberBudgetService:
@@ -132,11 +95,6 @@ def _audit_required(request: Request, workspace_id: str, resource_id: str) -> No
         record_audit_event(actor_from_request(request, fallback=False), "member.manage", {"workspace_id": workspace_id, "resource_type": "member", "resource_id": resource_id[:199] or "pending"}, result="allowed", reason_code="authorized")
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Audit persistence is required") from exc
-
-
-def _active_admins(identity_tenant_id: str, workspace_ids: tuple[str, ...]) -> dict[str, str]:
-    members = MemberDirectory(identity_loader=workspace_finops_member_identities, hmac_secret=str(os.environ["DF_FINOPS_HMAC_SECRET"])).list_members(identity_tenant_id, workspace_ids)
-    return {member.member_ref: member.email for member in members if member.identity_state == "active" and member.role in {"owner", "admin"} and member.email}
 
 
 def _map_error(exc: Exception) -> HTTPException:
@@ -219,7 +177,7 @@ def _strict_notification_payload(payload: dict[str, Any]) -> None:
     _strict_revision(payload["base_revision"])
     if "enabled" in payload and type(payload["enabled"]) is not bool:
         raise HTTPException(status_code=422, detail="enabled must be a boolean")
-    for key in {"recipient_actor_ref", "sender_display_name", "subject_template", "body_template"} & set(payload):
+    for key in {"recipient_email", "sender_display_name", "subject_template", "body_template"} & set(payload):
         if type(payload[key]) is not str:
             raise HTTPException(status_code=422, detail=f"{key} must be a string")
 
@@ -279,7 +237,12 @@ async def create_member_budget(request: Request) -> dict[str, Any]:
     _strict_budget_payload(payload, create=True)
     try:
         service = get_member_budget_service()
-        if not service.is_eligible_member(member_ref=payload["member_ref"], identity_tenant_id=str(actor["tenant_id"]), workspace_ids=workspace_ids):
+        if not service.is_eligible_member(
+            member_ref=payload["member_ref"],
+            tenant_ref=tenant_ref,
+            identity_tenant_id=str(actor["tenant_id"]),
+            workspace_ids=workspace_ids,
+        ):
             raise KeyError(payload["member_ref"])
         _audit_required(request, workspace_ids[0], "member-budget-create")
         return _item_envelope(service.save_budget(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload))
@@ -344,12 +307,18 @@ async def get_notification_settings(request: Request) -> dict[str, Any]:
 @router.put("/notification-settings")
 async def put_notification_settings(request: Request) -> dict[str, Any]:
     tenant_ref, actor_ref, workspace_ids, actor = _email_configuration_context(request)
-    payload = _payload(await _object_body(request), {"recipient_actor_ref", "sender_display_name", "subject_template", "body_template", "enabled", "base_revision"})
+    payload = _payload(await _object_body(request), {"recipient_email", "sender_display_name", "subject_template", "body_template", "enabled", "base_revision"})
     _strict_notification_payload(payload)
     _validate_notification_templates(payload)
     _audit_required(request, workspace_ids[0], "member-budget-notification")
     try:
-        return _item_envelope(get_member_budget_service().save_notification(tenant_ref=tenant_ref, actor_ref=actor_ref, payload=payload, active_admins=_active_admins(str(actor["tenant_id"]), workspace_ids)))
+        return _item_envelope(
+            get_member_budget_service().save_notification(
+                tenant_ref=tenant_ref,
+                actor_ref=actor_ref,
+                payload=payload,
+            )
+        )
     except Exception as exc:
         raise _map_error(exc) from exc
 
@@ -361,7 +330,6 @@ async def test_notification_email(request: Request) -> dict[str, Any]:
     try:
         result = get_member_budget_service().send_test_email(
             tenant_ref=tenant_ref,
-            active_admins=_active_admins(str(actor["tenant_id"]), workspace_ids),
             sender=acs_email_sender_from_environment(),
         )
         return _test_email_response(state=result.state, sent_at=result.sent_at, safe_error_category=result.safe_error_category)

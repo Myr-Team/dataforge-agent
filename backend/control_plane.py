@@ -13,13 +13,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from urllib.parse import unquote, urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 try:
+    from . import cache_store
     from .audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from .artifact_jobs import list_artifact_jobs
     from .artifact_registry import ArtifactPersistenceError, get_artifact
@@ -41,13 +42,16 @@ try:
     from .observability import observability_snapshot
     from .outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from .roi_service import build_roi_snapshot, member_chargeback, parse_time_window, realized_roi_evidence, record_in_window, roi_cost_evidence, roi_outcome_evidence
-    from .roi_scenario_store import ScenarioPersistenceError, create_roi_scenario, list_roi_scenarios, scenario_projection
+    from .roi_scenario_store import ScenarioPersistenceError, ScenarioRevisionConflict, create_roi_scenario, list_roi_scenarios, scenario_projection
     from .pm_skills import playbook_suggestion
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
     from .workspace_model_config import normalize_workspace_price_card, public_workspace_model_config, validate_workspace_routing_policy
     from .workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
+    from .finops.cache_namespace import FinOpsCacheNamespace
+    from .finops.normalization import canonical_tenant_ref
 except ImportError:
+    import cache_store
     from audit_store import AuditPersistenceError, list_audit_events, record_audit_event
     from artifact_jobs import list_artifact_jobs
     from artifact_registry import ArtifactPersistenceError, get_artifact
@@ -69,12 +73,14 @@ except ImportError:
     from observability import observability_snapshot
     from outcome_store import list_outcome_events, list_verification_events, record_outcome_event, source_is_valid, verify_outcome_event
     from roi_service import build_roi_snapshot, member_chargeback, parse_time_window, realized_roi_evidence, record_in_window, roi_cost_evidence, roi_outcome_evidence
-    from roi_scenario_store import ScenarioPersistenceError, create_roi_scenario, list_roi_scenarios, scenario_projection
+    from roi_scenario_store import ScenarioPersistenceError, ScenarioRevisionConflict, create_roi_scenario, list_roi_scenarios, scenario_projection
     from pm_skills import playbook_suggestion
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
     from workspace_model_config import normalize_workspace_price_card, public_workspace_model_config, validate_workspace_routing_policy
     from workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
+    from finops.cache_namespace import FinOpsCacheNamespace
+    from finops.normalization import canonical_tenant_ref
 
 
 router = APIRouter(tags=["control-plane"])
@@ -89,6 +95,30 @@ _HEALTH_CACHE: dict[str, Any] = {"expires": 0.0, "value": None}
 _DIRECTORY_SELECTION_TTL_SECONDS = 300.0
 _DIRECTORY_SELECTION_LOCK = threading.RLock()
 _DIRECTORY_SELECTIONS: dict[str, dict[str, Any]] = {}
+
+
+def _bump_finops_workspace_domains(
+    request: Request,
+    workspace_id: str,
+    domains: tuple[str, ...],
+) -> None:
+    """Best-effort FinOps invalidation after an authorized workspace write."""
+    try:
+        actor = actor_from_request(request)
+        tenant_id = str(actor.get("tenant_id") or "").strip()
+        secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
+        if not tenant_id or not secret:
+            return
+        tenant_ref = canonical_tenant_ref(tenant_id, secret=secret)
+        FinOpsCacheNamespace(cache_store).bump(
+            tenant_ref,
+            workspace_id,
+            domains,
+        )
+    except Exception:
+        # Durable scenario/outcome writes are authoritative; Redis is only an
+        # acceleration layer and must not change the write result.
+        return
 
 
 @router.get("/api/workspaces/{workspace_id}/overview")
@@ -380,6 +410,7 @@ async def workspace_roi_scenario_create(workspace_id: str, body: dict[str, Any],
     _require_workspace_owner(workspace_id, request, "roi.scenario.write")
     data = dict(body or {})
     previous_id = data.pop("previous_id", None)
+    base_revision = data.pop("base_revision", None)
     _audit_required(request, workspace_id, "roi.scenario.write", "roi_scenario", "pending")
     try:
         scenario = await _call(
@@ -388,10 +419,17 @@ async def workspace_roi_scenario_create(workspace_id: str, body: dict[str, Any],
             data,
             actor_from_request(request),
             previous_id=previous_id,
+            base_revision=base_revision,
         )
     except Exception:
         _audit_failed(request, workspace_id, "roi.scenario.write", "roi_scenario", "pending")
         raise
+    await _call(
+        _bump_finops_workspace_domains,
+        request,
+        workspace_id,
+        ("roi", "overview"),
+    )
     return {"workspace_id": workspace_id, "scenario": await _call(scenario_projection, workspace_id, scenario)}
 
 
@@ -445,6 +483,12 @@ async def workspace_outcome_verify(
     except Exception:
         _audit_failed(request, workspace_id, "outcome.verify", "outcome", event_id, correlation={"outcome_event_id": event_id})
         raise
+    await _call(
+        _bump_finops_workspace_domains,
+        request,
+        workspace_id,
+        ("roi", "overview"),
+    )
     return {"workspace_id": workspace_id, "event": await _call(_public_outcome_event, workspace_id, event)}
 
 
@@ -527,6 +571,8 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
         raise HTTPException(status_code=503, detail="Invitation persistence is unavailable") from exc
     except ScenarioPersistenceError as exc:
         raise HTTPException(status_code=503, detail="ROI scenario persistence is unavailable") from exc
+    except ScenarioRevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1114,10 +1160,16 @@ def build_method_action_plan(workspace_id: str, body: dict[str, Any]) -> dict[st
     }
 
 
-def list_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
+def list_workspace_artifacts(
+    workspace_id: str,
+    *,
+    run_limit: int | None = 80,
+) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for summary in list_runs(workspace_id)[:80]:
+    summaries = list_runs(workspace_id)
+    scanned = summaries if run_limit is None else summaries[:run_limit]
+    for summary in scanned:
         run_id = str(summary.get("run_id") or "")
         if not run_id:
             continue
@@ -1148,6 +1200,7 @@ def list_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
         "artifacts": items,
         "jobs": list_artifact_jobs(workspace_id)[:20],
         "tasks": list_tasks(workspace_id)[:20],
+        "runs_truncated": run_limit is not None and len(summaries) > run_limit,
     }
 
 
@@ -2314,12 +2367,45 @@ def workspace_roi_snapshot(workspace_id: str, from_value: str, to_value: str) ->
 def workspace_cost_value_snapshot(workspace_id: str, from_value: str, to_value: str) -> dict[str, Any]:
     snapshot = workspace_roi_snapshot(workspace_id, from_value, to_value)
     scenarios = [scenario_projection(workspace_id, item) for item in list_roi_scenarios(workspace_id)]
+    window = parse_time_window(from_value, to_value)
+    artifacts = list_workspace_artifacts(
+        workspace_id,
+        run_limit=None,
+    ).get("artifacts") or []
+    artifact_count = sum(
+        1
+        for item in artifacts
+        if isinstance(item, Mapping)
+        and record_in_window(item, window, "task")
+    )
+    output_by_day: dict[str, int] = {}
+    for item in artifacts:
+        if not isinstance(item, Mapping) or not record_in_window(item, window, "task"):
+            continue
+        timestamp = str(item.get("created_at") or item.get("updated_at") or item.get("time") or "")
+        if not timestamp:
+            continue
+        try:
+            day = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(timezone.utc).date().isoformat()
+        except ValueError:
+            continue
+        output_by_day[day] = output_by_day.get(day, 0) + 1
     return {
         "workspace_id": workspace_id,
         "window": snapshot["window"],
         "cost_evidence": snapshot["cost_evidence"],
         "outcome_evidence": snapshot["outcome_evidence"],
         "realized_roi": realized_roi_evidence(snapshot),
+        "artifact_count": artifact_count,
+        "output_trend": [
+            {
+                "bucket_at": day,
+                "effective_output_count": count,
+                "output_kind": "artifact",
+                "data_status": "available",
+            }
+            for day, count in sorted(output_by_day.items())
+        ],
         "scenarios": scenarios,
         "foundry_integration": snapshot["foundry_integration"],
         "generated_at": snapshot["generated_at"],

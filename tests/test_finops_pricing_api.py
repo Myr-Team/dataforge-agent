@@ -39,6 +39,13 @@ def _client(
 
 def test_pricing_catalog_and_owner_mapping_round_trip(monkeypatch) -> None:
     client = _client(monkeypatch)
+    bumps: list[tuple[str, str, tuple[str, ...]]] = []
+
+    class _Namespace:
+        def bump(self, tenant_ref, workspace_id, domains):
+            bumps.append((tenant_ref, workspace_id, tuple(domains)))
+
+    monkeypatch.setattr(finops_router, "get_finops_cache_namespace", _Namespace)
     headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
 
     catalog = client.get("/api/finops/pricing/catalog", headers=headers)
@@ -59,10 +66,20 @@ def test_pricing_catalog_and_owner_mapping_round_trip(monkeypatch) -> None:
     assert created.status_code == 200
     assert created.json()["mapping"]["mapping_revision"] == 1
     assert mappings.json()["items"][0]["deployment"] == "gpt-5.6-terra"
+    assert bumps == [
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview"))
+    ]
 
 
 def test_pricing_mapping_rejects_arbitrary_rate_and_stale_revision(monkeypatch) -> None:
     client = _client(monkeypatch)
+    bumps: list[tuple[str, str, tuple[str, ...]]] = []
+
+    class _Namespace:
+        def bump(self, tenant_ref, workspace_id, domains):
+            bumps.append((tenant_ref, workspace_id, tuple(domains)))
+
+    monkeypatch.setattr(finops_router, "get_finops_cache_namespace", _Namespace)
     headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
     url = "/api/finops/pricing/mappings/gpt-5.6-terra"
     body = {
@@ -73,6 +90,9 @@ def test_pricing_mapping_rejects_arbitrary_rate_and_stale_revision(monkeypatch) 
     assert client.put(url, headers=headers, json={**body, "input_rate": 0}).status_code == 422
     assert client.put(url, headers=headers, json=body).status_code == 200
     assert client.put(url, headers=headers, json=body).status_code == 409
+    assert bumps == [
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview"))
+    ]
 
 
 def test_pricing_mapping_write_requires_owner(monkeypatch) -> None:
@@ -92,6 +112,13 @@ def test_pricing_mapping_write_requires_owner(monkeypatch) -> None:
 
 def test_pricing_mapping_delete_removes_wrong_mapping(monkeypatch) -> None:
     client = _client(monkeypatch)
+    bumps: list[tuple[str, str, tuple[str, ...]]] = []
+
+    class _Namespace:
+        def bump(self, tenant_ref, workspace_id, domains):
+            bumps.append((tenant_ref, workspace_id, tuple(domains)))
+
+    monkeypatch.setattr(finops_router, "get_finops_cache_namespace", _Namespace)
     headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
     url = "/api/finops/pricing/mappings/gpt-5.6-terra"
 
@@ -110,6 +137,10 @@ def test_pricing_mapping_delete_removes_wrong_mapping(monkeypatch) -> None:
     assert deleted.status_code == 204
     assert missing.status_code == 404
     assert mappings.json()["count"] == 0
+    assert bumps == [
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview")),
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview")),
+    ]
 
 
 def test_pricing_mapping_delete_requires_owner(monkeypatch) -> None:

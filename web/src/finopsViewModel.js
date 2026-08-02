@@ -1,4 +1,17 @@
+import { FINOPS_REFRESH_MS } from "./finopsNavigation.js";
+
 const numberFormat = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 });
+
+export { FINOPS_REFRESH_MS };
+
+export const CUSTOMER_INFRA_LABELS = Object.freeze({
+  reconciliation: "请求对账",
+  gatewayCoverage: "统一入口覆盖率",
+  gateway: "统一入口",
+  gatewayCorrelation: "入口关联",
+  trace: "运行追踪",
+  monitor: "云端监控",
+});
 
 export const FINOPS_TABS = [
   { id: "overview", label: "运营总览" },
@@ -7,8 +20,67 @@ export const FINOPS_TABS = [
   { id: "risk", label: "风险与优化" },
 ];
 
+const FINOPS_POLICY_LABELS = Object.freeze({
+  error_rate: "调用失败率",
+  p95_latency: "P95 响应时延",
+  daily_cost_budget: "日预算使用",
+  token_spike: "Token 异常增长",
+  apim_coverage: "统一入口覆盖",
+  unpriced_requests: "未计价调用",
+  cache_hit_rate: "缓存命中率",
+});
+
+export function finopsPolicyLabel(value) {
+  const key = String(value || "").trim();
+  return FINOPS_POLICY_LABELS[key] || "运营规则";
+}
+
+export function finopsGatewayCoverageLabel(value) {
+  return {
+    apim_governed: "统一入口",
+    app_observed: "应用观测",
+    unmanaged: "未经过统一入口",
+    unknown: "未记录",
+  }[String(value || "").trim()] || "未记录";
+}
+
 function hasNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+export function niceFinOpsAxis(values = [], tickCount = 4) {
+  const count = Math.max(2, Math.floor(Number(tickCount) || 4));
+  const observedMaximum = (Array.isArray(values) ? values : [])
+    .filter((value) => hasNumber(value) && value >= 0)
+    .reduce((maximum, value) => Math.max(maximum, value), 0);
+  if (observedMaximum <= 0) {
+    return {
+      max: 1,
+      ticks: Array.from({ length: count }, (_item, index) => (
+        (count - 1 - index) / (count - 1)
+      )),
+    };
+  }
+  const roughStep = observedMaximum / (count - 1);
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const normalized = roughStep / magnitude;
+  const niceFactor = [1, 2, 2.5, 5, 10].find((candidate) => candidate >= normalized) || 10;
+  const step = niceFactor * magnitude;
+  const max = step * (count - 1);
+  return {
+    max,
+    ticks: Array.from({ length: count }, (_item, index) => (
+      step * (count - 1 - index)
+    )),
+  };
+}
+
+export function finopsBarPercent(value, axisMaximum) {
+  const numericValue = Number(value);
+  const numericMaximum = Number(axisMaximum);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) return 0;
+  if (!Number.isFinite(numericMaximum) || numericMaximum <= 0) return 0;
+  return Math.min(100, (numericValue / numericMaximum) * 100);
 }
 
 export function formatFinOpsNumber(value, fallback = "未记录") {
@@ -18,7 +90,10 @@ export function formatFinOpsNumber(value, fallback = "未记录") {
 export function formatFinOpsCost(value, status = "") {
   if (!hasNumber(value)) return ["unavailable", "unpriced"].includes(status) ? "未计价" : "未记录";
   const digits = value >= 1 ? 2 : value >= 0.01 ? 4 : 6;
-  return `$${value.toFixed(digits).replace(/0+$/, "").replace(/\.$/, "")}`;
+  return `$${value.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: digits,
+  })}`;
 }
 
 export function formatFinOpsDuration(value) {
@@ -216,9 +291,64 @@ export function finopsMetricCards(payload = {}) {
           bypassed: cache.bypassed ?? null,
           unavailable: cache.unavailable ?? null,
           eligible: cache.eligible_requests ?? null,
+          avoidedTokens: cache.avoided_tokens ?? null,
+          estimatedSavings: cache.estimated_savings ?? null,
+          status: cache.data_status || "unavailable",
         },
         dataStatus,
         evidenceState: cache.eligible_requests ? "observed" : "unavailable",
+      },
+    },
+    {
+      id: "cache_avoided_tokens",
+      label: "缓存避免 Token",
+      value: formatFinOpsNumber(cache.avoided_tokens),
+      meta: cache.data_status === "partial" ? "部分命中缺少完整计量" : "来自已记录的结果复用",
+      tone: cache.data_status === "partial" ? "warning" : "neutral",
+      metric: {
+        id: "cache_avoided_tokens",
+        label: "缓存避免 Token",
+        value: cache.avoided_tokens ?? null,
+        unit: "Token",
+        kind: "cache",
+        cache: {
+          hit: cache.hit ?? null,
+          miss: cache.miss ?? null,
+          bypassed: cache.bypassed ?? null,
+          unavailable: cache.unavailable ?? null,
+          eligible: cache.eligible_requests ?? null,
+          avoidedTokens: cache.avoided_tokens ?? null,
+          estimatedSavings: cache.estimated_savings ?? null,
+          status: cache.data_status || "unavailable",
+        },
+        dataStatus,
+        evidenceState: cache.avoided_tokens == null ? "unavailable" : (cache.data_status || "observed"),
+      },
+    },
+    {
+      id: "cache_savings",
+      label: "缓存估算节省",
+      value: formatFinOpsCost(cache.estimated_savings),
+      meta: cache.data_status === "partial" ? "仅统计可可靠计价的命中" : "按当前价目映射估算",
+      tone: cache.data_status === "partial" ? "warning" : "neutral",
+      metric: {
+        id: "cache_estimated_savings",
+        label: "缓存估算节省",
+        value: cache.estimated_savings ?? null,
+        unit: "USD",
+        kind: "cache",
+        cache: {
+          hit: cache.hit ?? null,
+          miss: cache.miss ?? null,
+          bypassed: cache.bypassed ?? null,
+          unavailable: cache.unavailable ?? null,
+          eligible: cache.eligible_requests ?? null,
+          avoidedTokens: cache.avoided_tokens ?? null,
+          estimatedSavings: cache.estimated_savings ?? null,
+          status: cache.data_status || "unavailable",
+        },
+        dataStatus,
+        evidenceState: cache.estimated_savings == null ? "unavailable" : (cache.data_status || "estimated"),
       },
     },
   ];
@@ -237,6 +367,16 @@ export function finopsTrendViewModel(payload = {}) {
       output: item?.tokens?.output ?? null,
       cached: item?.tokens?.cached_input ?? null,
       reasoning: item?.tokens?.reasoning ?? null,
+    },
+    cache: {
+      eligible: item?.cache?.eligible_requests ?? null,
+      hit: item?.cache?.hit ?? null,
+      miss: item?.cache?.miss ?? null,
+      bypassed: item?.cache?.bypassed ?? null,
+      unavailable: item?.cache?.unavailable ?? null,
+      avoidedTokens: item?.cache?.avoided_tokens ?? null,
+      estimatedSavings: item?.cache?.estimated_savings ?? null,
+      status: item?.cache?.data_status || "unavailable",
     },
     status: item.data_status || "unavailable",
   }));
@@ -302,7 +442,23 @@ export function finopsRoiEconomicsView(payload = {}) {
       : "证据不足",
     verifiedRoiStatus: verified.status || "not_recorded",
     scenarios: (Array.isArray(payload.scenarios) ? payload.scenarios : [])
-      .filter((item) => item.status === "estimated"),
+      .filter((item) => item.status === "estimated")
+      .map((item) => {
+        const result = item.result || {};
+        return {
+          ...item,
+          monthlyBenefitLabel: formatFinOpsCost(result.monthly_benefit),
+          monthlyCostLabel: formatFinOpsCost(result.monthly_total_cost),
+          monthlyNetBenefitLabel: formatFinOpsCost(result.monthly_net_benefit),
+          roiLabel: hasNumber(result.roi_ratio)
+            ? formatFinOpsPercent(result.roi_ratio * 100)
+            : "暂不可用",
+          paybackLabel: hasNumber(result.payback_months)
+            ? `${formatFinOpsNumber(result.payback_months)} 个月`
+            : "暂不可用",
+          formulaRevision: result.formula_revision || item.formula_revision || "",
+        };
+      }),
     evidenceGaps: Array.isArray(payload.evidence_gaps) ? payload.evidence_gaps : [],
   };
 }
@@ -310,6 +466,9 @@ export function finopsRoiEconomicsView(payload = {}) {
 export function finopsOpportunityRows(payload = {}) {
   return (Array.isArray(payload?.items) ? payload.items : []).map((item) => ({
     ...item,
+    evidenceRefs: (Array.isArray(item.evidence_refs) ? item.evidence_refs : [])
+      .filter((value) => typeof value === "string" && value.trim())
+      .slice(0, 5),
     stateLabel: item.queue_state === "ready" ? "可评估" : "观察中",
     savingsLabel: hasNumber(item.estimated_savings)
       ? formatFinOpsCost(item.estimated_savings, "estimated")
@@ -319,6 +478,21 @@ export function finopsOpportunityRows(payload = {}) {
     effortLabel: { high: "高", medium: "中", low: "低" }[item.effort] || "未记录",
     actionLabel: "建议 · 需人工审批",
   }));
+}
+
+export function evidenceRequestRef({
+  evidenceRefs = [],
+  fallbackItems = [],
+} = {}) {
+  const values = [
+    ...(Array.isArray(evidenceRefs) ? evidenceRefs : []),
+    ...(Array.isArray(fallbackItems)
+      ? fallbackItems.map((item) => item?.request_ref)
+      : []),
+  ];
+  return values
+    .map((value) => String(value || "").trim())
+    .find((value) => /^[A-Za-z][A-Za-z0-9_-]{7,127}$/.test(value)) || "";
 }
 
 export function finopsRequestViewModel(item = {}) {
@@ -333,9 +507,9 @@ export function finopsRequestViewModel(item = {}) {
   const technicalLabels = {
     request_ref: "请求关联",
     run_id: "MAF 运行",
-    apim_correlation_id: "APIM 关联",
+    apim_correlation_id: CUSTOMER_INFRA_LABELS.gatewayCorrelation,
     price_card_revision: "价目表版本",
-    trace_id: "Foundry Trace",
+    trace_id: CUSTOMER_INFRA_LABELS.trace,
     agent_id: "Agent",
   };
   const technicalItems = Object.entries(technicalRefs)
@@ -360,7 +534,7 @@ export function finopsRequestViewModel(item = {}) {
     costStatus: metrics?.estimated_cost?.status || "unavailable",
     latency: formatFinOpsDuration(metrics.latency_ms),
     errorCategory: metrics.error_category || "无",
-    gatewayCoverage: metrics.gateway_coverage || "unknown",
+    gatewayCoverage: finopsGatewayCoverageLabel(metrics.gateway_coverage),
     evidenceState: metrics.evidence_state || "unavailable",
     businessRequest: {
       text: item?.business_request?.text || "未记录",
@@ -459,6 +633,16 @@ export function finopsBreakdownRows(payload = {}) {
     cost: item.estimated_cost,
     errorRate: item.error_rate_pct,
     p95: item.p95_latency_ms,
+    cacheHitRate: item.cache_hit_rate_pct,
+    cache: {
+      eligible: item?.cache?.eligible_requests ?? null,
+      hit: item?.cache?.hit ?? null,
+      miss: item?.cache?.miss ?? null,
+      bypassed: item?.cache?.bypassed ?? null,
+      avoidedTokens: item?.cache?.avoided_tokens ?? null,
+      estimatedSavings: item?.cache?.estimated_savings ?? null,
+      status: item?.cache?.data_status || "unavailable",
+    },
     status: item.data_status || "unavailable",
   }));
 }

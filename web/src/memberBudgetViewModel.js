@@ -46,6 +46,13 @@ function friendlyName(value) {
   return name === "Former member" ? "历史成员" : name;
 }
 
+function maskedEmail(value) {
+  const email = text(value);
+  const [local, domain] = email.split("@");
+  if (!local || !domain) return "尚未配置";
+  return `${local.slice(0, 1)}***@${domain}`;
+}
+
 function normalizedThresholds(value) {
   const items = Array.isArray(value)
     ? value.filter((item) => Number.isInteger(item) && item >= 1 && item <= 100)
@@ -96,7 +103,7 @@ function rowModel(item, alerts, periodKey) {
     memberLabel: friendlyName(member.display_name),
     memberInitial: friendlyName(member.display_name).slice(0, 1),
     identityState,
-    identityLabel: identityState === "active" ? "Entra 已启用" : "身份已停用",
+    identityLabel: identityState === "active" ? "预算主体已启用" : "预算主体已停用",
     workspaceLabel: Array.isArray(member.workspace_ids) && member.workspace_ids.length
       ? `${member.workspace_ids.length} 个工作区`
       : "无当前工作区",
@@ -179,7 +186,7 @@ export function memberBudgetViewModel({
   const notificationItem = notification?.item && typeof notification.item === "object"
     ? notification.item
     : null;
-  const recipientMemberRef = text(notificationItem?.recipient_actor_ref);
+  const recipientEmail = text(notificationItem?.recipient_email);
   const knownSpend = rows.map((row) => row.spendValue).filter((value) => value !== null);
   const estimatedSpend = knownSpend.length ? knownSpend.reduce((sum, value) => sum + value, 0) : null;
   const sentAlerts = alertsView.filter((item) => item.deliveryState === "sent").length;
@@ -221,12 +228,14 @@ export function memberBudgetViewModel({
               ? "unavailable"
               : "not_configured",
       configured: Boolean(notificationItem),
-      recipientMemberRef,
-      recipientLabel: membersByRef.get(recipientMemberRef) || (notificationItem ? "管理员" : "尚未选择"),
+      recipientEmail,
+      recipientLabel: recipientEmail ? maskedEmail(recipientEmail) : "尚未配置",
       senderDisplayName: text(notificationItem?.sender_display_name) || "DataForge",
       subjectTemplate: text(notificationItem?.subject_template) || "{{member_name}} 预算提醒",
       bodyTemplate: text(notificationItem?.body_template) || "本月估算成本 {{estimated_spend}}，预算 {{budget_amount}}，已达到 {{threshold_percent}}%。估算覆盖率：{{pricing_coverage}}。",
       enabled: notificationItem?.enabled === true,
+      testEmailSucceededAt: text(notificationItem?.test_email_succeeded_at),
+      testEmailReady: Boolean(text(notificationItem?.test_email_succeeded_at)),
       revision: Number.isInteger(notificationItem?.revision) ? notificationItem.revision : 0,
     },
   };
@@ -237,7 +246,7 @@ export function memberBudgetHomeSummaryViewModel(value = {}) {
     return {
       state: "permission_required",
       stateLabel: "需要权限",
-      nearBudgetLabel: "需要租户 FinOps 管理员角色",
+      nearBudgetLabel: "需要工作区管理员权限",
       mailLabel: "预算与提醒已受限",
       actionLabel: "查看权限说明",
     };
@@ -266,7 +275,7 @@ export function memberBudgetHomeSummaryViewModel(value = {}) {
         : view.notification.state === "disabled"
           ? "邮件配置未启用"
           : view.notification.state === "permission_required"
-            ? "需要租户 FinOps 管理员角色"
+            ? "需要组织 FinOps 管理员权限"
             : view.notification.state === "unavailable"
               ? "邮件状态不可用"
               : "邮件未配置",

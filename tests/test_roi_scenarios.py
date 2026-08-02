@@ -26,6 +26,23 @@ def _payload(**overrides: object) -> dict[str, object]:
     return payload
 
 
+def _dataforge_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "title": "运营自动化情景",
+        "currency": "USD",
+        "hours_saved": 40,
+        "hourly_value": 50,
+        "avoided_loss_or_revenue": 1000,
+        "implementation_cost": 6000,
+        "monthly_fixed_cost": 200,
+        "model_cost": 100,
+        "evaluation_months": 12,
+        "evidence_revision": 3,
+    }
+    payload.update(overrides)
+    return payload
+
+
 def _configure_store(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(roi_scenario_store, "SCENARIO_DIR", tmp_path / "scenarios")
     monkeypatch.setattr(roi_scenario_store, "blob_configured", lambda: False)
@@ -61,6 +78,90 @@ def test_scenario_is_immutable_estimate_and_new_revision_is_linked(monkeypatch, 
     }
     assert second["result"]["estimated_business_value"] == 18000.0
     assert roi_scenario_store.list_roi_scenarios("ws-1")[-1]["scenario_id"] == second["scenario_id"]
+
+
+def test_dataforge_roi_scenario_persists_inputs_formula_and_revision(monkeypatch, tmp_path: Path) -> None:
+    _configure_store(monkeypatch, tmp_path)
+
+    first = roi_scenario_store.create_roi_scenario(
+        "ws-1",
+        _dataforge_payload(),
+        {"actor_id": "owner-1"},
+    )
+    second = roi_scenario_store.create_roi_scenario(
+        "ws-1",
+        _dataforge_payload(hours_saved=48),
+        {"actor_id": "owner-1"},
+        previous_id=first["scenario_id"],
+        base_revision=1,
+    )
+
+    assert first["result"]["monthly_benefit"] == 3000
+    assert first["result"]["monthly_total_cost"] == 800
+    assert first["result"]["formula_revision"] == "dataforge-roi-v1"
+    assert second["revision"] == 2
+    assert second["inputs"]["hours_saved"] == 48
+
+    with pytest.raises(roi_scenario_store.ScenarioRevisionConflict):
+        roi_scenario_store.create_roi_scenario(
+            "ws-1",
+            _dataforge_payload(hours_saved=60),
+            {"actor_id": "owner-2"},
+            previous_id=first["scenario_id"],
+            base_revision=1,
+        )
+
+
+def test_demo_roi_scenario_upsert_is_stable_and_keeps_internal_seed_batch(monkeypatch, tmp_path: Path) -> None:
+    _configure_store(monkeypatch, tmp_path)
+    payload = {**_dataforge_payload(), "seed_batch": "operations-v1"}
+
+    first = roi_scenario_store.upsert_demo_roi_scenario(
+        "ws-1",
+        payload,
+        {"actor_id": "seed-owner"},
+        seed_key="operations-v1",
+    )
+    second = roi_scenario_store.upsert_demo_roi_scenario(
+        "ws-1",
+        payload,
+        {"actor_id": "seed-owner"},
+        seed_key="operations-v1",
+    )
+
+    assert first["scenario_id"] == second["scenario_id"]
+    assert first["result"]["formula_revision"] == "dataforge-roi-v1"
+    assert second["seed_batch"] == "operations-v1"
+    assert len(roi_scenario_store.list_roi_scenarios("ws-1")) == 1
+
+
+def test_demo_roi_upgrade_replaces_only_demo_owned_scenario(monkeypatch, tmp_path: Path) -> None:
+    _configure_store(monkeypatch, tmp_path)
+    first = roi_scenario_store.upsert_demo_roi_scenario(
+        "ws-1",
+        _dataforge_payload(),
+        None,
+        seed_key="operations-v1",
+    )
+    user = roi_scenario_store.create_roi_scenario(
+        "ws-1",
+        _dataforge_payload(hours_saved=64),
+        {"actor_id": "owner-user"},
+    )
+    upgraded = roi_scenario_store.upsert_demo_roi_scenario(
+        "ws-1",
+        _dataforge_payload(hours_saved=48),
+        None,
+        seed_key="operations-v2",
+    )
+
+    rows = roi_scenario_store.list_roi_scenarios("ws-1")
+    demo_rows = [item for item in rows if item.get("seed_batch")]
+    assert first["scenario_id"] == upgraded["scenario_id"]
+    assert len(demo_rows) == 1
+    assert demo_rows[0]["seed_batch"] == "operations-v2"
+    assert demo_rows[0]["inputs"]["hours_saved"] == 48
+    assert any(item["scenario_id"] == user["scenario_id"] for item in rows)
 
 
 def test_scenario_projection_omits_email_and_rejects_nonfinite_or_foreign_revision(monkeypatch, tmp_path: Path) -> None:
@@ -107,12 +208,21 @@ def test_scenario_actions_allow_reader_reads_and_editor_writes() -> None:
 def test_scenario_routes_use_explicit_governance_actions(monkeypatch, tmp_path: Path) -> None:
     _configure_store(monkeypatch, tmp_path)
     actions: list[str] = []
+    invalidations: list[tuple[str, tuple[str, ...]]] = []
     monkeypatch.setattr(
         control_plane,
         "_require_workspace_owner",
         lambda _workspace_id, _request, action: actions.append(action) or "owner",
     )
     monkeypatch.setattr(control_plane, "_audit_required", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        control_plane,
+        "_bump_finops_workspace_domains",
+        lambda _request, workspace_id, domains: invalidations.append(
+            (workspace_id, tuple(domains))
+        ),
+        raising=False,
+    )
     monkeypatch.setattr(
         control_plane,
         "actor_from_request",
@@ -128,6 +238,7 @@ def test_scenario_routes_use_explicit_governance_actions(monkeypatch, tmp_path: 
     assert listed.status_code == 200, listed.text
     assert listed.json()["scenarios"][0]["scenario_id"] == created.json()["scenario"]["scenario_id"]
     assert actions == ["roi.scenario.write", "roi.scenario.read"]
+    assert invalidations == [("ws-1", ("roi", "overview"))]
 
 
 def test_scenario_route_returns_service_unavailable_when_durable_store_fails(monkeypatch, tmp_path: Path) -> None:
@@ -144,3 +255,30 @@ def test_scenario_route_returns_service_unavailable_when_durable_store_fails(mon
 
     assert response.status_code == 503
     assert response.json()["detail"] == "ROI scenario persistence is unavailable"
+
+
+def test_scenario_route_returns_conflict_for_stale_revision(monkeypatch) -> None:
+    monkeypatch.setattr(control_plane, "_require_workspace_owner", lambda *_args, **_kwargs: "owner")
+    monkeypatch.setattr(control_plane, "_audit_required", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(control_plane, "_audit_failed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda _request: {"actor_id": "owner-1"})
+
+    def conflict(*_args, **_kwargs):
+        raise roi_scenario_store.ScenarioRevisionConflict(
+            "ROI scenario revision has changed"
+        )
+
+    monkeypatch.setattr(control_plane, "create_roi_scenario", conflict)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/workspaces/ws-1/governance/scenarios",
+        json={
+            **_dataforge_payload(),
+            "previous_id": "roi_scenario_1234567890abcdef",
+            "base_revision": 1,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "ROI scenario revision has changed"

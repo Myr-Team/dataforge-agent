@@ -1,7 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { finopsRequestViewModel } from "./finopsViewModel.js";
+import {
+  evidenceRequestRef,
+  finopsRequestViewModel,
+} from "./finopsViewModel.js";
+
+
+test("evidence selection prefers the clicked finding reference", () => {
+  assert.equal(
+    evidenceRequestRef({
+      evidenceRefs: ["req_slow"],
+      fallbackItems: [{ request_ref: "req_latest" }],
+    }),
+    "req_slow",
+  );
+  assert.equal(
+    evidenceRequestRef({
+      evidenceRefs: [],
+      fallbackItems: [{ request_ref: "req_latest" }],
+    }),
+    "req_latest",
+  );
+});
 
 
 test("evidence drawer model uses business-first section order", () => {
@@ -20,7 +41,7 @@ test("evidence drawer model uses business-first section order", () => {
     business_request: { text: "分析本月销售异常", status: "recorded" },
     business_response: { text: "已定位主要变化来自华东区域。", status: "recorded" },
     timeline: [
-      { stage: "gateway", label: "APIM 网关", status: "observed" },
+      { stage: "gateway", label: "统一入口", status: "observed" },
       { stage: "response", label: "完成返回", status: "succeeded" },
     ],
     technical_refs: { request_ref: "req_safe" },
@@ -35,5 +56,5 @@ test("evidence drawer model uses business-first section order", () => {
     "technical",
   ]);
   assert.equal(detail.title.includes("req_safe"), false);
-  assert.equal(detail.timeline[0].label, "APIM 网关");
+  assert.equal(detail.timeline[0].label, "统一入口");
 });

@@ -368,7 +368,10 @@ def _try_acquire_local_task_lock(lock_path: Path) -> str | None:
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
+    except (FileExistsError, PermissionError):
+        # Windows can report EACCES while another thread is completing an
+        # exclusive create for the same path. Treat it as bounded contention;
+        # the caller retries and still fails closed on a persistent denial.
         return None
     try:
         os.write(descriptor, json.dumps(payload, separators=(",", ":")).encode("utf-8"))

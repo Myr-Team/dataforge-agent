@@ -148,3 +148,114 @@ test("operations trends keep event counts in hover detail without persistent mar
   assert.doesNotMatch(source, /className="finops-trend-event"/);
   assert.match(source, /rowEvents\.length \? <span>运营事件/);
 });
+
+
+test("risk selection distinguishes initial selection from an explicit close", async () => {
+  const server = await import("vite").then(({ createServer }) => createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  }));
+  try {
+    const { resolveSelectedRisk } = await server.ssrLoadModule("/src/finops/RiskDecisionPage.jsx");
+    const priorities = [{ id: "risk-a" }, { id: "risk-b" }];
+    assert.equal(resolveSelectedRisk(undefined, priorities)?.id, "risk-a");
+    assert.equal(resolveSelectedRisk("risk-b", priorities)?.id, "risk-b");
+    assert.equal(resolveSelectedRisk(null, priorities), null);
+    assert.equal(resolveSelectedRisk("missing", priorities), null);
+  } finally {
+    await server.close();
+  }
+});
+
+
+test("portfolio selection defaults only when the selectedId prop is omitted", async () => {
+  const server = await import("vite").then(({ createServer }) => createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  }));
+  try {
+    const {
+      OpportunityPortfolio,
+      resolvePortfolioSelection,
+    } = await server.ssrLoadModule("/src/finops/DecisionCharts.jsx");
+    const validIds = ["risk-a", "risk-b"];
+    assert.equal(resolvePortfolioSelection(undefined, "", validIds, false), "risk-a");
+    assert.equal(resolvePortfolioSelection("", "risk-a", validIds, true), "");
+    assert.equal(resolvePortfolioSelection(null, "risk-a", validIds, true), "");
+    assert.equal(resolvePortfolioSelection("risk-b", "", validIds, true), "risk-b");
+
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const data = {
+      items: [
+        { id: "risk-a", label: "风险 A", domainLabel: "成本", effortLabel: "低", impactLevelLabel: "高", impactLabel: "待验证" },
+        { id: "risk-b", label: "风险 B", domainLabel: "体验", effortLabel: "中", impactLevelLabel: "中", impactLabel: "待验证" },
+      ],
+      points: [],
+      metadata: {},
+    };
+    const omitted = renderToStaticMarkup(React.createElement(OpportunityPortfolio, { data }));
+    const closed = renderToStaticMarkup(React.createElement(OpportunityPortfolio, { data, selectedId: null }));
+    assert.match(omitted, /<li class="finops-decision-selected"/);
+    assert.doesNotMatch(closed, /<li class="finops-decision-selected"/);
+  } finally {
+    await server.close();
+  }
+});
+
+
+test("risk mutation refresh uses scoped invalidation without a forced server bypass", async () => {
+  const source = await readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8");
+  assert.match(source, /invalidateFinOpsMutation\("risk_draft", \{ workspaceId \}\)/);
+  assert.match(source, /requestTabRefresh\("risk", \{ force: false \}\)/);
+});
+
+
+test("portal risk integration uses one decision read and conflict-safe draft reload", async () => {
+  const source = await readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8");
+
+  assert.match(source, /loadFinOpsRiskDecision/);
+  assert.match(source, /<RiskDecisionPage/);
+  assert.match(source, /<RemediationDraftPanel/);
+  assert.match(source, /orchestrateRemediationMutation/);
+  assert.match(source, /refreshOpportunity/);
+  assert.match(source, /loadFinOpsTab\(\{[\s\S]*tab:\s*"risk"[\s\S]*force:\s*true[\s\S]*\}\)\.promise/);
+  assert.match(source, /loadFinOpsRemediationDraft/);
+  assert.match(source, /mutationError=\{riskMutation\.error\}/);
+  assert.match(source, /busyId=\{riskMutation\.busyId\}/);
+  assert.doesNotMatch(source, /function RiskPage\(/);
+  assert.doesNotMatch(source, /risk:\s*\(\)\s*=>\s*Promise\.all/);
+});
+
+
+test("model setting callbacks run only after a successful write", async () => {
+  const server = await import("vite").then(({ createServer }) => createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  }));
+  try {
+    const { persistModelSetting } = await server.ssrLoadModule("/src/ModelRoutingPage.jsx");
+    let changes = 0;
+    const saved = await persistModelSetting(
+      async () => ({ revision: 2 }),
+      () => { changes += 1; },
+      "model",
+    );
+    assert.deepEqual(saved, { revision: 2 });
+    assert.equal(changes, 1);
+    await assert.rejects(
+      persistModelSetting(
+        async () => { throw new Error("save failed"); },
+        () => { changes += 1; },
+        "price",
+      ),
+      /save failed/,
+    );
+    assert.equal(changes, 1);
+  } finally {
+    await server.close();
+  }
+});

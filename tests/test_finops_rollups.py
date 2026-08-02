@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from backend.finops.models import FinOpsRequestEvent
+from backend.finops.query import FinOpsQuery
 from backend.finops.rollups import aggregate_rollups
 from backend.finops.rollup_refresh import refresh_rollups
 from backend.finops.repository import InMemoryFinOpsRepository
@@ -60,6 +61,32 @@ def test_rollups_aggregate_hour_and_day_without_turning_unknowns_into_zero() -> 
     assert hourly[0].p95_latency_ms == 500
 
 
+def test_rollups_preserve_cache_counts_and_avoided_tokens() -> None:
+    payload = _event(
+        "req_aaaaaaaaaaaa",
+        1,
+        status="succeeded",
+        total_tokens=100,
+        cost=0.004,
+        latency_ms=100,
+    ).model_dump(mode="python")
+    payload["cache"] = {"state": "hit", "eligible": True, "avoided_tokens": 60}
+    payload["result_cache"] = {
+        "state": "hit",
+        "eligible": True,
+        "reason": "eligible",
+        "policy_revision": 1,
+    }
+    event = FinOpsRequestEvent.model_validate(payload)
+
+    hourly, _daily = aggregate_rollups([event])
+
+    assert hourly[0].cache_hit_count == 1
+    assert hourly[0].cache_miss_count == 0
+    assert hourly[0].cache_bypassed_count == 0
+    assert hourly[0].cache_avoided_tokens == 60
+
+
 def test_sql_rollup_repository_replaces_only_requested_tenant_window() -> None:
     connection = RecordingConnection()
     repository = SqlFinOpsRollupRepository(connection_factory=lambda: connection)
@@ -80,6 +107,51 @@ def test_sql_rollup_repository_replaces_only_requested_tenant_window() -> None:
     assert any("finops:insert-hour-rollup" in operation for operation in operations)
     assert any("finops:delete-day-rollups" in operation for operation in operations)
     assert any("finops:insert-day-rollup" in operation for operation in operations)
+
+
+def test_sql_rollup_read_is_tenant_workspace_and_window_scoped() -> None:
+    connection = RecordingConnection()
+    connection.cursor_value.rows = [
+        (
+            "2026-07-24",
+            "tenant-a",
+            "commerce",
+            "ws-a",
+            "coordinator",
+            "gpt-5-mini",
+            2,
+            1,
+            20,
+            0.01,
+            100,
+            200,
+            2,
+            0,
+        )
+    ]
+    repository = SqlFinOpsRollupRepository(connection_factory=lambda: connection)
+    query = FinOpsQuery(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        workspace_id="ws-a",
+        department_id="commerce",
+        agent_id="coordinator",
+        model="gpt-5-mini",
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-08-01T00:00:00Z",
+    )
+
+    [rollup] = repository.read(query, "day")
+
+    operation, parameters = connection.cursor_value.calls[0]
+    assert "tenant_ref = ?" in operation
+    assert "workspace_id IN (?)" in operation
+    assert "bucket_at >=" in operation and "bucket_at <" in operation
+    assert parameters[0] == "tenant-a"
+    assert "ws-a" in parameters
+    assert rollup.bucket_kind == "day"
+    assert rollup.workspace_id == "ws-a"
+    assert rollup.estimated_cost == 0.01
 
 
 def test_rollup_refresh_processes_scopes_without_returning_scope_identifiers() -> None:

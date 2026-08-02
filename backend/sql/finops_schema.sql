@@ -661,6 +661,25 @@ BEGIN
 END;
 GO
 
+IF OBJECT_ID(N'df_finops.budget_subject', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.budget_subject (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        workspace_id NVARCHAR(160) NOT NULL,
+        subject_ref NVARCHAR(128) NOT NULL,
+        display_name NVARCHAR(120) NOT NULL,
+        department_label NVARCHAR(120) NULL,
+        primary_model NVARCHAR(160) NULL,
+        enabled BIT NOT NULL,
+        revision INT NOT NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_budget_subject
+            PRIMARY KEY (tenant_ref, workspace_id, subject_ref),
+        CONSTRAINT CK_finops_budget_subject_revision CHECK (revision >= 1)
+    );
+END;
+GO
+
 IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
     WHERE object_id = OBJECT_ID(N'df_finops.member_budget')
@@ -682,6 +701,7 @@ BEGIN
         subject_template NVARCHAR(200) NOT NULL,
         body_template NVARCHAR(4000) NOT NULL,
         enabled BIT NOT NULL,
+        test_email_succeeded_at DATETIME2(7) NULL,
         revision INT NOT NULL,
         created_by_ref NVARCHAR(128) NOT NULL,
         updated_by_ref NVARCHAR(128) NOT NULL,
@@ -691,6 +711,14 @@ BEGIN
         CONSTRAINT CK_finops_notification_revision CHECK (revision >= 1)
     );
 END;
+GO
+
+IF COL_LENGTH(N'df_finops.notification_setting', N'test_email_succeeded_at') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.notification_setting
+        ADD test_email_succeeded_at DATETIME2(7) NULL');
+END;
+GO
 
 IF OBJECT_ID(N'df_finops.budget_alert', N'U') IS NULL
 BEGIN
@@ -737,6 +765,20 @@ BEGIN
             OR
             (delivery_state <> N'sending' AND lease_token IS NULL AND lease_expires_at IS NULL)
         )
+    );
+END;
+GO
+
+IF OBJECT_ID(N'df_finops.demo_seed_event', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.demo_seed_event (
+        tenant_ref NVARCHAR(128) NOT NULL,
+        workspace_id NVARCHAR(160) NOT NULL,
+        seed_batch NVARCHAR(64) NOT NULL,
+        request_ref NVARCHAR(128) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_demo_seed_event
+            PRIMARY KEY (tenant_ref, workspace_id, seed_batch, request_ref)
     );
 END;
 GO
@@ -818,6 +860,105 @@ BEGIN
         ON df_finops.request_event (tenant_ref, actor_ref, occurred_at)
         INCLUDE (cost_amount, evidence_state);
 END;
+
+IF OBJECT_ID(N'df_finops.remediation_draft', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.remediation_draft (
+        tenant_ref NVARCHAR(160) NOT NULL,
+        draft_id NVARCHAR(160) NOT NULL,
+        workspace_id NVARCHAR(160) NOT NULL,
+        source_opportunity_id NVARCHAR(128) NOT NULL,
+        source_anomaly_id NVARCHAR(128) NULL,
+        risk_type NVARCHAR(64) NOT NULL,
+        title NVARCHAR(240) NOT NULL,
+        summary NVARCHAR(1000) NOT NULL,
+        scope_json NVARCHAR(MAX) NOT NULL,
+        evidence_refs_json NVARCHAR(MAX) NOT NULL,
+        proposed_changes_json NVARCHAR(MAX) NOT NULL,
+        expected_impact_json NVARCHAR(MAX) NOT NULL,
+        prerequisites_json NVARCHAR(MAX) NOT NULL,
+        risks_and_guardrails_json NVARCHAR(MAX) NOT NULL,
+        verification_plan_json NVARCHAR(MAX) NOT NULL,
+        rollback_plan_json NVARCHAR(MAX) NOT NULL,
+        action_kind NVARCHAR(40) NOT NULL,
+        execution_capability NVARCHAR(32) NOT NULL,
+        base_version NVARCHAR(128) NOT NULL,
+        draft_status NVARCHAR(24) NOT NULL,
+        revision INT NOT NULL,
+        created_by_ref NVARCHAR(160) NOT NULL,
+        reviewed_by_ref NVARCHAR(160) NULL,
+        translated_action_id NVARCHAR(160) NULL,
+        created_at DATETIME2(7) NOT NULL,
+        updated_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_remediation_draft
+            PRIMARY KEY (tenant_ref, draft_id),
+        CONSTRAINT CK_finops_remediation_status CHECK (
+            draft_status IN (
+                N'draft', N'reviewed', N'pending_approval', N'promoted', N'closed'
+            )
+        ),
+        CONSTRAINT CK_finops_remediation_execution CHECK (
+            execution_capability IN (
+                N'advisory_only', N'typed_action_available'
+            )
+        ),
+        CONSTRAINT CK_finops_remediation_scope_json CHECK (
+            ISJSON(scope_json) = 1
+        ),
+        CONSTRAINT CK_finops_remediation_evidence_json CHECK (
+            ISJSON(evidence_refs_json) = 1
+        ),
+        CONSTRAINT CK_finops_remediation_changes_json CHECK (
+            ISJSON(proposed_changes_json) = 1
+        ),
+        CONSTRAINT CK_finops_remediation_expected_impact_json CHECK (
+            ISJSON(expected_impact_json) = 1
+        ),
+        CONSTRAINT CK_finops_remediation_prerequisites_json CHECK (
+            ISJSON(prerequisites_json) = 1
+        ),
+        CONSTRAINT CK_finops_remediation_guardrails_json CHECK (
+            ISJSON(risks_and_guardrails_json) = 1
+        ),
+        CONSTRAINT CK_finops_remediation_verification_json CHECK (
+            ISJSON(verification_plan_json) = 1
+        ),
+        CONSTRAINT CK_finops_remediation_rollback_json CHECK (
+            ISJSON(rollback_plan_json) = 1
+        ),
+        CONSTRAINT CK_finops_remediation_revision CHECK (revision >= 1)
+    );
+    CREATE INDEX IX_finops_remediation_scope_updated
+        ON df_finops.remediation_draft (
+            tenant_ref, workspace_id, updated_at DESC, draft_id
+        );
+END;
+GO
+
+IF OBJECT_ID(N'df_finops.remediation_transition', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.remediation_transition (
+        transition_id BIGINT IDENTITY(1, 1) NOT NULL,
+        tenant_ref NVARCHAR(160) NOT NULL,
+        workspace_id NVARCHAR(160) NOT NULL,
+        draft_id NVARCHAR(160) NOT NULL,
+        from_status NVARCHAR(24) NULL,
+        to_status NVARCHAR(24) NOT NULL,
+        actor_ref NVARCHAR(160) NOT NULL,
+        reason NVARCHAR(512) NULL,
+        occurred_at DATETIME2(7) NOT NULL,
+        CONSTRAINT PK_finops_remediation_transition
+            PRIMARY KEY (transition_id),
+        CONSTRAINT FK_finops_remediation_transition_draft
+            FOREIGN KEY (tenant_ref, draft_id)
+            REFERENCES df_finops.remediation_draft (tenant_ref, draft_id)
+    );
+    CREATE INDEX IX_finops_remediation_transition_scope
+        ON df_finops.remediation_transition (
+            tenant_ref, workspace_id, occurred_at DESC
+        );
+END;
+GO
 
 IF COL_LENGTH(N'df_finops.request_event', N'routing_policy_revision') IS NULL
 BEGIN

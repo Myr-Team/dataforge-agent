@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from backend.finops.gateway_unmatched import InMemoryGatewayUnmatchedRepository
 from backend.finops.models import FinOpsRequestEvent, TokenUsage
 from backend.finops.query import FinOpsQuery, FinOpsQueryService
 from backend.finops.repository import InMemoryFinOpsRepository
+from backend.finops.rollups import aggregate_rollups
 
 
 def _event(
@@ -177,6 +178,9 @@ def test_overview_exposes_recorded_token_and_cache_composition() -> None:
         "miss": 1,
         "bypassed": 1,
         "unavailable": 0,
+        "avoided_tokens": None,
+        "estimated_savings": None,
+        "data_status": "unavailable",
     }
 
 
@@ -344,6 +348,226 @@ def test_trends_selects_metric_and_preserves_exact_value() -> None:
     assert cost["metric"] == "estimated_cost"
     assert cost["unit"] == "USD"
     assert cost["items"][0]["value"] == 0.01
+
+
+def test_unit_economics_trend_uses_rollups_without_reading_historical_request_facts() -> None:
+    event = _event("req_aaaaaaaaaaaa", total=100, cost=0.01)
+    hourly, daily = aggregate_rollups([event])
+
+    class Rollups:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def read(self, query, bucket):
+            self.calls += 1
+            return daily if bucket == "day" else hourly
+
+    class NoFactReads(InMemoryFinOpsRepository):
+        def list_events(self, **kwargs):
+            raise AssertionError("historical windows must use persisted rollups")
+
+    rollups = Rollups()
+    result = FinOpsQueryService(NoFactReads(), rollup_repository=rollups).unit_economics_trend(
+        FinOpsQuery(
+            tenant_ref="tenant-a",
+            authorized_workspace_ids=("ws-a",),
+            from_value="2026-07-01T00:00:00Z",
+            to_value="2026-07-25T00:00:00Z",
+        )
+    )
+
+    assert rollups.calls == 1
+    assert result["items"] == [{
+        "bucket_at": "2026-07-24",
+        "successful_requests": 1,
+        "estimated_cost": 0.01,
+        "cost_per_successful_request": 0.01,
+        "data_status": "available",
+    }]
+
+
+def test_unit_economics_merges_only_current_incomplete_bucket_request_facts() -> None:
+    now = datetime.now(timezone.utc)
+    current_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    historical = _event("req_aaaaaaaaaaaa", total=100, cost=0.01).model_copy(
+        update={"occurred_at": current_day - timedelta(days=1, hours=-1)}
+    )
+    current = _event("req_bbbbbbbbbbbb", total=100, cost=0.02).model_copy(
+        update={"occurred_at": now - timedelta(seconds=1)}
+    )
+    _, historical_rollups = aggregate_rollups([historical])
+
+    class Rollups:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def read(self, query, bucket):
+            self.calls.append((query.from_value, query.to_value, bucket))
+            return historical_rollups
+
+    class Facts(InMemoryFinOpsRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def list_events(self, **kwargs):
+            self.calls += 1
+            return super().list_events(**kwargs)
+
+    facts = Facts()
+    facts.upsert_events([historical, current])
+    rollups = Rollups()
+    result = FinOpsQueryService(facts, rollup_repository=rollups).unit_economics_trend(
+        FinOpsQuery(
+            tenant_ref="tenant-a",
+            authorized_workspace_ids=("ws-a",),
+            from_value=(current_day - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+            to_value=now.isoformat().replace("+00:00", "Z"),
+        )
+    )
+
+    assert len(rollups.calls) == 1
+    assert facts.calls == 1
+    assert sum(item["successful_requests"] for item in result["items"]) == 2
+
+
+def test_unit_economics_future_window_uses_only_closed_rollups_and_current_facts() -> None:
+    now = datetime.now(timezone.utc)
+    current_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    historical = _event("req_aaaaaaaaaaaa", total=100, cost=0.01).model_copy(
+        update={"occurred_at": current_day - timedelta(days=1, hours=-1)}
+    )
+    current = _event("req_bbbbbbbbbbbb", total=100, cost=0.02).model_copy(
+        update={"occurred_at": now - timedelta(seconds=1)}
+    )
+    future = _event("req_cccccccccccc", total=100, cost=0.03).model_copy(
+        update={"occurred_at": current_day + timedelta(days=1, hours=1)}
+    )
+    _, historical_rollups = aggregate_rollups([historical])
+    _, current_rollups = aggregate_rollups([current])
+    _, future_rollups = aggregate_rollups([future])
+
+    class Rollups:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def read(self, query, bucket):
+            self.calls.append((query.from_value, query.to_value, bucket))
+            # A malformed/stale repository response must not reintroduce an
+            # open current bucket or synthesize future data into this result.
+            return [*historical_rollups, *current_rollups, *future_rollups]
+
+    class Facts(InMemoryFinOpsRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = []
+
+        def list_events(self, **kwargs):
+            self.calls.append(kwargs)
+            return super().list_events(**kwargs)
+
+    facts = Facts()
+    facts.upsert_events([historical, current, future])
+    rollups = Rollups()
+    result = FinOpsQueryService(facts, rollup_repository=rollups).unit_economics_trend(
+        FinOpsQuery(
+            tenant_ref="tenant-a",
+            authorized_workspace_ids=("ws-a",),
+            from_value=(current_day - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+            to_value=(now + timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+        )
+    )
+
+    assert rollups.calls == [(
+        (current_day - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+        current_day.isoformat().replace("+00:00", "Z"),
+        "day",
+    )]
+    assert len(facts.calls) == 1
+    assert facts.calls[0]["from_value"] == current_day.isoformat().replace("+00:00", "Z")
+    fact_end = datetime.fromisoformat(facts.calls[0]["to_value"].replace("Z", "+00:00"))
+    assert current_day < fact_end < now + timedelta(seconds=1)
+    assert [item["bucket_at"] for item in result["items"]] == [
+        (current_day - timedelta(days=1)).date().isoformat(),
+        current_day.date().isoformat(),
+    ]
+
+
+def test_unit_economics_actor_scope_uses_request_facts_not_rollups() -> None:
+    class Rollups:
+        def read(self, query, bucket):
+            raise AssertionError("actor scoped query must not read rollups")
+
+    facts = InMemoryFinOpsRepository()
+    facts.upsert_events([_event("req_aaaaaaaaaaaa", actor="actor-a", total=100, cost=0.01)])
+    result = FinOpsQueryService(facts, rollup_repository=Rollups()).unit_economics_trend(
+        FinOpsQuery(
+            tenant_ref="tenant-a",
+            authorized_workspace_ids=("ws-a",),
+            actor_ref="actor-a",
+            from_value="2026-07-01T00:00:00Z",
+            to_value="2026-07-25T00:00:00Z",
+        )
+    )
+
+    assert result["count"] == 1
+
+
+def test_cache_economics_are_scoped_to_trends_and_breakdowns() -> None:
+    raw_events = []
+    for request_ref, state, avoided_tokens, cost, official_key in (
+        ("req_aaaaaaaaaaaa", "miss", None, 0.01, "gpt-5-mini:global"),
+        ("req_bbbbbbbbbbbb", "hit", 60, 0.004, "gpt-5-mini:global"),
+        ("req_cccccccccccc", "hit", 40, None, None),
+        ("req_dddddddddddd", "bypassed", None, 0.003, "gpt-5-mini:global"),
+    ):
+        payload = _event(
+            request_ref,
+            department="commerce",
+            total=100,
+            cost=cost,
+        ).model_dump(mode="python")
+        payload["cache"] = {
+            "state": state,
+            "eligible": state in {"hit", "miss"},
+            "avoided_tokens": avoided_tokens,
+        }
+        payload["result_cache"] = {
+            "state": state,
+            "eligible": state in {"hit", "miss"},
+            "reason": "eligible" if state in {"hit", "miss"} else "not_recorded",
+            "policy_revision": 1,
+        }
+        payload["estimated_cost"]["official_price_key"] = official_key
+        raw_events.append(FinOpsRequestEvent.model_validate(payload))
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events(raw_events)
+    service = FinOpsQueryService(repository)
+    query = FinOpsQuery(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    overview = service.overview(query)
+    trend = service.trends(query, "day", metric="tokens")
+    breakdown = service.breakdowns(query, "department")
+
+    expected = {
+        "eligible_requests": 3,
+        "hit": 2,
+        "miss": 1,
+        "bypassed": 1,
+        "unavailable": 0,
+        "avoided_tokens": 100,
+        "estimated_savings": 0.006,
+        "data_status": "partial",
+    }
+    assert overview["metrics"]["cache"] == expected
+    assert trend["items"][0]["cache"] == expected
+    assert breakdown["items"][0]["cache_hit_rate_pct"] == 66.67
+    assert breakdown["items"][0]["cache"] == expected
 
 
 def test_overview_pipes_unattributed_gateway_evidence_into_apim_trust() -> None:

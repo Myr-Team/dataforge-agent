@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 import math
+import re
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -10,6 +11,9 @@ from .acs_email import AcsEmailSender, EmailDeliveryResult, EmailMessage, render
 from .member_budget_repository import MemberBudgetRepository
 from .member_budgets import MemberBudget, MemberBudgetDraft, NotificationSetting
 from .member_directory import MemberDirectory, MemberMonthlyCost
+
+
+_EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s.]{1,190}(?:\.[^@\s.]{1,63})+$")
 
 
 class _MemberCostReader(Protocol):
@@ -28,9 +32,14 @@ class MemberBudgetService:
         self, *, tenant_ref: str, workspace_ids: tuple[str, ...], cursor: str | None, limit: int,
         identity_tenant_id: str | None = None,
     ) -> dict[str, Any]:
-        # The directory needs the raw trusted tenant only to compare trusted
-        # loader metadata. Persisted/query scope remains the opaque tenant ref.
-        members = {item.member_ref: item for item in self._directory.list_members(identity_tenant_id or tenant_ref, workspace_ids)}
+        members = {
+            item.subject_ref: item
+            for item in self._budget_subjects(
+                tenant_ref=tenant_ref,
+                workspace_ids=workspace_ids,
+                include_disabled=True,
+            )
+        }
         now = datetime.now(timezone.utc)
         costs = self._costs.summarize_month(tenant_ref, _month_start(now), _next_month(now), workspace_ids)
         rows = tuple(
@@ -45,12 +54,13 @@ class MemberBudgetService:
             member = members[budget.member_ref]
             progress = costs.get(budget.member_ref)
             safe_member = {
-                "member_ref": member.member_ref,
+                "member_ref": member.subject_ref,
                 "display_name": member.display_name,
-                "role": member.role,
-                "identity_state": member.identity_state,
-                "workspace_ids": member.workspace_ids,
-                "department_labels": member.department_labels,
+                "role": "member",
+                "identity_state": "active" if member.enabled else "inactive",
+                "workspace_ids": (member.workspace_id,),
+                "department_labels": (member.department_label,) if member.department_label else (),
+                "primary_model": member.primary_model,
             }
             safe_progress = _safe_progress(progress) if progress else _unavailable_progress()
             items.append(
@@ -75,17 +85,24 @@ class MemberBudgetService:
     def list_eligible_members(
         self, *, tenant_ref: str, identity_tenant_id: str, workspace_ids: tuple[str, ...], cursor: str | None, limit: int
     ) -> dict[str, Any]:
-        rows = [item for item in self._directory.list_members(identity_tenant_id, workspace_ids) if item.identity_state == "active"]
+        rows = list(
+            self._budget_subjects(
+                tenant_ref=tenant_ref,
+                workspace_ids=workspace_ids,
+                include_disabled=True,
+            )
+        )
         start = _cursor_offset(cursor)
         selected = rows[start : start + limit]
         items = [
             {
-                "member_ref": item.member_ref,
+                "member_ref": item.subject_ref,
                 "display_name": item.display_name,
-                "role": item.role,
-                "identity_state": item.identity_state,
-                "workspace_ids": item.workspace_ids,
-                "department_labels": item.department_labels,
+                "role": "member",
+                "identity_state": "active" if item.enabled else "inactive",
+                "workspace_ids": (item.workspace_id,),
+                "department_labels": (item.department_label,) if item.department_label else (),
+                "primary_model": item.primary_model,
             }
             for item in selected
         ]
@@ -98,8 +115,21 @@ class MemberBudgetService:
             "currency": "USD",
         }
 
-    def is_eligible_member(self, *, member_ref: str, identity_tenant_id: str, workspace_ids: tuple[str, ...]) -> bool:
-        return any(item.member_ref == member_ref and item.identity_state == "active" for item in self._directory.list_members(identity_tenant_id, workspace_ids))
+    def is_eligible_member(
+        self,
+        *,
+        member_ref: str,
+        tenant_ref: str,
+        identity_tenant_id: str,
+        workspace_ids: tuple[str, ...],
+    ) -> bool:
+        return any(
+            item.subject_ref == member_ref and item.enabled
+            for item in self._budget_subjects(
+                tenant_ref=tenant_ref,
+                workspace_ids=workspace_ids,
+            )
+        )
 
     def is_budget_member_authorized(
         self,
@@ -113,8 +143,12 @@ class MemberBudgetService:
         if budget is None:
             return False
         return any(
-            item.member_ref == budget.member_ref
-            for item in self._directory.list_members(identity_tenant_id, workspace_ids)
+            item.subject_ref == budget.member_ref
+            for item in self._budget_subjects(
+                tenant_ref=tenant_ref,
+                workspace_ids=workspace_ids,
+                include_disabled=True,
+            )
         )
 
     def save_budget(
@@ -175,21 +209,24 @@ class MemberBudgetService:
         return _safe_notification(value)
 
     def save_notification(
-        self, *, tenant_ref: str, actor_ref: str, payload: dict[str, Any], active_admins: dict[str, str]
+        self,
+        *,
+        tenant_ref: str,
+        actor_ref: str,
+        payload: dict[str, Any],
+        active_admins: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        allowed = {"recipient_actor_ref", "sender_display_name", "subject_template", "body_template", "enabled", "base_revision"}
+        allowed = {"recipient_email", "sender_display_name", "subject_template", "body_template", "enabled", "base_revision"}
         if not isinstance(payload, dict) or set(payload) - allowed:
             raise ValueError("unsupported notification fields")
-        recipient = payload.get("recipient_actor_ref")
-        if type(recipient) is not str or not recipient:
-            raise ValueError("recipient_actor_ref must be a string")
-        email = active_admins.get(recipient)
-        if not email:
-            raise PermissionError("recipient must be an active tenant administrator")
         if type(payload.get("base_revision")) is not int or payload["base_revision"] < 0:
             raise ValueError("base_revision must be a non-negative integer")
         current = self._repository.get_notification_setting(tenant_ref)
         base_revision = payload["base_revision"]
+        email = payload.get("recipient_email", current.recipient_email if current else "")
+        if type(email) is not str or len(email.strip()) > 320 or not _EMAIL.fullmatch(email.strip()):
+            raise ValueError("recipient_email must be a valid email address")
+        email = email.strip()
         now = datetime.now(timezone.utc)
         enabled = payload.get("enabled", current.enabled if current else False)
         if type(enabled) is not bool:
@@ -201,13 +238,30 @@ class MemberBudgetService:
             raise ValueError("notification template fields must be strings")
         validate_template(subject_template)
         validate_template(body_template)
+        configuration_changed = bool(
+            current is not None
+            and (
+                email.casefold() != current.recipient_email.casefold()
+                or sender_display_name != current.sender_display_name
+                or subject_template != current.subject_template
+                or body_template != current.body_template
+            )
+        )
+        tested_at = (
+            None
+            if current is None or configuration_changed
+            else current.test_email_succeeded_at
+        )
+        if enabled and tested_at is None:
+            raise ValueError("test_email_required")
         value = NotificationSetting(
-            recipient_actor_ref=recipient,
+            recipient_actor_ref=actor_ref,
             recipient_email=email,
             sender_display_name=sender_display_name,
             subject_template=subject_template,
             body_template=body_template,
             enabled=enabled,
+            test_email_succeeded_at=tested_at,
             revision=base_revision + 1,
             created_by_ref=current.created_by_ref if current else actor_ref,
             updated_by_ref=actor_ref,
@@ -226,14 +280,14 @@ class MemberBudgetService:
         cursor: str | None,
         limit: int,
     ) -> dict[str, Any]:
-        authorized_actor_refs = tuple(
-            sorted(
-                {
-                    item.member_ref
-                    for item in self._directory.list_members(identity_tenant_id, workspace_ids)
-                }
+        authorized_actor_refs = tuple(sorted({
+            item.subject_ref
+            for item in self._budget_subjects(
+                tenant_ref=tenant_ref,
+                workspace_ids=workspace_ids,
+                include_disabled=True,
             )
-        )
+        }))
         if budget_id is not None:
             budget = self._repository.get_budget(tenant_ref, budget_id)
             if budget is None or budget.member_ref not in authorized_actor_refs:
@@ -260,14 +314,18 @@ class MemberBudgetService:
             "data_status": data_status,
         }
 
-    def send_test_email(self, *, tenant_ref: str, active_admins: dict[str, str], sender: AcsEmailSender) -> EmailDeliveryResult:
+    def send_test_email(
+        self,
+        *,
+        tenant_ref: str,
+        sender: AcsEmailSender,
+        active_admins: dict[str, str] | None = None,
+    ) -> EmailDeliveryResult:
         """Send a configuration probe only; it never creates a budget alert."""
         setting = self._repository.get_notification_setting(tenant_ref)
         if setting is None:
             raise KeyError("notification_setting")
-        recipient = active_admins.get(setting.recipient_actor_ref)
-        if not recipient or recipient != setting.recipient_email:
-            raise PermissionError("recipient must be an active tenant administrator")
+        recipient = setting.recipient_email
         values = {
             "member_name": "Member", "budget_amount": "-", "estimated_spend": "-", "usage_percent": "-",
             "threshold_percent": "-", "period_label": "-", "pricing_coverage": "-", "portal_url": "-",
@@ -279,11 +337,36 @@ class MemberBudgetService:
             plain_text=render_template(setting.body_template, values),
         )
         operation_id = str(uuid4())
-        return sender.send(message, operation_id=operation_id)
+        result = sender.send(message, operation_id=operation_id)
+        if result.state == "sent":
+            self._repository.mark_notification_tested(
+                tenant_ref,
+                revision=setting.revision,
+                sent_at=result.sent_at or datetime.now(timezone.utc),
+            )
+        return result
+
+    def _budget_subjects(
+        self,
+        *,
+        tenant_ref: str,
+        workspace_ids: tuple[str, ...],
+        include_disabled: bool = False,
+    ) -> tuple[Any, ...]:
+        values: list[Any] = []
+        for workspace_id in workspace_ids:
+            values.extend(
+                self._repository.list_budget_subjects(
+                    tenant_ref,
+                    workspace_id,
+                    include_disabled=include_disabled,
+                )
+            )
+        return tuple(values)
 
 
 def _safe_notification(value: NotificationSetting) -> dict[str, Any]:
-    return value.model_dump(mode="json", exclude={"recipient_email"})
+    return value.model_dump(mode="json")
 
 
 def _safe_budget(value: MemberBudget) -> dict[str, Any]:

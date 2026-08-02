@@ -1,3 +1,5 @@
+import { CUSTOMER_INFRA_LABELS } from "./finopsViewModel.js";
+
 function asNumber(value) {
   if (value === null || value === undefined || value === "" || typeof value === "boolean") return null;
   const number = Number(value);
@@ -208,18 +210,18 @@ function estimatedCostLabel(cost = {}) {
 }
 
 const GATEWAY_COPY = Object.freeze({
-  verified: { label: "APIM 指标已验证", tone: "ok" },
-  partial: { label: "部分 APIM 指标已验证", tone: "warn" },
-  pending: { label: "等待 APIM 指标", tone: "warn" },
-  unavailable: { label: "APIM 指标暂不可用", tone: "error" },
-  not_configured: { label: "未配置 APIM 指标", tone: "neutral" },
+  verified: { label: "入口指标已验证", tone: "ok" },
+  partial: { label: "部分入口指标已验证", tone: "warn" },
+  pending: { label: "等待入口指标", tone: "warn" },
+  unavailable: { label: "入口指标暂不可用", tone: "error" },
+  not_configured: { label: "未配置入口指标", tone: "neutral" },
 });
 
 const GATEWAY_SOURCE_COPY = Object.freeze({
-  apim_custom_metric: "APIM 自定义指标",
-  apim_metric_pending: "APIM 指标采集中",
-  apim_metric_query_unavailable: "APIM 指标查询",
-  apim_metric_not_configured: "未配置 APIM 指标",
+  apim_custom_metric: `${CUSTOMER_INFRA_LABELS.gateway}指标`,
+  apim_metric_pending: "入口指标采集中",
+  apim_metric_query_unavailable: "入口指标查询",
+  apim_metric_not_configured: "未配置入口指标",
 });
 
 function gatewayEvidenceView(value = {}) {
@@ -289,7 +291,7 @@ export function monitorDashboardViewModel(payload = {}) {
         value: ["available", "estimated"].includes(costStatus) ? formatCurrency(cost.amount, cost.currency) : "未记录",
         badge: costStatus === "estimated" ? "估算" : costStatus === "available" ? "已计价" : costStatus === "partial" ? "部分未计价" : "不可用",
         meta: costStatus === "estimated"
-          ? "Owner 维护价格卡；非 Azure 账单"
+          ? "Owner 维护价格卡；非云平台账单"
           : costStatus === "partial"
             ? `${formatInteger(cost.unpriced_calls)} 次调用未计价`
             : cost.price_catalog_version || String(cost.currency || "USD"),

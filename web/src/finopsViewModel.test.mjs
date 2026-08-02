@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  CUSTOMER_INFRA_LABELS,
+  FINOPS_REFRESH_MS,
   FINOPS_TABS,
   finopsBootstrapViewData,
   finopsMetricCards,
@@ -11,9 +14,40 @@ import {
   finopsDoughnutSegments,
   finopsRoiEconomicsView,
   finopsOpportunityRows,
+  finopsPolicyLabel,
+  finopsBarPercent,
+  niceFinOpsAxis,
   formatRelativeUpdateTime,
   gatewayUnmatchedEvidence,
 } from "./finopsViewModel.js";
+
+
+test("operations customer labels hide infrastructure product names", () => {
+  const source = readFileSync(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8");
+  for (const forbidden of ["APIM", "Foundry Trace", "Azure Monitor"]) {
+    assert.equal(source.includes(forbidden), false);
+  }
+  assert.deepEqual(CUSTOMER_INFRA_LABELS, {
+    reconciliation: "请求对账",
+    gatewayCoverage: "统一入口覆盖率",
+    gateway: "统一入口",
+    gatewayCorrelation: "入口关联",
+    trace: "运行追踪",
+    monitor: "云端监控",
+  });
+});
+
+
+test("operations refresh interval is ten minutes", () => {
+  assert.equal(FINOPS_REFRESH_MS, 600_000);
+});
+
+
+test("operations rules use business labels instead of infrastructure keys", () => {
+  assert.equal(finopsPolicyLabel("apim_coverage"), "统一入口覆盖");
+  assert.equal(finopsPolicyLabel("cache_hit_rate"), "缓存命中率");
+  assert.equal(finopsPolicyLabel("unknown"), "运营规则");
+});
 
 
 test("gateway unmatched evidence is scope-labelled and never invented", () => {
@@ -65,6 +99,8 @@ test("finops metric cards preserve unavailable and partial evidence", () => {
     "success",
     "p95",
     "cache",
+    "cache_avoided_tokens",
+    "cache_savings",
   ]);
   assert.equal(cards.find((item) => item.id === "cost").value, "未计价");
   assert.equal(cards.find((item) => item.id === "p95").value, "未记录");
@@ -72,6 +108,8 @@ test("finops metric cards preserve unavailable and partial evidence", () => {
   assert.equal(cards.find((item) => item.id === "cost").metric.kind, "cost");
   assert.equal(cards.find((item) => item.id === "success").metric.kind, "quality");
   assert.equal(cards.find((item) => item.id === "cache").metric.kind, "cache");
+  assert.equal(cards.find((item) => item.id === "cache_avoided_tokens").value, "未记录");
+  assert.equal(cards.find((item) => item.id === "cache_savings").value, "未记录");
 });
 
 
@@ -127,6 +165,48 @@ test("finops trend view model keeps token categories separate", () => {
 });
 
 
+test("finops trend view model preserves cache economics", () => {
+  const rows = finopsTrendViewModel({
+    items: [{
+      bucket: "2026-07-24T00:00:00Z",
+      cache: {
+        eligible_requests: 5,
+        hit: 3,
+        miss: 2,
+        bypassed: 1,
+        unavailable: 0,
+        avoided_tokens: 840,
+        estimated_savings: 0.0097,
+        data_status: "available",
+      },
+    }],
+  });
+
+  assert.deepEqual(rows[0].cache, {
+    eligible: 5,
+    hit: 3,
+    miss: 2,
+    bypassed: 1,
+    unavailable: 0,
+    avoidedTokens: 840,
+    estimatedSavings: 0.0097,
+    status: "available",
+  });
+});
+
+
+test("finops chart axis is adaptive and bar proportions remain truthful", () => {
+  const axis = niceFinOpsAxis([0.0021, 0.0097], 4);
+
+  assert.equal(axis.ticks.at(-1), 0);
+  assert.ok(axis.max >= 0.0097);
+  assert.ok(axis.max < 0.02);
+  assert.equal(finopsBarPercent(0, axis.max), 0);
+  assert.ok(finopsBarPercent(0.0021, axis.max) < finopsBarPercent(0.0097, axis.max));
+  assert.ok(finopsBarPercent(0.0021, axis.max) < 50);
+});
+
+
 test("request detail view model prefers friendly evidence and keeps technical refs collapsed", () => {
   const request = finopsRequestViewModel({
     display: {
@@ -157,6 +237,7 @@ test("request detail view model prefers friendly evidence and keeps technical re
   assert.equal(request.businessResponse.text, "已定位主要变化来自华东区域。");
   assert.equal(request.cost, "$0.0012");
   assert.equal(request.cache, "命中");
+  assert.equal(request.gatewayCoverage, "统一入口");
   assert.equal(request.technical.expanded, false);
   assert.equal(request.technical.items[0].value, "req_safe");
   assert.equal(request.links.foundryTrace, "https://ai.azure.com/trace/safe");
@@ -216,12 +297,29 @@ test("ROI economics view keeps verified ROI separate from estimated scenarios", 
       cost_per_analysis: { label: "每次分析成本", value: 3, currency: "USD", status: "estimated" },
     },
     verified_roi: { status: "verified", value: 1.5, currency: "USD" },
-    scenarios: [{ scenario_id: "roi_scenario_a", status: "estimated", title: "扩容情景" }],
+    scenarios: [{
+      scenario_id: "roi_scenario_a",
+      status: "estimated",
+      title: "扩容情景",
+      revision: 2,
+      result: {
+        monthly_benefit: 3000,
+        monthly_total_cost: 800,
+        monthly_net_benefit: 2200,
+        roi_ratio: 2.75,
+        payback_months: 2.222222,
+        formula_revision: "dataforge-roi-v1",
+      },
+    }],
     evidence_gaps: [],
   });
 
   assert.equal(view.verifiedRoiLabel, "150%");
   assert.equal(view.scenarios[0].status, "estimated");
+  assert.equal(view.scenarios[0].monthlyBenefitLabel, "$3,000");
+  assert.equal(view.scenarios[0].roiLabel, "275%");
+  assert.equal(view.scenarios[0].paybackLabel, "2.2 个月");
+  assert.equal(view.scenarios[0].formulaRevision, "dataforge-roi-v1");
   assert.equal(finopsRoiEconomicsView({}).verifiedRoiLabel, "证据不足");
 });
 

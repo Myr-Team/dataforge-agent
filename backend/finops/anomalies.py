@@ -50,6 +50,7 @@ class DetectedAnomaly(BaseModel):
     sample_count: int
     workspace_ids: list[str]
     recommendation: str
+    evidence_refs: list[str] = Field(default_factory=list, max_length=5)
 
 
 def evaluate_default_anomalies(value: AnomalyEvaluationInput) -> list[DetectedAnomaly]:
@@ -81,6 +82,10 @@ def evaluate_default_anomalies(value: AnomalyEvaluationInput) -> list[DetectedAn
                 error_count,
                 workspace_ids,
                 "检查失败来源、模型路由与上游限流证据。",
+                _event_refs(
+                    [event for event in error_events if event.status == "failed"],
+                    key=lambda event: event.occurred_at.timestamp(),
+                ),
             )
         )
 
@@ -106,7 +111,11 @@ def evaluate_default_anomalies(value: AnomalyEvaluationInput) -> list[DetectedAn
                 value.p95_latency_threshold_ms,
                 len(latencies),
                 workspace_ids,
-                "核对慢请求路由、缓存状态及 APIM 后端耗时。",
+                "核对慢请求路由、缓存状态及统一入口后端耗时。",
+                _event_refs(
+                    [event for event in latency_events if event.latency_ms is not None],
+                    key=lambda event: float(event.latency_ms or 0),
+                ),
             )
         )
 
@@ -133,6 +142,13 @@ def evaluate_default_anomalies(value: AnomalyEvaluationInput) -> list[DetectedAn
                     len(costs),
                     workspace_ids,
                     "审阅当日高成本 Agent 与模型，再决定是否提交限额或路由动作。",
+                    _event_refs(
+                        [
+                            event for event in daily_events
+                            if event.estimated_cost.amount is not None
+                        ],
+                        key=lambda event: float(event.estimated_cost.amount or 0),
+                    ),
                 )
             )
 
@@ -156,6 +172,15 @@ def evaluate_default_anomalies(value: AnomalyEvaluationInput) -> list[DetectedAn
                     len(token_values),
                     workspace_ids,
                     "检查相同时段的调用量、上下文长度和重试行为。",
+                    _event_refs(
+                        [
+                            event for event in events
+                            if event.occurred_at.date() == latest.date()
+                            and event.occurred_at.hour == latest.hour
+                            and event.tokens.total is not None
+                        ],
+                        key=lambda event: float(event.tokens.total or 0),
+                    ),
                 )
             )
 
@@ -171,6 +196,13 @@ def evaluate_default_anomalies(value: AnomalyEvaluationInput) -> list[DetectedAn
                 count,
                 workspace_ids,
                 "定位 app_observed、unmanaged 或 unknown 调用链。",
+                _event_refs(
+                    [
+                        event for event in events
+                        if event.gateway_coverage != "apim_governed"
+                    ],
+                    key=lambda event: event.occurred_at.timestamp(),
+                ),
             )
         )
 
@@ -186,6 +218,13 @@ def evaluate_default_anomalies(value: AnomalyEvaluationInput) -> list[DetectedAn
                 count,
                 workspace_ids,
                 "补充对应模型价目表 revision，禁止以零成本代替未知价格。",
+                _event_refs(
+                    [
+                        event for event in events
+                        if event.estimated_cost.amount is None
+                    ],
+                    key=lambda event: event.occurred_at.timestamp(),
+                ),
             )
         )
 
@@ -206,6 +245,13 @@ def evaluate_default_anomalies(value: AnomalyEvaluationInput) -> list[DetectedAn
                 len(eligible),
                 workspace_ids,
                 "检查同 workspace 分析的缓存键、TTL 与 bypass 原因。",
+                _event_refs(
+                    [
+                        event for event in events
+                        if event.cache.state in {"miss", "bypassed"}
+                    ],
+                    key=lambda event: event.occurred_at.timestamp(),
+                ),
             )
         )
     return results
@@ -219,6 +265,7 @@ def _finding(
     sample_count: int,
     workspace_ids: list[str],
     recommendation: str,
+    evidence_refs: list[str] | None = None,
 ) -> DetectedAnomaly:
     # Identity represents the governed scope and rule, not a particular sample.
     # This lets acknowledgements/suppressions survive normal metric movement.
@@ -233,7 +280,23 @@ def _finding(
         sample_count=sample_count,
         workspace_ids=workspace_ids,
         recommendation=recommendation,
+        evidence_refs=list(evidence_refs or [])[:5],
     )
+
+
+def _event_refs(
+    events: list[FinOpsRequestEvent],
+    *,
+    key,
+) -> list[str]:
+    refs: list[str] = []
+    for event in sorted(events, key=key, reverse=True):
+        request_ref = str(event.request_ref or "").strip()
+        if request_ref and request_ref not in refs:
+            refs.append(request_ref)
+        if len(refs) >= 5:
+            break
+    return refs
 
 
 def _percentile(values: list[int], fraction: float) -> int | None:

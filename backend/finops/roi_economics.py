@@ -1,7 +1,91 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any, Mapping
+
+
+@dataclass(frozen=True)
+class RoiCalculation:
+    monthly_benefit: float
+    implementation_amortization: float
+    monthly_total_cost: float
+    monthly_net_benefit: float
+    roi_ratio: float | None
+    payback_months: float | None
+    formula_revision: str = "dataforge-roi-v1"
+
+
+def calculate_roi(
+    *,
+    hours_saved: float,
+    hourly_value: float,
+    avoided_loss_or_revenue: float,
+    implementation_cost: float,
+    monthly_fixed_cost: float,
+    model_cost: float,
+    evaluation_months: int,
+) -> RoiCalculation:
+    values = {
+        "hours_saved": hours_saved,
+        "hourly_value": hourly_value,
+        "avoided_loss_or_revenue": avoided_loss_or_revenue,
+        "implementation_cost": implementation_cost,
+        "monthly_fixed_cost": monthly_fixed_cost,
+        "model_cost": model_cost,
+    }
+    normalized: dict[str, float] = {}
+    for field, value in values.items():
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} must be numeric") from exc
+        if not math.isfinite(number) or number < 0:
+            raise ValueError(f"{field} must be finite and non-negative")
+        normalized[field] = number
+    if isinstance(evaluation_months, bool):
+        raise ValueError("evaluation_months must be a positive integer")
+    try:
+        months = int(evaluation_months)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("evaluation_months must be a positive integer") from exc
+    if months <= 0 or float(evaluation_months) != months:
+        raise ValueError("evaluation_months must be a positive integer")
+
+    monthly_benefit = (
+        normalized["hours_saved"] * normalized["hourly_value"]
+        + normalized["avoided_loss_or_revenue"]
+    )
+    implementation_amortization = normalized["implementation_cost"] / months
+    monthly_total_cost = (
+        implementation_amortization
+        + normalized["monthly_fixed_cost"]
+        + normalized["model_cost"]
+    )
+    monthly_net_benefit = monthly_benefit - monthly_total_cost
+    roi_ratio = (
+        monthly_net_benefit / monthly_total_cost
+        if monthly_total_cost > 0
+        else None
+    )
+    recurring_net_benefit = (
+        monthly_benefit
+        - normalized["monthly_fixed_cost"]
+        - normalized["model_cost"]
+    )
+    payback_months = (
+        normalized["implementation_cost"] / recurring_net_benefit
+        if recurring_net_benefit > 0
+        else None
+    )
+    return RoiCalculation(
+        monthly_benefit=monthly_benefit,
+        implementation_amortization=implementation_amortization,
+        monthly_total_cost=monthly_total_cost,
+        monthly_net_benefit=monthly_net_benefit,
+        roi_ratio=roi_ratio,
+        payback_months=payback_months,
+    )
 
 
 def build_roi_economics(
@@ -83,9 +167,8 @@ def build_roi_economics(
             {
                 "id": "output",
                 "label": "产出",
-                "value": max(0, artifacts),
-                "unit": "个产物",
-                "secondary_value": max(0, analyses),
+                "value": max(0, artifacts) if artifacts > 0 else max(0, analyses),
+                "unit": "个产物" if artifacts > 0 else "次分析",
                 "status": "observed" if artifacts > 0 or analyses > 0 else "unavailable",
             },
             {
@@ -100,6 +183,10 @@ def build_roi_economics(
             "cost_per_successful_request": unit(successful_requests, "每次成功调用成本"),
             "cost_per_analysis": unit(analyses, "每次分析成本"),
             "cost_per_artifact": unit(artifacts, "每个产物成本"),
+            "cost_per_verified_outcome": unit(
+                len(verified_outcomes) if verified else 0,
+                "每个已验证结果成本",
+            ),
         },
         "verified_roi": {
             "status": realized_status,

@@ -19,6 +19,7 @@ try:
     from ..run_store import get_run, list_runs
     from ..workspace_authz import active_workspace_role
     from ..workspace_store import list_workspaces
+    from ..control_plane import workspace_cost_value_snapshot, workspace_roi_snapshot
 except ImportError:
     import cache_store
     from identity import actor_from_request, is_trusted_tenant_identity
@@ -27,6 +28,7 @@ except ImportError:
     from run_store import get_run, list_runs
     from workspace_authz import active_workspace_role
     from workspace_store import list_workspaces
+    from control_plane import workspace_cost_value_snapshot, workspace_roi_snapshot
 
 from .normalization import canonical_actor_ref, canonical_tenant_ref
 from .evidence import build_evidence_alias, operation_code_for_event
@@ -58,6 +60,13 @@ from .governance import (
     FinOpsActionService,
     InMemoryActionRepository,
 )
+from .remediation import (
+    FinOpsRemediationService,
+    InMemoryRemediationDraftRepository,
+    REMEDIATION_TEMPLATE_VERSION,
+    RemediationConflict,
+    RemediationNotFound,
+)
 from .dataforge_clients import (
     DataForgeCachePolicyClient,
     DataForgeModelRouteClient,
@@ -84,7 +93,8 @@ from .sql_pricing import (
 from .gateway_unmatched import SqlGatewayUnmatchedRepository
 from .query import FinOpsQuery, FinOpsQueryService
 from .models import FinOpsRequestEvent
-from .query_cache import CachedFinOpsQueryService
+from .cache_namespace import FinOpsCacheNamespace
+from .query_cache import CachedFinOpsQueryService, FinOpsCacheBusy
 from .request_detail import FinOpsRequestDetailService, build_foundry_trace_link
 from .planning import (
     BudgetDefinition,
@@ -100,14 +110,19 @@ from .saved_views import (
 from .sql_planning import SqlFinOpsPlanningRepository
 from .roi_economics import build_roi_economics
 from .opportunities import build_opportunity_queue
+from .decision_service import build_risk_decision, build_roi_decision
 from .insight_repository import InMemoryInsightRepository, SqlInsightRepository
 from .insight_service import FinOpsInsightService
 from .repository import RunStoreFinOpsRepository
 from .sql_repository import SqlFinOpsRepository
 from .sql_management import SqlFinOpsManagementRepository
 from .sql_governance import SqlFinOpsActionRepository
+from .sql_remediation import SqlRemediationDraftRepository
 from .sql_anomalies import SqlFinOpsAnomalyRepository
 from .sql_repository import FinOpsPersistenceError
+from .sql_rollups import SqlFinOpsRollupRepository
+from .member_budget_repository import InMemoryMemberBudgetRepository
+from .sql_member_budgets import SqlMemberBudgetRepository
 
 
 router = APIRouter(prefix="/api/finops", tags=["finops"])
@@ -126,6 +141,7 @@ _DATAFORGE_ACTION_EXECUTORS = {
     ),
 }
 _ACTION_REPOSITORY = InMemoryActionRepository()
+_REMEDIATION_REPOSITORY = InMemoryRemediationDraftRepository()
 _MANAGEMENT_REPOSITORY = InMemoryManagementRepository()
 _MANAGEMENT_SERVICE = FinOpsManagementService(_MANAGEMENT_REPOSITORY)
 _ANOMALY_REPOSITORY = InMemoryAnomalyRepository()
@@ -133,6 +149,7 @@ _ANOMALY_SERVICE = FinOpsAnomalyService(_ANOMALY_REPOSITORY)
 _SQL_REPOSITORY: SqlFinOpsRepository | None = None
 _SQL_MANAGEMENT_SERVICE: FinOpsManagementService | None = None
 _SQL_ACTION_REPOSITORY: SqlFinOpsActionRepository | None = None
+_SQL_REMEDIATION_REPOSITORY: SqlRemediationDraftRepository | None = None
 _SQL_ANOMALY_SERVICE: FinOpsAnomalyService | None = None
 _EVIDENCE_REPOSITORY = InMemoryEvidenceAliasRepository()
 _SQL_EVIDENCE_REPOSITORY: SqlEvidenceAliasRepository | None = None
@@ -144,6 +161,9 @@ _SQL_PLANNING_REPOSITORY: SqlFinOpsPlanningRepository | None = None
 _PRICE_MAPPING_REPOSITORY = InMemoryPriceMappingRepository()
 _SQL_PRICE_MAPPING_REPOSITORY: SqlPriceMappingRepository | None = None
 _SQL_GATEWAY_UNMATCHED_REPOSITORY: SqlGatewayUnmatchedRepository | None = None
+_SQL_ROLLUP_REPOSITORY: SqlFinOpsRollupRepository | None = None
+_MEMBER_BUDGET_REPOSITORY = InMemoryMemberBudgetRepository()
+_SQL_MEMBER_BUDGET_REPOSITORY: SqlMemberBudgetRepository | None = None
 _ASSISTANT_STORE = InMemoryAssistantConversationStore()
 _SQL_ASSISTANT_STORE: SqlAssistantConversationStore | None = None
 
@@ -174,12 +194,27 @@ class AssistantConversationCreate(BaseModel):
     title: str = Field(default="新会话", min_length=1, max_length=120)
 
 
+class RemediationDraftCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(min_length=1, max_length=160)
+    source_opportunity_id: str = Field(min_length=1, max_length=128)
+    base_version: str = Field(min_length=1, max_length=128)
+
+
+class RemediationTransitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision: int = Field(ge=1)
+    reason: str | None = Field(default=None, max_length=512)
+
+
 def _enabled(name: str) -> bool:
     return str(os.environ.get(name) or "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def get_finops_query_service() -> Any:
-    global _SQL_REPOSITORY
+    global _SQL_REPOSITORY, _SQL_ROLLUP_REPOSITORY
     secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
     if not secret:
         raise RuntimeError("FinOps HMAC is unavailable")
@@ -196,6 +231,7 @@ def get_finops_query_service() -> Any:
         delegate = FinOpsQueryService(
             _SQL_REPOSITORY,
             gateway_unmatched_repository=_SQL_GATEWAY_UNMATCHED_REPOSITORY,
+            rollup_repository=get_finops_rollup_repository(),
         )
     else:
         delegate = FinOpsQueryService(
@@ -210,15 +246,56 @@ def get_finops_query_service() -> Any:
                 ),
             )
         )
-    try:
-        ttl_seconds = int(os.environ.get("DF_FINOPS_QUERY_CACHE_TTL_SECONDS", "60"))
-    except ValueError:
-        ttl_seconds = 60
     return CachedFinOpsQueryService(
         delegate,
         cache=cache_store,
-        ttl_seconds=ttl_seconds,
+        namespace=get_finops_cache_namespace(),
     )
+
+
+def get_finops_cache_namespace() -> FinOpsCacheNamespace:
+    return FinOpsCacheNamespace(cache_store)
+
+
+def _bump_finops_domains(
+    tenant_ref: str,
+    workspace_ids: tuple[str, ...] | list[str],
+    domains: tuple[str, ...],
+) -> None:
+    """Best-effort targeted invalidation after a successful durable write."""
+    namespace = get_finops_cache_namespace()
+    for workspace_id in sorted({str(item or "").strip() for item in workspace_ids}):
+        if not workspace_id:
+            continue
+        try:
+            namespace.bump(tenant_ref, workspace_id, domains)
+        except Exception:
+            # Redis is an acceleration layer; a durable write must remain
+            # successful when its namespace revision cannot be advanced.
+            continue
+
+
+def get_finops_rollup_repository() -> SqlFinOpsRollupRepository:
+    """Return the SQL rollup reader only when SQL FinOps is enabled."""
+    global _SQL_ROLLUP_REPOSITORY
+    if not _enabled("DF_FINOPS_SQL_ENABLED"):
+        raise RuntimeError("FinOps SQL rollups are disabled")
+    if _SQL_ROLLUP_REPOSITORY is None:
+        _SQL_ROLLUP_REPOSITORY = SqlFinOpsRollupRepository(
+            connection_factory=build_lineage_sql_connection_factory()
+        )
+    return _SQL_ROLLUP_REPOSITORY
+
+
+def get_finops_member_budget_repository() -> Any:
+    global _SQL_MEMBER_BUDGET_REPOSITORY
+    if _enabled("DF_FINOPS_SQL_ENABLED"):
+        if _SQL_MEMBER_BUDGET_REPOSITORY is None:
+            _SQL_MEMBER_BUDGET_REPOSITORY = SqlMemberBudgetRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        return _SQL_MEMBER_BUDGET_REPOSITORY
+    return _MEMBER_BUDGET_REPOSITORY
 
 
 def get_finops_action_service() -> FinOpsActionService:
@@ -236,6 +313,36 @@ def get_finops_action_service() -> FinOpsActionService:
     else:
         repository = _ACTION_REPOSITORY
     return FinOpsActionService(repository=repository, executors=executors)
+
+
+def current_remediation_base_version(
+    tenant_ref: str,
+    workspace_id: str,
+    action_kind: str,
+) -> str:
+    del tenant_ref
+    if action_kind != "cache_policy":
+        raise ValueError("typed remediation version resolver is unavailable")
+    return DataForgeCachePolicyClient(
+        store=_WORKSPACE_CONFIG_STORE
+    ).current_version(workspace_id)
+
+
+def get_finops_remediation_service() -> FinOpsRemediationService:
+    global _SQL_REMEDIATION_REPOSITORY
+    if _enabled("DF_FINOPS_SQL_ENABLED"):
+        if _SQL_REMEDIATION_REPOSITORY is None:
+            _SQL_REMEDIATION_REPOSITORY = SqlRemediationDraftRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        repository = _SQL_REMEDIATION_REPOSITORY
+    else:
+        repository = _REMEDIATION_REPOSITORY
+    return FinOpsRemediationService(
+        repository=repository,
+        action_service=get_finops_action_service(),
+        version_resolver=current_remediation_base_version,
+    )
 
 
 def get_finops_management_service() -> FinOpsManagementService:
@@ -487,6 +594,7 @@ def _context(
         query = FinOpsQuery(
             tenant_ref=_tenant_ref(actor),
             authorized_workspace_ids=selected_ids,
+            permission_scope=_permission_scope(roles, selected_ids),
             from_value=start,
             to_value=end,
             department_id=department_id,
@@ -498,6 +606,8 @@ def _context(
             limit=limit,
         )
         service = get_finops_query_service()
+    except FinOpsCacheBusy:
+        raise
     except (RuntimeError, ValueError) as exc:
         if "HMAC" in str(exc) or "scope is unavailable" in str(exc):
             raise HTTPException(status_code=503, detail="FinOps evidence service is unavailable") from exc
@@ -505,6 +615,22 @@ def _context(
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
     return service, query, roles
+
+
+def _permission_scope(
+    roles: Mapping[str, str],
+    workspace_ids: tuple[str, ...],
+) -> str:
+    pairs = [
+        [workspace_id, str(roles[workspace_id])]
+        for workspace_id in sorted(workspace_ids)
+    ]
+    material = json.dumps(
+        pairs,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()[:16]
 
 
 def _window(from_value: str | None, to_value: str | None) -> tuple[str, str]:
@@ -617,7 +743,7 @@ def _bootstrap_insights(query: FinOpsQuery) -> dict[str, Any]:
                 ),
                 agent_kind=kind,
             ),
-            include_evidence_refs=False,
+            include_evidence_refs=True,
         )
         for kind in ("finops", "roi")
     }
@@ -627,6 +753,81 @@ def _bootstrap_budget(
     query: FinOpsQuery,
     metrics: Mapping[str, Any],
 ) -> dict[str, Any]:
+    cost = metrics.get("estimated_cost")
+    used_amount = cost.get("amount") if isinstance(cost, Mapping) else None
+    cost_status = str(cost.get("status") or "unavailable") if isinstance(cost, Mapping) else "unavailable"
+    if query.workspace_id:
+        repository = get_finops_member_budget_repository()
+        subjects = repository.list_budget_subjects(
+            query.tenant_ref,
+            query.workspace_id,
+            include_disabled=False,
+        )
+        member_refs = {item.subject_ref for item in subjects}
+        member_budgets = [
+            item
+            for item in repository.list_budgets(
+                query.tenant_ref,
+                include_disabled=False,
+            )
+            if item.member_ref in member_refs
+        ]
+        if member_budgets:
+            amount = round(sum(float(item.amount_usd) for item in member_budgets), 8)
+            month_start, month_end = _utc_month_window()
+            summaries = repository.summarize_month(
+                query.tenant_ref,
+                month_start,
+                month_end,
+                (query.workspace_id,),
+            )
+            selected = [summaries.get(item.member_ref) for item in member_budgets]
+            known = [
+                item for item in selected
+                if item is not None and item.estimated_spend_usd is not None
+            ]
+            used_amount = (
+                round(sum(float(item.estimated_spend_usd) for item in known), 8)
+                if known
+                else None
+            )
+            priced_requests = sum(item.priced_requests for item in selected if item is not None)
+            total_requests = sum(item.total_requests for item in selected if item is not None)
+            coverage_pct = (
+                round(priced_requests / total_requests * 100, 4)
+                if total_requests
+                else None
+            )
+            if not known:
+                budget_data_status = "unavailable"
+            elif (
+                len(known) == len(member_budgets)
+                and total_requests > 0
+                and priced_requests == total_requests
+            ):
+                budget_data_status = "complete"
+            else:
+                budget_data_status = "partial"
+            return {
+                "amount": amount,
+                "used_amount": used_amount,
+                "usage_pct": (
+                    round(float(used_amount) / amount * 100, 4)
+                    if used_amount is not None and amount > 0
+                    else None
+                ),
+                "status": "estimated" if used_amount is not None else "unavailable",
+                "source": "workspace_member_budgets",
+                "pricing_coverage_pct": coverage_pct,
+                "data_status": budget_data_status,
+                "priced_requests": priced_requests,
+                "total_requests": total_requests,
+                "period": {
+                    "type": "calendar_month_utc",
+                    "from": _iso(month_start),
+                    "to": _iso(month_end),
+                },
+            }
     budget_policy = next(
         (
             item
@@ -637,8 +838,6 @@ def _bootstrap_budget(
         ),
         None,
     )
-    cost = metrics.get("estimated_cost")
-    used_amount = cost.get("amount") if isinstance(cost, Mapping) else None
     if budget_policy is None:
         return {
             "amount": None,
@@ -658,7 +857,6 @@ def _bootstrap_budget(
         if used_amount is not None and amount > 0
         else None
     )
-    cost_status = str(cost.get("status") or "unavailable") if isinstance(cost, Mapping) else "unavailable"
     return {
         "amount": amount,
         "used_amount": used_amount,
@@ -666,6 +864,22 @@ def _bootstrap_budget(
         "status": cost_status,
         "source": "daily_cost_budget",
     }
+
+
+def _utc_month_window() -> tuple[datetime, datetime]:
+    start = datetime.now(timezone.utc).replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    end = (
+        start.replace(year=start.year + 1, month=1)
+        if start.month == 12
+        else start.replace(month=start.month + 1)
+    )
+    return start, end
 
 
 def _bootstrap_anomaly_summaries(query: FinOpsQuery) -> list[dict[str, Any]]:
@@ -914,6 +1128,67 @@ async def list_budgets(
         payload = budget.model_dump(mode="json")
         payload["progress"] = progress.model_dump(mode="json")
         selected.append(payload)
+    if not selected and query.workspace_id:
+        member_budget = _bootstrap_budget(query, metrics)
+        if member_budget.get("source") == "workspace_member_budgets":
+            period = member_budget.get("period") or {}
+            amount = float(member_budget["amount"])
+            spent = member_budget.get("used_amount")
+            usage_pct = member_budget.get("usage_pct")
+            from_period = _parse_time(str(period["from"]))
+            to_period = _parse_time(str(period["to"]))
+            point = min(
+                max(datetime.now(timezone.utc), from_period),
+                to_period,
+            )
+            elapsed = (point - from_period).total_seconds()
+            duration = (to_period - from_period).total_seconds()
+            forecast = (
+                round(float(spent) * duration / elapsed, 4)
+                if spent is not None and elapsed > 0
+                else None
+            )
+            threshold_state = (
+                "unavailable"
+                if usage_pct is None
+                else "critical"
+                if float(usage_pct) >= 100
+                else "warning"
+                if float(usage_pct) >= 80
+                else "normal"
+            )
+            selected.append(
+                {
+                    "budget_id": "workspace_member_budgets",
+                    "name": "工作区成员月度预算",
+                    "scope_type": "workspace",
+                    "scope_id": query.workspace_id,
+                    "period_start": period["from"],
+                    "period_end": period["to"],
+                    "amount": amount,
+                    "currency": "USD",
+                    "warning_pct": 80,
+                    "critical_pct": 100,
+                    "version": 1,
+                    "created_by": "system_projection",
+                    "updated_at": _iso(point),
+                    "progress": {
+                        "budget_id": "workspace_member_budgets",
+                        "amount": amount,
+                        "spent_amount": spent,
+                        "usage_pct": usage_pct,
+                        "forecast_amount": forecast,
+                        "forecast_status": (
+                            "estimated" if forecast is not None else "unavailable"
+                        ),
+                        "confidence": member_budget.get("data_status", "unavailable"),
+                        "priced_requests": int(member_budget.get("priced_requests") or 0),
+                        "total_requests": int(member_budget.get("total_requests") or 0),
+                        "threshold_state": threshold_state,
+                        "currency": "USD",
+                    },
+                }
+            )
     return {
         "items": selected,
         "count": len(selected),
@@ -1045,7 +1320,7 @@ async def roi_economics(
         requests=requests,
         successful_requests=successful_requests,
         analyses=int(usage.get("runs") or 0),
-        artifacts=0,
+        artifacts=int(cost_value.get("artifact_count") or 0),
         scenarios=list(cost_value.get("scenarios") or []),
     )
     payload.update({
@@ -1054,6 +1329,386 @@ async def roi_economics(
         "currency": "USD",
     })
     return payload
+
+
+def _roi_economics_payload(
+    query_service: Any,
+    query: FinOpsQuery,
+    roi: Mapping[str, Any],
+    cost_value: Mapping[str, Any],
+) -> dict[str, Any]:
+    metrics = query_service.overview(query).get("metrics") or {}
+    requests = int(metrics.get("requests") or 0)
+    success_rate = metrics.get("success_rate_pct")
+    successful_requests = (
+        round(requests * float(success_rate) / 100)
+        if success_rate is not None
+        else 0
+    )
+    usage = roi.get("usage") if isinstance(roi.get("usage"), Mapping) else {}
+    return build_roi_economics(
+        cost_evidence=cost_value.get("cost_evidence") or {},
+        outcome_evidence=cost_value.get("outcome_evidence") or {},
+        realized_roi=cost_value.get("realized_roi") or {},
+        requests=requests,
+        successful_requests=successful_requests,
+        analyses=int(usage.get("runs") or 0),
+        artifacts=int(cost_value.get("artifact_count") or 0),
+        scenarios=list(cost_value.get("scenarios") or []),
+    )
+
+
+def merge_output_trend(
+    unit_items: list[Mapping[str, Any]],
+    output_items: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Join daily aggregate cost facts with separately observed artifacts.
+
+    No aggregate is spread across days: a missing side stays unavailable for
+    that exact bucket rather than being inferred from a neighbouring period.
+    """
+    costs = {
+        str(item.get("bucket_at")): item
+        for item in unit_items
+        if str(item.get("bucket_at") or "")
+    }
+    outputs = {
+        str(item.get("bucket_at")): item
+        for item in output_items
+        if str(item.get("bucket_at") or "")
+    }
+    result = []
+    for bucket_at in sorted(set(costs) | set(outputs)):
+        cost = costs.get(bucket_at) or {}
+        output = outputs.get(bucket_at) or {}
+        cost_status = str(cost.get("data_status") or "unavailable")
+        output_count = output.get("effective_output_count")
+        output_status = str(output.get("data_status") or "unavailable")
+        result.append(
+            {
+                "bucket_at": bucket_at,
+                "successful_requests": cost.get("successful_requests"),
+                "estimated_cost": cost.get("estimated_cost"),
+                "cost_per_successful_request": cost.get("cost_per_successful_request"),
+                "cost_data_status": cost_status,
+                "effective_output_count": output_count,
+                "output_kind": output.get("output_kind") if output_count is not None else None,
+                "output_data_status": output_status,
+                # Task 1's decision projection accepts this concise display
+                # form; the complete row is restored after its safety schema.
+                "label": bucket_at,
+                "period": bucket_at,
+                "value": cost.get("cost_per_successful_request"),
+                "unit": "USD per successful request",
+                "currency": "USD" if cost.get("estimated_cost") is not None else None,
+                "status": "estimated" if cost_status == "available" else "unavailable",
+            }
+        )
+    return result
+
+
+def _decision_envelope(
+    query_service: Any,
+    query: FinOpsQuery,
+    decision: Mapping[str, Any],
+) -> dict[str, Any]:
+    envelope = query_service.overview(query)
+    return {
+        key: envelope.get(key)
+        for key in ("scope", "window", "freshness", "coverage", "currency", "data_status")
+    } | dict(decision)
+
+
+def _roi_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, Any]:
+    if not query.workspace_id:
+        raise ValueError("ROI decision requires one workspace")
+    roi = workspace_roi_snapshot(query.workspace_id, query.from_value, query.to_value)
+    cost_value = workspace_cost_value_snapshot(query.workspace_id, query.from_value, query.to_value)
+    economics = _roi_economics_payload(query_service, query, roi, cost_value)
+    unit_trend = merge_output_trend(
+        query_service.unit_economics_trend(query, "day").get("items") or [],
+        cost_value.get("output_trend") or [],
+    )
+    decision = build_roi_decision(
+        economics=economics,
+        roi_snapshot=roi,
+        cost_value=cost_value,
+        unit_trend=unit_trend,
+    )
+    # Keep Task 1's schema-safe display projection while returning the full
+    # bounded trend rows that this page needs for unavailable-data states.
+    decision["unit_economics_trend"] = unit_trend
+    return _decision_envelope(query_service, query, decision)
+
+
+def _decision_anomalies_from_events(
+    events: list[FinOpsRequestEvent],
+    *,
+    tenant_ref: str,
+    scope_workspace_ids: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    findings = evaluate_default_anomalies(
+        _anomaly_evaluation_input(events, tenant_ref=tenant_ref)
+    )
+    managed = get_finops_anomaly_service().reconcile(
+        tenant_ref=tenant_ref,
+        findings=findings,
+        scope_workspace_ids=scope_workspace_ids,
+    )
+    selected = set(scope_workspace_ids)
+    return [
+        {
+            **item.model_dump(mode="json", exclude={"tenant_ref", "origin"}),
+            "evidence_state": "observed",
+        }
+        for item in managed
+        if set(item.workspace_ids).issubset(selected)
+    ]
+
+
+def _decision_opportunities(
+    query_service: Any,
+    query: FinOpsQuery,
+    anomalies: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    metrics = query_service.overview(query).get("metrics") or {}
+    cost = metrics.get("estimated_cost") if isinstance(metrics.get("estimated_cost"), Mapping) else {}
+    total = metrics.get("requests") or 0
+    priced = cost.get("priced_requests") if isinstance(cost, Mapping) else 0
+    coverage = round(float(priced) / float(total) * 100, 4) if total else None
+    queue = build_opportunity_queue(
+        anomalies=list(anomalies),
+        recommendations=list(anomalies),
+        priced_cost=cost.get("amount") if isinstance(cost, Mapping) else None,
+        priced_coverage_pct=coverage,
+    )
+    managed_by_id = {
+        str(item.get("anomaly_id") or ""): item
+        for item in anomalies
+        if item.get("anomaly_id")
+    }
+    for item in queue:
+        managed = managed_by_id.get(str(item.get("anomaly_id") or ""), {})
+        item["anomaly_status"] = str(managed.get("status") or "")
+        if item.get("policy_type") != "cache_hit_rate":
+            item["base_version"] = REMEDIATION_TEMPLATE_VERSION
+            continue
+        try:
+            item["base_version"] = current_remediation_base_version(
+                query.tenant_ref,
+                str(query.workspace_id or ""),
+                "cache_policy",
+            )
+        except Exception:
+            # A configuration read affects only this typed opportunity. The
+            # remaining risk decision remains safe and usable.
+            item["base_version"] = None
+    return queue
+
+
+def _current_remediation_opportunity(
+    *,
+    tenant_ref: str,
+    workspace_id: str,
+    source_opportunity_id: str,
+    permission_scope: str = "",
+) -> dict[str, object] | None:
+    start, end = _window(None, None)
+    query = FinOpsQuery(
+        tenant_ref=tenant_ref,
+        authorized_workspace_ids=(workspace_id,),
+        permission_scope=permission_scope,
+        workspace_id=workspace_id,
+        from_value=start,
+        to_value=end,
+    )
+    service = get_finops_query_service()
+    events = service.events(query)
+    anomalies = _decision_anomalies_from_events(
+        events,
+        tenant_ref=tenant_ref,
+        scope_workspace_ids=(workspace_id,),
+    )
+    opportunities = _decision_opportunities(service, query, anomalies)
+    return next(
+        (
+            dict(item)
+            for item in opportunities
+            if item.get("opportunity_id") == source_opportunity_id
+        ),
+        None,
+    )
+
+
+def _risk_evidence_summaries(
+    events: list[FinOpsRequestEvent],
+    opportunities: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    by_ref = {event.request_ref: event for event in events}
+    selected: list[str] = []
+    for opportunity in opportunities:
+        for ref in opportunity.get("evidence_refs") or []:
+            ref = str(ref)
+            if ref in by_ref and ref not in selected:
+                selected.append(ref)
+            if len(selected) >= 10 or len([item for item in selected if item in set(opportunity.get("evidence_refs") or [])]) >= 2:
+                break
+        if len(selected) >= 10:
+            break
+    result = []
+    for request_ref in selected[:10]:
+        event = by_ref[request_ref]
+        result.append(
+            {
+                "request_ref": request_ref,
+                "request_name": f"Request {event.occurred_at.astimezone(timezone.utc):%Y-%m-%d %H:%M}",
+                "operation": operation_code_for_event(event),
+                "model_label": event.deployment or event.model or "unrecorded",
+                "signal": {"metric": "request", "value": 1, "unit": "request"},
+                "cache_state": event.result_cache.state,
+                "status": event.status,
+                "error_category": event.error_category,
+                "latency_ms": event.latency_ms,
+                "cost_status": event.estimated_cost.status,
+                "technical_refs": {"request_ref": request_ref},
+            }
+        )
+    return result
+
+
+def _governance_capability() -> dict[str, Any]:
+    return {
+        "read_enabled": True,
+        "draft_enabled": True,
+        "actions_enabled": False,
+        "typed_executors": ["cache_policy"],
+    }
+
+
+def _risk_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, Any]:
+    if not query.workspace_id:
+        raise ValueError("risk decision requires one workspace")
+    events = query_service.events(query)
+    anomaly_items = _decision_anomalies_from_events(
+        events,
+        tenant_ref=query.tenant_ref,
+        scope_workspace_ids=(query.workspace_id,),
+    )
+    opportunity_items = _decision_opportunities(query_service, query, anomaly_items)
+    evidence_summaries = _risk_evidence_summaries(events, opportunity_items)
+    latest = get_finops_insight_service().latest(
+        tenant_ref=query.tenant_ref,
+        authorized_workspace_ids=(query.workspace_id,),
+        agent_kind="finops",
+    )
+    drafts = get_finops_remediation_service().list(
+        tenant_ref=query.tenant_ref,
+        authorized_workspace_ids=(query.workspace_id,),
+    )
+    decision = build_risk_decision(
+        anomalies=anomaly_items,
+        opportunities=opportunity_items,
+        evidence_summaries=evidence_summaries,
+        insight=_public_insight(latest, include_evidence_refs=True) if latest else None,
+        drafts=[
+            draft.model_dump(
+                mode="json",
+                exclude={"tenant_ref", "created_by", "reviewed_by"},
+            )
+            for draft in drafts
+        ],
+        governance_capability=_governance_capability(),
+    )
+    return _decision_envelope(query_service, query, decision)
+
+
+@router.get("/roi/decision")
+async def roi_decision(
+    request: Request,
+    from_value: str | None = Query(default=None, alias="from", max_length=64),
+    to_value: str | None = Query(default=None, alias="to", max_length=64),
+    department_id: str | None = Query(default=None, max_length=128),
+    workspace_id: str = Query(min_length=1, max_length=160),
+    agent_id: str | None = Query(default=None, max_length=128),
+    actor_ref: str | None = Query(default=None, max_length=128),
+    model: str | None = Query(default=None, max_length=160),
+    refresh: bool = Query(default=False),
+) -> dict[str, Any]:
+    service, query, roles = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
+    if roles.get(workspace_id) not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="ROI decision requires admin or owner")
+    try:
+        return _compose_decision(
+            service,
+            "roi_decision",
+            query,
+            lambda: _roi_decision_payload(service, query),
+            force_refresh=refresh,
+        )
+    except FinOpsCacheBusy:
+        raise
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="ROI evidence service is unavailable") from exc
+
+
+@router.get("/risk/decision")
+async def risk_decision(
+    request: Request,
+    from_value: str | None = Query(default=None, alias="from", max_length=64),
+    to_value: str | None = Query(default=None, alias="to", max_length=64),
+    department_id: str | None = Query(default=None, max_length=128),
+    workspace_id: str = Query(min_length=1, max_length=160),
+    agent_id: str | None = Query(default=None, max_length=128),
+    actor_ref: str | None = Query(default=None, max_length=128),
+    model: str | None = Query(default=None, max_length=160),
+    refresh: bool = Query(default=False),
+) -> dict[str, Any]:
+    service, query, roles = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
+    if roles.get(workspace_id) not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="risk decision requires admin or owner")
+    try:
+        return _compose_decision(
+            service,
+            "risk_decision",
+            query,
+            lambda: _risk_decision_payload(service, query),
+            force_refresh=refresh,
+        )
+    except FinOpsPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="risk evidence service is unavailable",
+        ) from exc
+
+
+def _compose_decision(
+    service: Any,
+    operation: Literal["roi_decision", "risk_decision"],
+    query: FinOpsQuery,
+    compute: Any,
+    *,
+    force_refresh: bool,
+) -> dict[str, Any]:
+    compose = getattr(service, "compose", None)
+    if callable(compose):
+        return compose(
+            operation,
+            query,
+            compute,
+            force_refresh=force_refresh,
+        )
+    # Focused tests and integrators may provide an uncached query service.
+    # Wrap it here rather than changing the authorized query or bypassing it.
+    return CachedFinOpsQueryService(
+        service,
+        cache=cache_store,
+        namespace=get_finops_cache_namespace(),
+    ).compose(
+        operation,
+        query,
+        compute,
+        force_refresh=force_refresh,
+    )
 
 
 @router.post("/views", status_code=201)
@@ -1571,7 +2226,10 @@ async def anomalies(
     payload.pop("items", None)
     payload.update(
         {
-            "items": [item.model_dump(mode="json", exclude={"tenant_ref"}) for item in managed],
+            "items": [
+                item.model_dump(mode="json", exclude={"tenant_ref", "origin"})
+                for item in managed
+            ],
             "count": len(managed),
             "next_cursor": None,
         }
@@ -1602,6 +2260,7 @@ async def recommendations(
             "severity": item.severity,
             "policy_type": item.policy_type,
             "recommendation": item.recommendation,
+            "evidence_refs": item.evidence_refs,
             "execution_mode": "approval_required",
         }
         for item in findings
@@ -1671,6 +2330,225 @@ async def opportunities(
         "window": {"from": query.from_value, "to": query.to_value},
         "currency": "USD",
         "data_status": "complete" if coverage == 100 else "partial" if requests else "unavailable",
+    }
+
+
+def _public_remediation_draft(draft: Any) -> dict[str, Any]:
+    return draft.model_dump(
+        mode="json",
+        exclude={"tenant_ref", "created_by", "reviewed_by"},
+    )
+
+
+def _public_remediation_action(action: Any) -> dict[str, Any]:
+    return {
+        "action_id": action.action_id,
+        "action_type": action.action_type,
+        "status": action.status,
+        "payload": action.payload,
+        "version": action.version,
+        "created_at": action.created_at,
+        "updated_at": action.updated_at,
+    }
+
+
+def _remediation_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException):
+        return exc
+    if isinstance(exc, RemediationNotFound):
+        return HTTPException(
+            status_code=404,
+            detail="remediation draft not found",
+        )
+    if isinstance(exc, (RemediationConflict, ActionConflict)):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, ActionPermissionDenied):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, ActionNotFound):
+        return HTTPException(
+            status_code=404,
+            detail="FinOps action not found",
+        )
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=422, detail=str(exc))
+    if isinstance(exc, FinOpsPersistenceError):
+        return HTTPException(
+            status_code=503,
+            detail="FinOps remediation service is unavailable",
+        )
+    return HTTPException(status_code=500, detail="FinOps remediation failed")
+
+
+def _remediation_draft_context(
+    request: Request,
+    draft_id: str,
+) -> tuple[str, str, dict[str, str], Any]:
+    tenant_ref, actor_ref, roles = _write_context(request)
+    try:
+        draft = get_finops_remediation_service().get(
+            tenant_ref=tenant_ref,
+            draft_id=draft_id,
+            authorized_workspace_ids=tuple(sorted(roles)),
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    _require_admin_scope(roles, [draft.workspace_id])
+    return tenant_ref, actor_ref, roles, draft
+
+
+@router.post("/remediation-drafts", status_code=201)
+async def create_remediation_draft(
+    body: RemediationDraftCreate,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_ref, actor_ref, roles = _write_context(
+        request,
+        workspace_id=body.workspace_id,
+    )
+    try:
+        opportunity = _current_remediation_opportunity(
+            tenant_ref=tenant_ref,
+            workspace_id=body.workspace_id,
+            source_opportunity_id=body.source_opportunity_id,
+            permission_scope=_permission_scope(roles, (body.workspace_id,)),
+        )
+        if opportunity is None:
+            raise HTTPException(
+                status_code=404,
+                detail="remediation opportunity not found",
+            )
+        draft = get_finops_remediation_service().create(
+            tenant_ref=tenant_ref,
+            workspace_id=body.workspace_id,
+            actor_ref=actor_ref,
+            opportunity=opportunity,
+            base_version=body.base_version,
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    _bump_finops_domains(tenant_ref, [draft.workspace_id], ("risk",))
+    return {"draft": _public_remediation_draft(draft)}
+
+
+@router.get("/remediation-drafts")
+async def list_remediation_drafts(
+    request: Request,
+    workspace_id: str | None = Query(default=None, max_length=160),
+) -> dict[str, Any]:
+    tenant_ref, _, roles = _write_context(
+        request,
+        workspace_id=workspace_id,
+    )
+    authorized_workspace_ids = tuple(
+        sorted(
+            candidate
+            for candidate, role in roles.items()
+            if role in {"owner", "admin"}
+            and (workspace_id is None or candidate == workspace_id)
+        )
+    )
+    try:
+        drafts = get_finops_remediation_service().list(
+            tenant_ref=tenant_ref,
+            authorized_workspace_ids=authorized_workspace_ids,
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    return {
+        "items": [_public_remediation_draft(draft) for draft in drafts],
+        "count": len(drafts),
+    }
+
+
+@router.get("/remediation-drafts/{draft_id}")
+async def get_remediation_draft(
+    draft_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    _, _, _, draft = _remediation_draft_context(request, draft_id)
+    return {"draft": _public_remediation_draft(draft)}
+
+
+@router.post("/remediation-drafts/{draft_id}/review")
+async def review_remediation_draft(
+    draft_id: str,
+    body: RemediationTransitionRequest,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_ref, actor_ref, roles, _ = _remediation_draft_context(
+        request,
+        draft_id,
+    )
+    try:
+        draft = get_finops_remediation_service().review(
+            tenant_ref=tenant_ref,
+            draft_id=draft_id,
+            actor_ref=actor_ref,
+            base_revision=body.base_revision,
+            authorized_workspace_ids=tuple(sorted(roles)),
+            reason=body.reason,
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    _bump_finops_domains(tenant_ref, [draft.workspace_id], ("risk",))
+    return {"draft": _public_remediation_draft(draft)}
+
+
+@router.post("/remediation-drafts/{draft_id}/close")
+async def close_remediation_draft(
+    draft_id: str,
+    body: RemediationTransitionRequest,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_ref, actor_ref, roles, _ = _remediation_draft_context(
+        request,
+        draft_id,
+    )
+    try:
+        draft = get_finops_remediation_service().close(
+            tenant_ref=tenant_ref,
+            draft_id=draft_id,
+            actor_ref=actor_ref,
+            base_revision=body.base_revision,
+            authorized_workspace_ids=tuple(sorted(roles)),
+            reason=body.reason,
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    _bump_finops_domains(tenant_ref, [draft.workspace_id], ("risk",))
+    return {"draft": _public_remediation_draft(draft)}
+
+
+@router.post("/remediation-drafts/{draft_id}/promote")
+async def promote_remediation_draft(
+    draft_id: str,
+    body: RemediationTransitionRequest,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_ref, actor_ref, roles, _ = _remediation_draft_context(
+        request,
+        draft_id,
+    )
+    try:
+        draft = get_finops_remediation_service().promote(
+            tenant_ref=tenant_ref,
+            draft_id=draft_id,
+            actor_ref=actor_ref,
+            base_revision=body.base_revision,
+            authorized_workspace_ids=tuple(sorted(roles)),
+            reason=body.reason,
+        )
+        action = get_finops_action_service().get(
+            tenant_ref=tenant_ref,
+            action_id=str(draft.translated_action_id or ""),
+        )
+    except Exception as exc:
+        raise _remediation_error(exc) from exc
+    _bump_finops_domains(tenant_ref, [draft.workspace_id], ("risk",))
+    return {
+        "draft": _public_remediation_draft(draft),
+        "action": _public_remediation_action(action),
+        "actions_enabled": _enabled("DF_FINOPS_ACTIONS_ENABLED"),
     }
 
 
@@ -1817,6 +2695,18 @@ def _action_write_context(
     return tenant_ref, actor_ref, roles, action
 
 
+def _bump_action_transition_domains(tenant_ref: str, action: Any) -> None:
+    if action.action_type not in {"cache_policy", "model_route"}:
+        return
+    workspace_id = str(action.payload.get("workspace_id") or "").strip()
+    if workspace_id:
+        _bump_finops_domains(
+            tenant_ref,
+            [workspace_id],
+            ("cost", "roi", "risk", "overview"),
+        )
+
+
 @router.post("/actions", status_code=201)
 async def create_action(body: dict[str, Any], request: Request) -> dict[str, Any]:
     raw = body if isinstance(body, dict) else {}
@@ -1843,6 +2733,7 @@ async def submit_action(action_id: str, request: Request) -> dict[str, Any]:
         action = get_finops_action_service().submit(action_id, tenant_ref=tenant_ref, actor_ref=actor_ref)
     except Exception as exc:
         raise _action_error(exc) from exc
+    _bump_action_transition_domains(tenant_ref, action)
     return _action_response(action)
 
 
@@ -1853,6 +2744,7 @@ async def approve_action(action_id: str, request: Request) -> dict[str, Any]:
         action = get_finops_action_service().approve(action_id, tenant_ref=tenant_ref, actor_ref=actor_ref)
     except Exception as exc:
         raise _action_error(exc) from exc
+    _bump_action_transition_domains(tenant_ref, action)
     return _action_response(action)
 
 
@@ -1868,6 +2760,7 @@ async def execute_action(action_id: str, request: Request) -> dict[str, Any]:
         )
     except Exception as exc:
         raise _action_error(exc) from exc
+    _bump_action_transition_domains(tenant_ref, action)
     return _action_response(action)
 
 
@@ -1878,6 +2771,7 @@ async def verify_action(action_id: str, request: Request) -> dict[str, Any]:
         action = get_finops_action_service().verify(action_id, tenant_ref=tenant_ref, actor_ref=actor_ref)
     except Exception as exc:
         raise _action_error(exc) from exc
+    _bump_action_transition_domains(tenant_ref, action)
     return _action_response(action)
 
 
@@ -1901,6 +2795,7 @@ async def rollback_action(action_id: str, body: dict[str, Any], request: Request
         )
     except Exception as exc:
         raise _action_error(exc) from exc
+    _bump_action_transition_domains(tenant_ref, action)
     return _action_response(action)
 
 
@@ -1952,7 +2847,13 @@ async def acknowledge_anomaly(anomaly_id: str, request: Request) -> dict[str, An
         )
     except Exception as exc:
         raise _anomaly_error(exc) from exc
-    return {"anomaly": anomaly.model_dump(mode="json", exclude={"tenant_ref"})}
+    _bump_finops_domains(tenant_ref, list(current.workspace_ids), ("risk",))
+    return {
+        "anomaly": anomaly.model_dump(
+            mode="json",
+            exclude={"tenant_ref", "origin"},
+        )
+    }
 
 
 @router.post("/anomalies/{anomaly_id}/suppress")
@@ -1972,7 +2873,13 @@ async def suppress_anomaly(anomaly_id: str, body: dict[str, Any], request: Reque
         )
     except Exception as exc:
         raise _anomaly_error(exc) from exc
-    return {"anomaly": anomaly.model_dump(mode="json", exclude={"tenant_ref"})}
+    _bump_finops_domains(tenant_ref, list(current.workspace_ids), ("risk",))
+    return {
+        "anomaly": anomaly.model_dump(
+            mode="json",
+            exclude={"tenant_ref", "origin"},
+        )
+    }
 
 
 @router.get("/departments")
@@ -2145,6 +3052,11 @@ async def update_official_pricing_mapping(
         )
     except PriceMappingConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _bump_finops_domains(
+        tenant_ref,
+        tuple(sorted(roles)),
+        ("cost", "roi", "risk", "overview"),
+    )
     return {"mapping": saved.model_dump(mode="json")}
 
 
@@ -2161,6 +3073,11 @@ async def delete_official_pricing_mapping(
             status_code=404,
             detail="official price mapping not found",
         )
+    _bump_finops_domains(
+        tenant_ref,
+        tuple(sorted(roles)),
+        ("cost", "roi", "risk", "overview"),
+    )
     return Response(status_code=204)
 
 
@@ -2203,7 +3120,7 @@ async def review_price_card(revision_id: str, request: Request) -> dict[str, Any
 
 @router.post("/price-cards/{revision_id}/activate")
 async def activate_price_card(revision_id: str, request: Request) -> dict[str, Any]:
-    tenant_ref, actor_ref, _ = _write_context(request)
+    tenant_ref, actor_ref, roles = _write_context(request)
     try:
         revision = get_finops_management_service().activate_price_card(
             tenant_ref=tenant_ref,
@@ -2213,6 +3130,11 @@ async def activate_price_card(revision_id: str, request: Request) -> dict[str, A
         )
     except Exception as exc:
         raise _management_error(exc) from exc
+    _bump_finops_domains(
+        tenant_ref,
+        tuple(sorted(roles)),
+        ("cost", "roi", "risk", "overview"),
+    )
     return {"price_card": _price_card_response(revision)}
 
 

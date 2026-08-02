@@ -24,6 +24,10 @@ from backend.finops.insight_repository import (
     InsightPage,
 )
 from backend.finops.insights import FinOpsInsight
+from backend.finops.budget_subjects import BudgetSubject
+from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
+from backend.finops.member_budgets import MemberBudget
+from backend.finops.member_budgets import MemberCostSummary
 from auth_fixtures import trusted_headers
 
 
@@ -211,6 +215,125 @@ def test_finops_bootstrap_projects_server_side_budget_usage(
     }
 
 
+def test_finops_bootstrap_prefers_workspace_member_budget_total(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _WorkspaceBudgetRepository(InMemoryMemberBudgetRepository):
+        def summarize_month(self, tenant_ref, from_value, to_value, workspace_ids):
+            assert tenant_ref == "tenantref-a"
+            assert from_value == datetime(2026, 7, 1, tzinfo=timezone.utc)
+            assert to_value == datetime(2026, 8, 1, tzinfo=timezone.utc)
+            assert workspace_ids == ("ws-a",)
+            return {
+                "subject_member_a": MemberCostSummary(
+                    actor_ref="subject_member_a",
+                    estimated_spend_usd=0.125,
+                    priced_requests=8,
+                    total_requests=10,
+                    primary_model="gpt-5.6-terra",
+                )
+            }
+
+    budgets = _WorkspaceBudgetRepository()
+    recorded_at = datetime(2026, 7, 24, 0, 0, tzinfo=timezone.utc)
+    budgets.upsert_budget_subjects(
+        "tenantref-a",
+        (
+            BudgetSubject(
+                subject_ref="subject_member_a",
+                workspace_id="ws-a",
+                display_name="Demo member",
+                primary_model="gpt-5.6-terra",
+                enabled=True,
+                revision=1,
+                updated_at=recorded_at,
+            ),
+        ),
+    )
+    budgets.save_budget(
+        "tenantref-a",
+        MemberBudget(
+            member_ref="subject_member_a",
+            amount_usd=200,
+            thresholds_pct=(80, 95),
+            enabled=True,
+            budget_id="budget-member-a",
+            revision=1,
+            created_by_ref="actor-owner",
+            updated_by_ref="actor-owner",
+            created_at=recorded_at,
+            updated_at=recorded_at,
+        ),
+        base_revision=0,
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_member_budget_repository",
+        lambda: budgets,
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "_utc_month_window",
+        lambda: (
+            datetime(2026, 7, 1, tzinfo=timezone.utc),
+            datetime(2026, 8, 1, tzinfo=timezone.utc),
+        ),
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_planning_service",
+        lambda: FinOpsPlanningService(InMemoryPlanningRepository()),
+    )
+
+    response = client.get(
+        "/api/finops/bootstrap?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["overview"]["metrics"]["budget"] == {
+        "amount": 200.0,
+        "used_amount": 0.125,
+        "usage_pct": 0.0625,
+        "status": "estimated",
+        "source": "workspace_member_budgets",
+        "pricing_coverage_pct": 80.0,
+        "data_status": "partial",
+        "priced_requests": 8,
+        "total_requests": 10,
+        "period": {
+            "type": "calendar_month_utc",
+            "from": "2026-07-01T00:00:00Z",
+            "to": "2026-08-01T00:00:00Z",
+        },
+    }
+
+    budgets_response = client.get(
+        "/api/finops/budgets?workspace_id=ws-a&from=2026-06-26T00:00:00Z&to=2026-07-25T00:00:00Z&agent_id=agent-filtered",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert budgets_response.status_code == 200
+    projected = budgets_response.json()["items"][0]
+    assert projected["name"] == "工作区成员月度预算"
+    assert projected["amount"] == 200.0
+    assert projected["period_start"] == "2026-07-01T00:00:00Z"
+    assert projected["period_end"] == "2026-08-01T00:00:00Z"
+    assert projected["progress"] == {
+        "budget_id": "workspace_member_budgets",
+        "amount": 200.0,
+        "spent_amount": 0.125,
+        "usage_pct": 0.0625,
+        "forecast_amount": 0.125,
+        "forecast_status": "estimated",
+        "confidence": "partial",
+        "priced_requests": 8,
+        "total_requests": 10,
+        "threshold_state": "normal",
+        "currency": "USD",
+    }
+
+
 def test_finops_budget_saved_view_and_csv_routes_are_bounded(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -315,6 +438,7 @@ def test_finops_roi_economics_is_workspace_bounded_and_evidence_safe(
             "cost_evidence": {"status": "complete", "total": 0.001, "currency": "USD"},
             "outcome_evidence": {"status": "not_recorded", "outcome_event_ids": []},
             "realized_roi": {"status": "not_recorded", "roi_ratio": None},
+            "artifact_count": 2,
             "scenarios": [{"scenario_id": "roi_scenario_aaaaaaaaaaaaaaaa", "status": "estimated"}],
         },
     )
@@ -330,6 +454,7 @@ def test_finops_roi_economics_is_workspace_bounded_and_evidence_safe(
 
     assert response.status_code == 200
     assert response.json()["verified_roi"]["value"] is None
+    assert response.json()["funnel"][2]["value"] == 2
     assert response.json()["scenarios"][0]["status"] == "estimated"
     assert denied.status_code == 403
 
@@ -364,7 +489,7 @@ def test_finops_opportunity_queue_never_executes_actions(
     item = response.json()["items"][0]
     assert item["queue_state"] == "ready"
     assert item["action_status"] == "suggested"
-    assert item["estimated_savings"] == 0.0001
+    assert item["estimated_savings"] is None
 
 
 def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(
@@ -854,6 +979,13 @@ def test_finops_action_api_enforces_two_person_approval_and_execution_flag(
         executors={"cache_policy": RecordingExecutor(current_version="v1")},
     )
     monkeypatch.setattr(finops_router, "get_finops_action_service", lambda: service)
+    bumps: list[tuple[str, str, tuple[str, ...]]] = []
+
+    class _Namespace:
+        def bump(self, tenant_ref, workspace_id, domains):
+            bumps.append((tenant_ref, workspace_id, tuple(domains)))
+
+    monkeypatch.setattr(finops_router, "get_finops_cache_namespace", _Namespace)
     proposer = trusted_headers(actor_id="proposer", tenant_id="tenant-a")
     approver = trusted_headers(actor_id="approver", tenant_id="tenant-a")
     created = client.post(
@@ -880,6 +1012,12 @@ def test_finops_action_api_enforces_two_person_approval_and_execution_flag(
     monkeypatch.setenv("DF_FINOPS_ACTIONS_ENABLED", "1")
     assert client.post(f"/api/finops/actions/{action_id}/execute", headers=approver).json()["action"]["status"] == "verifying"
     assert client.post(f"/api/finops/actions/{action_id}/verify", headers=approver).json()["action"]["status"] == "succeeded"
+    assert bumps == [
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview")),
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview")),
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview")),
+        ("tenantref-a", "ws-a", ("cost", "roi", "risk", "overview")),
+    ]
 
 
 def test_finops_action_transition_rechecks_target_workspace_admin_scope(
@@ -930,6 +1068,13 @@ def test_finops_anomaly_api_supports_admin_acknowledge_and_suppress(
 ) -> None:
     anomaly_service = FinOpsAnomalyService(InMemoryAnomalyRepository())
     monkeypatch.setattr(finops_router, "get_finops_anomaly_service", lambda: anomaly_service)
+    bumps: list[tuple[str, str, tuple[str, ...]]] = []
+
+    class _Namespace:
+        def bump(self, tenant_ref, workspace_id, domains):
+            bumps.append((tenant_ref, workspace_id, tuple(domains)))
+
+    monkeypatch.setattr(finops_router, "get_finops_cache_namespace", _Namespace)
     monkeypatch.setattr(
         finops_router,
         "evaluate_default_anomalies",
@@ -964,6 +1109,7 @@ def test_finops_anomaly_api_supports_admin_acknowledge_and_suppress(
     )
     assert acknowledged.status_code == 200
     assert acknowledged.json()["anomaly"]["status"] == "acknowledged"
+    assert "origin" not in acknowledged.json()["anomaly"]
 
     suppressed = client.post(
         f"/api/finops/anomalies/{anomaly_id}/suppress",
@@ -972,6 +1118,10 @@ def test_finops_anomaly_api_supports_admin_acknowledge_and_suppress(
     )
     assert suppressed.status_code == 200
     assert suppressed.json()["anomaly"]["status"] == "suppressed"
+    assert bumps == [
+        ("tenantref-a", "ws-a", ("risk",)),
+        ("tenantref-a", "ws-a", ("risk",)),
+    ]
 
 
 def test_finops_anomaly_mutation_rechecks_all_target_workspace_scopes(

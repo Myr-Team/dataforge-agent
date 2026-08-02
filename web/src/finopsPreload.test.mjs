@@ -7,6 +7,10 @@ import {
   prefetchFinOpsBootstrap,
   readFinOpsBootstrap,
 } from "./finopsPreload.js";
+import {
+  loadFinOpsData,
+  readFinOpsData,
+} from "./finopsDataStore.js";
 
 
 function scopeKey(workspaceId = "ws-a") {
@@ -40,6 +44,39 @@ test("finopsScopeKey is stable across permission ordering and separates workspac
 });
 
 
+test("clearing bootstrap without a key removes only overview entries", async () => {
+  const overviewKey = scopeKey();
+  const roiKey = "tenant/ws-a/roi";
+  const riskKey = "tenant/ws-a/risk";
+  let overviewSignal;
+  const overview = prefetchFinOpsBootstrap(overviewKey, ({ signal }) => {
+    overviewSignal = signal;
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      });
+    });
+  });
+  await loadFinOpsData(roiKey, async () => ({ revision: 1 }), {
+    domain: "roi",
+    now: 1_000,
+  });
+  await loadFinOpsData(riskKey, async () => ({ revision: 1 }), {
+    domain: "risk",
+    now: 1_000,
+  });
+
+  clearFinOpsBootstrap();
+
+  await assert.rejects(overview, { name: "AbortError" });
+  assert.equal(overviewSignal.aborted, true);
+  assert.equal(readFinOpsData(roiKey, 1_000).status, "fresh");
+  assert.equal(readFinOpsData(riskKey, 1_000).status, "fresh");
+});
+
+
 test("same scope shares one in-flight bootstrap request", async () => {
   let calls = 0;
   let resolveLoader;
@@ -60,7 +97,28 @@ test("same scope shares one in-flight bootstrap request", async () => {
 });
 
 
-test("bootstrap cache distinguishes fresh stale and expired values", async () => {
+test("fresh bootstrap navigation does not request and stale bootstrap revalidates once", async () => {
+  const key = scopeKey();
+  let calls = 0;
+  const loader = async () => {
+    calls += 1;
+    return { overview: { metrics: { requests: calls } } };
+  };
+  await prefetchFinOpsBootstrap(key, loader, { now: 1_000 });
+
+  await prefetchFinOpsBootstrap(key, loader, { now: 300_000 });
+  assert.equal(calls, 1);
+
+  const first = prefetchFinOpsBootstrap(key, loader, { now: 400_000 });
+  const second = prefetchFinOpsBootstrap(key, loader, { now: 400_000 });
+  assert.equal(first, second);
+  assert.equal(readFinOpsBootstrap(key, 400_000).value.overview.metrics.requests, 1);
+  await first;
+  assert.equal(calls, 2);
+});
+
+
+test("bootstrap compatibility uses the five and thirty minute store lifecycle", async () => {
   const key = scopeKey();
   await prefetchFinOpsBootstrap(
     key,
@@ -68,10 +126,10 @@ test("bootstrap cache distinguishes fresh stale and expired values", async () =>
     { now: 1_000 },
   );
 
-  assert.equal(readFinOpsBootstrap(key, 60_000).status, "fresh");
-  assert.equal(readFinOpsBootstrap(key, 61_001).status, "stale");
-  assert.equal(readFinOpsBootstrap(key, 301_001).status, "expired");
-  assert.equal(readFinOpsBootstrap(key, 301_001).value, null);
+  assert.equal(readFinOpsBootstrap(key, 301_000).status, "fresh");
+  assert.equal(readFinOpsBootstrap(key, 301_001).status, "stale");
+  assert.equal(readFinOpsBootstrap(key, 1_801_001).status, "expired");
+  assert.equal(readFinOpsBootstrap(key, 1_801_001).value, null);
 });
 
 

@@ -116,7 +116,7 @@ test("monitor view model labels persisted model estimates without claiming verif
   assert.match(view.modelRows[0].secondaryLabel, /估算 USD/);
 });
 
-test("monitor view model keeps APIM proof distinct from per-run token observations", () => {
+test("monitor view model keeps gateway proof distinct from per-run token observations", () => {
   const view = monitorDashboardViewModel({
     summary: {
       calls: { observed: 3, succeeded: 3, failed: 0, unknown: 0 },
@@ -136,14 +136,14 @@ test("monitor view model keeps APIM proof distinct from per-run token observatio
   });
 
   assert.equal(view.cards.tokens.value, "100");
-  assert.equal(view.gateway.label, "APIM 指标已验证");
+  assert.equal(view.gateway.label, "入口指标已验证");
   assert.equal(view.gateway.callsLabel, "7");
   assert.equal(view.gateway.tokensLabel, "420");
-  assert.equal(view.gateway.sourceLabel, "APIM 自定义指标");
+  assert.equal(view.gateway.sourceLabel, "统一入口指标");
   assert.equal(view.gateway.lastObservedAt, "2026-07-05T09:28:00Z");
 });
 
-test("monitor view model labels partially verified APIM portfolio evidence", () => {
+test("monitor view model labels partially verified gateway portfolio evidence", () => {
   const view = monitorDashboardViewModel({
     gateway: {
       state: "partial",
@@ -155,11 +155,11 @@ test("monitor view model labels partially verified APIM portfolio evidence", () 
     },
   });
 
-  assert.equal(view.gateway.label, "部分 APIM 指标已验证");
+  assert.equal(view.gateway.label, "部分入口指标已验证");
   assert.equal(view.gateway.scopeLabel, "1 / 2 个工作区已验证");
 });
 
-test("monitor view model keeps Redis reuse separate from APIM evidence and only projects safe request fields", () => {
+test("monitor view model keeps Redis reuse separate from gateway evidence and only projects safe request fields", () => {
   const view = monitorDashboardViewModel({
     summary: {
       cache: {

@@ -38,6 +38,25 @@ class InMemoryFinOpsRepository:
             for event in events:
                 self._events[(event.tenant_ref, event.request_ref)] = event
 
+    def delete_events(
+        self,
+        *,
+        tenant_ref: str,
+        workspace_id: str,
+        request_refs: Iterable[str],
+    ) -> None:
+        targets = {
+            str(value or "").strip()
+            for value in request_refs
+            if str(value or "").strip()
+        }
+        with self._lock:
+            for request_ref in targets:
+                key = (tenant_ref, request_ref)
+                event = self._events.get(key)
+                if event is not None and event.workspace_id == workspace_id:
+                    del self._events[key]
+
     def list_events(
         self,
         *,

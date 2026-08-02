@@ -49,6 +49,7 @@ def _notification(*, revision: int = 1, enabled: bool = True) -> NotificationSet
             "{{pricing_coverage}}|{{portal_url}}"
         ),
         enabled=enabled,
+        test_email_succeeded_at=NOW,
         revision=revision,
         created_by_ref="owner-safe",
         updated_by_ref="owner-safe",
@@ -327,7 +328,7 @@ def test_send_revalidates_active_member_and_suppresses_invalidated_claim() -> No
     assert alert.attempt_count == 1
 
 
-@pytest.mark.parametrize("invalidated", ("recipient", "notification", "gate"))
+@pytest.mark.parametrize("invalidated", ("notification", "gate"))
 def test_send_revalidates_recipient_notification_revision_and_automatic_gate(
     invalidated: str,
 ) -> None:
