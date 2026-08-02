@@ -294,6 +294,15 @@ function demoCompletenessBootstrapPayload() {
         },
       })),
     },
+    departments: {
+      items: [
+        { key: "Commerce", requests: 24, tokens: 920, estimated_cost: 0.0108, error_rate_pct: 3.1, p95_latency_ms: 1800, cache_hit_rate_pct: 48.28, data_status: "available" },
+        { key: "Finance", requests: 16, tokens: 610, estimated_cost: 0.0074, error_rate_pct: 5.2, p95_latency_ms: 2200, cache_hit_rate_pct: 41.18, data_status: "available" },
+        { key: "IT", requests: 10, tokens: 410, estimated_cost: 0.0041, error_rate_pct: 2.5, p95_latency_ms: 1500, cache_hit_rate_pct: 55.56, data_status: "available" },
+        { key: "未归属", requests: 6, tokens: 290, estimated_cost: 0.0029, error_rate_pct: 8.1, p95_latency_ms: 2600, cache_hit_rate_pct: 25, data_status: "partial" },
+        { key: "Support", requests: 4, tokens: 257, estimated_cost: 0.0017, error_rate_pct: 4.4, p95_latency_ms: 1700, cache_hit_rate_pct: 50, data_status: "available" },
+      ],
+    },
     anomalies: {
       count: 4,
       items: [

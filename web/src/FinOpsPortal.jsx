@@ -2012,15 +2012,15 @@ export function FinOpsPortal({
           <span>至</span>
           <input type="date" value={windowValue.to} onChange={(event) => setWindowValue((value) => ({ ...value, to: event.target.value }))} />
         </div>
-        <select value={filters.departmentId} onChange={(event) => setFilters((value) => ({ ...value, departmentId: event.target.value }))}>
+        <select aria-label="部门筛选" value={filters.departmentId} onChange={(event) => setFilters((value) => ({ ...value, departmentId: event.target.value }))}>
           <option value="">全部部门</option>
           {(filterOptions?.filters?.departments || []).map((item) => <option key={item} value={item === "unassigned" ? "" : item}>{item === "unassigned" ? "未归属" : item}</option>)}
         </select>
-        <select value={filters.agentId} onChange={(event) => setFilters((value) => ({ ...value, agentId: event.target.value }))}>
+        <select aria-label="Agent 筛选" value={filters.agentId} onChange={(event) => setFilters((value) => ({ ...value, agentId: event.target.value }))}>
           <option value="">全部 Agent</option>
           {(filterOptions?.filters?.agents || []).map((item) => <option key={item}>{item}</option>)}
         </select>
-        <select value={filters.model} onChange={(event) => setFilters((value) => ({ ...value, model: event.target.value }))}>
+        <select aria-label="模型筛选" value={filters.model} onChange={(event) => setFilters((value) => ({ ...value, model: event.target.value }))}>
           <option value="">全部模型</option>
           {(filterOptions?.filters?.models || []).map((item) => <option key={item}>{item}</option>)}
         </select>

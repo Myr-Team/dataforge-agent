@@ -56,6 +56,23 @@ test("cost analysis starts with one compact cost scope instead of the overview K
 });
 
 
+test("executive donut replaces the browser SVG focus rectangle with a slice highlight", async () => {
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+
+  assert.match(styles, /\.finops-executive-donut:focus-within\s*\{[^}]*outline:\s*none/s);
+  assert.match(styles, /\.finops-executive-donut \.segment:focus-visible\s*\{[^}]*outline:\s*none\s*!important/s);
+  assert.match(styles, /\.finops-executive-donut \.segment:focus-visible\s*\{[^}]*stroke-width:\s*7/s);
+});
+
+
+test("mobile operations AI launcher stays compact over dashboard content", async () => {
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+
+  assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.finops-ai-launcher\s*\{[^}]*width:\s*42px[^}]*padding:\s*0/s);
+  assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.finops-ai-launcher span\s*\{[^}]*display:\s*none/s);
+});
+
+
 test("trend bars scale inside a dedicated plot track without clipping near-maximum values", async () => {
   const [component, styles] = await Promise.all([
     readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8"),

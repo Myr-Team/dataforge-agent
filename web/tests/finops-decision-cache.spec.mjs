@@ -29,11 +29,11 @@ test("decision navigation stays cache first and refreshes only the visible tab a
   await page.goto("/");
   await openOperations(page);
 
-  await page.getByRole("button", { name: "效能与 ROI" }).click();
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
   await expect(page.getByRole("heading", { name: "价值桥" })).toBeVisible();
-  await page.getByRole("button", { name: "风险与优化" }).click();
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
   await expect(page.getByRole("heading", { name: "风险矩阵" })).toBeVisible();
-  await page.getByRole("button", { name: "效能与 ROI" }).click();
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
   await expect(page.getByRole("heading", { name: "价值桥" })).toBeVisible();
 
   expect(control.calls.roiDecision).toBe(1);
@@ -58,7 +58,7 @@ test("failed ROI revalidation keeps the prior decision and manual refresh stays 
   const control = await installFinOpsMockApi(page);
   await page.goto("/");
   await openOperations(page);
-  await page.getByRole("button", { name: "效能与 ROI" }).click();
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
   await expect(page.getByText("$3,000.00").first()).toBeVisible();
 
   const riskCalls = control.calls.riskDecision;
@@ -77,14 +77,14 @@ test("seeded ROI cache is interactive within 300ms without a full-page skeleton"
   const control = await installFinOpsMockApi(page, [], { decisionDelayMs: 350 });
   await page.goto("/");
   await openOperations(page);
-  await page.getByRole("button", { name: "效能与 ROI" }).click();
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
   await expect(page.getByRole("button", { name: "调整测算参数" })).toBeVisible();
   const coldLatencyMs = control.timings.roiDecision.at(-1);
 
-  await page.getByRole("button", { name: "风险与优化" }).click();
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
   await expect(page.getByRole("heading", { name: "风险矩阵" })).toBeVisible();
   const startedAt = await page.evaluate(() => performance.now());
-  await page.getByRole("button", { name: "效能与 ROI" }).click();
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
   await expect(page.getByRole("button", { name: "调整测算参数" })).toBeVisible();
   const interactiveMs = await page.evaluate((started) => performance.now() - started, startedAt);
 

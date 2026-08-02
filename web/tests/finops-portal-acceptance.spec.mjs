@@ -28,9 +28,6 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
   const scale = page.locator(".finops-trend-scale");
   const trendSwitch = page.locator(".finops-trend-switch");
 
-  await expect(legend).toContainText("输入");
-
-  await trendSwitch.getByRole("button", { name: "成本" }).click();
   await expect(legend).toContainText("估算成本");
   await expect(scale.locator("span").first()).toContainText("$");
   const costBars = page.locator(".finops-trend-stack");
@@ -40,6 +37,9 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
   expect(secondCostBar).not.toBeNull();
   expect(secondCostBar.height).toBeGreaterThan(firstCostBar.height);
   expect(secondCostBar.height - firstCostBar.height).toBeGreaterThan(5);
+
+  await trendSwitch.getByRole("button", { name: "Token" }).click();
+  await expect(legend).toContainText("输入");
 
   await trendSwitch.getByRole("button", { name: "P95" }).click();
   await expect(legend).toContainText("P95 延迟");
@@ -52,8 +52,25 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
   await column.focus();
   await expect(page.locator(".finops-trend-tooltip-content")).toContainText("调用次数");
   await expect(page.locator(".finops-trend-tooltip-content")).toContainText("缓存命中");
-  await expect(page.locator(".finops-metric").filter({ hasText: "缓存避免 Token" })).toBeVisible();
-  await expect(page.locator(".finops-metric").filter({ hasText: "缓存估算节省" })).toBeVisible();
+  await expect(page.locator(".finops-metric").filter({ hasText: "缓存收益" })).toContainText("命中率");
+});
+
+
+test("executive cost drilldown preserves the current filters and uses the compact cost page", async ({ page }) => {
+  await installFinOpsMockApi(page);
+  await page.goto("/");
+  await openOperations(page);
+
+  const overview = page.getByRole("region", { name: "运营决策概览" });
+  await page.getByLabel("部门筛选", { exact: true }).selectOption("Commerce");
+  await page.getByLabel("Agent 筛选", { exact: true }).selectOption("分析协调 Agent");
+  await overview.getByRole("button", { name: /成本分析.*成本来自哪里/ }).click();
+
+  await expect(page.getByRole("button", { name: "成本分析", exact: true })).toHaveClass(/active/);
+  await expect(page.getByLabel("部门筛选", { exact: true })).toHaveValue("Commerce");
+  await expect(page.getByLabel("Agent 筛选", { exact: true })).toHaveValue("分析协调 Agent");
+  await expect(page.locator(".finops-cost-summary")).toBeVisible();
+  await expect(page.locator(".finops-content > .finops-metrics")).toHaveCount(0);
 });
 
 
@@ -62,7 +79,7 @@ test("ROI parameters create a new DataForge scenario revision", async ({ page })
   const control = await installFinOpsMockApi(page, calls);
   await page.goto("/");
   await openOperations(page);
-  await page.getByRole("button", { name: "效能与 ROI" }).click();
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
 
   await expect(page.getByRole("heading", { name: "测算显示具备投入价值，业务结果仍需验证" })).toBeVisible();
   const initialDecisionCalls = control.calls.roiDecision;
@@ -94,25 +111,25 @@ test("ROI parameters create a new DataForge scenario revision", async ({ page })
 });
 
 
-test("request reconciliation surfaces unattributed gateway evidence with scope label", async ({ page }) => {
+test("overview hides infrastructure reconciliation and keeps pricing coverage in cost analysis", async ({ page }) => {
   await installFinOpsMockApi(page);
   await page.goto("/");
   await openOperations(page);
 
-  const evidence = page.locator(".finops-gateway-evidence");
-  await expect(evidence).toBeVisible();
-  await expect(evidence).toContainText("未归属网关证据");
-  await expect(evidence.locator(".finops-scope-tag")).toContainText("unattributed");
-  await expect(evidence).toContainText("已关联请求");
-  await expect(evidence).toContainText("未关联网关错误");
-  await expect(evidence).toContainText("4xx 3");
-  await expect(evidence).toContainText("5xx 1");
-  await expect(evidence).toContainText("数据更新时间");
+  const overview = page.getByRole("region", { name: "运营决策概览" });
+  await expect(overview).not.toContainText("APIM");
+  await expect(overview).not.toContainText("网关");
+  await expect(overview).not.toContainText("unattributed");
+  await expect(overview.locator(".finops-metric")).toHaveCount(4);
+
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
+  await expect(page.locator(".finops-cost-summary")).toContainText("计价覆盖 96.7%");
+  await expect(page.locator(".finops-cost-summary")).toContainText("2 次未计价");
 
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
   await mkdir(outputDir, { recursive: true });
   await page.screenshot({
-    path: path.join(outputDir, "operations-gateway-evidence-desktop.png"),
+    path: path.join(outputDir, "operations-cost-pricing-coverage-desktop.png"),
     fullPage: true,
   });
 });
@@ -123,7 +140,7 @@ test("visible decision refresh waits ten minutes and pauses while hidden", async
   const control = await installFinOpsMockApi(page);
   await page.goto("/");
   await openOperations(page);
-  await page.getByRole("button", { name: "效能与 ROI" }).click();
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
   await expect(page.getByRole("heading", { name: "价值桥" })).toBeVisible();
 
   const initialCount = control.calls.roiDecision;
@@ -155,7 +172,7 @@ test("detail refresh failure preserves the last successful page", async ({ page 
   const control = await installFinOpsMockApi(page);
   await page.goto("/");
   await openOperations(page);
-  await page.getByRole("button", { name: "成本分析" }).click();
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
   await expect(page.getByText("成本趋势")).toBeVisible();
 
   control.failDetail = true;
@@ -172,7 +189,7 @@ test("risk evidence is distinct and remediation 409 requires reload and a second
   const control = await installFinOpsMockApi(page, [], { remediationReviewConflictOnce: true });
   await page.goto("/");
   await openOperations(page);
-  await page.getByRole("button", { name: "风险与优化" }).click();
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
 
   const priorities = page.getByRole("list", { name: "风险优先事项" });
   await priorities.getByRole("button", { name: /响应时延优化/ }).click();
@@ -224,7 +241,7 @@ for (const viewport of [
     await installFinOpsMockApi(page);
     await page.goto("/");
     await openOperations(page);
-    await page.getByRole("button", { name: "风险与优化" }).click();
+    await page.getByRole("button", { name: "风险与优化", exact: true }).click();
     const priorities = page.getByRole("list", { name: "风险优先事项" });
     await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
     const trigger = page.getByRole("button", { name: "查看整改方案" });
@@ -270,7 +287,7 @@ test("detail failure after a range change never labels old data as the new range
   const control = await installFinOpsMockApi(page);
   await page.goto("/");
   await openOperations(page);
-  await page.getByRole("button", { name: "成本分析" }).click();
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
   await expect(page.getByText("成本趋势")).toBeVisible();
 
   control.failDetail = true;
@@ -301,7 +318,7 @@ test("bootstrap failure shows a friendly error and recovers on retry", async ({ 
   control.failBootstrap = false;
   await errorState.getByRole("button", { name: "重试" }).click();
   await expect(page.locator(".finops-metric").first()).toBeVisible();
-  await expect(page.getByText("数据可信度")).toBeVisible();
+  await expect(page.getByRole("img", { name: "部门估算成本占比" })).toBeVisible();
 
   expect(pageErrors).toEqual([]);
 });
@@ -320,8 +337,8 @@ test("mobile operations layout has no horizontal overflow", async ({ page }) => 
   });
   expect(overflow).toBeLessThanOrEqual(1);
 
-  await expect(page.getByRole("button", { name: "成本分析" }).first()).toBeVisible();
-  await page.getByRole("button", { name: "成本分析" }).first().click();
+  await expect(page.getByRole("button", { name: "成本分析", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
   await expect(page.getByText("成本趋势")).toBeVisible();
 });
 

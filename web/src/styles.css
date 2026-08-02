@@ -5740,7 +5740,8 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-doughnut-legend { width: 100%; }
   .finops-drawer { width: 100%; }
   .finops-drawer-body { padding: 12px; }
-  .finops-ai-launcher { right: 14px; bottom: 14px; }
+  .finops-ai-launcher { right: 14px; bottom: 14px; width: 42px; min-height: 42px; justify-content: center; padding: 0; }
+  .finops-ai-launcher span { display: none; }
   .finops-ai-popover { right: 14px; bottom: 66px; max-height: calc(100vh - 82px); }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -6611,10 +6612,12 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-executive-donut-layout { display: grid; min-height: 248px; align-content: center; justify-items: center; gap: 11px; padding: 14px 14px 12px; }
 .finops-executive-donut-wrap { position: relative; width: 148px; height: 148px; }
 .finops-executive-donut { width: 148px; height: 148px; overflow: visible; transform: rotate(-90deg); }
+.finops-executive-donut:focus,
+.finops-executive-donut:focus-within { outline: none; }
 .finops-executive-donut .track { stroke: #edf1f6; }
 .finops-executive-donut .segment { cursor: pointer; transform-origin: center; transition: opacity 160ms ease, stroke-width 160ms ease, filter 160ms ease; }
 .finops-executive-donut .segment:hover,
-.finops-executive-donut .segment:focus-visible { outline: none; filter: saturate(1.14); opacity: .8; stroke-width: 7; }
+.finops-executive-donut .segment:focus-visible { outline: none !important; filter: saturate(1.14) drop-shadow(0 0 1px rgba(23, 92, 211, .28)); opacity: .8; stroke-width: 7; }
 .finops-executive-donut-wrap > span { position: absolute; inset: 0; display: grid; align-content: center; justify-items: center; gap: 3px; pointer-events: none; }
 .finops-executive-donut-wrap > span b { color: #172033; font-size: 17px; font-variant-numeric: tabular-nums; letter-spacing: -.025em; }
 .finops-executive-donut-wrap > span small { color: #98a2b3; font-size: 8.5px; }

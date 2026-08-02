@@ -72,7 +72,7 @@ test("all four risk priorities open only their own request_ref without a generic
   await page.goto("/");
 
   await page.getByRole("button", { name: "运营管理" }).first().click();
-  await page.getByRole("button", { name: "风险与优化" }).click();
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
 
   const priorities = page.getByRole("list", { name: "风险优先事项" });
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");

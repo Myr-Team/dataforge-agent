@@ -53,16 +53,17 @@ test("operations management is immediately discoverable and supports metric dril
   await expect(page.getByRole("heading", { name: "运营管理" })).toBeVisible();
   await expect(page.locator(".finops-live")).toContainText("更新");
 
-  const tokenMetric = page.getByRole("article", { name: /^Token / });
-  await tokenMetric.focus();
+  const cacheMetric = page.getByRole("article", { name: /^缓存收益 / });
+  await cacheMetric.focus();
   await expect(page.locator(".finops-metric-tooltip-content")).toHaveCount(0);
-  const tokenHelp = tokenMetric.locator(".finops-help-trigger");
-  await expect(tokenHelp).toBeVisible();
-  await tokenHelp.focus();
+  const cacheHelp = cacheMetric.locator(".finops-help-trigger");
+  await expect(cacheHelp).toBeVisible();
+  await cacheHelp.focus();
   await expect(page.locator(".finops-metric-tooltip-content")).toBeVisible();
-  await expect(page.locator(".finops-metric-tooltip-content")).toContainText("缓存输入");
+  await expect(page.locator(".finops-metric-tooltip-content")).toContainText("缓存命中");
 
   await expect(page.locator(".finops-trend-event")).toHaveCount(0);
+  await page.locator(".finops-trend-switch").getByRole("button", { name: "Token" }).click();
   const latestTrend = page.locator(".finops-trend-column").filter({ hasText: "752 Token" });
   await expect(latestTrend).toHaveCount(1);
   await latestTrend.hover();
@@ -80,13 +81,14 @@ test("operations management is immediately discoverable and supports metric dril
     fullPage: false,
   });
 
-  await page.getByText("Commerce", { exact: true }).last().click();
+  await page.getByLabel("部门筛选", { exact: true }).selectOption("Commerce");
   await expect(page.getByRole("button", { name: /移除部门筛选 Commerce/ })).toBeVisible();
   await page.getByRole("button", { name: "清除全部" }).click();
   await expect(page.getByRole("button", { name: /移除部门筛选 Commerce/ })).toHaveCount(0);
 
-  await expect(page.getByText("数据可信度")).toBeVisible();
-  await expect(page.getByText("计价覆盖")).toBeVisible();
+  await expect(page.getByRole("region", { name: "运营决策概览" }).locator(".finops-metric")).toHaveCount(4);
+  await expect(page.getByRole("img", { name: "部门估算成本占比" })).toBeVisible();
+  await expect(page.locator(".finops-executive-attention-item")).toHaveCount(3);
   await page.getByRole("button", { name: "关联官方模型价格" }).click();
   await expect(page.getByRole("dialog", { name: "模型分配与官方价格" })).toBeVisible();
   await expect(page.getByText("Agent 模型分配")).toBeVisible();
@@ -106,8 +108,10 @@ test("operations management is immediately discoverable and supports metric dril
     path: path.join(outputDir, "operations-management-overview-desktop.png"),
     fullPage: true,
   });
-  await page.getByRole("button", { name: "成本分析" }).click();
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
   await expect(page.getByText("成本趋势")).toBeVisible();
+  await expect(page.locator(".finops-cost-summary")).toBeVisible();
+  await expect(page.locator(".finops-content > .finops-metrics")).toHaveCount(0);
   await expect(page.getByText("Agent 成本结构")).toBeVisible();
   await expect(page.getByText("模型成本结构")).toBeVisible();
   await page.screenshot({
@@ -115,15 +119,16 @@ test("operations management is immediately discoverable and supports metric dril
     fullPage: true,
   });
 
-  await page.getByRole("button", { name: "效能与 ROI" }).click();
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
   await expect(page.getByRole("heading", { name: "价值桥" })).toBeVisible();
+  await expect(page.getByText("AI 运营总投入").first()).toBeVisible();
   await expect(page.getByText("测算显示具备投入价值，业务结果仍需验证")).toBeVisible();
   await page.screenshot({
     path: path.join(outputDir, "operations-roi-desktop.png"),
     fullPage: true,
   });
 
-  await page.getByRole("button", { name: "风险与优化" }).click();
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
   await expect(page.getByRole("heading", { name: "优化组合" })).toBeVisible();
   await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(4);
   await expect(page.getByText("最新 AI 解读 · 已保存证据")).toBeVisible();
@@ -148,7 +153,7 @@ for (const viewport of [
     await page.getByRole("button", { name: "运营管理" }).last().click();
 
     const headerBefore = await page.locator(".finops-head").boundingBox();
-    await page.getByRole("button", { name: "效能与 ROI" }).click();
+    await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
     await expect(page.getByText("测算显示具备投入价值，业务结果仍需验证")).toBeVisible();
     await expect(page.getByRole("heading", { name: "价值桥" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "证据成熟度" })).toBeVisible();
@@ -187,7 +192,7 @@ for (const viewport of [
       fullPage: true,
     });
 
-    await page.getByRole("button", { name: "风险与优化" }).click();
+    await page.getByRole("button", { name: "风险与优化", exact: true }).click();
     await expect(page.getByRole("heading", { name: "风险矩阵" })).toBeVisible();
     await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(4);
     const riskRows = page.locator(".finops-decision-risk-row");
@@ -207,29 +212,77 @@ for (const viewport of [
 }
 
 
+for (const viewport of [
+  { name: "desktop", width: 1440, height: 900 },
+  { name: "1366", width: 1366, height: 768 },
+  { name: "intermediate", width: 820, height: 1180 },
+  { name: "mobile", width: 390, height: 844 },
+]) {
+  test(`executive overview stays proportional and unclipped at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await installFinOpsDemoCompletenessApi(page);
+    await page.goto("/");
+    await page.getByRole("button", { name: "运营管理" }).last().click();
+
+    const overview = page.getByRole("region", { name: "运营决策概览" });
+    await expect(overview.locator(".finops-metric")).toHaveCount(4);
+    await expect(overview.locator(".finops-executive-attention-item")).toHaveCount(3);
+    await expectNoOverlap(overview.locator(".finops-executive-decision-grid > .finops-panel"));
+
+    const slices = overview.locator(".finops-executive-donut .segment");
+    await expect(slices).toHaveCount(4);
+    const dashArrays = await slices.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("stroke-dasharray")));
+    expect(new Set(dashArrays).size).toBeGreaterThan(1);
+    await slices.last().focus();
+    const tooltipId = await slices.last().getAttribute("aria-describedby");
+    const tooltip = page.locator(`#${tooltipId}`);
+    await expect(tooltip).toBeVisible();
+    await expect(tooltip).toContainText("估算成本");
+    const bounds = await tooltip.boundingBox();
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+    expect(bounds.y).toBeGreaterThanOrEqual(0);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+    await page.locator(".finops-head h1").click();
+    await expect(tooltip).toHaveCount(0);
+
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(1);
+    const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+    await mkdir(outputDir, { recursive: true });
+    await page.screenshot({
+      path: path.join(outputDir, `operations-executive-overview-${viewport.name}.png`),
+      fullPage: true,
+    });
+  });
+}
+
+
 test("demo completeness fixture fills every visible metric card chart table and queue across all four views", async ({ page }) => {
   const control = await installFinOpsDemoCompletenessApi(page);
   await page.goto("/");
   await page.getByRole("button", { name: "运营管理" }).first().click();
 
-  await page.getByRole("button", { name: "运营总览" }).click();
+  await page.getByRole("button", { name: "运营总览", exact: true }).click();
   await expectDemoSurfaceComplete(page);
-  await expect(page.locator(".finops-metric")).toHaveCount(8);
+  await expect(page.locator(".finops-metric")).toHaveCount(4);
   const overviewMetricValues = await page.locator(".finops-metric > strong").allTextContents();
-  expect(new Set(overviewMetricValues).size).toBeGreaterThan(5);
+  expect(new Set(overviewMetricValues).size).toBe(4);
   await expect(page.locator(".finops-trend-column")).toHaveCount(3);
   await expectDistinctGeometry(page.locator(".finops-trend-stack"), "height");
-  await expect(page.locator(".finops-trust-grid article")).toHaveCount(3);
-  expect(new Set(await page.locator(".finops-trust-grid article > strong").allTextContents()).size).toBe(3);
-  await expect(page.locator(".finops-insights > div")).toHaveCount(4);
-  await expect(page.locator(".finops-table tbody tr")).toHaveCount(2);
+  await expect(page.locator(".finops-executive-donut .segment")).toHaveCount(4);
+  const donutShares = await page.locator(".finops-executive-donut .segment").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("stroke-dasharray")));
+  expect(new Set(donutShares).size).toBeGreaterThan(1);
+  await expect(page.locator(".finops-executive-attention-item")).toHaveCount(3);
+  await expect(page.locator(".finops-executive-drilldowns > button")).toHaveCount(3);
   for (const panel of await page.locator(".finops-panel").all()) {
     await expect(panel.locator(".finops-panel-body")).not.toBeEmpty();
   }
 
-  await page.getByRole("button", { name: "成本分析" }).click();
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
   await expectDemoSurfaceComplete(page);
-  await expect(page.locator(".finops-metric")).toHaveCount(8);
+  await expect(page.locator(".finops-metric")).toHaveCount(0);
+  await expect(page.locator(".finops-cost-summary")).toContainText("计价覆盖");
   await expect(page.locator(".finops-trend-column")).toHaveCount(3);
   await expectDistinctGeometry(page.locator(".finops-trend-stack"), "height");
   await expect(page.locator(".finops-table")).toHaveCount(2);
@@ -251,7 +304,7 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await expect(doughnuts).toHaveCount(2);
   for (const doughnut of await doughnuts.all()) await expect(doughnut).toContainText("3");
 
-  await page.getByRole("button", { name: "效能与 ROI" }).click();
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
   await expectDemoSurfaceComplete(page);
   await expect(page.locator(".finops-decision-roi-metric")).toHaveCount(4);
   const roiValues = await page.locator(".finops-decision-roi-metric > strong").allTextContents();
@@ -263,7 +316,7 @@ test("demo completeness fixture fills every visible metric card chart table and 
   expect(new Set(await page.locator(".finops-decision-roi-trend tbody td:nth-child(3)").allTextContents()).size).toBe(3);
   await expect(page.locator(".finops-decision-roi-capability")).toBeVisible();
 
-  await page.getByRole("button", { name: "风险与优化" }).click();
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
   await expectDemoSurfaceComplete(page);
   await expect(page.locator(".finops-decision-risk-domains article")).toHaveCount(4);
   await expect(page.locator(".finops-decision-risk-row")).toHaveCount(4);
@@ -288,7 +341,7 @@ test("cost attribution tables fit desktop cards and remain horizontally operable
   await installFinOpsMockApi(page);
   await page.goto("/");
   await page.getByRole("button", { name: "运营管理" }).last().click();
-  await page.getByRole("button", { name: "成本分析" }).click();
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
 
   for (const title of ["部门成本归因", "专案成本归因"]) {
     const panel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: title }) });
