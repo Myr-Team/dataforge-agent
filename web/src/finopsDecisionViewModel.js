@@ -62,6 +62,13 @@ const UNIT_LABELS = Object.freeze({
   "USD per successful request": "USD / 成功调用",
 });
 
+const ROI_METRIC_COPY = Object.freeze({
+  monthly_total_cost: {
+    label: "AI 运营总投入",
+    explanation: "可包含实施摊销、固定运营成本与当前模型成本；不等同于请求级模型使用成本。",
+  },
+});
+
 const REMEDIATION_STATUS_LABELS = Object.freeze({
   draft: "草案",
   reviewed: "已复核",
@@ -244,16 +251,17 @@ function safeMetric(raw) {
   const evidence = evidenceState(raw.status);
   const value = finiteNumber(raw.value);
   const unit = safeUnit(raw.unit);
+  const copy = ROI_METRIC_COPY[id];
   return {
     id,
-    label: boundedText(raw.label, 80) || "运营指标",
+    label: copy?.label || boundedText(raw.label, 80) || "运营指标",
     value,
     unit,
     unitLabel: UNIT_LABELS[unit] || "",
     status: evidence.key,
     badge: evidence.label,
     valueLabel: formatValue(value, unit, evidence.key),
-    explanation: boundedText(raw.explanation, 240),
+    explanation: copy?.explanation || boundedText(raw.explanation, 240),
   };
 }
 

@@ -43,6 +43,19 @@ test("overview renders one executive decision hierarchy", async () => {
 });
 
 
+test("cost analysis starts with one compact cost scope instead of the overview KPI grid", async () => {
+  const component = await readFile(
+    new URL("./FinOpsPortal.jsx", import.meta.url),
+    "utf8",
+  );
+  const costPage = component.match(/function CostPage[\s\S]*?function RoiScenarioDialog/)?.[0] || "";
+
+  assert.match(costPage, /className="finops-cost-summary"/);
+  assert.match(costPage, /维护计价映射/);
+  assert.doesNotMatch(costPage, /<MetricCards/);
+});
+
+
 test("trend bars scale inside a dedicated plot track without clipping near-maximum values", async () => {
   const [component, styles] = await Promise.all([
     readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8"),

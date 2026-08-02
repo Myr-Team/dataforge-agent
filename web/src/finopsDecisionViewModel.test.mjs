@@ -137,6 +137,27 @@ test("value bridge scales only comparable units and exposes negative direction",
 });
 
 
+test("monthly total cost is presented as AI operating investment", () => {
+  const view = roiDecisionView({
+    metrics: [{
+      id: "monthly_total_cost",
+      label: "月度总成本",
+      value: 800,
+      unit: "USD",
+      status: "estimated",
+      explanation: "来自情景成本。",
+    }],
+  });
+
+  assert.equal(view.metrics[0].label, "AI 运营总投入");
+  assert.match(view.metrics[0].explanation, /实施摊销/);
+  assert.match(view.metrics[0].explanation, /固定运营成本/);
+  assert.match(view.metrics[0].explanation, /模型成本/);
+  assert.equal(view.valueBridge.items[0].label, "AI 运营总投入");
+  assert.equal(view.valueBridge.items[0].value, 800);
+});
+
+
 test("risk bubbles preserve source coordinates and real size differences", () => {
   const view = riskDecisionView({
     risk_matrix: [

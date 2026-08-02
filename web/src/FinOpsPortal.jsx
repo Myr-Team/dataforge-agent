@@ -919,10 +919,7 @@ function BudgetForecast({ payload }) {
 function CostPage({
   overviewData,
   detail,
-  scope,
   comparison,
-  onEvidence = null,
-  onAsk = null,
   onDimensionSelect = null,
   onSaveView = null,
   exportUrl = "",
@@ -930,9 +927,22 @@ function CostPage({
 }) {
   const agents = finopsBreakdownRows({ items: detail.agents?.agents || [] });
   const models = finopsBreakdownRows({ items: detail.agents?.models || [] });
+  const summary = executiveCostSummary(overviewData.overview);
   return (
     <>
-      <MetricCards payload={overviewData.overview} scope={scope} onEvidence={onEvidence} onAsk={onAsk} onConfigurePricing={onConfigurePricing} />
+      <section className="finops-cost-summary" aria-label="成本分析口径">
+        <div>
+          <small>当前估算成本</small>
+          <b>{summary.value}</b>
+          <span>{summary.meta}</span>
+        </div>
+        <p>以下按部门、工作区、Agent 与模型解释成本来源；估算不代表云平台实际账单。</p>
+        {onConfigurePricing ? (
+          <button type="button" onClick={onConfigurePricing}>
+            <Pencil size={14} />维护计价映射
+          </button>
+        ) : null}
+      </section>
       <div className="finops-page-actions">
         <span>{detail.views?.count ? `${detail.views.count} 个已保存视图` : "可保存当前 IT / 财务筛选范围"}</span>
         {onSaveView ? <button type="button" onClick={onSaveView}><BookmarkPlus size={14} />保存财务视图</button> : null}
