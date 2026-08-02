@@ -95,10 +95,12 @@ description. The filter row and tab row remain stable across all four pages.
 Display exactly these four cards:
 
 1. **AI usage cost**: request-level price-card estimate and pricing coverage.
-2. **Effective calls**: successful calls over total calls and success rate.
+2. **Call quality**: observed success rate with total calls as supporting text.
+   Do not infer a successful-call count when the API does not return one.
 3. **Cache benefit**: estimated avoided cost and observed cache hit rate.
 4. **Value assessment**: verified, needs validation, insufficient evidence, or
-   unavailable, accompanied by evidence maturity when recorded.
+   unavailable, accompanied by evidence maturity only when the API records it.
+   Do not invent a maturity percentage from status text.
 
 Each card keeps its help tooltip, evidence entry point, and metric-aware AI
 entry. Secondary numbers are supporting text, not additional KPI cards.
