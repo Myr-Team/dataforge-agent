@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -376,13 +376,20 @@ def test_roi_decision_uses_rollup_unit_economics_when_sql_is_enabled(
         "get_finops_query_service",
         lambda: FinOpsQueryService(repository, rollup_repository=fake),
     )
+    current_day_value = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    window_start = (
+        current_day_value - timedelta(days=31)
+    ).isoformat().replace("+00:00", "Z")
+    window_end = (
+        current_day_value + timedelta(days=1)
+    ).isoformat().replace("+00:00", "Z")
     response = client.get(
         "/api/finops/roi/decision",
-        params={"workspace_id": "ws-a", "from": "2026-07-01T00:00:00Z", "to": "2026-08-01T00:00:00Z"},
+        params={"workspace_id": "ws-a", "from": window_start, "to": window_end},
         headers=owner_headers,
     )
     assert response.status_code == 200
-    current_day = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    ).isoformat().replace("+00:00", "Z")
-    assert fake.read_calls == [("tenant-a", ("ws-a",), "2026-07-01T00:00:00Z", current_day, "day")]
+    current_day = current_day_value.isoformat().replace("+00:00", "Z")
+    assert fake.read_calls == [("tenant-a", ("ws-a",), window_start, current_day, "day")]
