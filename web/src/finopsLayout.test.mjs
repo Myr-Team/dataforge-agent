@@ -22,17 +22,22 @@ test("operations header isolates title copy from the synchronization control", a
 });
 
 
-test("overview uses operations metrics, data trust, selectable trend and no budget forecast", async () => {
+test("overview renders one executive decision hierarchy", async () => {
   const component = await readFile(
     new URL("./FinOpsPortal.jsx", import.meta.url),
     "utf8",
   );
 
+  assert.match(component, /executiveOverviewView\(data\)/);
+  assert.match(component, /aria-label="运营决策概览"/);
   assert.match(component, /aria-label="趋势指标"/);
-  assert.match(component, /title="数据可信度"/);
-  assert.match(component, /计价覆盖/);
-  assert.match(component, /Token 覆盖/);
-  assert.match(component, /CUSTOMER_INFRA_LABELS\.reconciliation/);
+  assert.match(component, /title="部门成本构成"/);
+  assert.match(component, /查看成本分析/);
+  assert.match(component, /成本分析[\s\S]*成本来自哪里/);
+  assert.match(component, /效能与 ROI[\s\S]*投入是否产生价值/);
+  assert.match(component, /风险与优化[\s\S]*现在应优先处理什么/);
+  assert.doesNotMatch(component, /title="数据可信度"/);
+  assert.doesNotMatch(component, /title="部门成本与运行质量"/);
   assert.doesNotMatch(component, /APIM 对账/);
   assert.doesNotMatch(component, /title="预算消耗与期末预测"/);
 });

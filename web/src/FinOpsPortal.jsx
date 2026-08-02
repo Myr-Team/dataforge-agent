@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowRight,
   BookmarkPlus,
   Clock3,
   CircleHelp,
@@ -10,8 +11,10 @@ import {
   Gauge,
   Loader2,
   Pencil,
+  PieChart,
   RefreshCw,
   ShieldCheck,
+  Sparkles,
   TrendingUp,
   WalletCards,
   X,
@@ -72,6 +75,10 @@ import {
   orchestrateRemediationMutation,
 } from "./finops/remediationOrchestration.js";
 import { remediationDraftView, riskDecisionView } from "./finopsDecisionViewModel.js";
+import {
+  executiveCostSummary,
+  executiveOverviewView,
+} from "./finopsExecutiveOverview.js";
 import {
   applyDimensionFilter,
   filterChips,
@@ -226,15 +233,17 @@ function MetricHelp({ card, tooltip }) {
 
 
 function MetricCards({
+  cards = null,
   payload,
   scope,
   onEvidence = null,
   onAsk = null,
   onConfigurePricing = null,
 }) {
+  const visibleCards = cards || finopsMetricCards(payload);
   return (
     <section className="finops-metrics" aria-label="运营核心指标">
-      {finopsMetricCards(payload).map((card) => {
+      {visibleCards.map((card) => {
         const tooltip = metricTooltip(card.metric);
         const context = metricContext(card.metric, scope);
         return (
@@ -287,7 +296,7 @@ function MetricCards({
 function MetricSkeleton() {
   return (
     <section className="finops-metrics finops-metrics-skeleton" aria-label="正在加载运营指标">
-      {Array.from({ length: 8 }, (_, index) => (
+      {Array.from({ length: 4 }, (_, index) => (
         <article className="finops-metric" key={index}>
           <i />
           <b />
@@ -656,28 +665,173 @@ function GatewayUnmatchedEvidence({ evidence }) {
 }
 
 
+function ExecutiveDonutSlice({ segment, onOpenCost }) {
+  const tooltipId = `finops-department-cost-${segment.id}`;
+  const { anchorRef, open, anchorProps } = useViewportTooltipAnchor();
+  const activate = (event) => {
+    if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
+    if (event.type === "keydown") event.preventDefault();
+    onOpenCost();
+  };
+  return (
+    <>
+      <circle
+        {...anchorProps}
+        ref={anchorRef}
+        cx="21"
+        cy="21"
+        r="15.9155"
+        fill="none"
+        strokeWidth="6"
+        className={`segment segment-${segment.colorIndex}`}
+        strokeDasharray={`${segment.sharePct} ${Math.max(0, 100 - segment.sharePct)}`}
+        strokeDashoffset={25 - segment.offsetPct}
+        tabIndex="0"
+        role="button"
+        aria-label={`${segment.label}，估算成本 ${formatFinOpsCost(segment.value, segment.evidenceState)}，占比 ${formatFinOpsPercent(segment.sharePct)}`}
+        aria-describedby={tooltipId}
+        onClick={activate}
+        onKeyDown={activate}
+      />
+      <ViewportTooltip anchorRef={anchorRef} open={open} id={tooltipId} variant="finops-donut-tooltip">
+        <header><b>{segment.label}</b><EvidenceBadge status={segment.evidenceState} /></header>
+        <dl>
+          <div><dt>估算成本</dt><dd>{formatFinOpsCost(segment.value, segment.evidenceState)}</dd></div>
+          <div><dt>当前占比</dt><dd>{formatFinOpsPercent(segment.sharePct)}</dd></div>
+        </dl>
+      </ViewportTooltip>
+    </>
+  );
+}
+
+
+function ExecutiveCostDonut({ composition, onOpenCost }) {
+  if (!composition.segments.length) {
+    return <EmptyState>当前范围没有可比较的部门成本。</EmptyState>;
+  }
+  return (
+    <div className="finops-executive-donut-layout">
+      <div className="finops-executive-donut-wrap">
+        <svg
+          className="finops-executive-donut"
+          viewBox="0 0 42 42"
+          role="img"
+          aria-label="部门估算成本占比"
+        >
+          <circle className="track" cx="21" cy="21" r="15.9155" fill="none" strokeWidth="6" />
+          {composition.segments.map((segment) => (
+            <ExecutiveDonutSlice key={segment.id} segment={segment} onOpenCost={onOpenCost} />
+          ))}
+        </svg>
+        <span>
+          <b>{formatFinOpsCost(composition.total, composition.status)}</b>
+          <small>部门估算成本</small>
+        </span>
+      </div>
+      <div className="finops-executive-donut-legend">
+        {composition.segments.map((segment) => (
+          <button
+            key={segment.id}
+            type="button"
+            onClick={onOpenCost}
+            title={`${segment.label} · ${formatFinOpsCost(segment.value, segment.evidenceState)}`}
+          >
+            <i className={`segment-${segment.colorIndex}`} aria-hidden="true" />
+            <span>{segment.label}</span>
+            <b>{formatFinOpsPercent(segment.sharePct)}</b>
+          </button>
+        ))}
+      </div>
+      <button type="button" className="finops-panel-link" onClick={onOpenCost}>
+        查看成本分析 <ArrowRight size={13} />
+      </button>
+    </div>
+  );
+}
+
+
+function ExecutiveAttention({ items, onEvidence = null }) {
+  if (!items.length) return <EmptyState>当前没有需要立即关注的事项。</EmptyState>;
+  return (
+    <div className="finops-executive-attention">
+      {items.map((item, index) => (
+        <article className={`finops-executive-attention-item ${item.tone}`} key={item.id}>
+          <span className="finops-executive-attention-rank">{String(index + 1).padStart(2, "0")}</span>
+          <span className="finops-executive-attention-copy">
+            <b>{item.title}</b>
+            <small>{item.detail}</small>
+          </span>
+          <EvidenceBadge status={item.status} />
+          {onEvidence ? (
+            <button
+              type="button"
+              onClick={() => onEvidence({
+                reason: item.reason,
+                evidenceRefs: item.evidenceRefs,
+                policyType: "",
+              })}
+            >
+              证据
+            </button>
+          ) : null}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+
+function OverviewDrilldowns({ onNavigate, onPrefetch }) {
+  const items = [
+    { id: "cost", label: "成本分析", question: "成本来自哪里？", icon: PieChart },
+    { id: "roi", label: "效能与 ROI", question: "投入是否产生价值？", icon: Sparkles },
+    { id: "risk", label: "风险与优化", question: "现在应优先处理什么？", icon: AlertTriangle },
+  ];
+  return (
+    <nav className="finops-executive-drilldowns" aria-label="运营分析下钻">
+      {items.map((item) => {
+        const Icon = item.icon;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onNavigate(item.id)}
+            {...finopsTabIntentHandlers(item.id, onPrefetch)}
+          >
+            <span><Icon size={16} /></span>
+            <span><b>{item.label}</b><small>{item.question}</small></span>
+            <ArrowRight size={15} />
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+
 function OverviewPage({
   data,
   scope,
   comparison,
   onEvidence = null,
   onAsk = null,
-  onDimensionSelect = null,
   onConfigurePricing = null,
+  onNavigateTab,
+  onPrefetchTab,
 }) {
-  const [trendMetric, setTrendMetric] = useState("total");
-  const departmentRows = finopsBreakdownRows(data.department);
+  const [trendMetric, setTrendMetric] = useState("cost");
+  const view = executiveOverviewView(data);
   const anomalies = Array.isArray(data.anomalies?.items) ? data.anomalies.items : [];
   return (
-    <>
-      <MetricCards payload={data.overview} scope={scope} onEvidence={onEvidence} onAsk={onAsk} onConfigurePricing={onConfigurePricing} />
-      <div className="finops-grid finops-grid-wide">
-        <Panel title="使用与成本趋势" subtitle="统一零基线，数值与柱高按真实数据比例呈现" className="span-2">
+    <section className="finops-executive-overview" aria-label="运营决策概览">
+      <MetricCards cards={view.cards} payload={data.overview} scope={scope} onEvidence={onEvidence} onAsk={onAsk} onConfigurePricing={onConfigurePricing} />
+      <div className="finops-executive-decision-grid">
+        <Panel title="成本与调用趋势" subtitle="统一零基线，按真实数值比例呈现" className="finops-executive-trend">
           <div className="finops-trend-switch" aria-label="趋势指标">
             {[
-              ["total", "Token"],
-              ["requests", "调用"],
               ["cost", "成本"],
+              ["requests", "调用"],
+              ["total", "Token"],
               ["p95", "P95"],
             ].map(([id, label]) => (
               <button
@@ -692,17 +846,15 @@ function OverviewPage({
           </div>
           <TrendBars metric={trendMetric} payload={data.trends} comparisonPayload={comparison} events={anomalies} />
         </Panel>
-        <Panel title="数据可信度" subtitle="明确哪些数字已记录、已计价并完成请求对账">
-          <DataTrust trust={data.overview?.trust || data.trust || {}} />
+        <Panel title="部门成本构成" subtitle="当前筛选范围的估算成本">
+          <ExecutiveCostDonut composition={view.costComposition} onOpenCost={() => onNavigateTab("cost")} />
         </Panel>
-        <Panel title="需要关注" subtitle="仅显示可下钻或可修正的事项">
-          <AttentionList items={anomalies} onEvidence={onEvidence} />
-        </Panel>
-        <Panel title="部门成本与运行质量" subtitle="未映射 workspace 统一进入“未归属”">
-          <BreakdownTable rows={departmentRows} dimension="department" onSelect={onDimensionSelect} />
+        <Panel title="需要关注" subtitle="当前最值得处理的三项">
+          <ExecutiveAttention items={view.attention} onEvidence={onEvidence} />
         </Panel>
       </div>
-    </>
+      <OverviewDrilldowns onNavigate={onNavigateTab} onPrefetch={onPrefetchTab} />
+    </section>
   );
 }
 
@@ -1919,7 +2071,7 @@ export function FinOpsPortal({
           ? <div className="finops-state finops-state-error"><AlertTriangle size={18} /><span>{overviewState.error}</span><button type="button" onClick={refresh}>重试</button></div>
           : null}
         {!overviewState.loading && overviewState.data?.overview?.metrics && tab === "overview"
-          ? <OverviewPage data={overviewState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onDimensionSelect={selectDimension} onConfigurePricing={() => setModelSettingsOpen(true)} />
+          ? <OverviewPage data={overviewState.data} scope={assistantScope} comparison={comparisonState.data} onEvidence={canOpenEvidence ? openEvidence : null} onAsk={openAssistant} onConfigurePricing={() => setModelSettingsOpen(true)} onNavigateTab={activateTab} onPrefetchTab={prefetchTab} />
           : null}
         {showDetailLoading && !["roi", "risk"].includes(tab) ? <div className="finops-section-loading"><Loader2 className="spin" size={18} />正在读取当前页面</div> : null}
         {!showDetailLoading && !["roi", "risk"].includes(tab) && detailState.error && hasDetailData
