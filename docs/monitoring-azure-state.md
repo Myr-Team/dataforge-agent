@@ -203,6 +203,20 @@ az containerapp show -g rg-dataforge-dev -n ca-dataforge-backend `
 If the deployment identity changes, rerun the role verification before making
 any production routing change.
 
+## 2026-08-02 FinOps ROI / risk UI production update
+
+- Current web: `ca-dataforge-web--finui11c19f3`, Healthy, 100% traffic,
+  digest `sha256:9b76a6c0d491cedd9fa7564a919f013074efe10d514b4b309d46458b1760b449`.
+- Previous rollback web: `ca-dataforge-web--opsaug3cd8d44`, Healthy, 0%
+  traffic.
+- Backend remained `ca-dataforge-backend--opsaug3cd8d44`, Healthy, 100%
+  traffic; `DF_FINOPS_ACTIONS_ENABLED` remained `0`.
+- Python, Node, Vite, and Playwright gates passed before cutover. Anonymous
+  stable-domain requests continue to enforce Easy Auth and backend
+  `/api/health` returns HTTP 200.
+- Full evidence:
+  `docs/validation/2026-08-02-finops-ui-polish-production.md`.
+
 ## 2026-07-26 Operations Management production update
 
 - Current backend: `ca-dataforge-backend--ops1596d4f`, Healthy, 100% traffic,
