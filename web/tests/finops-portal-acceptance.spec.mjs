@@ -50,8 +50,8 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
   const column = page.locator(".finops-trend-column").first();
   await expect(column).toHaveAttribute("aria-label", /次/);
   await column.focus();
-  await expect(column.locator(".finops-trend-tooltip")).toContainText("调用次数");
-  await expect(column.locator(".finops-trend-tooltip")).toContainText("缓存命中");
+  await expect(page.locator(".finops-trend-tooltip-content")).toContainText("调用次数");
+  await expect(page.locator(".finops-trend-tooltip-content")).toContainText("缓存命中");
   await expect(page.locator(".finops-metric").filter({ hasText: "缓存避免 Token" })).toBeVisible();
   await expect(page.locator(".finops-metric").filter({ hasText: "缓存估算节省" })).toBeVisible();
 });

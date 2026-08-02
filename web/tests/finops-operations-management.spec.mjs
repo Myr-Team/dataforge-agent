@@ -18,6 +18,21 @@ async function expectDistinctGeometry(locator, dimension = "height") {
 }
 
 
+async function expectNoOverlap(locator) {
+  const boxes = (await locator.evaluateAll((nodes) => nodes.map((node) => {
+    const box = node.getBoundingClientRect();
+    return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+  })));
+  for (let left = 0; left < boxes.length; left += 1) {
+    for (let right = left + 1; right < boxes.length; right += 1) {
+      const overlapWidth = Math.min(boxes[left].right, boxes[right].right) - Math.max(boxes[left].left, boxes[right].left);
+      const overlapHeight = Math.min(boxes[left].bottom, boxes[right].bottom) - Math.max(boxes[left].top, boxes[right].top);
+      expect(overlapWidth > 0 && overlapHeight > 0).toBe(false);
+    }
+  }
+}
+
+
 async function expectDemoSurfaceComplete(page) {
   const content = page.locator(".finops-content");
   const body = await content.innerText();
@@ -40,18 +55,30 @@ test("operations management is immediately discoverable and supports metric dril
 
   const tokenMetric = page.getByRole("article", { name: /^Token / });
   await tokenMetric.focus();
-  await expect(tokenMetric.locator(".finops-metric-tooltip")).toHaveCSS("opacity", "0");
+  await expect(page.locator(".finops-metric-tooltip-content")).toHaveCount(0);
   const tokenHelp = tokenMetric.locator(".finops-help-trigger");
   await expect(tokenHelp).toBeVisible();
   await tokenHelp.focus();
-  await expect(tokenMetric.locator(".finops-metric-tooltip")).toHaveCSS("opacity", "1");
-  await expect(tokenMetric.locator(".finops-metric-tooltip")).toContainText("缓存输入");
+  await expect(page.locator(".finops-metric-tooltip-content")).toBeVisible();
+  await expect(page.locator(".finops-metric-tooltip-content")).toContainText("缓存输入");
 
   await expect(page.locator(".finops-trend-event")).toHaveCount(0);
   const latestTrend = page.locator(".finops-trend-column").filter({ hasText: "752 Token" });
   await expect(latestTrend).toHaveCount(1);
   await latestTrend.hover();
-  await expect(latestTrend.locator(".finops-trend-tooltip")).toContainText("1");
+  const trendTooltip = page.locator(".finops-trend-tooltip-content");
+  await expect(trendTooltip).toContainText("1");
+  await expect(page.locator(".finops-viewport-tooltip")).toHaveCount(1);
+  const tooltipBox = await trendTooltip.boundingBox();
+  const viewport = page.viewportSize();
+  expect(tooltipBox.x).toBeGreaterThanOrEqual(0);
+  expect(tooltipBox.x + tooltipBox.width).toBeLessThanOrEqual(viewport.width);
+  expect(tooltipBox.y).toBeGreaterThanOrEqual(0);
+  expect(tooltipBox.y + tooltipBox.height).toBeLessThanOrEqual(viewport.height);
+  await page.screenshot({
+    path: path.join(outputDir, "operations-trend-tooltip-desktop.png"),
+    fullPage: false,
+  });
 
   await page.getByText("Commerce", { exact: true }).last().click();
   await expect(page.getByRole("button", { name: /移除部门筛选 Commerce/ })).toBeVisible();
@@ -163,10 +190,9 @@ for (const viewport of [
     await page.getByRole("button", { name: "风险与优化" }).click();
     await expect(page.getByRole("heading", { name: "风险矩阵" })).toBeVisible();
     await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(4);
-    const pointSizes = await page.locator(".finops-decision-matrix-point > button").evaluateAll((points) => (
-      points.map((point) => Math.round(point.getBoundingClientRect().width))
-    ));
-    expect(new Set(pointSizes).size).toBeGreaterThan(1);
+    const riskRows = page.locator(".finops-decision-risk-row");
+    await expect(riskRows).toHaveCount(4);
+    await expectNoOverlap(riskRows);
     await expect(page.locator(".finops-live > i")).toHaveCount(0);
 
     const contentText = await page.locator(".finops-content").innerText();
@@ -240,11 +266,11 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await page.getByRole("button", { name: "风险与优化" }).click();
   await expectDemoSurfaceComplete(page);
   await expect(page.locator(".finops-decision-risk-domains article")).toHaveCount(4);
-  await expect(page.locator(".finops-decision-matrix-point > button")).toHaveCount(4);
-  await expectDistinctGeometry(page.locator(".finops-decision-matrix-point > button"), "width");
+  await expect(page.locator(".finops-decision-risk-row")).toHaveCount(4);
+  await expectNoOverlap(page.locator(".finops-decision-risk-row"));
   await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(4);
-  await expect(page.locator(".finops-decision-portfolio-point > button")).toHaveCount(4);
-  await expectDistinctGeometry(page.locator(".finops-decision-portfolio-point > button"), "width");
+  await expect(page.locator(".finops-decision-opportunity-track > i")).toHaveCount(4);
+  await expectDistinctGeometry(page.locator(".finops-decision-opportunity-track > i"), "width");
   await expect(page.getByRole("list", { name: "优化机会优先列表" }).getByRole("button")).toHaveCount(4);
   await expect(page.locator(".finops-decision-risk-chain-stages li")).toHaveCount(5);
   await expect(page.locator(".finops-decision-risk-evidence-card")).toHaveCount(1);
@@ -291,9 +317,12 @@ test("cost attribution tables fit desktop cards and remain horizontally operable
 
 test("operations management stays usable on mobile without a full-screen AI drawer", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await installFinOpsMockApi(page);
+  const calls = [];
+  await installFinOpsMockApi(page, calls);
   await page.goto("/");
   await page.getByRole("button", { name: "运营管理" }).last().click();
+
+  await expect.poll(() => calls.some((call) => call.path === "/api/finops/assistant/conversations")).toBe(true);
 
   await page.getByRole("button", { name: "运营 AI" }).click();
   const dialog = page.getByRole("dialog", { name: "运营指标 AI 助手" });
@@ -301,6 +330,7 @@ test("operations management stays usable on mobile without a full-screen AI draw
   const bounds = await dialog.boundingBox();
   expect(bounds.width).toBeLessThanOrEqual(362);
   expect(bounds.height).toBeLessThan(790);
+  await expect(dialog).toContainText("上次分析已保留，可继续针对当前指标提问。");
 
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
   await mkdir(outputDir, { recursive: true });

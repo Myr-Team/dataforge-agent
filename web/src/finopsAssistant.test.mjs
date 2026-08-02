@@ -11,8 +11,12 @@ test("operations assistant is a compact anchored popover rather than a dashboard
   ]);
 
   assert.match(component, /queryFinOpsAssistant/);
-  assert.match(component, /loadFinOpsAssistantConversations/);
-  assert.match(component, /loadFinOpsAssistantMessages/);
+  assert.doesNotMatch(component, /loadFinOpsAssistantConversations/);
+  assert.doesNotMatch(component, /loadFinOpsAssistantMessages/);
+  assert.match(component, /prefetchFinOpsAssistantHistory/);
+  assert.match(component, /peekFinOpsAssistantHistory/);
+  assert.match(component, /正在同步历史/);
+  assert.doesNotMatch(component, /if \(!open \|\| !workspaceId\)/);
   assert.match(component, /clearFinOpsAssistantConversation/);
   assert.match(component, /conversation_ref/);
   assert.match(component, /清空历史/);
@@ -36,7 +40,7 @@ test("operations assistant is a compact anchored popover rather than a dashboard
 test("metric cards expose keyboard tooltip and ask-ai affordances", async () => {
   const source = await readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8");
 
-  assert.match(source, /className="finops-metric-tooltip"/);
+  assert.match(source, /finops-metric-tooltip-content/);
   assert.match(source, /tabIndex=\{0\}/);
   assert.match(source, />问 AI</);
   assert.match(source, /metricTooltip\(/);

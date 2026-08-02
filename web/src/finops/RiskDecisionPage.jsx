@@ -1,14 +1,12 @@
 import React from "react";
 import {
   AlertTriangle,
-  ArrowRight,
   Bot,
   CheckCircle2,
   Database,
   FileSearch,
   RefreshCw,
   ShieldCheck,
-  Sparkles,
   Wrench,
 } from "lucide-react";
 
@@ -204,7 +202,6 @@ export function RiskDecisionPage({
   onCreateDraft = null,
   onAcknowledge = null,
   onSuppress = null,
-  onAsk = null,
 }) {
   if (loading && !payload) return <RiskLoadingShell />;
   if (error && !payload) {
@@ -221,16 +218,6 @@ export function RiskDecisionPage({
   const cacheNotice = riskCacheNotice(payload, updating);
   const selected = resolveSelectedRisk(selectedRiskId, view.priorities);
   const selectedId = selected?.id || "";
-  const decisionContext = {
-    id: selected ? `risk_${selected.id}` : "risk_operating_decision",
-    label: selected?.label || "本期风险判断",
-    value: selected?.summary || view.decision.title || view.decision.description,
-    unit: "",
-    status: view.decision.status,
-    dataStatus: view.decision.status,
-    evidenceState: view.decision.status,
-  };
-
   return (
     <div className="finops-decision-risk-shell">
       {error && payload ? (
@@ -264,7 +251,6 @@ export function RiskDecisionPage({
           <p>{view.decision.description}</p>
           <small>风险按证据置信度、业务影响与真实影响范围展示，不生成无法解释的复合分数。</small>
         </div>
-        {onAsk ? <button type="button" onClick={() => onAsk(decisionContext)}><Sparkles size={14} />咨询当前判断</button> : null}
       </section>
 
       <section className="finops-decision-risk-domains" aria-label="四个风险治理域">
@@ -306,7 +292,6 @@ export function RiskDecisionPage({
           <span><Bot size={17} aria-hidden="true" /></span>
           <div><small>最新 AI 解读 · 已保存证据</small><h2 id="finops-risk-insight-title">{view.insight.title || "运营分析说明"}</h2><p>{view.insight.summary || "当前没有可展示的分析说明。"}</p></div>
           <StatusBadge status={view.insight.status}>{view.insight.badge}</StatusBadge>
-          {onAsk ? <button type="button" onClick={() => onAsk(decisionContext)}>继续询问 <ArrowRight size={12} /></button> : null}
         </section>
       ) : null}
 

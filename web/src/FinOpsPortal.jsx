@@ -63,6 +63,11 @@ import { RemediationDraftPanel } from "./finops/RemediationDraftPanel.jsx";
 import { RiskDecisionPage } from "./finops/RiskDecisionPage.jsx";
 import { RoiDecisionPage } from "./finops/RoiDecisionPage.jsx";
 import {
+  ViewportTooltip,
+  useViewportTooltipAnchor,
+} from "./finops/ViewportTooltip.jsx";
+export { viewportTooltipPosition } from "./finops/ViewportTooltip.jsx";
+import {
   REMEDIATION_RESELECT_MESSAGE,
   orchestrateRemediationMutation,
 } from "./finops/remediationOrchestration.js";
@@ -187,6 +192,39 @@ function formatMetricTooltipValue(row) {
 }
 
 
+function MetricHelp({ card, tooltip }) {
+  const tooltipId = `finops-metric-tooltip-${card.id}`;
+  const { anchorRef, open, toggle, anchorProps } = useViewportTooltipAnchor();
+  return (
+    <>
+      <button
+        {...anchorProps}
+        ref={anchorRef}
+        className="finops-help-trigger"
+        type="button"
+        aria-label={`${card.label}说明`}
+        aria-describedby={tooltipId}
+        aria-expanded={open}
+        onClick={toggle}
+      >
+        <CircleHelp size={13} aria-hidden="true" />
+      </button>
+      <ViewportTooltip anchorRef={anchorRef} open={open} id={tooltipId} variant="finops-metric-tooltip-content">
+        <header><b>{tooltip.title}</b><EvidenceBadge status={tooltip.evidenceState} /></header>
+        {tooltip.rows.length ? (
+          <dl>
+            {tooltip.rows.map((row) => (
+              <div key={row.label}><dt>{row.label}</dt><dd>{formatMetricTooltipValue(row)}</dd></div>
+            ))}
+          </dl>
+        ) : <p>当前指标暂无更多可复核明细。</p>}
+        <small>当前筛选范围 · {tooltip.dataStatus === "complete" ? "数据完整" : tooltip.dataStatus === "partial" ? "数据不完整" : "待接入"}</small>
+      </ViewportTooltip>
+    </>
+  );
+}
+
+
 function MetricCards({
   payload,
   scope,
@@ -199,7 +237,6 @@ function MetricCards({
       {finopsMetricCards(payload).map((card) => {
         const tooltip = metricTooltip(card.metric);
         const context = metricContext(card.metric, scope);
-        const tooltipId = `finops-metric-tooltip-${card.id}`;
         return (
           <article
             className={`finops-metric ${card.tone}`}
@@ -209,14 +246,7 @@ function MetricCards({
             <div className="finops-metric-header">
               <span className="finops-metric-label">
                 <span>{card.label}</span>
-                <button
-                  className="finops-help-trigger"
-                  type="button"
-                  aria-label={`${card.label}说明`}
-                  aria-describedby={tooltipId}
-                >
-                  <CircleHelp size={13} aria-hidden="true" />
-                </button>
+                <MetricHelp card={card} tooltip={tooltip} />
               </span>
               <span className="finops-metric-meta">
                 <EvidenceBadge status={card.metric.evidenceState} />
@@ -245,17 +275,6 @@ function MetricCards({
                   查看证据
                 </button>
               ) : null}
-            </div>
-            <div className="finops-metric-tooltip" id={tooltipId} role="tooltip">
-              <header><b>{tooltip.title}</b><EvidenceBadge status={tooltip.evidenceState} /></header>
-              {tooltip.rows.length ? (
-                <dl>
-                  {tooltip.rows.map((row) => (
-                    <div key={row.label}><dt>{row.label}</dt><dd>{formatMetricTooltipValue(row)}</dd></div>
-                  ))}
-                </dl>
-              ) : <p>当前指标暂无更多可复核明细。</p>}
-              <small>当前筛选范围 · {tooltip.dataStatus === "complete" ? "数据完整" : tooltip.dataStatus === "partial" ? "数据不完整" : "待接入"}</small>
             </div>
           </article>
         );
@@ -310,6 +329,79 @@ function HorizontalBars({
           <b>{valueFormatter(row[valueKey])}</b>
         </button>
       ))}
+    </div>
+  );
+}
+
+
+function TrendColumn({
+  row,
+  metric,
+  rawValue,
+  value,
+  height,
+  comparisonRow,
+  comparisonValue,
+  comparisonHeight,
+  rowEvents,
+  parts,
+  partTotal,
+  formatValue,
+}) {
+  const { anchorRef, open, anchorProps } = useViewportTooltipAnchor();
+  const tooltipId = `finops-trend-tooltip-${String(row.bucket).replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  return (
+    <div
+      {...anchorProps}
+      ref={anchorRef}
+      className="finops-trend-column"
+      tabIndex={0}
+      aria-label={`${row.label}，${formatValue(rawValue)}`}
+      aria-describedby={tooltipId}
+    >
+      {comparisonRow ? (
+        <i
+          className="finops-trend-comparison"
+          style={{ height: `${comparisonHeight}%` }}
+          title={`上一周期 ${formatValue(comparisonValue)}`}
+        />
+      ) : null}
+      <div className="finops-trend-plot">
+        <b className="finops-trend-value">{formatValue(rawValue)}</b>
+        <div className="finops-trend-bar-slot">
+          <div
+            className={`finops-trend-stack ${value > 0 ? "has-value" : ""}`}
+            style={{ height: `${height}%` }}
+          >
+            {metric !== "total"
+              ? <i className="input" style={{ height: "100%" }} />
+              : parts.map((part) => part.value
+                ? <i key={part.key} className={part.key} style={{ height: `${(part.value / partTotal) * 100}%` }} />
+                : null)}
+          </div>
+        </div>
+      </div>
+      <span>{row.label.slice(5)}</span>
+      <ViewportTooltip anchorRef={anchorRef} open={open} id={tooltipId} variant="finops-trend-tooltip-content">
+        <b>{row.label}</b>
+        {metric !== "total" ? (
+          <span>{{ cost: "估算成本", requests: "调用次数", p95: "P95 延迟" }[metric]} <strong>{formatValue(rawValue)}</strong></span>
+        ) : (
+          <>
+            <span>输入 <strong>{formatFinOpsNumber(row.series.input)}</strong></span>
+            <span>输出 <strong>{formatFinOpsNumber(row.series.output)}</strong></span>
+            <span>缓存 <strong>{formatFinOpsNumber(row.series.cached)}</strong></span>
+            <span>推理 <strong>{formatFinOpsNumber(row.series.reasoning)}</strong></span>
+            <span>合计 <strong>{formatFinOpsNumber(row.total)}</strong></span>
+          </>
+        )}
+        <span>缓存命中 <strong>{formatFinOpsNumber(row.cache.hit, "0")}</strong></span>
+        <span>缓存未命中 <strong>{formatFinOpsNumber(row.cache.miss, "0")}</strong></span>
+        <span>绕过缓存 <strong>{formatFinOpsNumber(row.cache.bypassed, "0")}</strong></span>
+        <span>避免 Token <strong>{formatFinOpsNumber(row.cache.avoidedTokens)}</strong></span>
+        <span>估算节省 <strong>{formatFinOpsCost(row.cache.estimatedSavings, row.cache.status)}</strong></span>
+        {rowEvents.length ? <span>运营事件 <strong>{rowEvents.length} 条</strong></span> : null}
+      </ViewportTooltip>
     </div>
   );
 }
@@ -377,56 +469,21 @@ function TrendBars({
           }));
           const partTotal = parts.reduce((sum, item) => sum + item.value, 0) || 1;
           return (
-            <div
-              className="finops-trend-column"
+            <TrendColumn
               key={row.bucket}
-              tabIndex={0}
-              aria-label={`${row.label}，${formatValue(rawValue)}`}
-            >
-              {comparisonRow ? (
-                <i
-                  className="finops-trend-comparison"
-                  style={{ height: `${comparisonHeight}%` }}
-                  title={`上一周期 ${formatValue(comparisonValue)}`}
-                />
-              ) : null}
-              <div className="finops-trend-plot">
-                <b className="finops-trend-value">{formatValue(rawValue)}</b>
-                <div className="finops-trend-bar-slot">
-                  <div
-                    className={`finops-trend-stack ${value > 0 ? "has-value" : ""}`}
-                    style={{ height: `${height}%` }}
-                  >
-                    {metric !== "total"
-                      ? <i className="input" style={{ height: "100%" }} />
-                      : parts.map((part) => part.value
-                        ? <i key={part.key} className={part.key} style={{ height: `${(part.value / partTotal) * 100}%` }} />
-                        : null)}
-                  </div>
-                </div>
-              </div>
-              <span>{row.label.slice(5)}</span>
-              <div className="finops-trend-tooltip" role="tooltip">
-                <b>{row.label}</b>
-                {metric !== "total" ? (
-                  <span>{{ cost: "估算成本", requests: "调用次数", p95: "P95 延迟" }[metric]} <strong>{formatValue(rawValue)}</strong></span>
-                ) : (
-                  <>
-                    <span>输入 <strong>{formatFinOpsNumber(row.series.input)}</strong></span>
-                    <span>输出 <strong>{formatFinOpsNumber(row.series.output)}</strong></span>
-                    <span>缓存 <strong>{formatFinOpsNumber(row.series.cached)}</strong></span>
-                    <span>推理 <strong>{formatFinOpsNumber(row.series.reasoning)}</strong></span>
-                    <span>合计 <strong>{formatFinOpsNumber(row.total)}</strong></span>
-                  </>
-                )}
-                <span>缓存命中 <strong>{formatFinOpsNumber(row.cache.hit, "0")}</strong></span>
-                <span>缓存未命中 <strong>{formatFinOpsNumber(row.cache.miss, "0")}</strong></span>
-                <span>绕过缓存 <strong>{formatFinOpsNumber(row.cache.bypassed, "0")}</strong></span>
-                <span>避免 Token <strong>{formatFinOpsNumber(row.cache.avoidedTokens)}</strong></span>
-                <span>估算节省 <strong>{formatFinOpsCost(row.cache.estimatedSavings, row.cache.status)}</strong></span>
-                {rowEvents.length ? <span>运营事件 <strong>{rowEvents.length} 条</strong></span> : null}
-              </div>
-            </div>
+              row={row}
+              metric={metric}
+              rawValue={rawValue}
+              value={value}
+              height={height}
+              comparisonRow={comparisonRow}
+              comparisonValue={comparisonValue}
+              comparisonHeight={comparisonHeight}
+              rowEvents={rowEvents}
+              parts={parts}
+              partTotal={partTotal}
+              formatValue={formatValue}
+            />
           );
         })}
       </div>
@@ -1253,13 +1310,6 @@ export function FinOpsPortal({
       evidenceState: context?.evidenceState || context?.status || "unavailable",
     }, assistantScope));
   }, [assistantScope, openAssistant]);
-  const openRiskAssistant = useCallback((context) => {
-    openAssistant(metricContext({
-      ...context,
-      dataStatus: context?.dataStatus || context?.status || "unavailable",
-      evidenceState: context?.evidenceState || context?.status || "unavailable",
-    }, assistantScope));
-  }, [assistantScope, openAssistant]);
   const selectDimension = useCallback((selection) => {
     setFilters((value) => applyDimensionFilter(value, selection));
   }, []);
@@ -1906,7 +1956,6 @@ export function FinOpsPortal({
             onCreateDraft={openRemediation}
             onAcknowledge={(item) => manageAnomaly(item, "acknowledge")}
             onSuppress={(item) => manageAnomaly(item, "suppress")}
-            onAsk={openRiskAssistant}
           />
         ) : null}
       </section>

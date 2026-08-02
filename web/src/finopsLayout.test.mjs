@@ -53,6 +53,38 @@ test("trend bars scale inside a dedicated plot track without clipping near-maxim
 });
 
 
+test("metric and trend tooltips render at viewport level and clamp to screen edges", async (context) => {
+  const [component, tooltipSource, styles] = await Promise.all([
+    readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./finops/ViewportTooltip.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(component, /ViewportTooltip/);
+  assert.match(tooltipSource, /createPortal/);
+  assert.match(tooltipSource, /className={`finops-viewport-tooltip/);
+  assert.doesNotMatch(component, /className="finops-trend-tooltip"/);
+  assert.match(styles, /\.finops-viewport-tooltip\s*\{[^}]*position:\s*fixed[^}]*z-index:\s*1[2-9]\d/s);
+
+  const server = await createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  });
+  context.after(() => server.close());
+  const { viewportTooltipPosition } = await server.ssrLoadModule("/src/FinOpsPortal.jsx");
+  assert.deepEqual(viewportTooltipPosition(
+    { left: 0, right: 20, top: 120, bottom: 140, width: 20 },
+    { width: 180, height: 80 },
+    { width: 320, height: 240 },
+  ), { left: 12, top: 30 });
+  assert.deepEqual(viewportTooltipPosition(
+    { left: 300, right: 320, top: 8, bottom: 28, width: 20 },
+    { width: 180, height: 100 },
+    { width: 320, height: 240 },
+  ), { left: 128, top: 38 });
+});
+
+
 test("ROI page exposes one honest operating-decision hierarchy", async () => {
   const source = await readFile(
     new URL("./finops/RoiDecisionPage.jsx", import.meta.url),
@@ -67,7 +99,6 @@ test("ROI page exposes one honest operating-decision hierarchy", async () => {
     "单位效能趋势",
     "平台自动确认",
     "业务侧补充验证",
-    "咨询运营 AI",
   ]) {
     assert.match(source, new RegExp(label));
   }
@@ -79,6 +110,7 @@ test("ROI page exposes one honest operating-decision hierarchy", async () => {
   assert.match(source, /loading\s*&&\s*!payload/);
   assert.match(source, /error\s*&&\s*payload/);
   assert.match(source, /updating/);
+  assert.doesNotMatch(source, /finops-decision-roi-ai|咨询当前判断|开始咨询/);
   assert.doesNotMatch(source, /Azure Cost Management|APIM|API Management/);
 });
 
@@ -255,10 +287,10 @@ test("ROI portal status, scenario readiness, and refresh stay locally bounded", 
 
 
 test("risk page contains the complete linked signal-to-verification hierarchy", async () => {
-  const source = await readFile(
-    new URL("./finops/RiskDecisionPage.jsx", import.meta.url),
-    "utf8",
-  );
+  const [source, charts] = await Promise.all([
+    readFile(new URL("./finops/RiskDecisionPage.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./finops/DecisionCharts.jsx", import.meta.url), "utf8"),
+  ]);
 
   for (const label of [
     "本期风险判断",
@@ -281,7 +313,39 @@ test("risk page contains the complete linked signal-to-verification hierarchy", 
   assert.match(source, /selectedRiskId/);
   assert.match(source, /requestEvidenceRefs/);
   assert.match(source, /<details[^>]*className="finops-decision-risk-technical"/);
+  assert.doesNotMatch(source, /咨询当前判断|继续询问/);
+  assert.match(charts, /finops-decision-risk-quadrants/);
+  assert.match(charts, /finops-decision-opportunity-bars/);
+  assert.doesNotMatch(charts, /finops-decision-matrix-point/);
+  assert.doesNotMatch(charts, /finops-decision-portfolio-point/);
   assert.doesNotMatch(source, /provider_response_id|prompt|raw_identity|internal_error/);
+});
+
+
+test("risk quadrants keep colocated risks distinct without changing source values", async (context) => {
+  const server = await createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  });
+  context.after(() => server.close());
+  const { riskQuadrants } = await server.ssrLoadModule("/src/finops/DecisionCharts.jsx");
+  const points = [
+    { id: "a", xConfidence: 3, yImpact: 3, bubbleSize: 198 },
+    { id: "b", xConfidence: 3, yImpact: 3, bubbleSize: 60 },
+    { id: "c", xConfidence: 1, yImpact: 1, bubbleSize: 12 },
+  ];
+
+  const quadrants = riskQuadrants(points);
+
+  assert.deepEqual(quadrants.map((item) => item.id), ["priority", "validate", "improve", "observe"]);
+  assert.deepEqual(quadrants[0].items.map((item) => item.id), ["a", "b"]);
+  assert.deepEqual(quadrants[3].items.map((item) => item.id), ["c"]);
+  assert.deepEqual(points.map((item) => [item.xConfidence, item.yImpact, item.bubbleSize]), [
+    [3, 3, 198],
+    [3, 3, 60],
+    [1, 1, 12],
+  ]);
 });
 
 

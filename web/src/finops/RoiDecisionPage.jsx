@@ -2,11 +2,9 @@ import React from "react";
 import {
   AlertTriangle,
   ArrowRight,
-  Bot,
   Database,
   RefreshCw,
   SlidersHorizontal,
-  Sparkles,
 } from "lucide-react";
 
 import { roiDecisionView } from "../finopsDecisionViewModel.js";
@@ -145,14 +143,6 @@ export function RoiDecisionPage({
   }
 
   const view = roiDecisionView(payload);
-  const decisionContext = {
-    id: "roi_operating_decision",
-    label: "本期运营判断",
-    value: view.decision.title || view.decision.description,
-    unit: "",
-    dataStatus: view.decision.status,
-    evidenceState: view.decision.status,
-  };
   const hasVerifiedRoi = view.verifiedRoiStatus === "verified"
     && view.verifiedRoiValue !== null;
 
@@ -192,11 +182,6 @@ export function RoiDecisionPage({
             {onAdjustScenario ? (
               <button type="button" onClick={onAdjustScenario}>
                 <SlidersHorizontal size={14} aria-hidden="true" />调整测算参数
-              </button>
-            ) : null}
-            {onAsk ? (
-              <button type="button" className="primary" onClick={() => onAsk(decisionContext)}>
-                <Sparkles size={14} aria-hidden="true" />咨询当前判断
               </button>
             ) : null}
           </div>
@@ -247,13 +232,6 @@ export function RoiDecisionPage({
         <FinOpsCapabilityNote capability={view.capability} />
       </section>
 
-      {onAsk ? (
-        <section className="finops-decision-roi-ai">
-          <span><Bot size={16} aria-hidden="true" /></span>
-          <div><b>咨询运营 AI</b><small>针对当前判断或某个指标提问，回答会沿用当前工作区与筛选范围。</small></div>
-          <button type="button" onClick={() => onAsk(decisionContext)}><Sparkles size={13} />开始咨询</button>
-        </section>
-      ) : null}
     </div>
   );
 }

@@ -327,6 +327,7 @@ test("capability and remediation views expose only bounded allowlisted fields", 
 test("shared decision components declare accessible charts and bounded tooltips", () => {
   const charts = readFileSync(new URL("./finops/DecisionCharts.jsx", import.meta.url), "utf8");
   const capability = readFileSync(new URL("./finops/FinOpsCapabilityNote.jsx", import.meta.url), "utf8");
+  const viewportTooltip = readFileSync(new URL("./finops/ViewportTooltip.jsx", import.meta.url), "utf8");
   const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 
   for (const component of ["ValueBridge", "EvidenceMaturity", "RiskMatrix", "OpportunityPortfolio"]) {
@@ -336,33 +337,23 @@ test("shared decision components declare accessible charts and bounded tooltips"
   assert.match(charts, /toggleRiskPointSelection/);
   assert.match(charts, /onSelect\?\.\(nextId \|\| null\)/);
   assert.match(charts, /aria-label=/);
-  assert.match(charts, /role="tooltip"/);
-  assert.match(charts, /<table/);
+  assert.match(viewportTooltip, /role="tooltip"/);
+  assert.doesNotMatch(charts, /<table/);
   assert.match(charts, /<ol/);
   assert.match(capability, /export function FinOpsCapabilityNote\b/);
   assert.doesNotMatch(capability, /APIM|Azure API Management|Azure Cost Management/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
-  assert.match(styles, /\.finops-decision-tooltip/);
-  assert.match(styles, /left:\s*clamp\(var\(--finops-decision-point-radius\)/);
-  assert.match(styles, /top:\s*clamp\(var\(--finops-decision-point-radius\)/);
-  assert.match(styles, /top:\s*var\(--finops-decision-point-offset\)/);
+  assert.match(charts, /ViewportTooltip/);
+  assert.match(styles, /\.finops-decision-tooltip-content/);
   assert.doesNotMatch(styles, /--finops-decision-bar-width\)\s*\/\s*2/);
   assert.doesNotMatch(styles, /\.finops-decision-value-bridge\s*\{[^}]*overflow:\s*(?:hidden|clip)/s);
   assert.doesNotMatch(styles, /\.finops-decision-maturity\s*\{[^}]*overflow:\s*(?:hidden|clip)/s);
   assert.doesNotMatch(styles, /finops-decision-tooltip-boundary:(?:first|last)-child/);
   assert.match(styles, /\.finops-decision-tooltip-boundary\s*\{[^}]*width:\s*100%[^}]*overflow:\s*visible/s);
-  assert.match(styles, /\.finops-decision-tooltip\s*\{[^}]*position:\s*static[^}]*display:\s*none[^}]*width:\s*min\(230px, 100%\)[^}]*max-width:\s*100%/s);
-  assert.doesNotMatch(styles, /\.finops-decision-tooltip\s*\{[^}]*position:\s*(?:absolute|fixed)/s);
-  assert.match(styles, /\.finops-decision-help:hover \.finops-decision-tooltip,[\s\S]*\.finops-decision-help-open \.finops-decision-tooltip\s*\{[^}]*display:\s*block/s);
-  assert.match(styles, /\.finops-decision-help\.finops-decision-help-dismissed\s*>\s*\.finops-decision-tooltip\s*\{[^}]*display:\s*none/s);
-  assert.ok(
-    styles.indexOf(".finops-decision-help.finops-decision-help-dismissed")
-      > styles.indexOf(".finops-decision-help-open .finops-decision-tooltip"),
-    "dismissed help rule must follow open/hover/focus visibility rules",
-  );
+  assert.match(styles, /\.finops-decision-tooltip-content\s*\{[^}]*width:\s*min\(230px,/s);
   assert.match(styles, /\.finops-decision-value-label\s*\{[^}]*flex-wrap:\s*wrap/s);
   assert.match(styles, /\.finops-decision-maturity-stages header\s*\{[^}]*flex-wrap:\s*wrap/s);
-  assert.match(styles, /\.finops-decision-matrix-plot[^}]*overflow:\s*(?:hidden|clip)/s);
+  assert.doesNotMatch(styles, /\.finops-decision-risk-quadrants[^}]*overflow:\s*(?:hidden|clip)/s);
 });
 
 
@@ -443,7 +434,6 @@ test("shared charts render proportional accessible structures through Vite SSR",
   });
   context.after(() => server.close());
   const {
-    decisionHelpInteraction,
     EvidenceMaturity,
     OpportunityPortfolio,
     RiskMatrix,
@@ -451,16 +441,6 @@ test("shared charts render proportional accessible structures through Vite SSR",
     resolveRiskPointSelection,
     toggleRiskPointSelection,
   } = await server.ssrLoadModule("/src/finops/DecisionCharts.jsx");
-
-  let helpState = { open: false, dismissed: false };
-  helpState = decisionHelpInteraction(helpState, "toggle");
-  assert.deepEqual(helpState, { open: true, dismissed: false });
-  helpState = decisionHelpInteraction(helpState, "leave");
-  assert.deepEqual(helpState, { open: true, dismissed: false });
-  helpState = decisionHelpInteraction(helpState, "toggle");
-  assert.deepEqual(helpState, { open: false, dismissed: true });
-  helpState = decisionHelpInteraction(helpState, "leave");
-  assert.deepEqual(helpState, { open: false, dismissed: false });
 
   const bridge = renderToStaticMarkup(React.createElement("section", { className: "finops-panel" }, React.createElement(ValueBridge, {
     items: [
@@ -471,14 +451,13 @@ test("shared charts render proportional accessible structures through Vite SSR",
   })));
   assert.match(bridge, /^<section class="finops-panel">/);
   assert.match(bridge, /finops-decision-help"><button[^>]*aria-expanded="false"/);
-  assert.doesNotMatch(bridge, /finops-decision-help-(?:open|dismissed)/);
-  assert.match(bridge, /<table/);
+  assert.doesNotMatch(bridge, /<table/);
   assert.match(bridge, /--finops-decision-bar-width:20%/);
   assert.match(bridge, /--finops-decision-bar-width:100%/);
   assert.match(bridge, /--finops-decision-bar-half-width:10%/);
   assert.match(bridge, /--finops-decision-bar-half-width:50%/);
   assert.match(bridge, /finops-decision-zero-axis/);
-  assert.match(bridge, /finops-decision-value-row finops-decision-tooltip-boundary[^>]*>[\s\S]*finops-decision-help[\s\S]*finops-decision-tooltip/);
+  assert.match(bridge, /finops-decision-value-row finops-decision-tooltip-boundary[^>]*>[\s\S]*finops-decision-help/);
 
   const hostileBridge = renderToStaticMarkup(React.createElement(ValueBridge, {
     items: [{
@@ -509,7 +488,7 @@ test("shared charts render proportional accessible structures through Vite SSR",
   assert.match(maturity, /投入/);
   assert.match(maturity, /\$0\.00/);
   assert.match(maturity, /aria-label="投入：\$0\.00；已观测"/);
-  assert.match(maturity, /<li class="finops-decision-tooltip-boundary[^>]*>[\s\S]*finops-decision-help[\s\S]*finops-decision-tooltip/);
+  assert.match(maturity, /<li class="finops-decision-tooltip-boundary[^>]*>[\s\S]*finops-decision-help/);
 
   const matrix = renderToStaticMarkup(React.createElement(RiskMatrix, {
     points: [{
@@ -529,9 +508,9 @@ test("shared charts render proportional accessible structures through Vite SSR",
   }));
   assert.match(matrix, /<button[^>]+type="button"/);
   assert.match(matrix, /响应时延；证据置信度 3/);
-  assert.match(matrix, /role="tooltip"/);
-  assert.match(matrix, /--finops-decision-point-radius:20px/);
-  assert.match(matrix, /--finops-decision-point-offset:-20px/);
+  assert.match(matrix, /finops-decision-risk-quadrants/);
+  assert.match(matrix, /优先处置/);
+  assert.match(matrix, /60 次请求/);
   assert.doesNotMatch(matrix, /finops-decision-selected/);
   assert.doesNotMatch(matrix, /aria-pressed="true"/);
   assert.equal(resolveRiskPointSelection("missing", ["risk-a"]), "");
@@ -556,5 +535,5 @@ test("shared charts render proportional accessible structures through Vite SSR",
   }));
   assert.match(portfolio, /<ol/);
   assert.match(portfolio, /响应时延/);
-  assert.match(portfolio, /当前缺少服务端坐标/);
+  assert.match(portfolio, /当前缺少影响坐标/);
 });

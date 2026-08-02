@@ -1451,8 +1451,19 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         agent_kind: "finops",
         trigger_fingerprint: "f".repeat(64),
       };
+    } else if (path === "/api/finops/assistant/conversations" && request.method() === "GET") {
+      body = { items: [{ conversation_ref: "conversation-demo", updated_at: "2026-08-02T08:00:00Z" }], count: 1 };
+    } else if (path === "/api/finops/assistant/conversations/conversation-demo/messages" && request.method() === "GET") {
+      body = {
+        items: [{ role: "assistant", content: "上次分析已保留，可继续针对当前指标提问。" }],
+        count: 1,
+      };
+    } else if (path === "/api/finops/assistant/conversations/conversation-demo" && request.method() === "DELETE") {
+      status = 204;
+      body = {};
     } else if (path === "/api/finops/assistant/query") {
       body = {
+        conversation_ref: "conversation-demo",
         answer: "当前缓存命中率为 42%，50 次可缓存调用中有 21 次命中。",
         evidence_state: "observed",
         evidence_refs: ["req_aaaaaaaaaaaa"],
