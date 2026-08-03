@@ -32,6 +32,7 @@ except ImportError:
 
 from .normalization import canonical_actor_ref, canonical_tenant_ref
 from .evidence import build_evidence_alias, operation_code_for_event
+from .evidence_selection import EvidenceSet, select_policy_evidence
 from .evidence_repository import (
     InMemoryEvidenceAliasRepository,
     SqlEvidenceAliasRepository,
@@ -1540,40 +1541,42 @@ def _current_remediation_opportunity(
     )
 
 
-def _risk_evidence_summaries(
+def _risk_evidence_sets(
     events: list[FinOpsRequestEvent],
     opportunities: list[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
+) -> list[EvidenceSet]:
     by_ref = {event.request_ref: event for event in events}
-    selected: list[str] = []
+    result: list[EvidenceSet] = []
     for opportunity in opportunities:
-        for ref in opportunity.get("evidence_refs") or []:
-            ref = str(ref)
-            if ref in by_ref and ref not in selected:
-                selected.append(ref)
-            if len(selected) >= 10 or len([item for item in selected if item in set(opportunity.get("evidence_refs") or [])]) >= 2:
-                break
-        if len(selected) >= 10:
-            break
-    result = []
-    for request_ref in selected[:10]:
-        event = by_ref[request_ref]
+        requested_refs = [
+            str(value)
+            for value in opportunity.get("evidence_refs") or []
+            if str(value) in by_ref
+        ]
+        candidates = [by_ref[ref] for ref in requested_refs] if requested_refs else events
+        policy_type = str(opportunity.get("policy_type") or "")
+        selected = select_policy_evidence(candidates, policy_type, limit=3)
         result.append(
-            {
-                "request_ref": request_ref,
-                "request_name": f"Request {event.occurred_at.astimezone(timezone.utc):%Y-%m-%d %H:%M}",
-                "operation": operation_code_for_event(event),
-                "model_label": event.deployment or event.model or "unrecorded",
-                "signal": {"metric": "request", "value": 1, "unit": "request"},
-                "cache_state": event.result_cache.state,
-                "status": event.status,
-                "error_category": event.error_category,
-                "latency_ms": event.latency_ms,
-                "cost_status": event.estimated_cost.status,
-                "technical_refs": {"request_ref": request_ref},
-            }
+            selected.model_copy(
+                update={
+                    "subject_id": str(opportunity.get("opportunity_id") or policy_type),
+                    "reason": f"{str(opportunity.get('title') or selected.reason)}证据",
+                }
+            )
         )
     return result
+
+
+def _risk_evidence_summaries(evidence_sets: list[EvidenceSet]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for evidence_set in evidence_sets:
+        for item in evidence_set.items:
+            if item.request_ref in seen:
+                continue
+            seen.add(item.request_ref)
+            selected.append(item.model_dump(mode="json"))
+    return selected[:30]
 
 
 def _governance_capability() -> dict[str, Any]:
@@ -1595,7 +1598,8 @@ def _risk_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, 
         scope_workspace_ids=(query.workspace_id,),
     )
     opportunity_items = _decision_opportunities(query_service, query, anomaly_items)
-    evidence_summaries = _risk_evidence_summaries(events, opportunity_items)
+    evidence_sets = _risk_evidence_sets(events, opportunity_items)
+    evidence_summaries = _risk_evidence_summaries(evidence_sets)
     latest = get_finops_insight_service().latest(
         tenant_ref=query.tenant_ref,
         authorized_workspace_ids=(query.workspace_id,),
@@ -1609,6 +1613,7 @@ def _risk_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, 
         anomalies=anomaly_items,
         opportunities=opportunity_items,
         evidence_summaries=evidence_summaries,
+        evidence_sets=[item.model_dump(mode="json") for item in evidence_sets],
         insight=_public_insight(latest, include_evidence_refs=True) if latest else None,
         drafts=[
             draft.model_dump(

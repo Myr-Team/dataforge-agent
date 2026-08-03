@@ -121,6 +121,88 @@ def test_risk_decision_does_not_trigger_agent(
     assert called is False
 
 
+def test_risk_decision_returns_policy_specific_evidence_sets(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_latency_specific",
+                    "occurred_at": datetime(2026, 7, 24, 2, 1, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "status": "succeeded",
+                    "latency_ms": 9_500,
+                    "tokens": {"total": 800},
+                    "gateway_coverage": "apim_governed",
+                    "estimated_cost": {"amount": 0.02, "currency": "USD", "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_cache_specific",
+                    "occurred_at": datetime(2026, 7, 24, 2, 2, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "status": "succeeded",
+                    "latency_ms": 700,
+                    "tokens": {"total": 400},
+                    "cache": {"state": "miss", "eligible": True},
+                    "gateway_coverage": "apim_governed",
+                    "estimated_cost": {"amount": 0.01, "currency": "USD", "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "evaluate_default_anomalies",
+        lambda _value: [
+            _managed_finding(
+                anomaly_id="anomaly_latency_specific",
+                workspace_id="ws-a",
+                policy_type="p95_latency",
+            ).model_copy(update={"evidence_refs": ["req_latency_specific"]}),
+            _managed_finding(
+                anomaly_id="anomaly_cache_specific",
+                workspace_id="ws-a",
+                policy_type="cache_hit_rate",
+            ).model_copy(update={"evidence_refs": ["req_cache_specific"]}),
+        ],
+    )
+
+    response = client.get(
+        "/api/finops/risk/decision",
+        params={"workspace_id": "ws-a", "refresh": "1"},
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    evidence_sets = {
+        item["policy_type"]: item for item in response.json()["evidence_sets"]
+    }
+    assert evidence_sets["p95_latency"]["items"][0]["request_ref"] == "req_latency_specific"
+    assert evidence_sets["p95_latency"]["items"][0]["signal"] == {
+        "metric": "latency_ms",
+        "value": 9_500.0,
+        "unit": "ms",
+    }
+    assert evidence_sets["cache_hit_rate"]["items"][0]["request_ref"] == "req_cache_specific"
+    assert evidence_sets["cache_hit_rate"]["items"][0]["signal"]["value"] == "miss"
+    assert all(
+        item["signal"]["metric"] != "request"
+        for item in response.json()["selected_evidence_summaries"]
+    )
+
+
 def _managed_finding(
     *,
     anomaly_id: str,
