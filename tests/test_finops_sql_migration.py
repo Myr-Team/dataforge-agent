@@ -132,6 +132,20 @@ def test_finops_schema_contains_remediation_tables() -> None:
     assert "TRUNCATE TABLE df_finops.remediation_draft" not in sql
 
 
+def test_finops_schema_contains_additive_risk_scan_history() -> None:
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+    lowered = sql.lower()
+
+    for table in ("risk_scan", "risk_scan_finding"):
+        assert f"if object_id(n'df_finops.{table}', n'u') is null" in lowered
+        assert f"create table df_finops.{table}" in lowered
+
+    assert "CK_finops_risk_scan_status" in sql
+    assert "CK_finops_risk_scan_finding_status" in sql
+    assert "DROP TABLE df_finops.risk_scan" not in sql
+    assert "TRUNCATE TABLE df_finops.risk_scan" not in sql
+
+
 def test_request_event_routing_policy_revision_is_additive_and_nullable() -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     lowered = schema.lower()
