@@ -3,6 +3,7 @@ import { defineConfig } from "playwright/test";
 
 const port = Number(process.env.DF_PLAYWRIGHT_PORT || 4173);
 const baseURL = `http://127.0.0.1:${port}`;
+const reuseExistingServer = process.env.DF_PLAYWRIGHT_REUSE_SERVER === "1";
 const loopbackBypass = new Set(
   String(process.env.NO_PROXY || process.env.no_proxy || "")
     .split(",")
@@ -30,7 +31,7 @@ export default defineConfig({
   webServer: {
     command: `npm run preview -- --port ${port}`,
     url: baseURL,
-    reuseExistingServer: true,
+    reuseExistingServer,
     timeout: 30_000,
   },
 });
