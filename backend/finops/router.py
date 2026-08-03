@@ -131,6 +131,7 @@ from .sql_member_budgets import SqlMemberBudgetRepository
 from .risk_scans import (
     FinOpsRiskScan,
     InMemoryRiskScanRepository,
+    RiskScanFinding,
     RiskScanScope,
     RiskScanService,
 )
@@ -1741,7 +1742,7 @@ def _public_risk_scan(
         ),
         "scope": scope,
         "evidence_sets": [
-            select_policy_evidence(events, finding.policy_type).model_dump(mode="json")
+            _scan_finding_evidence(finding, events).model_dump(mode="json")
             for finding in scan.findings
         ],
         "governance": {
@@ -1750,6 +1751,20 @@ def _public_risk_scan(
             "explanation_agent_invoked": False,
         },
     }
+
+
+def _scan_finding_evidence(
+    finding: RiskScanFinding,
+    events: list[FinOpsRequestEvent],
+) -> EvidenceSet:
+    events_by_ref = {event.request_ref: event for event in events}
+    persisted_events = [
+        events_by_ref[request_ref]
+        for request_ref in finding.evidence_refs
+        if request_ref in events_by_ref
+    ]
+    candidates = persisted_events if persisted_events else events
+    return select_policy_evidence(candidates, finding.policy_type)
 
 
 def _risk_scan_context(
@@ -2146,7 +2161,14 @@ async def evidence_for_subject(
         actor_ref,
         model,
     )
-    if not all(role in {"owner", "admin"} for role in roles.values()):
+    can_read_detail = (
+        roles.get(workspace_id) in {"owner", "admin"}
+        if workspace_id
+        else bool(roles) and all(
+            role in {"owner", "admin"} for role in roles.values()
+        )
+    )
+    if not can_read_detail:
         raise HTTPException(
             status_code=403,
             detail="workspace access denied for finops.request_detail.read",
@@ -2183,7 +2205,14 @@ async def request_detail(
     model: str | None = Query(default=None, max_length=160),
 ) -> dict[str, Any]:
     service, query, roles = _common(request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model)
-    if not all(role in {"owner", "admin"} for role in roles.values()):
+    can_read_detail = (
+        roles.get(workspace_id) in {"owner", "admin"}
+        if workspace_id
+        else bool(roles) and all(
+            role in {"owner", "admin"} for role in roles.values()
+        )
+    )
+    if not can_read_detail:
         raise HTTPException(
             status_code=403,
             detail="workspace access denied for finops.request_detail.read",

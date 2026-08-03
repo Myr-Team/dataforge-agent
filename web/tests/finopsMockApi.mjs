@@ -589,8 +589,9 @@ function riskScanPayload() {
     evidence_coverage_pct: 100,
     findings,
     evidence_sets: findings.map((item) => ({
-      subject_type: "policy",
+      subject_type: "risk",
       subject_id: item.policy_type,
+      policy_type: item.policy_type,
       state: "observed",
       items: item.evidence_refs.map((request_ref) => ({ request_ref })),
     })),
