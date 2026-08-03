@@ -54,7 +54,11 @@ def test_assistant_returns_only_allowlisted_evidence() -> None:
     def runner(*_args: object, **_kwargs: object) -> dict[str, object]:
         return {
             "structured": {
-                "answer": "缓存命中率下降主要来自当前模型范围内的未命中请求。[req_safe]",
+                "conclusion": "缓存命中率下降主要来自当前模型范围内的未命中请求。[req_safe]",
+                "basis": "所选范围内存在可复核的未命中调用。[req_safe]",
+                "impact": "重复分析会增加等待时间与估算成本。",
+                "recommendation": "先复核相同工作区的缓存键与有效期。",
+                "caveat": "当前判断仅覆盖所选时间范围。",
                 "evidence_refs": ["req_safe"],
                 "suggested_questions": ["哪些工作区贡献最大？"],
             }
@@ -77,9 +81,38 @@ def test_assistant_returns_only_allowlisted_evidence() -> None:
     assert result.status == "ready"
     assert result.evidence_refs == ["req_safe"]
     assert "req_safe" not in result.answer
+    assert result.sections is not None
+    assert result.sections.conclusion.startswith("缓存命中率下降")
+    assert result.sections.basis.startswith("所选范围内")
+    assert result.sections.impact == "重复分析会增加等待时间与估算成本。"
+    assert result.sections.recommendation == "先复核相同工作区的缓存键与有效期。"
+    assert result.sections.caveat == "当前判断仅覆盖所选时间范围。"
     assert result.evidence_labels == ["工作区 A · 模型调用 · 7月26日 10:00"]
     assert result.evidence_state == "observed"
     assert result.suggested_questions == ["哪些工作区贡献最大？"]
+
+
+def test_assistant_normalizes_legacy_answer_into_semantic_sections() -> None:
+    def runner(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "structured": {
+                "answer": "当前成本变化由一条高用量调用贡献。[req_safe]",
+                "evidence_refs": ["req_safe"],
+                "suggested_questions": [],
+            }
+        }
+
+    result = FinOpsAssistantService(model_runner=runner).answer(
+        request=_request(),
+        evidence_payload={"evidence_refs": ["req_safe"]},
+    )
+
+    assert result.status == "ready"
+    assert result.sections is not None
+    assert result.sections.conclusion.startswith("当前成本变化")
+    assert result.sections.basis
+    assert result.sections.recommendation
+    assert result.sections.caveat
 
 
 def test_assistant_fails_closed_when_model_cites_foreign_evidence() -> None:

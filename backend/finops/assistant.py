@@ -83,14 +83,26 @@ class AssistantRequest(BaseModel):
 class AssistantAnswerOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    answer: str = Field(min_length=1, max_length=1600)
+    answer: str | None = Field(default=None, min_length=1, max_length=1600)
+    conclusion: str | None = Field(default=None, min_length=1, max_length=600)
+    basis: str | None = Field(default=None, min_length=1, max_length=800)
+    impact: str | None = Field(default=None, min_length=1, max_length=600)
+    recommendation: str | None = Field(default=None, min_length=1, max_length=600)
+    caveat: str | None = Field(default=None, min_length=1, max_length=400)
     evidence_refs: list[str] = Field(min_length=1, max_length=20)
     suggested_questions: list[str] = Field(default_factory=list, max_length=4)
 
-    @field_validator("answer")
+    @field_validator(
+        "answer",
+        "conclusion",
+        "basis",
+        "impact",
+        "recommendation",
+        "caveat",
+    )
     @classmethod
-    def clean_answer(cls, value: str) -> str:
-        return " ".join(value.split())
+    def clean_answer(cls, value: str | None) -> str | None:
+        return " ".join(value.split()) if value is not None else None
 
     @field_validator("evidence_refs")
     @classmethod
@@ -106,6 +118,22 @@ class AssistantAnswerOutput(BaseModel):
         cleaned = [" ".join(str(value or "").split())[:160] for value in values]
         return [value for value in dict.fromkeys(cleaned) if value]
 
+    @model_validator(mode="after")
+    def requires_conclusion_or_legacy_answer(self) -> "AssistantAnswerOutput":
+        if not self.conclusion and not self.answer:
+            raise ValueError("assistant response requires a conclusion")
+        return self
+
+
+class AssistantAnswerSections(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conclusion: str = Field(min_length=1, max_length=600)
+    basis: str = Field(min_length=1, max_length=800)
+    impact: str = Field(min_length=1, max_length=600)
+    recommendation: str = Field(min_length=1, max_length=600)
+    caveat: str = Field(min_length=1, max_length=400)
+
 
 class AssistantResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -116,6 +144,7 @@ class AssistantResponse(BaseModel):
     evidence_labels: list[str] = Field(default_factory=list)
     evidence_state: EvidenceState
     suggested_questions: list[str] = Field(default_factory=list)
+    sections: AssistantAnswerSections | None = None
 
     @model_validator(mode="after")
     def ready_requires_evidence(self) -> "AssistantResponse":
@@ -157,7 +186,8 @@ class FinOpsAssistantService:
             )
         payload = {
             "task": (
-                "根据所选运营指标回答用户问题，仅在结构化 evidence_refs 字段引用允许的证据；"
+                "根据所选运营指标回答用户问题，必须分别输出 conclusion、basis、impact、"
+                "recommendation、caveat 五个结构化字段；仅在 evidence_refs 字段引用允许的证据；"
                 "回答正文只能使用 evidence_catalog 的 display_name，不得输出原始 evidence ref；"
                 "不要批准或执行治理动作。"
             ),
@@ -192,17 +222,19 @@ class FinOpsAssistantService:
                 evidence_labels.get(ref) or f"运营证据 {index + 1}"
                 for index, ref in enumerate(output.evidence_refs)
             ]
+            sections = _public_sections(
+                output,
+                evidence_labels=evidence_labels,
+                evidence_state=request.metric_context.evidence_state,
+            )
             return AssistantResponse(
                 status="ready",
-                answer=_public_answer(
-                    output.answer,
-                    evidence_refs=output.evidence_refs,
-                    evidence_labels=evidence_labels,
-                ),
+                answer=sections.conclusion,
                 evidence_refs=output.evidence_refs,
                 evidence_labels=public_labels,
                 evidence_state=request.metric_context.evidence_state,
                 suggested_questions=output.suggested_questions,
+                sections=sections,
             )
         except Exception:
             return AssistantResponse(
@@ -246,3 +278,34 @@ def _public_answer(
     public = re.sub(r"\s+([，。；：,.!?])", r"\1", public)
     public = " ".join(public.split()).strip()
     return public or "已基于相关运营证据完成分析，请通过“查看证据”复核明细。"
+
+
+def _public_sections(
+    output: AssistantAnswerOutput,
+    *,
+    evidence_labels: Mapping[str, str],
+    evidence_state: EvidenceState,
+) -> AssistantAnswerSections:
+    def public(value: str) -> str:
+        return _public_answer(
+            value,
+            evidence_refs=output.evidence_refs,
+            evidence_labels=evidence_labels,
+        )
+
+    conclusion = output.conclusion or output.answer or "已完成当前指标分析。"
+    basis = output.basis or "结论仅基于当前筛选范围内已列出的可复核证据。"
+    impact = output.impact or "现有证据不足以进一步量化业务影响。"
+    recommendation = output.recommendation or "建议先复核证据，再决定是否进入治理流程。"
+    caveat = output.caveat or (
+        "当前证据不完整，结论仅用于辅助判断。"
+        if evidence_state in {"partial", "unavailable"}
+        else "结论仅适用于当前时间范围和筛选条件。"
+    )
+    return AssistantAnswerSections(
+        conclusion=public(conclusion),
+        basis=public(basis),
+        impact=public(impact),
+        recommendation=public(recommendation),
+        caveat=public(caveat),
+    )

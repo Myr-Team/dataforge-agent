@@ -551,6 +551,13 @@ def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(
         "evidence_refs": ["req_aaaaaaaaaaaa"],
         "evidence_state": "observed",
         "suggested_questions": ["与上一周期相比如何？"],
+        "sections": {
+            "conclusion": "当前模型范围内只有一条已观测请求，可继续扩大样本后比较。",
+            "basis": "结论仅基于当前筛选范围内已列出的可复核证据。",
+            "impact": "现有证据不足以进一步量化业务影响。",
+            "recommendation": "建议先复核证据，再决定是否进入治理流程。",
+            "caveat": "结论仅适用于当前时间范围和筛选条件。",
+        },
     }
 
     payload["metric_context"]["filters"]["workspace_id"] = "ws-b"
