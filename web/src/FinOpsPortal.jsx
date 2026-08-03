@@ -35,12 +35,14 @@ import {
   loadFinOpsRequest,
   loadFinOpsRequests,
   loadFinOpsRiskDecision,
+  loadLatestFinOpsRiskScan,
   loadFinOpsRoiDecision,
   loadFinOpsRoiEconomics,
   loadFinOpsSavedViews,
   loadFinOpsTrends,
   promoteFinOpsRemediationDraft,
   reviewFinOpsRemediationDraft,
+  runFinOpsRiskScan,
   suppressFinOpsAnomaly,
 } from "./api.js";
 import {
@@ -1299,6 +1301,12 @@ export function FinOpsPortal({
   });
   const [governance, setGovernance] = useState({ busyId: "", error: "" });
   const [riskMutation, setRiskMutation] = useState({ busyId: "", error: "" });
+  const [riskScanState, setRiskScanState] = useState({
+    loading: false,
+    busy: false,
+    error: "",
+    scan: null,
+  });
   const [assistantState, setAssistantState] = useState({
     context: null,
     openRequest: 0,
@@ -1325,6 +1333,7 @@ export function FinOpsPortal({
   const remediationSequence = useRef(0);
   const remediationOpportunityRef = useRef(null);
   const remediationTrigger = useRef(null);
+  const riskScanController = useRef(null);
 
   useEffect(() => {
     setTab(initialTab === "risk" ? "risk" : "overview");
@@ -1517,6 +1526,77 @@ export function FinOpsPortal({
     remediationOpportunityRef.current = null;
     setRemediationState({ open: false, opportunity: null, draft: null, busy: false, error: "" });
   }, [queryScopeKey]);
+
+  useEffect(() => {
+    if (tab !== "risk" || !workspaceId) return undefined;
+    riskScanController.current?.abort();
+    const controller = new AbortController();
+    riskScanController.current = controller;
+    setRiskScanState({ loading: true, busy: false, error: "", scan: null });
+    const load = async () => {
+      try {
+        const scan = await loadLatestFinOpsRiskScan(query, { signal: controller.signal });
+        setRiskScanState({ loading: false, busy: false, error: "", scan });
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+        const initializeCurrentDemoScope = (
+          error?.status === 404
+          && workspaceId === "demo-corpus"
+          && !query.departmentId
+          && !query.agentId
+          && !query.model
+        );
+        if (initializeCurrentDemoScope) {
+          try {
+            const scan = await runFinOpsRiskScan(query, { signal: controller.signal });
+            setRiskScanState({ loading: false, busy: false, error: "", scan });
+            return;
+          } catch (scanError) {
+            if (scanError?.name === "AbortError") return;
+            setRiskScanState({
+              loading: false,
+              busy: false,
+              error: scanError instanceof Error ? scanError.message : "风险扫描暂时无法执行",
+              scan: null,
+            });
+            return;
+          }
+        }
+        if (error?.status === 404) {
+          setRiskScanState({ loading: false, busy: false, error: "", scan: null });
+          return;
+        }
+        setRiskScanState({
+          loading: false,
+          busy: false,
+          error: error instanceof Error ? error.message : "最近扫描结果读取失败",
+          scan: null,
+        });
+      }
+    };
+    load();
+    return () => controller.abort();
+  }, [query, queryScopeKey, tab, workspaceId]);
+
+  const runRiskScan = useCallback(async () => {
+    if (!workspaceId || riskScanState.busy) return;
+    riskScanController.current?.abort();
+    const controller = new AbortController();
+    riskScanController.current = controller;
+    setRiskScanState((state) => ({ ...state, loading: false, busy: true, error: "" }));
+    try {
+      const scan = await runFinOpsRiskScan(query, { signal: controller.signal });
+      setRiskScanState({ loading: false, busy: false, error: "", scan });
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      setRiskScanState((state) => ({
+        ...state,
+        loading: false,
+        busy: false,
+        error: error instanceof Error ? error.message : "风险扫描暂时无法执行",
+      }));
+    }
+  }, [query, riskScanState.busy, workspaceId]);
   const loadRoiDialogData = useCallback(async () => {
     roiDialogController.current?.abort();
     const controller = new AbortController();
@@ -1720,6 +1800,7 @@ export function FinOpsPortal({
   useEffect(() => () => {
     evidenceController.current?.abort();
     roiDialogController.current?.abort();
+    riskScanController.current?.abort();
   }, []);
 
   const refreshRiskOnly = useCallback(() => {
@@ -2170,6 +2251,11 @@ export function FinOpsPortal({
             onCreateDraft={openRemediation}
             onAcknowledge={(item) => manageAnomaly(item, "acknowledge")}
             onSuppress={(item) => manageAnomaly(item, "suppress")}
+            scan={riskScanState.scan}
+            scanLoading={riskScanState.loading}
+            scanBusy={riskScanState.busy}
+            scanError={riskScanState.error}
+            onRunScan={runRiskScan}
           />
         ) : null}
       </section>

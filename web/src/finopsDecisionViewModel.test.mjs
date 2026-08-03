@@ -8,8 +8,80 @@ import { createServer } from "vite";
 import {
   remediationDraftView,
   riskDecisionView,
+  riskScanView,
   roiDecisionView,
 } from "./finopsDecisionViewModel.js";
+
+
+test("risk scan view exposes all rule basis without leaking internal identities", () => {
+  const view = riskScanView({
+    scan_ref: "rscan_0123456789abcdef0123456789abcdef",
+    status: "completed",
+    rules_evaluated: 7,
+    rules_triggered: 2,
+    rules_clear: 3,
+    rules_insufficient: 1,
+    request_sample_count: 146,
+    evidence_coverage_pct: 85.71,
+    policy_revision: "policy_abc123",
+    ledger_revision: "ledger_def456",
+    started_at: "2026-08-03T02:30:00Z",
+    finished_at: "2026-08-03T02:30:01Z",
+    initiated_by_ref: "actor-secret",
+    findings: [
+      {
+        policy_type: "error_rate",
+        status: "triggered",
+        severity: "critical",
+        observed_value: 12.5,
+        threshold_value: 5,
+        unit: "%",
+        sample_count: 24,
+        minimum_samples: 20,
+        reason: "观测值已达到当前策略的风险判定条件。",
+        recommendation: "检查失败来源。",
+        evidence_refs: ["req_error_001", "run-private"],
+        arbitrary: "hidden",
+      },
+      {
+        policy_type: "daily_cost_budget",
+        status: "unavailable",
+        severity: "info",
+        observed_value: null,
+        threshold_value: null,
+        unit: "%",
+        sample_count: 0,
+        minimum_samples: 1,
+        reason: "当前缺少该规则所需的预算或历史基线。",
+        recommendation: "配置预算后重新扫描。",
+        evidence_refs: [],
+      },
+    ],
+    evidence_sets: [{
+      subject_type: "policy",
+      subject_id: "error_rate",
+      items: [{ request_ref: "req_error_002" }],
+    }],
+    governance: {
+      mode: "read_only_scan",
+      automatic_actions: false,
+      explanation_agent_invoked: false,
+    },
+  });
+
+  assert.equal(view.isAvailable, true);
+  assert.equal(view.summary.evaluated, 7);
+  assert.equal(view.summary.unavailable, 1);
+  assert.equal(view.findings[0].label, "调用失败率");
+  assert.equal(view.findings[0].statusLabel, "需关注");
+  assert.equal(view.findings[0].observedLabel, "12.5%");
+  assert.equal(view.findings[0].thresholdLabel, "5%");
+  assert.deepEqual(view.findings[0].evidenceRefs, ["req_error_001", "req_error_002"]);
+  assert.equal(view.findings[1].statusLabel, "暂不可评估");
+  assert.equal(view.readOnly, true);
+  assert.equal(Object.hasOwn(view, "initiatedByRef"), false);
+  assert.doesNotMatch(JSON.stringify(view), /actor-secret|run-private|arbitrary|hidden/);
+});
 
 
 test("ROI view never labels an estimated scenario as verified", () => {

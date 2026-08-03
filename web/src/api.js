@@ -301,6 +301,29 @@ export function loadFinOpsRiskDecision(filters = {}, options = {}) {
   return loadFinOpsResource("risk/decision", filters, options);
 }
 
+export function loadLatestFinOpsRiskScan(filters = {}, options = {}) {
+  return loadFinOpsResource("risk/scans/latest", filters, options);
+}
+
+export function runFinOpsRiskScan(payload = {}, options = {}) {
+  const clean = {
+    workspace_id: payload.workspaceId ?? payload.workspace_id,
+    from: payload.from,
+    to: payload.to,
+    department_id: payload.departmentId ?? payload.department_id,
+    agent_id: payload.agentId ?? payload.agent_id,
+    actor_ref: payload.actorRef ?? payload.actor_ref,
+    model: payload.model,
+  };
+  const body = Object.fromEntries(Object.entries(clean).filter(([, value]) => (
+    value !== undefined && value !== null && String(value).trim() !== ""
+  )));
+  return requestFinOps("/api/finops/risk/scans", options, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 function remediationTransitionBody(payload = {}) {
   const baseRevision = payload.baseRevision ?? payload.base_revision;
   const reason = payload.reason;
