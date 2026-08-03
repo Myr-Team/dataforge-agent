@@ -192,47 +192,53 @@ function RiskScanWorkbench({ scan, loading, busy, error, onRun, onEvidence, onAs
               <div key={label}><small>{label}</small><strong>{value}<i>{unit}</i></strong></div>
             ))}
           </div>
-          <div className="finops-risk-scan-rule-head">
-            <div><span>规则依据</span><h3>七项运营检查</h3></div>
-            <small>策略版本 {view.policyRevision || "待确认"} · 证据覆盖 {view.summary.evidenceCoveragePct === null ? "待确认" : `${view.summary.evidenceCoveragePct}%`}</small>
-          </div>
-          <ol className="finops-risk-scan-rules">
-            {view.findings.map((finding) => (
-              <li key={finding.policy} className={`status-${finding.status}`}>
-                <div className="finops-risk-scan-rule-title">
-                  <span className={`finops-risk-scan-rule-dot severity-${finding.severity}`} />
-                  <div><b>{finding.label}</b><small>{finding.reason}</small></div>
-                  <StatusBadge status={finding.status}>{finding.statusLabel}</StatusBadge>
-                </div>
-                <dl>
-                  <div><dt>观测值</dt><dd>{finding.observedLabel}</dd></div>
-                  <div><dt>阈值</dt><dd>{finding.thresholdLabel}</dd></div>
-                  <div><dt>样本</dt><dd>{finding.sampleCount} / {finding.minimumSamples}</dd></div>
-                </dl>
-                <p>{finding.recommendation}</p>
-                <div className="finops-risk-scan-rule-actions">
-                  {onEvidence && finding.evidenceRefs.length ? (
-                    <button type="button" onClick={() => onEvidence({
-                      reason: `${finding.label}扫描证据`,
-                      policyType: finding.policy,
-                      evidenceRefs: finding.evidenceRefs,
-                    })}><FileSearch size={12} />查看证据</button>
-                  ) : <span>当前没有可下钻请求</span>}
-                  {onAsk ? (
-                    <button type="button" onClick={() => onAsk({
-                      id: `risk_scan_${finding.policy}`,
-                      label: finding.label,
-                      value: finding.observedValue,
-                      unit: finding.unit,
-                      dataStatus: finding.status === "unavailable" ? "unavailable" : "complete",
-                      evidenceState: finding.evidenceRefs.length ? "observed" : "partial",
-                    })}>问 AI</button>
-                  ) : null}
-                </div>
-              </li>
-            ))}
-          </ol>
-          <footer><ShieldCheck size={13} />扫描已完成，只生成可复核判断；未触发自动整改或生产动作。</footer>
+          <details className="finops-risk-scan-disclosure">
+            <summary>
+              <span><b>判定规则</b><small>展开查看七项运营检查的观测值、阈值与证据</small></span>
+              <span>{view.summary.triggered} 项需关注 · {view.findings.length} 条规则</span>
+            </summary>
+            <div className="finops-risk-scan-rule-head">
+              <div><span>规则依据</span><h3>七项运营检查</h3></div>
+              <small>策略版本 {view.policyRevision || "待确认"} · 证据覆盖 {view.summary.evidenceCoveragePct === null ? "待确认" : `${view.summary.evidenceCoveragePct}%`}</small>
+            </div>
+            <ol className="finops-risk-scan-rules">
+              {view.findings.map((finding) => (
+                <li key={finding.policy} className={`status-${finding.status}`}>
+                  <div className="finops-risk-scan-rule-title">
+                    <span className={`finops-risk-scan-rule-dot severity-${finding.severity}`} />
+                    <div><b>{finding.label}</b><small>{finding.reason}</small></div>
+                    <StatusBadge status={finding.status}>{finding.statusLabel}</StatusBadge>
+                  </div>
+                  <dl>
+                    <div><dt>观测值</dt><dd>{finding.observedLabel}</dd></div>
+                    <div><dt>阈值</dt><dd>{finding.thresholdLabel}</dd></div>
+                    <div><dt>样本</dt><dd>{finding.sampleCount} / {finding.minimumSamples}</dd></div>
+                  </dl>
+                  <p>{finding.recommendation}</p>
+                  <div className="finops-risk-scan-rule-actions">
+                    {onEvidence && finding.evidenceRefs.length ? (
+                      <button type="button" onClick={() => onEvidence({
+                        reason: `${finding.label}扫描证据`,
+                        policyType: finding.policy,
+                        evidenceRefs: finding.evidenceRefs,
+                      })}><FileSearch size={12} />查看证据</button>
+                    ) : <span>当前没有可下钻请求</span>}
+                    {onAsk ? (
+                      <button type="button" onClick={() => onAsk({
+                        id: `risk_scan_${finding.policy}`,
+                        label: finding.label,
+                        value: finding.observedValue,
+                        unit: finding.unit,
+                        dataStatus: finding.status === "unavailable" ? "unavailable" : "complete",
+                        evidenceState: finding.evidenceRefs.length ? "observed" : "partial",
+                      })}>问 AI</button>
+                    ) : null}
+                  </div>
+                </li>
+              ))}
+            </ol>
+            <footer><ShieldCheck size={13} />扫描只生成可复核判断；未触发自动整改或生产动作。</footer>
+          </details>
         </>
       ) : loading ? (
         <div className="finops-risk-scan-empty"><Loader2 className="spin" size={16} />正在读取最近一次扫描</div>
@@ -400,11 +406,6 @@ export function RiskDecisionPage({
         </article>
       </section>
 
-      <section className="finops-decision-risk-wide">
-        <header className="finops-decision-risk-section-head"><div><span>价值、难度与影响范围</span><h2>优化组合</h2></div><small>用于排序，不代表自动执行顺序</small></header>
-        <OpportunityPortfolio data={view.portfolio} selectedId={selectedId} onSelect={onSelectRisk} />
-      </section>
-
       <EvidenceChain
         priority={selected}
         evidence={view.evidence}
@@ -416,6 +417,11 @@ export function RiskDecisionPage({
         draftEnabled={view.governance.draftEnabled}
         busyId={busyId}
       />
+
+      <section className="finops-decision-risk-wide">
+        <header className="finops-decision-risk-section-head"><div><span>价值、难度与影响范围</span><h2>优化组合</h2></div><small>用于排序，不代表自动执行顺序</small></header>
+        <OpportunityPortfolio data={view.portfolio} selectedId={selectedId} onSelect={onSelectRisk} />
+      </section>
 
       {view.insight ? (
         <section className="finops-decision-risk-insight" aria-labelledby="finops-risk-insight-title">

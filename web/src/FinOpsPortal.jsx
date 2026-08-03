@@ -95,7 +95,6 @@ import {
   finopsBootstrapViewData,
   finopsBudgetView,
   finopsBreakdownRows,
-  finopsDoughnutSegments,
   evidenceRequestRef,
   finopsMetricCards,
   finopsRequestViewModel,
@@ -862,39 +861,6 @@ function OverviewPage({
 }
 
 
-function AllocationDoughnut({ rows, title }) {
-  const segments = finopsDoughnutSegments(rows, "cost");
-  if (!segments.length) return <EmptyState>当前范围没有可计价的分摊数据。</EmptyState>;
-  let cursor = 0;
-  const gradient = segments.map((segment) => {
-    const start = cursor;
-    cursor += segment.sharePct;
-    return `var(--finops-chart-${segment.colorIndex}) ${start}% ${cursor}%`;
-  }).join(", ");
-  return (
-    <div className="finops-doughnut-layout">
-      <div
-        className="finops-doughnut"
-        style={{ background: `conic-gradient(${gradient})` }}
-        role="img"
-        aria-label={`${title}，${segments.map((item) => `${item.key} ${item.sharePct}%`).join("，")}`}
-      >
-        <span><b>{segments.length}</b><small>个分类</small></span>
-      </div>
-      <div className="finops-doughnut-legend">
-        {segments.slice(0, 6).map((item) => (
-          <div key={item.key}>
-            <i style={{ background: `var(--finops-chart-${item.colorIndex})` }} />
-            <span title={item.key}>{item.key}</span>
-            <b>{item.sharePct}%</b>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-
 function BudgetForecast({ payload }) {
   const budget = finopsBudgetView(payload);
   const progress = Math.max(0, Math.min(100, budget.usagePct || 0));
@@ -966,12 +932,6 @@ function CostPage({
         </Panel>
         <Panel title="模型成本归因" subtitle="按 deployment 聚合">
           <HorizontalBars rows={models} valueKey="cost" dimension="model" onSelect={onDimensionSelect} valueFormatter={(value) => formatFinOpsCost(value, value == null ? "unavailable" : "estimated")} />
-        </Panel>
-        <Panel title="Agent 成本结构" subtitle="分类占比使用同一估算账本">
-          <AllocationDoughnut rows={agents} title="Agent 成本结构" />
-        </Panel>
-        <Panel title="模型成本结构" subtitle="单一分类仍保留完整圆环">
-          <AllocationDoughnut rows={models} title="模型成本结构" />
         </Panel>
       </div>
     </>

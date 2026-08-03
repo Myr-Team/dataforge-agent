@@ -18,6 +18,7 @@ dist/
 build/
 .vite/
 coverage/
+web/test-results/
 generated-outputs/
 artifacts/
 tmp/

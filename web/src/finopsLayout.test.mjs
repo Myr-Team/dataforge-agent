@@ -54,6 +54,26 @@ test("cost analysis starts with one compact cost scope instead of the overview K
   assert.match(costPage, /className="finops-cost-summary"/);
   assert.match(costPage, /维护计价映射/);
   assert.doesNotMatch(costPage, /<MetricCards/);
+  assert.match(costPage, /title="Agent 成本归因"/);
+  assert.match(costPage, /title="模型成本归因"/);
+  assert.doesNotMatch(costPage, /title="Agent 成本结构"/);
+  assert.doesNotMatch(costPage, /title="模型成本结构"/);
+});
+
+
+test("risk decisions stay ahead of detailed scan rules", async () => {
+  const source = await readFile(
+    new URL("./finops/RiskDecisionPage.jsx", import.meta.url),
+    "utf8",
+  );
+  const workbench = source.match(/function RiskScanWorkbench[\s\S]*?function EvidenceChain/)?.[0] || "";
+  const page = source.match(/export function RiskDecisionPage[\s\S]*$/)?.[0] || "";
+
+  assert.match(workbench, /<details className="finops-risk-scan-disclosure">/);
+  assert.match(workbench, /<summary>[\s\S]*判定规则/);
+  assert.match(workbench, /finops-risk-scan-rules/);
+  assert.ok(page.indexOf("finops-decision-risk-columns") < page.indexOf("<EvidenceChain"));
+  assert.ok(page.indexOf("<EvidenceChain") < page.indexOf("<OpportunityPortfolio"));
 });
 
 
@@ -69,8 +89,26 @@ test("executive donut replaces the browser SVG focus rectangle with a slice high
 test("mobile operations AI launcher stays compact over dashboard content", async () => {
   const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
 
+  assert.match(styles, /\.finops-ai-launcher\s*\{[^}]*width:\s*42px[^}]*padding:\s*0/s);
+  assert.match(styles, /\.finops-ai-launcher:hover[\s\S]*width:\s*auto/s);
+  assert.match(styles, /@media \(min-width: 981px\)[\s\S]*\.finops-content\s*\{[^}]*padding-right:\s*56px/s);
   assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.finops-ai-launcher\s*\{[^}]*width:\s*42px[^}]*padding:\s*0/s);
   assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.finops-ai-launcher span\s*\{[^}]*display:\s*none/s);
+});
+
+
+test("decision surfaces reserve readable type and a safe area for the AI launcher", async () => {
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+
+  assert.match(styles, /\.finops-content\s*\{[^}]*padding-bottom:\s*64px/s);
+  assert.match(styles, /\.finops-risk-scan-disclosure\s*>\s*summary\s*\{[^}]*cursor:\s*pointer/s);
+  assert.match(styles, /\.finops-risk-scan-rules\s*>\s*li\s*>\s*p\s*\{[^}]*font-size:\s*10\.5px/s);
+  assert.match(styles, /\.finops-decision-roi-metric\s*>\s*p\s*\{[^}]*font-size:\s*10\.5px/s);
+  assert.match(styles, /\.finops-decision-risk-priorities b\s*\{[^}]*font-size:\s*11\.5px/s);
+  assert.match(styles, /\.finops-decision-status\s*\{[^}]*font-size:\s*10px/s);
+  assert.match(styles, /\.finops-decision-risk-row\s*>\s*span\s*>\s*b\s*\{[^}]*font-size:\s*11px/s);
+  assert.match(styles, /\.finops-decision-risk-evidence-card dt\s*\{[^}]*font-size:\s*10px/s);
+  assert.match(styles, /\.finops-decision-risk-insight p,[\s\S]*font-size:\s*11px/s);
 });
 
 
