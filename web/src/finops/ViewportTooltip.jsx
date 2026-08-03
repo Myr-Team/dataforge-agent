@@ -39,14 +39,26 @@ export function useViewportTooltipAnchor() {
   };
   const hide = () => setOpen(false);
   const toggle = () => (open ? hide() : show());
+  const showFromPointer = () => {
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof Element
+      && activeElement !== anchorRef.current
+      && activeElement.hasAttribute("data-finops-tooltip-anchor")
+    ) return;
+    show();
+  };
   return {
     anchorRef,
     open,
     setOpen,
     toggle,
     anchorProps: {
-      onPointerEnter: show,
-      onPointerLeave: hide,
+      "data-finops-tooltip-anchor": "true",
+      onPointerEnter: showFromPointer,
+      onPointerLeave: () => {
+        if (anchorRef.current !== document.activeElement) hide();
+      },
       onFocus: show,
       onBlur: hide,
     },

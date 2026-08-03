@@ -58,8 +58,9 @@ test("risk scan view exposes all rule basis without leaking internal identities"
       },
     ],
     evidence_sets: [{
-      subject_type: "policy",
+      subject_type: "risk",
       subject_id: "error_rate",
+      policy_type: "error_rate",
       items: [{ request_ref: "req_error_002" }],
     }],
     governance: {

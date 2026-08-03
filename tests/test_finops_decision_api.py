@@ -170,6 +170,127 @@ def test_owner_can_run_and_reload_a_persisted_read_only_risk_scan(
     assert latest.json()["scan_ref"] == body["scan_ref"]
 
 
+def test_latest_risk_scan_keeps_persisted_evidence_until_it_expires(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_service = RiskScanService(InMemoryRiskScanRepository())
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_risk_scan_service",
+        lambda: scan_service,
+    )
+    events = [
+        FinOpsRequestEvent.model_validate(
+            {
+                "request_ref": f"req_scan_api_{index:012d}",
+                "occurred_at": datetime(2026, 7, 24, 2, 0, tzinfo=timezone.utc)
+                + timedelta(seconds=index),
+                "call_class": "model",
+                "tenant_ref": "tenant-a",
+                "workspace_id": "ws-a",
+                "status": "failed" if index in {18, 19} else "succeeded",
+                "latency_ms": 500,
+                "tokens": {"total": 100 + index},
+                "gateway_coverage": "apim_governed",
+                "estimated_cost": {
+                    "amount": 0.001,
+                    "currency": "USD",
+                    "status": "estimated",
+                },
+                "evidence_state": "observed",
+            }
+        )
+        for index in range(20)
+    ]
+    repository.upsert_events(events)
+    params = {
+        "workspace_id": "ws-a",
+        "from": "2026-07-01T00:00:00Z",
+        "to": "2026-08-01T00:00:00Z",
+    }
+
+    created = client.post(
+        "/api/finops/risk/scans",
+        json=params,
+        headers=owner_headers,
+    )
+    assert created.status_code == 201, created.text
+    error_finding = next(
+        item for item in created.json()["findings"]
+        if item["policy_type"] == "error_rate"
+    )
+    persisted_refs = error_finding["evidence_refs"]
+    assert len(persisted_refs) == 2, error_finding
+
+    newest = FinOpsRequestEvent.model_validate(
+        {
+            "request_ref": "req_scan_api_newest",
+            "occurred_at": datetime(2026, 7, 25, 2, 0, tzinfo=timezone.utc),
+            "call_class": "model",
+            "tenant_ref": "tenant-a",
+            "workspace_id": "ws-a",
+            "status": "failed",
+            "latency_ms": 500,
+            "tokens": {"total": 150},
+            "gateway_coverage": "apim_governed",
+            "estimated_cost": {
+                "amount": 0.001,
+                "currency": "USD",
+                "status": "estimated",
+            },
+            "evidence_state": "observed",
+        }
+    )
+    repository.upsert_events([newest])
+
+    latest = client.get(
+        "/api/finops/risk/scans/latest",
+        params=params,
+        headers=owner_headers,
+    )
+    assert latest.status_code == 200, latest.text
+    evidence_set = next(
+        item for item in latest.json()["evidence_sets"]
+        if item["policy_type"] == "error_rate"
+    )
+    assert [item["request_ref"] for item in evidence_set["items"]] == persisted_refs
+
+    repository.delete_events(
+        tenant_ref="tenant-a",
+        workspace_id="ws-a",
+        request_refs=persisted_refs[:1],
+    )
+    partially_expired = client.get(
+        "/api/finops/risk/scans/latest",
+        params=params,
+        headers=owner_headers,
+    )
+    partial_set = next(
+        item for item in partially_expired.json()["evidence_sets"]
+        if item["policy_type"] == "error_rate"
+    )
+    assert [item["request_ref"] for item in partial_set["items"]] == persisted_refs[1:]
+
+    repository.delete_events(
+        tenant_ref="tenant-a",
+        workspace_id="ws-a",
+        request_refs=persisted_refs[1:],
+    )
+    fallback = client.get(
+        "/api/finops/risk/scans/latest",
+        params=params,
+        headers=owner_headers,
+    )
+    fallback_set = next(
+        item for item in fallback.json()["evidence_sets"]
+        if item["policy_type"] == "error_rate"
+    )
+    assert fallback_set["items"][0]["request_ref"] == newest.request_ref
+
+
 def test_member_cannot_run_or_read_risk_scans(
     client: TestClient,
     member_headers: dict[str, str],

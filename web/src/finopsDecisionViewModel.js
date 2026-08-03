@@ -799,8 +799,8 @@ function scanValueLabel(value, unit) {
 
 function scanEvidenceRefs(value, policy) {
   const matching = records(value).find((item) => (
-    boundedText(item.subject_type, 24) === "policy"
-    && safePolicy(item.subject_id) === policy
+    boundedText(item.subject_type, 24) === "risk"
+    && safePolicy(item.policy_type ?? item.subject_id) === policy
   ));
   return safeEvidenceRefs(records(matching?.items).map((item) => item.request_ref));
 }

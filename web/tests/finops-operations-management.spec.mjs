@@ -267,20 +267,20 @@ for (const viewport of [
     await expect(slices).toHaveCount(4);
     const dashArrays = await slices.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("stroke-dasharray")));
     expect(new Set(dashArrays).size).toBeGreaterThan(1);
-    if (viewport.name !== "mobile") {
-      await slices.last().focus();
-      const tooltipId = await slices.last().getAttribute("aria-describedby");
-      const tooltip = page.locator(`#${tooltipId}`);
-      await expect(tooltip).toBeVisible();
-      await expect(tooltip).toContainText("估算成本");
-      const bounds = await tooltip.boundingBox();
-      expect(bounds.x).toBeGreaterThanOrEqual(0);
-      expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
-      expect(bounds.y).toBeGreaterThanOrEqual(0);
-      expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
-      await page.locator(".finops-head h1").click();
-      await expect(tooltip).toHaveCount(0);
-    }
+    await slices.last().focus();
+    await expect(slices.last()).toBeFocused();
+    const tooltipId = await slices.last().getAttribute("aria-describedby");
+    const tooltip = page.locator(`#${tooltipId}`);
+    await expect(tooltip).toBeVisible();
+    await expect(page.locator(".finops-viewport-tooltip")).toHaveCount(1);
+    await expect(tooltip).toContainText("估算成本");
+    const bounds = await tooltip.boundingBox();
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+    expect(bounds.y).toBeGreaterThanOrEqual(0);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+    await page.locator(".finops-head h1").click();
+    await expect(tooltip).toHaveCount(0);
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);

@@ -684,6 +684,51 @@ def test_finops_request_detail_requires_owner_or_admin(
     assert "req_aaaaaaaaaaaa" not in response.text
 
 
+def test_finops_request_evidence_checks_only_the_selected_workspace_role(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "owner", "ws-b": "viewer"},
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+
+    evidence = client.get(
+        "/api/finops/evidence",
+        params={"workspace_id": "ws-a", "metric_id": "cost"},
+        headers=headers,
+    )
+    detail = client.get(
+        "/api/finops/requests/req_aaaaaaaaaaaa",
+        params={"workspace_id": "ws-a"},
+        headers=headers,
+    )
+
+    assert evidence.status_code == 200, evidence.text
+    assert detail.status_code == 200, detail.text
+
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "viewer", "ws-b": "owner"},
+    )
+    denied_evidence = client.get(
+        "/api/finops/evidence",
+        params={"workspace_id": "ws-a", "metric_id": "cost"},
+        headers=headers,
+    )
+    denied_detail = client.get(
+        "/api/finops/requests/req_aaaaaaaaaaaa",
+        params={"workspace_id": "ws-a"},
+        headers=headers,
+    )
+
+    assert denied_evidence.status_code == 403
+    assert denied_detail.status_code == 403
+
+
 def test_finops_request_detail_returns_application_request_and_visible_response(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
