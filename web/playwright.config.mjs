@@ -1,6 +1,21 @@
 import { defineConfig } from "playwright/test";
 
 
+const port = Number(process.env.DF_PLAYWRIGHT_PORT || 4173);
+const baseURL = `http://127.0.0.1:${port}`;
+const loopbackBypass = new Set(
+  String(process.env.NO_PROXY || process.env.no_proxy || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean),
+);
+loopbackBypass.add("127.0.0.1");
+loopbackBypass.add("localhost");
+const noProxy = [...loopbackBypass].join(",");
+process.env.NO_PROXY = noProxy;
+process.env.no_proxy = noProxy;
+
+
 export default defineConfig({
   testDir: "./tests",
   timeout: 30_000,
@@ -8,13 +23,13 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"]],
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
   webServer: {
-    command: "npm run preview -- --port 4173",
-    url: "http://127.0.0.1:4173",
+    command: `npm run preview -- --port ${port}`,
+    url: baseURL,
     reuseExistingServer: true,
     timeout: 30_000,
   },

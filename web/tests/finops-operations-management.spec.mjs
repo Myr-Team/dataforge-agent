@@ -112,8 +112,8 @@ test("operations management is immediately discoverable and supports metric dril
   await expect(page.getByText("成本趋势")).toBeVisible();
   await expect(page.locator(".finops-cost-summary")).toBeVisible();
   await expect(page.locator(".finops-content > .finops-metrics")).toHaveCount(0);
-  await expect(page.getByText("Agent 成本结构")).toBeVisible();
-  await expect(page.getByText("模型成本结构")).toBeVisible();
+  await expect(page.getByText("Agent 成本结构")).toHaveCount(0);
+  await expect(page.getByText("模型成本结构")).toHaveCount(0);
   await page.screenshot({
     path: path.join(outputDir, "operations-cost-analysis-desktop.png"),
     fullPage: true,
@@ -129,9 +129,12 @@ test("operations management is immediately discoverable and supports metric dril
   });
 
   await page.getByRole("button", { name: "风险与优化", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "七项运营检查" })).toBeVisible();
-  await expect(page.locator(".finops-risk-scan-rules > li")).toHaveCount(7);
+  const ruleDisclosure = page.locator(".finops-risk-scan-disclosure");
+  await expect(ruleDisclosure).not.toHaveAttribute("open", "");
+  await expect(page.getByText("判定规则", { exact: true })).toBeVisible();
+  await expect(page.locator(".finops-risk-scan-rules")).toBeHidden();
   await expect(page.locator(".finops-risk-scan-summary")).toContainText("146");
+  await expect(page.getByRole("heading", { name: "风险矩阵" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "优化组合" })).toBeVisible();
   await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(4);
   await expect(page.getByText("最新 AI 解读 · 已保存证据")).toBeVisible();
@@ -196,8 +199,8 @@ for (const viewport of [
     });
 
     await page.getByRole("button", { name: "风险与优化", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "七项运营检查" })).toBeVisible();
-    await expect(page.locator(".finops-risk-scan-rules > li")).toHaveCount(7);
+    await expect(page.getByText("判定规则", { exact: true })).toBeVisible();
+    await expect(page.locator(".finops-risk-scan-rules")).toBeHidden();
     await expect(page.getByRole("heading", { name: "风险矩阵" })).toBeVisible();
     await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(4);
     const riskRows = page.locator(".finops-decision-risk-row");
@@ -224,6 +227,7 @@ test("risk scan reruns safely and binds evidence plus AI to the selected rule", 
   await page.getByRole("button", { name: "成本管理" }).first().click();
   await page.getByRole("button", { name: "风险与优化", exact: true }).click();
 
+  await page.locator(".finops-risk-scan-disclosure > summary").click();
   const rules = page.locator(".finops-risk-scan-rules");
   await expect(rules.locator("li")).toHaveCount(7);
   await page.getByRole("button", { name: "重新扫描" }).click();
@@ -337,8 +341,7 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await expectDistinctGeometry(agentPanel.locator(".finops-bar-row i"), "width");
   await expectDistinctGeometry(modelPanel.locator(".finops-bar-row i"), "width");
   const doughnuts = page.getByRole("img", { name: /成本结构/ });
-  await expect(doughnuts).toHaveCount(2);
-  for (const doughnut of await doughnuts.all()) await expect(doughnut).toContainText("3");
+  await expect(doughnuts).toHaveCount(0);
 
   await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
   await expectDemoSurfaceComplete(page);

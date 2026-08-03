@@ -192,16 +192,18 @@ test("risk evidence is distinct and remediation 409 requires reload and a second
   await page.getByRole("button", { name: "风险与优化", exact: true }).click();
 
   const priorities = page.getByRole("list", { name: "风险优先事项" });
+  const evidenceChain = page.locator(".finops-decision-risk-chain");
+  const evidenceCard = evidenceChain.locator(".finops-decision-risk-evidence-card");
   await priorities.getByRole("button", { name: /响应时延优化/ }).click();
-  await expect(page.getByText("6,200 ms", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("分析已完成，但模型响应阶段耗时偏高。")).toBeVisible();
+  await expect(evidenceCard).toContainText("6,200 ms");
+  await expect(evidenceCard).toContainText("分析已完成，但模型响应阶段耗时偏高。");
   await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
-  await expect(page.getByText("缓存未命中", { exact: true })).toBeVisible();
-  await expect(page.getByText("本次请求未命中结果缓存，已重新执行分析。")).toBeVisible();
+  await expect(evidenceCard).toContainText("缓存未命中");
+  await expect(evidenceCard).toContainText("本次请求未命中结果缓存，已重新执行分析。");
   await priorities.getByRole("button", { name: /计价覆盖补齐/ }).click();
-  await expect(page.getByText("评审已完成，当前模型尚未关联价目。")).toBeVisible();
+  await expect(evidenceCard).toContainText("评审已完成，当前模型尚未关联价目。");
   await priorities.getByRole("button", { name: /调用成功率改善/ }).click();
-  await expect(page.getByText("provider_5xx")).toBeVisible();
+  await expect(evidenceCard).toContainText("provider_5xx");
 
   await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
   await page.getByRole("button", { name: "查看整改方案" }).click();
