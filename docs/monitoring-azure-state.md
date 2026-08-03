@@ -1,6 +1,26 @@
 # Monitoring Azure Deployment State
 
-Last verified: `2026-07-26`.
+Last verified: `2026-08-03`.
+
+## FinOps governance production
+
+- Team main release commit:
+  `098e2ca8f9a78b5f73739f0261f5651abf15c2bf`.
+- Backend production revision:
+  `ca-dataforge-backend--gov098e2ca` at `100%` traffic.
+- Web production revision:
+  `ca-dataforge-web--gov098e2ca` at `100%` traffic.
+- Both revisions use immutable image digests and were verified `Healthy` and
+  `Running` after zero-traffic candidate checks.
+- Stable backend health returned HTTP 200 five consecutive times; stable web
+  authentication returned HTTP 401 anonymously and loaded successfully in the
+  existing authenticated browser session.
+- FinOps read access remains enabled and production governance execution
+  remains disabled.
+- Rollback revisions are `ca-dataforge-backend--opsaug3cd8d44` and
+  `ca-dataforge-web--finexec12be269`.
+- Detailed evidence is recorded in
+  `docs/validation/2026-08-03-finops-governance-production.md`.
 
 ## Operations Management production
 
