@@ -41,6 +41,43 @@ test("assistant history prefetch is workspace-scoped, cached, and request-dedupl
 });
 
 
+test("cross-device history restores structured assistant sections and evidence labels", async () => {
+  clearFinOpsAssistantHistoryCache("ws-structured");
+  const history = await prefetchFinOpsAssistantHistory("ws-structured", {
+    loadConversations: async () => ({ items: [{ conversation_ref: "conversation-structured" }] }),
+    loadMessages: async () => ({
+      items: [{
+        role: "assistant",
+        content: "结论正文",
+        metric_context_payload: {
+          response_sections: {
+            conclusion: "结论正文",
+            basis: "证据依据",
+            impact: "影响说明",
+            recommendation: "建议动作",
+            caveat: "判断边界",
+          },
+          evidence_refs: ["req_safe"],
+          evidence_labels: ["销售分析 · 模型调用"],
+          evidence_state: "observed",
+          suggested_questions: ["下一步怎么验证？"],
+        },
+      }],
+    }),
+  });
+
+  assert.deepEqual(history.messages[0].sections, {
+    conclusion: "结论正文",
+    basis: "证据依据",
+    impact: "影响说明",
+    recommendation: "建议动作",
+    caveat: "判断边界",
+  });
+  assert.deepEqual(history.messages[0].evidenceRefs, ["req_safe"]);
+  assert.deepEqual(history.messages[0].evidenceLabels, ["销售分析 · 模型调用"]);
+});
+
+
 test("assistant history writes and clears one workspace without touching another", () => {
   clearFinOpsAssistantHistoryCache();
   writeFinOpsAssistantHistory("ws-a", {

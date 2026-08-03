@@ -18,6 +18,7 @@ import {
   prefetchFinOpsAssistantHistory,
   writeFinOpsAssistantHistory,
 } from "./finopsAssistantHistory.js";
+import { contextualAssistantQuestion } from "./finopsInteraction.js";
 
 
 const DEFAULT_QUESTIONS = [
@@ -38,6 +39,20 @@ export function publicAssistantContent(value) {
 }
 
 
+function assistantMessageSections(message = {}) {
+  const value = message.sections || message.metric_context_payload?.response_sections;
+  if (!value || typeof value !== "object") return null;
+  const sections = {
+    conclusion: publicAssistantContent(value.conclusion),
+    basis: publicAssistantContent(value.basis),
+    impact: publicAssistantContent(value.impact),
+    recommendation: publicAssistantContent(value.recommendation),
+    caveat: publicAssistantContent(value.caveat),
+  };
+  return Object.values(sections).every(Boolean) ? sections : null;
+}
+
+
 export function FinOpsAssistant({
   context,
   openRequest = 0,
@@ -52,14 +67,11 @@ export function FinOpsAssistant({
   const [conversationRef, setConversationRef] = useState("");
   const inputRef = useRef(null);
   const interactionVersionRef = useRef(0);
+  const lastOpenRequestRef = useRef(0);
 
   useEffect(() => {
     if (open) inputRef.current?.focus();
   }, [open]);
-
-  useEffect(() => {
-    if (openRequest > 0) setOpen(true);
-  }, [openRequest]);
 
   const workspaceId = context?.filters?.workspace_id || "";
 
@@ -129,6 +141,7 @@ export function FinOpsAssistant({
             ? response.evidence_labels.filter((value) => value && !/^req_/i.test(String(value)))
             : [],
           evidenceState: response?.evidence_state || "unavailable",
+          sections: response?.sections || null,
           suggestions: Array.isArray(response?.suggested_questions)
             ? response.suggested_questions
             : [],
@@ -155,6 +168,19 @@ export function FinOpsAssistant({
       setBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (
+      openRequest <= 0
+      || openRequest <= lastOpenRequestRef.current
+      || !context
+    ) return;
+    lastOpenRequestRef.current = openRequest;
+    const question = contextualAssistantQuestion(context);
+    setOpen(true);
+    setInput(question);
+    Promise.resolve().then(() => ask(question));
+  }, [context, openRequest]);
 
   const latestSuggestions = messages
     .slice()
@@ -234,11 +260,25 @@ export function FinOpsAssistant({
             ) : null}
             {messages.map((message, index) => (
               <article className={message.role} key={`${message.role}:${index}`}>
-                <span>
-                  {message.role === "assistant"
-                    ? publicAssistantContent(message.content)
-                    : message.content}
-                </span>
+                {message.role === "assistant" && assistantMessageSections(message) ? (
+                  <dl className="finops-ai-answer-sections">
+                    {[
+                      ["conclusion", "结论"],
+                      ["basis", "依据"],
+                      ["impact", "影响"],
+                      ["recommendation", "建议"],
+                      ["caveat", "判断边界"],
+                    ].map(([key, label]) => (
+                      <div key={key}><dt>{label}</dt><dd>{assistantMessageSections(message)[key]}</dd></div>
+                    ))}
+                  </dl>
+                ) : (
+                  <span>
+                    {message.role === "assistant"
+                      ? publicAssistantContent(message.content)
+                      : message.content}
+                  </span>
+                )}
                 {message.role === "assistant" && message.evidenceLabels?.length ? (
                   <small className="finops-ai-evidence-labels">
                     <b>相关证据</b>
@@ -248,7 +288,7 @@ export function FinOpsAssistant({
                   </small>
                 ) : null}
                 {message.role === "assistant" && message.evidenceRefs?.length && onEvidence ? (
-                  <button type="button" onClick={() => onEvidence(`AI 回答 · ${message.evidenceRefs.length} 条证据`)}>
+                  <button type="button" onClick={() => onEvidence({ reason: `AI 回答 · ${message.evidenceRefs.length} 条证据`, evidenceRefs: message.evidenceRefs })}>
                     查看证据
                   </button>
                 ) : null}

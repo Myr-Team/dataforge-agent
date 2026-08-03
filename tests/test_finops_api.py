@@ -559,6 +559,16 @@ def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(
             "caveat": "结论仅适用于当前时间范围和筛选条件。",
         },
     }
+    persisted = client.get(
+        f"/api/finops/assistant/conversations/{response.json()['conversation_ref']}/messages",
+        params={"workspace_id": "ws-a"},
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert persisted.status_code == 200
+    assistant_message = persisted.json()["items"][-1]
+    assert assistant_message["metric_context_payload"]["response_sections"]["conclusion"] == (
+        "当前模型范围内只有一条已观测请求，可继续扩大样本后比较。"
+    )
 
     payload["metric_context"]["filters"]["workspace_id"] = "ws-b"
     denied = client.post(

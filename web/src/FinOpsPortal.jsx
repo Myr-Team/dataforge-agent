@@ -2166,6 +2166,7 @@ export function FinOpsPortal({
             onSelectRisk={setSelectedRiskId}
             onRetry={() => requestTabRefresh("risk", { force: true })}
             onEvidence={canOpenEvidence ? openEvidence : null}
+            onAsk={openRoiAssistant}
             onCreateDraft={openRemediation}
             onAcknowledge={(item) => manageAnomaly(item, "acknowledge")}
             onSuppress={(item) => manageAnomaly(item, "suppress")}

@@ -1128,6 +1128,17 @@ async def assistant_query(
                 AssistantMessage(
                     role="assistant",
                     content=response.answer,
+                    metric_context_payload={
+                        "response_sections": (
+                            response.sections.model_dump(mode="json")
+                            if response.sections is not None
+                            else None
+                        ),
+                        "evidence_refs": response.evidence_refs,
+                        "evidence_labels": response.evidence_labels,
+                        "evidence_state": response.evidence_state,
+                        "suggested_questions": response.suggested_questions,
+                    },
                 ),
             )
         except AssistantConversationExpired:

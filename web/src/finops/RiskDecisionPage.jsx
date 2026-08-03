@@ -143,7 +143,7 @@ function PriorityList({ items, selectedId, onSelect }) {
 }
 
 
-function EvidenceChain({ priority, evidence, onEvidence, onCreateDraft, onAcknowledge, onSuppress, draftEnabled, busyId }) {
+function EvidenceChain({ priority, evidence, onEvidence, onAsk, onCreateDraft, onAcknowledge, onSuppress, draftEnabled, busyId }) {
   if (!priority) return <LocalEmpty>选择一个风险点后，这里会联动展示其证据与整改入口。</LocalEmpty>;
   const requestEvidenceRefs = requestRefsOf(priority);
   const evidenceByRef = new Set(requestEvidenceRefs);
@@ -161,7 +161,19 @@ function EvidenceChain({ priority, evidence, onEvidence, onCreateDraft, onAcknow
     <section className="finops-decision-risk-chain" aria-labelledby="finops-risk-chain-title">
       <header className="finops-decision-risk-section-head">
         <div><span>当前选择 · {priority.domainLabel}</span><h2 id="finops-risk-chain-title">{priority.label}</h2></div>
-        <button type="button" className="quiet" data-finops-remediation-trigger onClick={() => onCreateDraft?.(priority)} disabled={!draftEnabled}>查看整改方案</button>
+        <div className="finops-decision-risk-section-actions">
+          {onAsk ? (
+            <button type="button" className="quiet" onClick={() => onAsk({
+              id: `risk_${priority.policy}`,
+              label: priority.label,
+              value: priority.sampleCount,
+              unit: " 次请求",
+              dataStatus: priority.evidenceRefs.length ? "complete" : "partial",
+              evidenceState: priority.evidenceRefs.length ? "observed" : "partial",
+            })}>问 AI</button>
+          ) : null}
+          <button type="button" className="quiet" data-finops-remediation-trigger onClick={() => onCreateDraft?.(priority)} disabled={!draftEnabled}>查看整改方案</button>
+        </div>
       </header>
       <ol className="finops-decision-risk-chain-stages">
         {stages.map(([label, value, note], index) => (
@@ -199,6 +211,7 @@ export function RiskDecisionPage({
   onSelectRisk = null,
   onRetry = null,
   onEvidence = null,
+  onAsk = null,
   onCreateDraft = null,
   onAcknowledge = null,
   onSuppress = null,
@@ -280,6 +293,7 @@ export function RiskDecisionPage({
         priority={selected}
         evidence={view.evidence}
         onEvidence={onEvidence}
+        onAsk={onAsk}
         onCreateDraft={onCreateDraft}
         onAcknowledge={onAcknowledge}
         onSuppress={onSuppress}

@@ -117,6 +117,31 @@ export function metricContext(metric = {}, scope = {}) {
 }
 
 
+export function contextualAssistantQuestion(context = {}) {
+  const label = bounded(context.label, 120) || "当前运营指标";
+  const unit = bounded(context.unit, 24);
+  const rawValue = context.value;
+  const value = finite(rawValue)
+    ? `${rawValue}${unit}`
+    : bounded(rawValue, 120)
+      ? `${bounded(rawValue, 120)}${unit}`
+      : "未记录";
+  const dimension = bounded(context.dimension, 48);
+  const dimensionValue = bounded(context.dimension_value, 160);
+  const dimensionLabel = {
+    model: "模型",
+    agent: "Agent",
+    department: "部门",
+    workspace: "工作区",
+    actor: "人员",
+  }[dimension] || dimension;
+  const suffix = dimensionLabel && dimensionValue
+    ? `，${dimensionLabel}为 ${dimensionValue}`
+    : "";
+  return `请分析“${label}”（当前值 ${value}${suffix}）：说明结论、证据依据、影响、建议和判断边界。`.slice(0, 600);
+}
+
+
 export function applyDimensionFilter(filters = {}, selection = {}) {
   const field = DIMENSION_FIELDS[selection.dimension];
   if (!field) return { ...filters };
