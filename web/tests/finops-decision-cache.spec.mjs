@@ -7,8 +7,8 @@ import { installFinOpsMockApi } from "./finopsMockApi.mjs";
 
 
 async function openOperations(page) {
-  await page.getByRole("button", { name: "运营管理" }).first().click();
-  await expect(page.getByRole("heading", { name: "运营管理" })).toBeVisible();
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await expect(page.getByRole("heading", { name: "成本管理" })).toBeVisible();
 }
 
 
@@ -33,6 +33,7 @@ test("decision navigation stays cache first and refreshes only the visible tab a
   await expect(page.getByRole("heading", { name: "价值桥" })).toBeVisible();
   await page.getByRole("button", { name: "风险与优化", exact: true }).click();
   await expect(page.getByRole("heading", { name: "风险矩阵" })).toBeVisible();
+  await openOperations(page);
   await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
   await expect(page.getByRole("heading", { name: "价值桥" })).toBeVisible();
 
@@ -84,6 +85,7 @@ test("seeded ROI cache is interactive within 300ms without a full-page skeleton"
   await page.getByRole("button", { name: "风险与优化", exact: true }).click();
   await expect(page.getByRole("heading", { name: "风险矩阵" })).toBeVisible();
   const startedAt = await page.evaluate(() => performance.now());
+  await openOperations(page);
   await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
   await expect(page.getByRole("button", { name: "调整测算参数" })).toBeVisible();
   const interactiveMs = await page.evaluate((started) => performance.now() - started, startedAt);

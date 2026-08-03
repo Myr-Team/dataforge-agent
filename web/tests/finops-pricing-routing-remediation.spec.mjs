@@ -9,8 +9,8 @@ import { installFinOpsMockApi } from "./finopsMockApi.mjs";
 
 async function openModelSettings(page) {
   await page.goto("/");
-  await page.getByRole("button", { name: "运营管理" }).first().click();
-  await expect(page.getByRole("heading", { name: "运营管理" })).toBeVisible();
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await expect(page.getByRole("heading", { name: "成本管理" })).toBeVisible();
   await page.getByRole("button", { name: "关联官方模型价格" }).click();
   await expect(page.getByRole("dialog", { name: "模型分配与官方价格" })).toBeVisible();
 }

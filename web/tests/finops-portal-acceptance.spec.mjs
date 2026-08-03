@@ -7,8 +7,8 @@ import { installFinOpsMockApi } from "./finopsMockApi.mjs";
 
 
 async function openOperations(page) {
-  await page.getByRole("button", { name: "运营管理" }).first().click();
-  await expect(page.getByRole("heading", { name: "运营管理" })).toBeVisible();
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await expect(page.getByRole("heading", { name: "成本管理" })).toBeVisible();
 }
 
 async function openMemberBudgets(page) {
@@ -193,7 +193,7 @@ test("risk evidence is distinct and remediation 409 requires reload and a second
 
   const priorities = page.getByRole("list", { name: "风险优先事项" });
   await priorities.getByRole("button", { name: /响应时延优化/ }).click();
-  await expect(page.getByText("6,200 ms")).toBeVisible();
+  await expect(page.getByText("6,200 ms", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("分析已完成，但模型响应阶段耗时偏高。")).toBeVisible();
   await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
   await expect(page.getByText("缓存未命中", { exact: true })).toBeVisible();
@@ -328,8 +328,8 @@ test("mobile operations layout has no horizontal overflow", async ({ page }) => 
   await page.setViewportSize({ width: 390, height: 844 });
   await installFinOpsMockApi(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "运营管理" }).last().click();
-  await expect(page.getByRole("heading", { name: "运营管理" })).toBeVisible();
+  await page.getByRole("button", { name: "成本管理" }).last().click();
+  await expect(page.getByRole("heading", { name: "成本管理" })).toBeVisible();
 
   const overflow = await page.evaluate(() => {
     const doc = document.documentElement;

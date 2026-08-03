@@ -37,6 +37,7 @@ test("primary navigation is structurally complete before capabilities resolve", 
     "runs",
     "artifacts",
     "finops",
+    "finops-risk",
     "settings",
   ]);
   assert.deepEqual(visibleNavItems(null).map((item) => item.id), items.map((item) => item.id));
@@ -48,9 +49,10 @@ test("operations dashboard is grouped between business workbench and system sett
   const systemGroup = NAV_GROUPS.find((group) => group.id === "system");
 
   assert.deepEqual(workspaceGroup.items.map((item) => item.id), ["workspaces", "data", "conversations", "runs", "artifacts"]);
-  assert.deepEqual(operationsGroup.items.map((item) => item.id), ["finops"]);
+  assert.deepEqual(operationsGroup.items.map((item) => item.id), ["finops", "finops-risk"]);
   assert.deepEqual(systemGroup.items.map((item) => item.id), ["settings"]);
   assert.equal(NAV_ITEMS.find((item) => item.id === "finops")?.capabilityKey, "finops");
+  assert.equal(NAV_ITEMS.find((item) => item.id === "finops-risk")?.capabilityKey, "finops");
 });
 
 test("legacy governance routes converge on the operations dashboard", () => {

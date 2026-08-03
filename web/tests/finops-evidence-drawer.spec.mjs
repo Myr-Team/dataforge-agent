@@ -10,13 +10,14 @@ test("owner drills from operations metric into friendly request evidence", async
   await installFinOpsMockApi(page);
   await page.goto("/");
 
-  await page.getByRole("button", { name: "运营管理" }).first().click();
-  await expect(page.getByRole("heading", { name: "运营管理" })).toBeVisible();
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await expect(page.getByRole("heading", { name: "成本管理" })).toBeVisible();
   await expect(page.getByText("数据更新中")).not.toBeVisible();
 
   await page.getByRole("button", { name: "查看证据" }).first().click();
-  const dialog = page.getByRole("dialog", { name: /Commerce · 分析运行/ });
+  const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("AI 使用成本指标 · 1 条证据")).toBeVisible();
   const [topbarBounds, dialogBounds] = await Promise.all([
     page.locator(".topbar").boundingBox(),
     dialog.boundingBox(),
@@ -48,7 +49,7 @@ test("evidence drawer is full-width and keyboard closable on mobile", async ({ p
   await installFinOpsMockApi(page);
   await page.goto("/");
 
-  await page.getByRole("button", { name: "运营管理" }).last().click();
+  await page.getByRole("button", { name: "成本管理" }).last().click();
   await page.getByRole("button", { name: "查看证据" }).first().click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
@@ -71,7 +72,7 @@ test("all four risk priorities open only their own request_ref without a generic
   await installFinOpsMockApi(page, calls);
   await page.goto("/");
 
-  await page.getByRole("button", { name: "运营管理" }).first().click();
+  await page.getByRole("button", { name: "成本管理" }).first().click();
   await page.getByRole("button", { name: "风险与优化", exact: true }).click();
 
   const priorities = page.getByRole("list", { name: "风险优先事项" });
@@ -85,7 +86,7 @@ test("all four risk priorities open only their own request_ref without a generic
   ];
   for (const [priorityName, requestRef, requestText, screenshotName] of riskEvidence) {
     await priorities.getByRole("button", { name: priorityName }).click();
-    await page.getByRole("button", { name: "查看证据" }).click();
+    await page.locator(".finops-decision-risk-evidence-head").getByRole("button", { name: "查看证据" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByText(requestText)).toBeVisible();
     if (screenshotName) {

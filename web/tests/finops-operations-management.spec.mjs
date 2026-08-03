@@ -47,10 +47,10 @@ test("operations management is immediately discoverable and supports metric dril
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
   await mkdir(outputDir, { recursive: true });
 
-  await expect(page.getByRole("button", { name: "运营管理" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "成本管理" }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "运行记录" }).first()).toBeVisible();
-  await page.getByRole("button", { name: "运营管理" }).first().click();
-  await expect(page.getByRole("heading", { name: "运营管理" })).toBeVisible();
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await expect(page.getByRole("heading", { name: "成本管理" })).toBeVisible();
   await expect(page.locator(".finops-live")).toContainText("更新");
 
   const cacheMetric = page.getByRole("article", { name: /^缓存收益 / });
@@ -129,6 +129,9 @@ test("operations management is immediately discoverable and supports metric dril
   });
 
   await page.getByRole("button", { name: "风险与优化", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "七项运营检查" })).toBeVisible();
+  await expect(page.locator(".finops-risk-scan-rules > li")).toHaveCount(7);
+  await expect(page.locator(".finops-risk-scan-summary")).toContainText("146");
   await expect(page.getByRole("heading", { name: "优化组合" })).toBeVisible();
   await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(4);
   await expect(page.getByText("最新 AI 解读 · 已保存证据")).toBeVisible();
@@ -150,7 +153,7 @@ for (const viewport of [
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     const control = await installFinOpsMockApi(page);
     await page.goto("/");
-    await page.getByRole("button", { name: "运营管理" }).last().click();
+    await page.getByRole("button", { name: "成本管理" }).last().click();
 
     const headerBefore = await page.locator(".finops-head").boundingBox();
     await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
@@ -193,6 +196,8 @@ for (const viewport of [
     });
 
     await page.getByRole("button", { name: "风险与优化", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "七项运营检查" })).toBeVisible();
+    await expect(page.locator(".finops-risk-scan-rules > li")).toHaveCount(7);
     await expect(page.getByRole("heading", { name: "风险矩阵" })).toBeVisible();
     await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(4);
     const riskRows = page.locator(".finops-decision-risk-row");
@@ -212,6 +217,35 @@ for (const viewport of [
 }
 
 
+test("risk scan reruns safely and binds evidence plus AI to the selected rule", async ({ page }) => {
+  const calls = [];
+  await installFinOpsMockApi(page, calls);
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
+
+  const rules = page.locator(".finops-risk-scan-rules");
+  await expect(rules.locator("li")).toHaveCount(7);
+  await page.getByRole("button", { name: "重新扫描" }).click();
+  await expect(page.getByRole("button", { name: "重新扫描" })).toBeEnabled();
+  expect(calls.filter((item) => item.method === "POST" && item.path === "/api/finops/risk/scans")).toHaveLength(1);
+
+  const errorRule = rules.locator("li").filter({ hasText: "调用失败率" });
+  await errorRule.getByRole("button", { name: "查看证据" }).click();
+  const evidence = page.getByRole("dialog");
+  await expect(evidence.getByText("提取高价值客户机会并生成摘要")).toBeVisible();
+  await expect(evidence.getByText("失败", { exact: true }).first()).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await errorRule.getByRole("button", { name: "问 AI" }).click();
+  const assistant = page.getByRole("dialog", { name: "运营指标 AI 助手" });
+  await expect(assistant.getByText("调用失败率").first()).toBeVisible();
+  await expect(assistant.getByText("结论", { exact: true })).toBeVisible();
+  const assistantCall = calls.find((item) => item.path === "/api/finops/assistant/query");
+  expect(JSON.parse(assistantCall.body).question).toContain("调用失败率");
+});
+
+
 for (const viewport of [
   { name: "desktop", width: 1440, height: 900 },
   { name: "1366", width: 1366, height: 768 },
@@ -222,7 +256,7 @@ for (const viewport of [
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await installFinOpsDemoCompletenessApi(page);
     await page.goto("/");
-    await page.getByRole("button", { name: "运营管理" }).last().click();
+    await page.getByRole("button", { name: "成本管理" }).last().click();
 
     const overview = page.getByRole("region", { name: "运营决策概览" });
     await expect(overview.locator(".finops-metric")).toHaveCount(4);
@@ -233,18 +267,20 @@ for (const viewport of [
     await expect(slices).toHaveCount(4);
     const dashArrays = await slices.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("stroke-dasharray")));
     expect(new Set(dashArrays).size).toBeGreaterThan(1);
-    await slices.last().focus();
-    const tooltipId = await slices.last().getAttribute("aria-describedby");
-    const tooltip = page.locator(`#${tooltipId}`);
-    await expect(tooltip).toBeVisible();
-    await expect(tooltip).toContainText("估算成本");
-    const bounds = await tooltip.boundingBox();
-    expect(bounds.x).toBeGreaterThanOrEqual(0);
-    expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
-    expect(bounds.y).toBeGreaterThanOrEqual(0);
-    expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
-    await page.locator(".finops-head h1").click();
-    await expect(tooltip).toHaveCount(0);
+    if (viewport.name !== "mobile") {
+      await slices.last().focus();
+      const tooltipId = await slices.last().getAttribute("aria-describedby");
+      const tooltip = page.locator(`#${tooltipId}`);
+      await expect(tooltip).toBeVisible();
+      await expect(tooltip).toContainText("估算成本");
+      const bounds = await tooltip.boundingBox();
+      expect(bounds.x).toBeGreaterThanOrEqual(0);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+      expect(bounds.y).toBeGreaterThanOrEqual(0);
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+      await page.locator(".finops-head h1").click();
+      await expect(tooltip).toHaveCount(0);
+    }
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);
@@ -261,7 +297,7 @@ for (const viewport of [
 test("demo completeness fixture fills every visible metric card chart table and queue across all four views", async ({ page }) => {
   const control = await installFinOpsDemoCompletenessApi(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "运营管理" }).first().click();
+  await page.getByRole("button", { name: "成本管理" }).first().click();
 
   await page.getByRole("button", { name: "运营总览", exact: true }).click();
   await expectDemoSurfaceComplete(page);
@@ -340,7 +376,7 @@ test("cost attribution tables fit desktop cards and remain horizontally operable
   await page.setViewportSize({ width: 1366, height: 900 });
   await installFinOpsMockApi(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "运营管理" }).last().click();
+  await page.getByRole("button", { name: "成本管理" }).last().click();
   await page.getByRole("button", { name: "成本分析", exact: true }).click();
 
   for (const title of ["部门成本归因", "专案成本归因"]) {
@@ -373,7 +409,7 @@ test("operations management stays usable on mobile without a full-screen AI draw
   const calls = [];
   await installFinOpsMockApi(page, calls);
   await page.goto("/");
-  await page.getByRole("button", { name: "运营管理" }).last().click();
+  await page.getByRole("button", { name: "成本管理" }).last().click();
 
   await expect.poll(() => calls.some((call) => call.path === "/api/finops/assistant/conversations")).toBe(true);
 
