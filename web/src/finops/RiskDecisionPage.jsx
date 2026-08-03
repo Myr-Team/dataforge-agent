@@ -5,12 +5,14 @@ import {
   CheckCircle2,
   Database,
   FileSearch,
+  Loader2,
   RefreshCw,
+  ScanSearch,
   ShieldCheck,
   Wrench,
 } from "lucide-react";
 
-import { riskDecisionView } from "../finopsDecisionViewModel.js";
+import { riskDecisionView, riskScanView } from "../finopsDecisionViewModel.js";
 import { OpportunityPortfolio, RiskMatrix } from "./DecisionCharts.jsx";
 
 
@@ -143,7 +145,106 @@ function PriorityList({ items, selectedId, onSelect }) {
 }
 
 
-function EvidenceChain({ priority, evidence, onEvidence, onCreateDraft, onAcknowledge, onSuppress, draftEnabled, busyId }) {
+function scanTimeLabel(value) {
+  if (!value) return "尚未执行";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "时间待确认";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(parsed);
+}
+
+
+function RiskScanWorkbench({ scan, loading, busy, error, onRun, onEvidence, onAsk }) {
+  const view = riskScanView(scan);
+  const summaryItems = [
+    ["检查规则", view.summary.evaluated, "条"],
+    ["需关注", view.summary.triggered, "项"],
+    ["规则正常", view.summary.clear, "项"],
+    ["待补证据", view.summary.insufficient + view.summary.unavailable, "项"],
+    ["请求样本", view.summary.sampleCount, "次"],
+  ];
+  return (
+    <section className="finops-risk-scan" aria-labelledby="finops-risk-scan-title">
+      <header className="finops-risk-scan-head">
+        <div>
+          <span className="finops-decision-eyebrow">只读规则扫描</span>
+          <h2 id="finops-risk-scan-title">检查当前筛选范围的运营风险</h2>
+          <p>读取请求、成本、时延、缓存与统一入口证据；扫描不会修改模型、缓存或生产策略。</p>
+        </div>
+        <div className="finops-risk-scan-actions">
+          <small>{loading ? "正在读取最近结果" : `上次扫描 ${scanTimeLabel(view.finishedAt || view.startedAt)}`}</small>
+          <button type="button" onClick={onRun} disabled={busy || loading}>
+            {busy ? <Loader2 className="spin" size={14} /> : <ScanSearch size={14} />}
+            {busy ? "扫描中" : view.isAvailable ? "重新扫描" : "执行风险扫描"}
+          </button>
+        </div>
+      </header>
+      {error ? <div className="finops-risk-scan-error" role="alert"><AlertTriangle size={14} />{error}</div> : null}
+      {view.isAvailable ? (
+        <>
+          <div className="finops-risk-scan-summary" aria-label="扫描摘要">
+            {summaryItems.map(([label, value, unit]) => (
+              <div key={label}><small>{label}</small><strong>{value}<i>{unit}</i></strong></div>
+            ))}
+          </div>
+          <div className="finops-risk-scan-rule-head">
+            <div><span>规则依据</span><h3>七项运营检查</h3></div>
+            <small>策略版本 {view.policyRevision || "待确认"} · 证据覆盖 {view.summary.evidenceCoveragePct === null ? "待确认" : `${view.summary.evidenceCoveragePct}%`}</small>
+          </div>
+          <ol className="finops-risk-scan-rules">
+            {view.findings.map((finding) => (
+              <li key={finding.policy} className={`status-${finding.status}`}>
+                <div className="finops-risk-scan-rule-title">
+                  <span className={`finops-risk-scan-rule-dot severity-${finding.severity}`} />
+                  <div><b>{finding.label}</b><small>{finding.reason}</small></div>
+                  <StatusBadge status={finding.status}>{finding.statusLabel}</StatusBadge>
+                </div>
+                <dl>
+                  <div><dt>观测值</dt><dd>{finding.observedLabel}</dd></div>
+                  <div><dt>阈值</dt><dd>{finding.thresholdLabel}</dd></div>
+                  <div><dt>样本</dt><dd>{finding.sampleCount} / {finding.minimumSamples}</dd></div>
+                </dl>
+                <p>{finding.recommendation}</p>
+                <div className="finops-risk-scan-rule-actions">
+                  {onEvidence && finding.evidenceRefs.length ? (
+                    <button type="button" onClick={() => onEvidence({
+                      reason: `${finding.label}扫描证据`,
+                      policyType: finding.policy,
+                      evidenceRefs: finding.evidenceRefs,
+                    })}><FileSearch size={12} />查看证据</button>
+                  ) : <span>当前没有可下钻请求</span>}
+                  {onAsk ? (
+                    <button type="button" onClick={() => onAsk({
+                      id: `risk_scan_${finding.policy}`,
+                      label: finding.label,
+                      value: finding.observedValue,
+                      unit: finding.unit,
+                      dataStatus: finding.status === "unavailable" ? "unavailable" : "complete",
+                      evidenceState: finding.evidenceRefs.length ? "observed" : "partial",
+                    })}>问 AI</button>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+          <footer><ShieldCheck size={13} />扫描已完成，只生成可复核判断；未触发自动整改或生产动作。</footer>
+        </>
+      ) : loading ? (
+        <div className="finops-risk-scan-empty"><Loader2 className="spin" size={16} />正在读取最近一次扫描</div>
+      ) : (
+        <div className="finops-risk-scan-empty"><ScanSearch size={17} />执行一次扫描后，这里会显示七项规则的数值、阈值、样本与证据。</div>
+      )}
+    </section>
+  );
+}
+
+
+function EvidenceChain({ priority, evidence, onEvidence, onAsk, onCreateDraft, onAcknowledge, onSuppress, draftEnabled, busyId }) {
   if (!priority) return <LocalEmpty>选择一个风险点后，这里会联动展示其证据与整改入口。</LocalEmpty>;
   const requestEvidenceRefs = requestRefsOf(priority);
   const evidenceByRef = new Set(requestEvidenceRefs);
@@ -161,7 +262,19 @@ function EvidenceChain({ priority, evidence, onEvidence, onCreateDraft, onAcknow
     <section className="finops-decision-risk-chain" aria-labelledby="finops-risk-chain-title">
       <header className="finops-decision-risk-section-head">
         <div><span>当前选择 · {priority.domainLabel}</span><h2 id="finops-risk-chain-title">{priority.label}</h2></div>
-        <button type="button" className="quiet" data-finops-remediation-trigger onClick={() => onCreateDraft?.(priority)} disabled={!draftEnabled}>查看整改方案</button>
+        <div className="finops-decision-risk-section-actions">
+          {onAsk ? (
+            <button type="button" className="quiet" onClick={() => onAsk({
+              id: `risk_${priority.policy}`,
+              label: priority.label,
+              value: priority.sampleCount,
+              unit: " 次请求",
+              dataStatus: priority.evidenceRefs.length ? "complete" : "partial",
+              evidenceState: priority.evidenceRefs.length ? "observed" : "partial",
+            })}>问 AI</button>
+          ) : null}
+          <button type="button" className="quiet" data-finops-remediation-trigger onClick={() => onCreateDraft?.(priority)} disabled={!draftEnabled}>查看整改方案</button>
+        </div>
       </header>
       <ol className="finops-decision-risk-chain-stages">
         {stages.map(([label, value, note], index) => (
@@ -199,9 +312,15 @@ export function RiskDecisionPage({
   onSelectRisk = null,
   onRetry = null,
   onEvidence = null,
+  onAsk = null,
   onCreateDraft = null,
   onAcknowledge = null,
   onSuppress = null,
+  scan = null,
+  scanLoading = false,
+  scanBusy = false,
+  scanError = "",
+  onRunScan = null,
 }) {
   if (loading && !payload) return <RiskLoadingShell />;
   if (error && !payload) {
@@ -253,6 +372,16 @@ export function RiskDecisionPage({
         </div>
       </section>
 
+      <RiskScanWorkbench
+        scan={scan}
+        loading={scanLoading}
+        busy={scanBusy}
+        error={scanError}
+        onRun={onRunScan}
+        onEvidence={onEvidence}
+        onAsk={onAsk}
+      />
+
       <section className="finops-decision-risk-domains" aria-label="四个风险治理域">
         {DOMAIN_ORDER.map(([id, label]) => {
           const domain = view.riskDomains.find((item) => item.id === id);
@@ -280,6 +409,7 @@ export function RiskDecisionPage({
         priority={selected}
         evidence={view.evidence}
         onEvidence={onEvidence}
+        onAsk={onAsk}
         onCreateDraft={onCreateDraft}
         onAcknowledge={onAcknowledge}
         onSuppress={onSuppress}

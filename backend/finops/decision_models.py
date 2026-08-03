@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 DecisionEvidenceState = Literal[
@@ -50,6 +50,7 @@ class RiskDecision(BaseModel):
     optimization_portfolio: list[dict[str, Any]]
     portfolio_metadata: dict[str, Any]
     selected_evidence_summaries: list[dict[str, Any]]
+    evidence_sets: list[dict[str, Any]] = Field(default_factory=list)
     insight: dict[str, Any] | None
     drafts: list[dict[str, Any]]
     governance_capability: dict[str, Any]

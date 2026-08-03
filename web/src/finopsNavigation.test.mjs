@@ -47,6 +47,7 @@ test("finops navigation intent handlers preload on hover focus and touch", () =>
   handlers.onTouchStart();
 
   assert.equal(calls, 3);
+  assert.ok(Object.keys(finopsIntentHandlers({ id: "finops-risk" }, () => {})).length);
   assert.deepEqual(finopsIntentHandlers({ id: "runs" }, () => {}), {});
 });
 

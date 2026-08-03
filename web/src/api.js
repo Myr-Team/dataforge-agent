@@ -139,6 +139,8 @@ export function buildFinOpsQuery(filters = {}) {
     bucket: filters.bucket,
     group_by: filters.groupBy,
     agent_kind: filters.agentKind,
+    metric_id: filters.metricId,
+    policy_type: filters.policyType,
   };
   Object.entries(supported).forEach(([key, value]) => {
     if (value !== undefined && value !== null && String(value).trim() !== "") {
@@ -212,6 +214,22 @@ export function loadFinOpsRequest(requestRef, filters = {}, options = {}) {
   return loadFinOpsResource(`requests/${encodeURIComponent(requestRef)}`, filters, options);
 }
 
+export function loadFinOpsEvidence(subject = {}, filters = {}, options = {}) {
+  const metricId = String(subject?.metricId || subject?.metric_id || "").trim();
+  const policyType = String(subject?.policyType || subject?.policy_type || "").trim();
+  if (Boolean(metricId) === Boolean(policyType)) {
+    return Promise.reject(new Error("exactly one evidence subject is required"));
+  }
+  return loadFinOpsResource(
+    "evidence",
+    {
+      ...filters,
+      ...(metricId ? { metricId } : { policyType }),
+    },
+    options,
+  );
+}
+
 export function loadFinOpsInsights(filters = {}, options = {}) {
   return loadFinOpsResource("insights", filters, options);
 }
@@ -281,6 +299,29 @@ export function loadFinOpsRoiDecision(filters = {}, options = {}) {
 
 export function loadFinOpsRiskDecision(filters = {}, options = {}) {
   return loadFinOpsResource("risk/decision", filters, options);
+}
+
+export function loadLatestFinOpsRiskScan(filters = {}, options = {}) {
+  return loadFinOpsResource("risk/scans/latest", filters, options);
+}
+
+export function runFinOpsRiskScan(payload = {}, options = {}) {
+  const clean = {
+    workspace_id: payload.workspaceId ?? payload.workspace_id,
+    from: payload.from,
+    to: payload.to,
+    department_id: payload.departmentId ?? payload.department_id,
+    agent_id: payload.agentId ?? payload.agent_id,
+    actor_ref: payload.actorRef ?? payload.actor_ref,
+    model: payload.model,
+  };
+  const body = Object.fromEntries(Object.entries(clean).filter(([, value]) => (
+    value !== undefined && value !== null && String(value).trim() !== ""
+  )));
+  return requestFinOps("/api/finops/risk/scans", options, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 function remediationTransitionBody(payload = {}) {

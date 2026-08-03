@@ -29,17 +29,20 @@ import {
   loadFinOpsAgents,
   loadFinOpsBootstrap,
   loadFinOpsBreakdowns,
+  loadFinOpsEvidence,
   loadFinOpsRemediationDraft,
   loadFinOpsRemediationDrafts,
   loadFinOpsRequest,
   loadFinOpsRequests,
   loadFinOpsRiskDecision,
+  loadLatestFinOpsRiskScan,
   loadFinOpsRoiDecision,
   loadFinOpsRoiEconomics,
   loadFinOpsSavedViews,
   loadFinOpsTrends,
   promoteFinOpsRemediationDraft,
   reviewFinOpsRemediationDraft,
+  runFinOpsRiskScan,
   suppressFinOpsAnomaly,
 } from "./api.js";
 import {
@@ -280,7 +283,7 @@ function MetricCards({
             <div className="finops-metric-actions">
               {onAsk ? <button type="button" onClick={() => onAsk(context)}>问 AI</button> : null}
               {onEvidence ? (
-                <button type="button" onClick={() => onEvidence(`${card.label}指标`)}>
+                <button type="button" onClick={() => onEvidence({ reason: `${card.label}指标`, metricId: card.id })}>
                   查看证据
                 </button>
               ) : null}
@@ -1087,6 +1090,77 @@ export function finOpsPortalStatusVisibility({
 }
 
 
+function EvidenceRequestCard({ detail, index, total }) {
+  return (
+    <article className="finops-evidence-request-card">
+      <header>
+        <span>证据 {index + 1} / {total}</span>
+        <h3>{detail.title}</h3>
+      </header>
+      <section>
+        <h4>业务信号</h4>
+        <dl>
+          <div><dt>操作</dt><dd>{detail.operation}</dd></div>
+          <div><dt>结果</dt><dd><EvidenceBadge status={detail.status} /></dd></div>
+          <div><dt>发生时间</dt><dd>{detail.occurredAt ? new Date(detail.occurredAt).toLocaleString("zh-CN") : "未记录"}</dd></div>
+          <div><dt>入口状态</dt><dd>{detail.gatewayCoverage}</dd></div>
+        </dl>
+      </section>
+      <section>
+        <h4>运行与缓存</h4>
+        <dl>
+          <div><dt>响应时间</dt><dd>{detail.latency}</dd></div>
+          <div><dt>Token</dt><dd>{formatFinOpsNumber(detail.tokens)}</dd></div>
+          <div><dt>估算成本</dt><dd>{detail.cost}</dd></div>
+          <div><dt>缓存判定</dt><dd>{detail.cache}</dd></div>
+        </dl>
+      </section>
+      <section className="finops-business-evidence">
+        <h4>业务请求 <EvidenceBadge status={detail.businessRequest.status} /></h4>
+        <p>{detail.businessRequest.text}</p>
+      </section>
+      <section className="finops-business-evidence">
+        <h4>最终可见回答 <EvidenceBadge status={detail.businessResponse.status} /></h4>
+        <p>{detail.businessResponse.text}</p>
+      </section>
+      <section>
+        <h4>处理过程</h4>
+        <ol className="finops-evidence-timeline">
+          {detail.timeline.map((item, timelineIndex) => (
+            <li key={`${item.stage || "stage"}:${timelineIndex}`}>
+              <i />
+              <span><b>{item.label || "处理阶段"}</b><small>{item.latency_ms == null ? item.status : formatFinOpsDuration(item.latency_ms)}</small></span>
+            </li>
+          ))}
+        </ol>
+      </section>
+      {detail.technical.items.length ? (
+        <details className="finops-technical">
+          <summary>技术信息（按需查看）</summary>
+          <dl>
+            {detail.technical.items.map((item) => (
+              <div key={item.key}><dt>{item.label}</dt><dd>{item.value}</dd></div>
+            ))}
+          </dl>
+        </details>
+      ) : null}
+      <div className="finops-evidence-links">
+        {detail.links.foundryTrace ? (
+          <a className="finops-monitor-link" href={detail.links.foundryTrace} target="_blank" rel="noreferrer">
+            打开{CUSTOMER_INFRA_LABELS.trace} <ExternalLink size={14} />
+          </a>
+        ) : null}
+        {detail.links.azureMonitor ? (
+          <a className="finops-monitor-link" href={detail.links.azureMonitor} target="_blank" rel="noreferrer">
+            打开{CUSTOMER_INFRA_LABELS.monitor} <ExternalLink size={14} />
+          </a>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+
 function EvidenceDrawer({
   state,
   onClose,
@@ -1094,7 +1168,8 @@ function EvidenceDrawer({
 }) {
   const drawerRef = useRef(null);
   const closeRef = useRef(null);
-  const detail = state.detail ? finopsRequestViewModel(state.detail) : null;
+  const rawDetails = Array.isArray(state.details) ? state.details : [];
+  const details = rawDetails.map((item) => finopsRequestViewModel(item));
 
   useEffect(() => {
     if (!state.open) return undefined;
@@ -1152,7 +1227,7 @@ function EvidenceDrawer({
         <header>
           <div>
             <span>请求证据</span>
-            <h2 id="finops-evidence-title">{detail?.title || "正在获取请求证据"}</h2>
+            <h2 id="finops-evidence-title">{details.length ? `${state.reason} · ${details.length} 条证据` : "正在获取请求证据"}</h2>
             {state.reason ? <p>查看原因：{state.reason}</p> : null}
           </div>
           <button ref={closeRef} type="button" onClick={onClose} aria-label="关闭请求证据">
@@ -1166,71 +1241,20 @@ function EvidenceDrawer({
           {!state.loading && state.error ? (
             <div className="finops-drawer-state error"><AlertTriangle size={18} />{state.error}</div>
           ) : null}
-          {!state.loading && !state.error && !detail ? (
+          {!state.loading && !state.error && !details.length ? (
             <div className="finops-drawer-state"><Database size={18} />当前筛选范围没有可用请求证据</div>
           ) : null}
-          {detail ? (
-            <>
-              <section>
-                <h3>请求概况</h3>
-                <dl>
-                  <div><dt>操作</dt><dd>{detail.operation}</dd></div>
-                  <div><dt>状态</dt><dd><EvidenceBadge status={detail.status} /></dd></div>
-                  <div><dt>发生时间</dt><dd>{detail.occurredAt ? new Date(detail.occurredAt).toLocaleString("zh-CN") : "未记录"}</dd></div>
-                  <div><dt>网关覆盖</dt><dd>{detail.gatewayCoverage}</dd></div>
-                </dl>
-              </section>
-              <section>
-                <h3>运行指标</h3>
-                <dl>
-                  <div><dt>响应时间</dt><dd>{detail.latency}</dd></div>
-                  <div><dt>Token</dt><dd>{formatFinOpsNumber(detail.tokens)}</dd></div>
-                  <div><dt>估算成本</dt><dd>{detail.cost}</dd></div>
-                  <div><dt>缓存</dt><dd>{detail.cache}</dd></div>
-                </dl>
-              </section>
-              <section className="finops-business-evidence">
-                <h3>业务请求 <EvidenceBadge status={detail.businessRequest.status} /></h3>
-                <p>{detail.businessRequest.text}</p>
-              </section>
-              <section className="finops-business-evidence">
-                <h3>最终可见回答 <EvidenceBadge status={detail.businessResponse.status} /></h3>
-                <p>{detail.businessResponse.text}</p>
-              </section>
-              <section>
-                <h3>处理过程</h3>
-                <ol className="finops-evidence-timeline">
-                  {detail.timeline.map((item, index) => (
-                    <li key={`${item.stage || "stage"}:${index}`}>
-                      <i />
-                      <span><b>{item.label || "处理阶段"}</b><small>{item.latency_ms == null ? item.status : formatFinOpsDuration(item.latency_ms)}</small></span>
-                    </li>
-                  ))}
-                </ol>
-              </section>
-              {detail.technical.items.length ? (
-                <details className="finops-technical">
-                  <summary>技术信息（按需查看）</summary>
-                  <dl>
-                    {detail.technical.items.map((item) => (
-                      <div key={item.key}><dt>{item.label}</dt><dd>{item.value}</dd></div>
-                    ))}
-                  </dl>
-                </details>
-              ) : null}
-              <div className="finops-evidence-links">
-                {detail.links.foundryTrace ? (
-                  <a className="finops-monitor-link" href={detail.links.foundryTrace} target="_blank" rel="noreferrer">
-                    打开{CUSTOMER_INFRA_LABELS.trace} <ExternalLink size={14} />
-                  </a>
-                ) : null}
-                {detail.links.azureMonitor ? (
-                  <a className="finops-monitor-link" href={detail.links.azureMonitor} target="_blank" rel="noreferrer">
-                    打开{CUSTOMER_INFRA_LABELS.monitor} <ExternalLink size={14} />
-                  </a>
-                ) : null}
-              </div>
-            </>
+          {details.length ? (
+            <div className="finops-evidence-request-list">
+              {state.details.map((item, index) => (
+                <EvidenceRequestCard
+                  key={item?.technical_refs?.request_ref || index}
+                  detail={finopsRequestViewModel(item)}
+                  index={index}
+                  total={details.length}
+                />
+              ))}
+            </div>
           ) : null}
         </div>
       </aside>
@@ -1244,13 +1268,16 @@ export function FinOpsPortal({
   preloadScopeKey = "",
   dataScope = {},
   permissions = {},
+  initialTab = "overview",
+  surface = "cost",
+  onNavigateRisk = null,
 }) {
   const initialWindowRef = useRef(initialWindow());
   const initialCacheRef = useRef(
     preloadScopeKey ? readFinOpsData(preloadScopeKey) : { status: "missing", value: null },
   );
   const initialView = finopsBootstrapViewData(initialCacheRef.current.value || {});
-  const [tab, setTab] = useState("overview");
+  const [tab, setTab] = useState(initialTab === "risk" ? "risk" : "overview");
   const [windowValue, setWindowValue] = useState(initialWindowRef.current);
   const [filters, setFilters] = useState({ departmentId: "", agentId: "", model: "" });
   const [overviewState, setOverviewState] = useState({
@@ -1274,6 +1301,12 @@ export function FinOpsPortal({
   });
   const [governance, setGovernance] = useState({ busyId: "", error: "" });
   const [riskMutation, setRiskMutation] = useState({ busyId: "", error: "" });
+  const [riskScanState, setRiskScanState] = useState({
+    loading: false,
+    busy: false,
+    error: "",
+    scan: null,
+  });
   const [assistantState, setAssistantState] = useState({
     context: null,
     openRequest: 0,
@@ -1291,7 +1324,7 @@ export function FinOpsPortal({
     reason: "",
     loading: false,
     error: "",
-    detail: null,
+    details: [],
   });
   const overviewSequence = useRef(0);
   const evidenceController = useRef(null);
@@ -1300,6 +1333,11 @@ export function FinOpsPortal({
   const remediationSequence = useRef(0);
   const remediationOpportunityRef = useRef(null);
   const remediationTrigger = useRef(null);
+  const riskScanController = useRef(null);
+
+  useEffect(() => {
+    setTab(initialTab === "risk" ? "risk" : "overview");
+  }, [initialTab]);
 
   const query = useMemo(() => ({
     from: toIso(windowValue.from),
@@ -1488,6 +1526,77 @@ export function FinOpsPortal({
     remediationOpportunityRef.current = null;
     setRemediationState({ open: false, opportunity: null, draft: null, busy: false, error: "" });
   }, [queryScopeKey]);
+
+  useEffect(() => {
+    if (tab !== "risk" || !workspaceId) return undefined;
+    riskScanController.current?.abort();
+    const controller = new AbortController();
+    riskScanController.current = controller;
+    setRiskScanState({ loading: true, busy: false, error: "", scan: null });
+    const load = async () => {
+      try {
+        const scan = await loadLatestFinOpsRiskScan(query, { signal: controller.signal });
+        setRiskScanState({ loading: false, busy: false, error: "", scan });
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+        const initializeCurrentDemoScope = (
+          error?.status === 404
+          && workspaceId === "demo-corpus"
+          && !query.departmentId
+          && !query.agentId
+          && !query.model
+        );
+        if (initializeCurrentDemoScope) {
+          try {
+            const scan = await runFinOpsRiskScan(query, { signal: controller.signal });
+            setRiskScanState({ loading: false, busy: false, error: "", scan });
+            return;
+          } catch (scanError) {
+            if (scanError?.name === "AbortError") return;
+            setRiskScanState({
+              loading: false,
+              busy: false,
+              error: scanError instanceof Error ? scanError.message : "风险扫描暂时无法执行",
+              scan: null,
+            });
+            return;
+          }
+        }
+        if (error?.status === 404) {
+          setRiskScanState({ loading: false, busy: false, error: "", scan: null });
+          return;
+        }
+        setRiskScanState({
+          loading: false,
+          busy: false,
+          error: error instanceof Error ? error.message : "最近扫描结果读取失败",
+          scan: null,
+        });
+      }
+    };
+    load();
+    return () => controller.abort();
+  }, [query, queryScopeKey, tab, workspaceId]);
+
+  const runRiskScan = useCallback(async () => {
+    if (!workspaceId || riskScanState.busy) return;
+    riskScanController.current?.abort();
+    const controller = new AbortController();
+    riskScanController.current = controller;
+    setRiskScanState((state) => ({ ...state, loading: false, busy: true, error: "" }));
+    try {
+      const scan = await runFinOpsRiskScan(query, { signal: controller.signal });
+      setRiskScanState({ loading: false, busy: false, error: "", scan });
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      setRiskScanState((state) => ({
+        ...state,
+        loading: false,
+        busy: false,
+        error: error instanceof Error ? error.message : "风险扫描暂时无法执行",
+      }));
+    }
+  }, [query, riskScanState.busy, workspaceId]);
   const loadRoiDialogData = useCallback(async () => {
     roiDialogController.current?.abort();
     const controller = new AbortController();
@@ -1530,7 +1639,7 @@ export function FinOpsPortal({
       reason: "",
       loading: false,
       error: "",
-      detail: null,
+      details: [],
     });
   }, []);
 
@@ -1544,6 +1653,7 @@ export function FinOpsPortal({
           ? selection.evidenceRefs
           : [],
         policyType: String(selection?.policyType || ""),
+        metricId: String(selection?.metricId || ""),
       };
     evidenceController.current?.abort();
     const controller = new AbortController();
@@ -1554,44 +1664,56 @@ export function FinOpsPortal({
       reason: normalized.reason,
       loading: true,
       error: "",
-      detail: null,
+      details: [],
     });
     try {
       let items = [];
-      let requestRef = evidenceRequestRef({
-        evidenceRefs: normalized.evidenceRefs,
-      });
-      if (!requestRef) {
+      let requestRefs = normalized.evidenceRefs.slice(0, 3);
+      if (!requestRefs.length && (normalized.metricId || normalized.policyType)) {
+        const subjectEvidence = await loadFinOpsEvidence(
+          { metricId: normalized.metricId, policyType: normalized.policyType },
+          query,
+          { signal: controller.signal },
+        );
+        requestRefs = (Array.isArray(subjectEvidence?.items) ? subjectEvidence.items : [])
+          .map((item) => item?.request_ref)
+          .filter(Boolean)
+          .slice(0, 3);
+      }
+      if (!requestRefs.length) {
         const list = await loadFinOpsRequests(
           { ...query, limit: 20 },
           { signal: controller.signal },
         );
         items = Array.isArray(list?.items) ? list.items : [];
-        requestRef = evidenceRequestRef({
+        const requestRef = evidenceRequestRef({
           fallbackItems: [...items].reverse(),
         });
+        requestRefs = requestRef ? [requestRef] : [];
       }
-      if (!requestRef) {
+      if (!requestRefs.length) {
         setEvidenceState({
           open: true,
           reason: normalized.reason,
           loading: false,
           error: "",
-          detail: null,
+          details: [],
         });
         return;
       }
-      const detail = await loadFinOpsRequest(
-        requestRef,
-        query,
-        { signal: controller.signal },
-      );
+      const details = await Promise.all(requestRefs.map((requestRef) => (
+        loadFinOpsRequest(
+          requestRef,
+          query,
+          { signal: controller.signal },
+        )
+      )));
       setEvidenceState({
         open: true,
         reason: normalized.reason,
         loading: false,
         error: "",
-        detail,
+        details,
       });
     } catch (error) {
       if (error?.name === "AbortError") return;
@@ -1600,7 +1722,7 @@ export function FinOpsPortal({
         reason: normalized.reason,
         loading: false,
         error: error instanceof Error ? error.message : "请求证据读取失败",
-        detail: null,
+        details: [],
       });
     }
   }, [permissions, query]);
@@ -1678,6 +1800,7 @@ export function FinOpsPortal({
   useEffect(() => () => {
     evidenceController.current?.abort();
     roiDialogController.current?.abort();
+    riskScanController.current?.abort();
   }, []);
 
   const refreshRiskOnly = useCallback(() => {
@@ -1919,6 +2042,10 @@ export function FinOpsPortal({
     return null;
   }), [tabKeys, tabLoaders]);
   const activateTab = useCallback((targetTab) => {
+    if (targetTab === "risk" && surface !== "risk" && onNavigateRisk) {
+      onNavigateRisk();
+      return;
+    }
     if (targetTab !== "overview") {
       const cached = readFinOpsData(tabKeys[targetTab]);
       if (cached.value) {
@@ -1936,7 +2063,7 @@ export function FinOpsPortal({
       }
     }
     setTab(targetTab);
-  }, [markSuccessful, queryScopeKey, tabKeys]);
+  }, [markSuccessful, onNavigateRisk, queryScopeKey, surface, tabKeys]);
   const handleModelSettingsChanged = useCallback((kind) => {
     invalidateFinOpsMutation(kind === "price" ? "price_setting" : "model_setting", {
       workspaceId,
@@ -1959,7 +2086,8 @@ export function FinOpsPortal({
         ? "partial"
         : "unavailable",
   }, assistantScope), [assistantScope, overviewDataStatus, tab]);
-  const visibleTabs = FINOPS_TABS.filter((item) => {
+  const visibleTabs = (surface === "risk" ? [] : FINOPS_TABS).filter((item) => {
+    if (item.id === "risk") return false;
     if (item.id === "cost") return permissions["finops.cost.read"] !== false;
     if (item.id === "roi") return permissions["finops.roi.read"] !== false;
     return true;
@@ -1987,14 +2115,18 @@ export function FinOpsPortal({
     ? detailState.updating
     : overviewState.updating || detailState.updating;
   const canOpenEvidence = permissions["finops.request_detail.read"] !== false;
+  const pageTitle = surface === "risk" ? "风险与优化" : "成本管理";
+  const pageDescription = surface === "risk"
+    ? "扫描运行证据、解释判定依据，并把建议与生产动作保持分离。"
+    : "让 IT 与财务在同一视图理解成本、效能与投入价值。";
 
   return (
     <main className="finops-page">
       <header className="finops-head">
         <div className="finops-head-copy">
           <p>AI OPERATIONS</p>
-          <h1>运营管理</h1>
-          <span>让 IT 与财务在同一视图理解成本、效能、价值与风险。</span>
+          <h1>{pageTitle}</h1>
+          <span>{pageDescription}</span>
         </div>
         <div className="finops-live">
           <span>
@@ -2054,7 +2186,7 @@ export function FinOpsPortal({
         </div>
       ) : null}
 
-      <nav className="finops-tabs" aria-label="运营管理页面">
+      {visibleTabs.length ? <nav className="finops-tabs" aria-label="成本管理页面">
         {visibleTabs.map((item) => {
           const Icon = TAB_ICONS[item.id];
           return (
@@ -2070,7 +2202,7 @@ export function FinOpsPortal({
             </button>
           );
         })}
-      </nav>
+      </nav> : null}
 
       <section className="finops-content" aria-busy={portalStatusVisibility.showOverviewSkeleton || showDetailLoading || detailState.updating ? "true" : "false"}>
         {portalStatusVisibility.showOverviewSkeleton ? <MetricSkeleton /> : null}
@@ -2115,16 +2247,22 @@ export function FinOpsPortal({
             onSelectRisk={setSelectedRiskId}
             onRetry={() => requestTabRefresh("risk", { force: true })}
             onEvidence={canOpenEvidence ? openEvidence : null}
+            onAsk={openRoiAssistant}
             onCreateDraft={openRemediation}
             onAcknowledge={(item) => manageAnomaly(item, "acknowledge")}
             onSuppress={(item) => manageAnomaly(item, "suppress")}
+            scan={riskScanState.scan}
+            scanLoading={riskScanState.loading}
+            scanBusy={riskScanState.busy}
+            scanError={riskScanState.error}
+            onRunScan={runRiskScan}
           />
         ) : null}
       </section>
 
       <footer className="finops-footnote">
         <WalletCards size={14} />
-        <span>成本为 DataForge 价目表估算，不代表云平台实际账单；缺失证据不会补造数据。</span>
+        <span>{surface === "risk" ? "扫描只读取当前授权范围内的运行证据，不会自动执行生产变更。" : "成本为 DataForge 价目表估算，不代表云平台实际账单；缺失证据不会补造数据。"}</span>
       </footer>
       <EvidenceDrawer
         state={evidenceState}

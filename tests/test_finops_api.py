@@ -551,7 +551,24 @@ def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(
         "evidence_refs": ["req_aaaaaaaaaaaa"],
         "evidence_state": "observed",
         "suggested_questions": ["与上一周期相比如何？"],
+        "sections": {
+            "conclusion": "当前模型范围内只有一条已观测请求，可继续扩大样本后比较。",
+            "basis": "结论仅基于当前筛选范围内已列出的可复核证据。",
+            "impact": "现有证据不足以进一步量化业务影响。",
+            "recommendation": "建议先复核证据，再决定是否进入治理流程。",
+            "caveat": "结论仅适用于当前时间范围和筛选条件。",
+        },
     }
+    persisted = client.get(
+        f"/api/finops/assistant/conversations/{response.json()['conversation_ref']}/messages",
+        params={"workspace_id": "ws-a"},
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert persisted.status_code == 200
+    assistant_message = persisted.json()["items"][-1]
+    assert assistant_message["metric_context_payload"]["response_sections"]["conclusion"] == (
+        "当前模型范围内只有一条已观测请求，可继续扩大样本后比较。"
+    )
 
     payload["metric_context"]["filters"]["workspace_id"] = "ws-b"
     denied = client.post(
@@ -665,6 +682,51 @@ def test_finops_request_detail_requires_owner_or_admin(
         "workspace access denied for finops.request_detail.read"
     )
     assert "req_aaaaaaaaaaaa" not in response.text
+
+
+def test_finops_request_evidence_checks_only_the_selected_workspace_role(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "owner", "ws-b": "viewer"},
+    )
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+
+    evidence = client.get(
+        "/api/finops/evidence",
+        params={"workspace_id": "ws-a", "metric_id": "cost"},
+        headers=headers,
+    )
+    detail = client.get(
+        "/api/finops/requests/req_aaaaaaaaaaaa",
+        params={"workspace_id": "ws-a"},
+        headers=headers,
+    )
+
+    assert evidence.status_code == 200, evidence.text
+    assert detail.status_code == 200, detail.text
+
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "viewer", "ws-b": "owner"},
+    )
+    denied_evidence = client.get(
+        "/api/finops/evidence",
+        params={"workspace_id": "ws-a", "metric_id": "cost"},
+        headers=headers,
+    )
+    denied_detail = client.get(
+        "/api/finops/requests/req_aaaaaaaaaaaa",
+        params={"workspace_id": "ws-a"},
+        headers=headers,
+    )
+
+    assert denied_evidence.status_code == 403
+    assert denied_detail.status_code == 403
 
 
 def test_finops_request_detail_returns_application_request_and_visible_response(

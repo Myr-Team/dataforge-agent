@@ -965,3 +965,92 @@ BEGIN
     EXEC(N'ALTER TABLE df_finops.request_event
         ADD routing_policy_revision INT NULL');
 END;
+GO
+
+IF OBJECT_ID(N'df_finops.risk_scan', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.risk_scan (
+        tenant_ref NVARCHAR(160) NOT NULL,
+        scan_ref NVARCHAR(64) NOT NULL,
+        workspace_id NVARCHAR(160) NOT NULL,
+        scope_fingerprint CHAR(64) NOT NULL,
+        scope_json NVARCHAR(MAX) NOT NULL,
+        scan_status NVARCHAR(16) NOT NULL,
+        policy_revision NVARCHAR(128) NOT NULL,
+        ledger_revision NVARCHAR(128) NOT NULL,
+        rules_evaluated INT NOT NULL,
+        rules_triggered INT NOT NULL,
+        rules_clear INT NOT NULL,
+        rules_insufficient INT NOT NULL,
+        request_sample_count INT NOT NULL,
+        evidence_coverage_pct DECIMAL(7, 4) NOT NULL,
+        started_at DATETIME2(7) NOT NULL,
+        finished_at DATETIME2(7) NULL,
+        initiated_by_ref NVARCHAR(160) NOT NULL,
+        safe_error_category NVARCHAR(80) NULL,
+        CONSTRAINT PK_finops_risk_scan
+            PRIMARY KEY (tenant_ref, scan_ref),
+        CONSTRAINT CK_finops_risk_scan_scope_json CHECK (
+            ISJSON(scope_json) = 1
+        ),
+        CONSTRAINT CK_finops_risk_scan_status CHECK (
+            scan_status IN (N'running', N'completed', N'failed')
+        ),
+        CONSTRAINT CK_finops_risk_scan_counts CHECK (
+            rules_evaluated >= 0
+            AND rules_triggered >= 0
+            AND rules_clear >= 0
+            AND rules_insufficient >= 0
+            AND request_sample_count >= 0
+        ),
+        CONSTRAINT CK_finops_risk_scan_coverage CHECK (
+            evidence_coverage_pct >= 0 AND evidence_coverage_pct <= 100
+        )
+    );
+    CREATE INDEX IX_finops_risk_scan_scope_started
+        ON df_finops.risk_scan (
+            tenant_ref, workspace_id, scope_fingerprint, started_at DESC
+        );
+END;
+GO
+
+IF OBJECT_ID(N'df_finops.risk_scan_finding', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.risk_scan_finding (
+        tenant_ref NVARCHAR(160) NOT NULL,
+        scan_ref NVARCHAR(64) NOT NULL,
+        finding_index INT NOT NULL,
+        policy_type NVARCHAR(48) NOT NULL,
+        rule_status NVARCHAR(24) NOT NULL,
+        severity NVARCHAR(16) NOT NULL,
+        rule_revision NVARCHAR(128) NOT NULL,
+        observed_value DECIMAL(28, 8) NULL,
+        threshold_value DECIMAL(28, 8) NULL,
+        unit NVARCHAR(24) NOT NULL,
+        sample_count INT NOT NULL,
+        minimum_samples INT NOT NULL,
+        recommendation NVARCHAR(1000) NOT NULL,
+        reason NVARCHAR(1000) NOT NULL,
+        evidence_refs_json NVARCHAR(MAX) NOT NULL,
+        CONSTRAINT PK_finops_risk_scan_finding
+            PRIMARY KEY (tenant_ref, scan_ref, finding_index),
+        CONSTRAINT FK_finops_risk_scan_finding_scan
+            FOREIGN KEY (tenant_ref, scan_ref)
+            REFERENCES df_finops.risk_scan (tenant_ref, scan_ref),
+        CONSTRAINT CK_finops_risk_scan_finding_status CHECK (
+            rule_status IN (
+                N'triggered', N'clear', N'insufficient_data', N'unavailable'
+            )
+        ),
+        CONSTRAINT CK_finops_risk_scan_finding_severity CHECK (
+            severity IN (N'info', N'warning', N'critical')
+        ),
+        CONSTRAINT CK_finops_risk_scan_finding_evidence_json CHECK (
+            ISJSON(evidence_refs_json) = 1
+        ),
+        CONSTRAINT CK_finops_risk_scan_finding_samples CHECK (
+            sample_count >= 0 AND minimum_samples >= 0
+        )
+    );
+END;
+GO

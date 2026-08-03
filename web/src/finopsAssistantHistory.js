@@ -16,6 +16,22 @@ function workspaceKey(workspaceId) {
 }
 
 
+function normalizeHistoryMessage(item = {}) {
+  const payload = item?.metric_context_payload;
+  if (item?.role !== "assistant" || !payload || typeof payload !== "object") {
+    return item;
+  }
+  return {
+    ...item,
+    sections: payload.response_sections || null,
+    evidenceRefs: Array.isArray(payload.evidence_refs) ? payload.evidence_refs : [],
+    evidenceLabels: Array.isArray(payload.evidence_labels) ? payload.evidence_labels : [],
+    evidenceState: payload.evidence_state || "unavailable",
+    suggestions: Array.isArray(payload.suggested_questions) ? payload.suggested_questions : [],
+  };
+}
+
+
 export function peekFinOpsAssistantHistory(workspaceId) {
   const key = workspaceKey(workspaceId);
   return key ? historyCache.get(key) || null : null;
@@ -82,7 +98,9 @@ export function prefetchFinOpsAssistantHistory(workspaceId, options = {}) {
       return stillCurrent()
         ? writeFinOpsAssistantHistory(key, {
           conversationRef,
-          messages: Array.isArray(history?.items) ? history.items : [],
+          messages: Array.isArray(history?.items)
+            ? history.items.map(normalizeHistoryMessage)
+            : [],
         })
         : peekFinOpsAssistantHistory(key);
     })

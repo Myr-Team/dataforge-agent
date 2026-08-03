@@ -194,7 +194,7 @@ def build_roi_decision(*, economics: Mapping[str, Any], roi_snapshot: Mapping[st
     return validated.model_dump(mode="json")
 
 
-def build_risk_decision(*, anomalies: Sequence[Mapping[str, Any]], opportunities: Sequence[Mapping[str, Any]], evidence_summaries: Sequence[Mapping[str, Any]], insight: Mapping[str, Any] | None, drafts: Sequence[Mapping[str, Any]], governance_capability: Mapping[str, Any]) -> dict[str, Any]:
+def build_risk_decision(*, anomalies: Sequence[Mapping[str, Any]], opportunities: Sequence[Mapping[str, Any]], evidence_summaries: Sequence[Mapping[str, Any]], insight: Mapping[str, Any] | None, drafts: Sequence[Mapping[str, Any]], governance_capability: Mapping[str, Any], evidence_sets: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     domains = {name: 0 for name in ("cost", "experience", "efficiency", "governance")}
     for anomaly in anomalies:
         domains[_DOMAIN.get(str(anomaly.get("policy_type") or ""), "governance")] += 1
@@ -232,14 +232,16 @@ def build_risk_decision(*, anomalies: Sequence[Mapping[str, Any]], opportunities
         signal = summary.get("signal") if isinstance(summary.get("signal"), Mapping) else {}
         technical = summary.get("technical_refs") if isinstance(summary.get("technical_refs"), Mapping) else {}
         selected.append({"request_ref": summary.get("request_ref"), "request_name": summary.get("request_name"),
+            "operation": summary.get("operation"), "model_label": summary.get("model_label"),
             "signal": {"metric": signal.get("metric"), "value": signal.get("value"), "unit": signal.get("unit")},
             "latency_ms": summary.get("latency_ms"), "cache_state": summary.get("cache_state"), "status": summary.get("status"),
-            "error_category": summary.get("error_category"), "technical_refs": {"request_ref": str(technical.get("request_ref") or summary.get("request_ref") or "")} if str(technical.get("request_ref") or summary.get("request_ref") or "").startswith(_SAFE_REF_PREFIXES) else {}})
+            "error_category": summary.get("error_category"), "visible_answer_summary": _bounded_text(summary.get("visible_answer_summary"), 400),
+            "technical_refs": {"request_ref": str(technical.get("request_ref") or summary.get("request_ref") or "")} if str(technical.get("request_ref") or summary.get("request_ref") or "").startswith(_SAFE_REF_PREFIXES) else {}})
     statement = DecisionStatement(state="prioritized" if priorities else "no_current_risk", title="已按影响与证据确定优化优先级" if priorities else "当前没有可排序的风险证据", summary="风险以影响、置信度、影响范围和可追溯证据展示，不使用复合风险分数。", evidence_state="observed" if priorities else "unavailable")
     payload = {"decision": statement, "risk_domains": [{"id": key, "count": value} for key, value in domains.items()],
         "risk_matrix": matrix, "priorities": priorities, "optimization_portfolio": portfolio,
         "portfolio_metadata": {"x_axis": "effort", "y_axis": "value_impact", "size": "affected_scope", "color": "risk_domain"},
-        "selected_evidence_summaries": selected, "insight": _safe_text_projection(insight) if insight else None,
+        "selected_evidence_summaries": selected, "evidence_sets": [dict(item) for item in evidence_sets], "insight": _safe_text_projection(insight) if insight else None,
         "drafts": [_safe_text_projection(item) for item in drafts], "governance_capability": {"read_enabled": bool(governance_capability.get("read_enabled")), "draft_enabled": bool(governance_capability.get("draft_enabled")), "actions_enabled": bool(governance_capability.get("actions_enabled")), "typed_executors": [value for value in (str(item).strip() for item in governance_capability.get("typed_executors") or []) if value in {"cache_policy", "budget_policy", "routing_policy", "pricing_policy"}]}}
     validated = RiskDecision.model_validate(payload)
     return validated.model_dump(mode="json")

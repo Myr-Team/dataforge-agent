@@ -780,6 +780,93 @@ export function riskDecisionView(payload) {
 }
 
 
+const RISK_SCAN_STATUS_LABELS = Object.freeze({
+  triggered: "需关注",
+  clear: "正常",
+  insufficient_data: "样本不足",
+  unavailable: "暂不可评估",
+});
+
+
+function scanValueLabel(value, unit) {
+  if (value === null) return "未取得";
+  if (unit === "%") return `${formatNumber(value, 2)}%`;
+  if (unit === "ms") return `${formatNumber(value, 1)} ms`;
+  if (unit === "x") return `${formatNumber(value, 2)} 倍`;
+  return formatNumber(value, 2);
+}
+
+
+function scanEvidenceRefs(value, policy) {
+  const matching = records(value).find((item) => (
+    boundedText(item.subject_type, 24) === "risk"
+    && safePolicy(item.policy_type ?? item.subject_id) === policy
+  ));
+  return safeEvidenceRefs(records(matching?.items).map((item) => item.request_ref));
+}
+
+
+export function riskScanView(payload) {
+  const source = isRecord(payload) ? payload : {};
+  const scanRef = boundedText(source.scan_ref, 40);
+  const status = boundedText(source.status, 24);
+  const evaluated = nonNegativeNumber(source.rules_evaluated) ?? 0;
+  const triggered = nonNegativeNumber(source.rules_triggered) ?? 0;
+  const clear = nonNegativeNumber(source.rules_clear) ?? 0;
+  const insufficient = nonNegativeNumber(source.rules_insufficient) ?? 0;
+  const unavailable = Math.max(0, evaluated - triggered - clear - insufficient);
+  const evidenceSets = records(source.evidence_sets);
+  const findings = records(source.findings).flatMap((item) => {
+    const policy = safePolicy(item.policy_type);
+    if (policy === "other") return [];
+    const findingStatus = boundedText(item.status, 32);
+    if (!Object.hasOwn(RISK_SCAN_STATUS_LABELS, findingStatus)) return [];
+    const unit = ["%", "ms", "x"].includes(item.unit) ? item.unit : "";
+    const directRefs = safeEvidenceRefs(item.evidence_refs).filter((reference) => reference.startsWith("req_"));
+    const selectedRefs = scanEvidenceRefs(evidenceSets, policy).filter((reference) => reference.startsWith("req_"));
+    return [{
+      policy,
+      label: POLICY_LABELS[policy],
+      status: findingStatus,
+      statusLabel: RISK_SCAN_STATUS_LABELS[findingStatus],
+      severity: ["info", "warning", "critical"].includes(item.severity) ? item.severity : "info",
+      observedValue: finiteNumber(item.observed_value),
+      observedLabel: scanValueLabel(finiteNumber(item.observed_value), unit),
+      thresholdValue: finiteNumber(item.threshold_value),
+      thresholdLabel: scanValueLabel(finiteNumber(item.threshold_value), unit),
+      unit,
+      sampleCount: nonNegativeNumber(item.sample_count) ?? 0,
+      minimumSamples: nonNegativeNumber(item.minimum_samples) ?? 0,
+      reason: boundedText(item.reason, 300),
+      recommendation: boundedText(item.recommendation, 300),
+      ruleRevision: safeRevision(item.rule_revision),
+      evidenceRefs: [...new Set([...directRefs, ...selectedRefs])].slice(0, 3),
+    }];
+  }).slice(0, 7);
+  const governance = isRecord(source.governance) ? source.governance : {};
+  return {
+    isAvailable: Boolean(scanRef && status === "completed"),
+    scanRef,
+    status: status === "completed" ? status : "unavailable",
+    summary: {
+      evaluated,
+      triggered,
+      clear,
+      insufficient,
+      unavailable,
+      sampleCount: nonNegativeNumber(source.request_sample_count) ?? 0,
+      evidenceCoveragePct: nonNegativeNumber(source.evidence_coverage_pct),
+    },
+    findings,
+    policyRevision: safeRevision(source.policy_revision),
+    ledgerRevision: safeRevision(source.ledger_revision),
+    startedAt: boundedText(source.started_at, 40),
+    finishedAt: boundedText(source.finished_at, 40),
+    readOnly: governance.mode === "read_only_scan" && governance.automatic_actions === false,
+  };
+}
+
+
 function safeScalar(value) {
   if (typeof value === "boolean") return value;
   const number = finiteNumber(value);

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   applyDimensionFilter,
+  contextualAssistantQuestion,
   filterChips,
   metricContext,
   metricTooltip,
@@ -108,6 +109,21 @@ test("metric context keeps only bounded safe fields", () => {
     evidence_state: "observed",
     cache_state: "hit",
   });
+});
+
+
+test("clicked metrics generate a bounded subject-specific assistant question", () => {
+  assert.equal(
+    contextualAssistantQuestion({
+      metric_id: "cache_hit_rate",
+      label: "缓存命中率",
+      value: 62.5,
+      unit: "%",
+      dimension: "model",
+      dimension_value: "gpt-5.6-terra",
+    }),
+    "请分析“缓存命中率”（当前值 62.5%，模型为 gpt-5.6-terra）：说明结论、证据依据、影响、建议和判断边界。",
+  );
 });
 
 

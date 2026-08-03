@@ -62,7 +62,7 @@ function cacheKeyWorkspace(key) {
 
 
 export function finopsIntentHandlers(item, onIntent) {
-  if (item?.id !== "finops" || typeof onIntent !== "function") return {};
+  if (!["finops", "finops-risk"].includes(item?.id) || typeof onIntent !== "function") return {};
   return {
     onMouseEnter: onIntent,
     onFocus: onIntent,

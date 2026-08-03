@@ -13,7 +13,8 @@ test("operations header isolates title copy from the synchronization control", a
   ]);
 
   assert.match(component, /className="finops-head-copy"/);
-  assert.match(component, /<h1>运营管理<\/h1>/);
+  assert.match(component, /const pageTitle = surface === "risk" \? "风险与优化" : "成本管理"/);
+  assert.match(component, /<h1>\{pageTitle\}<\/h1>/);
   assert.doesNotMatch(styles, /\.finops-head\s*>\s*div\s*>\s*span/);
   assert.match(styles, /\.finops-head-copy\s*>\s*span/);
   assert.match(styles, /\.finops-live\s*>\s*span/);
@@ -482,6 +483,64 @@ test("risk page shows local cache and mutation states without infrastructure wor
   assert.match(markup, /<button type="button" disabled="">确认异常<\/button>/);
   assert.match(markup, /<button type="button" disabled="">抑制异常<\/button>/);
   assert.doesNotMatch(markup, /新鲜度|APIM|Azure API Management/);
+});
+
+
+test("risk page renders an explainable read-only scan with rule-specific actions", async (context) => {
+  const server = await createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  });
+  context.after(() => server.close());
+  const { RiskDecisionPage } = await server.ssrLoadModule("/src/finops/RiskDecisionPage.jsx");
+  const scan = {
+    scan_ref: "rscan_0123456789abcdef0123456789abcdef",
+    status: "completed",
+    rules_evaluated: 7,
+    rules_triggered: 1,
+    rules_clear: 5,
+    rules_insufficient: 1,
+    request_sample_count: 146,
+    evidence_coverage_pct: 100,
+    policy_revision: "policy_v7",
+    ledger_revision: "ledger_v9",
+    started_at: "2026-08-03T02:30:00Z",
+    finished_at: "2026-08-03T02:30:01Z",
+    findings: [{
+      policy_type: "cache_hit_rate",
+      status: "triggered",
+      severity: "warning",
+      observed_value: 18.4,
+      threshold_value: 20,
+      unit: "%",
+      sample_count: 62,
+      minimum_samples: 20,
+      reason: "观测值已达到当前策略的风险判定条件。",
+      recommendation: "检查缓存资格、键策略与失效窗口。",
+      evidence_refs: ["req_cache_scan_001"],
+    }],
+    evidence_sets: [],
+    governance: { mode: "read_only_scan", automatic_actions: false },
+  };
+  const markup = renderToStaticMarkup(React.createElement(RiskDecisionPage, {
+    payload: {
+      decision: { state: "prioritized", title: "风险判断", summary: "证据已排序", evidence_state: "observed" },
+      risk_domains: [], risk_matrix: [], priorities: [], optimization_portfolio: [], selected_evidence_summaries: [],
+      governance_capability: { draft_enabled: true },
+    },
+    scan,
+    onRunScan() {},
+    onEvidence() {},
+    onAsk() {},
+  }));
+
+  for (const copy of ["只读规则扫描", "重新扫描", "七项运营检查", "缓存效率", "观测值", "阈值", "样本", "查看证据", "问 AI"]) {
+    assert.match(markup, new RegExp(copy));
+  }
+  assert.match(markup, /18\.4%/);
+  assert.match(markup, /扫描不会修改模型、缓存或生产策略/);
+  assert.doesNotMatch(markup, /一键整改|批准并执行|actor_ref|tenant_ref/);
 });
 
 

@@ -16,6 +16,7 @@ from backend.finops.models import FinOpsRequestEvent
 from backend.finops.query import FinOpsQueryService
 from backend.finops.query_cache import FinOpsCacheBusy
 from backend.finops.repository import InMemoryFinOpsRepository
+from backend.finops.risk_scans import InMemoryRiskScanRepository, RiskScanService
 
 
 @pytest.fixture
@@ -119,6 +120,349 @@ def test_risk_decision_does_not_trigger_agent(
     response = client.get("/api/finops/risk/decision", params={"workspace_id": "ws-a"}, headers=owner_headers)
     assert response.status_code == 200
     assert called is False
+
+
+def test_owner_can_run_and_reload_a_persisted_read_only_risk_scan(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_service = RiskScanService(InMemoryRiskScanRepository())
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_risk_scan_service",
+        lambda: scan_service,
+    )
+
+    def fail_action_service() -> None:
+        raise AssertionError("a read-only scan must not load governance executors")
+
+    monkeypatch.setattr(finops_router, "get_finops_action_service", fail_action_service)
+    payload = {
+        "workspace_id": "ws-a",
+        "from": "2026-07-01T00:00:00Z",
+        "to": "2026-08-01T00:00:00Z",
+    }
+
+    created = client.post(
+        "/api/finops/risk/scans",
+        json=payload,
+        headers=owner_headers,
+    )
+
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["status"] == "completed"
+    assert body["scope"]["workspace_id"] == "ws-a"
+    assert body["scope"]["from"] == payload["from"]
+    assert body["scope"]["to"] == payload["to"]
+    assert len(body["findings"]) == 7
+    assert len(body["evidence_sets"]) == 7
+    assert "tenant_ref" not in created.text
+    assert "initiated_by_ref" not in created.text
+
+    latest = client.get(
+        "/api/finops/risk/scans/latest",
+        params=payload,
+        headers=owner_headers,
+    )
+    assert latest.status_code == 200, latest.text
+    assert latest.json()["scan_ref"] == body["scan_ref"]
+
+
+def test_latest_risk_scan_keeps_persisted_evidence_until_it_expires(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_service = RiskScanService(InMemoryRiskScanRepository())
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_risk_scan_service",
+        lambda: scan_service,
+    )
+    events = [
+        FinOpsRequestEvent.model_validate(
+            {
+                "request_ref": f"req_scan_api_{index:012d}",
+                "occurred_at": datetime(2026, 7, 24, 2, 0, tzinfo=timezone.utc)
+                + timedelta(seconds=index),
+                "call_class": "model",
+                "tenant_ref": "tenant-a",
+                "workspace_id": "ws-a",
+                "status": "failed" if index in {18, 19} else "succeeded",
+                "latency_ms": 500,
+                "tokens": {"total": 100 + index},
+                "gateway_coverage": "apim_governed",
+                "estimated_cost": {
+                    "amount": 0.001,
+                    "currency": "USD",
+                    "status": "estimated",
+                },
+                "evidence_state": "observed",
+            }
+        )
+        for index in range(20)
+    ]
+    repository.upsert_events(events)
+    params = {
+        "workspace_id": "ws-a",
+        "from": "2026-07-01T00:00:00Z",
+        "to": "2026-08-01T00:00:00Z",
+    }
+
+    created = client.post(
+        "/api/finops/risk/scans",
+        json=params,
+        headers=owner_headers,
+    )
+    assert created.status_code == 201, created.text
+    error_finding = next(
+        item for item in created.json()["findings"]
+        if item["policy_type"] == "error_rate"
+    )
+    persisted_refs = error_finding["evidence_refs"]
+    assert len(persisted_refs) == 2, error_finding
+
+    newest = FinOpsRequestEvent.model_validate(
+        {
+            "request_ref": "req_scan_api_newest",
+            "occurred_at": datetime(2026, 7, 25, 2, 0, tzinfo=timezone.utc),
+            "call_class": "model",
+            "tenant_ref": "tenant-a",
+            "workspace_id": "ws-a",
+            "status": "failed",
+            "latency_ms": 500,
+            "tokens": {"total": 150},
+            "gateway_coverage": "apim_governed",
+            "estimated_cost": {
+                "amount": 0.001,
+                "currency": "USD",
+                "status": "estimated",
+            },
+            "evidence_state": "observed",
+        }
+    )
+    repository.upsert_events([newest])
+
+    latest = client.get(
+        "/api/finops/risk/scans/latest",
+        params=params,
+        headers=owner_headers,
+    )
+    assert latest.status_code == 200, latest.text
+    evidence_set = next(
+        item for item in latest.json()["evidence_sets"]
+        if item["policy_type"] == "error_rate"
+    )
+    assert [item["request_ref"] for item in evidence_set["items"]] == persisted_refs
+
+    repository.delete_events(
+        tenant_ref="tenant-a",
+        workspace_id="ws-a",
+        request_refs=persisted_refs[:1],
+    )
+    partially_expired = client.get(
+        "/api/finops/risk/scans/latest",
+        params=params,
+        headers=owner_headers,
+    )
+    partial_set = next(
+        item for item in partially_expired.json()["evidence_sets"]
+        if item["policy_type"] == "error_rate"
+    )
+    assert [item["request_ref"] for item in partial_set["items"]] == persisted_refs[1:]
+
+    repository.delete_events(
+        tenant_ref="tenant-a",
+        workspace_id="ws-a",
+        request_refs=persisted_refs[1:],
+    )
+    fallback = client.get(
+        "/api/finops/risk/scans/latest",
+        params=params,
+        headers=owner_headers,
+    )
+    fallback_set = next(
+        item for item in fallback.json()["evidence_sets"]
+        if item["policy_type"] == "error_rate"
+    )
+    assert fallback_set["items"][0]["request_ref"] == newest.request_ref
+
+
+def test_member_cannot_run_or_read_risk_scans(
+    client: TestClient,
+    member_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_service = RiskScanService(InMemoryRiskScanRepository())
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_risk_scan_service",
+        lambda: scan_service,
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "member"},
+    )
+    payload = {"workspace_id": "ws-a"}
+
+    created = client.post(
+        "/api/finops/risk/scans",
+        json=payload,
+        headers=member_headers,
+    )
+    latest = client.get(
+        "/api/finops/risk/scans/latest",
+        params=payload,
+        headers=member_headers,
+    )
+
+    assert created.status_code == 403
+    assert latest.status_code == 403
+
+
+def test_metric_evidence_endpoint_returns_subject_specific_bounded_requests(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+) -> None:
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_latency_endpoint",
+                    "occurred_at": datetime(2026, 7, 24, 2, 2, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "status": "succeeded",
+                    "latency_ms": 8_200,
+                    "tokens": {"total": 20},
+                    "gateway_coverage": "apim_governed",
+                    "estimated_cost": {"amount": 0.002, "currency": "USD", "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_failure_endpoint",
+                    "occurred_at": datetime(2026, 7, 24, 2, 3, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "status": "failed",
+                    "latency_ms": 600,
+                    "tokens": {"total": 15},
+                    "gateway_coverage": "apim_governed",
+                    "estimated_cost": {"amount": 0.001, "currency": "USD", "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+        ]
+    )
+
+    latency = client.get(
+        "/api/finops/evidence",
+        params={"workspace_id": "ws-a", "metric_id": "p95"},
+        headers=owner_headers,
+    )
+    failures = client.get(
+        "/api/finops/evidence",
+        params={"workspace_id": "ws-a", "policy_type": "error_rate"},
+        headers=owner_headers,
+    )
+
+    assert latency.status_code == 200, latency.text
+    assert failures.status_code == 200, failures.text
+    assert latency.json()["subject_id"] == "p95"
+    assert latency.json()["items"][0]["request_ref"] == "req_latency_endpoint"
+    assert failures.json()["items"][0]["request_ref"] == "req_failure_endpoint"
+    assert len(latency.json()["items"]) <= 3
+
+
+def test_risk_decision_returns_policy_specific_evidence_sets(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_latency_specific",
+                    "occurred_at": datetime(2026, 7, 24, 2, 1, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "status": "succeeded",
+                    "latency_ms": 9_500,
+                    "tokens": {"total": 800},
+                    "gateway_coverage": "apim_governed",
+                    "estimated_cost": {"amount": 0.02, "currency": "USD", "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_cache_specific",
+                    "occurred_at": datetime(2026, 7, 24, 2, 2, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "status": "succeeded",
+                    "latency_ms": 700,
+                    "tokens": {"total": 400},
+                    "cache": {"state": "miss", "eligible": True},
+                    "gateway_coverage": "apim_governed",
+                    "estimated_cost": {"amount": 0.01, "currency": "USD", "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "evaluate_default_anomalies",
+        lambda _value: [
+            _managed_finding(
+                anomaly_id="anomaly_latency_specific",
+                workspace_id="ws-a",
+                policy_type="p95_latency",
+            ).model_copy(update={"evidence_refs": ["req_latency_specific"]}),
+            _managed_finding(
+                anomaly_id="anomaly_cache_specific",
+                workspace_id="ws-a",
+                policy_type="cache_hit_rate",
+            ).model_copy(update={"evidence_refs": ["req_cache_specific"]}),
+        ],
+    )
+
+    response = client.get(
+        "/api/finops/risk/decision",
+        params={"workspace_id": "ws-a", "refresh": "1"},
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    evidence_sets = {
+        item["policy_type"]: item for item in response.json()["evidence_sets"]
+    }
+    assert evidence_sets["p95_latency"]["items"][0]["request_ref"] == "req_latency_specific"
+    assert evidence_sets["p95_latency"]["items"][0]["signal"] == {
+        "metric": "latency_ms",
+        "value": 9_500.0,
+        "unit": "ms",
+    }
+    assert evidence_sets["cache_hit_rate"]["items"][0]["request_ref"] == "req_cache_specific"
+    assert evidence_sets["cache_hit_rate"]["items"][0]["signal"]["value"] == "miss"
+    assert all(
+        item["signal"]["metric"] != "request"
+        for item in response.json()["selected_evidence_summaries"]
+    )
 
 
 def _managed_finding(

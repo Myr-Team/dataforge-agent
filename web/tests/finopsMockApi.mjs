@@ -477,6 +477,42 @@ const riskEvidence = [
     visible_answer_summary: "调用在模型执行阶段失败，未生成业务侧回答。",
     technical_refs: { request_ref: "req_error_000001", run_id: "run_error_000001" },
   },
+  {
+    request_ref: "req_budget_000001",
+    request_name: "Finance · 当日预算 · 消耗提醒",
+    operation: "成本预算复核",
+    signal: { metric: "预算使用率", value: 86.4, unit: "percent" },
+    latency_ms: 1240,
+    cache_state: "bypassed",
+    status: "succeeded",
+    error_category: null,
+    visible_answer_summary: "当日估算成本已超过提醒阈值，尚未触发任何自动限制。",
+    technical_refs: { request_ref: "req_budget_000001", run_id: "run_budget_000001" },
+  },
+  {
+    request_ref: "req_token_000001",
+    request_name: "AI Platform · 深度分析 · Token 突增",
+    operation: "深度分析",
+    signal: { metric: "Token 基线倍数", value: 2.36, unit: "ratio" },
+    latency_ms: 3380,
+    cache_state: "miss",
+    status: "succeeded",
+    error_category: null,
+    visible_answer_summary: "本小时深度分析用量高于过去七天相同时段基线。",
+    technical_refs: { request_ref: "req_token_000001", run_id: "run_token_000001" },
+  },
+  {
+    request_ref: "req_coverage_000001",
+    request_name: "Operations · 调用入口 · 覆盖复核",
+    operation: "统一入口覆盖复核",
+    signal: { metric: "统一入口覆盖率", value: 92.8, unit: "percent" },
+    latency_ms: 1120,
+    cache_state: "bypassed",
+    status: "succeeded",
+    error_category: null,
+    visible_answer_summary: "发现少量应用侧可见但未经过统一治理入口的调用。",
+    technical_refs: { request_ref: "req_coverage_000001", run_id: "run_coverage_000001" },
+  },
 ];
 
 
@@ -522,6 +558,46 @@ function riskDecisionPayload(baseVersion = "cache-policy-v1") {
     insight: { title: "优先处理慢响应并验证缓存策略", summary: "高时延影响范围最大；缓存未命中具有可量化的成本改善空间。", status: "observed" },
     drafts: [],
     governance_capability: { read_enabled: true, draft_enabled: true, actions_enabled: false, typed_executors: ["cache_policy"] },
+  };
+}
+
+
+function riskScanPayload() {
+  const specs = [
+    ["error_rate", "triggered", "critical", 8.3, 5, "%", 24, 20, "req_error_000001", "失败请求占比已达到当前策略阈值。", "按失败类别与模型路由复核错误来源。"],
+    ["p95_latency", "triggered", "warning", 6200, 2000, "ms", 28, 20, "req_slow_000001", "P95 响应时间高于当前体验阈值。", "拆分大批量分析并复核高时延模型路由。"],
+    ["daily_cost_budget", "triggered", "warning", 86.4, 80, "%", 34, 1, "req_budget_000001", "当日估算成本已达到预算提醒区间。", "复核主要成本贡献来源和模型路由。"],
+    ["token_spike", "triggered", "warning", 2.36, 2, "x", 18, 1, "req_token_000001", "当前小时 Token 用量超过历史基线倍数。", "检查大上下文和重复分析调用。"],
+    ["apim_coverage", "triggered", "warning", 92.8, 95, "%", 146, 1, "req_coverage_000001", "统一入口治理覆盖率低于当前策略要求。", "核对未纳管调用来源并补齐入口治理。"],
+    ["unpriced_requests", "triggered", "warning", 6.2, 5, "%", 146, 1, "req_unpriced_001", "未计价请求占比高于当前策略阈值。", "补齐新接入模型的官方价目映射。"],
+    ["cache_hit_rate", "triggered", "warning", 18.5, 20, "%", 54, 20, "req_cache_000001", "缓存命中率低于当前策略要求。", "统一重复分析缓存键并复核有效期。"],
+  ];
+  const findings = specs.map(([policy_type, status, severity, observed_value, threshold_value, unit, sample_count, minimum_samples, requestRef, reason, recommendation]) => ({
+    policy_type, status, severity, observed_value, threshold_value, unit, sample_count, minimum_samples,
+    reason, recommendation, evidence_refs: [requestRef], rule_revision: "policy_demo_v3",
+  }));
+  return {
+    scan_ref: "rscan_0123456789abcdef0123456789abcdef",
+    status: "completed",
+    policy_revision: "policy_demo_v3",
+    ledger_revision: "ledger_demo_v2",
+    rules_evaluated: 7,
+    rules_triggered: 7,
+    rules_clear: 0,
+    rules_insufficient: 0,
+    request_sample_count: 146,
+    evidence_coverage_pct: 100,
+    findings,
+    evidence_sets: findings.map((item) => ({
+      subject_type: "risk",
+      subject_id: item.policy_type,
+      policy_type: item.policy_type,
+      state: "observed",
+      items: item.evidence_refs.map((request_ref) => ({ request_ref })),
+    })),
+    started_at: "2026-08-03T02:30:00Z",
+    finished_at: "2026-08-03T02:30:01Z",
+    governance: { mode: "read_only_scan", automatic_actions: false, explanation_agent_invoked: false },
   };
 }
 
@@ -1156,6 +1232,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       || path === "/api/finops/requests/req_cache_000001"
       || path === "/api/finops/requests/req_unpriced_001"
       || path === "/api/finops/requests/req_error_000001"
+      || path === "/api/finops/requests/req_budget_000001"
+      || path === "/api/finops/requests/req_token_000001"
+      || path === "/api/finops/requests/req_coverage_000001"
     ) {
       const requestRef = path.split("/").at(-1);
       const profiles = {
@@ -1198,6 +1277,36 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           cache: "bypassed",
           cost: 0.0021,
           error: "provider_5xx",
+        },
+        req_budget_000001: {
+          operation: "成本预算复核",
+          request: "检查当日模型成本是否接近预算提醒阈值",
+          response: "当日估算成本已超过提醒阈值，尚未触发任何自动限制。",
+          status: "succeeded",
+          latency: 1240,
+          cache: "bypassed",
+          cost: 0.0186,
+          error: null,
+        },
+        req_token_000001: {
+          operation: "深度分析",
+          request: "对本批客户反馈执行深度归因与机会分析",
+          response: "本小时深度分析用量高于过去七天相同时段基线。",
+          status: "succeeded",
+          latency: 3380,
+          cache: "miss",
+          cost: 0.0248,
+          error: null,
+        },
+        req_coverage_000001: {
+          operation: "统一入口覆盖复核",
+          request: "复核本期调用是否全部经过统一治理入口",
+          response: "发现少量应用侧可见但未经过统一治理入口的调用。",
+          status: "succeeded",
+          latency: 1120,
+          cache: "bypassed",
+          cost: 0.0034,
+          error: null,
         },
       };
       const profile = profiles[requestRef];
@@ -1471,13 +1580,29 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       status = 204;
       body = {};
     } else if (path === "/api/finops/assistant/query") {
+      const submitted = request.postDataJSON();
+      const metricLabel = String(submitted?.metric_context?.label || "当前指标");
       body = {
         conversation_ref: "conversation-demo",
-        answer: "当前缓存命中率为 42%，50 次可缓存调用中有 21 次命中。",
+        answer: `${metricLabel}当前需要关注。`,
+        sections: {
+          conclusion: `${metricLabel}当前需要关注。`,
+          basis: "当前筛选范围内已有请求级运行证据和规则阈值。",
+          impact: "该信号会影响成本、体验或治理判断，应先复核影响范围。",
+          recommendation: "先查看关联证据，再在候选范围验证优化建议。",
+          caveat: "这是基于当前运行证据的分析，不会自动执行生产变更。",
+        },
         evidence_state: "observed",
-        evidence_refs: ["req_aaaaaaaaaaaa"],
+        evidence_refs: submitted?.metric_context?.metric_id?.includes("error")
+          ? ["req_error_000001"]
+          : ["req_cache_000001"],
         suggested_questions: ["与上一周期相比如何？"],
       };
+    } else if (path === "/api/finops/risk/scans/latest") {
+      body = riskScanPayload();
+    } else if (path === "/api/finops/risk/scans" && request.method() === "POST") {
+      status = 201;
+      body = riskScanPayload();
     } else if (path === "/api/finops/roi/decision") {
       body = roiDecisionPayload;
     } else if (path === "/api/finops/risk/decision") {

@@ -16,6 +16,7 @@ import {
   loadFinOpsRemediationDraft,
   loadFinOpsRemediationDrafts,
   loadFinOpsRiskDecision,
+  loadLatestFinOpsRiskScan,
   loadFinOpsRoiDecision,
   loadFinOpsOfficialPriceCatalog,
   loadFinOpsOfficialPriceMappings,
@@ -26,6 +27,7 @@ import {
   loadIdentityGovernance,
   loadModelProviders,
   queryFinOpsAssistant,
+  runFinOpsRiskScan,
   promoteFinOpsRemediationDraft,
   reviewFinOpsRemediationDraft,
   rotateModelProviderSecret,
@@ -109,6 +111,55 @@ test("decision loaders append only the bounded refresh query and preserve abort 
   assert.equal(calls[0].options.signal, controller.signal);
   assert.equal("refresh" in calls[0].options, false);
   assert.deepEqual(Object.keys(calls[0].options.headers).sort(), ["Accept"]);
+});
+
+test("risk scan clients preserve the selected scope and send a strict read-only scan payload", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({
+      url: String(url),
+      method: options.method || "GET",
+      body: options.body ? JSON.parse(options.body) : null,
+      signal: options.signal,
+    });
+    return { ok: true, json: async () => ({ status: "completed", findings: [] }) };
+  };
+
+  const filters = {
+    workspaceId: "ws-a",
+    from: "2026-07-01T00:00:00Z",
+    to: "2026-08-01T00:00:00Z",
+    departmentId: "Finance",
+    agentId: "agent-a",
+    model: "gpt-safe",
+    ignored: "must-not-pass",
+  };
+  try {
+    await loadLatestFinOpsRiskScan(filters, { signal: controller.signal });
+    await runFinOpsRiskScan({ ...filters, actorRef: "actor-safe", execute: true }, { signal: controller.signal });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(
+    calls[0].url,
+    "/api/finops/risk/scans/latest?from=2026-07-01T00%3A00%3A00Z&to=2026-08-01T00%3A00%3A00Z&department_id=Finance&workspace_id=ws-a&agent_id=agent-a&model=gpt-safe",
+  );
+  assert.equal(calls[1].url, "/api/finops/risk/scans");
+  assert.equal(calls[1].method, "POST");
+  assert.deepEqual(calls[1].body, {
+    workspace_id: "ws-a",
+    from: "2026-07-01T00:00:00Z",
+    to: "2026-08-01T00:00:00Z",
+    department_id: "Finance",
+    agent_id: "agent-a",
+    actor_ref: "actor-safe",
+    model: "gpt-safe",
+  });
+  assert.equal(calls[0].signal, controller.signal);
+  assert.equal(calls[1].signal, controller.signal);
 });
 
 test("remediation clients use encoded endpoints and send only strict server payloads", async () => {
