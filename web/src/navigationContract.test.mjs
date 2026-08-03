@@ -13,8 +13,9 @@ test("navigation keeps business operations and system groups visible", () => {
   assert.equal(workspace.items.find((item) => item.id === "conversations")?.label, "会话");
   assert.equal(workspace.items.find((item) => item.id === "runs")?.label, "运行记录");
   assert.equal(operations.label, "运营治理");
-  assert.deepEqual(operations.items.map((item) => item.id), ["finops"]);
-  assert.equal(operations.items[0].label, "运营管理");
+  assert.deepEqual(operations.items.map((item) => item.id), ["finops", "finops-risk"]);
+  assert.equal(operations.items[0].label, "成本管理");
+  assert.equal(operations.items[1].label, "风险与优化");
   assert.equal(system.label, "系统");
   assert.deepEqual(system.items.map((item) => item.id), ["settings"]);
   assert.equal(NAV_GROUPS.some((group) => group.items.some((item) => ["lineage", "monitor", "model-routing"].includes(item.id))), false);
@@ -31,6 +32,7 @@ test("unavailable governance capabilities do not make primary groups appear late
 
   assert.ok(items.some((item) => item.id === "settings"));
   assert.ok(items.some((item) => item.id === "finops"));
+  assert.ok(items.some((item) => item.id === "finops-risk"));
   assert.ok(items.some((item) => item.id === "runs"));
   assert.ok(!items.some((item) => item.id === "members"));
   assert.ok(!items.some((item) => item.id === "lineage"));

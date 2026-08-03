@@ -645,8 +645,8 @@ function WorkbenchMainInner({
   if (resolvedView === "runs") {
     return <RunsCenter dashboard={dashboard} trace={trace} running={running} observability={observability} onOpenConversation={onOpenConversation} tasks={tasks} />;
   }
-  if (resolvedView === "finops") {
-    const accessState = navigationAccessState("finops", governanceCapabilities);
+  if (["finops", "finops-risk"].includes(resolvedView)) {
+    const accessState = navigationAccessState(resolvedView, governanceCapabilities);
     if (accessState === "loading") {
       return <main className="finops-page"><div className="finops-section-loading">正在核验运营管理权限</div></main>;
     }
@@ -660,6 +660,9 @@ function WorkbenchMainInner({
           preloadScopeKey={finopsPreloadScope?.key || ""}
           dataScope={finopsPreloadScope || {}}
           permissions={governanceCapabilities?.sections?.finops?.permissions || {}}
+          initialTab={resolvedView === "finops-risk" ? "risk" : "overview"}
+          surface={resolvedView === "finops-risk" ? "risk" : "cost"}
+          onNavigateRisk={() => setView("finops-risk")}
         />
       </Suspense>
     );

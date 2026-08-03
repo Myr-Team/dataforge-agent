@@ -58,3 +58,14 @@ test("evidence drawer model uses business-first section order", () => {
   assert.equal(detail.title.includes("req_safe"), false);
   assert.equal(detail.timeline[0].label, "统一入口");
 });
+
+
+test("evidence drawer renders a bounded set of subject-specific request cards", async () => {
+  const source = await import("node:fs/promises").then(({ readFile }) => (
+    readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8")
+  ));
+
+  assert.match(source, /state\.details\.map/);
+  assert.match(source, /normalized\.evidenceRefs[\s\S]*slice\(0, 3\)/);
+  assert.match(source, /metricId/);
+});

@@ -5621,6 +5621,15 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-drawer-state { display: flex; min-height: 240px; align-items: center; justify-content: center; gap: 8px; color: #667085; font-size: 11px; }
 .finops-drawer-state.error { color: #b42318; }
 .finops-business-evidence p { margin: 0; padding: 13px 14px; color: #344054; font-size: 11px; line-height: 1.65; white-space: pre-wrap; }
+.finops-evidence-request-list { display: grid; gap: 14px; }
+.finops-evidence-request-card { overflow: hidden; border: 1px solid #dce4ee; border-radius: 12px; background: #fff; box-shadow: 0 3px 12px rgba(16, 24, 40, .045); }
+.finops-evidence-request-card > header { display: grid; min-height: auto; justify-content: stretch; gap: 4px; border-bottom: 1px solid #e7ebf1; padding: 12px 14px; background: #f8fafc; }
+.finops-evidence-request-card > header span { color: #175cd3; font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.finops-evidence-request-card > header h3 { display: block; margin: 0; border: 0; padding: 0; color: #1d2939; font-size: 12px; line-height: 1.45; }
+.finops-evidence-request-card > section { margin: 12px; }
+.finops-evidence-request-card h4 { display: flex; margin: 0; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid #edf0f5; padding: 10px 12px; color: #344054; font-size: 11px; }
+.finops-evidence-request-card > details,
+.finops-evidence-request-card > .finops-evidence-links { margin: 12px; }
 .finops-evidence-timeline { display: grid; margin: 0; padding: 12px 14px; list-style: none; }
 .finops-evidence-timeline li { position: relative; display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; min-height: 42px; }
 .finops-evidence-timeline li:not(:last-child)::after { position: absolute; top: 15px; bottom: -1px; left: 5px; width: 1px; background: #d0d5dd; content: ""; }

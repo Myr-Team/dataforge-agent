@@ -24,6 +24,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Target,
+  AlertTriangle,
   UsersRound,
   ListTree,
   WalletCards,
@@ -45,7 +46,8 @@ export const NAV_GROUPS = [
     id: "operations",
     label: "运营治理",
     items: [
-      { id: "finops", label: "运营管理", icon: WalletCards, capabilityKey: "finops" },
+      { id: "finops", label: "成本管理", icon: WalletCards, capabilityKey: "finops" },
+      { id: "finops-risk", label: "风险与优化", icon: AlertTriangle, capabilityKey: "finops" },
     ],
   },
   {

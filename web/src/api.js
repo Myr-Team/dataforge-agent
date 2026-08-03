@@ -139,6 +139,8 @@ export function buildFinOpsQuery(filters = {}) {
     bucket: filters.bucket,
     group_by: filters.groupBy,
     agent_kind: filters.agentKind,
+    metric_id: filters.metricId,
+    policy_type: filters.policyType,
   };
   Object.entries(supported).forEach(([key, value]) => {
     if (value !== undefined && value !== null && String(value).trim() !== "") {
@@ -210,6 +212,22 @@ export function loadFinOpsRequests(filters = {}, options = {}) {
 
 export function loadFinOpsRequest(requestRef, filters = {}, options = {}) {
   return loadFinOpsResource(`requests/${encodeURIComponent(requestRef)}`, filters, options);
+}
+
+export function loadFinOpsEvidence(subject = {}, filters = {}, options = {}) {
+  const metricId = String(subject?.metricId || subject?.metric_id || "").trim();
+  const policyType = String(subject?.policyType || subject?.policy_type || "").trim();
+  if (Boolean(metricId) === Boolean(policyType)) {
+    return Promise.reject(new Error("exactly one evidence subject is required"));
+  }
+  return loadFinOpsResource(
+    "evidence",
+    {
+      ...filters,
+      ...(metricId ? { metricId } : { policyType }),
+    },
+    options,
+  );
 }
 
 export function loadFinOpsInsights(filters = {}, options = {}) {

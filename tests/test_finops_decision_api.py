@@ -203,6 +203,65 @@ def test_member_cannot_run_or_read_risk_scans(
     assert latest.status_code == 403
 
 
+def test_metric_evidence_endpoint_returns_subject_specific_bounded_requests(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+) -> None:
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_latency_endpoint",
+                    "occurred_at": datetime(2026, 7, 24, 2, 2, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "status": "succeeded",
+                    "latency_ms": 8_200,
+                    "tokens": {"total": 20},
+                    "gateway_coverage": "apim_governed",
+                    "estimated_cost": {"amount": 0.002, "currency": "USD", "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_failure_endpoint",
+                    "occurred_at": datetime(2026, 7, 24, 2, 3, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "status": "failed",
+                    "latency_ms": 600,
+                    "tokens": {"total": 15},
+                    "gateway_coverage": "apim_governed",
+                    "estimated_cost": {"amount": 0.001, "currency": "USD", "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+        ]
+    )
+
+    latency = client.get(
+        "/api/finops/evidence",
+        params={"workspace_id": "ws-a", "metric_id": "p95"},
+        headers=owner_headers,
+    )
+    failures = client.get(
+        "/api/finops/evidence",
+        params={"workspace_id": "ws-a", "policy_type": "error_rate"},
+        headers=owner_headers,
+    )
+
+    assert latency.status_code == 200, latency.text
+    assert failures.status_code == 200, failures.text
+    assert latency.json()["subject_id"] == "p95"
+    assert latency.json()["items"][0]["request_ref"] == "req_latency_endpoint"
+    assert failures.json()["items"][0]["request_ref"] == "req_failure_endpoint"
+    assert len(latency.json()["items"]) <= 3
+
+
 def test_risk_decision_returns_policy_specific_evidence_sets(
     client: TestClient,
     owner_headers: dict[str, str],

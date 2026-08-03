@@ -32,7 +32,11 @@ except ImportError:
 
 from .normalization import canonical_actor_ref, canonical_tenant_ref
 from .evidence import build_evidence_alias, operation_code_for_event
-from .evidence_selection import EvidenceSet, select_policy_evidence
+from .evidence_selection import (
+    EvidenceSet,
+    select_metric_evidence,
+    select_policy_evidence,
+)
 from .evidence_repository import (
     InMemoryEvidenceAliasRepository,
     SqlEvidenceAliasRepository,
@@ -2101,6 +2105,58 @@ async def requests_list(
         request, from_value, to_value, department_id, workspace_id, agent_id, actor_ref, model, cursor=cursor, limit=limit
     )
     return service.requests(query)
+
+
+@router.get("/evidence")
+async def evidence_for_subject(
+    request: Request,
+    metric_id: str | None = Query(default=None, max_length=96),
+    policy_type: str | None = Query(default=None, max_length=64),
+    from_value: str | None = Query(default=None, alias="from", max_length=64),
+    to_value: str | None = Query(default=None, alias="to", max_length=64),
+    department_id: str | None = Query(default=None, max_length=128),
+    workspace_id: str | None = Query(default=None, max_length=160),
+    agent_id: str | None = Query(default=None, max_length=128),
+    actor_ref: str | None = Query(default=None, max_length=128),
+    model: str | None = Query(default=None, max_length=160),
+) -> dict[str, Any]:
+    if bool(metric_id) == bool(policy_type):
+        raise HTTPException(
+            status_code=422,
+            detail="exactly one evidence subject is required",
+        )
+    service, query, roles = _common(
+        request,
+        from_value,
+        to_value,
+        department_id,
+        workspace_id,
+        agent_id,
+        actor_ref,
+        model,
+    )
+    if not all(role in {"owner", "admin"} for role in roles.values()):
+        raise HTTPException(
+            status_code=403,
+            detail="workspace access denied for finops.request_detail.read",
+        )
+    events = service.events(query)
+    selected = (
+        select_metric_evidence(events, str(metric_id))
+        if metric_id
+        else select_policy_evidence(events, str(policy_type))
+    )
+    events_by_ref = {event.request_ref: event for event in events}
+    named_items = []
+    for item in selected.items:
+        event = events_by_ref.get(item.request_ref)
+        display_name = item.request_name
+        if event is not None:
+            display_name = _assistant_evidence_name(
+                event.model_dump(mode="json")
+            )
+        named_items.append(item.model_copy(update={"request_name": display_name}))
+    return selected.model_copy(update={"items": named_items}).model_dump(mode="json")
 
 
 @router.get("/requests/{request_ref}")
