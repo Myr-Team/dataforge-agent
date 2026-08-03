@@ -16,6 +16,7 @@ from backend.finops.models import FinOpsRequestEvent
 from backend.finops.query import FinOpsQueryService
 from backend.finops.query_cache import FinOpsCacheBusy
 from backend.finops.repository import InMemoryFinOpsRepository
+from backend.finops.risk_scans import InMemoryRiskScanRepository, RiskScanService
 
 
 @pytest.fixture
@@ -119,6 +120,87 @@ def test_risk_decision_does_not_trigger_agent(
     response = client.get("/api/finops/risk/decision", params={"workspace_id": "ws-a"}, headers=owner_headers)
     assert response.status_code == 200
     assert called is False
+
+
+def test_owner_can_run_and_reload_a_persisted_read_only_risk_scan(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_service = RiskScanService(InMemoryRiskScanRepository())
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_risk_scan_service",
+        lambda: scan_service,
+    )
+
+    def fail_action_service() -> None:
+        raise AssertionError("a read-only scan must not load governance executors")
+
+    monkeypatch.setattr(finops_router, "get_finops_action_service", fail_action_service)
+    payload = {
+        "workspace_id": "ws-a",
+        "from": "2026-07-01T00:00:00Z",
+        "to": "2026-08-01T00:00:00Z",
+    }
+
+    created = client.post(
+        "/api/finops/risk/scans",
+        json=payload,
+        headers=owner_headers,
+    )
+
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["status"] == "completed"
+    assert body["scope"]["workspace_id"] == "ws-a"
+    assert body["scope"]["from"] == payload["from"]
+    assert body["scope"]["to"] == payload["to"]
+    assert len(body["findings"]) == 7
+    assert len(body["evidence_sets"]) == 7
+    assert "tenant_ref" not in created.text
+    assert "initiated_by_ref" not in created.text
+
+    latest = client.get(
+        "/api/finops/risk/scans/latest",
+        params=payload,
+        headers=owner_headers,
+    )
+    assert latest.status_code == 200, latest.text
+    assert latest.json()["scan_ref"] == body["scan_ref"]
+
+
+def test_member_cannot_run_or_read_risk_scans(
+    client: TestClient,
+    member_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_service = RiskScanService(InMemoryRiskScanRepository())
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_risk_scan_service",
+        lambda: scan_service,
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "member"},
+    )
+    payload = {"workspace_id": "ws-a"}
+
+    created = client.post(
+        "/api/finops/risk/scans",
+        json=payload,
+        headers=member_headers,
+    )
+    latest = client.get(
+        "/api/finops/risk/scans/latest",
+        params=payload,
+        headers=member_headers,
+    )
+
+    assert created.status_code == 403
+    assert latest.status_code == 403
 
 
 def test_risk_decision_returns_policy_specific_evidence_sets(

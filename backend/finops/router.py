@@ -124,6 +124,13 @@ from .sql_repository import FinOpsPersistenceError
 from .sql_rollups import SqlFinOpsRollupRepository
 from .member_budget_repository import InMemoryMemberBudgetRepository
 from .sql_member_budgets import SqlMemberBudgetRepository
+from .risk_scans import (
+    FinOpsRiskScan,
+    InMemoryRiskScanRepository,
+    RiskScanScope,
+    RiskScanService,
+)
+from .sql_risk_scans import SqlRiskScanRepository
 
 
 router = APIRouter(prefix="/api/finops", tags=["finops"])
@@ -167,6 +174,8 @@ _MEMBER_BUDGET_REPOSITORY = InMemoryMemberBudgetRepository()
 _SQL_MEMBER_BUDGET_REPOSITORY: SqlMemberBudgetRepository | None = None
 _ASSISTANT_STORE = InMemoryAssistantConversationStore()
 _SQL_ASSISTANT_STORE: SqlAssistantConversationStore | None = None
+_RISK_SCAN_REPOSITORY = InMemoryRiskScanRepository()
+_SQL_RISK_SCAN_REPOSITORY: SqlRiskScanRepository | None = None
 
 
 class InsightAnalyzeRequest(BaseModel):
@@ -208,6 +217,21 @@ class RemediationTransitionRequest(BaseModel):
 
     base_revision: int = Field(ge=1)
     reason: str | None = Field(default=None, max_length=512)
+
+
+class RiskScanCreateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+
+    workspace_id: str = Field(min_length=1, max_length=160)
+    from_value: str | None = Field(default=None, alias="from", max_length=64)
+    to_value: str | None = Field(default=None, alias="to", max_length=64)
+    department_id: str | None = Field(default=None, max_length=128)
+    agent_id: str | None = Field(default=None, max_length=128)
+    actor_ref: str | None = Field(default=None, max_length=128)
+    model: str | None = Field(default=None, max_length=160)
 
 
 def _enabled(name: str) -> bool:
@@ -392,6 +416,19 @@ def get_finops_anomaly_service() -> FinOpsAnomalyService:
             )
         return _SQL_ANOMALY_SERVICE
     return _ANOMALY_SERVICE
+
+
+def get_finops_risk_scan_service() -> RiskScanService:
+    global _SQL_RISK_SCAN_REPOSITORY
+    if _enabled("DF_FINOPS_SQL_ENABLED"):
+        if _SQL_RISK_SCAN_REPOSITORY is None:
+            _SQL_RISK_SCAN_REPOSITORY = SqlRiskScanRepository(
+                connection_factory=build_lineage_sql_connection_factory()
+            )
+        repository = _SQL_RISK_SCAN_REPOSITORY
+    else:
+        repository = _RISK_SCAN_REPOSITORY
+    return RiskScanService(repository)
 
 
 def get_finops_evidence_alias_repository() -> Any:
@@ -1625,6 +1662,194 @@ def _risk_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, 
         governance_capability=_governance_capability(),
     )
     return _decision_envelope(query_service, query, decision)
+
+
+def _risk_scan_scope(query: FinOpsQuery) -> RiskScanScope:
+    if not query.workspace_id:
+        raise ValueError("risk scan requires one workspace")
+    return RiskScanScope(
+        workspace_id=query.workspace_id,
+        from_value=query.from_value,
+        to_value=query.to_value,
+        department_id=query.department_id,
+        agent_id=query.agent_id,
+        actor_ref=query.actor_ref,
+        model=query.model,
+    )
+
+
+def _risk_policy_revision(tenant_ref: str) -> str:
+    policies = sorted(
+        (
+            item.model_dump(
+                mode="json",
+                exclude={"updated_by", "updated_at"},
+            )
+            for item in get_finops_management_service().list_policies(
+                tenant_ref=tenant_ref
+            )
+        ),
+        key=lambda item: (str(item.get("policy_type")), str(item.get("policy_id"))),
+    )
+    material = json.dumps(
+        policies,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return f"policy_{hashlib.sha256(material).hexdigest()[:16]}"
+
+
+def _risk_ledger_revision(events: list[FinOpsRequestEvent]) -> str:
+    digest = hashlib.sha256()
+    for event in sorted(events, key=lambda item: (item.occurred_at, item.request_ref)):
+        digest.update(event.request_ref.encode("utf-8"))
+        digest.update(event.occurred_at.isoformat().encode("utf-8"))
+        digest.update(event.evidence_state.encode("utf-8"))
+        revision = str(event.estimated_cost.price_card_revision or "")
+        digest.update(revision.encode("utf-8"))
+    return f"ledger_{digest.hexdigest()[:16]}"
+
+
+def _public_risk_scan(
+    scan: FinOpsRiskScan,
+    *,
+    events: list[FinOpsRequestEvent],
+) -> dict[str, Any]:
+    scope = scan.scope.model_dump(mode="json")
+    scope["from"] = scope.pop("from_value")
+    scope["to"] = scope.pop("to_value")
+    return {
+        **scan.model_dump(
+            mode="json",
+            exclude={"tenant_ref", "initiated_by_ref", "scope", "scope_fingerprint"},
+        ),
+        "scope": scope,
+        "evidence_sets": [
+            select_policy_evidence(events, finding.policy_type).model_dump(mode="json")
+            for finding in scan.findings
+        ],
+        "governance": {
+            "mode": "read_only_scan",
+            "automatic_actions": False,
+            "explanation_agent_invoked": False,
+        },
+    }
+
+
+def _risk_scan_context(
+    request: Request,
+    *,
+    from_value: str | None,
+    to_value: str | None,
+    department_id: str | None,
+    workspace_id: str,
+    agent_id: str | None,
+    actor_ref: str | None,
+    model: str | None,
+) -> tuple[Any, FinOpsQuery, list[FinOpsRequestEvent]]:
+    service, query, roles = _common(
+        request,
+        from_value,
+        to_value,
+        department_id,
+        workspace_id,
+        agent_id,
+        actor_ref,
+        model,
+    )
+    if roles.get(workspace_id) not in {"owner", "admin"}:
+        raise HTTPException(
+            status_code=403,
+            detail="risk scan requires admin or owner",
+        )
+    return service, query, service.events(query)
+
+
+@router.post("/risk/scans", status_code=201)
+async def run_risk_scan(
+    body: RiskScanCreateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    try:
+        service, query, events = _risk_scan_context(
+            request,
+            from_value=body.from_value,
+            to_value=body.to_value,
+            department_id=body.department_id,
+            workspace_id=body.workspace_id,
+            agent_id=body.agent_id,
+            actor_ref=body.actor_ref,
+            model=body.model,
+        )
+        actor = actor_from_request(request, fallback=False)
+        scan = get_finops_risk_scan_service().run(
+            tenant_ref=query.tenant_ref,
+            scope=_risk_scan_scope(query),
+            evaluation=_anomaly_evaluation_input(
+                events,
+                tenant_ref=query.tenant_ref,
+            ),
+            policy_revision=_risk_policy_revision(query.tenant_ref),
+            ledger_revision=_risk_ledger_revision(events),
+            initiated_by_ref=_actor_ref(actor),
+        )
+        _bump_finops_domains(
+            query.tenant_ref,
+            [body.workspace_id],
+            ("risk",),
+        )
+        return _public_risk_scan(scan, events=events)
+    except HTTPException:
+        raise
+    except FinOpsPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="risk scan persistence is unavailable",
+        ) from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="risk scan evidence is unavailable",
+        ) from exc
+
+
+@router.get("/risk/scans/latest")
+async def latest_risk_scan(
+    request: Request,
+    from_value: str | None = Query(default=None, alias="from", max_length=64),
+    to_value: str | None = Query(default=None, alias="to", max_length=64),
+    department_id: str | None = Query(default=None, max_length=128),
+    workspace_id: str = Query(min_length=1, max_length=160),
+    agent_id: str | None = Query(default=None, max_length=128),
+    actor_ref: str | None = Query(default=None, max_length=128),
+    model: str | None = Query(default=None, max_length=160),
+) -> dict[str, Any]:
+    try:
+        _service, query, events = _risk_scan_context(
+            request,
+            from_value=from_value,
+            to_value=to_value,
+            department_id=department_id,
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            actor_ref=actor_ref,
+            model=model,
+        )
+        scan = get_finops_risk_scan_service().latest(
+            tenant_ref=query.tenant_ref,
+            scope=_risk_scan_scope(query),
+        )
+        if scan is None:
+            raise HTTPException(status_code=404, detail="risk scan not found")
+        return _public_risk_scan(scan, events=events)
+    except HTTPException:
+        raise
+    except FinOpsPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="risk scan persistence is unavailable",
+        ) from exc
 
 
 @router.get("/roi/decision")
