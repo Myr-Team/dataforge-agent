@@ -2,7 +2,7 @@
 
 Date: 2026-08-04
 
-Decision: **backend/API candidate PASS; signed-in candidate visual gate BLOCKED; production promotion NOT APPROVED**.
+Decision: **backend/API candidate PASS; auth-free test UI gate PASS; production promotion NOT APPROVED**.
 
 ## Scope
 
@@ -91,7 +91,7 @@ to this record or command output.
 A bounded 200-line candidate log scan found zero critical/traceback markers,
 zero Microsoft Graph failure markers, and zero secret-like output markers.
 
-## Honest limitation: candidate browser authentication
+## Authentication boundary
 
 The final candidate root returned 401, confirming that the candidate does not
 bypass Easy Auth. Root, logo, and API requests on the preceding candidate with
@@ -100,16 +100,46 @@ route reached Entra, but Entra rejected the temporary revision-label callback
 with `AADSTS50011` because that hostname is not registered as an application
 redirect URI.
 
-Per the release constraints, the temporary candidate did not modify Easy Auth or
-the Entra application registration. Therefore:
+The accepted test environment is auth-free, so the temporary revision-label
+callback is not a test-environment acceptance gate. Per the release constraints,
+the candidate did not modify Easy Auth or the Entra application registration.
+Therefore:
 
-- signed-in desktop/mobile candidate screenshots are **not claimed**;
+- auth-free desktop/mobile test behavior is accepted by the fresh Playwright gate;
+- signed-in desktop/mobile candidate screenshots are **not claimed and not
+  required for the test environment**;
 - the live candidate logo response header is **not claimed** because the asset is
   protected by the same authentication boundary;
 - desktop/mobile, chart, tooltip, retry-state, and logo-cache behavior are covered
   by the fresh local Playwright and Node gates above;
-- production traffic remains unchanged until a signed-in production-host smoke
-  can be performed during an explicitly approved promotion.
+- production traffic remains unchanged; production-host authentication is
+  rechecked immediately after an explicitly approved promotion and triggers
+  rollback if it fails.
+
+## Repository credential scan
+
+The GitHub PR head and the local remote-tracking branch both resolved to
+`e6e4fb400ca5fb85db5d306e9aa7a1af8a7cf833` before this documentation-only
+update. Gitleaks 8.30.1 was downloaded from its official GitHub release and its
+SHA-256 checksum was verified before use.
+
+- the exact PR range contained zero findings;
+- the target branch ancestry contained 16 generic-rule findings, all in tests or
+  `.env.example`;
+- the current tracked snapshot contained 15 generic-rule findings: eight
+  deterministic test seeds, six opaque request/trace references, and one empty
+  example setting;
+- all current findings were classified, and none matched a known provider key,
+  private-key, JWT, or cloud connection-string pattern;
+- the only tracked environment file outside `.env.example` is
+  `web/.env.development`; it contains one loopback API URL and no sensitive
+  variable name or credential-shaped value;
+- the public GitHub repository currently reports native Secret Scanning and Push
+  Protection as disabled. No repository-security setting was changed during this
+  acceptance.
+
+These scanner results found no committed credential. They do not replace secret
+rotation if a credential is ever independently suspected to have been exposed.
 
 ## Promotion gate and rollback
 
