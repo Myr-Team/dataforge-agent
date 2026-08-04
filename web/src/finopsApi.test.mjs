@@ -16,6 +16,8 @@ import {
   loadFinOpsRemediationDraft,
   loadFinOpsRemediationDrafts,
   loadFinOpsRiskDecision,
+  loadDashboard,
+  loadGovernanceCapabilities,
   loadLatestFinOpsRiskScan,
   loadFinOpsRoiDecision,
   loadFinOpsOfficialPriceCatalog,
@@ -40,6 +42,47 @@ import {
   updateWorkspaceModelRouting,
   toUserFacingRequestError,
 } from "./api.js";
+
+
+test("governance capability reads abort at the bounded timeout", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (_url, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener("abort", () => reject(options.signal.reason));
+  });
+
+  try {
+    await assert.rejects(
+      loadGovernanceCapabilities("ws-a", { timeoutMs: 5 }),
+      (error) => error.name === "DataForgeRequestTimeoutError"
+        && error.message === "服务响应超时，请重试",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
+test("dashboard timeout does not fan out to legacy fallback requests", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (_url, options) => {
+    calls += 1;
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(options.signal.reason));
+    });
+  };
+
+  try {
+    await assert.rejects(
+      loadDashboard("ws-a", { timeoutMs: 5 }),
+      (error) => error.name === "DataForgeRequestTimeoutError",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls, 1);
+});
 
 
 test("buildFinOpsQuery emits only supported non-empty filters", () => {
