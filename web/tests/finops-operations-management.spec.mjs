@@ -41,6 +41,20 @@ async function expectDemoSurfaceComplete(page) {
 }
 
 
+test("stalled capability check becomes one retryable operations state", async ({ page }) => {
+  await installFinOpsMockApi(page, [], { capabilityDelayMs: 9_000 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+
+  await expect(page.getByText("正在核验运营管理权限")).toBeVisible();
+  const retryState = page.getByRole("status", { name: "运营管理权限服务状态" });
+  await expect(retryState).toContainText("权限服务暂时不可用", { timeout: 12_000 });
+  await expect(retryState.getByRole("button", { name: "重新检查" })).toHaveCount(1);
+  await expect(page.getByText("当前账户无权访问运营管理")).toHaveCount(0);
+  await expect(page.getByText("正在核验运营管理权限")).toHaveCount(0);
+});
+
+
 test("operations management is immediately discoverable and supports metric drilldown", async ({ page }) => {
   await installFinOpsMockApi(page);
   await page.goto("/");

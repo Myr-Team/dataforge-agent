@@ -656,6 +656,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     remediationReviewConflictOnce: Boolean(options.remediationReviewConflictOnce),
     failRoiRefresh: Boolean(options.failRoiRefresh),
     decisionDelayMs: Number(options.decisionDelayMs || 0),
+    capabilityDelayMs: Number(options.capabilityDelayMs || 0),
     delayNextRoiRefreshMs: 0,
     riskBaseVersion: "cache-policy-v1",
     remediation: null,
@@ -772,6 +773,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     if (path === "/api/workspaces/demo-corpus/access") {
       body = { allowed: true, role: "owner", workspace_id: "demo-corpus" };
     } else if (path === "/api/workspaces/demo-corpus/governance/capabilities") {
+      if (control.capabilityDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, control.capabilityDelayMs));
+      }
       body = {
         workspace_id: "demo-corpus",
         sections: {

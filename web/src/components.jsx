@@ -610,6 +610,8 @@ function WorkbenchMainInner({
   onOpenTaskCenter,
   workspaceAccess,
   governanceCapabilities,
+  governanceCapabilitiesError,
+  onRetryGovernanceCapabilities,
   finopsPreloadScope,
 }) {
   const resolvedView = view === "governance" ? "lineage" : view === "cost-value" ? "monitor" : view;
@@ -648,6 +650,20 @@ function WorkbenchMainInner({
   if (["finops", "finops-risk"].includes(resolvedView)) {
     const accessState = navigationAccessState(resolvedView, governanceCapabilities);
     if (accessState === "loading") {
+      if (governanceCapabilitiesError) {
+        return (
+          <main className="finops-page">
+            <section className="finops-permission-retry" role="status" aria-label="运营管理权限服务状态">
+              <span className="finops-permission-retry-icon" aria-hidden="true"><AlertTriangle size={18} /></span>
+              <div>
+                <strong>权限服务暂时不可用</strong>
+                <p>未能在限定时间内完成权限核验，请重新检查。</p>
+              </div>
+              <button className="ghost-button" type="button" onClick={onRetryGovernanceCapabilities}>重新检查</button>
+            </section>
+          </main>
+        );
+      }
       return <main className="finops-page"><div className="finops-section-loading">正在核验运营管理权限</div></main>;
     }
     if (accessState === "denied") {

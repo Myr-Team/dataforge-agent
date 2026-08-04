@@ -5467,6 +5467,15 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-anomaly-list article footer button:disabled, .finops-table-action:disabled { cursor: wait; opacity: .55; }
 .finops-inline-error { border: 1px solid rgba(217, 45, 32, .25); border-radius: 8px; background: #fef3f2; color: #b42318; margin: 10px 13px; padding: 9px 11px; font-size: 10.5px; }
 .finops-section-loading { display: flex; min-height: 220px; align-items: center; justify-content: center; gap: 8px; color: #667085; font-size: 11px; }
+.finops-permission-retry { max-width: 520px; margin: 72px auto 0; padding: 18px 20px; border: 1px solid #f5d0aa; border-radius: 14px; background: #fffaf5; box-shadow: 0 10px 28px rgba(71, 45, 20, 0.07); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; color: #7a2e0e; }
+.finops-permission-retry-icon { width: 34px; height: 34px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; background: #ffead5; color: #c2410c; }
+.finops-permission-retry strong { display: block; color: #5f270f; font-size: 14px; line-height: 1.35; }
+.finops-permission-retry p { margin: 4px 0 0; color: #87553b; font-size: 11.5px; line-height: 1.5; }
+.finops-permission-retry .ghost-button { white-space: nowrap; background: #fff; }
+@media (max-width: 560px) {
+  .finops-permission-retry { margin: 36px 14px 0; grid-template-columns: auto minmax(0, 1fr); }
+  .finops-permission-retry .ghost-button { grid-column: 1 / -1; width: 100%; justify-content: center; }
+}
 .finops-agent-stack { display: grid; gap: 10px; padding: 12px; }
 .finops-agent-card { border: 1px solid #dbe7f8; border-radius: 9px; background: #f8fbff; padding: 12px; }
 .finops-agent-card > header { display: flex; align-items: flex-start; gap: 8px; color: #175cd3; }
