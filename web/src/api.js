@@ -72,9 +72,8 @@ async function request(path, options = {}) {
       timeoutController.abort();
     }, boundedTimeoutMs);
   }
-  let response;
   try {
-    response = await fetch(`${API_BASE}${path}`, {
+    const response = await fetch(`${API_BASE}${path}`, {
       headers: {
         Accept: "application/json",
         ...(fetchOptions.body && !(fetchOptions.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
@@ -84,6 +83,23 @@ async function request(path, options = {}) {
       ...fetchOptions,
       ...(requestSignal ? { signal: requestSignal } : {}),
     });
+    if (!response.ok) {
+      let message = `${response.status} ${response.statusText}`;
+      try {
+        const data = await response.json();
+        message = errorMessageFromPayload(data, message);
+      } catch (error) {
+        if (timedOut) throw error;
+        // Keep HTTP status text when the server does not return JSON.
+      }
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
+    }
+    if (response.status === 204) {
+      return {};
+    }
+    return await response.json();
   } catch (error) {
     if (timedOut) {
       const timeoutError = new Error("服务响应超时，请重试");
@@ -99,22 +115,6 @@ async function request(path, options = {}) {
       callerSignal.removeEventListener("abort", forwardCallerAbort);
     }
   }
-  if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
-    try {
-      const data = await response.json();
-      message = errorMessageFromPayload(data, message);
-    } catch {
-      // Keep HTTP status text when the server does not return JSON.
-    }
-    const error = new Error(message);
-    error.status = response.status;
-    throw error;
-  }
-  if (response.status === 204) {
-    return {};
-  }
-  return response.json();
 }
 
 export const apiFetch = request;

@@ -62,6 +62,33 @@ test("governance capability reads abort at the bounded timeout", async () => {
 });
 
 
+test("governance capability timeout also bounds a stalled JSON body", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => ({
+    ok: true,
+    status: 200,
+    json: () => new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(options.signal.reason));
+    }),
+  });
+
+  try {
+    await assert.rejects(
+      Promise.race([
+        loadGovernanceCapabilities("ws-a", { timeoutMs: 5 }),
+        new Promise((_resolve, reject) => setTimeout(
+          () => reject(new Error("request body timeout did not fire")),
+          100,
+        )),
+      ]),
+      (error) => error.name === "DataForgeRequestTimeoutError",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
 test("dashboard timeout does not fan out to legacy fallback requests", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
