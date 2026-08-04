@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any, Callable, Mapping
 
 from . import cache_store
 from .entra_group_mapping import group_ref_for
 from .finops.normalization import canonical_tenant_id, opaque_ref
 from .graph_client import list_signed_in_transitive_groups
+
+
+_RESOLUTION_LOCKS = tuple(threading.Lock() for _ in range(64))
 
 
 def resolve_actor_group_membership(
@@ -46,52 +50,89 @@ def resolve_actor_group_membership(
             secret=secret,
         )
     )
+    cached_result = _cached_membership(cache, cache_key)
+    if cached_result is not None:
+        return cached_result
+
+    with _resolution_lock(cache_key):
+        cached_result = _cached_membership(cache, cache_key)
+        if cached_result is not None:
+            return cached_result
+        try:
+            groups = graph_loader(request)
+        except Exception:
+            unavailable = _unavailable("microsoft_graph")
+            _store_membership(cache, cache_key, unavailable, ttl_seconds=30)
+            return unavailable
+        refs = sorted(
+            {
+                group_ref_for(tenant_id, str(item.get("id") or ""), secret=secret)
+                for item in groups
+                if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+            }
+        )
+        result = {
+            "state": "observed",
+            "group_refs": refs,
+            "source": "microsoft_graph",
+            "permission_state": "granted",
+        }
+        _store_membership(cache, cache_key, result, ttl_seconds=120)
+        return result
+
+
+def _resolution_lock(cache_key: str) -> threading.Lock:
+    return _RESOLUTION_LOCKS[hash(cache_key) % len(_RESOLUTION_LOCKS)]
+
+
+def _cached_membership(cache: Any, cache_key: str) -> dict[str, Any] | None:
     try:
         cached, meta = cache.get_json(cache_key)
     except Exception:
-        cached, meta = None, {"status": "unavailable"}
-    if (
-        isinstance(cached, Mapping)
-        and meta.get("status") == "hit"
-        and isinstance(cached.get("group_refs"), list)
-    ):
-        refs = [
-            str(item)
-            for item in cached["group_refs"]
-            if str(item).startswith("group_")
-        ]
+        return None
+    if not isinstance(cached, Mapping) or meta.get("status") != "hit":
+        return None
+    state = str(cached.get("state") or "observed").strip().lower()
+    if state == "unavailable":
         return {
-            "state": "observed",
-            "group_refs": sorted(set(refs)),
+            "state": "unavailable",
+            "group_refs": [],
             "source": "microsoft_graph_cache",
-            "permission_state": "granted",
+            "permission_state": "unavailable",
         }
+    if state != "observed" or not isinstance(cached.get("group_refs"), list):
+        return None
+    refs = [
+        str(item)
+        for item in cached["group_refs"]
+        if str(item).startswith("group_")
+    ]
+    return {
+        "state": "observed",
+        "group_refs": sorted(set(refs)),
+        "source": "microsoft_graph_cache",
+        "permission_state": "granted",
+    }
 
-    try:
-        groups = graph_loader(request)
-    except Exception:
-        return _unavailable("microsoft_graph")
-    refs = sorted(
-        {
-            group_ref_for(tenant_id, str(item.get("id") or ""), secret=secret)
-            for item in groups
-            if isinstance(item, Mapping) and str(item.get("id") or "").strip()
-        }
-    )
+
+def _store_membership(
+    cache: Any,
+    cache_key: str,
+    result: Mapping[str, Any],
+    *,
+    ttl_seconds: int,
+) -> None:
     try:
         cache.set_json(
             cache_key,
-            {"group_refs": refs},
-            ttl_seconds=120,
+            {
+                "state": result.get("state"),
+                "group_refs": list(result.get("group_refs") or []),
+            },
+            ttl_seconds=ttl_seconds,
         )
     except Exception:
         pass
-    return {
-        "state": "observed",
-        "group_refs": refs,
-        "source": "microsoft_graph",
-        "permission_state": "granted",
-    }
 
 
 def _unavailable(source: str) -> dict[str, Any]:

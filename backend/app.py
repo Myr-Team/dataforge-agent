@@ -70,7 +70,7 @@ try:
         workspace_ingest_status,
         workspace_pending_ingest_jobs,
     )
-    from .workspace_authz import authorize, require_workspace_permission, workspace_access_decision, workspace_role
+    from .workspace_authz import actor_for_workspace_request, authorize, require_workspace_permission, workspace_access_decision, workspace_role
     from .schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -128,7 +128,7 @@ except ImportError:
         workspace_ingest_status,
         workspace_pending_ingest_jobs,
     )
-    from workspace_authz import authorize, require_workspace_permission, workspace_access_decision, workspace_role
+    from workspace_authz import actor_for_workspace_request, authorize, require_workspace_permission, workspace_access_decision, workspace_role
     from schemas import (
         ChatRequest,
         ConversationDetailResponse,
@@ -331,7 +331,7 @@ async def workspace_detail(workspace_id: str, request: Request) -> WorkspaceDeta
 async def workspace_access(workspace_id: str, request: Request) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,159}", str(workspace_id or "")):
         raise HTTPException(status_code=400, detail="workspace_id is invalid")
-    actor = actor_from_request(request, fallback=False)
+    actor = actor_for_workspace_request(workspace_id, request, fallback=False)
     decision = workspace_access_decision(workspace_id, actor)
     return {
         "workspace_id": workspace_id,
@@ -931,12 +931,13 @@ def _compact_event_data(data: Any) -> Any:
 def _require_workspace_action(workspace_id: str, request: Request, action: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,159}", str(workspace_id or "")):
         raise HTTPException(status_code=400, detail="workspace_id is invalid")
+    actor = actor_for_workspace_request(workspace_id, request, fallback=False)
     try:
-        return require_workspace_permission(workspace_id, actor_from_request(request), action)
+        return require_workspace_permission(workspace_id, actor, action)
     except PermissionError as exc:
         try:
             record_audit_event(
-                actor_from_request(request),
+                actor,
                 action,
                 {"workspace_id": workspace_id, "resource_type": "workspace", "resource_id": workspace_id},
                 result="denied",

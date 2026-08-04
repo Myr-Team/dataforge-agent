@@ -8,6 +8,8 @@ from urllib.parse import quote
 import pytest
 
 import backend.invitation_store as invitation_store
+import backend.entra_membership as entra_membership
+import backend.identity as identity
 import backend.workspace_authz as workspace_authz
 from backend.app import app
 from fastapi import HTTPException
@@ -32,6 +34,84 @@ def _trusted_easy_auth_headers(email: str, *, actor_id: str = "oid-user", tenant
 
 def _actor(oid: str, tid: str = "tenant-a") -> dict[str, str]:
     return {"actor_id": oid, "tenant_id": tid, "source": "easy_auth"}
+
+
+def test_workspace_owner_authorization_does_not_resolve_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setenv("DF_ENTRA_GROUP_GOVERNANCE_ENABLED", "1")
+    monkeypatch.setattr(
+        workspace_authz,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": {"actor_id": "owner-oid", "tenant_id": "tenant-a"},
+            "workspace_members": [
+                {
+                    "actor_id": "owner-oid",
+                    "tenant_id": "tenant-a",
+                    "role": "owner",
+                    "status": "active",
+                    "source": "workspace_owner",
+                }
+            ],
+        },
+    )
+    calls = 0
+
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("group lookup must not run for the persisted owner")
+
+    monkeypatch.setattr(entra_membership, "resolve_actor_group_membership", fail_if_called)
+    request = type(
+        "Request",
+        (),
+        {
+            "headers": _trusted_easy_auth_headers(
+                "owner@contoso.com",
+                actor_id="owner-oid",
+                tenant_id="tenant-a",
+            ),
+            "state": type("State", (), {})(),
+        },
+    )()
+
+    actor = workspace_authz.actor_for_workspace_request("ws-owner", request)
+
+    assert workspace_authz.require_workspace_permission("ws-owner", actor, "workspace.read") == "owner"
+    assert calls == 0
+
+
+def test_actor_from_request_reuses_group_resolution_within_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "server-only-secret")
+    monkeypatch.setenv("DF_ENTRA_GROUP_GOVERNANCE_ENABLED", "1")
+    calls = 0
+
+    def resolve_once(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "state": "observed",
+            "group_refs": [],
+            "source": "easy_auth_claims",
+            "permission_state": "not_required",
+        }
+
+    monkeypatch.setattr(entra_membership, "resolve_actor_group_membership", resolve_once)
+    request = type(
+        "Request",
+        (),
+        {
+            "headers": _trusted_easy_auth_headers("member@contoso.com"),
+            "state": type("State", (), {})(),
+        },
+    )()
+
+    first = identity.actor_from_request(request, fallback=False, resolve_groups=True)
+    second = identity.actor_from_request(request, fallback=False, resolve_groups=True)
+
+    assert first == second
+    assert calls == 1
 
 
 def test_access_decision_normalizes_matching_legacy_owner_without_email_grant(monkeypatch: pytest.MonkeyPatch) -> None:

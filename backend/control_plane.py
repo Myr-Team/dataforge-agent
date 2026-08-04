@@ -47,7 +47,7 @@ try:
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
     from .workspace_model_config import normalize_workspace_price_card, public_workspace_model_config, validate_workspace_routing_policy
-    from .workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
+    from .workspace_authz import actor_for_workspace_request, active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
     from .finops.cache_namespace import FinOpsCacheNamespace
     from .finops.normalization import canonical_tenant_ref
 except ImportError:
@@ -78,7 +78,7 @@ except ImportError:
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
     from workspace_model_config import normalize_workspace_price_card, public_workspace_model_config, validate_workspace_routing_policy
-    from workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
+    from workspace_authz import actor_for_workspace_request, active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
     from finops.cache_namespace import FinOpsCacheNamespace
     from finops.normalization import canonical_tenant_ref
 
@@ -582,7 +582,7 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
 
 
 def _require_workspace_action(workspace_id: str, request: Request | None, action: str) -> str:
-    actor = actor_from_request(request)
+    actor = actor_for_workspace_request(workspace_id, request, fallback=False)
     try:
         return require_workspace_permission(workspace_id, actor, action)
     except PermissionError as exc:
@@ -592,7 +592,7 @@ def _require_workspace_action(workspace_id: str, request: Request | None, action
 
 def _require_trusted_workspace_action(workspace_id: str, request: Request | None, action: str) -> str:
     """Authorize a normal run reader without exposing sensitive governance data."""
-    actor = actor_from_request(request, fallback=False)
+    actor = actor_for_workspace_request(workspace_id, request, fallback=False)
     role = workspace_role(workspace_id, actor) if is_trusted_tenant_identity(actor) else None
     if not authorize(role, action):
         _audit_denied(request, workspace_id, action, actor=actor)
@@ -601,7 +601,7 @@ def _require_trusted_workspace_action(workspace_id: str, request: Request | None
 
 
 def _require_sensitive_workspace_action(workspace_id: str, request: Request | None, action: str) -> str:
-    actor = actor_from_request(request, fallback=False)
+    actor = actor_for_workspace_request(workspace_id, request, fallback=False)
     try:
         return require_sensitive_workspace_permission(workspace_id, actor, action, role_resolver=active_workspace_role)
     except PermissionError as exc:
