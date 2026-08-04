@@ -84,14 +84,47 @@ test("seeded ROI cache is interactive within 300ms without a full-page skeleton"
 
   await page.getByRole("button", { name: "风险与优化", exact: true }).click();
   await expect(page.getByRole("heading", { name: "风险矩阵" })).toBeVisible();
-  const startedAt = await page.evaluate(() => performance.now());
-  await openOperations(page);
-  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
+  const roiCallsBeforeCachedNavigation = control.calls.roiDecision;
+  const interactiveMs = await page.evaluate(async () => {
+    const visibleButton = (label) => [...document.querySelectorAll("button")]
+      .filter((node) => node.textContent?.trim() === label)
+      .find((node) => {
+        const box = node.getBoundingClientRect();
+        return box.width > 0 && box.height > 0;
+      });
+    const waitForVisibleButton = (label) => new Promise((resolve, reject) => {
+      const initial = visibleButton(label);
+      if (initial) {
+        resolve(initial);
+        return;
+      }
+      let timeoutId;
+      const observer = new MutationObserver(() => {
+        const match = visibleButton(label);
+        if (!match) return;
+        observer.disconnect();
+        clearTimeout(timeoutId);
+        resolve(match);
+      });
+      observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+      timeoutId = setTimeout(() => {
+        observer.disconnect();
+        reject(new Error(`button did not become visible: ${label}`));
+      }, 1_000);
+    });
+
+    const started = performance.now();
+    visibleButton("成本管理")?.click();
+    const roiTab = await waitForVisibleButton("效能与 ROI");
+    roiTab.click();
+    await waitForVisibleButton("调整测算参数");
+    return performance.now() - started;
+  });
   await expect(page.getByRole("button", { name: "调整测算参数" })).toBeVisible();
-  const interactiveMs = await page.evaluate((started) => performance.now() - started, startedAt);
 
   expect(coldLatencyMs).toBeGreaterThanOrEqual(300);
   expect(interactiveMs).toBeLessThan(300);
+  expect(control.calls.roiDecision).toBe(roiCallsBeforeCachedNavigation);
   await expect(page.locator(".finops-decision-roi-loading")).toHaveCount(0);
 
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
