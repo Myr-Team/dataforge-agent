@@ -55,6 +55,31 @@ test("stalled capability check becomes one retryable operations state", async ({
 });
 
 
+test("dashboard pending renders a skeleton then the real workspace", async ({ page }) => {
+  await installFinOpsMockApi(page, [], { dashboardDelayMs: 1_200 });
+  await page.goto("/");
+
+  await expect(page.locator(".dashboard-stage-loading")).toBeVisible({ timeout: 4_000 });
+  await expect(page.getByRole("heading", { name: "Commerce" })).toBeVisible({ timeout: 6_000 });
+  await expect(page.locator(".dashboard-stage-loading")).toHaveCount(0);
+});
+
+
+test("dashboard failure becomes a retryable content state", async ({ page }) => {
+  const control = await installFinOpsMockApi(page, [], { dashboardUnavailable: true });
+  await page.goto("/");
+
+  const state = page.getByRole("alert", { name: "工作区加载失败" });
+  await expect(state).toBeVisible({ timeout: 6_000 });
+  await expect(state).toContainText("工作区数据未完整加载");
+  control.dashboardUnavailable = false;
+  control.failDashboardFallback = false;
+  await state.getByRole("button", { name: "重新加载" }).click();
+  await expect(page.getByRole("heading", { name: "Commerce" })).toBeVisible({ timeout: 6_000 });
+  expect(control.calls.dashboard).toBeGreaterThanOrEqual(2);
+});
+
+
 test("operations management is immediately discoverable and supports metric drilldown", async ({ page }) => {
   await installFinOpsMockApi(page);
   await page.goto("/");

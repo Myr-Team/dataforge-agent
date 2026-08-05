@@ -320,7 +320,10 @@ export function App() {
         accessPromise,
         capabilitiesPromise,
       ]);
-      if (isCurrentRequest()) setDashboard(data);
+      if (isCurrentRequest()) {
+        setDashboard(data);
+        setDashboardError(data?.fallback_error ? String(data.fallback_error) : "");
+      }
     } catch (error) {
       if (!isCurrentRequest()) return;
       const message = error instanceof Error ? error.message : String(error);
@@ -1281,6 +1284,9 @@ export function App() {
             view={renderView}
             setView={setActiveView}
             dashboard={dashboard}
+            dashboardLoading={dashboardLoading}
+            dashboardError={dashboardError}
+            onRetryDashboard={() => refreshDashboard(workspaceId)}
             messages={messages}
             trace={trace}
             streamText={streamText || demoReveal.text}

@@ -581,6 +581,9 @@ function WorkbenchMainInner({
   view,
   setView,
   dashboard,
+  dashboardLoading,
+  dashboardError,
+  onRetryDashboard,
   messages,
   trace,
   streamText,
@@ -672,7 +675,7 @@ function WorkbenchMainInner({
     return (
       <Suspense fallback={<main className="finops-page"><div className="finops-section-loading">正在打开运营管理</div></main>}>
         <FinOpsPortal
-          workspaceId={dashboard?.workspace_id || dashboard?.workspace?.workspace_id || ""}
+          workspaceId={finopsPreloadScope?.workspaceId || dashboard?.workspace_id || dashboard?.workspace?.workspace_id || ""}
           preloadScopeKey={finopsPreloadScope?.key || ""}
           dataScope={finopsPreloadScope || {}}
           permissions={governanceCapabilities?.sections?.finops?.permissions || {}}
@@ -697,22 +700,78 @@ function WorkbenchMainInner({
       />
     );
   }
+  if (resolvedView === "workspaces" && dashboardError && !dashboard) {
+    return <DashboardLoadError message={dashboardError} onRetry={onRetryDashboard} />;
+  }
+  if (resolvedView === "workspaces" && dashboardLoading && !dashboard) {
+    return <DashboardLoadingSkeleton />;
+  }
   return (
-    <DashboardStudio
-      dashboard={dashboard}
-      trace={trace}
-      running={running}
-      selectedPlaybook={selectedPlaybook}
-      setSelectedPlaybook={setSelectedPlaybook}
-      artifactMode={artifactMode}
-      setArtifactMode={setArtifactMode}
-      finalArtifact={finalArtifact}
-      artifacts={artifacts}
-      onRun={onRun}
-      onNewConversation={onNewConversation}
-      onProduce={onProduce}
-      producing={producing}
-    />
+    <>
+      {resolvedView === "workspaces" && dashboardError ? (
+        <DashboardDegradedNotice message={dashboardError} onRetry={onRetryDashboard} />
+      ) : null}
+      <DashboardStudio
+        dashboard={dashboard}
+        trace={trace}
+        running={running}
+        selectedPlaybook={selectedPlaybook}
+        setSelectedPlaybook={setSelectedPlaybook}
+        artifactMode={artifactMode}
+        setArtifactMode={setArtifactMode}
+        finalArtifact={finalArtifact}
+        artifacts={artifacts}
+        onRun={onRun}
+        onNewConversation={onNewConversation}
+        onProduce={onProduce}
+        producing={producing}
+      />
+    </>
+  );
+}
+
+function DashboardLoadingSkeleton() {
+  return (
+    <main className="agent-studio dashboard-stage dashboard-stage-loading" aria-busy="true" aria-label="正在加载工作区">
+      <section className="dashboard-skeleton-hero" aria-hidden="true">
+        <div className="dashboard-skeleton-line dashboard-skeleton-title" />
+        <div className="dashboard-skeleton-line dashboard-skeleton-subtitle" />
+      </section>
+      <div className="dashboard-skeleton-grid" aria-hidden="true">
+        <div className="dashboard-skeleton-card" />
+        <div className="dashboard-skeleton-card" />
+        <div className="dashboard-skeleton-card" />
+        <div className="dashboard-skeleton-card" />
+      </div>
+    </main>
+  );
+}
+
+function DashboardLoadError({ message, onRetry }) {
+  return (
+    <main className="agent-studio dashboard-stage dashboard-stage-error">
+      <section className="dashboard-load-error" role="alert" aria-label="工作区加载失败">
+        <span aria-hidden="true"><AlertTriangle size={20} /></span>
+        <div>
+          <h2>工作区暂时无法加载</h2>
+          <p>{message || "服务暂时没有返回工作区内容，请重新加载。"}</p>
+        </div>
+        <button type="button" className="primary-button" onClick={onRetry}>重新加载</button>
+      </section>
+    </main>
+  );
+}
+
+function DashboardDegradedNotice({ message, onRetry }) {
+  return (
+    <section className="dashboard-degraded-notice" role="alert" aria-label="工作区加载失败">
+      <AlertTriangle size={17} aria-hidden="true" />
+      <div>
+        <strong>工作区数据未完整加载</strong>
+        <span>{message || "当前展示的是可用的基础信息。"}</span>
+      </div>
+      <button type="button" className="ghost-button" onClick={onRetry}>重新加载</button>
+    </section>
   );
 }
 
