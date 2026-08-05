@@ -554,7 +554,7 @@ test("risk decision view preserves unmapped identifier-like risk terms", () => {
       opportunity_id: "opp-identifiers",
       policy_type: "apim_coverage",
       risk_domain: "governance",
-      recommendation: "定位 app_observed 与 gateway_coverage_v2，保留 provider_5xx_retryable。",
+      recommendation: "定位 app_observed 与 gateway_coverage_v2、gateway_coverage-v2、provider_5xx-retryable、gateway_coverage.v2、risk/gateway_coverage 和 provider:provider_5xx；保留 provider_5xx_retryable。",
       impact: "high",
       confidence: "high",
       effort: "medium",
@@ -570,7 +570,7 @@ test("risk decision view preserves unmapped identifier-like risk terms", () => {
 
   assert.equal(
     view.priorities[0].summary,
-    "定位 应用侧已观测 与 gateway_coverage_v2，保留 provider_5xx_retryable。",
+    "定位 应用侧已观测 与 gateway_coverage_v2、gateway_coverage-v2、provider_5xx-retryable、gateway_coverage.v2、risk/gateway_coverage 和 provider:provider_5xx；保留 provider_5xx_retryable。",
   );
   assert.equal(view.evidence[0].signal.metric, "gateway_coverage_v2");
   assert.equal(view.evidence[0].errorCategory, "provider_5xx_retryable");

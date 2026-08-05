@@ -45,7 +45,7 @@ const CUSTOMER_FACING_FINOPS_TERMS = Object.freeze({
   provider_5xx: "模型服务异常",
 });
 
-const CUSTOMER_FACING_FINOPS_TERM_PATTERN = /(^|[^A-Za-z0-9_])(gateway_coverage|app_observed|unmanaged|unknown|cache_state|tokens_total|provider_5xx)(?![A-Za-z0-9_])/g;
+const CUSTOMER_FACING_FINOPS_TERM_PATTERN = /(^|[^A-Za-z0-9_.:/-])(gateway_coverage|app_observed|unmanaged|unknown|cache_state|tokens_total|provider_5xx)(?![A-Za-z0-9_.:/-])/g;
 
 const LEVEL_LABELS = Object.freeze({
   low: "低",
