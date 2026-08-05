@@ -249,6 +249,17 @@ for (const viewport of [
     const riskRows = page.locator(".finops-decision-risk-row");
     await expect(riskRows).toHaveCount(4);
     await expectNoOverlap(riskRows);
+    const recommendation = page.locator(".finops-decision-risk-recommendation p");
+    await expect(recommendation).toBeVisible();
+    const recommendationBox = await recommendation.evaluate((node) => ({
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+      overflow: getComputedStyle(node).overflow,
+      whiteSpace: getComputedStyle(node).whiteSpace,
+    }));
+    expect(recommendationBox.scrollHeight).toBeLessThanOrEqual(recommendationBox.clientHeight + 1);
+    expect(recommendationBox.overflow).not.toBe("hidden");
+    expect(recommendationBox.whiteSpace).not.toBe("nowrap");
     await expect(page.locator(".finops-live > i")).toHaveCount(0);
 
     const contentText = await page.locator(".finops-content").innerText();

@@ -382,7 +382,8 @@ test("risk page contains the complete linked signal-to-verification hierarchy", 
     "信号",
     "影响范围",
     "代表证据",
-    "建议",
+    "判定依据",
+    "处置建议",
     "改善验证",
     "最新 AI 解读",
     "治理边界",
@@ -394,6 +395,8 @@ test("risk page contains the complete linked signal-to-verification hierarchy", 
   assert.match(source, /<OpportunityPortfolio/);
   assert.match(source, /selectedRiskId/);
   assert.match(source, /requestEvidenceRefs/);
+  assert.match(source, /finops-decision-risk-recommendation/);
+  assert.match(source, /finops-decision-risk-facts/);
   assert.match(source, /<details[^>]*className="finops-decision-risk-technical"/);
   assert.doesNotMatch(source, /咨询当前判断|继续询问/);
   assert.match(charts, /finops-decision-risk-quadrants/);
@@ -481,6 +484,8 @@ test("risk page renders only selected request evidence and keeps technical IDs c
   assert.doesNotMatch(markup, /高时延请求|req_latency_001|run-private|provider-secret/);
   assert.match(markup, /查看证据/);
   assert.match(markup, /查看整改方案/);
+  assert.match(markup, /finops-decision-risk-recommendation/);
+  assert.match(markup, /finops-decision-risk-facts/);
 });
 
 

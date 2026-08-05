@@ -258,11 +258,10 @@ function EvidenceChain({ priority, evidence, onEvidence, onAsk, onCreateDraft, o
   const canAcknowledge = priority.applicableActions.includes("acknowledge");
   const canSuppress = priority.applicableActions.includes("suppress");
   const stages = [
-    ["信号", priority.policyLabel, priority.domainLabel],
+    ["信号", "已识别", `${priority.policyLabel} · ${priority.domainLabel}`],
     ["影响范围", priority.sampleCount === null ? "未记录" : `${priority.sampleCount} 次请求`, `业务影响 ${priority.impactLevelLabel}`],
     ["代表证据", selectedEvidence.length ? `${selectedEvidence.length} 条请求证据` : "暂无可下钻请求", "仅请求证据可打开详情"],
-    ["建议", priority.summary || "服务端尚未返回建议说明", `预计影响 ${priority.impactLabel}`],
-    ["改善验证", "保存整改草案后复核", "验证前不视为已完成改善"],
+    ["改善验证", "待验证", "保存整改草案后复核"],
   ];
   return (
     <section className="finops-decision-risk-chain" aria-labelledby="finops-risk-chain-title">
@@ -287,6 +286,19 @@ function EvidenceChain({ priority, evidence, onEvidence, onAsk, onCreateDraft, o
           <li key={label}><span>{index + 1}</span><div><small>{label}</small><b>{value}</b><p>{note}</p></div></li>
         ))}
       </ol>
+      <div className="finops-decision-risk-assessment">
+        <article className="finops-decision-risk-recommendation">
+          <small>处置建议</small>
+          <p>{priority.summary || "当前尚未形成具体处置建议，请先复核代表证据后再创建整改草案。"}</p>
+          <span>建议只作为候选判断；保存草案并完成验证前，不视为已完成改善。</span>
+        </article>
+        <dl className="finops-decision-risk-facts" aria-label="判定依据">
+          <div><dt>判定依据</dt><dd>{priority.policyLabel}</dd></div>
+          <div><dt>证据置信度</dt><dd>{priority.confidenceLabel}</dd></div>
+          <div><dt>实施难度</dt><dd>{priority.effortLabel}</dd></div>
+          <div><dt>预计影响</dt><dd>{priority.impactLabel}</dd></div>
+        </dl>
+      </div>
       <div className="finops-decision-risk-evidence-head">
         <div><span>可复核请求</span><h3>代表证据</h3></div>
         <div>

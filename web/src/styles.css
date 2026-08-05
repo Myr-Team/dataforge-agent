@@ -6274,14 +6274,25 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-decision-risk-priorities button > strong { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
 
 .finops-decision-risk-chain { padding-bottom: 14px; }
-.finops-decision-risk-chain-stages { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; padding: 14px; list-style: none; }
+.finops-decision-risk-chain-stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: 14px; list-style: none; }
 .finops-decision-risk-chain-stages > li { position: relative; display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 7px; min-width: 0; padding-right: 10px; }
 .finops-decision-risk-chain-stages > li:not(:last-child)::after { position: absolute; top: 10px; right: 0; left: 10px; z-index: 0; height: 1px; background: var(--line-strong); content: ""; }
 .finops-decision-risk-chain-stages > li > span { z-index: 1; display: grid; width: 20px; height: 20px; border: 1px solid #bdd0ef; border-radius: 50%; place-items: center; background: var(--surface); color: var(--blue); font-size: 8.5px; font-weight: 800; }
 .finops-decision-risk-chain-stages > li > div { z-index: 1; display: grid; min-width: 0; align-content: start; gap: 3px; background: var(--surface); }
 .finops-decision-risk-chain-stages small { color: var(--blue); font-size: 10px; font-weight: 700; }
-.finops-decision-risk-chain-stages b { overflow: hidden; color: var(--ink); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.finops-decision-risk-chain-stages b { color: var(--ink); font-size: 11px; }
 .finops-decision-risk-chain-stages p { margin: 0; color: var(--faint); font-size: 10px; line-height: 1.45; }
+.finops-decision-risk-assessment { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, .8fr); gap: 10px; padding: 0 14px 14px; }
+.finops-decision-risk-recommendation { display: grid; min-width: 0; gap: 6px; border: 1px solid #c9d9f5; border-radius: 8px; padding: 12px 13px; background: #f7f9fd; }
+.finops-decision-risk-recommendation small { color: var(--blue); font-size: 10px; font-weight: 750; }
+.finops-decision-risk-recommendation p { overflow: visible; margin: 0; color: var(--ink); font-size: 12px; font-weight: 650; line-height: 1.6; white-space: normal; overflow-wrap: anywhere; }
+.finops-decision-risk-recommendation span { color: var(--faint); font-size: 9.5px; line-height: 1.5; }
+.finops-decision-risk-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; margin: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.finops-decision-risk-facts > div { display: grid; min-width: 0; align-content: center; gap: 3px; padding: 10px 11px; }
+.finops-decision-risk-facts > div:nth-child(even) { border-left: 1px solid var(--line); }
+.finops-decision-risk-facts > div:nth-child(n + 3) { border-top: 1px solid var(--line); }
+.finops-decision-risk-facts dt { color: var(--faint); font-size: 9px; }
+.finops-decision-risk-facts dd { overflow: hidden; margin: 0; color: var(--ink); font-size: 10.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .finops-decision-risk-evidence-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .finops-decision-risk-evidence-head > div:first-child { display: grid; gap: 2px; }
 .finops-decision-risk-evidence-head span { color: var(--blue); font-size: 10px; font-weight: 700; }
@@ -6406,6 +6417,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-risk-scan-rules { grid-template-columns: 1fr; }
   .finops-decision-risk-chain-stages { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 0; }
   .finops-decision-risk-chain-stages > li:not(:last-child)::after { display: none; }
+  .finops-decision-risk-assessment { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 640px) {
@@ -6428,6 +6440,10 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-decision-risk-evidence-head > div:last-child { width: 100%; justify-content: flex-start; }
   .finops-decision-risk-chain-stages { grid-template-columns: 1fr; gap: 8px; }
   .finops-decision-risk-chain-stages > li { padding: 0; }
+  .finops-decision-risk-assessment { padding: 0 10px 10px; }
+  .finops-decision-risk-facts { grid-template-columns: 1fr; }
+  .finops-decision-risk-facts > div:nth-child(even) { border-left: 0; }
+  .finops-decision-risk-facts > div + div { border-top: 1px solid var(--line); }
   .finops-decision-risk-insight,
   .finops-decision-risk-governance { grid-template-columns: 32px minmax(0, 1fr); align-items: start; }
   .finops-decision-risk-insight > .finops-decision-status,
