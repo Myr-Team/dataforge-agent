@@ -5264,6 +5264,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   min-width: 0;
   min-height: 100%;
   overflow: auto;
+  position: relative;
   padding: 22px 26px 18px;
   background: #f6f8fb;
   color: var(--finops-ink);
@@ -5790,7 +5791,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-doughnut-legend { width: 100%; }
   .finops-drawer { width: 100%; }
   .finops-drawer-body { padding: 12px; }
-  .finops-ai-launcher { right: 14px; bottom: 14px; width: 42px; min-height: 42px; justify-content: center; padding: 0; }
+  .finops-ai-launcher { position: absolute; right: 14px; bottom: 14px; width: 42px; min-height: 42px; justify-content: center; padding: 0; }
   .finops-ai-launcher span { display: none; }
   .finops-ai-popover { right: 14px; bottom: 66px; max-height: calc(100vh - 82px); }
 }

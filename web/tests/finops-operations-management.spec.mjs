@@ -266,12 +266,53 @@ for (const viewport of [
     expect(contentText).not.toMatch(/未接入|暂不可用|Failed to fetch/);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);
+    const riskChain = page.locator(".finops-decision-risk-chain");
+    await riskChain.scrollIntoViewIfNeeded();
+    await riskChain.evaluate((node) => node.scrollIntoView({ block: "start", inline: "nearest" }));
+    const riskChainBox = await riskChain.boundingBox();
+    expect(riskChainBox).not.toBeNull();
+    expect(riskChainBox.x).toBeGreaterThanOrEqual(0);
+    expect(riskChainBox.x + riskChainBox.width).toBeLessThanOrEqual(viewport.width);
+    expect(riskChainBox.y).toBeGreaterThanOrEqual(-1);
+    expect(riskChainBox.y).toBeLessThan(viewport.height);
+    if (viewport.name === "desktop" || viewport.name === "mobile") {
+      await page.screenshot({
+        path: path.join(outputDir, `finops-risk-stage-${viewport.name}.png`),
+      });
+    }
     await page.screenshot({
       path: path.join(outputDir, `operations-risk-${viewport.name}.png`),
       fullPage: true,
     });
   });
 }
+
+
+test("mobile AI launcher follows risk content without covering it", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installFinOpsMockApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "\u6210\u672c\u7ba1\u7406" }).last().click();
+  await page.getByRole("button", { name: "\u98ce\u9669\u4e0e\u4f18\u5316", exact: true }).click();
+
+  const pageSurface = page.locator(".finops-page");
+  const launcher = page.locator(".finops-ai-launcher");
+  const riskChain = page.locator(".finops-decision-risk-chain");
+  await riskChain.scrollIntoViewIfNeeded();
+  await expect(launcher).toBeVisible();
+  await expect.poll(() => pageSurface.evaluate((node) => getComputedStyle(node).position)).toBe("relative");
+  await expect.poll(() => launcher.evaluate((node) => getComputedStyle(node).position)).toBe("absolute");
+  const [launcherBox, riskChainBox] = await Promise.all([launcher.boundingBox(), riskChain.boundingBox()]);
+  expect(launcherBox).not.toBeNull();
+  expect(riskChainBox).not.toBeNull();
+  const overlapsRiskChain = launcherBox.left < riskChainBox.right
+    && launcherBox.right > riskChainBox.left
+    && launcherBox.top < riskChainBox.bottom
+    && launcherBox.bottom > riskChainBox.top;
+  expect(overlapsRiskChain).toBe(false);
+  await launcher.scrollIntoViewIfNeeded();
+  await expect(launcher).toBeInViewport();
+});
 
 
 test("risk scan reruns safely and binds evidence plus AI to the selected rule", async ({ page }) => {
