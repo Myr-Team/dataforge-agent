@@ -419,8 +419,9 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await expect(page.locator(".finops-decision-roi-metric")).toHaveCount(4);
   const roiValues = await page.locator(".finops-decision-roi-metric > strong").allTextContents();
   expect(new Set(roiValues).size).toBe(4);
-  await expect(page.locator(".finops-decision-value-row")).toHaveCount(3);
-  await expectDistinctGeometry(page.locator(".finops-decision-value-bar"), "width");
+  await expect(page.locator(".finops-decision-value-term")).toHaveCount(3);
+  await expect(page.locator(".finops-decision-value-operator")).toHaveCount(2);
+  await expect(page.locator(".finops-decision-value-result-strip")).toBeVisible();
   await expect(page.locator(".finops-decision-maturity-stages li")).toHaveCount(4);
   await expect(page.locator(".finops-decision-roi-trend tbody tr")).toHaveCount(3);
   expect(new Set(await page.locator(".finops-decision-roi-trend tbody td:nth-child(3)").allTextContents()).size).toBe(3);
@@ -435,7 +436,9 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await expect(page.locator(".finops-decision-opportunity-track > i")).toHaveCount(4);
   await expectDistinctGeometry(page.locator(".finops-decision-opportunity-track > i"), "width");
   await expect(page.getByRole("list", { name: "优化机会优先列表" }).getByRole("button")).toHaveCount(4);
-  await expect(page.locator(".finops-decision-risk-chain-stages li")).toHaveCount(5);
+  await expect(page.locator(".finops-decision-risk-chain-stages li")).toHaveCount(4);
+  await expect(page.locator(".finops-decision-risk-recommendation")).not.toBeEmpty();
+  await expect(page.locator(".finops-decision-risk-facts > div")).toHaveCount(4);
   await expect(page.locator(".finops-decision-risk-evidence-card")).toHaveCount(1);
   await expect(page.locator(".finops-decision-risk-insight")).not.toBeEmpty();
   await expect(page.locator(".finops-decision-risk-governance")).not.toBeEmpty();
