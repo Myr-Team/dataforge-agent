@@ -10,10 +10,13 @@ import re
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Iterator, Literal, Mapping
 from urllib.parse import unquote, urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -47,7 +50,7 @@ try:
     from .run_store import get_run, list_runs
     from .workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
     from .workspace_model_config import normalize_workspace_price_card, public_workspace_model_config, validate_workspace_routing_policy
-    from .workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
+    from .workspace_authz import actor_for_workspace_request, active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
     from .finops.cache_namespace import FinOpsCacheNamespace
     from .finops.normalization import canonical_tenant_ref
 except ImportError:
@@ -78,7 +81,7 @@ except ImportError:
     from run_store import get_run, list_runs
     from workspace_store import WORKSPACES, get_workspace_detail, list_workspaces
     from workspace_model_config import normalize_workspace_price_card, public_workspace_model_config, validate_workspace_routing_policy
-    from workspace_authz import active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
+    from workspace_authz import actor_for_workspace_request, active_workspace_role, authorize, rbac_enabled, require_sensitive_workspace_permission, require_workspace_permission, workspace_role
     from finops.cache_namespace import FinOpsCacheNamespace
     from finops.normalization import canonical_tenant_ref
 
@@ -88,10 +91,15 @@ router = APIRouter(tags=["control-plane"])
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_DIR = ROOT / "generated-outputs"
 HEALTH_CACHE_SECONDS = float(os.environ.get("DF_DASHBOARD_HEALTH_CACHE_SECONDS", "8"))
+DASHBOARD_CACHE_SECONDS = max(0.0, float(os.environ.get("DF_DASHBOARD_CACHE_SECONDS", "2")))
+DASHBOARD_CACHE_MAX_ENTRIES = max(1, int(os.environ.get("DF_DASHBOARD_CACHE_MAX_ENTRIES", "128")))
 WORKSPACE_MEMBER_ROLES = {"admin", "editor", "viewer"}
 WORKSPACE_MEMBER_STATUSES = {"pending", "active"}
 
 _HEALTH_CACHE: dict[str, Any] = {"expires": 0.0, "value": None}
+_DASHBOARD_CACHE_GUARD = threading.Lock()
+_DASHBOARD_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+_DASHBOARD_BUILD_STATES: dict[str, dict[str, Any]] = {}
 _DIRECTORY_SELECTION_TTL_SECONDS = 300.0
 _DIRECTORY_SELECTION_LOCK = threading.RLock()
 _DIRECTORY_SELECTIONS: dict[str, dict[str, Any]] = {}
@@ -582,7 +590,7 @@ async def _call(func: Any, *args: Any, **kwargs: Any) -> Any:
 
 
 def _require_workspace_action(workspace_id: str, request: Request | None, action: str) -> str:
-    actor = actor_from_request(request)
+    actor = actor_for_workspace_request(workspace_id, request, fallback=False)
     try:
         return require_workspace_permission(workspace_id, actor, action)
     except PermissionError as exc:
@@ -592,7 +600,7 @@ def _require_workspace_action(workspace_id: str, request: Request | None, action
 
 def _require_trusted_workspace_action(workspace_id: str, request: Request | None, action: str) -> str:
     """Authorize a normal run reader without exposing sensitive governance data."""
-    actor = actor_from_request(request, fallback=False)
+    actor = actor_for_workspace_request(workspace_id, request, fallback=False)
     role = workspace_role(workspace_id, actor) if is_trusted_tenant_identity(actor) else None
     if not authorize(role, action):
         _audit_denied(request, workspace_id, action, actor=actor)
@@ -601,7 +609,7 @@ def _require_trusted_workspace_action(workspace_id: str, request: Request | None
 
 
 def _require_sensitive_workspace_action(workspace_id: str, request: Request | None, action: str) -> str:
-    actor = actor_from_request(request, fallback=False)
+    actor = actor_for_workspace_request(workspace_id, request, fallback=False)
     try:
         return require_sensitive_workspace_permission(workspace_id, actor, action, role_resolver=active_workspace_role)
     except PermissionError as exc:
@@ -746,7 +754,86 @@ def _safe_audit_id(value: Any, fallback: str) -> str:
     return clean if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}", clean) else fallback
 
 
+def _prune_dashboard_cache_locked(now: float) -> None:
+    expired = [
+        key
+        for key, (expires_at, _payload) in _DASHBOARD_CACHE.items()
+        if expires_at <= now
+    ]
+    for key in expired:
+        _DASHBOARD_CACHE.pop(key, None)
+    while len(_DASHBOARD_CACHE) > DASHBOARD_CACHE_MAX_ENTRIES:
+        _DASHBOARD_CACHE.popitem(last=False)
+
+
+def _dashboard_cache_get(workspace_id: str) -> dict[str, Any] | None:
+    if DASHBOARD_CACHE_SECONDS <= 0:
+        return None
+    now = time.monotonic()
+    with _DASHBOARD_CACHE_GUARD:
+        _prune_dashboard_cache_locked(now)
+        entry = _DASHBOARD_CACHE.get(workspace_id)
+        if entry is None:
+            return None
+        _DASHBOARD_CACHE.move_to_end(workspace_id)
+        return deepcopy(entry[1])
+
+
+def _dashboard_cache_put(
+    workspace_id: str,
+    payload: dict[str, Any],
+    completed_at: float,
+) -> None:
+    if DASHBOARD_CACHE_SECONDS <= 0:
+        return
+    try:
+        held = deepcopy(payload)
+    except Exception:
+        return
+    with _DASHBOARD_CACHE_GUARD:
+        _prune_dashboard_cache_locked(completed_at)
+        _DASHBOARD_CACHE[workspace_id] = (
+            completed_at + DASHBOARD_CACHE_SECONDS,
+            held,
+        )
+        _DASHBOARD_CACHE.move_to_end(workspace_id)
+        _prune_dashboard_cache_locked(completed_at)
+
+
+@contextmanager
+def _dashboard_build_lock(workspace_id: str) -> Iterator[None]:
+    with _DASHBOARD_CACHE_GUARD:
+        state = _DASHBOARD_BUILD_STATES.get(workspace_id)
+        if state is None:
+            state = {"lock": threading.Lock(), "users": 0}
+            _DASHBOARD_BUILD_STATES[workspace_id] = state
+        state["users"] += 1
+        build_lock = state["lock"]
+    build_lock.acquire()
+    try:
+        yield
+    finally:
+        build_lock.release()
+        with _DASHBOARD_CACHE_GUARD:
+            state["users"] -= 1
+            if state["users"] == 0 and _DASHBOARD_BUILD_STATES.get(workspace_id) is state:
+                _DASHBOARD_BUILD_STATES.pop(workspace_id, None)
+
+
 def build_workspace_dashboard(workspace_id: str) -> dict[str, Any]:
+    cached = _dashboard_cache_get(workspace_id)
+    if cached is not None:
+        return cached
+    with _dashboard_build_lock(workspace_id):
+        cached = _dashboard_cache_get(workspace_id)
+        if cached is not None:
+            return cached
+        payload = _build_workspace_dashboard_uncached(workspace_id)
+        _dashboard_cache_put(workspace_id, payload, time.monotonic())
+        return deepcopy(payload)
+
+
+def _build_workspace_dashboard_uncached(workspace_id: str) -> dict[str, Any]:
     started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=5) as pool:
         futures = {

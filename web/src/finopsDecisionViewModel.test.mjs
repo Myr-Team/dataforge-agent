@@ -198,6 +198,7 @@ test("value bridge scales only comparable units and exposes negative direction",
   assert.equal(view.valueBridge.items[1].sign, -1);
   assert.equal(view.valueBridge.items[1].directionLabel, "负值");
   assert.equal(view.valueBridge.items[1].valueLabel, "-$50.00");
+  assert.equal(view.valueBridge.items[1].formulaValueLabel, "$50.00");
   assert.equal(view.valueBridge.items[0].direction, "positive");
   assert.equal(view.valueBridge.items[2].direction, "positive");
   assert.equal(view.valueBridge.items[3].scaleGroup, "ratio");
@@ -546,12 +547,12 @@ test("shared charts render proportional accessible structures through Vite SSR",
   assert.match(bridge, /^<section class="finops-panel">/);
   assert.match(bridge, /finops-decision-help"><button[^>]*aria-expanded="false"/);
   assert.doesNotMatch(bridge, /<table/);
-  assert.match(bridge, /--finops-decision-bar-width:20%/);
-  assert.match(bridge, /--finops-decision-bar-width:100%/);
-  assert.match(bridge, /--finops-decision-bar-half-width:10%/);
-  assert.match(bridge, /--finops-decision-bar-half-width:50%/);
-  assert.match(bridge, /finops-decision-zero-axis/);
-  assert.match(bridge, /finops-decision-value-row finops-decision-tooltip-boundary[^>]*>[\s\S]*finops-decision-help/);
+  assert.match(bridge, /finops-decision-value-formula/);
+  assert.match(bridge, /finops-decision-value-term/);
+  assert.match(bridge, /finops-decision-value-operator/);
+  assert.doesNotMatch(bridge, /finops-decision-zero-axis/);
+  assert.doesNotMatch(bridge, /finops-decision-value-track/);
+  assert.match(bridge, /finops-decision-value-term finops-decision-tooltip-boundary[^>]*>[\s\S]*finops-decision-help/);
 
   const hostileBridge = renderToStaticMarkup(React.createElement(ValueBridge, {
     items: [{

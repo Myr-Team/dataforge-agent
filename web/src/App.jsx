@@ -48,6 +48,10 @@ import {
   filterCustomerConversationMessages,
   readyExecutionState,
 } from "./executionIdentity.js";
+import {
+  matchingWorkspaceValue,
+  workspaceBootstrapFailure,
+} from "./workspaceBootstrap.js";
 
 const DEFAULT_WORKSPACE = "demo-corpus";
 const ARTIFACT_JOB_TERMINAL = new Set(["partial", "completed", "failed", "cancelled"]);
@@ -139,6 +143,7 @@ export function App() {
   const [dashboard, setDashboard] = useState(null);
   const [workspaceAccess, setWorkspaceAccess] = useState(null);
   const [governanceCapabilities, setGovernanceCapabilities] = useState(null);
+  const [governanceCapabilitiesError, setGovernanceCapabilitiesError] = useState("");
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState("");
   const [messages, setMessages] = useState([]);
@@ -201,6 +206,7 @@ export function App() {
   const dismissedTaskNotificationsRef = useRef(new Set());
   const workspaceIdRef = useRef(workspaceId);
   const taskRequestRef = useRef(0);
+  const dashboardRequestRef = useRef(0);
   const taskAbortRef = useRef(null);
   const finopsAuthorizationRef = useRef("");
   const finopsScope = useMemo(
@@ -277,20 +283,49 @@ export function App() {
   );
 
   const refreshDashboard = useCallback(async (id = workspaceId) => {
+    const sequence = ++dashboardRequestRef.current;
+    const isCurrentRequest = () => (
+      sequence === dashboardRequestRef.current
+      && id === workspaceIdRef.current
+    );
     setDashboardLoading(true);
     setDashboardError("");
-    setWorkspaceAccess(null);
-    setGovernanceCapabilities(null);
+    setGovernanceCapabilitiesError("");
+    setWorkspaceAccess((current) => matchingWorkspaceValue(current, id));
+    setGovernanceCapabilities((current) => matchingWorkspaceValue(current, id));
+
+    const accessPromise = loadWorkspaceAccess(id)
+      .then((access) => {
+        if (isCurrentRequest()) setWorkspaceAccess(access);
+        return access;
+      })
+      .catch(() => null);
+    const capabilitiesPromise = loadGovernanceCapabilities(id)
+      .then((capabilities) => {
+        if (isCurrentRequest()) {
+          setGovernanceCapabilities(capabilities);
+          setGovernanceCapabilitiesError("");
+        }
+        return capabilities;
+      })
+      .catch((error) => {
+        if (isCurrentRequest()) {
+          setGovernanceCapabilitiesError((current) => current || workspaceBootstrapFailure(null, id, error));
+        }
+        return null;
+      });
     try {
-      const access = await loadWorkspaceAccess(id).catch(() => null);
-      setWorkspaceAccess(access);
-      const [data, capabilities] = await Promise.all([
+      const [data] = await Promise.all([
         loadDashboard(id),
-        loadGovernanceCapabilities(id).catch(() => null),
+        accessPromise,
+        capabilitiesPromise,
       ]);
-      setDashboard(data);
-      setGovernanceCapabilities(capabilities);
+      if (isCurrentRequest()) {
+        setDashboard(data);
+        setDashboardError(data?.fallback_error ? String(data.fallback_error) : "");
+      }
     } catch (error) {
+      if (!isCurrentRequest()) return;
       const message = error instanceof Error ? error.message : String(error);
       if (/Workspace not found/i.test(message)) {
         try {
@@ -308,9 +343,24 @@ export function App() {
       setDashboardError(message);
       setNotice({ type: "error", message: `工作区加载失败：${message}` });
     } finally {
-      setDashboardLoading(false);
+      if (isCurrentRequest()) setDashboardLoading(false);
     }
   }, [workspaceId]);
+
+  const retryGovernanceCapabilities = useCallback(async () => {
+    const id = workspaceIdRef.current;
+    setGovernanceCapabilitiesError("");
+    try {
+      const capabilities = await loadGovernanceCapabilities(id);
+      if (id !== workspaceIdRef.current) return;
+      setGovernanceCapabilities(capabilities);
+    } catch (error) {
+      if (id !== workspaceIdRef.current) return;
+      setGovernanceCapabilitiesError(
+        workspaceBootstrapFailure(null, id, error),
+      );
+    }
+  }, []);
 
   const refreshTasks = useCallback(async (id = workspaceId) => {
     const sequence = ++taskRequestRef.current;
@@ -667,6 +717,9 @@ export function App() {
   useEffect(() => () => clearReveal(), []);
 
   const changeWorkspace = (id) => {
+    setWorkspaceAccess((current) => matchingWorkspaceValue(current, id));
+    setGovernanceCapabilities((current) => matchingWorkspaceValue(current, id));
+    setGovernanceCapabilitiesError("");
     setWorkspaceId(id);
     setMessages([]);
     setActiveConversationId(null);
@@ -1231,6 +1284,9 @@ export function App() {
             view={renderView}
             setView={setActiveView}
             dashboard={dashboard}
+            dashboardLoading={dashboardLoading}
+            dashboardError={dashboardError}
+            onRetryDashboard={() => refreshDashboard(workspaceId)}
             messages={messages}
             trace={trace}
             streamText={streamText || demoReveal.text}
@@ -1260,6 +1316,8 @@ export function App() {
             onOpenTaskCenter={() => setTaskDrawerOpen(true)}
             workspaceAccess={workspaceAccess}
             governanceCapabilities={governanceCapabilities}
+            governanceCapabilitiesError={governanceCapabilitiesError}
+            onRetryGovernanceCapabilities={retryGovernanceCapabilities}
             finopsPreloadScope={finopsPortalScope}
           />
         </div>

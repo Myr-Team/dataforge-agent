@@ -19,13 +19,6 @@ function safeEvidenceStatus(value) {
 }
 
 
-function safeValueDirection(value) {
-  return ["negative", "positive", "zero", "unavailable"].includes(value)
-    ? value
-    : "unavailable";
-}
-
-
 function safeBarWidth(value) {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.min(100, Math.max(0, value))
@@ -111,49 +104,45 @@ export function ValueBridge({
   items = [],
   formulaRevision = "",
   paybackLabel = "",
+  roiLabel = "",
   description = "",
 }) {
   const rows = Array.isArray(items) ? items.filter((item) => item?.id) : [];
   if (!rows.length) return <DecisionEmpty>当前没有可展示的价值构成。</DecisionEmpty>;
+  const rowById = new Map(rows.map((item) => [item.id, item]));
+  const canonicalIds = ["monthly_benefit", "monthly_total_cost", "monthly_net_benefit"];
+  const formulaRows = canonicalIds.every((id) => rowById.has(id))
+    ? canonicalIds.map((id) => rowById.get(id))
+    : rows.slice(0, 3);
   return (
     <div className="finops-decision-value-bridge" aria-label={description || "价值构成"}>
-      <div className="finops-decision-value-bars">
-        {rows.map((item) => (
-          <div
-            className="finops-decision-value-row finops-decision-tooltip-boundary"
-            key={item.id}
-            aria-label={`${item.label}：${item.valueLabel}；${item.directionLabel || "方向不可用"}；${item.badge || "状态待确认"}`}
-          >
-            <span className={`finops-decision-value-label ${item.explanation ? "finops-decision-value-label-help" : ""}`}>
-              <b>{item.label}</b>
-              {item.explanation ? (
-                <DecisionTooltip label={item.label}>{item.explanation}</DecisionTooltip>
-              ) : null}
-            </span>
-            <div className="finops-decision-value-track">
-              <span className="finops-decision-zero-axis" aria-hidden="true" />
-              <i
-                className={`finops-decision-value-bar finops-decision-value-${safeEvidenceStatus(item.status)} finops-decision-direction-${safeValueDirection(item.direction)}`}
-                aria-hidden="true"
-                style={{
-                  "--finops-decision-bar-width": `${safeBarWidth(item.barPct)}%`,
-                  "--finops-decision-bar-half-width": `${safeBarWidth(item.barPct) / 2}%`,
-                }}
-              />
+      <div className="finops-decision-value-formula" aria-label="月度收益减去 AI 运营总投入等于月度净收益">
+        {formulaRows.map((item, index) => (
+          <React.Fragment key={item.id}>
+            {index > 0 ? (
+              <span className="finops-decision-value-operator" aria-hidden="true">
+                {item.id === "monthly_net_benefit" ? "=" : item.direction === "negative" ? "−" : "+"}
+              </span>
+            ) : null}
+            <div
+              className={`finops-decision-value-term finops-decision-tooltip-boundary finops-decision-value-${safeEvidenceStatus(item.status)} ${item.id === "monthly_net_benefit" ? "finops-decision-value-term-result" : ""}`}
+              aria-label={`${item.label}：${item.formulaValueLabel || item.valueLabel}；${item.badge || "状态待确认"}`}
+            >
+              <span className="finops-decision-value-label">
+                <b>{item.label}</b>
+                {item.explanation ? <DecisionTooltip label={item.label}>{item.explanation}</DecisionTooltip> : null}
+              </span>
+              <strong>{item.formulaValueLabel || item.valueLabel}</strong>
+              <small>{item.badge || "状态待确认"}</small>
             </div>
-            <span className="finops-decision-value-result">
-              <strong>{item.valueLabel}</strong>
-              <small>{item.directionLabel || "方向不可用"}{item.unitLabel ? ` · ${item.unitLabel}` : ""}</small>
-            </span>
-          </div>
+          </React.Fragment>
         ))}
       </div>
-      {formulaRevision || paybackLabel ? (
-        <footer className="finops-decision-chart-meta">
-          {formulaRevision ? <span>公式版本：<code>{formulaRevision}</code></span> : null}
-          {paybackLabel ? <span>预计回收周期：<b>{paybackLabel}</b></span> : null}
-        </footer>
-      ) : null}
+      <div className="finops-decision-value-result-strip">
+        {roiLabel ? <span><small>ROI 比率</small><strong>{roiLabel}</strong></span> : null}
+        {paybackLabel ? <span><small>预计回收周期</small><strong>{paybackLabel}</strong></span> : null}
+        {formulaRevision ? <span className="finops-decision-value-formula-meta"><small>测算口径</small><code>{formulaRevision}</code></span> : null}
+      </div>
     </div>
   );
 }

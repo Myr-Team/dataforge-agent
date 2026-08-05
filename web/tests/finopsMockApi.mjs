@@ -656,6 +656,12 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     remediationReviewConflictOnce: Boolean(options.remediationReviewConflictOnce),
     failRoiRefresh: Boolean(options.failRoiRefresh),
     decisionDelayMs: Number(options.decisionDelayMs || 0),
+    capabilityDelayMs: Number(options.capabilityDelayMs || 0),
+    dashboardDelayMs: Number(options.dashboardDelayMs || 0),
+    dashboardUnavailable: Boolean(options.dashboardUnavailable),
+    assistantValidationFailuresRemaining: Math.max(0, Number(options.assistantValidationFailures || 0)),
+    dashboardFailuresRemaining: Math.max(0, Number(options.dashboardFailures || 0)),
+    failDashboardFallback: false,
     delayNextRoiRefreshMs: 0,
     riskBaseVersion: "cache-policy-v1",
     remediation: null,
@@ -665,6 +671,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       riskDecision: 0,
       remediationCreate: 0,
       remediationReview: 0,
+      dashboard: 0,
     },
     timings: { roiDecision: [], riskDecision: [] },
     roiScenarios: [{
@@ -704,6 +711,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     const path = url.pathname;
     calls.push({ method: request.method(), path, body: request.postData() || "" });
     if (path === "/api/finops/bootstrap") control.calls.bootstrap += 1;
+    if (path === "/api/workspaces/demo-corpus/dashboard") control.calls.dashboard += 1;
     if (path === "/api/finops/roi/decision") control.calls.roiDecision += 1;
     if (path === "/api/finops/risk/decision") control.calls.riskDecision += 1;
     if (path === "/api/finops/remediation-drafts" && request.method() === "POST") control.calls.remediationCreate += 1;
@@ -769,9 +777,37 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       return;
     }
 
+    if (
+      path === "/api/workspaces/demo-corpus/dashboard"
+      && (control.dashboardUnavailable || control.dashboardFailuresRemaining > 0)
+    ) {
+      control.dashboardFailuresRemaining = Math.max(0, control.dashboardFailuresRemaining - 1);
+      control.failDashboardFallback = true;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Dashboard bootstrap unavailable" }),
+      });
+      return;
+    }
+    if (
+      (control.dashboardUnavailable || control.failDashboardFallback)
+      && path === "/api/workspaces/demo-corpus"
+    ) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Workspace fallback unavailable" }),
+      });
+      return;
+    }
+
     if (path === "/api/workspaces/demo-corpus/access") {
       body = { allowed: true, role: "owner", workspace_id: "demo-corpus" };
     } else if (path === "/api/workspaces/demo-corpus/governance/capabilities") {
+      if (control.capabilityDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, control.capabilityDelayMs));
+      }
       body = {
         workspace_id: "demo-corpus",
         sections: {
@@ -789,6 +825,10 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         },
       };
     } else if (path === "/api/workspaces/demo-corpus/dashboard") {
+      control.failDashboardFallback = false;
+      if (control.dashboardDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, control.dashboardDelayMs));
+      }
       body = {
         workspace_id: "demo-corpus",
         workspace: { workspace_id: "demo-corpus", name: "Commerce" },
@@ -1580,6 +1620,20 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       status = 204;
       body = {};
     } else if (path === "/api/finops/assistant/query") {
+      if (control.assistantValidationFailuresRemaining > 0) {
+        control.assistantValidationFailuresRemaining -= 1;
+        await route.fulfill({
+          status: 422,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: [{
+            type: "string_pattern_mismatch",
+            loc: ["body", "metric_context", "data_status"],
+            msg: "String should match pattern",
+            input: "estimated",
+          }] }),
+        });
+        return;
+      }
       const submitted = request.postDataJSON();
       const metricLabel = String(submitted?.metric_context?.label || "当前指标");
       body = {

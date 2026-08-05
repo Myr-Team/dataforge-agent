@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
+import time
 
 import backend.entra_membership as membership
 import backend.graph_client as graph_client
@@ -11,6 +13,7 @@ from backend.identity import actor_from_headers
 class _Cache:
     def __init__(self) -> None:
         self.value = None
+        self.last_ttl = None
 
     def get_json(self, _key: str):
         return self.value, {
@@ -18,8 +21,9 @@ class _Cache:
             "status": "hit" if self.value else "miss",
         }
 
-    def set_json(self, _key: str, value: dict[str, object], **_kwargs):
+    def set_json(self, _key: str, value: dict[str, object], **kwargs):
         self.value = value
+        self.last_ttl = kwargs.get("ttl_seconds")
         return {"provider": "redis", "status": "stored"}
 
 
@@ -103,6 +107,72 @@ def test_graph_failure_drops_group_grants_without_stale_elevation(
         "source": "microsoft_graph",
         "permission_state": "unavailable",
     }
+
+
+def test_overage_unavailable_result_is_short_cached(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "membership-secret")
+    cache = _Cache()
+    calls = 0
+
+    def unavailable(_request):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("graph unavailable")
+
+    actor = {
+        "actor_id": "actor-a",
+        "tenant_id": "tenant-a",
+        "group_overage": True,
+    }
+    first = membership.resolve_actor_group_membership(
+        actor,
+        request=object(),
+        graph_loader=unavailable,
+        cache=cache,
+    )
+    second = membership.resolve_actor_group_membership(
+        actor,
+        request=object(),
+        graph_loader=unavailable,
+        cache=cache,
+    )
+
+    assert first["state"] == second["state"] == "unavailable"
+    assert calls == 1
+    assert cache.last_ttl == 30
+
+
+def test_concurrent_overage_resolution_uses_one_graph_loader(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "membership-secret")
+    cache = _Cache()
+    calls = 0
+
+    def slow_loader(_request):
+        nonlocal calls
+        calls += 1
+        time.sleep(0.05)
+        return [{"id": "raw-group-a"}]
+
+    actor = {
+        "actor_id": "actor-concurrent",
+        "tenant_id": "tenant-a",
+        "group_overage": True,
+    }
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _index: membership.resolve_actor_group_membership(
+                    actor,
+                    request=object(),
+                    graph_loader=slow_loader,
+                    cache=cache,
+                ),
+                range(2),
+            )
+        )
+
+    assert calls == 1
+    assert results[0]["group_refs"] == results[1]["group_refs"]
 
 
 def test_easy_auth_hasgroups_claim_marks_overage(monkeypatch) -> None:

@@ -10,14 +10,14 @@ from typing import Any, Callable, Mapping
 try:
     from .audit_store import AuditPersistenceError, _active_key as _audit_active_key, _actor_hash as _audit_actor_hash
     from .blob_store import upload_blob_json
-    from .identity import canonical_actor_identity, is_trusted_tenant_identity, public_actor
+    from .identity import actor_from_request, canonical_actor_identity, is_trusted_tenant_identity, public_actor
     from .entra_group_mapping import resolve_actor_group_role
     from .invitation_store import InvitationPersistenceError, InvitationTransitionError, consume_accepted_invitation, current_invited_member_role
     from .workspace_store import WORKSPACES, _load_workspace_bundle
 except ImportError:
     from audit_store import AuditPersistenceError, _active_key as _audit_active_key, _actor_hash as _audit_actor_hash
     from blob_store import upload_blob_json
-    from identity import canonical_actor_identity, is_trusted_tenant_identity, public_actor
+    from identity import actor_from_request, canonical_actor_identity, is_trusted_tenant_identity, public_actor
     from entra_group_mapping import resolve_actor_group_role
     from invitation_store import InvitationPersistenceError, InvitationTransitionError, consume_accepted_invitation, current_invited_member_role
     from workspace_store import WORKSPACES, _load_workspace_bundle
@@ -151,6 +151,20 @@ def workspace_access_decision(workspace_id: str, actor: Mapping[str, Any] | None
     if identity and owner_identity and identity[1] == owner_identity[1]:
         return WorkspaceAccessDecision(False, None, "tenant_mismatch")
     return _member_access_decision(workspace_id, meta, clean_actor)
+
+
+def actor_for_workspace_request(
+    workspace_id: str,
+    request: Any | None,
+    *,
+    fallback: bool = False,
+) -> dict[str, Any]:
+    """Resolve Entra groups only when direct workspace membership cannot decide access."""
+    actor = actor_from_request(request, fallback=fallback, resolve_groups=False)
+    decision = workspace_access_decision(workspace_id, actor)
+    if decision.allowed or decision.reason_code != "membership_missing":
+        return actor
+    return actor_from_request(request, fallback=fallback, resolve_groups=True)
 
 
 def workspace_role(workspace_id: str, actor: Mapping[str, Any] | None) -> str | None:

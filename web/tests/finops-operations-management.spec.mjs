@@ -41,6 +41,45 @@ async function expectDemoSurfaceComplete(page) {
 }
 
 
+test("stalled capability check becomes one retryable operations state", async ({ page }) => {
+  await installFinOpsMockApi(page, [], { capabilityDelayMs: 9_000 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+
+  await expect(page.getByText("正在核验运营管理权限")).toBeVisible();
+  const retryState = page.getByRole("status", { name: "运营管理权限服务状态" });
+  await expect(retryState).toContainText("权限服务暂时不可用", { timeout: 12_000 });
+  await expect(retryState.getByRole("button", { name: "重新检查" })).toHaveCount(1);
+  await expect(page.getByText("当前账户无权访问运营管理")).toHaveCount(0);
+  await expect(page.getByText("正在核验运营管理权限")).toHaveCount(0);
+});
+
+
+test("dashboard pending renders a skeleton then the real workspace", async ({ page }) => {
+  await installFinOpsMockApi(page, [], { dashboardDelayMs: 1_200 });
+  await page.goto("/");
+
+  await expect(page.locator(".dashboard-stage-loading")).toBeVisible({ timeout: 4_000 });
+  await expect(page.getByRole("heading", { name: "Commerce" })).toBeVisible({ timeout: 6_000 });
+  await expect(page.locator(".dashboard-stage-loading")).toHaveCount(0);
+});
+
+
+test("dashboard failure becomes a retryable content state", async ({ page }) => {
+  const control = await installFinOpsMockApi(page, [], { dashboardUnavailable: true });
+  await page.goto("/");
+
+  const state = page.getByRole("alert", { name: "工作区加载失败" });
+  await expect(state).toBeVisible({ timeout: 6_000 });
+  await expect(state).toContainText("工作区数据未完整加载");
+  control.dashboardUnavailable = false;
+  control.failDashboardFallback = false;
+  await state.getByRole("button", { name: "重新加载" }).click();
+  await expect(page.getByRole("heading", { name: "Commerce" })).toBeVisible({ timeout: 6_000 });
+  expect(control.calls.dashboard).toBeGreaterThanOrEqual(2);
+});
+
+
 test("operations management is immediately discoverable and supports metric drilldown", async ({ page }) => {
   await installFinOpsMockApi(page);
   await page.goto("/");
@@ -167,10 +206,14 @@ for (const viewport of [
     await expect(page.getByRole("complementary", { name: "已验证 ROI" })).toContainText("结果待验证");
     await expect(page.locator(".finops-decision-roi-metric")).toHaveCount(4);
 
-    const bridgeWidths = await page.locator(".finops-decision-value-bar").evaluateAll((bars) => (
-      bars.map((bar) => Math.round(bar.getBoundingClientRect().width)).filter((value) => value > 0)
-    ));
-    expect(new Set(bridgeWidths).size).toBeGreaterThan(1);
+    const valueFormula = page.locator(".finops-decision-value-formula");
+    await expect(valueFormula.locator(".finops-decision-value-term")).toHaveCount(3);
+    await expect(valueFormula.locator(".finops-decision-value-operator")).toHaveCount(2);
+    await expect(valueFormula).toContainText("月度收益");
+    await expect(valueFormula).toContainText("AI 运营总投入");
+    await expect(valueFormula).toContainText("月度净收益");
+    await expect(page.locator(".finops-decision-value-result-strip")).toContainText("预计回收周期");
+    await expect(page.locator(".finops-decision-value-track")).toHaveCount(0);
     const help = page.getByRole("button", { name: "月度收益说明" });
     const tooltipId = await help.getAttribute("aria-describedby");
     const helpTooltip = page.locator(`#${tooltipId}`);
@@ -206,6 +249,17 @@ for (const viewport of [
     const riskRows = page.locator(".finops-decision-risk-row");
     await expect(riskRows).toHaveCount(4);
     await expectNoOverlap(riskRows);
+    const recommendation = page.locator(".finops-decision-risk-recommendation p");
+    await expect(recommendation).toBeVisible();
+    const recommendationBox = await recommendation.evaluate((node) => ({
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+      overflow: getComputedStyle(node).overflow,
+      whiteSpace: getComputedStyle(node).whiteSpace,
+    }));
+    expect(recommendationBox.scrollHeight).toBeLessThanOrEqual(recommendationBox.clientHeight + 1);
+    expect(recommendationBox.overflow).not.toBe("hidden");
+    expect(recommendationBox.whiteSpace).not.toBe("nowrap");
     await expect(page.locator(".finops-live > i")).toHaveCount(0);
 
     const contentText = await page.locator(".finops-content").innerText();
@@ -247,6 +301,23 @@ test("risk scan reruns safely and binds evidence plus AI to the selected rule", 
   await expect(assistant.getByText("结论", { exact: true })).toBeVisible();
   const assistantCall = calls.find((item) => item.path === "/api/finops/assistant/query");
   expect(JSON.parse(assistantCall.body).question).toContain("调用失败率");
+});
+
+
+test("operations AI hides validation internals and lets the user retry", async ({ page }) => {
+  await installFinOpsMockApi(page, [], { assistantValidationFailures: 1 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
+  await page.locator(".finops-risk-scan-disclosure > summary").click();
+  await page.locator(".finops-risk-scan-rules li").first().getByRole("button", { name: "问 AI" }).click();
+
+  const assistant = page.getByRole("dialog", { name: "运营指标 AI 助手" });
+  await expect(assistant).toContainText("当前分析未完成，请重试");
+  await expect(assistant).not.toContainText("string_pattern_mismatch");
+  await expect(assistant).not.toContainText("metric_context");
+  await assistant.getByRole("button", { name: "重试本次提问" }).click();
+  await expect(assistant.getByText("结论", { exact: true })).toBeVisible();
 });
 
 
@@ -348,8 +419,9 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await expect(page.locator(".finops-decision-roi-metric")).toHaveCount(4);
   const roiValues = await page.locator(".finops-decision-roi-metric > strong").allTextContents();
   expect(new Set(roiValues).size).toBe(4);
-  await expect(page.locator(".finops-decision-value-row")).toHaveCount(3);
-  await expectDistinctGeometry(page.locator(".finops-decision-value-bar"), "width");
+  await expect(page.locator(".finops-decision-value-term")).toHaveCount(3);
+  await expect(page.locator(".finops-decision-value-operator")).toHaveCount(2);
+  await expect(page.locator(".finops-decision-value-result-strip")).toBeVisible();
   await expect(page.locator(".finops-decision-maturity-stages li")).toHaveCount(4);
   await expect(page.locator(".finops-decision-roi-trend tbody tr")).toHaveCount(3);
   expect(new Set(await page.locator(".finops-decision-roi-trend tbody td:nth-child(3)").allTextContents()).size).toBe(3);
@@ -364,7 +436,9 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await expect(page.locator(".finops-decision-opportunity-track > i")).toHaveCount(4);
   await expectDistinctGeometry(page.locator(".finops-decision-opportunity-track > i"), "width");
   await expect(page.getByRole("list", { name: "优化机会优先列表" }).getByRole("button")).toHaveCount(4);
-  await expect(page.locator(".finops-decision-risk-chain-stages li")).toHaveCount(5);
+  await expect(page.locator(".finops-decision-risk-chain-stages li")).toHaveCount(4);
+  await expect(page.locator(".finops-decision-risk-recommendation")).not.toBeEmpty();
+  await expect(page.locator(".finops-decision-risk-facts > div")).toHaveCount(4);
   await expect(page.locator(".finops-decision-risk-evidence-card")).toHaveCount(1);
   await expect(page.locator(".finops-decision-risk-insight")).not.toBeEmpty();
   await expect(page.locator(".finops-decision-risk-governance")).not.toBeEmpty();

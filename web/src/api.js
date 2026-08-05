@@ -45,36 +45,76 @@ function errorMessageFromPayload(data, fallback) {
 }
 
 async function request(path, options = {}) {
-  let response;
+  const {
+    timeoutMs = 0,
+    signal: callerSignal,
+    ...fetchOptions
+  } = options;
+  const boundedTimeoutMs = Number.isFinite(Number(timeoutMs))
+    ? Math.max(0, Number(timeoutMs))
+    : 0;
+  let timeoutId = null;
+  let timedOut = false;
+  let timeoutController = null;
+  let forwardCallerAbort = null;
+  let requestSignal = callerSignal;
+  if (boundedTimeoutMs > 0) {
+    timeoutController = new AbortController();
+    requestSignal = timeoutController.signal;
+    if (callerSignal?.aborted) {
+      timeoutController.abort(callerSignal.reason);
+    } else if (callerSignal) {
+      forwardCallerAbort = () => timeoutController.abort(callerSignal.reason);
+      callerSignal.addEventListener("abort", forwardCallerAbort, { once: true });
+    }
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      timeoutController.abort();
+    }, boundedTimeoutMs);
+  }
   try {
-    response = await fetch(`${API_BASE}${path}`, {
+    const response = await fetch(`${API_BASE}${path}`, {
       headers: {
         Accept: "application/json",
-        ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+        ...(fetchOptions.body && !(fetchOptions.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
         ...clientActorHeaders(),
-        ...(options.headers || {}),
+        ...(fetchOptions.headers || {}),
       },
-      ...options,
+      ...fetchOptions,
+      ...(requestSignal ? { signal: requestSignal } : {}),
     });
-  } catch (error) {
-    throw await toUserFacingRequestError(error);
-  }
-  if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
-    try {
-      const data = await response.json();
-      message = errorMessageFromPayload(data, message);
-    } catch {
-      // Keep HTTP status text when the server does not return JSON.
+    if (!response.ok) {
+      let message = `${response.status} ${response.statusText}`;
+      try {
+        const data = await response.json();
+        message = errorMessageFromPayload(data, message);
+      } catch (error) {
+        if (timedOut) throw error;
+        // Keep HTTP status text when the server does not return JSON.
+      }
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
     }
-    const error = new Error(message);
-    error.status = response.status;
-    throw error;
+    if (response.status === 204) {
+      return {};
+    }
+    return await response.json();
+  } catch (error) {
+    if (timedOut) {
+      const timeoutError = new Error("服务响应超时，请重试");
+      timeoutError.name = "DataForgeRequestTimeoutError";
+      timeoutError.code = "request_timeout";
+      timeoutError.cause = error;
+      throw timeoutError;
+    }
+    throw await toUserFacingRequestError(error);
+  } finally {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    if (callerSignal && forwardCallerAbort) {
+      callerSignal.removeEventListener("abort", forwardCallerAbort);
+    }
   }
-  if (response.status === 204) {
-    return {};
-  }
-  return response.json();
 }
 
 export const apiFetch = request;
@@ -478,16 +518,20 @@ export function isTransientFetchError(error) {
   );
 }
 
-export async function loadDashboard(workspaceId) {
+export async function loadDashboard(workspaceId, options = {}) {
+  const requestOptions = { timeoutMs: 15_000, ...options };
   try {
-    return await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/dashboard`);
+    return await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/dashboard`, requestOptions);
   } catch (error) {
+    if (error?.name === "DataForgeRequestTimeoutError" || error?.name === "AbortError") {
+      throw error;
+    }
     const [workspace, workspaces, runs, conversations, health] = await Promise.all([
-      request(`/api/workspaces/${encodeURIComponent(workspaceId)}`),
-      request("/api/workspaces"),
-      request(`/api/runs?workspace_id=${encodeURIComponent(workspaceId)}`).catch(() => ({ runs: [] })),
-      request(`/api/conversations?workspace_id=${encodeURIComponent(workspaceId)}`).catch(() => ({ conversations: [] })),
-      request("/api/health").catch((healthError) => ({ ok: false, message: healthError.message })),
+      request(`/api/workspaces/${encodeURIComponent(workspaceId)}`, requestOptions).catch(() => ({})),
+      request("/api/workspaces", requestOptions).catch(() => ({ workspaces: [] })),
+      request(`/api/runs?workspace_id=${encodeURIComponent(workspaceId)}`, requestOptions).catch(() => ({ runs: [] })),
+      request(`/api/conversations?workspace_id=${encodeURIComponent(workspaceId)}`, requestOptions).catch(() => ({ conversations: [] })),
+      request("/api/health", requestOptions).catch((healthError) => ({ ok: false, message: healthError.message })),
     ]);
     return {
       workspace_id: workspaceId,
@@ -502,8 +546,8 @@ export async function loadDashboard(workspaceId) {
   }
 }
 
-export async function loadWorkspaceAccess(workspaceId) {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/access`);
+export async function loadWorkspaceAccess(workspaceId, options = {}) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/access`, { timeoutMs: 8_000, ...options });
 }
 
 export async function loadLatestAnalysis(workspaceId) {
@@ -690,8 +734,8 @@ export async function loadWorkspaceGovernance(workspaceId) {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance-summary`);
 }
 
-export async function loadGovernanceCapabilities(workspaceId) {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/capabilities`);
+export async function loadGovernanceCapabilities(workspaceId, options = {}) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/capabilities`, { timeoutMs: 8_000, ...options });
 }
 
 export async function loadGovernanceLineage(workspaceId, { scope = "self", cursor = "", limit = 50 } = {}) {

@@ -15,6 +15,11 @@ server {
         add_header Cache-Control "public, max-age=2592000, stale-while-revalidate=604800";
     }
 
+    location = /dataforge-logo.png {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=2592000, stale-while-revalidate=604800" always;
+    }
+
     location /api/ {
         proxy_pass ${DF_BACKEND_UPSTREAM};
         proxy_ssl_server_name on;

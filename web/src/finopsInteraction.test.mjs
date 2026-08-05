@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   applyDimensionFilter,
+  assistantFailureMessage,
   contextualAssistantQuestion,
   filterChips,
   metricContext,
@@ -109,6 +110,29 @@ test("metric context keeps only bounded safe fields", () => {
     evidence_state: "observed",
     cache_state: "hit",
   });
+});
+
+
+test("estimated business metrics use the assistant contract without losing evidence state", () => {
+  const context = metricContext({
+    id: "roi_ratio",
+    label: "ROI 比率",
+    value: 275,
+    unit: "%",
+    dataStatus: "estimated",
+    evidenceState: "estimated",
+  });
+
+  assert.equal(context.data_status, "partial");
+  assert.equal(context.evidence_state, "estimated");
+});
+
+
+test("assistant validation payloads become customer-safe retry guidance", () => {
+  const message = assistantFailureMessage(new Error('[{"type":"string_pattern_mismatch","loc":["body","metric_context","data_status"]}]'));
+
+  assert.equal(message, "当前分析未完成，请重试。若问题持续，可清除当前指标后重新提问。");
+  assert.doesNotMatch(message, /string_pattern_mismatch|metric_context|data_status/);
 });
 
 

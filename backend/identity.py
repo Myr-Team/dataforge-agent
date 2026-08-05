@@ -19,11 +19,23 @@ PLACEHOLDER_EMAILS = {
 }
 
 
-def actor_from_request(request: Any | None, *, fallback: bool = True) -> dict[str, Any]:
+def actor_from_request(
+    request: Any | None,
+    *,
+    fallback: bool = True,
+    resolve_groups: bool = True,
+) -> dict[str, Any]:
+    cache_key = f"_dataforge_actor_{int(fallback)}_{int(resolve_groups)}"
+    state = getattr(request, "state", None)
+    cached_actor = getattr(state, cache_key, None) if state is not None else None
+    if isinstance(cached_actor, dict):
+        return dict(cached_actor)
+
     headers = getattr(request, "headers", None)
     actor = actor_from_headers(headers, fallback=fallback)
     if (
-        _environment_flag("DF_ENTRA_GROUP_GOVERNANCE_ENABLED")
+        resolve_groups
+        and _environment_flag("DF_ENTRA_GROUP_GOVERNANCE_ENABLED")
         and is_trusted_tenant_identity(actor)
     ):
         try:
@@ -47,6 +59,11 @@ def actor_from_request(request: Any | None, *, fallback: bool = True) -> dict[st
             },
             fallback=fallback,
         )
+    if state is not None:
+        try:
+            setattr(state, cache_key, dict(actor))
+        except Exception:
+            pass
     return actor
 
 
