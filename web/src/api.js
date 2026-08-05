@@ -527,8 +527,8 @@ export async function loadDashboard(workspaceId, options = {}) {
       throw error;
     }
     const [workspace, workspaces, runs, conversations, health] = await Promise.all([
-      request(`/api/workspaces/${encodeURIComponent(workspaceId)}`, requestOptions),
-      request("/api/workspaces", requestOptions),
+      request(`/api/workspaces/${encodeURIComponent(workspaceId)}`, requestOptions).catch(() => ({})),
+      request("/api/workspaces", requestOptions).catch(() => ({ workspaces: [] })),
       request(`/api/runs?workspace_id=${encodeURIComponent(workspaceId)}`, requestOptions).catch(() => ({ runs: [] })),
       request(`/api/conversations?workspace_id=${encodeURIComponent(workspaceId)}`, requestOptions).catch(() => ({ conversations: [] })),
       request("/api/health", requestOptions).catch((healthError) => ({ ok: false, message: healthError.message })),

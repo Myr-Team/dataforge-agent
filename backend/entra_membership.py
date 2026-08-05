@@ -82,6 +82,8 @@ def resolve_actor_group_membership(
 
 
 def _resolution_lock(cache_key: str) -> threading.Lock:
+    # The stripe only coordinates loaders inside this process; it is never a
+    # persisted or cross-process key, so Python's per-process hash is sufficient.
     return _RESOLUTION_LOCKS[hash(cache_key) % len(_RESOLUTION_LOCKS)]
 
 

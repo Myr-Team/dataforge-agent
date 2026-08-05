@@ -112,6 +112,52 @@ test("dashboard timeout does not fan out to legacy fallback requests", async () 
 });
 
 
+test("dashboard legacy fallback preserves optional data when workspace reads time out", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    const path = String(url);
+    if (path.endsWith("/api/workspaces/ws-a/dashboard")) {
+      return {
+        ok: false,
+        status: 500,
+        statusText: "Server Error",
+        json: async () => ({ detail: "dashboard unavailable" }),
+      };
+    }
+    if (path.endsWith("/api/workspaces/ws-a") || path.endsWith("/api/workspaces")) {
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(options.signal.reason));
+      });
+    }
+    if (path.includes("/api/runs?")) {
+      return { ok: true, status: 200, json: async () => ({ runs: [{ run_id: "run-a" }] }) };
+    }
+    if (path.includes("/api/conversations?")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ conversations: [{ conversation_id: "conversation-a" }] }),
+      };
+    }
+    if (path.endsWith("/api/health")) {
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+
+  try {
+    const dashboard = await loadDashboard("ws-a", { timeoutMs: 5 });
+    assert.deepEqual(dashboard.workspace, {});
+    assert.deepEqual(dashboard.workspaces, []);
+    assert.deepEqual(dashboard.runs, [{ run_id: "run-a" }]);
+    assert.deepEqual(dashboard.conversations, [{ conversation_id: "conversation-a" }]);
+    assert.equal(dashboard.health.ok, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
 test("buildFinOpsQuery emits only supported non-empty filters", () => {
   const query = buildFinOpsQuery({
     from: "2026-07-01T00:00:00Z",
