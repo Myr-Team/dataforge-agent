@@ -1,70 +1,129 @@
-# Task 3 validation report
+# Task 3: Bedrock API Contract, Audit, and Feature Gate
 
-## Acceptance remediation (2026-08-06)
+## Scope delivered
 
-- RED: the newly added focused 390x844 layout test failed before the CSS fix because `.finops-page` computed as `position: static`, not the required relative containing block.
-- GREEN: `.finops-page` is now relative and the mobile-only `.finops-ai-launcher` is absolute at its end. Desktop retains the fixed launcher. The focused test verifies no overlap with `.finops-decision-risk-chain`, then scrolls the launcher into view to prove it stays reachable.
-- The viewport loop now scrolls the selected chain to the viewport start, verifies its horizontal bounds and visible origin, then directly writes the exact artifacts below from Playwright (no post-run copies).
+- Added discriminated `deepseek` / `aws_bedrock` create and rotate contracts.
+- Bedrock derives its control-plane endpoint server-side and serializes its
+  credential bundle only as `secret_value` for the provider service.
+- Bedrock create, test, and rotate require both provider connector flags;
+  normal provider operations still require the global connector flag.
+- Provider validation responses are generic so AWS credential values are never
+  returned in validation details. Audit resources contain only provider ID,
+  type, display name, and region.
+- Mutation handlers perform a read-only revision preflight before writing an
+  audit event, so deterministic stale-revision 409s do not change audit,
+  registry, or secret state. Successful mutations retain audit-before-mutation.
+- DeepSeek rotation remains compatible with its existing body that omits
+  `provider_type`.
 
-### Current focused evidence
+## TDD evidence
 
-1. `Set-Location web; npm run build`
-   - PASS: Vite 8.0.16 built 1,793 modules in 803 ms. The pre-existing 577.16 kB chunk-size warning remains.
-2. `Set-Location web; node --test src/finopsAssistant.test.mjs`
-   - PASS: 2 passed, 0 failed.
-3. `Set-Location web; $env:DF_PLAYWRIGHT_PORT="5221"; Remove-Item Env:DF_PLAYWRIGHT_REUSE_SERVER -ErrorAction SilentlyContinue; npx playwright test tests/finops-operations-management.spec.mjs --grep "ROI and risk decision BI stays readable at (desktop|1366|mobile)|mobile AI launcher follows risk content"`
-   - PASS: 4 passed in 15.1 s; the isolated port 5221 preview server was not reused.
-4. `git diff --check`
-   - PASS: no whitespace errors.
+- RED: `python -m pytest tests/test_model_provider_api.py tests/test_model_provider_audit.py -q`
+  produced `3 failed, 8 passed`: Bedrock requests were rejected as DeepSeek-only
+  validation errors. A separate credential-redaction test failed because the
+  previous FastAPI validation response echoed the request body.
+- GREEN: the same focused command passed `15 passed` after implementation.
 
-### Current direct screenshot evidence
+## Verification
 
-| Artifact | Absolute path | Image dimensions |
-| --- | --- | --- |
-| Desktop risk stage | `C:\\Users\\12140\\Documents\\Agent-Demo-project-worktrees\\codex-finops-prod-20260805\\output\\playwright\\finops-risk-stage-desktop.png` | 1440x1000 |
-| Mobile risk stage | `C:\\Users\\12140\\Documents\\Agent-Demo-project-worktrees\\codex-finops-prod-20260805\\output\\playwright\\finops-risk-stage-mobile.png` | 390x844 |
+- `python -m pytest tests/test_aws_bedrock_provider.py tests/test_model_provider_api.py tests/test_model_provider_audit.py tests/test_model_provider_repository.py tests/test_model_provider_secrets.py tests/test_model_providers.py -q`
+  -> `40 passed`.
+- `python -m compileall -q backend` -> exit 0.
+- `git diff --check` -> exit 0.
 
-Visual inspection of these current files confirms that both visibly contain the selected four-stage risk chain. The mobile capture excludes the launcher because it now lives at the end of the page rather than floating over dashboard/risk content; the focused test confirms it is reachable by scrolling.
+## Scope retained
 
-Base/head validated: `6be92fa12e80e4044ffeeb4db6249337c4e35959`.
+- Runtime provider routing, APIM provisioning, and FinOps actions remain
+  disabled; the environment example keeps their relevant flags off.
 
-## Commands and results
+## Blocking review remediation
 
-1. `Set-Location web; node --test`
-   - Result: PASS — 286 tests, 286 passed, 0 failed, 0 cancelled, 0 skipped, 0 todo (`6657.4558 ms`).
+### Root cause
 
-2. `Set-Location web; npm run build`
-   - Result: PASS — Vite 8.0.16 built 1,793 modules in 984 ms.
-   - Warning: existing Vite chunk-size warning for the 577.16 kB minified `index` chunk; no other build warning or error was reported.
+- Revision preflight, durable audit, and the service mutation were separate
+  critical sections. The repository CAS protected only the registry row, so a
+  competing request could advance the revision after preflight while the first
+  request had already appended audit or written a replacement secret.
+- The Bedrock-specific connector check was present on create, test, and rotate,
+  but PATCH and disable performed provider writes after checking only the global
+  provider connector flag.
 
-3. Preflight: `Get-NetTCPConnection -LocalPort 5217 -State Listen -ErrorAction SilentlyContinue`
-   - Result: `PORT_5217_CLEAR` before the test run. `DF_PLAYWRIGHT_PORT=5217` was set and `DF_PLAYWRIGHT_REUSE_SERVER` was not enabled. The Playwright configuration therefore started its own preview server rather than reusing one.
+### Design and implementation
 
-4. `Set-Location web; $env:DF_PLAYWRIGHT_PORT="5217"; npx playwright test`
-   - Result: PASS — 56 passed in 2.0 m. The first foreground invocation exceeded the execution harness's 120-second command cap while printing its summary; a new, fresh invocation of the same command was then launched with stdout/stderr captured and completed with the recorded `56 passed (2.0m)` summary. Its port 5217 preview listener stopped after completion.
+- Added a provider-scoped `mutation_guard(tenant_ref, provider_id)` repository
+  contract.
+- The SQL repository obtains a SQL Server session-owned exclusive application
+  lock on a deterministic SHA-256-derived provider key. The dedicated
+  connection remains open across preflight, feature-gate evaluation, durable
+  audit, and the complete service mutation, then releases the lock and closes
+  the session.
+- The in-memory repository uses a process-wide keyed `RLock` registry shared
+  across repository instances. Entries are reference-counted and removed after
+  the final holder exits.
+- Create, test, rotate, PATCH, and disable now use the same repository instance
+  and guard for their full mutation critical section. Revisioned losers acquire
+  the guard after the winner, fail the fresh preflight with HTTP 409, and do not
+  append audit, rotate a secret, or update the registry.
+- PATCH and disable now apply the Bedrock-specific gate after the guarded
+  provider lookup and before audit or mutation. The existing global gate remains
+  enforced by request context.
 
-5. `git diff --check`
-   - Result: PASS — no output (no whitespace errors).
+### TDD evidence
 
-6. `git status --short`
-   - Result: no Task 3 product-source or test-source edits. Pre-existing/other-task `.superpowers/sdd` report and brief work remains listed; output artifacts are ignored and therefore do not appear in status.
+- RED:
+  `python -m pytest tests/test_model_provider_api.py -k "bedrock_patch_is_hidden or bedrock_disable_is_hidden or competing_revisioned_rotations" tests/test_model_provider_repository.py -k "mutation_guard or bedrock_patch_is_hidden or bedrock_disable_is_hidden or competing_revisioned_rotations" -q`
+  -> `6 failed, 18 deselected`.
+  - Bedrock PATCH and disable returned HTTP 200 while the specific flag was off.
+  - The competing rotation did not observe a guard.
+  - Neither repository implementation exposed `mutation_guard`.
+- GREEN: the same focused command -> `6 passed, 18 deselected`.
+- The deterministic competing-rotation test blocks the first request in durable
+  audit while the second attempts the same provider guard. After release, the
+  first succeeds and the second returns HTTP 409; assertions prove exactly one
+  new audit event, one secret rotation, and only the successful writer's two
+  expected registry updates.
+- Repository tests prove same-provider in-memory guards serialize across
+  repository instances, and the SQL guard holds the same session application
+  lock resource until release/connection close while rejecting failed lock
+  acquisition.
 
-## Screenshot evidence
+### Verification
 
-The completed Playwright acceptance test produced `operations-risk-desktop.png` and `operations-risk-mobile.png` from its explicit 1440x1000 and 390x844 viewports (full-page captures). The requested exact-named artifacts below were copied from those corresponding test outputs without image modification:
+- Required minimum:
+  `python -m pytest tests/test_model_provider_api.py tests/test_model_provider_audit.py tests/test_model_provider_repository.py tests/test_model_provider_secrets.py -q`
+  -> `33 passed in 5.27s`.
+- Broader Bedrock/provider suite:
+  `python -m pytest tests/test_aws_bedrock_provider.py tests/test_model_provider_api.py tests/test_model_provider_audit.py tests/test_model_provider_repository.py tests/test_model_provider_secrets.py tests/test_model_providers.py -q`
+  -> `46 passed in 5.06s`.
+- `python -m compileall -q backend` -> exit 0.
+- `git diff --check eed7e4b20ff1df2801d3d4687d2e973052ea1d50..HEAD`
+  -> exit 0.
 
-| Artifact | Absolute path | Image dimensions |
-| --- | --- | --- |
-| Desktop risk stage | `C:\\Users\\12140\\Documents\\Agent-Demo-project-worktrees\\codex-finops-prod-20260805\\output\\playwright\\finops-risk-stage-desktop.png` | 1440x1000 |
-| Mobile risk stage | `C:\\Users\\12140\\Documents\\Agent-Demo-project-worktrees\\codex-finops-prod-20260805\\output\\playwright\\finops-risk-stage-mobile.png` | 390x4247 (full-page; viewport was 390x844) |
+### Changed files
 
-## Visual inspection
+- `backend/model_provider_repository.py`
+- `backend/model_provider_router.py`
+- `tests/test_model_provider_repository.py`
+- `tests/test_model_provider_api.py`
+- `.superpowers/sdd/task-3-report.md`
 
-Both artifacts were inspected directly.
+### Self-review
 
-- No horizontal connector line crosses the risk stage. The risk priority cards and optimization rows remain separated; no card overlap is visible.
-- Desktop presents the four category summary cards in one row and a two-column risk/optimization region. Mobile reflows the category summary to two columns and stacks the risk cards and evidence/optimization content to one column. The focused Playwright suite also passed the 1440 desktop, 1366 intermediate, and 390 mobile readability/overflow assertions.
-- No text truncation was visible in the highlighted recommendation, risk cards, or mobile evidence sections. The mobile page scrolls vertically, with no horizontal overflow reported by the acceptance test.
-- Visible labels are customer-readable Chinese business text (for example, `响应时延优化`, `缓存效率优化`, and `计划覆盖补齐`). No raw enum or infrastructure identifiers (such as `gateway_coverage`, `app_observed`, `unmanaged`, `unknown`, or `provider_5xx`) appear in the customer-facing stage.
+- All five provider mutation handlers acquire the repository guard before any
+  provider preflight or audit and hold it through the service mutation.
+- Audit remains before mutation for successful requests; stale revision
+  conflicts are detected before audit.
+- Every Bedrock write requires both the global provider flag and the
+  Bedrock-specific flag. DeepSeek request compatibility is unchanged.
+- No credential fields were added to API responses, logs, audit metadata, or
+  repository records.
+- Runtime routing, APIM, pricing, FinOps metrics/actions, auth, and environment
+  defaults were not changed.
+- Pre-existing unrelated dirty and untracked workspace files were left
+  untouched and are excluded from the remediation commit.
 
-Superseded by the 2026-08-06 acceptance remediation above: the two review gaps were fixed with frontend-only source and test changes. No backend/API/auth/Entra/governance change, deployment, image build, Container App revision, or production traffic action was performed.
+### Validation boundary
+
+- SQL application-lock acquisition and session lifetime are covered with a
+  pyodbc-style connection test double; this remediation did not run a live
+  two-session Azure SQL contention test.
