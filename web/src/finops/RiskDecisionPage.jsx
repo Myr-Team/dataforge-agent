@@ -258,10 +258,10 @@ function EvidenceChain({ priority, evidence, onEvidence, onAsk, onCreateDraft, o
   const canAcknowledge = priority.applicableActions.includes("acknowledge");
   const canSuppress = priority.applicableActions.includes("suppress");
   const stages = [
-    ["信号", "已识别", `${priority.policyLabel} · ${priority.domainLabel}`],
-    ["影响范围", priority.sampleCount === null ? "未记录" : `${priority.sampleCount} 次请求`, `业务影响 ${priority.impactLevelLabel}`],
-    ["代表证据", selectedEvidence.length ? `${selectedEvidence.length} 条请求证据` : "暂无可下钻请求", "仅请求证据可打开详情"],
-    ["改善验证", "待验证", "保存整改草案后复核"],
+    { id: "signal", label: "信号", value: "已识别", note: `${priority.policyLabel} · ${priority.domainLabel}`, state: "observed" },
+    { id: "impact", label: "影响范围", value: priority.sampleCount === null ? "未记录" : `${priority.sampleCount} 次请求`, note: `业务影响 ${priority.impactLevelLabel}`, state: priority.sampleCount === null ? "partial" : "observed" },
+    { id: "evidence", label: "代表证据", value: selectedEvidence.length ? `${selectedEvidence.length} 条请求证据` : "暂无可下钻请求", note: "仅请求证据可打开详情", state: selectedEvidence.length ? "observed" : "partial" },
+    { id: "verification", label: "改善验证", value: "待验证", note: "保存整改草案后复核", state: "pending" },
   ];
   return (
     <section className="finops-decision-risk-chain" aria-labelledby="finops-risk-chain-title">
@@ -281,9 +281,9 @@ function EvidenceChain({ priority, evidence, onEvidence, onAsk, onCreateDraft, o
           <button type="button" className="quiet" data-finops-remediation-trigger onClick={() => onCreateDraft?.(priority)} disabled={!draftEnabled}>查看整改方案</button>
         </div>
       </header>
-      <ol className="finops-decision-risk-chain-stages">
-        {stages.map(([label, value, note], index) => (
-          <li key={label}><span>{index + 1}</span><div><small>{label}</small><b>{value}</b><p>{note}</p></div></li>
+      <ol className="finops-decision-risk-chain-stages" aria-label="治理判断阶段">
+        {stages.map((stage, index) => (
+          <li key={stage.id} data-state={stage.state}><span aria-hidden="true">{index + 1}</span><div><small>{stage.label}</small><b>{stage.value}</b><p>{stage.note}</p></div></li>
         ))}
       </ol>
       <div className="finops-decision-risk-assessment">

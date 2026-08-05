@@ -436,7 +436,19 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await expect(page.locator(".finops-decision-opportunity-track > i")).toHaveCount(4);
   await expectDistinctGeometry(page.locator(".finops-decision-opportunity-track > i"), "width");
   await expect(page.getByRole("list", { name: "优化机会优先列表" }).getByRole("button")).toHaveCount(4);
-  await expect(page.locator(".finops-decision-risk-chain-stages li")).toHaveCount(4);
+  const stageList = page.getByRole("list", { name: "治理判断阶段" });
+  const stageItems = stageList.locator("li");
+  await expect(stageItems).toHaveCount(4);
+  const connectors = await stageItems.evaluateAll((nodes) => nodes.map((node) => (
+    getComputedStyle(node, "::after").content
+  )));
+  expect(connectors).toEqual(["none", "none", "none", "none"]);
+  await expectNoOverlap(stageItems);
+  const stageBox = await stageList.boundingBox();
+  expect(stageBox.height).toBeLessThanOrEqual(86);
+  await expect(page.locator(".finops-decision-risk-chain")).not.toContainText(
+    /gateway_coverage|app_observed|unmanaged|unknown|provider_5xx/,
+  );
   await expect(page.locator(".finops-decision-risk-recommendation")).not.toBeEmpty();
   await expect(page.locator(".finops-decision-risk-facts > div")).toHaveCount(4);
   await expect(page.locator(".finops-decision-risk-evidence-card")).toHaveCount(1);
