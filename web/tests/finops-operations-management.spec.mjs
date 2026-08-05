@@ -289,6 +289,23 @@ test("risk scan reruns safely and binds evidence plus AI to the selected rule", 
 });
 
 
+test("operations AI hides validation internals and lets the user retry", async ({ page }) => {
+  await installFinOpsMockApi(page, [], { assistantValidationFailures: 1 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
+  await page.locator(".finops-risk-scan-disclosure > summary").click();
+  await page.locator(".finops-risk-scan-rules li").first().getByRole("button", { name: "问 AI" }).click();
+
+  const assistant = page.getByRole("dialog", { name: "运营指标 AI 助手" });
+  await expect(assistant).toContainText("当前分析未完成，请重试");
+  await expect(assistant).not.toContainText("string_pattern_mismatch");
+  await expect(assistant).not.toContainText("metric_context");
+  await assistant.getByRole("button", { name: "重试本次提问" }).click();
+  await expect(assistant.getByText("结论", { exact: true })).toBeVisible();
+});
+
+
 for (const viewport of [
   { name: "desktop", width: 1440, height: 900 },
   { name: "1366", width: 1366, height: 768 },

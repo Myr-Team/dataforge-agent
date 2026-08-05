@@ -18,7 +18,7 @@ import {
   prefetchFinOpsAssistantHistory,
   writeFinOpsAssistantHistory,
 } from "./finopsAssistantHistory.js";
-import { contextualAssistantQuestion } from "./finopsInteraction.js";
+import { assistantFailureMessage, contextualAssistantQuestion } from "./finopsInteraction.js";
 
 
 const DEFAULT_QUESTIONS = [
@@ -105,7 +105,12 @@ export function FinOpsAssistant({
   const ask = async (rawQuestion) => {
     const question = String(rawQuestion || "").trim();
     if (!question || !context || busy) return;
-    const history = messages
+    const persistentMessages = messages.filter((item) => !item.transient);
+    const lastPersistent = persistentMessages[persistentMessages.length - 1];
+    const pendingMessages = lastPersistent?.role === "user" && lastPersistent.content === question
+      ? persistentMessages
+      : [...persistentMessages, { role: "user", content: question }];
+    const history = persistentMessages
       .slice(-6)
       .map((item) => ({
         role: item.role,
@@ -116,11 +121,7 @@ export function FinOpsAssistant({
         ).slice(0, 600),
       }));
     interactionVersionRef.current += 1;
-    setMessages((items) => {
-      const next = [...items, { role: "user", content: question }];
-      writeFinOpsAssistantHistory(workspaceId, { conversationRef, messages: next });
-      return next;
-    });
+    setMessages(pendingMessages);
     setInput("");
     setBusy(true);
     try {
@@ -132,8 +133,8 @@ export function FinOpsAssistant({
       });
       const nextConversationRef = response?.conversation_ref || conversationRef;
       if (nextConversationRef) setConversationRef(nextConversationRef);
-      setMessages((items) => {
-        const next = [...items, {
+      setMessages(() => {
+        const next = [...pendingMessages, {
           role: "assistant",
           content: response?.answer || "当前分析暂不可用。",
           evidenceRefs: Array.isArray(response?.evidence_refs) ? response.evidence_refs : [],
@@ -153,17 +154,19 @@ export function FinOpsAssistant({
         return next;
       });
     } catch (error) {
-      setMessages((items) => {
-        const next = [...items, {
+      setMessages(() => {
+        const next = [...pendingMessages, {
           role: "assistant",
-          content: error instanceof Error ? error.message : "当前分析暂不可用。",
+          content: assistantFailureMessage(error),
           evidenceRefs: [],
           evidenceState: "unavailable",
           suggestions: [],
+          retryQuestion: question,
+          transient: true,
         }];
-        writeFinOpsAssistantHistory(workspaceId, { conversationRef, messages: next });
         return next;
       });
+      writeFinOpsAssistantHistory(workspaceId, { conversationRef, messages: persistentMessages });
     } finally {
       setBusy(false);
     }
@@ -259,7 +262,7 @@ export function FinOpsAssistant({
               <p>可以直接询问当前指标的变化原因、异常判断、贡献来源和优化方向。</p>
             ) : null}
             {messages.map((message, index) => (
-              <article className={message.role} key={`${message.role}:${index}`}>
+              <article className={`${message.role}${message.transient ? " transient" : ""}`} key={`${message.role}:${index}`}>
                 {message.role === "assistant" && assistantMessageSections(message) ? (
                   <dl className="finops-ai-answer-sections">
                     {[
@@ -290,6 +293,17 @@ export function FinOpsAssistant({
                 {message.role === "assistant" && message.evidenceRefs?.length && onEvidence ? (
                   <button type="button" onClick={() => onEvidence({ reason: `AI 回答 · ${message.evidenceRefs.length} 条证据`, evidenceRefs: message.evidenceRefs })}>
                     查看证据
+                  </button>
+                ) : null}
+                {message.role === "assistant" && message.retryQuestion ? (
+                  <button
+                    type="button"
+                    className="finops-ai-retry"
+                    disabled={busy}
+                    aria-label="重试本次提问"
+                    onClick={() => ask(message.retryQuestion)}
+                  >
+                    重试
                   </button>
                 ) : null}
               </article>

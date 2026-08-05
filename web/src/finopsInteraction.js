@@ -17,6 +17,8 @@ const DIMENSION_FIELDS = {
 };
 
 const CACHE_STATES = new Set(["hit", "miss", "bypassed", "unavailable"]);
+const ASSISTANT_DATA_STATES = new Set(["complete", "partial", "unavailable", "insufficient_data"]);
+const ASSISTANT_EVIDENCE_STATES = new Set(["observed", "estimated", "partial", "unavailable"]);
 
 
 function finite(value) {
@@ -26,6 +28,33 @@ function finite(value) {
 
 function bounded(value, length = 160) {
   return String(value ?? "").trim().slice(0, length);
+}
+
+
+function assistantDataStatus(value) {
+  const status = bounded(value, 32).toLowerCase();
+  if (ASSISTANT_DATA_STATES.has(status)) return status;
+  if (["available", "ready", "verified", "observed"].includes(status)) return "complete";
+  if (status === "estimated") return "partial";
+  return "unavailable";
+}
+
+
+function assistantEvidenceState(value) {
+  const state = bounded(value, 32).toLowerCase();
+  return ASSISTANT_EVIDENCE_STATES.has(state) ? state : "unavailable";
+}
+
+
+export function assistantFailureMessage(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (/timeout|timed out|abort/i.test(message)) {
+    return "分析响应超时，请稍后重试。";
+  }
+  if (/failed to fetch|network|connection|disconnected/i.test(message)) {
+    return "暂时无法连接分析服务，请检查网络后重试。";
+  }
+  return "当前分析未完成，请重试。若问题持续，可清除当前指标后重新提问。";
 }
 
 
@@ -108,8 +137,8 @@ export function metricContext(metric = {}, scope = {}) {
     dimension_value: bounded(metric.dimensionValue, 160) || null,
     window,
     filters,
-    data_status: bounded(metric.dataStatus, 32) || "unavailable",
-    evidence_state: bounded(metric.evidenceState, 32) || "unavailable",
+    data_status: assistantDataStatus(metric.dataStatus),
+    evidence_state: assistantEvidenceState(metric.evidenceState),
   };
   const cacheState = bounded(metric.cacheState, 24);
   if (CACHE_STATES.has(cacheState)) result.cache_state = cacheState;

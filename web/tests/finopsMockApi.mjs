@@ -659,6 +659,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     capabilityDelayMs: Number(options.capabilityDelayMs || 0),
     dashboardDelayMs: Number(options.dashboardDelayMs || 0),
     dashboardUnavailable: Boolean(options.dashboardUnavailable),
+    assistantValidationFailuresRemaining: Math.max(0, Number(options.assistantValidationFailures || 0)),
     dashboardFailuresRemaining: Math.max(0, Number(options.dashboardFailures || 0)),
     failDashboardFallback: false,
     delayNextRoiRefreshMs: 0,
@@ -1619,6 +1620,20 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       status = 204;
       body = {};
     } else if (path === "/api/finops/assistant/query") {
+      if (control.assistantValidationFailuresRemaining > 0) {
+        control.assistantValidationFailuresRemaining -= 1;
+        await route.fulfill({
+          status: 422,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: [{
+            type: "string_pattern_mismatch",
+            loc: ["body", "metric_context", "data_status"],
+            msg: "String should match pattern",
+            input: "estimated",
+          }] }),
+        });
+        return;
+      }
       const submitted = request.postDataJSON();
       const metricLabel = String(submitted?.metric_context?.label || "当前指标");
       body = {
