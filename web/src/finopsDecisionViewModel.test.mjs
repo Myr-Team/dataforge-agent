@@ -521,6 +521,33 @@ test("risk and remediation projections expose only bounded interaction fields", 
 });
 
 
+test("risk decision view localizes internal evidence terms for customer-facing cards", () => {
+  const view = riskDecisionView({
+    priorities: [{
+      opportunity_id: "opp-coverage",
+      policy_type: "apim_coverage",
+      risk_domain: "governance",
+      recommendation: "定位app_observed、unmanaged或unknown调用链。",
+      impact: "high",
+      confidence: "high",
+      effort: "medium",
+      evidence_refs: ["req_coverage_001"],
+    }],
+    selected_evidence_summaries: [{
+      request_ref: "req_coverage_001",
+      signal: { metric: "gateway_coverage", value: null, unit: "" },
+      status: "failed",
+      error_category: "provider_5xx",
+    }],
+  });
+
+  assert.equal(view.priorities[0].summary, "定位应用侧已观测、未纳入统一入口或来源待确认调用链。");
+  assert.equal(view.evidence[0].signal.metric, "入口治理覆盖");
+  assert.equal(view.evidence[0].errorCategory, "模型服务异常");
+  assert.doesNotMatch(JSON.stringify(view), /gateway_coverage|app_observed|unmanaged|unknown|provider_5xx/);
+});
+
+
 test("shared charts render proportional accessible structures through Vite SSR", async (context) => {
   const server = await createServer({
     appType: "custom",

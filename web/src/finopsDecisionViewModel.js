@@ -35,6 +35,16 @@ const DOMAIN_LABELS = Object.freeze({
   governance: "治理",
 });
 
+const CUSTOMER_FACING_FINOPS_TERMS = Object.freeze({
+  gateway_coverage: "入口治理覆盖",
+  app_observed: "应用侧已观测",
+  unmanaged: "未纳入统一入口",
+  unknown: "来源待确认",
+  cache_state: "缓存状态",
+  tokens_total: "Token 总量",
+  provider_5xx: "模型服务异常",
+});
+
 const LEVEL_LABELS = Object.freeze({
   low: "低",
   medium: "中",
@@ -128,6 +138,15 @@ function records(value) {
 function boundedText(value, maximum = 160) {
   if (typeof value !== "string") return "";
   return value.trim().slice(0, maximum);
+}
+
+
+function customerFacingFinOpsText(value, maximum) {
+  const text = boundedText(value, maximum);
+  return text.replace(
+    /gateway_coverage|app_observed|unmanaged|unknown|cache_state|tokens_total|provider_5xx/g,
+    (term) => CUSTOMER_FACING_FINOPS_TERMS[term] || term,
+  );
 }
 
 
@@ -587,7 +606,7 @@ function safeOpportunity(raw) {
   return {
     id,
     label: boundedText(raw.title, 100) || POLICY_LABELS[policy],
-    summary: boundedText(raw.recommendation ?? raw.summary, 260),
+    summary: customerFacingFinOpsText(raw.recommendation ?? raw.summary, 260),
     policy,
     policyLabel: POLICY_LABELS[policy],
     domain,
@@ -693,7 +712,7 @@ function safeEvidenceSummaries(value) {
       operation: boundedText(item.operation, 80),
       modelLabel: boundedText(item.model_label, 120),
       signal: {
-        metric: boundedText(signal.metric, 80),
+        metric: customerFacingFinOpsText(signal.metric, 80),
         value: signalValue,
         unit,
         valueLabel: formatValue(signalValue, unit, "observed"),
@@ -703,7 +722,7 @@ function safeEvidenceSummaries(value) {
         ? item.cache_state
         : "unavailable",
       status: ["succeeded", "failed"].includes(item.status) ? item.status : "unavailable",
-      errorCategory: boundedText(item.error_category, 64),
+      errorCategory: customerFacingFinOpsText(item.error_category, 64),
       visibleAnswerSummary: boundedText(item.visible_answer_summary, 400),
       technical: {
         requestRef: safeReference(technical.request_ref),
