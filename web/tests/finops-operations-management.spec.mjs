@@ -206,10 +206,14 @@ for (const viewport of [
     await expect(page.getByRole("complementary", { name: "已验证 ROI" })).toContainText("结果待验证");
     await expect(page.locator(".finops-decision-roi-metric")).toHaveCount(4);
 
-    const bridgeWidths = await page.locator(".finops-decision-value-bar").evaluateAll((bars) => (
-      bars.map((bar) => Math.round(bar.getBoundingClientRect().width)).filter((value) => value > 0)
-    ));
-    expect(new Set(bridgeWidths).size).toBeGreaterThan(1);
+    const valueFormula = page.locator(".finops-decision-value-formula");
+    await expect(valueFormula.locator(".finops-decision-value-term")).toHaveCount(3);
+    await expect(valueFormula.locator(".finops-decision-value-operator")).toHaveCount(2);
+    await expect(valueFormula).toContainText("月度收益");
+    await expect(valueFormula).toContainText("AI 运营总投入");
+    await expect(valueFormula).toContainText("月度净收益");
+    await expect(page.locator(".finops-decision-value-result-strip")).toContainText("预计回收周期");
+    await expect(page.locator(".finops-decision-value-track")).toHaveCount(0);
     const help = page.getByRole("button", { name: "月度收益说明" });
     const tooltipId = await help.getAttribute("aria-describedby");
     const helpTooltip = page.locator(`#${tooltipId}`);

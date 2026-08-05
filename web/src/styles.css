@@ -5840,27 +5840,24 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-decision-badge-not_recorded { color: var(--muted); }
 
 .finops-decision-value-bridge { display: grid; min-width: 0; gap: 14px; overflow: visible; padding: 16px; }
-.finops-decision-value-bars { display: grid; gap: 10px; }
-.finops-decision-value-row { display: grid; grid-template-columns: minmax(105px, 155px) minmax(100px, 1fr) minmax(76px, auto); align-items: center; gap: 10px; }
+.finops-decision-value-formula { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1.12fr); align-items: stretch; gap: 8px; }
+.finops-decision-value-operator { display: grid; place-items: center; color: #98a2b3; font-size: 22px; font-weight: 500; }
+.finops-decision-value-term { display: grid; min-width: 0; align-content: space-between; gap: 10px; border: 1px solid #e4e9f1; border-radius: 9px; padding: 13px; background: #fbfcfe; }
+.finops-decision-value-term::before { width: 26px; height: 3px; border-radius: 999px; background: var(--amber); content: ""; }
+.finops-decision-value-term-result { border-color: #b9d0ff; background: #f3f7ff; box-shadow: inset 0 0 0 1px rgb(38 103 222 / 4%); }
+.finops-decision-value-term-result::before { background: var(--blue); }
 .finops-decision-value-label { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 3px; }
-.finops-decision-value-label > b { overflow: hidden; max-width: 100%; color: var(--muted); font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.finops-decision-value-label > b { max-width: 100%; color: var(--muted); font-size: 10px; font-weight: 700; }
 .finops-decision-value-label-help > b { max-width: calc(100% - 21px); }
-.finops-decision-value-result { display: grid; justify-items: end; gap: 2px; min-width: 0; text-align: right; }
-.finops-decision-value-result > strong { color: var(--ink); font-size: 11px; white-space: nowrap; }
-.finops-decision-value-result > small { color: var(--faint); font-size: 8px; white-space: nowrap; }
-.finops-decision-value-track { position: relative; height: 13px; overflow: hidden; border: 1px solid #e7ebf1; border-radius: 3px; background: var(--surface-soft); }
-.finops-decision-zero-axis { position: absolute; z-index: 2; top: 0; bottom: 0; left: 50%; width: 1px; background: #98a2b3; }
-.finops-decision-value-track > .finops-decision-value-bar { position: absolute; top: 1px; bottom: 1px; width: var(--finops-decision-bar-half-width); min-width: 0; background: var(--blue); transition: width 180ms ease; }
-.finops-decision-value-track > .finops-decision-direction-positive { left: 50%; }
-.finops-decision-value-track > .finops-decision-direction-negative { right: 50%; }
-.finops-decision-value-track > .finops-decision-direction-zero { left: calc(50% - 2px); width: 4px; }
-.finops-decision-value-track > .finops-decision-direction-unavailable { display: none; }
-.finops-decision-value-track > .finops-decision-value-observed,
-.finops-decision-value-track > .finops-decision-value-verified { background: var(--mint); }
-.finops-decision-value-track > .finops-decision-value-estimated,
-.finops-decision-value-track > .finops-decision-value-partial { background: var(--amber); }
-.finops-decision-value-track > .finops-decision-value-unavailable,
-.finops-decision-value-track > .finops-decision-value-not_recorded { background: var(--line-strong); }
+.finops-decision-value-term > strong { color: var(--ink); font-size: 18px; line-height: 1.15; white-space: nowrap; }
+.finops-decision-value-term > small { color: #b26a00; font-size: 9px; }
+.finops-decision-value-term-result > small { color: var(--blue); }
+.finops-decision-value-result-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.finops-decision-value-result-strip > span { display: grid; gap: 3px; padding: 10px 12px; }
+.finops-decision-value-result-strip > span + span { border-left: 1px solid var(--line); }
+.finops-decision-value-result-strip small { color: var(--faint); font-size: 9px; }
+.finops-decision-value-result-strip strong { color: var(--ink); font-size: 12px; }
+.finops-decision-value-result-strip code { overflow: hidden; color: var(--muted); font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .finops-decision-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; }
 .finops-decision-table-fallback { width: 100%; border-collapse: collapse; font-size: 10px; }
 .finops-decision-table-fallback caption { padding: 8px 10px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 10px; font-weight: 700; text-align: left; }
@@ -5981,8 +5978,10 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 }
 
 @media (max-width: 640px) {
-  .finops-decision-value-row { grid-template-columns: minmax(84px, 1fr) minmax(90px, 1.3fr); }
-  .finops-decision-value-row > strong { grid-column: 2; }
+  .finops-decision-value-formula { grid-template-columns: 1fr; }
+  .finops-decision-value-operator { min-height: 18px; font-size: 18px; }
+  .finops-decision-value-result-strip { grid-template-columns: 1fr; }
+  .finops-decision-value-result-strip > span + span { border-top: 1px solid var(--line); border-left: 0; }
   .finops-decision-maturity-stages { grid-template-columns: 1fr; gap: 0; }
   .finops-decision-maturity-stages > li { min-height: 76px; padding: 0 0 12px; }
   .finops-decision-maturity-stages > li:not(:last-child)::after { top: 7px; bottom: 0; left: 7px; width: 1px; height: auto; }
@@ -5996,7 +5995,6 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 
 @media (prefers-reduced-motion: reduce) {
   .finops-decision-tooltip,
-  .finops-decision-value-track > i,
   .finops-decision-matrix-point > button,
   .finops-decision-portfolio-point > button,
   .finops-decision-point-tooltip { animation: none !important; transition: none !important; }
@@ -6610,8 +6608,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-decision-roi-panel { height: 100%; }
 .finops-decision-roi-banner-actions:empty { display: none; }
 .finops-decision-value-bridge { gap: 12px; padding: 14px; }
-.finops-decision-value-bars { gap: 12px; }
-.finops-decision-value-row { min-height: 38px; }
+.finops-decision-value-term { min-height: 116px; }
 
 .finops-decision-maturity { gap: 12px; padding: 14px; }
 .finops-decision-maturity-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }

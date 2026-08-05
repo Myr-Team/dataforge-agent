@@ -300,6 +300,9 @@ function proportionalItems(items) {
         zero: "零值",
         unavailable: "方向不可用",
       }[direction],
+      formulaValueLabel: item.value === null
+        ? item.valueLabel
+        : formatValue(direction === "negative" ? Math.abs(item.value) : item.value, item.unit, item.status),
       barPct: item.value === null || maximum === 0
         ? 0
         : Math.min(100, (Math.abs(item.value) / maximum) * 100),

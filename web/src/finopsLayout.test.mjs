@@ -186,6 +186,14 @@ test("ROI page exposes one honest operating-decision hierarchy", async () => {
   assert.match(source, /updating/);
   assert.doesNotMatch(source, /finops-decision-roi-ai|咨询当前判断|开始咨询/);
   assert.doesNotMatch(source, /Azure Cost Management|APIM|API Management/);
+
+  const chartSource = await readFile(
+    new URL("./finops/DecisionCharts.jsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(chartSource, /finops-decision-value-formula/);
+  assert.match(chartSource, /finops-decision-value-result-strip/);
+  assert.doesNotMatch(chartSource, /finops-decision-zero-axis/);
 });
 
 

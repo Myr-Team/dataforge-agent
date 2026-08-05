@@ -202,11 +202,12 @@ export function RoiDecisionPage({
 
       <section className="finops-decision-roi-columns">
         <article className="finops-decision-roi-panel">
-          <header className="finops-decision-roi-panel-head"><div><span>价值构成</span><h2>价值桥</h2></div><small>正负方向与单位比例来自同一服务端口径</small></header>
+          <header className="finops-decision-roi-panel-head"><div><span>价值构成</span><h2>价值桥</h2></div><small>同一测算口径下，收益减去投入得到净收益</small></header>
           <ValueBridge
             items={view.valueBridge.items}
             formulaRevision={view.valueBridge.formulaRevision}
             paybackLabel={view.valueBridge.paybackLabel}
+            roiLabel={view.metrics.find((metric) => metric.id === "roi_ratio")?.valueLabel || ""}
             description={view.valueBridge.description}
           />
         </article>
