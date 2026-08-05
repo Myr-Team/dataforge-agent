@@ -548,6 +548,35 @@ test("risk decision view localizes internal evidence terms for customer-facing c
 });
 
 
+test("risk decision view preserves unmapped identifier-like risk terms", () => {
+  const view = riskDecisionView({
+    priorities: [{
+      opportunity_id: "opp-identifiers",
+      policy_type: "apim_coverage",
+      risk_domain: "governance",
+      recommendation: "定位 app_observed 与 gateway_coverage_v2，保留 provider_5xx_retryable。",
+      impact: "high",
+      confidence: "high",
+      effort: "medium",
+      evidence_refs: ["req_identifiers_001"],
+    }],
+    selected_evidence_summaries: [{
+      request_ref: "req_identifiers_001",
+      signal: { metric: "gateway_coverage_v2", value: null, unit: "" },
+      status: "failed",
+      error_category: "provider_5xx_retryable",
+    }],
+  });
+
+  assert.equal(
+    view.priorities[0].summary,
+    "定位 应用侧已观测 与 gateway_coverage_v2，保留 provider_5xx_retryable。",
+  );
+  assert.equal(view.evidence[0].signal.metric, "gateway_coverage_v2");
+  assert.equal(view.evidence[0].errorCategory, "provider_5xx_retryable");
+});
+
+
 test("shared charts render proportional accessible structures through Vite SSR", async (context) => {
   const server = await createServer({
     appType: "custom",

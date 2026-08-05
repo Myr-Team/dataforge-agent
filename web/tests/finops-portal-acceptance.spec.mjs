@@ -203,7 +203,8 @@ test("risk evidence is distinct and remediation 409 requires reload and a second
   await priorities.getByRole("button", { name: /计价覆盖补齐/ }).click();
   await expect(evidenceCard).toContainText("评审已完成，当前模型尚未关联价目。");
   await priorities.getByRole("button", { name: /调用成功率改善/ }).click();
-  await expect(evidenceCard).toContainText("provider_5xx");
+  await expect(evidenceCard).toContainText("模型服务异常");
+  await expect(evidenceCard).not.toContainText("provider_5xx");
 
   await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
   await page.getByRole("button", { name: "查看整改方案" }).click();

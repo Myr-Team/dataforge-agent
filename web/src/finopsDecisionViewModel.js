@@ -45,6 +45,8 @@ const CUSTOMER_FACING_FINOPS_TERMS = Object.freeze({
   provider_5xx: "模型服务异常",
 });
 
+const CUSTOMER_FACING_FINOPS_TERM_PATTERN = /(^|[^A-Za-z0-9_])(gateway_coverage|app_observed|unmanaged|unknown|cache_state|tokens_total|provider_5xx)(?![A-Za-z0-9_])/g;
+
 const LEVEL_LABELS = Object.freeze({
   low: "低",
   medium: "中",
@@ -141,12 +143,18 @@ function boundedText(value, maximum = 160) {
 }
 
 
-function customerFacingFinOpsText(value, maximum) {
+function customerFacingFinOpsProse(value, maximum) {
   const text = boundedText(value, maximum);
   return text.replace(
-    /gateway_coverage|app_observed|unmanaged|unknown|cache_state|tokens_total|provider_5xx/g,
-    (term) => CUSTOMER_FACING_FINOPS_TERMS[term] || term,
+    CUSTOMER_FACING_FINOPS_TERM_PATTERN,
+    (match, prefix, term) => `${prefix}${CUSTOMER_FACING_FINOPS_TERMS[term]}`,
   );
+}
+
+
+function customerFacingFinOpsLabel(value, maximum) {
+  const text = boundedText(value, maximum);
+  return CUSTOMER_FACING_FINOPS_TERMS[text] || text;
 }
 
 
@@ -606,7 +614,7 @@ function safeOpportunity(raw) {
   return {
     id,
     label: boundedText(raw.title, 100) || POLICY_LABELS[policy],
-    summary: customerFacingFinOpsText(raw.recommendation ?? raw.summary, 260),
+    summary: customerFacingFinOpsProse(raw.recommendation ?? raw.summary, 260),
     policy,
     policyLabel: POLICY_LABELS[policy],
     domain,
@@ -712,7 +720,7 @@ function safeEvidenceSummaries(value) {
       operation: boundedText(item.operation, 80),
       modelLabel: boundedText(item.model_label, 120),
       signal: {
-        metric: customerFacingFinOpsText(signal.metric, 80),
+        metric: customerFacingFinOpsLabel(signal.metric, 80),
         value: signalValue,
         unit,
         valueLabel: formatValue(signalValue, unit, "observed"),
@@ -722,7 +730,7 @@ function safeEvidenceSummaries(value) {
         ? item.cache_state
         : "unavailable",
       status: ["succeeded", "failed"].includes(item.status) ? item.status : "unavailable",
-      errorCategory: customerFacingFinOpsText(item.error_category, 64),
+      errorCategory: customerFacingFinOpsLabel(item.error_category, 64),
       visibleAnswerSummary: boundedText(item.visible_answer_summary, 400),
       technical: {
         requestRef: safeReference(technical.request_ref),
