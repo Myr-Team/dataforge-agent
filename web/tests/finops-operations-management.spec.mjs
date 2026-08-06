@@ -609,6 +609,32 @@ test("demo completeness fixture fills every visible metric card chart table and 
 });
 
 
+test("ROI maturity stages open stage-specific request evidence", async ({ page }) => {
+  const calls = [];
+  await installFinOpsMockApi(page, calls);
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
+
+  const actions = page.getByLabel("按阶段查看证据");
+  await expect(actions.getByText("可打开的请求证据", { exact: true })).toBeVisible();
+  const cases = [
+    { stage: "投入", requestRef: "req_priced_000001", operation: "成本归因" },
+    { stage: "使用", requestRef: "req_cache_000001", operation: "重复分析" },
+    { stage: "产出", requestRef: "req_slow_000001", operation: "批量分析" },
+    { stage: "业务结果", requestRef: "req_outcome_000001", operation: "业务结果复核" },
+  ];
+
+  for (const item of cases) {
+    await actions.getByRole("button", { name: new RegExp(`^${item.stage} · 1 条$`) }).click();
+    const drawer = page.locator(".finops-drawer");
+    await expect(drawer).toContainText(item.operation);
+    expect(calls.filter((call) => call.path === `/api/finops/requests/${item.requestRef}`)).toHaveLength(1);
+    await drawer.getByRole("button", { name: "关闭请求证据" }).click();
+  }
+});
+
+
 test("cost attribution tables fit desktop cards and remain horizontally operable on mobile", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 900 });
   await installFinOpsMockApi(page);

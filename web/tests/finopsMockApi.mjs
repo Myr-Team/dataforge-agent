@@ -395,10 +395,10 @@ const roiDecisionPayload = {
     score_pct: 75,
     formula_revision: "roi-evidence-maturity-v1",
     stages: [
-      { id: "investment", label: "投入", value: 800, unit: "USD", status: "estimated", evidence_count: 58, evidence_refs: ["req_unpriced_001"], complete: true },
+      { id: "investment", label: "投入", value: 800, unit: "USD", status: "estimated", evidence_count: 58, evidence_refs: ["req_priced_000001"], complete: true },
       { id: "usage", label: "使用", value: 60, unit: "次调用", status: "observed", evidence_count: 60, evidence_refs: ["req_cache_000001"], complete: true },
       { id: "output", label: "产出", value: 12, unit: "个产物", status: "observed", evidence_count: 12, evidence_refs: ["req_slow_000001"], complete: true },
-      { id: "outcome", label: "业务结果", value: 2, unit: "项结果", status: "partial", evidence_count: 2, evidence_refs: ["outcome_demo_001", "outcome_demo_002"], evidence_gap: "业务结果仍需独立复核后才能计入已验证 ROI。", complete: false },
+      { id: "outcome", label: "业务结果", value: 2, unit: "项结果", status: "partial", evidence_count: 2, evidence_refs: ["req_outcome_000001"], evidence_gap: "业务结果仍需独立复核后才能计入已验证 ROI。", complete: false },
     ],
   },
   unit_economics_trend: [
@@ -1292,11 +1292,13 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     } else if (
       path === "/api/finops/requests/req_slow_000001"
       || path === "/api/finops/requests/req_cache_000001"
+      || path === "/api/finops/requests/req_priced_000001"
       || path === "/api/finops/requests/req_unpriced_001"
       || path === "/api/finops/requests/req_error_000001"
       || path === "/api/finops/requests/req_budget_000001"
       || path === "/api/finops/requests/req_token_000001"
       || path === "/api/finops/requests/req_coverage_000001"
+      || path === "/api/finops/requests/req_outcome_000001"
     ) {
       const requestRef = path.split("/").at(-1);
       const profiles = {
@@ -1318,6 +1320,16 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           latency: 1850,
           cache: "miss",
           cost: 0.0084,
+          error: null,
+        },
+        req_priced_000001: {
+          operation: "成本归因",
+          request: "使用已配置价目的模型执行客户机会分析",
+          response: "分析已完成，本次 Token 用量已按生效价目表完成估算成本归因。",
+          status: "succeeded",
+          latency: 1480,
+          cache: "miss",
+          cost: 0.0128,
           error: null,
         },
         req_unpriced_001: {
@@ -1368,6 +1380,16 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           latency: 1120,
           cache: "bypassed",
           cost: 0.0034,
+          error: null,
+        },
+        req_outcome_000001: {
+          operation: "业务结果复核",
+          request: "复核本期分析建议是否形成可验证的业务结果",
+          response: "已记录业务结果证据，仍需独立审核后计入已验证 ROI。",
+          status: "succeeded",
+          latency: 1460,
+          cache: "bypassed",
+          cost: 0.0041,
           error: null,
         },
       };

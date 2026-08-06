@@ -78,7 +78,7 @@ function EvidenceActions({ stages, onEvidence }) {
   if (!available.length) return null;
   return (
     <div className="finops-decision-roi-evidence-actions" aria-label="按阶段查看证据">
-      <span>阶段证据</span>
+      <span>可打开的请求证据</span>
       {available.map((stage) => (
         <button
           type="button"

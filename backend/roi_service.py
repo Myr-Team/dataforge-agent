@@ -201,6 +201,7 @@ class RoiSnapshot(BaseModel):
     time_value: TimeValueSummary
     business_value: BusinessValueSummary | None
     observed_run_ids: list[str]
+    priced_run_ids: list[str] = Field(default_factory=list)
     lineage_complete: bool
     invalid_run_ids: list[str]
     outcome_event_ids: list[str]
@@ -278,7 +279,7 @@ def build_roi_snapshot(workspace_id: str, window: Mapping[str, Any], *, runs: It
     normalized_window = parse_time_window(window.get("from"), window.get("to"))
     catalog = _catalog(prices)
     run_items, was_truncated = _filtered(workspace_id, runs, normalized_window, "run")
-    usage, cost, assumptions = _usage_cost(run_items, catalog)
+    usage, cost, assumptions, priced_run_ids = _usage_cost(run_items, catalog)
     evidence = [item for item in outcomes if _valid_outcome(workspace_id, item, normalized_window, source_validator)]
     verification_by_id = {str(item.get("event_id")): item for item in verification_events if isinstance(item, Mapping) and item.get("event_id")}
     verified = [item for item in evidence if _verified(workspace_id, item, verification_by_id)]
@@ -289,7 +290,7 @@ def build_roi_snapshot(workspace_id: str, window: Mapping[str, Any], *, runs: It
     business_value, business_assumptions = _business_value(evidence)
     observed_run_ids, invalid_run_ids = _run_lineage(run_items)
     was_incomplete = bool(truncated or was_truncated or invalid_run_ids)
-    model = RoiSnapshot(workspace_id=str(workspace_id), window=normalized_window, generated_at=datetime.now(timezone.utc), status=status, usage=usage, cost=cost, time_value=TimeValueSummary(hours=None, cash_value=None, status="not_monetized"), business_value=business_value, observed_run_ids=observed_run_ids, lineage_complete=not was_incomplete, invalid_run_ids=invalid_run_ids, outcome_event_ids=[str(item["event_id"]) for item in evidence if item.get("event_id")], verified_outcome_event_ids=[str(item["event_id"]) for item in verified if item.get("event_id")], unverified_outcome_event_ids=unverified, assumptions=[*assumptions, Assumption(kind="time_value", source="not_configured", formula="saved time is not cash", status="not_monetized"), *business_assumptions], truncated=truncated or was_truncated)
+    model = RoiSnapshot(workspace_id=str(workspace_id), window=normalized_window, generated_at=datetime.now(timezone.utc), status=status, usage=usage, cost=cost, time_value=TimeValueSummary(hours=None, cash_value=None, status="not_monetized"), business_value=business_value, observed_run_ids=observed_run_ids, priced_run_ids=priced_run_ids, lineage_complete=not was_incomplete, invalid_run_ids=invalid_run_ids, outcome_event_ids=[str(item["event_id"]) for item in evidence if item.get("event_id")], verified_outcome_event_ids=[str(item["event_id"]) for item in verified if item.get("event_id")], unverified_outcome_event_ids=unverified, assumptions=[*assumptions, Assumption(kind="time_value", source="not_configured", formula="saved time is not cash", status="not_monetized"), *business_assumptions], truncated=truncated or was_truncated)
     return model.model_dump(mode="json")
 
 
@@ -300,14 +301,19 @@ def roi_cost_evidence(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         str(cost.get("status") or ""),
         "not_configured",
     )
+    has_priced_lineage = "priced_run_ids" in snapshot
+    priced_run_ids = list(snapshot.get("priced_run_ids") or [])[:300]
     return {
         "status": status,
         "total": cost.get("total") if status == "complete" else None,
         "currency": cost.get("currency") if status == "complete" else None,
         "by_currency": cost.get("by_currency") if isinstance(cost.get("by_currency"), Mapping) else {},
         "unpriced_models": list(cost.get("unpriced_models") or [])[:50],
-        "observed_run_ids": list(snapshot.get("observed_run_ids") or [])[:300],
-        "lineage_complete": snapshot.get("lineage_complete") is True,
+        # Keep the legacy key as a compatibility alias, but narrow its
+        # semantics to runs that actually contributed to the price total.
+        "observed_run_ids": priced_run_ids,
+        "priced_run_ids": priced_run_ids,
+        "lineage_complete": has_priced_lineage and snapshot.get("lineage_complete") is True,
     }
 
 
@@ -453,8 +459,8 @@ def _catalog(prices: Iterable[Mapping[str, Any]] | None) -> PriceCatalog:
     return load_price_catalog() if prices is None else PriceCatalog.model_validate({"prices": list(prices)})
 
 
-def _usage_cost(runs: list[Mapping[str, Any]], catalog: PriceCatalog) -> tuple[UsageSummary, CostSummary, list[Assumption]]:
-    inputs = outputs = totals = 0; known_usage = False; unpriced: set[str] = set(); by_currency: dict[str, float] = {}; assumptions: list[Assumption] = []; seen: set[str] = set(); duplicates: list[str] = []
+def _usage_cost(runs: list[Mapping[str, Any]], catalog: PriceCatalog) -> tuple[UsageSummary, CostSummary, list[Assumption], list[str]]:
+    inputs = outputs = totals = 0; known_usage = False; unpriced: set[str] = set(); by_currency: dict[str, float] = {}; assumptions: list[Assumption] = []; seen: set[str] = set(); duplicates: list[str] = []; priced_run_ids: list[str] = []; priced_run_seen: set[str] = set()
     for run in runs:
         for index, model, tokens in _run_usage(run):
             event_id = str(run.get("run_id") or "run") + ":" + str(run.get("models", [])[index].get("usage_event_id") or run.get("models", [])[index].get("response_id") or index)
@@ -466,10 +472,14 @@ def _usage_cost(runs: list[Mapping[str, Any]], catalog: PriceCatalog) -> tuple[U
             price = _price(catalog, model, _record_time(run, "run"))
             if price is None: unpriced.add(model); continue
             by_currency[price.currency] = by_currency.get(price.currency, 0) + tokens["input_tokens"] / 1_000_000 * price.input_per_1m + tokens["output_tokens"] / 1_000_000 * price.output_per_1m
+            run_id = str(run.get("run_id") or "").strip()
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", run_id) and run_id not in priced_run_seen and len(priced_run_ids) < MAX_RECORDS_PER_KIND:
+                priced_run_seen.add(run_id)
+                priced_run_ids.append(run_id)
             assumptions.append(Assumption(kind="model_price", source=price.source, formula="input_tokens/1_000_000*input_per_1m + output_tokens/1_000_000*output_per_1m", status="configured", model=price.model, version=price.version, currency=price.currency, unit=price.unit, effective_from=price.effective_from, effective_to=price.effective_to, input_per_1m=price.input_per_1m, output_per_1m=price.output_per_1m))
     status = "unknown" if not seen else "partial" if unpriced or len(by_currency) != 1 else "complete"
     total = _money(next(iter(by_currency.values()))) if status == "complete" else None
-    return UsageSummary(runs=len(runs), input_tokens=inputs if known_usage else None, output_tokens=outputs if known_usage else None, total_tokens=totals if known_usage else None, models=sorted({model for run in runs for _, model, _ in _run_usage(run)}), duplicate_usage_event_ids=duplicates), CostSummary(total=total, status=status, currency=next(iter(by_currency)) if status == "complete" else None, by_currency={key: _money(value) for key, value in by_currency.items()} if status != "unknown" else {}, unpriced_models=sorted(unpriced)), _dedupe(assumptions)
+    return UsageSummary(runs=len(runs), input_tokens=inputs if known_usage else None, output_tokens=outputs if known_usage else None, total_tokens=totals if known_usage else None, models=sorted({model for run in runs for _, model, _ in _run_usage(run)}), duplicate_usage_event_ids=duplicates), CostSummary(total=total, status=status, currency=next(iter(by_currency)) if status == "complete" else None, by_currency={key: _money(value) for key, value in by_currency.items()} if status != "unknown" else {}, unpriced_models=sorted(unpriced)), _dedupe(assumptions), priced_run_ids
 
 
 def _run_lineage(runs: Iterable[Mapping[str, Any]]) -> tuple[list[str], list[str]]:

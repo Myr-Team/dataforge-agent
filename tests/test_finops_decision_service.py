@@ -32,7 +32,11 @@ def test_roi_decision_keeps_scenario_separate_from_verified_value() -> None:
             "lineage_complete": True,
             "usage": {"runs": 60},
             "observed_run_ids": ["run-001", "run-002"],
-            "cost_evidence": {"status": "complete", "observed_run_ids": ["run-001", "run-002"]},
+            "cost_evidence": {
+                "status": "complete",
+                "observed_run_ids": ["run-001", "run-002"],
+                "priced_run_ids": ["run-001", "run-002"],
+            },
         },
         cost_value={
             "artifact_count": 12,
@@ -43,6 +47,12 @@ def test_roi_decision_keeps_scenario_separate_from_verified_value() -> None:
             },
         },
         unit_trend=[],
+        request_refs_by_run={
+            "run-001": ["req_run_000001"],
+            "run-002": ["req_run_000002"],
+        },
+        artifact_run_ids=["run-001", "run-002"],
+        artifact_source_count=12,
     )
 
     assert result["decision"]["state"] == "scenario_positive_unverified"
@@ -59,6 +69,239 @@ def test_roi_decision_keeps_scenario_separate_from_verified_value() -> None:
     assert result["evidence_maturity"]["stages"][1]["evidence_count"] == 60
     assert result["evidence_maturity"]["stages"][2]["value"] == 12
     assert result["evidence_maturity"]["stages"][3]["evidence_gap"] == "业务结果尚未独立验证"
+
+
+def test_roi_decision_projects_each_stage_to_openable_request_evidence() -> None:
+    result = build_roi_decision(
+        economics={
+            "funnel": [
+                {"id": "investment", "value": 2, "status": "estimated"},
+                {"id": "usage", "value": 2, "status": "observed"},
+                {"id": "output", "value": 1, "status": "observed"},
+                {"id": "outcome", "value": 1, "status": "verified"},
+            ],
+            "scenarios": [],
+            "verified_roi": {"status": "not_recorded", "value": None},
+        },
+        roi_snapshot={
+            "usage": {"runs": 2},
+            "observed_run_ids": ["run-usage", "run-output"],
+            "cost_evidence": {
+                "status": "complete",
+                "observed_run_ids": ["run-usage", "run-output"],
+                "priced_run_ids": ["run-usage"],
+            },
+        },
+        cost_value={
+            "artifact_count": 1,
+            "outcome_evidence": {
+                "status": "verified",
+                "outcome_event_ids": ["outcome-second"],
+                "verified_outcome_event_ids": ["outcome-second"],
+            },
+        },
+        unit_trend=[],
+        request_refs_by_run={
+            "run-usage": ["req_usage_000001"],
+            "run-output": ["req_output_000001"],
+            "run-other-workspace": ["req_other_workspace"],
+        },
+        artifact_run_ids=["run-output"],
+        artifact_source_count=1,
+        outcome_source_run_ids={"outcome-second": "run-output"},
+    )
+
+    stages = {
+        item["id"]: item for item in result["evidence_maturity"]["stages"]
+    }
+    assert stages["investment"]["evidence_refs"] == ["req_usage_000001"]
+    assert stages["usage"]["evidence_refs"] == [
+        "req_usage_000001",
+        "req_output_000001",
+    ]
+    assert stages["output"]["evidence_refs"] == ["req_output_000001"]
+    assert stages["outcome"]["evidence_refs"] == ["req_output_000001"]
+    assert "req_other_workspace" not in json.dumps(stages)
+
+
+def test_roi_decision_preserves_counts_and_gaps_when_request_mapping_is_missing() -> None:
+    result = build_roi_decision(
+        economics={
+            "funnel": [
+                {"id": "investment", "value": 1, "status": "estimated"},
+                {"id": "usage", "value": 1, "status": "observed"},
+                {"id": "output", "value": 1, "status": "observed"},
+                {"id": "outcome", "value": 1, "status": "verified"},
+            ],
+            "scenarios": [],
+            "verified_roi": {"status": "not_recorded", "value": None},
+        },
+        roi_snapshot={
+            "usage": {"runs": 1},
+            "observed_run_ids": ["run-missing"],
+            "cost_evidence": {
+                "status": "complete",
+                "observed_run_ids": ["run-missing"],
+                "priced_run_ids": ["run-missing"],
+            },
+        },
+        cost_value={
+            "artifact_count": 1,
+            "outcome_evidence": {
+                "status": "verified",
+                "outcome_event_ids": ["outcome-missing"],
+                "verified_outcome_event_ids": ["outcome-missing"],
+            },
+        },
+        unit_trend=[],
+        request_refs_by_run={},
+        artifact_run_ids=["run-missing"],
+        artifact_source_count=1,
+        outcome_source_run_ids={"outcome-missing": "run-missing"},
+    )
+
+    stages = {
+        item["id"]: item for item in result["evidence_maturity"]["stages"]
+    }
+    for stage in stages.values():
+        assert stage["evidence_count"] == 1
+        assert stage["evidence_refs"] == []
+        assert "请求级证据" in stage["evidence_gap"]
+
+
+def test_roi_decision_marks_output_incomplete_when_one_artifact_lacks_source_lineage() -> None:
+    result = build_roi_decision(
+        economics={
+            "funnel": [{"id": "output", "value": 2, "status": "observed"}],
+            "scenarios": [],
+            "verified_roi": {"status": "not_recorded", "value": None},
+        },
+        roi_snapshot={"usage": {"runs": 0}, "observed_run_ids": []},
+        cost_value={
+            "artifact_count": 2,
+            "outcome_evidence": {
+                "status": "not_recorded",
+                "outcome_event_ids": [],
+                "verified_outcome_event_ids": [],
+            },
+        },
+        unit_trend=[],
+        request_refs_by_run={"run-output": ["req_output_000001"]},
+        artifact_run_ids=["run-output"],
+        artifact_source_count=1,
+    )
+
+    output = next(
+        item
+        for item in result["evidence_maturity"]["stages"]
+        if item["id"] == "output"
+    )
+    assert output["evidence_count"] == 2
+    assert output["evidence_refs"] == ["req_output_000001"]
+    assert output["complete"] is False
+    assert "部分产出证据" in output["evidence_gap"]
+
+
+def test_roi_decision_allows_two_artifacts_to_share_one_mapped_run() -> None:
+    result = build_roi_decision(
+        economics={
+            "funnel": [{"id": "output", "value": 2, "status": "observed"}],
+            "scenarios": [],
+            "verified_roi": {"status": "not_recorded", "value": None},
+        },
+        roi_snapshot={"usage": {"runs": 0}, "observed_run_ids": []},
+        cost_value={
+            "artifact_count": 2,
+            "outcome_evidence": {
+                "status": "not_recorded",
+                "outcome_event_ids": [],
+                "verified_outcome_event_ids": [],
+            },
+        },
+        unit_trend=[],
+        request_refs_by_run={"run-shared": ["req_output_000001"]},
+        artifact_run_ids=["run-shared"],
+        artifact_source_count=2,
+    )
+
+    output = next(
+        item
+        for item in result["evidence_maturity"]["stages"]
+        if item["id"] == "output"
+    )
+    assert output["evidence_count"] == 2
+    assert output["evidence_refs"] == ["req_output_000001"]
+    assert output["complete"] is True
+    assert output["evidence_gap"] == ""
+
+
+def test_roi_decision_does_not_treat_old_observed_lineage_as_priced() -> None:
+    result = build_roi_decision(
+        economics={
+            "funnel": [{"id": "investment", "value": 1, "status": "estimated"}],
+            "scenarios": [],
+            "verified_roi": {"status": "not_recorded", "value": None},
+        },
+        roi_snapshot={
+            "usage": {"runs": 1},
+            "observed_run_ids": ["run-observed-only"],
+            "cost_evidence": {
+                "status": "complete",
+                "observed_run_ids": ["run-observed-only"],
+            },
+        },
+        cost_value={"artifact_count": 0, "outcome_evidence": {}},
+        unit_trend=[],
+        request_refs_by_run={
+            "run-observed-only": ["req_observed_000001"]
+        },
+    )
+
+    investment = next(
+        item
+        for item in result["evidence_maturity"]["stages"]
+        if item["id"] == "investment"
+    )
+    assert investment["evidence_count"] == 0
+    assert investment["evidence_refs"] == []
+    assert investment["complete"] is False
+    assert "计价来源" in investment["evidence_gap"]
+
+
+def test_roi_decision_accepts_one_request_as_evidence_for_two_outcomes() -> None:
+    result = build_roi_decision(
+        economics={
+            "funnel": [
+                {"id": "outcome", "value": 2, "status": "verified"},
+            ],
+            "scenarios": [],
+            "verified_roi": {"status": "not_recorded", "value": None},
+        },
+        roi_snapshot={"usage": {"runs": 0}, "observed_run_ids": []},
+        cost_value={
+            "artifact_count": 0,
+            "outcome_evidence": {
+                "status": "verified",
+                "outcome_event_ids": ["outcome-one", "outcome-two"],
+                "verified_outcome_event_ids": ["outcome-one", "outcome-two"],
+            },
+        },
+        unit_trend=[],
+        request_refs_by_run={"run-shared": ["req_shared_000001"]},
+        outcome_source_run_ids={
+            "outcome-one": "run-shared",
+            "outcome-two": "run-shared",
+        },
+    )
+
+    outcome = next(
+        item
+        for item in result["evidence_maturity"]["stages"]
+        if item["id"] == "outcome"
+    )
+    assert outcome["evidence_count"] == 2
+    assert outcome["evidence_refs"] == ["req_shared_000001"]
+    assert outcome["evidence_gap"] == ""
 
 
 def test_risk_decision_uses_impact_and_evidence_without_composite_score() -> None:

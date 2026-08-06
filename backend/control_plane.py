@@ -3925,6 +3925,7 @@ def _artifact_item(
     )
     return {
         "name": name,
+        "workspace_id": str(record.get("workspace_id") or ""),
         "type": _artifact_type(kind, name),
         "bytes": record.get("bytes"),
         "created_at": created_at,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Literal, Mapping
@@ -1505,6 +1506,125 @@ def _decision_envelope(
     } | dict(decision)
 
 
+def _request_refs_by_run(
+    events: list[FinOpsRequestEvent],
+    *,
+    run_limit: int = 300,
+    refs_per_run: int = 3,
+) -> dict[str, list[str]]:
+    """Build a bounded run/request index from already-authorized query rows."""
+    result: dict[str, list[str]] = {}
+    for event in events:
+        run_id = str(event.run_id or "").strip()
+        request_ref = str(event.request_ref or "").strip()
+        if not run_id or not request_ref.startswith("req_"):
+            continue
+        if run_id not in result:
+            if len(result) >= run_limit:
+                continue
+            result[run_id] = []
+        if (
+            request_ref not in result[run_id]
+            and len(result[run_id]) < refs_per_run
+        ):
+            result[run_id].append(request_ref)
+    return result
+
+
+def _roi_stage_source_lineage(
+    query: FinOpsQuery,
+    cost_value: Mapping[str, Any],
+) -> tuple[list[str], int, dict[str, str]]:
+    """Load stage source IDs without returning them through the public API."""
+    if not query.workspace_id:
+        return [], 0, {}
+    start = _parse_time(query.from_value)
+    end = _parse_time(query.to_value)
+    try:
+        artifact_count = max(0, int(cost_value.get("artifact_count") or 0))
+    except (TypeError, ValueError):
+        artifact_count = 0
+    artifact_items: list[Any] = []
+    if artifact_count:
+        try:
+            from ..control_plane import list_workspace_artifacts
+        except ImportError:
+            from control_plane import list_workspace_artifacts
+        try:
+            artifact_items = list_workspace_artifacts(
+                query.workspace_id,
+                run_limit=None,
+            ).get("artifacts") or []
+        except Exception:
+            artifact_items = []
+
+    artifact_runs: list[str] = []
+    artifact_source_count = 0
+    seen_artifact_runs: set[str] = set()
+    for item in artifact_items:
+        if not isinstance(item, Mapping) or start is None or end is None:
+            continue
+        item_workspace = str(item.get("workspace_id") or "").strip()
+        if item_workspace != query.workspace_id:
+            continue
+        timestamp = str(
+            item.get("created_at")
+            or item.get("updated_at")
+            or item.get("time")
+            or ""
+        ).strip()
+        try:
+            occurred_at = _parse_time(timestamp)
+        except ValueError:
+            continue
+        run_id = str(item.get("run_id") or "").strip()
+        if (
+            start <= occurred_at < end
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", run_id)
+        ):
+            artifact_source_count += 1
+            if run_id not in seen_artifact_runs and len(artifact_runs) < 300:
+                seen_artifact_runs.add(run_id)
+                artifact_runs.append(run_id)
+            if artifact_source_count >= 300:
+                break
+
+    outcome = (
+        cost_value.get("outcome_evidence")
+        if isinstance(cost_value.get("outcome_evidence"), Mapping)
+        else {}
+    )
+    selected_outcomes = {
+        str(value or "").strip()
+        for value in outcome.get("outcome_event_ids") or []
+        if str(value or "").strip()
+    }
+    if not selected_outcomes:
+        return artifact_runs, artifact_source_count, {}
+    try:
+        try:
+            from ..outcome_store import list_outcome_events
+        except ImportError:
+            from outcome_store import list_outcome_events
+        outcome_items = list_outcome_events(query.workspace_id)
+    except Exception:
+        outcome_items = []
+    source_by_outcome: dict[str, str] = {}
+    for item in outcome_items:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("workspace_id") or "").strip() != query.workspace_id:
+            continue
+        event_id = str(item.get("event_id") or "").strip()
+        source = item.get("source") if isinstance(item.get("source"), Mapping) else {}
+        source_run_id = str(source.get("run_id") or "").strip()
+        if event_id in selected_outcomes and source_run_id:
+            source_by_outcome[event_id] = source_run_id
+            if len(source_by_outcome) >= 300:
+                break
+    return artifact_runs, artifact_source_count, source_by_outcome
+
+
 def _roi_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, Any]:
     if not query.workspace_id:
         raise ValueError("ROI decision requires one workspace")
@@ -1515,11 +1635,20 @@ def _roi_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, A
         query_service.unit_economics_trend(query, "day").get("items") or [],
         cost_value.get("output_trend") or [],
     )
+    artifact_run_ids, artifact_source_count, outcome_source_run_ids = _roi_stage_source_lineage(
+        query,
+        cost_value,
+    )
+    request_refs_by_run = _request_refs_by_run(query_service.events(query))
     decision = build_roi_decision(
         economics=economics,
         roi_snapshot=roi,
         cost_value=cost_value,
         unit_trend=unit_trend,
+        request_refs_by_run=request_refs_by_run,
+        artifact_run_ids=artifact_run_ids,
+        artifact_source_count=artifact_source_count,
+        outcome_source_run_ids=outcome_source_run_ids,
     )
     # Keep Task 1's schema-safe display projection while returning the full
     # bounded trend rows that this page needs for unavailable-data states.

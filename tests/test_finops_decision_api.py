@@ -8,6 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.finops.router as finops_router
+import backend.control_plane as control_plane
+import backend.outcome_store as outcome_store
 from auth_fixtures import trusted_headers
 from backend.app import app
 from backend.finops.anomalies import DetectedAnomaly
@@ -104,6 +106,174 @@ def test_roi_decision_returns_one_composed_payload(client: TestClient, owner_hea
     assert body["window"]["from"] == "2026-07-01T00:00:00Z"
     assert "decision" in body and "value_bridge" in body
     assert "provider_response_id" not in response.text
+
+
+def test_roi_decision_maps_only_authorized_stage_runs_to_request_refs(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_usage_000001",
+                    "occurred_at": datetime(2026, 7, 24, 3, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "run_id": "run-usage",
+                    "status": "succeeded",
+                    "tokens": {"total": 12},
+                    "estimated_cost": {
+                        "amount": 0.001,
+                        "currency": "USD",
+                        "status": "estimated",
+                    },
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_output_000001",
+                    "occurred_at": datetime(2026, 7, 24, 4, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "run_id": "run-output",
+                    "status": "succeeded",
+                    "tokens": {"total": 18},
+                    "estimated_cost": {
+                        "amount": 0.002,
+                        "currency": "USD",
+                        "status": "estimated",
+                    },
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_other_workspace",
+                    "occurred_at": datetime(2026, 7, 24, 4, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-b",
+                    "run_id": "run-output",
+                    "status": "succeeded",
+                    "tokens": {"total": 99},
+                    "estimated_cost": {
+                        "amount": 0.099,
+                        "currency": "USD",
+                        "status": "estimated",
+                    },
+                    "evidence_state": "observed",
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "workspace_roi_snapshot",
+        lambda workspace_id, from_value, to_value: {
+            "workspace_id": workspace_id,
+            "usage": {"runs": 2},
+            "observed_run_ids": ["run-usage", "run-output"],
+            "cost_evidence": {
+                "status": "complete",
+                "observed_run_ids": ["run-usage", "run-output"],
+                "priced_run_ids": ["run-usage"],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "workspace_cost_value_snapshot",
+        lambda workspace_id, from_value, to_value: {
+            "workspace_id": workspace_id,
+            "cost_evidence": {
+                "status": "complete",
+                "observed_run_ids": ["run-usage", "run-output"],
+            },
+            "outcome_evidence": {
+                "status": "verified",
+                "outcome_event_ids": ["outcome-second"],
+                "verified_outcome_event_ids": ["outcome-second"],
+            },
+            "realized_roi": {
+                "status": "not_recorded",
+                "value": None,
+                "currency": None,
+                "net_value": None,
+            },
+            "artifact_count": 1,
+            "output_trend": [],
+            "scenarios": [],
+        },
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "list_workspace_artifacts",
+        lambda workspace_id, run_limit=None: {
+            "workspace_id": workspace_id,
+            "artifacts": [
+                {
+                    "workspace_id": "ws-a",
+                    "run_id": "run-output",
+                    "created_at": "2026-07-24T04:05:00Z",
+                },
+                {
+                    "workspace_id": "ws-b",
+                    "run_id": "run-usage",
+                    "created_at": "2026-07-24T04:06:00Z",
+                },
+                {
+                    "run_id": "run-usage",
+                    "created_at": "2026-07-24T04:07:00Z",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        outcome_store,
+        "list_outcome_events",
+        lambda workspace_id: [
+            {
+                "event_id": "outcome-second",
+                "workspace_id": workspace_id,
+                "source": {"run_id": "run-output"},
+            },
+            {
+                "event_id": "outcome-second",
+                "workspace_id": "ws-b",
+                "source": {"run_id": "run-usage"},
+            },
+        ],
+    )
+
+    response = client.get(
+        "/api/finops/roi/decision",
+        params={
+            "workspace_id": "ws-a",
+            "from": "2026-07-01T00:00:00Z",
+            "to": "2026-08-01T00:00:00Z",
+        },
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    stages = {
+        item["id"]: item for item in response.json()["evidence_maturity"]["stages"]
+    }
+    assert stages["usage"]["evidence_refs"] == [
+        "req_usage_000001",
+        "req_output_000001",
+    ]
+    assert stages["investment"]["evidence_refs"] == ["req_usage_000001"]
+    assert stages["output"]["evidence_refs"] == ["req_output_000001"]
+    assert stages["output"]["complete"] is True
+    assert stages["outcome"]["evidence_refs"] == ["req_output_000001"]
+    assert "req_other_workspace" not in response.text
 
 
 def test_risk_decision_does_not_trigger_agent(

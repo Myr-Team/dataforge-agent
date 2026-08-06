@@ -120,6 +120,35 @@ def test_workspace_artifact_catalog_hides_foreign_registered_artifacts(tmp_path,
     assert catalog["artifacts"] == []
 
 
+def test_workspace_artifact_catalog_projects_workspace_id_for_lineage(tmp_path, monkeypatch) -> None:
+    output_dir = _configure_artifact_storage(tmp_path, monkeypatch)
+    monkeypatch.setattr(control_plane, "ARTIFACT_DIR", output_dir)
+    owned = _write_artifact("ws-a", "pdf", "application/pdf", ".pdf", b"workspace-a", output_dir)
+    monkeypatch.setattr(control_plane, "list_runs", lambda _workspace_id: [{"run_id": "run-a"}])
+    monkeypatch.setattr(
+        control_plane,
+        "get_run",
+        lambda _run_id: {
+            "run_id": "run-a",
+            "workspace_id": "ws-a",
+            "completed_at": "2026-07-24T04:05:00Z",
+            "artifact": {
+                "proposal": {
+                    "artifact_urls": {"pdf": f"/api/artifacts/{owned['artifact_name']}"}
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(control_plane, "list_artifact_jobs", lambda _workspace_id: [])
+    monkeypatch.setattr(control_plane, "list_tasks", lambda _workspace_id: [])
+
+    catalog = control_plane.list_workspace_artifacts("ws-a")
+
+    assert len(catalog["artifacts"]) == 1
+    assert catalog["artifacts"][0]["workspace_id"] == "ws-a"
+    assert catalog["artifacts"][0]["run_id"] == "run-a"
+
+
 def test_blob_registry_persistence_failure_blocks_artifact_bytes(tmp_path, monkeypatch) -> None:
     output_dir = _configure_artifact_storage(tmp_path, monkeypatch)
     monkeypatch.setattr(artifact_registry, "blob_configured", lambda: True)

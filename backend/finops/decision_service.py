@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Mapping, Sequence
 
 from .decision_models import DecisionStatement, RiskDecision, RoiDecision
@@ -33,6 +34,8 @@ _ANOMALY_ACTIONS = {
 _SCENARIO_RESULT_KEYS = (
     "monthly_benefit", "monthly_total_cost", "monthly_net_benefit", "roi_ratio", "payback_months", "formula_revision",
 )
+_SOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
+_REQUEST_REF = re.compile(r"^req_[A-Za-z0-9_-]{1,124}$")
 
 
 def _refs(values: Any, limit: int = 20) -> list[str]:
@@ -40,6 +43,55 @@ def _refs(values: Any, limit: int = 20) -> list[str]:
         ref for value in values or []
         if (ref := str(value).strip()) and ref.startswith(_SAFE_REF_PREFIXES)
     ][:limit]
+
+
+def _source_ids(values: Any, limit: int = 300) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        identifier = str(value or "").strip()
+        if not _SOURCE_ID.fullmatch(identifier) or identifier in seen:
+            continue
+        seen.add(identifier)
+        result.append(identifier)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _request_refs_for_runs(
+    run_ids: Sequence[str],
+    request_refs_by_run: Mapping[str, Sequence[str]],
+    *,
+    limit: int = 20,
+) -> tuple[list[str], int]:
+    refs: list[str] = []
+    seen: set[str] = set()
+    mapped_runs = 0
+    for run_id in run_ids:
+        run_refs: list[str] = []
+        raw_refs = request_refs_by_run.get(run_id) or ()
+        for value in raw_refs:
+            request_ref = str(value or "").strip()
+            if not _REQUEST_REF.fullmatch(request_ref) or request_ref in seen:
+                continue
+            seen.add(request_ref)
+            run_refs.append(request_ref)
+            refs.append(request_ref)
+            if len(refs) >= limit:
+                break
+        if run_refs:
+            mapped_runs += 1
+        if len(refs) >= limit:
+            break
+    return refs, mapped_runs
+
+
+def _append_gap(stage: dict[str, Any], message: str) -> None:
+    current = str(stage.get("evidence_gap") or "").strip()
+    if message in current:
+        return
+    stage["evidence_gap"] = f"{current}；{message}" if current else message
 
 
 def _safe_scenario(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -129,7 +181,11 @@ def _maturity(funnel: list[dict[str, Any]]) -> dict[str, Any]:
     for expected in ("investment", "usage", "output", "outcome"):
         raw = next((item for item in funnel if item.get("id") == expected), {})
         status = str(raw.get("status") or "unavailable")
-        complete = status in _COMPLETE_STAGE[expected]
+        complete = (
+            bool(raw.get("complete"))
+            if "complete" in raw
+            else status in _COMPLETE_STAGE[expected]
+        )
         score += 25 if complete else 0
         stages.append({
             "id": expected, "label": raw.get("label") or expected, "value": raw.get("value"),
@@ -149,37 +205,96 @@ def _roi_statement(scenario: dict[str, Any] | None, verified: dict[str, Any]) ->
     return DecisionStatement(state="evidence_incomplete", title="已建立投入与使用证据，仍需补充价值假设", summary="当前范围不足以形成可复核 ROI。", evidence_state="partial")
 
 
-def build_roi_decision(*, economics: Mapping[str, Any], roi_snapshot: Mapping[str, Any], cost_value: Mapping[str, Any], unit_trend: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def build_roi_decision(
+    *,
+    economics: Mapping[str, Any],
+    roi_snapshot: Mapping[str, Any],
+    cost_value: Mapping[str, Any],
+    unit_trend: Sequence[Mapping[str, Any]],
+    request_refs_by_run: Mapping[str, Sequence[str]] | None = None,
+    artifact_run_ids: Sequence[str] = (),
+    artifact_source_count: int = 0,
+    outcome_source_run_ids: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     scenarios = [_safe_scenario(item) for item in economics.get("scenarios") or [] if isinstance(item, Mapping)]
     scenario = max(scenarios, key=lambda item: str(item.get("revision") or item.get("scenario_id") or ""), default=None)
     result = dict(scenario.get("result") or {}) if scenario else {}
-    observed_runs = _refs(roi_snapshot.get("observed_run_ids"))
+    observed_runs = _source_ids(roi_snapshot.get("observed_run_ids"))
+    runs = int((roi_snapshot.get("usage") or {}).get("runs") or 0) if isinstance(roi_snapshot.get("usage"), Mapping) else 0
     cost_evidence = roi_snapshot.get("cost_evidence") if isinstance(roi_snapshot.get("cost_evidence"), Mapping) else {}
-    priced_runs = _refs(cost_evidence.get("observed_run_ids")) or observed_runs
+    priced_runs = _source_ids(cost_evidence.get("priced_run_ids"))
+    has_priced_lineage = (
+        "priced_run_ids" in cost_evidence
+        and cost_evidence.get("lineage_complete") is not False
+    )
     outcome = cost_value.get("outcome_evidence") if isinstance(cost_value.get("outcome_evidence"), Mapping) else {}
     outcome_ids = _refs(outcome.get("outcome_event_ids"))
     verified_ids = _refs(outcome.get("verified_outcome_event_ids"))
+    mapping = request_refs_by_run if isinstance(request_refs_by_run, Mapping) else {}
+    output_runs = _source_ids(artifact_run_ids)
+    source_by_outcome = outcome_source_run_ids if isinstance(outcome_source_run_ids, Mapping) else {}
+    outcome_source_values: list[str] = []
+    for outcome_id in outcome_ids:
+        safe_source = _source_ids([source_by_outcome.get(outcome_id)], 1)
+        if safe_source:
+            outcome_source_values.append(safe_source[0])
+    outcome_runs = _source_ids(outcome_source_values)
+    investment_refs, investment_mapped = _request_refs_for_runs(priced_runs, mapping)
+    usage_refs, usage_mapped = _request_refs_for_runs(observed_runs, mapping)
+    output_refs, output_mapped = _request_refs_for_runs(output_runs, mapping)
+    outcome_refs, _ = _request_refs_for_runs(outcome_runs, mapping)
+    outcome_mapping_complete = (
+        len(outcome_source_values) == len(outcome_ids)
+        and all(
+            bool(_request_refs_for_runs([run_id], mapping, limit=1)[0])
+            for run_id in outcome_source_values
+        )
+    )
     funnel_by_id = {str(item.get("id")): dict(item) for item in economics.get("funnel") or [] if isinstance(item, Mapping)}
     investment = funnel_by_id.get("investment", {"id": "investment", "label": "投入", "unit": "USD"})
     investment["label"], investment["unit"] = "投入", "USD"
-    investment.update({"evidence_count": len(priced_runs), "evidence_refs": priced_runs})
+    investment.update({"evidence_count": len(priced_runs), "evidence_refs": investment_refs})
     if str(cost_evidence.get("status") or "") != "complete":
         investment["evidence_gap"] = "模型计价未完整覆盖或成本证据不完整"
+    if not has_priced_lineage and runs > 0:
+        _append_gap(investment, "当前快照缺少可复核的投入计价来源")
+    if priced_runs and investment_mapped < len(priced_runs):
+        _append_gap(investment, "部分投入证据未投影到当前可打开的请求级证据")
+    investment["complete"] = not bool(investment.get("evidence_gap"))
     usage = funnel_by_id.get("usage", {"id": "usage", "label": "使用", "unit": "次调用"})
     usage["label"], usage["unit"] = "使用", "次调用"
-    runs = int((roi_snapshot.get("usage") or {}).get("runs") or 0) if isinstance(roi_snapshot.get("usage"), Mapping) else 0
-    usage.update({"value": max(0, runs), "evidence_count": max(0, runs), "evidence_refs": observed_runs})
+    usage.update({"value": max(0, runs), "evidence_count": max(0, runs), "evidence_refs": usage_refs})
+    if runs > 0 and (not observed_runs or usage_mapped < len(observed_runs)):
+        _append_gap(usage, "部分使用证据未投影到当前可打开的请求级证据")
     output = funnel_by_id.get("output", {"id": "output", "label": "产出", "unit": "个产物"})
     output["label"], output["unit"] = "产出", "个产物"
     if "artifact_count" in cost_value:
         output.update({"value": max(0, int(cost_value.get("artifact_count") or 0)), "status": "observed"})
-    output.update({"evidence_count": max(0, int(output.get("value") or 0)), "evidence_refs": observed_runs})
+    output_count = max(0, int(output.get("value") or 0))
+    output.update({"evidence_count": output_count, "evidence_refs": output_refs})
+    try:
+        sourced_artifacts = max(0, int(artifact_source_count))
+    except (TypeError, ValueError):
+        sourced_artifacts = 0
+    output_lineage_complete = (
+        output_count == 0
+        or (
+            sourced_artifacts >= output_count
+            and bool(output_runs)
+            and output_mapped == len(output_runs)
+        )
+    )
+    if output_count > 0 and not output_lineage_complete:
+        _append_gap(output, "部分产出证据未投影到当前可打开的请求级证据")
+    output["complete"] = output_lineage_complete
     outcome_stage = funnel_by_id.get("outcome", {"id": "outcome", "label": "业务结果", "unit": "项结果"})
     outcome_stage["label"], outcome_stage["unit"] = "业务结果", "项结果"
     all_verified = bool(outcome_ids) and set(outcome_ids) == set(verified_ids)
-    outcome_stage.update({"value": len(outcome_ids), "evidence_count": len(outcome_ids), "evidence_refs": outcome_ids})
+    outcome_stage.update({"value": len(outcome_ids), "evidence_count": len(outcome_ids), "evidence_refs": outcome_refs})
     if not all_verified:
         outcome_stage["evidence_gap"] = "业务结果尚未独立验证"
+    if outcome_ids and not outcome_mapping_complete:
+        _append_gap(outcome_stage, "部分业务结果未投影到当前可打开的请求级证据")
     funnel = [investment, usage, output, outcome_stage]
     metrics = [{"id": key, "label": label, "value": result.get(key), "unit": unit, "status": "estimated", "explanation": "来自情景测算，非已验证业务结果。"} for key, label, unit in (
         ("monthly_benefit", "月度收益", "USD"), ("monthly_total_cost", "月度总成本", "USD"),
