@@ -12,6 +12,8 @@ export const MODEL_AGENT_ROLES = [
   { id: "df-feasibility-analyst", label: "可行性 Agent", description: "形成产品机会与可行性判断" },
   { id: "df-auditor", label: "审计 Agent", description: "检查证据、结论强度与风险" },
   { id: "df-producer", label: "产物 Agent", description: "生成报告、图像和交付产物" },
+  { id: "df-finops-analyst", label: "FinOps 分析 Agent", description: "分析成本、用量、缓存与运营风险" },
+  { id: "df-roi-analyst", label: "ROI 分析 Agent", description: "分析价值测算、证据成熟度与回报边界" },
 ];
 
 function text(value) {

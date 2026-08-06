@@ -29,6 +29,8 @@ test("model routing view exposes allowlisted routes and owner-managed price-card
       },
       agent_assignments: {
         "df-auditor": { primary_route_id: "sol", fallback_route_id: null },
+        "df-finops-analyst": { primary_route_id: "sol", fallback_route_id: "sol" },
+        "df-roi-analyst": { primary_route_id: "sol", fallback_route_id: "sol" },
       },
     },
     price_card: {
@@ -43,6 +45,8 @@ test("model routing view exposes allowlisted routes and owner-managed price-card
   assert.equal(view.assignments.direct_reply.primaryRouteId, "luna");
   assert.equal(view.assignments.full_analysis.primaryRouteId, "");
   assert.equal(view.agentAssignments["df-auditor"].primaryRouteId, "sol");
+  assert.equal(view.agentAssignments["df-finops-analyst"].primaryRouteId, "sol");
+  assert.equal(view.agentAssignments["df-roi-analyst"].fallbackRouteId, "sol");
   assert.equal(view.agentAssignments["df-producer"].primaryRouteId, "");
   assert.equal(view.routes[0].id, "sol");
   assert.equal(view.routes[0].deployment, "gpt-5.6-sol");
@@ -52,7 +56,7 @@ test("model routing view exposes allowlisted routes and owner-managed price-card
   assert.equal(view.priceCard.configuredRouteCount, 1);
 });
 
-test("model settings expose the six stable DataForge Agent roles", () => {
+test("model settings expose the stable DataForge and operations analyst roles", () => {
   assert.deepEqual(MODEL_AGENT_ROLES.map((item) => item.id), [
     "df-coordinator",
     "df-corpus-analyst",
@@ -60,6 +64,8 @@ test("model settings expose the six stable DataForge Agent roles", () => {
     "df-feasibility-analyst",
     "df-auditor",
     "df-producer",
+    "df-finops-analyst",
+    "df-roi-analyst",
   ]);
 });
 

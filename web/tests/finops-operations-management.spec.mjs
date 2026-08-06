@@ -694,7 +694,8 @@ test("operations management stays usable on mobile without a full-screen AI draw
 
 
 test("settings opens the same persisted Agent model configuration", async ({ page }) => {
-  await installFinOpsMockApi(page);
+  const calls = [];
+  await installFinOpsMockApi(page, calls);
   await page.goto("/");
   await page.getByRole("button", { name: "设置" }).click();
   await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
@@ -702,5 +703,26 @@ test("settings opens the same persisted Agent model configuration", async ({ pag
   await modelCard.getByRole("button", { name: "配置模型与生成" }).click();
   await expect(page.getByText("Agent 模型分配")).toBeVisible();
   await expect(page.getByLabel("审计 Agent主要模型")).toHaveValue("terra");
+  await expect(page.getByLabel("FinOps 分析 Agent主要模型")).toHaveValue("terra");
+  await expect(page.getByLabel("ROI 分析 Agent主要模型")).toHaveValue("terra");
+  await page.getByRole("button", { name: "保存模型分配" }).click();
+  await expect.poll(() => calls.filter((call) => (
+    call.method === "PUT"
+    && call.path === "/api/workspaces/demo-corpus/governance/model-routing"
+  )).length).toBe(1);
+  const write = calls.find((call) => (
+    call.method === "PUT"
+    && call.path === "/api/workspaces/demo-corpus/governance/model-routing"
+  ));
+  const submitted = JSON.parse(write.body);
+  expect(submitted.base_revision).toBe(3);
+  expect(submitted.agent_assignments["df-finops-analyst"]).toEqual({
+    primary_route_id: "terra",
+    fallback_route_id: "analysis",
+  });
+  expect(submitted.agent_assignments["df-roi-analyst"]).toEqual({
+    primary_route_id: "terra",
+    fallback_route_id: "analysis",
+  });
   await expect(page.locator(".side-drawer.wide")).toBeVisible();
 });

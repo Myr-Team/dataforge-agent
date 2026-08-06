@@ -46,6 +46,28 @@ class DemoSeedResult:
     roi_scenario: dict[str, Any]
     outcome_events: tuple[dict[str, Any], ...]
     run_evidence: tuple[dict[str, Any], ...]
+    model_routing_policy: dict[str, Any]
+
+
+def demo_operations_model_policy() -> dict[str, Any]:
+    """Return the audited-settings payload recommended for the demo workspace.
+
+    The seed exposes the policy but deliberately does not persist it. Applying
+    it remains an Owner action through the existing audited model-routing API.
+    """
+    return {
+        "assignments": {},
+        "agent_assignments": {
+            "df-finops-analyst": {
+                "primary_route_id": "terra",
+                "fallback_route_id": "analysis",
+            },
+            "df-roi-analyst": {
+                "primary_route_id": "terra",
+                "fallback_route_id": "analysis",
+            },
+        },
+    }
 
 
 def seed_demo_workspace(
@@ -144,6 +166,7 @@ def seed_demo_workspace(
         roi_scenario=roi_scenario,
         outcome_events=outcome_events,
         run_evidence=run_evidence,
+        model_routing_policy=demo_operations_model_policy(),
     )
 
 

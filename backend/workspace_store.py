@@ -832,6 +832,10 @@ def load_workspace_model_configuration(workspace_id: str) -> dict[str, Any]:
     return {
         "policy": dict(meta.get("model_routing_policy") or {}) if isinstance(meta.get("model_routing_policy"), dict) else {},
         "price_card": dict(meta.get("model_price_card") or {}) if isinstance(meta.get("model_price_card"), dict) else {},
+        # Presence is intentionally distinct from content. An Owner can persist
+        # an empty assignment set to remove a runtime default without it
+        # silently reappearing on the next request.
+        "policy_persisted": "model_routing_policy" in meta,
     }
 
 

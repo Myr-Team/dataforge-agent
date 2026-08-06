@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
+import backend.workspace_store as workspace_store
 from backend.model_policy import ModelRoute
 from backend.workspace_model_config import (
     estimate_model_cost,
@@ -13,6 +16,7 @@ from backend.workspace_model_config import (
 def _routes() -> list[ModelRoute]:
     return [
         ModelRoute("sol", "gpt-5.6-sol", "GPT-5.6 Sol", frozenset({"chat", "analysis"})),
+        ModelRoute("terra", "gpt-5.6-terra", "GPT-5.6 Terra", frozenset({"chat", "analysis"})),
         ModelRoute("luna", "gpt-5.6-luna", "GPT-5.6 Luna", frozenset({"chat"})),
     ]
 
@@ -85,6 +89,79 @@ def test_workspace_policy_accepts_default_and_per_agent_routes() -> None:
             },
             _routes(),
         )
+
+
+def test_workspace_policy_accepts_operations_analysis_agents_with_safe_fallback() -> None:
+    policy = validate_workspace_routing_policy(
+        {
+            "agent_assignments": {
+                "df-finops-analyst": {
+                    "primary_route_id": "terra",
+                    "fallback_route_id": "sol",
+                },
+                "df-roi-analyst": {
+                    "primary_route_id": "terra",
+                    "fallback_route_id": "sol",
+                },
+            }
+        },
+        _routes(),
+        revision=4,
+        updated_at="2026-08-06T00:00:00Z",
+    )
+
+    assert policy["agent_assignments"] == {
+        "df-finops-analyst": {
+            "primary_route_id": "terra",
+            "fallback_route_id": "sol",
+        },
+        "df-roi-analyst": {
+            "primary_route_id": "terra",
+            "fallback_route_id": "sol",
+        },
+    }
+    assert policy["revision"] == 4
+
+
+def test_workspace_model_configuration_distinguishes_absent_from_explicit_empty_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    workspace_id = "demo-corpus"
+    workspace_dir = tmp_path / workspace_id
+    workspace_dir.mkdir()
+    (workspace_dir / "workspace.json").write_text(
+        json.dumps(
+            {
+                "workspace_id": workspace_id,
+                "name": "Operations demo",
+                "format": "mixed",
+                "documents": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(workspace_store, "WORKSPACES", tmp_path)
+    monkeypatch.setattr(workspace_store, "download_blob_json", lambda _path: None)
+    monkeypatch.setattr(workspace_store, "upload_blob_json", lambda _path, _value: None)
+
+    absent = workspace_store.load_workspace_model_configuration("demo-corpus")
+    workspace_store.save_workspace_finops_model_policy(
+        workspace_id,
+        {
+            "revision": 1,
+            "assignments": {},
+            "agent_assignments": {},
+        },
+    )
+    explicitly_empty = workspace_store.load_workspace_model_configuration(workspace_id)
+    general_detail = workspace_store.get_workspace_detail(workspace_id)
+
+    assert absent["policy_persisted"] is False
+    assert explicitly_empty["policy_persisted"] is True
+    assert explicitly_empty["policy"]["agent_assignments"] == {}
+    assert "policy_persisted" not in general_detail
+    assert "model_routing_policy" not in general_detail
 
 
 def test_price_card_estimate_requires_complete_usage_and_matching_price() -> None:

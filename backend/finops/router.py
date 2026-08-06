@@ -4,9 +4,10 @@ import os
 import hashlib
 import json
 import re
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from statistics import median
-from typing import Any, Literal, Mapping
+from typing import Any, Iterator, Literal, Mapping
 from urllib.parse import quote, urlparse
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
@@ -19,8 +20,14 @@ try:
     from ..lineage_sql import build_lineage_sql_connection_factory
     from ..run_store import get_run, list_runs
     from ..workspace_authz import active_workspace_role
-    from ..workspace_store import list_workspaces
+    from ..workspace_store import list_workspaces, load_workspace_model_configuration
     from ..control_plane import workspace_cost_value_snapshot, workspace_roi_snapshot
+    from ..model_policy import (
+        SelectedTextRoute,
+        model_route_scope,
+        select_text_route_record,
+        workspace_model_policy_scope,
+    )
 except ImportError:
     import cache_store
     from identity import actor_from_request, is_trusted_tenant_identity
@@ -28,8 +35,14 @@ except ImportError:
     from lineage_sql import build_lineage_sql_connection_factory
     from run_store import get_run, list_runs
     from workspace_authz import active_workspace_role
-    from workspace_store import list_workspaces
+    from workspace_store import list_workspaces, load_workspace_model_configuration
     from control_plane import workspace_cost_value_snapshot, workspace_roi_snapshot
+    from model_policy import (
+        SelectedTextRoute,
+        model_route_scope,
+        select_text_route_record,
+        workspace_model_policy_scope,
+    )
 
 from .normalization import canonical_actor_ref, canonical_tenant_ref
 from .evidence import build_evidence_alias, operation_code_for_event
@@ -44,7 +57,7 @@ from .evidence_repository import (
 )
 from .anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
 from .agent_inputs import build_finops_agent_input, build_roi_agent_input
-from .analysis_agents import FinOpsAnalysisAgent
+from .analysis_agents import FinOpsAnalysisAgent, analysis_agent_id
 from .assistant import AssistantRequest, AssistantTurn, FinOpsAssistantService
 from .assistant_store import (
     AssistantConversationExpired,
@@ -117,6 +130,7 @@ from .sql_planning import SqlFinOpsPlanningRepository
 from .roi_economics import build_roi_economics
 from .opportunities import build_opportunity_queue
 from .decision_service import build_risk_decision, build_roi_decision
+from .demo_workspace_seed import demo_operations_model_policy
 from .insight_repository import InMemoryInsightRepository, SqlInsightRepository
 from .insight_service import FinOpsInsightService
 from .repository import RunStoreFinOpsRepository
@@ -469,6 +483,66 @@ def get_finops_insight_service() -> FinOpsInsightService:
 
 def get_finops_assistant_service() -> FinOpsAssistantService:
     return FinOpsAssistantService(model_runner=run_agent)
+
+
+@contextmanager
+def _finops_model_route_scope(
+    *,
+    workspace_id: str,
+    agent_id: str,
+) -> Iterator[SelectedTextRoute]:
+    configuration = load_workspace_model_configuration(workspace_id)
+    policy = (
+        configuration.get("policy")
+        if isinstance(configuration, Mapping)
+        and isinstance(configuration.get("policy"), Mapping)
+        else None
+    )
+    policy_persisted = (
+        configuration.get("policy_persisted") is True
+        if isinstance(configuration, Mapping)
+        and "policy_persisted" in configuration
+        else bool(policy)
+    )
+    demo_workspace_id = str(
+        os.environ.get("DF_FINOPS_DEMO_WORKSPACE_ID") or "demo-corpus"
+    ).strip()
+    if (
+        not policy_persisted
+        and demo_workspace_id
+        and workspace_id == demo_workspace_id
+    ):
+        # Read-only default for the allowlisted demo workspace. It is never
+        # persisted here, so Owner saves/removals still go through the audited
+        # model-routing API; an explicitly persisted empty policy wins.
+        policy = demo_operations_model_policy()
+    price_card = (
+        configuration.get("price_card")
+        if isinstance(configuration, Mapping)
+        and isinstance(configuration.get("price_card"), Mapping)
+        else None
+    )
+    with workspace_model_policy_scope(policy=policy, price_card=price_card):
+        selected = select_text_route_record(
+            "full_analysis",
+            agent_id=agent_id,
+        )
+        with model_route_scope(route=selected, price_card=price_card):
+            yield selected
+
+
+def _analyze_insight_with_workspace_route(
+    service: Any,
+    *,
+    workspace_id: str,
+    agent_kind: Literal["finops", "roi"],
+    **kwargs: Any,
+) -> Any:
+    with _finops_model_route_scope(
+        workspace_id=workspace_id,
+        agent_id=analysis_agent_id(agent_kind),
+    ):
+        return service.analyze(agent_kind=agent_kind, **kwargs)
 
 
 def get_finops_planning_service() -> FinOpsPlanningService:
@@ -1135,10 +1209,14 @@ async def assistant_query(
         evidence_name_resolver=_assistant_evidence_name,
         evidence_refs=effective_refs,
     )
-    response = get_finops_assistant_service().answer(
-        request=body,
-        evidence_payload=evidence_payload,
-    )
+    with _finops_model_route_scope(
+        workspace_id=workspace_id,
+        agent_id=analysis_agent_id("finops"),
+    ):
+        response = get_finops_assistant_service().answer(
+            request=body,
+            evidence_payload=evidence_payload,
+        )
     if store is not None and conversation_ref:
         try:
             store.append(
@@ -2547,7 +2625,9 @@ async def analyze_insight(
             "trigger_fingerprint": fingerprint,
         }
     background_tasks.add_task(
-        service.analyze,
+        _analyze_insight_with_workspace_route,
+        service,
+        workspace_id=body.workspace_id,
         agent_kind=body.agent_kind,
         tenant_ref=query.tenant_ref,
         workspace_ids=selected_workspace_ids,

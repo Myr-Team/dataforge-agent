@@ -56,6 +56,19 @@ def test_seed_is_workspace_bounded_and_idempotent() -> None:
     ) >= 8
     assert len({event.agent_id for event in first.events}) >= 6
     assert len({event.model for event in first.events}) >= 4
+    assert first.model_routing_policy == {
+        "assignments": {},
+        "agent_assignments": {
+            "df-finops-analyst": {
+                "primary_route_id": "terra",
+                "fallback_route_id": "analysis",
+            },
+            "df-roi-analyst": {
+                "primary_route_id": "terra",
+                "fallback_route_id": "analysis",
+            },
+        },
+    }
 
     persisted = ledger.list_events(
         tenant_ref="tenant_demo",

@@ -1184,6 +1184,14 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
               primary_route_id: "terra",
               fallback_route_id: "analysis",
             },
+            "df-finops-analyst": {
+              primary_route_id: "terra",
+              fallback_route_id: "analysis",
+            },
+            "df-roi-analyst": {
+              primary_route_id: "terra",
+              fallback_route_id: "analysis",
+            },
           },
         },
         price_card: { state: "not_configured", revision: 0, currency: "USD" },

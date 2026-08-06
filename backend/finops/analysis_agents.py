@@ -17,6 +17,18 @@ from .insights import (
 )
 
 
+FINOPS_ANALYST_AGENT_ID = "df-finops-analyst"
+ROI_ANALYST_AGENT_ID = "df-roi-analyst"
+
+
+def analysis_agent_id(agent_kind: AgentKind) -> str:
+    return (
+        FINOPS_ANALYST_AGENT_ID
+        if agent_kind == "finops"
+        else ROI_ANALYST_AGENT_ID
+    )
+
+
 class AgentAnalysisOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -121,7 +133,7 @@ class FinOpsAnalysisAgent:
             )
         try:
             response = self._model_runner(
-                "df-finops-analyst" if agent_kind == "finops" else "df-roi-analyst",
+                analysis_agent_id(agent_kind),
                 json.dumps(input_payload, ensure_ascii=False, separators=(",", ":")),
                 response_schema=AgentAnalysisOutput.model_json_schema(),
                 max_output_tokens=2200,
