@@ -567,7 +567,97 @@ test("risk decision view localizes internal evidence terms for customer-facing c
 });
 
 
-test("risk decision view preserves unmapped identifier-like risk terms", () => {
+test("risk evidence projects numeric and allowlisted string signals with customer labels", () => {
+  const signals = [
+    { metric: "latency_ms", value: 6200, unit: "ms", expectedMetric: "响应时延", expectedValue: "6,200 毫秒" },
+    { metric: "request_status", value: "failed", unit: "status", expectedMetric: "调用状态", expectedValue: "调用失败" },
+    { metric: "pricing_status", value: "unpriced", unit: "status", expectedMetric: "计价状态", expectedValue: "未计价" },
+    { metric: "cache_state", value: "miss", unit: "state", expectedMetric: "缓存状态", expectedValue: "缓存未命中" },
+    { metric: "gateway_coverage", value: "unmanaged", unit: "state", expectedMetric: "入口治理覆盖", expectedValue: "未纳入统一入口" },
+    { metric: "tokens_total", value: 31580, unit: "token", expectedMetric: "Token 总量", expectedValue: "31,580 Token" },
+    { metric: "estimated_cost", value: 12.34, unit: "USD", expectedMetric: "估算成本", expectedValue: "$12.34" },
+  ];
+  const view = riskDecisionView({
+    portfolio_metadata: {
+      x_axis: "effort",
+      y_axis: "value_impact",
+      size: "sample_count",
+      color: "risk_domain",
+    },
+    selected_evidence_summaries: signals.map((signal, index) => ({
+      request_ref: `req_signal_${index}`,
+      signal,
+    })),
+  });
+
+  assert.equal(view.portfolio.metadata.size, "评估样本量");
+  assert.equal(riskDecisionView({
+    portfolio_metadata: {
+      x_axis: "effort",
+      y_axis: "value_impact",
+      size: "affected_scope",
+      color: "risk_domain",
+    },
+  }).portfolio.metadata.size, "评估样本量");
+  assert.deepEqual(
+    view.evidence.map((item) => [item.signal.metric, item.signal.valueLabel]),
+    signals.map((item) => [item.expectedMetric, item.expectedValue]),
+  );
+
+  const allowlistedValues = [
+    ["request_status", "succeeded", "status", "调用成功"],
+    ["request_status", "failed", "status", "调用失败"],
+    ["cache_state", "hit", "state", "缓存命中"],
+    ["cache_state", "miss", "state", "缓存未命中"],
+    ["cache_state", "bypassed", "state", "未使用缓存"],
+    ["cache_state", "unavailable", "state", "状态暂不可用"],
+    ["pricing_status", "priced", "status", "已计价"],
+    ["pricing_status", "unpriced", "status", "未计价"],
+    ["pricing_status", "estimated", "status", "估算值"],
+    ["pricing_status", "unavailable", "status", "状态暂不可用"],
+    ["gateway_coverage", "apim_governed", "state", "已纳入统一入口"],
+    ["gateway_coverage", "app_observed", "state", "应用侧已观测"],
+    ["gateway_coverage", "unmanaged", "state", "未纳入统一入口"],
+    ["gateway_coverage", "unknown", "state", "来源待确认"],
+    ["gateway_coverage", "unavailable", "state", "状态暂不可用"],
+  ];
+  const valueView = riskDecisionView({
+    selected_evidence_summaries: allowlistedValues.map(([metric, value, unit], index) => ({
+      request_ref: `req_value_${index}`,
+      signal: { metric, value, unit },
+    })),
+  });
+  assert.deepEqual(
+    valueView.evidence.map((item) => item.signal.valueLabel),
+    allowlistedValues.map(([, , , label]) => label),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(valueView.evidence),
+    /"(?:failed|miss|unmanaged|apim_governed|app_observed|unknown)"/,
+  );
+});
+
+
+test("risk evidence rejects cross-metric values, incompatible units, and unknown metrics", () => {
+  const view = riskDecisionView({
+    selected_evidence_summaries: [
+      { request_ref: "req_invalid_status", signal: { metric: "request_status", value: "miss", unit: "status" } },
+      { request_ref: "req_invalid_cache", signal: { metric: "cache_state", value: "failed", unit: "state" } },
+      { request_ref: "req_invalid_pricing", signal: { metric: "pricing_status", value: "unmanaged", unit: "status" } },
+      { request_ref: "req_invalid_coverage", signal: { metric: "gateway_coverage", value: "unpriced", unit: "state" } },
+      { request_ref: "req_invalid_unit", signal: { metric: "cache_state", value: "miss", unit: "status" } },
+      { request_ref: "req_unknown_metric", signal: { metric: "provider_internal_state", value: "miss", unit: "state" } },
+    ],
+  });
+
+  assert.deepEqual(view.evidence.map((item) => item.signal.value), [null, null, null, null, null, null]);
+  assert.deepEqual(view.evidence.map((item) => item.signal.valueLabel), Array(6).fill("暂不可用"));
+  assert.equal(view.evidence[5].signal.metric, "运营信号");
+  assert.doesNotMatch(JSON.stringify(view), /provider_internal_state|"miss"|"failed"|"unmanaged"|"unpriced"/);
+});
+
+
+test("risk prose preserves bounded identifiers while unknown signal metrics stay hidden", () => {
   const view = riskDecisionView({
     priorities: [{
       opportunity_id: "opp-identifiers",
@@ -591,7 +681,7 @@ test("risk decision view preserves unmapped identifier-like risk terms", () => {
     view.priorities[0].summary,
     "定位 应用侧已观测 与 gateway_coverage_v2、gateway_coverage-v2、provider_5xx-retryable、gateway_coverage.v2、risk/gateway_coverage 和 provider:provider_5xx；保留 provider_5xx_retryable。",
   );
-  assert.equal(view.evidence[0].signal.metric, "gateway_coverage_v2");
+  assert.equal(view.evidence[0].signal.metric, "运营信号");
   assert.equal(view.evidence[0].errorCategory, "provider_5xx_retryable");
 });
 
@@ -611,6 +701,7 @@ test("shared charts render proportional accessible structures through Vite SSR",
     resolveRiskPointSelection,
     toggleRiskPointSelection,
   } = await server.ssrLoadModule("/src/finops/DecisionCharts.jsx");
+  const { RiskDecisionPage } = await server.ssrLoadModule("/src/finops/RiskDecisionPage.jsx");
 
   const bridge = renderToStaticMarkup(React.createElement("section", { className: "finops-panel" }, React.createElement(ValueBridge, {
     items: [
@@ -706,4 +797,38 @@ test("shared charts render proportional accessible structures through Vite SSR",
   assert.match(portfolio, /<ol/);
   assert.match(portfolio, /响应时延/);
   assert.match(portfolio, /当前缺少影响坐标/);
+
+  const riskPage = renderToStaticMarkup(React.createElement(RiskDecisionPage, {
+    payload: {
+      decision: { state: "prioritized", title: "风险判断", summary: "按证据排序。", evidence_state: "observed" },
+      risk_domains: [{ id: "experience", count: 1 }],
+      risk_matrix: [{
+        opportunity_id: "risk-a",
+        title: "响应时延",
+        policy_type: "p95_latency",
+        risk_domain: "experience",
+        x_confidence: 3,
+        y_impact: 2,
+        bubble_size: 60,
+      }],
+      priorities: [{
+        opportunity_id: "risk-a",
+        title: "响应时延",
+        policy_type: "p95_latency",
+        risk_domain: "experience",
+        impact: "medium",
+        confidence: "high",
+        effort: "medium",
+        sample_count: 60,
+        evidence_refs: ["req_risk_a"],
+      }],
+      optimization_portfolio: [],
+      portfolio_metadata: { x_axis: "effort", y_axis: "value_impact", size: "sample_count", color: "risk_domain" },
+      selected_evidence_summaries: [],
+      governance_capability: { read_enabled: true, draft_enabled: false, actions_enabled: false },
+    },
+  }));
+  assert.match(riskPage, /评估样本量/);
+  assert.match(riskPage, /运营严重度/);
+  assert.doesNotMatch(riskPage, /真实影响范围|业务影响/);
 });

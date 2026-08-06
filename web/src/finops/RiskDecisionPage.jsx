@@ -259,7 +259,7 @@ function EvidenceChain({ priority, evidence, onEvidence, onAsk, onCreateDraft, o
   const canSuppress = priority.applicableActions.includes("suppress");
   const stages = [
     { id: "signal", label: "信号", value: "已识别", note: `${priority.policyLabel} · ${priority.domainLabel}`, state: "observed" },
-    { id: "impact", label: "影响范围", value: priority.sampleCount === null ? "未记录" : `${priority.sampleCount} 次请求`, note: `业务影响 ${priority.impactLevelLabel}`, state: priority.sampleCount === null ? "partial" : "observed" },
+    { id: "impact", label: "评估样本量", value: priority.sampleCount === null ? "未记录" : `${priority.sampleCount} 次请求`, note: `运营严重度 ${priority.impactLevelLabel}`, state: priority.sampleCount === null ? "partial" : "observed" },
     { id: "evidence", label: "代表证据", value: selectedEvidence.length ? `${selectedEvidence.length} 条请求证据` : "暂无可下钻请求", note: "仅请求证据可打开详情", state: selectedEvidence.length ? "observed" : "partial" },
     { id: "verification", label: "改善验证", value: "待验证", note: "保存整改草案后复核", state: "pending" },
   ];
@@ -386,7 +386,7 @@ export function RiskDecisionPage({
             <span className="finops-decision-risk-updating" aria-live="polite">{updating ? <><RefreshCw className="spin" size={12} />后台更新中</> : null}</span>
           </div>
           <p>{view.decision.description}</p>
-          <small>风险按证据置信度、业务影响与真实影响范围展示，不生成无法解释的复合分数。</small>
+          <small>风险按证据置信度、运营严重度与评估样本量展示，不生成无法解释的复合分数。</small>
         </div>
       </section>
 
@@ -409,7 +409,7 @@ export function RiskDecisionPage({
 
       <section className="finops-decision-risk-columns">
         <article className="finops-decision-risk-panel">
-          <header className="finops-decision-risk-section-head"><div><span>业务影响 × 证据置信度</span><h2>风险矩阵</h2></div><small>气泡大小代表服务端返回的影响范围</small></header>
+          <header className="finops-decision-risk-section-head"><div><span>运营严重度 × 证据置信度</span><h2>风险矩阵</h2></div><small>气泡大小代表评估样本量</small></header>
           <RiskMatrix points={view.matrix} selectedId={selectedId} onSelect={onSelectRisk} />
         </article>
         <article className="finops-decision-risk-panel">
@@ -431,7 +431,7 @@ export function RiskDecisionPage({
       />
 
       <section className="finops-decision-risk-wide">
-        <header className="finops-decision-risk-section-head"><div><span>价值、难度与影响范围</span><h2>优化组合</h2></div><small>用于排序，不代表自动执行顺序</small></header>
+        <header className="finops-decision-risk-section-head"><div><span>价值、难度与评估样本量</span><h2>优化组合</h2></div><small>用于排序，不代表自动执行顺序</small></header>
         <OpportunityPortfolio data={view.portfolio} selectedId={selectedId} onSelect={onSelectRisk} />
       </section>
 

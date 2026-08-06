@@ -380,7 +380,7 @@ test("risk page contains the complete linked signal-to-verification hierarchy", 
     "优先事项",
     "优化组合",
     "信号",
-    "影响范围",
+    "评估样本量",
     "代表证据",
     "判定依据",
     "处置建议",
@@ -398,9 +398,11 @@ test("risk page contains the complete linked signal-to-verification hierarchy", 
   assert.match(source, /finops-decision-risk-recommendation/);
   assert.match(source, /finops-decision-risk-facts/);
   assert.match(source, /<details[^>]*className="finops-decision-risk-technical"/);
+  assert.doesNotMatch(source, /真实影响范围|业务影响/);
   assert.doesNotMatch(source, /咨询当前判断|继续询问/);
   assert.match(charts, /finops-decision-risk-quadrants/);
   assert.match(charts, /finops-decision-opportunity-bars/);
+  assert.doesNotMatch(charts, /影响高|影响可控|· 影响 \{point\.yImpact\}/);
   assert.doesNotMatch(charts, /finops-decision-matrix-point/);
   assert.doesNotMatch(charts, /finops-decision-portfolio-point/);
   assert.doesNotMatch(source, /provider_response_id|prompt|raw_identity|internal_error/);

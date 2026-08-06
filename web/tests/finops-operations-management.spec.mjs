@@ -269,6 +269,17 @@ for (const viewport of [
 
     const contentText = await page.locator(".finops-content").innerText();
     expect(contentText).not.toMatch(/未接入|暂不可用|Failed to fetch/);
+    expect(contentText).toContain("评估样本量");
+    expect(contentText).toContain("运营严重度");
+    expect(contentText).not.toMatch(/真实影响范围|业务影响/);
+    await expect(page.locator(".finops-decision-risk-evidence-card")).toContainText("响应时延 · 6,200 毫秒");
+    await page.getByRole("list", { name: "风险优先事项" }).getByRole("button", { name: /缓存效率优化/ }).click();
+    await expect(page.locator(".finops-decision-risk-evidence-card")).toContainText("缓存状态 · 缓存未命中");
+    await page.getByRole("list", { name: "风险优先事项" }).getByRole("button", { name: /计价覆盖补齐/ }).click();
+    await expect(page.locator(".finops-decision-risk-evidence-card")).toContainText("计价状态 · 未计价");
+    await page.getByRole("list", { name: "风险优先事项" }).getByRole("button", { name: /调用成功率改善/ }).click();
+    await expect(page.locator(".finops-decision-risk-evidence-card")).toContainText("调用状态 · 调用失败");
+    await expect(page.locator(".finops-decision-risk-chain")).not.toContainText(/gateway_coverage|cache_state|failed|miss|unmanaged/);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);
     const riskChain = page.locator(".finops-decision-risk-chain");

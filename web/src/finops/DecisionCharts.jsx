@@ -204,10 +204,10 @@ function isHighSignal(point, visualKey, sourceKey) {
 
 export function riskQuadrants(points = []) {
   const quadrants = [
-    { id: "priority", label: "优先处置", hint: "影响高 · 证据强", items: [] },
-    { id: "validate", label: "重点验证", hint: "影响高 · 证据待补", items: [] },
-    { id: "improve", label: "计划改善", hint: "影响可控 · 证据强", items: [] },
-    { id: "observe", label: "持续观察", hint: "影响可控 · 证据待补", items: [] },
+    { id: "priority", label: "优先处置", hint: "严重度高 · 证据强", items: [] },
+    { id: "validate", label: "重点验证", hint: "严重度高 · 证据待补", items: [] },
+    { id: "improve", label: "计划改善", hint: "严重度可控 · 证据强", items: [] },
+    { id: "observe", label: "持续观察", hint: "严重度可控 · 证据待补", items: [] },
   ];
   for (const point of Array.isArray(points) ? points : []) {
     if (!point?.id) continue;
@@ -233,7 +233,7 @@ export function RiskMatrix({ points = [], selectedId = "", onSelect = null }) {
     ? resolveRiskPointSelection(selectedId, validIds)
     : resolveRiskPointSelection(tappedId, validIds);
   return (
-    <div className="finops-decision-matrix" aria-label="风险矩阵：按证据置信度与业务影响分组">
+    <div className="finops-decision-matrix" aria-label="风险矩阵：按证据置信度与运营严重度分组">
       <div className="finops-decision-risk-quadrants">
         {riskQuadrants(rows).map((quadrant) => (
           <section className={`finops-decision-risk-quadrant finops-decision-risk-quadrant-${quadrant.id}`} key={quadrant.id}>
@@ -258,7 +258,7 @@ export function RiskMatrix({ points = [], selectedId = "", onSelect = null }) {
                   <i className={`finops-decision-domain-${point.domain}`} aria-hidden="true" />
                   <span>
                     <b>{point.label}</b>
-                    <small>{point.domainLabel} · 置信度 {point.xConfidence} · 影响 {point.yImpact}</small>
+                    <small>{point.domainLabel} · 置信度 {point.xConfidence} · 严重度 {point.yImpact}</small>
                   </span>
                   <strong>{point.bubbleSize} 次请求</strong>
                 </button>

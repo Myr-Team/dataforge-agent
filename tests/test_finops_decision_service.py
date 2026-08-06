@@ -89,6 +89,9 @@ def test_risk_decision_uses_impact_and_evidence_without_composite_score() -> Non
     assert result["priorities"][0]["expected_impact"]["status"] == "unavailable"
     assert result["selected_evidence_summaries"][0]["request_name"].endswith("慢响应")
     assert result["portfolio_metadata"]["x_axis"] == "effort"
+    assert result["portfolio_metadata"]["size"] == "sample_count"
+    assert "评估样本量" in result["decision"]["summary"]
+    assert "业务影响" not in result["decision"]["summary"]
     assert result["governance_capability"]["actions_enabled"] is False
 
 
