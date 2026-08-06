@@ -341,9 +341,17 @@ test("risk scan reruns safely and binds evidence plus AI to the selected rule", 
   await page.locator(".finops-risk-scan-disclosure > summary").click();
   const rules = page.locator(".finops-risk-scan-rules");
   await expect(rules.locator("li")).toHaveCount(7);
+  const priorities = page.getByRole("list", { name: "风险优先事项" });
+  await expect(priorities.getByRole("button")).toHaveCount(4);
+  await priorities.getByRole("button", { name: /调用成功率改善/ }).click();
   await page.getByRole("button", { name: "重新扫描" }).click();
   await expect(page.getByRole("button", { name: "重新扫描" })).toBeEnabled();
+  await expect(priorities.getByRole("button")).toHaveCount(6);
+  await expect(priorities.getByRole("button", { name: /响应时延优化/ })).toHaveAttribute("aria-pressed", "true");
   expect(calls.filter((item) => item.method === "POST" && item.path === "/api/finops/risk/scans")).toHaveLength(1);
+  const decisionCalls = calls.filter((item) => item.method === "GET" && item.path === "/api/finops/risk/decision");
+  expect(decisionCalls.filter((item) => !item.search.includes("refresh=1")).length).toBeGreaterThanOrEqual(1);
+  expect(decisionCalls.filter((item) => item.search.includes("refresh=1"))).toHaveLength(1);
 
   const errorRule = rules.locator("li").filter({ hasText: "调用失败率" });
   await errorRule.getByRole("button", { name: "查看证据" }).click();
@@ -358,6 +366,27 @@ test("risk scan reruns safely and binds evidence plus AI to the selected rule", 
   await expect(assistant.getByText("结论", { exact: true })).toBeVisible();
   const assistantCall = calls.find((item) => item.path === "/api/finops/assistant/query");
   expect(JSON.parse(assistantCall.body).question).toContain("调用失败率");
+});
+
+
+test("risk scan keeps its completed summary when priority refresh fails and can retry", async ({ page }) => {
+  const calls = [];
+  await installFinOpsMockApi(page, calls, { riskDecisionRefreshFailures: 1 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
+
+  await page.getByRole("button", { name: "重新扫描" }).click();
+  await expect(page.locator(".finops-risk-scan-summary")).toContainText("146");
+  const warning = page.getByRole("status").filter({ hasText: "更新失败" });
+  await expect(warning).toContainText("当前继续展示最近一次成功结果");
+  await expect(warning.getByRole("button", { name: "重新更新" })).toBeVisible();
+  await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(4);
+
+  await warning.getByRole("button", { name: "重新更新" }).click();
+  await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(6);
+  await expect(warning).toHaveCount(0);
+  expect(calls.filter((item) => item.method === "POST" && item.path === "/api/finops/risk/scans")).toHaveLength(1);
 });
 
 

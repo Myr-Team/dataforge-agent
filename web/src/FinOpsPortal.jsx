@@ -1405,6 +1405,16 @@ export function FinOpsPortal({
       data: {},
     },
   });
+  useEffect(() => {
+    if (tab !== "risk" || detailState.dataScopeKey !== queryScopeKey) return;
+    const priorityIds = riskDecisionView(detailState.data).priorities
+      .map((item) => item?.id)
+      .filter(Boolean);
+    setSelectedRiskId((current) => {
+      if (current === undefined || current === null || priorityIds.includes(current)) return current;
+      return priorityIds[0];
+    });
+  }, [detailState.data, detailState.dataScopeKey, queryScopeKey, tab]);
   const comparisonWindow = useMemo(
     () => previousEqualWindow({ from: query.from, to: query.to }),
     [query.from, query.to],
@@ -1547,6 +1557,7 @@ export function FinOpsPortal({
     try {
       const scan = await runFinOpsRiskScan(query, { signal: controller.signal });
       setRiskScanState({ loading: false, busy: false, error: "", scan });
+      requestTabRefresh("risk", { force: true });
     } catch (error) {
       if (error?.name === "AbortError") return;
       setRiskScanState((state) => ({
@@ -1556,7 +1567,7 @@ export function FinOpsPortal({
         error: error instanceof Error ? error.message : "风险扫描暂时无法执行",
       }));
     }
-  }, [query, riskScanState.busy, workspaceId]);
+  }, [query, requestTabRefresh, riskScanState.busy, workspaceId]);
   const loadRoiDialogData = useCallback(async () => {
     roiDialogController.current?.abort();
     const controller = new AbortController();

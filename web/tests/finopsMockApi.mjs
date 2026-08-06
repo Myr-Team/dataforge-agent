@@ -516,26 +516,32 @@ const riskEvidence = [
 ];
 
 
-function riskDecisionPayload(baseVersion = "cache-policy-v1") {
-  const opportunities = [
+function riskDecisionPayload(baseVersion = "cache-policy-v1", { postScan = false } = {}) {
+  const initialOpportunities = [
     { opportunity_id: "opp-latency", anomaly_id: "anom-latency", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "p95_latency", risk_domain: "experience", title: "响应时延优化", recommendation: "拆分大批量分析并复核高时延模型路由。", impact: "high", confidence: "high", effort: "high", sample_count: 60, evidence_refs: ["req_slow_000001"], expected_impact: { status: "estimated", value: 1.4, currency: "USD" }, base_version: "remediation-template-v1" },
     { opportunity_id: "opp-cache", anomaly_id: "anom-cache", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "cache_hit_rate", risk_domain: "efficiency", title: "缓存效率优化", recommendation: "统一重复分析的缓存键并复核有效期。", impact: "medium", confidence: "high", effort: "low", sample_count: 54, evidence_refs: ["req_cache_000001"], expected_impact: { status: "estimated", value: 0.0048, currency: "USD" }, base_version: baseVersion },
     { opportunity_id: "opp-unpriced", anomaly_id: "anom-unpriced", anomaly_status: "acknowledged", applicable_actions: ["suppress"], policy_type: "unpriced_requests", risk_domain: "cost", title: "计价覆盖补齐", recommendation: "为新接入模型补齐官方价目映射。", impact: "medium", confidence: "medium", effort: "medium", sample_count: 30, evidence_refs: ["req_unpriced_001"], expected_impact: { status: "estimated", value: 0.0026, currency: "USD" }, base_version: "remediation-template-v1" },
     { opportunity_id: "opp-error", anomaly_id: "anom-error", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "error_rate", risk_domain: "governance", title: "调用成功率改善", recommendation: "按失败类别和调用来源修复错误。", impact: "high", confidence: "medium", effort: "medium", sample_count: 24, evidence_refs: ["req_error_000001"], expected_impact: { status: "estimated", value: 0.0031, currency: "USD" }, base_version: "remediation-template-v1" },
   ];
+  const postScanOpportunities = [
+    ...initialOpportunities.filter((item) => item.opportunity_id !== "opp-error"),
+    { opportunity_id: "opp-budget", anomaly_id: "anom-budget", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "daily_cost_budget", risk_domain: "cost", title: "预算消耗复核", recommendation: "复核主要成本贡献来源和模型路由。", impact: "high", confidence: "high", effort: "medium", sample_count: 34, evidence_refs: ["req_budget_000001"], expected_impact: { status: "estimated", value: 0.0038, currency: "USD" }, base_version: "remediation-template-v1" },
+    { opportunity_id: "opp-token", anomaly_id: "anom-token", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "token_spike", risk_domain: "efficiency", title: "Token 用量复核", recommendation: "检查大上下文和重复分析调用。", impact: "medium", confidence: "high", effort: "low", sample_count: 18, evidence_refs: ["req_token_000001"], expected_impact: { status: "estimated", value: 0.0022, currency: "USD" }, base_version: "remediation-template-v1" },
+    { opportunity_id: "opp-coverage", anomaly_id: "anom-coverage", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "apim_coverage", risk_domain: "governance", title: "统一入口覆盖复核", recommendation: "核对未纳管调用来源并补齐入口治理。", impact: "medium", confidence: "high", effort: "medium", sample_count: 146, evidence_refs: ["req_coverage_000001"], expected_impact: { status: "estimated", value: 0.0019, currency: "USD" }, base_version: "remediation-template-v1" },
+  ];
+  const opportunities = postScan ? postScanOpportunities : initialOpportunities;
   const levels = { low: 1, medium: 2, high: 3 };
+  const riskDomains = ["cost", "experience", "efficiency", "governance"].map((id) => ({
+    id,
+    count: opportunities.filter((item) => item.risk_domain === id).length,
+  }));
   return {
     scope: { workspace_ids: ["demo-corpus"], workspace_count: 1 },
     window: bootstrapPayload.window,
     freshness: { generated_at: NOW, query_cache: { provider: "redis", status: "miss" } },
     data_status: "partial",
     decision: { state: "prioritized", title: "已按影响与证据确定优化优先级", summary: "风险以运营严重度、证据置信度、评估样本量和可追溯证据展示，不使用复合风险分数。", evidence_state: "observed" },
-    risk_domains: [
-      { id: "cost", count: 1 },
-      { id: "experience", count: 1 },
-      { id: "efficiency", count: 1 },
-      { id: "governance", count: 1 },
-    ],
+    risk_domains: riskDomains,
     risk_matrix: opportunities.map((item) => ({
       ...item,
       x_confidence: levels[item.confidence],
@@ -655,6 +661,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     roiScenarioConflictOnce: Boolean(options.roiScenarioConflictOnce),
     remediationReviewConflictOnce: Boolean(options.remediationReviewConflictOnce),
     failRoiRefresh: Boolean(options.failRoiRefresh),
+    riskDecisionRefreshFailuresRemaining: Math.max(0, Number(options.riskDecisionRefreshFailures || 0)),
     decisionDelayMs: Number(options.decisionDelayMs || 0),
     capabilityDelayMs: Number(options.capabilityDelayMs || 0),
     dashboardDelayMs: Number(options.dashboardDelayMs || 0),
@@ -664,6 +671,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     failDashboardFallback: false,
     delayNextRoiRefreshMs: 0,
     riskBaseVersion: "cache-policy-v1",
+    riskScanRuns: 0,
     remediation: null,
     calls: {
       bootstrap: 0,
@@ -709,7 +717,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
-    calls.push({ method: request.method(), path, body: request.postData() || "" });
+    calls.push({ method: request.method(), path, search: url.search, body: request.postData() || "" });
     if (path === "/api/finops/bootstrap") control.calls.bootstrap += 1;
     if (path === "/api/workspaces/demo-corpus/dashboard") control.calls.dashboard += 1;
     if (path === "/api/finops/roi/decision") control.calls.roiDecision += 1;
@@ -740,6 +748,20 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         status: 503,
         contentType: "application/json",
         body: JSON.stringify({ detail: "ROI decision refresh is temporarily unavailable" }),
+      });
+      return;
+    }
+
+    if (
+      path === "/api/finops/risk/decision"
+      && url.searchParams.get("refresh") === "1"
+      && control.riskDecisionRefreshFailuresRemaining > 0
+    ) {
+      control.riskDecisionRefreshFailuresRemaining -= 1;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "优先事项更新失败，请重试" }),
       });
       return;
     }
@@ -1656,11 +1678,14 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       body = riskScanPayload();
     } else if (path === "/api/finops/risk/scans" && request.method() === "POST") {
       status = 201;
+      control.riskScanRuns += 1;
       body = riskScanPayload();
     } else if (path === "/api/finops/roi/decision") {
       body = roiDecisionPayload;
     } else if (path === "/api/finops/risk/decision") {
-      body = riskDecisionPayload(control.riskBaseVersion);
+      body = riskDecisionPayload(control.riskBaseVersion, {
+        postScan: control.riskScanRuns > 0 && url.searchParams.get("refresh") === "1",
+      });
     } else if (path === "/api/finops/remediation-drafts" && request.method() === "GET") {
       body = {
         items: control.remediation ? [control.remediation] : [],
