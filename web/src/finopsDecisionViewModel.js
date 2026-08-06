@@ -341,14 +341,18 @@ function proportionalItems(items) {
 function safeBridge(raw, metrics) {
   const source = isRecord(raw) ? raw : {};
   const explicit = records(source.items).map(safeMetric).filter(Boolean);
-  const metricItems = explicit.length
-    ? explicit
-    : metrics.filter((item) => [
+  const metricItems = explicit.length ? explicit : metrics
+    .filter((item) => [
       "monthly_benefit",
       "monthly_total_cost",
       "monthly_net_benefit",
       "roi_ratio",
-    ].includes(item.id));
+    ].includes(item.id))
+    .map((item) => {
+      if (item.id !== "monthly_total_cost" || item.value === null) return item;
+      const value = -Math.abs(item.value);
+      return { ...item, value, valueLabel: formatValue(value, item.unit, item.status) };
+    });
   const items = proportionalItems(metricItems.slice(0, 8));
   const paybackMonths = finiteNumber(source.payback_months);
   return {

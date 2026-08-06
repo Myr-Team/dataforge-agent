@@ -9,7 +9,7 @@ def test_roi_decision_keeps_scenario_separate_from_verified_value() -> None:
     result = build_roi_decision(
         economics={
             "funnel": [
-                {"id": "investment", "label": "投入", "value": 700.03, "unit": "USD", "status": "estimated"},
+                {"id": "investment", "label": "投入", "value": 800, "unit": "USD", "status": "estimated"},
                 {"id": "usage", "label": "使用", "value": 60, "unit": "调用", "status": "observed"},
                 {"id": "output", "label": "产出", "value": 60, "unit": "分析", "status": "observed"},
                 {"id": "outcome", "label": "业务结果", "value": None, "unit": "结果", "status": "not_recorded"},
@@ -19,10 +19,10 @@ def test_roi_decision_keeps_scenario_separate_from_verified_value() -> None:
                 "status": "estimated",
                 "result": {
                     "monthly_benefit": 3000,
-                    "monthly_total_cost": 700.03,
-                    "monthly_net_benefit": 2299.97,
-                    "roi_ratio": 3.2856,
-                    "payback_months": 2.1,
+                    "monthly_total_cost": 800,
+                    "monthly_net_benefit": 2200,
+                    "roi_ratio": 2.75,
+                    "payback_months": 2.2,
                     "formula_revision": "dataforge-roi-v1",
                 },
             }],
@@ -49,6 +49,11 @@ def test_roi_decision_keeps_scenario_separate_from_verified_value() -> None:
     assert result["decision"]["title"] == "测算显示具备投入价值，业务结果仍需验证"
     assert result["metrics"][0]["status"] == "estimated"
     assert result["value_bridge"]["formula_revision"] == "dataforge-roi-v1"
+    assert result["value_bridge"]["items"] == [
+        {"id": "monthly_benefit", "label": "月度收益", "value": 3000, "unit": "USD", "status": "estimated", "explanation": "情景测算中的月度收益。"},
+        {"id": "monthly_total_cost", "label": "AI 运营总投入", "value": -800, "unit": "USD", "status": "estimated", "explanation": "价值桥中的成本扣减项。"},
+        {"id": "monthly_net_benefit", "label": "月度净收益", "value": 2200, "unit": "USD", "status": "estimated", "explanation": "月度收益减去 AI 运营总投入。"},
+    ]
     assert result["verified_roi"]["value"] is None
     assert result["evidence_maturity"]["score_pct"] == 75
     assert result["evidence_maturity"]["stages"][1]["evidence_count"] == 60

@@ -174,11 +174,11 @@ test("small non-zero USD unit costs remain visibly distinct instead of rounding 
 });
 
 
-test("value bridge scales only comparable units and exposes negative direction", () => {
+test("value bridge scales only comparable units and makes legacy costs negative", () => {
   const view = roiDecisionView({
     metrics: [
       { id: "monthly_benefit", label: "月度收益", value: 100, unit: "USD", status: "estimated" },
-      { id: "monthly_total_cost", label: "月度总成本", value: -50, unit: "USD", status: "estimated" },
+      { id: "monthly_total_cost", label: "月度总成本", value: 50, unit: "USD", status: "estimated" },
       { id: "monthly_net_benefit", label: "月度净收益", value: 25, unit: "USD", status: "estimated" },
       { id: "roi_ratio", label: "ROI 比率", value: 2, unit: "ratio", status: "estimated" },
     ],
@@ -211,6 +211,23 @@ test("value bridge scales only comparable units and exposes negative direction",
 });
 
 
+test("value bridge preserves the explicit cost deduction contract", () => {
+  const view = roiDecisionView({
+    value_bridge: {
+      items: [
+        { id: "monthly_benefit", label: "月度收益", value: 3000, unit: "USD", status: "estimated" },
+        { id: "monthly_total_cost", label: "AI 运营总投入", value: -800, unit: "USD", status: "estimated" },
+        { id: "monthly_net_benefit", label: "月度净收益", value: 2200, unit: "USD", status: "estimated" },
+      ],
+    },
+  });
+
+  const cost = view.valueBridge.items.find((item) => item.id === "monthly_total_cost");
+  assert.equal(cost.direction, "negative");
+  assert.equal(cost.formulaValueLabel, "$800.00");
+});
+
+
 test("monthly total cost is presented as AI operating investment", () => {
   const view = roiDecisionView({
     metrics: [{
@@ -228,7 +245,9 @@ test("monthly total cost is presented as AI operating investment", () => {
   assert.match(view.metrics[0].explanation, /固定运营成本/);
   assert.match(view.metrics[0].explanation, /模型成本/);
   assert.equal(view.valueBridge.items[0].label, "AI 运营总投入");
-  assert.equal(view.valueBridge.items[0].value, 800);
+  assert.equal(view.valueBridge.items[0].value, -800);
+  assert.equal(view.valueBridge.items[0].direction, "negative");
+  assert.equal(view.valueBridge.items[0].formulaValueLabel, "$800.00");
 });
 
 

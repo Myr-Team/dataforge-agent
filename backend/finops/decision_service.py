@@ -185,8 +185,14 @@ def build_roi_decision(*, economics: Mapping[str, Any], roi_snapshot: Mapping[st
         ("monthly_benefit", "月度收益", "USD"), ("monthly_total_cost", "月度总成本", "USD"),
         ("monthly_net_benefit", "月度净收益", "USD"), ("roi_ratio", "ROI 比率", "ratio"),
     )]
+    total_cost = result.get("monthly_total_cost")
+    bridge_items = [
+        {"id": "monthly_benefit", "label": "月度收益", "value": result.get("monthly_benefit"), "unit": "USD", "status": "estimated", "explanation": "情景测算中的月度收益。"},
+        {"id": "monthly_total_cost", "label": "AI 运营总投入", "value": -total_cost if isinstance(total_cost, (int, float)) and not isinstance(total_cost, bool) else None, "unit": "USD", "status": "estimated", "explanation": "价值桥中的成本扣减项。"},
+        {"id": "monthly_net_benefit", "label": "月度净收益", "value": result.get("monthly_net_benefit"), "unit": "USD", "status": "estimated", "explanation": "月度收益减去 AI 运营总投入。"},
+    ] if scenario else []
     payload = {"decision": _roi_statement(scenario, dict(economics.get("verified_roi") or {})), "metrics": metrics,
-        "value_bridge": {"formula_revision": result.get("formula_revision"), "scenario_id": scenario.get("scenario_id") if scenario else None, "payback_months": result.get("payback_months")},
+        "value_bridge": {"formula_revision": result.get("formula_revision"), "scenario_id": scenario.get("scenario_id") if scenario else None, "payback_months": result.get("payback_months"), "items": bridge_items},
         "evidence_maturity": _maturity(funnel), "unit_economics_trend": [_safe_trend(item) for item in unit_trend],
         "verified_roi": _safe_verified(economics.get("verified_roi")), "capability_explanation": _CAPABILITY_EXPLANATION,
         "scenarios": scenarios, "evidence_gaps": [stage["evidence_gap"] for stage in funnel if stage.get("evidence_gap")]}

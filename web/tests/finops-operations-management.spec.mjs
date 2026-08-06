@@ -209,9 +209,14 @@ for (const viewport of [
     const valueFormula = page.locator(".finops-decision-value-formula");
     await expect(valueFormula.locator(".finops-decision-value-term")).toHaveCount(3);
     await expect(valueFormula.locator(".finops-decision-value-operator")).toHaveCount(2);
+    await expect(valueFormula).toHaveAccessibleName("月度收益减去 AI 运营总投入等于月度净收益");
     await expect(valueFormula).toContainText("月度收益");
     await expect(valueFormula).toContainText("AI 运营总投入");
     await expect(valueFormula).toContainText("月度净收益");
+    await expect(valueFormula).toContainText("$3,000.00");
+    await expect(valueFormula).toContainText("$800.00");
+    await expect(valueFormula).toContainText("$2,200.00");
+    await expect(page.locator(".finops-decision-value-result-strip")).toContainText("275%");
     await expect(page.locator(".finops-decision-value-result-strip")).toContainText("预计回收周期");
     await expect(page.locator(".finops-decision-value-track")).toHaveCount(0);
     const help = page.getByRole("button", { name: "月度收益说明" });
