@@ -146,13 +146,15 @@ function EmptyState({ children = "当前范围没有可展示的记录。" }) {
 }
 
 
-function EvidenceBadge({ status }) {
+function evidenceStatusLabel(status) {
   const normalized = String(status || "unavailable").toLowerCase();
-  const label = {
+  return {
     available: "完整",
     complete: "完整",
+    completed: "已完成",
     observed: "已观测",
     measured: "已记录",
+    recorded: "已记录",
     verified: "已验证",
     estimated: "估算",
     partial: "部分",
@@ -169,9 +171,16 @@ function EvidenceBadge({ status }) {
     resolved: "已解决",
     stale: "已过期",
     failed: "失败",
+    succeeded: "调用成功",
     ready: "分析完成",
     insufficient_data: "证据不足",
-  }[normalized] || normalized;
+  }[normalized] || "未记录";
+}
+
+
+function EvidenceBadge({ status }) {
+  const normalized = String(status || "unavailable").toLowerCase();
+  const label = evidenceStatusLabel(normalized);
   return <span className={`finops-evidence ${normalized}`}>{label}</span>;
 }
 
@@ -1089,7 +1098,7 @@ function EvidenceRequestCard({ detail, index, total }) {
           {detail.timeline.map((item, timelineIndex) => (
             <li key={`${item.stage || "stage"}:${timelineIndex}`}>
               <i />
-              <span><b>{item.label || "处理阶段"}</b><small>{item.latency_ms == null ? item.status : formatFinOpsDuration(item.latency_ms)}</small></span>
+              <span><b>{item.label || "处理阶段"}</b><small>{item.latency_ms == null ? evidenceStatusLabel(item.status) : formatFinOpsDuration(item.latency_ms)}</small></span>
             </li>
           ))}
         </ol>

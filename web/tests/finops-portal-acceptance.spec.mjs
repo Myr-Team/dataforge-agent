@@ -85,7 +85,7 @@ test("ROI parameters create a new DataForge scenario revision", async ({ page })
   const initialDecisionCalls = control.calls.roiDecision;
   await page.getByRole("button", { name: "调整测算参数" }).click();
   const dialog = page.getByRole("dialog", { name: "调整 ROI 测算参数" });
-  await expect(dialog.getByText("当前模型成本 $0.0269 / 月")).toBeVisible();
+  await expect(dialog.getByText("当前模型成本 $100 / 月")).toBeVisible();
   await dialog.getByLabel("每月节省工时").fill("48");
   await dialog.getByRole("button", { name: "保存新版本" }).click();
 
@@ -103,7 +103,7 @@ test("ROI parameters create a new DataForge scenario revision", async ({ page })
     avoided_loss_or_revenue: 1000,
     implementation_cost: 6000,
     monthly_fixed_cost: 200,
-    model_cost: 0.0269,
+    model_cost: 100,
     evaluation_months: 12,
     previous_id: "roi_scenario_demo0001",
     base_revision: 1,
@@ -195,7 +195,7 @@ test("risk evidence is distinct and remediation 409 requires reload and a second
   const evidenceChain = page.locator(".finops-decision-risk-chain");
   const evidenceCard = evidenceChain.locator(".finops-decision-risk-evidence-card");
   await priorities.getByRole("button", { name: /响应时延优化/ }).click();
-  await expect(evidenceCard).toContainText("6,200 ms");
+  await expect(evidenceCard).toContainText("6,200 毫秒");
   await expect(evidenceCard).toContainText("分析已完成，但模型响应阶段耗时偏高。");
   await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
   await expect(evidenceCard).toContainText("缓存未命中");
