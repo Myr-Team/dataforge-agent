@@ -231,6 +231,8 @@ function RiskScanWorkbench({ scan, loading, busy, error, onRun, onEvidence, onAs
                         unit: finding.unit,
                         dataStatus: finding.status === "unavailable" ? "unavailable" : "complete",
                         evidenceState: finding.evidenceRefs.length ? "observed" : "partial",
+                        policyType: finding.policy,
+                        evidenceRefs: finding.evidenceRefs,
                       })}>问 AI</button>
                     ) : null}
                   </div>
@@ -276,6 +278,8 @@ function EvidenceChain({ priority, evidence, onEvidence, onAsk, onCreateDraft, o
               unit: " 次请求",
               dataStatus: priority.evidenceRefs.length ? "complete" : "partial",
               evidenceState: priority.evidenceRefs.length ? "observed" : "partial",
+              policyType: priority.policy,
+              evidenceRefs: priority.evidenceRefs,
             })}>问 AI</button>
           ) : null}
           <button type="button" className="quiet" data-finops-remediation-trigger onClick={() => onCreateDraft?.(priority)} disabled={!draftEnabled}>查看整改方案</button>

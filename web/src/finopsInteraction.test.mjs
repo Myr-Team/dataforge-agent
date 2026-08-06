@@ -113,6 +113,38 @@ test("metric context keeps only bounded safe fields", () => {
 });
 
 
+test("metric context carries only an allowlisted policy and three safe request refs", () => {
+  const context = metricContext({
+    id: "risk_p95_latency",
+    label: "响应时延优化",
+    value: 6200,
+    unit: "ms",
+    dataStatus: "complete",
+    evidenceState: "observed",
+    policyType: "p95_latency",
+    evidenceRefs: [
+      "req_latency_001",
+      "provider-response-id",
+      "req_latency_002",
+      "req_latency_003",
+      "req_latency_004",
+    ],
+  });
+
+  assert.equal(context.policy_type, "p95_latency");
+  assert.deepEqual(context.evidence_refs, [
+    "req_latency_001",
+    "req_latency_002",
+    "req_latency_003",
+  ]);
+  assert.equal(metricContext({
+    id: "risk_unknown",
+    label: "未知规则",
+    policyType: "arbitrary_policy",
+  }).policy_type, undefined);
+});
+
+
 test("estimated business metrics use the assistant contract without losing evidence state", () => {
   const context = metricContext({
     id: "roi_ratio",

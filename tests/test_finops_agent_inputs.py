@@ -78,6 +78,61 @@ def test_finops_agent_input_is_bounded_and_contains_only_scoped_evidence() -> No
         assert forbidden not in serialized
 
 
+def test_finops_agent_input_projects_only_requested_authorized_evidence() -> None:
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": request_ref,
+                    "occurred_at": datetime(2026, 7, 24, hour, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "agent_id": "df-coordinator",
+                    "deployment": "gpt-5-mini",
+                    "status": "succeeded",
+                    "latency_ms": latency_ms,
+                    "tokens": TokenUsage(input=10, output=2, total=12),
+                    "estimated_cost": {"amount": 0.001, "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            )
+            for request_ref, hour, latency_ms in (
+                ("req_latency_authorized", 2, 6200),
+                ("req_unselected_authorized", 3, 1800),
+            )
+        ]
+    )
+    query = FinOpsQuery(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        workspace_id="ws-a",
+        from_value="2026-07-23T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    payload = build_finops_agent_input(
+        query,
+        FinOpsQueryService(repository),
+        evidence_refs=["req_latency_authorized"],
+    )
+
+    assert payload["evidence_refs"] == ["req_latency_authorized"]
+    assert [item["ref"] for item in payload["evidence_catalog"]] == [
+        "req_latency_authorized"
+    ]
+    assert "req_unselected_authorized" not in str(payload)
+
+    empty = build_finops_agent_input(
+        query,
+        FinOpsQueryService(repository),
+        evidence_refs=["req_not_authorized"],
+    )
+    assert empty["status"] == "insufficient_data"
+    assert empty["evidence_refs"] == []
+
+
 def test_roi_agent_input_accepts_only_verified_outcome_events() -> None:
     snapshot = {
         "status": "verified",

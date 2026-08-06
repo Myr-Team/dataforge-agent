@@ -1112,10 +1112,27 @@ async def assistant_query(
                 status_code=404,
                 detail="Operations AI conversation expired",
             ) from exc
+    events = query_service.events(query)
+    selected = (
+        select_policy_evidence(events, context.policy_type, limit=3)
+        if context.policy_type
+        else select_metric_evidence(
+            events,
+            _assistant_evidence_metric(context.metric_id),
+            limit=3,
+        )
+    )
+    requested_refs = set(context.evidence_refs)
+    effective_refs = [
+        item.request_ref
+        for item in selected.items
+        if not requested_refs or item.request_ref in requested_refs
+    ]
     evidence_payload = build_finops_agent_input(
         query,
         query_service,
         evidence_name_resolver=_assistant_evidence_name,
+        evidence_refs=effective_refs,
     )
     response = get_finops_assistant_service().answer(
         request=body,
@@ -1148,6 +1165,21 @@ async def assistant_query(
         **response.model_dump(mode="json"),
         "conversation_ref": conversation_ref,
     }
+
+
+def _assistant_evidence_metric(metric_id: str) -> str:
+    metric = str(metric_id or "").strip().lower()
+    if "cache" in metric:
+        return "cache"
+    if "token" in metric:
+        return "tokens"
+    if "latency" in metric or metric in {"p50", "p95"}:
+        return "latency"
+    if "cost" in metric or "budget" in metric or metric.startswith("roi_"):
+        return "estimated_cost"
+    if "success" in metric or "error" in metric:
+        return "success_rate"
+    return "requests"
 
 
 @router.get("/budgets")

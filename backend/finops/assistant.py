@@ -8,7 +8,21 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 _SAFE_REF = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{2,255}$")
+_SAFE_REQUEST_REF = re.compile(r"^req_[A-Za-z0-9_-]{4,123}$")
+_REQUEST_REF_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_.:-])(req_[A-Za-z0-9_.:-]{4,123})(?![A-Za-z0-9_.:-])",
+    re.IGNORECASE,
+)
 EvidenceState = Literal["observed", "estimated", "partial", "unavailable"]
+AssistantPolicyType = Literal[
+    "error_rate",
+    "p95_latency",
+    "daily_cost_budget",
+    "token_spike",
+    "apim_coverage",
+    "unpriced_requests",
+    "cache_hit_rate",
+]
 
 
 class AssistantWindow(BaseModel):
@@ -42,6 +56,8 @@ class AssistantMetricContext(BaseModel):
     data_status: str = Field(pattern=r"^(complete|partial|unavailable|insufficient_data)$")
     evidence_state: EvidenceState
     cache_state: Literal["hit", "miss", "bypassed", "unavailable"] | None = None
+    policy_type: AssistantPolicyType | None = None
+    evidence_refs: list[str] = Field(default_factory=list, max_length=3)
 
     @field_validator("value")
     @classmethod
@@ -49,6 +65,14 @@ class AssistantMetricContext(BaseModel):
         if isinstance(value, str):
             return " ".join(value.split())[:120]
         return value
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def safe_request_evidence_refs(cls, values: list[str]) -> list[str]:
+        cleaned = [str(value or "").strip() for value in values]
+        if any(not _SAFE_REQUEST_REF.fullmatch(value) for value in cleaned):
+            raise ValueError("invalid request evidence reference")
+        return list(dict.fromkeys(cleaned))
 
 
 class AssistantTurn(BaseModel):
@@ -184,6 +208,12 @@ class FinOpsAssistantService:
                 evidence_state="unavailable",
                 suggested_questions=[],
             )
+        metric_context = request.metric_context.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_none=True,
+        )
+        metric_context["evidence_refs"] = sorted(allowed_refs)
         payload = {
             "task": (
                 "根据所选运营指标回答用户问题，必须分别输出 conclusion、basis、impact、"
@@ -192,11 +222,7 @@ class FinOpsAssistantService:
                 "不要批准或执行治理动作。"
             ),
             "question": request.question,
-            "metric_context": request.metric_context.model_dump(
-                mode="json",
-                by_alias=True,
-                exclude_none=True,
-            ),
+            "metric_context": metric_context,
             "history": [
                 item.model_dump(mode="json")
                 for item in request.history
@@ -218,6 +244,9 @@ class FinOpsAssistantService:
             cited = set(output.evidence_refs)
             if not cited.issubset(allowed_refs):
                 raise ValueError("assistant cited evidence outside the allowed scope")
+            prose_refs = _model_prose_request_refs(output)
+            if not prose_refs.issubset(allowed_refs):
+                raise ValueError("assistant prose cited evidence outside the allowed scope")
             public_labels = [
                 evidence_labels.get(ref) or f"运营证据 {index + 1}"
                 for index, ref in enumerate(output.evidence_refs)
@@ -226,14 +255,31 @@ class FinOpsAssistantService:
                 output,
                 evidence_labels=evidence_labels,
                 evidence_state=request.metric_context.evidence_state,
+                allowed_refs=allowed_refs,
             )
+            suggested_questions = [
+                _public_answer(
+                    question,
+                    evidence_refs=sorted(allowed_refs),
+                    evidence_labels=evidence_labels,
+                )
+                for question in output.suggested_questions
+            ]
+            if any(
+                _request_refs_in_text(value)
+                for value in [
+                    *sections.model_dump(mode="json").values(),
+                    *suggested_questions,
+                ]
+            ):
+                raise ValueError("assistant public prose contains a raw evidence reference")
             return AssistantResponse(
                 status="ready",
                 answer=sections.conclusion,
                 evidence_refs=output.evidence_refs,
                 evidence_labels=public_labels,
                 evidence_state=request.metric_context.evidence_state,
-                suggested_questions=output.suggested_questions,
+                suggested_questions=suggested_questions,
                 sections=sections,
             )
         except Exception:
@@ -271,10 +317,26 @@ def _public_answer(
     evidence_labels: Mapping[str, str],
 ) -> str:
     public = answer
-    for index, ref in enumerate(evidence_refs):
-        label = evidence_labels.get(ref) or f"运营证据 {index + 1}"
-        public = re.sub(rf"\[\s*{re.escape(ref)}\s*\]", "", public)
-        public = public.replace(ref, label)
+    unique_refs = list(dict.fromkeys(evidence_refs))
+    if unique_refs:
+        labels = {
+            ref: evidence_labels.get(ref) or f"运营证据 {index + 1}"
+            for index, ref in enumerate(unique_refs)
+        }
+        alternatives = "|".join(
+            re.escape(ref)
+            for ref in sorted(unique_refs, key=len, reverse=True)
+        )
+        token_pattern = re.compile(
+            rf"\[\s*(?P<bracket>{alternatives})\s*\]"
+            rf"|(?<![A-Za-z0-9_.:-])(?P<plain>{alternatives})(?![A-Za-z0-9_.:-])"
+        )
+
+        def public_label(match: re.Match[str]) -> str:
+            ref = match.group("bracket") or match.group("plain")
+            return labels[ref]
+
+        public = token_pattern.sub(public_label, public)
     public = re.sub(r"\s+([，。；：,.!?])", r"\1", public)
     public = " ".join(public.split()).strip()
     return public or "已基于相关运营证据完成分析，请通过“查看证据”复核明细。"
@@ -285,11 +347,12 @@ def _public_sections(
     *,
     evidence_labels: Mapping[str, str],
     evidence_state: EvidenceState,
+    allowed_refs: set[str],
 ) -> AssistantAnswerSections:
     def public(value: str) -> str:
         return _public_answer(
             value,
-            evidence_refs=output.evidence_refs,
+            evidence_refs=sorted(allowed_refs),
             evidence_labels=evidence_labels,
         )
 
@@ -309,3 +372,23 @@ def _public_sections(
         recommendation=public(recommendation),
         caveat=public(caveat),
     )
+
+
+def _request_refs_in_text(value: Any) -> set[str]:
+    return {
+        match.group(1)
+        for match in _REQUEST_REF_TOKEN.finditer(str(value or ""))
+    }
+
+
+def _model_prose_request_refs(output: AssistantAnswerOutput) -> set[str]:
+    values = [
+        output.answer,
+        output.conclusion,
+        output.basis,
+        output.impact,
+        output.recommendation,
+        output.caveat,
+        *output.suggested_questions,
+    ]
+    return set().union(*(_request_refs_in_text(value) for value in values))

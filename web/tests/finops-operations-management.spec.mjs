@@ -369,6 +369,68 @@ test("risk scan reruns safely and binds evidence plus AI to the selected rule", 
 });
 
 
+test("operations AI keeps latency cache pricing and error evidence item-specific", async ({ page }) => {
+  const calls = [];
+  await installFinOpsMockApi(page, calls);
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await page.getByRole("button", { name: "风险与优化", exact: true }).click();
+  await page.locator(".finops-risk-scan-disclosure > summary").click();
+  const rules = page.locator(".finops-risk-scan-rules");
+  const cases = [
+    { label: "响应时延", policy: "p95_latency", requestRef: "req_slow_000001", operation: "批量分析" },
+    { label: "缓存效率", policy: "cache_hit_rate", requestRef: "req_cache_000001", operation: "重复分析" },
+    { label: "计价覆盖", policy: "unpriced_requests", requestRef: "req_unpriced_001", operation: "模型评审" },
+    { label: "调用失败率", policy: "error_rate", requestRef: "req_error_000001", operation: "机会提取" },
+  ];
+
+  for (const item of cases) {
+    const rule = rules.locator("li").filter({ hasText: item.label });
+    const before = calls.filter((call) => call.path === "/api/finops/assistant/query").length;
+    await rule.getByRole("button", { name: "问 AI" }).click();
+    const assistant = page.getByRole("dialog", { name: "运营指标 AI 助手" });
+    await expect(assistant).toContainText(`${item.label}当前需要关注`);
+    await expect.poll(() => calls.filter((call) => call.path === "/api/finops/assistant/query").length).toBe(before + 1);
+    const assistantCall = calls.filter((call) => call.path === "/api/finops/assistant/query").at(-1);
+    const submitted = JSON.parse(assistantCall.body);
+    expect(submitted.metric_context.policy_type).toBe(item.policy);
+    expect(submitted.metric_context.evidence_refs).toEqual([item.requestRef]);
+
+    await assistant.locator("article.assistant").last().getByRole("button", { name: "查看证据" }).click();
+    const drawer = page.locator(".finops-drawer");
+    await expect(drawer).toContainText(item.operation);
+    expect(calls.filter((call) => call.path === `/api/finops/requests/${item.requestRef}`)).toHaveLength(1);
+    await drawer.getByRole("button", { name: "关闭请求证据" }).click();
+    await assistant.getByRole("button", { name: "关闭运营 AI" }).click();
+  }
+
+  const rejected = await page.evaluate(async () => {
+    const response = await fetch("/api/finops/assistant/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question: "尝试使用不属于时延规则的证据。",
+        metric_context: {
+          metric_id: "risk_p95_latency",
+          label: "响应时延",
+          value: 6200,
+          unit: "ms",
+          window: { from: "2026-07-01T00:00:00Z", to: "2026-07-25T00:00:00Z" },
+          filters: { workspace_id: "demo-corpus" },
+          data_status: "complete",
+          evidence_state: "observed",
+          policy_type: "p95_latency",
+          evidence_refs: ["req_cache_000001"],
+        },
+      }),
+    });
+    return response.json();
+  });
+  expect(rejected.status).toBe("insufficient_data");
+  expect(rejected.evidence_refs).toEqual([]);
+});
+
+
 test("risk scan keeps its completed summary when priority refresh fails and can retry", async ({ page }) => {
   const calls = [];
   await installFinOpsMockApi(page, calls, { riskDecisionRefreshFailures: 1 });

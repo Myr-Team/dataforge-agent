@@ -1658,21 +1658,46 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       }
       const submitted = request.postDataJSON();
       const metricLabel = String(submitted?.metric_context?.label || "当前指标");
+      const submittedRefs = Array.isArray(submitted?.metric_context?.evidence_refs)
+        ? submitted.metric_context.evidence_refs.slice(0, 3)
+        : [];
+      const policyEvidence = {
+        p95_latency: "req_slow_000001",
+        cache_hit_rate: "req_cache_000001",
+        unpriced_requests: "req_unpriced_001",
+        error_rate: "req_error_000001",
+        daily_cost_budget: "req_budget_000001",
+        token_spike: "req_token_000001",
+        apim_coverage: "req_coverage_000001",
+      }[submitted?.metric_context?.policy_type];
+      const metricId = String(submitted?.metric_context?.metric_id || "");
+      const metricEvidence = metricId.includes("error")
+        ? "req_error_000001"
+        : metricId.includes("latency") || metricId.includes("p95")
+          ? "req_slow_000001"
+          : metricId.includes("cost") || metricId.includes("price")
+            ? "req_unpriced_001"
+            : "req_cache_000001";
+      const serviceSelectedRef = policyEvidence || metricEvidence;
+      const assistantEvidenceRefs = submittedRefs.length
+        ? (submittedRefs.includes(serviceSelectedRef) ? [serviceSelectedRef] : [])
+        : [serviceSelectedRef];
+      const assistantReady = assistantEvidenceRefs.length > 0;
       body = {
+        status: assistantReady ? "ready" : "insufficient_data",
         conversation_ref: "conversation-demo",
-        answer: `${metricLabel}当前需要关注。`,
-        sections: {
+        answer: assistantReady ? `${metricLabel}当前需要关注。` : "当前指标缺少可复核证据，暂不能生成分析结论。",
+        sections: assistantReady ? {
           conclusion: `${metricLabel}当前需要关注。`,
           basis: "当前筛选范围内已有请求级运行证据和规则阈值。",
           impact: "该信号会影响成本、体验或治理判断，应先复核影响范围。",
           recommendation: "先查看关联证据，再在候选范围验证优化建议。",
           caveat: "这是基于当前运行证据的分析，不会自动执行生产变更。",
-        },
-        evidence_state: "observed",
-        evidence_refs: submitted?.metric_context?.metric_id?.includes("error")
-          ? ["req_error_000001"]
-          : ["req_cache_000001"],
-        suggested_questions: ["与上一周期相比如何？"],
+        } : null,
+        evidence_state: assistantReady ? "observed" : "unavailable",
+        evidence_refs: assistantEvidenceRefs,
+        evidence_labels: assistantEvidenceRefs.map((_, index) => `${metricLabel}证据 ${index + 1}`),
+        suggested_questions: assistantReady ? ["与上一周期相比如何？"] : [],
       };
     } else if (path === "/api/finops/risk/scans/latest") {
       body = riskScanPayload();

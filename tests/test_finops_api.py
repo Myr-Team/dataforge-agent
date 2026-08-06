@@ -579,6 +579,218 @@ def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(
     assert denied.status_code == 403
 
 
+def test_finops_assistant_binds_model_input_to_selected_policy_evidence(
+    client: TestClient,
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_latency_authorized",
+                    "occurred_at": datetime(2026, 7, 24, 3, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenantref-a",
+                    "workspace_id": "ws-a",
+                    "agent_id": "df-coordinator",
+                    "deployment": "gpt-5-mini",
+                    "status": "succeeded",
+                    "latency_ms": 6200,
+                    "tokens": TokenUsage(input=20, output=4, total=24),
+                    "estimated_cost": {"amount": 0.002, "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_latency_unselected",
+                    "occurred_at": datetime(2026, 7, 24, 4, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenantref-a",
+                    "workspace_id": "ws-a",
+                    "agent_id": "df-coordinator",
+                    "deployment": "gpt-5-mini",
+                    "status": "succeeded",
+                    "latency_ms": 3100,
+                    "tokens": TokenUsage(input=15, output=3, total=18),
+                    "estimated_cost": {"amount": 0.0015, "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+        ]
+    )
+    model_inputs: list[str] = []
+
+    def runner(_agent_id: str, payload: str, **_kwargs: object) -> dict[str, object]:
+        model_inputs.append(payload)
+        return {
+            "structured": {
+                "answer": "高时延请求需要复核。",
+                "evidence_refs": ["req_latency_authorized"],
+                "suggested_questions": [],
+            }
+        }
+
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_assistant_service",
+        lambda: FinOpsAssistantService(model_runner=runner),
+    )
+    metric_context = {
+        "metric_id": "risk_p95_latency",
+        "label": "响应时延优化",
+        "value": 6200,
+        "unit": "ms",
+        "window": {
+            "from": "2026-07-01T00:00:00Z",
+            "to": "2026-07-25T00:00:00Z",
+        },
+        "filters": {"workspace_id": "ws-a"},
+        "data_status": "complete",
+        "evidence_state": "observed",
+        "policy_type": "p95_latency",
+        "evidence_refs": ["req_latency_authorized"],
+    }
+    response = client.post(
+        "/api/finops/assistant/query",
+        json={"question": "为什么时延偏高？", "metric_context": metric_context},
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["evidence_refs"] == ["req_latency_authorized"]
+    assert len(model_inputs) == 1
+    assert "req_latency_authorized" in model_inputs[0]
+    assert "req_latency_unselected" not in model_inputs[0]
+    assert "req_aaaaaaaaaaaa" not in model_inputs[0]
+
+    metric_context["evidence_refs"] = [
+        "req_latency_authorized",
+        "req_other_workspace",
+    ]
+    partially_forged = client.post(
+        "/api/finops/assistant/query",
+        json={"question": "复核选中的时延证据。", "metric_context": metric_context},
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert partially_forged.status_code == 200
+    assert partially_forged.json()["evidence_refs"] == ["req_latency_authorized"]
+    assert "req_other_workspace" not in model_inputs[-1]
+
+    metric_context["evidence_refs"] = ["req_other_workspace"]
+    forged = client.post(
+        "/api/finops/assistant/query",
+        json={"question": "分析这条证据。", "metric_context": metric_context},
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert forged.status_code == 200
+    assert forged.json()["status"] == "insufficient_data"
+    assert forged.json()["evidence_refs"] == []
+    assert "req_other_workspace" not in str(forged.json())
+    assert len(model_inputs) == 2
+
+
+@pytest.mark.parametrize(
+    ("policy_type", "request_ref", "event_updates"),
+    [
+        ("p95_latency", "req_policy_latency", {"latency_ms": 6200}),
+        (
+            "cache_hit_rate",
+            "req_policy_cache",
+            {
+                "result_cache": {
+                    "eligible": True,
+                    "state": "miss",
+                    "reason": "eligible",
+                }
+            },
+        ),
+        (
+            "unpriced_requests",
+            "req_policy_unpriced",
+            {"estimated_cost": {"amount": None, "status": "unavailable"}},
+        ),
+        (
+            "error_rate",
+            "req_policy_error",
+            {"status": "failed", "error_category": "provider_5xx"},
+        ),
+    ],
+)
+def test_finops_assistant_real_policy_selectors_bind_four_risk_evidence_types(
+    client: TestClient,
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    policy_type: str,
+    request_ref: str,
+    event_updates: dict[str, object],
+) -> None:
+    event = {
+        "request_ref": request_ref,
+        "occurred_at": datetime(2026, 7, 24, 5, 0, tzinfo=timezone.utc),
+        "call_class": "model",
+        "tenant_ref": "tenantref-a",
+        "workspace_id": "ws-a",
+        "agent_id": "df-coordinator",
+        "deployment": "gpt-5-mini",
+        "status": "succeeded",
+        "latency_ms": 900,
+        "tokens": TokenUsage(input=20, output=4, total=24),
+        "estimated_cost": {"amount": 0.002, "status": "estimated"},
+        "evidence_state": "observed",
+    }
+    event.update(event_updates)
+    repository.upsert_events([FinOpsRequestEvent.model_validate(event)])
+    model_inputs: list[str] = []
+
+    def runner(_agent_id: str, payload: str, **_kwargs: object) -> dict[str, object]:
+        model_inputs.append(payload)
+        return {
+            "structured": {
+                "answer": "当前规则证据可复核。",
+                "evidence_refs": [request_ref],
+                "suggested_questions": [],
+            }
+        }
+
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_assistant_service",
+        lambda: FinOpsAssistantService(model_runner=runner),
+    )
+    response = client.post(
+        "/api/finops/assistant/query",
+        json={
+            "question": "请复核当前风险证据。",
+            "metric_context": {
+                "metric_id": f"risk_{policy_type}",
+                "label": "风险证据",
+                "value": 1,
+                "unit": "",
+                "window": {
+                    "from": "2026-07-01T00:00:00Z",
+                    "to": "2026-07-25T00:00:00Z",
+                },
+                "filters": {"workspace_id": "ws-a"},
+                "data_status": "complete",
+                "evidence_state": "observed",
+                "policy_type": policy_type,
+                "evidence_refs": [request_ref],
+            },
+        },
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert response.json()["evidence_refs"] == [request_ref]
+    assert len(model_inputs) == 1
+    assert request_ref in model_inputs[0]
+    assert "req_aaaaaaaaaaaa" not in model_inputs[0]
+
+
 def test_finops_assistant_reuses_a_long_persisted_answer_without_rejecting_history(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -631,6 +843,88 @@ def test_finops_assistant_reuses_a_long_persisted_answer_without_rejecting_histo
     )
 
     assert second.status_code == 200
+
+
+def test_finops_assistant_does_not_persist_or_replay_foreign_refs_from_model_prose(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_inputs: list[str] = []
+
+    def runner(_agent_id: str, payload: str, **_kwargs: object) -> dict[str, object]:
+        model_inputs.append(payload)
+        if len(model_inputs) == 1:
+            return {
+                "structured": {
+                    "conclusion": "当前结论引用了 req_other_workspace。",
+                    "basis": "依据仍来自当前窗口。",
+                    "impact": "需要复核。",
+                    "recommendation": "先查看证据。",
+                    "caveat": "只读分析。",
+                    "evidence_refs": ["req_aaaaaaaaaaaa"],
+                    "suggested_questions": [],
+                }
+            }
+        return {
+            "structured": {
+                "conclusion": "当前窗口证据可复核。",
+                "basis": "依据来自已授权请求。",
+                "impact": "影响仍需验证。",
+                "recommendation": "继续观察。",
+                "caveat": "仅适用于当前窗口。",
+                "evidence_refs": ["req_aaaaaaaaaaaa"],
+                "suggested_questions": [],
+            }
+        }
+
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_assistant_service",
+        lambda: FinOpsAssistantService(model_runner=runner),
+    )
+    payload = {
+        "question": "当前调用情况如何？",
+        "metric_context": {
+            "metric_id": "requests",
+            "label": "调用次数",
+            "value": 1,
+            "unit": "次",
+            "window": {
+                "from": "2026-07-01T00:00:00Z",
+                "to": "2026-07-25T00:00:00Z",
+            },
+            "filters": {"workspace_id": "ws-a"},
+            "data_status": "complete",
+            "evidence_state": "observed",
+        },
+    }
+    first = client.post(
+        "/api/finops/assistant/query",
+        json=payload,
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "unavailable"
+    assert "req_other_workspace" not in first.text
+
+    messages = client.get(
+        f"/api/finops/assistant/conversations/{first.json()['conversation_ref']}/messages",
+        params={"workspace_id": "ws-a"},
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert messages.status_code == 200
+    assert "req_other_workspace" not in messages.text
+
+    payload["conversation_ref"] = first.json()["conversation_ref"]
+    second = client.post(
+        "/api/finops/assistant/query",
+        json=payload,
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert second.status_code == 200
+    assert second.json()["status"] == "ready"
+    assert len(model_inputs) == 2
+    assert "req_other_workspace" not in model_inputs[1]
 
 
 def test_finops_read_contract_and_request_detail_are_privacy_bounded(client: TestClient) -> None:

@@ -50,6 +50,28 @@ def test_assistant_request_rejects_unknown_or_unsafe_context_fields() -> None:
         _request(filters={"workspace_id": "ws-a", "resource_id": "/subscriptions/secret"})
 
 
+def test_assistant_request_accepts_only_bounded_policy_request_evidence() -> None:
+    request = _request(
+        policy_type="p95_latency",
+        evidence_refs=["req_latency_authorized", "req_latency_authorized"],
+    )
+
+    assert request.metric_context.policy_type == "p95_latency"
+    assert request.metric_context.evidence_refs == ["req_latency_authorized"]
+
+    with pytest.raises(ValidationError):
+        _request(policy_type="arbitrary_policy")
+
+    with pytest.raises(ValidationError):
+        _request(evidence_refs=["provider-response-id"])
+
+    with pytest.raises(ValidationError):
+        _request(evidence_refs=["req_safe:provider"])
+
+    with pytest.raises(ValidationError):
+        _request(evidence_refs=["req_one1", "req_two2", "req_three3", "req_four4"])
+
+
 def test_assistant_returns_only_allowlisted_evidence() -> None:
     def runner(*_args: object, **_kwargs: object) -> dict[str, object]:
         return {
@@ -133,6 +155,116 @@ def test_assistant_fails_closed_when_model_cites_foreign_evidence() -> None:
     assert result.status == "unavailable"
     assert result.evidence_refs == []
     assert result.answer == "当前分析暂不可用，运营数据本身不受影响。"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("answer", "旧格式正文提到 req_other_workspace。"),
+        ("conclusion", "结论提到 req_other_workspace。"),
+        ("basis", "依据提到 req_other_workspace。"),
+        ("impact", "影响提到 req_other_workspace。"),
+        ("recommendation", "建议提到 req_other_workspace。"),
+        ("caveat", "边界提到 req_other_workspace。"),
+        ("suggested_questions", ["继续查看 req_other_workspace 吗？"]),
+    ],
+)
+def test_assistant_rejects_foreign_request_refs_in_any_model_prose(
+    field: str,
+    value: object,
+) -> None:
+    structured: dict[str, object] = {
+        "conclusion": "当前结论仅引用已授权证据 req_safe。",
+        "basis": "依据来自 req_safe。",
+        "impact": "影响仍需复核。",
+        "recommendation": "先查看 req_safe。",
+        "caveat": "仅适用于当前范围。",
+        "evidence_refs": ["req_safe"],
+        "suggested_questions": [],
+    }
+    if field == "answer":
+        structured.pop("conclusion")
+    structured[field] = value
+
+    result = FinOpsAssistantService(
+        model_runner=lambda *_args, **_kwargs: {"structured": structured}
+    ).answer(
+        request=_request(),
+        evidence_payload={
+            "evidence_refs": ["req_safe"],
+            "evidence_catalog": [
+                {"ref": "req_safe", "display_name": "缓存运行证据"}
+            ],
+        },
+    )
+
+    assert result.status == "unavailable"
+    assert result.evidence_refs == []
+    assert "req_other_workspace" not in result.model_dump_json()
+
+
+def test_assistant_replaces_allowed_request_refs_in_sections_and_suggestions() -> None:
+    result = FinOpsAssistantService(
+        model_runner=lambda *_args, **_kwargs: {
+            "structured": {
+                "conclusion": "req_safe 显示缓存命中率下降。",
+                "basis": "依据是 req_safe。",
+                "impact": "req_safe 对等待时间有影响。",
+                "recommendation": "先复核 req_safe。",
+                "caveat": "仅覆盖 req_safe 所在窗口。",
+                "evidence_refs": ["req_safe"],
+                "suggested_questions": ["req_safe 与上一周期相比如何？"],
+            }
+        }
+    ).answer(
+        request=_request(),
+        evidence_payload={
+            "evidence_refs": ["req_safe"],
+            "evidence_catalog": [
+                {"ref": "req_safe", "display_name": "缓存运行证据"}
+            ],
+        },
+    )
+
+    assert result.status == "ready"
+    assert result.sections is not None
+    assert "req_safe" not in result.sections.model_dump_json()
+    assert all("req_safe" not in item for item in result.suggested_questions)
+    assert "缓存运行证据" in result.sections.model_dump_json()
+    assert "缓存运行证据" in result.suggested_questions[0]
+
+
+def test_assistant_replaces_overlapping_and_bracketed_allowed_refs_exactly() -> None:
+    result = FinOpsAssistantService(
+        model_runner=lambda *_args, **_kwargs: {
+            "structured": {
+                "conclusion": "[ req_safe ] 与 req_safe_extra 分别代表两条证据。",
+                "basis": "先看 req_safe_extra，再看 [req_safe]。",
+                "impact": "两条证据需要分别复核。",
+                "recommendation": "比较 [req_safe] 和 [ req_safe_extra ]。",
+                "caveat": "仅限当前证据集。",
+                "evidence_refs": ["req_safe", "req_safe_extra"],
+                "suggested_questions": ["[req_safe_extra] 与 req_safe 有何差异？"],
+            }
+        }
+    ).answer(
+        request=_request(),
+        evidence_payload={
+            "evidence_refs": ["req_safe", "req_safe_extra"],
+            "evidence_catalog": [
+                {"ref": "req_safe", "display_name": "缓存证据一"},
+                {"ref": "req_safe_extra", "display_name": "缓存证据二"},
+            ],
+        },
+    )
+
+    assert result.status == "ready"
+    assert result.sections is not None
+    assert result.sections.conclusion == "缓存证据一 与 缓存证据二 分别代表两条证据。"
+    assert result.sections.basis == "先看 缓存证据二，再看 缓存证据一。"
+    assert result.sections.recommendation == "比较 缓存证据一 和 缓存证据二。"
+    assert result.suggested_questions == ["缓存证据二 与 缓存证据一 有何差异？"]
+    assert "req_safe" not in result.sections.model_dump_json()
 
 
 def test_assistant_does_not_invent_an_answer_without_evidence() -> None:

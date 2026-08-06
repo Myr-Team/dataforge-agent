@@ -12,18 +12,39 @@ def build_finops_agent_input(
     anomalies: Iterable[Mapping[str, Any]] = (),
     price_card_revision: str | None = None,
     evidence_name_resolver: Callable[[Mapping[str, Any]], str] | None = None,
+    evidence_refs: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     overview = query_service.overview(query)
     trends = query_service.trends(query, "day")
     departments = query_service.breakdowns(query, "department")
     workspaces = query_service.breakdowns(query, "workspace")
-    request_page = query_service.requests(query)
-    evidence_items = [
-        item
-        for item in request_page.get("items", [])[:50]
-        if isinstance(item, Mapping) and str(item.get("request_ref") or "").strip()
-    ]
-    evidence_refs = [
+    requested_refs = (
+        None
+        if evidence_refs is None
+        else list(dict.fromkeys(
+            str(value or "").strip()
+            for value in evidence_refs
+            if str(value or "").strip()
+        ))[:3]
+    )
+    if requested_refs is None:
+        request_page = query_service.requests(query)
+        evidence_items = [
+            item
+            for item in request_page.get("items", [])[:50]
+            if isinstance(item, Mapping) and str(item.get("request_ref") or "").strip()
+        ]
+    else:
+        events_by_ref = {
+            event.request_ref: event
+            for event in query_service.events(query)
+        }
+        evidence_items = [
+            events_by_ref[request_ref].model_dump(mode="json")
+            for request_ref in requested_refs
+            if request_ref in events_by_ref
+        ]
+    selected_evidence_refs = [
         str(item.get("request_ref") or "").strip()
         for item in evidence_items
     ]
@@ -38,7 +59,7 @@ def build_finops_agent_input(
         }
         for index, item in enumerate(evidence_items)
     ]
-    if not evidence_refs:
+    if not selected_evidence_refs:
         return {
             "status": "insufficient_data",
             "agent_kind": "finops",
@@ -114,7 +135,7 @@ def build_finops_agent_input(
         "price_card_revision": (
             str(price_card_revision or "").strip()[:160] or None
         ),
-        "evidence_refs": list(dict.fromkeys(evidence_refs)),
+        "evidence_refs": list(dict.fromkeys(selected_evidence_refs)),
         "evidence_catalog": evidence_catalog,
         "evidence_gaps": [],
     }
