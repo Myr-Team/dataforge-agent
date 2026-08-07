@@ -6,6 +6,8 @@ from typing import Any, Callable, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .assistant_knowledge import retrieve_finops_knowledge
+
 
 _SAFE_REF = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{2,255}$")
 _SAFE_REQUEST_REF = re.compile(r"^req_[A-Za-z0-9_-]{4,123}$")
@@ -214,11 +216,17 @@ class FinOpsAssistantService:
             exclude_none=True,
         )
         metric_context["evidence_refs"] = sorted(allowed_refs)
+        knowledge_entries = retrieve_finops_knowledge(
+            metric_id=request.metric_context.metric_id,
+            policy_type=request.metric_context.policy_type,
+            question=request.question,
+        )
         payload = {
             "task": (
                 "根据所选运营指标回答用户问题，必须分别输出 conclusion、basis、impact、"
                 "recommendation、caveat 五个结构化字段；仅在 evidence_refs 字段引用允许的证据；"
                 "回答正文只能使用 evidence_catalog 的 display_name，不得输出原始 evidence ref；"
+                "知识目录只能解释定义、公式和判断边界，当前数值只能来自授权运营证据；"
                 "不要批准或执行治理动作。"
             ),
             "question": request.question,
@@ -229,6 +237,11 @@ class FinOpsAssistantService:
             ],
             "evidence": dict(evidence_payload),
             "evidence_refs": sorted(allowed_refs),
+            "knowledge_context": {
+                "version": "finops-knowledge-v1",
+                "usage_boundary": "知识仅用于解释概念和公式，不能生成当前数值或新增证据。",
+                "entries": knowledge_entries,
+            },
         }
         try:
             raw = self._model_runner(

@@ -28,6 +28,36 @@ const DEFAULT_QUESTIONS = [
   "有哪些可验证的优化方向？",
 ];
 
+const COST_QUESTIONS = Object.freeze([
+  "本月估算成本主要由哪些部门和模型贡献？",
+  "价目覆盖率如何影响当前成本可信度？",
+  "缓存命中率提升后可能节省多少？",
+  "哪些高成本请求值得优先下钻？",
+]);
+
+const ROI_QUESTIONS = Object.freeze([
+  "本期 ROI 测算使用了哪些投入假设？",
+  "哪些收益已经观测，哪些仍待验证？",
+  "模型成本变化会怎样影响回收周期？",
+  "下一步应补充哪些业务结果证据？",
+]);
+
+const RISK_QUESTIONS = Object.freeze([
+  "当前最高优先级风险的判定依据是什么？",
+  "哪些请求构成了代表证据？",
+  "建议先验证哪一项优化？",
+  "哪些结论仍受证据不足限制？",
+]);
+
+
+export function assistantStarterQuestions(context = {}) {
+  const metricId = String(context?.metric_id || "").toLowerCase();
+  if (["estimated_cost", "cost", "unpriced_requests"].includes(metricId)) return [...COST_QUESTIONS];
+  if (["roi_ratio", "roi", "monthly_net_benefit"].includes(metricId)) return [...ROI_QUESTIONS];
+  if (metricId === "risk_summary" || context?.policy_type) return [...RISK_QUESTIONS];
+  return [...DEFAULT_QUESTIONS];
+}
+
 
 export function publicAssistantContent(value) {
   return String(value || "")
@@ -190,7 +220,7 @@ export function FinOpsAssistant({
     .reverse()
     .find((item) => item.role === "assistant" && item.suggestions?.length)
     ?.suggestions;
-  const suggestions = latestSuggestions || DEFAULT_QUESTIONS;
+  const suggestions = latestSuggestions || assistantStarterQuestions(context);
   const clearHistory = async () => {
     if (!conversationRef || !workspaceId || busy) return;
     setBusy(true);

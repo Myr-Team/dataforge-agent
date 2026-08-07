@@ -77,7 +77,7 @@ def seed_demo_workspace(
     tenant_ref: str,
     workspace_id: str,
     allowed_workspace_id: str,
-    batch: str = "operations-v2",
+    batch: str = "operations-v3",
     budget_repository: Any | None = None,
     hmac_secret: str | None = None,
     roi_scenario_writer: Any | None = None,
@@ -178,66 +178,93 @@ def _scenario_events(
     *,
     actor_refs: tuple[str, ...],
 ) -> Iterable[FinOpsRequestEvent]:
-    for index in range(120):
-        day_offset = 29 - index // 4
-        slot = index % 4
-        occurred_at = now - timedelta(
-            days=day_offset,
-            hours=(3 - slot) * 3,
-            minutes=(index * 7) % 53,
+    ordinal = 0
+    anchor_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    cache_pattern = (
+        "hit", "miss", "miss", "miss", "miss",
+        "hit", "miss", "miss", "miss", "miss",
+        "hit", "miss", "miss", "miss", "miss",
+        "miss", "bypassed", "bypassed", "bypassed", "unavailable",
+    )
+    for day_offset in range(29, -1, -1):
+        daily_count = 60 + ((day_offset * 17) % 31) + ((day_offset % 5) * 2)
+        day_start = anchor_day - timedelta(days=day_offset)
+        minutes_available = 1430 if day_offset else max(
+            1,
+            int((now - day_start).total_seconds() // 60) - 60,
         )
-        agent_index = index % len(_AGENTS)
-        model_index = (index + index // 5) % len(_MODELS)
-        actor_index = (index // 5) % len(actor_refs)
-        input_tokens = 320 + ((index * 137) % 4200)
-        output_tokens = 80 + ((index * 71) % 1300)
-        reasoning_tokens = 40 + ((index * 29) % 620) if index % 3 == 0 else 0
-        total_tokens = input_tokens + output_tokens + reasoning_tokens
-        cache_state = (
-            "miss", "bypassed", "miss", "bypassed", "hit",
-            "miss", "bypassed", "miss", "bypassed", "unavailable",
-        )[index % 10]
-        eligible = cache_state in {"hit", "miss"}
-        avoided_tokens = int(input_tokens * 0.72) if cache_state == "hit" else None
-        failed = index in {17, 44, 73, 91, 106}
-        unpriced = index in {11, 58, 97}
-        cost = None if unpriced else round(
-            (
-                input_tokens
-                + output_tokens * 2.4
-                + reasoning_tokens * 1.7
-                - (avoided_tokens or 0) * 0.72
+        for slot in range(daily_count):
+            index = ordinal
+            occurred_at = day_start + timedelta(
+                minutes=(slot * 53 + day_offset * 29) % minutes_available,
             )
-            * _PRICE_FACTORS[model_index],
-            8,
-        )
-        yield _event(
-            tenant_ref=tenant_ref,
-            workspace_id=workspace_id,
-            batch=batch,
-            ordinal=index,
-            occurred_at=occurred_at,
-            run_id=f"run_demo_{index:04d}",
-            route=("analysis", "conversation", "artifact", "review")[index % 4],
-            agent_id=_AGENTS[agent_index],
-            model=_MODELS[model_index],
-            actor_ref=actor_refs[actor_index],
-            department_id=_DEPARTMENTS[actor_index],
-            status="failed" if failed else "succeeded",
-            error_category=("provider_5xx" if index % 2 else "client_4xx") if failed else None,
-            latency_ms=650 + ((index * 283) % 4300),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens or None,
-            cached_input_tokens=avoided_tokens,
-            total_tokens=total_tokens,
-            cache_state=cache_state,
-            eligible=eligible,
-            avoided_tokens=avoided_tokens,
-            gateway_coverage=("apim_governed", "app_observed", "unmanaged")[index % 3],
-            cost=cost,
-            priced=not unpriced,
-        )
+            agent_index = (index + day_offset) % len(_AGENTS)
+            model_index = (index + index // 7 + day_offset) % len(_MODELS)
+            actor_index = (index // 5 + day_offset) % len(actor_refs)
+            input_tokens = 22_000 + ((index * 1789 + day_offset * 941) % 72_000)
+            output_tokens = 2_000 + ((index * 977 + slot * 331) % 16_000)
+            reasoning_tokens = (
+                800 + ((index * 421 + day_offset * 113) % 6_200)
+                if index % 3 == 0
+                else 0
+            )
+            total_tokens = input_tokens + output_tokens + reasoning_tokens
+            cache_state = cache_pattern[index % len(cache_pattern)]
+            eligible = cache_state in {"hit", "miss"}
+            avoided_tokens = int(input_tokens * 0.65) if cache_state == "hit" else None
+            failed = index % 29 == 17
+            unpriced = index % 16 == 11
+            cost = None if unpriced else round(
+                (
+                    input_tokens
+                    + output_tokens * 2.4
+                    + reasoning_tokens * 1.7
+                    - (avoided_tokens or 0) * 0.72
+                )
+                * _PRICE_FACTORS[model_index],
+                8,
+            )
+            coverage_bucket = index % 100
+            gateway_coverage = (
+                "apim_governed"
+                if coverage_bucket < 92
+                else "app_observed"
+                if coverage_bucket < 97
+                else "unmanaged"
+                if coverage_bucket < 99
+                else "unknown"
+            )
+            latency_ms = 620 + ((index * 283 + day_offset * 41) % 2_900)
+            if index % 37 == 0:
+                latency_ms += 2_800
+            yield _event(
+                tenant_ref=tenant_ref,
+                workspace_id=workspace_id,
+                batch=batch,
+                ordinal=ordinal,
+                occurred_at=occurred_at,
+                run_id=f"run_demo_{index:04d}",
+                route=("analysis", "conversation", "artifact", "review")[index % 4],
+                agent_id=_AGENTS[agent_index],
+                model=_MODELS[model_index],
+                actor_ref=actor_refs[actor_index],
+                department_id=_DEPARTMENTS[actor_index],
+                status="failed" if failed else "succeeded",
+                error_category=("provider_5xx" if index % 2 else "client_4xx") if failed else None,
+                latency_ms=latency_ms,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                reasoning_tokens=reasoning_tokens or None,
+                cached_input_tokens=avoided_tokens,
+                total_tokens=total_tokens,
+                cache_state=cache_state,
+                eligible=eligible,
+                avoided_tokens=avoided_tokens,
+                gateway_coverage=gateway_coverage,
+                cost=cost,
+                priced=not unpriced,
+            )
+            ordinal += 1
 
     chain_time = now - timedelta(minutes=25)
     for offset, cache_state in enumerate(("miss", "hit")):
@@ -248,7 +275,7 @@ def _scenario_events(
             tenant_ref=tenant_ref,
             workspace_id=workspace_id,
             batch=batch,
-            ordinal=120 + offset,
+            ordinal=ordinal,
             occurred_at=chain_time + timedelta(minutes=offset * 6),
             run_id=f"run_repeat_analysis_{offset + 1}",
             route="repeat-analysis",
@@ -271,10 +298,11 @@ def _scenario_events(
             cost=0.0714 if cache_state == "miss" else 0.0068,
             priced=True,
         )
+        ordinal += 1
 
     recent_start = now - timedelta(minutes=12)
     for offset in range(24):
-        ordinal = 122 + offset
+        event_ordinal = ordinal
         actor_index = offset % len(actor_refs)
         model_index = offset % len(_MODELS)
         failed = offset in {4, 13, 21}
@@ -303,7 +331,7 @@ def _scenario_events(
             tenant_ref=tenant_ref,
             workspace_id=workspace_id,
             batch=batch,
-            ordinal=ordinal,
+            ordinal=event_ordinal,
             occurred_at=recent_start + timedelta(seconds=offset * 30),
             run_id=f"run_demo_recent_{offset:03d}",
             route=route,
@@ -332,9 +360,9 @@ def _scenario_events(
             cost=None if unpriced else round(0.012 + offset * 0.0017, 8),
             priced=not unpriced,
         )
+        ordinal += 1
 
     for day_offset in range(1, 8):
-        ordinal = 146 + day_offset
         yield _event(
             tenant_ref=tenant_ref,
             workspace_id=workspace_id,
@@ -362,6 +390,7 @@ def _scenario_events(
             cost=0.0014,
             priced=True,
         )
+        ordinal += 1
 
 
 def _roi_scenario_seed(batch: str) -> dict[str, Any]:
@@ -373,7 +402,7 @@ def _roi_scenario_seed(batch: str) -> dict[str, Any]:
         "avoided_loss_or_revenue": 1000,
         "implementation_cost": 6000,
         "monthly_fixed_cost": 200,
-        "model_cost": 100,
+        "model_cost": 450,
         "evaluation_months": 12,
         "evidence_revision": 1,
         "seed_batch": batch,

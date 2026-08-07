@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -112,6 +114,48 @@ def test_assistant_returns_only_allowlisted_evidence() -> None:
     assert result.evidence_labels == ["工作区 A · 模型调用 · 7月26日 10:00"]
     assert result.evidence_state == "observed"
     assert result.suggested_questions == ["哪些工作区贡献最大？"]
+
+
+def test_assistant_cost_question_passes_explanatory_knowledge_without_new_evidence() -> None:
+    captured: dict[str, object] = {}
+
+    def runner(_agent: str, payload: str, **_kwargs: object) -> dict[str, object]:
+        captured.update(json.loads(payload))
+        return {
+            "structured": {
+                "conclusion": "估算成本主要由高用量请求贡献。[req_safe]",
+                "basis": "当前授权范围内存在一条高成本请求。[req_safe]",
+                "impact": "成本增长会提高预算消耗速度。",
+                "recommendation": "先复核模型和部门归因，再评估缓存优化。",
+                "caveat": "估算成本不等于云平台实际账单。",
+                "evidence_refs": ["req_safe"],
+                "suggested_questions": ["价目覆盖率如何影响可信度？"],
+            }
+        }
+
+    result = FinOpsAssistantService(model_runner=runner).answer(
+        request=_request(
+            metric_id="estimated_cost",
+            label="估算成本",
+            value=468.42,
+            unit="USD",
+            evidence_state="estimated",
+        ),
+        evidence_payload={
+            "overview": {"estimated_cost": {"amount": 468.42}},
+            "evidence_refs": ["req_safe"],
+            "evidence_catalog": [
+                {"ref": "req_safe", "display_name": "模型成本运行证据"}
+            ],
+        },
+    )
+
+    assert result.status == "ready"
+    knowledge = captured["knowledge_context"]
+    assert isinstance(knowledge, dict)
+    assert knowledge["usage_boundary"].startswith("知识仅用于解释")
+    assert {item["id"] for item in knowledge["entries"]} >= {"estimated-cost"}
+    assert captured["evidence_refs"] == ["req_safe"]
 
 
 def test_assistant_normalizes_legacy_answer_into_semantic_sections() -> None:

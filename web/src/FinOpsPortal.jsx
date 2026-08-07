@@ -118,6 +118,19 @@ const TAB_ICONS = {
 };
 
 
+const GENERAL_ASSISTANT_DESCRIPTORS = Object.freeze({
+  overview: Object.freeze({ id: "operations_overview", label: "运营总览", kind: "overview" }),
+  cost: Object.freeze({ id: "estimated_cost", label: "成本分析", kind: "cost" }),
+  roi: Object.freeze({ id: "roi_ratio", label: "效能与 ROI", kind: "roi" }),
+  risk: Object.freeze({ id: "risk_summary", label: "风险与优化", kind: "risk" }),
+});
+
+
+export function generalAssistantDescriptor(tab) {
+  return GENERAL_ASSISTANT_DESCRIPTORS[tab] || GENERAL_ASSISTANT_DESCRIPTORS.overview;
+}
+
+
 function dateValue(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -2053,19 +2066,22 @@ export function FinOpsPortal({
 
   const generatedAt = overviewState.generatedAt || overviewState.data?.overview?.freshness?.generated_at;
   const overviewDataStatus = overviewState.data?.overview?.data_status || "unavailable";
-  const generalAssistantContext = useMemo(() => metricContext({
-    id: "operations_overview",
-    label: FINOPS_TABS.find((item) => item.id === tab)?.label || "运营总览",
+  const generalAssistantContext = useMemo(() => {
+    const descriptor = generalAssistantDescriptor(tab);
+    return metricContext({
+    id: descriptor.id,
+    label: descriptor.label,
     value: null,
     unit: "",
-    kind: "overview",
+    kind: descriptor.kind,
     dataStatus: overviewDataStatus,
     evidenceState: overviewDataStatus === "complete"
       ? "observed"
       : overviewDataStatus === "partial"
         ? "partial"
         : "unavailable",
-  }, assistantScope), [assistantScope, overviewDataStatus, tab]);
+  }, assistantScope);
+  }, [assistantScope, overviewDataStatus, tab]);
   const visibleTabs = (surface === "risk" ? [] : FINOPS_TABS).filter((item) => {
     if (item.id === "risk") return false;
     if (item.id === "cost") return permissions["finops.cost.read"] !== false;
@@ -2109,11 +2125,17 @@ export function FinOpsPortal({
           <span>{pageDescription}</span>
         </div>
         <div className="finops-live">
-          <span>
-            {formatRelativeUpdateTime(pageGeneratedAt)}
-            {pageUpdating ? " · 正在更新" : ""}
-          </span>
-          <button type="button" onClick={refresh} title="刷新"><RefreshCw size={15} /></button>
+          <span>{formatRelativeUpdateTime(pageGeneratedAt)}</span>
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={pageUpdating}
+            aria-label={pageUpdating ? "数据更新中" : "刷新运营数据"}
+            title={pageUpdating ? "数据更新中" : "刷新运营数据"}
+          >
+            {pageUpdating ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+            <span>{pageUpdating ? "更新中" : "刷新"}</span>
+          </button>
         </div>
       </header>
 

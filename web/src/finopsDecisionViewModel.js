@@ -308,7 +308,11 @@ function unavailableValueLabel(status) {
 function formatValue(value, unit, status) {
   if (value === null) return unavailableValueLabel(status);
   if (unit === "USD") {
-    const maximumFractionDigits = value !== 0 && Math.abs(value) < 0.01 ? 5 : 2;
+    const maximumFractionDigits = value !== 0 && Math.abs(value) < 0.01
+      ? 5
+      : value !== 0 && Math.abs(value) < 1
+        ? 4
+        : 2;
     return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: "USD",

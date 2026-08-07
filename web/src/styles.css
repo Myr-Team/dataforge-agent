@@ -5273,11 +5273,12 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-head p { margin: 0 0 4px; color: var(--finops-blue); font-size: 10px; font-weight: 800; letter-spacing: .12em; }
 .finops-head h1 { margin: 0; font-size: 24px; font-weight: 730; letter-spacing: -.02em; }
 .finops-head-copy > span { display: block; margin-top: 6px; color: var(--finops-muted); font-size: 12.5px; }
-.finops-live { display: flex; min-height: 34px; align-items: center; gap: 8px; border: 1px solid #dfe5ee; border-radius: 999px; background: #fff; padding: 0 6px 0 11px; color: #475467; font-size: 11px; white-space: nowrap; }
+.finops-live { display: flex; min-height: 36px; align-items: center; gap: 8px; border: 1px solid #dfe5ee; border-radius: 999px; background: #fff; padding: 3px 4px 3px 11px; color: #475467; font-size: 11px; white-space: nowrap; }
 .finops-live > i { width: 7px; height: 7px; border-radius: 50%; background: #12b76a; box-shadow: 0 0 0 3px #ecfdf3; }
-.finops-live > span { display: inline-flex; min-width: 132px; min-height: 26px; align-items: center; justify-content: flex-end; margin: 0; line-height: 1; }
-.finops-live button { display: grid; width: 26px; height: 26px; border: 0; border-radius: 50%; place-items: center; background: transparent; color: #667085; cursor: pointer; }
+.finops-live > span { display: inline-flex; min-width: 112px; min-height: 28px; align-items: center; justify-content: flex-end; margin: 0; line-height: 1; }
+.finops-live button { min-width: 72px; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 0; border-radius: 999px; background: #f2f4f7; padding: 0 9px; color: #475467; cursor: pointer; font: inherit; font-size: 10.5px; line-height: 1; }
 .finops-live button:hover { background: #f2f4f7; color: #175cd3; }
+.finops-live button:disabled { background: #eef4ff; color: #175cd3; opacity: 1; cursor: progress; }
 .finops-toolbar { display: flex; max-width: 1500px; margin: 0 auto 12px; align-items: center; gap: 8px; flex-wrap: wrap; }
 .finops-toolbar select,
 .finops-date-range { min-height: 34px; border: 1px solid #dfe5ee; border-radius: 8px; background: #fff; color: #344054; font: inherit; font-size: 11.5px; }
@@ -6316,18 +6317,20 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-decision-risk-technical dl > div { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 7px; }
 .finops-decision-risk-technical dd { overflow-wrap: anywhere; white-space: normal; }
 
+.finops-decision-risk-footer-grid { display: grid; min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .finops-decision-risk-insight,
-.finops-decision-risk-governance { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 13px 14px; box-shadow: var(--shadow); }
+.finops-decision-risk-governance { display: grid; min-width: 0; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 13px 14px; box-shadow: var(--shadow); }
 .finops-decision-risk-insight > span,
 .finops-decision-risk-governance > span { display: grid; width: 32px; height: 32px; border-radius: 7px; place-items: center; background: var(--blue-soft); color: var(--blue); }
 .finops-decision-risk-insight > div,
-.finops-decision-risk-governance > div { display: grid; min-width: 0; gap: 3px; }
+.finops-decision-risk-governance > div { display: grid; min-width: 0; gap: 4px; overflow-wrap: anywhere; }
 .finops-decision-risk-insight small,
 .finops-decision-risk-governance small { color: var(--blue); font-size: 10px; font-weight: 700; }
 .finops-decision-risk-insight h2,
 .finops-decision-risk-governance h2 { margin: 0; color: var(--ink); font-size: 13px; }
 .finops-decision-risk-insight p,
 .finops-decision-risk-governance p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.finops-decision-risk-card-meta { display: flex !important; min-width: 0; align-items: center; gap: 6px; margin-top: 5px; }
 .finops-decision-risk-governance-state { display: flex !important; align-items: center; flex-wrap: wrap; gap: 6px; }
 .finops-decision-risk-governance-state span { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10.5px; }
 
@@ -6682,7 +6685,9 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-decision-opportunity-track > i.finops-decision-domain-governance { background: var(--blue); }
 
 .finops-decision-risk-banner { grid-template-columns: minmax(0, 1fr); }
-.finops-decision-risk-insight { grid-template-columns: 34px minmax(0, 1fr) auto; }
+@media (max-width: 980px) {
+  .finops-decision-risk-footer-grid { grid-template-columns: 1fr; }
+}
 
 @media (max-width: 760px) {
   .finops-decision-maturity-stages,

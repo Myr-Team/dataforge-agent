@@ -439,22 +439,32 @@ export function RiskDecisionPage({
         <OpportunityPortfolio data={view.portfolio} selectedId={selectedId} onSelect={onSelectRisk} />
       </section>
 
-      {view.insight ? (
-        <section className="finops-decision-risk-insight" aria-labelledby="finops-risk-insight-title">
-          <span><Bot size={17} aria-hidden="true" /></span>
-          <div><small>最新 AI 解读 · 已保存证据</small><h2 id="finops-risk-insight-title">{view.insight.title || "运营分析说明"}</h2><p>{view.insight.summary || "当前没有可展示的分析说明。"}</p></div>
-          <StatusBadge status={view.insight.status}>{view.insight.badge}</StatusBadge>
-        </section>
-      ) : null}
+      <div className="finops-decision-risk-footer-grid">
+        {view.insight ? (
+          <section className="finops-decision-risk-insight" aria-labelledby="finops-risk-insight-title">
+            <span><Bot size={17} aria-hidden="true" /></span>
+            <div>
+              <small>最新 AI 解读 · 已保存证据</small>
+              <h2 id="finops-risk-insight-title">{view.insight.title || "运营分析说明"}</h2>
+              <p>{view.insight.summary || "当前没有可展示的分析说明。"}</p>
+              <div className="finops-decision-risk-card-meta"><StatusBadge status={view.insight.status}>{view.insight.badge}</StatusBadge></div>
+            </div>
+          </section>
+        ) : null}
 
-      <section className="finops-decision-risk-governance" aria-label="治理边界">
-        <span><ShieldCheck size={17} aria-hidden="true" /></span>
-        <div><small>治理边界</small><h2>建议、草案与生产变更保持分离</h2><p>AI 只解释现有证据；整改入口保存结构化草案，不批准、不执行生产变更。</p></div>
-        <div className="finops-decision-risk-governance-state">
-          <span><CheckCircle2 size={13} />只读判断</span>
-          <span><Wrench size={13} />{view.governance.draftEnabled ? "草案可保存" : "草案未开放"}</span>
-        </div>
-      </section>
+        <section className="finops-decision-risk-governance" aria-label="治理边界">
+          <span><ShieldCheck size={17} aria-hidden="true" /></span>
+          <div>
+            <small>治理边界</small>
+            <h2>建议、草案与生产变更保持分离</h2>
+            <p>AI 只解释现有证据；整改入口保存结构化草案，不批准、不执行生产变更。</p>
+            <div className="finops-decision-risk-governance-state">
+              <span><CheckCircle2 size={13} />只读判断</span>
+              <span><Wrench size={13} />{view.governance.draftEnabled ? "草案可保存" : "草案未开放"}</span>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }

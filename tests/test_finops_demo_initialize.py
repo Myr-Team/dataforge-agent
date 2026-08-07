@@ -211,9 +211,9 @@ def test_initializer_upgrades_legacy_batch_and_persists_repeatable_demo_findings
         now=NOW.replace(hour=9),
     )
 
-    assert first.batch == second.batch == "operations-v2"
+    assert first.batch == second.batch == "operations-v3"
     assert seeds.list_request_refs(tenant_ref="tenant_demo_ref", workspace_id="ws-demo", batch="operations-v1") == ()
-    assert set(seeds.list_request_refs(tenant_ref="tenant_demo_ref", workspace_id="ws-demo", batch="operations-v2")) == {event.request_ref for event in second.events}
+    assert set(seeds.list_request_refs(tenant_ref="tenant_demo_ref", workspace_id="ws-demo", batch="operations-v3")) == {event.request_ref for event in second.events}
     assert {event.request_ref for event in legacy.events}.isdisjoint({event.request_ref for event in first.events})
     assert len(anomalies.list("tenant_demo_ref")) == 7
     assert len({item.policy_type for item in anomalies.list("tenant_demo_ref")}) == 6

@@ -20,6 +20,10 @@ test("operations header isolates title copy from the synchronization control", a
   assert.match(styles, /\.finops-live\s*>\s*span/);
   assert.match(styles, /\.finops-live\s*>\s*span\s*\{[^}]*min-width:/s);
   assert.doesNotMatch(component, /新鲜度/);
+  assert.match(component, /aria-label=\{pageUpdating \? "数据更新中" : "刷新运营数据"\}/);
+  assert.match(component, /pageUpdating \? <Loader2 className="spin"[^>]*> : <RefreshCw/);
+  assert.match(component, /<span>\{pageUpdating \? "更新中" : "刷新"\}<\/span>/);
+  assert.match(styles, /\.finops-live button\s*\{[^}]*min-width:\s*72px[^}]*display:\s*inline-flex/s);
 });
 
 
@@ -94,6 +98,35 @@ test("mobile operations AI launcher stays compact over dashboard content", async
   assert.match(styles, /@media \(min-width: 981px\)[\s\S]*\.finops-content\s*\{[^}]*padding-right:\s*56px/s);
   assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.finops-ai-launcher\s*\{[^}]*width:\s*42px[^}]*padding:\s*0/s);
   assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.finops-ai-launcher span\s*\{[^}]*display:\s*none/s);
+});
+
+
+test("operations AI uses tab-specific metrics and cost starter questions", async (context) => {
+  const server = await createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  });
+  context.after(() => server.close());
+
+  const [{ generalAssistantDescriptor }, { assistantStarterQuestions }] = await Promise.all([
+    server.ssrLoadModule("/src/FinOpsPortal.jsx"),
+    server.ssrLoadModule("/src/FinOpsAssistant.jsx"),
+  ]);
+
+  assert.deepEqual(generalAssistantDescriptor("cost"), {
+    id: "estimated_cost",
+    label: "成本分析",
+    kind: "cost",
+  });
+  assert.equal(generalAssistantDescriptor("roi").id, "roi_ratio");
+  assert.equal(generalAssistantDescriptor("risk").id, "risk_summary");
+  assert.deepEqual(assistantStarterQuestions({ metric_id: "estimated_cost" }), [
+    "本月估算成本主要由哪些部门和模型贡献？",
+    "价目覆盖率如何影响当前成本可信度？",
+    "缓存命中率提升后可能节省多少？",
+    "哪些高成本请求值得优先下钻？",
+  ]);
 });
 
 
@@ -397,6 +430,7 @@ test("risk page contains the complete linked signal-to-verification hierarchy", 
   assert.match(source, /requestEvidenceRefs/);
   assert.match(source, /finops-decision-risk-recommendation/);
   assert.match(source, /finops-decision-risk-facts/);
+  assert.match(source, /finops-decision-risk-footer-grid/);
   assert.match(source, /<details[^>]*className="finops-decision-risk-technical"/);
   assert.doesNotMatch(source, /真实影响范围|业务影响/);
   assert.doesNotMatch(source, /咨询当前判断|继续询问/);
@@ -406,6 +440,16 @@ test("risk page contains the complete linked signal-to-verification hierarchy", 
   assert.doesNotMatch(charts, /finops-decision-matrix-point/);
   assert.doesNotMatch(charts, /finops-decision-portfolio-point/);
   assert.doesNotMatch(source, /provider_response_id|prompt|raw_identity|internal_error/);
+});
+
+
+test("risk decision footer uses bounded cards instead of auto columns", async () => {
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+
+  assert.match(styles, /\.finops-decision-risk-footer-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/s);
+  assert.match(styles, /\.finops-decision-risk-insight,[\s\S]*grid-template-columns:\s*34px minmax\(0,\s*1fr\)/s);
+  assert.doesNotMatch(styles, /\.finops-decision-risk-governance\s*\{[^}]*grid-template-columns:[^}]*auto/s);
+  assert.match(styles, /@media \(max-width: 980px\)[\s\S]*\.finops-decision-risk-footer-grid\s*\{[^}]*grid-template-columns:\s*1fr/s);
 });
 
 

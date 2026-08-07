@@ -12,7 +12,7 @@ from backend.finops.member_budgets import MemberBudget
 from backend.finops.repository import InMemoryFinOpsRepository
 
 
-NOW = datetime(2026, 7, 30, 8, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 7, 8, 0, tzinfo=timezone.utc)
 
 
 def test_seed_is_workspace_bounded_and_idempotent() -> None:
@@ -36,7 +36,7 @@ def test_seed_is_workspace_bounded_and_idempotent() -> None:
         now=NOW,
     )
 
-    assert first.event_count >= 120
+    assert 2400 <= first.event_count <= 2500
     assert first.created == first.event_count
     assert first.updated == 0
     assert second.created == 0
@@ -56,6 +56,22 @@ def test_seed_is_workspace_bounded_and_idempotent() -> None:
     ) >= 8
     assert len({event.agent_id for event in first.events}) >= 6
     assert len({event.model for event in first.events}) >= 4
+    occurred_at = [event.occurred_at for event in first.events]
+    assert max(occurred_at) <= NOW
+    assert min(occurred_at) >= datetime(2026, 7, 9, tzinfo=timezone.utc)
+    total_cost = sum(
+        event.estimated_cost.amount or 0
+        for event in first.events
+    )
+    assert 400 <= total_cost <= 550
+    daily_costs: dict[str, float] = {}
+    for event in first.events:
+        day = event.occurred_at.date().isoformat()
+        daily_costs[day] = daily_costs.get(day, 0) + (
+            event.estimated_cost.amount or 0
+        )
+    assert len(daily_costs) == 30
+    assert len({round(value, 2) for value in daily_costs.values()}) >= 12
     assert first.model_routing_policy == {
         "assignments": {},
         "agent_assignments": {
@@ -73,8 +89,8 @@ def test_seed_is_workspace_bounded_and_idempotent() -> None:
     persisted = ledger.list_events(
         tenant_ref="tenant_demo",
         workspace_ids=("ws-demo",),
-        from_value="2026-06-01T00:00:00Z",
-        to_value="2026-08-01T00:00:00Z",
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-08-08T00:00:00Z",
     )
     assert len(persisted) == first.event_count
 
@@ -95,7 +111,7 @@ def test_seed_batch_upgrade_removes_retired_owned_request_facts() -> None:
     seeds.replace_batch_events(
         tenant_ref="tenant_demo",
         workspace_id="ws-demo",
-        batch="operations-v2",
+        batch="operations-v3",
         events=(retained,),
         event_repository=ledger,
     )
@@ -103,8 +119,8 @@ def test_seed_batch_upgrade_removes_retired_owned_request_facts() -> None:
     persisted = ledger.list_events(
         tenant_ref="tenant_demo",
         workspace_ids=("ws-demo",),
-        from_value="2026-06-01T00:00:00Z",
-        to_value="2026-08-01T00:00:00Z",
+        from_value="2026-07-01T00:00:00Z",
+        to_value="2026-08-08T00:00:00Z",
     )
     assert [event.request_ref for event in persisted] == [
         retained.request_ref
@@ -117,7 +133,7 @@ def test_seed_batch_upgrade_removes_retired_owned_request_facts() -> None:
     assert seeds.list_request_refs(
         tenant_ref="tenant_demo",
         workspace_id="ws-demo",
-        batch="operations-v2",
+        batch="operations-v3",
     ) == (retained.request_ref,)
 
 
@@ -245,7 +261,8 @@ def test_seed_emits_versioned_roi_scenario_and_distinct_outcome_evidence() -> No
     )
 
     assert result.roi_scenario["evaluation_months"] == 12
-    assert result.roi_scenario["seed_batch"] == "operations-v2"
+    assert result.roi_scenario["seed_batch"] == "operations-v3"
+    assert result.roi_scenario["model_cost"] == 450
     assert [item["verification_state"] for item in result.outcome_events] == [
         "unverified",
         "unverified",

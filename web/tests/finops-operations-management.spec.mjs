@@ -103,7 +103,7 @@ test("operations management is immediately discoverable and supports metric dril
 
   await expect(page.locator(".finops-trend-event")).toHaveCount(0);
   await page.locator(".finops-trend-switch").getByRole("button", { name: "Token" }).click();
-  const latestTrend = page.locator(".finops-trend-column").filter({ hasText: "752 Token" });
+  const latestTrend = page.locator(".finops-trend-column").filter({ hasText: "4,712,780 Token" });
   await expect(latestTrend).toHaveCount(1);
   await latestTrend.hover();
   const trendTooltip = page.locator(".finops-trend-tooltip-content");
@@ -120,10 +120,10 @@ test("operations management is immediately discoverable and supports metric dril
     fullPage: false,
   });
 
-  await page.getByLabel("部门筛选", { exact: true }).selectOption("Commerce");
-  await expect(page.getByRole("button", { name: /移除部门筛选 Commerce/ })).toBeVisible();
+  await page.getByLabel("部门筛选", { exact: true }).selectOption("Operations");
+  await expect(page.getByRole("button", { name: /移除部门筛选 Operations/ })).toBeVisible();
   await page.getByRole("button", { name: "清除全部" }).click();
-  await expect(page.getByRole("button", { name: /移除部门筛选 Commerce/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /移除部门筛选 Operations/ })).toHaveCount(0);
 
   await expect(page.getByRole("region", { name: "运营决策概览" }).locator(".finops-metric")).toHaveCount(4);
   await expect(page.getByRole("img", { name: "部门估算成本占比" })).toBeVisible();
@@ -214,9 +214,9 @@ for (const viewport of [
     await expect(valueFormula).toContainText("AI 运营总投入");
     await expect(valueFormula).toContainText("月度净收益");
     await expect(valueFormula).toContainText("$3,000.00");
-    await expect(valueFormula).toContainText("$800.00");
-    await expect(valueFormula).toContainText("$2,200.00");
-    await expect(page.locator(".finops-decision-value-result-strip")).toContainText("275%");
+    await expect(valueFormula).toContainText("$1,150.00");
+    await expect(valueFormula).toContainText("$1,850.00");
+    await expect(page.locator(".finops-decision-value-result-strip")).toContainText("160.9%");
     await expect(page.locator(".finops-decision-value-result-strip")).toContainText("预计回收周期");
     await expect(page.locator(".finops-decision-value-track")).toHaveCount(0);
     const help = page.getByRole("button", { name: "月度收益说明" });
@@ -227,17 +227,17 @@ for (const viewport of [
     await expect(helpTooltip).not.toBeEmpty();
     await help.focus();
     await expect(helpTooltip).toBeVisible();
-    await expect(page.getByText("$0.00039")).toBeVisible();
-    await expect(page.getByText("$0.00046")).toBeVisible();
-    await expect(page.getByText("$0.00048")).toBeVisible();
+    await expect(page.getByText("$0.1706")).toBeVisible();
+    await expect(page.getByText("$0.2143")).toBeVisible();
+    await expect(page.getByText("$0.1735")).toBeVisible();
     await expect(page.locator(".finops-decision-roi-wide")).not.toContainText("缺少样本或价格");
 
     control.delayNextRoiRefreshMs = 250;
-    await page.locator(".finops-live").getByRole("button", { name: "刷新" }).click();
-    await expect(page.locator(".finops-live")).toContainText("正在更新");
+    await page.locator(".finops-live").getByRole("button", { name: "刷新运营数据" }).click();
+    await expect(page.locator(".finops-live")).toContainText("更新中");
     const headerUpdating = await page.locator(".finops-head").boundingBox();
     expect(Math.round(headerUpdating.height)).toBe(Math.round(headerBefore.height));
-    await expect(page.locator(".finops-live")).not.toContainText("正在更新");
+    await expect(page.locator(".finops-live")).not.toContainText("更新中");
 
     const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
     await mkdir(outputDir, { recursive: true });
@@ -527,7 +527,7 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await expect(page.locator(".finops-metric")).toHaveCount(4);
   const overviewMetricValues = await page.locator(".finops-metric > strong").allTextContents();
   expect(new Set(overviewMetricValues).size).toBe(4);
-  await expect(page.locator(".finops-trend-column")).toHaveCount(3);
+  await expect(page.locator(".finops-trend-column")).toHaveCount(7);
   await expectDistinctGeometry(page.locator(".finops-trend-stack"), "height");
   await expect(page.locator(".finops-executive-donut .segment")).toHaveCount(4);
   const donutShares = await page.locator(".finops-executive-donut .segment").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("stroke-dasharray")));
@@ -542,21 +542,23 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await expectDemoSurfaceComplete(page);
   await expect(page.locator(".finops-metric")).toHaveCount(0);
   await expect(page.locator(".finops-cost-summary")).toContainText("计价覆盖");
-  await expect(page.locator(".finops-trend-column")).toHaveCount(3);
+  await expect(page.locator(".finops-trend-column")).toHaveCount(7);
   await expectDistinctGeometry(page.locator(".finops-trend-stack"), "height");
   await expect(page.locator(".finops-table")).toHaveCount(2);
   for (const table of await page.locator(".finops-table").all()) {
     const rows = table.locator("tbody tr");
-    expect(await rows.count()).toBeGreaterThanOrEqual(2);
+    expect(await rows.count()).toBeGreaterThanOrEqual(1);
     const dimensions = await rows.locator("td:first-child").allTextContents();
     expect(new Set(dimensions).size).toBe(dimensions.length);
   }
+  const departmentPanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "部门成本归因" }) });
+  await expect(departmentPanel.locator("tbody tr")).toHaveCount(4);
   const workspacePanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "专案成本归因" }) });
-  await expect(workspacePanel.locator("tbody tr")).toHaveCount(3);
+  await expect(workspacePanel.locator("tbody tr")).toHaveCount(1);
   const agentPanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "Agent 成本归因" }) });
   const modelPanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "模型成本归因" }) });
-  await expect(agentPanel.locator(".finops-bar-row")).toHaveCount(3);
-  await expect(modelPanel.locator(".finops-bar-row")).toHaveCount(3);
+  await expect(agentPanel.locator(".finops-bar-row")).toHaveCount(6);
+  await expect(modelPanel.locator(".finops-bar-row")).toHaveCount(4);
   await expectDistinctGeometry(agentPanel.locator(".finops-bar-row i"), "width");
   await expectDistinctGeometry(modelPanel.locator(".finops-bar-row i"), "width");
   const doughnuts = page.getByRole("img", { name: /成本结构/ });
@@ -664,6 +666,44 @@ test("cost attribution tables fit desktop cards and remain horizontally operable
     return node.scrollLeft;
   });
   expect(scrolled).toBeGreaterThan(0);
+});
+
+
+test("refresh state, risk footer, and cost assistant stay presentation ready", async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await installFinOpsDemoCompletenessApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).last().click();
+
+  const refresh = page.locator(".finops-live").getByRole("button", { name: "刷新运营数据" });
+  await expect(refresh).toContainText("刷新");
+  const refreshBox = await refresh.boundingBox();
+  expect(refreshBox.width).toBeGreaterThanOrEqual(72);
+  expect(refreshBox.height).toBeGreaterThanOrEqual(28);
+
+  await page.getByRole("button", { name: "成本分析", exact: true }).click();
+  await page.getByRole("button", { name: "打开运营 AI" }).click();
+  const assistant = page.getByRole("dialog", { name: "运营指标 AI 助手" });
+  await expect(assistant.getByRole("button", { name: "本月估算成本主要由哪些部门和模型贡献？" })).toBeVisible();
+  await assistant.getByRole("button", { name: "本月估算成本主要由哪些部门和模型贡献？" }).click();
+  await expect(assistant.locator(".finops-ai-answer-sections").last()).toContainText("$493.88");
+  await expect(assistant.locator(".finops-ai-answer-sections").last()).toContainText("gpt-5.1");
+  await expect(assistant.locator(".finops-ai-answer-sections").last()).toContainText("不等于云平台实际账单");
+  await assistant.getByRole("button", { name: "关闭运营 AI" }).click();
+
+  await page.getByRole("button", { name: "风险与优化" }).last().click();
+  const footer = page.locator(".finops-decision-risk-footer-grid");
+  await expect(footer).toBeVisible();
+  for (const width of [1366, 1024, 820, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const geometry = await footer.evaluate((node) => ({
+      clientWidth: node.clientWidth,
+      scrollWidth: node.scrollWidth,
+      cardWidths: [...node.children].map((child) => child.getBoundingClientRect().width),
+    }));
+    expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
+    expect(geometry.cardWidths.every((value) => value <= geometry.clientWidth + 1)).toBe(true);
+  }
 });
 
 
