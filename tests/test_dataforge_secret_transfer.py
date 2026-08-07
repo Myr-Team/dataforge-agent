@@ -90,7 +90,10 @@ def test_azure_bridge_returns_names_and_keeps_values_in_writer(monkeypatch, caps
     monkeypatch.setattr(
         secret_transfer,
         "_read_containerapp_secrets",
-        lambda **_kwargs: [{"name": "provider-key", "value": "memory-only"}],
+        lambda **_kwargs: [
+            {"name": "provider-key", "value": "memory-only"},
+            {"name": "source-only-key", "value": "must-not-migrate"},
+        ],
     )
 
     names = secret_transfer.transfer_containerapp_secrets_to_vault(
@@ -99,6 +102,7 @@ def test_azure_bridge_returns_names_and_keeps_values_in_writer(monkeypatch, caps
         app_name="ca-dataforge-backend",
         vault_url="https://example-vault.vault.azure.net",
         credential=object(),
+        allowed_names={"provider-key"},
     )
 
     assert names == ["provider-key"]
@@ -106,6 +110,8 @@ def test_azure_bridge_returns_names_and_keeps_values_in_writer(monkeypatch, caps
     captured = capsys.readouterr()
     assert "memory-only" not in captured.out
     assert "memory-only" not in captured.err
+    assert "must-not-migrate" not in captured.out
+    assert "must-not-migrate" not in captured.err
 
 
 def test_azure_bridge_redacts_provider_failure(monkeypatch):
@@ -136,3 +142,30 @@ def test_azure_bridge_redacts_provider_failure(monkeypatch):
         assert "never-surface" not in str(exc)
     else:
         raise AssertionError("provider failure must be normalized")
+
+
+def test_azure_bridge_fails_when_allowlisted_secret_is_missing(monkeypatch):
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+    _install_fake_azure_modules(monkeypatch, Client)
+    monkeypatch.setattr(
+        secret_transfer,
+        "_read_containerapp_secrets",
+        lambda **_kwargs: [{"name": "available-key", "value": "hidden"}],
+    )
+
+    try:
+        secret_transfer.transfer_containerapp_secrets_to_vault(
+            subscription_ref="source-scope",
+            resource_group="rg-dataforge-dev",
+            app_name="ca-dataforge-backend",
+            vault_url="https://example-vault.vault.azure.net",
+            credential=object(),
+            allowed_names={"required-key"},
+        )
+    except secret_transfer.SecretTransferError as exc:
+        assert str(exc) == "required source secret missing"
+    else:
+        raise AssertionError("missing allowlisted secret must fail closed")

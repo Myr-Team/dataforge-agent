@@ -44,6 +44,7 @@ def transfer_containerapp_secrets_to_vault(
     vault_url: str,
     credential: Any | None = None,
     api_version: str = "2025-01-01",
+    allowed_names: Iterable[str] | None = None,
 ) -> list[str]:
     """Read source Container Apps secrets and write them directly to Key Vault.
 
@@ -69,6 +70,14 @@ def transfer_containerapp_secrets_to_vault(
         api_version=api_version,
         credential=active_credential,
     )
+    if allowed_names is not None:
+        selected = {str(name) for name in allowed_names}
+        if not selected or any(not _SAFE_NAME.fullmatch(name) for name in selected):
+            raise ValueError("invalid secret allowlist")
+        present = {str(record.get("name") or "") for record in records}
+        if selected - present:
+            raise SecretTransferError("required source secret missing")
+        records = [record for record in records if record.get("name") in selected]
     client = SecretClient(vault_url=vault_url.rstrip("/"), credential=active_credential)
 
     def write(name: str, value: str) -> None:
