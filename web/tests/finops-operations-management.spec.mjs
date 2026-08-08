@@ -714,7 +714,7 @@ test("operations management stays usable on mobile without a full-screen AI draw
   await page.goto("/");
   await page.getByRole("button", { name: "成本管理" }).last().click();
 
-  await expect.poll(() => calls.some((call) => call.path === "/api/finops/assistant/conversations")).toBe(true);
+  await expect.poll(() => calls.some((call) => call.path === "/api/finops/assistant/bootstrap")).toBe(true);
 
   await page.getByRole("button", { name: "运营 AI" }).click();
   const dialog = page.getByRole("dialog", { name: "运营指标 AI 助手" });
@@ -745,6 +745,8 @@ test("settings opens the same persisted Agent model configuration", async ({ pag
   await expect(page.getByLabel("审计 Agent主要模型")).toHaveValue("terra");
   await expect(page.getByLabel("FinOps 分析 Agent主要模型")).toHaveValue("terra");
   await expect(page.getByLabel("ROI 分析 Agent主要模型")).toHaveValue("terra");
+  await expect(page.getByLabel("快速回答主要模型")).toHaveValue("");
+  await expect(page.getByLabel("深入分析主要模型")).toHaveValue("terra");
   await page.getByRole("button", { name: "保存模型分配" }).click();
   await expect.poll(() => calls.filter((call) => (
     call.method === "PUT"

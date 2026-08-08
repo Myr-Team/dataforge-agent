@@ -1683,6 +1683,12 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         agent_kind: "finops",
         trigger_fingerprint: "f".repeat(64),
       };
+    } else if (path === "/api/finops/assistant/bootstrap" && request.method() === "GET") {
+      body = {
+        conversation: { conversation_ref: "conversation-demo", updated_at: "2026-08-02T08:00:00Z" },
+        messages: [{ role: "assistant", content: "上次分析已保留，可继续针对当前指标提问。" }],
+        cache_status: "hit",
+      };
     } else if (path === "/api/finops/assistant/conversations" && request.method() === "GET") {
       body = { items: [{ conversation_ref: "conversation-demo", updated_at: "2026-08-02T08:00:00Z" }], count: 1 };
     } else if (path === "/api/finops/assistant/conversations/conversation-demo/messages" && request.method() === "GET") {

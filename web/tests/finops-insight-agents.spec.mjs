@@ -22,6 +22,7 @@ test("metric-aware assistant remains compact, contextual and evidence-bound", as
   expect(calls.filter((item) => item.path === "/api/finops/assistant/query")).toHaveLength(1);
   const submitted = JSON.parse(calls.find((item) => item.path === "/api/finops/assistant/query").body);
   expect(submitted.question).toContain("缓存收益");
+  expect(submitted.mode).toBe("quick");
   expect(calls.some((item) => /\/approve$|\/execute$|\/submit$/.test(item.path))).toBe(false);
   await expect(page.locator(".finops-drawer-backdrop")).toHaveCount(0);
 });
