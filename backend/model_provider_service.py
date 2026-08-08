@@ -54,7 +54,10 @@ class ModelProviderService:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def list(self, tenant_ref: str) -> list[dict[str, object]]:
-        return [item.public_payload() for item in self._repository.list(tenant_ref)]
+        return [
+            item.public_payload(secret_status=self._secret_status(item))
+            for item in self._repository.list(tenant_ref)
+        ]
 
     def create(
         self,
@@ -112,12 +115,13 @@ class ModelProviderService:
     ) -> dict[str, object]:
         value = self._repository.get(tenant_ref, provider_id)
         prepared = self.prepare_configuration_patch(value, patch)
-        return self._repository.update(
+        updated = self._repository.update(
             tenant_ref,
             provider_id,
             prepared,
             actor_ref=actor_ref,
-        ).public_payload()
+        )
+        return updated.public_payload(secret_status=self._secret_status(updated))
 
     def prepare_configuration_patch(
         self,
@@ -196,7 +200,7 @@ class ModelProviderService:
                     connection_state=value.connection_state,
                 ),
                 actor_ref=actor_ref,
-            ).public_payload()
+            ).public_payload(secret_status=self._secret_status(value))
         secret_ref = self._secret_store.rotate(
             tenant_ref,
             provider_id,
@@ -228,7 +232,7 @@ class ModelProviderService:
         base_revision: int,
         actor_ref: str,
     ) -> dict[str, object]:
-        return self._repository.update(
+        updated = self._repository.update(
             tenant_ref,
             provider_id,
             ProviderPatch(
@@ -236,7 +240,8 @@ class ModelProviderService:
                 connection_state="disabled",
             ),
             actor_ref=actor_ref,
-        ).public_payload()
+        )
+        return updated.public_payload(secret_status=self._secret_status(updated))
 
     def _test_record(
         self,
@@ -317,7 +322,21 @@ class ModelProviderService:
             patch,
             actor_ref=actor_ref,
         )
-        return updated.public_payload()
+        return updated.public_payload(secret_status="stored")
+
+    def _secret_status(self, value: ModelProviderRecord) -> str:
+        status = getattr(self._secret_store, "status", None)
+        if not callable(status):
+            return "unavailable"
+        try:
+            observed = status(
+                value.tenant_ref,
+                value.provider_id,
+                value.secret_ref,
+            )
+        except Exception:
+            return "unavailable"
+        return observed if observed in {"stored", "missing", "unavailable"} else "unavailable"
 
 
 def _deepseek_models() -> list[ProviderModel]:

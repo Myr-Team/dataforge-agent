@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .aws_bedrock_provider import bedrock_control_endpoint
+from .model_provider_secrets import SecretStatus
 
 
 ProviderType = Literal["deepseek", "aws_bedrock"]
@@ -84,7 +85,11 @@ class ModelProviderRecord(BaseModel):
         self.region = str(self.region or "").strip().lower()
         return self
 
-    def public_payload(self) -> dict[str, Any]:
+    def public_payload(
+        self,
+        *,
+        secret_status: SecretStatus = "unavailable",
+    ) -> dict[str, Any]:
         payload = self.model_dump(
             mode="json",
             exclude={
@@ -94,7 +99,7 @@ class ModelProviderRecord(BaseModel):
                 "updated_by_ref",
             },
         )
-        payload["secret_status"] = "stored"
+        payload["secret_status"] = secret_status
         return payload
 
 

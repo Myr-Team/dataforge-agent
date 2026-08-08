@@ -58,7 +58,7 @@ def _bedrock_payload(**updates: object) -> dict[str, object]:
 def test_provider_public_serialization_masks_internal_identity_and_secret() -> None:
     record = _record()
 
-    public = record.public_payload()
+    public = record.public_payload(secret_status="stored")
     serialized = str(public)
 
     assert public["provider_id"] == "provider_01"
@@ -67,6 +67,13 @@ def test_provider_public_serialization_masks_internal_identity_and_secret() -> N
     assert "secret_ref" not in public
     assert "must-never-leave" not in serialized
     assert "must-never-leave" not in repr(record)
+
+
+def test_provider_public_serialization_does_not_invent_secret_status() -> None:
+    record = _record()
+
+    assert record.public_payload()["secret_status"] == "unavailable"
+    assert record.public_payload(secret_status="missing")["secret_status"] == "missing"
 
 
 def test_provider_type_and_endpoint_are_server_bounded() -> None:

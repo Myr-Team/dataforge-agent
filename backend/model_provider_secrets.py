@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import hashlib
 import os
-from typing import Any, Mapping, Protocol
+from typing import Any, Literal, Mapping, Protocol
 
 from .aws_bedrock_provider import AwsBedrockCredential
 from .connector_secret_store import validate_key_vault_url
 
 try:
+    from azure.core.exceptions import ResourceNotFoundError
     from azure.identity import ManagedIdentityCredential
     from azure.keyvault.secrets import SecretClient
 except ImportError:
+    ResourceNotFoundError = type("ResourceNotFoundError", (Exception,), {})  # type: ignore[assignment,misc]
     ManagedIdentityCredential = None  # type: ignore[assignment]
     SecretClient = None  # type: ignore[assignment]
+
+
+SecretStatus = Literal["stored", "missing", "unavailable"]
 
 
 class ModelProviderSecretError(RuntimeError):
@@ -35,6 +40,13 @@ class ModelProviderSecretStore(Protocol):
     ) -> str: ...
 
     def rotate(self, tenant_ref: str, provider_id: str, api_key: str) -> str: ...
+
+    def status(
+        self,
+        tenant_ref: str,
+        provider_id: str,
+        secret_ref: str,
+    ) -> SecretStatus: ...
 
 
 class KeyVaultModelProviderSecretStore:
@@ -77,9 +89,26 @@ class KeyVaultModelProviderSecretStore:
         name = self._reference_name(tenant_ref, provider_id, secret_ref)
         try:
             value = str(self._client.get_secret(name).value or "")
+        except ResourceNotFoundError:
+            raise ModelProviderSecretError("provider_secret_missing") from None
         except Exception:
             raise ModelProviderSecretError("provider_secret_get_failed") from None
         return _validated_secret_value(value)
+
+    def status(
+        self,
+        tenant_ref: str,
+        provider_id: str,
+        secret_ref: str,
+    ) -> SecretStatus:
+        name = self._reference_name(tenant_ref, provider_id, secret_ref)
+        try:
+            value = str(self._client.get_secret(name).value or "").strip()
+        except ResourceNotFoundError:
+            return "missing"
+        except Exception:
+            return "unavailable"
+        return "stored" if value else "missing"
 
     def rotate(self, tenant_ref: str, provider_id: str, api_key: str) -> str:
         return self.put(tenant_ref, provider_id, api_key)
@@ -136,6 +165,7 @@ __all__ = [
     "KeyVaultModelProviderSecretStore",
     "ModelProviderSecretError",
     "ModelProviderSecretStore",
+    "SecretStatus",
     "model_provider_secret_store_from_environment",
     "provider_secret_name",
 ]

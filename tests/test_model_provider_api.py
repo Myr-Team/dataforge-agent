@@ -32,6 +32,9 @@ class _Secrets:
     def get(self, tenant_ref: str, provider_id: str, secret_ref: str) -> str:
         return self.values[(tenant_ref, provider_id)]
 
+    def status(self, tenant_ref: str, provider_id: str, secret_ref: str) -> str:
+        return "stored" if (tenant_ref, provider_id) in self.values else "missing"
+
     def rotate(self, tenant_ref: str, provider_id: str, api_key: str) -> str:
         self.rotate_calls += 1
         return self.put(tenant_ref, provider_id, api_key)
