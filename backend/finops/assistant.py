@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Callable, Literal, Mapping
 
@@ -215,6 +216,12 @@ class FinOpsAssistantService:
                 evidence_state="unavailable",
                 suggested_questions=[],
             )
+        if request.mode == "quick" and not _quick_model_enabled():
+            return _grounded_quick_response(
+                request=request,
+                allowed_refs=allowed_refs,
+                evidence_labels=evidence_labels,
+            )
         metric_context = request.metric_context.model_dump(
             mode="json",
             by_alias=True,
@@ -331,6 +338,15 @@ def _unavailable_response() -> AssistantResponse:
         evidence_state="unavailable",
         suggested_questions=[],
     )
+
+
+def _quick_model_enabled() -> bool:
+    return str(os.environ.get("DF_FINOPS_QUICK_MODEL_ENABLED") or "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _grounded_quick_response(

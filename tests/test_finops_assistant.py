@@ -112,6 +112,47 @@ def test_quick_assistant_uses_bounded_model_attempt_and_grounded_fallback() -> N
     assert result.evidence_state == "observed"
 
 
+def test_quick_assistant_can_use_immediate_grounded_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DF_FINOPS_QUICK_MODEL_ENABLED", "0")
+    calls: list[str] = []
+
+    def runner(*_args: object, **_kwargs: object) -> dict[str, object]:
+        calls.append("provider")
+        return {
+            "structured": {
+                "conclusion": "provider answer",
+                "basis": "provider basis",
+                "impact": "provider impact",
+                "recommendation": "provider recommendation",
+                "caveat": "provider caveat",
+                "evidence_refs": ["req_safe"],
+            }
+        }
+
+    result = FinOpsAssistantService(model_runner=runner).answer(
+        request=_request(
+            label="Gateway coverage",
+            value=93.2,
+            unit="%",
+            policy_type="apim_coverage",
+        ),
+        evidence_payload={
+            "evidence_refs": ["req_safe"],
+            "evidence_catalog": [
+                {"ref": "req_safe", "display_name": "Demo analysis run"}
+            ],
+        },
+    )
+
+    assert result.status == "ready"
+    assert calls == []
+    assert result.sections is not None
+    assert "Gateway coverage" in result.sections.conclusion
+    assert result.evidence_labels == ["Demo analysis run"]
+
+
 def test_deep_assistant_keeps_fail_closed_behavior_when_model_is_unavailable() -> None:
     result = FinOpsAssistantService(
         model_runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(
