@@ -1334,6 +1334,35 @@ def test_finops_workspace_display_name_is_reused_within_refresh_window(
     assert calls == ["load"]
 
 
+def test_finops_workspace_scoped_query_does_not_enumerate_all_workspaces(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DF_FINOPS_SCOPED_AUTHZ_FAST_PATH", "1")
+    checked: list[str] = []
+
+    def role(workspace_id: str, _actor: object) -> str:
+        checked.append(workspace_id)
+        return "owner"
+
+    monkeypatch.setattr(finops_router, "active_workspace_role", role)
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: (_ for _ in ()).throw(
+            AssertionError("workspace-scoped query must not enumerate all workspaces")
+        ),
+    )
+
+    response = client.get(
+        "/api/finops/filters?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert checked == ["ws-a"]
+
+
 def test_finops_request_detail_builds_server_owned_azure_monitor_link(
     client: TestClient,
     repository: InMemoryFinOpsRepository,

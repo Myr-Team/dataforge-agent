@@ -709,6 +709,19 @@ def _authorized_workspace_roles(actor: Mapping[str, Any]) -> dict[str, str]:
     return roles
 
 
+def _workspace_roles_for_query(
+    actor: Mapping[str, Any],
+    workspace_id: str | None,
+) -> dict[str, str]:
+    if not workspace_id:
+        return _authorized_workspace_roles(actor)
+    try:
+        role = active_workspace_role(workspace_id, actor)
+    except FileNotFoundError:
+        return {}
+    return {workspace_id: role} if role else {}
+
+
 def _context(
     request: Request,
     *,
@@ -727,7 +740,11 @@ def _context(
     actor = actor_from_request(request, fallback=False)
     if not is_trusted_tenant_identity(actor):
         raise HTTPException(status_code=401, detail="trusted tenant identity is required")
-    roles = _authorized_workspace_roles(actor)
+    roles = (
+        _workspace_roles_for_query(actor, workspace_id)
+        if workspace_id and _enabled("DF_FINOPS_SCOPED_AUTHZ_FAST_PATH")
+        else _authorized_workspace_roles(actor)
+    )
     if workspace_id and workspace_id not in roles:
         raise HTTPException(status_code=403, detail="workspace access denied for finops.read")
     selected_ids = (workspace_id,) if workspace_id else tuple(sorted(roles))
